@@ -49,8 +49,6 @@ defmodule Nest.MixProject do
       {:phoenix_live_view, "~> 1.1.0"},
       {:lazy_html, ">= 0.1.0", only: :test},
       {:phoenix_live_dashboard, "~> 0.8.3"},
-      {:esbuild, "~> 0.10", runtime: Mix.env() == :dev},
-      {:tailwind, "~> 0.3", runtime: Mix.env() == :dev},
       {:heroicons,
        github: "tailwindlabs/heroicons",
        tag: "v2.2.0",
@@ -67,7 +65,9 @@ defmodule Nest.MixProject do
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"},
       {:langchain, "~> 0.8.0"},
-      {:toml, "~> 0.7.0"}
+      {:toml, "~> 0.7.0"},
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:phoenix_copy, "~> 0.1.4", only: :dev}
     ]
   end
 
@@ -83,14 +83,24 @@ defmodule Nest.MixProject do
       "ecto.setup": ["ecto.create", "ecto.migrate", "run priv/repo/seeds.exs"],
       "ecto.reset": ["ecto.drop", "ecto.setup"],
       test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"],
-      "assets.setup": ["tailwind.install --if-missing", "esbuild.install --if-missing"],
-      "assets.build": ["compile", "tailwind nest", "esbuild nest"],
+      "assets.setup": ["cmd --cd assets pnpm install"],
+      "assets.build": ["cmd --cd assets pnpm build"],
       "assets.deploy": [
-        "tailwind nest --minify",
-        "esbuild nest --minify",
+        "cmd --cd assets pnpm build",
+        "phx.copy default",
         "phx.digest"
       ],
-      precommit: ["compile --warnings-as-errors", "deps.unlock --unused", "format", "test"]
+      "assets.test": ["cmd --cd assets pnpm vitest run"],
+      "assets.check": ["cmd --cd assets pnpm biome check"],
+      precommit: [
+        "compile --warnings-as-errors",
+        "deps.unlock --unused",
+        "format",
+        "credo",
+        "cmd --cd assets pnpm biome ci",
+        "test",
+        "assets.test"
+      ]
     ]
   end
 end

@@ -3,12 +3,31 @@ user interface.
 
 ## Project guidelines
 
+### During Development
+
+- Never run the any dev servers, neither `mix phx.server` nor `npx vite`. The user will manage that manually.
+- Code must pass lints (e.g. credo, biome). Do not modify lint configs or bypass the lints.
+- Limit length and complexity of both functions and files. When complexity gets
+  too great, first factor out potentially reusable components then factor out
+  single-use helper functions if there isn't enough reusable logic to get the
+  function simple enough.
+- **NEVER** downgrade anything without an explicit user request.
+
 ### JavaScript
 
 - Our JS stuff lives in ./assets. If there is a package.json or node_modules
 directory in the project root something has gone horribly wrong and we need to
 immediately stop and fix it.
 - We're using pnpm for JS package management.
+- Use `mix assets.check` to run the biome checks.
+- Use `mix assets.test` to run the JS tests.
+- When running any `pnpm`, `pnpx` or other JS command **always** start with an
+  explicit `cd assets && ...`.
+
+### React
+
+- Use modern react and hooks.
+- Use a single zustand store for transient in-browser state.
 
 ### Basics for Elixir / Phoenix
 

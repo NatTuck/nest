@@ -1,5 +1,13 @@
 import Config
 
+# Configure Phoenix.Copy for static assets
+config :phoenix_copy,
+  default: [
+    source: Path.expand("../assets/static/", __DIR__),
+    destination: Path.expand("../priv/static/", __DIR__),
+    debounce: 100
+  ]
+
 # Configure your database
 config :nest, Nest.Repo,
   database: Path.expand("../db/nest_dev.db", __DIR__),
@@ -22,8 +30,20 @@ config :nest, NestWeb.Endpoint,
   debug_errors: true,
   secret_key_base: "KkIpLULqI6uMbiLBWT3v9gkaue6IBrpIcKTGdYPI8Jwad9LbgWD2olp9YWyX4OmT",
   watchers: [
-    esbuild: {Esbuild, :install_and_run, [:nest, ~w(--sourcemap=inline --watch)]},
-    tailwind: {Tailwind, :install_and_run, [:nest, ~w(--watch)]}
+    # Phoenix.Copy watcher for static files
+    copy: {Phoenix.Copy, :watch, [:default]},
+    # Vite build with watch mode - writes files to disk for Phoenix live reload
+    vite:
+      {System, :cmd,
+       [
+         "pnpm",
+         ["exec", "vite", "build", "--watch", "--mode", "development"],
+         [
+           cd: Path.expand("../assets", __DIR__),
+           stderr_to_stdout: true,
+           into: IO.stream(:stdio, :line)
+         ]
+       ]}
   ]
 
 # ## SSL Support

@@ -63,13 +63,15 @@ defmodule NestWeb.CoreComponents do
       id={@id}
       phx-click={JS.push("lv:clear-flash", value: %{key: @kind}) |> hide("##{@id}")}
       role="alert"
-      class="toast toast-top toast-end z-50"
+      class="fixed top-4 right-4 z-50 flex flex-col gap-2"
       {@rest}
     >
       <div class={[
-        "alert w-80 sm:w-96 max-w-80 sm:max-w-96 text-wrap",
-        @kind == :info && "alert-info",
-        @kind == :error && "alert-error"
+        "flex items-center gap-3 w-80 sm:w-96 max-w-96 p-4 rounded-lg shadow-lg text-wrap",
+        @kind == :info &&
+          "bg-blue-50 border border-blue-200 text-blue-800 dark:bg-blue-900/20 dark:border-blue-800 dark:text-blue-200",
+        @kind == :error &&
+          "bg-red-50 border border-red-200 text-red-800 dark:bg-red-900/20 dark:border-red-800 dark:text-red-200"
       ]}>
         <.icon :if={@kind == :info} name="hero-information-circle" class="size-5 shrink-0" />
         <.icon :if={@kind == :error} name="hero-exclamation-circle" class="size-5 shrink-0" />
@@ -367,7 +369,7 @@ defmodule NestWeb.CoreComponents do
       end
 
     ~H"""
-    <table class="table table-zebra">
+    <table class="min-w-full border-collapse">
       <thead>
         <tr>
           <th :for={col <- @col}>{col[:label]}</th>
