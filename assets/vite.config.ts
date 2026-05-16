@@ -108,6 +108,8 @@ export default defineConfig(({ mode }) => {
         // Vendor files - use raw imports
         topbar: path.resolve(__dirname, "vendor/topbar.js"),
       },
+      // Auto-resolve these extensions when importing without extension
+      extensions: [".js", ".jsx", ".ts", ".tsx"],
     },
 
     // CSS configuration

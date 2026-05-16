@@ -1,0 +1,18 @@
+[providers.pegasus]
+base-url = "http://pegasus:8080/v1"
+api-key = "none"
+auto-models = true
+tags = ["local"]
+
+[providers.model-studio]
+base-url = "https://coding-intl.dashscope.aliyuncs.com/v1"
+api-key = "sk-sp-c...0"
+tags = ["quota"]
+
+[[providers.model-studio.models]]
+name = "qwen3.5-plus"
+context-limit = 512000
+multi-modal = { input = ["image"] }
+
+[[providers.model-studio.models]]
+name = "MiniMax-M2.5"

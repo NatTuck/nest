@@ -27,10 +27,25 @@ defmodule Nest.DotConfig do
   def config_file, do: @config_file
 
   @doc """
-  Loads and parses the config file, returning a map with providers and models
+  Loads and parses the config file, returning a map with providers and models.
+  In test environment, loads from test/data/config.toml instead of the default location.
   """
   def load do
-    case File.read(@config_file) do
+    config_file =
+      if Mix.env() == :test do
+        Path.join([File.cwd!(), "test", "data", "config.toml"])
+      else
+        @config_file
+      end
+
+    load(config_file)
+  end
+
+  @doc """
+  Loads config from a specific file path
+  """
+  def load(file_path) do
+    case File.read(file_path) do
       {:ok, content} ->
         case Toml.decode(content) do
           {:ok, config} ->
@@ -41,7 +56,7 @@ defmodule Nest.DotConfig do
         end
 
       {:error, :enoent} ->
-        {:error, "Config file not found at #{@config_file}"}
+        {:error, "Config file not found at #{file_path}"}
 
       {:error, reason} ->
         {:error, "Failed to read config: #{inspect(reason)}"}

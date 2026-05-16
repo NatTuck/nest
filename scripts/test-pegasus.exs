@@ -107,11 +107,10 @@ dice_tool =
 IO.puts("Creating LLM chain...")
 
 llm_chain =
-  try do
-    ChatModel.new(provider: "pegasus")
-  rescue
-    e ->
-      IO.puts("Error creating chat model: #{e.message}")
+  case ChatModel.new(provider: "pegasus") do
+    {:ok, chain} -> chain
+    {:error, reason} ->
+      IO.puts("Error creating chat model: #{inspect(reason)}")
       System.halt(1)
   end
 

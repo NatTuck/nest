@@ -29,7 +29,7 @@ IO.puts("Creating LLM chain for qwen3-plus...")
 
 llm_chain =
   try do
-    ChatModel.new(provider: "model-studio", model: "qwen3.5-plus")
+    ChatModel.new(provider: "model-studio", model: "MiniMax-M2.5")
   rescue
     e ->
       IO.puts("Error creating chat model: #{e.message}")

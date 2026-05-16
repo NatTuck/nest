@@ -39,6 +39,7 @@
     "@llamaindex/chat-ui": "^0.6.1",
     "phoenix": "^1.8.7",
     "react": "^19.2.6",
-    "react-dom": "^19.2.6"
+    "react-dom": "^19.2.6",
+    "zustand": "^5.0.13"
   }
 }

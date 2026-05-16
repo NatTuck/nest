@@ -3,6 +3,6 @@ defmodule NestWeb.PageControllerTest do
 
   test "GET /", %{conn: conn} do
     conn = get(conn, ~p"/")
-    assert html_response(conn, 200) =~ ~s(<div id="landing-root"></div>)
+    assert html_response(conn, 200) =~ ~s(<div id="root" class="h-screen"></div>)
   end
 end

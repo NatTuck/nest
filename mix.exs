@@ -67,7 +67,9 @@ defmodule Nest.MixProject do
       {:langchain, "~> 0.8.0"},
       {:toml, "~> 0.7.0"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
-      {:phoenix_copy, "~> 0.1.4", only: :dev}
+      {:mimic, "~> 2.3", only: :test},
+      {:phoenix_copy, "~> 0.1.4", only: :dev},
+      {:unique_names_generator, "~> 0.2.0"}
     ]
   end
 

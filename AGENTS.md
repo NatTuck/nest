@@ -22,7 +22,7 @@ immediately stop and fix it.
 - Use `mix assets.check` to run the biome checks.
 - Use `mix assets.test` to run the JS tests.
 - When running any `pnpm`, `pnpx` or other JS command **always** start with an
-  explicit `cd assets && ...`.
+explicit `cd assets && ...`.
 
 ### React
 
@@ -31,8 +31,16 @@ immediately stop and fix it.
 
 ### Basics for Elixir / Phoenix
 
-- Use `mix precommit` alias when you are done with all changes and fix any pending issues. Lint warnings (e.g. from credo) aren't optional, they need to be fixed.
-- Use the already included and available `:req` (`Req`) library for HTTP requests, **avoid** `:httpoison`, `:tesla`, and `:httpc`. Req is included by default and is the preferred HTTP client for Phoenix apps
+- Use `mix precommit` alias when you are done with all changes and fix any
+pending issues.
+- Tests shouldn't print anything except temporarily during debugging.
+- Lint warnings (e.g. from credo) aren't optional, they need to be fixed.
+- Errors in tests mean the tests are broken. The tests should be changed so that
+those errors cause test failures, and then the failures and errors should be
+fixed.
+- Use the already included and available `:req` (`Req`) library for HTTP
+requests, **avoid** `:httpoison`, `:tesla`, and `:httpc`. Req is included by
+default and is the preferred HTTP client for Phoenix apps
 
 ### Phoenix v1.8 guidelines for Nest
 

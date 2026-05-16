@@ -9,6 +9,7 @@ defmodule Nest.ChatModel do
   alias LangChain.ChatModels.ChatAnthropic
   alias LangChain.ChatModels.ChatOpenAI
   alias Nest.DotConfig
+  alias Nest.Models
 
   defmodule ModelNotFoundError do
     defexception [:message]
@@ -33,13 +34,15 @@ defmodule Nest.ChatModel do
     new(tag: "local")
   """
   def new(opts \\ []) do
+    # Get all models (static + auto-discovered)
+    all_models = Models.list()
     config = DotConfig.load!()
 
-    chat_model =
+    result =
       cond do
         model_name = opts[:model] ->
           # Find by model name
-          find_by_model(config, model_name)
+          find_by_model(all_models, config, model_name)
 
         provider_name = opts[:provider] ->
           # Find by provider
@@ -50,15 +53,24 @@ defmodule Nest.ChatModel do
           find_by_tag(config, tag)
 
         true ->
-          raise ArgumentError, "Must specify :model, :provider, or :tag"
+          {:error, %ArgumentError{message: "Must specify :model, :provider, or :tag"}}
       end
 
-    case chat_model do
-      {:ok, llm} ->
-        LLMChain.new!(%{llm: llm})
+    # Wrap the LLM in an LLMChain
+    case result do
+      {:ok, llm} -> {:ok, LLMChain.new!(%{llm: llm})}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
-      {:error, reason} ->
-        raise reason
+  @doc """
+  Creates an LLMChain for the given model specification.
+  Raises an exception if the model/provider is not found.
+  """
+  def new!(opts \\ []) do
+    case new(opts) do
+      {:ok, chain} -> chain
+      {:error, reason} -> raise reason
     end
   end
 
@@ -92,11 +104,13 @@ defmodule Nest.ChatModel do
 
   # Private functions
 
-  defp find_by_model(config, model_name) do
-    model = DotConfig.get_model(config, model_name)
+  defp find_by_model(all_models, config, model_name) do
+    # Find model in the merged list
+    model = Enum.find(all_models, fn m -> m["name"] == model_name end)
 
     if model do
-      provider = DotConfig.get_provider(config, model.provider_name)
+      provider_name = model["provider"]
+      provider = DotConfig.get_provider(config, provider_name)
       build_chat_model(provider, model_name)
     else
       {:error, ModelNotFoundError.exception("Model not found: #{model_name}")}
@@ -195,26 +209,71 @@ defmodule Nest.ChatModel do
     {:ok, ChatAnthropic.new!(opts)}
   end
 
-  defp discover_model(provider) do
+  @doc """
+  Lists all available models from a provider by querying the /models endpoint.
+
+  Returns a list of model names available from the provider.
+  """
+  def list_models(%DotConfig.Provider{} = provider) do
     url = provider.base_url <> "/models"
     headers = [{"Authorization", "Bearer #{DotConfig.resolve_api_key(provider.api_key)}"}]
 
     case Req.get(url, headers: headers) do
       {:ok, %{status: 200, body: body}} ->
-        # Extract first model name from response
-        case body do
-          %{"data" => [%{"id" => model_id} | _]} ->
-            model_id
+        extract_all_models(body)
 
-          %{"models" => [%{"name" => model_name} | _]} ->
-            model_name
+      {:ok, %{status: status}} ->
+        Logger.warning(
+          "Provider returned status #{status} when listing models from #{provider.name}"
+        )
 
-          _ ->
-            nil
-        end
+        []
 
-      _error ->
-        nil
+      {:error, reason} ->
+        Logger.warning("Failed to list models from #{provider.name}: #{inspect(reason)}")
+        []
+    end
+  end
+
+  def list_models(provider_name) when is_binary(provider_name) do
+    config = DotConfig.load!()
+    provider = DotConfig.get_provider(config, provider_name)
+
+    if provider do
+      list_models(provider)
+    else
+      Logger.warning("Provider not found: #{provider_name}")
+      []
+    end
+  end
+
+  # Extract all model names from the API response
+  defp extract_all_models(body) do
+    models =
+      case body do
+        %{"data" => data} when is_list(data) ->
+          Enum.map(data, fn
+            %{"id" => model_id} -> model_id
+            _ -> nil
+          end)
+
+        %{"models" => models} when is_list(models) ->
+          Enum.map(models, fn
+            %{"name" => model_name} -> model_name
+            _ -> nil
+          end)
+
+        _ ->
+          []
+      end
+
+    Enum.reject(models, &is_nil/1)
+  end
+
+  defp discover_model(provider) do
+    case list_models(provider) do
+      [first_model | _] -> first_model
+      [] -> nil
     end
   end
 end
