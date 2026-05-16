@@ -111,25 +111,41 @@ defmodule Nest.DotConfig do
       is_nil(key_value) ->
         nil
 
-      String.starts_with?(key_value, "${") and String.ends_with?(key_value, "}") ->
-        var_name = key_value |> String.slice(2..-2//1)
+      env_var_match?(key_value) ->
+        resolve_env_var(key_value)
 
-        case System.get_env(var_name) do
-          nil -> raise "Environment variable #{var_name} not set"
-          value -> value
-        end
-
-      String.starts_with?(key_value, "file:") ->
-        path = String.slice(key_value, 5..-1//1)
-        expanded_path = Path.expand(path)
-
-        case File.read(expanded_path) do
-          {:ok, content} -> String.trim(content)
-          {:error, reason} -> raise "Failed to read API key file #{path}: #{inspect(reason)}"
-        end
+      file_match?(key_value) ->
+        resolve_file_key(key_value)
 
       true ->
         key_value
+    end
+  end
+
+  defp env_var_match?(key_value) do
+    String.starts_with?(key_value, "${") and String.ends_with?(key_value, "}")
+  end
+
+  defp resolve_env_var(key_value) do
+    var_name = key_value |> String.slice(2..-2//1)
+
+    case System.get_env(var_name) do
+      nil -> raise "Environment variable #{var_name} not set"
+      value -> value
+    end
+  end
+
+  defp file_match?(key_value) do
+    String.starts_with?(key_value, "file:")
+  end
+
+  defp resolve_file_key(key_value) do
+    path = String.slice(key_value, 5..-1//1)
+    expanded_path = Path.expand(path)
+
+    case File.read(expanded_path) do
+      {:ok, content} -> String.trim(content)
+      {:error, reason} -> raise "Failed to read API key file #{path}: #{inspect(reason)}"
     end
   end
 

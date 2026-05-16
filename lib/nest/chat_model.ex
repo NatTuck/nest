@@ -5,10 +5,10 @@ defmodule Nest.ChatModel do
 
   require Logger
 
-  alias Nest.DotConfig
   alias LangChain.Chains.LLMChain
-  alias LangChain.ChatModels.ChatOpenAI
   alias LangChain.ChatModels.ChatAnthropic
+  alias LangChain.ChatModels.ChatOpenAI
+  alias Nest.DotConfig
 
   defmodule ModelNotFoundError do
     defexception [:message]
@@ -106,9 +106,7 @@ defmodule Nest.ChatModel do
   defp find_by_provider(config, provider_name) do
     provider = DotConfig.get_provider(config, provider_name)
 
-    unless provider do
-      {:error, ProviderNotFoundError.exception("Provider not found: #{provider_name}")}
-    else
+    if provider do
       # If provider has explicit models, use the first one
       # Otherwise use nil and let it auto-discover
       model_name =
@@ -119,6 +117,8 @@ defmodule Nest.ChatModel do
         end
 
       build_chat_model(provider, model_name)
+    else
+      {:error, ProviderNotFoundError.exception("Provider not found: #{provider_name}")}
     end
   end
 
