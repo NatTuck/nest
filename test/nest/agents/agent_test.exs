@@ -64,7 +64,7 @@ defmodule Nest.Agents.AgentTest do
   end
 
   describe "chat/2" do
-    test "adds user message to state" do
+    test "adds user message to state with index" do
       pid = start_agent()
 
       :ok = Agent.chat(pid, "Hello, agent!")
@@ -74,6 +74,32 @@ defmodule Nest.Agents.AgentTest do
       [message] = state.messages
       assert message.role == :user
       assert message.content == "Hello, agent!"
+      assert message.index == 0
+      assert is_map_key(message, :timestamp)
+    end
+
+    test "increments next_message_index after user message" do
+      pid = start_agent()
+      Agent.set_channel(pid, self())
+
+      :ok = Agent.chat(pid, "First message")
+      state = Agent.get_state(pid)
+      assert state.next_message_index == 1
+    end
+
+    test "creates partial_message for assistant response" do
+      pid = start_agent()
+      Agent.set_channel(pid, self())
+
+      :ok = Agent.chat(pid, "Hello")
+
+      state = Agent.get_state(pid)
+      assert state.partial_message != nil
+      assert state.partial_message.index == 1
+      assert state.partial_message.role == :assistant
+      assert state.partial_message.content == ""
+      assert state.partial_message.chars_sent == 0
+      assert is_map_key(state.partial_message, :timestamp)
     end
 
     test "updates status to streaming" do
@@ -86,7 +112,7 @@ defmodule Nest.Agents.AgentTest do
       assert state.status == :streaming
     end
 
-    test "calls LLM and broadcasts response" do
+    test "calls LLM and broadcasts response with deltas" do
       # Use Mimic.stub_with to stub all LLMChain functions
       Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
 
@@ -100,18 +126,87 @@ defmodule Nest.Agents.AgentTest do
       receive_deltas_and_message()
     end
 
+    test "accumulates delta content in partial_message" do
+      # Use Mimic.stub_with to stub all LLMChain functions
+      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
+
+      pid = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Agent.set_channel(pid, self())
+
+      :ok = Agent.chat(pid, "Hello")
+
+      # Collect deltas and the final message
+      {partial_content, final_message} = collect_deltas_and_message(pid)
+
+      # Verify partial accumulated content matches final
+      assert partial_content == final_message.content
+      assert final_message.role == :assistant
+    end
+
+    test "clears partial_message and adds completed message on finish" do
+      # Use Mimic.stub_with to stub all LLMChain functions
+      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
+
+      pid = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Agent.set_channel(pid, self())
+
+      :ok = Agent.chat(pid, "Hello")
+
+      # Wait for completion
+      receive do
+        {:message_complete, %{index: index, role: :assistant, content: content}} ->
+          state = Agent.get_state(pid)
+          assert state.partial_message == nil
+          assert state.status == :idle
+          assert length(state.messages) == 2
+
+          # Find the assistant message
+          assistant_msg = Enum.find(state.messages, fn m -> m.index == index end)
+          assert assistant_msg != nil
+          assert assistant_msg.role == :assistant
+          assert assistant_msg.content == content
+          assert is_map_key(assistant_msg, :timestamp)
+      after
+        2000 ->
+          flunk("Timeout waiting for assistant response")
+      end
+    end
+
     defp receive_deltas_and_message do
       receive do
         {:delta, _chunk} ->
           # Continue receiving deltas
           receive_deltas_and_message()
 
-        {:message, %{role: :assistant, content: _}} = msg ->
+        {:message_complete, %{role: :assistant, content: _}} = msg ->
           # Got the final message
-          assert match?({:message, %{role: :assistant, content: _}}, msg)
+          assert match?({:message_complete, %{role: :assistant, content: _}}, msg)
       after
         2000 ->
           flunk("Timeout waiting for assistant response")
+      end
+    end
+
+    defp collect_deltas_and_message(pid, acc \\ "") do
+      receive do
+        {:delta, %{content: content}} ->
+          # Verify partial is being accumulated
+          state = Agent.get_state(pid)
+          partial = state.partial_message
+
+          if partial != nil do
+            assert is_binary(partial.content)
+          end
+
+          # Continue collecting with accumulated content
+          collect_deltas_and_message(pid, acc <> content)
+
+        {:message_complete, msg} ->
+          # Return the accumulated content and the final message
+          {acc, msg}
+      after
+        2000 ->
+          flunk("Timeout waiting for deltas")
       end
     end
   end

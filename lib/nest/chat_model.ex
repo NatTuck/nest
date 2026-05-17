@@ -156,7 +156,10 @@ defmodule Nest.ChatModel do
     end
   end
 
-  defp build_chat_model(%DotConfig.Provider{} = provider, model_name) do
+  @doc """
+  Builds a chat model from a provider configuration.
+  """
+  def build_chat_model(%DotConfig.Provider{} = provider, model_name) do
     api_key = DotConfig.resolve_api_key(provider.api_key)
 
     # Auto-discover model if needed

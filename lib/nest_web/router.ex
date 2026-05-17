@@ -41,4 +41,11 @@ defmodule NestWeb.Router do
       forward "/mailbox", Plug.Swoosh.MailboxPreview
     end
   end
+
+  # Catch-all route for React Router - must be last
+  scope "/", NestWeb do
+    pipe_through :browser
+
+    get "/*path", PageController, :home
+  end
 end

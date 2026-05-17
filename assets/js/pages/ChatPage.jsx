@@ -1,130 +1,152 @@
 /**
  * Chat Page - Interface for chatting with an agent.
  *
- * Features:
- * - Message history display
- * - Message input
- * - Real-time streaming (via channel events)
- * - Loading states
+ * Uses URL as source of truth for which agent to display.
+ * Cache is independent of what's shown - we show the cached data
+ * for the agent in the URL, if any exists.
  */
 
 import { useEffect, useRef, useState } from "react";
-import { useParams, useNavigate } from "react-router";
+import { useParams } from "react-router-dom";
 import { useStore } from "../store";
+import { joinAgent, leaveAgent, sendMessage } from "../channels";
+
+/**
+ * Status banner component
+ */
+function StatusBanner({ status, error, onRetry }) {
+  if (status === "connecting") {
+    return (
+      <div className="bg-blue-100 border-l-4 border-blue-500 p-4 mb-4">
+        <div className="flex items-center">
+          <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600 mr-3" />
+          <p className="text-blue-700">Connecting to agent...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (status === "error") {
+    return (
+      <div className="bg-red-100 border-l-4 border-red-500 p-4 mb-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-red-700 font-medium">Connection failed</p>
+            <p className="text-red-600 text-sm">{error || "Unknown error"}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onRetry}
+            className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors text-sm"
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (status === "disconnected") {
+    return (
+      <div className="bg-yellow-100 border-l-4 border-yellow-500 p-4 mb-4">
+        <div className="flex items-center justify-between">
+          <p className="text-yellow-700">Disconnected. Connection lost.</p>
+          <button
+            type="button"
+            onClick={onRetry}
+            className="px-4 py-2 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 transition-colors text-sm"
+          >
+            Reconnect
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}
 
 /**
  * Chat Page component
  */
 export function ChatPage() {
   const { id } = useParams();
-  const navigate = useNavigate();
   const messagesEndRef = useRef(null);
   const [inputValue, setInputValue] = useState("");
-  const [isJoining, setIsJoining] = useState(true);
-  const [error, setError] = useState(null);
+  const [sendError, setSendError] = useState(null);
 
-  const { joinAgent, leaveAgent, sendMessage, messages, isStreaming } =
-    useStore();
+  // Get agent cache from store
+  const agentsCache = useStore((state) => state.agentsCache);
+  const cache = agentsCache[id];
+
+  // Is this an unknown agent (never attempted to join)?
+  const isUnknown = !cache;
+
+  // Get status, messages, and partial
+  const status = cache?.status ?? "disconnected";
+  const messages = cache?.messages ?? [];
+  const partial = cache?.partial ?? null;
+  const streaming = partial !== null;
 
   // Scroll to bottom when messages change
   // biome-ignore lint/correctness/useExhaustiveDependencies: messages is the dependency we want
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages, partial?.content]);
 
-  // Join agent channel on mount
+  // Join agent channel on mount/id change
   useEffect(() => {
-    let mounted = true;
+    if (!id) return;
 
-    const connect = async () => {
-      try {
-        setIsJoining(true);
-        setError(null);
-        await joinAgent(id);
-      } catch (err) {
-        if (mounted) {
-          setError(err.message || "Failed to connect to agent");
-        }
-      } finally {
-        if (mounted) {
-          setIsJoining(false);
-        }
-      }
-    };
-
-    connect();
+    // Idempotent: joinAgent handles already-connected case
+    joinAgent(id);
 
     return () => {
-      mounted = false;
-      leaveAgent();
+      leaveAgent(id);
     };
-  }, [id, joinAgent, leaveAgent]);
+  }, [id]);
 
-  const handleSendMessage = async (e) => {
+  const handleSendMessage = (e) => {
     e.preventDefault();
 
-    if (!inputValue.trim() || isStreaming) {
+    if (!inputValue.trim() || streaming) {
       return;
     }
 
     const content = inputValue.trim();
     setInputValue("");
+    setSendError(null);
 
-    try {
-      await sendMessage(content);
-    } catch (err) {
-      setError(err.message || "Failed to send message");
-    }
+    sendMessage(id, content, (err) => {
+      setSendError(err.message || "Failed to send message");
+    });
   };
 
-  // Show loading state while joining
-  if (isJoining) {
+  const handleRetry = () => {
+    setSendError(null);
+    joinAgent(id);
+  };
+
+  // Show initial loading state while we attempt first join
+  if (isUnknown) {
     return (
       <div className="flex items-center justify-center h-full">
         <div className="flex flex-col items-center gap-4">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600" />
-          <p className="text-gray-600">Connecting to agent...</p>
+          <p className="text-gray-600">Loading agent...</p>
         </div>
       </div>
     );
   }
 
-  // Show error state
-  if (error) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <div className="max-w-md text-center">
-          <div className="text-red-500 mb-4">
-            <svg
-              className="w-16 h-16 mx-auto"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-              aria-label="Error icon"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
-              />
-            </svg>
-          </div>
-          <h2 className="text-xl font-bold text-gray-900 mb-2">
-            Connection Error
-          </h2>
-          <p className="text-gray-600 mb-4">{error}</p>
-          <button
-            type="button"
-            onClick={() => navigate("/")}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-          >
-            Go Home
-          </button>
-        </div>
-      </div>
-    );
+  // Combine messages with partial for display
+  const displayMessages = [...messages];
+  if (partial) {
+    displayMessages.push({ ...partial, isPartial: true });
   }
+
+  // Input is disabled when not connected or streaming
+  const isInputDisabled = status !== "connected" || streaming;
 
   return (
     <div className="flex flex-col h-full max-w-4xl mx-auto">
@@ -134,21 +156,40 @@ export function ChatPage() {
           <div>
             <h1 className="text-2xl font-bold text-gray-900">{id}</h1>
             <p className="text-sm text-gray-500">
-              {isStreaming ? "Typing..." : "Ready"}
+              {status === "connected"
+                ? streaming
+                  ? "Typing..."
+                  : "Ready"
+                : status}
             </p>
           </div>
           <div
             className={`
               w-3 h-3 rounded-full
-              ${isStreaming ? "bg-green-500 animate-pulse" : "bg-gray-300"}
+              ${status === "connected" ? "bg-green-500" : "bg-gray-300"}
+              ${streaming ? "animate-pulse" : ""}
             `}
           />
         </div>
       </div>
 
+      {/* Status banner */}
+      <StatusBanner
+        status={status}
+        error={cache?.error}
+        onRetry={handleRetry}
+      />
+
+      {/* Send error */}
+      {sendError && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-4">
+          <p className="text-red-700 text-sm">{sendError}</p>
+        </div>
+      )}
+
       {/* Messages */}
       <div className="flex-1 overflow-y-auto space-y-4 mb-4 pr-2">
-        {messages.length === 0 ? (
+        {displayMessages.length === 0 ? (
           <div className="text-center py-12 text-gray-400">
             <svg
               className="w-16 h-16 mx-auto mb-4 opacity-50"
@@ -168,16 +209,14 @@ export function ChatPage() {
             <p className="text-sm mt-1">Send a message to begin chatting</p>
           </div>
         ) : (
-          messages.map((message, index) => (
+          displayMessages.map((message) => (
             <div
-              // biome-ignore lint/suspicious/noArrayIndexKey: Messages are append-only, index is safe
-              key={index}
+              key={message.index}
               className={`
                 flex gap-4 p-4 rounded-xl
-                ${
-                  message.role === "user"
-                    ? "bg-blue-50 ml-12"
-                    : "bg-gray-50 mr-12"
+                ${message.role === "user"
+                  ? "bg-blue-50 ml-12"
+                  : "bg-gray-50 mr-12"
                 }
               `}
             >
@@ -185,10 +224,9 @@ export function ChatPage() {
               <div
                 className={`
                   w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0
-                  ${
-                    message.role === "user"
-                      ? "bg-blue-600 text-white"
-                      : "bg-gray-600 text-white"
+                  ${message.role === "user"
+                    ? "bg-blue-600 text-white"
+                    : "bg-gray-600 text-white"
                   }
                 `}
               >
@@ -201,43 +239,32 @@ export function ChatPage() {
                   <span className="font-semibold text-sm text-gray-700">
                     {message.role === "user" ? "You" : id}
                   </span>
+                  {message.isPartial && (
+                    <span className="text-xs text-gray-400">(typing...)</span>
+                  )}
                 </div>
                 <p className="text-gray-800 whitespace-pre-wrap">
                   {message.content}
                 </p>
+                {message.isPartial && (
+                  <div className="flex items-center gap-1 mt-2">
+                    <span
+                      className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"
+                      style={{ animationDelay: "0ms" }}
+                    />
+                    <span
+                      className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"
+                      style={{ animationDelay: "150ms" }}
+                    />
+                    <span
+                      className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"
+                      style={{ animationDelay: "300ms" }}
+                    />
+                  </div>
+                )}
               </div>
             </div>
           ))
-        )}
-
-        {/* Streaming indicator */}
-        {isStreaming && (
-          <div className="flex gap-4 p-4 rounded-xl bg-gray-50 mr-12">
-            <div className="w-8 h-8 rounded-full bg-gray-600 text-white flex items-center justify-center flex-shrink-0">
-              AI
-            </div>
-            <div className="flex-1">
-              <div className="flex items-center gap-2 mb-1">
-                <span className="font-semibold text-sm text-gray-700">
-                  {id}
-                </span>
-              </div>
-              <div className="flex items-center gap-1">
-                <span
-                  className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"
-                  style={{ animationDelay: "0ms" }}
-                />
-                <span
-                  className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"
-                  style={{ animationDelay: "150ms" }}
-                />
-                <span
-                  className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"
-                  style={{ animationDelay: "300ms" }}
-                />
-              </div>
-            </div>
-          </div>
         )}
 
         <div ref={messagesEndRef} />
@@ -253,8 +280,12 @@ export function ChatPage() {
             type="text"
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
-            placeholder="Type a message..."
-            disabled={isStreaming}
+            placeholder={
+              status === "connected"
+                ? "Type a message..."
+                : "Connect to send messages..."
+            }
+            disabled={isInputDisabled}
             className="
               flex-1 px-4 py-3 border border-gray-300 rounded-lg
               focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none
@@ -263,14 +294,13 @@ export function ChatPage() {
           />
           <button
             type="submit"
-            disabled={!inputValue.trim() || isStreaming}
+            disabled={!inputValue.trim() || isInputDisabled}
             className={`
               px-6 py-3 rounded-lg font-semibold text-white
               transition-all duration-200
-              ${
-                !inputValue.trim() || isStreaming
-                  ? "bg-gray-400 cursor-not-allowed"
-                  : "bg-blue-600 hover:bg-blue-700 active:bg-blue-800"
+              ${!inputValue.trim() || isInputDisabled
+                ? "bg-gray-400 cursor-not-allowed"
+                : "bg-blue-600 hover:bg-blue-700 active:bg-blue-800"
               }
             `}
           >
@@ -281,5 +311,3 @@ export function ChatPage() {
     </div>
   );
 }
-
-export default ChatPage;

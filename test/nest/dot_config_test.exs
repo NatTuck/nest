@@ -63,8 +63,8 @@ defmodule Nest.DotConfigTest do
           }
         end)
 
-      # Verify structure
-      assert length(models_list) == 2
+      # Verify structure (4 models: 2 from model-studio + 2 from anthropic-provider)
+      assert length(models_list) == 4
 
       # All models should have string keys (for JSON serialization)
       Enum.each(models_list, fn model ->

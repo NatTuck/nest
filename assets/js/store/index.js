@@ -1,262 +1,344 @@
 /**
  * Zustand store for global application state.
  *
- * Manages:
- * - Socket connection state
- * - Agent list and current agent
- * - Channel references
- * - Chat messages
+ * The store now contains ONLY immutable data.
+ * Mutable channel refs are in channels.js.
+ * Channel callbacks call these store methods.
  */
 
 import { create } from "zustand";
 import { devtools } from "zustand/middleware";
-import { getSocket, joinChannel, leaveChannel } from "../socket";
+
+/**
+ * @typedef {Object} AgentCache
+ * @property {Array} messages - Complete messages
+ * @property {Object|null} partial - Partial streaming message
+ * @property {number} lastIndex - Last complete message index
+ * @property {'disconnected'|'connecting'|'connected'|'error'} status - Connection status
+ * @property {string|null} error - Error message if status is 'error'
+ * @property {string|null} model - Agent model name
+ */
 
 /**
  * Create a Zustand store with devtools in development
  */
 export const useStore = create(
   devtools(
-    (set, get) => ({
-      // Connection state
-      socket: null,
+    (set) => ({
+      // Socket connection status (for global indicator)
       isConnected: false,
-      connectionError: null,
 
-      // Agents state
+      // Agents list from lobby
       agents: [],
       models: [],
-      currentAgentId: null,
-
-      // Channels
-      lobbyChannel: null,
-      agentChannel: null,
-
-      // Chat state
-      messages: [],
-      isStreaming: false,
-
-      // Actions
 
       /**
-       * Initialize socket connection
+       * Agent cache: { [agentId]: AgentCache }
+       * Only contains agents we've attempted to join.
        */
-      connectSocket: () => {
-        const socket = getSocket();
+      agentsCache: {},
 
-        socket.onOpen(() => {
-          set({ isConnected: true, connectionError: null });
-        });
+      // Setters called by channels.js
 
-        socket.onClose(() => {
-          set({ isConnected: false });
-        });
-
-        socket.onError((error) => {
-          set({ connectionError: error, isConnected: false });
-        });
-
-        set({ socket });
+      /**
+       * Set socket connection status
+       */
+      setIsConnected: (connected) => {
+        set({ isConnected: connected });
       },
 
       /**
-       * Join the lobby channel and set up listeners
+       * Set agents list from lobby init
        */
-      joinLobby: () => {
-        const channel = joinChannel("lobby");
-
-        // Listen for initial state
-        channel.on("init", (payload) => {
-          set({
-            agents: payload.agents || [],
-            models: payload.models || [],
-          });
-        });
-
-        // Listen for agent creation
-        channel.on("agent:created", (payload) => {
-          const { agents } = get();
-          set({
-            agents: [
-              ...agents,
-              { id: payload.id, model: payload.model, status: "idle" },
-            ],
-          });
-        });
-
-        // Listen for agent deletion
-        channel.on("agent:deleted", (payload) => {
-          const { agents, currentAgentId } = get();
-          set({
-            agents: agents.filter((a) => a.id !== payload.id),
-            currentAgentId:
-              currentAgentId === payload.id ? null : currentAgentId,
-          });
-        });
-
-        set({ lobbyChannel: channel });
-
-        return channel;
+      setAgents: (agents) => {
+        set({ agents });
       },
 
       /**
-       * Leave the lobby channel
+       * Set models list from lobby init
        */
-      leaveLobby: () => {
-        const { lobbyChannel } = get();
-        if (lobbyChannel) {
-          leaveChannel(lobbyChannel);
-          set({ lobbyChannel: null });
-        }
+      setModels: (models) => {
+        set({ models });
       },
 
       /**
-       * Create a new agent
+       * Add newly created agent
        */
-      createAgent: async (model) => {
-        const { lobbyChannel } = get();
-        if (!lobbyChannel) {
-          throw new Error("Not connected to lobby");
-        }
+      addAgent: (agent) => {
+        set((state) => ({
+          agents: [
+            ...state.agents,
+            { id: agent.id, model: agent.model, status: "idle" },
+          ],
+        }));
+      },
 
-        return new Promise((resolve, reject) => {
-          lobbyChannel
-            .push("create_agent", { model })
-            .receive("ok", (resp) => {
-              resolve(resp.id);
-            })
-            .receive("error", (resp) => {
-              reject(new Error(resp.reason || "Failed to create agent"));
-            });
+      /**
+       * Remove deleted agent
+       */
+      removeAgent: (id) => {
+        set((state) => {
+          const newCache = { ...state.agentsCache };
+          delete newCache[id];
+          return {
+            agents: state.agents.filter((a) => a.id !== id),
+            agentsCache: newCache,
+          };
         });
       },
 
       /**
-       * Delete an agent
+       * Set agent status to connecting (called before join)
        */
-      deleteAgent: async (id) => {
-        const { lobbyChannel } = get();
-        if (!lobbyChannel) {
-          throw new Error("Not connected to lobby");
-        }
-
-        return new Promise((resolve, reject) => {
-          lobbyChannel
-            .push("delete_agent", { id })
-            .receive("ok", () => {
-              resolve();
-            })
-            .receive("error", (resp) => {
-              reject(new Error(resp.reason || "Failed to delete agent"));
-            });
+      setAgentConnecting: (id) => {
+        set((state) => {
+          const existing = state.agentsCache[id];
+          return {
+            agentsCache: {
+              ...state.agentsCache,
+              [id]: existing
+                ? { ...existing, status: "connecting", error: null }
+                : {
+                    messages: [],
+                    partial: null,
+                    lastIndex: -1,
+                    status: "connecting",
+                    error: null,
+                    model: null,
+                  },
+            },
+          };
         });
       },
 
       /**
-       * Join an agent channel for chatting
+       * Set agent as connected with initial data
        */
-      joinAgent: (id) => {
-        // Leave current agent channel if any
-        const { agentChannel } = get();
-        if (agentChannel) {
-          leaveChannel(agentChannel);
-        }
+      setAgentConnected: (id, payload) => {
+        set((state) => {
+          const existing = state.agentsCache[id];
+          const messages = payload.messages || [];
 
-        const channel = joinChannel(`agent:${id}`);
+          // Merge with existing if we have more cached data
+          const finalMessages =
+            existing?.messages?.length > messages.length
+              ? existing.messages
+              : messages;
 
-        // Listen for initial state
-        channel.on("init", (payload) => {
-          set({
-            currentAgentId: payload.id,
-            messages: payload.messages || [],
-            isStreaming: payload.status === "streaming",
-          });
-        });
-
-        // Listen for streaming deltas (future implementation)
-        channel.on("chat:delta", (payload) => {
-          const { messages } = get();
-          // Append delta to last assistant message or create new one
-          const lastMessage = messages[messages.length - 1];
-          if (lastMessage && lastMessage.role === "assistant") {
-            const updatedMessages = [...messages];
-            updatedMessages[messages.length - 1] = {
-              ...lastMessage,
-              content: lastMessage.content + payload.content,
-            };
-            set({ messages: updatedMessages });
-          }
-        });
-
-        // Listen for complete messages
-        channel.on("chat:message", (payload) => {
-          const { messages } = get();
-          set({
-            messages: [...messages, payload],
-            isStreaming: false,
-          });
-        });
-
-        // Listen for errors
-        channel.on("chat:error", (payload) => {
-          console.error("Chat error:", payload);
-          set({ isStreaming: false });
-        });
-
-        set({ agentChannel: channel });
-
-        return channel;
-      },
-
-      /**
-       * Leave the current agent channel
-       */
-      leaveAgent: () => {
-        const { agentChannel } = get();
-        if (agentChannel) {
-          leaveChannel(agentChannel);
-          set({
-            agentChannel: null,
-            currentAgentId: null,
-            messages: [],
-          });
-        }
-      },
-
-      /**
-       * Send a chat message
-       */
-      sendMessage: async (content) => {
-        const { agentChannel, messages } = get();
-        if (!agentChannel) {
-          throw new Error("Not connected to agent");
-        }
-
-        // Add user message locally
-        const userMessage = { role: "user", content };
-        set({
-          messages: [...messages, userMessage],
-          isStreaming: true,
-        });
-
-        return new Promise((resolve, reject) => {
-          agentChannel
-            .push("chat:message", { content })
-            .receive("ok", () => {
-              resolve();
-            })
-            .receive("error", (resp) => {
-              set({ isStreaming: false });
-              reject(new Error(resp.reason || "Failed to send message"));
-            });
+          return {
+            agentsCache: {
+              ...state.agentsCache,
+              [id]: {
+                messages: finalMessages,
+                partial: payload.partial || null,
+                lastIndex: payload.lastCompleteIndex ?? -1,
+                status: "connected",
+                error: null,
+                model: payload.model || existing?.model || null,
+              },
+            },
+          };
         });
       },
 
       /**
-       * Clear messages
+       * Set agent status to disconnected
        */
-      clearMessages: () => {
-        set({ messages: [] });
+      setAgentDisconnected: (id) => {
+        set((state) => {
+          const existing = state.agentsCache[id];
+          if (!existing) return state;
+          return {
+            agentsCache: {
+              ...state.agentsCache,
+              [id]: { ...existing, status: "disconnected" },
+            },
+          };
+        });
+      },
+
+      /**
+       * Set agent status to error
+       */
+      setAgentError: (id, error) => {
+        set((state) => {
+          const existing = state.agentsCache[id];
+          return {
+            agentsCache: {
+              ...state.agentsCache,
+              [id]: existing
+                ? { ...existing, status: "error", error }
+                : {
+                    messages: [],
+                    partial: null,
+                    lastIndex: -1,
+                    status: "error",
+                    error,
+                    model: null,
+                  },
+            },
+          };
+        });
+      },
+
+      /**
+       * Add chat delta (streaming content)
+       */
+      addChatDelta: (id, payload) => {
+        set((state) => {
+          const cache = state.agentsCache[id];
+          if (!cache) return state;
+
+          const partial = cache.partial || {
+            index: payload.index,
+            role: "assistant",
+            content: "",
+            charsReceived: 0,
+          };
+
+          return {
+            agentsCache: {
+              ...state.agentsCache,
+              [id]: {
+                ...cache,
+                partial: {
+                  ...partial,
+                  content: partial.content + payload.content,
+                  charsReceived: payload.charsEnd,
+                },
+              },
+            },
+          };
+        });
+      },
+
+      /**
+       * Add complete chat message
+       */
+      addChatMessage: (id, message) => {
+        set((state) => {
+          const cache = state.agentsCache[id];
+          if (!cache) return state;
+
+          const exists = cache.messages.some((m) => m.index === message.index);
+
+          const newMessages = exists
+            ? cache.messages.map((m) =>
+                m.index === message.index ? message : m,
+              )
+            : [...cache.messages, message];
+
+          return {
+            agentsCache: {
+              ...state.agentsCache,
+              [id]: {
+                ...cache,
+                messages: newMessages,
+                partial: null,
+                lastIndex: message.index,
+              },
+            },
+          };
+        });
+      },
+
+      /**
+       * Add user message (optimistic)
+       */
+      addUserMessage: (id, content) => {
+        set((state) => {
+          const cache = state.agentsCache[id];
+          if (!cache) return state;
+
+          const newIndex = cache.lastIndex + 1;
+          const userMessage = {
+            index: newIndex,
+            role: "user",
+            content,
+            timestamp: new Date().toISOString(),
+          };
+
+          return {
+            agentsCache: {
+              ...state.agentsCache,
+              [id]: {
+                ...cache,
+                messages: [...cache.messages, userMessage],
+                lastIndex: newIndex,
+                partial: {
+                  index: newIndex + 1,
+                  role: "assistant",
+                  content: "",
+                  charsReceived: 0,
+                },
+              },
+            },
+          };
+        });
+      },
+
+      /**
+       * Clear partial message (on error)
+       */
+      clearPartial: (id) => {
+        set((state) => {
+          const cache = state.agentsCache[id];
+          if (!cache) return state;
+          return {
+            agentsCache: {
+              ...state.agentsCache,
+              [id]: { ...cache, partial: null },
+            },
+          };
+        });
+      },
+
+      /**
+       * Sync agent messages from server response
+       * Merges synced messages into existing cache
+       */
+      syncAgentMessages: (id, payload) => {
+        set((state) => {
+          const cache = state.agentsCache[id];
+          if (!cache) return state;
+
+          const newMessages = payload.messages || [];
+          const existingMessages = cache.messages || [];
+
+          // Merge: keep existing, add new ones that don't exist
+          const existingIndices = new Set(existingMessages.map((m) => m.index));
+          const messagesToAdd = newMessages.filter(
+            (m) => !existingIndices.has(m.index),
+          );
+
+          const mergedMessages = [...existingMessages, ...messagesToAdd];
+          // Sort by index to ensure order
+          mergedMessages.sort((a, b) => a.index - b.index);
+
+          return {
+            agentsCache: {
+              ...state.agentsCache,
+              [id]: {
+                ...cache,
+                messages: mergedMessages,
+                partial: payload.partial || null,
+                status: payload.status || cache.status,
+                lastIndex: payload.lastCompleteIndex ?? cache.lastIndex,
+              },
+            },
+          };
+        });
+      },
+
+      /**
+       * Clear all cached messages for an agent
+       */
+      clearAgentCache: (id) => {
+        set((state) => {
+          const newCache = { ...state.agentsCache };
+          delete newCache[id];
+          return { agentsCache: newCache };
+        });
       },
     }),
     { name: "nest-store" },

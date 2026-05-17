@@ -1,6 +1,14 @@
 This is a web application written using the Phoenix web framework with a React
 user interface.
 
+## ⚠️ CRITICAL: JS Package Location
+
+Our JavaScript code lives exclusively in `./assets/`.
+
+- **NEVER** run `pnpm`, `npm`, or `yarn` commands in the project root
+- **ALWAYS** `cd assets` first before running any JS package commands
+- If you see `package.json` or `node_modules` in the project root, something is wrong - delete them immediately
+
 ## Project guidelines
 
 ### During Development
@@ -12,6 +20,20 @@ user interface.
   single-use helper functions if there isn't enough reusable logic to get the
   function simple enough.
 - **NEVER** downgrade anything without an explicit user request.
+- **NEVER** remove or skip tests without explicit user request.
+- **NEVER** fail to implement requested tests and then claim you've completed
+the task.
+
+### Test Coverage
+
+- The required test coverage must always be met.
+- Required test coverage may not go down, and should be increased every time new
+coverage is added until the required test coverage for a given language (Elixir,
+JS) is 90%.
+- To increase coverage, simple functions and branches that aren't being used,
+aren't essential to a module's external interface, and aren't a functional
+requirement can be removed. Simplifying the code to better match the actual
+current purpose is a good thing.
 
 ### JavaScript
 
@@ -35,9 +57,9 @@ explicit `cd assets && ...`.
 pending issues.
 - Tests shouldn't print anything except temporarily during debugging.
 - Lint warnings (e.g. from credo) aren't optional, they need to be fixed.
-- Errors in tests mean the tests are broken. The tests should be changed so that
-those errors cause test failures, and then the failures and errors should be
-fixed.
+- The tests must not print to the console except during debugging. If they print
+logs correctly, capture and test those logs. If the log outputs unexpected, fix
+them.
 - Use the already included and available `:req` (`Req`) library for HTTP
 requests, **avoid** `:httpoison`, `:tesla`, and `:httpc`. Req is included by
 default and is the preferred HTTP client for Phoenix apps

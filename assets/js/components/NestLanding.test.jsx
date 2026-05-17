@@ -80,4 +80,35 @@ describe("NestLanding", () => {
     const image = screen.getByTestId("mascot-image");
     expect(image).toHaveStyle({ transition: "transform 0.3s ease-in-out" });
   });
+
+  it("changes button color on mouse enter", () => {
+    render(<NestLanding />);
+
+    const button = screen.getByTestId("toggle-button");
+
+    // Initial color
+    expect(button).toHaveStyle({ backgroundColor: "#4f46e5" });
+
+    // Hover
+    fireEvent.mouseEnter(button);
+
+    // Should change to hover color
+    expect(button).toHaveStyle({ backgroundColor: "#4338ca" });
+  });
+
+  it("restores button color on mouse leave", () => {
+    render(<NestLanding />);
+
+    const button = screen.getByTestId("toggle-button");
+
+    // Hover first
+    fireEvent.mouseEnter(button);
+    expect(button).toHaveStyle({ backgroundColor: "#4338ca" });
+
+    // Mouse leave
+    fireEvent.mouseLeave(button);
+
+    // Should restore original color
+    expect(button).toHaveStyle({ backgroundColor: "#4f46e5" });
+  });
 });

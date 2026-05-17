@@ -24,6 +24,8 @@ defmodule Nest.Agents.Agent do
     :chain,
     :channel_pid,
     messages: [],
+    next_message_index: 0,
+    partial_message: nil,
     status: :idle
   ]
 
@@ -33,6 +35,8 @@ defmodule Nest.Agents.Agent do
           chain: LLMChain.t() | nil,
           channel_pid: pid() | nil,
           messages: list(),
+          next_message_index: non_neg_integer(),
+          partial_message: map() | nil,
           status: :idle | :streaming
         }
 
@@ -106,6 +110,8 @@ defmodule Nest.Agents.Agent do
           chain: chain,
           channel_pid: nil,
           messages: [],
+          next_message_index: 0,
+          partial_message: nil,
           status: :idle
         }
 
@@ -129,26 +135,84 @@ defmodule Nest.Agents.Agent do
 
   @impl true
   def handle_cast({:chat, content}, state) do
-    # Add user message to history
-    user_message = %{role: :user, content: content}
+    # Add user message to history with index
+    user_message = %{
+      index: state.next_message_index,
+      role: :user,
+      content: content,
+      timestamp: DateTime.utc_now()
+    }
+
     messages = state.messages ++ [user_message]
 
     # Update status to streaming
-    state = %{state | messages: messages, status: :streaming}
+    state = %{
+      state
+      | messages: messages,
+        next_message_index: state.next_message_index + 1,
+        status: :streaming,
+        partial_message: %{
+          index: state.next_message_index + 1,
+          role: :assistant,
+          content: "",
+          chars_sent: 0,
+          timestamp: DateTime.utc_now()
+        }
+    }
 
     # Run LLM chain with callbacks in a task
+    agent_pid = self()
+
     Task.start(fn ->
-      run_chain_with_callbacks(state.chain, messages, state.channel_pid, state.id)
+      run_chain_with_callbacks(
+        state.chain,
+        messages,
+        state.channel_pid,
+        agent_pid,
+        state.id,
+        state.partial_message.index
+      )
     end)
 
     {:noreply, state}
   end
 
   @impl true
-  def handle_info({:llm_response, message}, state) do
-    # Add assistant message to history
-    messages = state.messages ++ [message]
-    state = %{state | messages: messages, status: :idle}
+  def handle_info({:delta_received, delta_content}, state) do
+    # Accumulate delta into partial_message
+    partial = state.partial_message
+    new_partial = %{partial | content: partial.content <> delta_content}
+    {:noreply, %{state | partial_message: new_partial}}
+  end
+
+  @impl true
+  def handle_info({:llm_response, _message}, state) do
+    # Finalize assistant message
+    final_message = %{
+      index: state.partial_message.index,
+      role: :assistant,
+      content: state.partial_message.content,
+      timestamp: DateTime.utc_now()
+    }
+
+    messages = state.messages ++ [final_message]
+
+    # Send completion to channel
+    if state.channel_pid && Process.alive?(state.channel_pid) do
+      send(
+        state.channel_pid,
+        {:message_complete, final_message}
+      )
+    end
+
+    state = %{
+      state
+      | messages: messages,
+        partial_message: nil,
+        next_message_index: state.next_message_index + 1,
+        status: :idle
+    }
+
     {:noreply, state}
   end
 
@@ -164,15 +228,11 @@ defmodule Nest.Agents.Agent do
     end
   end
 
-  defp run_chain_with_callbacks(nil, _messages, _channel_pid, agent_id) do
-    Logger.error("Cannot run chain for #{agent_id}: chain not initialized")
-  end
-
-  defp run_chain_with_callbacks(chain, messages, channel_pid, _agent_id) do
+  defp run_chain_with_callbacks(chain, messages, channel_pid, agent_pid, _agent_id, message_index) do
     messages
     |> convert_to_langchain_messages()
     |> create_chain_with_messages(chain)
-    |> run_and_handle_response(channel_pid)
+    |> run_and_handle_response(channel_pid, agent_pid, message_index)
   end
 
   defp convert_to_langchain_messages(messages) do
@@ -197,23 +257,25 @@ defmodule Nest.Agents.Agent do
     end)
   end
 
-  defp run_and_handle_response(chain, channel_pid) do
+  defp run_and_handle_response(chain, channel_pid, agent_pid, message_index) do
     case LLMChain.run(chain) do
       {:ok, updated_chain} ->
         response = updated_chain.last_message
-        handle_successful_response(response, channel_pid)
+        handle_successful_response(response, channel_pid, agent_pid, message_index)
 
       {:error, _failed_chain, error} ->
-        handle_failed_response(error, channel_pid)
+        handle_failed_response(error, channel_pid, message_index)
     end
   end
 
-  defp handle_successful_response(response, channel_pid) do
+  defp handle_successful_response(response, channel_pid, agent_pid, message_index) do
     content = extract_content_text(response.content)
 
     if channel_pid && Process.alive?(channel_pid) do
-      stream_chunks(content, channel_pid)
-      send(channel_pid, {:message, %{role: :assistant, content: content}})
+      stream_chunks(content, channel_pid, agent_pid, message_index)
+
+      # Notify agent that streaming is complete
+      send(agent_pid, {:llm_response, response})
     end
   end
 
@@ -227,23 +289,40 @@ defmodule Nest.Agents.Agent do
 
   defp extract_content_text(_content), do: ""
 
-  defp handle_failed_response(error, channel_pid) do
+  defp handle_failed_response(error, channel_pid, message_index) do
     error_msg = "Error: #{inspect(error)}"
 
     if channel_pid && Process.alive?(channel_pid) do
       send(
         channel_pid,
-        {:message, %{role: :assistant, content: error_msg}}
+        {:error, %{index: message_index, content: error_msg}}
       )
     end
   end
 
-  defp stream_chunks(content, channel_pid) do
+  defp stream_chunks(content, channel_pid, agent_pid, message_index) do
     chunks = chunk_content(content, 5)
 
-    Enum.each(chunks, fn chunk ->
-      send(channel_pid, {:delta, chunk})
+    Enum.reduce(chunks, 0, fn chunk, chars_sent ->
+      chars_end = chars_sent + String.length(chunk)
+
+      # Send delta to channel for broadcast
+      send(
+        channel_pid,
+        {:delta,
+         %{
+           index: message_index,
+           content: chunk,
+           chars_start: chars_sent,
+           chars_end: chars_end
+         }}
+      )
+
+      # Also update agent's partial_message
+      send(agent_pid, {:delta_received, chunk})
+
       Process.sleep(50)
+      chars_end
     end)
   end
 

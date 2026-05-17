@@ -11,7 +11,11 @@ defmodule Nest.MixProject do
       aliases: aliases(),
       deps: deps(),
       compilers: [:phoenix_live_view] ++ Mix.compilers(),
-      listeners: [Phoenix.CodeReloader]
+      listeners: [Phoenix.CodeReloader],
+      test_coverage: [
+        tool: ExCoveralls,
+        summary: [threshold: 74]
+      ]
     ]
   end
 
@@ -67,6 +71,7 @@ defmodule Nest.MixProject do
       {:langchain, "~> 0.8.0"},
       {:toml, "~> 0.7.0"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:excoveralls, "~> 0.18", only: :test, runtime: false},
       {:mimic, "~> 2.3", only: :test},
       {:phoenix_copy, "~> 0.1.4", only: :dev},
       {:unique_names_generator, "~> 0.2.0"}
@@ -92,7 +97,7 @@ defmodule Nest.MixProject do
         "phx.copy default",
         "phx.digest"
       ],
-      "assets.test": ["cmd --cd assets pnpm vitest run"],
+      "assets.test": ["cmd --cd assets pnpm vitest run --coverage"],
       "assets.check": ["cmd --cd assets pnpm biome check"],
       precommit: [
         "compile --warnings-as-errors",
@@ -100,7 +105,7 @@ defmodule Nest.MixProject do
         "format",
         "credo",
         "cmd --cd assets pnpm biome ci",
-        "test",
+        "test --cover",
         "assets.test"
       ]
     ]

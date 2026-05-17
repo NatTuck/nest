@@ -8,7 +8,7 @@
   },
   "files": {
     "ignoreUnknown": false,
-    "includes": ["**", "!vendor", "!**/*.css"]
+    "includes": ["**", "!vendor", "!coverage", "!**/*.css"]
   },
   "formatter": {
     "enabled": true,

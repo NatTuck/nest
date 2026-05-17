@@ -17,8 +17,9 @@ import {
   RouterProvider,
   Outlet,
   Navigate,
-} from "react-router";
+} from "react-router-dom";
 import { useStore } from "./store";
+import { initChannels, joinLobby, leaveLobby } from "./channels";
 import { Sidebar } from "./components/Sidebar";
 import { NewAgentPage } from "./pages/NewAgentPage";
 import { ChatPage } from "./pages/ChatPage";
@@ -28,24 +29,26 @@ import { AboutPage } from "./pages/AboutPage";
  * Layout component with sidebar and main content
  */
 function Layout() {
-  const { connectSocket, joinLobby, leaveLobby, isConnected } = useStore();
+  const isConnected = useStore((state) => state.isConnected);
 
   useEffect(() => {
-    // Connect socket on mount
-    connectSocket();
-
-    // Cleanup on unmount
-    return () => {
-      leaveLobby();
-    };
-  }, [connectSocket, leaveLobby]);
+    // Initialize channels
+    initChannels();
+  }, []);
 
   useEffect(() => {
     // Join lobby when socket connects
     if (isConnected) {
       joinLobby();
     }
-  }, [isConnected, joinLobby]);
+  }, [isConnected]);
+
+  useEffect(() => {
+    // Cleanup on unmount
+    return () => {
+      leaveLobby();
+    };
+  }, []);
 
   return (
     <div className="flex h-screen bg-gray-50">

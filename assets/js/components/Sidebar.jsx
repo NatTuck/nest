@@ -8,8 +8,9 @@
  * - Current route highlighting
  */
 
-import { Link, useLocation, useNavigate } from "react-router";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useStore } from "../store";
+import { deleteAgent } from "../channels";
 
 /**
  * Sidebar component
@@ -17,20 +18,18 @@ import { useStore } from "../store";
 export function Sidebar() {
   const location = useLocation();
   const navigate = useNavigate();
-  const { agents, currentAgentId, deleteAgent } = useStore();
+  const { agents } = useStore();
 
-  const handleDeleteAgent = async (e, id) => {
+  const handleDeleteAgent = (e, id) => {
     e.preventDefault();
     e.stopPropagation();
 
-    try {
-      await deleteAgent(id);
-      // If we deleted the current agent, navigate home
-      if (currentAgentId === id) {
-        navigate("/");
-      }
-    } catch (error) {
+    deleteAgent(id, (error) => {
       console.error("Failed to delete agent:", error);
+    });
+    // If we deleted the current agent, navigate home
+    if (location.pathname === `/agent/${id}`) {
+      navigate("/");
     }
   };
 
@@ -93,62 +92,66 @@ export function Sidebar() {
             </p>
           ) : (
             <ul className="space-y-1">
-              {agents.map((agent) => (
-                <li key={agent.id}>
-                  <Link
-                    to={`/agent/${agent.id}`}
-                    className={`
+              {agents.map((agent) => {
+                const isCurrentAgent =
+                  location.pathname === `/agent/${agent.id}`;
+                return (
+                  <li key={agent.id}>
+                    <Link
+                      to={`/agent/${agent.id}`}
+                      className={`
                       flex items-center justify-between px-3 py-2 rounded-lg
                       transition-colors duration-200 group
                       ${
-                        currentAgentId === agent.id
+                        isCurrentAgent
                           ? "bg-blue-50 text-blue-700 border border-blue-200"
                           : "text-gray-700 hover:bg-gray-100"
                       }
                     `}
-                  >
-                    <div className="flex items-center gap-2 min-w-0">
-                      <div
-                        className={`
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div
+                          className={`
                           w-2 h-2 rounded-full flex-shrink-0
                           ${agent.status === "streaming" ? "bg-green-500 animate-pulse" : "bg-gray-300"}
                         `}
-                      />
-                      <span className="truncate text-sm font-medium">
-                        {agent.id}
-                      </span>
-                    </div>
+                        />
+                        <span className="truncate text-sm font-medium">
+                          {agent.id}
+                        </span>
+                      </div>
 
-                    {/* Delete button */}
-                    <button
-                      type="button"
-                      onClick={(e) => handleDeleteAgent(e, agent.id)}
-                      className="
+                      {/* Delete button */}
+                      <button
+                        type="button"
+                        onClick={(e) => handleDeleteAgent(e, agent.id)}
+                        className="
                         opacity-0 group-hover:opacity-100
                         p-1 rounded hover:bg-red-100 text-gray-400 hover:text-red-600
                         transition-all duration-200
                       "
-                      title={`Delete ${agent.id}`}
-                      aria-label={`Delete ${agent.id}`}
-                    >
-                      <svg
-                        className="w-4 h-4"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                        aria-label="Delete icon"
+                        title={`Delete ${agent.id}`}
+                        aria-label={`Delete ${agent.id}`}
                       >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth={2}
-                          d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                        />
-                      </svg>
-                    </button>
-                  </Link>
-                </li>
-              ))}
+                        <svg
+                          className="w-4 h-4"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                          aria-label="Delete icon"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                          />
+                        </svg>
+                      </button>
+                    </Link>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </div>

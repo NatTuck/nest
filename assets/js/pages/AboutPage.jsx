@@ -39,7 +39,7 @@ export function AboutPage() {
               alt="Nest Mascots"
               className={`
                 max-w-md w-full rounded-xl shadow-lg transition-transform duration-300 ease-in-out
-                ${isFlipped ? "scale-x-[-1]" : "scale-x-1"}
+                ${isFlipped ? "-scale-x-100" : "scale-x-100"}
               `}
               data-testid="mascot-image"
             />

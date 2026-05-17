@@ -16,3 +16,15 @@ multi-modal = { input = ["image"] }
 
 [[providers.model-studio.models]]
 name = "MiniMax-M2.5"
+
+[providers.anthropic-provider]
+base-url = "https://api.anthropic.com/v1"
+api-key = "sk-ant-test-key"
+protocol = "anthropic"
+tags = ["anthropic"]
+
+[[providers.anthropic-provider.models]]
+name = "claude-3-opus-20240229"
+
+[[providers.anthropic-provider.models]]
+name = "claude-3-sonnet-20240229"

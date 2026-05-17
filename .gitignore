@@ -39,3 +39,6 @@ npm-debug.log
 *.db
 *.db-*
 
+# JS test coverage output
+/assets/coverage/
+

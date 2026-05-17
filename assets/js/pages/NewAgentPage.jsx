@@ -9,20 +9,21 @@
  */
 
 import { useState } from "react";
-import { useNavigate } from "react-router";
+import { useNavigate } from "react-router-dom";
 import { useStore } from "../store";
+import { createAgent } from "../channels";
 
 /**
  * New Agent Page component
  */
 export function NewAgentPage() {
   const navigate = useNavigate();
-  const { models, createAgent } = useStore();
+  const { models } = useStore();
   const [selectedModel, setSelectedModel] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState(null);
 
-  const handleCreateAgent = async () => {
+  const handleCreateAgent = () => {
     if (!selectedModel) {
       setError("Please select a model");
       return;
@@ -31,16 +32,19 @@ export function NewAgentPage() {
     setIsCreating(true);
     setError(null);
 
-    try {
-      const model = models.find((m) => m.name === selectedModel) || {
-        name: selectedModel,
-      };
-      const id = await createAgent(model);
-      navigate(`/agent/${id}`);
-    } catch (err) {
-      setError(err.message || "Failed to create agent");
-      setIsCreating(false);
-    }
+    const model = models.find((m) => m.name === selectedModel) || {
+      name: selectedModel,
+    };
+    createAgent(
+      model,
+      (id) => {
+        navigate(`/agent/${id}`);
+      },
+      (err) => {
+        setError(err.message || "Failed to create agent");
+        setIsCreating(false);
+      }
+    );
   };
 
   return (

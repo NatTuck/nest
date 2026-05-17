@@ -26,6 +26,17 @@ export default defineConfig(({ mode }) => {
       environment: "jsdom",
       include: ["js/**/*.{test,spec}.{js,jsx}"],
       setupFiles: ["./js/test/setup.js"],
+      coverage: {
+        provider: "v8",
+        reporter: ["text", "html"],
+        reportsDirectory: "./coverage",
+        thresholds: {
+          lines: 93,
+          functions: 100,
+          branches: 96,
+          statements: 94,
+        },
+      },
     },
 
     // Optimize dependencies - include React ESM exports
