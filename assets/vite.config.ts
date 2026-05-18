@@ -103,11 +103,18 @@ export default defineConfig(({ mode }) => {
       alias: {
         "@": path.resolve(__dirname, "js"),
         "@css": path.resolve(__dirname, "css"),
-        // Phoenix deps from Elixir deps directory
-        phoenix: path.resolve(
-          __dirname,
-          "../deps/phoenix/priv/static/phoenix.mjs",
-        ),
+        // Use mock phoenix in tests, real phoenix in dev/build
+        ...(mode === "test"
+          ? {
+              phoenix: path.resolve(__dirname, "js/__mocks__/phoenix.js"),
+            }
+          : {
+              // Phoenix deps from Elixir deps directory
+              phoenix: path.resolve(
+                __dirname,
+                "../deps/phoenix/priv/static/phoenix.mjs",
+              ),
+            }),
         phoenix_html: path.resolve(
           __dirname,
           "../deps/phoenix_html/priv/static/phoenix_html.js",

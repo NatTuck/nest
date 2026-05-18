@@ -36,10 +36,13 @@ describe("channels", () => {
   });
 
   describe("initChannels", () => {
-    it.skip("should update store.isConnected to true when socket connects", () => {
-      // TODO: Verify that calling initChannels() and then connectSocket()
-      // results in store.isConnected being true
-      assert(false);
+    it("should update store.isConnected to true when socket connects", async () => {
+      initChannels();
+      connectSocket();
+      // Wait for async callback
+      // FIXME: No sleeps in test. Use a specific wait_for tool.
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      assert.strictEqual(useStore.getState().isConnected, true);
     });
 
     it.skip("should update store.isConnected to false when socket disconnects", () => {
