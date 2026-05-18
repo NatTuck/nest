@@ -20,6 +20,16 @@ import { devtools } from "zustand/middleware";
  */
 
 /**
+ * Initial state factory for store reset
+ */
+const initialState = {
+  isConnected: false,
+  agents: [],
+  models: [],
+  agentsCache: {},
+};
+
+/**
  * Create a Zustand store with devtools in development
  */
 export const useStore = create(
@@ -189,12 +199,16 @@ export const useStore = create(
           const cache = state.agentsCache[id];
           if (!cache) return state;
 
-          const partial = cache.partial || {
-            index: payload.index,
-            role: "assistant",
-            content: "",
-            charsReceived: 0,
-          };
+          // Reset partial if index changed or doesn't exist
+          const partial =
+            cache.partial && cache.partial.index === payload.index
+              ? cache.partial
+              : {
+                  index: payload.index,
+                  role: "assistant",
+                  content: "",
+                  charsReceived: 0,
+                };
 
           return {
             agentsCache: {
@@ -205,7 +219,11 @@ export const useStore = create(
                   ...partial,
                   content: partial.content + payload.content,
                   charsReceived: payload.charsEnd,
+                  charsStart: payload.charsStart,
+                  charsEnd: payload.charsEnd,
                 },
+                // Clear waiting flag when assistant starts responding
+                waitingForResponse: false,
               },
             },
           };
@@ -294,6 +312,22 @@ export const useStore = create(
       },
 
       /**
+       * Set waiting for response (user sent message, waiting for assistant)
+       */
+      setWaitingForResponse: (id, waiting) => {
+        set((state) => {
+          const cache = state.agentsCache[id];
+          if (!cache) return state;
+          return {
+            agentsCache: {
+              ...state.agentsCache,
+              [id]: { ...cache, waitingForResponse: waiting },
+            },
+          };
+        });
+      },
+
+      /**
        * Sync agent messages from server response
        * Merges synced messages into existing cache
        */
@@ -340,7 +374,19 @@ export const useStore = create(
           return { agentsCache: newCache };
         });
       },
+
+      /**
+       * Reset store to initial state (for testing)
+       */
+      _reset: () => {
+        set(initialState);
+      },
     }),
     { name: "nest-store" },
   ),
 );
+
+/**
+ * Get initial state (for testing)
+ */
+export { initialState };

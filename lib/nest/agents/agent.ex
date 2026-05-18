@@ -6,7 +6,7 @@ defmodule Nest.Agents.Agent do
   - A unique readable ID (e.g., "clever-raven")
   - Message history
   - LLM chain for model communication
-  - Streaming callback support for real-time responses
+  - Streaming broadcast support for real-time responses via PubSub
   """
 
   use GenServer, restart: :temporary
@@ -22,7 +22,6 @@ defmodule Nest.Agents.Agent do
     :id,
     :model,
     :chain,
-    :channel_pid,
     messages: [],
     next_message_index: 0,
     partial_message: nil,
@@ -33,7 +32,6 @@ defmodule Nest.Agents.Agent do
           id: String.t(),
           model: map(),
           chain: LLMChain.t() | nil,
-          channel_pid: pid() | nil,
           messages: list(),
           next_message_index: non_neg_integer(),
           partial_message: map() | nil,
@@ -66,20 +64,10 @@ defmodule Nest.Agents.Agent do
   end
 
   @doc """
-  Sets the channel PID for streaming callbacks.
-
-  The channel will receive delta and message broadcasts during chat.
-  """
-  @spec set_channel(pid(), pid()) :: :ok
-  def set_channel(pid, channel_pid) do
-    GenServer.cast(pid, {:set_channel, channel_pid})
-  end
-
-  @doc """
   Sends a chat message to the agent.
 
   The message is added to the chain and triggers a streaming response
-  from the LLM. Responses are broadcast to the channel.
+  from the LLM. Responses are broadcast via PubSub to all subscribers.
   """
   @spec chat(pid(), String.t()) :: :ok
   def chat(pid, content) do
@@ -108,7 +96,6 @@ defmodule Nest.Agents.Agent do
           id: id,
           model: model,
           chain: chain,
-          channel_pid: nil,
           messages: [],
           next_message_index: 0,
           partial_message: nil,
@@ -129,11 +116,6 @@ defmodule Nest.Agents.Agent do
   end
 
   @impl true
-  def handle_cast({:set_channel, channel_pid}, state) do
-    {:noreply, %{state | channel_pid: channel_pid}}
-  end
-
-  @impl true
   def handle_cast({:chat, content}, state) do
     # Add user message to history with index
     user_message = %{
@@ -144,6 +126,9 @@ defmodule Nest.Agents.Agent do
     }
 
     messages = state.messages ++ [user_message]
+
+    # Broadcast user message to all subscribers
+    broadcast_message(state.id, user_message)
 
     # Update status to streaming
     state = %{
@@ -167,7 +152,6 @@ defmodule Nest.Agents.Agent do
       run_chain_with_callbacks(
         state.chain,
         messages,
-        state.channel_pid,
         agent_pid,
         state.id,
         state.partial_message.index
@@ -197,13 +181,8 @@ defmodule Nest.Agents.Agent do
 
     messages = state.messages ++ [final_message]
 
-    # Send completion to channel
-    if state.channel_pid && Process.alive?(state.channel_pid) do
-      send(
-        state.channel_pid,
-        {:message_complete, final_message}
-      )
-    end
+    # Broadcast completion to all subscribers via PubSub
+    broadcast_message(state.id, final_message)
 
     state = %{
       state
@@ -228,11 +207,11 @@ defmodule Nest.Agents.Agent do
     end
   end
 
-  defp run_chain_with_callbacks(chain, messages, channel_pid, agent_pid, _agent_id, message_index) do
+  defp run_chain_with_callbacks(chain, messages, agent_pid, agent_id, message_index) do
     messages
     |> convert_to_langchain_messages()
     |> create_chain_with_messages(chain)
-    |> run_and_handle_response(channel_pid, agent_pid, message_index)
+    |> run_and_handle_response(agent_pid, agent_id, message_index)
   end
 
   defp convert_to_langchain_messages(messages) do
@@ -257,26 +236,24 @@ defmodule Nest.Agents.Agent do
     end)
   end
 
-  defp run_and_handle_response(chain, channel_pid, agent_pid, message_index) do
+  defp run_and_handle_response(chain, agent_pid, agent_id, message_index) do
     case LLMChain.run(chain) do
       {:ok, updated_chain} ->
         response = updated_chain.last_message
-        handle_successful_response(response, channel_pid, agent_pid, message_index)
+        handle_successful_response(response, agent_pid, agent_id, message_index)
 
       {:error, _failed_chain, error} ->
-        handle_failed_response(error, channel_pid, message_index)
+        handle_failed_response(error, agent_id, message_index)
     end
   end
 
-  defp handle_successful_response(response, channel_pid, agent_pid, message_index) do
+  defp handle_successful_response(response, agent_pid, agent_id, message_index) do
     content = extract_content_text(response.content)
 
-    if channel_pid && Process.alive?(channel_pid) do
-      stream_chunks(content, channel_pid, agent_pid, message_index)
+    stream_chunks(content, agent_pid, agent_id, message_index)
 
-      # Notify agent that streaming is complete
-      send(agent_pid, {:llm_response, response})
-    end
+    # Notify agent that streaming is complete
+    send(agent_pid, {:llm_response, response})
   end
 
   defp extract_content_text(content) when is_binary(content), do: content
@@ -289,34 +266,21 @@ defmodule Nest.Agents.Agent do
 
   defp extract_content_text(_content), do: ""
 
-  defp handle_failed_response(error, channel_pid, message_index) do
+  defp handle_failed_response(error, agent_id, message_index) do
     error_msg = "Error: #{inspect(error)}"
 
-    if channel_pid && Process.alive?(channel_pid) do
-      send(
-        channel_pid,
-        {:error, %{index: message_index, content: error_msg}}
-      )
-    end
+    # Broadcast error to all subscribers via PubSub
+    broadcast_error(agent_id, message_index, error_msg)
   end
 
-  defp stream_chunks(content, channel_pid, agent_pid, message_index) do
+  defp stream_chunks(content, agent_pid, agent_id, message_index) do
     chunks = chunk_content(content, 5)
 
     Enum.reduce(chunks, 0, fn chunk, chars_sent ->
       chars_end = chars_sent + String.length(chunk)
 
-      # Send delta to channel for broadcast
-      send(
-        channel_pid,
-        {:delta,
-         %{
-           index: message_index,
-           content: chunk,
-           chars_start: chars_sent,
-           chars_end: chars_end
-         }}
-      )
+      # Broadcast delta to all subscribers via PubSub
+      broadcast_delta(agent_id, message_index, chunk, chars_sent, chars_end)
 
       # Also update agent's partial_message
       send(agent_pid, {:delta_received, chunk})
@@ -331,5 +295,37 @@ defmodule Nest.Agents.Agent do
     |> String.graphemes()
     |> Enum.chunk_every(size)
     |> Enum.map(&Enum.join/1)
+  end
+
+  # PubSub broadcast helpers
+
+  defp broadcast_message(agent_id, message) do
+    Phoenix.PubSub.broadcast(
+      Nest.PubSub,
+      "agent:#{agent_id}",
+      {:chat_message, message}
+    )
+  end
+
+  defp broadcast_delta(agent_id, message_index, content, chars_start, chars_end) do
+    Phoenix.PubSub.broadcast(
+      Nest.PubSub,
+      "agent:#{agent_id}",
+      {:chat_delta,
+       %{
+         index: message_index,
+         content: content,
+         chars_start: chars_start,
+         chars_end: chars_end
+       }}
+    )
+  end
+
+  defp broadcast_error(agent_id, message_index, error_msg) do
+    Phoenix.PubSub.broadcast(
+      Nest.PubSub,
+      "agent:#{agent_id}",
+      {:chat_error, %{index: message_index, content: error_msg}}
+    )
   end
 end

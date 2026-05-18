@@ -10,7 +10,15 @@ import { useStore } from "./store";
 
 // Module-level channel refs (NOT in store - they're mutable references)
 let lobbyChannel = null;
-const agentChannels = new Map(); // agentId -> Channel
+export const agentChannels = new Map(); // agentId -> Channel
+
+/**
+ * Get the socket instance
+ * @returns {Object} The socket instance
+ */
+export function getSocket() {
+  return socket;
+}
 
 /**
  * Clear all agent channels (for testing)
@@ -84,7 +92,8 @@ export function leaveLobby() {
  */
 function checkAndSync(agentId, serverLastIndex) {
   const cache = getStore().agentsCache[agentId];
-  if (!cache || serverLastIndex <= cache.lastIndex) {
+  const cacheLastIndex = cache?.lastIndex ?? -1;
+  if (serverLastIndex <= cacheLastIndex) {
     return;
   }
 
@@ -92,7 +101,7 @@ function checkAndSync(agentId, serverLastIndex) {
   if (!channel) return;
 
   channel
-    .push("chat:sync", { lastIndex: cache.lastIndex })
+    .push("chat:sync", { lastIndex: cacheLastIndex })
     .receive("ok", (resp) => {
       getStore().syncAgentMessages(agentId, resp);
     });
@@ -188,11 +197,17 @@ export function sendMessage(agentId, content, onError) {
   const store = getStore();
   store.addUserMessage(agentId, content);
 
-  channel.push("chat:message", { content }).receive("error", (err) => {
-    // Clear partial on error
-    store.clearPartial(agentId);
-    if (onError) onError(err);
-  });
+  channel
+    .push("chat:message", { content })
+    .receive("ok", () => {
+      // Message acknowledged, waiting for assistant response
+      store.setWaitingForResponse(agentId, true);
+    })
+    .receive("error", (err) => {
+      // Clear partial on error
+      store.clearPartial(agentId);
+      if (onError) onError(err);
+    });
 }
 
 /**

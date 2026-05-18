@@ -20,7 +20,8 @@ Our JavaScript code lives exclusively in `./assets/`.
   single-use helper functions if there isn't enough reusable logic to get the
   function simple enough.
 - **NEVER** downgrade anything without an explicit user request.
-- **NEVER** remove or skip tests without explicit user request.
+- **NEVER** remove or skip tests without explicit user request. If tests are
+failing, they are failing.
 - **NEVER** fail to implement requested tests and then claim you've completed
 the task.
 

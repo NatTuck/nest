@@ -18,9 +18,12 @@ sync.
   "id": "clever-raven",
   "model": {"name": "Kimi-K2.5", "provider": "openrouter"},
   "lastCompleteIndex": 3,
-  "status": "idle"
+  "status": "idle",
+  "partial": null
 }
 ```
+
+The `partial` field contains the current partial message when `status` is `"streaming"`, or `null` when idle.
 
 ### Status Values
 
@@ -149,11 +152,12 @@ Exactly the same as the reply to a join:
   "id": "clever-raven",
   "model": {"name": "Kimi-K2.5", "provider": "openrouter"},
   "lastCompleteIndex": 3,
-  "status": "idle"
+  "status": "idle",
+  "partial": null
 }
 ```
 
-Status is either "idle" or "streaming".
+Status is either "idle" or "streaming". The `partial` field contains the current partial message when streaming, or `null` when idle.
 
 **Error Reply:** Errors use the format `{:error, %{"reason" => reason}}`
 

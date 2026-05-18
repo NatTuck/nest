@@ -86,7 +86,16 @@ export function ChatPage() {
   const status = cache?.status ?? "disconnected";
   const messages = cache?.messages ?? [];
   const partial = cache?.partial ?? null;
+  const waitingForResponse = cache?.waitingForResponse ?? false;
   const streaming = partial !== null;
+
+  // Determine status label
+  const getStatusLabel = () => {
+    if (status !== "connected") return status;
+    if (streaming) return "Generating response";
+    if (waitingForResponse) return "Waiting for response";
+    return "Ready";
+  };
 
   // Scroll to bottom when messages change
   // biome-ignore lint/correctness/useExhaustiveDependencies: messages is the dependency we want
@@ -155,13 +164,7 @@ export function ChatPage() {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold text-gray-900">{id}</h1>
-            <p className="text-sm text-gray-500">
-              {status === "connected"
-                ? streaming
-                  ? "Typing..."
-                  : "Ready"
-                : status}
-            </p>
+            <p className="text-sm text-gray-500">{getStatusLabel()}</p>
           </div>
           <div
             className={`
@@ -214,9 +217,10 @@ export function ChatPage() {
               key={message.index}
               className={`
                 flex gap-4 p-4 rounded-xl
-                ${message.role === "user"
-                  ? "bg-blue-50 ml-12"
-                  : "bg-gray-50 mr-12"
+                ${
+                  message.role === "user"
+                    ? "bg-blue-50 ml-12"
+                    : "bg-gray-50 mr-12"
                 }
               `}
             >
@@ -224,9 +228,10 @@ export function ChatPage() {
               <div
                 className={`
                   w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0
-                  ${message.role === "user"
-                    ? "bg-blue-600 text-white"
-                    : "bg-gray-600 text-white"
+                  ${
+                    message.role === "user"
+                      ? "bg-blue-600 text-white"
+                      : "bg-gray-600 text-white"
                   }
                 `}
               >
@@ -270,6 +275,29 @@ export function ChatPage() {
         <div ref={messagesEndRef} />
       </div>
 
+      {/* Typing indicator - shown when waiting or generating */}
+      {(waitingForResponse || streaming) && (
+        <div className="flex items-center gap-2 py-2 px-4 mb-2">
+          <span className="text-sm text-gray-500">
+            {streaming ? "Generating response" : "Waiting for response"}
+          </span>
+          <div className="flex items-center gap-1">
+            <span
+              className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce"
+              style={{ animationDelay: "0ms" }}
+            />
+            <span
+              className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce"
+              style={{ animationDelay: "150ms" }}
+            />
+            <span
+              className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce"
+              style={{ animationDelay: "300ms" }}
+            />
+          </div>
+        </div>
+      )}
+
       {/* Input area */}
       <form
         onSubmit={handleSendMessage}
@@ -298,9 +326,10 @@ export function ChatPage() {
             className={`
               px-6 py-3 rounded-lg font-semibold text-white
               transition-all duration-200
-              ${!inputValue.trim() || isInputDisabled
-                ? "bg-gray-400 cursor-not-allowed"
-                : "bg-blue-600 hover:bg-blue-700 active:bg-blue-800"
+              ${
+                !inputValue.trim() || isInputDisabled
+                  ? "bg-gray-400 cursor-not-allowed"
+                  : "bg-blue-600 hover:bg-blue-700 active:bg-blue-800"
               }
             `}
           >

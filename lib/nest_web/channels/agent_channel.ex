@@ -8,6 +8,8 @@ defmodule NestWeb.AgentChannel do
   - Streaming responses via deltas
 
   Topic format: "agent:ID" (e.g., "agent:clever-raven")
+
+  Uses Phoenix.PubSub for broadcasting to all connected clients.
   """
 
   use NestWeb, :channel
@@ -20,9 +22,9 @@ defmodule NestWeb.AgentChannel do
   def join("agent:" <> agent_id, _payload, socket) do
     case Agents.get_agent(agent_id) do
       {:ok, agent} ->
-        # Set the channel PID on the agent for callbacks
-        {:ok, pid} = Agents.Supervisor.get_agent(agent_id)
-        Nest.Agents.Agent.set_channel(pid, self())
+        # Subscribe to PubSub topic for this agent
+        # All channels connected to this agent will receive broadcasts
+        Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
         # Send initial state
         send(self(), {:after_join, agent})
@@ -44,12 +46,13 @@ defmodule NestWeb.AgentChannel do
         -1
       end
 
-    # Build lightweight init payload (no messages sent)
+    # Build init payload with partial when streaming
     init_payload = %{
       "id" => agent.id,
       "model" => agent.model,
       "lastCompleteIndex" => last_complete_index,
-      "status" => to_string(agent.status)
+      "status" => to_string(agent.status),
+      "partial" => build_partial_payload(agent.partial_message)
     }
 
     push(socket, "init", init_payload)
@@ -57,12 +60,22 @@ defmodule NestWeb.AgentChannel do
     {:noreply, socket}
   end
 
-  # Handle streaming delta from the agent process
+  # Handle chat messages from PubSub (broadcast by Agent)
   @impl true
-  def handle_info({:delta, delta}, socket) do
-    # Update partial message in agent state (handled by Agent GenServer)
-    # Just broadcast the delta to all subscribers
-    broadcast!(socket, "chat:delta", %{
+  def handle_info({:chat_message, message}, socket) do
+    push(socket, "chat:message", %{
+      "index" => message.index,
+      "role" => message.role,
+      "content" => message.content
+    })
+
+    {:noreply, socket}
+  end
+
+  # Handle streaming delta from PubSub (broadcast by Agent)
+  @impl true
+  def handle_info({:chat_delta, delta}, socket) do
+    push(socket, "chat:delta", %{
       "index" => delta.index,
       "content" => delta.content,
       "charsStart" => delta.chars_start,
@@ -72,22 +85,12 @@ defmodule NestWeb.AgentChannel do
     {:noreply, socket}
   end
 
+  # Handle errors from PubSub (broadcast by Agent)
   @impl true
-  def handle_info({:error, error}, socket) do
-    broadcast!(socket, "chat:error", %{
+  def handle_info({:chat_error, error}, socket) do
+    push(socket, "chat:error", %{
       "index" => error.index,
       "content" => error.content
-    })
-
-    {:noreply, socket}
-  end
-
-  @impl true
-  def handle_info({:message_complete, message}, socket) do
-    broadcast!(socket, "chat:message", %{
-      "index" => message.index,
-      "role" => message.role,
-      "content" => message.content
     })
 
     {:noreply, socket}
@@ -135,7 +138,8 @@ defmodule NestWeb.AgentChannel do
           "id" => agent.id,
           "model" => agent.model,
           "lastCompleteIndex" => last_complete_index,
-          "status" => to_string(agent.status)
+          "status" => to_string(agent.status),
+          "partial" => build_partial_payload(agent.partial_message)
         }
 
         {:reply, {:ok, reply}, socket}
@@ -183,5 +187,16 @@ defmodule NestWeb.AgentChannel do
       {:error, :not_found} ->
         {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
     end
+  end
+
+  # Cleanup: Unsubscribe from PubSub when channel terminates
+  @impl true
+  def terminate(_reason, socket) do
+    # Only unsubscribe if agent_id was assigned (join completed successfully)
+    if agent_id = socket.assigns[:agent_id] do
+      Phoenix.PubSub.unsubscribe(Nest.PubSub, "agent:#{agent_id}")
+    end
+
+    {:ok, socket}
   end
 end

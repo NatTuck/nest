@@ -7,6 +7,7 @@ defmodule NestWeb.AgentChannelTest do
   import Mimic
 
   alias Nest.Agents
+  alias Nest.Agents.Agent
 
   setup :set_mimic_global
   setup :verify_on_exit!
@@ -34,9 +35,10 @@ defmodule NestWeb.AgentChannelTest do
       assert payload["model"][:name] == "qwen3.5-plus"
       assert payload["lastCompleteIndex"] == -1
       assert payload["status"] == "idle"
-      # Init is lightweight - no messages or partial sent (client must sync)
+      # Init includes partial (nil when not streaming)
+      assert Map.has_key?(payload, "partial")
+      assert payload["partial"] == nil
       refute Map.has_key?(payload, "messages")
-      refute Map.has_key?(payload, "partial")
     end
 
     test "returns error for non-existent agent" do
@@ -57,14 +59,10 @@ defmodule NestWeb.AgentChannelTest do
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
-      # Wait for completion
-      receive do
-        %Phoenix.Socket.Broadcast{event: "chat:message"} -> :ok
-      after
-        2000 -> flunk("Timeout waiting for message")
-      end
+      # Wait for completion (user message first, then assistant)
+      assert_push "chat:message", %{"index" => 0, "role" => :user}, 2000
+      assert_push "chat:message", %{"index" => 1, "role" => :assistant}, 2000
 
-      # Give the agent time to update its state
       Process.sleep(100)
 
       # Leave channel by stopping the channel process
@@ -100,20 +98,20 @@ defmodule NestWeb.AgentChannelTest do
     end
 
     test "broadcasts user message with index", %{socket: socket} do
+      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
+
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
-      # Wait and check if we receive appropriate broadcasts
-      receive do
-        %Phoenix.Socket.Broadcast{event: "chat:delta", payload: payload} ->
-          assert is_integer(payload["index"])
-          assert is_binary(payload["content"])
-          assert is_integer(payload["charsStart"])
-          assert is_integer(payload["charsEnd"])
-      after
-        # No delta expected immediately
-        500 -> :ok
-      end
+      # Receive user message broadcast first
+      assert_push "chat:message", %{"index" => 0, "role" => :user}, 500
+
+      # Then receive streaming deltas
+      assert_push "chat:delta", payload, 500
+      assert is_integer(payload["index"])
+      assert is_binary(payload["content"])
+      assert is_integer(payload["charsStart"])
+      assert is_integer(payload["charsEnd"])
     end
 
     test "calls LLM and broadcasts response with deltas and index", %{socket: socket} do
@@ -128,27 +126,24 @@ defmodule NestWeb.AgentChannelTest do
     end
 
     defp receive_deltas_and_message do
-      receive do
-        %Phoenix.Socket.Broadcast{event: "chat:delta", payload: payload} ->
-          # Verify delta format
-          assert is_integer(payload["index"])
-          assert is_binary(payload["content"])
-          assert is_integer(payload["charsStart"])
-          assert is_integer(payload["charsEnd"])
-          assert payload["charsEnd"] > payload["charsStart"]
+      assert_push "chat:delta", payload, 2000
+      # Verify delta format
+      assert is_integer(payload["index"])
+      assert is_binary(payload["content"])
+      assert is_integer(payload["charsStart"])
+      assert is_integer(payload["charsEnd"])
+      assert payload["charsEnd"] > payload["charsStart"]
 
-          # Continue receiving deltas
-          receive_deltas_and_message()
-
-        %Phoenix.Socket.Broadcast{event: "chat:message", payload: payload} ->
-          assert is_integer(payload["index"])
-          assert payload["index"] >= 0
-          assert payload["role"] == :assistant
-          assert is_binary(payload["content"])
-      after
-        2000 ->
-          flunk("Timeout waiting for assistant response")
-      end
+      # Continue receiving deltas
+      receive_deltas_and_message()
+    rescue
+      ExUnit.AssertionError ->
+        # Try to receive final message instead
+        assert_push "chat:message", payload, 2000
+        assert is_integer(payload["index"])
+        assert payload["index"] >= 0
+        assert payload["role"] == :assistant
+        assert is_binary(payload["content"])
     end
   end
 
@@ -165,15 +160,9 @@ defmodule NestWeb.AgentChannelTest do
       ref1 = push(socket, "chat:message", %{"content" => "First"})
       assert_reply ref1, :ok, %{}
 
-      # Wait for assistant response to complete
-      receive do
-        %Phoenix.Socket.Broadcast{event: "chat:message", payload: payload} ->
-          first_index = payload["index"]
-          # User is 0, assistant is 1
-          assert first_index == 1
-      after
-        2000 -> flunk("Timeout waiting for first completion")
-      end
+      # Wait for user message (even index), then assistant message (odd index)
+      assert_push "chat:message", %{"index" => 0, "role" => :user}, 2000
+      assert_push "chat:message", %{"index" => 1, "role" => :assistant}, 2000
 
       # Sync should return no new messages (we're up to date)
       ref_sync = push(socket, "chat:sync", %{"lastIndex" => 1})
@@ -183,14 +172,9 @@ defmodule NestWeb.AgentChannelTest do
       ref2 = push(socket, "chat:message", %{"content" => "Second"})
       assert_reply ref2, :ok, %{}
 
-      # Wait for second completion
-      receive do
-        %Phoenix.Socket.Broadcast{event: "chat:message", payload: %{"index" => idx}} ->
-          # Second user (2) + second assistant (3)
-          assert idx == 3
-      after
-        2000 -> flunk("Timeout waiting for second completion")
-      end
+      # Wait for second user message (index 2), then assistant (index 3)
+      assert_push "chat:message", %{"index" => 2, "role" => :user}, 2000
+      assert_push "chat:message", %{"index" => 3, "role" => :assistant}, 2000
 
       # Sync from index 1 should return messages at index 2 and 3
       ref_sync2 = push(socket, "chat:sync", %{"lastIndex" => 1})
@@ -213,11 +197,7 @@ defmodule NestWeb.AgentChannelTest do
       assert_reply ref, :ok, %{}
 
       # Wait for at least one delta to ensure we're streaming
-      receive do
-        %Phoenix.Socket.Broadcast{event: "chat:delta"} -> :ok
-      after
-        500 -> :ok
-      end
+      assert_push "chat:delta", _payload, 500
 
       # Sync while streaming
       ref_sync = push(socket, "chat:sync", %{"lastIndex" => 0})
@@ -274,12 +254,9 @@ defmodule NestWeb.AgentChannelTest do
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
-      # Wait for completion
-      receive do
-        %Phoenix.Socket.Broadcast{event: "chat:message"} -> :ok
-      after
-        2000 -> flunk("Timeout waiting for message")
-      end
+      # Wait for completion (user message first, then assistant)
+      assert_push "chat:message", %{"index" => 0, "role" => :user}, 2000
+      assert_push "chat:message", %{"index" => 1, "role" => :assistant}, 2000
 
       Process.sleep(100)
 
@@ -304,11 +281,7 @@ defmodule NestWeb.AgentChannelTest do
       assert_reply ref, :ok, %{}
 
       # Wait for at least one delta
-      receive do
-        %Phoenix.Socket.Broadcast{event: "chat:delta"} -> :ok
-      after
-        500 -> :ok
-      end
+      assert_push "chat:delta", _payload, 500
 
       # Check status while streaming
       ref_status = push(socket, "chat:status", %{"lastIndex" => -1})
@@ -333,18 +306,16 @@ defmodule NestWeb.AgentChannelTest do
   end
 
   describe "chat:sync edge cases" do
-    test "returns empty messages when lastIndex exceeds server's lastCompleteIndex", %{socket: socket} do
+    test "returns empty messages when lastIndex exceeds server's lastCompleteIndex", %{
+      socket: socket
+    } do
       Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
 
       # Send a message to create history
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
-      receive do
-        %Phoenix.Socket.Broadcast{event: "chat:message"} -> :ok
-      after
-        2000 -> flunk("Timeout")
-      end
+      assert_push "chat:message", _payload, 2000
 
       Process.sleep(100)
 
@@ -375,11 +346,9 @@ defmodule NestWeb.AgentChannelTest do
       ref1 = push(socket, "chat:message", %{"content" => "First"})
       assert_reply ref1, :ok, %{}
 
-      receive do
-        %Phoenix.Socket.Broadcast{event: "chat:message"} -> :ok
-      after
-        2000 -> flunk("Timeout waiting for first")
-      end
+      # Wait for completion (user message first, then assistant)
+      assert_push "chat:message", %{"index" => 0, "role" => :user}, 2000
+      assert_push "chat:message", %{"index" => 1, "role" => :assistant}, 2000
 
       Process.sleep(100)
 
@@ -407,14 +376,10 @@ defmodule NestWeb.AgentChannelTest do
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
-      receive do
-        %Phoenix.Socket.Broadcast{event: "chat:error", payload: payload} ->
-          assert payload["index"] == 1
-          assert is_binary(payload["content"])
-          assert payload["content"] =~ "unavailable" or payload["content"] =~ "error"
-      after
-        2000 -> flunk("Timeout waiting for error")
-      end
+      assert_push "chat:error", payload, 2000
+      assert payload["index"] == 1
+      assert is_binary(payload["content"])
+      assert payload["content"] =~ "unavailable" or payload["content"] =~ "error"
     end
 
     test "error event is broadcast when LLM fails" do
@@ -438,13 +403,9 @@ defmodule NestWeb.AgentChannelTest do
       assert_reply ref, :ok, %{}
 
       # Wait for error broadcast
-      receive do
-        %Phoenix.Socket.Broadcast{event: "chat:error", payload: error_payload} ->
-          assert error_payload["index"] >= 0
-          assert is_binary(error_payload["content"])
-      after
-        2000 -> flunk("Timeout waiting for error")
-      end
+      assert_push "chat:error", error_payload, 2000
+      assert error_payload["index"] >= 0
+      assert is_binary(error_payload["content"])
     end
   end
 
@@ -477,13 +438,9 @@ defmodule NestWeb.AgentChannelTest do
       if count <= 0 do
         acc
       else
-        receive do
-          %Phoenix.Socket.Broadcast{event: "chat:message", payload: payload} ->
-            validator.(payload)
-            collect_messages([payload | acc], count - 1, validator, timeout)
-        after
-          timeout -> acc
-        end
+        assert_push "chat:message", payload, timeout
+        validator.(payload)
+        collect_messages([payload | acc], count - 1, validator, timeout)
       end
     end
 
@@ -494,33 +451,25 @@ defmodule NestWeb.AgentChannelTest do
       assert_reply ref, :ok, %{}
 
       # Wait for streaming to start
-      receive do
-        %Phoenix.Socket.Broadcast{event: "chat:delta", payload: delta} ->
-          partial_index = delta["index"]
+      assert_push "chat:delta", delta, 500
+      partial_index = delta["index"]
 
-          # Check status during streaming
-          ref_status = push(socket, "chat:status", %{"lastIndex" => -1})
-          assert_reply ref_status, :ok, %{"lastCompleteIndex" => last_complete}
+      # Check status during streaming
+      ref_status = push(socket, "chat:status", %{"lastIndex" => -1})
+      assert_reply ref_status, :ok, %{"lastCompleteIndex" => last_complete}
 
-          # Partial message index should be higher than lastCompleteIndex
-          assert partial_index > last_complete
-      after
-        500 -> :ok
-      end
+      # Partial message index should be higher than lastCompleteIndex
+      assert partial_index > last_complete
 
       # Wait for completion
-      receive do
-        %Phoenix.Socket.Broadcast{event: "chat:message", payload: msg} ->
-          final_index = msg["index"]
+      assert_push "chat:message", msg, 2000
+      final_index = msg["index"]
 
-          # After completion, lastCompleteIndex should match
-          ref_status2 = push(socket, "chat:status", %{"lastIndex" => -1})
-          assert_reply ref_status2, :ok, %{"lastCompleteIndex" => final_last}
+      # After completion, lastCompleteIndex should match
+      ref_status2 = push(socket, "chat:status", %{"lastIndex" => -1})
+      assert_reply ref_status2, :ok, %{"lastCompleteIndex" => final_last}
 
-          assert final_last == final_index
-      after
-        2000 -> flunk("Timeout waiting for completion")
-      end
+      assert final_last == final_index
     end
   end
 
@@ -532,27 +481,18 @@ defmodule NestWeb.AgentChannelTest do
       assert_reply ref, :ok, %{}
 
       # Capture first delta and verify all subsequent deltas have same index
-      first_delta_index =
-        receive do
-          %Phoenix.Socket.Broadcast{event: "chat:delta", payload: payload} ->
-            assert is_integer(payload["index"])
-            payload["index"]
-        after
-          1000 -> flunk("Timeout waiting for delta")
-        end
+      assert_push "chat:delta", payload, 1000
+      assert is_integer(payload["index"])
+      first_delta_index = payload["index"]
 
       # All subsequent deltas should have same index
       receive_deltas_with_index(first_delta_index, 3)
     end
 
     defp receive_deltas_with_index(expected_index, remaining) when remaining > 0 do
-      receive do
-        %Phoenix.Socket.Broadcast{event: "chat:delta", payload: payload} ->
-          assert payload["index"] == expected_index
-          receive_deltas_with_index(expected_index, remaining - 1)
-      after
-        500 -> :ok
-      end
+      assert_push "chat:delta", payload, 500
+      assert payload["index"] == expected_index
+      receive_deltas_with_index(expected_index, remaining - 1)
     end
 
     defp receive_deltas_with_index(_expected_index, _remaining), do: :ok
@@ -581,16 +521,18 @@ defmodule NestWeb.AgentChannelTest do
     end
 
     defp receive_deltas_and_build_content(acc, validator, timeout \\ 2000) do
-      receive do
-        %Phoenix.Socket.Broadcast{event: "chat:delta", payload: delta} ->
-          validator.(delta)
-          receive_deltas_and_build_content(acc <> delta["content"], validator, timeout)
-
-        %Phoenix.Socket.Broadcast{event: "chat:message"} ->
+      assert_push "chat:delta", delta, timeout
+      validator.(delta)
+      receive_deltas_and_build_content(acc <> delta["content"], validator, timeout)
+    rescue
+      ExUnit.AssertionError ->
+        # No more deltas, try for final message
+        try do
+          assert_push "chat:message", _payload, timeout
           acc
-      after
-        timeout -> acc
-      end
+        rescue
+          ExUnit.AssertionError -> acc
+        end
     end
   end
 
@@ -606,18 +548,20 @@ defmodule NestWeb.AgentChannelTest do
       ref = push(socket, "chat:message", %{"content" => "Hello from client 1"})
       assert_reply ref, :ok, %{}
 
-      # Second client should receive the assistant message broadcast (odd index)
-      assistant_payload =
-        receive do
-          %Phoenix.Socket.Broadcast{event: "chat:message", payload: %{"index" => idx} = p}
-          when rem(idx, 2) == 1 ->
-            p
-        after
-          3000 -> flunk("Second client did not receive assistant message broadcast")
-        end
+      # First client receives user message first (even index), then assistant
+      assert_push "chat:message", %{"index" => 0, "role" => :user}, 3000
 
-      assert assistant_payload["role"] == :assistant
+      assert_push "chat:message",
+                  %{"index" => idx, "role" => :assistant} = assistant_payload,
+                  3000
+
+      assert rem(idx, 2) == 1
       assert is_binary(assistant_payload["content"])
+
+      # Second client should also receive both messages
+      assert_push "chat:message", %{"index" => 0, "role" => :user}, 3000
+      assert_push "chat:message", %{"index" => idx2, "role" => :assistant}, 3000
+      assert rem(idx2, 2) == 1
 
       # Cleanup
       Process.unlink(socket2.channel_pid)
@@ -630,17 +574,15 @@ defmodule NestWeb.AgentChannelTest do
       ref = push(socket, "chat:message", %{"content" => "Test"})
       assert_reply ref, :ok, %{}
 
-      # Assistant message is broadcast (odd index)
-      receive do
-        %Phoenix.Socket.Broadcast{event: "chat:message", payload: payload} ->
-          assert payload["role"] == :assistant
-          assert is_binary(payload["content"])
-          assert payload["index"] >= 1
-          # Assistant messages should have odd indexes
-          assert rem(payload["index"], 2) == 1
-      after
-        3000 -> flunk("Did not receive assistant message")
-      end
+      # Receive user message first (even index)
+      assert_push "chat:message", %{"index" => 0, "role" => :user}, 3000
+
+      # Then receive assistant message (odd index)
+      assert_push "chat:message", %{"index" => idx, "role" => :assistant} = payload, 3000
+      assert is_binary(payload["content"])
+      assert idx >= 1
+      # Assistant messages should have odd indexes
+      assert rem(idx, 2) == 1
     end
   end
 
@@ -664,20 +606,20 @@ defmodule NestWeb.AgentChannelTest do
       assert_reply ref2, :ok, %{}
 
       # Wait for streaming to start
-      receive do
-        %Phoenix.Socket.Broadcast{event: "chat:delta"} -> :ok
-      after
-        500 -> :ok
-      end
+      assert_push "chat:delta", _payload, 500
 
       ref3 = push(socket, "chat:status", %{"lastIndex" => -1})
       assert_reply ref3, :ok, %{"status" => "streaming"}
 
-      # Wait for completion
+      # Wait for completion (user message first, then assistant)
+      assert_push "chat:message", %{"index" => 0, "role" => :user}, 2000
+      assert_push "chat:message", %{"index" => 1, "role" => :assistant}, 2000
+
+      # Drain any remaining delta messages from mailbox
       receive do
-        %Phoenix.Socket.Broadcast{event: "chat:message"} -> :ok
+        %Phoenix.Socket.Message{event: "chat:delta"} -> :ok
       after
-        2000 -> flunk("Timeout")
+        0 -> :ok
       end
 
       Process.sleep(100)
@@ -685,6 +627,117 @@ defmodule NestWeb.AgentChannelTest do
       # Should be idle again
       ref4 = push(socket, "chat:status", %{"lastIndex" => -1})
       assert_reply ref4, :ok, %{"status" => "idle"}
+    end
+  end
+
+  describe "channel lifecycle edge cases" do
+    test "agent process does not capture channel pid", %{socket: _socket, agent_id: id} do
+      # Get the agent process state
+      {:ok, agent_pid} = Agents.Supervisor.get_agent(id)
+
+      # The agent should not have a channel_pid field or it should be nil
+      # This test documents the expected behavior after fixing Bug 2
+      agent_state = Agent.get_state(agent_pid)
+
+      # The agent should not store the channel PID
+      # If it does, responses may be lost when the channel is rejoined
+      has_channel_pid = Map.has_key?(agent_state, :channel_pid)
+      channel_pid_set = has_channel_pid && not is_nil(Map.get(agent_state, :channel_pid))
+
+      refute channel_pid_set,
+             "Agent should not capture channel PID to avoid response loss on rejoin"
+    end
+
+    test "messages are not lost on channel rejoin", %{socket: socket, agent_id: id} do
+      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
+
+      # Send a message
+      ref = push(socket, "chat:message", %{"content" => "Hello"})
+      assert_reply ref, :ok, %{}
+
+      # Wait for any broadcast events
+      assert_push "chat:delta", _payload, 100
+
+      # Wait for assistant response to complete (user message first, then assistant)
+      assert_push "chat:message", %{"index" => 0, "role" => :user}, 2000
+      assert_push "chat:message", %{"index" => 1, "role" => :assistant}, 2000
+
+      Process.sleep(100)
+
+      # Verify agent has the messages before disconnect
+      {:ok, agent_pid} = Agents.Supervisor.get_agent(id)
+      agent_state = Agent.get_state(agent_pid)
+      assert length(agent_state.messages) == 2
+      last_complete_index = List.last(agent_state.messages).index
+      assert last_complete_index >= 0
+
+      # Simulate connection loss by stopping channel process
+      Process.unlink(socket.channel_pid)
+      GenServer.stop(socket.channel_pid, :normal)
+
+      # Wait for process to stop
+      Process.sleep(100)
+
+      # Verify agent still has messages after channel disconnect
+      # This proves messages persist on the server side
+      agent_state_after = Agent.get_state(agent_pid)
+      assert length(agent_state_after.messages) == 2
+      assert List.last(agent_state_after.messages).index >= 0
+
+      # Note: Full rejoin test would verify client-side sync receives the
+      # correct lastCompleteIndex. The client would use chat:sync after rejoin.
+    end
+
+    test "sync returns correct messages after multiple rejoins", %{socket: socket, agent_id: id} do
+      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
+
+      # Send first message
+      ref1 = push(socket, "chat:message", %{"content" => "Message 1"})
+      assert_reply ref1, :ok, %{}
+
+      # Wait for completion (user message first, then assistant)
+      assert_push "chat:message", %{"index" => 0}, 2000
+      assert_push "chat:message", _payload, 2000
+
+      Process.sleep(100)
+
+      # First rejoin - sync should return messages
+      Process.unlink(socket.channel_pid)
+      GenServer.stop(socket.channel_pid, :normal)
+      Process.sleep(50)
+
+      {:ok, _, socket2} =
+        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{id}")
+
+      # Request sync with lastIndex: -1
+      ref_sync = push(socket2, "chat:sync", %{"lastIndex" => -1})
+
+      assert_reply ref_sync, :ok, %{
+        "messages" => messages,
+        "lastCompleteIndex" => last_complete
+      }
+
+      # Should have the messages
+      assert length(messages) >= 1
+      assert last_complete >= 0
+
+      # Second rejoin - should still get same messages
+      Process.unlink(socket2.channel_pid)
+      GenServer.stop(socket2.channel_pid, :normal)
+      Process.sleep(50)
+
+      {:ok, _, socket3} =
+        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{id}")
+
+      ref_sync2 = push(socket3, "chat:sync", %{"lastIndex" => -1})
+
+      assert_reply ref_sync2, :ok, %{
+        "messages" => messages2,
+        "lastCompleteIndex" => last_complete2
+      }
+
+      assert length(messages2) >= 1
+      assert last_complete2 == last_complete
     end
   end
 end

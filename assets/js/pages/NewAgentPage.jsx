@@ -43,7 +43,7 @@ export function NewAgentPage() {
       (err) => {
         setError(err.message || "Failed to create agent");
         setIsCreating(false);
-      }
+      },
     );
   };
 

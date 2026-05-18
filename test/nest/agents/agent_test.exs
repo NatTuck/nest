@@ -54,15 +54,6 @@ defmodule Nest.Agents.AgentTest do
     end
   end
 
-  describe "set_channel/2" do
-    test "sets channel pid for callbacks" do
-      pid = start_agent()
-      Agent.set_channel(pid, self())
-      state = Agent.get_state(pid)
-      assert state.channel_pid == self()
-    end
-  end
-
   describe "chat/2" do
     test "adds user message to state with index" do
       pid = start_agent()
@@ -80,7 +71,6 @@ defmodule Nest.Agents.AgentTest do
 
     test "increments next_message_index after user message" do
       pid = start_agent()
-      Agent.set_channel(pid, self())
 
       :ok = Agent.chat(pid, "First message")
       state = Agent.get_state(pid)
@@ -89,7 +79,6 @@ defmodule Nest.Agents.AgentTest do
 
     test "creates partial_message for assistant response" do
       pid = start_agent()
-      Agent.set_channel(pid, self())
 
       :ok = Agent.chat(pid, "Hello")
 
@@ -104,7 +93,6 @@ defmodule Nest.Agents.AgentTest do
 
     test "updates status to streaming" do
       pid = start_agent()
-      Agent.set_channel(pid, self())
 
       :ok = Agent.chat(pid, "Hello")
 
@@ -112,18 +100,20 @@ defmodule Nest.Agents.AgentTest do
       assert state.status == :streaming
     end
 
-    test "calls LLM and broadcasts response with deltas" do
+    test "calls LLM and broadcasts response via PubSub" do
       # Use Mimic.stub_with to stub all LLMChain functions
       Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
 
       pid = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Agent.set_channel(pid, self())
+      agent_id = Agent.get_state(pid).id
+
+      # Subscribe to agent's PubSub topic
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "Hello")
 
-      # Receive all deltas and final message
-      # The agent sends deltas first, then the final message
-      receive_deltas_and_message()
+      # Receive all deltas and final message via PubSub
+      receive_deltas_and_message_from_pubsub()
     end
 
     test "accumulates delta content in partial_message" do
@@ -131,12 +121,15 @@ defmodule Nest.Agents.AgentTest do
       Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
 
       pid = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Agent.set_channel(pid, self())
+      agent_id = Agent.get_state(pid).id
+
+      # Subscribe to agent's PubSub topic
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "Hello")
 
-      # Collect deltas and the final message
-      {partial_content, final_message} = collect_deltas_and_message(pid)
+      # Collect deltas and the final message via PubSub
+      {partial_content, final_message} = collect_deltas_and_message_from_pubsub(pid)
 
       # Verify partial accumulated content matches final
       assert partial_content == final_message.content
@@ -148,13 +141,16 @@ defmodule Nest.Agents.AgentTest do
       Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
 
       pid = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Agent.set_channel(pid, self())
+      agent_id = Agent.get_state(pid).id
+
+      # Subscribe to agent's PubSub topic
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "Hello")
 
-      # Wait for completion
+      # Wait for completion via PubSub
       receive do
-        {:message_complete, %{index: index, role: :assistant, content: content}} ->
+        {:chat_message, %{index: index, role: :assistant, content: content}} ->
           state = Agent.get_state(pid)
           assert state.partial_message == nil
           assert state.status == :idle
@@ -172,24 +168,28 @@ defmodule Nest.Agents.AgentTest do
       end
     end
 
-    defp receive_deltas_and_message do
+    defp receive_deltas_and_message_from_pubsub do
       receive do
-        {:delta, _chunk} ->
+        {:chat_delta, _chunk} ->
           # Continue receiving deltas
-          receive_deltas_and_message()
+          receive_deltas_and_message_from_pubsub()
 
-        {:message_complete, %{role: :assistant, content: _}} = msg ->
+        {:chat_message, %{role: :user}} ->
+          # Skip user messages, continue waiting for assistant
+          receive_deltas_and_message_from_pubsub()
+
+        {:chat_message, %{role: :assistant, content: _}} = msg ->
           # Got the final message
-          assert match?({:message_complete, %{role: :assistant, content: _}}, msg)
+          assert match?({:chat_message, %{role: :assistant, content: _}}, msg)
       after
         2000 ->
           flunk("Timeout waiting for assistant response")
       end
     end
 
-    defp collect_deltas_and_message(pid, acc \\ "") do
+    defp collect_deltas_and_message_from_pubsub(pid, acc \\ "") do
       receive do
-        {:delta, %{content: content}} ->
+        {:chat_delta, %{content: content}} ->
           # Verify partial is being accumulated
           state = Agent.get_state(pid)
           partial = state.partial_message
@@ -199,10 +199,14 @@ defmodule Nest.Agents.AgentTest do
           end
 
           # Continue collecting with accumulated content
-          collect_deltas_and_message(pid, acc <> content)
+          collect_deltas_and_message_from_pubsub(pid, acc <> content)
 
-        {:message_complete, msg} ->
-          # Return the accumulated content and the final message
+        {:chat_message, %{role: :user}} ->
+          # Skip user messages, continue waiting for assistant
+          collect_deltas_and_message_from_pubsub(pid, acc)
+
+        {:chat_message, msg} ->
+          # Return the accumulated content and the final message (assistant)
           {acc, msg}
       after
         2000 ->
