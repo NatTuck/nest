@@ -116,11 +116,8 @@ export function joinAgent(agentId) {
   const existingChannel = agentChannels.get(agentId);
 
   if (existingChannel) {
-    // Already have a channel - send status check to verify/sync
     existingChannel.push("chat:status", {}).receive("ok", (payload) => {
-      // Update connected status (clears any error state)
       store.setAgentConnected(agentId, payload);
-      // Sync if needed
       checkAndSync(agentId, payload.lastCompleteIndex);
     });
     return;

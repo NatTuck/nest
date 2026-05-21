@@ -177,11 +177,12 @@ function createMockChannel(topic) {
 
     push(event, _payload) {
       const key = `${topic}:${event}`;
+      const behavior = mockState.pushBehaviors.get(key) || { ok: {} };
+
+      mockState.pushBehaviors.delete(key);
 
       const pushReceiver = {
         receive(status, callback) {
-          const behavior = mockState.pushBehaviors.get(key) || { ok: {} };
-
           setTimeout(() => {
             if (status === "ok" && behavior.ok !== undefined) {
               callback(behavior.ok);
@@ -195,9 +196,6 @@ function createMockChannel(topic) {
           return pushReceiver;
         },
       };
-
-      // Clear used behavior after scheduling
-      mockState.pushBehaviors.delete(key);
 
       return pushReceiver;
     },

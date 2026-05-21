@@ -129,11 +129,15 @@ export const useStore = create(
           const existing = state.agentsCache[id];
           const messages = payload.messages || [];
 
-          // Merge with existing if we have more cached data
           const finalMessages =
             existing?.messages?.length > messages.length
               ? existing.messages
               : messages;
+
+          const lastIndex =
+            finalMessages.length > 0
+              ? Math.max(...finalMessages.map((m) => m.index))
+              : payload.lastCompleteIndex ?? -1;
 
           return {
             agentsCache: {
@@ -141,7 +145,7 @@ export const useStore = create(
               [id]: {
                 messages: finalMessages,
                 partial: payload.partial || null,
-                lastIndex: payload.lastCompleteIndex ?? -1,
+                lastIndex,
                 status: "connected",
                 error: null,
                 model: payload.model || existing?.model || null,
