@@ -8,6 +8,11 @@
 
 import { create } from "zustand";
 import { devtools } from "zustand/middleware";
+import {
+  graphemeCount,
+  graphemeLast,
+  graphemeSlice,
+} from "../utils/grapheme.js";
 
 /**
  * @typedef {Object} AgentCache
@@ -30,11 +35,22 @@ const initialState = {
 };
 
 /**
+ * Normalize partial message from wire format to internal format.
+ * Wire format uses "charsEnd" to describe position.
+ * Internal format uses "charsReceived" to track state.
+ */
+const normalizePartial = (partial) => {
+  if (!partial) return null;
+  const { charsEnd, ...rest } = partial;
+  return { ...rest, charsReceived: charsEnd ?? 0 };
+};
+
+/**
  * Create a Zustand store with devtools in development
  */
 export const useStore = create(
   devtools(
-    (set) => ({
+    (set, get) => ({
       // Socket connection status (for global indicator)
       isConnected: false,
 
@@ -137,14 +153,14 @@ export const useStore = create(
           const lastIndex =
             finalMessages.length > 0
               ? Math.max(...finalMessages.map((m) => m.index))
-              : payload.lastCompleteIndex ?? -1;
+              : (payload.lastCompleteIndex ?? -1);
 
           return {
             agentsCache: {
               ...state.agentsCache,
               [id]: {
                 messages: finalMessages,
-                partial: payload.partial || null,
+                partial: normalizePartial(payload.partial),
                 lastIndex,
                 status: "connected",
                 error: null,
@@ -197,41 +213,109 @@ export const useStore = create(
 
       /**
        * Add chat delta (streaming content)
+       * Returns { applied: boolean, needsSync: boolean, overlapMismatch: boolean }
        */
       addChatDelta: (id, payload) => {
-        set((state) => {
-          const cache = state.agentsCache[id];
-          if (!cache) return state;
+        const state = get();
+        const cache = state.agentsCache[id];
+        if (!cache) return { applied: false, needsSync: false };
 
-          // Reset partial if index changed or doesn't exist
-          const partial =
-            cache.partial && cache.partial.index === payload.index
-              ? cache.partial
-              : {
-                  index: payload.index,
-                  role: "assistant",
-                  content: "",
-                  charsReceived: 0,
-                };
+        const partial =
+          cache.partial && cache.partial.index === payload.index
+            ? cache.partial
+            : {
+                index: payload.index,
+                role: "assistant",
+                content: "",
+                charsReceived: 0,
+              };
 
-          return {
+        const currentReceived = partial.charsReceived || 0;
+
+        if (payload.charsStart > currentReceived) {
+          return { applied: false, needsSync: true };
+        }
+
+        if (payload.charsStart < currentReceived) {
+          const overlap = currentReceived - payload.charsStart;
+          const expectedOverlap = graphemeLast(partial.content, overlap);
+          const actualOverlap = graphemeSlice(payload.content, 0, overlap);
+
+          const mismatch = expectedOverlap !== actualOverlap;
+
+          if (mismatch) {
+            console.warn(`[agent:${id}] Delta overlap mismatch:`, {
+              delta: {
+                index: payload.index,
+                charsStart: payload.charsStart,
+                charsEnd: payload.charsEnd,
+                content: payload.content,
+                graphemeCount: graphemeCount(payload.content),
+              },
+              partial: {
+                index: partial.index,
+                charsReceived: currentReceived,
+                graphemeCount: graphemeCount(partial.content),
+                content:
+                  graphemeCount(partial.content) > 100
+                    ? `...${graphemeLast(partial.content, 50)}`
+                    : partial.content,
+              },
+              overlapCalc: {
+                overlapChars: overlap,
+                expected: expectedOverlap,
+                actual: actualOverlap,
+              },
+              integrityCheck: {
+                contentVsCharsReceived:
+                  graphemeCount(partial.content) === currentReceived
+                    ? "OK"
+                    : `MISMATCH: graphemeCount=${graphemeCount(partial.content)}, charsReceived=${currentReceived}`,
+              },
+            });
+          }
+
+          const newContent = graphemeSlice(payload.content, overlap);
+          if (graphemeCount(newContent) === 0) {
+            return {
+              applied: false,
+              needsSync: false,
+              overlapMismatch: mismatch,
+            };
+          }
+
+          set((s) => ({
             agentsCache: {
-              ...state.agentsCache,
+              ...s.agentsCache,
               [id]: {
                 ...cache,
                 partial: {
                   ...partial,
-                  content: partial.content + payload.content,
+                  content: partial.content + newContent,
                   charsReceived: payload.charsEnd,
-                  charsStart: payload.charsStart,
-                  charsEnd: payload.charsEnd,
                 },
-                // Clear waiting flag when assistant starts responding
                 waitingForResponse: false,
               },
             },
-          };
-        });
+          }));
+          return { applied: true, needsSync: false, overlapMismatch: mismatch };
+        }
+
+        set((s) => ({
+          agentsCache: {
+            ...s.agentsCache,
+            [id]: {
+              ...cache,
+              partial: {
+                ...partial,
+                content: partial.content + payload.content,
+                charsReceived: payload.charsEnd,
+              },
+              waitingForResponse: false,
+            },
+          },
+        }));
+        return { applied: true, needsSync: false };
       },
 
       /**
@@ -241,6 +325,57 @@ export const useStore = create(
         set((state) => {
           const cache = state.agentsCache[id];
           if (!cache) return state;
+
+          const partial = cache.partial;
+          if (partial && partial.index === message.index) {
+            const partialContent = partial.content || "";
+            const messageContent = message.content || "";
+
+            if (partialContent !== messageContent) {
+              console.warn(
+                `[agent:${id}] Final message differs from partial:`,
+                {
+                  index: message.index,
+                  partial: {
+                    graphemeCount: graphemeCount(partialContent),
+                    charsReceived: partial.charsReceived,
+                    content:
+                      graphemeCount(partialContent) > 200
+                        ? `...${graphemeLast(partialContent, 100)}`
+                        : partialContent,
+                  },
+                  message: {
+                    graphemeCount: graphemeCount(messageContent),
+                    content:
+                      graphemeCount(messageContent) > 200
+                        ? `...${graphemeLast(messageContent, 100)}`
+                        : messageContent,
+                  },
+                  diff: {
+                    extraInPartial:
+                      graphemeCount(partialContent) >
+                      graphemeCount(messageContent)
+                        ? graphemeSlice(
+                            partialContent,
+                            graphemeCount(messageContent),
+                          )
+                        : null,
+                    extraInMessage:
+                      graphemeCount(messageContent) >
+                      graphemeCount(partialContent)
+                        ? graphemeSlice(
+                            messageContent,
+                            graphemeCount(partialContent),
+                          )
+                        : null,
+                    lengthDiff:
+                      graphemeCount(partialContent) -
+                      graphemeCount(messageContent),
+                  },
+                },
+              );
+            }
+          }
 
           const exists = cache.messages.some((m) => m.index === message.index);
 
@@ -359,7 +494,7 @@ export const useStore = create(
               [id]: {
                 ...cache,
                 messages: mergedMessages,
-                partial: payload.partial || null,
+                partial: normalizePartial(payload.partial),
                 status: payload.status || cache.status,
                 lastIndex: payload.lastCompleteIndex ?? cache.lastIndex,
               },

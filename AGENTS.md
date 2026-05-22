@@ -25,6 +25,12 @@ failing, they are failing.
 - **NEVER** fail to implement requested tests and then claim you've completed
 the task.
 
+### More Testing Rules
+
+- No sleeps in tests; use vi.waitFor for async conditions
+- Clean patterns without accessing mock internals
+- Merge tests with same setup and non-conflicting assertions
+
 ### Test Coverage
 
 - The required test coverage must always be met.

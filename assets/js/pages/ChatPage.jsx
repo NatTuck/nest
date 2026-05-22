@@ -10,6 +10,7 @@ import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useStore } from "../store";
 import { joinAgent, leaveAgent, sendMessage } from "../channels";
+import { MessageContent } from "../components/MessageContent";
 
 /**
  * Status banner component
@@ -248,9 +249,11 @@ export function ChatPage() {
                     <span className="text-xs text-gray-400">(typing...)</span>
                   )}
                 </div>
-                <p className="text-gray-800 whitespace-pre-wrap">
-                  {message.content}
-                </p>
+                <MessageContent
+                  content={message.content}
+                  isPartial={message.isPartial ?? false}
+                  className="text-gray-800"
+                />
                 {message.isPartial && (
                   <div className="flex items-center gap-1 mt-2">
                     <span

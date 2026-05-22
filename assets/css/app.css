@@ -6,6 +6,9 @@
 @source "../js";
 @source "../../lib/nest_web";
 
+/* LlamaIndex Chat UI markdown styling (code, LaTeX, custom markdown) */
+@import "@llamaindex/chat-ui/styles/markdown.css";
+
 /* Add variants based on LiveView classes */
 @custom-variant phx-click-loading (.phx-click-loading&, .phx-click-loading &);
 @custom-variant phx-submit-loading (.phx-submit-loading&, .phx-submit-loading &);

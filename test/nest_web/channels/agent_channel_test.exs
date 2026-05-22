@@ -212,7 +212,7 @@ defmodule NestWeb.AgentChannelTest do
       if partial != nil do
         assert is_integer(partial["index"])
         assert is_binary(partial["content"])
-        assert is_integer(partial["charsSent"])
+        assert is_integer(partial["charsEnd"])
       end
     end
   end
@@ -431,7 +431,7 @@ defmodule NestWeb.AgentChannelTest do
           end
         end)
 
-      assert length(messages_received) >= 1
+      assert messages_received != []
     end
 
     defp collect_messages(acc, count, validator, timeout \\ 5000) do
@@ -718,7 +718,7 @@ defmodule NestWeb.AgentChannelTest do
       }
 
       # Should have the messages
-      assert length(messages) >= 1
+      assert messages != []
       assert last_complete >= 0
 
       # Second rejoin - should still get same messages
@@ -736,7 +736,7 @@ defmodule NestWeb.AgentChannelTest do
         "lastCompleteIndex" => last_complete2
       }
 
-      assert length(messages2) >= 1
+      assert messages2 != []
       assert last_complete2 == last_complete
     end
   end

@@ -103,7 +103,7 @@ defmodule NestWeb.AgentChannel do
       "index" => partial.index,
       "role" => partial.role,
       "content" => partial.content,
-      "charsSent" => partial.chars_sent,
+      "charsEnd" => partial.chars_sent,
       "timestamp" => partial.timestamp
     }
   end

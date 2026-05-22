@@ -136,7 +136,13 @@ export function joinAgent(agentId) {
   });
 
   channel.on("chat:delta", (delta) => {
-    store.addChatDelta(agentId, delta);
+    const result = store.addChatDelta(agentId, delta);
+    if (result.needsSync) {
+      console.warn(
+        `[agent:${agentId}] Delta gap at ${delta.charsStart}, expected ${store.agentsCache[agentId]?.partial?.charsReceived || 0}. Syncing.`,
+      );
+      checkAndSync(agentId, store.agentsCache[agentId]?.lastIndex ?? -1);
+    }
   });
 
   channel.on("chat:error", (error) => {

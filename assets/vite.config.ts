@@ -14,9 +14,9 @@ export default defineConfig(({ mode }) => {
     plugins: [
       react(),
       tailwindcss(),
-      // Handle CommonJS vendor files (topbar.js)
+      // Handle CommonJS modules (@swc/helpers, vendor files)
       commonjs({
-        include: [/vendor/],
+        include: [/vendor/, /@swc\/helpers/],
       }),
     ],
 
@@ -30,6 +30,7 @@ export default defineConfig(({ mode }) => {
         provider: "v8",
         reporter: ["text", "html"],
         reportsDirectory: "./coverage",
+        exclude: ["**/__mocks__/**"],
         thresholds: {
           lines: 90,
           functions: 90,
@@ -47,7 +48,7 @@ export default defineConfig(({ mode }) => {
         "react/jsx-runtime",
         "react/jsx-dev-runtime",
       ],
-      exclude: ["topbar"],
+      exclude: ["topbar", "@swc/helpers"],
     },
 
     // Build configuration

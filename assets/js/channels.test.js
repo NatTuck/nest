@@ -228,7 +228,10 @@ describe("channels", () => {
 
       await vi.waitFor(() => {
         assert.strictEqual(useStore.getState().agents.length, 0);
-        assert.strictEqual(useStore.getState().agentsCache["agent-1"], undefined);
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"],
+          undefined,
+        );
       });
     });
   });
@@ -244,9 +247,13 @@ describe("channels", () => {
       leaveLobby();
 
       let errorCalled = false;
-      createAgent("gpt-4", () => {}, (err) => {
-        errorCalled = true;
-      });
+      createAgent(
+        "gpt-4",
+        () => {},
+        (err) => {
+          errorCalled = true;
+        },
+      );
 
       await vi.waitFor(() => {
         assert.strictEqual(errorCalled, true);
@@ -519,6 +526,150 @@ describe("channels", () => {
         );
       });
     });
+
+    it("should detect gap and return needsSync when charsStart > charsReceived", async () => {
+      joinAgent("agent-1");
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      // Set up a partial that's received up to 3 chars
+      useStore.getState().agentsCache["agent-1"].partial = {
+        index: 0,
+        role: "assistant",
+        content: "Hel",
+        charsReceived: 3,
+      };
+
+      // Send delta that starts at 5 (gap from 3-5)
+      const result = useStore.getState().addChatDelta("agent-1", {
+        index: 0,
+        content: "lo!",
+        charsStart: 5,
+        charsEnd: 8,
+      });
+
+      assert.deepStrictEqual(result, { applied: false, needsSync: true });
+      // Content should not have changed
+      assert.strictEqual(
+        useStore.getState().agentsCache["agent-1"]?.partial?.content,
+        "Hel",
+      );
+    });
+
+    it("should handle overlap by slicing correctly", async () => {
+      joinAgent("agent-1");
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      // Set up a partial that's received up to 3 chars
+      useStore.getState().agentsCache["agent-1"].partial = {
+        index: 0,
+        role: "assistant",
+        content: "Hel",
+        charsReceived: 3,
+      };
+
+      // Send overlapping delta: charsStart=2, content="llo" (overlap is 1 char "l")
+      simulateServerEvent("agent:agent-1", "chat:delta", {
+        index: 0,
+        content: "llo",
+        charsStart: 2,
+        charsEnd: 5,
+      });
+
+      await vi.waitFor(() => {
+        // Should have sliced to just "lo" and appended
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.partial?.content,
+          "Hello",
+        );
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.partial?.charsReceived,
+          5,
+        );
+      });
+    });
+
+    it("should detect overlap mismatch and continue with server data", async () => {
+      joinAgent("agent-1");
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      // Set up a partial that's received up to 3 chars: "Hel"
+      useStore.getState().agentsCache["agent-1"].partial = {
+        index: 0,
+        role: "assistant",
+        content: "Hel",
+        charsReceived: 3,
+      };
+
+      // Send overlapping delta with mismatch: charsStart=2, content="xyz" (overlap is 1 char)
+      // Expected overlap is "l", actual is "z"
+      const result = useStore.getState().addChatDelta("agent-1", {
+        index: 0,
+        content: "xyz",
+        charsStart: 2,
+        charsEnd: 5,
+      });
+
+      // Should have mismatch flag
+      assert.strictEqual(result.overlapMismatch, true);
+      // But still applied the new content (sliced to "yz")
+      assert.strictEqual(result.applied, true);
+      assert.strictEqual(
+        useStore.getState().agentsCache["agent-1"]?.partial?.content,
+        "Helyz",
+      );
+    });
+
+    it("should not apply delta when overlap consumes entire content", async () => {
+      joinAgent("agent-1");
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      // Set up a partial that's received up to 5 chars: "Hello"
+      useStore.getState().agentsCache["agent-1"].partial = {
+        index: 0,
+        role: "assistant",
+        content: "Hello",
+        charsReceived: 5,
+      };
+
+      // Send delta that's entirely in the past: charsStart=3, content="lo" (overlap=2)
+      const result = useStore.getState().addChatDelta("agent-1", {
+        index: 0,
+        content: "lo",
+        charsStart: 3,
+        charsEnd: 5,
+      });
+
+      // Should not have applied anything new
+      assert.strictEqual(result.applied, false);
+      assert.strictEqual(
+        useStore.getState().agentsCache["agent-1"]?.partial?.content,
+        "Hello",
+      );
+    });
   });
 
   describe("agent chat:message events", () => {
@@ -692,9 +843,13 @@ describe("channels", () => {
       });
 
       let errorCalled = false;
-      sendMessage("agent-1", "test", (err) => {
-        errorCalled = true;
-      });
+      createAgent(
+        "gpt-4",
+        () => {},
+        (err) => {
+          errorCalled = true;
+        },
+      );
 
       await vi.waitFor(() => {
         assert.strictEqual(errorCalled, true);
@@ -791,9 +946,13 @@ describe("channels", () => {
   describe("createAgent", () => {
     it("should call onError when not connected to lobby", async () => {
       let errorCalled = false;
-      createAgent("gpt-4", () => {}, (err) => {
-        errorCalled = true;
-      });
+      createAgent(
+        "gpt-4",
+        () => {},
+        (err) => {
+          errorCalled = true;
+        },
+      );
 
       await vi.waitFor(() => {
         assert.strictEqual(errorCalled, true);
@@ -832,9 +991,13 @@ describe("channels", () => {
       });
 
       let errorCalled = false;
-      createAgent("gpt-4", () => {}, (err) => {
-        errorCalled = true;
-      });
+      createAgent(
+        "gpt-4",
+        () => {},
+        (err) => {
+          errorCalled = true;
+        },
+      );
 
       await vi.waitFor(() => {
         assert.strictEqual(errorCalled, true);
@@ -905,9 +1068,53 @@ describe("channels", () => {
         index: 4,
         role: "assistant",
         content: "Streaming...",
+        charsReceived: 0,
       });
       assert.strictEqual(cache.status, "streaming");
       assert.strictEqual(cache.lastIndex, 3);
+    });
+  });
+
+  describe("chat:delta gap detection via server event", () => {
+    it("should trigger sync when server sends delta with gap", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      joinAgent("agent-1");
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      // Set up partial with some content
+      useStore.getState().agentsCache["agent-1"].partial = {
+        index: 0,
+        role: "assistant",
+        content: "Hel",
+        charsReceived: 3,
+      };
+
+      // Simulate server sending delta with a gap (charsStart=5 > charsReceived=3)
+      simulateServerEvent("agent:agent-1", "chat:delta", {
+        index: 0,
+        content: "lo",
+        charsStart: 5, // Gap from 3 to 5
+        charsEnd: 7,
+      });
+
+      await vi.waitFor(() => {
+        // Should have logged a warning about the gap
+        assert.strictEqual(warnSpy.mock.calls.length > 0, true);
+      });
+
+      const warningMessage = warnSpy.mock.calls.find((call) =>
+        call[0]?.includes("Delta gap"),
+      );
+      assert.ok(warningMessage, "Expected warning message about delta gap");
+
+      warnSpy.mockRestore();
     });
   });
 });
