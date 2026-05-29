@@ -31,6 +31,7 @@ const initialState = {
   isConnected: false,
   agents: [],
   models: [],
+  vocations: [],
   agentsCache: {},
 };
 
@@ -43,6 +44,42 @@ const normalizePartial = (partial) => {
   if (!partial) return null;
   const { charsEnd, ...rest } = partial;
   return { ...rest, charsReceived: charsEnd ?? 0 };
+};
+
+/**
+ * Helper to accumulate content into segments based on type.
+ * Returns updated segments array and current type.
+ */
+const accumulateSegment = (segments, _currentType, content, partType) => {
+  const type = partType || "text";
+
+  if (segments.length === 0) {
+    // First segment
+    return {
+      segments: [{ type, content }],
+      currentType: type,
+    };
+  }
+
+  const lastSegment = segments[segments.length - 1];
+  if (lastSegment.type === type) {
+    // Continue existing segment
+    const updatedSegments = [...segments];
+    updatedSegments[updatedSegments.length - 1] = {
+      ...lastSegment,
+      content: lastSegment.content + content,
+    };
+    return {
+      segments: updatedSegments,
+      currentType: type,
+    };
+  } else {
+    // Start new segment
+    return {
+      segments: [...segments, { type, content }],
+      currentType: type,
+    };
+  }
 };
 
 /**
@@ -85,6 +122,13 @@ export const useStore = create(
        */
       setModels: (models) => {
         set({ models });
+      },
+
+      /**
+       * Set vocations list from lobby init
+       */
+      setVocations: (vocations) => {
+        set({ vocations });
       },
 
       /**
@@ -153,7 +197,7 @@ export const useStore = create(
           const lastIndex =
             finalMessages.length > 0
               ? Math.max(...finalMessages.map((m) => m.index))
-              : (payload.lastCompleteIndex ?? -1);
+              : -1;
 
           return {
             agentsCache: {
@@ -228,6 +272,8 @@ export const useStore = create(
                 role: "assistant",
                 content: "",
                 charsReceived: 0,
+                segments: [],
+                currentType: null,
               };
 
         const currentReceived = partial.charsReceived || 0;
@@ -284,6 +330,14 @@ export const useStore = create(
             };
           }
 
+          const { segments: newSegments, currentType: newCurrentType } =
+            accumulateSegment(
+              partial.segments || [],
+              partial.currentType,
+              newContent,
+              payload.partType,
+            );
+
           set((s) => ({
             agentsCache: {
               ...s.agentsCache,
@@ -293,6 +347,8 @@ export const useStore = create(
                   ...partial,
                   content: partial.content + newContent,
                   charsReceived: payload.charsEnd,
+                  segments: newSegments,
+                  currentType: newCurrentType,
                 },
                 waitingForResponse: false,
               },
@@ -300,6 +356,14 @@ export const useStore = create(
           }));
           return { applied: true, needsSync: false, overlapMismatch: mismatch };
         }
+
+        const { segments: newSegments, currentType: newCurrentType } =
+          accumulateSegment(
+            partial.segments || [],
+            partial.currentType,
+            payload.content,
+            payload.partType,
+          );
 
         set((s) => ({
           agentsCache: {
@@ -310,6 +374,8 @@ export const useStore = create(
                 ...partial,
                 content: partial.content + payload.content,
                 charsReceived: payload.charsEnd,
+                segments: newSegments,
+                currentType: newCurrentType,
               },
               waitingForResponse: false,
             },
@@ -427,6 +493,8 @@ export const useStore = create(
                   role: "assistant",
                   content: "",
                   charsReceived: 0,
+                  segments: [],
+                  currentType: null,
                 },
               },
             },
@@ -488,6 +556,11 @@ export const useStore = create(
           // Sort by index to ensure order
           mergedMessages.sort((a, b) => a.index - b.index);
 
+          const lastIndex =
+            mergedMessages.length > 0
+              ? Math.max(...mergedMessages.map((m) => m.index))
+              : -1;
+
           return {
             agentsCache: {
               ...state.agentsCache,
@@ -496,7 +569,7 @@ export const useStore = create(
                 messages: mergedMessages,
                 partial: normalizePartial(payload.partial),
                 status: payload.status || cache.status,
-                lastIndex: payload.lastCompleteIndex ?? cache.lastIndex,
+                lastIndex,
               },
             },
           };

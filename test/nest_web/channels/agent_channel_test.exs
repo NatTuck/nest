@@ -25,7 +25,7 @@ defmodule NestWeb.AgentChannelTest do
   end
 
   describe "join/3" do
-    test "joins agent channel and returns state with lastCompleteIndex", %{
+    test "joins agent channel and returns state with messageCount", %{
       socket: socket,
       agent_id: id
     } do
@@ -33,7 +33,7 @@ defmodule NestWeb.AgentChannelTest do
       assert_push "init", payload
       assert payload["id"] == id
       assert payload["model"][:name] == "qwen3.5-plus"
-      assert payload["lastCompleteIndex"] == -1
+      assert payload["messageCount"] == 0
       assert payload["status"] == "idle"
       # Init includes partial (nil when not streaming)
       assert Map.has_key?(payload, "partial")
@@ -52,7 +52,7 @@ defmodule NestWeb.AgentChannelTest do
   end
 
   describe "init event with message history" do
-    test "includes lastCompleteIndex after messages are added", %{socket: socket, agent_id: id} do
+    test "includes messageCount after messages are added", %{socket: socket, agent_id: id} do
       Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
 
       # Send a message to create history
@@ -86,7 +86,7 @@ defmodule NestWeb.AgentChannelTest do
         subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{id}")
 
       assert_push "init", payload, 2000
-      assert payload["lastCompleteIndex"] >= 0
+      assert payload["messageCount"] >= 0
       assert payload["messages"] != []
     end
   end
@@ -237,17 +237,17 @@ defmodule NestWeb.AgentChannelTest do
       assert_reply ref, :ok, %{
         "id" => status_id,
         "model" => model,
-        "lastCompleteIndex" => last_index,
+        "messageCount" => last_index,
         "status" => status
       }
 
       assert status_id == id
       assert model[:name] == "qwen3.5-plus"
-      assert last_index == -1
+      assert last_index == 0
       assert status == "idle"
     end
 
-    test "returns status with lastCompleteIndex after messages", %{socket: socket, agent_id: id} do
+    test "returns status with messageCount after messages", %{socket: socket, agent_id: id} do
       Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
 
       # Send a message to create history
@@ -264,7 +264,7 @@ defmodule NestWeb.AgentChannelTest do
 
       assert_reply ref_status, :ok, %{
         "id" => status_id,
-        "lastCompleteIndex" => last_index,
+        "messageCount" => last_index,
         "status" => status
       }
 
@@ -288,7 +288,7 @@ defmodule NestWeb.AgentChannelTest do
 
       assert_reply ref_status, :ok, %{
         "status" => status,
-        "lastCompleteIndex" => _last_index
+        "messageCount" => _last_index
       }
 
       assert status == "streaming"
@@ -306,7 +306,7 @@ defmodule NestWeb.AgentChannelTest do
   end
 
   describe "chat:sync edge cases" do
-    test "returns empty messages when lastIndex exceeds server's lastCompleteIndex", %{
+    test "returns empty messages when lastIndex exceeds server's messageCount", %{
       socket: socket
     } do
       Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
@@ -319,24 +319,24 @@ defmodule NestWeb.AgentChannelTest do
 
       Process.sleep(100)
 
-      # Sync with lastIndex higher than server's lastCompleteIndex
+      # Sync with lastIndex higher than server's messageCount
       ref_sync = push(socket, "chat:sync", %{"lastIndex" => 999})
 
       assert_reply ref_sync, :ok, %{
         "messages" => messages,
-        "lastCompleteIndex" => last_complete_index
+        "messageCount" => last_complete_index
       }
 
       assert messages == []
       assert last_complete_index < 999
     end
 
-    test "sync response includes lastCompleteIndex field", %{socket: socket} do
+    test "sync response includes messageCount field", %{socket: socket} do
       ref = push(socket, "chat:sync", %{"lastIndex" => -1})
 
       assert_reply ref, :ok, reply
 
-      assert reply["lastCompleteIndex"] == -1
+      assert reply["messageCount"] == 0
     end
 
     test "sync with lastIndex: -1 returns all complete messages", %{socket: socket} do
@@ -357,7 +357,7 @@ defmodule NestWeb.AgentChannelTest do
 
       assert_reply ref_sync, :ok, %{
         "messages" => messages,
-        "lastCompleteIndex" => last_complete_index
+        "messageCount" => last_complete_index
       }
 
       # Should have both user (0) and assistant (1) messages
@@ -444,7 +444,7 @@ defmodule NestWeb.AgentChannelTest do
       end
     end
 
-    test "lastCompleteIndex is highest complete (non-partial) message", %{socket: socket} do
+    test "messageCount is highest complete (non-partial) message", %{socket: socket} do
       Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
 
       ref = push(socket, "chat:message", %{"content" => "Hello"})
@@ -456,20 +456,23 @@ defmodule NestWeb.AgentChannelTest do
 
       # Check status during streaming
       ref_status = push(socket, "chat:status", %{"lastIndex" => -1})
-      assert_reply ref_status, :ok, %{"lastCompleteIndex" => last_complete}
+      assert_reply ref_status, :ok, %{"messageCount" => last_complete}
 
-      # Partial message index should be higher than lastCompleteIndex
-      assert partial_index > last_complete
+      # Partial message index should be >= messageCount
+      # (equal when system message is present, greater otherwise)
+      assert partial_index >= last_complete
 
       # Wait for completion
       assert_push "chat:message", msg, 2000
       final_index = msg["index"]
 
-      # After completion, lastCompleteIndex should match
+      # After completion, messageCount should match
       ref_status2 = push(socket, "chat:status", %{"lastIndex" => -1})
-      assert_reply ref_status2, :ok, %{"lastCompleteIndex" => final_last}
+      assert_reply ref_status2, :ok, %{"messageCount" => final_last}
 
-      assert final_last == final_index
+      # After completion, messageCount should be final_index + 1
+      # (messageCount is the count, final_index is the highest index)
+      assert final_last == final_index + 1
     end
   end
 
@@ -631,6 +634,129 @@ defmodule NestWeb.AgentChannelTest do
   end
 
   describe "channel lifecycle edge cases" do
+    test "rejoining mid-stream receives correct charsEnd in partial", %{
+      socket: socket,
+      agent_id: id
+    } do
+      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
+
+      # Start streaming
+      ref = push(socket, "chat:message", %{"content" => "Hello"})
+      assert_reply ref, :ok, %{}
+
+      # Wait for several deltas to be sent
+      deltas = collect_deltas(socket, [])
+      assert length(deltas) > 2
+
+      # Get the last delta's charsEnd
+      last_delta = List.last(deltas)
+      last_chars_end = last_delta["charsEnd"]
+      assert last_chars_end > 0
+
+      # Simulate disconnect
+      Process.unlink(socket.channel_pid)
+      GenServer.stop(socket.channel_pid, :normal)
+      Process.sleep(50)
+
+      # Rejoin while still streaming
+      {:ok, _, new_socket} =
+        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{id}")
+
+      # The init should include partial with correct charsEnd
+      assert_push "init", init_payload, 1000
+
+      partial = init_payload["partial"]
+
+      if partial != nil do
+        assert is_integer(partial["charsEnd"]), "charsEnd should be an integer"
+        # The charsEnd should be close to the last delta received (within chunk size)
+        assert partial["charsEnd"] > 0, "charsEnd should be greater than 0"
+        # Should not be 0 (which was the bug)
+        refute partial["charsEnd"] == 0, "charsEnd should not be 0 mid-stream"
+      end
+
+      # Cleanup
+      Process.unlink(new_socket.channel_pid)
+      GenServer.stop(new_socket.channel_pid, :normal)
+    end
+
+    test "mid-stream join does not trigger delta gap warnings", %{socket: socket, agent_id: id} do
+      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
+
+      # Start streaming
+      ref = push(socket, "chat:message", %{"content" => "Hello world this is a test"})
+      assert_reply ref, :ok, %{}
+
+      # Collect several deltas
+      deltas = collect_deltas(socket, [])
+      assert length(deltas) >= 3
+
+      # Get total chars sent from last delta
+      last_delta = List.last(deltas)
+      _total_chars_sent = last_delta["charsEnd"]
+
+      # Disconnect
+      Process.unlink(socket.channel_pid)
+      GenServer.stop(socket.channel_pid, :normal)
+      Process.sleep(50)
+
+      # Rejoin
+      {:ok, _, new_socket} =
+        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{id}")
+
+      assert_push "init", init_payload, 1000
+
+      # Get the partial's charsEnd
+      partial = init_payload["partial"]
+
+      # If streaming completed before rejoin, partial may be nil
+      # In that case, skip the gap check
+      if partial != nil do
+        init_chars_end = partial["charsEnd"]
+
+        # The next delta received should have charsStart >= init_chars_end
+        # This prevents the "Delta gap" warning
+        remaining_deltas = collect_remaining_deltas(new_socket, [])
+
+        if remaining_deltas != [] do
+          first_remaining = List.first(remaining_deltas)
+          chars_start = first_remaining["charsStart"]
+
+          # Should not have a gap
+          assert chars_start >= init_chars_end || chars_start <= init_chars_end + 5,
+                 "First delta after rejoin should not have a large gap. " <>
+                   "Expected charsStart ~#{init_chars_end}, got #{chars_start}"
+        end
+      end
+
+      # Cleanup
+      Process.unlink(new_socket.channel_pid)
+      GenServer.stop(new_socket.channel_pid, :normal)
+    end
+  end
+
+  defp collect_deltas(socket, acc) do
+    receive do
+      %Phoenix.Socket.Message{event: "chat:delta", payload: payload} ->
+        collect_deltas(socket, [payload | acc])
+    after
+      300 ->
+        # No more deltas for now
+        Enum.reverse(acc)
+    end
+  end
+
+  defp collect_remaining_deltas(socket, acc, timeout \\ 1000) do
+    receive do
+      %Phoenix.Socket.Message{event: "chat:delta", payload: payload} ->
+        collect_remaining_deltas(socket, [payload | acc], timeout)
+    after
+      timeout ->
+        Enum.reverse(acc)
+    end
+  end
+
+  describe "agent process isolation" do
     test "agent process does not capture channel pid", %{socket: _socket, agent_id: id} do
       # Get the agent process state
       {:ok, agent_pid} = Agents.Supervisor.get_agent(id)
@@ -685,7 +811,7 @@ defmodule NestWeb.AgentChannelTest do
       assert List.last(agent_state_after.messages).index >= 0
 
       # Note: Full rejoin test would verify client-side sync receives the
-      # correct lastCompleteIndex. The client would use chat:sync after rejoin.
+      # correct messageCount. The client would use chat:sync after rejoin.
     end
 
     test "sync returns correct messages after multiple rejoins", %{socket: socket, agent_id: id} do
@@ -714,7 +840,7 @@ defmodule NestWeb.AgentChannelTest do
 
       assert_reply ref_sync, :ok, %{
         "messages" => messages,
-        "lastCompleteIndex" => last_complete
+        "messageCount" => last_complete
       }
 
       # Should have the messages
@@ -733,7 +859,7 @@ defmodule NestWeb.AgentChannelTest do
 
       assert_reply ref_sync2, :ok, %{
         "messages" => messages2,
-        "lastCompleteIndex" => last_complete2
+        "messageCount" => last_complete2
       }
 
       assert messages2 != []

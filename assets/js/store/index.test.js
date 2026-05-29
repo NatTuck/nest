@@ -4,7 +4,7 @@
  */
 
 import { describe, it, beforeEach, vi, expect } from "vitest";
-import { useStore, initialState } from "./index";
+import { useStore } from "./index";
 
 describe("store", () => {
   beforeEach(() => {
@@ -46,7 +46,7 @@ describe("store", () => {
 
       useStore.getState().syncAgentMessages("non-existent", {
         messages: [],
-        lastCompleteIndex: -1,
+        messageCount: 0,
       });
       expect(useStore.getState().agentsCache).toBe(initialCache);
     });
@@ -69,7 +69,7 @@ describe("store", () => {
           { index: 0, role: "user", content: "A" },
           { index: 1, role: "assistant", content: "B" },
         ],
-        lastCompleteIndex: 1,
+        messageCount: 1,
       });
 
       const cache = useStore.getState().agentsCache["agent-1"];
@@ -90,18 +90,18 @@ describe("store", () => {
       expect(useStore.getState().agentsCache["agent-1"].lastIndex).toBe(10);
     });
 
-    it("falls back to payload lastCompleteIndex when no messages", () => {
+    it("defaults to -1 when no messages", () => {
       useStore.getState().setAgentConnecting("agent-1");
       useStore.getState().setAgentConnected("agent-1", {
         model: { name: "gpt-4" },
         messages: [],
-        lastCompleteIndex: 7,
+        messageCount: 7,
       });
 
-      expect(useStore.getState().agentsCache["agent-1"].lastIndex).toBe(7);
+      expect(useStore.getState().agentsCache["agent-1"].lastIndex).toBe(-1);
     });
 
-    it("defaults to -1 when neither messages nor lastCompleteIndex present", () => {
+    it("defaults to -1 when neither messages nor messageCount present", () => {
       useStore.getState().setAgentConnecting("agent-1");
       useStore.getState().setAgentConnected("agent-1", {
         model: { name: "gpt-4" },
@@ -114,7 +114,7 @@ describe("store", () => {
       useStore.getState().setAgentConnecting("agent-1");
       useStore.getState().setAgentConnected("agent-1", {
         model: { name: "gpt-4" },
-        lastCompleteIndex: -1,
+        messageCount: 0,
       });
 
       expect(useStore.getState().agentsCache["agent-1"].model?.name).toBe(
@@ -127,7 +127,7 @@ describe("store", () => {
       useStore.getState().agentsCache["agent-1"].model = { name: "claude-3" };
 
       useStore.getState().setAgentConnected("agent-1", {
-        lastCompleteIndex: -1,
+        messageCount: 0,
       });
 
       expect(useStore.getState().agentsCache["agent-1"].model?.name).toBe(
@@ -139,7 +139,7 @@ describe("store", () => {
       useStore.getState().setAgentConnecting("agent-1");
 
       useStore.getState().setAgentConnected("agent-1", {
-        lastCompleteIndex: -1,
+        messageCount: 0,
       });
 
       expect(useStore.getState().agentsCache["agent-1"].model).toBeNull();
@@ -326,7 +326,7 @@ describe("store", () => {
       useStore.getState().setAgentConnecting("agent-1");
       useStore.getState().setAgentConnected("agent-1", {
         model: { name: "gpt-4" },
-        lastCompleteIndex: -1,
+        messageCount: 0,
       });
     });
 
@@ -588,7 +588,7 @@ describe("store", () => {
       useStore.getState().setAgentConnecting("agent-1");
       useStore.getState().setAgentConnected("agent-1", {
         model: { name: "gpt-4" },
-        lastCompleteIndex: -1,
+        messageCount: 0,
       });
     });
 
@@ -919,7 +919,7 @@ describe("store", () => {
           content: "Synced",
           charsEnd: 6,
         },
-        lastCompleteIndex: 4,
+        messageCount: 4,
       });
 
       const partial = useStore.getState().agentsCache["agent-1"].partial;
@@ -932,7 +932,7 @@ describe("store", () => {
       useStore.getState().setAgentConnecting("agent-1");
       useStore.getState().setAgentConnected("agent-1", {
         model: { name: "gpt-4" },
-        lastCompleteIndex: -1,
+        messageCount: 0,
       });
     });
 
@@ -961,7 +961,7 @@ describe("store", () => {
       useStore.getState().setAgentConnecting("agent-1");
       useStore.getState().setAgentConnected("agent-1", {
         model: { name: "gpt-4" },
-        lastCompleteIndex: -1,
+        messageCount: 0,
       });
     });
 
@@ -983,7 +983,7 @@ describe("store", () => {
       useStore.getState().setAgentConnecting("agent-1");
       useStore.getState().setAgentConnected("agent-1", {
         model: { name: "gpt-4" },
-        lastCompleteIndex: -1,
+        messageCount: 0,
       });
     });
 
@@ -1007,7 +1007,7 @@ describe("store", () => {
       useStore.getState().setAgentConnecting("agent-1");
       useStore.getState().setAgentConnected("agent-1", {
         model: { name: "gpt-4" },
-        lastCompleteIndex: -1,
+        messageCount: 0,
       });
     });
 
@@ -1020,7 +1020,7 @@ describe("store", () => {
         messages: [{ index: 1, role: "assistant", content: "New" }],
         partial: { index: 2, content: "Partial", charsEnd: 7 },
         status: "streaming",
-        lastCompleteIndex: 1,
+        messageCount: 1,
       });
 
       const cache = useStore.getState().agentsCache["agent-1"];
@@ -1040,7 +1040,7 @@ describe("store", () => {
           { index: 0, role: "user", content: "Duplicate" },
           { index: 1, role: "assistant", content: "New" },
         ],
-        lastCompleteIndex: 1,
+        messageCount: 1,
       });
 
       const cache = useStore.getState().agentsCache["agent-1"];
@@ -1055,19 +1055,21 @@ describe("store", () => {
 
       useStore.getState().syncAgentMessages("agent-1", {
         messages: [{ index: 0, role: "user", content: "New" }],
-        lastCompleteIndex: 0,
+        messageCount: 0,
       });
 
       const cache = useStore.getState().agentsCache["agent-1"];
       expect(cache.messages).toHaveLength(1);
     });
 
-    it("preserves existing lastIndex when lastCompleteIndex not provided", () => {
+    it("recalculates lastIndex from messages when sync returns empty", () => {
       useStore.getState().agentsCache["agent-1"].lastIndex = 5;
+      // Add a message so lastIndex would be recalculated
+      useStore.getState().agentsCache["agent-1"].messages = [{ index: 5 }];
 
       useStore.getState().syncAgentMessages("agent-1", {
         messages: [],
-        // No lastCompleteIndex provided
+        // No messageCount provided
       });
 
       const cache = useStore.getState().agentsCache["agent-1"];
@@ -1081,7 +1083,7 @@ describe("store", () => {
           content: "Test",
           // charsEnd is undefined
         },
-        lastCompleteIndex: -1,
+        messageCount: 0,
       });
 
       const partial = useStore.getState().agentsCache["agent-1"].partial;
@@ -1092,7 +1094,7 @@ describe("store", () => {
       useStore.getState().setAgentConnecting("agent-1");
       useStore.getState().setAgentConnected("agent-1", {
         model: { name: "gpt-4" },
-        lastCompleteIndex: -1,
+        messageCount: 0,
         partial: {
           index: 0,
           content: "Test",
@@ -1110,7 +1112,7 @@ describe("store", () => {
       useStore.getState().setAgentConnecting("agent-1");
       useStore.getState().setAgentConnected("agent-1", {
         model: { name: "gpt-4" },
-        lastCompleteIndex: -1,
+        messageCount: 0,
       });
 
       useStore.getState().setAgentDisconnected("agent-1");

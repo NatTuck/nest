@@ -10,10 +10,13 @@ defmodule Nest.Agents do
   alias Nest.Agents.{Agent, Supervisor}
 
   @doc """
-  Creates a new agent with the given model.
+  Creates a new agent with the given model and optional vocation.
 
   ## Parameters
   - `model` - A map with `:name` and optionally other model configuration
+  - `opts` - Optional parameters:
+    - `:vocation_id` - ID of the vocation to use
+    - `:workspace_path` - Path to the workspace directory
 
   ## Returns
   - `{:ok, id}` - Agent created successfully with readable ID
@@ -22,11 +25,18 @@ defmodule Nest.Agents do
   ## Examples
 
       {:ok, "clever-raven"} = Agents.create_agent(%{name: "gpt-4"})
+      {:ok, "clever-raven"} = Agents.create_agent(%{name: "gpt-4"}, vocation_id: 1, workspace_path: "/tmp/workspace")
 
   """
-  @spec create_agent(map()) :: {:ok, String.t()} | {:error, term()}
-  def create_agent(model) when is_map(model) do
-    Supervisor.start_agent(%{model: model})
+  @spec create_agent(map(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  def create_agent(model, opts \\ []) when is_map(model) do
+    attrs = %{
+      model: model,
+      vocation_id: Keyword.get(opts, :vocation_id),
+      workspace_path: Keyword.get(opts, :workspace_path)
+    }
+
+    Supervisor.start_agent(attrs)
   end
 
   @doc """

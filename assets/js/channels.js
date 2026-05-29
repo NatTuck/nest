@@ -55,6 +55,7 @@ export function joinLobby(onOk, onError) {
     const store = getStore();
     store.setAgents(payload.agents || []);
     store.setModels(payload.models || []);
+    store.setVocations(payload.vocations || []);
   });
 
   lobbyChannel.on("agent:created", (payload) => {
@@ -73,6 +74,7 @@ export function joinLobby(onOk, onError) {
       if (onOk) onOk();
     })
     .receive("error", (err) => {
+      console.error("Lobby channel join error:", err);
       if (onError) onError(err);
     });
 }
@@ -90,21 +92,20 @@ export function leaveLobby() {
 /**
  * Check if we need to sync messages and do so if needed
  */
-function checkAndSync(agentId, serverLastIndex) {
+function checkAndSync(agentId, serverMessageCount) {
   const cache = getStore().agentsCache[agentId];
-  const cacheLastIndex = cache?.lastIndex ?? -1;
-  if (serverLastIndex <= cacheLastIndex) {
+  const clientMessageCount = cache?.messages?.length ?? 0;
+  if (serverMessageCount <= clientMessageCount) {
     return;
   }
 
   const channel = agentChannels.get(agentId);
   if (!channel) return;
 
-  channel
-    .push("chat:sync", { lastIndex: cacheLastIndex })
-    .receive("ok", (resp) => {
-      getStore().syncAgentMessages(agentId, resp);
-    });
+  const lastIndex = cache?.lastIndex ?? -1;
+  channel.push("chat:sync", { lastIndex }).receive("ok", (resp) => {
+    getStore().syncAgentMessages(agentId, resp);
+  });
 }
 
 /**
@@ -118,7 +119,7 @@ export function joinAgent(agentId) {
   if (existingChannel) {
     existingChannel.push("chat:status", {}).receive("ok", (payload) => {
       store.setAgentConnected(agentId, payload);
-      checkAndSync(agentId, payload.lastCompleteIndex);
+      checkAndSync(agentId, payload.messageCount);
     });
     return;
   }
@@ -132,7 +133,7 @@ export function joinAgent(agentId) {
   // Setup event handlers
   channel.on("init", (payload) => {
     store.setAgentConnected(agentId, payload);
-    checkAndSync(agentId, payload.lastCompleteIndex);
+    checkAndSync(agentId, payload.messageCount);
   });
 
   channel.on("chat:delta", (delta) => {
@@ -166,10 +167,12 @@ export function joinAgent(agentId) {
       // Wait for init event
     })
     .receive("error", (err) => {
+      console.error(`Agent ${agentId} channel join error:`, err);
       agentChannels.delete(agentId);
       store.setAgentError(agentId, err.reason || "Failed to connect");
     })
     .receive("timeout", () => {
+      console.error(`Agent ${agentId} channel join timeout`);
       agentChannels.delete(agentId);
       store.setAgentError(agentId, "Connection timed out");
     });
@@ -216,14 +219,22 @@ export function sendMessage(agentId, content, onError) {
 /**
  * Create agent via lobby
  */
-export function createAgent(model, onOk, onError) {
+export function createAgent(model, vocationId, workspacePath, onOk, onError) {
   if (!lobbyChannel) {
     if (onError) onError(new Error("Not connected to lobby"));
     return;
   }
 
+  const payload = { model };
+  if (vocationId) {
+    payload.vocation_id = vocationId;
+  }
+  if (workspacePath) {
+    payload.workspace_path = workspacePath;
+  }
+
   lobbyChannel
-    .push("create_agent", { model })
+    .push("create_agent", payload)
     .receive("ok", (resp) => {
       if (onOk) onOk(resp.id);
     })

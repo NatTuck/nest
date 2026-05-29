@@ -121,7 +121,10 @@ defmodule Nest.Agents.Supervisor do
             %{
               id: id,
               model: state.model,
-              status: state.status
+              status: state.status,
+              vocation_id: state.vocation_id,
+              mode: state.mode,
+              workspace_path: state.workspace_path
             }
           catch
             :exit, _ -> nil

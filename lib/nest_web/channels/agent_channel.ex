@@ -38,19 +38,11 @@ defmodule NestWeb.AgentChannel do
 
   @impl true
   def handle_info({:after_join, agent}, socket) do
-    # Calculate last complete message index
-    last_complete_index =
-      if agent.messages != [] do
-        List.last(agent.messages).index
-      else
-        -1
-      end
-
     # Build init payload with partial when streaming
     init_payload = %{
       "id" => agent.id,
       "model" => agent.model,
-      "lastCompleteIndex" => last_complete_index,
+      "messageCount" => length(agent.messages),
       "status" => to_string(agent.status),
       "partial" => build_partial_payload(agent.partial_message)
     }
@@ -79,7 +71,8 @@ defmodule NestWeb.AgentChannel do
       "index" => delta.index,
       "content" => delta.content,
       "charsStart" => delta.chars_start,
-      "charsEnd" => delta.chars_end
+      "charsEnd" => delta.chars_end,
+      "partType" => delta.part_type
     })
 
     {:noreply, socket}
@@ -104,7 +97,9 @@ defmodule NestWeb.AgentChannel do
       "role" => partial.role,
       "content" => partial.content,
       "charsEnd" => partial.chars_sent,
-      "timestamp" => partial.timestamp
+      "timestamp" => partial.timestamp,
+      "segments" => partial[:segments] || [],
+      "currentType" => partial[:current_type]
     }
   end
 
@@ -127,17 +122,10 @@ defmodule NestWeb.AgentChannel do
 
     case Agents.get_agent(agent_id) do
       {:ok, agent} ->
-        last_complete_index =
-          if agent.messages != [] do
-            List.last(agent.messages).index
-          else
-            -1
-          end
-
         reply = %{
           "id" => agent.id,
           "model" => agent.model,
-          "lastCompleteIndex" => last_complete_index,
+          "messageCount" => length(agent.messages),
           "status" => to_string(agent.status),
           "partial" => build_partial_payload(agent.partial_message)
         }
@@ -155,14 +143,6 @@ defmodule NestWeb.AgentChannel do
 
     case Agents.get_agent(agent_id) do
       {:ok, agent} ->
-        # Get last complete index
-        last_complete_index =
-          if agent.messages != [] do
-            List.last(agent.messages).index
-          else
-            -1
-          end
-
         # Get messages after last_index
         new_messages =
           Enum.filter(agent.messages, fn msg -> msg.index > last_index end)
@@ -179,7 +159,7 @@ defmodule NestWeb.AgentChannel do
           "messages" => new_messages,
           "partial" => partial,
           "status" => to_string(agent.status),
-          "lastCompleteIndex" => last_complete_index
+          "messageCount" => length(agent.messages)
         }
 
         {:reply, {:ok, reply}, socket}

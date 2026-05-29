@@ -145,6 +145,27 @@ describe("channels", () => {
       assert.strictEqual(errorReason, "lobby_full");
     });
 
+    it("should log console error on lobby join failure", async () => {
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      setNextJoinResult("lobby", { error: "lobby_full" });
+
+      joinLobby(
+        () => {},
+        () => {},
+      );
+
+      await vi.waitFor(() => {
+        assert.strictEqual(errorSpy.mock.calls.length > 0, true);
+      });
+
+      const errorMessage = errorSpy.mock.calls.find((call) =>
+        call[0]?.includes("Lobby channel join error"),
+      );
+      assert.ok(errorMessage, "Expected console error for lobby join failure");
+
+      errorSpy.mockRestore();
+    });
+
     it("should be idempotent - call onOk immediately if already joined", async () => {
       let firstCalled = false;
       let secondCalled = false;
@@ -216,7 +237,7 @@ describe("channels", () => {
       });
       useStore.getState().setAgentConnected("agent-1", {
         model: { name: "gpt-4" },
-        lastCompleteIndex: 0,
+        messageCount: 0,
       });
       joinLobby();
 
@@ -249,8 +270,10 @@ describe("channels", () => {
       let errorCalled = false;
       createAgent(
         "gpt-4",
+        1,
+        null,
         () => {},
-        (err) => {
+        (_err) => {
           errorCalled = true;
         },
       );
@@ -270,12 +293,12 @@ describe("channels", () => {
       );
     });
 
-    it("should store init payload - status, model, and lastIndex", async () => {
+    it("should store init payload - status, model, but not set lastIndex from messageCount", async () => {
       setNextJoinResult("agent:agent-1", {
         autoInit: {
           id: "agent-1",
           model: { name: "claude-3", provider: "anthropic" },
-          lastCompleteIndex: 5,
+          messageCount: 5,
           status: "idle",
         },
       });
@@ -286,14 +309,15 @@ describe("channels", () => {
         const cache = useStore.getState().agentsCache["agent-1"];
         assert.strictEqual(cache?.status, "connected");
         assert.strictEqual(cache?.model?.name, "claude-3");
-        assert.strictEqual(cache?.lastIndex, 5);
+        // lastIndex is not set from messageCount, only from actual messages
+        assert.strictEqual(cache?.lastIndex, -1);
       });
     });
 
-    it("should trigger sync when server lastCompleteIndex > cached lastIndex", async () => {
+    it("should trigger sync when server messageCount > cached lastIndex", async () => {
       useStore.getState().setAgentConnected("agent-1", {
         model: { name: "gpt-4" },
-        lastCompleteIndex: 0,
+        messageCount: 0,
         messages: [{ index: 0, role: "user", content: "Hello" }],
       });
 
@@ -301,7 +325,7 @@ describe("channels", () => {
         autoInit: {
           id: "agent-1",
           model: { name: "gpt-4" },
-          lastCompleteIndex: 3,
+          messageCount: 3,
           status: "idle",
           messages: [{ index: 0, role: "user", content: "Hello" }],
         },
@@ -314,7 +338,7 @@ describe("channels", () => {
             { index: 2, role: "user", content: "Question" },
             { index: 3, role: "assistant", content: "Response 2" },
           ],
-          lastCompleteIndex: 3,
+          messageCount: 3,
         },
       });
 
@@ -348,6 +372,24 @@ describe("channels", () => {
       });
     });
 
+    it("should log console error on agent join failure", async () => {
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      setNextJoinResult("agent:agent-1", { error: "agent_not_found" });
+
+      joinAgent("agent-1");
+
+      await vi.waitFor(() => {
+        assert.strictEqual(errorSpy.mock.calls.length > 0, true);
+      });
+
+      const errorMessage = errorSpy.mock.calls.find((call) =>
+        call[0]?.includes("Agent agent-1 channel join error"),
+      );
+      assert.ok(errorMessage, "Expected console error for agent join failure");
+
+      errorSpy.mockRestore();
+    });
+
     it("should set agent status to error on join timeout", async () => {
       setNextJoinResult("agent:agent-1", { timeout: true });
       joinAgent("agent-1");
@@ -364,12 +406,30 @@ describe("channels", () => {
       });
     });
 
+    it("should log console error on agent join timeout", async () => {
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      setNextJoinResult("agent:agent-1", { timeout: true });
+
+      joinAgent("agent-1");
+
+      await vi.waitFor(() => {
+        assert.strictEqual(errorSpy.mock.calls.length > 0, true);
+      });
+
+      const errorMessage = errorSpy.mock.calls.find((call) =>
+        call[0]?.includes("Agent agent-1 channel join timeout"),
+      );
+      assert.ok(errorMessage, "Expected console error for agent join timeout");
+
+      errorSpy.mockRestore();
+    });
+
     it("should handle rejoin - send chat:status and update from response", async () => {
       setNextJoinResult("agent:agent-1", {
         autoInit: {
           id: "agent-1",
           model: { name: "gpt-4", provider: "openai" },
-          lastCompleteIndex: 0,
+          messageCount: 0,
           status: "idle",
         },
       });
@@ -389,7 +449,7 @@ describe("channels", () => {
       setNextPushResult("agent:agent-1", "chat:status", {
         ok: {
           model: { name: "claude-3", provider: "anthropic" },
-          lastCompleteIndex: 0,
+          messageCount: 0,
         },
       });
 
@@ -472,7 +532,7 @@ describe("channels", () => {
     it("should reset partial when delta index changes", async () => {
       useStore.getState().setAgentConnected("agent-1", {
         model: { name: "gpt-4" },
-        lastCompleteIndex: -1,
+        messageCount: 0,
       });
       useStore.getState().agentsCache["agent-1"].partial = {
         index: 1,
@@ -704,7 +764,7 @@ describe("channels", () => {
     it("should clear partial when message index matches", async () => {
       useStore.getState().setAgentConnected("agent-1", {
         model: { name: "gpt-4" },
-        lastCompleteIndex: -1,
+        messageCount: 0,
       });
       useStore.getState().agentsCache["agent-1"].partial = {
         index: 3,
@@ -793,7 +853,7 @@ describe("channels", () => {
     it("should handle chat:error event - set status, message, and clear partial", async () => {
       useStore.getState().setAgentConnected("agent-1", {
         model: { name: "gpt-4" },
-        lastCompleteIndex: -1,
+        messageCount: 0,
       });
       useStore.getState().agentsCache["agent-1"].partial = {
         index: 0,
@@ -845,8 +905,10 @@ describe("channels", () => {
       let errorCalled = false;
       createAgent(
         "gpt-4",
+        1,
+        null,
         () => {},
-        (err) => {
+        (_err) => {
           errorCalled = true;
         },
       );
@@ -860,7 +922,7 @@ describe("channels", () => {
   describe("sendMessage", () => {
     it("should call onError when not connected to agent", async () => {
       let errorCalled = false;
-      sendMessage("agent-1", "Hello", (err) => {
+      sendMessage("agent-1", "Hello", (_err) => {
         errorCalled = true;
       });
 
@@ -874,7 +936,7 @@ describe("channels", () => {
         autoInit: {
           id: "agent-1",
           model: { name: "gpt-4", provider: "openai" },
-          lastCompleteIndex: -1,
+          messageCount: 0,
           status: "idle",
         },
       });
@@ -911,7 +973,7 @@ describe("channels", () => {
         autoInit: {
           id: "agent-1",
           model: { name: "gpt-4", provider: "openai" },
-          lastCompleteIndex: -1,
+          messageCount: 0,
           status: "idle",
         },
       });
@@ -929,7 +991,7 @@ describe("channels", () => {
       });
 
       let errorCalled = false;
-      sendMessage("agent-1", "Hello", (err) => {
+      sendMessage("agent-1", "Hello", (_err) => {
         errorCalled = true;
       });
 
@@ -948,8 +1010,10 @@ describe("channels", () => {
       let errorCalled = false;
       createAgent(
         "gpt-4",
+        1,
+        null,
         () => {},
-        (err) => {
+        (_err) => {
           errorCalled = true;
         },
       );
@@ -969,7 +1033,7 @@ describe("channels", () => {
 
       let okCalled = false;
       let agentId = null;
-      createAgent("gpt-4", (id) => {
+      createAgent("gpt-4", 1, null, (id) => {
         okCalled = true;
         agentId = id;
       });
@@ -993,8 +1057,10 @@ describe("channels", () => {
       let errorCalled = false;
       createAgent(
         "gpt-4",
+        1,
+        null,
         () => {},
-        (err) => {
+        (_err) => {
           errorCalled = true;
         },
       );
@@ -1008,7 +1074,7 @@ describe("channels", () => {
   describe("deleteAgent", () => {
     it("should call onError when not connected to lobby", async () => {
       let errorCalled = false;
-      deleteAgent("agent-1", (err) => {
+      deleteAgent("agent-1", (_err) => {
         errorCalled = true;
       });
 
@@ -1028,7 +1094,7 @@ describe("channels", () => {
       });
 
       let errorCalled = false;
-      deleteAgent("agent-1", (err) => {
+      deleteAgent("agent-1", (_err) => {
         errorCalled = true;
       });
 
@@ -1042,7 +1108,7 @@ describe("channels", () => {
     it("should sync messages, partial, status, and lastIndex from sync response", async () => {
       useStore.getState().setAgentConnected("agent-1", {
         model: { name: "gpt-4" },
-        lastCompleteIndex: 0,
+        messageCount: 0,
         messages: [{ index: 0, role: "user", content: "Hello" }],
       });
 
@@ -1054,7 +1120,7 @@ describe("channels", () => {
         ],
         partial: { index: 4, role: "assistant", content: "Streaming..." },
         status: "streaming",
-        lastCompleteIndex: 3,
+        messageCount: 3,
       });
 
       const cache = useStore.getState().agentsCache["agent-1"];

@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { NewAgentPage } from "./NewAgentPage";
 
 // Mock createAgent before vi.mock uses it
@@ -21,6 +21,7 @@ vi.mock("react-router-dom", () => ({
 // Mock zustand store
 let mockStore = {
   models: [],
+  vocations: [],
 };
 
 vi.mock("../store", () => ({
@@ -37,6 +38,7 @@ describe("NewAgentPage", () => {
     vi.clearAllMocks();
     mockStore = {
       models: [],
+      vocations: [],
     };
   });
 
@@ -45,7 +47,7 @@ describe("NewAgentPage", () => {
 
     expect(screen.getByText("Create New Agent")).toBeInTheDocument();
     expect(
-      screen.getByText("Select a model and spawn a new AI agent to chat with."),
+      screen.getByText("Select a model and vocation to spawn a new AI agent."),
     ).toBeInTheDocument();
   });
 
@@ -98,7 +100,7 @@ describe("NewAgentPage", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("disables create button when no model is selected", () => {
+  it("disables create button when no model or vocation is selected", () => {
     render(<NewAgentPage />);
 
     const button = screen.getByRole("button", { name: "Create Agent" });
@@ -106,14 +108,24 @@ describe("NewAgentPage", () => {
     expect(button).toHaveClass("bg-gray-400", "cursor-not-allowed");
   });
 
-  it("enables create button after selecting a model", () => {
+  it("enables create button after selecting a model and vocation", () => {
     mockStore = {
       models: [{ name: "gpt-4", provider: "openai" }],
+      vocations: [
+        { id: 1, name: "Chat Buddy", description: "A friendly chat companion" },
+      ],
     };
 
     render(<NewAgentPage />);
 
     const button = screen.getByRole("button", { name: "Create Agent" });
+    expect(button).toBeDisabled();
+
+    // Select a vocation
+    const vocationSelect = screen.getByLabelText("Select Vocation");
+    fireEvent.change(vocationSelect, { target: { value: "1" } });
+
+    // Button should still be disabled (no model selected)
     expect(button).toBeDisabled();
 
     // Select a model
@@ -128,12 +140,18 @@ describe("NewAgentPage", () => {
   it("clears error message when model is selected", () => {
     mockStore = {
       models: [{ name: "gpt-4", provider: "openai" }],
+      vocations: [
+        { id: 1, name: "Chat Buddy", description: "A friendly chat companion" },
+      ],
     };
 
     render(<NewAgentPage />);
 
     // Manually trigger error by calling handleCreateAgent logic
-    // First select then clear to test error clearing
+    // First select vocation and model then clear to test error clearing
+    const vocationSelect = screen.getByLabelText("Select Vocation");
+    fireEvent.change(vocationSelect, { target: { value: "1" } });
+
     const select = screen.getByLabelText("Select Model");
     fireEvent.change(select, { target: { value: "gpt-4" } });
 
@@ -149,13 +167,19 @@ describe("NewAgentPage", () => {
   it("shows loading state while creating agent", () => {
     mockStore = {
       models: [{ name: "gpt-4", provider: "openai" }],
+      vocations: [
+        { id: 1, name: "Chat Buddy", description: "A friendly chat companion" },
+      ],
     };
     // Simulate pending callback (onOk not called yet)
     mockCreateAgent.mockImplementation(() => {});
 
     render(<NewAgentPage />);
 
-    // Select model and create
+    // Select vocation and model
+    const vocationSelect = screen.getByLabelText("Select Vocation");
+    fireEvent.change(vocationSelect, { target: { value: "1" } });
+
     const select = screen.getByLabelText("Select Model");
     fireEvent.change(select, { target: { value: "gpt-4" } });
 
@@ -176,25 +200,35 @@ describe("NewAgentPage", () => {
   });
 
   it("calls createAgent with selected model and navigates on success", () => {
-    mockCreateAgent.mockImplementation((model, onOk) => {
-      onOk("agent-123");
-    });
+    mockCreateAgent.mockImplementation(
+      (_model, _vocationId, _workspacePath, onOk) => {
+        onOk("agent-123");
+      },
+    );
     mockStore = {
       models: [{ name: "gpt-4", provider: "openai" }],
+      vocations: [
+        { id: 1, name: "Chat Buddy", description: "A friendly chat companion" },
+      ],
     };
 
     render(<NewAgentPage />);
 
-    // Select model and create
+    // Select vocation and model
+    const vocationSelect = screen.getByLabelText("Select Vocation");
+    fireEvent.change(vocationSelect, { target: { value: "1" } });
+
     const select = screen.getByLabelText("Select Model");
     fireEvent.change(select, { target: { value: "gpt-4" } });
 
     const button = screen.getByRole("button", { name: "Create Agent" });
     fireEvent.click(button);
 
-    // Should call createAgent with the model
+    // Should call createAgent with the model, vocation_id, and callbacks
     expect(mockCreateAgent).toHaveBeenCalledWith(
       { name: "gpt-4", provider: "openai" },
+      1,
+      null,
       expect.any(Function),
       expect.any(Function),
     );
@@ -204,14 +238,23 @@ describe("NewAgentPage", () => {
   });
 
   it("creates agent with fallback model when store has no models", () => {
-    mockCreateAgent.mockImplementation((model, onOk) => {
-      onOk("agent-456");
-    });
+    mockCreateAgent.mockImplementation(
+      (_model, _vocationId, _workspacePath, onOk) => {
+        onOk("agent-456");
+      },
+    );
     mockStore = {
       models: [],
+      vocations: [
+        { id: 1, name: "Chat Buddy", description: "A friendly chat companion" },
+      ],
     };
 
     render(<NewAgentPage />);
+
+    // Select vocation first
+    const vocationSelect = screen.getByLabelText("Select Vocation");
+    fireEvent.change(vocationSelect, { target: { value: "1" } });
 
     // Select fallback option
     const select = screen.getByLabelText("Select Model");
@@ -220,25 +263,84 @@ describe("NewAgentPage", () => {
     const button = screen.getByRole("button", { name: "Create Agent" });
     fireEvent.click(button);
 
-    // Should call createAgent with just the name
+    // Should call createAgent with the model, vocation_id, and callbacks
     expect(mockCreateAgent).toHaveBeenCalledWith(
       { name: "gpt-4" },
+      1,
+      null,
       expect.any(Function),
       expect.any(Function),
     );
   });
 
-  it("shows error message when agent creation fails", () => {
-    mockCreateAgent.mockImplementation((model, onOk, onError) => {
-      onError(new Error("Model not available"));
-    });
+  it("shows workspace path input for Programmer vocation", () => {
     mockStore = {
       models: [{ name: "gpt-4", provider: "openai" }],
+      vocations: [
+        { id: 1, name: "Chat Buddy", description: "A friendly chat companion" },
+        { id: 2, name: "Programmer", description: "A coding assistant" },
+      ],
     };
 
     render(<NewAgentPage />);
 
-    // Select model and create
+    // Select Programmer vocation
+    const vocationSelect = screen.getByLabelText("Select Vocation");
+    fireEvent.change(vocationSelect, { target: { value: "2" } });
+
+    // Should show workspace path input
+    expect(screen.getByLabelText("Workspace Path")).toBeInTheDocument();
+  });
+
+  it("shows error when Programmer vocation is selected without workspace path", () => {
+    mockStore = {
+      models: [{ name: "gpt-4", provider: "openai" }],
+      vocations: [
+        { id: 1, name: "Chat Buddy", description: "A friendly chat companion" },
+        { id: 2, name: "Programmer", description: "A coding assistant" },
+      ],
+    };
+
+    render(<NewAgentPage />);
+
+    // Select Programmer vocation and model
+    const vocationSelect = screen.getByLabelText("Select Vocation");
+    fireEvent.change(vocationSelect, { target: { value: "2" } });
+
+    const select = screen.getByLabelText("Select Model");
+    fireEvent.change(select, { target: { value: "gpt-4" } });
+
+    // Try to create without workspace path
+    const button = screen.getByRole("button", { name: "Create Agent" });
+    fireEvent.click(button);
+
+    // Should show error
+    expect(
+      screen.getByText(
+        "Please specify a workspace path for the Programmer vocation",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("shows error message when agent creation fails", () => {
+    mockCreateAgent.mockImplementation(
+      (_model, _vocationId, _workspacePath, _onOk, onError) => {
+        onError(new Error("Model not available"));
+      },
+    );
+    mockStore = {
+      models: [{ name: "gpt-4", provider: "openai" }],
+      vocations: [
+        { id: 1, name: "Chat Buddy", description: "A friendly chat companion" },
+      ],
+    };
+
+    render(<NewAgentPage />);
+
+    // Select vocation and model
+    const vocationSelect = screen.getByLabelText("Select Vocation");
+    fireEvent.change(vocationSelect, { target: { value: "1" } });
+
     const select = screen.getByLabelText("Select Model");
     fireEvent.change(select, { target: { value: "gpt-4" } });
 
@@ -253,14 +355,23 @@ describe("NewAgentPage", () => {
   });
 
   it("shows generic error message when creation fails without message", () => {
-    mockCreateAgent.mockImplementation((model, onOk, onError) => {
-      onError(new Error());
-    });
+    mockCreateAgent.mockImplementation(
+      (_model, _vocationId, _workspacePath, _onOk, onError) => {
+        onError(new Error());
+      },
+    );
     mockStore = {
       models: [{ name: "gpt-4", provider: "openai" }],
+      vocations: [
+        { id: 1, name: "Chat Buddy", description: "A friendly chat companion" },
+      ],
     };
 
     render(<NewAgentPage />);
+
+    // Select vocation and model
+    const vocationSelect = screen.getByLabelText("Select Vocation");
+    fireEvent.change(vocationSelect, { target: { value: "1" } });
 
     const select = screen.getByLabelText("Select Model");
     fireEvent.change(select, { target: { value: "gpt-4" } });
@@ -271,13 +382,13 @@ describe("NewAgentPage", () => {
     expect(screen.getByText("Failed to create agent")).toBeInTheDocument();
   });
 
-  it("renders the info box about agents", () => {
+  it("renders the info box about vocations", () => {
     render(<NewAgentPage />);
 
-    expect(screen.getByText("What is an Agent?")).toBeInTheDocument();
+    expect(screen.getByText("What is a Vocation?")).toBeInTheDocument();
     expect(
       screen.getByText(
-        /An agent is an AI assistant powered by a language model/,
+        /A vocation defines an agent's role, capabilities, and permissions/,
       ),
     ).toBeInTheDocument();
   });

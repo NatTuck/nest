@@ -147,7 +147,7 @@ function createMockChannel(topic) {
         autoInit: {
           id: topic.replace("agent:", ""),
           model: { name: "gpt-4", provider: "openai" },
-          lastCompleteIndex: -1,
+          messageCount: 0,
           status: "idle",
         },
       };

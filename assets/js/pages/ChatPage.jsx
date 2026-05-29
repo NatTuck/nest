@@ -221,7 +221,9 @@ export function ChatPage() {
                 ${
                   message.role === "user"
                     ? "bg-blue-50 ml-12"
-                    : "bg-gray-50 mr-12"
+                    : message.role === "system"
+                      ? "bg-amber-50 border border-amber-200 mx-8"
+                      : "bg-gray-50 mr-12"
                 }
               `}
             >
@@ -232,18 +234,28 @@ export function ChatPage() {
                   ${
                     message.role === "user"
                       ? "bg-blue-600 text-white"
-                      : "bg-gray-600 text-white"
+                      : message.role === "system"
+                        ? "bg-amber-500 text-white"
+                        : "bg-gray-600 text-white"
                   }
                 `}
               >
-                {message.role === "user" ? "U" : "AI"}
+                {message.role === "user"
+                  ? "U"
+                  : message.role === "system"
+                    ? "S"
+                    : "AI"}
               </div>
 
               {/* Message content */}
               <div className="flex-1">
                 <div className="flex items-center gap-2 mb-1">
                   <span className="font-semibold text-sm text-gray-700">
-                    {message.role === "user" ? "You" : id}
+                    {message.role === "user"
+                      ? "You"
+                      : message.role === "system"
+                        ? "System"
+                        : id}
                   </span>
                   {message.isPartial && (
                     <span className="text-xs text-gray-400">(typing...)</span>
@@ -251,6 +263,7 @@ export function ChatPage() {
                 </div>
                 <MessageContent
                   content={message.content}
+                  segments={message.segments}
                   isPartial={message.isPartial ?? false}
                   className="text-gray-800"
                 />

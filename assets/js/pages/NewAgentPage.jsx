@@ -3,6 +3,8 @@
  *
  * Features:
  * - Model selection dropdown
+ * - Vocation selection dropdown
+ * - Workspace path input (for Programmer vocation)
  * - Create Agent button
  * - Loading state
  * - Navigate to new agent on success
@@ -18,14 +20,31 @@ import { createAgent } from "../channels";
  */
 export function NewAgentPage() {
   const navigate = useNavigate();
-  const { models } = useStore();
+  const { models, vocations } = useStore();
   const [selectedModel, setSelectedModel] = useState("");
+  const [selectedVocation, setSelectedVocation] = useState("");
+  const [workspacePath, setWorkspacePath] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState(null);
+
+  const selectedVocationData = vocations?.find(
+    (v) => v.id.toString() === selectedVocation,
+  );
+  const requiresWorkspace = selectedVocationData?.name === "Programmer";
 
   const handleCreateAgent = () => {
     if (!selectedModel) {
       setError("Please select a model");
+      return;
+    }
+
+    if (!selectedVocation) {
+      setError("Please select a vocation");
+      return;
+    }
+
+    if (requiresWorkspace && !workspacePath) {
+      setError("Please specify a workspace path for the Programmer vocation");
       return;
     }
 
@@ -35,8 +54,14 @@ export function NewAgentPage() {
     const model = models.find((m) => m.name === selectedModel) || {
       name: selectedModel,
     };
+
+    const vocationId = parseInt(selectedVocation, 10);
+    const workspace = requiresWorkspace ? workspacePath : null;
+
     createAgent(
       model,
+      vocationId,
+      workspace,
       (id) => {
         navigate(`/agent/${id}`);
       },
@@ -54,13 +79,67 @@ export function NewAgentPage() {
           Create New Agent
         </h1>
         <p className="text-gray-600 mb-8">
-          Select a model and spawn a new AI agent to chat with.
+          Select a model and vocation to spawn a new AI agent.
         </p>
 
         {/* Error message */}
         {error && (
           <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg">
             <p className="text-red-700">{error}</p>
+          </div>
+        )}
+
+        {/* Vocation selection */}
+        <div className="mb-6">
+          <label
+            htmlFor="vocation-select"
+            className="block text-sm font-medium text-gray-700 mb-2"
+          >
+            Select Vocation
+          </label>
+          <select
+            id="vocation-select"
+            value={selectedVocation}
+            onChange={(e) => setSelectedVocation(e.target.value)}
+            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+            disabled={isCreating}
+          >
+            <option value="">Choose a vocation...</option>
+            {(vocations || []).map((vocation) => (
+              <option key={vocation.id} value={vocation.id}>
+                {vocation.name}
+              </option>
+            ))}
+          </select>
+          {selectedVocationData && (
+            <p className="mt-2 text-sm text-gray-600">
+              {selectedVocationData.description}
+            </p>
+          )}
+        </div>
+
+        {/* Workspace path input (for Programmer) */}
+        {requiresWorkspace && (
+          <div className="mb-6">
+            <label
+              htmlFor="workspace-path"
+              className="block text-sm font-medium text-gray-700 mb-2"
+            >
+              Workspace Path
+            </label>
+            <input
+              id="workspace-path"
+              type="text"
+              value={workspacePath}
+              onChange={(e) => setWorkspacePath(e.target.value)}
+              placeholder="/path/to/project"
+              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+              disabled={isCreating}
+            />
+            <p className="mt-2 text-sm text-gray-500">
+              The Programmer vocation needs a workspace directory to read and
+              write files.
+            </p>
           </div>
         )}
 
@@ -102,12 +181,12 @@ export function NewAgentPage() {
         <button
           type="button"
           onClick={handleCreateAgent}
-          disabled={isCreating || !selectedModel}
+          disabled={isCreating || !selectedModel || !selectedVocation}
           className={`
             w-full py-3 px-4 rounded-lg font-semibold text-white
             transition-all duration-200
             ${
-              isCreating || !selectedModel
+              isCreating || !selectedModel || !selectedVocation
                 ? "bg-gray-400 cursor-not-allowed"
                 : "bg-blue-600 hover:bg-blue-700 active:bg-blue-800"
             }
@@ -145,13 +224,14 @@ export function NewAgentPage() {
         {/* Info box */}
         <div className="mt-8 p-4 bg-gray-50 rounded-lg">
           <h3 className="font-semibold text-gray-700 mb-2">
-            What is an Agent?
+            What is a Vocation?
           </h3>
           <p className="text-sm text-gray-600">
-            An agent is an AI assistant powered by a language model. Each agent
-            maintains its own conversation history and can be customized with
-            different models. Agents run independently and persist until you
-            delete them.
+            A vocation defines an agent&apos;s role, capabilities, and
+            permissions. Different vocations have access to different tools and
+            can operate in different modes. For example, the Programmer vocation
+            can read and write files in a workspace, while Chat Buddy is for
+            general conversation.
           </p>
         </div>
       </div>

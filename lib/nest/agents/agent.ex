@@ -17,11 +17,16 @@ defmodule Nest.Agents.Agent do
   alias LangChain.Message
   alias Nest.Agents.Registry
   alias Nest.ChatModel
+  alias Nest.Vocations
 
   defstruct [
     :id,
     :model,
     :chain,
+    :vocation_id,
+    :system_prompt,
+    :workspace_path,
+    mode: "chat",
     messages: [],
     next_message_index: 0,
     partial_message: nil,
@@ -32,6 +37,10 @@ defmodule Nest.Agents.Agent do
           id: String.t(),
           model: map(),
           chain: LLMChain.t() | nil,
+          vocation_id: integer() | nil,
+          system_prompt: String.t() | nil,
+          workspace_path: String.t() | nil,
+          mode: String.t(),
           messages: list(),
           next_message_index: non_neg_integer(),
           partial_message: map() | nil,
@@ -88,21 +97,53 @@ defmodule Nest.Agents.Agent do
   def init(attrs) do
     id = Map.fetch!(attrs, :id)
     model = Map.fetch!(attrs, :model)
+    vocation_id = Map.get(attrs, :vocation_id)
+    workspace_path = Map.get(attrs, :workspace_path)
 
-    # Create LLM chain from model config
-    case create_chain(model) do
+    # Fetch vocation if provided
+    {system_prompt, mode} = fetch_vocation_prompt_and_mode(vocation_id)
+
+    # Create LLM chain from model config with system prompt
+    case create_chain(model, system_prompt) do
       {:ok, chain} ->
+        # Build initial messages with system prompt if present
+        {initial_messages, next_index} =
+          if system_prompt do
+            system_message = %{
+              index: 0,
+              role: :system,
+              content: system_prompt,
+              timestamp: DateTime.utc_now()
+            }
+
+            {[system_message], 1}
+          else
+            {[], 0}
+          end
+
         state = %__MODULE__{
           id: id,
           model: model,
           chain: chain,
-          messages: [],
-          next_message_index: 0,
+          vocation_id: vocation_id,
+          system_prompt: system_prompt,
+          workspace_path: workspace_path,
+          mode: mode,
+          messages: initial_messages,
+          next_message_index: next_index,
           partial_message: nil,
           status: :idle
         }
 
-        Logger.info("Agent started: #{id}")
+        # Broadcast system message if present
+        if system_prompt do
+          broadcast_message(id, List.first(initial_messages))
+        end
+
+        Logger.info(
+          "Agent started: #{id} with vocation_id: #{inspect(vocation_id)}, mode: #{mode}"
+        )
+
         {:ok, state}
 
       {:error, reason} ->
@@ -140,6 +181,8 @@ defmodule Nest.Agents.Agent do
           index: state.next_message_index + 1,
           role: :assistant,
           content: "",
+          segments: [],
+          current_type: nil,
           chars_sent: 0,
           timestamp: DateTime.utc_now()
         }
@@ -162,20 +205,54 @@ defmodule Nest.Agents.Agent do
   end
 
   @impl true
-  def handle_info({:delta_received, delta_content}, state) do
-    # Accumulate delta into partial_message
+  def handle_info({:delta_received, delta_content, part_type}, state) do
+    # Accumulate delta into partial_message with segment tracking
     partial = state.partial_message
-    new_partial = %{partial | content: partial.content <> delta_content}
+
+    # Initialize segments if empty
+    segments = partial[:segments] || []
+
+    # Check if we need to start a new segment or continue existing
+    {current_type, current_content, segments} =
+      if segments == [] do
+        # First segment - initialize with proper content accumulation
+        new_segment = %{type: part_type, content: delta_content}
+        {part_type, partial.content <> delta_content, [new_segment]}
+      else
+        last_segment = List.last(segments)
+
+        if last_segment.type == part_type do
+          # Continue existing segment
+          updated_segment = %{last_segment | content: last_segment.content <> delta_content}
+
+          {part_type, partial.content <> delta_content,
+           List.replace_at(segments, -1, updated_segment)}
+        else
+          # Start new segment
+          new_segment = %{type: part_type, content: delta_content}
+          {part_type, partial.content <> delta_content, segments ++ [new_segment]}
+        end
+      end
+
+    new_partial = %{
+      partial
+      | content: current_content,
+        segments: segments,
+        current_type: current_type,
+        chars_sent: String.length(current_content)
+    }
+
     {:noreply, %{state | partial_message: new_partial}}
   end
 
   @impl true
   def handle_info({:llm_response, _message}, state) do
-    # Finalize assistant message
+    # Finalize assistant message with segments
     final_message = %{
       index: state.partial_message.index,
       role: :assistant,
       content: state.partial_message.content,
+      segments: state.partial_message.segments,
       timestamp: DateTime.utc_now()
     }
 
@@ -195,19 +272,77 @@ defmodule Nest.Agents.Agent do
     {:noreply, state}
   end
 
+  @impl true
+  def handle_info({:llm_error, error_msg}, state) do
+    # Finalize error message
+    error_message = %{
+      index: state.partial_message.index,
+      role: :assistant,
+      content: error_msg,
+      timestamp: DateTime.utc_now()
+    }
+
+    messages = state.messages ++ [error_message]
+
+    # Broadcast error message to all subscribers via PubSub
+    broadcast_message(state.id, error_message)
+
+    state = %{
+      state
+      | messages: messages,
+        partial_message: nil,
+        next_message_index: state.next_message_index + 1,
+        status: :idle
+    }
+
+    {:noreply, state}
+  end
+
   # Private functions
 
-  defp create_chain(model) do
+  defp create_chain(model, system_prompt) do
     model_name = model[:name] || model["name"]
 
     if model_name do
-      ChatModel.new(model: model_name)
+      opts = [model: model_name]
+
+      opts =
+        if system_prompt do
+          Keyword.put(opts, :system_prompt, system_prompt)
+        else
+          opts
+        end
+
+      ChatModel.new(opts)
     else
       {:error, :no_model_name}
     end
   end
 
+  defp fetch_vocation_prompt_and_mode(nil), do: {nil, "chat"}
+
+  defp fetch_vocation_prompt_and_mode(vocation_id) do
+    case Vocations.get_vocation(vocation_id) do
+      nil ->
+        {nil, "chat"}
+
+      vocation ->
+        initial_mode = get_initial_mode(vocation.modes)
+        {vocation.system_prompt, initial_mode}
+    end
+  end
+
+  defp get_initial_mode(nil), do: "chat"
+
+  defp get_initial_mode(%{} = modes) when map_size(modes) > 0 do
+    modes |> Map.keys() |> List.first()
+  end
+
+  defp get_initial_mode(_), do: "chat"
+
   defp run_chain_with_callbacks(chain, messages, agent_pid, agent_id, message_index) do
+    Logger.info("Agent #{agent_id} sending LLM request (message #{message_index})")
+
     messages
     |> convert_to_langchain_messages()
     |> create_chain_with_messages(chain)
@@ -243,51 +378,103 @@ defmodule Nest.Agents.Agent do
         handle_successful_response(response, agent_pid, agent_id, message_index)
 
       {:error, _failed_chain, error} ->
-        handle_failed_response(error, agent_id, message_index)
+        handle_failed_response(error, agent_pid, agent_id, message_index)
     end
   end
 
   defp handle_successful_response(response, agent_pid, agent_id, message_index) do
-    content = extract_content_text(response.content)
+    segments = extract_content_segments(response.content)
 
-    stream_chunks(content, agent_pid, agent_id, message_index)
+    total_chars =
+      segments
+      |> Enum.filter(fn seg -> seg.type == :text end)
+      |> Enum.map(&String.length(&1.content))
+      |> Enum.sum()
+
+    Logger.info(
+      "Agent #{agent_id} received LLM response (message #{message_index}): #{length(segments)} segments, #{total_chars} text chars"
+    )
+
+    stream_segments(segments, agent_pid, agent_id, message_index)
 
     # Notify agent that streaming is complete
     send(agent_pid, {:llm_response, response})
   end
 
-  defp extract_content_text(content) when is_binary(content), do: content
-
-  defp extract_content_text(content) when is_list(content) do
-    content
-    |> Enum.filter(fn part -> part.type == :text end)
-    |> Enum.map_join("", fn part -> part.content end)
+  # Extract content as segments with type information
+  defp extract_content_segments(content) when is_binary(content) do
+    [%{type: :text, content: content}]
   end
 
-  defp extract_content_text(_content), do: ""
+  defp extract_content_segments(content) when is_list(content) do
+    Enum.flat_map(content, &part_to_segment/1)
+  end
 
-  defp handle_failed_response(error, agent_id, message_index) do
+  defp extract_content_segments(_content), do: []
+
+  # Convert a single ContentPart to a segment
+  defp part_to_segment(%{type: :text, content: content})
+       when is_binary(content) and content != "",
+       do: [%{type: :text, content: content}]
+
+  defp part_to_segment(%{type: :text}), do: []
+
+  defp part_to_segment(%{type: :thinking, content: content})
+       when is_binary(content) and content != "",
+       do: [%{type: :thinking, content: content}]
+
+  defp part_to_segment(%{type: :thinking}), do: []
+
+  defp part_to_segment(%{type: :unsupported}),
+    do: [%{type: :unsupported, content: "[redacted thinking]"}]
+
+  defp part_to_segment(%{type: :image}),
+    do: [%{type: :unsupported, content: "[image]"}]
+
+  defp part_to_segment(%{type: :image_url}),
+    do: [%{type: :unsupported, content: "[image]"}]
+
+  defp part_to_segment(%{type: :file}),
+    do: [%{type: :unsupported, content: "[file attachment]"}]
+
+  defp part_to_segment(%{type: :file_url}),
+    do: [%{type: :unsupported, content: "[file attachment]"}]
+
+  defp part_to_segment(_), do: []
+
+  # Stream each segment separately with type information
+  defp stream_segments(segments, agent_pid, agent_id, message_index) do
+    Enum.reduce(segments, 0, fn segment, chars_sent ->
+      chunks = chunk_content(segment.content, 5)
+
+      chars_sent =
+        Enum.reduce(chunks, chars_sent, fn chunk, acc ->
+          chars_end = acc + String.length(chunk)
+
+          # Broadcast delta with type information
+          broadcast_delta(agent_id, message_index, chunk, acc, chars_end, segment.type)
+
+          # Also update agent's partial_message
+          send(agent_pid, {:delta_received, chunk, segment.type})
+
+          Process.sleep(50)
+          chars_end
+        end)
+
+      chars_sent
+    end)
+  end
+
+  defp handle_failed_response(error, agent_pid, agent_id, message_index) do
     error_msg = "Error: #{inspect(error)}"
+
+    Logger.error("Agent #{agent_id} LLM request failed: #{error_msg}")
 
     # Broadcast error to all subscribers via PubSub
     broadcast_error(agent_id, message_index, error_msg)
-  end
 
-  defp stream_chunks(content, agent_pid, agent_id, message_index) do
-    chunks = chunk_content(content, 5)
-
-    Enum.reduce(chunks, 0, fn chunk, chars_sent ->
-      chars_end = chars_sent + String.length(chunk)
-
-      # Broadcast delta to all subscribers via PubSub
-      broadcast_delta(agent_id, message_index, chunk, chars_sent, chars_end)
-
-      # Also update agent's partial_message
-      send(agent_pid, {:delta_received, chunk})
-
-      Process.sleep(50)
-      chars_end
-    end)
+    # Notify agent that streaming failed (similar to successful response)
+    send(agent_pid, {:llm_error, error_msg})
   end
 
   defp chunk_content(content, size) do
@@ -307,7 +494,7 @@ defmodule Nest.Agents.Agent do
     )
   end
 
-  defp broadcast_delta(agent_id, message_index, content, chars_start, chars_end) do
+  defp broadcast_delta(agent_id, message_index, content, chars_start, chars_end, part_type) do
     Phoenix.PubSub.broadcast(
       Nest.PubSub,
       "agent:#{agent_id}",
@@ -316,7 +503,8 @@ defmodule Nest.Agents.Agent do
          index: message_index,
          content: content,
          chars_start: chars_start,
-         chars_end: chars_end
+         chars_end: chars_end,
+         part_type: part_type
        }}
     )
   end
