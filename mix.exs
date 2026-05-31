@@ -53,13 +53,6 @@ defmodule Nest.MixProject do
       {:phoenix_live_view, "~> 1.1.0"},
       {:lazy_html, ">= 0.1.0", only: :test},
       {:phoenix_live_dashboard, "~> 0.8.3"},
-      {:heroicons,
-       github: "tailwindlabs/heroicons",
-       tag: "v2.2.0",
-       sparse: "optimized",
-       app: false,
-       compile: false,
-       depth: 1},
       {:swoosh, "~> 1.16"},
       {:req, "~> 0.5"},
       {:telemetry_metrics, "~> 1.0"},
@@ -74,7 +67,9 @@ defmodule Nest.MixProject do
       {:excoveralls, "~> 0.18", only: :test, runtime: false},
       {:mimic, "~> 2.3", only: :test},
       {:phoenix_copy, "~> 0.1.4", only: :dev},
-      {:unique_names_generator, "~> 0.2.0"}
+      {:unique_names_generator, "~> 0.2.0"},
+      {:erlexec, "~> 2.0"},
+      {:mustache, "~> 0.5"}
     ]
   end
 

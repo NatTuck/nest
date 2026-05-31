@@ -10,7 +10,7 @@ defmodule Nest.Agents.SupervisorTest do
     # Agents supervision tree is already started by Application
     # Just need to clean up any agents from previous tests
     for id <- Supervisor.list_agents() do
-      Supervisor.stop_agent(id.id)
+      Supervisor.stop_agent(id)
     end
 
     :ok
@@ -58,14 +58,14 @@ defmodule Nest.Agents.SupervisorTest do
   end
 
   describe "list_agents/0" do
-    test "returns list of running agents" do
+    test "returns list of running agent IDs" do
       {:ok, id1} = Supervisor.start_agent(%{model: %{name: "qwen3.5-plus"}})
       {:ok, id2} = Supervisor.start_agent(%{model: %{name: "MiniMax-M2.5"}})
 
       agents = Supervisor.list_agents()
       assert length(agents) == 2
-      assert Enum.any?(agents, &(&1.id == id1))
-      assert Enum.any?(agents, &(&1.id == id2))
+      assert id1 in agents
+      assert id2 in agents
     end
 
     test "returns empty list when no agents" do

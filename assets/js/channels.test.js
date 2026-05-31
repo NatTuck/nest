@@ -1136,7 +1136,8 @@ describe("channels", () => {
         content: "Streaming...",
         charsReceived: 0,
       });
-      assert.strictEqual(cache.status, "streaming");
+      assert.strictEqual(cache.status, "connected");
+      assert.strictEqual(cache.agentState, "streaming");
       assert.strictEqual(cache.lastIndex, 3);
     });
   });

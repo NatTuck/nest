@@ -27,7 +27,7 @@ defmodule NestWeb.LobbyChannel do
 
   @impl true
   def handle_info(:after_join, socket) do
-    agents = Agents.list_agents()
+    agents = Agents.list_agents_info()
     models = Models.list()
     vocations = Vocations.list_vocations()
 

@@ -85,6 +85,22 @@ defmodule Nest.LangChainMock do
   end
 
   @doc """
+  Add tools to the chain.
+  """
+  def add_tools(%{__struct__: LangChain.Chains.LLMChain} = chain, tools) do
+    tool_map =
+      Enum.reduce(tools, %{}, fn tool, acc ->
+        Map.put(acc, tool.name, tool)
+      end)
+
+    %{
+      chain
+      | tools: chain.tools ++ tools,
+        _tool_map: tool_map
+    }
+  end
+
+  @doc """
   Run the chain with the configured LLM.
   Returns {:ok, updated_chain} on success.
   """
@@ -142,5 +158,13 @@ defmodule Nest.LangChainMock do
     id = :crypto.strong_rand_bytes(4) |> Base.encode16(case: :lower)
 
     "This #{adj} #{noun} #{verb} that the model is working correctly. #{id}"
+  end
+
+  @doc """
+  Execute a single step in the chain (mock implementation).
+  """
+  def execute_step(%{__struct__: LangChain.Chains.LLMChain} = chain, _opts \\ []) do
+    # Just return the chain unchanged for the mock
+    {:ok, chain}
   end
 end

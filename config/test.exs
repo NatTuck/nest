@@ -36,3 +36,6 @@ config :phoenix_live_view,
 # Sort query params output of verified routes for robust url comparisons
 config :phoenix,
   sort_verified_routes_query_params: true
+
+# Use null adapter for Req in tests to prevent real HTTP requests
+config :req, default_options: [adapter: &Nest.Test.ReqNullAdapter.run/1]

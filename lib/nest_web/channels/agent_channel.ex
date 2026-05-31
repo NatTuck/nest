@@ -42,6 +42,7 @@ defmodule NestWeb.AgentChannel do
     init_payload = %{
       "id" => agent.id,
       "model" => agent.model,
+      "vocation" => agent.vocation,
       "messageCount" => length(agent.messages),
       "status" => to_string(agent.status),
       "partial" => build_partial_payload(agent.partial_message)
@@ -58,7 +59,12 @@ defmodule NestWeb.AgentChannel do
     push(socket, "chat:message", %{
       "index" => message.index,
       "role" => message.role,
-      "content" => message.content
+      "content" => message.content,
+      "toolCalls" => message[:tool_calls],
+      "toolResults" => format_tool_results(message[:tool_results]),
+      "thinking" => message[:thinking],
+      "usage" => message[:usage],
+      "apiLogs" => format_api_logs(message[:api_logs])
     })
 
     {:noreply, socket}
@@ -89,6 +95,13 @@ defmodule NestWeb.AgentChannel do
     {:noreply, socket}
   end
 
+  # Handle API call metadata from PubSub (deprecated - now included with messages)
+  @impl true
+  def handle_info({:api_call, _api_call}, socket) do
+    # Deprecated: API calls are now included with messages via apiLogs field
+    {:noreply, socket}
+  end
+
   defp build_partial_payload(nil), do: nil
 
   defp build_partial_payload(partial) do
@@ -102,6 +115,46 @@ defmodule NestWeb.AgentChannel do
       "currentType" => partial[:current_type]
     }
   end
+
+  defp format_api_logs(nil), do: []
+
+  defp format_api_logs(api_logs) do
+    Enum.map(api_logs, fn log ->
+      %{
+        "id" => log.id,
+        "timestamp" => format_timestamp(log.timestamp),
+        "type" => to_string(log.type),
+        "payload" => log.payload
+      }
+    end)
+  end
+
+  defp format_timestamp(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
+  defp format_timestamp(other), do: other
+
+  defp format_tool_results(nil), do: []
+
+  defp format_tool_results(tool_results) do
+    Enum.map(tool_results, fn tr ->
+      %{
+        "tool_call_id" => tr.tool_call_id,
+        "name" => tr.name,
+        "content" => extract_tool_result_content(tr.content),
+        "is_error" => tr.is_error || false
+      }
+    end)
+  end
+
+  # Extract content from ContentPart structs or plain text
+  defp extract_tool_result_content(content) when is_list(content) do
+    Enum.map_join(content, "\n", fn
+      %LangChain.Message.ContentPart{type: :text, content: text} -> text
+      %LangChain.Message.ContentPart{} = part -> inspect(part)
+      other -> to_string(other)
+    end)
+  end
+
+  defp extract_tool_result_content(content), do: to_string(content)
 
   @impl true
   def handle_in("chat:message", %{"content" => content}, socket) do

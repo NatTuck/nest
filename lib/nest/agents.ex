@@ -8,6 +8,7 @@ defmodule Nest.Agents do
   """
 
   alias Nest.Agents.{Agent, Supervisor}
+  alias Nest.Vocations
 
   @doc """
   Creates a new agent with the given model and optional vocation.
@@ -40,24 +41,24 @@ defmodule Nest.Agents do
   end
 
   @doc """
-  Gets the state of an agent by its ID.
+  Gets the public info of an agent by its ID.
 
   ## Returns
-  - `{:ok, state}` - Agent found with current state
+  - `{:ok, info}` - Agent found with public info
   - `{:error, :not_found}` - Agent doesn't exist
 
   ## Examples
 
-      {:ok, agent} = Agents.get_agent("clever-raven")
-      # agent.id, agent.model, agent.messages, agent.status
+      {:ok, info} = Agents.get_info("clever-raven")
+      # info.id, info.model, info.message_count, info.status, info.partial
 
   """
-  @spec get_agent(String.t()) :: {:ok, Agent.t()} | {:error, :not_found}
-  def get_agent(id) do
+  @spec get_info(String.t()) :: {:ok, map()} | {:error, :not_found}
+  def get_info(id) do
     case Supervisor.get_agent(id) do
       {:ok, pid} ->
         if Process.alive?(pid) do
-          {:ok, Agent.get_state(pid)}
+          {:ok, Agent.get_public_info(pid)}
         else
           {:error, :not_found}
         end
@@ -68,18 +69,115 @@ defmodule Nest.Agents do
   end
 
   @doc """
-  Lists all running agents with their current state.
+  Gets the full agent state by its ID.
 
-  Returns a list of maps containing agent information.
+  ## Returns
+  - `{:ok, agent}` - Agent found with full state including messages
+  - `{:error, :not_found}` - Agent doesn't exist
+
+  """
+  @spec get_agent(String.t()) :: {:ok, map()} | {:error, :not_found}
+  def get_agent(id) do
+    case Supervisor.get_agent(id) do
+      {:ok, pid} ->
+        get_agent_if_alive(pid)
+
+      {:error, :not_found} ->
+        {:error, :not_found}
+    end
+  end
+
+  defp get_agent_if_alive(pid) do
+    if Process.alive?(pid) do
+      build_agent_data(pid)
+    else
+      {:error, :not_found}
+    end
+  end
+
+  defp build_agent_data(pid) do
+    info = Agent.get_public_info(pid)
+    messages = Agent.get_messages(pid)
+    vocation = get_vocation_info(info.vocation_id)
+
+    agent = %{
+      id: info.id,
+      model: info.model,
+      vocation: vocation,
+      messages: messages,
+      status: info.status,
+      partial_message: info.partial
+    }
+
+    {:ok, agent}
+  end
+
+  defp get_vocation_info(nil), do: nil
+
+  defp get_vocation_info(vocation_id) do
+    case Vocations.get_vocation(vocation_id) do
+      nil -> nil
+      v -> %{id: v.id, name: v.name}
+    end
+  end
+
+  @doc """
+  Lists all running agent IDs.
+
+  Returns a list of agent ID strings.
 
   ## Examples
 
-      [%{id: "clever-raven", model: %{name: "gpt-4"}, status: :idle}]
+      ["clever-raven", "swift-fox"]
 
   """
-  @spec list_agents() :: list(map())
+  @spec list_agents() :: list(String.t())
   def list_agents do
     Supervisor.list_agents()
+  end
+
+  @doc """
+  Lists public info for all running agents.
+
+  Returns a list of maps containing agent public info.
+
+  ## Examples
+
+      [%{id: "clever-raven", model: %{name: "gpt-4"}, status: :idle, message_count: 0}, ...]
+
+  """
+  @spec list_agents_info() :: list(map())
+  def list_agents_info do
+    list_agents()
+    |> Enum.map(&get_info/1)
+    |> Enum.filter(fn
+      {:ok, info} -> info
+      _ -> nil
+    end)
+    |> Enum.map(fn {:ok, info} -> info end)
+  end
+
+  @doc """
+  Gets the messages for an agent by its ID.
+
+  ## Returns
+  - `{:ok, messages}` - Agent found with messages
+  - `{:error, :not_found}` - Agent doesn't exist
+
+  """
+  @spec get_messages(String.t()) :: {:ok, [map()]} | {:error, :not_found}
+  def get_messages(id) do
+    case Supervisor.get_agent(id) do
+      {:ok, pid} ->
+        if Process.alive?(pid) do
+          {:ok, Agent.get_messages(pid)}
+        else
+          {:error, :not_found}
+        end
+
+      {:error, :not_found} ->
+        {:error, :not_found}
+    end
   end
 
   @doc """

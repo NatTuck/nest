@@ -49,6 +49,9 @@ describe("store", () => {
         messageCount: 0,
       });
       expect(useStore.getState().agentsCache).toBe(initialCache);
+
+      // Verify no changes after all operations
+      expect(useStore.getState().agentsCache).toBe(initialCache);
     });
   });
 
@@ -849,6 +852,93 @@ describe("store", () => {
       expect(messages[0].content).toBe("Updated First");
       expect(messages[1].content).toBe("Second");
     });
+
+    it("preserves existing apiLogs when updating message", () => {
+      useStore.getState().addChatMessage("agent-1", {
+        index: 0,
+        role: "assistant",
+        content: "Hello",
+        apiLogs: [
+          {
+            id: "000.000",
+            type: "request",
+            timestamp: "2024-01-01T00:00:00Z",
+            payload: {},
+          },
+        ],
+      });
+
+      // Update the message without apiLogs
+      useStore.getState().addChatMessage("agent-1", {
+        index: 0,
+        role: "assistant",
+        content: "Hello world",
+      });
+
+      const messages = useStore.getState().agentsCache["agent-1"].messages;
+      expect(messages[0].content).toBe("Hello world");
+      expect(messages[0].apiLogs).toHaveLength(1);
+      expect(messages[0].apiLogs[0].id).toBe("000.000");
+    });
+
+    it("uses new apiLogs when updating message with apiLogs", () => {
+      useStore.getState().addChatMessage("agent-1", {
+        index: 0,
+        role: "assistant",
+        content: "Hello",
+        apiLogs: [
+          {
+            id: "000.000",
+            type: "request",
+            timestamp: "2024-01-01T00:00:00Z",
+            payload: {},
+          },
+        ],
+      });
+
+      // Update with new apiLogs
+      useStore.getState().addChatMessage("agent-1", {
+        index: 0,
+        role: "assistant",
+        content: "Hello world",
+        apiLogs: [
+          {
+            id: "000.000",
+            type: "request",
+            timestamp: "2024-01-01T00:00:00Z",
+            payload: {},
+          },
+          {
+            id: "001.001",
+            type: "response",
+            timestamp: "2024-01-01T00:00:01Z",
+            payload: {},
+          },
+        ],
+      });
+
+      const messages = useStore.getState().agentsCache["agent-1"].messages;
+      expect(messages[0].apiLogs).toHaveLength(2);
+      expect(messages[0].apiLogs[1].id).toBe("001.001");
+    });
+
+    it("handles message update without existing or new apiLogs", () => {
+      useStore.getState().addChatMessage("agent-1", {
+        index: 0,
+        role: "assistant",
+        content: "Hello",
+      });
+
+      useStore.getState().addChatMessage("agent-1", {
+        index: 0,
+        role: "assistant",
+        content: "Hello world",
+      });
+
+      const messages = useStore.getState().agentsCache["agent-1"].messages;
+      expect(messages[0].content).toBe("Hello world");
+      expect(messages[0].apiLogs).toEqual([]);
+    });
   });
 
   describe("removeAgent", () => {
@@ -1011,7 +1101,7 @@ describe("store", () => {
       });
     });
 
-    it("merges messages and updates status", () => {
+    it("merges messages and updates agentState", () => {
       useStore.getState().agentsCache["agent-1"].messages = [
         { index: 0, role: "user", content: "Existing" },
       ];
@@ -1026,7 +1116,8 @@ describe("store", () => {
       const cache = useStore.getState().agentsCache["agent-1"];
       expect(cache.messages).toHaveLength(2);
       expect(cache.messages[1].content).toBe("New");
-      expect(cache.status).toBe("streaming");
+      expect(cache.status).toBe("connected");
+      expect(cache.agentState).toBe("streaming");
       expect(cache.lastIndex).toBe(1);
     });
 

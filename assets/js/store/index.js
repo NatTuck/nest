@@ -209,6 +209,7 @@ export const useStore = create(
                 status: "connected",
                 error: null,
                 model: payload.model || existing?.model || null,
+                vocation: payload.vocation || existing?.vocation || null,
               },
             },
           };
@@ -445,10 +446,18 @@ export const useStore = create(
 
           const exists = cache.messages.some((m) => m.index === message.index);
 
+          // Merge apiLogs if updating an existing message
           const newMessages = exists
-            ? cache.messages.map((m) =>
-                m.index === message.index ? message : m,
-              )
+            ? cache.messages.map((m) => {
+                if (m.index === message.index) {
+                  // Merge apiLogs, preferring the new message's apiLogs if they exist
+                  const mergedApiLogs = message.apiLogs?.length
+                    ? message.apiLogs
+                    : m.apiLogs || [];
+                  return { ...message, apiLogs: mergedApiLogs };
+                }
+                return m;
+              })
             : [...cache.messages, message];
 
           return {
@@ -568,7 +577,8 @@ export const useStore = create(
                 ...cache,
                 messages: mergedMessages,
                 partial: normalizePartial(payload.partial),
-                status: payload.status || cache.status,
+                status: cache.status,
+                agentState: payload.status || cache.agentState,
                 lastIndex,
               },
             },

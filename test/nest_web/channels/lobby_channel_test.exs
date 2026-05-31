@@ -11,7 +11,7 @@ defmodule NestWeb.LobbyChannelTest do
     # Agents supervision tree is already started by Application
     # Just need to clean up any agents from previous tests
     for id <- Nest.Agents.list_agents() do
-      Nest.Agents.delete_agent(id.id)
+      Nest.Agents.delete_agent(id)
     end
 
     # Clean up any vocations from previous tests
@@ -187,7 +187,7 @@ defmodule NestWeb.LobbyChannelTest do
       assert_broadcast "agent:deleted", %{"id" => ^id}
 
       # Verify agent is gone
-      assert {:error, :not_found} = Agents.get_agent(id)
+      assert {:error, :not_found} = Agents.get_info(id)
     end
 
     test "returns error for non-existent agent" do
