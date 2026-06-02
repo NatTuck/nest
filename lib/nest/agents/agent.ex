@@ -15,9 +15,16 @@ defmodule Nest.Agents.Agent do
 
   alias LangChain.Chains.LLMChain
   alias LangChain.ChatModels.ChatOpenAI
-  alias LangChain.Message
+  alias LangChain.Message, as: LangChainMessage
   alias Nest.Agents.Registry
   alias Nest.ChatModel
+  alias Nest.Messages.Assistant
+  alias Nest.Messages.Message
+  alias Nest.Messages.System
+  alias Nest.Messages.Tool
+  alias Nest.Messages.ToolCall
+  alias Nest.Messages.ToolResult
+  alias Nest.Messages.User
   alias Nest.Tools
   alias Nest.Vocations
 
@@ -48,7 +55,7 @@ defmodule Nest.Agents.Agent do
           workspace_path: String.t() | nil,
           tools: [LangChain.Function.t()],
           mode: String.t(),
-          messages: [map()],
+          messages: [Message.t()],
           next_message_index: non_neg_integer(),
           partial_message: map() | nil,
           status: :idle | :streaming | :executing_tools,
@@ -56,17 +63,11 @@ defmodule Nest.Agents.Agent do
           api_call_sequences: %{non_neg_integer() => non_neg_integer()}
         }
 
-  @type message :: %{
-          index: non_neg_integer(),
-          timestamp: DateTime.t(),
-          role: :user | :assistant | :system | :tool,
-          content: String.t(),
-          tool_calls: [map()] | nil,
-          tool_results: [map()] | nil,
-          thinking: String.t() | nil,
-          usage: map() | nil,
-          api_logs: [map()]
-        }
+  @type message ::
+          {:system, System.t()}
+          | {:user, User.t()}
+          | {:assistant, Assistant.t()}
+          | {:tool, Tool.t()}
 
   # Client API
 
@@ -124,7 +125,7 @@ defmodule Nest.Agents.Agent do
   @doc """
   Returns the message history for the agent.
   """
-  @spec get_messages(pid()) :: [map()]
+  @spec get_messages(pid()) :: [Message.t()]
   def get_messages(pid) do
     GenServer.call(pid, :get_messages)
   end
@@ -202,17 +203,14 @@ defmodule Nest.Agents.Agent do
   @impl true
   def handle_cast({:chat, content}, state) do
     # Add user message to history with index
-    user_message = %{
-      index: state.next_message_index,
-      timestamp: DateTime.utc_now(),
-      role: :user,
-      content: content,
-      tool_calls: nil,
-      tool_results: nil,
-      thinking: nil,
-      usage: nil,
-      api_logs: get_pending_api_logs(state, state.next_message_index)
-    }
+    user_message =
+      {:user,
+       %User{
+         index: state.next_message_index,
+         timestamp: DateTime.utc_now(),
+         content: content,
+         api_logs: get_pending_api_logs(state, state.next_message_index)
+       }}
 
     messages = state.messages ++ [user_message]
 
@@ -225,8 +223,9 @@ defmodule Nest.Agents.Agent do
       | messages: messages,
         next_message_index: state.next_message_index + 1,
         status: :streaming,
-        active_message_index: user_message.index,
-        pending_api_logs: clear_pending_api_logs(state, user_message.index).pending_api_logs,
+        active_message_index: state.next_message_index,
+        pending_api_logs:
+          clear_pending_api_logs(state, state.next_message_index).pending_api_logs,
         partial_message: %{
           index: state.next_message_index + 1,
           role: :assistant,
@@ -326,17 +325,16 @@ defmodule Nest.Agents.Agent do
   @impl true
   def handle_info({:llm_response, _message}, state) do
     # Finalize assistant message
-    final_message = %{
-      index: state.partial_message.index,
-      timestamp: DateTime.utc_now(),
-      role: :assistant,
-      content: state.partial_message.content,
-      tool_calls: nil,
-      tool_results: nil,
-      thinking: nil,
-      usage: nil,
-      api_logs: get_pending_api_logs(state, state.partial_message.index)
-    }
+    final_message =
+      {:assistant,
+       %Assistant{
+         index: state.partial_message.index,
+         timestamp: DateTime.utc_now(),
+         content: state.partial_message.content,
+         thinking: nil,
+         tool_calls: nil,
+         api_logs: get_pending_api_logs(state, state.partial_message.index)
+       }}
 
     messages = state.messages ++ [final_message]
 
@@ -348,8 +346,9 @@ defmodule Nest.Agents.Agent do
       | messages: messages,
         partial_message: nil,
         next_message_index: state.next_message_index + 1,
-        active_message_index: final_message.index,
-        pending_api_logs: clear_pending_api_logs(state, final_message.index).pending_api_logs,
+        active_message_index: state.partial_message.index,
+        pending_api_logs:
+          clear_pending_api_logs(state, state.partial_message.index).pending_api_logs,
         status: :idle
     }
 
@@ -359,17 +358,16 @@ defmodule Nest.Agents.Agent do
   @impl true
   def handle_info({:llm_error, error_msg}, state) do
     # Finalize error message
-    error_message = %{
-      index: state.partial_message.index,
-      timestamp: DateTime.utc_now(),
-      role: :assistant,
-      content: error_msg,
-      tool_calls: nil,
-      tool_results: nil,
-      thinking: nil,
-      usage: nil,
-      api_logs: get_pending_api_logs(state, state.partial_message.index)
-    }
+    error_message =
+      {:assistant,
+       %Assistant{
+         index: state.partial_message.index,
+         timestamp: DateTime.utc_now(),
+         content: error_msg,
+         thinking: nil,
+         tool_calls: nil,
+         api_logs: get_pending_api_logs(state, state.partial_message.index)
+       }}
 
     messages = state.messages ++ [error_message]
 
@@ -381,8 +379,9 @@ defmodule Nest.Agents.Agent do
       | messages: messages,
         partial_message: nil,
         next_message_index: state.next_message_index + 1,
-        active_message_index: error_message.index,
-        pending_api_logs: clear_pending_api_logs(state, error_message.index).pending_api_logs,
+        active_message_index: state.partial_message.index,
+        pending_api_logs:
+          clear_pending_api_logs(state, state.partial_message.index).pending_api_logs,
         status: :idle
     }
 
@@ -390,16 +389,17 @@ defmodule Nest.Agents.Agent do
   end
 
   @impl true
-  def handle_info({:tool_calls_received, tool_call_message}, state) do
+  def handle_info({:tool_calls_received, {:assistant, %Assistant{} = tool_call_message}}, state) do
     # Apply any pending api_logs to the tool call message
     index = tool_call_message.index
     pending_logs = get_pending_api_logs(state, index)
 
     tool_call_message =
       if pending_logs != [] do
-        %{tool_call_message | api_logs: tool_call_message.api_logs ++ pending_logs}
+        {:assistant,
+         %{tool_call_message | api_logs: (tool_call_message.api_logs || []) ++ pending_logs}}
       else
-        tool_call_message
+        {:assistant, tool_call_message}
       end
 
     # Add tool call message to history
@@ -420,16 +420,17 @@ defmodule Nest.Agents.Agent do
   end
 
   @impl true
-  def handle_info({:tool_results_received, tool_result_message}, state) do
+  def handle_info({:tool_results_received, {:tool, %Tool{} = tool_result_message}}, state) do
     # Apply any pending api_logs to the tool result message
     index = tool_result_message.index
     pending_logs = get_pending_api_logs(state, index)
 
     tool_result_message =
       if pending_logs != [] do
-        %{tool_result_message | api_logs: tool_result_message.api_logs ++ pending_logs}
+        {:tool,
+         %{tool_result_message | api_logs: (tool_result_message.api_logs || []) ++ pending_logs}}
       else
-        tool_result_message
+        {:tool, tool_result_message}
       end
 
     # Add tool result message to history
@@ -490,17 +491,16 @@ defmodule Nest.Agents.Agent do
   @impl true
   def handle_info({:llm_response_with_thinking, _response, thinking}, state) do
     # Finalize assistant message with thinking
-    final_message = %{
-      index: state.partial_message.index,
-      timestamp: DateTime.utc_now(),
-      role: :assistant,
-      content: state.partial_message.content,
-      tool_calls: nil,
-      tool_results: nil,
-      thinking: thinking,
-      usage: nil,
-      api_logs: get_pending_api_logs(state, state.partial_message.index)
-    }
+    final_message =
+      {:assistant,
+       %Assistant{
+         index: state.partial_message.index,
+         timestamp: DateTime.utc_now(),
+         content: state.partial_message.content,
+         thinking: thinking,
+         tool_calls: nil,
+         api_logs: get_pending_api_logs(state, state.partial_message.index)
+       }}
 
     messages = state.messages ++ [final_message]
 
@@ -512,8 +512,9 @@ defmodule Nest.Agents.Agent do
       | messages: messages,
         partial_message: nil,
         next_message_index: state.next_message_index + 1,
-        active_message_index: final_message.index,
-        pending_api_logs: clear_pending_api_logs(state, final_message.index).pending_api_logs,
+        active_message_index: state.partial_message.index,
+        pending_api_logs:
+          clear_pending_api_logs(state, state.partial_message.index).pending_api_logs,
         status: :idle
     }
 
@@ -523,7 +524,13 @@ defmodule Nest.Agents.Agent do
   @impl true
   def handle_info({:api_log, message_index, api_log}, state) do
     # Check if message exists
-    message = Enum.find(state.messages, fn msg -> msg.index == message_index end)
+    message =
+      Enum.find(state.messages, fn
+        {:user, %{index: idx}} -> idx == message_index
+        {:assistant, %{index: idx}} -> idx == message_index
+        {:tool, %{index: idx}} -> idx == message_index
+        {:system, %{index: idx}} -> idx == message_index
+      end)
 
     if message do
       handle_api_log_for_existing_message(state, message_index, api_log)
@@ -534,15 +541,31 @@ defmodule Nest.Agents.Agent do
 
   defp handle_api_log_for_existing_message(state, message_index, api_log) do
     messages =
-      Enum.map(state.messages, fn msg ->
-        if msg.index == message_index do
-          %{msg | api_logs: msg.api_logs ++ [api_log]}
-        else
+      Enum.map(state.messages, fn
+        {:user, %User{} = msg} when msg.index == message_index ->
+          {:user, %{msg | api_logs: (msg.api_logs || []) ++ [api_log]}}
+
+        {:assistant, %Assistant{} = msg} when msg.index == message_index ->
+          {:assistant, %{msg | api_logs: (msg.api_logs || []) ++ [api_log]}}
+
+        {:tool, %Tool{} = msg} when msg.index == message_index ->
+          {:tool, %{msg | api_logs: (msg.api_logs || []) ++ [api_log]}}
+
+        {:system, %System{} = msg} when msg.index == message_index ->
+          {:system, %{msg | api_logs: (msg.api_logs || []) ++ [api_log]}}
+
+        msg ->
           msg
-        end
       end)
 
-    updated_message = Enum.find(messages, fn msg -> msg.index == message_index end)
+    updated_message =
+      Enum.find(messages, fn
+        {:user, %{index: idx}} -> idx == message_index
+        {:assistant, %{index: idx}} -> idx == message_index
+        {:tool, %{index: idx}} -> idx == message_index
+        {:system, %{index: idx}} -> idx == message_index
+      end)
+
     broadcast_message(state.id, updated_message)
 
     {:noreply, %{state | messages: messages}}
@@ -640,44 +663,49 @@ defmodule Nest.Agents.Agent do
     Enum.map(messages, &convert_message/1)
   end
 
-  defp convert_message(msg) do
-    role = msg[:role] || msg["role"]
-    content = msg[:content] || msg["content"]
-
-    convert_by_role(role, content, msg)
+  defp convert_message({:user, %User{} = msg}) do
+    LangChainMessage.new_user!(msg.content)
   end
 
-  defp convert_by_role(:user, content, _msg), do: Message.new_user!(content)
-
-  defp convert_by_role(:assistant, content, msg) do
-    tool_calls = msg[:tool_calls] || msg["tool_calls"]
-    convert_assistant_message(content, tool_calls)
+  defp convert_message({:assistant, %Assistant{} = msg}) do
+    convert_assistant_message(msg.content, msg.tool_calls)
   end
 
-  defp convert_by_role(:tool, _content, msg) do
-    tool_results = msg[:tool_results] || msg["tool_results"]
-    convert_tool_message(tool_results)
+  defp convert_message({:tool, %Tool{} = msg}) do
+    lc_tool_results = Enum.map(msg.tool_results, &build_tool_result/1)
+    LangChainMessage.new_tool_result!(%{content: nil, tool_results: lc_tool_results})
   end
 
-  defp convert_by_role(_, content, _msg), do: Message.new_user!(content)
+  defp convert_message({:system, %System{} = msg}) do
+    LangChainMessage.new_system!(msg.content)
+  end
 
   defp convert_assistant_message(content, nil) do
-    Message.new_assistant!(content)
+    LangChainMessage.new_assistant!(content)
   end
 
   defp convert_assistant_message(content, tool_calls) do
     case tool_calls do
       [] ->
-        Message.new_assistant!(content)
+        LangChainMessage.new_assistant!(content)
 
       calls ->
         lc_tool_calls = Enum.map(calls, &build_tool_call/1)
-        Message.new_assistant!(%{content: content, tool_calls: lc_tool_calls})
+        LangChainMessage.new_assistant!(%{content: content, tool_calls: lc_tool_calls})
     end
   end
 
-  defp build_tool_call(tc) do
-    %LangChain.Message.ToolCall{
+  defp build_tool_call(%ToolCall{} = tc) do
+    %LangChainMessage.ToolCall{
+      call_id: tc.id,
+      name: tc.name,
+      arguments: tc.arguments || %{},
+      status: :complete
+    }
+  end
+
+  defp build_tool_call(tc) when is_map(tc) do
+    %LangChainMessage.ToolCall{
       call_id: tc["id"] || tc[:id],
       name: tc["name"] || tc[:name],
       arguments: tc["arguments"] || tc[:arguments] || %{},
@@ -685,13 +713,17 @@ defmodule Nest.Agents.Agent do
     }
   end
 
-  defp convert_tool_message(tool_results) do
-    lc_tool_results = Enum.map(tool_results || [], &build_tool_result/1)
-    Message.new_tool_result!(%{content: nil, tool_results: lc_tool_results})
+  defp build_tool_result(%ToolResult{} = tr) do
+    %LangChainMessage.ToolResult{
+      tool_call_id: tr.tool_call_id,
+      name: tr.name,
+      content: tr.content,
+      is_error: tr.is_error
+    }
   end
 
-  defp build_tool_result(tr) do
-    %LangChain.Message.ToolResult{
+  defp build_tool_result(tr) when is_map(tr) do
+    %LangChainMessage.ToolResult{
       tool_call_id: tr["tool_call_id"] || tr[:tool_call_id],
       name: tr["name"] || tr[:name],
       content: tr["content"] || tr[:content] || "",
@@ -754,7 +786,7 @@ defmodule Nest.Agents.Agent do
          active_message_index
        ) do
     # Check if this is a tool call
-    if Message.is_tool_call?(response) do
+    if LangChainMessage.is_tool_call?(response) do
       # Handle tool calls
       handle_tool_calls(response, chain, agent_pid, agent_id, message_index, active_message_index)
     else
@@ -791,7 +823,7 @@ defmodule Nest.Agents.Agent do
     # Extract tool calls from response
     tool_calls =
       Enum.map(response.tool_calls, fn tc ->
-        %{
+        %ToolCall{
           id: tc.call_id,
           name: tc.name,
           arguments: tc.arguments || %{}
@@ -799,17 +831,15 @@ defmodule Nest.Agents.Agent do
       end)
 
     # Broadcast tool call message immediately
-    tool_call_message = %{
-      index: message_index,
-      timestamp: DateTime.utc_now(),
-      role: :assistant,
-      content: "",
-      tool_calls: tool_calls,
-      tool_results: nil,
-      thinking: nil,
-      usage: nil,
-      api_logs: []
-    }
+    tool_call_message =
+      {:assistant,
+       %Assistant{
+         index: message_index,
+         timestamp: DateTime.utc_now(),
+         content: "",
+         tool_calls: tool_calls,
+         api_logs: []
+       }}
 
     send(agent_pid, {:tool_calls_received, tool_call_message})
 
@@ -823,7 +853,7 @@ defmodule Nest.Agents.Agent do
       tool_results =
         if tool_results_message.tool_results do
           Enum.map(tool_results_message.tool_results, fn tr ->
-            %{
+            %ToolResult{
               tool_call_id: tr.tool_call_id,
               name: tr.name,
               content: extract_tool_content(tr.content),
@@ -835,17 +865,14 @@ defmodule Nest.Agents.Agent do
         end
 
       # Broadcast tool results
-      tool_result_message = %{
-        index: message_index + 1,
-        timestamp: DateTime.utc_now(),
-        role: :tool,
-        content: format_tool_results_content(tool_results),
-        tool_calls: nil,
-        tool_results: tool_results,
-        thinking: nil,
-        usage: nil,
-        api_logs: []
-      }
+      tool_result_message =
+        {:tool,
+         %Tool{
+           index: message_index + 1,
+           timestamp: DateTime.utc_now(),
+           tool_results: tool_results,
+           api_logs: []
+         }}
 
       send(agent_pid, {:tool_results_received, tool_result_message})
 
@@ -862,14 +889,6 @@ defmodule Nest.Agents.Agent do
         Logger.error("Tool execution failed: #{inspect(error)}")
         send(agent_pid, {:llm_error, "Tool execution failed: #{inspect(error)}"})
     end
-  end
-
-  defp format_tool_results_content(tool_results) do
-    tool_results
-    |> Enum.map_join("\n\n", fn tr ->
-      status = if tr.is_error, do: "[ERROR]", else: "[SUCCESS]"
-      "#{status} #{tr.name}: #{tr.content}"
-    end)
   end
 
   # Extract content from LangChain.Message.ContentPart structs or plain text

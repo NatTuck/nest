@@ -7,6 +7,9 @@ defmodule NestWeb.AgentChannelTest do
   import Mimic
 
   alias Nest.Agents
+  alias Nest.Messages.Assistant
+  alias Nest.Messages.Tool
+  alias Nest.Messages.ToolResult
 
   setup :set_mimic_global
   setup :verify_on_exit!
@@ -59,8 +62,8 @@ defmodule NestWeb.AgentChannelTest do
       assert_reply ref, :ok, %{}
 
       # Wait for completion (user message first, then assistant)
-      assert_push "chat:message", %{"index" => 0, "role" => :user}, 2000
-      assert_push "chat:message", %{"index" => 1, "role" => :assistant}, 2000
+      assert_push "chat:message", %{"index" => 0, "role" => "user"}, 2000
+      assert_push "chat:message", %{"index" => 1, "role" => "assistant"}, 2000
 
       Process.sleep(100)
 
@@ -102,7 +105,7 @@ defmodule NestWeb.AgentChannelTest do
       assert_reply ref, :ok, %{}
 
       # Receive user message broadcast first
-      assert_push "chat:message", %{"index" => 0, "role" => :user}, 500
+      assert_push "chat:message", %{"index" => 0, "role" => "user"}, 500
 
       # Then receive streaming deltas
       assert_push "chat:delta", payload, 500
@@ -140,7 +143,7 @@ defmodule NestWeb.AgentChannelTest do
         assert_push "chat:message", payload, 2000
         assert is_integer(payload["index"])
         assert payload["index"] >= 0
-        assert payload["role"] == :assistant
+        assert payload["role"] == "assistant"
         assert is_binary(payload["content"])
     end
   end
@@ -159,8 +162,8 @@ defmodule NestWeb.AgentChannelTest do
       assert_reply ref1, :ok, %{}
 
       # Wait for user message (even index), then assistant message (odd index)
-      assert_push "chat:message", %{"index" => 0, "role" => :user}, 2000
-      assert_push "chat:message", %{"index" => 1, "role" => :assistant}, 2000
+      assert_push "chat:message", %{"index" => 0, "role" => "user"}, 2000
+      assert_push "chat:message", %{"index" => 1, "role" => "assistant"}, 2000
 
       # Sync should return no new messages (we're up to date)
       ref_sync = push(socket, "chat:sync", %{"lastIndex" => 1})
@@ -171,8 +174,8 @@ defmodule NestWeb.AgentChannelTest do
       assert_reply ref2, :ok, %{}
 
       # Wait for second user message (index 2), then assistant (index 3)
-      assert_push "chat:message", %{"index" => 2, "role" => :user}, 2000
-      assert_push "chat:message", %{"index" => 3, "role" => :assistant}, 2000
+      assert_push "chat:message", %{"index" => 2, "role" => "user"}, 2000
+      assert_push "chat:message", %{"index" => 3, "role" => "assistant"}, 2000
 
       # Sync from index 1 should return messages at index 2 and 3
       ref_sync2 = push(socket, "chat:sync", %{"lastIndex" => 1})
@@ -253,8 +256,8 @@ defmodule NestWeb.AgentChannelTest do
       assert_reply ref, :ok, %{}
 
       # Wait for completion (user message first, then assistant)
-      assert_push "chat:message", %{"index" => 0, "role" => :user}, 2000
-      assert_push "chat:message", %{"index" => 1, "role" => :assistant}, 2000
+      assert_push "chat:message", %{"index" => 0, "role" => "user"}, 2000
+      assert_push "chat:message", %{"index" => 1, "role" => "assistant"}, 2000
 
       Process.sleep(100)
 
@@ -345,8 +348,8 @@ defmodule NestWeb.AgentChannelTest do
       assert_reply ref1, :ok, %{}
 
       # Wait for completion (user message first, then assistant)
-      assert_push "chat:message", %{"index" => 0, "role" => :user}, 2000
-      assert_push "chat:message", %{"index" => 1, "role" => :assistant}, 2000
+      assert_push "chat:message", %{"index" => 0, "role" => "user"}, 2000
+      assert_push "chat:message", %{"index" => 1, "role" => "assistant"}, 2000
 
       Process.sleep(100)
 
@@ -550,18 +553,18 @@ defmodule NestWeb.AgentChannelTest do
       assert_reply ref, :ok, %{}
 
       # First client receives user message first (even index), then assistant
-      assert_push "chat:message", %{"index" => 0, "role" => :user}, 3000
+      assert_push "chat:message", %{"index" => 0, "role" => "user"}, 3000
 
       assert_push "chat:message",
-                  %{"index" => idx, "role" => :assistant} = assistant_payload,
+                  %{"index" => idx, "role" => "assistant"} = assistant_payload,
                   3000
 
       assert rem(idx, 2) == 1
       assert is_binary(assistant_payload["content"])
 
       # Second client should also receive both messages
-      assert_push "chat:message", %{"index" => 0, "role" => :user}, 3000
-      assert_push "chat:message", %{"index" => idx2, "role" => :assistant}, 3000
+      assert_push "chat:message", %{"index" => 0, "role" => "user"}, 3000
+      assert_push "chat:message", %{"index" => idx2, "role" => "assistant"}, 3000
       assert rem(idx2, 2) == 1
 
       # Cleanup
@@ -576,10 +579,10 @@ defmodule NestWeb.AgentChannelTest do
       assert_reply ref, :ok, %{}
 
       # Receive user message first (even index)
-      assert_push "chat:message", %{"index" => 0, "role" => :user}, 3000
+      assert_push "chat:message", %{"index" => 0, "role" => "user"}, 3000
 
       # Then receive assistant message (odd index)
-      assert_push "chat:message", %{"index" => idx, "role" => :assistant} = payload, 3000
+      assert_push "chat:message", %{"index" => idx, "role" => "assistant"} = payload, 3000
       assert is_binary(payload["content"])
       assert idx >= 1
       # Assistant messages should have odd indexes
@@ -613,8 +616,8 @@ defmodule NestWeb.AgentChannelTest do
       assert_reply ref3, :ok, %{"status" => "streaming"}
 
       # Wait for completion (user message first, then assistant)
-      assert_push "chat:message", %{"index" => 0, "role" => :user}, 2000
-      assert_push "chat:message", %{"index" => 1, "role" => :assistant}, 2000
+      assert_push "chat:message", %{"index" => 0, "role" => "user"}, 2000
+      assert_push "chat:message", %{"index" => 1, "role" => "assistant"}, 2000
 
       # Drain any remaining delta messages from mailbox
       receive do
@@ -775,8 +778,8 @@ defmodule NestWeb.AgentChannelTest do
       assert_push "chat:delta", _payload, 100
 
       # Wait for assistant response to complete (user message first, then assistant)
-      assert_push "chat:message", %{"index" => 0, "role" => :user}, 2000
-      assert_push "chat:message", %{"index" => 1, "role" => :assistant}, 2000
+      assert_push "chat:message", %{"index" => 0, "role" => "user"}, 2000
+      assert_push "chat:message", %{"index" => 1, "role" => "assistant"}, 2000
 
       Process.sleep(100)
 
@@ -896,8 +899,8 @@ defmodule NestWeb.AgentChannelTest do
       user1 = messages1[0]
       assistant1 = messages1[1]
 
-      assert user1["role"] == :user
-      assert assistant1["role"] == :assistant
+      assert user1["role"] == "user"
+      assert assistant1["role"] == "assistant"
 
       # User message (index 0) should have request log
       assert length(user1["apiLogs"]) == 1
@@ -925,8 +928,8 @@ defmodule NestWeb.AgentChannelTest do
       user2 = messages2[2]
       assistant2 = messages2[3]
 
-      assert user2["role"] == :user
-      assert assistant2["role"] == :assistant
+      assert user2["role"] == "user"
+      assert assistant2["role"] == "assistant"
 
       # User message (index 2) should have request log
       assert length(user2["apiLogs"]) == 1
@@ -966,8 +969,8 @@ defmodule NestWeb.AgentChannelTest do
       user = messages[0]
       assistant = messages[1]
 
-      assert user["role"] == :user
-      assert assistant["role"] == :assistant
+      assert user["role"] == "user"
+      assert assistant["role"] == "assistant"
 
       # Verify user message has request with proper payload structure
       request = Enum.find(user["apiLogs"], fn l -> l["type"] == "request" end)
@@ -992,33 +995,22 @@ defmodule NestWeb.AgentChannelTest do
       socket: socket,
       agent_id: _id
     } do
-      # Create a message with tool_results using LangChain structs
-      # These structs cannot be JSON encoded directly and must be converted to maps
-      tool_result_message = %{
-        index: 2,
-        timestamp: DateTime.utc_now(),
-        role: :tool,
-        content: "Tool execution result",
-        tool_calls: nil,
-        tool_results: [
-          %LangChain.Message.ToolResult{
-            tool_call_id: "call_123",
-            name: "shell_cmd",
-            content: [
-              %LangChain.Message.ContentPart{
-                type: :text,
-                content: "total 4\ndrwxrwxr-x 1 user user 18 May 29 10:49 .",
-                options: [],
-                citations: []
-              }
-            ],
-            is_error: false
-          }
-        ],
-        thinking: nil,
-        usage: nil,
-        api_logs: []
-      }
+      # Create a message with tool_results using new Tool struct
+      tool_result_message =
+        {:tool,
+         %Tool{
+           index: 2,
+           timestamp: DateTime.utc_now(),
+           tool_results: [
+             %ToolResult{
+               tool_call_id: "call_123",
+               name: "shell_cmd",
+               content: "total 4\ndrwxrwxr-x 1 user user 18 May 29 10:49 .",
+               is_error: false
+             }
+           ],
+           api_logs: []
+         }}
 
       # Send the broadcast message to the channel process
       send(socket.channel_pid, {:chat_message, tool_result_message})
@@ -1027,7 +1019,7 @@ defmodule NestWeb.AgentChannelTest do
       assert_push "chat:message", payload, 500
 
       assert payload["index"] == 2
-      assert payload["role"] == :tool
+      assert payload["role"] == "tool"
 
       # toolResults should be a list of plain maps, not structs
       assert is_list(payload["toolResults"])
@@ -1044,6 +1036,154 @@ defmodule NestWeb.AgentChannelTest do
       # ContentPart structs should be converted to plain text
       assert tool_result["content"] == "total 4\ndrwxrwxr-x 1 user user 18 May 29 10:49 ."
       assert tool_result["is_error"] == false
+    end
+
+    test "chat:sync handles messages with ToolResult structs", %{
+      socket: socket,
+      agent_id: id
+    } do
+      # Stub the LLMChain so we can inject a message with ToolResult structs
+      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
+
+      # Send a message to create some history
+      ref = push(socket, "chat:message", %{"content" => "Hello"})
+      assert_reply ref, :ok, %{}
+
+      # Wait for completion
+      assert_push "chat:message", %{"index" => 0, "role" => "user"}, 2000
+      assert_push "chat:message", %{"index" => 1, "role" => "assistant"}, 2000
+
+      Process.sleep(100)
+
+      # Create a tool result message with new Tool struct
+      tool_result_message =
+        {:tool,
+         %Tool{
+           index: 2,
+           timestamp: DateTime.utc_now(),
+           tool_results: [
+             %ToolResult{
+               tool_call_id: "call_123",
+               name: "shell_cmd",
+               content: "total 4\ndrwxrwxr-x 1 user user 18 May 29 10:49 .",
+               is_error: false
+             }
+           ],
+           api_logs: []
+         }}
+
+      # Inject the tool result message into the agent's state
+      {:ok, agent_pid} = Nest.Agents.Supervisor.get_agent(id)
+
+      # Use :sys.replace_state to inject the tool message
+      :sys.replace_state(agent_pid, fn state ->
+        %{state | messages: [tool_result_message | state.messages]}
+      end)
+
+      # Sync from -1 should return all messages including the tool result
+      sync_ref = push(socket, "chat:sync", %{"lastIndex" => -1})
+
+      # This should NOT crash with Protocol.UndefinedError
+      assert_reply sync_ref, :ok, %{"messages" => messages}
+
+      # Find the tool message (role is now a string in formatted messages)
+      tool_message = Enum.find(messages, fn m -> m["role"] == "tool" end)
+      assert tool_message != nil
+
+      # toolResults should be plain maps
+      assert is_list(tool_message["toolResults"])
+      tool_result = List.first(tool_message["toolResults"])
+      assert is_map(tool_result)
+      refute is_struct(tool_result)
+      assert tool_result["tool_call_id"] == "call_123"
+      assert tool_result["content"] == "total 4\ndrwxrwxr-x 1 user user 18 May 29 10:49 ."
+    end
+
+    test "chat:sync handles messages with ToolResult structs in api_logs", %{
+      socket: socket,
+      agent_id: id
+    } do
+      # Stub the LLMChain so we can inject a message with ToolResult structs in api_logs
+      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
+
+      # Send a message to create some history
+      ref = push(socket, "chat:message", %{"content" => "Hello"})
+      assert_reply ref, :ok, %{}
+
+      # Wait for completion
+      assert_push "chat:message", %{"index" => 0, "role" => "user"}, 2000
+      assert_push "chat:message", %{"index" => 1, "role" => "assistant"}, 2000
+
+      Process.sleep(100)
+
+      # Create a message with api_logs containing ToolResult structs in payload
+      # The api_logs payload still contains raw LangChain structs for testing serialization
+      message_with_api_logs =
+        {:assistant,
+         %Assistant{
+           index: 2,
+           timestamp: DateTime.utc_now(),
+           content: "Response with API logs",
+           api_logs: [
+             %{
+               id: "api_001",
+               timestamp: DateTime.utc_now(),
+               type: :response,
+               payload: %{
+                 role: :assistant,
+                 content: "Test",
+                 tool_results: [
+                   %LangChain.Message.ToolResult{
+                     tool_call_id: "call_456",
+                     name: "shell_cmd",
+                     content: [
+                       %LangChain.Message.ContentPart{
+                         type: :text,
+                         content: "output",
+                         options: [],
+                         citations: []
+                       }
+                     ],
+                     is_error: false
+                   }
+                 ],
+                 index: 2,
+                 status: :complete
+               }
+             }
+           ]
+         }}
+
+      # Inject the message into the agent's state
+      {:ok, agent_pid} = Nest.Agents.Supervisor.get_agent(id)
+
+      :sys.replace_state(agent_pid, fn state ->
+        %{state | messages: [message_with_api_logs | state.messages]}
+      end)
+
+      # Sync from -1 should return all messages including the one with api_logs
+      sync_ref = push(socket, "chat:sync", %{"lastIndex" => -1})
+
+      # This should NOT crash with Protocol.UndefinedError
+      assert_reply sync_ref, :ok, %{"messages" => messages}
+
+      # Find the message with api_logs
+      message = Enum.find(messages, fn m -> m["index"] == 2 end)
+      assert message != nil
+
+      # api_logs should be present and properly formatted
+      assert is_list(message["apiLogs"])
+      [api_log] = message["apiLogs"]
+      assert api_log["id"] == "api_001"
+
+      # payload.tool_results should be plain maps, not structs
+      payload = api_log["payload"]
+      assert is_map(payload)
+      assert is_list(payload["tool_results"])
+      tool_result = List.first(payload["tool_results"])
+      refute is_struct(tool_result)
+      assert tool_result["tool_call_id"] == "call_456"
+      assert tool_result["content"] == "output"
     end
   end
 end

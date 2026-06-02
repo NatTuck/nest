@@ -175,6 +175,7 @@ export const useStore = create(
                     status: "connecting",
                     error: null,
                     model: null,
+                    waitingForResponse: false,
                   },
             },
           };
@@ -210,6 +211,7 @@ export const useStore = create(
                 error: null,
                 model: payload.model || existing?.model || null,
                 vocation: payload.vocation || existing?.vocation || null,
+                waitingForResponse: false,
               },
             },
           };
@@ -446,7 +448,7 @@ export const useStore = create(
 
           const exists = cache.messages.some((m) => m.index === message.index);
 
-          // Merge apiLogs if updating an existing message
+          // Merge apiLogs, toolCalls, and toolResults if updating an existing message
           const newMessages = exists
             ? cache.messages.map((m) => {
                 if (m.index === message.index) {
@@ -454,7 +456,19 @@ export const useStore = create(
                   const mergedApiLogs = message.apiLogs?.length
                     ? message.apiLogs
                     : m.apiLogs || [];
-                  return { ...message, apiLogs: mergedApiLogs };
+                  // Preserve toolCalls and toolResults from existing message if not in new message
+                  const mergedToolCalls = message.toolCalls?.length
+                    ? message.toolCalls
+                    : m.toolCalls || [];
+                  const mergedToolResults = message.toolResults?.length
+                    ? message.toolResults
+                    : m.toolResults || [];
+                  return {
+                    ...message,
+                    apiLogs: mergedApiLogs,
+                    toolCalls: mergedToolCalls,
+                    toolResults: mergedToolResults,
+                  };
                 }
                 return m;
               })
@@ -497,6 +511,7 @@ export const useStore = create(
                 ...cache,
                 messages: [...cache.messages, userMessage],
                 lastIndex: newIndex,
+                waitingForResponse: true,
                 partial: {
                   index: newIndex + 1,
                   role: "assistant",

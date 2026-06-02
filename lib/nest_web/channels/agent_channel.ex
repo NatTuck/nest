@@ -17,6 +17,7 @@ defmodule NestWeb.AgentChannel do
   require Logger
 
   alias Nest.Agents
+  alias Nest.Messages.Message
 
   @impl true
   def join("agent:" <> agent_id, _payload, socket) do
@@ -56,16 +57,7 @@ defmodule NestWeb.AgentChannel do
   # Handle chat messages from PubSub (broadcast by Agent)
   @impl true
   def handle_info({:chat_message, message}, socket) do
-    push(socket, "chat:message", %{
-      "index" => message.index,
-      "role" => message.role,
-      "content" => message.content,
-      "toolCalls" => message[:tool_calls],
-      "toolResults" => format_tool_results(message[:tool_results]),
-      "thinking" => message[:thinking],
-      "usage" => message[:usage],
-      "apiLogs" => format_api_logs(message[:api_logs])
-    })
+    push(socket, "chat:message", Message.to_json(message))
 
     {:noreply, socket}
   end
@@ -116,45 +108,9 @@ defmodule NestWeb.AgentChannel do
     }
   end
 
-  defp format_api_logs(nil), do: []
-
-  defp format_api_logs(api_logs) do
-    Enum.map(api_logs, fn log ->
-      %{
-        "id" => log.id,
-        "timestamp" => format_timestamp(log.timestamp),
-        "type" => to_string(log.type),
-        "payload" => log.payload
-      }
-    end)
+  defp format_message(message) do
+    Message.to_json(message)
   end
-
-  defp format_timestamp(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
-  defp format_timestamp(other), do: other
-
-  defp format_tool_results(nil), do: []
-
-  defp format_tool_results(tool_results) do
-    Enum.map(tool_results, fn tr ->
-      %{
-        "tool_call_id" => tr.tool_call_id,
-        "name" => tr.name,
-        "content" => extract_tool_result_content(tr.content),
-        "is_error" => tr.is_error || false
-      }
-    end)
-  end
-
-  # Extract content from ContentPart structs or plain text
-  defp extract_tool_result_content(content) when is_list(content) do
-    Enum.map_join(content, "\n", fn
-      %LangChain.Message.ContentPart{type: :text, content: text} -> text
-      %LangChain.Message.ContentPart{} = part -> inspect(part)
-      other -> to_string(other)
-    end)
-  end
-
-  defp extract_tool_result_content(content), do: to_string(content)
 
   @impl true
   def handle_in("chat:message", %{"content" => content}, socket) do
@@ -196,9 +152,16 @@ defmodule NestWeb.AgentChannel do
 
     case Agents.get_agent(agent_id) do
       {:ok, agent} ->
-        # Get messages after last_index
+        # Get messages after last_index and format them
         new_messages =
-          Enum.filter(agent.messages, fn msg -> msg.index > last_index end)
+          agent.messages
+          |> Enum.filter(fn
+            {:user, %{index: idx}} -> idx > last_index
+            {:assistant, %{index: idx}} -> idx > last_index
+            {:tool, %{index: idx}} -> idx > last_index
+            {:system, %{index: idx}} -> idx > last_index
+          end)
+          |> Enum.map(&format_message/1)
 
         # Check if there's a partial message being streamed
         partial =

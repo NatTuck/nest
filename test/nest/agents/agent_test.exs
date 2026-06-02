@@ -43,7 +43,7 @@ defmodule Nest.Agents.AgentTest do
       :ok = Agent.chat(pid, "Hello")
 
       # Receive user message
-      assert_receive {:chat_message, %{role: :user, index: 0, content: "Hello"}},
+      assert_receive {:chat_message, {:user, %{index: 0, content: "Hello"}}},
                      1000
 
       # Receive assistant response via PubSub
@@ -62,7 +62,7 @@ defmodule Nest.Agents.AgentTest do
       :ok = Agent.chat(pid, "Hello")
 
       # Should receive user message
-      assert_receive {:chat_message, %{role: :user, index: 0, content: "Hello"}},
+      assert_receive {:chat_message, {:user, %{index: 0, content: "Hello"}}},
                      1000
 
       # Should receive error message
@@ -78,14 +78,14 @@ defmodule Nest.Agents.AgentTest do
       :ok = Agent.chat(pid, "Hello")
 
       # Receive user message
-      assert_receive {:chat_message, %{role: :user}}, 1000
+      assert_receive {:chat_message, {:user, _}}, 1000
 
       # Collect deltas and verify final message
       {partial_content, final_message} = collect_deltas_and_message_from_pubsub()
 
       # Verify accumulated content matches final
-      assert final_message.role == :assistant
-      assert partial_content == final_message.content
+      assert elem(final_message, 0) == :assistant
+      assert partial_content == elem(final_message, 1).content
       assert partial_content != ""
     end
   end
@@ -100,7 +100,7 @@ defmodule Nest.Agents.AgentTest do
       :ok = Agent.chat(pid, "Hello")
 
       # Skip user message
-      assert_receive {:chat_message, %{role: :user}}, 1000
+      assert_receive {:chat_message, {:user, _}}, 1000
 
       # Collect all deltas and verify
       deltas = collect_all_deltas_from_pubsub()
@@ -131,11 +131,13 @@ defmodule Nest.Agents.AgentTest do
       {:chat_delta, _chunk} ->
         receive_deltas_and_message_from_pubsub()
 
-      {:chat_message, %{role: :user}} ->
+      {:chat_message, {:user, _}} ->
         receive_deltas_and_message_from_pubsub()
 
-      {:chat_message, %{role: :assistant, content: _}} = msg ->
-        assert match?({:chat_message, %{role: :assistant, content: _}}, msg)
+      {:chat_message, {:assistant, assistant_struct}} = msg ->
+        assert is_struct(assistant_struct, Nest.Messages.Assistant)
+        assert assistant_struct.content != nil
+        msg
     after
       2000 ->
         flunk("Timeout waiting for assistant response")
@@ -147,7 +149,7 @@ defmodule Nest.Agents.AgentTest do
       {:chat_delta, %{content: content}} ->
         collect_deltas_and_message_from_pubsub(acc <> content)
 
-      {:chat_message, %{role: :user}} ->
+      {:chat_message, {:user, _}} ->
         collect_deltas_and_message_from_pubsub(acc)
 
       {:chat_message, msg} ->
@@ -163,7 +165,7 @@ defmodule Nest.Agents.AgentTest do
       {:chat_delta, delta} ->
         collect_all_deltas_from_pubsub([delta | deltas])
 
-      {:chat_message, %{role: :assistant}} ->
+      {:chat_message, {:assistant, _}} ->
         Enum.reverse(deltas)
     after
       500 ->

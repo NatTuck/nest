@@ -939,6 +939,129 @@ describe("store", () => {
       expect(messages[0].content).toBe("Hello world");
       expect(messages[0].apiLogs).toEqual([]);
     });
+
+    it("preserves toolCalls when updating existing message", () => {
+      // Add initial message with toolCalls
+      useStore.getState().addChatMessage("agent-1", {
+        index: 0,
+        role: "assistant",
+        content: "Let me help",
+        toolCalls: [
+          {
+            id: "call_123",
+            name: "shell_cmd",
+            arguments: { command: "ls" },
+          },
+        ],
+      });
+
+      // Update the message without toolCalls (simulating a sync)
+      useStore.getState().addChatMessage("agent-1", {
+        index: 0,
+        role: "assistant",
+        content: "Let me help",
+      });
+
+      const messages = useStore.getState().agentsCache["agent-1"].messages;
+      expect(messages[0].toolCalls).toHaveLength(1);
+      expect(messages[0].toolCalls[0].id).toBe("call_123");
+    });
+
+    it("preserves toolResults when updating existing message", () => {
+      // Add initial message with toolResults
+      useStore.getState().addChatMessage("agent-1", {
+        index: 0,
+        role: "tool",
+        content: "Tool result",
+        toolResults: [
+          {
+            tool_call_id: "call_123",
+            name: "shell_cmd",
+            content: "file1.txt file2.txt",
+            is_error: false,
+          },
+        ],
+      });
+
+      // Update the message without toolResults (simulating a sync)
+      useStore.getState().addChatMessage("agent-1", {
+        index: 0,
+        role: "tool",
+        content: "Tool result",
+      });
+
+      const messages = useStore.getState().agentsCache["agent-1"].messages;
+      expect(messages[0].toolResults).toHaveLength(1);
+      expect(messages[0].toolResults[0].tool_call_id).toBe("call_123");
+    });
+  });
+
+  describe("setWaitingForResponse during tool execution", () => {
+    beforeEach(() => {
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+      });
+    });
+
+    it("should set waitingForResponse when status changes to executing_tools", () => {
+      // Setup: User sends a message
+      useStore.getState().addUserMessage("agent-1", "Run a command");
+      expect(
+        useStore.getState().agentsCache["agent-1"].waitingForResponse,
+      ).toBe(true);
+
+      // Simulate receiving tool call message (assistant with tool_calls)
+      useStore.getState().addChatMessage("agent-1", {
+        index: 1,
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          {
+            id: "call_123",
+            name: "shell_cmd",
+            arguments: { command: "ls" },
+          },
+        ],
+      });
+
+      // At this point, waitingForResponse should still be true
+      // because we're waiting for tool execution
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.waitingForResponse).toBe(true);
+    });
+
+    it("should preserve waitingForResponse when adding tool result message", () => {
+      // Setup: User message and tool call
+      useStore.getState().addUserMessage("agent-1", "Run a command");
+      useStore.getState().addChatMessage("agent-1", {
+        index: 1,
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: "call_123", name: "shell_cmd", arguments: {} }],
+      });
+
+      // Simulate receiving tool result
+      useStore.getState().addChatMessage("agent-1", {
+        index: 2,
+        role: "tool",
+        content: "output",
+        toolResults: [
+          {
+            tool_call_id: "call_123",
+            name: "shell_cmd",
+            content: "output",
+            is_error: false,
+          },
+        ],
+      });
+
+      // After tool result, waitingForResponse should remain true
+      // until we receive the final assistant response
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.waitingForResponse).toBe(true);
+    });
   });
 
   describe("removeAgent", () => {

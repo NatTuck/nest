@@ -430,9 +430,7 @@ export function ChatPage() {
                 ${streaming ? "animate-pulse" : ""}
               `}
             />
-            <span className="text-sm text-gray-400">
-              {getStatusLabel()}
-            </span>
+            <span className="text-sm text-gray-400">{getStatusLabel()}</span>
           </div>
         </div>
       </div>
