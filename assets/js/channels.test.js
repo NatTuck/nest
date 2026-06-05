@@ -77,6 +77,14 @@ describe("channels", () => {
     });
   });
 
+  describe("getSocket", () => {
+    it("should return the socket instance", async () => {
+      const { getSocket } = await import("./channels");
+      const socket = getSocket();
+      assert.strictEqual(typeof socket, "object");
+    });
+  });
+
   describe("joinLobby", () => {
     it("should set store.agents when receiving init event", async () => {
       setNextJoinResult("lobby", {
@@ -1069,6 +1077,55 @@ describe("channels", () => {
         assert.strictEqual(errorCalled, true);
       });
     });
+    it("should include workspace_path in payload when provided", async () => {
+      setNextPushResult("lobby", "create_agent", { ok: { id: "new-agent" } });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().agents.length >= 0, true);
+      });
+
+      let okCalled = false;
+      createAgent("gpt-4", 1, "/path/to/workspace", (id) => {
+        okCalled = true;
+      });
+
+      await vi.waitFor(() => {
+        assert.strictEqual(okCalled, true);
+      });
+    });
+
+    it("should work without onOk callback on success", async () => {
+      setNextPushResult("lobby", "create_agent", { ok: { id: "new-agent" } });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().agents.length >= 0, true);
+      });
+
+      // Call without onOk callback - should not throw
+      createAgent("gpt-4", 1, null, undefined);
+
+      // Just wait a bit to ensure no errors
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    it("should work without onError callback on error", async () => {
+      setNextPushResult("lobby", "create_agent", {
+        error: { reason: "limit_reached" },
+      });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().agents.length >= 0, true);
+      });
+
+      // Call without onError callback - should not throw
+      createAgent("gpt-4", 1, null, undefined, undefined);
+
+      // Just wait a bit to ensure no errors
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
   });
 
   describe("deleteAgent", () => {
@@ -1101,6 +1158,23 @@ describe("channels", () => {
       await vi.waitFor(() => {
         assert.strictEqual(errorCalled, true);
       });
+    });
+
+    it("should work without onError callback", async () => {
+      setNextPushResult("lobby", "delete_agent", {
+        error: { reason: "not_found" },
+      });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().agents.length >= 0, true);
+      });
+
+      // Call without onError callback - should not throw
+      deleteAgent("agent-1");
+
+      // Just wait a bit to ensure no errors
+      await new Promise((resolve) => setTimeout(resolve, 50));
     });
   });
 

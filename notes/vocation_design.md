@@ -78,7 +78,7 @@ Vocations are **reusable agent blueprints** that define an agent's role, availab
   workspace_path: String,   # Absolute path to workspace directory
   
   # Existing fields:
-  # model, messages, next_message_index, partial_message, status
+  # model, messages, next_message_index, streaming_acc, status
 }
 ```
 

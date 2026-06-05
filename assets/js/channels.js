@@ -11,6 +11,7 @@ import { useStore } from "./store";
 // Module-level channel refs (NOT in store - they're mutable references)
 let lobbyChannel = null;
 export const agentChannels = new Map(); // agentId -> Channel
+const joinFailedAgents = new Set(); // Track agents that failed to join
 
 /**
  * Get the socket instance
@@ -156,8 +157,20 @@ export function joinAgent(agentId) {
   });
 
   channel.onClose(() => {
-    agentChannels.delete(agentId);
-    store.setAgentDisconnected(agentId);
+    // Don't set disconnected if join failed (error or timeout)
+    // This prevents overwriting error status when Phoenix retries connections
+    if (joinFailedAgents.has(agentId)) {
+      joinFailedAgents.delete(agentId);
+      return;
+    }
+    // Set disconnected if currently connected (prevents overwriting error status)
+    // Must get fresh store state, not use captured 'store' variable
+    const currentStore = getStore();
+    const cache = currentStore.agentsCache[agentId];
+    if (cache?.status === "connected") {
+      agentChannels.delete(agentId);
+      currentStore.setAgentDisconnected(agentId);
+    }
   });
 
   // Join the channel
@@ -168,11 +181,15 @@ export function joinAgent(agentId) {
     })
     .receive("error", (err) => {
       console.error(`Agent ${agentId} channel join error:`, err);
+      joinFailedAgents.add(agentId); // Mark as failed to prevent reconnection
+      channel.leave(); // Properly close channel to stop reconnection attempts
       agentChannels.delete(agentId);
       store.setAgentError(agentId, err.reason || "Failed to connect");
     })
     .receive("timeout", () => {
       console.error(`Agent ${agentId} channel join timeout`);
+      joinFailedAgents.add(agentId); // Mark as failed to prevent reconnection
+      channel.leave(); // Properly close channel to stop reconnection attempts
       agentChannels.delete(agentId);
       store.setAgentError(agentId, "Connection timed out");
     });

@@ -18,6 +18,7 @@ defmodule NestWeb.AgentChannel do
 
   alias Nest.Agents
   alias Nest.Messages.Message
+  alias Nest.Messages.Streaming
 
   @impl true
   def join("agent:" <> agent_id, _payload, socket) do
@@ -46,7 +47,7 @@ defmodule NestWeb.AgentChannel do
       "vocation" => agent.vocation,
       "messageCount" => length(agent.messages),
       "status" => to_string(agent.status),
-      "partial" => build_partial_payload(agent.partial_message)
+      "partial" => build_partial_payload(agent.partial)
     }
 
     push(socket, "init", init_payload)
@@ -96,16 +97,8 @@ defmodule NestWeb.AgentChannel do
 
   defp build_partial_payload(nil), do: nil
 
-  defp build_partial_payload(partial) do
-    %{
-      "index" => partial.index,
-      "role" => partial.role,
-      "content" => partial.content,
-      "charsEnd" => partial.chars_sent,
-      "timestamp" => partial.timestamp,
-      "segments" => partial[:segments] || [],
-      "currentType" => partial[:current_type]
-    }
+  defp build_partial_payload(%Streaming.AssistantAccumulator{} = acc) do
+    Streaming.to_json(acc)
   end
 
   defp format_message(message) do
@@ -136,7 +129,7 @@ defmodule NestWeb.AgentChannel do
           "model" => agent.model,
           "messageCount" => length(agent.messages),
           "status" => to_string(agent.status),
-          "partial" => build_partial_payload(agent.partial_message)
+          "partial" => build_partial_payload(agent.partial)
         }
 
         {:reply, {:ok, reply}, socket}
@@ -165,8 +158,8 @@ defmodule NestWeb.AgentChannel do
 
         # Check if there's a partial message being streamed
         partial =
-          if agent.partial_message && agent.partial_message.index > last_index do
-            build_partial_payload(agent.partial_message)
+          if agent.partial && agent.partial.index > last_index do
+            build_partial_payload(agent.partial)
           else
             nil
           end

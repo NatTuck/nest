@@ -388,6 +388,183 @@ describe("store", () => {
     });
   });
 
+  describe("addChatDelta with deltaIndex (new protocol)", () => {
+    beforeEach(() => {
+      useStore.getState().setAgentConnecting("agent-1");
+    });
+
+    it("applies first delta with deltaIndex 0", () => {
+      const result = useStore.getState().addChatDelta("agent-1", {
+        index: 5,
+        deltaIndex: 0,
+        content: "Hello",
+        partType: "text",
+      });
+
+      expect(result).toEqual({ applied: true, needsSync: false });
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.streaming.content).toBe("Hello");
+      expect(cache.streaming.nextDeltaIndex).toBe(1);
+      expect(cache.streaming.messageIndex).toBe(5);
+    });
+
+    it("applies sequential deltas", () => {
+      // First delta
+      useStore.getState().addChatDelta("agent-1", {
+        index: 5,
+        deltaIndex: 0,
+        content: "Hello ",
+        partType: "text",
+      });
+
+      // Second delta
+      const result = useStore.getState().addChatDelta("agent-1", {
+        index: 5,
+        deltaIndex: 1,
+        content: "world",
+        partType: "text",
+      });
+
+      expect(result).toEqual({ applied: true, needsSync: false });
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.streaming.content).toBe("Hello world");
+      expect(cache.streaming.nextDeltaIndex).toBe(2);
+    });
+
+    it("detects duplicate delta and rejects without sync", () => {
+      // Apply first delta
+      useStore.getState().addChatDelta("agent-1", {
+        index: 5,
+        deltaIndex: 0,
+        content: "Hello",
+        partType: "text",
+      });
+
+      // Try to apply same delta again
+      const result = useStore.getState().addChatDelta("agent-1", {
+        index: 5,
+        deltaIndex: 0,
+        content: "Duplicate",
+        partType: "text",
+      });
+
+      expect(result).toEqual({
+        applied: false,
+        needsSync: false,
+        outOfOrder: false,
+      });
+      // Content should not change
+      expect(useStore.getState().agentsCache["agent-1"].streaming.content).toBe(
+        "Hello",
+      );
+    });
+
+    it("detects out-of-order delta and requests sync", () => {
+      // Apply first delta
+      useStore.getState().addChatDelta("agent-1", {
+        index: 5,
+        deltaIndex: 0,
+        content: "First",
+        partType: "text",
+      });
+
+      // Try to apply delta with index 2 (skipping index 1)
+      const result = useStore.getState().addChatDelta("agent-1", {
+        index: 5,
+        deltaIndex: 2,
+        content: "Third",
+        partType: "text",
+      });
+
+      expect(result).toEqual({
+        applied: false,
+        needsSync: true,
+        outOfOrder: true,
+      });
+      // Content should not change
+      expect(useStore.getState().agentsCache["agent-1"].streaming.content).toBe(
+        "First",
+      );
+    });
+
+    it("resets streaming state when message index changes", () => {
+      // Apply delta for message 5
+      useStore.getState().addChatDelta("agent-1", {
+        index: 5,
+        deltaIndex: 0,
+        content: "Message 5",
+        partType: "text",
+      });
+
+      // Apply delta for message 6 - should reset streaming
+      const result = useStore.getState().addChatDelta("agent-1", {
+        index: 6,
+        deltaIndex: 0,
+        content: "Message 6",
+        partType: "text",
+      });
+
+      expect(result).toEqual({ applied: true, needsSync: false });
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.streaming.messageIndex).toBe(6);
+      expect(cache.streaming.content).toBe("Message 6");
+      expect(cache.streaming.nextDeltaIndex).toBe(1);
+    });
+
+    it("stores tool call information in streaming state", () => {
+      useStore.getState().addChatDelta("agent-1", {
+        index: 5,
+        deltaIndex: 0,
+        content: ' {"key": "value"}',
+        partType: "tool_arguments",
+        toolCallId: "call-123",
+        toolCallName: "test_tool",
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.streaming.toolCallId).toBe("call-123");
+      expect(cache.streaming.toolCallName).toBe("test_tool");
+    });
+
+    it("preserves existing tool call info when new delta has none", () => {
+      useStore.getState().addChatDelta("agent-1", {
+        index: 5,
+        deltaIndex: 0,
+        content: "Start",
+        partType: "text",
+        toolCallId: "call-123",
+        toolCallName: "test_tool",
+      });
+
+      useStore.getState().addChatDelta("agent-1", {
+        index: 5,
+        deltaIndex: 1,
+        content: " end",
+        partType: "text",
+        // No tool call info - should preserve existing
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.streaming.toolCallId).toBe("call-123");
+      expect(cache.streaming.toolCallName).toBe("test_tool");
+    });
+
+    it("sets waitingForResponse to false when applying delta", () => {
+      useStore.getState().agentsCache["agent-1"].waitingForResponse = true;
+
+      useStore.getState().addChatDelta("agent-1", {
+        index: 5,
+        deltaIndex: 0,
+        content: "Response",
+        partType: "text",
+      });
+
+      expect(
+        useStore.getState().agentsCache["agent-1"].waitingForResponse,
+      ).toBe(false);
+    });
+  });
+
   describe("addChatDelta", () => {
     beforeEach(() => {
       useStore.getState().setAgentConnecting("agent-1");
@@ -1169,6 +1346,64 @@ describe("store", () => {
     });
   });
 
+  describe("clearStreaming with existing cache", () => {
+    beforeEach(() => {
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+      });
+    });
+
+    it("clears the streaming state", () => {
+      useStore.getState().agentsCache["agent-1"].streaming = {
+        messageIndex: 5,
+        nextDeltaIndex: 3,
+        content: "Streaming...",
+      };
+
+      useStore.getState().clearStreaming("agent-1");
+
+      expect(useStore.getState().agentsCache["agent-1"].streaming).toBeNull();
+      expect(useStore.getState().agentsCache["agent-1"].partial).toBeNull();
+    });
+  });
+
+  describe("addChatDelta with different part types", () => {
+    beforeEach(() => {
+      useStore.getState().setAgentConnecting("agent-1");
+    });
+
+    it("creates new segment when part type changes", () => {
+      // First delta with text type
+      useStore.getState().addChatDelta("agent-1", {
+        index: 5,
+        deltaIndex: 0,
+        content: "Hello ",
+        partType: "text",
+      });
+
+      // Second delta with tool_arguments type - should create new segment
+      useStore.getState().addChatDelta("agent-1", {
+        index: 5,
+        deltaIndex: 1,
+        content: '{"key": "val"}',
+        partType: "tool_arguments",
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.streaming.segments).toHaveLength(2);
+      expect(cache.streaming.segments[0]).toMatchObject({
+        type: "text",
+        content: "Hello ",
+      });
+      expect(cache.streaming.segments[1]).toMatchObject({
+        type: "tool_arguments",
+        content: '{"key": "val"}',
+      });
+    });
+  });
+
   describe("clearPartial with existing cache", () => {
     beforeEach(() => {
       useStore.getState().setAgentConnecting("agent-1");
@@ -1354,6 +1589,207 @@ describe("store", () => {
     it("setModels updates models list", () => {
       useStore.getState().setModels([{ name: "gpt-4", provider: "openai" }]);
       expect(useStore.getState().models).toHaveLength(1);
+    });
+  });
+
+  describe("tool call message flow", () => {
+    it("handles complete tool call flow with four separate messages", () => {
+      // Setup agent
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+      });
+
+      // Message 0: User message
+      useStore.getState().addUserMessage("agent-1", "List the files");
+
+      // Message 1: Assistant with tool calls
+      useStore.getState().addChatMessage("agent-1", {
+        index: 1,
+        role: "assistant",
+        content: "I'll run that command for you",
+        toolCalls: [
+          {
+            id: "call_123",
+            name: "shell_cmd",
+            arguments: { command: "ls -la" },
+          },
+        ],
+      });
+
+      // Message 2: Tool result
+      useStore.getState().addChatMessage("agent-1", {
+        index: 2,
+        role: "tool",
+        content: "",
+        toolResults: [
+          {
+            tool_call_id: "call_123",
+            name: "shell_cmd",
+            content: "total 4\\ndrwxrwxr-x 1 user user 18 May 29 10:49 .",
+            is_error: false,
+          },
+        ],
+      });
+
+      // Message 3: Final assistant response
+      useStore.getState().addChatMessage("agent-1", {
+        index: 3,
+        role: "assistant",
+        content: "Here are the directory contents",
+      });
+
+      const messages = useStore.getState().agentsCache["agent-1"].messages;
+
+      // Verify 4 separate messages
+      expect(messages).toHaveLength(4);
+
+      // Verify each message has correct role and index
+      expect(messages[0]).toMatchObject({
+        index: 0,
+        role: "user",
+        content: "List the files",
+      });
+
+      expect(messages[1]).toMatchObject({
+        index: 1,
+        role: "assistant",
+        content: "I'll run that command for you",
+      });
+      expect(messages[1].toolCalls).toHaveLength(1);
+      expect(messages[1].toolCalls[0].id).toBe("call_123");
+
+      expect(messages[2]).toMatchObject({
+        index: 2,
+        role: "tool",
+      });
+      expect(messages[2].toolResults).toHaveLength(1);
+      expect(messages[2].toolResults[0].tool_call_id).toBe("call_123");
+
+      expect(messages[3]).toMatchObject({
+        index: 3,
+        role: "assistant",
+        content: "Here are the directory contents",
+      });
+    });
+
+    it("separates assistant message with toolCalls from tool result message", () => {
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+      });
+
+      // Add assistant message with tool calls
+      useStore.getState().addChatMessage("agent-1", {
+        index: 1,
+        role: "assistant",
+        content: "Let me calculate that",
+        toolCalls: [
+          {
+            id: "call_456",
+            name: "calculator",
+            arguments: { expression: "2 + 2" },
+          },
+        ],
+      });
+
+      // Add separate tool result message
+      useStore.getState().addChatMessage("agent-1", {
+        index: 2,
+        role: "tool",
+        content: "",
+        toolResults: [
+          {
+            tool_call_id: "call_456",
+            name: "calculator",
+            content: "4",
+            is_error: false,
+          },
+        ],
+      });
+
+      const messages = useStore.getState().agentsCache["agent-1"].messages;
+
+      // Should have exactly 2 messages, not merged
+      expect(messages).toHaveLength(2);
+
+      // First message is assistant with toolCalls
+      expect(messages[0].role).toBe("assistant");
+      expect(messages[0].toolCalls).toBeDefined();
+      expect(messages[0].toolCalls[0].name).toBe("calculator");
+
+      // Second message is tool result (different role)
+      expect(messages[1].role).toBe("tool");
+      expect(messages[1].toolResults).toBeDefined();
+      expect(messages[1].toolResults[0].content).toBe("4");
+    });
+
+    it("maintains message order as received in tool call flow", () => {
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+      });
+
+      // Add messages out of order to test append behavior
+      useStore.getState().addChatMessage("agent-1", {
+        index: 2,
+        role: "tool",
+        content: "",
+        toolResults: [
+          {
+            tool_call_id: "call_789",
+            name: "weather",
+            content: "sunny",
+            is_error: false,
+          },
+        ],
+      });
+
+      useStore.getState().addChatMessage("agent-1", {
+        index: 1,
+        role: "assistant",
+        content: "Checking weather",
+        toolCalls: [
+          { id: "call_789", name: "weather", arguments: { city: "London" } },
+        ],
+      });
+
+      useStore.getState().addChatMessage("agent-1", {
+        index: 3,
+        role: "assistant",
+        content: "It's sunny today",
+      });
+
+      useStore.getState().addChatMessage("agent-1", {
+        index: 0,
+        role: "user",
+        content: "What's the weather?",
+      });
+
+      const messages = useStore.getState().agentsCache["agent-1"].messages;
+
+      // Messages are appended in received order, not sorted by index
+      expect(messages).toHaveLength(4);
+      expect(messages[0].index).toBe(2);
+      expect(messages[0].role).toBe("tool");
+
+      expect(messages[1].index).toBe(1);
+      expect(messages[1].role).toBe("assistant");
+
+      expect(messages[2].index).toBe(3);
+      expect(messages[2].role).toBe("assistant");
+
+      expect(messages[3].index).toBe(0);
+      expect(messages[3].role).toBe("user");
+
+      // But each message has correct content
+      expect(messages[0].toolResults[0].content).toBe("sunny");
+      expect(messages[1].toolCalls[0].name).toBe("weather");
+      expect(messages[2].content).toBe("It's sunny today");
+      expect(messages[3].content).toBe("What's the weather?");
     });
   });
 });

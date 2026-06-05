@@ -106,7 +106,7 @@ defmodule Nest.Agents do
       vocation: vocation,
       messages: messages,
       status: info.status,
-      partial_message: info.partial
+      partial: info.partial
     }
 
     {:ok, agent}

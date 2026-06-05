@@ -8,6 +8,9 @@ defmodule Nest.Agents.AgentTest do
 
   alias Nest.Agents.Agent
   alias Nest.Agents.Registry
+  alias Nest.Messages.Assistant
+  alias Nest.Messages.Tool
+  alias Nest.Messages.ToolCall
 
   setup :set_mimic_global
   setup :verify_on_exit!
@@ -52,7 +55,7 @@ defmodule Nest.Agents.AgentTest do
 
     test "handles LLM error gracefully" do
       # Mock LLM to return an error
-      Mimic.stub(LangChain.Chains.LLMChain, :run, fn _chain, _opts ->
+      Mimic.stub(LangChain.Chains.LLMChain, :run, fn _chain ->
         {:error, nil, "Connection failed"}
       end)
 
@@ -107,6 +110,220 @@ defmodule Nest.Agents.AgentTest do
 
       # Verify we got deltas
       assert deltas != []
+    end
+  end
+
+  describe "chat/2 with tool calls" do
+    test "broadcasts complete tool call flow: user → assistant+tools → tool → assistant" do
+      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
+
+      # Configure mock to return tool calls
+      Nest.LangChainMock.set_tool_response(%{
+        text: "I'll run that command for you",
+        tool_calls: [
+          %LangChain.Message.ToolCall{
+            call_id: "call_123",
+            name: "shell_cmd",
+            arguments: %{"command" => "ls -la"}
+          }
+        ]
+      })
+
+      # Set final response after tool execution
+      Nest.LangChainMock.set_response("Here are the directory contents")
+
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      :ok = Agent.chat(pid, "List the files")
+
+      # Collect all messages from PubSub (deduplicated by index)
+      messages = collect_all_messages_from_pubsub([])
+
+      # Should receive exactly 4 unique messages (user, assistant+tools, tool, assistant)
+      # Note: messages may be broadcast multiple times with api_logs updates
+      assert length(messages) >= 4, "Expected at least 4 messages, got #{length(messages)}"
+
+      # Get unique messages by index (keep latest version with api_logs)
+      unique_messages =
+        messages
+        |> Enum.reverse()
+        |> Enum.uniq_by(fn {_role, msg} -> msg.index end)
+        |> Enum.reverse()
+
+      assert length(unique_messages) == 4,
+             "Expected 4 unique messages, got #{length(unique_messages)}: #{inspect(unique_messages)}"
+
+      # Message 0: User message
+      assert {:user, user_msg} = Enum.at(unique_messages, 0)
+      assert user_msg.index == 0
+      assert user_msg.content == "List the files"
+
+      # Message 1: Assistant with tool calls
+      assert {:assistant, assistant_msg} = Enum.at(unique_messages, 1)
+      assert assistant_msg.index == 1
+      assert assistant_msg.content == "I'll run that command for you"
+      assert assistant_msg.tool_calls != []
+      assert length(assistant_msg.tool_calls) == 1
+
+      [tool_call] = assistant_msg.tool_calls
+      assert %ToolCall{} = tool_call
+      assert tool_call.id == "call_123"
+      assert tool_call.name == "shell_cmd"
+
+      # Message 2: Tool result
+      assert {:tool, tool_msg} = Enum.at(unique_messages, 2)
+      assert tool_msg.index == 2
+      assert tool_msg.tool_results != []
+      assert length(tool_msg.tool_results) == 1
+
+      [tool_result] = tool_msg.tool_results
+      assert tool_result.tool_call_id == "call_123"
+      assert tool_result.name == "shell_cmd"
+
+      # Message 3: Final assistant response
+      assert {:assistant, final_msg} = Enum.at(unique_messages, 3)
+      assert final_msg.index == 3
+      assert final_msg.content == "Here are the directory contents"
+
+      # Cleanup
+      Nest.LangChainMock.clear_response()
+    end
+
+    test "tool call message has correct content and tool_calls field" do
+      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
+
+      Nest.LangChainMock.set_tool_response(%{
+        text: "Let me calculate that",
+        tool_calls: [
+          %LangChain.Message.ToolCall{
+            call_id: "call_456",
+            name: "calculator",
+            arguments: %{"expression" => "2 + 2"}
+          }
+        ]
+      })
+
+      Nest.LangChainMock.set_response("The result is 4")
+
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      :ok = Agent.chat(pid, "What is 2+2?")
+
+      # Find the assistant message with tool calls
+      assistant_msg =
+        receive do
+          {:chat_message, {:user, _}} ->
+            receive do
+              {:chat_message, {:assistant, %Assistant{tool_calls: [_ | _]} = msg}} ->
+                msg
+            after
+              3000 -> flunk("Timeout waiting for assistant with tool calls")
+            end
+        after
+          1000 -> flunk("Timeout waiting for user message")
+        end
+
+      assert assistant_msg.index == 1
+      assert assistant_msg.content == "Let me calculate that"
+      assert length(assistant_msg.tool_calls) == 1
+
+      [tool_call] = assistant_msg.tool_calls
+      assert tool_call.name == "calculator"
+      assert tool_call.arguments == %{"expression" => "2 + 2"}
+
+      # Cleanup
+      Nest.LangChainMock.clear_response()
+    end
+
+    test "tool result message has role tool not assistant" do
+      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
+
+      Nest.LangChainMock.set_tool_response(%{
+        text: "I'll check that",
+        tool_calls: [
+          %LangChain.Message.ToolCall{
+            call_id: "call_789",
+            name: "weather",
+            arguments: %{"city" => "London"}
+          }
+        ]
+      })
+
+      Nest.LangChainMock.set_response("The weather is sunny")
+
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      :ok = Agent.chat(pid, "What's the weather?")
+
+      # Collect messages until we get the tool result
+      tool_msg =
+        receive do
+          {:chat_message, {:user, _}} ->
+            collect_until_tool_message()
+        after
+          1000 -> flunk("Timeout waiting for user message")
+        end
+
+      # Verify it's a tool message
+      assert {:tool, %Tool{} = msg} = tool_msg
+      assert msg.index == 2
+      assert msg.tool_results != []
+
+      # Cleanup
+      Nest.LangChainMock.clear_response()
+    end
+
+    test "second message after tool execution serializes tool results correctly" do
+      # This test verifies that tool results are stored with ContentParts format
+      # so that subsequent messages can be serialized without FunctionClauseError
+      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
+
+      # First message with tool calls
+      Nest.LangChainMock.set_tool_response(%{
+        text: "I'll check the directory",
+        tool_calls: [
+          %LangChain.Message.ToolCall{
+            call_id: "call_first",
+            name: "shell_cmd",
+            arguments: %{"command" => "ls"}
+          }
+        ]
+      })
+
+      Nest.LangChainMock.set_response("Directory listing complete")
+
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      # First message
+      :ok = Agent.chat(pid, "List files")
+
+      # Wait for first conversation to complete
+      _messages = collect_all_messages_from_pubsub([])
+
+      # Second message - this triggers serialization of previous tool results
+      Nest.LangChainMock.set_response("Second response received")
+
+      # This would raise FunctionClauseError if tool content is not ContentParts
+      :ok = Agent.chat(pid, "What else is there?")
+
+      # Wait for second response
+      second_messages = collect_all_messages_from_pubsub([])
+
+      # Verify we got the second assistant response
+      assistant_msgs =
+        Enum.filter(second_messages, fn
+          {:assistant, _} -> true
+          _ -> false
+        end)
+
+      assert [_ | _] = assistant_msgs
+
+      # Cleanup
+      Nest.LangChainMock.clear_response()
     end
   end
 
@@ -170,6 +387,31 @@ defmodule Nest.Agents.AgentTest do
     after
       500 ->
         Enum.reverse(deltas)
+    end
+  end
+
+  # Helper to collect all messages from PubSub for tool call flow tests
+  defp collect_all_messages_from_pubsub(messages) do
+    receive do
+      {:chat_message, msg} ->
+        collect_all_messages_from_pubsub(messages ++ [msg])
+    after
+      2000 ->
+        messages
+    end
+  end
+
+  # Helper to wait for tool message
+  defp collect_until_tool_message do
+    receive do
+      {:chat_message, {:tool, _} = msg_tuple} ->
+        msg_tuple
+
+      {:chat_message, _} ->
+        collect_until_tool_message()
+    after
+      3000 ->
+        flunk("Timeout waiting for tool message")
     end
   end
 end

@@ -20,6 +20,7 @@ defmodule Nest.Agents.Agent do
   alias Nest.ChatModel
   alias Nest.Messages.Assistant
   alias Nest.Messages.Message
+  alias Nest.Messages.Streaming
   alias Nest.Messages.System
   alias Nest.Messages.Tool
   alias Nest.Messages.ToolCall
@@ -39,7 +40,7 @@ defmodule Nest.Agents.Agent do
     mode: "chat",
     messages: [],
     next_message_index: 0,
-    partial_message: nil,
+    streaming_acc: nil,
     status: :idle,
     active_message_index: 0,
     api_call_sequences: %{},
@@ -57,7 +58,7 @@ defmodule Nest.Agents.Agent do
           mode: String.t(),
           messages: [Message.t()],
           next_message_index: non_neg_integer(),
-          partial_message: map() | nil,
+          streaming_acc: Streaming.AssistantAccumulator.t() | nil,
           status: :idle | :streaming | :executing_tools,
           active_message_index: non_neg_integer(),
           api_call_sequences: %{non_neg_integer() => non_neg_integer()}
@@ -151,17 +152,14 @@ defmodule Nest.Agents.Agent do
         # Build initial messages with system prompt if present
         {initial_messages, next_index} =
           if system_prompt do
-            system_message = %{
-              index: 0,
-              role: :system,
-              content: system_prompt,
-              timestamp: DateTime.utc_now(),
-              tool_calls: nil,
-              tool_results: nil,
-              thinking: nil,
-              usage: nil,
-              api_logs: []
-            }
+            system_message =
+              {:system,
+               %System{
+                 index: 0,
+                 content: system_prompt,
+                 timestamp: DateTime.utc_now(),
+                 api_logs: []
+               }}
 
             {[system_message], 1}
           else
@@ -179,7 +177,7 @@ defmodule Nest.Agents.Agent do
           mode: mode,
           messages: initial_messages,
           next_message_index: next_index,
-          partial_message: nil,
+          streaming_acc: nil,
           status: :idle,
           active_message_index: 0
         }
@@ -226,20 +224,7 @@ defmodule Nest.Agents.Agent do
         active_message_index: state.next_message_index,
         pending_api_logs:
           clear_pending_api_logs(state, state.next_message_index).pending_api_logs,
-        partial_message: %{
-          index: state.next_message_index + 1,
-          role: :assistant,
-          content: "",
-          tool_calls: nil,
-          tool_results: nil,
-          thinking: nil,
-          usage: nil,
-          timestamp: DateTime.utc_now(),
-          # Streaming-related fields
-          segments: [],
-          current_type: nil,
-          chars_sent: 0
-        }
+        streaming_acc: Streaming.new(state.next_message_index + 1)
     }
 
     # Run LLM chain with callbacks in a task
@@ -254,7 +239,7 @@ defmodule Nest.Agents.Agent do
         messages,
         agent_pid,
         state.id,
-        state.partial_message.index,
+        state.streaming_acc.index,
         state.active_message_index
       )
     end)
@@ -270,7 +255,7 @@ defmodule Nest.Agents.Agent do
       message_count: length(state.messages),
       status: state.status,
       vocation_id: state.vocation_id,
-      partial: state.partial_message
+      partial: state.streaming_acc
     }
 
     {:reply, public_info, state}
@@ -283,57 +268,39 @@ defmodule Nest.Agents.Agent do
 
   @impl true
   def handle_info({:delta_received, delta_content, part_type}, state) do
-    # Accumulate delta into partial_message with segment tracking
-    partial = state.partial_message
+    # Accumulate delta using Streaming module based on content type
+    acc = state.streaming_acc
 
-    # Initialize segments if empty
-    segments = partial[:segments] || []
+    new_acc =
+      case part_type do
+        :text ->
+          Streaming.append_text(acc, delta_content)
 
-    # Check if we need to start a new segment or continue existing
-    {current_type, current_content, segments} =
-      if segments == [] do
-        # First segment - initialize with proper content accumulation
-        new_segment = %{type: part_type, content: delta_content}
-        {part_type, partial.content <> delta_content, [new_segment]}
-      else
-        last_segment = List.last(segments)
+        :thinking ->
+          Streaming.append_thinking(acc, delta_content)
 
-        if last_segment.type == part_type do
-          # Continue existing segment
-          updated_segment = %{last_segment | content: last_segment.content <> delta_content}
-
-          {part_type, partial.content <> delta_content,
-           List.replace_at(segments, -1, updated_segment)}
-        else
-          # Start new segment
-          new_segment = %{type: part_type, content: delta_content}
-          {part_type, partial.content <> delta_content, segments ++ [new_segment]}
-        end
+        _ ->
+          # For unsupported types, append as text for now
+          Streaming.append_text(acc, delta_content)
       end
 
-    new_partial = %{
-      partial
-      | content: current_content,
-        segments: segments,
-        current_type: current_type,
-        chars_sent: String.length(current_content)
-    }
-
-    {:noreply, %{state | partial_message: new_partial}}
+    {:noreply, %{state | streaming_acc: new_acc}}
   end
 
   @impl true
   def handle_info({:llm_response, _message}, state) do
-    # Finalize assistant message
+    # Finalize assistant message using Streaming.finalize
+    assistant = Streaming.finalize(state.streaming_acc)
+
     final_message =
       {:assistant,
        %Assistant{
-         index: state.partial_message.index,
+         index: assistant.index,
          timestamp: DateTime.utc_now(),
-         content: state.partial_message.content,
-         thinking: nil,
-         tool_calls: nil,
-         api_logs: get_pending_api_logs(state, state.partial_message.index)
+         content: assistant.content,
+         thinking: assistant.thinking,
+         tool_calls: assistant.tool_calls,
+         api_logs: get_pending_api_logs(state, assistant.index)
        }}
 
     messages = state.messages ++ [final_message]
@@ -344,11 +311,11 @@ defmodule Nest.Agents.Agent do
     state = %{
       state
       | messages: messages,
-        partial_message: nil,
+        streaming_acc: nil,
         next_message_index: state.next_message_index + 1,
-        active_message_index: state.partial_message.index,
+        active_message_index: state.streaming_acc.index,
         pending_api_logs:
-          clear_pending_api_logs(state, state.partial_message.index).pending_api_logs,
+          clear_pending_api_logs(state, state.streaming_acc.index).pending_api_logs,
         status: :idle
     }
 
@@ -361,12 +328,12 @@ defmodule Nest.Agents.Agent do
     error_message =
       {:assistant,
        %Assistant{
-         index: state.partial_message.index,
+         index: state.streaming_acc.index,
          timestamp: DateTime.utc_now(),
          content: error_msg,
          thinking: nil,
          tool_calls: nil,
-         api_logs: get_pending_api_logs(state, state.partial_message.index)
+         api_logs: get_pending_api_logs(state, state.streaming_acc.index)
        }}
 
     messages = state.messages ++ [error_message]
@@ -377,11 +344,11 @@ defmodule Nest.Agents.Agent do
     state = %{
       state
       | messages: messages,
-        partial_message: nil,
+        streaming_acc: nil,
         next_message_index: state.next_message_index + 1,
-        active_message_index: state.partial_message.index,
+        active_message_index: state.streaming_acc.index,
         pending_api_logs:
-          clear_pending_api_logs(state, state.partial_message.index).pending_api_logs,
+          clear_pending_api_logs(state, state.streaming_acc.index).pending_api_logs,
         status: :idle
     }
 
@@ -445,20 +412,7 @@ defmodule Nest.Agents.Agent do
         next_message_index: state.next_message_index + 1,
         pending_api_logs: clear_pending_api_logs(state, index).pending_api_logs,
         status: :streaming,
-        partial_message: %{
-          index: state.next_message_index + 1,
-          role: :assistant,
-          content: "",
-          tool_calls: nil,
-          tool_results: nil,
-          thinking: nil,
-          usage: nil,
-          timestamp: DateTime.utc_now(),
-          # Streaming-related fields
-          segments: [],
-          current_type: nil,
-          chars_sent: 0
-        }
+        streaming_acc: Streaming.new(state.next_message_index + 1)
     }
 
     {:noreply, state}
@@ -466,23 +420,10 @@ defmodule Nest.Agents.Agent do
 
   @impl true
   def handle_info({:continue_after_tools, next_index}, state) do
-    # Update partial message for the final response after tool execution
+    # Update streaming accumulator for the final response after tool execution
     state = %{
       state
-      | partial_message: %{
-          index: next_index,
-          role: :assistant,
-          content: "",
-          tool_calls: nil,
-          tool_results: nil,
-          thinking: nil,
-          usage: nil,
-          timestamp: DateTime.utc_now(),
-          # Streaming-related fields
-          segments: [],
-          current_type: nil,
-          chars_sent: 0
-        }
+      | streaming_acc: Streaming.new(next_index)
     }
 
     {:noreply, state}
@@ -490,16 +431,18 @@ defmodule Nest.Agents.Agent do
 
   @impl true
   def handle_info({:llm_response_with_thinking, _response, thinking}, state) do
-    # Finalize assistant message with thinking
+    # Finalize assistant message with thinking using Streaming.finalize
+    assistant = Streaming.finalize(state.streaming_acc)
+
     final_message =
       {:assistant,
        %Assistant{
-         index: state.partial_message.index,
+         index: assistant.index,
          timestamp: DateTime.utc_now(),
-         content: state.partial_message.content,
+         content: assistant.content,
          thinking: thinking,
-         tool_calls: nil,
-         api_logs: get_pending_api_logs(state, state.partial_message.index)
+         tool_calls: assistant.tool_calls,
+         api_logs: get_pending_api_logs(state, state.streaming_acc.index)
        }}
 
     messages = state.messages ++ [final_message]
@@ -510,11 +453,11 @@ defmodule Nest.Agents.Agent do
     state = %{
       state
       | messages: messages,
-        partial_message: nil,
+        streaming_acc: nil,
         next_message_index: state.next_message_index + 1,
-        active_message_index: state.partial_message.index,
+        active_message_index: state.streaming_acc.index,
         pending_api_logs:
-          clear_pending_api_logs(state, state.partial_message.index).pending_api_logs,
+          clear_pending_api_logs(state, state.streaming_acc.index).pending_api_logs,
         status: :idle
     }
 
@@ -714,19 +657,35 @@ defmodule Nest.Agents.Agent do
   end
 
   defp build_tool_result(%ToolResult{} = tr) do
+    content_parts =
+      if is_binary(tr.content) do
+        [%LangChain.Message.ContentPart{type: :text, content: tr.content}]
+      else
+        tr.content
+      end
+
     %LangChainMessage.ToolResult{
       tool_call_id: tr.tool_call_id,
       name: tr.name,
-      content: tr.content,
+      content: content_parts,
       is_error: tr.is_error
     }
   end
 
   defp build_tool_result(tr) when is_map(tr) do
+    raw_content = tr["content"] || tr[:content] || ""
+
+    content_parts =
+      if is_binary(raw_content) do
+        [%LangChain.Message.ContentPart{type: :text, content: raw_content}]
+      else
+        raw_content
+      end
+
     %LangChainMessage.ToolResult{
       tool_call_id: tr["tool_call_id"] || tr[:tool_call_id],
       name: tr["name"] || tr[:name],
-      content: tr["content"] || tr[:content] || "",
+      content: content_parts,
       is_error: tr["is_error"] || tr[:is_error] || false
     }
   end
@@ -751,7 +710,7 @@ defmodule Nest.Agents.Agent do
          original_chain,
          active_message_index
        ) do
-    case LLMChain.run(chain, mode: :until_success) do
+    case LLMChain.run(chain) do
       {:ok, updated_chain} ->
         response = updated_chain.last_message
 
@@ -787,8 +746,16 @@ defmodule Nest.Agents.Agent do
        ) do
     # Check if this is a tool call
     if LangChainMessage.is_tool_call?(response) do
-      # Handle tool calls
-      handle_tool_calls(response, chain, agent_pid, agent_id, message_index, active_message_index)
+      # Handle tool calls - start with max 5 iterations
+      handle_tool_calls(
+        response,
+        chain,
+        agent_pid,
+        agent_id,
+        message_index,
+        active_message_index,
+        5
+      )
     else
       # Regular text response
       segments = extract_content_segments(response.content)
@@ -816,9 +783,12 @@ defmodule Nest.Agents.Agent do
          agent_pid,
          agent_id,
          message_index,
-         active_message_index
+         active_message_index,
+         max_iterations
        ) do
-    Logger.info("Agent #{agent_id} received tool calls (message #{message_index})")
+    Logger.info(
+      "Agent #{agent_id} received tool calls (message #{message_index}, iteration #{max_iterations})"
+    )
 
     # Extract tool calls from response
     tool_calls =
@@ -830,13 +800,16 @@ defmodule Nest.Agents.Agent do
         }
       end)
 
+    # Extract text content from the response (if any)
+    text_content = extract_text_content(response.content)
+
     # Broadcast tool call message immediately
     tool_call_message =
       {:assistant,
        %Assistant{
          index: message_index,
          timestamp: DateTime.utc_now(),
-         content: "",
+         content: text_content,
          tool_calls: tool_calls,
          api_logs: []
        }}
@@ -876,13 +849,14 @@ defmodule Nest.Agents.Agent do
 
       send(agent_pid, {:tool_results_received, tool_result_message})
 
-      # Continue the conversation with tool results
+      # Continue the conversation with tool results, decrementing the iteration counter
       continue_with_tool_results(
         chain_with_results,
         agent_pid,
         agent_id,
         message_index + 2,
-        active_message_index
+        active_message_index,
+        max_iterations - 1
       )
     catch
       error ->
@@ -907,72 +881,141 @@ defmodule Nest.Agents.Agent do
          agent_pid,
          agent_id,
          next_index,
-         _active_message_index
+         active_message_index,
+         max_iterations
        ) do
     # The chain now has the tool results, we need to call the LLM again
     # to get the final response based on the tool results
 
-    Logger.info("Agent #{agent_id} continuing conversation after tool execution")
+    Logger.info(
+      "Agent #{agent_id} continuing conversation after tool execution (#{max_iterations} iterations remaining)"
+    )
 
-    # Get the last message (tool results) and convert to our format
-    last_message = chain.last_message
-
-    _tool_results =
-      if last_message.tool_results do
-        Enum.map(last_message.tool_results, fn tr ->
-          %{
-            tool_call_id: tr.tool_call_id,
-            name: tr.name,
-            content: extract_tool_content(tr.content),
-            is_error: tr.is_error || false
-          }
-        end)
-      else
-        []
-      end
-
-    # Now we need to get the final assistant response
-    # This requires running the chain again, but we're already in a Task
-    # We need to set up the state for a new streaming response
-
+    # Set up the state for a new streaming response
     send(agent_pid, {:continue_after_tools, next_index})
 
-    # Run the chain again to get the final response
-    case LLMChain.run(chain, mode: :until_success) do
-      {:ok, final_chain} ->
-        final_response = final_chain.last_message
+    # Run the chain to get the final response
+    # Use explicit iteration with max limit instead of :while_needs_response
+    # to avoid hidden loop complexity and make migration easier
+    run_with_tool_handling(
+      chain,
+      agent_pid,
+      agent_id,
+      next_index,
+      active_message_index,
+      max_iterations
+    )
+  end
 
-        # Broadcast API response for OpenAI-compatible models
-        if match?(%ChatOpenAI{}, chain.llm) do
-          api_response = build_api_response(final_response)
-          broadcast_api_response(agent_pid, next_index, api_response)
-        end
+  # Run chain with explicit tool handling and iteration limit
+  # max_iterations prevents infinite loops with tool-happy LLMs
+  defp run_with_tool_handling(
+         chain,
+         agent_pid,
+         agent_id,
+         message_index,
+         active_message_index,
+         max_iterations
+       ) do
+    if max_iterations <= 0 do
+      Logger.warning("Agent #{agent_id} reached max tool iterations, returning last response")
+      handle_failed_response("Max tool iterations reached", agent_pid, agent_id, message_index)
+    else
+      run_chain_and_handle_response(
+        chain,
+        agent_pid,
+        agent_id,
+        message_index,
+        active_message_index,
+        max_iterations
+      )
+    end
+  end
 
-        # Extract thinking if present
-        thinking = extract_thinking(final_response.content)
-
-        # Extract segments
-        segments = extract_content_segments(final_response.content)
-
-        total_chars =
-          segments
-          |> Enum.filter(fn seg -> seg.type == :text end)
-          |> Enum.map(&String.length(&1.content))
-          |> Enum.sum()
-
-        Logger.info(
-          "Agent #{agent_id} received final response after tools (message #{next_index}): #{length(segments)} segments, #{total_chars} text chars"
+  # Execute chain run and route response handling
+  defp run_chain_and_handle_response(
+         chain,
+         agent_pid,
+         agent_id,
+         message_index,
+         active_message_index,
+         max_iterations
+       ) do
+    case LLMChain.run(chain) do
+      {:ok, updated_chain} ->
+        handle_run_response(
+          updated_chain,
+          agent_pid,
+          agent_id,
+          message_index,
+          active_message_index,
+          max_iterations
         )
 
-        # Stream the final response
-        stream_segments(segments, agent_pid, agent_id, next_index)
-
-        # Notify agent with final message including thinking
-        send(agent_pid, {:llm_response_with_thinking, final_response, thinking})
-
       {:error, _failed_chain, error} ->
-        handle_failed_response(error, agent_pid, agent_id, next_index)
+        handle_failed_response(error, agent_pid, agent_id, message_index)
     end
+  end
+
+  # Handle successful LLM run response - check for tool calls or finalize
+  defp handle_run_response(
+         updated_chain,
+         agent_pid,
+         agent_id,
+         message_index,
+         active_message_index,
+         max_iterations
+       ) do
+    response = updated_chain.last_message
+
+    if LangChainMessage.is_tool_call?(response) do
+      Logger.info(
+        "Agent #{agent_id} received additional tool calls in iteration #{max_iterations}"
+      )
+
+      handle_tool_calls(
+        response,
+        updated_chain,
+        agent_pid,
+        agent_id,
+        message_index,
+        active_message_index,
+        max_iterations
+      )
+    else
+      finalize_tool_response(updated_chain, response, agent_pid, agent_id, message_index)
+    end
+  end
+
+  # Finalize the response after all tools are executed
+  defp finalize_tool_response(chain, response, agent_pid, agent_id, message_index) do
+    # Broadcast API response for OpenAI-compatible models
+    if match?(%ChatOpenAI{}, chain.llm) do
+      api_response = build_api_response(response)
+      broadcast_api_response(agent_pid, message_index, api_response)
+    end
+
+    # Extract thinking if present
+    thinking = extract_thinking(response.content)
+
+    # Extract segments
+    segments = extract_content_segments(response.content)
+
+    total_chars =
+      segments
+      |> Enum.filter(fn seg -> seg.type == :text end)
+      |> Enum.map(&String.length(&1.content))
+      |> Enum.sum()
+
+    Logger.info(
+      "Agent #{agent_id} received final response after tools (message #{message_index}): #{length(segments)} segments, #{total_chars} text chars"
+    )
+
+    # Stream the final response
+    stream_segments(segments, agent_pid, agent_id, message_index)
+
+    # Notify agent with final message including thinking
+    send(agent_pid, {:llm_response_with_thinking, response, thinking})
   end
 
   defp extract_thinking(content) when is_list(content) do
@@ -986,6 +1029,19 @@ defmodule Nest.Agents.Agent do
   end
 
   defp extract_thinking(_content), do: nil
+
+  # Extract text content from response
+  defp extract_text_content(content) when is_binary(content) do
+    content
+  end
+
+  defp extract_text_content(content) when is_list(content) do
+    content
+    |> Enum.filter(fn part -> match?(%{type: :text}, part) end)
+    |> Enum.map_join("", fn %{content: text} -> text end)
+  end
+
+  defp extract_text_content(_content), do: ""
 
   # Extract content as segments with type information
   defp extract_content_segments(content) when is_binary(content) do
@@ -1040,7 +1096,7 @@ defmodule Nest.Agents.Agent do
           # Broadcast delta with type information
           broadcast_delta(agent_id, message_index, chunk, acc, chars_end, segment.type)
 
-          # Also update agent's partial_message
+          # Also update agent's streaming accumulator
           send(agent_pid, {:delta_received, chunk, segment.type})
 
           Process.sleep(50)

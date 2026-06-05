@@ -370,7 +370,7 @@ defmodule NestWeb.AgentChannelTest do
   describe "chat:error event" do
     test "broadcasts error with index and content", %{socket: socket} do
       # Mock the LLM to fail
-      Mimic.stub(LangChain.Chains.LLMChain, :run, fn _chain, _callback ->
+      Mimic.stub(LangChain.Chains.LLMChain, :run, fn _chain ->
         {:error, %{__struct__: LangChain.Chains.LLMChain}, "model unavailable"}
       end)
 
@@ -385,7 +385,7 @@ defmodule NestWeb.AgentChannelTest do
 
     test "error event is broadcast when LLM fails" do
       # Stub the LLM to fail BEFORE creating the agent
-      Mimic.stub(LangChain.Chains.LLMChain, :run, fn _chain, _callback ->
+      Mimic.stub(LangChain.Chains.LLMChain, :run, fn _chain ->
         {:error, %{__struct__: LangChain.Chains.LLMChain}, "model failed"}
       end)
 
