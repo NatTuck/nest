@@ -17,7 +17,7 @@ import {
 /**
  * @typedef {Object} AgentCache
  * @property {Array} messages - Complete messages
- * @property {Object|null} partial - Partial streaming message
+ * @property {Object|null} streaming - Streaming message state
  * @property {number} lastIndex - Last complete message index
  * @property {'disconnected'|'connecting'|'connected'|'error'} status - Connection status
  * @property {string|null} error - Error message if status is 'error'
@@ -31,18 +31,67 @@ const initialState = {
   isConnected: false,
   agents: [],
   models: [],
+  vocations: [],
   agentsCache: {},
 };
 
 /**
- * Normalize partial message from wire format to internal format.
+ * Normalize streaming state from wire format to internal format.
+ * Wire format uses "lastDeltaIndex" to describe position.
+ * Internal format uses "nextDeltaIndex" to track expected next delta.
+ */
+const normalizeStreaming = (streaming) => {
+  if (!streaming) return null;
+  const { lastDeltaIndex, ...rest } = streaming;
+  return { ...rest, nextDeltaIndex: (lastDeltaIndex ?? -1) + 1 };
+};
+
+/**
+ * Normalize partial message from wire format to internal format (legacy).
  * Wire format uses "charsEnd" to describe position.
  * Internal format uses "charsReceived" to track state.
+ * @deprecated Use normalizeStreaming instead
  */
 const normalizePartial = (partial) => {
   if (!partial) return null;
   const { charsEnd, ...rest } = partial;
   return { ...rest, charsReceived: charsEnd ?? 0 };
+};
+
+/**
+ * Helper to accumulate content into segments based on type.
+ * Returns updated segments array and current type.
+ */
+const accumulateSegment = (segments, _currentType, content, partType) => {
+  const type = partType || "text";
+
+  if (segments.length === 0) {
+    // First segment
+    return {
+      segments: [{ type, content }],
+      currentType: type,
+    };
+  }
+
+  const lastSegment = segments[segments.length - 1];
+  if (lastSegment.type === type) {
+    // Continue existing segment
+    const updatedSegments = [...segments];
+    updatedSegments[updatedSegments.length - 1] = {
+      ...lastSegment,
+      content: lastSegment.content + content,
+    };
+    return {
+      segments: updatedSegments,
+      currentType: type,
+    };
+  } else {
+    // Start new segment
+    return {
+      segments: [...segments, { type, content }],
+      currentType: type,
+    };
+  }
 };
 
 /**
@@ -88,6 +137,13 @@ export const useStore = create(
       },
 
       /**
+       * Set vocations list from lobby init
+       */
+      setVocations: (vocations) => {
+        set({ vocations });
+      },
+
+      /**
        * Add newly created agent
        */
       addAgent: (agent) => {
@@ -126,11 +182,13 @@ export const useStore = create(
                 ? { ...existing, status: "connecting", error: null }
                 : {
                     messages: [],
+                    streaming: null,
                     partial: null,
                     lastIndex: -1,
                     status: "connecting",
                     error: null,
                     model: null,
+                    waitingForResponse: false,
                   },
             },
           };
@@ -153,18 +211,28 @@ export const useStore = create(
           const lastIndex =
             finalMessages.length > 0
               ? Math.max(...finalMessages.map((m) => m.index))
-              : (payload.lastCompleteIndex ?? -1);
+              : -1;
+
+          // Support both new streaming format and legacy partial format
+          const streaming = payload.streaming
+            ? normalizeStreaming(payload.streaming)
+            : payload.partial
+              ? normalizePartial(payload.partial)
+              : null;
 
           return {
             agentsCache: {
               ...state.agentsCache,
               [id]: {
                 messages: finalMessages,
-                partial: normalizePartial(payload.partial),
+                streaming: streaming,
+                partial: streaming, // Keep partial for backward compat
                 lastIndex,
                 status: "connected",
                 error: null,
                 model: payload.model || existing?.model || null,
+                vocation: payload.vocation || existing?.vocation || null,
+                waitingForResponse: false,
               },
             },
           };
@@ -200,6 +268,7 @@ export const useStore = create(
                 ? { ...existing, status: "error", error }
                 : {
                     messages: [],
+                    streaming: null,
                     partial: null,
                     lastIndex: -1,
                     status: "error",
@@ -213,44 +282,122 @@ export const useStore = create(
 
       /**
        * Add chat delta (streaming content)
-       * Returns { applied: boolean, needsSync: boolean, overlapMismatch: boolean }
+       * Returns { applied: boolean, needsSync: boolean, outOfOrder: boolean }
+       *
+       * With deltaIndex-based protocol:
+       * - Each message has sequential delta indices (0, 1, 2...)
+       * - Client expects deltas in order
+       * - If deltaIndex doesn't match nextDeltaIndex, it's an error
        */
       addChatDelta: (id, payload) => {
         const state = get();
         const cache = state.agentsCache[id];
         if (!cache) return { applied: false, needsSync: false };
 
+        // Support both new format (messageIndex, deltaIndex) and old format (index, charsStart, charsEnd)
+        const messageIndex = payload.messageIndex ?? payload.index;
+        const deltaIndex = payload.deltaIndex;
+        const charsStart = payload.charsStart;
+        const charsEnd = payload.charsEnd;
+        const content = payload.content;
+        const partType = payload.partType;
+
+        // If using new deltaIndex protocol
+        if (deltaIndex !== undefined) {
+          const streaming =
+            cache.streaming && cache.streaming.messageIndex === messageIndex
+              ? cache.streaming
+              : {
+                  messageIndex: messageIndex,
+                  nextDeltaIndex: 0,
+                  content: "",
+                  segments: [],
+                  currentType: null,
+                };
+
+          // Check if this is the expected delta
+          if (deltaIndex !== streaming.nextDeltaIndex) {
+            const isDuplicate = deltaIndex < streaming.nextDeltaIndex;
+            console.warn(
+              `[agent:${id}] Delta ${isDuplicate ? "duplicate" : "out of order"}:`,
+              {
+                messageIndex: messageIndex,
+                expectedDeltaIndex: streaming.nextDeltaIndex,
+                receivedDeltaIndex: deltaIndex,
+              },
+            );
+            return {
+              applied: false,
+              needsSync: !isDuplicate,
+              outOfOrder: !isDuplicate,
+            };
+          }
+
+          // Apply the delta
+          const { segments: newSegments, currentType: newCurrentType } =
+            accumulateSegment(
+              streaming.segments || [],
+              streaming.currentType,
+              content,
+              partType,
+            );
+
+          set((s) => ({
+            agentsCache: {
+              ...s.agentsCache,
+              [id]: {
+                ...cache,
+                streaming: {
+                  ...streaming,
+                  content: streaming.content + content,
+                  nextDeltaIndex: deltaIndex + 1,
+                  segments: newSegments,
+                  currentType: newCurrentType,
+                  toolCallId: payload.toolCallId || streaming.toolCallId,
+                  toolCallName: payload.toolCallName || streaming.toolCallName,
+                },
+                waitingForResponse: false,
+              },
+            },
+          }));
+          return { applied: true, needsSync: false };
+        }
+
+        // Legacy: Support old charsStart/charsEnd protocol with partial
         const partial =
-          cache.partial && cache.partial.index === payload.index
+          cache.partial && cache.partial.index === messageIndex
             ? cache.partial
             : {
-                index: payload.index,
+                index: messageIndex,
                 role: "assistant",
                 content: "",
                 charsReceived: 0,
+                segments: [],
+                currentType: null,
               };
 
         const currentReceived = partial.charsReceived || 0;
 
-        if (payload.charsStart > currentReceived) {
+        if (charsStart > currentReceived) {
           return { applied: false, needsSync: true };
         }
 
-        if (payload.charsStart < currentReceived) {
-          const overlap = currentReceived - payload.charsStart;
+        let newContent = content;
+        let overlapMismatch = false;
+        if (charsStart < currentReceived) {
+          const overlap = currentReceived - charsStart;
           const expectedOverlap = graphemeLast(partial.content, overlap);
-          const actualOverlap = graphemeSlice(payload.content, 0, overlap);
+          const actualOverlap = graphemeSlice(content, 0, overlap);
+          overlapMismatch = expectedOverlap !== actualOverlap;
 
-          const mismatch = expectedOverlap !== actualOverlap;
-
-          if (mismatch) {
+          if (overlapMismatch) {
             console.warn(`[agent:${id}] Delta overlap mismatch:`, {
               delta: {
-                index: payload.index,
-                charsStart: payload.charsStart,
-                charsEnd: payload.charsEnd,
-                content: payload.content,
-                graphemeCount: graphemeCount(payload.content),
+                index: messageIndex,
+                charsStart: charsStart,
+                charsEnd: charsEnd,
+                content: content,
+                graphemeCount: graphemeCount(content),
               },
               partial: {
                 index: partial.index,
@@ -275,31 +422,19 @@ export const useStore = create(
             });
           }
 
-          const newContent = graphemeSlice(payload.content, overlap);
+          newContent = graphemeSlice(content, overlap);
           if (graphemeCount(newContent) === 0) {
-            return {
-              applied: false,
-              needsSync: false,
-              overlapMismatch: mismatch,
-            };
+            return { applied: false, needsSync: false, overlapMismatch };
           }
-
-          set((s) => ({
-            agentsCache: {
-              ...s.agentsCache,
-              [id]: {
-                ...cache,
-                partial: {
-                  ...partial,
-                  content: partial.content + newContent,
-                  charsReceived: payload.charsEnd,
-                },
-                waitingForResponse: false,
-              },
-            },
-          }));
-          return { applied: true, needsSync: false, overlapMismatch: mismatch };
         }
+
+        const { segments: newSegments, currentType: newCurrentType } =
+          accumulateSegment(
+            partial.segments || [],
+            partial.currentType,
+            newContent,
+            partType,
+          );
 
         set((s) => ({
           agentsCache: {
@@ -308,14 +443,23 @@ export const useStore = create(
               ...cache,
               partial: {
                 ...partial,
-                content: partial.content + payload.content,
-                charsReceived: payload.charsEnd,
+                content: partial.content + newContent,
+                charsReceived: charsEnd,
+                segments: newSegments,
+                currentType: newCurrentType,
+              },
+              streaming: {
+                ...partial,
+                content: partial.content + newContent,
+                charsReceived: charsEnd,
+                segments: newSegments,
+                currentType: newCurrentType,
               },
               waitingForResponse: false,
             },
           },
         }));
-        return { applied: true, needsSync: false };
+        return { applied: true, needsSync: false, overlapMismatch };
       },
 
       /**
@@ -326,23 +470,40 @@ export const useStore = create(
           const cache = state.agentsCache[id];
           if (!cache) return state;
 
-          const partial = cache.partial;
-          if (partial && partial.index === message.index) {
-            const partialContent = partial.content || "";
+          // Check both streaming (new) and partial (legacy) for backward compatibility
+          const streaming = cache.streaming || cache.partial;
+          const streamingIndex = streaming?.messageIndex ?? streaming?.index;
+          if (streaming && streamingIndex === message.index) {
+            const streamingContent = streaming.content || "";
             const messageContent = message.content || "";
 
-            if (partialContent !== messageContent) {
+            if (streamingContent !== messageContent) {
+              const extraInPartial =
+                graphemeCount(streamingContent) > graphemeCount(messageContent)
+                  ? graphemeSlice(
+                      streamingContent,
+                      graphemeCount(messageContent),
+                    )
+                  : null;
+              const extraInMessage =
+                graphemeCount(messageContent) > graphemeCount(streamingContent)
+                  ? graphemeSlice(
+                      messageContent,
+                      graphemeCount(streamingContent),
+                    )
+                  : null;
+
               console.warn(
                 `[agent:${id}] Final message differs from partial:`,
                 {
                   index: message.index,
                   partial: {
-                    graphemeCount: graphemeCount(partialContent),
-                    charsReceived: partial.charsReceived,
+                    graphemeCount: graphemeCount(streamingContent),
+                    charsReceived: streaming.charsReceived,
                     content:
-                      graphemeCount(partialContent) > 200
-                        ? `...${graphemeLast(partialContent, 100)}`
-                        : partialContent,
+                      graphemeCount(streamingContent) > 200
+                        ? `...${graphemeLast(streamingContent, 100)}`
+                        : streamingContent,
                   },
                   message: {
                     graphemeCount: graphemeCount(messageContent),
@@ -352,24 +513,10 @@ export const useStore = create(
                         : messageContent,
                   },
                   diff: {
-                    extraInPartial:
-                      graphemeCount(partialContent) >
-                      graphemeCount(messageContent)
-                        ? graphemeSlice(
-                            partialContent,
-                            graphemeCount(messageContent),
-                          )
-                        : null,
-                    extraInMessage:
-                      graphemeCount(messageContent) >
-                      graphemeCount(partialContent)
-                        ? graphemeSlice(
-                            messageContent,
-                            graphemeCount(partialContent),
-                          )
-                        : null,
+                    extraInPartial,
+                    extraInMessage,
                     lengthDiff:
-                      graphemeCount(partialContent) -
+                      graphemeCount(streamingContent) -
                       graphemeCount(messageContent),
                   },
                 },
@@ -379,10 +526,30 @@ export const useStore = create(
 
           const exists = cache.messages.some((m) => m.index === message.index);
 
+          // Merge apiLogs, toolCalls, and toolResults if updating an existing message
           const newMessages = exists
-            ? cache.messages.map((m) =>
-                m.index === message.index ? message : m,
-              )
+            ? cache.messages.map((m) => {
+                if (m.index === message.index) {
+                  // Merge apiLogs, preferring the new message's apiLogs if they exist
+                  const mergedApiLogs = message.apiLogs?.length
+                    ? message.apiLogs
+                    : m.apiLogs || [];
+                  // Preserve toolCalls and toolResults from existing message if not in new message
+                  const mergedToolCalls = message.toolCalls?.length
+                    ? message.toolCalls
+                    : m.toolCalls || [];
+                  const mergedToolResults = message.toolResults?.length
+                    ? message.toolResults
+                    : m.toolResults || [];
+                  return {
+                    ...message,
+                    apiLogs: mergedApiLogs,
+                    toolCalls: mergedToolCalls,
+                    toolResults: mergedToolResults,
+                  };
+                }
+                return m;
+              })
             : [...cache.messages, message];
 
           return {
@@ -391,6 +558,7 @@ export const useStore = create(
               [id]: {
                 ...cache,
                 messages: newMessages,
+                streaming: null,
                 partial: null,
                 lastIndex: message.index,
               },
@@ -415,6 +583,25 @@ export const useStore = create(
             timestamp: new Date().toISOString(),
           };
 
+          const streamingState = {
+            messageIndex: newIndex + 1,
+            role: "assistant",
+            content: "",
+            nextDeltaIndex: 0,
+            segments: [],
+            currentType: null,
+          };
+
+          // Legacy partial state for backward compatibility
+          const partialState = {
+            index: newIndex + 1,
+            role: "assistant",
+            content: "",
+            charsReceived: 0,
+            segments: [],
+            currentType: null,
+          };
+
           return {
             agentsCache: {
               ...state.agentsCache,
@@ -422,12 +609,9 @@ export const useStore = create(
                 ...cache,
                 messages: [...cache.messages, userMessage],
                 lastIndex: newIndex,
-                partial: {
-                  index: newIndex + 1,
-                  role: "assistant",
-                  content: "",
-                  charsReceived: 0,
-                },
+                waitingForResponse: true,
+                streaming: streamingState,
+                partial: partialState,
               },
             },
           };
@@ -435,16 +619,32 @@ export const useStore = create(
       },
 
       /**
-       * Clear partial message (on error)
+       * Clear streaming state (on error)
+       * @deprecated Use clearStreaming instead
        */
       clearPartial: (id) => {
+        const state = get();
+        const cache = state.agentsCache[id];
+        if (!cache) return;
+        set({
+          agentsCache: {
+            ...state.agentsCache,
+            [id]: { ...cache, streaming: null, partial: null },
+          },
+        });
+      },
+
+      /**
+       * Clear streaming state (on error)
+       */
+      clearStreaming: (id) => {
         set((state) => {
           const cache = state.agentsCache[id];
           if (!cache) return state;
           return {
             agentsCache: {
               ...state.agentsCache,
-              [id]: { ...cache, partial: null },
+              [id]: { ...cache, streaming: null, partial: null },
             },
           };
         });
@@ -488,15 +688,29 @@ export const useStore = create(
           // Sort by index to ensure order
           mergedMessages.sort((a, b) => a.index - b.index);
 
+          const lastIndex =
+            mergedMessages.length > 0
+              ? Math.max(...mergedMessages.map((m) => m.index))
+              : -1;
+
+          // Support both new streaming format and legacy partial format
+          const streaming = payload.streaming
+            ? normalizeStreaming(payload.streaming)
+            : payload.partial
+              ? normalizePartial(payload.partial)
+              : null;
+
           return {
             agentsCache: {
               ...state.agentsCache,
               [id]: {
                 ...cache,
                 messages: mergedMessages,
-                partial: normalizePartial(payload.partial),
-                status: payload.status || cache.status,
-                lastIndex: payload.lastCompleteIndex ?? cache.lastIndex,
+                streaming: streaming,
+                partial: streaming,
+                status: cache.status,
+                agentState: payload.status || cache.agentState,
+                lastIndex,
               },
             },
           };

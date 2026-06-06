@@ -17,6 +17,8 @@ defmodule NestWeb.AgentChannel do
   require Logger
 
   alias Nest.Agents
+  alias Nest.Messages.Message
+  alias Nest.Messages.Streaming
 
   @impl true
   def join("agent:" <> agent_id, _payload, socket) do
@@ -38,21 +40,14 @@ defmodule NestWeb.AgentChannel do
 
   @impl true
   def handle_info({:after_join, agent}, socket) do
-    # Calculate last complete message index
-    last_complete_index =
-      if agent.messages != [] do
-        List.last(agent.messages).index
-      else
-        -1
-      end
-
     # Build init payload with partial when streaming
     init_payload = %{
       "id" => agent.id,
       "model" => agent.model,
-      "lastCompleteIndex" => last_complete_index,
+      "vocation" => agent.vocation,
+      "messageCount" => length(agent.messages),
       "status" => to_string(agent.status),
-      "partial" => build_partial_payload(agent.partial_message)
+      "partial" => build_partial_payload(agent.partial)
     }
 
     push(socket, "init", init_payload)
@@ -63,11 +58,7 @@ defmodule NestWeb.AgentChannel do
   # Handle chat messages from PubSub (broadcast by Agent)
   @impl true
   def handle_info({:chat_message, message}, socket) do
-    push(socket, "chat:message", %{
-      "index" => message.index,
-      "role" => message.role,
-      "content" => message.content
-    })
+    push(socket, "chat:message", Message.to_json(message))
 
     {:noreply, socket}
   end
@@ -79,7 +70,8 @@ defmodule NestWeb.AgentChannel do
       "index" => delta.index,
       "content" => delta.content,
       "charsStart" => delta.chars_start,
-      "charsEnd" => delta.chars_end
+      "charsEnd" => delta.chars_end,
+      "partType" => delta.part_type
     })
 
     {:noreply, socket}
@@ -96,16 +88,21 @@ defmodule NestWeb.AgentChannel do
     {:noreply, socket}
   end
 
+  # Handle API log metadata from PubSub (deprecated - now included with messages)
+  @impl true
+  def handle_info({:api_log, _api_log}, socket) do
+    # Deprecated: API logs are now included with messages via apiLogs field
+    {:noreply, socket}
+  end
+
   defp build_partial_payload(nil), do: nil
 
-  defp build_partial_payload(partial) do
-    %{
-      "index" => partial.index,
-      "role" => partial.role,
-      "content" => partial.content,
-      "charsEnd" => partial.chars_sent,
-      "timestamp" => partial.timestamp
-    }
+  defp build_partial_payload(%Streaming.AssistantAccumulator{} = acc) do
+    Streaming.to_json(acc)
+  end
+
+  defp format_message(message) do
+    Message.to_json(message)
   end
 
   @impl true
@@ -127,19 +124,12 @@ defmodule NestWeb.AgentChannel do
 
     case Agents.get_agent(agent_id) do
       {:ok, agent} ->
-        last_complete_index =
-          if agent.messages != [] do
-            List.last(agent.messages).index
-          else
-            -1
-          end
-
         reply = %{
           "id" => agent.id,
           "model" => agent.model,
-          "lastCompleteIndex" => last_complete_index,
+          "messageCount" => length(agent.messages),
           "status" => to_string(agent.status),
-          "partial" => build_partial_payload(agent.partial_message)
+          "partial" => build_partial_payload(agent.partial)
         }
 
         {:reply, {:ok, reply}, socket}
@@ -155,22 +145,21 @@ defmodule NestWeb.AgentChannel do
 
     case Agents.get_agent(agent_id) do
       {:ok, agent} ->
-        # Get last complete index
-        last_complete_index =
-          if agent.messages != [] do
-            List.last(agent.messages).index
-          else
-            -1
-          end
-
-        # Get messages after last_index
+        # Get messages after last_index and format them
         new_messages =
-          Enum.filter(agent.messages, fn msg -> msg.index > last_index end)
+          agent.messages
+          |> Enum.filter(fn
+            {:user, %{index: idx}} -> idx > last_index
+            {:assistant, %{index: idx}} -> idx > last_index
+            {:tool, %{index: idx}} -> idx > last_index
+            {:system, %{index: idx}} -> idx > last_index
+          end)
+          |> Enum.map(&format_message/1)
 
         # Check if there's a partial message being streamed
         partial =
-          if agent.partial_message && agent.partial_message.index > last_index do
-            build_partial_payload(agent.partial_message)
+          if agent.partial && agent.partial.index > last_index do
+            build_partial_payload(agent.partial)
           else
             nil
           end
@@ -179,7 +168,7 @@ defmodule NestWeb.AgentChannel do
           "messages" => new_messages,
           "partial" => partial,
           "status" => to_string(agent.status),
-          "lastCompleteIndex" => last_complete_index
+          "messageCount" => length(agent.messages)
         }
 
         {:reply, {:ok, reply}, socket}

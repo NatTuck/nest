@@ -24,12 +24,18 @@ Our JavaScript code lives exclusively in `./assets/`.
 failing, they are failing.
 - **NEVER** fail to implement requested tests and then claim you've completed
 the task.
+- **NEVER** remove correct partial testing logic to get a test to pass. Finish
+the test.
 
 ### More Testing Rules
 
 - No sleeps in tests; use vi.waitFor for async conditions
 - Clean patterns without accessing mock internals
 - Merge tests with same setup and non-conflicting assertions
+- There should *NEVER* be two tests with identical (or compatible) setup that
+differ only in that they each do a different single assertion.
+- Tests that have only one assertion in them are extremely suspect as likely
+violating the previous rule.
 
 ### Test Coverage
 

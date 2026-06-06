@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { MessageContent, parseBlocks } from "./MessageContent";
 
 const mockMarkdown = vi.fn();
@@ -17,6 +17,153 @@ beforeEach(() => {
 });
 
 describe("MessageContent", () => {
+  describe("segments support", () => {
+    it("renders text segments with Markdown", () => {
+      const segments = [{ type: "text", content: "Hello world" }];
+      render(
+        <MessageContent
+          content="Hello world"
+          segments={segments}
+          isPartial={false}
+        />,
+      );
+
+      expect(screen.getByTestId("markdown-rendered")).toBeInTheDocument();
+      expect(screen.getByTestId("markdown-rendered")).toHaveAttribute(
+        "data-content",
+        "Hello world",
+      );
+    });
+
+    it("renders thinking segments with collapsible section", () => {
+      const segments = [{ type: "thinking", content: "I am thinking..." }];
+      render(
+        <MessageContent
+          content="I am thinking..."
+          segments={segments}
+          isPartial={false}
+        />,
+      );
+
+      expect(
+        screen.getByRole("button", { name: /thinking/i }),
+      ).toBeInTheDocument();
+      expect(screen.getByText("I am thinking...")).toBeInTheDocument();
+    });
+
+    it("renders thinking section with typing indicator when partial", () => {
+      const segments = [{ type: "thinking", content: "Thinking..." }];
+      render(
+        <MessageContent
+          content="Thinking..."
+          segments={segments}
+          isPartial={true}
+        />,
+      );
+
+      expect(
+        screen.getByRole("button", { name: /thinking/i }),
+      ).toBeInTheDocument();
+      // Check for typing indicator (animate-bounce elements)
+      const typingIndicators = document.querySelectorAll(".animate-bounce");
+      expect(typingIndicators.length).toBeGreaterThan(0);
+    });
+
+    it("collapses and expands thinking section on click", () => {
+      const segments = [{ type: "thinking", content: "Secret thoughts" }];
+      render(
+        <MessageContent
+          content="Secret thoughts"
+          segments={segments}
+          isPartial={false}
+        />,
+      );
+
+      // Initially expanded
+      expect(screen.getByText("Secret thoughts")).toBeInTheDocument();
+
+      // Click to collapse
+      fireEvent.click(screen.getByRole("button", { name: /thinking/i }));
+      expect(screen.queryByText("Secret thoughts")).not.toBeInTheDocument();
+
+      // Click to expand
+      fireEvent.click(screen.getByRole("button", { name: /thinking/i }));
+      expect(screen.getByText("Secret thoughts")).toBeInTheDocument();
+    });
+
+    it("renders unsupported segments with placeholder", () => {
+      const segments = [
+        { type: "unsupported", content: "[redacted thinking]" },
+      ];
+      render(
+        <MessageContent
+          content="[redacted thinking]"
+          segments={segments}
+          isPartial={false}
+        />,
+      );
+
+      expect(screen.getByText("[redacted thinking]")).toBeInTheDocument();
+      expect(screen.getByText("[redacted thinking]").className).toContain(
+        "bg-gray-100",
+      );
+    });
+
+    it("renders multiple segments in order", () => {
+      const segments = [
+        { type: "thinking", content: "First thought" },
+        { type: "text", content: "Then response" },
+        { type: "unsupported", content: "[image]" },
+      ];
+      render(
+        <MessageContent
+          content="First thought Then response [image]"
+          segments={segments}
+          isPartial={false}
+        />,
+      );
+
+      expect(
+        screen.getByRole("button", { name: /thinking/i }),
+      ).toBeInTheDocument();
+      expect(screen.getByText("First thought")).toBeInTheDocument();
+      expect(screen.getByTestId("markdown-rendered")).toBeInTheDocument();
+      expect(screen.getByText("[image]")).toBeInTheDocument();
+    });
+
+    it("falls back to content when segments is empty", () => {
+      render(
+        <MessageContent
+          content="Fallback content"
+          segments={[]}
+          isPartial={false}
+        />,
+      );
+
+      expect(screen.getByTestId("markdown-rendered")).toBeInTheDocument();
+      expect(screen.getByTestId("markdown-rendered")).toHaveAttribute(
+        "data-content",
+        "Fallback content",
+      );
+    });
+
+    it("falls back to content when segments is undefined", () => {
+      render(
+        <MessageContent
+          content="Fallback content"
+          segments={undefined}
+          isPartial={false}
+        />,
+      );
+
+      expect(screen.getByTestId("markdown-rendered")).toBeInTheDocument();
+      expect(screen.getByTestId("markdown-rendered")).toHaveAttribute(
+        "data-content",
+        "Fallback content",
+      );
+    });
+  });
+
   describe("partial/streaming messages", () => {
     it("renders plain text when isPartial is true", () => {
       render(<MessageContent content="Hello world" isPartial={true} />);

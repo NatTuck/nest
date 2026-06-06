@@ -5,30 +5,108 @@ defmodule NestWeb.LobbyChannelTest do
   use NestWeb.ChannelCase
 
   alias Nest.Agents
+  alias Nest.Vocations
 
   setup do
     # Agents supervision tree is already started by Application
     # Just need to clean up any agents from previous tests
     for id <- Nest.Agents.list_agents() do
-      Nest.Agents.delete_agent(id.id)
+      Nest.Agents.delete_agent(id)
     end
 
-    # Connect socket and join lobby
-    {:ok, _, socket} =
-      subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
+    # Clean up any vocations from previous tests
+    for v <- Vocations.list_vocations() do
+      Vocations.delete_vocation(v)
+    end
 
-    {:ok, socket: socket}
+    :ok
   end
 
   describe "join/3" do
-    test "returns agents and models on join" do
+    test "returns agents, models, and vocations on join" do
+      # Connect socket and join lobby
+      {:ok, _, _socket} =
+        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
+
       # After joining, we should receive initial state
       assert_push "init", payload
       assert is_list(payload.agents)
       assert is_list(payload.models)
+      assert is_list(payload.vocations)
+    end
+
+    test "returns vocations with correct JSON structure" do
+      # Create a test vocation BEFORE joining
+      {:ok, _vocation} =
+        Vocations.create_vocation(%{
+          name: "Test Vocation",
+          description: "A test vocation",
+          system_prompt: "You are a test assistant.",
+          tools: ["read_file"],
+          modes: %{"chat" => %{}}
+        })
+
+      # Now connect socket and join lobby
+      {:ok, _, _socket} =
+        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
+
+      assert_push "init", payload
+
+      # Verify vocations is a list
+      assert is_list(payload.vocations)
+
+      # Find our test vocation
+      test_vocation = Enum.find(payload.vocations, fn v -> v.name == "Test Vocation" end)
+      assert test_vocation != nil
+      assert test_vocation.description == "A test vocation"
+      assert test_vocation.system_prompt == "You are a test assistant."
+      assert test_vocation.tools == ["read_file"]
+      assert test_vocation.modes == %{"chat" => %{}}
+    end
+
+    test "vocations are JSON-serializable and roundtrip correctly" do
+      # Create a test vocation with all fields BEFORE joining
+      {:ok, _vocation} =
+        Vocations.create_vocation(%{
+          name: "JSON Test Vocation",
+          description: "Testing JSON encoding",
+          system_prompt: "System prompt here",
+          tools: ["read_file", "write_file"],
+          modes: %{"chat" => %{"net" => false}, "build" => %{"net" => true}}
+        })
+
+      # Now connect socket and join lobby
+      {:ok, _, _socket} =
+        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
+
+      assert_push "init", payload
+
+      # Verify the payload can be encoded to JSON
+      assert {:ok, json} = Jason.encode(payload)
+
+      # Verify we can decode it back
+      assert {:ok, decoded} = Jason.decode(json)
+
+      # Verify vocations are present and have correct structure
+      assert is_list(decoded["vocations"])
+      assert decoded["vocations"] != []
+
+      # Find and verify our test vocation in the decoded payload
+      test_vocation =
+        Enum.find(decoded["vocations"], fn v -> v["name"] == "JSON Test Vocation" end)
+
+      assert test_vocation != nil
+      assert test_vocation["description"] == "Testing JSON encoding"
+      assert test_vocation["system_prompt"] == "System prompt here"
+      assert test_vocation["tools"] == ["read_file", "write_file"]
+      assert test_vocation["modes"] == %{"chat" => %{"net" => false}, "build" => %{"net" => true}}
     end
 
     test "returns models with correct JSON structure" do
+      # Connect socket and join lobby
+      {:ok, _, _socket} =
+        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
+
       assert_push "init", payload
 
       # Verify models is a non-empty list from test/data/config.toml
@@ -60,6 +138,10 @@ defmodule NestWeb.LobbyChannelTest do
     end
 
     test "model structure is JSON-serializable" do
+      # Connect socket and join lobby
+      {:ok, _, _socket} =
+        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
+
       assert_push "init", payload
 
       # Verify the payload can be encoded to JSON
@@ -79,7 +161,11 @@ defmodule NestWeb.LobbyChannelTest do
   end
 
   describe "handle_in(create_agent)" do
-    test "creates agent and broadcasts event", %{socket: socket} do
+    test "creates agent and broadcasts event" do
+      # Connect socket and join lobby
+      {:ok, _, socket} =
+        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
+
       ref = push(socket, "create_agent", %{"model" => %{"name" => "qwen3.5-plus"}})
       assert_reply ref, :ok, %{"id" => id}
       assert Regex.match?(~r/^[a-z]+-[a-z]+$/, id)
@@ -88,7 +174,11 @@ defmodule NestWeb.LobbyChannelTest do
   end
 
   describe "handle_in(delete_agent)" do
-    test "deletes agent and broadcasts event", %{socket: socket} do
+    test "deletes agent and broadcasts event" do
+      # Connect socket and join lobby
+      {:ok, _, socket} =
+        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
+
       # First create an agent
       {:ok, id} = Agents.create_agent(%{name: "qwen3.5-plus"})
 
@@ -97,10 +187,14 @@ defmodule NestWeb.LobbyChannelTest do
       assert_broadcast "agent:deleted", %{"id" => ^id}
 
       # Verify agent is gone
-      assert {:error, :not_found} = Agents.get_agent(id)
+      assert {:error, :not_found} = Agents.get_info(id)
     end
 
-    test "returns error for non-existent agent", %{socket: socket} do
+    test "returns error for non-existent agent" do
+      # Connect socket and join lobby
+      {:ok, _, socket} =
+        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
+
       ref = push(socket, "delete_agent", %{"id" => "nonexistent"})
       assert_reply ref, :error, %{"reason" => "not_found"}
     end

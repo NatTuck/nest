@@ -54,6 +54,11 @@ defmodule Nest.ChatModelTest do
 
   describe "new/1 by tag" do
     test "creates chain for first provider matching tag" do
+      # Stub the auto-discovery HTTP call for pegasus provider
+      stub(Req, :get, fn "http://pegasus:8080/v1/models", _opts ->
+        {:ok, %{status: 200, body: %{"data" => [%{"id" => "test-model"}]}}}
+      end)
+
       # "local" tag matches pegasus provider
       assert {:ok, chain} = ChatModel.new(tag: "local")
       assert chain.llm.__struct__ == LangChain.ChatModels.ChatOpenAI

@@ -1,195 +1,246 @@
 # Agent Channel Protocol
 
+## Overview
+
+This document specifies the wire format for real-time communication between clients and agents via Phoenix channels.
+
+## Core Principles
+
+- **Everything is indexed**: Messages and deltas both have sequential indices
+- **Forward as-received**: Server forwards streaming chunks immediately from the LLM
+- **In-order delivery**: Out-of-order delivery is a bug
+- **Validation at end**: Final message includes counts for integrity checking
+
 ## Channel Topic
 
 `agent:{agent_id}` - e.g., `agent:clever-raven`
 
-## Join Sequence
-
-- Client joins.
-- Server responds with status message.
-- If client doesn't have all messages through lastCompleteIndex, it requests a
-sync.
-
-### Status Message
-
-```json
-{
-  "id": "clever-raven",
-  "model": {"name": "Kimi-K2.5", "provider": "openrouter"},
-  "lastCompleteIndex": 3,
-  "status": "idle",
-  "partial": null
-}
-```
-
-The `partial` field contains the current partial message when `status` is `"streaming"`, or `null` when idle.
-
-### Status Values
-
-- `"idle"` - Agent is ready, not actively streaming
-- `"streaming"` - Agent is generating a response (streaming deltas)
-
-The status reflects the agent's current activity state. When status is `"streaming"`, the client can expect `chat:delta` events followed by a `chat:message`.
-
 ## Message Indexing
 
-Messages are assigned sequential indexes starting from 0, incremented for each message in the conversation regardless of role. Indexes are assigned by the server:
+Messages are assigned sequential `messageIndex` values starting from 0:
 
 - Even indexes (0, 2, 4...) - user messages
 - Odd indexes (1, 3, 5...) - assistant messages
 
-The `lastCompleteIndex` in status/sync responses indicates the highest index of a complete (non-partial) message the server has.
+Deltas within a message are assigned sequential `deltaIndex` values starting from 0:
 
-## When the LLM Does Stuff
+- `deltaIndex` 0, 1, 2, 3... within each assistant message
+- Used for sync validation and integrity checking
 
-### `chat:delta` (Broadcast)
+The `messageCount` in status/sync responses indicates the number of complete (non-streaming) messages.
 
-**When:** Streaming content from LLM, sent multiple times per message
+## Server to Client Events
 
-**Purpose:** Deliver incremental content updates during streaming
+### `init`
 
-**Example:**
+Sent automatically when client joins the channel.
 
-```json
-{
-  "index": 4,
-  "content": "llo",
-  "charsStart": 2,
-  "charsEnd": 5
-}
-```
-
-When the client gets this:
-
-- If it doesn't have complete messages through 3 and the current partial message
-through character 2 it requests a sync.
-- If it does have everything, it updates the current partial message by
-appending this new content.
-
-### `chat:message` (Broadcast)
-
-**When:** Complete message finished streaming
-
-**Purpose:** Confirm message completion with full content
-
-```json
-{
-  "index": 4,
-  "role": "assistant",
-  "content": "Hello! How can I help you today?"
-}
-```
-
-**Roles:**
-- `"user"` - Message sent by the user  
-- `"assistant"` - Message from the LLM
-
-When the client gets this:
-
-- If it doesn't have previous messages, sync.
-- It adds this to the message list if it's the next one, dropping the partial message if the indexes
-  match.
-
-### `chat:error` (Broadcast)
-
-**When:** LLM request fails or other processing error
-
-**Purpose:** Report errors that occur during message processing
-
-**Example:**
-
-```json
-{
-  "index": 4,
-  "content": "Error: model unavailable"
-}
-```
-
-**Note:** Errors are not part of the message sequence. They replace the partial message that was being streamed and use the index that was being generated. Clients should display them differently from assistant messages but they don't affect `lastCompleteIndex`.
-
-### Partial Message Semantics
-
-A partial message exists **only when status is `"streaming"`** and represents the in-progress message being generated. It contains:
-
-- `"index"` - The message index being generated
-- `"content"` - Content received so far
-- Additional fields like `charsSent` indicating how many characters have been streamed
-
-The partial is cleared when:
-- The matching `chat:message` is received (same index)
-- A sync response includes a partial with a different index (new streaming started)
-- The client explicitly clears it on error
-
-## When the User Does Stuff
-
-### `chat:message`
-
-**Purpose:** Send user message to agent
-
-**Payload:**
-
-```javascript
-{ content: "Hello, agent!" }
-```
-
-**Success Reply:** `{:ok, %{}}` - Triggers streaming response via `chat:delta` and `chat:message` events
-
-**Error Reply:** Errors use the format `{:error, %{"reason" => reason}}`
-
-### `chat:status`
-
-**Purpose:** Get current agent status (used for rejoin verification)
-
-**Payload:** `{}` (empty)
-
-**Success Reply:**
-
-Exactly the same as the reply to a join:
-
+Example:
 ```json
 {
   "id": "clever-raven",
   "model": {"name": "Kimi-K2.5", "provider": "openrouter"},
-  "lastCompleteIndex": 3,
-  "status": "idle",
-  "partial": null
+  "vocation": {"id": 1, "name": "Developer"},
+  "messageCount": 5,
+  "status": "streaming",
+  "streaming": {
+    "messageIndex": 5,
+    "lastDeltaIndex": 8,
+    "content": "accumulated content...",
+    "segments": [
+      {"type": "text", "content": "Hello!"},
+      {"type": "thinking", "content": "The user..."},
+      {"type": "text", "content": " Here's"}
+    ],
+    "currentType": "text"
+  }
 }
 ```
 
-Status is either "idle" or "streaming". The `partial` field contains the current partial message when streaming, or `null` when idle.
+Fields:
+- `id` - Agent identifier (string)
+- `model` - Model configuration (object)
+- `vocation` - Vocation info or null (object)
+- `messageCount` - Number of complete messages (integer)
+- `status` - "idle" or "streaming" (string)
+- `streaming` - Current streaming state if status is "streaming", otherwise null (object)
 
-**Error Reply:** Errors use the format `{:error, %{"reason" => reason}}`
+Streaming object fields:
+- `messageIndex` - Index of message being streamed (integer)
+- `lastDeltaIndex` - Last delta sent (integer)
+- `content` - Accumulated content so far (string)
+- `segments` - Array of content segments
+- `currentType` - Current content type: "text", "thinking", "tool_call", or null
 
----
+### `chat:delta`
+
+Sent for each streaming chunk from the LLM.
+
+Text example:
+```json
+{
+  "messageIndex": 5,
+  "deltaIndex": 3,
+  "partType": "text",
+  "content": "ello"
+}
+```
+
+Tool call example:
+```json
+{
+  "messageIndex": 5,
+  "deltaIndex": 4,
+  "partType": "tool_call",
+  "toolCallId": "call_abc123",
+  "toolCallName": "read_file",
+  "content": "{\"path\": \"/tm"
+}
+```
+
+Fields:
+- `messageIndex` - Which message this delta belongs to (integer)
+- `deltaIndex` - Sequential within message (0, 1, 2, ...) (integer)
+- `partType` - Content type: "text", "thinking", or "tool_call" (string)
+- `content` - The chunk content (string)
+- `toolCallId` - Tool call identifier (only for partType: "tool_call") (string)
+- `toolCallName` - Tool name (only for partType: "tool_call") (string)
+
+Client behavior:
+- Validate deltaIndex is the expected next value
+- If deltaIndex doesn't match expected, request sync
+- Accumulate content by messageIndex + partType (+ toolCallId for tool calls)
+- Create new segment when partType changes
+
+### `chat:message`
+
+Sent when a message is complete.
+
+Example:
+```json
+{
+  "index": 5,
+  "role": "assistant",
+  "content": "Hello! Here's the file content: ...",
+  "thinking": "The user wants to see a file...",
+  "toolCalls": [
+    {
+      "id": "call_abc123",
+      "name": "read_file",
+      "arguments": {"path": "/tmp/foo.txt"}
+    }
+  ],
+  "apiLogs": [],
+  "graphemeCount": 156,
+  "finalDeltaIndex": 12
+}
+```
+
+Fields:
+- `index` - Message index (integer)
+- `role` - "assistant", "user", "system", or "tool" (string)
+- `content` - Message content (string)
+- `thinking` - Reasoning content (string or null)
+- `toolCalls` - Array of tool calls (array or null)
+- `toolResults` - Array of tool results (array or null, only for role: "tool")
+- `apiLogs` - API call logs (array)
+- `graphemeCount` - Total graphemes in content (integer)
+- `finalDeltaIndex` - Last delta index (integer)
+
+Validation: Client should verify it received all deltas (0 through finalDeltaIndex).
+
+### `chat:error`
+
+Sent when an error occurs.
+
+Example:
+```json
+{
+  "messageIndex": 5,
+  "deltaIndex": 7,
+  "content": "Error: model unavailable"
+}
+```
+
+Fields:
+- `messageIndex` - Message index where error occurred (integer)
+- `deltaIndex` - Delta index where error occurred (integer)
+- `content` - Error message (string)
+
+Note: Errors replace the streaming state and use the message index that was being generated.
+
+## Client to Server Messages
+
+### `chat:message`
+
+Send user message. Payload: `{content: string}`
+
+### `chat:status`
+
+Get current status. Payload: `{}`
 
 ### `chat:sync`
 
-**Purpose:** Request missing messages after or when confused.
+Request missing messages. Payload: `{lastIndex: number}`
 
-**Payload:**
-
-```javascript
-{ lastIndex: 3 }  // Last message index in the client has with no previous gaps
-                  // in the message list
-```
-
-**Success Reply:**
-
-```elixir
-%{
-  "messages" => [%{index: 4, role: "assistant", content: "..."}],  # Missing messages only, including both user and assistant messages.
-  "partial" => "Hello, wor" | nil,  # Current partial message if streaming
-  "status" => "streaming", # Status is "idle" or "streaming"
-  "lastCompleteIndex" => last_complete_index  # Server's last complete index
+Success reply:
+```json
+{
+  "messages": [
+    {"index": 4, "role": "user", "content": "..."},
+    {"index": 5, "role": "assistant", "content": "..."}
+  ],
+  "streaming": {
+    "messageIndex": 6,
+    "lastDeltaIndex": 2,
+    "content": "...",
+    "segments": [],
+    "currentType": "text"
+  },
+  "status": "streaming",
+  "messageCount": 6
 }
 ```
 
-**Sync Behavior:**
+Fields:
+- `messages` - Messages after lastIndex
+- `streaming` - Current streaming state or null
+- `status` - "idle" or "streaming"
+- `messageCount` - Server's message count
 
-- Server returns **all messages it has with index > lastIndex**, up to its current `lastCompleteIndex`
-- If `lastIndex` is -1, server returns all complete messages it has
-- If `lastIndex` is higher than server's `lastCompleteIndex`, server returns empty messages list
-- Always includes the current status and any current partial message (if streaming)
+Sync behavior:
+- Returns all complete messages with index > lastIndex
+- If lastIndex is -1, returns all complete messages
+- Always includes current streaming state if status is "streaming"
 
-**Error Reply:** Errors use the format `{:error, %{"reason" => reason}}`
+## Content Types
+
+Segment types track content boundaries when content types are interleaved:
+
+```json
+[
+  {"type": "text", "content": "Hello! "},
+  {"type": "thinking", "content": "The user wants..."},
+  {"type": "text", "content": " Here's the answer"},
+  {"type": "tool_call", "content": "{\"path\": \"/tmp/foo\"}"}
+]
+```
+
+Types:
+- `text` - Regular message text
+- `thinking` - Reasoning/thinking content
+- `tool_call` - Tool call JSON
+
+Delta accumulation keys:
+- Text: messageIndex + "text"
+- Thinking: messageIndex + "thinking"
+- Tool calls: messageIndex + "tool_call:" + toolCallId
+
+When partType changes or toolCallId changes, start a new segment.
+
+## Status Values
+
+- `idle` - Agent ready, not streaming
+- `streaming` - Agent generating response
+
+The `streaming` field is only present when status is "streaming".

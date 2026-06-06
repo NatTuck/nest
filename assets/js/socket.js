@@ -26,11 +26,4 @@ const socket = new Socket(SOCKET_URL, {
 
 socket.connect();
 
-// Log connection events in development
-if (process.env.NODE_ENV === "development") {
-  socket.onOpen(() => console.log("Socket connected"));
-  socket.onClose(() => console.log("Socket disconnected"));
-  socket.onError((error) => console.error("Socket error:", error));
-}
-
 export { socket };

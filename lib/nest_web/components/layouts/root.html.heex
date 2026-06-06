@@ -27,6 +27,11 @@
         window.addEventListener("phx:set-theme", (e) => setTheme(e.target.dataset.phxTheme));
       })();
     </script>
+    <script>
+      window.NEST_CONFIG = {
+        sourceUrl: "<%= Application.get_env(:nest, :source_url, "") %>"
+      };
+    </script>
   </head>
   <body>
     {@inner_content}

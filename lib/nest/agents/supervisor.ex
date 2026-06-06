@@ -100,38 +100,16 @@ defmodule Nest.Agents.Supervisor do
   end
 
   @doc """
-  Returns a list of all running agents with their current state.
-
-  Returns a list of maps containing `:id`, `:model`, and `:status` for each agent.
+  Returns a list of all running agent IDs.
 
   ## Examples
 
-      [%{id: "clever-raven", model: %{name: "gpt-4"}, status: :idle}]
+      ["clever-raven", "swift-fox"]
 
   """
-  @spec list_agents() :: list(map())
+  @spec list_agents() :: list(String.t())
   def list_agents do
     Registry.list()
-    |> Enum.map(fn id ->
-      case Registry.lookup(id) do
-        {:ok, pid} ->
-          try do
-            state = Agent.get_state(pid)
-
-            %{
-              id: id,
-              model: state.model,
-              status: state.status
-            }
-          catch
-            :exit, _ -> nil
-          end
-
-        {:error, :not_found} ->
-          nil
-      end
-    end)
-    |> Enum.reject(&is_nil/1)
   end
 
   @doc """

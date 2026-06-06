@@ -36,7 +36,7 @@ defmodule NestWeb.Endpoint do
   if code_reloading? do
     socket "/phoenix/live_reload/socket", Phoenix.LiveReloader.Socket
     plug Phoenix.LiveReloader
-    plug Phoenix.CodeReloader
+    plug NestWeb.SurgicalReloaderPlug
     plug Phoenix.Ecto.CheckRepoStatus, otp_app: :nest
   end
 

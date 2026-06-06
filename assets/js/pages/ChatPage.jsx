@@ -13,6 +13,252 @@ import { joinAgent, leaveAgent, sendMessage } from "../channels";
 import { MessageContent } from "../components/MessageContent";
 
 /**
+ * ToolCalls component - displays tool calls in a message
+ */
+function ToolCalls({ toolCalls }) {
+  if (!toolCalls || toolCalls.length === 0) return null;
+
+  return (
+    <div className="mt-3 space-y-2">
+      {toolCalls.map((call) => (
+        <div
+          key={call.id}
+          className="bg-purple-50 border border-purple-200 rounded-lg p-3"
+        >
+          <div className="flex items-center gap-2 text-purple-700 font-medium text-sm">
+            <svg
+              className="w-4 h-4"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+              aria-label="Success checkmark icon"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+              />
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+              />
+            </svg>
+            <span>Using tool: {call.name}</span>
+          </div>
+          {call.arguments && Object.keys(call.arguments).length > 0 && (
+            <pre className="mt-2 text-xs text-purple-600 overflow-x-auto">
+              {JSON.stringify(call.arguments, null, 2)}
+            </pre>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * ToolResults component - displays tool results in a message
+ */
+function ToolResults({ toolResults }) {
+  if (!toolResults || toolResults.length === 0) return null;
+
+  return (
+    <div className="mt-3 space-y-2">
+      {toolResults.map((result) => (
+        <div
+          key={result.tool_call_id}
+          className={`border rounded-lg p-3 ${
+            result.is_error
+              ? "bg-red-50 border-red-200"
+              : "bg-green-50 border-green-200"
+          }`}
+        >
+          <div
+            className={`flex items-center gap-2 font-medium text-sm ${
+              result.is_error ? "text-red-700" : "text-green-700"
+            }`}
+          >
+            {result.is_error ? (
+              <svg
+                className="w-4 h-4"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+                aria-label="Error icon"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                />
+              </svg>
+            ) : (
+              <svg
+                className="w-4 h-4"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+                aria-label="Success checkmark icon"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M5 13l4 4L19 7"
+                />
+              </svg>
+            )}
+            <span>
+              {result.is_error ? "Error" : "Success"}: {result.name}
+            </span>
+          </div>
+          {result.content && (
+            <pre
+              className={`mt-2 text-xs overflow-x-auto whitespace-pre-wrap ${
+                result.is_error ? "text-red-600" : "text-green-600"
+              }`}
+            >
+              {result.content}
+            </pre>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * ThinkingBlock component - displays thinking/reasoning content
+ */
+function ThinkingBlock({ thinking }) {
+  // Hook must be called before any early returns
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  if (!thinking) return null;
+
+  return (
+    <div className="mt-3 border border-amber-200 rounded-lg overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="w-full flex items-center justify-between px-3 py-2 bg-amber-50 hover:bg-amber-100 transition-colors text-sm"
+      >
+        <div className="flex items-center gap-2 text-amber-700">
+          <svg
+            className="w-4 h-4"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+            aria-label="Thinking icon"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"
+            />
+          </svg>
+          <span className="font-medium">Thinking</span>
+        </div>
+        <svg
+          className={`w-4 h-4 text-amber-600 transition-transform ${
+            isExpanded ? "rotate-180" : ""
+          }`}
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+          aria-label="Expand icon"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M19 9l-7 7-7-7"
+          />
+        </svg>
+      </button>
+      {isExpanded && (
+        <div className="px-3 py-2 bg-amber-50/50 text-sm text-amber-800 whitespace-pre-wrap">
+          {thinking}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * ApiLogsBlock component - displays API logs associated with a message
+ */
+function ApiLogsBlock({ apiLogs }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  if (!apiLogs || apiLogs.length === 0) return null;
+
+  return (
+    <div className="mt-3 border border-indigo-200 rounded-lg overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="w-full flex items-center justify-between px-3 py-2 bg-indigo-50 hover:bg-indigo-100 transition-colors text-sm"
+      >
+        <div className="flex items-center gap-2 text-indigo-700">
+          <svg
+            className="w-4 h-4"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+            aria-label="API log icon"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
+            />
+          </svg>
+          <span className="font-medium">API Logs ({apiLogs.length})</span>
+        </div>
+        <svg
+          className={`w-4 h-4 text-indigo-600 transition-transform ${isExpanded ? "rotate-180" : ""}`}
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+          aria-label={isExpanded ? "Collapse" : "Expand"}
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M19 9l-7 7-7-7"
+          />
+        </svg>
+      </button>
+      {isExpanded && (
+        <div className="bg-white p-3 space-y-3 max-h-96 overflow-y-auto">
+          {apiLogs.map((log) => (
+            <div
+              key={log.timestamp}
+              className="border border-gray-200 rounded-lg overflow-hidden"
+            >
+              <div className="px-3 py-2 bg-gray-50 border-b border-gray-200 text-xs text-gray-500">
+                {new Date(log.timestamp).toLocaleTimeString()}
+              </div>
+              <pre className="p-3 text-xs text-gray-700 overflow-x-auto whitespace-pre-wrap bg-gray-50">
+                {JSON.stringify(log.payload, null, 2)}
+              </pre>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
  * Status banner component
  */
 function StatusBanner({ status, error, onRetry }) {
@@ -162,18 +408,30 @@ export function ChatPage() {
     <div className="flex flex-col h-full max-w-4xl mx-auto">
       {/* Header */}
       <div className="border-b border-gray-200 pb-4 mb-4">
-        <div className="flex items-center justify-between">
+        <div className="flex items-end justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">{id}</h1>
-            <p className="text-sm text-gray-500">{getStatusLabel()}</p>
+            <h1 className="text-2xl font-bold text-gray-900">
+              {id}
+              {cache?.vocation?.name && (
+                <span className="text-gray-500 font-normal">
+                  ({cache.vocation.name})
+                </span>
+              )}
+            </h1>
+            <p className="text-sm text-gray-500">
+              {cache?.model?.name || "\u00A0"}
+            </p>
           </div>
-          <div
-            className={`
-              w-3 h-3 rounded-full
-              ${status === "connected" ? "bg-green-500" : "bg-gray-300"}
-              ${streaming ? "animate-pulse" : ""}
-            `}
-          />
+          <div className="flex flex-col items-end">
+            <div
+              className={`
+                w-3 h-3 rounded-full mb-1
+                ${status === "connected" ? "bg-green-500" : "bg-gray-300"}
+                ${streaming ? "animate-pulse" : ""}
+              `}
+            />
+            <span className="text-sm text-gray-400">{getStatusLabel()}</span>
+          </div>
         </div>
       </div>
 
@@ -221,7 +479,11 @@ export function ChatPage() {
                 ${
                   message.role === "user"
                     ? "bg-blue-50 ml-12"
-                    : "bg-gray-50 mr-12"
+                    : message.role === "system"
+                      ? "bg-amber-50 border border-amber-200 mx-8"
+                      : message.role === "tool"
+                        ? "bg-green-50 border border-green-200 mx-8"
+                        : "bg-gray-50 mr-12"
                 }
               `}
             >
@@ -232,18 +494,34 @@ export function ChatPage() {
                   ${
                     message.role === "user"
                       ? "bg-blue-600 text-white"
-                      : "bg-gray-600 text-white"
+                      : message.role === "system"
+                        ? "bg-amber-500 text-white"
+                        : message.role === "tool"
+                          ? "bg-green-500 text-white"
+                          : "bg-gray-600 text-white"
                   }
                 `}
               >
-                {message.role === "user" ? "U" : "AI"}
+                {message.role === "user"
+                  ? "U"
+                  : message.role === "system"
+                    ? "S"
+                    : message.role === "tool"
+                      ? "T"
+                      : "AI"}
               </div>
 
               {/* Message content */}
               <div className="flex-1">
                 <div className="flex items-center gap-2 mb-1">
                   <span className="font-semibold text-sm text-gray-700">
-                    {message.role === "user" ? "You" : id}
+                    {message.role === "user"
+                      ? "You"
+                      : message.role === "system"
+                        ? "System"
+                        : message.role === "tool"
+                          ? "Tool Result"
+                          : id}
                   </span>
                   {message.isPartial && (
                     <span className="text-xs text-gray-400">(typing...)</span>
@@ -251,9 +529,14 @@ export function ChatPage() {
                 </div>
                 <MessageContent
                   content={message.content}
+                  segments={message.segments}
                   isPartial={message.isPartial ?? false}
                   className="text-gray-800"
                 />
+                <ToolCalls toolCalls={message.toolCalls} />
+                <ToolResults toolResults={message.toolResults} />
+                <ThinkingBlock thinking={message.thinking} />
+                <ApiLogsBlock apiLogs={message.apiLogs} />
                 {message.isPartial && (
                   <div className="flex items-center gap-1 mt-2">
                     <span

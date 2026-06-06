@@ -9,9 +9,13 @@ import Config
 
 :inet_db.set_lookup([:native])
 
+# Import build-time helper for git URL conversion
+import_config "git_remote.exs"
+
 config :nest,
   ecto_repos: [Nest.Repo],
-  generators: [timestamp_type: :utc_datetime]
+  generators: [timestamp_type: :utc_datetime],
+  source_url: Config.GitRemote.get_origin_url()
 
 # Configure the endpoint
 config :nest, NestWeb.Endpoint,

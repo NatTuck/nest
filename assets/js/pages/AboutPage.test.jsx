@@ -4,11 +4,28 @@
  * Tests the flip behavior and rendering of the About page.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { AboutPage } from "./AboutPage";
 
 describe("AboutPage", () => {
+  // Store original NEST_CONFIG
+  const originalConfig = global.window?.NEST_CONFIG;
+
+  beforeEach(() => {
+    // Reset NEST_CONFIG before each test
+    if (typeof window !== "undefined") {
+      window.NEST_CONFIG = { sourceUrl: "" };
+    }
+  });
+
+  afterEach(() => {
+    // Restore original NEST_CONFIG
+    if (typeof window !== "undefined") {
+      window.NEST_CONFIG = originalConfig || { sourceUrl: "" };
+    }
+  });
+
   it("renders the page with initial state", () => {
     render(<AboutPage />);
 
@@ -131,5 +148,36 @@ describe("AboutPage", () => {
 
     const button = screen.getByTestId("toggle-button");
     expect(button).toHaveAttribute("type", "button");
+  });
+
+  it("renders source code link when NEST_CONFIG.sourceUrl is set", () => {
+    window.NEST_CONFIG = { sourceUrl: "https://github.com/NatTuck/nest" };
+    render(<AboutPage />);
+
+    const link = screen.getByText("Source Code (AGPLv3)");
+    expect(link).toBeInTheDocument();
+    expect(link).toHaveAttribute("href", "https://github.com/NatTuck/nest");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+  });
+
+  it("renders error message when NEST_CONFIG.sourceUrl is empty", () => {
+    window.NEST_CONFIG = { sourceUrl: "" };
+    render(<AboutPage />);
+
+    expect(screen.queryByText("Source Code (AGPLv3)")).not.toBeInTheDocument();
+    expect(screen.getByTestId("source-url-error")).toHaveTextContent(
+      "Error: Misconfigured Source URL",
+    );
+  });
+
+  it("renders error message when NEST_CONFIG is not set", () => {
+    window.NEST_CONFIG = undefined;
+    render(<AboutPage />);
+
+    expect(screen.queryByText("Source Code (AGPLv3)")).not.toBeInTheDocument();
+    expect(screen.getByTestId("source-url-error")).toHaveTextContent(
+      "Error: Misconfigured Source URL",
+    );
   });
 });
