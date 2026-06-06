@@ -4,6 +4,7 @@ defmodule NestWeb.AgentChannelTest do
   """
   use NestWeb.ChannelCase
 
+  import ExUnit.CaptureLog
   import Mimic
 
   alias Nest.Agents
@@ -374,13 +375,20 @@ defmodule NestWeb.AgentChannelTest do
         {:error, %{__struct__: LangChain.Chains.LLMChain}, "model unavailable"}
       end)
 
-      ref = push(socket, "chat:message", %{"content" => "Hello"})
-      assert_reply ref, :ok, %{}
+      log =
+        capture_log(fn ->
+          ref = push(socket, "chat:message", %{"content" => "Hello"})
+          assert_reply ref, :ok, %{}
 
-      assert_push "chat:error", payload, 2000
-      assert payload["index"] == 1
-      assert is_binary(payload["content"])
-      assert payload["content"] =~ "unavailable" or payload["content"] =~ "error"
+          assert_push "chat:error", payload, 2000
+          assert payload["index"] == 1
+          assert is_binary(payload["content"])
+          assert payload["content"] =~ "unavailable" or payload["content"] =~ "error"
+        end)
+
+      # Verify the error was logged with the correct message
+      assert log =~ "LLM request failed"
+      assert log =~ "model unavailable"
     end
 
     test "error event is broadcast when LLM fails" do
@@ -389,24 +397,31 @@ defmodule NestWeb.AgentChannelTest do
         {:error, %{__struct__: LangChain.Chains.LLMChain}, "model failed"}
       end)
 
-      # Create a separate agent for this test
-      {:ok, error_agent_id} = Agents.create_agent(%{name: "qwen3.5-plus"})
+      log =
+        capture_log(fn ->
+          # Create a separate agent for this test
+          {:ok, error_agent_id} = Agents.create_agent(%{name: "qwen3.5-plus"})
 
-      # Connect to the new agent
-      {:ok, _, error_socket} =
-        subscribe_and_join(
-          socket(NestWeb.UserSocket),
-          NestWeb.AgentChannel,
-          "agent:#{error_agent_id}"
-        )
+          # Connect to the new agent
+          {:ok, _, error_socket} =
+            subscribe_and_join(
+              socket(NestWeb.UserSocket),
+              NestWeb.AgentChannel,
+              "agent:#{error_agent_id}"
+            )
 
-      ref = push(error_socket, "chat:message", %{"content" => "Trigger error"})
-      assert_reply ref, :ok, %{}
+          ref = push(error_socket, "chat:message", %{"content" => "Trigger error"})
+          assert_reply ref, :ok, %{}
 
-      # Wait for error broadcast
-      assert_push "chat:error", error_payload, 2000
-      assert error_payload["index"] >= 0
-      assert is_binary(error_payload["content"])
+          # Wait for error broadcast
+          assert_push "chat:error", error_payload, 2000
+          assert error_payload["index"] >= 0
+          assert is_binary(error_payload["content"])
+        end)
+
+      # Verify the error was logged with the correct message
+      assert log =~ "LLM request failed"
+      assert log =~ "model failed"
     end
   end
 

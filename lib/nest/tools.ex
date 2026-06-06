@@ -27,14 +27,14 @@ defmodule Nest.Tools do
   @spec get_function(String.t(), String.t() | nil, String.t() | nil) :: Function.t() | nil
   def get_function(name, workspace_path, tmp_path \\ nil) do
     case name do
-      "read_file" -> read_file_function(workspace_path)
-      "write_file" -> write_file_function(workspace_path)
+      "read_file" -> read_file_function(workspace_path, tmp_path)
+      "write_file" -> write_file_function(workspace_path, tmp_path)
       "shell_cmd" -> shell_cmd_function(workspace_path, tmp_path)
       _ -> nil
     end
   end
 
-  defp read_file_function(workspace_path) do
+  defp read_file_function(workspace_path, tmp_path) do
     Function.new!(%{
       name: "read_file",
       description: "Read the contents of a file from the workspace",
@@ -49,12 +49,12 @@ defmodule Nest.Tools do
         required: ["path"]
       },
       function: fn %{"path" => path}, _context ->
-        read_file(path, workspace_path)
+        read_file(path, workspace_path, tmp_path)
       end
     })
   end
 
-  defp write_file_function(workspace_path) do
+  defp write_file_function(workspace_path, tmp_path) do
     Function.new!(%{
       name: "write_file",
       description: "Write content to a file in the workspace",
@@ -73,7 +73,7 @@ defmodule Nest.Tools do
         required: ["path", "content"]
       },
       function: fn %{"path" => path, "content" => content}, _context ->
-        write_file(path, content, workspace_path)
+        write_file(path, content, workspace_path, tmp_path)
       end
     })
   end
@@ -100,7 +100,7 @@ defmodule Nest.Tools do
 
   # Tool implementations
 
-  defp read_file(path, workspace_path) do
+  defp read_file(path, workspace_path, tmp_path) do
     Logger.info("Tool read_file: #{path} (workspace: #{workspace_path || "none"})")
 
     # Build the full path - if absolute, use as-is (sandbox will enforce)
@@ -117,17 +117,12 @@ defmodule Nest.Tools do
       end
 
     with {:ok, full_path} <- full_path_result do
-      case File.read(full_path) do
-        {:ok, content} ->
-          {:ok, content}
-
-        {:error, reason} ->
-          {:error, "Failed to read file: #{inspect(reason)}"}
-      end
+      # Use cat via sandboxed shell command to read file
+      ShellCmd.execute("cat -- #{shell_escape(full_path)}", workspace_path, tmp_path)
     end
   end
 
-  defp write_file(path, content, workspace_path) do
+  defp write_file(path, content, workspace_path, tmp_path) do
     Logger.info("Tool write_file: #{path} (workspace: #{workspace_path || "none"})")
 
     # Build the full path - if absolute, use as-is (sandbox will enforce)
@@ -144,17 +139,19 @@ defmodule Nest.Tools do
       end
 
     with {:ok, full_path} <- full_path_result do
-      # Ensure parent directory exists
-      full_path
-      |> Path.dirname()
-      |> File.mkdir_p!()
-
-      case File.write(full_path, content) do
-        :ok ->
+      # Use cat via sandboxed shell command to write file
+      # cat reads from stdin and writes to the specified file
+      case ShellCmd.execute(
+             "cat > #{shell_escape(full_path)}",
+             workspace_path,
+             tmp_path,
+             stdin: content
+           ) do
+        {:ok, _} ->
           {:ok, "Successfully wrote #{String.length(content)} bytes to #{path}"}
 
         {:error, reason} ->
-          {:error, "Failed to write file: #{inspect(reason)}"}
+          {:error, "Failed to write file: #{reason}"}
       end
     end
   end
@@ -166,5 +163,10 @@ defmodule Nest.Tools do
 
     # Execute in sandboxed environment via bwrap + erlexec
     ShellCmd.execute(command, workspace_path, tmp_path)
+  end
+
+  defp shell_escape(path) do
+    # Escape single quotes by ending the quote, adding escaped quote, resuming quote
+    "'" <> String.replace(path, "'", "'\\''") <> "'"
   end
 end

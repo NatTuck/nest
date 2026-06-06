@@ -36,6 +36,7 @@ defmodule Nest.Agents.Agent do
     :vocation_id,
     :system_prompt,
     :workspace_path,
+    :tmp_path,
     :tools,
     mode: "chat",
     messages: [],
@@ -54,6 +55,7 @@ defmodule Nest.Agents.Agent do
           vocation_id: integer() | nil,
           system_prompt: String.t() | nil,
           workspace_path: String.t() | nil,
+          tmp_path: String.t() | nil,
           tools: [LangChain.Function.t()],
           mode: String.t(),
           messages: [Message.t()],
@@ -117,6 +119,7 @@ defmodule Nest.Agents.Agent do
           message_count: non_neg_integer(),
           status: atom(),
           vocation_id: integer() | nil,
+          tmp_path: String.t() | nil,
           partial: map() | nil
         }
   def get_public_info(pid) do
@@ -135,6 +138,9 @@ defmodule Nest.Agents.Agent do
 
   @impl true
   def init(attrs) do
+    # Trap exits to ensure cleanup runs when agent is stopped
+    Process.flag(:trap_exit, true)
+
     id = Map.fetch!(attrs, :id)
     model = Map.fetch!(attrs, :model)
     vocation_id = Map.get(attrs, :vocation_id)
@@ -143,8 +149,11 @@ defmodule Nest.Agents.Agent do
     # Fetch vocation if provided
     {system_prompt, mode, tool_names} = fetch_vocation_config(vocation_id)
 
-    # Get tools for the agent
-    tools = Tools.get_functions(tool_names, workspace_path)
+    # Create per-agent tmp space
+    tmp_path = create_tmp_space(id)
+
+    # Get tools for the agent (with tmp_path for sandbox)
+    tools = Tools.get_functions(tool_names, workspace_path, tmp_path)
 
     # Create LLM chain from model config with system prompt and tools
     case create_chain(model, system_prompt, tools) do
@@ -173,6 +182,7 @@ defmodule Nest.Agents.Agent do
           vocation_id: vocation_id,
           system_prompt: system_prompt,
           workspace_path: workspace_path,
+          tmp_path: tmp_path,
           tools: tools,
           mode: mode,
           messages: initial_messages,
@@ -194,8 +204,19 @@ defmodule Nest.Agents.Agent do
         {:ok, state}
 
       {:error, reason} ->
+        # Clean up tmp space if chain creation fails
+        cleanup_tmp(id)
         {:stop, reason}
     end
+  end
+
+  @impl true
+  def terminate(_reason, state) do
+    # Cleanup /tmp per design specification
+    cleanup_tmp(state.id)
+
+    # Note: workspace is preserved for review/debugging (per design)
+    :ok
   end
 
   @impl true
@@ -257,6 +278,7 @@ defmodule Nest.Agents.Agent do
       message_count: length(state.messages),
       status: state.status,
       vocation_id: state.vocation_id,
+      tmp_path: state.tmp_path,
       partial: state.streaming_acc
     }
 
@@ -489,6 +511,25 @@ defmodule Nest.Agents.Agent do
     {:noreply, %{state | api_log_sequences: updated_sequences}}
   end
 
+  @impl true
+  def handle_info({:EXIT, _pid, :normal}, state) do
+    # Ignore normal exits from linked processes
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:EXIT, _pid, reason}, state) do
+    # When trap_exit is enabled, EXIT signals are delivered as messages.
+    # Stop the process for abnormal termination so terminate/2 is called.
+    {:stop, reason, state}
+  end
+
+  @impl true
+  def handle_info(_msg, state) do
+    # Catch-all for unexpected messages
+    {:noreply, state}
+  end
+
   defp handle_api_log_for_existing_message(state, message_index, api_log) do
     messages =
       Enum.map(state.messages, fn
@@ -578,6 +619,34 @@ defmodule Nest.Agents.Agent do
   end
 
   defp get_initial_mode(_), do: "chat"
+
+  # Create a per-agent tmp directory for sandbox use
+  # Pattern: /tmp/nest-{BEAM_pid}/agent-{agent_id}
+  defp create_tmp_space(agent_id) do
+    tmp_path = "/tmp/nest-#{Elixir.System.pid()}/agent-#{agent_id}"
+    File.mkdir_p!(tmp_path)
+    Logger.info("Created tmp space for agent #{agent_id}: #{tmp_path}")
+    tmp_path
+  end
+
+  # Clean up the per-agent tmp directory and parent if empty
+  defp cleanup_tmp(agent_id) do
+    tmp_path = "/tmp/nest-#{Elixir.System.pid()}/agent-#{agent_id}"
+    File.rm_rf(tmp_path)
+    Logger.info("Cleaned up tmp space for agent #{agent_id}: #{tmp_path}")
+
+    # Try to clean up parent directory if empty
+    parent_path = Path.dirname(tmp_path)
+
+    case File.ls(parent_path) do
+      {:ok, []} ->
+        File.rmdir(parent_path)
+        Logger.info("Cleaned up empty parent directory: #{parent_path}")
+
+      _ ->
+        :ok
+    end
+  end
 
   defp run_chain_with_callbacks(
          chain,

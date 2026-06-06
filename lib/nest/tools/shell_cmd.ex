@@ -27,6 +27,7 @@ defmodule Nest.Tools.ShellCmd do
   ## Options
 
     * `:timeout` - Maximum execution time in milliseconds (default: #{@default_timeout_ms})
+    * `:stdin` - Binary data to send to stdin via base64 encoding (default: "")
 
   ## Returns
 
@@ -40,12 +41,25 @@ defmodule Nest.Tools.ShellCmd do
           {:ok, String.t()} | {:error, String.t()}
   def execute(command, workspace_path, tmp_path \\ nil, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, @default_timeout_ms)
+    stdin = Keyword.get(opts, :stdin, "")
 
     # Validate workspace exists
     workspace = resolve_workspace(workspace_path)
 
+    # If stdin is provided, embed it via base64 to avoid stdin redirection issues
+    final_command =
+      if stdin != "" do
+        # Encode stdin content as base64 and pipe through base64 -d
+        encoded = Base.encode64(stdin)
+        # Escape single quotes in the base64 string for shell safety
+        escaped = String.replace(encoded, "'", "'\\''")
+        "printf '%s' '#{escaped}' | base64 -d | #{command}"
+      else
+        command
+      end
+
     # Build the sandboxed command
-    sandboxed_cmd = build_sandboxed_command(command, workspace, tmp_path)
+    sandboxed_cmd = build_sandboxed_command(final_command, workspace, tmp_path)
 
     Logger.info("Executing sandboxed command in #{workspace}: #{truncate_log(command)}")
 

@@ -89,7 +89,7 @@ defmodule Nest.ToolsTest do
       assert {:error, error_msg} =
                Function.execute(function, %{"path" => "nonexistent.txt"}, nil)
 
-      assert error_msg =~ "Failed to read"
+      assert error_msg =~ "No such file or directory"
     end
 
     test "returns error when workspace is nil" do
@@ -129,17 +129,17 @@ defmodule Nest.ToolsTest do
       assert written == "Test content"
     end
 
-    test "creates parent directories", %{workspace: workspace} do
+    test "returns error when parent directory does not exist", %{workspace: workspace} do
       function = Tools.get_function("write_file", workspace)
 
-      assert {:ok, _} =
+      assert {:error, error_msg} =
                Function.execute(
                  function,
                  %{"path" => "subdir/nested/file.txt", "content" => "nested"},
                  nil
                )
 
-      assert File.exists?(Path.join(workspace, "subdir/nested/file.txt"))
+      assert error_msg =~ "Directory nonexistent" or error_msg =~ "No such file"
     end
 
     test "overwrites existing files", %{workspace: workspace} do

@@ -4,6 +4,7 @@ defmodule Nest.Agents.AgentTest do
   """
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
   import Mimic
 
   alias Nest.Agents.Agent
@@ -36,6 +37,170 @@ defmodule Nest.Agents.AgentTest do
     end
   end
 
+  describe "tmp_path lifecycle" do
+    test "creates tmp directory on agent start" do
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      expected_tmp_path = "/tmp/nest-#{Elixir.System.pid()}/agent-#{agent_id}"
+
+      assert File.exists?(expected_tmp_path),
+             "Expected tmp directory to exist: #{expected_tmp_path}"
+
+      # Verify it's a directory
+      assert File.dir?(expected_tmp_path)
+
+      # Cleanup
+      Agent.terminate(pid)
+    end
+
+    test "passes tmp_path to agent state" do
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      info = Agent.get_public_info(pid)
+
+      assert info.tmp_path =~ ~r|/tmp/nest-#{Elixir.System.pid()}/agent-|,
+             "Expected tmp_path to match pattern, got: #{inspect(info.tmp_path)}"
+
+      Agent.terminate(pid)
+    end
+
+    test "cleans up tmp directory on agent termination" do
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      expected_tmp_path = "/tmp/nest-#{Elixir.System.pid()}/agent-#{agent_id}"
+
+      # Verify directory exists while agent is running
+      assert File.exists?(expected_tmp_path)
+
+      ref = Process.monitor(pid)
+
+      # Terminate the agent
+      Agent.terminate(pid)
+
+      # Wait for actual process termination using monitor
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1000
+
+      # Verify directory is removed
+      refute File.exists?(expected_tmp_path),
+             "Expected tmp directory to be removed: #{expected_tmp_path}"
+    end
+
+    test "uses unique tmp_path per agent" do
+      agent_id1 = "unique-test-1-#{System.unique_integer([:positive])}"
+      pid1 = start_supervised!({Agent, %{id: agent_id1, model: %{name: "qwen3.5-plus"}}})
+      info1 = Agent.get_public_info(pid1)
+
+      assert info1.tmp_path =~ ~r|/tmp/nest-#{Elixir.System.pid()}/agent-#{agent_id1}|
+      Agent.terminate(pid1)
+    end
+
+    test "cleans up tmp directory when stopped via Supervisor.stop_agent/1" do
+      alias Nest.Agents.Supervisor
+
+      # Start agent via Supervisor (real production path)
+      {:ok, agent_id} = Supervisor.start_agent(%{model: %{name: "qwen3.5-plus"}})
+      expected_tmp_path = "/tmp/nest-#{Elixir.System.pid()}/agent-#{agent_id}"
+
+      # Verify directory exists
+      assert File.exists?(expected_tmp_path),
+             "Expected tmp directory to exist: #{expected_tmp_path}"
+
+      # Get the PID for monitoring
+      {:ok, pid} = Supervisor.get_agent(agent_id)
+      ref = Process.monitor(pid)
+
+      # Stop via Supervisor (this calls DynamicSupervisor.terminate_child/2)
+      :ok = Supervisor.stop_agent(agent_id)
+
+      # Wait for actual process termination using monitor
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1000
+
+      # Verify directory is removed
+      refute File.exists?(expected_tmp_path),
+             "Expected tmp directory to be removed after Supervisor.stop_agent: #{expected_tmp_path}"
+    end
+
+    test "cleans up tmp directory when agent crashes" do
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      expected_tmp_path = "/tmp/nest-#{Elixir.System.pid()}/agent-#{agent_id}"
+
+      # Verify directory exists
+      assert File.exists?(expected_tmp_path),
+             "Expected tmp directory to exist: #{expected_tmp_path}"
+
+      ref = Process.monitor(pid)
+
+      # Crash the agent by sending an exit signal (simulates unexpected termination)
+      # Use :crash reason which is trappable but will cause process to exit
+      Process.exit(pid, :crash)
+
+      # Wait for actual process termination using monitor
+      assert_receive {:DOWN, ^ref, :process, ^pid, :crash}, 1000
+
+      # Verify directory is removed - this works with trap_exit
+      refute File.exists?(expected_tmp_path),
+             "Expected tmp directory to be removed after agent crash: #{expected_tmp_path}"
+    end
+
+    test "cleans up tmp directory when linked process dies" do
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      expected_tmp_path = "/tmp/nest-#{Elixir.System.pid()}/agent-#{agent_id}"
+
+      # Verify directory exists
+      assert File.exists?(expected_tmp_path),
+             "Expected tmp directory to exist: #{expected_tmp_path}"
+
+      ref = Process.monitor(pid)
+
+      # Simulate what happens when a linked supervisor shuts down the agent
+      # :shutdown is trappable and will trigger terminate/2
+      Process.exit(pid, :shutdown)
+
+      # Wait for actual process termination using monitor
+      assert_receive {:DOWN, ^ref, :process, ^pid, :shutdown}, 1000
+
+      # Verify directory is removed
+      refute File.exists?(expected_tmp_path),
+             "Expected tmp directory to be removed when linked process dies: #{expected_tmp_path}"
+    end
+
+    test "cleans up parent nest directory when last agent is removed" do
+      alias Nest.Agents.Supervisor
+
+      # Start two agents
+      {:ok, agent_id1} = Supervisor.start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {:ok, agent_id2} = Supervisor.start_agent(%{model: %{name: "qwen3.5-plus"}})
+
+      parent_dir = "/tmp/nest-#{Elixir.System.pid()}"
+      path1 = "#{parent_dir}/agent-#{agent_id1}"
+      path2 = "#{parent_dir}/agent-#{agent_id2}"
+
+      # Verify both directories exist
+      assert File.exists?(path1)
+      assert File.exists?(path2)
+      assert File.exists?(parent_dir)
+
+      # Get PIDs for monitoring
+      {:ok, pid1} = Supervisor.get_agent(agent_id1)
+      {:ok, pid2} = Supervisor.get_agent(agent_id2)
+      ref1 = Process.monitor(pid1)
+      ref2 = Process.monitor(pid2)
+
+      # Stop first agent
+      :ok = Supervisor.stop_agent(agent_id1)
+      assert_receive {:DOWN, ^ref1, :process, ^pid1, _reason}, 1000
+
+      # Parent directory should still exist
+      assert File.exists?(parent_dir),
+             "Parent directory should exist while agents are still running"
+
+      # Stop second agent
+      :ok = Supervisor.stop_agent(agent_id2)
+      assert_receive {:DOWN, ^ref2, :process, ^pid2, _reason}, 1000
+
+      # Now parent directory should be cleaned up
+      refute File.exists?(parent_dir),
+             "Expected parent nest directory to be removed: #{parent_dir}"
+    end
+  end
+
   describe "chat/2" do
     test "broadcasts user message and LLM response via PubSub" do
       Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
@@ -62,14 +227,21 @@ defmodule Nest.Agents.AgentTest do
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
-      :ok = Agent.chat(pid, "Hello")
+      log =
+        capture_log(fn ->
+          :ok = Agent.chat(pid, "Hello")
 
-      # Should receive user message
-      assert_receive {:chat_message, {:user, %{index: 0, content: "Hello"}}},
-                     1000
+          # Should receive user message
+          assert_receive {:chat_message, {:user, %{index: 0, content: "Hello"}}},
+                         1000
 
-      # Should receive error message
-      assert_receive {:chat_error, _error}, 2000
+          # Should receive error message
+          assert_receive {:chat_error, _error}, 2000
+        end)
+
+      # Verify the error was logged with the correct message
+      assert log =~ "LLM request failed"
+      assert log =~ "Connection failed"
     end
 
     test "accumulates delta content from streaming LLM response" do
