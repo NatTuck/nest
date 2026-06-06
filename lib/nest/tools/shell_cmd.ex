@@ -5,7 +5,7 @@ defmodule Nest.Tools.ShellCmd do
   This module provides sandboxed command execution for agent tools.
   Commands run in an isolated environment with:
   - Network isolation (--unshare-net)
-  - Read-only filesystem access (except workspace)
+  - Read-only filesystem access (except workspace and /tmp when tmp_path is provided)
   - Process namespace isolation
   - Proper cleanup on exit
 
@@ -14,7 +14,7 @@ defmodule Nest.Tools.ShellCmd do
   Current sandbox profile:
   - Network: Disabled
   - Filesystem read: Entire host (read-only)
-  - Filesystem write: Workspace directory only
+  - Filesystem write: Workspace directory (at original path) and /tmp (when tmp_path provided)
   """
 
   require Logger
@@ -36,23 +36,28 @@ defmodule Nest.Tools.ShellCmd do
   Both success and failure return the command output, which should be
   displayed as a message in the chat UI.
   """
-  @spec execute(String.t(), String.t() | nil, keyword()) ::
+  @spec execute(String.t(), String.t() | nil, String.t() | nil, keyword()) ::
           {:ok, String.t()} | {:error, String.t()}
-  def execute(command, workspace_path, opts \\ []) do
+  def execute(command, workspace_path, tmp_path \\ nil, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, @default_timeout_ms)
 
     # Validate workspace exists
     workspace = resolve_workspace(workspace_path)
 
     # Build the sandboxed command
-    sandboxed_cmd = build_sandboxed_command(command, workspace)
+    sandboxed_cmd = build_sandboxed_command(command, workspace, tmp_path)
 
     Logger.info("Executing sandboxed command in #{workspace}: #{truncate_log(command)}")
 
     # Execute via erlexec
     case run_with_erlexec(sandboxed_cmd, timeout) do
       {:ok, exit_code, output} when exit_code == 0 ->
-        {:ok, output}
+        # Return placeholder if output is empty to satisfy LangChain ToolResult validation
+        if output == "" do
+          {:ok, "[Command executed successfully with no output]"}
+        else
+          {:ok, output}
+        end
 
       {:ok, exit_code, output} ->
         {:error, "Exit code #{exit_code}:\n#{output}"}
@@ -69,34 +74,38 @@ defmodule Nest.Tools.ShellCmd do
 
     * Network: Disabled
     * Read access: Entire filesystem (read-only)
-    * Write access: Workspace directory only
+    * Write access: /workspace and /tmp only
   """
-  @spec build_bwrap_args(String.t()) :: [String.t()]
-  def build_bwrap_args(workspace_path) do
-    [
-      # Namespace isolation
+  @spec build_bwrap_args(String.t(), String.t() | nil) :: [String.t()]
+  def build_bwrap_args(workspace_path, tmp_path \\ nil) do
+    base_args = [
       "--unshare-all",
       "--die-with-parent",
       "--new-session",
-      # Basic filesystem
       "--proc",
       "/proc",
       "--dev",
       "/dev",
-      # Read-only root filesystem
       "--ro-bind",
       "/",
       "/",
-      # Read-write workspace
+      # Bind mount workspace at its original path (read-write)
       "--bind",
       workspace_path,
       workspace_path,
-      # Network isolation
       "--unshare-net",
-      # Working directory
       "--chdir",
       workspace_path
     ]
+
+    if tmp_path do
+      # When tmp_path is provided, bind mount it over /tmp
+      # This makes /tmp writable for the agent
+      base_args ++ ["--bind", tmp_path, "/tmp"]
+    else
+      # Without tmp_path, /tmp is read-only (part of ro-bind /)
+      base_args
+    end
   end
 
   # Private functions
@@ -114,8 +123,8 @@ defmodule Nest.Tools.ShellCmd do
     end
   end
 
-  defp build_sandboxed_command(command, workspace_path) do
-    bwrap_args = build_bwrap_args(workspace_path)
+  defp build_sandboxed_command(command, workspace_path, tmp_path) do
+    bwrap_args = build_bwrap_args(workspace_path, tmp_path)
     bwrap_cmd = Enum.join(["bwrap" | bwrap_args], " ")
     shell_escaped = escape_shell(command)
     "#{bwrap_cmd} /bin/sh -c '#{shell_escaped}'"

@@ -191,12 +191,12 @@ function ThinkingBlock({ thinking }) {
 }
 
 /**
- * ApiCallsBlock component - displays API calls associated with a message
+ * ApiLogsBlock component - displays API logs associated with a message
  */
-function ApiCallsBlock({ apiCalls }) {
+function ApiLogsBlock({ apiLogs }) {
   const [isExpanded, setIsExpanded] = useState(false);
 
-  if (!apiCalls || apiCalls.length === 0) return null;
+  if (!apiLogs || apiLogs.length === 0) return null;
 
   return (
     <div className="mt-3 border border-indigo-200 rounded-lg overflow-hidden">
@@ -211,7 +211,7 @@ function ApiCallsBlock({ apiCalls }) {
             fill="none"
             stroke="currentColor"
             viewBox="0 0 24 24"
-            aria-label="API call icon"
+            aria-label="API log icon"
           >
             <path
               strokeLinecap="round"
@@ -220,7 +220,7 @@ function ApiCallsBlock({ apiCalls }) {
               d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
             />
           </svg>
-          <span className="font-medium">API Calls ({apiCalls.length})</span>
+          <span className="font-medium">API Logs ({apiLogs.length})</span>
         </div>
         <svg
           className={`w-4 h-4 text-indigo-600 transition-transform ${isExpanded ? "rotate-180" : ""}`}
@@ -239,16 +239,16 @@ function ApiCallsBlock({ apiCalls }) {
       </button>
       {isExpanded && (
         <div className="bg-white p-3 space-y-3 max-h-96 overflow-y-auto">
-          {apiCalls.map((call) => (
+          {apiLogs.map((log) => (
             <div
-              key={call.timestamp}
+              key={log.timestamp}
               className="border border-gray-200 rounded-lg overflow-hidden"
             >
               <div className="px-3 py-2 bg-gray-50 border-b border-gray-200 text-xs text-gray-500">
-                {new Date(call.timestamp).toLocaleTimeString()}
+                {new Date(log.timestamp).toLocaleTimeString()}
               </div>
               <pre className="p-3 text-xs text-gray-700 overflow-x-auto whitespace-pre-wrap bg-gray-50">
-                {JSON.stringify(call.payload, null, 2)}
+                {JSON.stringify(log.payload, null, 2)}
               </pre>
             </div>
           ))}
@@ -536,7 +536,7 @@ export function ChatPage() {
                 <ToolCalls toolCalls={message.toolCalls} />
                 <ToolResults toolResults={message.toolResults} />
                 <ThinkingBlock thinking={message.thinking} />
-                <ApiCallsBlock apiCalls={message.apiLogs} />
+                <ApiLogsBlock apiLogs={message.apiLogs} />
                 {message.isPartial && (
                   <div className="flex items-center gap-1 mt-2">
                     <span

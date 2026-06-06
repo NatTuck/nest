@@ -325,6 +325,239 @@ defmodule Nest.Agents.AgentTest do
       # Cleanup
       Nest.LangChainMock.clear_response()
     end
+
+    test "tool continuation flow broadcasts API calls for each LLM request", %{} do
+      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
+
+      # First response: tool calls
+      Nest.LangChainMock.set_tool_response(%{
+        text: "I'll execute that",
+        tool_calls: [
+          %LangChain.Message.ToolCall{
+            call_id: "call_api_001",
+            name: "shell_cmd",
+            arguments: %{"command" => "echo test"}
+          }
+        ]
+      })
+
+      # Second response: final text after tool execution
+      Nest.LangChainMock.set_response("Tool executed successfully")
+
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      :ok = Agent.chat(pid, "Run a command")
+
+      # Collect all messages (may be broadcast multiple times with api_logs updates)
+      messages = collect_all_messages_from_pubsub([])
+
+      # Get unique messages by index (keep latest version with api_logs)
+      unique_messages =
+        messages
+        |> Enum.reverse()
+        |> Enum.uniq_by(fn {_role, msg} -> msg.index end)
+        |> Enum.reverse()
+
+      # Find the tool message (index 2) - should have API request log
+      tool_msg =
+        Enum.find(unique_messages, fn
+          {:tool, msg} -> msg.index == 2
+          _ -> false
+        end)
+
+      assert tool_msg != nil, "Expected to find tool message at index 2"
+      {:tool, tool} = tool_msg
+
+      assert tool.api_logs != [],
+             "Expected tool message to have API request log"
+
+      has_tool_request = Enum.any?(tool.api_logs, fn log -> log.type == :request end)
+
+      assert has_tool_request,
+             "Expected API request log in tool message (tool results sent to API)"
+
+      # Find the final assistant message (index 3) - should have API response log
+      final_assistant =
+        Enum.find(unique_messages, fn
+          {:assistant, msg} -> msg.index == 3
+          _ -> false
+        end)
+
+      assert final_assistant != nil, "Expected to find final assistant message at index 3"
+
+      {:assistant, final_msg} = final_assistant
+
+      # The final assistant message should have the API response log
+      assert final_msg.api_logs != [],
+             "Expected final assistant message to have API response log"
+
+      has_response = Enum.any?(final_msg.api_logs, fn log -> log.type == :response end)
+
+      assert has_response,
+             "Expected API response log in final assistant message"
+
+      # Cleanup
+      Nest.LangChainMock.clear_response()
+    end
+  end
+
+  describe "API logs" do
+    test "every message in simple conversation has API log" do
+      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
+
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      :ok = Agent.chat(pid, "Hello")
+
+      messages = collect_all_messages_from_pubsub([])
+
+      unique_messages =
+        messages
+        |> Enum.reverse()
+        |> Enum.uniq_by(fn {_role, msg} -> msg.index end)
+        |> Enum.reverse()
+
+      assert length(unique_messages) == 2,
+             "Expected 2 messages (user + assistant), got #{length(unique_messages)}"
+
+      for {role, msg} <- unique_messages do
+        assert msg.api_logs != [],
+               "Message #{msg.index} (#{role}) should have API logs"
+
+        assert length(msg.api_logs) == 1,
+               "Message #{msg.index} should have exactly 1 API log"
+      end
+
+      {:user, user_msg} = Enum.at(unique_messages, 0)
+      assert user_msg.index == 0
+      request = Enum.find(user_msg.api_logs, fn log -> log.type == :request end)
+      assert request != nil, "User message should have request log"
+
+      {:assistant, assistant_msg} = Enum.at(unique_messages, 1)
+      assert assistant_msg.index == 1
+      response = Enum.find(assistant_msg.api_logs, fn log -> log.type == :response end)
+      assert response != nil, "Assistant message should have response log"
+    end
+
+    test "every message in tool call flow has API log including tool message" do
+      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
+
+      Nest.LangChainMock.set_tool_response(%{
+        text: "I'll execute that command",
+        tool_calls: [
+          %LangChain.Message.ToolCall{
+            call_id: "call_001",
+            name: "shell_cmd",
+            arguments: %{"command" => "echo test"}
+          }
+        ]
+      })
+
+      Nest.LangChainMock.set_response("Command executed successfully")
+
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      :ok = Agent.chat(pid, "Run a command")
+
+      messages = collect_all_messages_from_pubsub([])
+
+      unique_messages =
+        messages
+        |> Enum.reverse()
+        |> Enum.uniq_by(fn {_role, msg} -> msg.index end)
+        |> Enum.reverse()
+
+      assert length(unique_messages) == 4,
+             "Expected 4 messages (user, assistant+tools, tool, assistant), got #{length(unique_messages)}"
+
+      assert {:user, user_msg} = Enum.at(unique_messages, 0)
+      assert user_msg.index == 0
+
+      assert {:assistant, assistant1} = Enum.at(unique_messages, 1)
+      assert assistant1.index == 1
+
+      assert {:tool, tool_msg} = Enum.at(unique_messages, 2)
+      assert tool_msg.index == 2
+
+      assert {:assistant, assistant2} = Enum.at(unique_messages, 3)
+      assert assistant2.index == 3
+
+      for {role, msg} <- unique_messages do
+        assert msg.api_logs != [],
+               "Message #{msg.index} (#{role}) should have API logs"
+      end
+
+      user_request = Enum.find(user_msg.api_logs, fn log -> log.type == :request end)
+      assert user_request != nil, "User message should have request log"
+
+      assistant1_response = Enum.find(assistant1.api_logs, fn log -> log.type == :response end)
+      assert assistant1_response != nil, "Assistant with tool calls should have response log"
+
+      tool_request = Enum.find(tool_msg.api_logs, fn log -> log.type == :request end)
+
+      assert tool_request != nil,
+             "Tool message should have API request log showing tool results were sent to API"
+
+      assistant2_response = Enum.find(assistant2.api_logs, fn log -> log.type == :response end)
+      assert assistant2_response != nil, "Final assistant message should have response log"
+
+      Nest.LangChainMock.clear_response()
+    end
+
+    test "API log IDs follow correct sequencing pattern" do
+      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
+
+      Nest.LangChainMock.set_tool_response(%{
+        text: "I'll help",
+        tool_calls: [
+          %LangChain.Message.ToolCall{
+            call_id: "call_001",
+            name: "shell_cmd",
+            arguments: %{"command" => "ls"}
+          }
+        ]
+      })
+
+      Nest.LangChainMock.set_response("Done")
+
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      :ok = Agent.chat(pid, "List files")
+
+      messages = collect_all_messages_from_pubsub([])
+
+      unique_messages =
+        messages
+        |> Enum.reverse()
+        |> Enum.uniq_by(fn {_role, msg} -> msg.index end)
+        |> Enum.reverse()
+
+      {:user, user} = Enum.at(unique_messages, 0)
+      [user_log] = user.api_logs
+      assert user_log.id == "000.000"
+      assert user_log.type == :request
+
+      {:assistant, asst1} = Enum.at(unique_messages, 1)
+      [asst1_log] = asst1.api_logs
+      assert asst1_log.id == "001.000"
+      assert asst1_log.type == :response
+
+      {:tool, tool} = Enum.at(unique_messages, 2)
+      [tool_log] = tool.api_logs
+      assert tool_log.id == "002.000"
+      assert tool_log.type == :request
+
+      {:assistant, asst2} = Enum.at(unique_messages, 3)
+      [asst2_log] = asst2.api_logs
+      assert asst2_log.id == "003.000"
+      assert asst2_log.type == :response
+
+      Nest.LangChainMock.clear_response()
+    end
   end
 
   test "stops agent process" do

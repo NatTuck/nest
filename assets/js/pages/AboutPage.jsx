@@ -5,16 +5,29 @@
  * - Nest mascot image
  * - Flip image toggle button
  * - Project description
+ * - Source code link
  */
 
 import { useState } from "react";
 import mascotImage from "../../images/nest-mascots.jpg";
 
 /**
+ * Get the source URL from the global config
+ * @returns {string|null}
+ */
+function getSourceUrl() {
+  if (typeof window !== "undefined" && window.NEST_CONFIG?.sourceUrl) {
+    return window.NEST_CONFIG.sourceUrl;
+  }
+  return null;
+}
+
+/**
  * About Page component
  */
 export function AboutPage() {
   const [isFlipped, setIsFlipped] = useState(false);
+  const sourceUrl = getSourceUrl();
 
   const toggleImage = () => {
     setIsFlipped(!isFlipped);
@@ -189,6 +202,55 @@ export function AboutPage() {
           <p className="text-sm text-gray-400">
             Built with Phoenix, React, and LangChain
           </p>
+          {sourceUrl ? (
+            <div className="mt-4">
+              <a
+                href={sourceUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 text-sm text-indigo-600 hover:text-indigo-800 transition-colors"
+              >
+                <svg
+                  className="w-4 h-4"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                  aria-label="Source code icon"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"
+                  />
+                </svg>
+                Source Code (AGPLv3)
+              </a>
+            </div>
+          ) : (
+            <div className="mt-4">
+              <p
+                className="inline-flex items-center gap-2 text-sm text-red-600"
+                data-testid="source-url-error"
+              >
+                <svg
+                  className="w-4 h-4"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                  aria-label="Error icon"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+                  />
+                </svg>
+                Error: Misconfigured Source URL
+              </p>
+            </div>
+          )}
         </div>
       </div>
     </div>

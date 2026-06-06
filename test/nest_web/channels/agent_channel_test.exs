@@ -866,7 +866,7 @@ defmodule NestWeb.AgentChannelTest do
     end
   end
 
-  describe "chat:api_call event" do
+  describe "API logs in chat:message events" do
     test "API requests and responses are broadcast with correct message indices in two-round conversation",
          %{
            socket: socket,
@@ -913,7 +913,7 @@ defmodule NestWeb.AgentChannelTest do
       assert length(assistant1["apiLogs"]) == 1
       response = Enum.find(assistant1["apiLogs"], fn l -> l["type"] == "response" end)
       assert response != nil
-      assert response["id"] == "001.001"
+      assert response["id"] == "001.000"
       assert is_map(response["payload"])
 
       # === Round 2 ===
@@ -941,7 +941,7 @@ defmodule NestWeb.AgentChannelTest do
       assert length(assistant2["apiLogs"]) == 1
       response2 = Enum.find(assistant2["apiLogs"], fn l -> l["type"] == "response" end)
       assert response2 != nil
-      assert response2["id"] == "003.001"
+      assert response2["id"] == "003.000"
     end
 
     test "API call payload contains conversation history and tool calls", %{
@@ -983,10 +983,63 @@ defmodule NestWeb.AgentChannelTest do
       # Verify assistant message has response with proper payload structure
       response = Enum.find(assistant["apiLogs"], fn l -> l["type"] == "response" end)
       assert response != nil
-      assert response["id"] == "001.001"
+      assert response["id"] == "001.000"
       assert is_map(response["payload"])
       # Response payload has atom keys (e.g., :role, :content, :tool_calls)
       assert response["timestamp"] != nil
+    end
+
+    test "tool messages have API request logs from continuation", %{
+      socket: socket,
+      agent_id: _id
+    } do
+      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
+
+      # Set up mock to return tool calls first, then final response
+      Nest.LangChainMock.set_tool_response(%{
+        text: "I'll run that command",
+        tool_calls: [
+          %LangChain.Message.ToolCall{
+            call_id: "call_shell_001",
+            name: "shell_cmd",
+            arguments: %{"command" => "echo test"}
+          }
+        ]
+      })
+
+      Nest.LangChainMock.set_response("Done")
+
+      # Send message
+      ref = push(socket, "chat:message", %{"content" => "Run a command"})
+      assert_reply ref, :ok, %{}
+
+      # Collect messages
+      messages =
+        Enum.reduce(1..30, %{}, fn _, acc ->
+          receive do
+            %Phoenix.Socket.Message{event: "chat:message", payload: payload} ->
+              Map.put(acc, payload["index"], payload)
+          after
+            100 -> acc
+          end
+        end)
+
+      # Get tool message (index 2)
+      tool = messages[2]
+      assert tool["role"] == "tool"
+
+      # Tool message should have API request log (from tool results sent to API)
+      assert tool["apiLogs"] != [], "Expected tool message to have API logs"
+
+      request = Enum.find(tool["apiLogs"], fn l -> l["type"] == "request" end)
+      assert request != nil, "Expected tool message to have request log"
+      assert request["id"] == "002.000"
+      assert is_map(request["payload"])
+      # Request should include conversation history with tool results
+      assert request["timestamp"] != nil
+
+      # Cleanup
+      Nest.LangChainMock.clear_response()
     end
   end
 

@@ -88,10 +88,10 @@ defmodule NestWeb.AgentChannel do
     {:noreply, socket}
   end
 
-  # Handle API call metadata from PubSub (deprecated - now included with messages)
+  # Handle API log metadata from PubSub (deprecated - now included with messages)
   @impl true
-  def handle_info({:api_call, _api_call}, socket) do
-    # Deprecated: API calls are now included with messages via apiLogs field
+  def handle_info({:api_log, _api_log}, socket) do
+    # Deprecated: API logs are now included with messages via apiLogs field
     {:noreply, socket}
   end
 

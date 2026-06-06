@@ -63,9 +63,8 @@ defmodule Nest.ToolsTest do
 
   describe "read_file tool" do
     setup do
-      # Create a temporary directory for testing
-      tmp_dir = System.tmp_dir!()
-      test_workspace = Path.join(tmp_dir, "nest_tools_test_#{System.unique_integer([:positive])}")
+      # Use a directory outside of /tmp for workspaces to avoid conflicts with tmp bind mounts
+      test_workspace = "/var/tmp/nest_tools_test_#{System.unique_integer([:positive])}"
       File.mkdir_p!(test_workspace)
 
       on_exit(fn ->
@@ -103,8 +102,8 @@ defmodule Nest.ToolsTest do
 
   describe "write_file tool" do
     setup do
-      tmp_dir = System.tmp_dir!()
-      test_workspace = Path.join(tmp_dir, "nest_tools_test_#{System.unique_integer([:positive])}")
+      # Use a directory outside of /tmp for workspaces to avoid conflicts with tmp bind mounts
+      test_workspace = "/var/tmp/nest_tools_test_#{System.unique_integer([:positive])}"
       File.mkdir_p!(test_workspace)
 
       on_exit(fn ->
@@ -169,8 +168,8 @@ defmodule Nest.ToolsTest do
 
   describe "shell_cmd tool" do
     setup do
-      tmp_dir = System.tmp_dir!()
-      test_workspace = Path.join(tmp_dir, "nest_tools_test_#{System.unique_integer([:positive])}")
+      # Use a directory outside of /tmp for workspaces to avoid conflicts with tmp bind mounts
+      test_workspace = "/var/tmp/nest_tools_test_#{System.unique_integer([:positive])}"
       File.mkdir_p!(test_workspace)
 
       on_exit(fn ->
@@ -208,6 +207,63 @@ defmodule Nest.ToolsTest do
 
       assert {:ok, result} = Function.execute(function, %{"command" => "cat test.txt"}, nil)
       assert result =~ "workspace file"
+    end
+
+    test "can write to /tmp when tmp_path is provided", %{workspace: workspace} do
+      # Create a dedicated tmp directory for this test
+      agent_tmp =
+        Path.join(System.tmp_dir!(), "test_agent_tmp_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(agent_tmp)
+
+      on_exit(fn ->
+        File.rm_rf(agent_tmp)
+      end)
+
+      function = Tools.get_function("shell_cmd", workspace, agent_tmp)
+
+      # Try to write to /tmp - this should succeed when tmp_path is provided
+      assert {:ok, result} =
+               Function.execute(
+                 function,
+                 %{
+                   "command" =>
+                     "echo 'test content' > /tmp/test_file.txt && cat /tmp/test_file.txt"
+                 },
+                 nil
+               )
+
+      assert result =~ "test content"
+
+      # Verify the file was actually written to the agent's tmp directory
+      assert File.exists?(Path.join(agent_tmp, "test_file.txt"))
+      assert File.read!(Path.join(agent_tmp, "test_file.txt")) == "test content\n"
+    end
+
+    test "returns placeholder message for commands with no output", %{workspace: workspace} do
+      function = Tools.get_function("shell_cmd", workspace)
+
+      # Command that produces no output
+      assert {:ok, result} =
+               Function.execute(
+                 function,
+                 %{"command" => "true"},
+                 nil
+               )
+
+      assert result == "[Command executed successfully with no output]"
+    end
+
+    test "cannot write to /tmp when tmp_path is not provided", %{workspace: workspace} do
+      function = Tools.get_function("shell_cmd", workspace, nil)
+
+      # Try to write to /tmp - this should fail when no tmp_path is provided
+      # (because /tmp is read-only in the sandbox without a bind mount)
+      assert {:error, result} =
+               Function.execute(function, %{"command" => "echo 'test' > /tmp/test_file.txt"}, nil)
+
+      # Should fail with a read-only filesystem error
+      assert result =~ "Read-only file system" or result =~ "Exit code"
     end
   end
 end

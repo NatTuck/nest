@@ -43,7 +43,7 @@ defmodule Nest.Agents.Agent do
     streaming_acc: nil,
     status: :idle,
     active_message_index: 0,
-    api_call_sequences: %{},
+    api_log_sequences: %{},
     pending_api_logs: %{}
   ]
 
@@ -61,7 +61,7 @@ defmodule Nest.Agents.Agent do
           streaming_acc: Streaming.AssistantAccumulator.t() | nil,
           status: :idle | :streaming | :executing_tools,
           active_message_index: non_neg_integer(),
-          api_call_sequences: %{non_neg_integer() => non_neg_integer()}
+          api_log_sequences: %{non_neg_integer() => non_neg_integer()}
         }
 
   @type message ::
@@ -231,17 +231,19 @@ defmodule Nest.Agents.Agent do
     agent_pid = self()
 
     Task.start(fn ->
-      # Initialize API call sequence counter for this Task
-      Process.put(:api_call_sequence, 0)
+      updated_sequences =
+        run_chain_with_callbacks(
+          state.chain,
+          messages,
+          agent_pid,
+          state.id,
+          state.streaming_acc.index,
+          state.active_message_index,
+          state.api_log_sequences
+        )
 
-      run_chain_with_callbacks(
-        state.chain,
-        messages,
-        agent_pid,
-        state.id,
-        state.streaming_acc.index,
-        state.active_message_index
-      )
+      # Send updated sequences back to agent
+      send(agent_pid, {:api_log_sequences_updated, updated_sequences})
     end)
 
     {:noreply, state}
@@ -482,6 +484,11 @@ defmodule Nest.Agents.Agent do
     end
   end
 
+  @impl true
+  def handle_info({:api_log_sequences_updated, updated_sequences}, state) do
+    {:noreply, %{state | api_log_sequences: updated_sequences}}
+  end
+
   defp handle_api_log_for_existing_message(state, message_index, api_log) do
     messages =
       Enum.map(state.messages, fn
@@ -578,7 +585,8 @@ defmodule Nest.Agents.Agent do
          agent_pid,
          agent_id,
          message_index,
-         active_message_index
+         active_message_index,
+         api_log_sequences
        ) do
     Logger.info("Agent #{agent_id} sending LLM request (message #{message_index})")
 
@@ -587,10 +595,18 @@ defmodule Nest.Agents.Agent do
     chain_with_messages = create_chain_with_messages(langchain_messages, chain)
 
     # Capture and broadcast API payload for OpenAI-compatible models
-    if match?(%ChatOpenAI{}, chain.llm) do
-      api_payload = ChatOpenAI.for_api(chain.llm, chain_with_messages.messages, chain.tools)
-      broadcast_api_call(agent_pid, active_message_index, api_payload)
-    end
+    api_log_sequences =
+      if match?(%ChatOpenAI{}, chain.llm) do
+        api_payload = ChatOpenAI.for_api(chain.llm, chain_with_messages.messages, chain.tools)
+
+        {api_log_id, updated_sequences} =
+          get_next_api_log_id(active_message_index, api_log_sequences)
+
+        broadcast_api_log(agent_pid, active_message_index, api_log_id, api_payload)
+        updated_sequences
+      else
+        api_log_sequences
+      end
 
     run_and_handle_response(
       chain_with_messages,
@@ -598,7 +614,8 @@ defmodule Nest.Agents.Agent do
       agent_id,
       message_index,
       chain,
-      active_message_index
+      active_message_index,
+      api_log_sequences
     )
   end
 
@@ -708,17 +725,26 @@ defmodule Nest.Agents.Agent do
          agent_id,
          message_index,
          original_chain,
-         active_message_index
+         active_message_index,
+         api_log_sequences
        ) do
     case LLMChain.run(chain) do
       {:ok, updated_chain} ->
         response = updated_chain.last_message
 
         # Broadcast API response for OpenAI-compatible models
-        if match?(%ChatOpenAI{}, original_chain.llm) do
-          api_response = build_api_response(response)
-          broadcast_api_response(agent_pid, message_index, api_response)
-        end
+        api_log_sequences =
+          if match?(%ChatOpenAI{}, original_chain.llm) do
+            api_response = build_api_response(response)
+
+            {api_log_id, updated_sequences} =
+              get_next_api_log_id(message_index, api_log_sequences)
+
+            broadcast_api_response(agent_pid, message_index, api_log_id, api_response)
+            updated_sequences
+          else
+            api_log_sequences
+          end
 
         handle_successful_response(
           response,
@@ -727,11 +753,12 @@ defmodule Nest.Agents.Agent do
           agent_id,
           message_index,
           original_chain,
-          active_message_index
+          active_message_index,
+          api_log_sequences
         )
 
       {:error, _failed_chain, error} ->
-        handle_failed_response(error, agent_pid, agent_id, message_index)
+        handle_failed_response(error, agent_pid, agent_id, message_index, api_log_sequences)
     end
   end
 
@@ -742,7 +769,8 @@ defmodule Nest.Agents.Agent do
          agent_id,
          message_index,
          _original_chain,
-         active_message_index
+         active_message_index,
+         api_log_sequences
        ) do
     # Check if this is a tool call
     if LangChainMessage.is_tool_call?(response) do
@@ -754,7 +782,8 @@ defmodule Nest.Agents.Agent do
         agent_id,
         message_index,
         active_message_index,
-        5
+        5,
+        api_log_sequences
       )
     else
       # Regular text response
@@ -774,6 +803,7 @@ defmodule Nest.Agents.Agent do
 
       # Notify agent that streaming is complete
       send(agent_pid, {:llm_response, response})
+      api_log_sequences
     end
   end
 
@@ -784,7 +814,8 @@ defmodule Nest.Agents.Agent do
          agent_id,
          message_index,
          active_message_index,
-         max_iterations
+         max_iterations,
+         api_log_sequences
        ) do
     Logger.info(
       "Agent #{agent_id} received tool calls (message #{message_index}, iteration #{max_iterations})"
@@ -818,7 +849,7 @@ defmodule Nest.Agents.Agent do
 
     # Execute tool calls (returns chain directly)
     try do
-      chain_with_results = LLMChain.execute_tool_calls(chain, context: %{})
+      chain_with_results = LLMChain.execute_tool_calls(chain, context: %{}, max_iterations: 5)
 
       # Extract tool results
       tool_results_message = chain_with_results.last_message
@@ -856,12 +887,14 @@ defmodule Nest.Agents.Agent do
         agent_id,
         message_index + 2,
         active_message_index,
-        max_iterations - 1
+        max_iterations - 1,
+        api_log_sequences
       )
     catch
       error ->
         Logger.error("Tool execution failed: #{inspect(error)}")
         send(agent_pid, {:llm_error, "Tool execution failed: #{inspect(error)}"})
+        api_log_sequences
     end
   end
 
@@ -882,7 +915,8 @@ defmodule Nest.Agents.Agent do
          agent_id,
          next_index,
          active_message_index,
-         max_iterations
+         max_iterations,
+         api_log_sequences
        ) do
     # The chain now has the tool results, we need to call the LLM again
     # to get the final response based on the tool results
@@ -903,7 +937,8 @@ defmodule Nest.Agents.Agent do
       agent_id,
       next_index,
       active_message_index,
-      max_iterations
+      max_iterations,
+      api_log_sequences
     )
   end
 
@@ -915,11 +950,19 @@ defmodule Nest.Agents.Agent do
          agent_id,
          message_index,
          active_message_index,
-         max_iterations
+         max_iterations,
+         api_log_sequences
        ) do
     if max_iterations <= 0 do
       Logger.warning("Agent #{agent_id} reached max tool iterations, returning last response")
-      handle_failed_response("Max tool iterations reached", agent_pid, agent_id, message_index)
+
+      handle_failed_response(
+        "Max tool iterations reached",
+        agent_pid,
+        agent_id,
+        message_index,
+        api_log_sequences
+      )
     else
       run_chain_and_handle_response(
         chain,
@@ -927,7 +970,8 @@ defmodule Nest.Agents.Agent do
         agent_id,
         message_index,
         active_message_index,
-        max_iterations
+        max_iterations,
+        api_log_sequences
       )
     end
   end
@@ -939,8 +983,37 @@ defmodule Nest.Agents.Agent do
          agent_id,
          message_index,
          active_message_index,
-         max_iterations
+         max_iterations,
+         api_log_sequences
        ) do
+    # Capture and broadcast API payload for OpenAI-compatible models
+    # Include all messages to transparently show the actual API request
+    api_log_sequences =
+      if match?(%ChatOpenAI{}, chain.llm) do
+        api_payload = ChatOpenAI.for_api(chain.llm, chain.messages, chain.tools)
+
+        # Determine which message should receive the API request log.
+        # When tool results are being sent back to the API (chain contains tool messages),
+        # the API request log belongs to the tool message (message_index - 1).
+        # Otherwise, it's for the upcoming assistant message (message_index).
+        last_message = List.last(chain.messages)
+
+        api_log_target_index =
+          if last_message && last_message.role == :tool do
+            message_index - 1
+          else
+            message_index
+          end
+
+        {api_log_id, updated_sequences} =
+          get_next_api_log_id(api_log_target_index, api_log_sequences)
+
+        broadcast_api_log(agent_pid, api_log_target_index, api_log_id, api_payload)
+        updated_sequences
+      else
+        api_log_sequences
+      end
+
     case LLMChain.run(chain) do
       {:ok, updated_chain} ->
         handle_run_response(
@@ -949,11 +1022,12 @@ defmodule Nest.Agents.Agent do
           agent_id,
           message_index,
           active_message_index,
-          max_iterations
+          max_iterations,
+          api_log_sequences
         )
 
       {:error, _failed_chain, error} ->
-        handle_failed_response(error, agent_pid, agent_id, message_index)
+        handle_failed_response(error, agent_pid, agent_id, message_index, api_log_sequences)
     end
   end
 
@@ -964,7 +1038,8 @@ defmodule Nest.Agents.Agent do
          agent_id,
          message_index,
          active_message_index,
-         max_iterations
+         max_iterations,
+         api_log_sequences
        ) do
     response = updated_chain.last_message
 
@@ -980,20 +1055,40 @@ defmodule Nest.Agents.Agent do
         agent_id,
         message_index,
         active_message_index,
-        max_iterations
+        max_iterations,
+        api_log_sequences
       )
     else
-      finalize_tool_response(updated_chain, response, agent_pid, agent_id, message_index)
+      finalize_tool_response(
+        updated_chain,
+        response,
+        agent_pid,
+        agent_id,
+        message_index,
+        api_log_sequences
+      )
     end
   end
 
   # Finalize the response after all tools are executed
-  defp finalize_tool_response(chain, response, agent_pid, agent_id, message_index) do
+  defp finalize_tool_response(
+         chain,
+         response,
+         agent_pid,
+         agent_id,
+         message_index,
+         api_log_sequences
+       ) do
     # Broadcast API response for OpenAI-compatible models
-    if match?(%ChatOpenAI{}, chain.llm) do
-      api_response = build_api_response(response)
-      broadcast_api_response(agent_pid, message_index, api_response)
-    end
+    api_log_sequences =
+      if match?(%ChatOpenAI{}, chain.llm) do
+        api_response = build_api_response(response)
+        {api_log_id, updated_sequences} = get_next_api_log_id(message_index, api_log_sequences)
+        broadcast_api_response(agent_pid, message_index, api_log_id, api_response)
+        updated_sequences
+      else
+        api_log_sequences
+      end
 
     # Extract thinking if present
     thinking = extract_thinking(response.content)
@@ -1016,6 +1111,8 @@ defmodule Nest.Agents.Agent do
 
     # Notify agent with final message including thinking
     send(agent_pid, {:llm_response_with_thinking, response, thinking})
+
+    api_log_sequences
   end
 
   defp extract_thinking(content) when is_list(content) do
@@ -1107,7 +1204,7 @@ defmodule Nest.Agents.Agent do
     end)
   end
 
-  defp handle_failed_response(error, agent_pid, agent_id, message_index) do
+  defp handle_failed_response(error, agent_pid, agent_id, message_index, api_log_sequences) do
     error_msg = "Error: #{inspect(error)}"
 
     Logger.error("Agent #{agent_id} LLM request failed: #{error_msg}")
@@ -1117,6 +1214,8 @@ defmodule Nest.Agents.Agent do
 
     # Notify agent that streaming failed (similar to successful response)
     send(agent_pid, {:llm_error, error_msg})
+
+    api_log_sequences
   end
 
   defp chunk_content(content, size) do
@@ -1163,14 +1262,12 @@ defmodule Nest.Agents.Agent do
     )
   end
 
-  defp broadcast_api_call(agent_pid, message_index, api_payload) do
-    api_call_id = get_next_api_call_id(message_index)
-
+  defp broadcast_api_log(agent_pid, message_index, api_log_id, api_payload) do
     send(
       agent_pid,
       {:api_log, message_index,
        %{
-         id: api_call_id,
+         id: api_log_id,
          timestamp: DateTime.utc_now(),
          type: :request,
          payload: api_payload
@@ -1178,14 +1275,12 @@ defmodule Nest.Agents.Agent do
     )
   end
 
-  defp broadcast_api_response(agent_pid, message_index, api_response) do
-    api_call_id = get_next_api_call_id(message_index)
-
+  defp broadcast_api_response(agent_pid, message_index, api_log_id, api_response) do
     send(
       agent_pid,
       {:api_log, message_index,
        %{
-         id: api_call_id,
+         id: api_log_id,
          timestamp: DateTime.utc_now(),
          type: :response,
          payload: api_response
@@ -1193,10 +1288,11 @@ defmodule Nest.Agents.Agent do
     )
   end
 
-  defp get_next_api_call_id(message_index) do
-    sequence = Process.get(:api_call_sequence, 0)
-    Process.put(:api_call_sequence, sequence + 1)
-    :io_lib.format("~3..0B.~3..0B", [message_index, sequence]) |> IO.iodata_to_binary()
+  defp get_next_api_log_id(message_index, sequences) do
+    sequence = Map.get(sequences, message_index, 0)
+    updated_sequences = Map.put(sequences, message_index, sequence + 1)
+    id = :io_lib.format("~3..0B.~3..0B", [message_index, sequence]) |> IO.iodata_to_binary()
+    {id, updated_sequences}
   end
 
   defp build_api_response(response) do

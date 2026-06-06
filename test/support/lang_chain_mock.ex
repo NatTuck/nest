@@ -9,6 +9,7 @@ defmodule Nest.LangChainMock do
   """
 
   alias LangChain.Message
+  alias LangChain.Message.ContentPart
 
   # Agent name for global state storage
   @agent_name :lang_chain_mock_agent
@@ -328,9 +329,11 @@ defmodule Nest.LangChainMock do
         end)
 
       # Create a tool result message
+      tool_content = Enum.map_join(tool_results, "\n", fn tr -> tr.content end)
+
       tool_result_msg = %Message{
         role: :tool,
-        content: tool_results,
+        content: [ContentPart.text!(tool_content)],
         index: length(chain.messages),
         status: :complete,
         tool_calls: [],
