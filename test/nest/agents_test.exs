@@ -5,15 +5,28 @@ defmodule Nest.AgentsTest do
   use ExUnit.Case
 
   import Eventually
+  import Mimic
 
   alias Nest.Agents
+  alias Nest.Test.TaskDrain
+
+  setup :set_mimic_global
+  setup :verify_on_exit!
 
   setup do
+    Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
+    Nest.LangChainMock.start_mock_agent()
+
     # Agents supervision tree is already started by Application
     # Just need to clean up any agents from previous tests
     for id <- Agents.list_agents() do
       Agents.delete_agent(id)
     end
+
+    parent_dir = "/tmp/nest-#{System.pid()}"
+    File.rm_rf(parent_dir)
+    on_exit(fn -> File.rm_rf(parent_dir) end)
+    on_exit(fn -> TaskDrain.drain() end)
 
     :ok
   end

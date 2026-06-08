@@ -251,7 +251,7 @@ defmodule Nest.Agents.Agent do
     # Run LLM chain with callbacks in a task
     agent_pid = self()
 
-    Task.start(fn ->
+    Task.Supervisor.start_child(Nest.Agents.TaskSupervisor, fn ->
       updated_sequences =
         run_chain_with_callbacks(
           state.chain,
@@ -1265,7 +1265,6 @@ defmodule Nest.Agents.Agent do
           # Also update agent's streaming accumulator
           send(agent_pid, {:delta_received, chunk, segment.type})
 
-          Process.sleep(50)
           chars_end
         end)
 

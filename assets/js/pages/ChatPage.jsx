@@ -11,6 +11,7 @@ import { useParams } from "react-router-dom";
 import { useStore } from "../store";
 import { joinAgent, leaveAgent, sendMessage } from "../channels";
 import { MessageContent } from "../components/MessageContent";
+import { ChatInput } from "../components/ChatInput";
 
 /**
  * ToolCalls component - displays tool calls in a message
@@ -362,9 +363,7 @@ export function ChatPage() {
     };
   }, [id]);
 
-  const handleSendMessage = (e) => {
-    e.preventDefault();
-
+  const handleSendMessage = () => {
     if (!inputValue.trim() || streaming) {
       return;
     }
@@ -585,44 +584,17 @@ export function ChatPage() {
       )}
 
       {/* Input area */}
-      <form
-        onSubmit={handleSendMessage}
-        className="border-t border-gray-200 pt-4"
-      >
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
-            placeholder={
-              status === "connected"
-                ? "Type a message..."
-                : "Connect to send messages..."
-            }
-            disabled={isInputDisabled}
-            className="
-              flex-1 px-4 py-3 border border-gray-300 rounded-lg
-              focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none
-              disabled:bg-gray-100 disabled:cursor-not-allowed
-            "
-          />
-          <button
-            type="submit"
-            disabled={!inputValue.trim() || isInputDisabled}
-            className={`
-              px-6 py-3 rounded-lg font-semibold text-white
-              transition-all duration-200
-              ${
-                !inputValue.trim() || isInputDisabled
-                  ? "bg-gray-400 cursor-not-allowed"
-                  : "bg-blue-600 hover:bg-blue-700 active:bg-blue-800"
-              }
-            `}
-          >
-            Send
-          </button>
-        </div>
-      </form>
+      <ChatInput
+        value={inputValue}
+        onChange={setInputValue}
+        onSend={handleSendMessage}
+        disabled={isInputDisabled}
+        placeholder={
+          status === "connected"
+            ? "Type a message..."
+            : "Connect to send messages..."
+        }
+      />
     </div>
   );
 }

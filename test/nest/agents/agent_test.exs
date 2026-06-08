@@ -12,9 +12,24 @@ defmodule Nest.Agents.AgentTest do
   alias Nest.Messages.Assistant
   alias Nest.Messages.Tool
   alias Nest.Messages.ToolCall
+  alias Nest.Test.TaskDrain
 
   setup :set_mimic_global
   setup :verify_on_exit!
+
+  setup do
+    Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
+    Nest.LangChainMock.start_mock_agent()
+    :ok
+  end
+
+  setup do
+    parent_dir = "/tmp/nest-#{System.pid()}"
+    File.rm_rf(parent_dir)
+    on_exit(fn -> File.rm_rf(parent_dir) end)
+    on_exit(fn -> TaskDrain.drain() end)
+    :ok
+  end
 
   defp start_agent(attrs) do
     agent_id = "test-agent-#{System.unique_integer([:positive])}"
@@ -119,7 +134,7 @@ defmodule Nest.Agents.AgentTest do
 
     test "cleans up tmp directory when agent crashes" do
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      expected_tmp_path = "/tmp/nest-#{Elixir.System.pid()}/agent-#{agent_id}"
+      expected_tmp_path = "/tmp/nest-#{System.pid()}/agent-#{agent_id}"
 
       # Verify directory exists
       assert File.exists?(expected_tmp_path),
@@ -127,12 +142,14 @@ defmodule Nest.Agents.AgentTest do
 
       ref = Process.monitor(pid)
 
-      # Crash the agent by sending an exit signal (simulates unexpected termination)
-      # Use :crash reason which is trappable but will cause process to exit
-      Process.exit(pid, :crash)
+      capture_log(fn ->
+        # Crash the agent by sending an exit signal (simulates unexpected termination)
+        # Use :crash reason which is trappable but will cause process to exit
+        Process.exit(pid, :crash)
 
-      # Wait for actual process termination using monitor
-      assert_receive {:DOWN, ^ref, :process, ^pid, :crash}, 1000
+        # Wait for actual process termination using monitor
+        assert_receive {:DOWN, ^ref, :process, ^pid, :crash}, 1000
+      end)
 
       # Verify directory is removed - this works with trap_exit
       refute File.exists?(expected_tmp_path),
@@ -141,7 +158,7 @@ defmodule Nest.Agents.AgentTest do
 
     test "cleans up tmp directory when linked process dies" do
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      expected_tmp_path = "/tmp/nest-#{Elixir.System.pid()}/agent-#{agent_id}"
+      expected_tmp_path = "/tmp/nest-#{System.pid()}/agent-#{agent_id}"
 
       # Verify directory exists
       assert File.exists?(expected_tmp_path),
@@ -219,8 +236,13 @@ defmodule Nest.Agents.AgentTest do
     end
 
     test "handles LLM error gracefully" do
-      # Mock LLM to return an error
+      # Mock LLM to return an error. Stub arity 1 and 2 because
+      # LLMChain.run/1 dispatches to run/2 with default opts.
       Mimic.stub(LangChain.Chains.LLMChain, :run, fn _chain ->
+        {:error, nil, "Connection failed"}
+      end)
+
+      Mimic.stub(LangChain.Chains.LLMChain, :run, fn _chain, _opts ->
         {:error, nil, "Connection failed"}
       end)
 

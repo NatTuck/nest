@@ -1,6 +1,8 @@
 This is a web application written using the Phoenix web framework with a React
 user interface.
 
+All browser JS and other assets are in ./assets. This is most of the UI.
+
 ## ⚠️ CRITICAL: JS Package Location
 
 Our JavaScript code lives exclusively in `./assets/`.

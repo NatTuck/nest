@@ -5,6 +5,7 @@ defmodule Nest.Agents.SupervisorTest do
   use ExUnit.Case
 
   alias Nest.Agents.{Registry, Supervisor}
+  alias Nest.Test.TaskDrain
 
   setup do
     # Agents supervision tree is already started by Application
@@ -12,6 +13,11 @@ defmodule Nest.Agents.SupervisorTest do
     for id <- Supervisor.list_agents() do
       Supervisor.stop_agent(id)
     end
+
+    parent_dir = "/tmp/nest-#{System.pid()}"
+    File.rm_rf(parent_dir)
+    on_exit(fn -> File.rm_rf(parent_dir) end)
+    on_exit(fn -> TaskDrain.drain() end)
 
     :ok
   end

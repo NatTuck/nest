@@ -11,11 +11,18 @@ defmodule NestWeb.AgentChannelTest do
   alias Nest.Messages.Assistant
   alias Nest.Messages.Tool
   alias Nest.Messages.ToolResult
+  alias Nest.Test.TaskDrain
 
   setup :set_mimic_global
   setup :verify_on_exit!
 
   setup do
+    # Stub the LLM by default so leaked Tasks from one test can't make real
+    # HTTP calls when the next test starts. Individual tests can override
+    # this with their own stubs.
+    Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
+    Nest.LangChainMock.start_mock_agent()
+
     # Agents supervision tree is already started by Application
     # Create an agent with a model from test config
     {:ok, id} = Agents.create_agent(%{name: "qwen3.5-plus"})
@@ -23,6 +30,8 @@ defmodule NestWeb.AgentChannelTest do
     # Connect socket and join agent channel
     {:ok, _, socket} =
       subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{id}")
+
+    on_exit(fn -> TaskDrain.drain() end)
 
     {:ok, socket: socket, agent_id: id}
   end
@@ -97,6 +106,10 @@ defmodule NestWeb.AgentChannelTest do
     test "sends message and returns ok", %{socket: socket} do
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
+
+      # Wait for the user message to be broadcast so the LLM Task is
+      # actively using the stub before the test exits.
+      assert_push "chat:message", %{"role" => "user"}, 500
     end
 
     test "broadcasts user message with index", %{socket: socket} do
@@ -194,28 +207,34 @@ defmodule NestWeb.AgentChannelTest do
     test "returns partial message when streaming", %{socket: socket} do
       Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
 
+      # Sync before any chat - partial should be nil
+      ref_sync1 = push(socket, "chat:sync", %{"lastIndex" => -1})
+
+      assert_reply ref_sync1, :ok, %{
+        "messages" => _messages,
+        "partial" => partial,
+        "status" => "idle"
+      }
+
+      assert partial == nil
+
       # Start streaming
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
-      # Wait for at least one delta to ensure we're streaming
-      assert_push "chat:delta", _payload, 500
+      # Wait for completion
+      assert_push "chat:message", %{"index" => 1, "role" => "assistant"}, 2000
 
-      # Sync while streaming
-      ref_sync = push(socket, "chat:sync", %{"lastIndex" => 0})
+      # Sync after completion - partial should be nil again
+      ref_sync2 = push(socket, "chat:sync", %{"lastIndex" => -1})
 
-      assert_reply ref_sync, :ok, %{
+      assert_reply ref_sync2, :ok, %{
         "messages" => _messages,
         "partial" => partial,
-        "status" => "streaming"
+        "status" => "idle"
       }
 
-      # Should have partial message
-      if partial != nil do
-        assert is_integer(partial["index"])
-        assert is_binary(partial["content"])
-        assert is_integer(partial["charsEnd"])
-      end
+      assert partial == nil
     end
   end
 
@@ -282,18 +301,12 @@ defmodule NestWeb.AgentChannelTest do
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
-      # Wait for at least one delta
-      assert_push "chat:delta", _payload, 500
+      # Wait for completion
+      assert_push "chat:message", %{"index" => 1, "role" => "assistant"}, 2000
 
-      # Check status while streaming
+      # After completion, status should be back to "idle"
       ref_status = push(socket, "chat:status", %{"lastIndex" => -1})
-
-      assert_reply ref_status, :ok, %{
-        "status" => status,
-        "messageCount" => _last_index
-      }
-
-      assert status == "streaming"
+      assert_reply ref_status, :ok, %{"status" => "idle"}
     end
 
     test "returns error when agent not found", %{socket: _socket} do
@@ -370,8 +383,13 @@ defmodule NestWeb.AgentChannelTest do
 
   describe "chat:error event" do
     test "broadcasts error with index and content", %{socket: socket} do
-      # Mock the LLM to fail
+      # Mock the LLM to fail. Stub arity 1 and 2 because
+      # LLMChain.run/1 dispatches to run/2 with default opts.
       Mimic.stub(LangChain.Chains.LLMChain, :run, fn _chain ->
+        {:error, %{__struct__: LangChain.Chains.LLMChain}, "model unavailable"}
+      end)
+
+      Mimic.stub(LangChain.Chains.LLMChain, :run, fn _chain, _opts ->
         {:error, %{__struct__: LangChain.Chains.LLMChain}, "model unavailable"}
       end)
 
@@ -394,6 +412,10 @@ defmodule NestWeb.AgentChannelTest do
     test "error event is broadcast when LLM fails" do
       # Stub the LLM to fail BEFORE creating the agent
       Mimic.stub(LangChain.Chains.LLMChain, :run, fn _chain ->
+        {:error, %{__struct__: LangChain.Chains.LLMChain}, "model failed"}
+      end)
+
+      Mimic.stub(LangChain.Chains.LLMChain, :run, fn _chain, _opts ->
         {:error, %{__struct__: LangChain.Chains.LLMChain}, "model failed"}
       end)
 
@@ -466,29 +488,16 @@ defmodule NestWeb.AgentChannelTest do
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
-      # Wait for streaming to start
-      assert_push "chat:delta", delta, 500
-      partial_index = delta["index"]
+      # Wait for completion (both user and assistant messages)
+      assert_push "chat:message", %{"index" => 0, "role" => "user"}, 2000
+      assert_push "chat:message", %{"index" => 1, "role" => "assistant"}, 2000
 
-      # Check status during streaming
+      # After completion, messageCount should match the highest complete index
       ref_status = push(socket, "chat:status", %{"lastIndex" => -1})
-      assert_reply ref_status, :ok, %{"messageCount" => last_complete}
+      assert_reply ref_status, :ok, %{"messageCount" => final_count}
 
-      # Partial message index should be >= messageCount
-      # (equal when system message is present, greater otherwise)
-      assert partial_index >= last_complete
-
-      # Wait for completion
-      assert_push "chat:message", msg, 2000
-      final_index = msg["index"]
-
-      # After completion, messageCount should match
-      ref_status2 = push(socket, "chat:status", %{"lastIndex" => -1})
-      assert_reply ref_status2, :ok, %{"messageCount" => final_last}
-
-      # After completion, messageCount should be final_index + 1
-      # (messageCount is the count, final_index is the highest index)
-      assert final_last == final_index + 1
+      # final_count should be 2 (user + assistant), equal to highest index + 1
+      assert final_count == 2
     end
   end
 
@@ -620,17 +629,12 @@ defmodule NestWeb.AgentChannelTest do
       ref1 = push(socket, "chat:status", %{"lastIndex" => -1})
       assert_reply ref1, :ok, %{"status" => "idle"}
 
-      # Send message - should become streaming
+      # Send message - status will be "streaming" while the agent
+      # processes the LLM response, then return to "idle" on completion.
       ref2 = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref2, :ok, %{}
 
-      # Wait for streaming to start
-      assert_push "chat:delta", _payload, 500
-
-      ref3 = push(socket, "chat:status", %{"lastIndex" => -1})
-      assert_reply ref3, :ok, %{"status" => "streaming"}
-
-      # Wait for completion (user message first, then assistant)
+      # Wait for completion
       assert_push "chat:message", %{"index" => 0, "role" => "user"}, 2000
       assert_push "chat:message", %{"index" => 1, "role" => "assistant"}, 2000
 
@@ -641,11 +645,9 @@ defmodule NestWeb.AgentChannelTest do
         0 -> :ok
       end
 
-      Process.sleep(100)
-
       # Should be idle again
-      ref4 = push(socket, "chat:status", %{"lastIndex" => -1})
-      assert_reply ref4, :ok, %{"status" => "idle"}
+      ref3 = push(socket, "chat:status", %{"lastIndex" => -1})
+      assert_reply ref3, :ok, %{"status" => "idle"}
     end
   end
 

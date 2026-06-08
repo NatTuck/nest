@@ -1086,7 +1086,7 @@ describe("channels", () => {
       });
 
       let okCalled = false;
-      createAgent("gpt-4", 1, "/path/to/workspace", (id) => {
+      createAgent("gpt-4", 1, "/path/to/workspace", (_id) => {
         okCalled = true;
       });
 

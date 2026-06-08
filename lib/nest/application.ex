@@ -20,6 +20,7 @@ defmodule Nest.Application do
       # Start agent supervision tree
       Nest.Agents.Registry.child_spec(),
       Nest.Agents.Supervisor.child_spec(),
+      {Task.Supervisor, name: Nest.Agents.TaskSupervisor},
       # Start model manager (queries auto-providers)
       Nest.Models
     ]
