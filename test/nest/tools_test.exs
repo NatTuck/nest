@@ -265,5 +265,61 @@ defmodule Nest.ToolsTest do
       # Should fail with a read-only filesystem error
       assert result =~ "Read-only file system" or result =~ "Exit code"
     end
+
+    test "can redirect stdout to /dev/null", %{workspace: workspace} do
+      # Regression: previously the read-only bind of the host root shadowed
+      # the devtmpfs at /dev, so `> /dev/null` failed with
+      # "cannot create /dev/null: Permission denied".
+      function = Tools.get_function("shell_cmd", workspace, nil)
+
+      assert {:ok, result} =
+               Function.execute(
+                 function,
+                 %{"command" => "echo hello > /dev/null && echo done"},
+                 nil
+               )
+
+      assert result =~ "done"
+      refute result =~ "Permission denied"
+    end
+
+    test "can redirect stderr to /dev/null", %{workspace: workspace} do
+      function = Tools.get_function("shell_cmd", workspace, nil)
+
+      # `ls /nonexistent 2>/dev/null` should suppress the "No such file"
+      # error; only the trailing `&& echo done` should appear in output.
+      assert {:ok, result} =
+               Function.execute(
+                 function,
+                 %{"command" => "ls /nonexistent-path 2>/dev/null; echo done"},
+                 nil
+               )
+
+      assert result =~ "done"
+      refute result =~ "No such file"
+      refute result =~ "Permission denied"
+    end
+
+    test "handles find with 2>/dev/null redirect", %{workspace: workspace} do
+      # Mirrors the user-reported failing command: find a missing path
+      # while redirecting stderr to /dev/null, then echo a marker. If /dev
+      # is misconfigured, the shell prints "cannot create /dev/null" to
+      # stderr which (since this command has no 2>/dev/null on the echo)
+      # would be captured.
+      function = Tools.get_function("shell_cmd", workspace, nil)
+
+      assert {:ok, result} =
+               Function.execute(
+                 function,
+                 %{
+                   "command" => "find /nonexistent-path-xyz -name foo 2>/dev/null; echo marker"
+                 },
+                 nil
+               )
+
+      assert result =~ "marker"
+      refute result =~ "Permission denied"
+      refute result =~ "cannot create"
+    end
   end
 end

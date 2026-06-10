@@ -6,6 +6,8 @@ defmodule Nest.Tools.ShellCmd do
   Commands run in an isolated environment with:
   - Network isolation (--unshare-net)
   - Read-only filesystem access (except workspace and /tmp when tmp_path is provided)
+  - A fresh devtmpfs at /dev, so shell redirects like `> /dev/null` and
+    `2>/dev/null` work as expected
   - Process namespace isolation
   - Proper cleanup on exit
 
@@ -15,6 +17,8 @@ defmodule Nest.Tools.ShellCmd do
   - Network: Disabled
   - Filesystem read: Entire host (read-only)
   - Filesystem write: Workspace directory (at original path) and /tmp (when tmp_path provided)
+  - /dev: Fresh devtmpfs (overlays the read-only host /dev so device files
+    like /dev/null are writable inside the sandbox)
   """
 
   require Logger
@@ -89,6 +93,16 @@ defmodule Nest.Tools.ShellCmd do
     * Network: Disabled
     * Read access: Entire filesystem (read-only)
     * Write access: /workspace and /tmp only
+    * /dev: Fresh devtmpfs, so device files (/dev/null, /dev/zero, etc.) are
+      writable. The devtmpfs is applied AFTER the read-only bind mount so it
+      overlays the host's /dev rather than being shadowed by it.
+
+  ## Arg ordering note
+
+  `--dev /dev` must come AFTER `--ro-bind / /`. If it comes first, the
+  subsequent read-only bind of the host root shadows the devtmpfs, leaving
+  the sandbox with a read-only /dev where even opening /dev/null for writing
+  fails with "Permission denied".
   """
   @spec build_bwrap_args(String.t(), String.t() | nil) :: [String.t()]
   def build_bwrap_args(workspace_path, tmp_path \\ nil) do
@@ -98,11 +112,15 @@ defmodule Nest.Tools.ShellCmd do
       "--new-session",
       "--proc",
       "/proc",
-      "--dev",
-      "/dev",
       "--ro-bind",
       "/",
       "/",
+      # Apply devtmpfs AFTER the read-only bind so it overlays the host's
+      # /dev. This makes /dev/null (and other device files) writable inside
+      # the sandbox, so shell redirects like `> /dev/null` and `2>/dev/null`
+      # work as expected.
+      "--dev",
+      "/dev",
       # Bind mount workspace at its original path (read-write)
       "--bind",
       workspace_path,

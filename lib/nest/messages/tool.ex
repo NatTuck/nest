@@ -25,19 +25,11 @@ defmodule Nest.Messages.Tool do
     %{
       "index" => msg.index,
       "role" => "tool",
-      "content" => format_content(formatted_results),
+      "content" => nil,
       "toolCalls" => nil,
       "toolResults" => formatted_results,
       "thinking" => nil,
       "apiLogs" => Message.format_api_logs(msg.api_logs)
     }
-  end
-
-  defp format_content(results) do
-    results
-    |> Enum.map_join("\n\n", fn tr ->
-      status = if tr["is_error"], do: "[ERROR]", else: "[SUCCESS]"
-      "#{status} #{tr["name"]}: #{tr["content"]}"
-    end)
   end
 end

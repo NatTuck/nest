@@ -202,6 +202,34 @@ describe("MessageContent", () => {
     });
   });
 
+  describe("layout", () => {
+    it("wraps code blocks and prose so content never overflows horizontally", () => {
+      const { container } = render(
+        <MessageContent content="Hello world" isPartial={false} />,
+      );
+
+      const root = container.firstChild;
+      expect(root.className).toContain("[&_pre]:whitespace-pre-wrap");
+      expect(root.className).toContain("[&_pre]:break-words");
+      expect(root.className).toContain("[&_pre]:overflow-x-hidden");
+      expect(root.className).toContain("[&_p]:[overflow-wrap:anywhere]");
+      expect(root.className).toContain("[&_li]:[overflow-wrap:anywhere]");
+    });
+
+    it("overrides the 65ch max-width on the prose container so text fills the message bubble", () => {
+      // Regression: @tailwindcss/typography's .prose class caps width at
+      // 65ch (~600px). The chat-ui Markdown component uses .prose, so
+      // complete messages were stuck at 65ch regardless of column width.
+      // The wrapper applies [&_.prose]:max-w-none to remove that cap.
+      const { container } = render(
+        <MessageContent content="Hello world" isPartial={false} />,
+      );
+
+      const root = container.firstChild;
+      expect(root.className).toContain("[&_.prose]:max-w-none");
+    });
+  });
+
   describe("complete messages", () => {
     it("renders with Markdown component when isPartial is false", () => {
       render(<MessageContent content="Hello world" isPartial={false} />);

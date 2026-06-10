@@ -96,4 +96,55 @@ defmodule Nest.DotConfigTest do
       assert {:error, _} = DotConfig.load("/nonexistent/path/config.toml")
     end
   end
+
+  describe "provider timeout" do
+    test "defaults to 300 seconds when timeout is not specified" do
+      {:ok, config} = DotConfig.load()
+      assert config.providers["model-studio"].timeout_seconds == 300
+    end
+
+    test "uses configured timeout when specified" do
+      {:ok, config} = DotConfig.load()
+      assert config.providers["pegasus"].timeout_seconds == 60
+      assert config.providers["anthropic-provider"].timeout_seconds == 600
+    end
+
+    test "raises on invalid (non-positive-integer) timeout" do
+      bad_toml = """
+      [providers.bad]
+      base-url = "http://example.com/v1"
+      api-key = "x"
+      timeout = 0
+      """
+
+      tmp_path =
+        Path.join(System.tmp_dir!(), "bad_timeout_#{System.unique_integer([:positive])}.toml")
+
+      File.write!(tmp_path, bad_toml)
+      on_exit(fn -> File.rm(tmp_path) end)
+
+      assert_raise RuntimeError, ~r/invalid timeout/, fn ->
+        DotConfig.load(tmp_path)
+      end
+    end
+
+    test "raises on non-integer timeout" do
+      bad_toml = """
+      [providers.bad]
+      base-url = "http://example.com/v1"
+      api-key = "x"
+      timeout = "300"
+      """
+
+      tmp_path =
+        Path.join(System.tmp_dir!(), "bad_timeout_#{System.unique_integer([:positive])}.toml")
+
+      File.write!(tmp_path, bad_toml)
+      on_exit(fn -> File.rm(tmp_path) end)
+
+      assert_raise RuntimeError, ~r/invalid timeout/, fn ->
+        DotConfig.load(tmp_path)
+      end
+    end
+  end
 end

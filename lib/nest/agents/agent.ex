@@ -900,6 +900,10 @@ defmodule Nest.Agents.Agent do
         }
       end)
 
+    # Build a lookup so each tool result can carry its call's arguments
+    arguments_by_call_id =
+      Map.new(tool_calls, fn %ToolCall{id: id, arguments: args} -> {id, args} end)
+
     # Extract text content from the response (if any)
     text_content = extract_text_content(response.content)
 
@@ -930,6 +934,7 @@ defmodule Nest.Agents.Agent do
               tool_call_id: tr.tool_call_id,
               name: tr.name,
               content: extract_tool_content(tr.content),
+              arguments: Map.get(arguments_by_call_id, tr.tool_call_id, %{}),
               is_error: tr.is_error || false
             }
           end)

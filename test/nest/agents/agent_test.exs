@@ -374,6 +374,9 @@ defmodule Nest.Agents.AgentTest do
       [tool_result] = tool_msg.tool_results
       assert tool_result.tool_call_id == "call_123"
       assert tool_result.name == "shell_cmd"
+      # The tool result carries the params of the matching tool call so the
+      # frontend can show e.g. the shell command that produced this output.
+      assert tool_result.arguments == %{"command" => "ls -la"}
 
       # Message 3: Final assistant response
       assert {:assistant, final_msg} = Enum.at(unique_messages, 3)

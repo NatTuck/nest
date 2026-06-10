@@ -6,12 +6,15 @@
  * for the agent in the URL, if any exists.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useStore } from "../store";
 import { joinAgent, leaveAgent, sendMessage } from "../channels";
 import { MessageContent } from "../components/MessageContent";
 import { ChatInput } from "../components/ChatInput";
+import { TruncatedResult } from "../components/TruncatedResult";
+import { useScrollToBottom } from "../hooks/useScrollToBottom";
+import { sortArgumentsForDisplay } from "../utils/argumentDisplay";
 
 /**
  * ToolCalls component - displays tool calls in a message
@@ -50,9 +53,17 @@ function ToolCalls({ toolCalls }) {
             <span>Using tool: {call.name}</span>
           </div>
           {call.arguments && Object.keys(call.arguments).length > 0 && (
-            <pre className="mt-2 text-xs text-purple-600 overflow-x-auto">
-              {JSON.stringify(call.arguments, null, 2)}
-            </pre>
+            <TruncatedResult
+              content={JSON.stringify(
+                sortArgumentsForDisplay(call.arguments),
+                null,
+                2,
+              )}
+              className="text-purple-600"
+              maxLines={3}
+              previewLines={3}
+              previewMaxChars={300}
+            />
           )}
         </div>
       ))}
@@ -117,14 +128,21 @@ function ToolResults({ toolResults }) {
               {result.is_error ? "Error" : "Success"}: {result.name}
             </span>
           </div>
+          {result.arguments && Object.keys(result.arguments).length > 0 && (
+            <TruncatedResult
+              content={JSON.stringify(
+                sortArgumentsForDisplay(result.arguments),
+                null,
+                2,
+              )}
+              className="text-purple-600"
+            />
+          )}
           {result.content && (
-            <pre
-              className={`mt-2 text-xs overflow-x-auto whitespace-pre-wrap ${
-                result.is_error ? "text-red-600" : "text-green-600"
-              }`}
-            >
-              {result.content}
-            </pre>
+            <TruncatedResult
+              content={result.content}
+              className={result.is_error ? "text-red-600" : "text-green-600"}
+            />
           )}
         </div>
       ))}
@@ -183,7 +201,7 @@ function ThinkingBlock({ thinking }) {
         </svg>
       </button>
       {isExpanded && (
-        <div className="px-3 py-2 bg-amber-50/50 text-sm text-amber-800 whitespace-pre-wrap">
+        <div className="px-3 py-2 bg-amber-50/50 text-sm text-amber-800 whitespace-pre-wrap break-words">
           {thinking}
         </div>
       )}
@@ -248,7 +266,7 @@ function ApiLogsBlock({ apiLogs }) {
               <div className="px-3 py-2 bg-gray-50 border-b border-gray-200 text-xs text-gray-500">
                 {new Date(log.timestamp).toLocaleTimeString()}
               </div>
-              <pre className="p-3 text-xs text-gray-700 overflow-x-auto whitespace-pre-wrap bg-gray-50">
+              <pre className="p-3 text-xs text-gray-700 whitespace-pre-wrap break-words overflow-x-hidden bg-gray-50">
                 {JSON.stringify(log.payload, null, 2)}
               </pre>
             </div>
@@ -319,7 +337,8 @@ function StatusBanner({ status, error, onRetry }) {
  */
 export function ChatPage() {
   const { id } = useParams();
-  const messagesEndRef = useRef(null);
+  const [scrollContainerEl, setScrollContainerEl] = useState(null);
+  const [messagesEndEl, setMessagesEndEl] = useState(null);
   const [inputValue, setInputValue] = useState("");
   const [sendError, setSendError] = useState(null);
 
@@ -345,11 +364,12 @@ export function ChatPage() {
     return "Ready";
   };
 
-  // Scroll to bottom when messages change
-  // biome-ignore lint/correctness/useExhaustiveDependencies: messages is the dependency we want
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, partial?.content]);
+  const { isAtBottom, hasNewContent, jumpToBottom } = useScrollToBottom(
+    scrollContainerEl,
+    messagesEndEl,
+    id,
+    partial?.content ?? messages,
+  );
 
   // Join agent channel on mount/id change
   useEffect(() => {
@@ -404,7 +424,7 @@ export function ChatPage() {
   const isInputDisabled = status !== "connected" || streaming;
 
   return (
-    <div className="flex flex-col h-full max-w-4xl mx-auto">
+    <div className="flex flex-col h-full max-w-6xl mx-auto">
       {/* Header */}
       <div className="border-b border-gray-200 pb-4 mb-4">
         <div className="flex items-end justify-between">
@@ -449,7 +469,10 @@ export function ChatPage() {
       )}
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto space-y-4 mb-4 pr-2">
+      <div
+        ref={setScrollContainerEl}
+        className="flex-1 overflow-y-auto space-y-4 mb-4 pr-2"
+      >
         {displayMessages.length === 0 ? (
           <div className="text-center py-12 text-gray-400">
             <svg
@@ -511,7 +534,7 @@ export function ChatPage() {
               </div>
 
               {/* Message content */}
-              <div className="flex-1">
+              <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-1">
                   <span className="font-semibold text-sm text-gray-700">
                     {message.role === "user"
@@ -557,7 +580,7 @@ export function ChatPage() {
           ))
         )}
 
-        <div ref={messagesEndRef} />
+        <div ref={setMessagesEndEl} />
       </div>
 
       {/* Typing indicator - shown when waiting or generating */}
@@ -583,18 +606,48 @@ export function ChatPage() {
         </div>
       )}
 
-      {/* Input area */}
-      <ChatInput
-        value={inputValue}
-        onChange={setInputValue}
-        onSend={handleSendMessage}
-        disabled={isInputDisabled}
-        placeholder={
-          status === "connected"
-            ? "Type a message..."
-            : "Connect to send messages..."
-        }
-      />
+      {/* Input area with floating Jump to latest button above it.
+          Positioning the button here (in the column's coordinate space, not
+          inside the scroll container) keeps it visible regardless of which
+          ancestor is the actual scroll region. */}
+      <div className="relative">
+        {hasNewContent && !isAtBottom && (
+          <button
+            type="button"
+            onClick={jumpToBottom}
+            aria-label="Jump to latest messages"
+            className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-10 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-full shadow-lg hover:bg-indigo-700 transition-all duration-200 flex items-center gap-1.5"
+          >
+            <svg
+              className="w-4 h-4"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M19 14l-7 7m0 0l-7-7m7 7V3"
+              />
+            </svg>
+            Jump to latest
+          </button>
+        )}
+
+        <ChatInput
+          value={inputValue}
+          onChange={setInputValue}
+          onSend={handleSendMessage}
+          disabled={isInputDisabled}
+          placeholder={
+            status === "connected"
+              ? "Type a message..."
+              : "Connect to send messages..."
+          }
+        />
+      </div>
     </div>
   );
 }

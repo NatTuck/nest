@@ -211,7 +211,7 @@ export function MessageContent({
   segmentKeyCounter = 0;
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-2 [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_pre]:overflow-x-hidden [&_p]:[overflow-wrap:anywhere] [&_li]:[overflow-wrap:anywhere] [&_.prose]:max-w-none">
       {segmentsToRender.map((segment) => {
         segmentKeyCounter += 1;
         return (

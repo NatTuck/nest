@@ -6,6 +6,8 @@
 @source "../js";
 @source "../../lib/nest_web";
 
+@plugin "@tailwindcss/typography";
+
 /* LlamaIndex Chat UI markdown styling (code, LaTeX, custom markdown) */
 @import "@llamaindex/chat-ui/styles/markdown.css";
 

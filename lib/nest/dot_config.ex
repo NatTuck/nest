@@ -6,9 +6,29 @@ defmodule Nest.DotConfig do
   @config_dir :filename.basedir(:user_config, "nest")
   @config_file Path.join(@config_dir, "config.toml")
 
+  # Default LLM call timeout, in seconds. LLM responses can be slow (large
+  # prompts, complex tool use), so we default to a generous 5 minutes. Each
+  # provider can override this via the `timeout` key in config.toml.
+  @default_timeout_seconds 300
+
   defmodule Provider do
-    @moduledoc "Provider configuration struct"
-    defstruct [:name, :base_url, :api_key, :protocol, :auto_models, :tags, :models]
+    @moduledoc """
+    Provider configuration struct.
+
+    `timeout_seconds` is the per-provider LLM call receive timeout. Defaults
+    to `Nest.DotConfig.@default_timeout_seconds` (300s = 5 minutes) if not
+    set in the config file.
+    """
+    defstruct [
+      :name,
+      :base_url,
+      :api_key,
+      :protocol,
+      :auto_models,
+      :tags,
+      :models,
+      :timeout_seconds
+    ]
   end
 
   defmodule Model do
@@ -20,6 +40,12 @@ defmodule Nest.DotConfig do
   Returns the XDG config directory path
   """
   def config_dir, do: @config_dir
+
+  @doc """
+  Returns the default LLM call timeout in seconds. Used when a provider
+  has no explicit `timeout` configured.
+  """
+  def default_timeout_seconds, do: @default_timeout_seconds
 
   @doc """
   Returns the full path to config.toml
@@ -212,8 +238,22 @@ defmodule Nest.DotConfig do
       protocol: Map.get(data, "protocol", "openai"),
       auto_models: Map.get(data, "auto-models", false),
       tags: Map.get(data, "tags", []),
-      models: models
+      models: models,
+      timeout_seconds: parse_timeout(Map.get(data, "timeout"), name)
     }
+  end
+
+  # Parses and validates the optional `timeout` (in seconds) for a provider.
+  # Returns the default if the key is absent. Raises on invalid values so
+  # config errors surface at startup, not on the first LLM call.
+  defp parse_timeout(nil, _provider_name), do: @default_timeout_seconds
+
+  defp parse_timeout(seconds, _provider_name) when is_integer(seconds) and seconds > 0 do
+    seconds
+  end
+
+  defp parse_timeout(seconds, provider_name) do
+    raise "Provider #{provider_name}: invalid timeout #{inspect(seconds)}: must be a positive integer (seconds)"
   end
 
   defp parse_model(model_data) do

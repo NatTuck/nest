@@ -145,6 +145,29 @@ defmodule Nest.ChatModelTest do
     end
   end
 
+  describe "LLM receive timeout" do
+    test "OpenAI-compatible models receive the provider's timeout in milliseconds" do
+      # model-studio has no explicit timeout in test config -> default 300s = 300_000 ms
+      {:ok, llm} = ChatModel.from_provider("model-studio", "qwen3.5-plus")
+      assert llm.receive_timeout == 300_000
+    end
+
+    test "Anthropic models receive the provider's timeout in milliseconds" do
+      # anthropic-provider has timeout = 600 in test config -> 600_000 ms
+      {:ok, llm} =
+        ChatModel.from_provider("anthropic-provider", "claude-3-opus-20240229")
+
+      assert llm.receive_timeout == 600_000
+    end
+
+    test "providers with a custom timeout use that value" do
+      # pegasus has timeout = 60 in test config -> 60_000 ms
+      # pegasus uses auto-models, so we need to pass a model name explicitly
+      {:ok, llm} = ChatModel.from_provider("pegasus", "some-model")
+      assert llm.receive_timeout == 60_000
+    end
+  end
+
   describe "API key resolution security" do
     test "resolves environment variable keys" do
       # Set an environment variable for testing

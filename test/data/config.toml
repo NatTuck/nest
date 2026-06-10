@@ -3,6 +3,7 @@ base-url = "http://pegasus:8080/v1"
 api-key = "none"
 auto-models = true
 tags = ["local"]
+timeout = 60
 
 [providers.model-studio]
 base-url = "https://coding-intl.dashscope.aliyuncs.com/v1"
@@ -22,6 +23,7 @@ base-url = "https://api.anthropic.com/v1"
 api-key = "sk-ant-test-key"
 protocol = "anthropic"
 tags = ["anthropic"]
+timeout = 600
 
 [[providers.anthropic-provider.models]]
 name = "claude-3-opus-20240229"

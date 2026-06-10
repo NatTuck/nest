@@ -1076,6 +1076,7 @@ defmodule NestWeb.AgentChannelTest do
                tool_call_id: "call_123",
                name: "shell_cmd",
                content: "total 4\ndrwxrwxr-x 1 user user 18 May 29 10:49 .",
+               arguments: %{"command" => "ls -la"},
                is_error: false
              }
            ],
@@ -1091,6 +1092,9 @@ defmodule NestWeb.AgentChannelTest do
       assert payload["index"] == 2
       assert payload["role"] == "tool"
 
+      # Outer content is dropped: tool message has no human-readable summary
+      assert payload["content"] == nil
+
       # toolResults should be a list of plain maps, not structs
       assert is_list(payload["toolResults"])
       assert length(payload["toolResults"]) == 1
@@ -1105,6 +1109,8 @@ defmodule NestWeb.AgentChannelTest do
       assert tool_result["name"] == "shell_cmd"
       # ContentPart structs should be converted to plain text
       assert tool_result["content"] == "total 4\ndrwxrwxr-x 1 user user 18 May 29 10:49 ."
+      # Tool call arguments are surfaced so the UI can show the command that ran
+      assert tool_result["arguments"] == %{"command" => "ls -la"}
       assert tool_result["is_error"] == false
     end
 
@@ -1136,6 +1142,7 @@ defmodule NestWeb.AgentChannelTest do
                tool_call_id: "call_123",
                name: "shell_cmd",
                content: "total 4\ndrwxrwxr-x 1 user user 18 May 29 10:49 .",
+               arguments: %{"command" => "ls -la"},
                is_error: false
              }
            ],
@@ -1167,6 +1174,7 @@ defmodule NestWeb.AgentChannelTest do
       refute is_struct(tool_result)
       assert tool_result["tool_call_id"] == "call_123"
       assert tool_result["content"] == "total 4\ndrwxrwxr-x 1 user user 18 May 29 10:49 ."
+      assert tool_result["arguments"] == %{"command" => "ls -la"}
     end
 
     test "chat:sync handles messages with ToolResult structs in api_logs", %{

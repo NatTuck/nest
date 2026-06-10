@@ -189,7 +189,8 @@ defmodule Nest.ChatModel do
     opts = %{
       endpoint: provider.base_url <> "/chat/completions",
       api_key: api_key,
-      model: model_name
+      model: model_name,
+      receive_timeout: receive_timeout_ms(provider)
     }
 
     {:ok, ChatOpenAI.new!(opts)}
@@ -198,7 +199,8 @@ defmodule Nest.ChatModel do
   defp build_anthropic_model(provider, model_name, api_key) do
     opts = %{
       model: model_name,
-      api_key: api_key
+      api_key: api_key,
+      receive_timeout: receive_timeout_ms(provider)
     }
 
     # Only set endpoint if base_url is provided and different from default
@@ -278,5 +280,13 @@ defmodule Nest.ChatModel do
       [first_model | _] -> first_model
       [] -> nil
     end
+  end
+
+  # Converts the provider's per-provider timeout (in seconds) to milliseconds
+  # for the underlying LangChain/Req client. Falls back to the global default
+  # (300s) if the struct was constructed without an explicit value.
+  defp receive_timeout_ms(provider) do
+    seconds = provider.timeout_seconds || DotConfig.default_timeout_seconds()
+    seconds * 1000
   end
 end
