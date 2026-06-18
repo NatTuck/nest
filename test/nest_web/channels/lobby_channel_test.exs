@@ -195,6 +195,33 @@ defmodule NestWeb.LobbyChannelTest do
       assert Regex.match?(~r/^[a-z]+-[a-z]+$/, id)
       assert_broadcast "agent:created", %{"id" => ^id, "model" => %{"name" => "qwen3.5-plus"}}
     end
+
+    test "forwards provider from the model params to the created agent" do
+      # The lobby's model catalog carries a `provider` for each model
+      # (including auto-discovered ones from providers with
+      # `auto-models = true`). The lobby forwards this to
+      # `Agents.create_agent/2` so the provider is always on the
+      # wire to the ChatPage header, even when the model isn't in
+      # the static DotConfig.
+      {:ok, _, socket} =
+        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
+
+      ref =
+        push(socket, "create_agent", %{
+          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+        })
+
+      assert_reply ref, :ok, %{"id" => id}
+
+      assert {:ok, info} = Agents.get_info(id)
+      assert info.model.name == "qwen3.5-plus"
+      assert info.model.provider == "model-studio"
+
+      assert_broadcast "agent:created", %{
+        "id" => ^id,
+        "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+      }
+    end
   end
 
   describe "handle_in(delete_agent)" do

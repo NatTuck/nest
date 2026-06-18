@@ -98,6 +98,16 @@ defmodule NestWeb.AgentChannelTest do
              }
     end
 
+    test "init payload includes provider in the model map", %{socket: socket} do
+      assert_push "init", payload
+
+      # The model map must carry both :name and :provider so the
+      # frontend can render "provider: model-name" in the chat
+      # header (assets/js/pages/ChatPage.jsx).
+      assert payload["model"][:name] == "qwen3.5-plus"
+      assert payload["model"][:provider] == "model-studio"
+    end
+
     test "returns error for non-existent agent" do
       assert {:error, %{"reason" => "agent not found"}} =
                subscribe_and_join(

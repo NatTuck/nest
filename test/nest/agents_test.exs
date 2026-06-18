@@ -36,6 +36,16 @@ defmodule Nest.AgentsTest do
       assert info.model.name == "qwen3.5-plus"
     end
 
+    test "enriches model with provider from DotConfig when only :name is given" do
+      # Callers (e.g. NewAgentPage) send just %{name: ...}; the API
+      # looks up the provider so the chat header can render
+      # "provider: model-name".
+      {:ok, id} = Agents.create_agent(%{name: "qwen3.5-plus"})
+      assert {:ok, info} = Agents.get_info(id)
+      assert info.model.name == "qwen3.5-plus"
+      assert info.model.provider == "model-studio"
+    end
+
     test "returns error for invalid model" do
       # Models must exist in config to create an agent
       assert {:error, %Nest.ChatModel.ModelNotFoundError{}} =

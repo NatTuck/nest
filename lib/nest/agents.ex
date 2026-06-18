@@ -8,6 +8,7 @@ defmodule Nest.Agents do
   """
 
   alias Nest.Agents.{Agent, Supervisor}
+  alias Nest.DotConfig
   alias Nest.Vocations
 
   @doc """
@@ -32,13 +33,33 @@ defmodule Nest.Agents do
   @spec create_agent(map(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def create_agent(model, opts \\ []) when is_map(model) do
     attrs = %{
-      model: model,
+      model: enrich_model(model),
       vocation_id: Keyword.get(opts, :vocation_id),
       workspace_path: Keyword.get(opts, :workspace_path)
     }
 
     Supervisor.start_agent(attrs)
   end
+
+  # Adds `:provider` to the model map if it's missing and the model is
+  # known to DotConfig. The channel sends the model map to the JS
+  # client, which uses `provider` to render `provider: model-name`.
+  defp enrich_model(%{provider: _} = model), do: model
+
+  defp enrich_model(%{name: name} = model) when is_binary(name) do
+    case DotConfig.load() do
+      {:ok, config} ->
+        case DotConfig.get_model(config, name) do
+          nil -> model
+          %{provider_name: provider} -> Map.put(model, :provider, provider)
+        end
+
+      _ ->
+        model
+    end
+  end
+
+  defp enrich_model(model), do: model
 
   @doc """
   Gets the public info of an agent by its ID.

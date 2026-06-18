@@ -514,8 +514,13 @@ export function ChatPage() {
                 </span>
               )}
             </h1>
-            <p className="text-sm text-gray-500">
-              {cache?.model?.name || "\u00A0"}
+            <p className="text-sm text-gray-500 break-all">
+              {(() => {
+                const name = cache?.model?.name;
+                const provider = cache?.model?.provider;
+                if (!name) return "[missing]";
+                return provider ? `${provider}: ${name}` : name;
+              })()}
             </p>
           </div>
           <div className="flex flex-col items-end gap-2">

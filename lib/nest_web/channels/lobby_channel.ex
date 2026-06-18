@@ -37,8 +37,13 @@ defmodule NestWeb.LobbyChannel do
 
   @impl true
   def handle_in("create_agent", %{"model" => model_params} = payload, socket) do
-    # Extract model name from params
+    # Extract model name and provider from params. The frontend
+    # sends both from the lobby's model catalog; we forward the
+    # provider to `Agents.create_agent` so auto-discovered models
+    # (which aren't in the static DotConfig) still get a provider
+    # on the wire to the ChatPage header.
     model_name = model_params["name"] || model_params[:name]
+    model_provider = model_params["provider"] || model_params[:provider]
 
     # Extract optional vocation_id and workspace_path
     vocation_id = payload["vocation_id"]
@@ -51,12 +56,12 @@ defmodule NestWeb.LobbyChannel do
       |> maybe_add_opt(:workspace_path, workspace_path)
 
     # Create the agent
-    case Agents.create_agent(%{name: model_name}, opts) do
+    case Agents.create_agent(%{name: model_name, provider: model_provider}, opts) do
       {:ok, id} ->
         # Broadcast to all clients with full agent info
         broadcast(socket, "agent:created", %{
           "id" => id,
-          "model" => %{"name" => model_name},
+          "model" => %{"name" => model_name, "provider" => model_provider},
           "vocation_id" => vocation_id,
           "workspace_path" => workspace_path
         })
