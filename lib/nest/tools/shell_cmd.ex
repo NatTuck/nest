@@ -4,16 +4,17 @@ defmodule Nest.Tools.ShellCmd do
 
   This module provides sandboxed command execution for agent tools.
   Commands run in an isolated environment with:
-  - Network isolation (--unshare-net)
+  - Network isolation (configurable via caps)
   - Read-only filesystem access (except workspace and /tmp when tmp_path is provided)
   - A fresh devtmpfs at /dev, so shell redirects like `> /dev/null` and
     `2>/dev/null` work as expected
   - Process namespace isolation
   - Proper cleanup on exit
 
-  ## Programmer Build Mode Profile
+  ## Sandbox Profile
 
-  Current sandbox profile:
+  The bwrap profile is determined by the `caps` map (see `Nest.Sandbox`).
+  When `caps` is `nil` (legacy callers), the default profile is used:
   - Network: Disabled
   - Filesystem read: Entire host (read-only)
   - Filesystem write: Workspace directory (at original path) and /tmp (when tmp_path provided)
@@ -22,6 +23,8 @@ defmodule Nest.Tools.ShellCmd do
   """
 
   require Logger
+
+  alias Nest.Sandbox
 
   @default_timeout_ms 60_000
 
@@ -36,14 +39,19 @@ defmodule Nest.Tools.ShellCmd do
   ## Returns
 
     * `{:ok, output}` - Command completed successfully
-    * `{:error, output}` - Command failed or was terminated
+    * `{:error, output}` - Command failed or was terminated (bwrap
+      returning "Permission denied" surfaces as `{:error, "Exit code N: ..."}`)
 
   Both success and failure return the command output, which should be
   displayed as a message in the chat UI.
+
+  Pass `nil` for `caps` to use the default profile (no network, full
+  host read-only, workspace + tmp writable). This is preserved for
+  back-compat with callers that haven't been migrated.
   """
-  @spec execute(String.t(), String.t() | nil, String.t() | nil, keyword()) ::
+  @spec execute(String.t(), String.t() | nil, String.t() | nil, map() | nil, keyword()) ::
           {:ok, String.t()} | {:error, String.t()}
-  def execute(command, workspace_path, tmp_path \\ nil, opts \\ []) do
+  def execute(command, workspace_path, tmp_path \\ nil, caps \\ nil, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, @default_timeout_ms)
     stdin = Keyword.get(opts, :stdin, "")
 
@@ -63,14 +71,15 @@ defmodule Nest.Tools.ShellCmd do
       end
 
     # Build the sandboxed command
-    sandboxed_cmd = build_sandboxed_command(final_command, workspace, tmp_path)
+    sandboxed_cmd = build_sandboxed_command(final_command, workspace, tmp_path, caps)
 
     Logger.info("Executing sandboxed command in #{workspace}: #{truncate_log(command)}")
 
     # Execute via erlexec
     case run_with_erlexec(sandboxed_cmd, timeout) do
       {:ok, exit_code, output} when exit_code == 0 ->
-        # Return placeholder if output is empty to satisfy LangChain ToolResult validation
+        # Return placeholder if output is empty so the LLM gets
+        # feedback that the command succeeded but produced nothing.
         if output == "" do
           {:ok, "[Command executed successfully with no output]"}
         else
@@ -86,58 +95,22 @@ defmodule Nest.Tools.ShellCmd do
   end
 
   @doc """
-  Builds the bwrap arguments for the programmer build mode sandbox profile.
+  Builds the bwrap arguments for the sandbox.
 
-  ## Profile Settings
+  When `caps` is `nil`, uses `Sandbox.default_caps/0` (the legacy
+  hardcoded profile). Otherwise builds args from the provided caps.
 
-    * Network: Disabled
-    * Read access: Entire filesystem (read-only)
-    * Write access: /workspace and /tmp only
-    * /dev: Fresh devtmpfs, so device files (/dev/null, /dev/zero, etc.) are
-      writable. The devtmpfs is applied AFTER the read-only bind mount so it
-      overlays the host's /dev rather than being shadowed by it.
-
-  ## Arg ordering note
-
-  `--dev /dev` must come AFTER `--ro-bind / /`. If it comes first, the
-  subsequent read-only bind of the host root shadows the devtmpfs, leaving
-  the sandbox with a read-only /dev where even opening /dev/null for writing
+  Arg ordering: `--dev /dev` must come AFTER `--ro-bind / /` (handled
+  in `Nest.Sandbox`). If it comes first, the subsequent read-only
+  bind of the host root shadows the devtmpfs, leaving the sandbox
+  with a read-only /dev where even opening /dev/null for writing
   fails with "Permission denied".
   """
-  @spec build_bwrap_args(String.t(), String.t() | nil) :: [String.t()]
-  def build_bwrap_args(workspace_path, tmp_path \\ nil) do
-    base_args = [
-      "--unshare-all",
-      "--die-with-parent",
-      "--new-session",
-      "--proc",
-      "/proc",
-      "--ro-bind",
-      "/",
-      "/",
-      # Apply devtmpfs AFTER the read-only bind so it overlays the host's
-      # /dev. This makes /dev/null (and other device files) writable inside
-      # the sandbox, so shell redirects like `> /dev/null` and `2>/dev/null`
-      # work as expected.
-      "--dev",
-      "/dev",
-      # Bind mount workspace at its original path (read-write)
-      "--bind",
-      workspace_path,
-      workspace_path,
-      "--unshare-net",
-      "--chdir",
-      workspace_path
-    ]
-
-    if tmp_path do
-      # When tmp_path is provided, bind mount it over /tmp
-      # This makes /tmp writable for the agent
-      base_args ++ ["--bind", tmp_path, "/tmp"]
-    else
-      # Without tmp_path, /tmp is read-only (part of ro-bind /)
-      base_args
-    end
+  @spec build_bwrap_args(String.t(), String.t() | nil, map() | nil) :: [String.t()]
+  def build_bwrap_args(workspace_path, tmp_path \\ nil, caps \\ nil) do
+    effective_caps = caps || Sandbox.default_caps()
+    {:ok, args} = Sandbox.build(effective_caps, workspace_path, tmp_path)
+    args
   end
 
   # Private functions
@@ -155,8 +128,8 @@ defmodule Nest.Tools.ShellCmd do
     end
   end
 
-  defp build_sandboxed_command(command, workspace_path, tmp_path) do
-    bwrap_args = build_bwrap_args(workspace_path, tmp_path)
+  defp build_sandboxed_command(command, workspace_path, tmp_path, caps) do
+    bwrap_args = build_bwrap_args(workspace_path, tmp_path, caps)
     bwrap_cmd = Enum.join(["bwrap" | bwrap_args], " ")
     shell_escaped = escape_shell(command)
     "#{bwrap_cmd} /bin/sh -c '#{shell_escaped}'"

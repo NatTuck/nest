@@ -1,14 +1,15 @@
 defmodule Nest.ChatModel do
   @moduledoc """
-  Wrapper around LangChain for creating LLM chains from config.
+  Resolves a model name (or provider, or tag) to an
+  `Nest.LLM.ClientConfig` that the agent can drive.
   """
 
   require Logger
 
-  alias LangChain.Chains.LLMChain
-  alias LangChain.ChatModels.ChatAnthropic
-  alias LangChain.ChatModels.ChatOpenAI
   alias Nest.DotConfig
+  alias Nest.LLM.AnthropicClient
+  alias Nest.LLM.ClientConfig
+  alias Nest.LLM.OpenAIClient
   alias Nest.Models
 
   defmodule ModelNotFoundError do
@@ -20,12 +21,16 @@ defmodule Nest.ChatModel do
   end
 
   @doc """
-  Creates an LLMChain for the given model specification.
+  Creates a client config for the given model specification.
 
   Options:
     - :model - Model name (searches all providers)
     - :provider - Provider name (uses auto-discovery or first model)
     - :tag - Provider tag (searches providers by tag, uses first match)
+
+  Returns `{:ok, %ClientConfig{}}` for any provider that has a
+  Nest-native client (OpenAI-compatible and Anthropic). The
+  `:protocol` field on the provider selects the client.
 
   Examples:
     new(model: "gpt-4o")
@@ -34,48 +39,39 @@ defmodule Nest.ChatModel do
     new(tag: "local")
   """
   def new(opts \\ []) do
-    # Get all models (static + auto-discovered)
     all_models = Models.list()
     config = DotConfig.load!()
 
     result =
       cond do
-        model_name = opts[:model] ->
-          # Find by model name
-          find_by_model(all_models, config, model_name)
-
-        provider_name = opts[:provider] ->
-          # Find by provider
-          find_by_provider(config, provider_name)
-
-        tag = opts[:tag] ->
-          # Find by provider tag
-          find_by_tag(config, tag)
-
-        true ->
-          {:error, %ArgumentError{message: "Must specify :model, :provider, or :tag"}}
+        model_name = opts[:model] -> find_by_model(all_models, config, model_name)
+        provider_name = opts[:provider] -> find_by_provider(config, provider_name)
+        tag = opts[:tag] -> find_by_tag(config, tag)
+        true -> {:error, %ArgumentError{message: "Must specify :model, :provider, or :tag"}}
       end
 
-    # Wrap the LLM in an LLMChain
     case result do
-      {:ok, llm} -> {:ok, LLMChain.new!(%{llm: llm})}
-      {:error, reason} -> {:error, reason}
+      {:ok, config} -> {:ok, config}
+      {:error, _} = err -> err
     end
   end
 
   @doc """
-  Creates an LLMChain for the given model specification.
-  Raises an exception if the model/provider is not found.
+  Like `new/1` but raises on error. Useful for tests and eager
+  initialization.
   """
   def new!(opts \\ []) do
     case new(opts) do
-      {:ok, chain} -> chain
-      {:error, reason} -> raise reason
+      {:ok, config} -> config
+      {:error, %ModelNotFoundError{} = err} -> raise err
+      {:error, %ProviderNotFoundError{} = err} -> raise err
+      {:error, %ArgumentError{} = err} -> raise err
+      {:error, reason} -> raise "ChatModel.new! failed: #{inspect(reason)}"
     end
   end
 
   @doc """
-  Creates a chat model from explicit provider and model info
+  Creates a client config from explicit provider and model info.
   """
   def from_provider(provider_name, model_name \\ nil) do
     config = DotConfig.load!()
@@ -85,33 +81,77 @@ defmodule Nest.ChatModel do
       raise ProviderNotFoundError, "Provider not found: #{provider_name}"
     end
 
-    # Resolve the actual model name to use
     actual_model =
       if model_name do
         model_name
       else
-        # Use first model from provider's explicit list
         if provider.models != [] do
           List.first(provider.models).name
         else
-          # Auto-discovery - we'll need to check what's available
           nil
         end
       end
 
-    build_chat_model(provider, actual_model)
+    build_client_config(provider, actual_model)
   end
+
+  @doc """
+  Build a client config from a provider struct and a model name.
+  """
+  def build_client_config(%DotConfig.Provider{} = provider, model_name) do
+    case provider.protocol do
+      "anthropic" -> build_anthropic_config(provider, model_name)
+      _ -> build_openai_config(provider, model_name)
+    end
+  end
+
+  defp build_openai_config(provider, model_name) do
+    api_key = DotConfig.resolve_api_key(provider.api_key)
+    actual = ensure_model_name(provider, model_name)
+
+    %ClientConfig{
+      client: OpenAIClient,
+      base_url: provider.base_url,
+      api_key: api_key,
+      model: actual,
+      receive_timeout: receive_timeout_ms(provider)
+    }
+    |> wrap_ok()
+  end
+
+  defp build_anthropic_config(provider, model_name) do
+    api_key = DotConfig.resolve_api_key(provider.api_key)
+    actual = ensure_model_name(provider, model_name)
+
+    %ClientConfig{
+      client: AnthropicClient,
+      base_url: provider.base_url,
+      api_key: api_key,
+      model: actual,
+      receive_timeout: receive_timeout_ms(provider)
+    }
+    |> wrap_ok()
+  end
+
+  defp ensure_model_name(provider, model_name) do
+    if model_name do
+      model_name
+    else
+      if provider.auto_models, do: discover_model(provider), else: nil
+    end
+  end
+
+  defp wrap_ok(value), do: {:ok, value}
 
   # Private functions
 
   defp find_by_model(all_models, config, model_name) do
-    # Find model in the merged list
     model = Enum.find(all_models, fn m -> m["name"] == model_name end)
 
     if model do
       provider_name = model["provider"]
       provider = DotConfig.get_provider(config, provider_name)
-      build_chat_model(provider, model_name)
+      build_client_config(provider, model_name)
     else
       {:error, ModelNotFoundError.exception("Model not found: #{model_name}")}
     end
@@ -121,8 +161,6 @@ defmodule Nest.ChatModel do
     provider = DotConfig.get_provider(config, provider_name)
 
     if provider do
-      # If provider has explicit models, use the first one
-      # Otherwise use nil and let it auto-discover
       model_name =
         if provider.models != [] do
           List.first(provider.models).name
@@ -130,7 +168,7 @@ defmodule Nest.ChatModel do
           nil
         end
 
-      build_chat_model(provider, model_name)
+      build_client_config(provider, model_name)
     else
       {:error, ProviderNotFoundError.exception("Provider not found: #{provider_name}")}
     end
@@ -144,7 +182,6 @@ defmodule Nest.ChatModel do
         {:error, ProviderNotFoundError.exception("No provider found with tag: #{tag}")}
 
       [provider | _] ->
-        # Use first provider with this tag
         model_name =
           if provider.models != [] do
             List.first(provider.models).name
@@ -152,72 +189,12 @@ defmodule Nest.ChatModel do
             nil
           end
 
-        build_chat_model(provider, model_name)
+        build_client_config(provider, model_name)
     end
-  end
-
-  @doc """
-  Builds a chat model from a provider configuration.
-  """
-  def build_chat_model(%DotConfig.Provider{} = provider, model_name) do
-    api_key = DotConfig.resolve_api_key(provider.api_key)
-
-    # Auto-discover model if needed
-    actual_model_name =
-      if model_name do
-        model_name
-      else
-        if provider.auto_models do
-          discover_model(provider)
-        else
-          nil
-        end
-      end
-
-    # Build appropriate chat model based on protocol
-    case provider.protocol do
-      "anthropic" ->
-        build_anthropic_model(provider, actual_model_name, api_key)
-
-      _openai ->
-        # Default to OpenAI-compatible
-        build_openai_model(provider, actual_model_name, api_key)
-    end
-  end
-
-  defp build_openai_model(provider, model_name, api_key) do
-    opts = %{
-      endpoint: provider.base_url <> "/chat/completions",
-      api_key: api_key,
-      model: model_name,
-      receive_timeout: receive_timeout_ms(provider)
-    }
-
-    {:ok, ChatOpenAI.new!(opts)}
-  end
-
-  defp build_anthropic_model(provider, model_name, api_key) do
-    opts = %{
-      model: model_name,
-      api_key: api_key,
-      receive_timeout: receive_timeout_ms(provider)
-    }
-
-    # Only set endpoint if base_url is provided and different from default
-    opts =
-      if provider.base_url && provider.base_url != "" do
-        Map.put(opts, :endpoint, provider.base_url)
-      else
-        opts
-      end
-
-    {:ok, ChatAnthropic.new!(opts)}
   end
 
   @doc """
   Lists all available models from a provider by querying the /models endpoint.
-
-  Returns a list of model names available from the provider.
   """
   def list_models(%DotConfig.Provider{} = provider) do
     url = provider.base_url <> "/models"
@@ -228,14 +205,11 @@ defmodule Nest.ChatModel do
         extract_all_models(body)
 
       {:ok, %{status: status}} ->
-        Logger.warning(
-          "Provider returned status #{status} when listing models from #{provider.name}"
-        )
-
+        log_list_status(provider, status)
         []
 
       {:error, reason} ->
-        Logger.warning("Failed to list models from #{provider.name}: #{inspect(reason)}")
+        log_list_error(provider, reason)
         []
     end
   end
@@ -252,7 +226,15 @@ defmodule Nest.ChatModel do
     end
   end
 
-  # Extract all model names from the API response
+  defp log_list_status(provider, status) do
+    Logger.warning("Provider returned status #{status} when listing models from #{provider.name}")
+  end
+
+  defp log_list_error(provider, reason) do
+    Logger.warning("Failed to list models from #{provider.name}: #{inspect(reason)}")
+  end
+
+  # Extract model names from a /models response (OpenAI shape or generic)
   defp extract_all_models(body) do
     models =
       case body do
@@ -282,9 +264,6 @@ defmodule Nest.ChatModel do
     end
   end
 
-  # Converts the provider's per-provider timeout (in seconds) to milliseconds
-  # for the underlying LangChain/Req client. Falls back to the global default
-  # (300s) if the struct was constructed without an explicit value.
   defp receive_timeout_ms(provider) do
     seconds = provider.timeout_seconds || DotConfig.default_timeout_seconds()
     seconds * 1000

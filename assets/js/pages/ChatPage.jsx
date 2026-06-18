@@ -12,7 +12,9 @@ import { useStore } from "../store";
 import { joinAgent, leaveAgent, sendMessage } from "../channels";
 import { MessageContent } from "../components/MessageContent";
 import { ChatInput } from "../components/ChatInput";
+import { TokenUsageChip } from "../components/TokenUsageChip";
 import { TruncatedResult } from "../components/TruncatedResult";
+import { CompactionMarker } from "../components/CompactionMarker";
 import { useScrollToBottom } from "../hooks/useScrollToBottom";
 import { sortArgumentsForDisplay } from "../utils/argumentDisplay";
 
@@ -333,6 +335,58 @@ function StatusBanner({ status, error, onRetry }) {
 }
 
 /**
+ * Notification banner component for system notifications (non-error)
+ */
+function NotificationBanner({ notification, onClose }) {
+  if (!notification) return null;
+
+  return (
+    <div className="bg-amber-50 border-l-4 border-amber-400 p-4 mb-4">
+      <div className="flex items-start justify-between">
+        <div className="flex items-start">
+          <svg
+            className="h-5 w-5 text-amber-400 mt-0.5 mr-3 flex-shrink-0"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            aria-hidden="true"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+            />
+          </svg>
+          <p className="text-amber-800 text-sm">{notification.message}</p>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="ml-4 text-amber-400 hover:text-amber-600 transition-colors flex-shrink-0"
+          aria-label="Dismiss notification"
+        >
+          <svg
+            className="h-5 w-5"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            aria-hidden="true"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M6 18L18 6M6 6l12 12"
+            />
+          </svg>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
  * Chat Page component
  */
 export function ChatPage() {
@@ -341,6 +395,7 @@ export function ChatPage() {
   const [messagesEndEl, setMessagesEndEl] = useState(null);
   const [inputValue, setInputValue] = useState("");
   const [sendError, setSendError] = useState(null);
+  const [currentMode, setCurrentMode] = useState(null);
 
   // Get agent cache from store
   const agentsCache = useStore((state) => state.agentsCache);
@@ -354,12 +409,31 @@ export function ChatPage() {
   const messages = cache?.messages ?? [];
   const partial = cache?.partial ?? null;
   const waitingForResponse = cache?.waitingForResponse ?? false;
-  const streaming = partial !== null;
+  const agentState = cache?.agentState ?? "idle";
+  const streaming = agentState === "streaming";
+  const executingTools = agentState === "executing_tools";
+  const availableModes = cache?.modes ?? ["chat"];
+  const defaultMode = cache?.defaultMode ?? "chat";
+  const contextLimit = cache?.contextLimit ?? null;
+  // `usage.input_tokens` is overwritten per LLM call (each call's
+  // `input_tokens` is the size of the full context for that call),
+  // so the most recent value is the current context size.
+  const lastInput = cache?.usage?.input_tokens ?? 0;
+
+  // When the agent's default mode arrives (or changes), reset the
+  // current mode to match. This ensures the selector always starts
+  // at the agent's default for the next message.
+  useEffect(() => {
+    if (defaultMode && currentMode === null) {
+      setCurrentMode(defaultMode);
+    }
+  }, [defaultMode, currentMode]);
 
   // Determine status label
   const getStatusLabel = () => {
     if (status !== "connected") return status;
     if (streaming) return "Generating response";
+    if (executingTools) return "Executing tools";
     if (waitingForResponse) return "Waiting for response";
     return "Ready";
   };
@@ -389,10 +463,13 @@ export function ChatPage() {
     }
 
     const content = inputValue.trim();
+    const mode = currentMode ?? defaultMode;
     setInputValue("");
     setSendError(null);
+    // Reset to the default mode for the next message.
+    setCurrentMode(defaultMode);
 
-    sendMessage(id, content, (err) => {
+    sendMessage(id, content, mode, (err) => {
       setSendError(err.message || "Failed to send message");
     });
   };
@@ -427,8 +504,8 @@ export function ChatPage() {
     <div className="flex flex-col h-full max-w-6xl mx-auto">
       {/* Header */}
       <div className="border-b border-gray-200 pb-4 mb-4">
-        <div className="flex items-end justify-between">
-          <div>
+        <div className="flex items-end justify-between gap-4">
+          <div className="min-w-0">
             <h1 className="text-2xl font-bold text-gray-900">
               {id}
               {cache?.vocation?.name && (
@@ -441,15 +518,18 @@ export function ChatPage() {
               {cache?.model?.name || "\u00A0"}
             </p>
           </div>
-          <div className="flex flex-col items-end">
-            <div
-              className={`
-                w-3 h-3 rounded-full mb-1
-                ${status === "connected" ? "bg-green-500" : "bg-gray-300"}
-                ${streaming ? "animate-pulse" : ""}
-              `}
-            />
-            <span className="text-sm text-gray-400">{getStatusLabel()}</span>
+          <div className="flex flex-col items-end gap-2">
+            <TokenUsageChip lastInput={lastInput} contextLimit={contextLimit} />
+            <div className="flex items-center gap-2">
+              <div
+                className={`
+                  w-3 h-3 rounded-full
+                  ${status === "connected" ? "bg-green-500" : "bg-gray-300"}
+                  ${streaming ? "animate-pulse" : ""}
+                `}
+              />
+              <span className="text-sm text-gray-400">{getStatusLabel()}</span>
+            </div>
           </div>
         </div>
       </div>
@@ -459,6 +539,12 @@ export function ChatPage() {
         status={status}
         error={cache?.error}
         onRetry={handleRetry}
+      />
+
+      {/* Notification banner */}
+      <NotificationBanner
+        notification={cache?.notification}
+        onClose={() => useStore.getState().clearNotification(id)}
       />
 
       {/* Send error */}
@@ -473,6 +559,24 @@ export function ChatPage() {
         ref={setScrollContainerEl}
         className="flex-1 overflow-y-auto space-y-4 mb-4 pr-2"
       >
+        {/* Compaction marker — only render when there are archived
+            messages (history) AND active messages to display. The
+            marker sits above the active messages, indicating the
+            boundary between the archived (history) and visible
+            (messages) conversation. */}
+        {displayMessages.length > 0 && cache?.history?.length > 0 && (
+          <CompactionMarker
+            marker={
+              cache.history.findLast
+                ? cache.history.findLast((m) => m.role === "compaction")
+                : [...cache.history]
+                    .reverse()
+                    .find((m) => m.role === "compaction")
+            }
+            history={cache.history}
+          />
+        )}
+
         {displayMessages.length === 0 ? (
           <div className="text-center py-12 text-gray-400">
             <svg
@@ -545,6 +649,11 @@ export function ChatPage() {
                           ? "Tool Result"
                           : id}
                   </span>
+                  {message.role === "user" && message.mode && (
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">
+                      mode: {message.mode}
+                    </span>
+                  )}
                   {message.isPartial && (
                     <span className="text-xs text-gray-400">(typing...)</span>
                   )}
@@ -584,10 +693,14 @@ export function ChatPage() {
       </div>
 
       {/* Typing indicator - shown when waiting or generating */}
-      {(waitingForResponse || streaming) && (
+      {(waitingForResponse || streaming || executingTools) && (
         <div className="flex items-center gap-2 py-2 px-4 mb-2">
           <span className="text-sm text-gray-500">
-            {streaming ? "Generating response" : "Waiting for response"}
+            {streaming
+              ? "Generating response"
+              : executingTools
+                ? "Executing tools"
+                : "Waiting for response"}
           </span>
           <div className="flex items-center gap-1">
             <span
@@ -646,6 +759,9 @@ export function ChatPage() {
               ? "Type a message..."
               : "Connect to send messages..."
           }
+          modes={availableModes}
+          mode={currentMode ?? defaultMode}
+          onModeChange={setCurrentMode}
         />
       </div>
     </div>

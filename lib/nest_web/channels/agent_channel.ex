@@ -46,8 +46,15 @@ defmodule NestWeb.AgentChannel do
       "model" => agent.model,
       "vocation" => agent.vocation,
       "messageCount" => length(agent.messages),
+      "history" => Enum.map(agent.history || [], &Message.to_json/1),
       "status" => to_string(agent.status),
-      "partial" => build_partial_payload(agent.partial)
+      "partial" => build_partial_payload(agent.partial),
+      "modes" => agent.modes,
+      "defaultMode" => agent.default_mode,
+      "currentMode" => agent.current_mode,
+      "contextLimit" => agent.context_limit,
+      "contextLimitSource" => source_to_string(agent.context_limit_source),
+      "usage" => agent.usage
     }
 
     push(socket, "init", init_payload)
@@ -88,6 +95,22 @@ defmodule NestWeb.AgentChannel do
     {:noreply, socket}
   end
 
+  # Handle status changes from PubSub (broadcast by Agent)
+  @impl true
+  def handle_info({:chat_status, status_payload}, socket) do
+    push(socket, "chat:status", status_payload)
+
+    {:noreply, socket}
+  end
+
+  # Handle notifications from PubSub (broadcast by Agent)
+  @impl true
+  def handle_info({:chat_notification, payload}, socket) do
+    push(socket, "chat:notification", payload)
+
+    {:noreply, socket}
+  end
+
   # Handle API log metadata from PubSub (deprecated - now included with messages)
   @impl true
   def handle_info({:api_log, _api_log}, socket) do
@@ -101,15 +124,24 @@ defmodule NestWeb.AgentChannel do
     Streaming.to_json(acc)
   end
 
+  # The context_limit_source is an internal atom (`:config`, `:vllm`,
+  # etc.) that survives the JSON wire trip as a string. Convert
+  # up-front so the test assertions and the frontend payload agree
+  # on shape.
+  defp source_to_string(nil), do: nil
+  defp source_to_string(atom) when is_atom(atom), do: Atom.to_string(atom)
+  defp source_to_string(other), do: other
+
   defp format_message(message) do
     Message.to_json(message)
   end
 
   @impl true
-  def handle_in("chat:message", %{"content" => content}, socket) do
+  def handle_in("chat:message", %{"content" => content} = payload, socket) do
     agent_id = socket.assigns.agent_id
+    mode = Map.get(payload, "mode")
 
-    case Agents.chat(agent_id, content) do
+    case Agents.chat(agent_id, content, mode) do
       :ok ->
         {:reply, {:ok, %{}}, socket}
 
@@ -129,7 +161,10 @@ defmodule NestWeb.AgentChannel do
           "model" => agent.model,
           "messageCount" => length(agent.messages),
           "status" => to_string(agent.status),
-          "partial" => build_partial_payload(agent.partial)
+          "partial" => build_partial_payload(agent.partial),
+          "contextLimit" => agent.context_limit,
+          "contextLimitSource" => source_to_string(agent.context_limit_source),
+          "usage" => agent.usage
         }
 
         {:reply, {:ok, reply}, socket}

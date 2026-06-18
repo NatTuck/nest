@@ -61,7 +61,6 @@ defmodule Nest.MixProject do
       {:jason, "~> 1.2"},
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"},
-      {:langchain, "~> 0.8.0"},
       {:toml, "~> 0.7.0"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:excoveralls, "~> 0.18", only: :test, runtime: false},
@@ -69,7 +68,8 @@ defmodule Nest.MixProject do
       {:phoenix_copy, "~> 0.1.4", only: :dev},
       {:unique_names_generator, "~> 0.2.0"},
       {:erlexec, "~> 2.0"},
-      {:mustache, "~> 0.5"}
+      {:mustache, "~> 0.5"},
+      {:tiktoken, "~> 0.4.2"}
     ]
   end
 

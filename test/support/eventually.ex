@@ -22,7 +22,7 @@ defmodule Eventually do
 
   """
   def eventually(fun, opts \\ []) do
-    timeout = opts[:timeout] || 1000
+    timeout = opts[:timeout] || 10
     interval = opts[:interval] || 10
     deadline = System.monotonic_time(:millisecond) + timeout
 

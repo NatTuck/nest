@@ -1,7 +1,7 @@
 defmodule Nest.ToolsTest do
   use ExUnit.Case, async: true
 
-  alias LangChain.Function
+  alias Nest.LLM.Tool, as: Function
   alias Nest.Tools
 
   describe "get_functions/2" do
@@ -21,7 +21,7 @@ defmodule Nest.ToolsTest do
       refute "unknown_tool" in names
     end
 
-    test "returns LangChain.Function structs" do
+    test "returns Nest.LLM.Tool structs" do
       [function] = Tools.get_functions(["read_file"], "/tmp")
 
       assert %Function{} = function
@@ -79,7 +79,7 @@ defmodule Nest.ToolsTest do
       File.write!(test_file, "Hello, World!")
 
       function = Tools.get_function("read_file", workspace)
-      assert {:ok, result} = Function.execute(function, %{"path" => "test.txt"}, nil)
+      assert {:ok, result} = function.function.(%{"path" => "test.txt"}, nil)
       assert result == "Hello, World!"
     end
 
@@ -87,7 +87,7 @@ defmodule Nest.ToolsTest do
       function = Tools.get_function("read_file", workspace)
 
       assert {:error, error_msg} =
-               Function.execute(function, %{"path" => "nonexistent.txt"}, nil)
+               function.function.(%{"path" => "nonexistent.txt"}, nil)
 
       assert error_msg =~ "No such file or directory"
     end
@@ -96,7 +96,7 @@ defmodule Nest.ToolsTest do
       function = Tools.get_function("read_file", nil)
 
       assert {:error, "No workspace configured for this agent"} =
-               Function.execute(function, %{"path" => "test.txt"}, nil)
+               function.function.(%{"path" => "test.txt"}, nil)
     end
   end
 
@@ -162,7 +162,7 @@ defmodule Nest.ToolsTest do
       function = Tools.get_function("write_file", nil)
 
       assert {:error, "No workspace configured for this agent"} =
-               Function.execute(function, %{"path" => "test.txt", "content" => "test"}, nil)
+               function.function.(%{"path" => "test.txt", "content" => "test"}, nil)
     end
   end
 
@@ -182,21 +182,21 @@ defmodule Nest.ToolsTest do
     test "executes command and returns output", %{workspace: workspace} do
       function = Tools.get_function("shell_cmd", workspace)
 
-      assert {:ok, result} = Function.execute(function, %{"command" => "echo hello"}, nil)
+      assert {:ok, result} = function.function.(%{"command" => "echo hello"}, nil)
       assert result =~ "hello"
     end
 
     test "returns error for failed commands", %{workspace: workspace} do
       function = Tools.get_function("shell_cmd", workspace)
 
-      assert {:error, result} = Function.execute(function, %{"command" => "exit 1"}, nil)
+      assert {:error, result} = function.function.(%{"command" => "exit 1"}, nil)
       assert result =~ "Exit code"
     end
 
     test "captures stderr", %{workspace: workspace} do
       function = Tools.get_function("shell_cmd", workspace)
 
-      assert {:ok, result} = Function.execute(function, %{"command" => "echo error >&2"}, nil)
+      assert {:ok, result} = function.function.(%{"command" => "echo error >&2"}, nil)
       assert result =~ "error"
     end
 
@@ -205,7 +205,7 @@ defmodule Nest.ToolsTest do
 
       function = Tools.get_function("shell_cmd", workspace)
 
-      assert {:ok, result} = Function.execute(function, %{"command" => "cat test.txt"}, nil)
+      assert {:ok, result} = function.function.(%{"command" => "cat test.txt"}, nil)
       assert result =~ "workspace file"
     end
 
@@ -260,7 +260,7 @@ defmodule Nest.ToolsTest do
       # Try to write to /tmp - this should fail when no tmp_path is provided
       # (because /tmp is read-only in the sandbox without a bind mount)
       assert {:error, result} =
-               Function.execute(function, %{"command" => "echo 'test' > /tmp/test_file.txt"}, nil)
+               function.function.(%{"command" => "echo 'test' > /tmp/test_file.txt"}, nil)
 
       # Should fail with a read-only filesystem error
       assert result =~ "Read-only file system" or result =~ "Exit code"
@@ -320,6 +320,137 @@ defmodule Nest.ToolsTest do
       assert result =~ "marker"
       refute result =~ "Permission denied"
       refute result =~ "cannot create"
+    end
+  end
+
+  describe "caps threading through context" do
+    setup do
+      test_workspace = "/var/tmp/nest_caps_test_#{System.unique_integer([:positive])}"
+      File.mkdir_p!(test_workspace)
+      on_exit(fn -> File.rm_rf!(test_workspace) end)
+      {:ok, workspace: test_workspace}
+    end
+
+    test "read_file ignores caps (read is always allowed in the host bind)", %{
+      workspace: workspace
+    } do
+      test_file = Path.join(workspace, "x.txt")
+      File.write!(test_file, "ok")
+
+      function = Tools.get_function("read_file", workspace)
+      # Read-only caps still allow reads (the ro-bind of / covers
+      # the workspace).
+      caps = %{"net" => false, "fs" => %{"read" => ["/"], "write" => []}}
+
+      assert {:ok, "ok"} = function.function.(%{"path" => "x.txt"}, %{caps: caps})
+    end
+
+    test "write_file fails when :workspace is not in the write list", %{workspace: workspace} do
+      function = Tools.get_function("write_file", workspace)
+      # Plan mode caps: write: ["/tmp"] but no :workspace. The
+      # workspace stays read-only via the ro-bind of /, so writes
+      # fail at the kernel level.
+      caps = %{"net" => false, "fs" => %{"read" => ["/"], "write" => ["/tmp"]}}
+
+      assert {:error, error_msg} =
+               Function.execute(
+                 function,
+                 %{"path" => "out.txt", "content" => "data"},
+                 %{caps: caps}
+               )
+
+      assert error_msg =~ "Read-only file system"
+    end
+
+    test "write_file succeeds when :workspace is in the write list", %{workspace: workspace} do
+      function = Tools.get_function("write_file", workspace)
+      caps = %{"net" => false, "fs" => %{"read" => ["/"], "write" => ["/tmp", ":workspace"]}}
+
+      assert {:ok, _} =
+               Function.execute(
+                 function,
+                 %{"path" => "out.txt", "content" => "data"},
+                 %{caps: caps}
+               )
+    end
+
+    test "shell_cmd with net=true caps passes --share-net through", %{workspace: workspace} do
+      # We can't directly observe bwrap args, but we can verify the
+      # tool still runs to completion when net=true.
+      function = Tools.get_function("shell_cmd", workspace, nil)
+      caps = %{"net" => true, "fs" => %{"read" => ["/"], "write" => ["/tmp", ":workspace"]}}
+
+      assert {:ok, result} =
+               Function.execute(
+                 function,
+                 %{"command" => "echo hello"},
+                 %{caps: caps}
+               )
+
+      assert result =~ "hello"
+    end
+
+    test "tool with nil context falls back to default caps", %{workspace: workspace} do
+      # The legacy path: callers that pass nil context get default caps.
+      function = Tools.get_function("shell_cmd", workspace, nil)
+      assert {:ok, result} = function.function.(%{"command" => "echo ok"}, nil)
+      assert result =~ "ok"
+    end
+
+    test "tool with context that has no caps key falls back to default caps", %{
+      workspace: workspace
+    } do
+      # The catch-all path in caps_from_context/1: context is a map
+      # but lacks the :caps key.
+      function = Tools.get_function("shell_cmd", workspace, nil)
+
+      assert {:ok, result} =
+               function.function.(%{"command" => "echo ok"}, %{other: "thing"})
+
+      assert result =~ "ok"
+    end
+  end
+
+  describe "max_result_tokens" do
+    test "read_file has a 8192-token default" do
+      function = Tools.get_function("read_file", "/tmp")
+      assert function.max_result_tokens == 8192
+    end
+
+    test "shell_cmd has a 8192-token default" do
+      function = Tools.get_function("shell_cmd", "/tmp")
+      assert function.max_result_tokens == 8192
+    end
+
+    test "write_file has a 256-token default (result is naturally small)" do
+      function = Tools.get_function("write_file", "/tmp")
+      assert function.max_result_tokens == 256
+    end
+
+    test "compact_context tool exists with 256-token cap" do
+      function = Tools.get_function("compact_context", "/tmp")
+      assert function != nil
+      assert function.name == "compact_context"
+      assert function.max_result_tokens == 256
+    end
+
+    test "compact_context is included when added to a tool list" do
+      functions = Tools.get_functions(["compact_context"], "/tmp")
+      assert length(functions) == 1
+      assert hd(functions).name == "compact_context"
+    end
+
+    test "max_result_tokens is exposed in the parameters schema" do
+      function = Tools.get_function("read_file", "/tmp")
+      schema = function.parameters_schema
+      assert Map.has_key?(schema["properties"], "max_result_tokens")
+      assert schema["properties"]["max_result_tokens"]["type"] == "integer"
+    end
+
+    test "max_result_tokens is not in the required list (it's optional)" do
+      function = Tools.get_function("read_file", "/tmp")
+      required = function.parameters_schema["required"] || []
+      refute "max_result_tokens" in required
     end
   end
 end

@@ -2,32 +2,44 @@ defmodule Nest.Agents.AgentTest do
   @moduledoc """
   Tests for the Agent GenServer behavior via PubSub.
   """
-  use ExUnit.Case, async: false
+  use Nest.DataCase, async: true
 
   import ExUnit.CaptureLog
   import Mimic
 
   alias Nest.Agents.Agent
   alias Nest.Agents.Registry
+  alias Nest.LLM.MockClient
+  alias Nest.LLM.RunResponse
   alias Nest.Messages.Assistant
+  alias Nest.Messages.Streaming
   alias Nest.Messages.Tool
   alias Nest.Messages.ToolCall
+  alias Nest.Messages.User
   alias Nest.Test.TaskDrain
+  alias Nest.Vocations
 
-  setup :set_mimic_global
   setup :verify_on_exit!
-
-  setup do
-    Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
-    Nest.LangChainMock.start_mock_agent()
-    :ok
-  end
 
   setup do
     parent_dir = "/tmp/nest-#{System.pid()}"
     File.rm_rf(parent_dir)
     on_exit(fn -> File.rm_rf(parent_dir) end)
     on_exit(fn -> TaskDrain.drain() end)
+
+    # Per-test MockClient queue keyed by the test's own pid. Tests
+    # that call `MockClient.set_*` BEFORE `start_agent/1` (e.g. error
+    # injection) land in this queue; `start_agent/1` transfers the
+    # contents to the per-agent queue. This preserves the historical
+    # pattern of calling `set_*` before `start_agent/1`.
+    Process.put(:nest_test_agent_pid, self())
+    MockClient.start_link()
+    MockClient.clear()
+
+    on_exit(fn ->
+      Process.delete(:nest_test_agent_pid)
+    end)
+
     :ok
   end
 
@@ -41,6 +53,47 @@ defmodule Nest.Agents.AgentTest do
 
     attrs = Map.merge(defaults, attrs)
     pid = start_supervised!({Agent, attrs})
+
+    # In async mode, Mimic stubs are per-test-process by default.
+    # The agent's `handle_info` and chat task run in separate
+    # processes and need explicit access to stubs set on
+    # `Mimic.expect(Req, :get, ...)` etc. No-op for tests that
+    # don't use Mimic.
+    Mimic.allow(Nest.LLM.OpenAIClient, self(), pid)
+    Mimic.allow(Req, self(), pid)
+    Mimic.allow(Nest.DotConfig, self(), pid)
+
+    # Swap the agent's client_config.client to MockClient and start
+    # a per-agent queue. The agent threads its pid through
+    # `build_run_opts/1`, so the chat task (in a separate process)
+    # calls MockClient.run/2 and finds this test's queue via
+    # `opts[:agent_pid]`.
+    :sys.replace_state(pid, fn state ->
+      %{state | client_config: %{state.client_config | client: MockClient}}
+    end)
+
+    # Transfer any pre-existing queued items from the test-pid queue
+    # (set up in `setup`) to the per-agent queue. This handles
+    # tests that call `MockClient.set_*` before `start_agent/1`.
+    test_pid = Process.get(:nest_test_agent_pid)
+
+    if test_pid && test_pid != pid do
+      items = MockClient.take_pending(test_pid)
+      MockClient.start_link(pid)
+      Enum.each(items, &MockClient.put_pending(pid, &1))
+    else
+      MockClient.start_link(pid)
+    end
+
+    Process.put(:nest_test_agent_pid, pid)
+    # NB: no MockClient.clear() here — that would wipe the
+    # transferred items.
+
+    on_exit(fn ->
+      MockClient.stop(pid)
+      Process.put(:nest_test_agent_pid, test_pid)
+    end)
+
     {pid, agent_id}
   end
 
@@ -220,8 +273,6 @@ defmodule Nest.Agents.AgentTest do
 
   describe "chat/2" do
     test "broadcasts user message and LLM response via PubSub" do
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
-
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
@@ -235,16 +286,29 @@ defmodule Nest.Agents.AgentTest do
       receive_deltas_and_message_from_pubsub()
     end
 
+    test "broadcasts status changes via PubSub" do
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      :ok = Agent.chat(pid, "Hello")
+
+      # Receive user message
+      assert_receive {:chat_message, {:user, %{index: 0, content: "Hello"}}},
+                     1000
+
+      # Should receive status:streaming when chat starts
+      assert_receive {:chat_status, %{status: "streaming"}}, 1000
+
+      # Should receive status:idle when response completes
+      # (drain deltas and messages first)
+      receive_deltas_and_message_from_pubsub()
+      assert_receive {:chat_status, %{status: "idle"}}, 2000
+    end
+
     test "handles LLM error gracefully" do
       # Mock LLM to return an error. Stub arity 1 and 2 because
       # LLMChain.run/1 dispatches to run/2 with default opts.
-      Mimic.stub(LangChain.Chains.LLMChain, :run, fn _chain ->
-        {:error, nil, "Connection failed"}
-      end)
-
-      Mimic.stub(LangChain.Chains.LLMChain, :run, fn _chain, _opts ->
-        {:error, nil, "Connection failed"}
-      end)
+      MockClient.set_error("Connection failed")
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
@@ -266,9 +330,36 @@ defmodule Nest.Agents.AgentTest do
       assert log =~ "Connection failed"
     end
 
-    test "accumulates delta content from streaming LLM response" do
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
+    test "LLM error path returns a RunState (Task body destructures successfully)" do
+      # Locks in the contract that `run_with_new_client/2`'s terminal
+      # paths return a `%RunState{}` so the `Task.Supervisor.start_child/2`
+      # body can destructure `%RunState{api_log_sequences: _}` without
+      # crashing. Before this was fixed, the error path returned
+      # `api_log_sequences` (a list) and the success path returned
+      # `_ = ctx` (a `RunContext`), both of which triggered a MatchError
+      # inside the Task and polluted test output with a stacktrace.
+      MockClient.set_error("Connection failed")
 
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      log =
+        capture_log(fn ->
+          :ok = Agent.chat(pid, "Hello")
+
+          assert_receive {:chat_message, {:user, %{index: 0, content: "Hello"}}},
+                         1000
+
+          assert_receive {:chat_error, _error}, 2000
+        end)
+
+      # The Task body would have logged a MatchError if the contract
+      # were violated; assert the log is clean.
+      refute log =~ "MatchError"
+      refute log =~ "no match of right hand side value"
+    end
+
+    test "accumulates delta content from streaming LLM response" do
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
@@ -289,8 +380,6 @@ defmodule Nest.Agents.AgentTest do
 
   describe "delta handling" do
     test "accumulates deltas with correct character counts" do
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
-
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
@@ -307,24 +396,211 @@ defmodule Nest.Agents.AgentTest do
     end
   end
 
+  describe "chat/3 with mode" do
+    test "user message includes the resolved mode in metadata (vocation-less agent defaults to chat)" do
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      :ok = Agent.chat(pid, "Read foo", "build")
+
+      # A vocation-less agent has no "build" mode, so it falls back to "chat"
+      user_message = find_user_message("Read foo")
+      assert user_message != nil
+      assert user_message.metadata["mode"] == "chat"
+    end
+
+    test "falls back to default mode when requested mode is unknown" do
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      :ok = Agent.chat(pid, "Hello", "nonexistent-mode")
+
+      user_message = find_user_message("Hello")
+      assert user_message != nil
+      assert user_message.metadata["mode"] == "chat"
+    end
+
+    test "uses agent's current mode when no mode is passed" do
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      :ok = Agent.chat(pid, "Hello")
+
+      user_message = find_user_message("Hello")
+      assert user_message != nil
+      assert user_message.metadata["mode"] == "chat"
+    end
+
+    @tag :db_shared
+    test "vocation with modes: requested mode is preserved when valid" do
+      valid_caps = %{
+        "net" => false,
+        "fs" => %{"read" => ["/"], "write" => []}
+      }
+
+      {:ok, vocation} =
+        Vocations.create_vocation(%{
+          name: "TestVocation-#{System.unique_integer([:positive])}",
+          description: "Test",
+          system_prompt: "Test",
+          tools: [],
+          modes: %{
+            "build" => %{"caps" => valid_caps},
+            "plan" => %{"caps" => valid_caps}
+          }
+        })
+
+      {pid, agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: vocation.id
+        })
+
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      :ok = Agent.chat(pid, "Run", "build")
+
+      user_message = find_user_message("Run")
+      assert user_message != nil
+      assert user_message.metadata["mode"] == "build"
+    end
+
+    @tag :db_shared
+    test "vocation with modes: unknown mode falls back to the vocation's default" do
+      valid_caps = %{
+        "net" => false,
+        "fs" => %{"read" => ["/"], "write" => []}
+      }
+
+      {:ok, vocation} =
+        Vocations.create_vocation(%{
+          name: "TestVocation-#{System.unique_integer([:positive])}",
+          description: "Test",
+          system_prompt: "Test",
+          tools: [],
+          modes: %{
+            "build" => %{"caps" => valid_caps},
+            "plan" => %{"caps" => valid_caps}
+          }
+        })
+
+      {pid, agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: vocation.id
+        })
+
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      :ok = Agent.chat(pid, "Hello", "nonexistent")
+
+      user_message = find_user_message("Hello")
+      assert user_message != nil
+      # Default is the lexicographically first mode: "build"
+      assert user_message.metadata["mode"] == "build"
+    end
+  end
+
+  describe "system prompt composition" do
+    @tag :db_shared
+    test "vocation system_prompt gets the mode catalog and a [Workspace] section" do
+      valid_caps = %{
+        "net" => false,
+        "fs" => %{"read" => ["/"], "write" => []}
+      }
+
+      {:ok, vocation} =
+        Vocations.create_vocation(%{
+          name: "TestSysPrompt-#{System.unique_integer([:positive])}",
+          description: "Test",
+          system_prompt: "Base prompt.",
+          tools: [],
+          modes: %{
+            "build" => %{
+              "description" => "You're clear to edit the project in the workspace.",
+              "caps" => valid_caps
+            }
+          }
+        })
+
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: vocation.id,
+          workspace_path: "/tmp/test-workspace-#{System.unique_integer([:positive])}"
+        })
+
+      # The system prompt is stored on the agent state. Pull it via
+      # get_public_info (which doesn't expose it directly), or just
+      # inspect the agent process state via a GenServer.call.
+      # The cleanest assertion: the client config was built with
+      # a system message containing both the catalog and the workspace.
+      # The mock agent captures the messages it received — but we
+      # need a different hook. The simplest is to assert on the
+      # state.system_prompt via a custom introspection call.
+      system_prompt = get_system_prompt(pid)
+
+      assert system_prompt =~ "Base prompt."
+      assert system_prompt =~ "\n\n[Available modes]\n\n"
+      assert system_prompt =~ ~s(- build: Read only "/")
+      assert system_prompt =~ "Network disabled"
+      assert system_prompt =~ "You're clear to edit the project in the workspace."
+      assert system_prompt =~ "\n\nWorkspace and tool working directory: /tmp/test-workspace-"
+    end
+
+    @tag :db_shared
+    test "no workspace line when workspace_path is nil" do
+      valid_caps = %{
+        "net" => false,
+        "fs" => %{"read" => ["/"], "write" => []}
+      }
+
+      {:ok, vocation} =
+        Vocations.create_vocation(%{
+          name: "TestNoWorkspace-#{System.unique_integer([:positive])}",
+          description: "Test",
+          system_prompt: "Chat only.",
+          tools: [],
+          modes: %{
+            "chat" => %{
+              "description" => "General conversation.",
+              "caps" => valid_caps
+            }
+          }
+        })
+
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: vocation.id
+        })
+
+      system_prompt = get_system_prompt(pid)
+
+      assert system_prompt =~ "Chat only."
+      refute system_prompt =~ "Workspace and tool working directory"
+    end
+  end
+
+  # The agent doesn't expose system_prompt via get_public_info. We
+  # use a custom GenServer.call to read it. If we add it to the
+  # public API later, this can become a regular call.
+  defp get_system_prompt(pid) do
+    GenServer.call(pid, :get_system_prompt)
+  end
+
   describe "chat/2 with tool calls" do
     test "broadcasts complete tool call flow: user → assistant+tools → tool → assistant" do
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
-
       # Configure mock to return tool calls
-      Nest.LangChainMock.set_tool_response(%{
+      MockClient.set_tool_response(%{
         text: "I'll run that command for you",
         tool_calls: [
-          %LangChain.Message.ToolCall{
-            call_id: "call_123",
-            name: "shell_cmd",
-            arguments: %{"command" => "ls -la"}
-          }
+          %{id: "call_123", name: "shell_cmd", arguments: %{"command" => "ls -la"}}
         ]
       })
 
       # Set final response after tool execution
-      Nest.LangChainMock.set_response("Here are the directory contents")
+      MockClient.set_response("Here are the directory contents")
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
@@ -384,24 +660,53 @@ defmodule Nest.Agents.AgentTest do
       assert final_msg.content == "Here are the directory contents"
 
       # Cleanup
-      Nest.LangChainMock.clear_response()
+      MockClient.clear()
     end
 
-    test "tool call message has correct content and tool_calls field" do
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
-
-      Nest.LangChainMock.set_tool_response(%{
-        text: "Let me calculate that",
+    test "broadcasts status changes during tool execution flow" do
+      # Configure mock to return tool calls
+      MockClient.set_tool_response(%{
+        text: "I'll run that command",
         tool_calls: [
-          %LangChain.Message.ToolCall{
-            call_id: "call_456",
-            name: "calculator",
-            arguments: %{"expression" => "2 + 2"}
-          }
+          %{id: "call_789", name: "shell_cmd", arguments: %{"command" => "echo hello"}}
         ]
       })
 
-      Nest.LangChainMock.set_response("The result is 4")
+      # Set final response after tool execution
+      MockClient.set_response("Done")
+
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      :ok = Agent.chat(pid, "Run a command")
+
+      # Should receive status:streaming when chat starts
+      assert_receive {:chat_status, %{status: "streaming"}}, 1000
+
+      # Should receive status:executing_tools when tool calls are processed
+      assert_receive {:chat_status, %{status: "executing_tools"}}, 2000
+
+      # Should receive status:streaming again when continuing after tool results
+      assert_receive {:chat_status, %{status: "streaming"}}, 2000
+
+      # Should receive status:idle when final response completes
+      # (drain remaining messages first)
+      collect_all_messages_from_pubsub([])
+      assert_receive {:chat_status, %{status: "idle"}}, 2000
+
+      # Cleanup
+      MockClient.clear()
+    end
+
+    test "tool call message has correct content and tool_calls field" do
+      MockClient.set_tool_response(%{
+        text: "Let me calculate that",
+        tool_calls: [
+          %{id: "call_456", name: "calculator", arguments: %{"expression" => "2 + 2"}}
+        ]
+      })
+
+      MockClient.set_response("The result is 4")
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
@@ -431,24 +736,18 @@ defmodule Nest.Agents.AgentTest do
       assert tool_call.arguments == %{"expression" => "2 + 2"}
 
       # Cleanup
-      Nest.LangChainMock.clear_response()
+      MockClient.clear()
     end
 
     test "tool result message has role tool not assistant" do
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
-
-      Nest.LangChainMock.set_tool_response(%{
+      MockClient.set_tool_response(%{
         text: "I'll check that",
         tool_calls: [
-          %LangChain.Message.ToolCall{
-            call_id: "call_789",
-            name: "weather",
-            arguments: %{"city" => "London"}
-          }
+          %{id: "call_789", name: "weather", arguments: %{"city" => "London"}}
         ]
       })
 
-      Nest.LangChainMock.set_response("The weather is sunny")
+      MockClient.set_response("The weather is sunny")
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
@@ -470,27 +769,22 @@ defmodule Nest.Agents.AgentTest do
       assert msg.tool_results != []
 
       # Cleanup
-      Nest.LangChainMock.clear_response()
+      MockClient.clear()
     end
 
     test "second message after tool execution serializes tool results correctly" do
-      # This test verifies that tool results are stored with ContentParts format
-      # so that subsequent messages can be serialized without FunctionClauseError
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
+      # Verifies that tool results from turn 1 serialize correctly
+      # when turn 2 builds a new request from the persisted history.
 
       # First message with tool calls
-      Nest.LangChainMock.set_tool_response(%{
+      MockClient.set_tool_response(%{
         text: "I'll check the directory",
         tool_calls: [
-          %LangChain.Message.ToolCall{
-            call_id: "call_first",
-            name: "shell_cmd",
-            arguments: %{"command" => "ls"}
-          }
+          %{id: "call_first", name: "shell_cmd", arguments: %{"command" => "ls"}}
         ]
       })
 
-      Nest.LangChainMock.set_response("Directory listing complete")
+      MockClient.set_response("Directory listing complete")
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
@@ -502,9 +796,8 @@ defmodule Nest.Agents.AgentTest do
       _messages = collect_all_messages_from_pubsub([])
 
       # Second message - this triggers serialization of previous tool results
-      Nest.LangChainMock.set_response("Second response received")
+      MockClient.set_response("Second response received")
 
-      # This would raise FunctionClauseError if tool content is not ContentParts
       :ok = Agent.chat(pid, "What else is there?")
 
       # Wait for second response
@@ -520,26 +813,20 @@ defmodule Nest.Agents.AgentTest do
       assert [_ | _] = assistant_msgs
 
       # Cleanup
-      Nest.LangChainMock.clear_response()
+      MockClient.clear()
     end
 
     test "tool continuation flow broadcasts API calls for each LLM request", %{} do
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
-
       # First response: tool calls
-      Nest.LangChainMock.set_tool_response(%{
+      MockClient.set_tool_response(%{
         text: "I'll execute that",
         tool_calls: [
-          %LangChain.Message.ToolCall{
-            call_id: "call_api_001",
-            name: "shell_cmd",
-            arguments: %{"command" => "echo test"}
-          }
+          %{id: "call_api_001", name: "shell_cmd", arguments: %{"command" => "echo test"}}
         ]
       })
 
       # Second response: final text after tool execution
-      Nest.LangChainMock.set_response("Tool executed successfully")
+      MockClient.set_response("Tool executed successfully")
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
@@ -595,14 +882,138 @@ defmodule Nest.Agents.AgentTest do
              "Expected API response log in final assistant message"
 
       # Cleanup
-      Nest.LangChainMock.clear_response()
+      MockClient.clear()
+    end
+
+    test "broadcasts notification and produces final response when max tool iterations reached" do
+      # Queue exactly max_iterations (5) tool responses
+      for _ <- 1..5 do
+        MockClient.set_tool_response(%{
+          text: "Calling tool",
+          tool_calls: [
+            %{
+              id: "call_#{:rand.uniform(100_000)}",
+              name: "shell_cmd",
+              arguments: %{"command" => "echo loop"}
+            }
+          ]
+        })
+      end
+
+      # Set final text response for when max iterations is hit (the final call without tools)
+      MockClient.set_response("I've completed the task after multiple iterations")
+
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      capture_log(fn ->
+        :ok = Agent.chat(pid, "Keep looping")
+
+        # Should receive notification about max iterations
+        assert_receive {:chat_notification,
+                        %{type: "max_iterations", message: "Max tool iterations reached"}},
+                       3000
+
+        # Collect all messages and find the final assistant response
+        messages = collect_all_messages_from_pubsub([])
+
+        # Find all assistant messages
+        assistant_messages =
+          messages
+          |> Enum.filter(fn
+            {:assistant, _} -> true
+            _ -> false
+          end)
+
+        # The last assistant message should be the final response (after max iterations)
+        final_assistant = List.last(assistant_messages)
+        second_to_last_assistant = Enum.at(assistant_messages, -2)
+
+        assert final_assistant != nil, "Expected at least one assistant message"
+        {:assistant, %{content: content}} = final_assistant
+        assert content =~ "completed the task"
+
+        # The request log for the final call should be in the second-to-last assistant message
+        # (the one with the tool calls that triggered the max iterations)
+        if second_to_last_assistant do
+          {:assistant, %{api_logs: prev_api_logs}} = second_to_last_assistant
+          final_request_log = Enum.find(prev_api_logs, fn log -> log.type == :request end)
+
+          if final_request_log do
+            # Verify the final call's wire format includes tool_choice: "none"
+            assert final_request_log.payload["tool_choice"] == "none"
+            assert final_request_log.payload["tools"] == nil
+          end
+        end
+
+        # Should receive status:idle after final response
+        assert_receive {:chat_status, %{status: "idle"}}, 1000
+
+        # Should NOT receive chat_error (this is not an error condition)
+        refute_receive {:chat_error, _}, 100
+      end)
+
+      # Cleanup
+      MockClient.clear()
+    end
+
+    test "does NOT hit max-iterations when iterations stay below the configured cap" do
+      # The test data config sets max-tool-iterations = 5. Queue 2
+      # tool responses followed by a final text response, and assert
+      # the agent completes without a max_iterations notification.
+      for _ <- 1..2 do
+        MockClient.set_tool_response(%{
+          text: "Calling tool",
+          tool_calls: [
+            %{
+              id: "call_#{:rand.uniform(100_000)}",
+              name: "shell_cmd",
+              arguments: %{"command" => "echo loop"}
+            }
+          ]
+        })
+      end
+
+      MockClient.set_response("Done well under the cap")
+
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      :ok = Agent.chat(pid, "Brief loop")
+
+      assert_receive {:chat_status, %{status: "idle"}}, 3000
+      refute_receive {:chat_notification, %{type: "max_iterations"}}, 100
+
+      MockClient.clear()
+    end
+  end
+
+  describe "configured_max_tool_iterations/0" do
+    test "returns the configured value when DotConfig has one" do
+      Mimic.stub(Nest.DotConfig, :load, fn ->
+        {:ok, %{providers: %{}, models: %{}, max_tool_iterations: 7}}
+      end)
+
+      assert Agent.configured_max_tool_iterations() == 7
+    end
+
+    test "returns the hardcoded default of 25 when DotConfig has no max_tool_iterations" do
+      Mimic.stub(Nest.DotConfig, :load, fn ->
+        {:ok, %{providers: %{}, models: %{}, max_tool_iterations: nil}}
+      end)
+
+      assert Agent.configured_max_tool_iterations() == 25
+    end
+
+    test "returns the hardcoded default of 25 when DotConfig.load/0 returns an error" do
+      Mimic.stub(Nest.DotConfig, :load, fn -> {:error, "no config file"} end)
+
+      assert Agent.configured_max_tool_iterations() == 25
     end
   end
 
   describe "API logs" do
     test "every message in simple conversation has API log" do
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
-
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
@@ -639,20 +1050,14 @@ defmodule Nest.Agents.AgentTest do
     end
 
     test "every message in tool call flow has API log including tool message" do
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
-
-      Nest.LangChainMock.set_tool_response(%{
+      MockClient.set_tool_response(%{
         text: "I'll execute that command",
         tool_calls: [
-          %LangChain.Message.ToolCall{
-            call_id: "call_001",
-            name: "shell_cmd",
-            arguments: %{"command" => "echo test"}
-          }
+          %{id: "call_001", name: "shell_cmd", arguments: %{"command" => "echo test"}}
         ]
       })
 
-      Nest.LangChainMock.set_response("Command executed successfully")
+      MockClient.set_response("Command executed successfully")
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
@@ -701,24 +1106,18 @@ defmodule Nest.Agents.AgentTest do
       assistant2_response = Enum.find(assistant2.api_logs, fn log -> log.type == :response end)
       assert assistant2_response != nil, "Final assistant message should have response log"
 
-      Nest.LangChainMock.clear_response()
+      MockClient.clear()
     end
 
     test "API log IDs follow correct sequencing pattern" do
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
-
-      Nest.LangChainMock.set_tool_response(%{
+      MockClient.set_tool_response(%{
         text: "I'll help",
         tool_calls: [
-          %LangChain.Message.ToolCall{
-            call_id: "call_001",
-            name: "shell_cmd",
-            arguments: %{"command" => "ls"}
-          }
+          %{id: "call_001", name: "shell_cmd", arguments: %{"command" => "ls"}}
         ]
       })
 
-      Nest.LangChainMock.set_response("Done")
+      MockClient.set_response("Done")
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
@@ -753,7 +1152,7 @@ defmodule Nest.Agents.AgentTest do
       assert asst2_log.id == "003.000"
       assert asst2_log.type == :response
 
-      Nest.LangChainMock.clear_response()
+      MockClient.clear()
     end
   end
 
@@ -771,7 +1170,429 @@ defmodule Nest.Agents.AgentTest do
     refute Process.alive?(pid)
   end
 
+  describe "context limit (configured)" do
+    test "uses the configured context_limit from DotConfig when present" do
+      # qwen3.5-plus has context-limit = 512000 in test/data/config.toml
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+
+      info = Agent.get_public_info(pid)
+      assert info.context_limit == 512_000
+      assert info.context_limit_source == :config
+
+      Agent.terminate(pid)
+    end
+
+    test "does not call Discover when context_limit is already configured" do
+      # If the probe were called, the Req mock would be invoked.
+      # We deliberately do NOT set up a Req mock and rely on the
+      # absence of any HTTP call as proof the probe was skipped.
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+
+      # :sys.get_state/1 is a synchronous call — by the time it
+      # returns, the GenServer has finished processing any
+      # init-time work (including any (incorrectly) spawned probe
+      # task). Confirm the configured context_limit is what
+      # public_info reports and that the source is :config, not
+      # :probe or :default.
+      state = :sys.get_state(pid)
+      assert state.context_limit == 512_000
+      assert state.context_limit_source == :config
+
+      Agent.terminate(pid)
+    end
+  end
+
+  describe "token usage aggregation" do
+    test "initial usage_totals are all zero" do
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      info = Agent.get_public_info(pid)
+
+      assert info.usage == %{
+               input_tokens: 0,
+               output_tokens: 0,
+               total_tokens: 0,
+               reasoning_tokens: 0,
+               last_output: 0
+             }
+
+      Agent.terminate(pid)
+    end
+
+    test "accumulates output_tokens across turns" do
+      # Script two turns; each turn's response carries a `usage`
+      # event with input_tokens + output_tokens. The mock consumes
+      # one event sequence per `run/2` call.
+      MockClient.set_stream_events([
+        {:text, "response 1"},
+        {:usage, %{input_tokens: 100, output_tokens: 50, total_tokens: 150}},
+        {:finish_reason, "stop"},
+        {:done, %{response: %RunResponse{text: "response 1", stop_reason: "stop"}}}
+      ])
+
+      MockClient.set_stream_events([
+        {:text, "response 2"},
+        {:usage, %{input_tokens: 200, output_tokens: 100, total_tokens: 300}},
+        {:finish_reason, "stop"},
+        {:done, %{response: %RunResponse{text: "response 2", stop_reason: "stop"}}}
+      ])
+
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      :ok = Agent.chat(pid, "First")
+      collect_all_messages_from_pubsub([])
+
+      # After the first turn, output_tokens should be 50.
+      info1 = Agent.get_public_info(pid)
+      assert info1.usage.output_tokens == 50
+      assert info1.usage.input_tokens == 100
+      assert info1.usage.last_output == 50
+
+      :ok = Agent.chat(pid, "Second")
+      collect_all_messages_from_pubsub([])
+
+      info2 = Agent.get_public_info(pid)
+      assert info2.usage.output_tokens == 150
+      # input_tokens is overwritten, not summed; latest call = 200
+      assert info2.usage.input_tokens == 200
+      assert info2.usage.last_output == 100
+
+      Agent.terminate(pid)
+    end
+
+    test "accumulates usage across tool iterations" do
+      # Two LLM calls: initial (tool call), then final answer after
+      # tool result continuation. Each call contributes its own
+      # usage to the running totals.
+      MockClient.set_stream_events([
+        {:text, "Calling tool"},
+        {:tool_call_start, %{id: "call_1", name: "shell_cmd"}},
+        {:tool_call_delta, %{id: "call_1", arguments_delta: "{}"}},
+        {:usage, %{input_tokens: 1001, output_tokens: 101, total_tokens: 1102}},
+        {:finish_reason, "tool_calls"},
+        {:done,
+         %{
+           response: %RunResponse{
+             text: "Calling tool",
+             tool_calls: [%ToolCall{id: "call_1", name: "shell_cmd", arguments: %{}}],
+             stop_reason: "tool_calls"
+           }
+         }}
+      ])
+
+      MockClient.set_stream_events([
+        {:text, "Final answer"},
+        {:usage, %{input_tokens: 1003, output_tokens: 103, total_tokens: 1106}},
+        {:finish_reason, "stop"},
+        {:done, %{response: %RunResponse{text: "Final answer", stop_reason: "stop"}}}
+      ])
+
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      :ok = Agent.chat(pid, "Run a command")
+      collect_all_messages_from_pubsub([])
+
+      info = Agent.get_public_info(pid)
+      # 2 LLM calls total: output_tokens = 101 + 103 = 204
+      assert info.usage.output_tokens == 204
+      # input_tokens is the LAST call's value, not summed
+      assert info.usage.input_tokens == 1003
+      # last_output is the last call's output_tokens
+      assert info.usage.last_output == 103
+
+      Agent.terminate(pid)
+    end
+
+    test "nil usage is treated as a no-op" do
+      # First call: real usage
+      # Second call: no `{:usage, _}` event — `RunResponse.usage` is nil
+      MockClient.set_stream_events([
+        {:text, "First"},
+        {:usage, %{input_tokens: 50, output_tokens: 25, total_tokens: 75}},
+        {:finish_reason, "stop"},
+        {:done, %{response: %RunResponse{text: "First", stop_reason: "stop"}}}
+      ])
+
+      MockClient.set_stream_events([
+        {:text, "Second"},
+        {:finish_reason, "stop"},
+        {:done, %{response: %RunResponse{text: "Second", stop_reason: "stop"}}}
+      ])
+
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      :ok = Agent.chat(pid, "First")
+      collect_all_messages_from_pubsub([])
+
+      info1 = Agent.get_public_info(pid)
+      assert info1.usage.output_tokens == 25
+      assert info1.usage.input_tokens == 50
+
+      :ok = Agent.chat(pid, "Second")
+      collect_all_messages_from_pubsub([])
+
+      info2 = Agent.get_public_info(pid)
+      # The nil usage from the second call should NOT have zeroed
+      # the running totals.
+      assert info2.usage.output_tokens == 25
+      # input_tokens is not overwritten when usage is nil
+      assert info2.usage.input_tokens == 50
+      # last_output is preserved across nil-usage calls (no-op
+      # semantics: we don't reset derived values when the call
+      # didn't surface usage info).
+      assert info2.usage.last_output == 25
+
+      Agent.terminate(pid)
+    end
+  end
+
+  describe "tool budget loop" do
+    test "small tool results pass through unchanged" do
+      MockClient.set_tool_response(%{
+        text: "Reading file",
+        tool_calls: [
+          %{id: "call_1", name: "shell_cmd", arguments: %{"command" => "echo small"}}
+        ]
+      })
+
+      MockClient.set_response("Done")
+
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      :ok = Agent.chat(pid, "Read a file")
+
+      # Collect all messages and find the tool result
+      messages = collect_all_messages_from_pubsub([])
+
+      tool_msg =
+        Enum.find(messages, fn
+          {:tool, _} -> true
+          _ -> false
+        end)
+
+      assert {:tool, %Tool{tool_results: [result]}} = tool_msg
+      # Small result should be present (not truncated, not skipped)
+      refute String.contains?(result.content, "[truncated:")
+      refute String.contains?(result.content, "[skipped:")
+      assert result.is_error == false
+
+      Agent.terminate(pid)
+    end
+
+    test "order is preserved when multiple tool calls are returned" do
+      # Single response with multiple tool calls
+      MockClient.set_stream_events([
+        {:text, "Running two commands"},
+        {:tool_call_start, %{id: "call_1", name: "shell_cmd"}},
+        {:tool_call_delta, %{id: "call_1", arguments_delta: "{}"}},
+        {:tool_call_start, %{id: "call_2", name: "shell_cmd"}},
+        {:tool_call_delta, %{id: "call_2", arguments_delta: "{}"}},
+        {:usage, %{input_tokens: 100, output_tokens: 50, total_tokens: 150}},
+        {:finish_reason, "tool_calls"},
+        {:done,
+         %{
+           response: %RunResponse{
+             text: "Running two commands",
+             tool_calls: [
+               %ToolCall{
+                 id: "call_1",
+                 name: "shell_cmd",
+                 arguments: %{"command" => "echo first"}
+               },
+               %ToolCall{
+                 id: "call_2",
+                 name: "shell_cmd",
+                 arguments: %{"command" => "echo second"}
+               }
+             ],
+             stop_reason: "tool_calls"
+           }
+         }}
+      ])
+
+      MockClient.set_response("All done")
+
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      :ok = Agent.chat(pid, "Run two")
+
+      messages = collect_all_messages_from_pubsub([])
+
+      tool_msg =
+        Enum.find(messages, fn
+          {:tool, _} -> true
+          _ -> false
+        end)
+
+      assert {:tool, %Tool{tool_results: results}} = tool_msg
+      assert length(results) == 2
+      # Order preserved
+      assert Enum.map(results, & &1.tool_call_id) == ["call_1", "call_2"]
+
+      Agent.terminate(pid)
+    end
+  end
+
+  # The "tight context budget" test was removed when the compactor
+  # was wired into the agent: with a 3k context_limit, the pre-flight
+  # now triggers compaction before any tool execution happens, so
+  # the tool result is no longer broadcast. The BudgetPlanner's
+  # truncate/skip behavior is covered in its own unit tests
+  # (`test/nest/tokens/budget_planner_test.exs`).
+
+  describe "compaction history" do
+    test "compaction moves messages to history with a marker" do
+      # Drive a chat that has enough history for compaction to
+      # potentially fire. We don't actually verify that compaction
+      # was triggered (the MockClient LLM is too random to set
+      # up cleanly) — what we verify is the API: when the
+      # GenServer's :compaction_done handle_info runs, it
+      # archives the previous messages to history with a marker.
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+
+      old_messages = [
+        {:user, %User{index: 0, content: "First", api_logs: []}},
+        {:assistant, %Assistant{index: 1, content: "A1", api_logs: []}},
+        {:user, %User{index: 2, content: "Second", api_logs: []}},
+        {:assistant, %Assistant{index: 3, content: "A2", api_logs: []}}
+      ]
+
+      new_messages = [
+        {:system,
+         %Nest.Messages.System{index: 4, content: "[Summary of earlier conversation]:\n\n..."}},
+        {:user, %User{index: 5, content: "Third", api_logs: []}}
+      ]
+
+      :sys.replace_state(pid, fn s -> %{s | messages: old_messages} end)
+
+      # Capture the GenServer's pid as a "from" for our message so
+      # we can wait for an explicit reply.
+      send(pid, {:compaction_done, new_messages, {:chat_continuation, {"next", "chat"}}})
+
+      # :sys.get_state/1 is a synchronous call — by the time it
+      # returns, the GenServer has finished processing
+      # :compaction_done (which archives old_messages to history
+      # synchronously). The async chat continuation may still be
+      # running, but the test only asserts on history, which is
+      # already updated.
+      state_after = :sys.get_state(pid)
+      history = state_after.history || []
+
+      # History should now contain the old messages plus a marker
+      assert length(history) == length(old_messages) + 1
+
+      # The last element of history is the compaction marker
+      assert match?({:compaction, %Nest.Messages.Compaction{}}, List.last(history))
+
+      # The marker should report the correct archived count
+      {:compaction, %Nest.Messages.Compaction{archived_count: count}} = List.last(history)
+      assert count == 4
+
+      Agent.terminate(pid)
+    end
+  end
+
+  describe "pre-flight streaming guard" do
+    test "preflight_request with active streaming returns :proceed without compacting" do
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+
+      # Simulate an in-progress stream by stuffing the accumulator
+      # with text. With our guard, a non-empty text_buffer means
+      # "actively streaming" — the pre-flight must NOT compact.
+      :sys.replace_state(pid, fn s ->
+        acc = Streaming.new(s.next_message_index)
+        acc = %{acc | text_buffer: "partial response..."}
+        %{s | streaming_acc: acc}
+      end)
+
+      state_before = :sys.get_state(pid)
+      msg_count = length(state_before.messages || [])
+
+      # Send a preflight request from a fake task; the GenServer
+      # should reply :proceed without touching state.messages.
+      fake_task = self()
+      send(pid, {:preflight_request, fake_task, state_before.messages || []})
+
+      assert_receive {:preflight_result, :proceed, _}, 1_000
+
+      state_after = :sys.get_state(pid)
+      assert length(state_after.messages || []) == msg_count
+
+      Agent.terminate(pid)
+    end
+
+    test "preflight_request with empty streaming_acc and fits returns :proceed" do
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+
+      # Default state from start_agent has empty messages and a
+      # nil streaming_acc (no stream ever started). Pre-flight
+      # should see :fits and reply :proceed.
+      state_before = :sys.get_state(pid)
+      assert state_before.streaming_acc == nil
+
+      send(pid, {:preflight_request, self(), state_before.messages || []})
+
+      assert_receive {:preflight_result, :proceed, _}, 1_000
+
+      Agent.terminate(pid)
+    end
+  end
+
+  describe "chat:compaction broadcast" do
+    test "compaction_done broadcasts chat:compaction with marker and history" do
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      old_messages = [
+        {:user, %User{index: 0, content: "First", api_logs: []}},
+        {:assistant, %Assistant{index: 1, content: "A1", api_logs: []}}
+      ]
+
+      new_messages = [
+        {:system,
+         %Nest.Messages.System{index: 2, content: "[Summary of earlier conversation]:\n\n..."}},
+        {:user, %User{index: 3, content: "Next", api_logs: []}}
+      ]
+
+      :sys.replace_state(pid, fn s -> %{s | messages: old_messages, next_message_index: 2} end)
+
+      send(pid, {:compaction_done, new_messages, {:compact_context_continuation, self()}})
+
+      assert_receive {:chat_compaction, payload}, 1_000
+
+      # Payload has the marker (with archivedCount) and the full
+      # history (old_messages ++ [marker])
+      assert payload.marker["role"] == "compaction"
+      assert payload.marker["archivedCount"] == 2
+      assert payload.marker["index"] == 2
+      assert is_list(payload.history)
+      assert length(payload.history) == 3
+      assert match?(%{"role" => "compaction"}, List.last(payload.history))
+
+      Agent.terminate(pid)
+    end
+  end
+
   # Helper functions
+
+  defp find_user_message(content) do
+    Stream.repeatedly(fn ->
+      receive do
+        msg -> msg
+      after
+        10 -> nil
+      end
+    end)
+    |> Enum.find_value(fn
+      {:chat_message, {:user, %{content: ^content} = m}} -> m
+      _ -> nil
+    end)
+  end
 
   defp receive_deltas_and_message_from_pubsub do
     receive do
@@ -820,16 +1641,43 @@ defmodule Nest.Agents.AgentTest do
     end
   end
 
-  # Helper to collect all messages from PubSub for tool call flow tests
-  defp collect_all_messages_from_pubsub(messages) do
-    receive do
-      {:chat_message, msg} ->
-        collect_all_messages_from_pubsub(messages ++ [msg])
-    after
-      2000 ->
+  # Helper to collect all messages from PubSub for tool call flow tests.
+  # Drains until no new `{:chat_message, _}` arrives within `quiet_ms`
+  # after the last message (or `max_ms` elapses if no message ever
+  # arrives). Most tests finish in ~100ms once the chat task goes idle;
+  # the max cap is a safety net for hung agents.
+  defp collect_all_messages_from_pubsub(messages, opts \\ []) do
+    quiet_ms = Keyword.get(opts, :quiet_ms, 10)
+    max_ms = Keyword.get(opts, :max_ms, 10)
+    started_at = System.monotonic_time(:millisecond)
+    do_collect_all_messages(messages, quiet_ms, max_ms, started_at, nil)
+  end
+
+  defp do_collect_all_messages(messages, quiet_ms, max_ms, started_at, last_msg_at) do
+    now = System.monotonic_time(:millisecond)
+    elapsed = now - started_at
+
+    cond do
+      elapsed >= max_ms ->
         messages
+
+      last_msg_at != nil and now - last_msg_at >= quiet_ms ->
+        messages
+
+      true ->
+        wait_ms = min(quiet_ms, max_ms - elapsed)
+
+        receive do
+          {:chat_message, msg} ->
+            do_collect_all_messages(messages ++ [msg], quiet_ms, max_ms, started_at, now_ms())
+        after
+          wait_ms ->
+            do_collect_all_messages(messages, quiet_ms, max_ms, started_at, last_msg_at)
+        end
     end
   end
+
+  defp now_ms, do: System.monotonic_time(:millisecond)
 
   # Helper to wait for tool message
   defp collect_until_tool_message do

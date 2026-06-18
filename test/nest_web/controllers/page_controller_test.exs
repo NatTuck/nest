@@ -1,5 +1,5 @@
 defmodule NestWeb.PageControllerTest do
-  use NestWeb.ConnCase
+  use NestWeb.ConnCase, async: true
 
   test "GET /", %{conn: conn} do
     conn = get(conn, ~p"/")

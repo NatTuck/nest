@@ -2,7 +2,7 @@ defmodule Nest.DotConfigTest do
   @moduledoc """
   Tests for the DotConfig module.
   """
-  use ExUnit.Case
+  use ExUnit.Case, async: true
 
   alias Nest.DotConfig
 
@@ -143,6 +143,77 @@ defmodule Nest.DotConfigTest do
       on_exit(fn -> File.rm(tmp_path) end)
 
       assert_raise RuntimeError, ~r/invalid timeout/, fn ->
+        DotConfig.load(tmp_path)
+      end
+    end
+  end
+
+  describe "max-tool-iterations" do
+    test "parses the configured value from the test data file" do
+      assert {:ok, config} = DotConfig.load()
+      assert config.max_tool_iterations == 5
+      assert DotConfig.max_tool_iterations(config) == 5
+    end
+
+    test "is nil when absent from the TOML" do
+      toml = """
+      [providers.foo]
+      base-url = "http://example.com/v1"
+      api-key = "x"
+      """
+
+      tmp_path =
+        Path.join(
+          System.tmp_dir!(),
+          "no_max_iter_#{System.unique_integer([:positive])}.toml"
+        )
+
+      File.write!(tmp_path, toml)
+      on_exit(fn -> File.rm(tmp_path) end)
+
+      assert {:ok, config} = DotConfig.load(tmp_path)
+      assert config.max_tool_iterations == nil
+      assert DotConfig.max_tool_iterations(config) == nil
+    end
+
+    test "default_max_tool_iterations/0 returns the hardcoded fallback" do
+      assert DotConfig.default_max_tool_iterations() == 25
+    end
+
+    test "raises on non-positive-integer value" do
+      bad_toml = """
+      max-tool-iterations = 0
+      """
+
+      tmp_path =
+        Path.join(
+          System.tmp_dir!(),
+          "bad_max_iter_#{System.unique_integer([:positive])}.toml"
+        )
+
+      File.write!(tmp_path, bad_toml)
+      on_exit(fn -> File.rm(tmp_path) end)
+
+      assert_raise RuntimeError, ~r/Invalid max-tool-iterations/, fn ->
+        DotConfig.load(tmp_path)
+      end
+    end
+
+    test "raises on non-integer value" do
+      bad_toml = """
+      max-tool-iterations = "25"
+      """
+
+      tmp_path =
+        Path.join(
+          System.tmp_dir!(),
+          "bad_max_iter_str_#{System.unique_integer([:positive])}.toml"
+        )
+
+      File.write!(tmp_path, bad_toml)
+      on_exit(fn -> File.rm(tmp_path) end)
+
+      assert_raise RuntimeError, ~r/Invalid max-tool-iterations/, fn ->
         DotConfig.load(tmp_path)
       end
     end

@@ -2,7 +2,7 @@ defmodule Nest.AgentsTest do
   @moduledoc """
   Tests for the Agents context module.
   """
-  use ExUnit.Case
+  use ExUnit.Case, async: true
 
   import Eventually
   import Mimic
@@ -10,13 +10,9 @@ defmodule Nest.AgentsTest do
   alias Nest.Agents
   alias Nest.Test.TaskDrain
 
-  setup :set_mimic_global
   setup :verify_on_exit!
 
   setup do
-    Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
-    Nest.LangChainMock.start_mock_agent()
-
     # Agents supervision tree is already started by Application
     # Just need to clean up any agents from previous tests
     for id <- Agents.list_agents() do

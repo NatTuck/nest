@@ -2,7 +2,9 @@ defmodule Nest.Agents.SupervisorTest do
   @moduledoc """
   Tests for the Agent Supervisor.
   """
-  use ExUnit.Case
+  use ExUnit.Case, async: true
+
+  import Eventually
 
   alias Nest.Agents.{Registry, Supervisor}
   alias Nest.Test.TaskDrain
@@ -53,9 +55,11 @@ defmodule Nest.Agents.SupervisorTest do
 
       :ok = Supervisor.stop_agent(id)
 
-      # Wait for process to stop
-      Process.sleep(50)
-      assert {:error, :not_found} = Registry.lookup(id)
+      # The registry's auto-cleanup happens asynchronously after the
+      # process exits, so poll until the lookup reflects the removal.
+      assert eventually(fn -> Registry.lookup(id) == {:error, :not_found} end,
+               timeout: 1000
+             )
     end
 
     test "returns error for non-existent agent" do

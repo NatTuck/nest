@@ -105,8 +105,15 @@ defmodule Nest.Agents do
       model: info.model,
       vocation: vocation,
       messages: messages,
+      history: Agent.get_history(pid),
       status: info.status,
-      partial: info.partial
+      partial: info.partial,
+      modes: info.modes,
+      default_mode: info.default_mode,
+      current_mode: info.current_mode,
+      context_limit: info.context_limit,
+      context_limit_source: info.context_limit_source,
+      usage: info.usage
     }
 
     {:ok, agent}
@@ -186,6 +193,12 @@ defmodule Nest.Agents do
   The message is added to the agent's history and triggers a streaming
   response from the LLM.
 
+  The optional `mode` selects the sandbox capability profile for this
+  message's tool calls. When `nil`, defaults to the agent's current
+  mode (first key in the vocation's `modes` map, or `"chat"` if none).
+  The mode is stored on the user message and applied to subsequent
+  tool calls in the same round.
+
   ## Returns
   - `:ok` - Message sent successfully
   - `{:error, :not_found}` - Agent doesn't exist
@@ -193,13 +206,14 @@ defmodule Nest.Agents do
   ## Examples
 
       :ok = Agents.chat("clever-raven", "Hello!")
+      :ok = Agents.chat("clever-raven", "Read foo.md", "plan")
 
   """
-  @spec chat(String.t(), String.t()) :: :ok | {:error, :not_found}
-  def chat(id, content) do
+  @spec chat(String.t(), String.t(), String.t() | nil) :: :ok | {:error, :not_found}
+  def chat(id, content, mode \\ nil) do
     case Supervisor.get_agent(id) do
       {:ok, pid} ->
-        Agent.chat(pid, content)
+        Agent.chat(pid, content, mode)
         :ok
 
       {:error, :not_found} ->

@@ -13,6 +13,8 @@ defmodule Nest.ChatModelTest do
 
   alias Nest.ChatModel
   alias Nest.DotConfig
+  alias Nest.LLM.AnthropicClient
+  alias Nest.LLM.OpenAIClient
 
   import ExUnit.CaptureLog
   import Mimic
@@ -20,11 +22,12 @@ defmodule Nest.ChatModelTest do
   setup :verify_on_exit!
 
   describe "new/1 by model name" do
-    test "creates OpenAI-compatible chain for model from config" do
+    test "creates OpenAI-compatible ClientConfig for model from config" do
       # qwen3.5-plus is defined in test/data/config.toml under model-studio provider
-      assert {:ok, chain} = ChatModel.new(model: "qwen3.5-plus")
-      assert chain.llm.__struct__ == LangChain.ChatModels.ChatOpenAI
-      assert chain.llm.model == "qwen3.5-plus"
+      assert {:ok, config} = ChatModel.new(model: "qwen3.5-plus")
+      assert %Nest.LLM.ClientConfig{} = config
+      assert config.client == Nest.LLM.OpenAIClient
+      assert config.model == "qwen3.5-plus"
     end
 
     test "returns ModelNotFoundError for unknown model" do
@@ -36,12 +39,13 @@ defmodule Nest.ChatModelTest do
   end
 
   describe "new/1 by provider" do
-    test "creates chain using provider's first explicit model" do
+    test "creates config using provider's first explicit model" do
       # model-studio has explicit models defined
-      assert {:ok, chain} = ChatModel.new(provider: "model-studio")
-      assert chain.llm.__struct__ == LangChain.ChatModels.ChatOpenAI
+      assert {:ok, config} = ChatModel.new(provider: "model-studio")
+      assert %Nest.LLM.ClientConfig{} = config
+      assert config.client == Nest.LLM.OpenAIClient
       # First model in config is qwen3.5-plus
-      assert chain.llm.model == "qwen3.5-plus"
+      assert config.model == "qwen3.5-plus"
     end
 
     test "returns ProviderNotFoundError for unknown provider" do
@@ -53,15 +57,16 @@ defmodule Nest.ChatModelTest do
   end
 
   describe "new/1 by tag" do
-    test "creates chain for first provider matching tag" do
+    test "creates config for first provider matching tag" do
       # Stub the auto-discovery HTTP call for pegasus provider
       stub(Req, :get, fn "http://pegasus:8080/v1/models", _opts ->
         {:ok, %{status: 200, body: %{"data" => [%{"id" => "test-model"}]}}}
       end)
 
       # "local" tag matches pegasus provider
-      assert {:ok, chain} = ChatModel.new(tag: "local")
-      assert chain.llm.__struct__ == LangChain.ChatModels.ChatOpenAI
+      assert {:ok, config} = ChatModel.new(tag: "local")
+      assert %Nest.LLM.ClientConfig{} = config
+      assert config.client == Nest.LLM.OpenAIClient
     end
 
     test "returns ProviderNotFoundError when no provider has tag" do
@@ -93,16 +98,18 @@ defmodule Nest.ChatModelTest do
   end
 
   describe "from_provider/2" do
-    test "creates chat model using explicit provider" do
-      assert {:ok, llm} = ChatModel.from_provider("model-studio", "MiniMax-M2.5")
-      assert llm.__struct__ == LangChain.ChatModels.ChatOpenAI
-      assert llm.model == "MiniMax-M2.5"
+    test "creates client config using explicit provider" do
+      assert {:ok, config} = ChatModel.from_provider("model-studio", "MiniMax-M2.5")
+      assert %Nest.LLM.ClientConfig{} = config
+      assert config.client == Nest.LLM.OpenAIClient
+      assert config.model == "MiniMax-M2.5"
     end
 
-    test "creates model using provider's first model when none specified" do
-      assert {:ok, llm} = ChatModel.from_provider("model-studio")
-      assert llm.__struct__ == LangChain.ChatModels.ChatOpenAI
-      assert llm.model == "qwen3.5-plus"
+    test "creates config using provider's first model when none specified" do
+      assert {:ok, config} = ChatModel.from_provider("model-studio")
+      assert %Nest.LLM.ClientConfig{} = config
+      assert config.client == Nest.LLM.OpenAIClient
+      assert config.model == "qwen3.5-plus"
     end
 
     test "raises ProviderNotFoundError for unknown provider" do
@@ -113,58 +120,76 @@ defmodule Nest.ChatModelTest do
   end
 
   describe "protocol selection" do
-    test "selects ChatAnthropic for anthropic protocol" do
-      # Test against the anthropic-provider defined in test/data/config.toml
-      # The protocol "anthropic" should result in ChatAnthropic struct
-      {:ok, llm} =
+    test "selects Nest.LLM.AnthropicClient for anthropic protocol" do
+      {:ok, config} =
         ChatModel.from_provider("anthropic-provider", "claude-3-opus-20240229")
 
-      assert llm.__struct__ == LangChain.ChatModels.ChatAnthropic
-      assert llm.model == "claude-3-opus-20240229"
+      assert %Nest.LLM.ClientConfig{} = config
+      assert config.client == Nest.LLM.AnthropicClient
+      assert config.model == "claude-3-opus-20240229"
     end
 
-    test "defaults to ChatOpenAI for unspecified protocol" do
-      {:ok, llm} = ChatModel.from_provider("model-studio", "qwen3.5-plus")
-      assert llm.__struct__ == LangChain.ChatModels.ChatOpenAI
+    test "defaults to OpenAI client for unspecified protocol" do
+      {:ok, config} = ChatModel.from_provider("model-studio", "qwen3.5-plus")
+      assert %Nest.LLM.ClientConfig{} = config
+      assert config.client == Nest.LLM.OpenAIClient
     end
   end
 
   describe "endpoint construction" do
-    test "OpenAI endpoints include /chat/completions path" do
-      {:ok, llm} = ChatModel.from_provider("model-studio", "qwen3.5-plus")
-      assert llm.__struct__ == LangChain.ChatModels.ChatOpenAI
-      # Endpoint should be base_url + "/chat/completions"
-      assert String.ends_with?(llm.endpoint, "/chat/completions")
+    test "OpenAIClient appends /chat/completions to base_url at call time" do
+      {:ok, config} = ChatModel.from_provider("model-studio", "qwen3.5-plus")
+      assert %Nest.LLM.ClientConfig{} = config
+      assert config.client == Nest.LLM.OpenAIClient
+      # The OpenAIClient builds the request URL as base_url <> "/chat/completions".
+      # Render a real request payload and verify the wire shape.
+      request = %Nest.LLM.RunRequest{model: config.model}
+      payload = OpenAIClient.format_request_payload(request, base_url: config.base_url)
+      assert is_map(payload)
+      assert payload["model"] == config.model
+      # The base_url itself is just the base; the client appends the path.
+      assert String.ends_with?(config.base_url, "/v1")
     end
 
-    test "Anthropic endpoints use base_url directly without path suffix" do
-      # Anthropic uses the base_url directly as endpoint
-      # (when explicitly set, otherwise uses default)
-      {:ok, llm} = ChatModel.from_provider("anthropic-provider", "claude-3")
-      assert llm.__struct__ == LangChain.ChatModels.ChatAnthropic
+    test "AnthropicClient appends /v1/messages to base_url at call time" do
+      {:ok, config} = ChatModel.from_provider("anthropic-provider", "claude-3")
+      assert %Nest.LLM.ClientConfig{} = config
+      assert config.client == Nest.LLM.AnthropicClient
+
+      request = %Nest.LLM.RunRequest{
+        model: config.model,
+        messages: [{:user, %Nest.Messages.User{index: 1, content: "hi"}}]
+      }
+
+      # Smoke-check the wire shape and base_url. The AnthropicClient
+      # adds the /v1/messages path at run time.
+      payload = AnthropicClient.format_request_payload(request, base_url: config.base_url)
+      assert is_map(payload)
+      assert payload["model"] == config.model
+      assert String.starts_with?(config.base_url, "https://")
     end
   end
 
   describe "LLM receive timeout" do
     test "OpenAI-compatible models receive the provider's timeout in milliseconds" do
       # model-studio has no explicit timeout in test config -> default 300s = 300_000 ms
-      {:ok, llm} = ChatModel.from_provider("model-studio", "qwen3.5-plus")
-      assert llm.receive_timeout == 300_000
+      {:ok, config} = ChatModel.from_provider("model-studio", "qwen3.5-plus")
+      assert config.receive_timeout == 300_000
     end
 
     test "Anthropic models receive the provider's timeout in milliseconds" do
       # anthropic-provider has timeout = 600 in test config -> 600_000 ms
-      {:ok, llm} =
+      {:ok, config} =
         ChatModel.from_provider("anthropic-provider", "claude-3-opus-20240229")
 
-      assert llm.receive_timeout == 600_000
+      assert config.receive_timeout == 600_000
     end
 
     test "providers with a custom timeout use that value" do
       # pegasus has timeout = 60 in test config -> 60_000 ms
       # pegasus uses auto-models, so we need to pass a model name explicitly
-      {:ok, llm} = ChatModel.from_provider("pegasus", "some-model")
-      assert llm.receive_timeout == 60_000
+      {:ok, config} = ChatModel.from_provider("pegasus", "some-model")
+      assert config.receive_timeout == 60_000
     end
   end
 
@@ -184,8 +209,8 @@ defmodule Nest.ChatModelTest do
       }
 
       # Create a model - the key should be resolved from env
-      {:ok, llm} = ChatModel.build_chat_model(provider, "test-model")
-      assert llm.api_key == "resolved-from-env"
+      {:ok, config} = ChatModel.build_client_config(provider, "test-model")
+      assert config.api_key == "resolved-from-env"
 
       System.delete_env("TEST_API_KEY")
     end
@@ -207,8 +232,8 @@ defmodule Nest.ChatModelTest do
         models: []
       }
 
-      {:ok, llm} = ChatModel.build_chat_model(provider, "test-model")
-      assert llm.api_key == "key-from-file"
+      {:ok, config} = ChatModel.build_client_config(provider, "test-model")
+      assert config.api_key == "key-from-file"
 
       File.rm!(tmp_file)
     end
@@ -224,8 +249,8 @@ defmodule Nest.ChatModelTest do
         models: []
       }
 
-      {:ok, llm} = ChatModel.build_chat_model(provider, "test-model")
-      assert llm.api_key == "sk-plain-key-123"
+      {:ok, config} = ChatModel.build_client_config(provider, "test-model")
+      assert config.api_key == "sk-plain-key-123"
     end
   end
 

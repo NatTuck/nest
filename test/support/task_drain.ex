@@ -12,8 +12,8 @@ defmodule Nest.Test.TaskDrain do
   `Nest.Agents.TaskSupervisor` to finish before the next test starts.
   """
 
-  @timeout_ms 5_000
-  @interval_ms 50
+  @timeout_ms 10
+  @interval_ms 10
 
   @doc """
   Waits up to #{@timeout_ms}ms for all children of

@@ -31,13 +31,19 @@ the test.
 
 ### More Testing Rules
 
-- No sleeps in tests; use vi.waitFor for async conditions
+- *NEVER* sleep directly in tests; use vi.waitFor for async conditions or one of
+the Elixir helpers (e.g. eventually).
 - Clean patterns without accessing mock internals
 - Merge tests with same setup and non-conflicting assertions
 - There should *NEVER* be two tests with identical (or compatible) setup that
 differ only in that they each do a different single assertion.
 - Tests that have only one assertion in them are extremely suspect as likely
 violating the previous rule.
+- The tests must not print to the console except during debugging. If they print
+logs correctly, capture and test those logs. If the log outputs unexpected, fix
+them.
+- It doesn't matter if the test failures or test prints were there before you
+started working. If you see them, fix them.
 
 ### Test Coverage
 

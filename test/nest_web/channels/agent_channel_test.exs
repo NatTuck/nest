@@ -2,30 +2,47 @@ defmodule NestWeb.AgentChannelTest do
   @moduledoc """
   Tests for the AgentChannel.
   """
-  use NestWeb.ChannelCase
+  use NestWeb.ChannelCase, async: true
 
   import ExUnit.CaptureLog
   import Mimic
 
   alias Nest.Agents
+  alias Nest.Agents.Supervisor
+  alias Nest.LLM.MockClient
+  alias Nest.LLM.RunResponse
   alias Nest.Messages.Assistant
   alias Nest.Messages.Tool
   alias Nest.Messages.ToolResult
   alias Nest.Test.TaskDrain
 
-  setup :set_mimic_global
   setup :verify_on_exit!
 
   setup do
-    # Stub the LLM by default so leaked Tasks from one test can't make real
-    # HTTP calls when the next test starts. Individual tests can override
-    # this with their own stubs.
-    Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
-    Nest.LangChainMock.start_mock_agent()
-
-    # Agents supervision tree is already started by Application
-    # Create an agent with a model from test config
+    # Per-test MockClient queue, scoped to this agent pid. The
+    # agent threads its pid through `build_run_opts/1` so the chat
+    # task's run/2 call (in a separate process) finds this test's
+    # queue via `opts[:agent_pid]`. The test's own set_* calls
+    # find the same key from the test's process dictionary.
     {:ok, id} = Agents.create_agent(%{name: "qwen3.5-plus"})
+    {:ok, agent_pid} = Supervisor.get_agent(id)
+
+    # Swap the agent's client_config.client to MockClient so the
+    # chat task (in a separate process) calls MockClient.run/2
+    # directly, without needing `set_mimic_global` (which Mimic
+    # explicitly disallows in async tests).
+    :sys.replace_state(agent_pid, fn state ->
+      %{state | client_config: %{state.client_config | client: MockClient}}
+    end)
+
+    Process.put(:nest_test_agent_pid, agent_pid)
+    MockClient.start_link(agent_pid)
+    MockClient.clear()
+
+    on_exit(fn ->
+      MockClient.stop(agent_pid)
+      Process.delete(:nest_test_agent_pid)
+    end)
 
     # Connect socket and join agent channel
     {:ok, _, socket} =
@@ -53,6 +70,34 @@ defmodule NestWeb.AgentChannelTest do
       refute Map.has_key?(payload, "messages")
     end
 
+    test "init includes modes, defaultMode, and currentMode", %{socket: _socket} do
+      assert_push "init", payload
+      # Vocation-less agent defaults to "chat"
+      assert payload["modes"] == ["chat"]
+      assert payload["defaultMode"] == "chat"
+      assert payload["currentMode"] == "chat"
+    end
+
+    test "init includes contextLimit, contextLimitSource, and usage", %{socket: _socket} do
+      assert_push "init", payload
+
+      # qwen3.5-plus has a configured context-limit of 512_000
+      # in test/data/config.toml.
+      assert payload["contextLimit"] == 512_000
+      assert payload["contextLimitSource"] == "config"
+      # No chat has happened yet, so usage is the initial zero map.
+      # Note: `assert_push` captures the Erlang term, not the wire
+      # format, so the map keys are still atoms here. The wire
+      # format (JSON) is what the frontend sees.
+      assert payload["usage"] == %{
+               input_tokens: 0,
+               output_tokens: 0,
+               total_tokens: 0,
+               reasoning_tokens: 0,
+               last_output: 0
+             }
+    end
+
     test "returns error for non-existent agent" do
       assert {:error, %{"reason" => "agent not found"}} =
                subscribe_and_join(
@@ -64,41 +109,36 @@ defmodule NestWeb.AgentChannelTest do
   end
 
   describe "init event with message history" do
-    test "includes messageCount after messages are added", %{socket: socket, agent_id: id} do
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
+    test "init reports messageCount = 2 after one chat turn", %{socket: socket, agent_id: id} do
+      # The setup's subscribe_and_join already pushed the *first*
+      # channel's init (messageCount: 0) into this process's mailbox.
+      # Consume it explicitly so the later `assert_push "init"`
+      # after the rejoin matches the *new* channel's init, not the
+      # stale one. Without this, the assertion sees the setup's
+      # messageCount = 0 and the test would pass for the wrong reason.
+      assert_push "init", _setup_init, 2000
 
-      # Send a message to create history
+      # Push one user message; the agent will respond, leaving 2 persisted messages.
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
-      # Wait for completion (user message first, then assistant)
       assert_push "chat:message", %{"index" => 0, "role" => "user"}, 2000
       assert_push "chat:message", %{"index" => 1, "role" => "assistant"}, 2000
 
-      Process.sleep(100)
+      # Drop the first channel and wait for it to actually terminate
+      # before rejoining. Monitor + :DOWN is the synchronous Erlang
+      # primitive; GenServer.stop/2 is async and would race.
+      channel_pid = socket.channel_pid
+      monitor_ref = Process.monitor(channel_pid)
+      Process.unlink(channel_pid)
+      GenServer.stop(channel_pid, :normal)
+      assert_receive {:DOWN, ^monitor_ref, :process, ^channel_pid, _}, 1000
 
-      # Leave channel by stopping the channel process
-      Process.unlink(socket.channel_pid)
-      GenServer.stop(socket.channel_pid, :normal)
-
-      # Wait for channel to close
-      Process.sleep(50)
-
-      # Drain any leftover messages in the mailbox
-      Enum.each(1..10, fn _ ->
-        receive do
-          _ -> :ok
-        after
-          0 -> :ok
-        end
-      end)
-
-      # Reconnect and rejoin channel
       {:ok, _, _new_socket} =
         subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{id}")
 
       assert_push "init", payload, 2000
-      assert payload["messageCount"] >= 0
+      assert payload["messageCount"] == 2
     end
   end
 
@@ -112,9 +152,22 @@ defmodule NestWeb.AgentChannelTest do
       assert_push "chat:message", %{"role" => "user"}, 500
     end
 
-    test "broadcasts user message with index", %{socket: socket} do
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
+    test "accepts a mode field in the payload", %{socket: socket} do
+      ref = push(socket, "chat:message", %{"content" => "Hello", "mode" => "build"})
+      assert_reply ref, :ok, %{}
 
+      # The user message broadcast includes the mode (which gets stored
+      # in the User struct's metadata).
+      assert_push "chat:message", %{"role" => "user"}, 500
+    end
+
+    test "omitting mode is allowed (defaults to chat)", %{socket: socket} do
+      ref = push(socket, "chat:message", %{"content" => "Hello"})
+      assert_reply ref, :ok, %{}
+      assert_push "chat:message", %{"role" => "user"}, 500
+    end
+
+    test "broadcasts user message with index", %{socket: socket} do
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
@@ -130,9 +183,6 @@ defmodule NestWeb.AgentChannelTest do
     end
 
     test "calls LLM and broadcasts response with deltas and index", %{socket: socket} do
-      # Use Mimic.stub_with to stub all LLMChain functions
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
-
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
@@ -141,24 +191,32 @@ defmodule NestWeb.AgentChannelTest do
     end
 
     defp receive_deltas_and_message do
-      assert_push "chat:delta", payload, 2000
-      # Verify delta format
-      assert is_integer(payload["index"])
-      assert is_binary(payload["content"])
-      assert is_integer(payload["charsStart"])
-      assert is_integer(payload["charsEnd"])
-      assert payload["charsEnd"] > payload["charsStart"]
+      receive do
+        %Phoenix.Socket.Message{event: "chat:delta", payload: payload} ->
+          # Verify delta format
+          assert is_integer(payload["index"])
+          assert is_binary(payload["content"])
+          assert is_integer(payload["charsStart"])
+          assert is_integer(payload["charsEnd"])
+          assert payload["charsEnd"] > payload["charsStart"]
+          # Continue receiving deltas
+          receive_deltas_and_message()
 
-      # Continue receiving deltas
-      receive_deltas_and_message()
-    rescue
-      ExUnit.AssertionError ->
-        # Try to receive final message instead
-        assert_push "chat:message", payload, 2000
-        assert is_integer(payload["index"])
-        assert payload["index"] >= 0
-        assert payload["role"] == "assistant"
-        assert is_binary(payload["content"])
+        %Phoenix.Socket.Message{event: "chat:message", payload: %{"role" => "user"}} ->
+          # Skip past the user message broadcast that preceded the
+          # deltas. The test setup at line 19 joined before the chat,
+          # so the user message arrives first; deltas follow; then
+          # the final assistant message.
+          receive_deltas_and_message()
+
+        %Phoenix.Socket.Message{event: "chat:message", payload: payload} ->
+          assert is_integer(payload["index"])
+          assert payload["index"] >= 0
+          assert payload["role"] == "assistant"
+          assert is_binary(payload["content"])
+      after
+        3000 -> flunk("Timeout waiting for assistant response")
+      end
     end
   end
 
@@ -169,8 +227,6 @@ defmodule NestWeb.AgentChannelTest do
     end
 
     test "returns messages after lastIndex", %{socket: socket} do
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
-
       # Send first message and wait for completion
       ref1 = push(socket, "chat:message", %{"content" => "First"})
       assert_reply ref1, :ok, %{}
@@ -205,8 +261,6 @@ defmodule NestWeb.AgentChannelTest do
     end
 
     test "returns partial message when streaming", %{socket: socket} do
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
-
       # Sync before any chat - partial should be nil
       ref_sync1 = push(socket, "chat:sync", %{"lastIndex" => -1})
 
@@ -242,9 +296,10 @@ defmodule NestWeb.AgentChannelTest do
     test "cleans up channel subscription", %{socket: socket, agent_id: id} do
       # Simulate disconnect by leaving the channel
       Process.unlink(socket.channel_pid)
-      GenServer.stop(socket.channel_pid, :normal)
-
-      Process.sleep(50)
+      channel_pid = socket.channel_pid
+      ref = Process.monitor(channel_pid)
+      GenServer.stop(channel_pid, :normal)
+      assert_receive {:DOWN, ^ref, :process, ^channel_pid, _reason}, 1000
 
       # Agent should still exist (no auto-terminate)
       assert {:ok, _} = Agents.get_info(id)
@@ -268,9 +323,30 @@ defmodule NestWeb.AgentChannelTest do
       assert status == "idle"
     end
 
-    test "returns status with messageCount after messages", %{socket: socket, agent_id: id} do
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
+    test "chat:status reply includes contextLimit, contextLimitSource, and usage",
+         %{socket: socket} do
+      ref = push(socket, "chat:status", %{"lastIndex" => -1})
 
+      assert_reply ref, :ok, %{
+        "contextLimit" => limit,
+        "contextLimitSource" => source,
+        "usage" => usage
+      }
+
+      assert limit == 512_000
+      assert source == "config"
+      # `assert_reply` captures the Erlang reply, so the map keys
+      # are still atoms. The wire format is JSON for the frontend.
+      assert usage == %{
+               input_tokens: 0,
+               output_tokens: 0,
+               total_tokens: 0,
+               reasoning_tokens: 0,
+               last_output: 0
+             }
+    end
+
+    test "returns status with messageCount after messages", %{socket: socket, agent_id: id} do
       # Send a message to create history
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
@@ -278,8 +354,6 @@ defmodule NestWeb.AgentChannelTest do
       # Wait for completion (user message first, then assistant)
       assert_push "chat:message", %{"index" => 0, "role" => "user"}, 2000
       assert_push "chat:message", %{"index" => 1, "role" => "assistant"}, 2000
-
-      Process.sleep(100)
 
       ref_status = push(socket, "chat:status", %{"lastIndex" => -1})
 
@@ -295,8 +369,6 @@ defmodule NestWeb.AgentChannelTest do
     end
 
     test "returns streaming status during LLM response", %{socket: socket} do
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
-
       # Start streaming
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
@@ -324,15 +396,11 @@ defmodule NestWeb.AgentChannelTest do
     test "returns empty messages when lastIndex exceeds server's messageCount", %{
       socket: socket
     } do
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
-
       # Send a message to create history
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
       assert_push "chat:message", _payload, 2000
-
-      Process.sleep(100)
 
       # Sync with lastIndex higher than server's messageCount
       ref_sync = push(socket, "chat:sync", %{"lastIndex" => 999})
@@ -355,8 +423,6 @@ defmodule NestWeb.AgentChannelTest do
     end
 
     test "sync with lastIndex: -1 returns all complete messages", %{socket: socket} do
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
-
       # Send first message
       ref1 = push(socket, "chat:message", %{"content" => "First"})
       assert_reply ref1, :ok, %{}
@@ -364,8 +430,6 @@ defmodule NestWeb.AgentChannelTest do
       # Wait for completion (user message first, then assistant)
       assert_push "chat:message", %{"index" => 0, "role" => "user"}, 2000
       assert_push "chat:message", %{"index" => 1, "role" => "assistant"}, 2000
-
-      Process.sleep(100)
 
       # Sync with -1 should return all messages (user + assistant)
       ref_sync = push(socket, "chat:sync", %{"lastIndex" => -1})
@@ -383,15 +447,12 @@ defmodule NestWeb.AgentChannelTest do
 
   describe "chat:error event" do
     test "broadcasts error with index and content", %{socket: socket} do
-      # Mock the LLM to fail. Stub arity 1 and 2 because
-      # LLMChain.run/1 dispatches to run/2 with default opts.
-      Mimic.stub(LangChain.Chains.LLMChain, :run, fn _chain ->
-        {:error, %{__struct__: LangChain.Chains.LLMChain}, "model unavailable"}
-      end)
-
-      Mimic.stub(LangChain.Chains.LLMChain, :run, fn _chain, _opts ->
-        {:error, %{__struct__: LangChain.Chains.LLMChain}, "model unavailable"}
-      end)
+      # Mock the LLM to fail. `Client.run/2` always returns
+      # `{:ok, stream}` per the behaviour; errors are surfaced as
+      # `{:error, _}` events inside the stream, which the agent
+      # captures in the reducer's `error` field and routes to
+      # `handle_failed_response/3`.
+      MockClient.set_error("model unavailable")
 
       log =
         capture_log(fn ->
@@ -410,20 +471,27 @@ defmodule NestWeb.AgentChannelTest do
     end
 
     test "error event is broadcast when LLM fails" do
-      # Stub the LLM to fail BEFORE creating the agent
-      Mimic.stub(LangChain.Chains.LLMChain, :run, fn _chain ->
-        {:error, %{__struct__: LangChain.Chains.LLMChain}, "model failed"}
+      # Create the second agent for this test BEFORE injecting the
+      # error, so the MockClient error lands in this test's queue
+      # (not the previous test's).
+      {:ok, error_agent_id} = Agents.create_agent(%{name: "qwen3.5-plus"})
+      {:ok, error_agent_pid} = Supervisor.get_agent(error_agent_id)
+
+      :sys.replace_state(error_agent_pid, fn state ->
+        %{state | client_config: %{state.client_config | client: MockClient}}
       end)
 
-      Mimic.stub(LangChain.Chains.LLMChain, :run, fn _chain, _opts ->
-        {:error, %{__struct__: LangChain.Chains.LLMChain}, "model failed"}
+      Process.put(:nest_test_agent_pid, error_agent_pid)
+      MockClient.start_link(error_agent_pid)
+      MockClient.set_error("model failed")
+
+      on_exit(fn ->
+        MockClient.stop(error_agent_pid)
+        Process.delete(:nest_test_agent_pid)
       end)
 
       log =
         capture_log(fn ->
-          # Create a separate agent for this test
-          {:ok, error_agent_id} = Agents.create_agent(%{name: "qwen3.5-plus"})
-
           # Connect to the new agent
           {:ok, _, error_socket} =
             subscribe_and_join(
@@ -449,8 +517,6 @@ defmodule NestWeb.AgentChannelTest do
 
   describe "message indexing rules" do
     test "assistant messages have odd indexes", %{socket: socket} do
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
-
       messages_received = []
 
       # Send first message
@@ -483,8 +549,6 @@ defmodule NestWeb.AgentChannelTest do
     end
 
     test "messageCount is highest complete (non-partial) message", %{socket: socket} do
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
-
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
@@ -503,7 +567,18 @@ defmodule NestWeb.AgentChannelTest do
 
   describe "delta event details" do
     test "delta index matches message being streamed", %{socket: socket} do
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
+      # Script multiple text chunks so we have > 1 deltas.
+      MockClient.set_stream_events([
+        {:text, "First "},
+        {:text, "second "},
+        {:text, "third "},
+        {:text, "fourth"},
+        {:finish_reason, "stop"},
+        {:done,
+         %{
+           response: %RunResponse{text: "First second third fourth", stop_reason: "stop"}
+         }}
+      ])
 
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
@@ -515,6 +590,8 @@ defmodule NestWeb.AgentChannelTest do
 
       # All subsequent deltas should have same index
       receive_deltas_with_index(first_delta_index, 3)
+
+      MockClient.clear()
     end
 
     defp receive_deltas_with_index(expected_index, remaining) when remaining > 0 do
@@ -526,8 +603,6 @@ defmodule NestWeb.AgentChannelTest do
     defp receive_deltas_with_index(_expected_index, _remaining), do: :ok
 
     test "delta charsStart and charsEnd represent content slice", %{socket: socket} do
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
-
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
@@ -548,7 +623,7 @@ defmodule NestWeb.AgentChannelTest do
       assert String.length(total_content) > 0
     end
 
-    defp receive_deltas_and_build_content(acc, validator, timeout \\ 2000) do
+    defp receive_deltas_and_build_content(acc, validator, timeout \\ 10) do
       assert_push "chat:delta", delta, timeout
       validator.(delta)
       receive_deltas_and_build_content(acc <> delta["content"], validator, timeout)
@@ -566,8 +641,6 @@ defmodule NestWeb.AgentChannelTest do
 
   describe "message broadcasting" do
     test "assistant message is broadcast to all subscribers", %{socket: socket, agent_id: id} do
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
-
       # Connect a second client to the same channel
       {:ok, _, socket2} =
         subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{id}")
@@ -597,8 +670,6 @@ defmodule NestWeb.AgentChannelTest do
     end
 
     test "assistant message has correct index and role", %{socket: socket} do
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
-
       ref = push(socket, "chat:message", %{"content" => "Test"})
       assert_reply ref, :ok, %{}
 
@@ -623,8 +694,6 @@ defmodule NestWeb.AgentChannelTest do
     end
 
     test "status transitions idle -> streaming -> idle", %{socket: socket} do
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
-
       # Start idle
       ref1 = push(socket, "chat:status", %{"lastIndex" => -1})
       assert_reply ref1, :ok, %{"status" => "idle"}
@@ -656,7 +725,21 @@ defmodule NestWeb.AgentChannelTest do
       socket: socket,
       agent_id: id
     } do
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
+      # Script multiple text chunks so we have > 2 deltas.
+      MockClient.set_stream_events([
+        {:text, "First "},
+        {:text, "second "},
+        {:text, "third "},
+        {:text, "fourth chunk"},
+        {:finish_reason, "stop"},
+        {:done,
+         %{
+           response: %RunResponse{
+             text: "First second third fourth chunk",
+             stop_reason: "stop"
+           }
+         }}
+      ])
 
       # Start streaming
       ref = push(socket, "chat:message", %{"content" => "Hello"})
@@ -672,10 +755,10 @@ defmodule NestWeb.AgentChannelTest do
       assert last_chars_end > 0
 
       # Simulate disconnect
-      Process.unlink(socket.channel_pid)
-      GenServer.stop(socket.channel_pid, :normal)
-      Process.sleep(50)
-
+      channel_pid = socket.channel_pid
+      ref = Process.monitor(channel_pid)
+      GenServer.stop(channel_pid, :normal)
+      assert_receive {:DOWN, ^ref, :process, ^channel_pid, _reason}, 1000
       # Rejoin while still streaming
       {:ok, _, new_socket} =
         subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{id}")
@@ -696,13 +779,31 @@ defmodule NestWeb.AgentChannelTest do
       # Cleanup
       Process.unlink(new_socket.channel_pid)
       GenServer.stop(new_socket.channel_pid, :normal)
+
+      MockClient.clear()
     end
 
     test "mid-stream join does not trigger delta gap warnings", %{socket: socket, agent_id: id} do
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
+      # Script multiple text chunks so we have > 3 deltas.
+      MockClient.set_stream_events([
+        {:text, "Hello "},
+        {:text, "world "},
+        {:text, "this "},
+        {:text, "is "},
+        {:text, "a "},
+        {:text, "test"},
+        {:finish_reason, "stop"},
+        {:done,
+         %{
+           response: %RunResponse{
+             text: "Hello world this is a test",
+             stop_reason: "stop"
+           }
+         }}
+      ])
 
       # Start streaming
-      ref = push(socket, "chat:message", %{"content" => "Hello world this is a test"})
+      ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
       # Collect several deltas
@@ -714,10 +815,10 @@ defmodule NestWeb.AgentChannelTest do
       _total_chars_sent = last_delta["charsEnd"]
 
       # Disconnect
-      Process.unlink(socket.channel_pid)
-      GenServer.stop(socket.channel_pid, :normal)
-      Process.sleep(50)
-
+      channel_pid = socket.channel_pid
+      ref = Process.monitor(channel_pid)
+      GenServer.stop(channel_pid, :normal)
+      assert_receive {:DOWN, ^ref, :process, ^channel_pid, _reason}, 1000
       # Rejoin
       {:ok, _, new_socket} =
         subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{id}")
@@ -758,13 +859,26 @@ defmodule NestWeb.AgentChannelTest do
       %Phoenix.Socket.Message{event: "chat:delta", payload: payload} ->
         collect_deltas(socket, [payload | acc])
     after
-      300 ->
+      10 ->
         # No more deltas for now
         Enum.reverse(acc)
     end
   end
 
-  defp collect_remaining_deltas(socket, acc, timeout \\ 1000) do
+  # Drains `chat:message` events into a map keyed by message index,
+  # keeping the last version of each (the duplicate broadcast carrying
+  # apiLogs lands after the one without). Returns when no new message
+  # arrives within `quiet_ms`.
+  defp drain_chat_messages(acc \\ %{}, quiet_ms \\ 10) do
+    receive do
+      %Phoenix.Socket.Message{event: "chat:message", payload: payload} ->
+        drain_chat_messages(Map.put(acc, payload["index"], payload), quiet_ms)
+    after
+      quiet_ms -> acc
+    end
+  end
+
+  defp collect_remaining_deltas(socket, acc, timeout \\ 10) do
     receive do
       %Phoenix.Socket.Message{event: "chat:delta", payload: payload} ->
         collect_remaining_deltas(socket, [payload | acc], timeout)
@@ -785,8 +899,6 @@ defmodule NestWeb.AgentChannelTest do
     end
 
     test "messages are not lost on channel rejoin", %{socket: socket, agent_id: id} do
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
-
       # Send a message
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
@@ -798,8 +910,6 @@ defmodule NestWeb.AgentChannelTest do
       assert_push "chat:message", %{"index" => 0, "role" => "user"}, 2000
       assert_push "chat:message", %{"index" => 1, "role" => "assistant"}, 2000
 
-      Process.sleep(100)
-
       # Verify agent has messages via sync before disconnect
       sync_ref = push(socket, "chat:sync", %{"lastIndex" => -1})
       assert_reply sync_ref, :ok, %{"messages" => messages, "messageCount" => msg_count}
@@ -808,10 +918,11 @@ defmodule NestWeb.AgentChannelTest do
 
       # Simulate connection loss by stopping channel process
       Process.unlink(socket.channel_pid)
-      GenServer.stop(socket.channel_pid, :normal)
-
+      channel_pid = socket.channel_pid
+      ref = Process.monitor(channel_pid)
+      GenServer.stop(channel_pid, :normal)
       # Wait for channel to terminate
-      Process.sleep(100)
+      assert_receive {:DOWN, ^ref, :process, ^channel_pid, _reason}, 1000
 
       # Rejoin the channel
       {:ok, _, new_socket} =
@@ -831,8 +942,6 @@ defmodule NestWeb.AgentChannelTest do
     end
 
     test "sync returns correct messages after multiple rejoins", %{socket: socket, agent_id: id} do
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
-
       # Send first message
       ref1 = push(socket, "chat:message", %{"content" => "Message 1"})
       assert_reply ref1, :ok, %{}
@@ -841,12 +950,11 @@ defmodule NestWeb.AgentChannelTest do
       assert_push "chat:message", %{"index" => 0}, 2000
       assert_push "chat:message", _payload, 2000
 
-      Process.sleep(100)
-
       # First rejoin - sync should return messages
-      Process.unlink(socket.channel_pid)
-      GenServer.stop(socket.channel_pid, :normal)
-      Process.sleep(50)
+      channel_pid = socket.channel_pid
+      ref = Process.monitor(channel_pid)
+      GenServer.stop(channel_pid, :normal)
+      assert_receive {:DOWN, ^ref, :process, ^channel_pid, _reason}, 1000
 
       {:ok, _, socket2} =
         subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{id}")
@@ -864,9 +972,10 @@ defmodule NestWeb.AgentChannelTest do
       assert last_complete >= 0
 
       # Second rejoin - should still get same messages
-      Process.unlink(socket2.channel_pid)
-      GenServer.stop(socket2.channel_pid, :normal)
-      Process.sleep(50)
+      channel_pid = socket2.channel_pid
+      ref = Process.monitor(channel_pid)
+      GenServer.stop(channel_pid, :normal)
+      assert_receive {:DOWN, ^ref, :process, ^channel_pid, _reason}, 1000
 
       {:ok, _, socket3} =
         subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{id}")
@@ -890,27 +999,17 @@ defmodule NestWeb.AgentChannelTest do
            agent_id: _id
          } do
       # Note: subscribe_and_join already subscribes the test process to the agent topic
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
-
-      # Collect messages into a map by index, keeping the last version (which includes apiLogs)
-      collect_messages = fn ->
-        Enum.reduce(1..20, %{}, fn _, acc ->
-          receive do
-            %Phoenix.Socket.Message{event: "chat:message", payload: payload} ->
-              Map.put(acc, payload["index"], payload)
-          after
-            100 -> acc
-          end
-        end)
-      end
 
       # === Round 1 ===
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
-      # Wait for completion and collect all message versions
-      Process.sleep(300)
-      messages1 = collect_messages.()
+      # Wait for the assistant message — signals the chat task is done.
+      # assert_push consumes this broadcast from the mailbox; drain_chat_messages
+      # below collects the user message and any duplicate broadcasts (the one
+      # carrying apiLogs lands after the one without).
+      assert_push "chat:message", %{"role" => "assistant", "index" => 1}, 10
+      messages1 = drain_chat_messages()
 
       # === Verify Round 1 ===
       user1 = messages1[0]
@@ -937,9 +1036,8 @@ defmodule NestWeb.AgentChannelTest do
       ref2 = push(socket, "chat:message", %{"content" => "How are you?"})
       assert_reply ref2, :ok, %{}
 
-      # Wait for completion and collect all message versions
-      Process.sleep(300)
-      messages2 = collect_messages.()
+      assert_push "chat:message", %{"role" => "assistant", "index" => 3}, 10
+      messages2 = drain_chat_messages()
 
       # === Verify Round 2 ===
       user2 = messages2[2]
@@ -965,8 +1063,6 @@ defmodule NestWeb.AgentChannelTest do
       socket: socket,
       agent_id: _id
     } do
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
-
       # Send first message
       ref = push(socket, "chat:message", %{"content" => "First message"})
       assert_reply ref, :ok, %{}
@@ -994,7 +1090,6 @@ defmodule NestWeb.AgentChannelTest do
       assert request != nil
       assert request["id"] == "000.000"
       assert is_map(request["payload"])
-      # Payload has atom keys from ChatOpenAI.for_api (e.g., :messages, :model, :temperature)
       assert request["timestamp"] != nil
 
       # Verify assistant message has response with proper payload structure
@@ -1010,21 +1105,19 @@ defmodule NestWeb.AgentChannelTest do
       socket: socket,
       agent_id: _id
     } do
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
-
       # Set up mock to return tool calls first, then final response
-      Nest.LangChainMock.set_tool_response(%{
+      MockClient.set_tool_response(%{
         text: "I'll run that command",
         tool_calls: [
-          %LangChain.Message.ToolCall{
-            call_id: "call_shell_001",
+          %{
+            id: "call_shell_001",
             name: "shell_cmd",
             arguments: %{"command" => "echo test"}
           }
         ]
       })
 
-      Nest.LangChainMock.set_response("Done")
+      MockClient.set_response("Done")
 
       # Send message
       ref = push(socket, "chat:message", %{"content" => "Run a command"})
@@ -1056,7 +1149,7 @@ defmodule NestWeb.AgentChannelTest do
       assert request["timestamp"] != nil
 
       # Cleanup
-      Nest.LangChainMock.clear_response()
+      MockClient.clear()
     end
   end
 
@@ -1107,7 +1200,6 @@ defmodule NestWeb.AgentChannelTest do
 
       assert tool_result["tool_call_id"] == "call_123"
       assert tool_result["name"] == "shell_cmd"
-      # ContentPart structs should be converted to plain text
       assert tool_result["content"] == "total 4\ndrwxrwxr-x 1 user user 18 May 29 10:49 ."
       # Tool call arguments are surfaced so the UI can show the command that ran
       assert tool_result["arguments"] == %{"command" => "ls -la"}
@@ -1119,7 +1211,6 @@ defmodule NestWeb.AgentChannelTest do
       agent_id: id
     } do
       # Stub the LLMChain so we can inject a message with ToolResult structs
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
 
       # Send a message to create some history
       ref = push(socket, "chat:message", %{"content" => "Hello"})
@@ -1128,8 +1219,6 @@ defmodule NestWeb.AgentChannelTest do
       # Wait for completion
       assert_push "chat:message", %{"index" => 0, "role" => "user"}, 2000
       assert_push "chat:message", %{"index" => 1, "role" => "assistant"}, 2000
-
-      Process.sleep(100)
 
       # Create a tool result message with new Tool struct
       tool_result_message =
@@ -1150,7 +1239,7 @@ defmodule NestWeb.AgentChannelTest do
          }}
 
       # Inject the tool result message into the agent's state
-      {:ok, agent_pid} = Nest.Agents.Supervisor.get_agent(id)
+      {:ok, agent_pid} = Supervisor.get_agent(id)
 
       # Use :sys.replace_state to inject the tool message
       :sys.replace_state(agent_pid, fn state ->
@@ -1182,7 +1271,6 @@ defmodule NestWeb.AgentChannelTest do
       agent_id: id
     } do
       # Stub the LLMChain so we can inject a message with ToolResult structs in api_logs
-      Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
 
       # Send a message to create some history
       ref = push(socket, "chat:message", %{"content" => "Hello"})
@@ -1192,10 +1280,8 @@ defmodule NestWeb.AgentChannelTest do
       assert_push "chat:message", %{"index" => 0, "role" => "user"}, 2000
       assert_push "chat:message", %{"index" => 1, "role" => "assistant"}, 2000
 
-      Process.sleep(100)
-
-      # Create a message with api_logs containing ToolResult structs in payload
-      # The api_logs payload still contains raw LangChain structs for testing serialization
+      # Create a message with api_logs containing a tool_results payload
+      # in the wire-shaped plain-map form emitted by the new client.
       message_with_api_logs =
         {:assistant,
          %Assistant{
@@ -1211,18 +1297,11 @@ defmodule NestWeb.AgentChannelTest do
                  role: :assistant,
                  content: "Test",
                  tool_results: [
-                   %LangChain.Message.ToolResult{
-                     tool_call_id: "call_456",
-                     name: "shell_cmd",
-                     content: [
-                       %LangChain.Message.ContentPart{
-                         type: :text,
-                         content: "output",
-                         options: [],
-                         citations: []
-                       }
-                     ],
-                     is_error: false
+                   %{
+                     "tool_call_id" => "call_456",
+                     "name" => "shell_cmd",
+                     "content" => "output",
+                     "is_error" => false
                    }
                  ],
                  index: 2,
@@ -1233,7 +1312,7 @@ defmodule NestWeb.AgentChannelTest do
          }}
 
       # Inject the message into the agent's state
-      {:ok, agent_pid} = Nest.Agents.Supervisor.get_agent(id)
+      {:ok, agent_pid} = Supervisor.get_agent(id)
 
       :sys.replace_state(agent_pid, fn state ->
         %{state | messages: [message_with_api_logs | state.messages]}

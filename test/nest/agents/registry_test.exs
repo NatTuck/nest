@@ -2,7 +2,7 @@ defmodule Nest.Agents.RegistryTest do
   @moduledoc """
   Tests for the Agent Registry module.
   """
-  use ExUnit.Case
+  use ExUnit.Case, async: true
 
   alias Nest.Agents.Registry
 

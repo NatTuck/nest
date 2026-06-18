@@ -1,0 +1,339 @@
+defmodule Nest.LLM.OpenAIClient do
+  @moduledoc """
+  OpenAI-compatible LLM client.
+
+  Speaks the wire format of any provider that exposes a
+  `/v1/chat/completions` endpoint with SSE streaming, including
+  OpenAI, OpenRouter, DashScope (Qwen), DeepSeek, vLLM, and
+  llama.cpp's server. Extends the OpenAI shape with the
+  `reasoning_content` delta field emitted by reasoning models
+  (Qwen QwQ, DeepSeek R1, llama.cpp with `--reasoning`).
+  """
+
+  @behaviour Nest.LLM.Client
+
+  require Logger
+
+  alias Nest.LLM.RunRequest
+  alias Nest.LLM.RunResponse
+  alias Nest.LLM.SSE.Parser
+  alias Nest.Messages.Assistant
+  alias Nest.Messages.System
+  alias Nest.Messages.Tool
+  alias Nest.Messages.ToolCall
+  alias Nest.Messages.ToolResult
+  alias Nest.Messages.User
+
+  @impl Nest.LLM.Client
+  def run(%RunRequest{} = request, opts) do
+    url = opts[:base_url] <> "/chat/completions"
+    api_key = Keyword.fetch!(opts, :api_key)
+    timeout = Keyword.get(opts, :receive_timeout, :infinity)
+    parent = self()
+
+    spawn_link(fn -> http_worker(parent, url, api_key, request, opts, timeout) end)
+
+    {:ok, build_event_stream()}
+  end
+
+  # The HTTP call and the body iteration both run in the worker
+  # process. `%Req.Response.Async{}` is process-bound to whoever
+  # called `Req.post` — iterating from a child process raises
+  # `expected to read body chunk in the process which made the
+  # request`. The worker is its own `Req.post` caller, so it can
+  # drain the body. It forwards each chunk as `{:req_chunk, _}`
+  # (and `:req_done` at the end) to the parent's mailbox, which
+  # the `Stream.resource` below pulls from. All non-200 / error
+  # paths are surfaced as synthetic SSE chunks so the consumer
+  # always sees a single, uniform event stream.
+  defp http_worker(parent, url, api_key, request, opts, timeout) do
+    case Req.post(url,
+           auth: {:bearer, api_key},
+           json: build_payload(request, opts),
+           receive_timeout: timeout,
+           into: :self,
+           http_errors: :return,
+           max_retries: 0
+         ) do
+      {:ok, %Req.Response{status: 200, body: %Req.Response.Async{} = async_body}} ->
+        try do
+          # `%Req.Response.Async{}` is enumerable and yields raw
+          # chunk bytes via its `fun.(data, acc)` callback — the
+          # `:data` / `:trailers` / `:done` framing is consumed
+          # internally by `response_async.ex` and is NOT what the
+          # user's reducer sees. `Enum.each` returns once the
+          # underlying stream signals `:done` (or raises if the
+          # transport is torn down mid-read), so we send `:req_done`
+          # immediately after the iteration completes.
+          Enum.each(async_body, fn chunk -> send(parent, {:req_chunk, chunk}) end)
+          send(parent, :req_done)
+        catch
+          kind, reason ->
+            Logger.error("OpenAIClient stream_terminated: kind=#{kind} reason=#{inspect(reason)}")
+
+            send_chunk(parent, "stream_terminated", to_string(kind), inspect(reason))
+            send(parent, :req_done)
+        end
+
+      {:ok, %Req.Response{status: status, body: %Req.Response.Async{} = async_body}} ->
+        # Non-200 responses also have async bodies when `into: :self`
+        # is used. Drain the error body in the worker (allowed since
+        # we called `Req.post`), collect it, and send as a single
+        # error chunk.
+        body =
+          async_body
+          |> Enum.reduce([], fn chunk, acc -> [acc, chunk] end)
+          |> IO.iodata_to_binary()
+
+        send_chunk(parent, "http_error", status, body)
+        send(parent, :req_done)
+
+      {:ok, %Req.Response{status: status, body: body}} ->
+        send_chunk(parent, "http_error", status, body)
+        send(parent, :req_done)
+
+      {:error, reason} ->
+        send_chunk(parent, "request_failed", nil, inspect(reason))
+        send(parent, :req_done)
+    end
+  end
+
+  defp send_chunk(parent, kind, status, body) do
+    data = "data: " <> Jason.encode!(%{error: kind, status: status, body: body}) <> "\n\n"
+    send(parent, {:req_chunk, data})
+  end
+
+  @impl Nest.LLM.Client
+  def format_request_payload(%RunRequest{} = request, _opts) do
+    payload = %{
+      "model" => request.model,
+      "messages" => build_wire_messages(request.messages, request.system_prompt),
+      "stream" => true,
+      "stream_options" => %{"include_usage" => true}
+    }
+
+    payload
+    |> maybe_put("temperature", request.temperature)
+    |> maybe_put("max_tokens", request.max_tokens)
+    |> maybe_put("top_p", request.top_p)
+    |> maybe_put("tools", build_wire_tools(request.tools))
+    |> maybe_put("tool_choice", normalize_tool_choice(request.tool_choice))
+  end
+
+  defp build_payload(request, opts) do
+    format_request_payload(request, opts)
+  end
+
+  defp build_wire_messages(messages, system_prompt) do
+    messages
+    |> prepend_system_message(system_prompt)
+    |> Enum.flat_map(&message_to_wire/1)
+  end
+
+  defp prepend_system_message(messages, nil), do: messages
+
+  defp prepend_system_message(messages, prompt) do
+    [{:system, %System{index: -1, content: prompt}} | messages]
+  end
+
+  defp message_to_wire({:system, %System{content: content}}) do
+    [%{"role" => "system", "content" => content || ""}]
+  end
+
+  defp message_to_wire({:user, %User{content: content}}) do
+    [%{"role" => "user", "content" => content}]
+  end
+
+  defp message_to_wire({:assistant, %Assistant{content: content, tool_calls: tool_calls}}) do
+    base = %{"role" => "assistant", "content" => content || ""}
+
+    case tool_calls do
+      nil -> [base]
+      [] -> [base]
+      calls -> [Map.put(base, "tool_calls", Enum.map(calls, &tool_call_to_wire/1))]
+    end
+  end
+
+  defp message_to_wire({:tool, %Tool{tool_results: results}}) do
+    Enum.map(results, fn %ToolResult{tool_call_id: id, content: content} ->
+      %{"role" => "tool", "tool_call_id" => id, "content" => content || ""}
+    end)
+  end
+
+  defp tool_call_to_wire(%ToolCall{id: id, name: name, arguments: args}) do
+    %{
+      "id" => id,
+      "type" => "function",
+      "function" => %{
+        "name" => name,
+        "arguments" => encode_arguments(args)
+      }
+    }
+  end
+
+  defp encode_arguments(nil), do: "{}"
+  defp encode_arguments(args) when is_map(args), do: Jason.encode!(args)
+  defp encode_arguments(args) when is_binary(args), do: args
+
+  defp build_wire_tools(nil), do: nil
+  defp build_wire_tools([]), do: nil
+
+  defp build_wire_tools(tools) do
+    Enum.map(tools, fn t ->
+      %{
+        "type" => "function",
+        "function" => %{
+          "name" => t.name,
+          "description" => t.description,
+          "parameters" => t.parameters_schema || %{"type" => "object", "properties" => %{}}
+        }
+      }
+    end)
+  end
+
+  defp normalize_tool_choice(nil), do: nil
+  defp normalize_tool_choice(:auto), do: "auto"
+  defp normalize_tool_choice(:none), do: "none"
+  defp normalize_tool_choice(:required), do: "required"
+
+  defp normalize_tool_choice({:tool, name}) do
+    %{"type" => "function", "function" => %{"name" => name}}
+  end
+
+  # The stream is a receive loop on the parent's mailbox. The
+  # `http_worker` is responsible for calling `Req.post` and
+  # draining the `%Req.Response.Async{}` body (it must do both
+  # in the same process — see comment on `http_worker/6`). It
+  # forwards each chunk as `{:req_chunk, _}` (and `:req_done`
+  # at the end) to the parent. The reducer below runs in the
+  # consumer's process and pulls from that mailbox, so the
+  # consumer can stop early (e.g. via `Stream.take/2` or the
+  # agent's iteration loop) by simply halting this resource.
+  @spec consume_sse_from_mailbox() :: Enumerable.t()
+  def consume_sse_from_mailbox do
+    build_event_stream()
+  end
+
+  defp build_event_stream do
+    Stream.resource(
+      fn -> {Parser.new(), false} end,
+      fn
+        {_parser, true} ->
+          {:halt, nil}
+
+        {parser, false} ->
+          receive do
+            {:req_chunk, chunk} ->
+              {frames, parser} = Parser.feed(parser, chunk)
+              events = Enum.flat_map(frames, &frame_to_canonical_event/1)
+              {events, {parser, false}}
+
+            :req_done ->
+              {frames, _} = Parser.flush(parser)
+              events = Enum.flat_map(frames, &frame_to_canonical_event/1)
+              {events, {parser, true}}
+          after
+            60_000 ->
+              {[{:error, :stream_timeout}], {parser, true}}
+          end
+      end,
+      fn _ -> :ok end
+    )
+  end
+
+  defp frame_to_canonical_event({:event, _name, "[DONE]"}) do
+    [{:done, %{response: %RunResponse{stop_reason: "stop"}}}]
+  end
+
+  defp frame_to_canonical_event({:event, _name, data}) do
+    case Jason.decode(data) do
+      {:ok, %{"choices" => choices} = chunk} when is_list(choices) ->
+        events_from_choices(choices) ++ events_from_metadata(chunk)
+
+      {:ok, %{"error" => error}} ->
+        [{:error, error}]
+
+      {:ok, _other} ->
+        []
+
+      {:error, %Jason.DecodeError{} = err} ->
+        [{:error, {:invalid_json, err, data}}]
+    end
+  end
+
+  defp frame_to_canonical_event(_other), do: []
+
+  defp events_from_choices(choices) do
+    Enum.flat_map(choices, &events_from_choice/1)
+  end
+
+  defp events_from_choice(%{"delta" => delta} = choice) do
+    delta_events(delta) ++ finish_event(choice)
+  end
+
+  defp events_from_choice(_other), do: []
+
+  defp delta_events(%{"content" => text}) when is_binary(text) and text != "",
+    do: [{:text, text}]
+
+  defp delta_events(%{"reasoning_content" => text}) when is_binary(text) and text != "",
+    do: [{:thinking, text}]
+
+  defp delta_events(%{"refusal" => text}) when is_binary(text) and text != "",
+    do: [{:refusal, text}]
+
+  defp delta_events(%{"tool_calls" => calls}) when is_list(calls) do
+    Enum.flat_map(calls, &tool_call_delta_events/1)
+  end
+
+  defp delta_events(_), do: []
+
+  # OpenAI's first tool-call delta for a given index carries the
+  # `id` and `function.name`; subsequent deltas only carry the
+  # `index` and the `function.arguments` fragment. Emit
+  # `tool_call_start` only on the seeding delta; emit
+  # `tool_call_delta` on every delta (including the seed, with an
+  # empty arguments fragment) so the consumer can track partial
+  # arguments from the very first delta.
+  defp tool_call_delta_events(%{
+         "index" => idx,
+         "id" => id,
+         "function" => %{"name" => name, "arguments" => args}
+       })
+       when is_binary(id) and is_binary(name) and is_binary(args) do
+    [
+      {:tool_call_start, %{id: id, name: name, index: idx}},
+      {:tool_call_delta, %{id: id, index: idx, arguments_delta: args}}
+    ]
+  end
+
+  defp tool_call_delta_events(%{"index" => idx, "function" => %{"arguments" => args}})
+       when is_binary(args) do
+    [{:tool_call_delta, %{id: :by_index, index: idx, arguments_delta: args}}]
+  end
+
+  defp tool_call_delta_events(_), do: []
+
+  defp finish_event(%{"finish_reason" => nil}), do: []
+  defp finish_event(%{"finish_reason" => reason}), do: [{:finish_reason, reason}]
+
+  defp events_from_metadata(%{"usage" => usage}) when is_map(usage) do
+    [{:usage, parse_usage(usage)}]
+  end
+
+  defp events_from_metadata(_), do: []
+
+  defp parse_usage(usage) do
+    input = Map.get(usage, "prompt_tokens", 0)
+    output = Map.get(usage, "completion_tokens", 0)
+
+    %{
+      input_tokens: input,
+      output_tokens: output,
+      total_tokens: Map.get(usage, "total_tokens", input + output)
+    }
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
+end

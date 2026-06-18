@@ -219,4 +219,71 @@ describe("ChatInput", () => {
       expect(textarea.style.overflowY).toBe("hidden");
     });
   });
+
+  describe("mode selector", () => {
+    it("does not render the mode selector when modes is undefined", () => {
+      render(<ChatInput value="" onChange={() => {}} onSend={() => {}} />);
+      expect(screen.queryByLabelText("Mode")).toBeNull();
+    });
+
+    it("does not render the mode selector when modes has only one entry", () => {
+      render(
+        <ChatInput
+          value=""
+          onChange={() => {}}
+          onSend={() => {}}
+          modes={["chat"]}
+          mode="chat"
+        />,
+      );
+      expect(screen.queryByLabelText("Mode")).toBeNull();
+    });
+
+    it("renders the mode selector when modes has multiple entries", () => {
+      render(
+        <ChatInput
+          value=""
+          onChange={() => {}}
+          onSend={() => {}}
+          modes={["chat", "build", "plan"]}
+          mode="chat"
+          onModeChange={() => {}}
+        />,
+      );
+      expect(screen.getByLabelText("Mode")).toBeInTheDocument();
+    });
+
+    it("calls onModeChange when the user picks a different mode", () => {
+      const onModeChange = vi.fn();
+      render(
+        <ChatInput
+          value=""
+          onChange={() => {}}
+          onSend={() => {}}
+          modes={["chat", "build"]}
+          mode="chat"
+          onModeChange={onModeChange}
+        />,
+      );
+      fireEvent.change(screen.getByLabelText("Mode"), {
+        target: { value: "build" },
+      });
+      expect(onModeChange).toHaveBeenCalledWith("build");
+    });
+
+    it("disables the mode selector when the input is disabled", () => {
+      render(
+        <ChatInput
+          value=""
+          onChange={() => {}}
+          onSend={() => {}}
+          modes={["chat", "build"]}
+          mode="chat"
+          onModeChange={() => {}}
+          disabled={true}
+        />,
+      );
+      expect(screen.getByLabelText("Mode")).toBeDisabled();
+    });
+  });
 });

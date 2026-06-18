@@ -2,7 +2,7 @@ defmodule NestWeb.UserSocketTest do
   @moduledoc """
   Tests for the UserSocket module.
   """
-  use NestWeb.ChannelCase
+  use NestWeb.ChannelCase, async: true
 
   alias NestWeb.UserSocket
 

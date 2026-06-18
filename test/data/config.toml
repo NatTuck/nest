@@ -1,3 +1,5 @@
+max-tool-iterations = 5
+
 [providers.pegasus]
 base-url = "http://pegasus:8080/v1"
 api-key = "none"

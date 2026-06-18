@@ -147,6 +147,141 @@ describe("store", () => {
 
       expect(useStore.getState().agentsCache["agent-1"].model).toBeNull();
     });
+
+    it("stores modes, defaultMode, and currentMode from the init payload", () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        messageCount: 0,
+        modes: ["chat", "build", "plan"],
+        defaultMode: "build",
+        currentMode: "build",
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.modes).toEqual(["chat", "build", "plan"]);
+      expect(cache.defaultMode).toBe("build");
+      expect(cache.currentMode).toBe("build");
+    });
+
+    it("initializes mode fields to null when payload omits them and no existing cache", () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        messageCount: 0,
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.modes).toBeNull();
+      expect(cache.defaultMode).toBeNull();
+      expect(cache.currentMode).toBeNull();
+    });
+
+    it("preserves existing mode values when a rejoin payload omits them", () => {
+      // Initial connection with full mode info
+      useStore.getState().setAgentConnected("agent-1", {
+        messageCount: 0,
+        modes: ["chat", "build"],
+        defaultMode: "build",
+        currentMode: "build",
+      });
+
+      // Mid-stream rejoin (e.g. via chat:status) — payload has no modes
+      useStore.getState().setAgentConnected("agent-1", {
+        messageCount: 2,
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.modes).toEqual(["chat", "build"]);
+      expect(cache.defaultMode).toBe("build");
+      expect(cache.currentMode).toBe("build");
+    });
+
+    it("overrides existing mode values when a new payload provides them", () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        messageCount: 0,
+        modes: ["chat", "build"],
+        defaultMode: "build",
+        currentMode: "build",
+      });
+
+      // A later init (e.g. after mode switch) replaces the values
+      useStore.getState().setAgentConnected("agent-1", {
+        messageCount: 4,
+        modes: ["chat", "build", "plan"],
+        defaultMode: "plan",
+        currentMode: "plan",
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.modes).toEqual(["chat", "build", "plan"]);
+      expect(cache.defaultMode).toBe("plan");
+      expect(cache.currentMode).toBe("plan");
+    });
+
+    it("stores initial agentState from payload.status", () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        messageCount: 0,
+        status: "streaming",
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.agentState).toBe("streaming");
+    });
+
+    it("defaults agentState to 'idle' when payload has no status", () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        messageCount: 0,
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.agentState).toBe("idle");
+    });
+  });
+
+  describe("setAgentState", () => {
+    it("updates agentState for existing agent", () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        messageCount: 0,
+        status: "idle",
+      });
+
+      useStore.getState().setAgentState("agent-1", "streaming");
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.agentState).toBe("streaming");
+    });
+
+    it("does nothing for non-existent agent", () => {
+      const initialCache = useStore.getState().agentsCache;
+
+      useStore.getState().setAgentState("non-existent", "streaming");
+
+      expect(useStore.getState().agentsCache).toBe(initialCache);
+    });
+
+    it("updates through all status transitions", () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        messageCount: 0,
+        status: "idle",
+      });
+
+      useStore.getState().setAgentState("agent-1", "streaming");
+      expect(useStore.getState().agentsCache["agent-1"].agentState).toBe(
+        "streaming",
+      );
+
+      useStore.getState().setAgentState("agent-1", "executing_tools");
+      expect(useStore.getState().agentsCache["agent-1"].agentState).toBe(
+        "executing_tools",
+      );
+
+      useStore.getState().setAgentState("agent-1", "streaming");
+      expect(useStore.getState().agentsCache["agent-1"].agentState).toBe(
+        "streaming",
+      );
+
+      useStore.getState().setAgentState("agent-1", "idle");
+      expect(useStore.getState().agentsCache["agent-1"].agentState).toBe(
+        "idle",
+      );
+    });
   });
 
   describe("setAgentConnecting", () => {
@@ -204,6 +339,89 @@ describe("store", () => {
       expect(cache.status).toBe("error");
       expect(cache.error).toBe("Model error");
       expect(cache.messages).toHaveLength(1);
+    });
+  });
+
+  describe("setNotification and clearNotification", () => {
+    it("sets notification for existing agent", () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        messageCount: 0,
+        status: "idle",
+      });
+
+      useStore.getState().setNotification("agent-1", {
+        type: "max_iterations",
+        message: "Max tool iterations reached",
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.notification).toEqual({
+        type: "max_iterations",
+        message: "Max tool iterations reached",
+      });
+    });
+
+    it("does nothing for non-existent agent", () => {
+      const initialCache = useStore.getState().agentsCache;
+
+      useStore.getState().setNotification("non-existent", {
+        type: "max_iterations",
+        message: "test",
+      });
+
+      expect(useStore.getState().agentsCache).toBe(initialCache);
+    });
+
+    it("clears notification for existing agent", () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        messageCount: 0,
+        status: "idle",
+      });
+
+      useStore.getState().setNotification("agent-1", {
+        type: "max_iterations",
+        message: "Max tool iterations reached",
+      });
+
+      expect(
+        useStore.getState().agentsCache["agent-1"].notification,
+      ).not.toBeNull();
+
+      useStore.getState().clearNotification("agent-1");
+
+      expect(
+        useStore.getState().agentsCache["agent-1"].notification,
+      ).toBeNull();
+    });
+
+    it("does nothing when clearing for non-existent agent", () => {
+      const initialCache = useStore.getState().agentsCache;
+
+      useStore.getState().clearNotification("non-existent");
+
+      expect(useStore.getState().agentsCache).toBe(initialCache);
+    });
+
+    it("clears notification when user sends a message", () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        messageCount: 0,
+        status: "idle",
+      });
+
+      useStore.getState().setNotification("agent-1", {
+        type: "max_iterations",
+        message: "Max tool iterations reached",
+      });
+
+      expect(
+        useStore.getState().agentsCache["agent-1"].notification,
+      ).not.toBeNull();
+
+      useStore.getState().addUserMessage("agent-1", "New message");
+
+      expect(
+        useStore.getState().agentsCache["agent-1"].notification,
+      ).toBeNull();
     });
   });
 
@@ -1239,6 +1457,57 @@ describe("store", () => {
       const cache = useStore.getState().agentsCache["agent-1"];
       expect(cache.waitingForResponse).toBe(true);
     });
+
+    it("should clear waitingForResponse when a terminal chat:error fires (max iterations reached)", () => {
+      // Setup: User message, tool call, tool result
+      useStore.getState().addUserMessage("agent-1", "Run a command");
+      useStore.getState().addChatMessage("agent-1", {
+        index: 1,
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: "call_123", name: "shell_cmd", arguments: {} }],
+      });
+      useStore.getState().addChatMessage("agent-1", {
+        index: 2,
+        role: "tool",
+        content: "output",
+        toolResults: [
+          {
+            tool_call_id: "call_123",
+            name: "shell_cmd",
+            content: "output",
+            is_error: false,
+          },
+        ],
+      });
+
+      // Mid-iteration: partial is set, waiting is still true
+      useStore.getState().addChatDelta("agent-1", {
+        index: 3,
+        content: "Let me try",
+        charsStart: 0,
+        charsEnd: 11,
+      });
+
+      let cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.waitingForResponse).toBe(false);
+      expect(cache.partial).not.toBeNull();
+
+      // The agent loop hits the max-iterations cap and the channel handler
+      // runs the chat:error path: setAgentError + clearPartial +
+      // setWaitingForResponse(false).
+      useStore
+        .getState()
+        .setAgentError("agent-1", 'Error: "Max tool iterations reached"');
+      useStore.getState().clearPartial("agent-1");
+      useStore.getState().setWaitingForResponse("agent-1", false);
+
+      cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.waitingForResponse).toBe(false);
+      expect(cache.status).toBe("error");
+      expect(cache.error).toBe('Error: "Max tool iterations reached"');
+      expect(cache.partial).toBeNull();
+    });
   });
 
   describe("removeAgent", () => {
@@ -1790,6 +2059,359 @@ describe("store", () => {
       expect(messages[1].toolCalls[0].name).toBe("weather");
       expect(messages[2].content).toBe("It's sunny today");
       expect(messages[3].content).toBe("What's the weather?");
+    });
+  });
+
+  describe("context window fields", () => {
+    it("setAgentConnecting initializes contextLimit and source to null", () => {
+      useStore.getState().setAgentConnecting("agent-1");
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.contextLimit).toBeNull();
+      expect(cache.contextLimitSource).toBeNull();
+      expect(cache.usage).toBeNull();
+    });
+
+    it("setAgentConnected stores contextLimit, contextLimitSource, and usage from the init payload", () => {
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+        contextLimit: 128000,
+        contextLimitSource: "openrouter",
+        usage: {
+          input_tokens: 1234,
+          output_tokens: 56,
+          total_tokens: 1290,
+          reasoning_tokens: 0,
+          last_output: 56,
+        },
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.contextLimit).toBe(128000);
+      expect(cache.contextLimitSource).toBe("openrouter");
+      expect(cache.usage).toEqual({
+        input_tokens: 1234,
+        output_tokens: 56,
+        total_tokens: 1290,
+        reasoning_tokens: 0,
+        last_output: 56,
+      });
+    });
+
+    it("preserves existing contextLimit when a rejoin payload omits it", () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        messageCount: 0,
+        contextLimit: 128000,
+        contextLimitSource: "config",
+      });
+
+      useStore.getState().setAgentConnected("agent-1", {
+        messageCount: 4,
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.contextLimit).toBe(128000);
+      expect(cache.contextLimitSource).toBe("config");
+    });
+
+    it("overrides existing contextLimit when a new payload provides it", () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        messageCount: 0,
+        contextLimit: 128000,
+        contextLimitSource: "default",
+      });
+
+      useStore.getState().setAgentConnected("agent-1", {
+        messageCount: 2,
+        contextLimit: 32768,
+        contextLimitSource: "vllm",
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.contextLimit).toBe(32768);
+      expect(cache.contextLimitSource).toBe("vllm");
+    });
+  });
+
+  describe("setAgentState with extra fields (chat:status payload)", () => {
+    beforeEach(() => {
+      useStore.getState().setAgentConnecting("agent-1");
+    });
+
+    it("updates contextLimit and source from a status push", () => {
+      useStore.getState().setAgentState("agent-1", "streaming", {
+        contextLimit: 200000,
+        contextLimitSource: "openrouter",
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.agentState).toBe("streaming");
+      expect(cache.contextLimit).toBe(200000);
+      expect(cache.contextLimitSource).toBe("openrouter");
+    });
+
+    it("updates usage from a status push", () => {
+      useStore.getState().setAgentState("agent-1", "streaming", {
+        usage: {
+          input_tokens: 5000,
+          output_tokens: 250,
+          total_tokens: 5250,
+          reasoning_tokens: 0,
+          last_output: 250,
+        },
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.usage.input_tokens).toBe(5000);
+      expect(cache.usage.output_tokens).toBe(250);
+    });
+
+    it("does not clobber existing contextLimit when the extra arg omits it", () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        messageCount: 0,
+        contextLimit: 128000,
+        contextLimitSource: "config",
+      });
+
+      // A status push that doesn't carry contextLimit fields.
+      useStore.getState().setAgentState("agent-1", "streaming", {
+        usage: { input_tokens: 100, output_tokens: 50, total_tokens: 150 },
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.contextLimit).toBe(128000);
+      expect(cache.contextLimitSource).toBe("config");
+      expect(cache.usage.input_tokens).toBe(100);
+    });
+  });
+
+  describe("setAgentContextLimit and setAgentUsage", () => {
+    beforeEach(() => {
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+        contextLimit: 128000,
+        contextLimitSource: "default",
+      });
+    });
+
+    it("setAgentContextLimit updates just the limit and source", () => {
+      useStore.getState().setAgentContextLimit("agent-1", 32768, "vllm");
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.contextLimit).toBe(32768);
+      expect(cache.contextLimitSource).toBe("vllm");
+    });
+
+    it("setAgentContextLimit preserves the source when called with undefined", () => {
+      useStore.getState().setAgentContextLimit("agent-1", 999999);
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.contextLimit).toBe(999999);
+      expect(cache.contextLimitSource).toBe("default");
+    });
+
+    it("setAgentContextLimit is a no-op for an unknown agent", () => {
+      const before = useStore.getState().agentsCache;
+      useStore.getState().setAgentContextLimit("missing", 1234, "vllm");
+      expect(useStore.getState().agentsCache).toBe(before);
+    });
+
+    it("setAgentUsage updates the usage map", () => {
+      useStore.getState().setAgentUsage("agent-1", {
+        input_tokens: 1000,
+        output_tokens: 100,
+        total_tokens: 1100,
+        reasoning_tokens: 0,
+        last_output: 100,
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.usage.input_tokens).toBe(1000);
+    });
+
+    it("setAgentUsage is a no-op for null usage", () => {
+      const before = useStore.getState().agentsCache["agent-1"].usage;
+      useStore.getState().setAgentUsage("agent-1", null);
+      expect(useStore.getState().agentsCache["agent-1"].usage).toBe(before);
+    });
+
+    it("setAgentUsage is a no-op for an unknown agent", () => {
+      const before = useStore.getState().agentsCache;
+      useStore.getState().setAgentUsage("missing", { input_tokens: 1 });
+      expect(useStore.getState().agentsCache).toBe(before);
+    });
+  });
+
+  describe("compaction history", () => {
+    it("setAgentConnected stores history from the init payload", () => {
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+        history: [
+          {
+            index: 0,
+            role: "compaction",
+            archivedCount: 5,
+            occurredAt: "2024-01-01T00:00:00Z",
+            apiLogs: [],
+          },
+        ],
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.history).toEqual([
+        {
+          index: 0,
+          role: "compaction",
+          archivedCount: 5,
+          occurredAt: "2024-01-01T00:00:00Z",
+          apiLogs: [],
+        },
+      ]);
+    });
+
+    it("setAgentConnected initializes history to [] when omitted", () => {
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+      });
+
+      expect(useStore.getState().agentsCache["agent-1"].history).toEqual([]);
+    });
+
+    it("syncAgentMessages preserves history when payload has none", () => {
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+        history: [{ index: 0, role: "compaction", archivedCount: 5 }],
+      });
+
+      useStore.getState().syncAgentMessages("agent-1", {
+        messages: [{ index: 0, role: "user", content: "Hi" }],
+        messageCount: 1,
+      });
+
+      expect(useStore.getState().agentsCache["agent-1"].history).toEqual([
+        { index: 0, role: "compaction", archivedCount: 5 },
+      ]);
+    });
+
+    it("syncAgentMessages replaces history when payload provides new", () => {
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+        history: [{ index: 0, role: "compaction", archivedCount: 5 }],
+      });
+
+      useStore.getState().syncAgentMessages("agent-1", {
+        messages: [],
+        history: [
+          { index: 0, role: "compaction", archivedCount: 5 },
+          { index: 1, role: "user", content: "Old message" },
+          { index: 2, role: "compaction", archivedCount: 3 },
+        ],
+        messageCount: 0,
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.history).toHaveLength(3);
+      expect(cache.history[0].role).toBe("compaction");
+      expect(cache.history[2].role).toBe("compaction");
+    });
+  });
+
+  describe("setAgentHistory (chat:compaction handler)", () => {
+    it("replaces history with the broadcast's history list", () => {
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+        history: [{ index: 0, role: "compaction", archivedCount: 1 }],
+      });
+
+      useStore.getState().setAgentHistory("agent-1", [
+        { index: 0, role: "user", content: "Old A" },
+        { index: 1, role: "assistant", content: "Old B" },
+        { index: 2, role: "compaction", archivedCount: 2 },
+      ]);
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.history).toHaveLength(3);
+      expect(cache.history[0].content).toBe("Old A");
+      expect(cache.history[2].role).toBe("compaction");
+    });
+
+    it("appends the explicit marker when history has no compaction role", () => {
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+        history: [],
+      });
+
+      useStore
+        .getState()
+        .setAgentHistory(
+          "agent-1",
+          [{ index: 0, role: "user", content: "old" }],
+          { index: 1, role: "compaction", archivedCount: 1 },
+        );
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.history).toHaveLength(2);
+      expect(cache.history[1].role).toBe("compaction");
+    });
+
+    it("does not duplicate the marker when history already has one", () => {
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+        history: [],
+      });
+
+      useStore.getState().setAgentHistory(
+        "agent-1",
+        [
+          { index: 0, role: "user", content: "old" },
+          { index: 1, role: "compaction", archivedCount: 1 },
+        ],
+        { index: 1, role: "compaction", archivedCount: 1 },
+      );
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      const compactionCount = cache.history.filter(
+        (m) => m.role === "compaction",
+      ).length;
+      expect(compactionCount).toBe(1);
+    });
+
+    it("ignores non-array history payloads", () => {
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+        history: [{ index: 0, role: "user", content: "kept" }],
+      });
+
+      const before = useStore.getState().agentsCache["agent-1"];
+      useStore.getState().setAgentHistory("agent-1", null, null);
+      const after = useStore.getState().agentsCache["agent-1"];
+
+      expect(after).toBe(before);
+    });
+
+    it("is a no-op for an unknown agent", () => {
+      const before = useStore.getState().agentsCache;
+      useStore.getState().setAgentHistory("missing", [], null);
+      expect(useStore.getState().agentsCache).toBe(before);
     });
   });
 });

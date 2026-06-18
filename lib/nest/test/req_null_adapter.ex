@@ -44,7 +44,7 @@ defmodule Nest.Test.ReqNullAdapter do
       you must mock it using Mimic.stub_with/2 or similar.
 
       Example:
-        Mimic.stub_with(LangChain.Chains.LLMChain, Nest.LangChainMock)
+        Mimic.stub_with(Nest.LLM.OpenAIClient, Nest.LLM.MockClient)
       """
     end
   end

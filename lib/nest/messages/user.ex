@@ -22,6 +22,7 @@ defmodule Nest.Messages.User do
       "index" => msg.index,
       "role" => "user",
       "content" => msg.content,
+      "mode" => msg.metadata && msg.metadata["mode"],
       "toolCalls" => nil,
       "toolResults" => nil,
       "thinking" => nil,

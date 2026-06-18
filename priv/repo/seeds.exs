@@ -12,7 +12,8 @@
 
 alias Nest.Vocations
 
-# Chat Buddy - simple chat agent, no tools
+# Chat Buddy - simple chat agent, no tools.
+# One mode ("chat") which uses the default caps (no filesystem, no net).
 {:ok, _} =
   Vocations.create_vocation(%{
     name: "Chat Buddy",
@@ -22,28 +23,44 @@ alias Nest.Vocations
     tools: [],
     modes: %{
       "chat" => %{
-        "net" => false,
-        "fs" => %{"read" => [], "write" => []}
+        "description" => "General conversation. No tools available.",
+        "caps" => %{
+          "net" => false,
+          "fs" => %{"read" => ["/"], "write" => ["/tmp"]}
+        }
       }
     }
   })
 
-# Programmer - code-focused agent with tools and workspace
+# Programmer - code-focused agent with tools and workspace.
+# Two modes:
+#   - "build": can read/write the workspace and run shell commands
+#   - "plan":  read-only; explore the workspace without making changes
+# Network is disabled in both modes.
 {:ok, _} =
   Vocations.create_vocation(%{
     name: "Programmer",
     description: "A coding assistant that can read and write files in a workspace",
-    system_prompt:
-      "You are a skilled programmer. Help users write, review, and understand code. You have access to a workspace directory where you can read and write files. Use tools to read files and make changes when requested.",
+    system_prompt: """
+    You are a skilled programmer. Help users write, review, and understand code.
+    You have access to a workspace directory where you can read and write files.
+    Use tools to read files and make changes when requested.
+    """,
     tools: ["read_file", "write_file", "shell_cmd"],
     modes: %{
-      "plan" => %{
-        "net" => true,
-        "fs" => %{"read" => [":workspace"], "write" => []}
-      },
       "build" => %{
-        "net" => true,
-        "fs" => %{"read" => [":workspace"], "write" => [":workspace"]}
+        "description" => "You're clear to edit the project in the workspace.",
+        "caps" => %{
+          "net" => false,
+          "fs" => %{"read" => ["/"], "write" => ["/tmp", ":workspace"]}
+        }
+      },
+      "plan" => %{
+        "description" => "Read-only planning only, can still run commands.",
+        "caps" => %{
+          "net" => false,
+          "fs" => %{"read" => ["/"], "write" => ["/tmp"]}
+        }
       }
     }
   })

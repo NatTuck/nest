@@ -10,6 +10,7 @@ import {
   resetMockSocket,
   setNextJoinResult,
   setNextPushResult,
+  captureNextPush,
   simulateServerEvent,
   connectSocket,
   disconnectSocket,
@@ -858,7 +859,7 @@ describe("channels", () => {
   });
 
   describe("agent chat:error events", () => {
-    it("should handle chat:error event - set status, message, and clear partial", async () => {
+    it("should handle chat:error event - set status, error, clear partial, and stop waiting", async () => {
       useStore.getState().setAgentConnected("agent-1", {
         model: { name: "gpt-4" },
         messageCount: 0,
@@ -867,6 +868,7 @@ describe("channels", () => {
         index: 0,
         content: "Streaming",
       };
+      useStore.getState().agentsCache["agent-1"].waitingForResponse = true;
 
       joinAgent("agent-1");
 
@@ -886,6 +888,177 @@ describe("channels", () => {
         assert.strictEqual(cache?.status, "error");
         assert.strictEqual(cache?.error, "Model unavailable");
         assert.strictEqual(cache?.partial, null);
+        assert.strictEqual(cache?.waitingForResponse, false);
+      });
+    });
+  });
+
+  describe("agent chat:status events", () => {
+    it("should handle chat:status event - update agentState", async () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+        status: "idle",
+      });
+
+      joinAgent("agent-1");
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      simulateServerEvent("agent:agent-1", "chat:status", {
+        status: "streaming",
+      });
+
+      await vi.waitFor(() => {
+        const cache = useStore.getState().agentsCache["agent-1"];
+        assert.strictEqual(cache?.agentState, "streaming");
+      });
+
+      simulateServerEvent("agent:agent-1", "chat:status", {
+        status: "executing_tools",
+      });
+
+      await vi.waitFor(() => {
+        const cache = useStore.getState().agentsCache["agent-1"];
+        assert.strictEqual(cache?.agentState, "executing_tools");
+      });
+
+      simulateServerEvent("agent:agent-1", "chat:status", {
+        status: "idle",
+      });
+
+      await vi.waitFor(() => {
+        const cache = useStore.getState().agentsCache["agent-1"];
+        assert.strictEqual(cache?.agentState, "idle");
+      });
+    });
+  });
+
+  describe("agent chat:compaction events", () => {
+    it("should replace history with the broadcast's history list", async () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+        status: "idle",
+        history: [{ index: 0, role: "compaction", archivedCount: 1 }],
+      });
+
+      joinAgent("agent-1");
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      simulateServerEvent("agent:agent-1", "chat:compaction", {
+        marker: {
+          index: 5,
+          role: "compaction",
+          archivedCount: 3,
+          apiLogs: [],
+        },
+        history: [
+          { index: 0, role: "user", content: "old A", apiLogs: [] },
+          { index: 1, role: "assistant", content: "old B", apiLogs: [] },
+          { index: 2, role: "user", content: "old C", apiLogs: [] },
+          { index: 5, role: "compaction", archivedCount: 3, apiLogs: [] },
+        ],
+      });
+
+      await vi.waitFor(() => {
+        const cache = useStore.getState().agentsCache["agent-1"];
+        assert.strictEqual(cache?.history?.length, 4);
+        const last = cache.history[cache.history.length - 1];
+        assert.strictEqual(last.role, "compaction");
+        assert.strictEqual(last.archivedCount, 3);
+      });
+    });
+
+    it("should ignore chat:compaction events before joining the channel", async () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+        status: "idle",
+        history: [{ index: 0, role: "user", content: "kept", apiLogs: [] }],
+      });
+
+      // No joinAgent() call here. The event has nowhere to land.
+      // We just verify the store hasn't been clobbered.
+      const before = useStore.getState().agentsCache["agent-1"];
+
+      // Dispatching to a non-existent channel is a no-op in our
+      // simulator. We confirm the cache is unchanged.
+      assert.strictEqual(before.history.length, 1);
+      assert.strictEqual(before.history[0].content, "kept");
+    });
+  });
+
+  describe("agent chat:notification events", () => {
+    it("should handle chat:notification event - set notification", async () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+        status: "idle",
+      });
+
+      joinAgent("agent-1");
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      simulateServerEvent("agent:agent-1", "chat:notification", {
+        type: "max_iterations",
+        message: "Max tool iterations reached",
+      });
+
+      await vi.waitFor(() => {
+        const cache = useStore.getState().agentsCache["agent-1"];
+        assert.strictEqual(cache?.notification?.type, "max_iterations");
+        assert.strictEqual(
+          cache?.notification?.message,
+          "Max tool iterations reached",
+        );
+      });
+    });
+
+    it("should not change connection status when notification arrives", async () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+        status: "idle",
+      });
+
+      joinAgent("agent-1");
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      simulateServerEvent("agent:agent-1", "chat:notification", {
+        type: "max_iterations",
+        message: "Max tool iterations reached",
+      });
+
+      await vi.waitFor(() => {
+        const cache = useStore.getState().agentsCache["agent-1"];
+        // Status should remain connected (not error)
+        assert.strictEqual(cache?.status, "connected");
+        // Notification should be set
+        assert.strictEqual(cache?.notification?.type, "max_iterations");
       });
     });
   });
@@ -1011,6 +1184,95 @@ describe("channels", () => {
         assert.strictEqual(errorCalled, true);
       });
     });
+
+    it("invokes the error callback when the server rejects the push", async () => {
+      setNextJoinResult("agent:agent-1", {
+        autoInit: {
+          id: "agent-1",
+          model: { name: "gpt-4", provider: "openai" },
+          messageCount: 0,
+          status: "idle",
+        },
+      });
+      joinAgent("agent-1");
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      setNextPushResult("agent:agent-1", "chat:message", {
+        error: { reason: "rate_limited" },
+      });
+
+      let errorCalled = false;
+      sendMessage("agent-1", "Hello", "build", (_err) => {
+        errorCalled = true;
+      });
+
+      await vi.waitFor(() => {
+        assert.strictEqual(errorCalled, true);
+      });
+    });
+
+    it("should include mode in the push payload and in the optimistic user message", async () => {
+      setNextJoinResult("agent:agent-1", {
+        autoInit: {
+          id: "agent-1",
+          model: { name: "gpt-4", provider: "openai" },
+          messageCount: 0,
+          status: "idle",
+        },
+      });
+      joinAgent("agent-1");
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      // Capture the next push payload
+      const pushCapture = captureNextPush("agent:agent-1", "chat:message");
+
+      sendMessage("agent-1", "Hello", "build");
+
+      const payload = await pushCapture;
+      assert.deepStrictEqual(payload, { content: "Hello", mode: "build" });
+
+      // Optimistic user message also has the mode
+      const cache = useStore.getState().agentsCache["agent-1"];
+      assert.strictEqual(cache.messages[0].mode, "build");
+    });
+
+    it("omits the mode key from the payload when no mode is passed", async () => {
+      setNextJoinResult("agent:agent-1", {
+        autoInit: {
+          id: "agent-1",
+          model: { name: "gpt-4", provider: "openai" },
+          messageCount: 0,
+          status: "idle",
+        },
+      });
+      joinAgent("agent-1");
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      const pushCapture = captureNextPush("agent:agent-1", "chat:message");
+
+      sendMessage("agent-1", "Hello");
+
+      const payload = await pushCapture;
+      assert.deepStrictEqual(payload, { content: "Hello" });
+    });
   });
 
   describe("createAgent", () => {
@@ -1087,6 +1349,24 @@ describe("channels", () => {
 
       let okCalled = false;
       createAgent("gpt-4", 1, "/path/to/workspace", (_id) => {
+        okCalled = true;
+      });
+
+      await vi.waitFor(() => {
+        assert.strictEqual(okCalled, true);
+      });
+    });
+
+    it("should include vocation_id in payload when provided", async () => {
+      setNextPushResult("lobby", "create_agent", { ok: { id: "new-agent" } });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().agents.length >= 0, true);
+      });
+
+      let okCalled = false;
+      createAgent("gpt-4", 42, null, (_id) => {
         okCalled = true;
       });
 

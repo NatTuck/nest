@@ -11,6 +11,10 @@ defmodule Nest.DotConfig do
   # provider can override this via the `timeout` key in config.toml.
   @default_timeout_seconds 300
 
+  # Default cap on consecutive tool-call iterations per agent chat turn.
+  # Override with the top-level `max-tool-iterations` key in config.toml.
+  @default_max_tool_iterations 25
+
   defmodule Provider do
     @moduledoc """
     Provider configuration struct.
@@ -145,6 +149,21 @@ defmodule Nest.DotConfig do
   end
 
   @doc """
+  Returns the configured `max-tool-iterations` value, or `nil` when unset.
+  Callers should fall back to `default_max_tool_iterations/0` when this
+  returns `nil`.
+  """
+  def max_tool_iterations(config) do
+    Map.get(config, :max_tool_iterations)
+  end
+
+  @doc """
+  Returns the hardcoded fallback for the `max-tool-iterations` setting,
+  used when config.toml does not specify a value.
+  """
+  def default_max_tool_iterations, do: @default_max_tool_iterations
+
+  @doc """
   Resolve API key value (handles env var substitution)
   """
   def resolve_api_key(key_value) do
@@ -214,8 +233,20 @@ defmodule Nest.DotConfig do
 
     %{
       providers: providers,
-      models: models
+      models: models,
+      max_tool_iterations: parse_max_tool_iterations(Map.get(raw_config, "max-tool-iterations"))
     }
+  end
+
+  # Parses and validates the top-level `max-tool-iterations` setting.
+  # Returns `nil` when absent. Raises on invalid values so config errors
+  # surface at startup, not on the first chat turn.
+  defp parse_max_tool_iterations(nil), do: nil
+
+  defp parse_max_tool_iterations(n) when is_integer(n) and n > 0, do: n
+
+  defp parse_max_tool_iterations(other) do
+    raise "Invalid max-tool-iterations #{inspect(other)}: must be a positive integer"
   end
 
   defp parse_provider(name, data) do

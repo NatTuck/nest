@@ -137,6 +137,18 @@ export function joinAgent(agentId) {
     checkAndSync(agentId, payload.messageCount);
   });
 
+  // The backend broadcasts a chat:compaction event when a
+  // compaction completes. The payload carries the marker (so the
+  // UI can render a divider) and the full archived history. The
+  // store replaces the agent's `history` field with the new
+  // list, leaving `messages` untouched (the backend has already
+  // truncated it to the compacted form).
+  channel.on("chat:compaction", (payload) => {
+    const history = Array.isArray(payload?.history) ? payload.history : [];
+    const marker = payload?.marker ?? null;
+    store.setAgentHistory(agentId, history, marker);
+  });
+
   channel.on("chat:delta", (delta) => {
     const result = store.addChatDelta(agentId, delta);
     if (result.needsSync) {
@@ -150,10 +162,38 @@ export function joinAgent(agentId) {
   channel.on("chat:error", (error) => {
     store.setAgentError(agentId, error.content);
     store.clearPartial(agentId);
+    store.setWaitingForResponse(agentId, false);
   });
 
   channel.on("chat:message", (message) => {
     store.addChatMessage(agentId, message);
+  });
+
+  channel.on("chat:status", (payload) => {
+    // The backend may include the resolved context-window limit and
+    // the running usage totals on status pushes (especially the one
+    // that follows a successful /models probe and the ones that fire
+    // after each LLM response). Forward those fields through
+    // `setAgentState`'s extra-arg path so the chip can update live.
+    const extra = {};
+
+    if (payload.contextLimit !== undefined) {
+      extra.contextLimit = payload.contextLimit;
+    }
+
+    if (payload.contextLimitSource !== undefined) {
+      extra.contextLimitSource = payload.contextLimitSource;
+    }
+
+    if (payload.usage !== undefined) {
+      extra.usage = payload.usage;
+    }
+
+    store.setAgentState(agentId, payload.status, extra);
+  });
+
+  channel.on("chat:notification", (payload) => {
+    store.setNotification(agentId, payload);
   });
 
   channel.onClose(() => {
@@ -207,21 +247,36 @@ export function leaveAgent(agentId) {
 }
 
 /**
- * Send chat message to specific agent
+ * Send chat message to specific agent. The optional `mode` selects
+ * the sandbox profile for this message's tool calls. The optional
+ * `onError` callback fires when the server rejects the push.
+ *
+ * Call shape is overloaded for back-compat:
+ *   sendMessage(id, content)
+ *   sendMessage(id, content, onError)
+ *   sendMessage(id, content, mode, onError)
  */
-export function sendMessage(agentId, content, onError) {
+export function sendMessage(agentId, content, modeOrOnError, onError) {
+  // Back-compat: 3rd arg may be a function (onError) or a string (mode)
+  const mode = typeof modeOrOnError === "function" ? undefined : modeOrOnError;
+  const errorCallback =
+    typeof modeOrOnError === "function" ? modeOrOnError : onError;
+
   const channel = agentChannels.get(agentId);
   if (!channel) {
-    if (onError) onError(new Error("Not connected to agent"));
+    if (errorCallback) errorCallback(new Error("Not connected to agent"));
     return;
   }
 
   // Optimistically add user message to cache
   const store = getStore();
-  store.addUserMessage(agentId, content);
+  store.addUserMessage(agentId, content, mode);
+
+  const payload = { content };
+  if (mode) payload.mode = mode;
 
   channel
-    .push("chat:message", { content })
+    .push("chat:message", payload)
     .receive("ok", () => {
       // Message acknowledged, waiting for assistant response
       store.setWaitingForResponse(agentId, true);
@@ -229,7 +284,7 @@ export function sendMessage(agentId, content, onError) {
     .receive("error", (err) => {
       // Clear partial on error
       store.clearPartial(agentId);
-      if (onError) onError(err);
+      if (errorCallback) errorCallback(err);
     });
 }
 

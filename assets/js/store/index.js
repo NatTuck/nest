@@ -189,6 +189,9 @@ export const useStore = create(
                     error: null,
                     model: null,
                     waitingForResponse: false,
+                    contextLimit: null,
+                    contextLimitSource: null,
+                    usage: null,
                   },
             },
           };
@@ -225,13 +228,39 @@ export const useStore = create(
               ...state.agentsCache,
               [id]: {
                 messages: finalMessages,
+                history: payload.history ?? existing?.history ?? [],
                 streaming: streaming,
                 partial: streaming, // Keep partial for backward compat
                 lastIndex,
                 status: "connected",
+                agentState: payload.status || "idle",
                 error: null,
                 model: payload.model || existing?.model || null,
                 vocation: payload.vocation || existing?.vocation || null,
+                // Persist mode metadata from the init payload so the
+                // ChatPage can render the mode selector. Fall back to
+                // existing cache values on mid-stream rejoins (where
+                // the chat:status response may not include modes).
+                modes: payload.modes ?? existing?.modes ?? null,
+                defaultMode:
+                  payload.defaultMode ?? existing?.defaultMode ?? null,
+                currentMode:
+                  payload.currentMode ?? existing?.currentMode ?? null,
+                // Context-window limit + how it was discovered. Backend
+                // may set :config (read from config.toml), :vllm,
+                // :openrouter, :llama_cpp (probed from /models), or
+                // :default (128k fallback). The chip only uses the
+                // number; the source is for debugging / future UI.
+                contextLimit:
+                  payload.contextLimit ?? existing?.contextLimit ?? null,
+                contextLimitSource:
+                  payload.contextLimitSource ??
+                  existing?.contextLimitSource ??
+                  null,
+                // Running token totals from the backend. `prompt_tokens`
+                // (overwritten per LLM call) drives the chip numerator;
+                // the rest are session-wide sums.
+                usage: payload.usage ?? existing?.usage ?? null,
                 waitingForResponse: false,
               },
             },
@@ -274,7 +303,140 @@ export const useStore = create(
                     status: "error",
                     error,
                     model: null,
+                    contextLimit: null,
+                    contextLimitSource: null,
+                    usage: null,
                   },
+            },
+          };
+        });
+      },
+
+      /**
+       * Set agent's GenServer state (idle, streaming, executing_tools).
+       * Optionally updates the resolved context-window limit and its
+       * source in the same write — used by the chat:status handler
+       * when the backend sends back a freshly discovered limit.
+       */
+      setAgentState: (id, agentState, extra) => {
+        set((state) => {
+          const cache = state.agentsCache[id];
+          if (!cache) return state;
+          return {
+            agentsCache: {
+              ...state.agentsCache,
+              [id]: { ...cache, agentState, ...(extra || {}) },
+            },
+          };
+        });
+      },
+
+      /**
+       * Update only the context-window limit (and optional source)
+       * for an agent. No-op if the agent isn't in the cache.
+       */
+      setAgentContextLimit: (id, contextLimit, contextLimitSource) => {
+        set((state) => {
+          const cache = state.agentsCache[id];
+          if (!cache) return state;
+          return {
+            agentsCache: {
+              ...state.agentsCache,
+              [id]: {
+                ...cache,
+                contextLimit:
+                  contextLimit !== undefined
+                    ? contextLimit
+                    : cache.contextLimit,
+                contextLimitSource:
+                  contextLimitSource !== undefined
+                    ? contextLimitSource
+                    : cache.contextLimitSource,
+              },
+            },
+          };
+        });
+      },
+
+      /**
+       * Update the running token-usage totals for an agent. No-op if
+       * the agent isn't in the cache, or if `usage` is nullish.
+       */
+      setAgentUsage: (id, usage) => {
+        if (usage == null) return;
+        set((state) => {
+          const cache = state.agentsCache[id];
+          if (!cache) return state;
+          return {
+            agentsCache: {
+              ...state.agentsCache,
+              [id]: { ...cache, usage },
+            },
+          };
+        });
+      },
+
+      /**
+       * Replace the agent's archived history with the new list sent
+       * by the backend's chat:compaction event. The store keeps the
+       * active `messages` list untouched (the backend has already
+       * truncated state.messages to the compacted form) and
+       * re-keys `history` with the new array.
+       *
+       * The marker from the broadcast is appended to history so
+       * the UI can render a divider at the boundary.
+       */
+      setAgentHistory: (id, history, marker) => {
+        if (!Array.isArray(history)) return;
+        set((state) => {
+          const cache = state.agentsCache[id];
+          if (!cache) return state;
+
+          // The backend may have broadcast the marker separately
+          // (e.g. for a UI notification) or as the tail of the
+          // history array. Prefer the explicit `marker` argument
+          // when present so the caller controls placement.
+          const nextHistory =
+            marker && !history.some((m) => m.role === "compaction")
+              ? [...history, marker]
+              : history;
+
+          return {
+            agentsCache: {
+              ...state.agentsCache,
+              [id]: { ...cache, history: nextHistory },
+            },
+          };
+        });
+      },
+
+      /**
+       * Set a notification banner for the agent
+       */
+      setNotification: (id, notification) => {
+        set((state) => {
+          const cache = state.agentsCache[id];
+          if (!cache) return state;
+          return {
+            agentsCache: {
+              ...state.agentsCache,
+              [id]: { ...cache, notification },
+            },
+          };
+        });
+      },
+
+      /**
+       * Clear the notification banner for the agent
+       */
+      clearNotification: (id) => {
+        set((state) => {
+          const cache = state.agentsCache[id];
+          if (!cache) return state;
+          return {
+            agentsCache: {
+              ...state.agentsCache,
+              [id]: { ...cache, notification: null },
             },
           };
         });
@@ -570,7 +732,7 @@ export const useStore = create(
       /**
        * Add user message (optimistic)
        */
-      addUserMessage: (id, content) => {
+      addUserMessage: (id, content, mode) => {
         set((state) => {
           const cache = state.agentsCache[id];
           if (!cache) return state;
@@ -580,6 +742,7 @@ export const useStore = create(
             index: newIndex,
             role: "user",
             content,
+            mode,
             timestamp: new Date().toISOString(),
           };
 
@@ -612,6 +775,7 @@ export const useStore = create(
                 waitingForResponse: true,
                 streaming: streamingState,
                 partial: partialState,
+                notification: null,
               },
             },
           };
@@ -706,11 +870,19 @@ export const useStore = create(
               [id]: {
                 ...cache,
                 messages: mergedMessages,
+                history: payload.history ?? cache.history ?? [],
                 streaming: streaming,
                 partial: streaming,
                 status: cache.status,
                 agentState: payload.status || cache.agentState,
                 lastIndex,
+                // Carry over usage / contextLimit fields if a sync
+                // payload ever includes them; otherwise preserve
+                // whatever the cache already has.
+                contextLimit: payload.contextLimit ?? cache.contextLimit,
+                contextLimitSource:
+                  payload.contextLimitSource ?? cache.contextLimitSource,
+                usage: payload.usage ?? cache.usage,
               },
             },
           };

@@ -36,9 +36,18 @@ defmodule Nest.DataCase do
 
   @doc """
   Sets up the sandbox based on the test tags.
+
+  Tests tagged with `:db_shared` (or that match the optional second
+  argument) opt into `shared: true`, which lets spawned children
+  (e.g. an `Agent` GenServer whose `init/1` queries the DB) use
+  the test's checked-out connection without a separate
+  `Sandbox.allow/3` call. This is needed for async tests that
+  start a GenServer doing DB work in `init/1`; without it, the
+  GenServer's `init/1` fails with `DBConnection.OwnershipError`.
   """
-  def setup_sandbox(tags) do
-    pid = Sandbox.start_owner!(Nest.Repo, shared: not tags[:async])
+  def setup_sandbox(tags, db_shared_tag \\ :db_shared) do
+    shared = tags[db_shared_tag] || not tags[:async]
+    pid = Sandbox.start_owner!(Nest.Repo, shared: shared)
     on_exit(fn -> Sandbox.stop_owner(pid) end)
   end
 

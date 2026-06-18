@@ -17,6 +17,7 @@ const mockState = {
   joinBehaviors: new Map(), // topic -> { type: 'ok' | 'error' | 'timeout', payload?: any }
   pushBehaviors: new Map(), // "topic:event" -> { type: 'ok' | 'error' | 'timeout', payload?: any }
   pendingPushes: new Map(), // "topic:event" -> { ok: fn, error: fn, timeout: fn }
+  pushCaptures: new Map(), // "topic:event" -> { resolve: fn }
   eventHandlers: new Map(), // "topic:event" -> handler function
 };
 
@@ -34,6 +35,7 @@ export function resetMockSocket() {
   mockState.pushBehaviors.clear();
   mockState.pendingPushes.clear();
   mockState.eventHandlers.clear();
+  mockState.pushCaptures.clear();
 }
 
 /**
@@ -60,6 +62,17 @@ export function setNextJoinResult(topic, config) {
 export function setNextPushResult(topic, event, config) {
   const key = `${topic}:${event}`;
   mockState.pushBehaviors.set(key, config);
+}
+
+/**
+ * Capture the next push payload sent to a topic+event. Returns a
+ * promise that resolves with the captured payload.
+ */
+export function captureNextPush(topic, event) {
+  return new Promise((resolve) => {
+    const key = `${topic}:${event}`;
+    mockState.pushCaptures.set(key, { resolve });
+  });
 }
 
 /**
@@ -175,11 +188,24 @@ function createMockChannel(topic) {
       return joinReceiver;
     },
 
-    push(event, _payload) {
+    push(event, payload) {
       const key = `${topic}:${event}`;
       const behavior = mockState.pushBehaviors.get(key) || { ok: {} };
 
       mockState.pushBehaviors.delete(key);
+
+      // If a capture is registered, resolve it with the payload and skip
+      // the regular receive flow (consumed by captureNextPush).
+      const capture = mockState.pushCaptures.get(key);
+      if (capture) {
+        mockState.pushCaptures.delete(key);
+        setTimeout(() => capture.resolve(payload), 1);
+        return {
+          receive: () => ({
+            receive: () => ({}),
+          }),
+        };
+      }
 
       const pushReceiver = {
         receive(status, callback) {

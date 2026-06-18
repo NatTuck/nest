@@ -2,7 +2,7 @@ defmodule NestWeb.LobbyChannelTest do
   @moduledoc """
   Tests for the LobbyChannel.
   """
-  use NestWeb.ChannelCase
+  use NestWeb.ChannelCase, async: false
 
   alias Nest.Agents
   alias Nest.Vocations
@@ -43,7 +43,11 @@ defmodule NestWeb.LobbyChannelTest do
           description: "A test vocation",
           system_prompt: "You are a test assistant.",
           tools: ["read_file"],
-          modes: %{"chat" => %{}}
+          modes: %{
+            "chat" => %{
+              "caps" => %{"net" => false, "fs" => %{"read" => ["/"], "write" => []}}
+            }
+          }
         })
 
       # Now connect socket and join lobby
@@ -61,7 +65,12 @@ defmodule NestWeb.LobbyChannelTest do
       assert test_vocation.description == "A test vocation"
       assert test_vocation.system_prompt == "You are a test assistant."
       assert test_vocation.tools == ["read_file"]
-      assert test_vocation.modes == %{"chat" => %{}}
+
+      assert test_vocation.modes == %{
+               "chat" => %{
+                 "caps" => %{"net" => false, "fs" => %{"read" => ["/"], "write" => []}}
+               }
+             }
     end
 
     test "vocations are JSON-serializable and roundtrip correctly" do
@@ -72,7 +81,14 @@ defmodule NestWeb.LobbyChannelTest do
           description: "Testing JSON encoding",
           system_prompt: "System prompt here",
           tools: ["read_file", "write_file"],
-          modes: %{"chat" => %{"net" => false}, "build" => %{"net" => true}}
+          modes: %{
+            "chat" => %{
+              "caps" => %{"net" => false, "fs" => %{"read" => ["/"], "write" => []}}
+            },
+            "build" => %{
+              "caps" => %{"net" => true, "fs" => %{"read" => ["/"], "write" => []}}
+            }
+          }
         })
 
       # Now connect socket and join lobby
@@ -99,7 +115,15 @@ defmodule NestWeb.LobbyChannelTest do
       assert test_vocation["description"] == "Testing JSON encoding"
       assert test_vocation["system_prompt"] == "System prompt here"
       assert test_vocation["tools"] == ["read_file", "write_file"]
-      assert test_vocation["modes"] == %{"chat" => %{"net" => false}, "build" => %{"net" => true}}
+
+      assert test_vocation["modes"] == %{
+               "chat" => %{
+                 "caps" => %{"net" => false, "fs" => %{"read" => ["/"], "write" => []}}
+               },
+               "build" => %{
+                 "caps" => %{"net" => true, "fs" => %{"read" => ["/"], "write" => []}}
+               }
+             }
     end
 
     test "returns models with correct JSON structure" do

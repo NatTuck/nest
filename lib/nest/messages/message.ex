@@ -4,9 +4,16 @@ defmodule Nest.Messages.Message do
 
   Role-specific structs with tagged tuple wrapper.
   Follows the canonical schema from notes/llm_schema.md.
+
+  `{:compaction, Compaction.t()}` is a non-LLM-visible marker
+  that lives in the agent's `history` list (not `messages`).
+  It marks the boundary between archived and active history
+  and tells the chat UI to render a divider with an "expand
+  archived messages" affordance.
   """
 
   alias Nest.Messages.Assistant
+  alias Nest.Messages.Compaction
   alias Nest.Messages.System
   alias Nest.Messages.Tool
   alias Nest.Messages.User
@@ -16,8 +23,9 @@ defmodule Nest.Messages.Message do
           | {:user, User.t()}
           | {:assistant, Assistant.t()}
           | {:tool, Tool.t()}
+          | {:compaction, Compaction.t()}
 
-  @type role :: :system | :user | :assistant | :tool
+  @type role :: :system | :user | :assistant | :tool | :compaction
 
   @doc """
   Convert a tagged tuple message to JSON-compatible map.
@@ -28,6 +36,7 @@ defmodule Nest.Messages.Message do
   def to_json({:user, %User{} = msg}), do: User.to_json(msg)
   def to_json({:assistant, %Assistant{} = msg}), do: Assistant.to_json(msg)
   def to_json({:tool, %Tool{} = msg}), do: Tool.to_json(msg)
+  def to_json({:compaction, %Compaction{} = msg}), do: Compaction.to_json(msg)
 
   @doc """
   Format api_logs for JSON output, ensuring consistent string keys.
@@ -66,35 +75,9 @@ defmodule Nest.Messages.Message do
 
   defp format_api_payload(payload), do: payload
 
-  # Special handling for LangChain.Message.ContentPart struct
-  defp format_api_payload_value(%{__struct__: struct_name} = v) do
-    # Handle ContentPart structs - extract content from text parts
-    if String.ends_with?(to_string(struct_name), ".ContentPart") or
-         struct_name == LangChain.Message.ContentPart do
-      map = Map.from_struct(v)
-      formatted = format_api_payload(map)
-      # If it's a text content part, extract just the content string
-      if formatted["type"] == "text" and is_binary(formatted["content"]),
-        do: formatted["content"],
-        else: formatted
-    else
-      format_api_payload(Map.from_struct(v))
-    end
-  end
-
   defp format_api_payload_value(v) when is_struct(v), do: format_api_payload(Map.from_struct(v))
   defp format_api_payload_value(v) when is_map(v), do: format_api_payload(v)
-  # Special handling for lists - check if it's a list of ContentParts and extract content
-  defp format_api_payload_value(v) when is_list(v) do
-    formatted_list = Enum.map(v, &format_api_payload_value/1)
-    # If all items are strings (extracted from ContentParts), join them
-    # Otherwise, return the formatted list
-    if Enum.all?(formatted_list, &is_binary/1) do
-      Enum.join(formatted_list, "")
-    else
-      formatted_list
-    end
-  end
+  defp format_api_payload_value(v) when is_list(v), do: Enum.map(v, &format_api_payload_value/1)
 
   defp format_api_payload_value(v) when is_atom(v) and v not in [nil, true, false],
     do: to_string(v)

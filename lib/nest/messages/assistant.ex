@@ -4,15 +4,35 @@ defmodule Nest.Messages.Assistant do
   alias Nest.Messages.Message
   alias Nest.Messages.ToolCall
 
-  defstruct [:index, :content, :thinking, :tool_calls, :refusal, :timestamp, :metadata, :api_logs]
+  defstruct [
+    :index,
+    :content,
+    :thinking,
+    :thinking_signature,
+    :tool_calls,
+    :refusal,
+    :timestamp,
+    :metadata,
+    :api_logs
+  ]
 
   @type t :: %__MODULE__{
           index: non_neg_integer(),
           content: String.t() | nil,
           thinking: String.t() | nil,
+          # Anthropic's extended-thinking signature, which must be
+          # echoed back on subsequent turns so the model can verify
+          # the prior reasoning block. `nil` for providers that
+          # don't emit one (OpenAI reasoning models emit `thinking`
+          # text only).
+          thinking_signature: String.t() | nil,
           tool_calls: [ToolCall.t()] | nil,
           refusal: String.t() | nil,
           timestamp: DateTime.t() | nil,
+          # Free-form bag for client-specific data. Known keys today:
+          # none — clients with provider-specific payloads should
+          # add named fields to this struct rather than reach into
+          # metadata.
           metadata: map() | nil,
           api_logs: [map()] | nil
         }
@@ -29,6 +49,7 @@ defmodule Nest.Messages.Assistant do
       "toolCalls" => format_tool_calls(msg.tool_calls),
       "toolResults" => nil,
       "thinking" => msg.thinking,
+      "thinkingSignature" => msg.thinking_signature,
       "apiLogs" => Message.format_api_logs(msg.api_logs)
     }
   end
