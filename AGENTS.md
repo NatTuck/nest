@@ -44,6 +44,8 @@ logs correctly, capture and test those logs. If the log outputs unexpected, fix
 them.
 - It doesn't matter if the test failures or test prints were there before you
 started working. If you see them, fix them.
+- The Elixir test suite must take less than 10 seconds to run. If it ever takes
+longer, that's a major issue that needs to be addressed immediately.
 
 ### Test Coverage
 
