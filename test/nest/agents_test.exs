@@ -19,9 +19,10 @@ defmodule Nest.AgentsTest do
       Agents.delete_agent(id)
     end
 
-    parent_dir = "/tmp/nest-#{System.pid()}"
-    File.rm_rf(parent_dir)
-    on_exit(fn -> File.rm_rf(parent_dir) end)
+    # Note: we don't wipe /tmp/nest-VMPID/ because the path is
+    # shared across all tests in this BEAM VM and wiping in setup
+    # races with concurrent async tests' agents. Per-agent cleanup
+    # is the agent's own responsibility in `terminate/2`.
     on_exit(fn -> TaskDrain.drain() end)
 
     :ok

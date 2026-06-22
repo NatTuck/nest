@@ -28,7 +28,10 @@ defmodule NestWeb.AgentChannel do
         # All channels connected to this agent will receive broadcasts
         Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
-        # Send initial state
+        # Send initial state via handle_info. The init is published
+        # to the test's mailbox as a socket push. Tests use
+        # `assert_push "init"` with a generous timeout (the init is
+        # the first event after the channel is established).
         send(self(), {:after_join, agent})
 
         {:ok, assign(socket, :agent_id, agent_id)}
@@ -40,7 +43,6 @@ defmodule NestWeb.AgentChannel do
 
   @impl true
   def handle_info({:after_join, agent}, socket) do
-    # Build init payload with partial when streaming
     init_payload = %{
       "id" => agent.id,
       "model" => agent.model,

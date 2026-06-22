@@ -1,0 +1,221 @@
+defmodule Nest.Agents.Agent.Compaction do
+  @moduledoc """
+  Background compaction tasks. Spawns a Task that runs the
+  two-pass Compactor on the agent's messages, sends the result
+  back to the agent pid via `send/2`.
+
+  Communicates with the GenServer via messages only — never touches
+  the Agent state struct directly.
+
+  ## Continuations
+
+  The continuation tuple describes what should happen after
+  compaction completes. Three shapes are supported:
+    * `{:chat_continuation, {content}}` — the original chat task
+      wants to proceed to the next LLM call.
+    * `{:preflight_continuation, task_pid}` — the pre-flight check
+      asked for compaction and is waiting for the result.
+    * `{:compact_context_continuation, task_pid}` — the
+      `compact_context` tool asked for compaction.
+  """
+
+  alias Nest.LLM.Client
+  alias Nest.LLM.ClientConfig
+  alias Nest.LLM.RunRequest
+  alias Nest.LLM.RunResponse
+  alias Nest.Tokens.Compactor
+
+  require Logger
+
+  @summarization_prompt """
+  You are a conversation summarizer.
+
+  Produce a concise prose summary preserving:
+    - The user's current goal
+    - Key facts established
+    - Decisions made
+    - Any unresolved TODOs
+
+  Drop redundant tool outputs and resolved sub-tasks. Be brief.
+  """
+
+  @type continuation ::
+          {:chat_continuation, {String.t()}}
+          | {:preflight_continuation, pid()}
+          | {:compact_context_continuation, pid()}
+
+  # Public API
+
+  @doc """
+  Spawns a Task that runs the two-pass Compactor on
+  `messages_to_compact`, then sends `{:compaction_done,
+  new_messages, continuation}` back to `agent_pid`. The
+  continuation is whatever was queued to happen after compaction
+  (e.g. the next chat turn).
+  """
+  @spec spawn(pid(), ClientConfig.t(), pos_integer() | nil, [Message.t()], continuation()) ::
+          Task.t()
+  def spawn(agent_pid, client_config, context_limit, messages_to_compact, continuation) do
+    Task.Supervisor.start_child(Nest.Agents.TaskSupervisor, fn ->
+      result =
+        try do
+          llm_call = build_summarization_llm_call(client_config, agent_pid)
+
+          {:ok, Compactor.compact(messages_to_compact, context_limit, llm_call)}
+        catch
+          kind, reason ->
+            Logger.warning(
+              "Compaction failed: #{inspect(kind)} #{inspect(reason)}. Proceeding with original messages."
+            )
+
+            {:error, {kind, reason}}
+        end
+
+      case result do
+        {:ok, new_messages} ->
+          send(agent_pid, {:compaction_done, new_messages, continuation})
+
+        {:error, reason} ->
+          send_failure(agent_pid, messages_to_compact, continuation, reason)
+      end
+    end)
+  end
+
+  @doc """
+  Assigns monotonically-increasing message indices starting at
+  `start_index`. Pure utility, exposed for the GenServer's
+  `archive_and_compact/2` to use.
+  """
+  @spec assign_indices([Message.t()], non_neg_integer()) :: [Message.t()]
+  def assign_indices(messages, start_index) do
+    {messages, _} =
+      Enum.map_reduce(messages, start_index, fn msg, idx ->
+        {assign_index(msg, idx), idx + 1}
+      end)
+
+    messages
+  end
+
+  # Private
+
+  # For chat and compact_context continuations, the GenServer's
+  # :compaction_done handler treats the input as-is and broadcasts
+  # a success log line. For preflight, the task is blocked on a
+  # receive and needs an explicit failure message so it can fall
+  # back to its existing snapshot.
+  defp send_failure(
+         agent_pid,
+         _messages_to_compact,
+         {:preflight_continuation, task_pid},
+         reason
+       ) do
+    send(agent_pid, {:compaction_failed_for_preflight, task_pid, reason})
+  end
+
+  defp send_failure(agent_pid, messages_to_compact, continuation, _reason) do
+    send(agent_pid, {:compaction_done, messages_to_compact, continuation})
+  end
+
+  # The LLM call the compactor uses. Wraps the chat client so the
+  # summarization LLM request is routed through the same provider
+  # the agent is using (KV cache prefix reuse, etc.).
+  #
+  # Deltas are sent to `compaction_pid` (the compactor task), not
+  # broadcast — we don't want summarization progress to leak into
+  # the chat PubSub topic. The compactor task ignores them.
+  defp build_summarization_llm_call(%ClientConfig{} = client_config, compaction_pid) do
+    fn messages ->
+      request = %RunRequest{
+        messages: reject_system_messages(messages),
+        tools: nil,
+        tool_choice: :none,
+        model: client_config.model,
+        system_prompt: @summarization_prompt,
+        stream: true,
+        metadata: %{}
+      }
+
+      opts = [
+        base_url: client_config.base_url,
+        api_key: client_config.api_key,
+        receive_timeout: client_config.receive_timeout
+      ]
+
+      case client_config.client.run(request, opts) do
+        {:ok, stream} ->
+          text = consume_quietly(stream, compaction_pid)
+          text || ""
+
+        {:error, _reason} ->
+          ""
+      end
+    end
+  end
+
+  defp reject_system_messages(messages) do
+    Enum.reject(messages, fn
+      {:system, _} -> true
+      _ -> false
+    end)
+  end
+
+  # Consume a streaming response without broadcasting. The
+  # `compaction_pid` receives delta messages (so the task can
+  # observe progress if it wants), but no PubSub broadcast.
+  defp consume_quietly(stream, compaction_pid) do
+    acc = Client.new_accumulator()
+
+    {_, response, _error, _} =
+      Enum.reduce(
+        stream,
+        {acc, nil, nil, %{chars: 0, thinking_chars: 0}},
+        fn
+          {:text, text}, {acc, _response, error, sent} ->
+            send(compaction_pid, {:delta_received, text, :text})
+            {Client.accumulate(acc, {:text, text}), nil, error, sent}
+
+          {:thinking, text}, {acc, response, error, sent} ->
+            send(compaction_pid, {:delta_received, text, :thinking})
+            {Client.accumulate(acc, {:thinking, text}), response, error, sent}
+
+          {:tool_call_start, event}, {acc, response, error, sent} ->
+            {Client.accumulate(acc, {:tool_call_start, event}), response, error, sent}
+
+          {:tool_call_delta, event}, {acc, response, error, sent} ->
+            {Client.accumulate(acc, {:tool_call_delta, event}), response, error, sent}
+
+          {:thinking_signature, sig}, {acc, response, error, sent} ->
+            {Client.accumulate(acc, {:thinking_signature, sig}), response, error, sent}
+
+          {:usage, usage}, {acc, response, error, sent} ->
+            {Client.accumulate(acc, {:usage, usage}), response, error, sent}
+
+          {:finish_reason, _reason}, {acc, response, error, sent} ->
+            {Client.accumulate(acc, {:finish_reason, nil}), response, error, sent}
+
+          {:refusal, text}, {acc, response, error, sent} ->
+            {Client.accumulate(acc, {:refusal, text}), response, error, sent}
+
+          {:done, %{response: r}}, {acc, _response, error, sent} ->
+            {acc, r, error, sent}
+
+          {:error, reason}, {acc, response, _error, sent} ->
+            {acc, response, reason, sent}
+
+          other, {acc, response, error, sent} ->
+            {Client.accumulate(acc, other), response, error, sent}
+        end
+      )
+
+    case response do
+      %RunResponse{text: text} -> text
+      _ -> nil
+    end
+  end
+
+  defp assign_index({role, %_{} = struct}, idx) do
+    {role, %{struct | index: idx}}
+  end
+
+  defp assign_index(other, _idx), do: other
+end

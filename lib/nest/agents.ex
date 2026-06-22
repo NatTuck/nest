@@ -100,19 +100,8 @@ defmodule Nest.Agents do
   @spec get_agent(String.t()) :: {:ok, map()} | {:error, :not_found}
   def get_agent(id) do
     case Supervisor.get_agent(id) do
-      {:ok, pid} ->
-        get_agent_if_alive(pid)
-
-      {:error, :not_found} ->
-        {:error, :not_found}
-    end
-  end
-
-  defp get_agent_if_alive(pid) do
-    if Process.alive?(pid) do
-      build_agent_data(pid)
-    else
-      {:error, :not_found}
+      {:ok, pid} -> build_agent_data(pid)
+      {:error, :not_found} -> {:error, :not_found}
     end
   end
 
