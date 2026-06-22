@@ -10,13 +10,15 @@ defmodule Nest.Agents.SupervisorTest do
   alias Nest.Test.TaskDrain
 
   setup do
-    # Agents supervision tree is already started by Application
-    # Just need to clean up any agents from previous tests
-    for id <- Supervisor.list_agents() do
-      Supervisor.stop_agent(id)
-    end
-
-    # Note: we don't wipe /tmp/nest-VMPID/ because the path is
+    # Note: we deliberately do NOT call `Supervisor.stop_agent/1`
+    # on every existing agent here. With `async: true`, that would
+    # kill agents created by other concurrent tests (e.g. the
+    # channel tests' per-test agents), which then fail with
+    # "agent not found" at subscribe_and_join. Per-test cleanup
+    # belongs in the test that owns the agent, not in a shared
+    # setup block.
+    #
+    # We also don't wipe /tmp/nest-VMPID/ because the path is
     # shared across all tests in this BEAM VM and wiping in setup
     # races with concurrent async tests' agents. Per-agent cleanup
     # is the agent's own responsibility in `terminate/2`.

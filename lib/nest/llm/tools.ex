@@ -30,23 +30,25 @@ defmodule Nest.LLM.Tools do
   @spec execute([Tool.t()], [ToolCall.t()], map()) :: [ToolResult.t()]
   def execute(tool_defs, calls, context) when is_list(calls) do
     tool_map = index_by_name(tool_defs)
+    Enum.map(calls, &dispatch_call(&1, tool_map, context))
+  end
 
-    Enum.map(calls, fn %ToolCall{id: id, name: name, arguments: args} ->
-      case Map.get(tool_map, name) do
-        nil ->
-          %ToolResult{
-            tool_call_id: id,
-            name: name,
-            content: "Unknown tool: #{name}",
-            arguments: args || %{},
-            is_error: true
-          }
+  defp dispatch_call(%ToolCall{id: id, name: name, arguments: args}, tool_map, context) do
+    args = args || %{}
 
-        %Tool{function: fun} ->
-          result = invoke(fun, args || %{}, context)
-          to_result(id, name, args || %{}, result)
-      end
-    end)
+    case Map.get(tool_map, name) do
+      nil ->
+        %ToolResult{
+          tool_call_id: id,
+          name: name,
+          content: "Unknown tool: #{name}",
+          arguments: args,
+          is_error: true
+        }
+
+      %Tool{function: fun} ->
+        to_result(id, name, args, invoke(fun, args, context))
+    end
   end
 
   @doc """

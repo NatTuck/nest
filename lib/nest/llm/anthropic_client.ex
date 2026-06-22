@@ -135,33 +135,41 @@ defmodule Nest.LLM.AnthropicClient do
   def consume_sse_from_mailbox do
     Stream.resource(
       fn -> {Parser.new(), false, initial_state()} end,
-      fn
-        {_parser, true, _state} ->
-          {:halt, nil}
-
-        {parser, false, state} ->
-          receive do
-            {:req_chunk, chunk} ->
-              {frames, parser} = Parser.feed(parser, chunk)
-              {events, state} = frames_to_canonical_events(frames, state)
-              {events, {parser, false, state}}
-
-            :req_done ->
-              {frames, _} = Parser.flush(parser)
-              {events, final_state} = frames_to_canonical_events(frames, state)
-
-              {events ++ [{:done, %{response: build_done_response(final_state)}}],
-               {parser, true, final_state}}
-          after
-            60_000 ->
-              {[
-                 {:error, :stream_timeout},
-                 {:done, %{response: build_done_response(state)}}
-               ], {parser, true, state}}
-          end
-      end,
+      &next_chunk_or_halt/1,
       fn _ -> :ok end
     )
+  end
+
+  defp next_chunk_or_halt({_parser, true, _state}), do: {:halt, nil}
+  defp next_chunk_or_halt({parser, false, state}), do: receive_chunk_or_done({parser, false, state})
+
+  defp receive_chunk_or_done({parser, false, state}) do
+    receive do
+      {:req_chunk, chunk} ->
+        {frames, parser} = Parser.feed(parser, chunk)
+        {events, state} = frames_to_canonical_events(frames, state)
+        {events, {parser, false, state}}
+
+      :req_done ->
+        {events, final_state} = flush_and_finish(parser, state)
+        {events ++ [{:done, %{response: build_done_response(final_state)}}],
+         {parser, true, final_state}}
+    after
+      60_000 ->
+        timeout_result(parser, state)
+    end
+  end
+
+  defp timeout_result(parser, state) do
+    {[
+       {:error, :stream_timeout},
+       {:done, %{response: build_done_response(state)}}
+     ], {parser, true, state}}
+  end
+
+  defp flush_and_finish(parser, state) do
+    {frames, _} = Parser.flush(parser)
+    frames_to_canonical_events(frames, state)
   end
 
   @impl Nest.LLM.Client

@@ -48,6 +48,8 @@ started working. If you see them, fix them.
 Make it always fail, and make it log "FIXME: HIGH PRIORITY FLAKY TEST".
 - The Elixir test suite must take less than 10 seconds to run. If it ever takes
 longer, that's a major issue that needs to be addressed immediately.
+- **NO** test may be async: false without a clear comment as to why that's
+actually required.
 
 ### Test Coverage
 

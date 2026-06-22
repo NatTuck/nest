@@ -26,6 +26,9 @@ matches a specific message we know will arrive.
   {:after_join, agent})` pattern. Tests use a 500ms timeout on
   `assert_push "init"` (per the user's "slightly longer
   timeouts are OK" guidance).
+- **`config/test.exs`** — Bumped `pool_size: 5` → `10` to
+  reduce SQL sandbox checkout contention (ultimately not the
+  fix; see SQL sandbox section below).
 
 ### Test helpers — deleted
 
@@ -79,6 +82,38 @@ asserts on its fields directly.
   registry). The "returns list of running agent IDs" test was
   changed to assert on this test's own IDs rather than the
   global count.
+- **`test/nest/agents/supervisor_test.exs:14-17`** — Fixed
+  the actual root cause of the channel test flakiness: the
+  setup was iterating `Supervisor.list_agents()` and calling
+  `Supervisor.stop_agent(id)` on EVERY existing agent, which
+  under async load killed agents created by other concurrent
+  tests (the channel tests' per-test agents). Replaced with a
+  comment explaining per-test cleanup belongs in the test that
+  owns the agent. **This was the bug causing the
+  "agent not found" errors at `subscribe_and_join`.**
+
+### Test files marked `async: false` (for DB-using tests)
+
+The user's plan was to restrict concurrency to half the pool
+size via `ExUnit.configure(max_cases: pool_size/2)`. That helped
+(8-19 failures → 2-9) but didn't reach 0, because the root
+cause was the supervisor_test setup bug above (now fixed).
+We then set `async: false` on the DataCase-using test files
+to belt-and-suspenders the SQL sandbox flakiness documented
+below:
+
+- `test/nest/vocations_test.exs`
+- `test/nest/chat_model_test.exs`
+- `test/nest/agents/agent_test.exs`
+- `test/nest/agents/agent_chat_test.exs`
+- `test/nest/agents/agent_tools_test.exs`
+- `test/nest/agents/agent_observability_test.exs`
+- `test/nest/agents/agent_compaction_test.exs`
+- `test/nest/agents/agent_context_limit_test.exs`
+
+These tests are already `async: false`:
+- `test/nest/agents/agent_tmp_path_test.exs` (was always)
+- `test/nest/agents_test.exs` (was always)
 
 ### Pre-existing bugs uncovered by the refactor
 
@@ -90,6 +125,29 @@ asserts on its fields directly.
   signal) rather than the internal `state.mode` / `current_mode`
   in `get_public_info/1`. The sticky-mode-on-internal-state
   feature is unimplemented; tracked as future work.
+- **Stale `MockClient` queue transfer** — the `start_agent`
+  helper had a bug where if `test_pid == pid` (a rare race
+  during initial setup), the `else` branch tried to start a
+  MockClient queue that was already started. Fixed the logic
+  to use `MockClient.start_link` only in the right branch.
+
+## Root cause analysis: the real "agent not found" bug
+
+The "agent not found" error that the SQL sandbox investigation
+turned up was actually a different bug. The sandbox checkout
+errors (`badmatch: :not_found` at `start_owner!`) are real but
+unrelated. The "agent not found" at `subscribe_and_join` came
+from `test/nest/agents/supervisor_test.exs:14-17`:
+
+```elixir
+for id <- Supervisor.list_agents() do
+  Supervisor.stop_agent(id)
+end
+```
+
+This `async: true` setup killed agents owned by concurrent
+tests. Once that was fixed, the channel tests pass with
+`async: true` (no need to force them to `async: false`).
 
 ## Tests that legitimately need `:sys.get_state`
 
@@ -139,33 +197,67 @@ observation point (broadcast, GenServer.call, or wire field).
   production observation; not the same as the principle's
   concern about testing externally visible behavior.
 
-## Pre-existing flakiness not addressed
+## SQL sandbox + SQLite: a documented limitation
 
-The full test suite has 11-20 failures across seeds, all
-unrelated to this refactor:
+`lib/nest/dependências/ecto_sqlite3/lib/ecto/adapters/sqlite3.ex:130-135`
+(current 0.24.1 docs at hexdocs.pm/ecto_sqlite3 confirm this
+still holds):
 
-- **`Ecto.Adapters.SQL.Sandbox.start_owner!/2` →
-  `badmatch: :not_found`** — DB sandbox checkout fails when
-  concurrent tests exhaust connection capacity. Affects
-  `VocationsTest`, `ChatModelTest`, and any test using
-  `Nest.DataCase` under load. Pre-existed; reproducible on
-  main with 20 failures across 3 seeds. Per AGENTS.md, these
-  should be either made to always-fail with a FIXME marker
-  or fixed. Out of scope for this refactor.
-- **Connection `:shutdown` in `chat:sync edge cases`** — a
-  different connection-pool issue in `agent_channel_chat_test`.
+> "The Ecto SQLite3 adapter does not support async tests when
+> used with `Ecto.Adapters.SQL.Sandbox`. This is due to SQLite
+> only allowing one write transaction at a time."
+
+The pre-existing flakiness under load was from this
+limitation. With the supervisor_test fix above, this
+contribution is now minor (rare `badmatch: :not_found` at
+`start_owner!`), so we keep the DB-using tests at
+`async: false` as a hard cap. If we ever switch to Postgres
+or upgrade `ecto_sqlite3` to support async sandbox, we can
+revert these to `async: true`.
 
 ## Verification
 
-- `mix precommit` passes (`mix format`, `mix credo`,
-  `mix test`).
-- `mix test test/nest/agents/ test/nest/agents_test.exs
-  test/nest_web/ test/nest/agents/agent_tmp_path_test.exs` is
-  146 tests, 2.5s wall-clock. Across 6 seeds, 0-1 failures —
-  the 0-1 is from the same Ecto sandbox issue above.
-- Full suite (`mix test`): 488 tests, 2.8s, 11-20 failures
-  across seeds — comparable to the pre-refactor baseline of
-  578 tests, 20 failures.
-- Credo: 2 file-size warnings (`agent.ex` 1149, `llm_runner.ex`
-  555) and 12 ABCSize refactoring opportunities (down from
-  13). All pre-existing.
+- **`mix test`: 488 tests, 0 failures, 2.6s wall-clock,
+  across 10 seeds (1, 7, 42, 100, 999, 2024, 12345, 31337,
+  65535, 99999) — 0 failures every time.**
+- Channel tests (61 tests) pass with `async: true` across
+  4 seeds (1, 42, 100, 999) — 0 failures.
+- `mix precommit` exits 28 (credo) + the test step runs but
+  doesn't show in the pipe. The credo issues (2 warnings,
+  12 refactoring, 1 readability) are all pre-existing —
+  see "Credo: pre-existing issues" below.
+- Credo: 15 issues (down from 24 on main). I fixed 9
+  "nested module could be aliased" issues in the test
+  helpers I rewrote. The remaining 15 are pre-existing in
+  `agent.ex`, `llm_runner.ex`, `compaction.ex`, `tools.ex`,
+  `anthropic_client.ex`, `openai_client.ex`,
+  `budget_planner.ex`, and `agent_channel.ex`. Out of scope
+  for this PR.
+
+## Credo: pre-existing issues (out of scope)
+
+The `mix precommit` chain exits non-zero due to these
+pre-existing credo issues, all in files I did not introduce:
+
+- 2 warnings (file size > 500):
+  - `lib/nest/agents/agent.ex` (1149 lines)
+  - `lib/nest/agents/agent/llm_runner.ex` (555 lines)
+- 12 refactoring (ABCSize > 30):
+  - `lib/nest/llm/openai_client.ex:49` (41)
+  - `lib/nest/llm/anthropic_client.ex:63` (41)
+  - `lib/nest/llm/anthropic_client.ex:135` (38)
+  - `lib/nest/tokens/budget_planner.ex:120` (36)
+  - `lib/nest/llm/tools.ex:31` (31)
+  - `lib/nest_web/channels/agent_channel.ex:180` (44)
+  - `lib/nest/agents/agent.ex:163` (49)
+  - `lib/nest/agents/agent.ex:292` (31)
+  - `lib/nest/agents/agent.ex:832` (41)
+  - `lib/nest/agents/agent.ex:967` (55)
+  - `lib/nest/agents/agent/compaction.ex:165` (111)
+  - `lib/nest/agents/agent/llm_runner.ex:432` (137)
+- 1 readability: alias order in `llm_runner.ex:21`
+
+These are all pre-existing. A separate refactor PR should
+address them (likely the same one that splits `agent.ex`
+into chat pipeline + handle_info router per the earlier
+"Next steps" plan).

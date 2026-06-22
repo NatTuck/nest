@@ -7,6 +7,11 @@ defmodule Nest.Agents.AgentTestHelpers do
 
   import ExUnit.Callbacks
 
+  alias Nest.Agents.Agent
+  alias Nest.DotConfig
+  alias Nest.LLM.MockClient
+  alias Nest.LLM.OpenAIClient
+
   def start_agent(attrs) do
     agent_id = "test-agent-#{System.unique_integer([:positive])}"
 
@@ -16,16 +21,16 @@ defmodule Nest.Agents.AgentTestHelpers do
     }
 
     attrs = Map.merge(defaults, attrs)
-    pid = start_supervised!({Nest.Agents.Agent, attrs})
+    pid = start_supervised!({Agent, attrs})
 
     # In async mode, Mimic stubs are per-test-process by default.
     # The agent's `handle_info` and chat task run in separate
     # processes and need explicit access to stubs set on
     # `Mimic.expect(Req, :get, ...)` etc. No-op for tests that
     # don't use Mimic.
-    Mimic.allow(Nest.LLM.OpenAIClient, self(), pid)
+    Mimic.allow(OpenAIClient, self(), pid)
     Mimic.allow(Req, self(), pid)
-    Mimic.allow(Nest.DotConfig, self(), pid)
+    Mimic.allow(DotConfig, self(), pid)
 
     # Swap the agent's client_config.client to MockClient and start
     # a per-agent queue. The agent threads its pid through
@@ -33,7 +38,7 @@ defmodule Nest.Agents.AgentTestHelpers do
     # calls MockClient.run/2 and finds this test's queue via
     # `opts[:agent_pid]`.
     :sys.replace_state(pid, fn state ->
-      %{state | client_config: %{state.client_config | client: Nest.LLM.MockClient}}
+      %{state | client_config: %{state.client_config | client: MockClient}}
     end)
 
     # Transfer any pre-existing queued items from the test-pid queue
@@ -42,11 +47,11 @@ defmodule Nest.Agents.AgentTestHelpers do
     test_pid = Process.get(:nest_test_agent_pid)
 
     if test_pid && test_pid != pid do
-      items = Nest.LLM.MockClient.take_pending(test_pid)
-      Nest.LLM.MockClient.start_link(pid)
-      Enum.each(items, &Nest.LLM.MockClient.put_pending(pid, &1))
+      items = MockClient.take_pending(test_pid)
+      MockClient.start_link(pid)
+      Enum.each(items, &MockClient.put_pending(pid, &1))
     else
-      Nest.LLM.MockClient.start_link(pid)
+      MockClient.start_link(pid)
     end
 
     Process.put(:nest_test_agent_pid, pid)
@@ -54,7 +59,7 @@ defmodule Nest.Agents.AgentTestHelpers do
     # transferred items.
 
     on_exit(fn ->
-      Nest.LLM.MockClient.stop(pid)
+      MockClient.stop(pid)
       Process.put(:nest_test_agent_pid, test_pid)
     end)
 

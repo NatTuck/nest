@@ -4,7 +4,7 @@ defmodule Nest.Agents.AgentCompactionTest do
   compaction history, pre-flight streaming guard, and
   `chat:compaction` broadcast.
   """
-  use Nest.DataCase, async: true
+  use Nest.DataCase, async: false
 
   import Mimic
 

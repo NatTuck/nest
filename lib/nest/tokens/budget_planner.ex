@@ -123,36 +123,52 @@ defmodule Nest.Tokens.BudgetPlanner do
     max_content_budget = min(budget_for_this - cfg.note_size, effective_max)
 
     cond do
-      max_content_budget < cfg.min_truncatable ->
-        # Even the max-allowed content wouldn't be useful — skip.
-        skip = SkipResponse.render(call_name(call), budget_for_this)
-
-        [
-          {call, skip}
-          | do_execute(
-              rest,
-              executor_fn,
-              max(0, remaining - cfg.skip_size - cfg.base_overhead),
-              cfg
-            )
-        ]
+      should_skip?(max_content_budget, cfg) ->
+        skip_remaining(call, rest, executor_fn, remaining, budget_for_this, cfg)
 
       fits?(raw_result, max_content_budget, cfg) ->
-        # Fits within both budget and tool cap; keep as-is.
-        [
-          {call, raw_result}
-          | do_execute(rest, executor_fn, remaining - charge(raw_result, cfg), cfg)
-        ]
+        keep_as_is(call, raw_result, rest, executor_fn, remaining, cfg)
 
       true ->
-        # Truncate to the smaller of (budget, tool cap).
-        {kept, note} = Truncate.head_with_note(raw_result, max_content_budget, cfg.note_size)
-
-        [
-          {call, kept <> note}
-          | do_execute(rest, executor_fn, remaining - charge(kept, cfg) - cfg.note_size, cfg)
-        ]
+        truncate(call, raw_result, max_content_budget, rest, executor_fn, remaining, cfg)
     end
+  end
+
+  defp should_skip?(max_content_budget, cfg) do
+    # Even the max-allowed content wouldn't be useful — skip.
+    max_content_budget < cfg.min_truncatable
+  end
+
+  defp skip_remaining(call, rest, executor_fn, remaining, budget_for_this, cfg) do
+    skip = SkipResponse.render(call_name(call), budget_for_this)
+
+    [
+      {call, skip}
+      | do_execute(
+          rest,
+          executor_fn,
+          max(0, remaining - cfg.skip_size - cfg.base_overhead),
+          cfg
+        )
+    ]
+  end
+
+  defp keep_as_is(call, raw_result, rest, executor_fn, remaining, cfg) do
+    # Fits within both budget and tool cap; keep as-is.
+    [
+      {call, raw_result}
+      | do_execute(rest, executor_fn, remaining - charge(raw_result, cfg), cfg)
+    ]
+  end
+
+  defp truncate(call, raw_result, max_content_budget, rest, executor_fn, remaining, cfg) do
+    # Truncate to the smaller of (budget, tool cap).
+    {kept, note} = Truncate.head_with_note(raw_result, max_content_budget, cfg.note_size)
+
+    [
+      {call, kept <> note}
+      | do_execute(rest, executor_fn, remaining - charge(kept, cfg) - cfg.note_size, cfg)
+    ]
   end
 
   # Effective cap = tool's default or the LLM's per-call override.

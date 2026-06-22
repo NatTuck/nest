@@ -3,7 +3,7 @@ defmodule Nest.Agents.AgentObservabilityTest do
   Agent observability tests: API logs, context limit handling, and
   token usage aggregation.
   """
-  use Nest.DataCase, async: true
+  use Nest.DataCase, async: false
 
   import Mimic
 

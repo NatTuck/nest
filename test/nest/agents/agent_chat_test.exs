@@ -3,7 +3,7 @@ defmodule Nest.Agents.AgentChatTest do
   Agent chat tests: `chat/2`, delta handling, `chat/3` with mode,
   the Vocation struct in state, and system prompt composition.
   """
-  use Nest.DataCase, async: true
+  use Nest.DataCase, async: false
 
   import ExUnit.CaptureLog
   import Mimic

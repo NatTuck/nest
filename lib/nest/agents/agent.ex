@@ -295,47 +295,15 @@ defmodule Nest.Agents.Agent do
     # Validate mode against the vocation; fall back to default if invalid.
     {effective_mode, _caps} = resolve_mode_and_caps(mode, state.vocation_id)
 
-    # Add user message to history with index
-    user_message =
-      {:user,
-       %User{
-         index: state.chat_state.next_message_index,
-         timestamp: DateTime.utc_now(),
-         content: content,
-         metadata: %{"mode" => effective_mode},
-         api_logs: get_pending_api_logs(state, state.chat_state.next_message_index)
-       }}
+    {user_message, llm_user_message} = build_user_messages(state, content, effective_mode)
 
-    # The LLM sees the mode prefixed into the user content; the original
-    # content (without the prefix) is what gets persisted and broadcast.
-    llm_content = "[mode: #{effective_mode}]\n#{content}"
-
-    # Build the LLM message with the prefixed content; the persisted
-    # user message keeps the raw content + metadata.mode.
-    persisted_user = user_message
-    llm_user_message = {:user, %{elem(user_message, 1) | content: llm_content}}
-
-    messages = state.chat_state.messages ++ [persisted_user]
+    messages = state.chat_state.messages ++ [user_message]
     messages_for_llm = state.chat_state.messages ++ [llm_user_message]
 
     # Broadcast user message to all subscribers
     Broadcasts.message(state.id, user_message)
 
-    # Update status to streaming
-    state = %{
-      state
-      | chat_state: %{
-          state.chat_state
-          | messages: messages,
-            next_message_index: state.chat_state.next_message_index + 1,
-            status: :streaming,
-            active_message_index: state.chat_state.next_message_index,
-            pending_api_logs:
-              clear_pending_api_logs(state, state.chat_state.next_message_index).chat_state.pending_api_logs,
-            streaming_acc: Streaming.new(state.chat_state.next_message_index + 1)
-        }
-    }
-
+    state = apply_user_message_to_state(state, messages, effective_mode)
     Broadcasts.status(state.id, :streaming)
 
     # Pre-flight: does the next LLM call fit? If not, the
@@ -344,6 +312,47 @@ defmodule Nest.Agents.Agent do
     state = maybe_compact_then_chat(state, messages_for_llm, content, mode)
 
     {:noreply, state}
+  end
+
+  # Build the persisted user message (raw content + metadata.mode)
+  # and the LLM-facing user message (with the mode prefixed into
+  # the content). The persisted form is what gets broadcast and
+  # saved; the LLM form is what the model sees on the next call.
+  defp build_user_messages(state, content, effective_mode) do
+    next_idx = state.chat_state.next_message_index
+    user = %User{
+      index: next_idx,
+      timestamp: DateTime.utc_now(),
+      content: content,
+      metadata: %{"mode" => effective_mode},
+      api_logs: get_pending_api_logs(state, next_idx)
+    }
+
+    llm_content = "[mode: #{effective_mode}]\n#{content}"
+    user_message = {:user, user}
+    llm_user_message = {:user, %{user | content: llm_content}}
+    {user_message, llm_user_message}
+  end
+
+  # Mutate the chat_state to reflect the new user message:
+  # append to history, advance the index, mark streaming,
+  # reset pending API logs, and start a fresh streaming acc.
+  defp apply_user_message_to_state(state, messages, _effective_mode) do
+    next_idx = state.chat_state.next_message_index
+
+    %{
+      state
+      | chat_state: %{
+          state.chat_state
+          | messages: messages,
+            next_message_index: next_idx + 1,
+            status: :streaming,
+            active_message_index: next_idx,
+            pending_api_logs:
+              clear_pending_api_logs(state, next_idx).chat_state.pending_api_logs,
+            streaming_acc: Streaming.new(next_idx + 1)
+        }
+    }
   end
 
   # Pre-flight: would the LLM call we'd make next fit in the

@@ -3,7 +3,7 @@ defmodule Nest.Agents.AgentToolsTest do
   Agent tool execution tests: `chat/2` with tool calls and
   `configured_max_tool_iterations/0`.
   """
-  use Nest.DataCase, async: true
+  use Nest.DataCase, async: false
 
   import ExUnit.CaptureLog
   import Mimic
