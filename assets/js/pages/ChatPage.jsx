@@ -348,15 +348,26 @@ export function ChatPage() {
                     <span className="text-xs text-gray-400">(typing...)</span>
                   )}
                 </div>
+                {/* Thinking is rendered BEFORE the reply and
+                    stays in place across the partial → final
+                    transition. The `key` prop forces a re-mount
+                    on that transition so the box's
+                    `useState(isPartial)` initializer runs again
+                    (expanded while partial, collapsed once
+                    final). See `assets/js/components/ThinkingBlock.jsx`
+                    for the full rationale. */}
+                <ThinkingBlock
+                  key={message.isPartial ? "partial" : "final"}
+                  thinking={thinkingFor(message)}
+                  isPartial={message.isPartial ?? false}
+                />
                 <MessageContent
                   content={message.content}
-                  segments={message.segments}
                   isPartial={message.isPartial ?? false}
                   className="text-gray-800"
                 />
                 <ToolCalls toolCalls={message.toolCalls} />
                 <ToolResults toolResults={message.toolResults} />
-                <ThinkingBlock thinking={message.thinking} />
                 <ApiLogsBlock apiLogs={message.apiLogs} />
                 {message.isPartial && (
                   <div className="flex items-center gap-1 mt-2">
@@ -459,4 +470,30 @@ export function ChatPage() {
       </div>
     </div>
   );
+}
+
+// Extract the thinking/reasoning text for any message shape.
+// The `Streaming.AssistantAccumulator` (used while partial)
+// carries the reasoning as `:thinking` segments inside
+// `message.segments`; the finalized `%Assistant{}` (used after
+// the partial resolves) carries it as a single `message.thinking`
+// string. Anthropic-style reasoning models emit a single
+// contiguous thinking block before the visible text, so the
+// segment list is typically `[{:thinking, ...}, {:text, ...}]` —
+// we concatenate any thinking segments (handles the rare case
+// of multiple thinking segments in one turn) so the unified
+// `<ThinkingBlock>` has one string to render.
+function thinkingFor(message) {
+  if (!message) return null;
+
+  if (message.isPartial && Array.isArray(message.segments)) {
+    const thinking = message.segments
+      .filter((s) => s && s.type === "thinking")
+      .map((s) => s.content || "")
+      .join("");
+
+    return thinking || null;
+  }
+
+  return message.thinking || null;
 }

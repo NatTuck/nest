@@ -110,7 +110,7 @@ defmodule Nest.LLM.StreamConsumer do
 
   defp dispatch({:thinking, text}, {acc, response, error, sent}, consumer) do
     new_sent = consumer.on_thinking.(text, sent)
-    {Client.accumulate(acc, {:text, text}), response, error, new_sent}
+    {Client.accumulate(acc, {:thinking, text}), response, error, new_sent}
   end
 
   defp dispatch({:tool_call_start, event}, {acc, response, error, sent}, _consumer) do
@@ -123,7 +123,7 @@ defmodule Nest.LLM.StreamConsumer do
 
   defp dispatch({:thinking_signature, sig}, {acc, response, error, sent}, consumer) do
     consumer.on_signature.(sig)
-    {Client.accumulate(acc, {:thinking, sig}), response, error, sent}
+    {Client.accumulate(acc, {:thinking_signature, sig}), response, error, sent}
   end
 
   defp dispatch({:usage, usage}, {acc, response, error, sent}, _consumer) do

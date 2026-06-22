@@ -14,6 +14,7 @@
  */
 
 import { MessageContent } from "./MessageContent";
+import { ThinkingBlock } from "./ThinkingBlock";
 
 const ROLE_LABELS = {
   user: "You",
@@ -79,9 +80,11 @@ function MessageBubble({ message }) {
             </span>
           )}
         </div>
+        {message.thinking && (
+          <ThinkingBlock thinking={message.thinking} isPartial={false} />
+        )}
         <MessageContent
           content={message.content}
-          segments={message.segments}
           isPartial={false}
           className="text-xs text-gray-700"
         />

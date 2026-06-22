@@ -1,13 +1,34 @@
 /**
- * ThinkingBlock component — displays the model's thinking /
- * reasoning content in a collapsible block. The block is
- * collapsed by default to keep the chat focused on the response.
+ * ThinkingBlock — collapsible box for the model's thinking /
+ * reasoning content. This is the one and only component that
+ * renders thinking/reasoning text in the chat UI; the visible
+ * reply is rendered by `<MessageContent>`. See `ChatPage.jsx`
+ * and `CollapsedHistory.jsx` for callers.
+ *
+ * The box lives in the same place before and after a turn
+ * finalizes. To make that work, the parent passes a `key` prop
+ * that changes on the partial→final transition (e.g.
+ * `key={isPartial ? "partial" : "final"}`). That re-mounts the
+ * box, which re-initializes `useState(isPartial)` to its new
+ * value:
+ *
+ *   * `isPartial: true`  — the box starts **expanded** so the
+ *     user can watch the reasoning stream in. The bouncing-dots
+ *     indicator in the header shows the model is still writing.
+ *   * `isPartial: false` — the box starts **collapsed** so the
+ *     chat focuses on the answer. The user can click to expand
+ *     and read the reasoning.
+ *
+ * The user can manually toggle at any time; the auto-expand /
+ * auto-collapse only sets the initial state.
  */
 import { useState } from "react";
 
-export function ThinkingBlock({ thinking }) {
-  // Hook must be called before any early returns.
-  const [isExpanded, setIsExpanded] = useState(false);
+export function ThinkingBlock({ thinking, isPartial = false }) {
+  // Initial state mirrors the partial flag. The parent's `key`
+  // prop forces a re-mount on the partial↔final transition so
+  // this initializer runs again with the new value.
+  const [isExpanded, setIsExpanded] = useState(isPartial);
 
   if (!thinking) return null;
 
@@ -16,6 +37,7 @@ export function ThinkingBlock({ thinking }) {
       <button
         type="button"
         onClick={() => setIsExpanded(!isExpanded)}
+        aria-expanded={isExpanded}
         className="w-full flex items-center justify-between px-3 py-2 bg-amber-50 hover:bg-amber-100 transition-colors text-sm"
       >
         <div className="flex items-center gap-2 text-amber-700">
@@ -34,6 +56,29 @@ export function ThinkingBlock({ thinking }) {
             />
           </svg>
           <span className="font-medium">Thinking</span>
+          {isPartial && (
+            <span
+              className="inline-flex gap-1 ml-1"
+              role="status"
+              aria-label="Streaming thinking"
+            >
+              <span
+                className="w-1.5 h-1.5 bg-amber-500 rounded-full animate-bounce"
+                style={{ animationDelay: "0ms" }}
+                aria-hidden="true"
+              />
+              <span
+                className="w-1.5 h-1.5 bg-amber-500 rounded-full animate-bounce"
+                style={{ animationDelay: "150ms" }}
+                aria-hidden="true"
+              />
+              <span
+                className="w-1.5 h-1.5 bg-amber-500 rounded-full animate-bounce"
+                style={{ animationDelay: "300ms" }}
+                aria-hidden="true"
+              />
+            </span>
+          )}
         </div>
         <svg
           className={`w-4 h-4 text-amber-600 transition-transform ${
@@ -42,7 +87,7 @@ export function ThinkingBlock({ thinking }) {
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
-          aria-label="Expand icon"
+          aria-label={isExpanded ? "Collapse" : "Expand"}
         >
           <path
             strokeLinecap="round"

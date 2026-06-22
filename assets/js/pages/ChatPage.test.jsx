@@ -418,6 +418,150 @@ describe("ChatPage message rendering", () => {
   });
 });
 
+describe("ChatPage thinking-before-content order", () => {
+  // The unified `<ThinkingBlock>` is rendered BEFORE the
+  // `<MessageContent>` and stays in place across the
+  // partial → final transition (the parent's `key` prop
+  // re-mounts the box on the transition, but the DOM
+  // position is the same). These tests pin that order so a
+  // future refactor doesn't accidentally re-introduce the
+  // "thinking jumps to the bottom on finalization" bug.
+
+  beforeEach(() => {
+    mockAgentsCache = {};
+  });
+
+  it("renders the Thinking box BEFORE the reply for a finalized assistant message", () => {
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "idle",
+        messages: [
+          { index: 0, role: "user", content: "Hi" },
+          {
+            index: 1,
+            role: "assistant",
+            content: "The answer is 42.",
+            thinking: "Let me think about this carefully.",
+          },
+        ],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+
+    renderChat();
+
+    // The Thinking box is collapsed by default for finalized
+    // messages, so the thinking text itself isn't visible.
+    // The reply is always visible.
+    expect(screen.getByText("The answer is 42.")).toBeInTheDocument();
+
+    // Click the Thinking button to expand the box and verify
+    // the order in the DOM.
+    fireEvent.click(screen.getByRole("button", { name: /thinking/i }));
+
+    const thinking = screen.getByText("Let me think about this carefully.");
+    const reply = screen.getByText("The answer is 42.");
+
+    // `compareDocumentPosition` returns a bitfield of the
+    // relative position. DOCUMENT_POSITION_FOLLOWING (4)
+    // means the thinking node comes before the reply node.
+    const position = thinking.compareDocumentPosition(reply);
+    expect(position & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("renders the Thinking box expanded (auto) for a partial message with thinking segments", () => {
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "streaming",
+        messages: [{ index: 0, role: "user", content: "Hi" }],
+        partial: {
+          index: 1,
+          role: "assistant",
+          content: "Halfway through...",
+          isPartial: true,
+          segments: [
+            { type: "thinking", content: "Reasoning about the answer..." },
+            { type: "text", content: "Halfway through..." },
+          ],
+        },
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+
+    renderChat();
+
+    // The partial's thinking segment is extracted from
+    // `segments` and rendered expanded (so the user can
+    // watch it stream in).
+    expect(
+      screen.getByText("Reasoning about the answer..."),
+    ).toBeInTheDocument();
+
+    // The streaming indicator is visible.
+    expect(screen.getByLabelText("Streaming thinking")).toBeInTheDocument();
+  });
+
+  it("concatenates multiple thinking segments from the partial's segments list", () => {
+    // Defends against the (rare) case of `[thinking, text,
+    // thinking, text]` interleaving within a single turn: the
+    // current providers don't emit it, but the partial→final
+    // data shape supports it and the helper should be
+    // robust to it.
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "streaming",
+        messages: [{ index: 0, role: "user", content: "Hi" }],
+        partial: {
+          index: 1,
+          role: "assistant",
+          content: "Visible answer",
+          isPartial: true,
+          segments: [
+            { type: "thinking", content: "First thought " },
+            { type: "text", content: "Visible " },
+            { type: "thinking", content: "second thought" },
+            { type: "text", content: "answer" },
+          ],
+        },
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+
+    renderChat();
+
+    // Both thinking segments appear, concatenated as one
+    // string in the Thinking box.
+    expect(
+      screen.getByText("First thought second thought"),
+    ).toBeInTheDocument();
+  });
+
+  it("does not render a Thinking box when the message has no thinking content", () => {
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "idle",
+        messages: [
+          { index: 0, role: "user", content: "Hi" },
+          { index: 1, role: "assistant", content: "Plain answer" },
+        ],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+
+    renderChat();
+
+    expect(screen.getByText("Plain answer")).toBeInTheDocument();
+    // No Thinking button when there's no thinking.
+    expect(
+      screen.queryByRole("button", { name: /thinking/i }),
+    ).not.toBeInTheDocument();
+  });
+});
+
 describe("ChatPage error display", () => {
   beforeEach(() => {
     mockAgentsCache = {};
