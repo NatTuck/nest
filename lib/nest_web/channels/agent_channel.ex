@@ -182,24 +182,12 @@ defmodule NestWeb.AgentChannel do
 
     case Agents.get_agent(agent_id) do
       {:ok, agent} ->
-        # Get messages after last_index and format them
         new_messages =
           agent.messages
-          |> Enum.filter(fn
-            {:user, %{index: idx}} -> idx > last_index
-            {:assistant, %{index: idx}} -> idx > last_index
-            {:tool, %{index: idx}} -> idx > last_index
-            {:system, %{index: idx}} -> idx > last_index
-          end)
+          |> Enum.filter(&index_gt?(&1, last_index))
           |> Enum.map(&format_message/1)
 
-        # Check if there's a partial message being streamed
-        partial =
-          if agent.partial && agent.partial.index > last_index do
-            build_partial_payload(agent.partial)
-          else
-            nil
-          end
+        partial = partial_payload(agent.partial, last_index)
 
         reply = %{
           "messages" => new_messages,
@@ -214,6 +202,21 @@ defmodule NestWeb.AgentChannel do
         {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
     end
   end
+
+  # Filter helper for `chat:sync`: keep only messages whose
+  # `index` is greater than `last_index`. The `chat_state.messages`
+  # list holds `{role, %{index: idx, ...}}` tuples (compaction
+  # markers and other non-indexed entries are ignored).
+  defp index_gt?({_, %{index: idx}}, last_index), do: idx > last_index
+  defp index_gt?(_, _), do: false
+
+  # Build the partial-message payload if the partial is past
+  # the client's last seen index; otherwise return nil.
+  defp partial_payload(%{index: idx} = partial, last_index) when idx > last_index do
+    build_partial_payload(partial)
+  end
+
+  defp partial_payload(_, _), do: nil
 
   # Cleanup: Unsubscribe from PubSub when channel terminates
   @impl true

@@ -34,9 +34,10 @@ alias Nest.Vocations
 
 # Programmer - code-focused agent with tools and workspace.
 # Two modes:
-#   - "build": can read/write the workspace and run shell commands
+#   - "build": can read/write the workspace, run shell commands,
+#              and access the network (for fetching docs, packages, etc.)
 #   - "plan":  read-only; explore the workspace without making changes
-# Network is disabled in both modes.
+# Network is enabled in both modes.
 {:ok, _} =
   Vocations.create_vocation(%{
     name: "Programmer",
@@ -51,14 +52,14 @@ alias Nest.Vocations
       "build" => %{
         "description" => "You're clear to edit the project in the workspace.",
         "caps" => %{
-          "net" => false,
+          "net" => true,
           "fs" => %{"read" => ["/"], "write" => ["/tmp", ":workspace"]}
         }
       },
       "plan" => %{
         "description" => "Read-only planning only, can still run commands.",
         "caps" => %{
-          "net" => false,
+          "net" => true,
           "fs" => %{"read" => ["/"], "write" => ["/tmp"]}
         }
       }

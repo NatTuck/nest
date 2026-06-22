@@ -18,8 +18,7 @@ defmodule Nest.LLM.AnthropicClient do
 
   @behaviour Nest.LLM.Client
 
-  require Logger
-
+  alias Nest.LLM.HttpWorker
   alias Nest.LLM.RunRequest
   alias Nest.LLM.RunResponse
   alias Nest.LLM.SSE.Parser
@@ -55,71 +54,28 @@ defmodule Nest.LLM.AnthropicClient do
   # called `Req.post` — iterating from a child process raises
   # `expected to read body chunk in the process which made the
   # request`. The worker is its own `Req.post` caller, so it can
-  # drain the body. It forwards each chunk as `{:req_chunk, _}`
-  # (and `:req_done` at the end) to the parent's mailbox, which
-  # `consume_sse_from_mailbox/0` pulls from. All non-200 / error
-  # paths are surfaced as synthetic SSE chunks so the consumer
-  # always sees a single, uniform event stream.
+  # drain the body. All non-200 / error paths are surfaced as
+  # synthetic SSE chunks so the consumer always sees a single,
+  # uniform event stream. The dispatch logic lives in
+  # `Nest.LLM.HttpWorker.handle_response/4`; this function only
+  # owns the Anthropic-specific Req options.
   defp http_worker(parent, url, headers, request, opts, timeout) do
-    case Req.post(url,
-           headers: headers,
-           json: format_request_payload(request, opts),
-           receive_timeout: timeout,
-           into: :self,
-           http_errors: :return,
-           max_retries: 0
-         ) do
-      {:ok, %Req.Response{status: 200, body: %Req.Response.Async{} = async_body}} ->
-        try do
-          # `%Req.Response.Async{}` is enumerable and yields raw
-          # chunk bytes via its `fun.(data, acc)` callback — the
-          # `:data` / `:trailers` / `:done` framing is consumed
-          # internally by `response_async.ex` and is NOT what the
-          # user's reducer sees. `Enum.each` returns once the
-          # underlying stream signals `:done` (or raises if the
-          # transport is torn down mid-read), so we send `:req_done`
-          # immediately after the iteration completes.
-          Enum.each(async_body, fn chunk -> send(parent, {:req_chunk, chunk}) end)
-          send(parent, :req_done)
-        catch
-          kind, reason ->
-            Logger.error(
-              "AnthropicClient stream_terminated: kind=#{kind} reason=#{inspect(reason)}"
-            )
+    result =
+      Req.post(url,
+        headers: headers,
+        json: format_request_payload(request, opts),
+        receive_timeout: timeout,
+        into: :self,
+        http_errors: :return,
+        max_retries: 0
+      )
 
-            send_chunk(parent, "stream_terminated", to_string(kind), inspect(reason))
-            send(parent, :req_done)
-        end
-
-      {:ok, %Req.Response{status: status, body: %Req.Response.Async{} = async_body}} ->
-        # Non-200 responses also have async bodies when `into: :self`
-        # is used. Drain the error body in the worker (allowed since
-        # we called `Req.post`), collect it, and send as a single
-        # error chunk.
-        body =
-          async_body
-          |> Enum.reduce([], fn chunk, acc -> [acc, chunk] end)
-          |> IO.iodata_to_binary()
-
-        send_chunk(parent, "http_error", status, body)
-        send(parent, :req_done)
-
-      {:ok, %Req.Response{status: status, body: body}} ->
-        send_chunk(parent, "http_error", status, body)
-        send(parent, :req_done)
-
-      {:error, reason} ->
-        send_chunk(parent, "request_failed", nil, inspect(reason))
-        send(parent, :req_done)
-    end
+    HttpWorker.handle_response(result, parent, "AnthropicClient", &format_error_chunk/3)
   end
 
-  defp send_chunk(parent, kind, status, body) do
-    data =
-      "event: error\ndata: " <>
-        Jason.encode!(%{error: kind, status: status, body: body}) <> "\n\n"
-
-    send(parent, {:req_chunk, data})
+  defp format_error_chunk(kind, status, body) do
+    "event: error\ndata: " <>
+      Jason.encode!(%{error: kind, status: status, body: body}) <> "\n\n"
   end
 
   # Public-for-testing: a stream of canonical events consumed from

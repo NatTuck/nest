@@ -19,10 +19,10 @@ defmodule Nest.Agents.Agent.Compaction do
       `compact_context` tool asked for compaction.
   """
 
-  alias Nest.LLM.Client
   alias Nest.LLM.ClientConfig
   alias Nest.LLM.RunRequest
   alias Nest.LLM.RunResponse
+  alias Nest.LLM.StreamConsumer
   alias Nest.Tokens.Compactor
 
   require Logger
@@ -163,54 +163,28 @@ defmodule Nest.Agents.Agent.Compaction do
   # `compaction_pid` receives delta messages (so the task can
   # observe progress if it wants), but no PubSub broadcast.
   defp consume_quietly(stream, compaction_pid) do
-    acc = Client.new_accumulator()
+    consumer = %StreamConsumer{
+      on_text: &forward_text_delta(&1, &2, compaction_pid),
+      on_thinking: &forward_thinking_delta(&1, &2, compaction_pid),
+      on_signature: fn _sig -> :ok end
+    }
 
-    {_, response, _error, _} =
-      Enum.reduce(
-        stream,
-        {acc, nil, nil, %{chars: 0, thinking_chars: 0}},
-        fn
-          {:text, text}, {acc, _response, error, sent} ->
-            send(compaction_pid, {:delta_received, text, :text})
-            {Client.accumulate(acc, {:text, text}), nil, error, sent}
-
-          {:thinking, text}, {acc, response, error, sent} ->
-            send(compaction_pid, {:delta_received, text, :thinking})
-            {Client.accumulate(acc, {:thinking, text}), response, error, sent}
-
-          {:tool_call_start, event}, {acc, response, error, sent} ->
-            {Client.accumulate(acc, {:tool_call_start, event}), response, error, sent}
-
-          {:tool_call_delta, event}, {acc, response, error, sent} ->
-            {Client.accumulate(acc, {:tool_call_delta, event}), response, error, sent}
-
-          {:thinking_signature, sig}, {acc, response, error, sent} ->
-            {Client.accumulate(acc, {:thinking_signature, sig}), response, error, sent}
-
-          {:usage, usage}, {acc, response, error, sent} ->
-            {Client.accumulate(acc, {:usage, usage}), response, error, sent}
-
-          {:finish_reason, _reason}, {acc, response, error, sent} ->
-            {Client.accumulate(acc, {:finish_reason, nil}), response, error, sent}
-
-          {:refusal, text}, {acc, response, error, sent} ->
-            {Client.accumulate(acc, {:refusal, text}), response, error, sent}
-
-          {:done, %{response: r}}, {acc, _response, error, sent} ->
-            {acc, r, error, sent}
-
-          {:error, reason}, {acc, response, _error, sent} ->
-            {acc, response, reason, sent}
-
-          other, {acc, response, error, sent} ->
-            {Client.accumulate(acc, other), response, error, sent}
-        end
-      )
+    {_acc, response, _error, _sent} = StreamConsumer.reduce(stream, consumer)
 
     case response do
       %RunResponse{text: text} -> text
       _ -> nil
     end
+  end
+
+  defp forward_text_delta(text, sent, compaction_pid) do
+    send(compaction_pid, {:delta_received, text, :text})
+    sent
+  end
+
+  defp forward_thinking_delta(text, sent, compaction_pid) do
+    send(compaction_pid, {:delta_received, text, :thinking})
+    sent
   end
 
   defp assign_index({role, %_{} = struct}, idx) do
