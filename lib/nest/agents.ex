@@ -232,6 +232,35 @@ defmodule Nest.Agents do
   end
 
   @doc """
+  Signal the in-flight chat task on the named agent to stop.
+
+  The `from` is the channel pid that initiated the stop; it is
+  threaded through so the agent's `handle_info({:stop_chat, from}, _)`
+  can forward a reply if needed (currently it does not, but
+  keeping the indirection lets us add an ack later without
+  breaking the channel contract).
+
+  A no-op when the agent is idle (no in-flight chat task).
+  Idempotent — multiple calls just re-set the `cancelled`
+  flag on the GenServer's state.
+
+  ## Returns
+  - `:ok` - Stop signal sent (agent exists)
+  - `{:error, :not_found}` - Agent doesn't exist
+  """
+  @spec stop_chat(String.t(), pid()) :: :ok | {:error, :not_found}
+  def stop_chat(id, from) do
+    case Supervisor.get_agent(id) do
+      {:ok, pid} ->
+        Agent.stop_chat(pid, from)
+        :ok
+
+      {:error, :not_found} ->
+        {:error, :not_found}
+    end
+  end
+
+  @doc """
   Deletes an agent by its ID.
 
   ## Returns

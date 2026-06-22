@@ -85,7 +85,11 @@ defmodule Nest.LLM.HttpWorker do
       kind, reason ->
         Logger.error("#{client_label} stream_terminated: kind=#{kind} reason=#{inspect(reason)}")
 
-        send(parent, {:req_chunk, format_chunk.("stream_terminated", to_string(kind), inspect(reason))})
+        send(
+          parent,
+          {:req_chunk, format_chunk.("stream_terminated", to_string(kind), inspect(reason))}
+        )
+
         send(parent, :req_done)
     end
   end

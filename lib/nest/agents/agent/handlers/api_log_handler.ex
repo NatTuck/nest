@@ -61,7 +61,16 @@ defmodule Nest.Agents.Agent.Handlers.ApiLogHandler do
   end
 
   defp api_log_sequences_updated(sequences, state) do
-    {:noreply, %{state | chat_state: %{state.chat_state | api_log_sequences: sequences}}}
+    # The chat task completed normally (no stop). Clear the
+    # `chat_task_pid` and `cancelled` flag so the next chat turn
+    # can start fresh.
+    chat_state =
+      state.chat_state
+      |> Map.put(:api_log_sequences, sequences)
+      |> Map.put(:chat_task_pid, nil)
+      |> Map.put(:cancelled, false)
+
+    {:noreply, %{state | chat_state: chat_state}}
   end
 
   defp find_message_by_index(messages, idx) do

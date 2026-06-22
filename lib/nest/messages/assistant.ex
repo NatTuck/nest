@@ -50,8 +50,19 @@ defmodule Nest.Messages.Assistant do
       "toolResults" => nil,
       "thinking" => msg.thinking,
       "thinkingSignature" => msg.thinking_signature,
-      "apiLogs" => Message.format_api_logs(msg.api_logs)
+      "apiLogs" => Message.format_api_logs(msg.api_logs),
+      "metadata" => stringify_metadata(msg.metadata)
     }
+  end
+
+  # The wire format uses string keys everywhere. Convert atom
+  # keys in `metadata` (e.g. `:stopped_by_user` would become
+  # `"stopped_by_user"` if we ever set it as such) and pass
+  # string-keyed maps through unchanged. `nil` becomes `nil`.
+  defp stringify_metadata(nil), do: nil
+
+  defp stringify_metadata(metadata) when is_map(metadata) do
+    Map.new(metadata, fn {k, v} -> {if(is_atom(k), do: Atom.to_string(k), else: k), v} end)
   end
 
   defp format_tool_calls(nil), do: nil

@@ -55,13 +55,25 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
 
     case continuation do
       {:chat_continuation, {content, mode}} ->
-        state = ChatPipeline.resume_after_compaction(state, content, mode)
-        {:noreply, state}
+        # The `cancelled` flag is set when the user clicked Stop
+        # while a pre-flight compaction was in flight. Discard the
+        # continuation — the agent's chat task has already exited
+        # (or is about to) and we don't want to spawn a new one.
+        if state.chat_state.cancelled do
+          {:noreply, state}
+        else
+          state = ChatPipeline.resume_after_compaction(state, content, mode)
+          {:noreply, state}
+        end
 
       {:preflight_continuation, task_pid} ->
         # The chat task that requested this pre-flight was sitting
         # in a `receive` waiting for the result. Send it the new
         # compacted message list so it can resume the LLM call.
+        # If the user clicked Stop, the chat task is no longer in
+        # this receive (it was halted via `{:stop_chat, _}`), so
+        # the `send` is a no-op — the message lands in a dead
+        # process's mailbox and is silently discarded.
         send(task_pid, {:preflight_result, :compacted, new_messages})
         {:noreply, state}
 
@@ -69,6 +81,8 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
         # The chat task invoked the `compact_context` tool and is
         # blocked on a receive for the result. Send it the new
         # messages so it can construct the tool result string.
+        # Same `send`-to-dead-process semantics as
+        # `{:preflight_continuation, _}` above.
         send(task_pid, {:compact_context_done, new_messages})
         {:noreply, state}
     end

@@ -152,6 +152,23 @@ defmodule NestWeb.AgentChannel do
     end
   end
 
+  # User clicked Stop on the chat page. The reply is
+  # immediate (`{:ok, %{}}`); the actual stop finalization
+  # happens asynchronously when the chat task unwinds and the
+  # agent's `handle_info({:chat_stopped, _}, _)` finalizes
+  # the partial accumulator. The client uses its own local
+  # "stopping" state to render the button as "Stopping..."
+  # until the next `chat:status` push arrives.
+  @impl true
+  def handle_in("chat:stop", _payload, socket) do
+    agent_id = socket.assigns.agent_id
+
+    case Agents.stop_chat(agent_id, self()) do
+      :ok -> {:reply, {:ok, %{}}, socket}
+      {:error, :not_found} -> {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
+    end
+  end
+
   @impl true
   def handle_in("chat:status", _payload, socket) do
     agent_id = socket.assigns.agent_id

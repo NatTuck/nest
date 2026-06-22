@@ -9,382 +9,18 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useStore } from "../store";
-import { joinAgent, leaveAgent, sendMessage } from "../channels";
+import { joinAgent, leaveAgent, sendMessage, stopMessage } from "../channels";
 import { MessageContent } from "../components/MessageContent";
 import { ChatInput } from "../components/ChatInput";
 import { TokenUsageChip } from "../components/TokenUsageChip";
-import { TruncatedResult } from "../components/TruncatedResult";
+import { ToolCalls } from "../components/ToolCalls";
+import { ToolResults } from "../components/ToolResults";
+import { ThinkingBlock } from "../components/ThinkingBlock";
+import { ApiLogsBlock } from "../components/ApiLogsBlock";
+import { StatusBanner } from "../components/StatusBanner";
+import { NotificationBanner } from "../components/NotificationBanner";
 import { CompactionMarker } from "../components/CompactionMarker";
 import { useScrollToBottom } from "../hooks/useScrollToBottom";
-import { sortArgumentsForDisplay } from "../utils/argumentDisplay";
-
-/**
- * ToolCalls component - displays tool calls in a message
- */
-function ToolCalls({ toolCalls }) {
-  if (!toolCalls || toolCalls.length === 0) return null;
-
-  return (
-    <div className="mt-3 space-y-2">
-      {toolCalls.map((call) => (
-        <div
-          key={call.id}
-          className="bg-purple-50 border border-purple-200 rounded-lg p-3"
-        >
-          <div className="flex items-center gap-2 text-purple-700 font-medium text-sm">
-            <svg
-              className="w-4 h-4"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-              aria-label="Success checkmark icon"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
-              />
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
-              />
-            </svg>
-            <span>Using tool: {call.name}</span>
-          </div>
-          {call.arguments && Object.keys(call.arguments).length > 0 && (
-            <TruncatedResult
-              content={JSON.stringify(
-                sortArgumentsForDisplay(call.arguments),
-                null,
-                2,
-              )}
-              className="text-purple-600"
-              maxLines={3}
-              previewLines={3}
-              previewMaxChars={300}
-            />
-          )}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-/**
- * ToolResults component - displays tool results in a message
- */
-function ToolResults({ toolResults }) {
-  if (!toolResults || toolResults.length === 0) return null;
-
-  return (
-    <div className="mt-3 space-y-2">
-      {toolResults.map((result) => (
-        <div
-          key={result.tool_call_id}
-          className={`border rounded-lg p-3 ${
-            result.is_error
-              ? "bg-red-50 border-red-200"
-              : "bg-green-50 border-green-200"
-          }`}
-        >
-          <div
-            className={`flex items-center gap-2 font-medium text-sm ${
-              result.is_error ? "text-red-700" : "text-green-700"
-            }`}
-          >
-            {result.is_error ? (
-              <svg
-                className="w-4 h-4"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-                aria-label="Error icon"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                />
-              </svg>
-            ) : (
-              <svg
-                className="w-4 h-4"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-                aria-label="Success checkmark icon"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M5 13l4 4L19 7"
-                />
-              </svg>
-            )}
-            <span>
-              {result.is_error ? "Error" : "Success"}: {result.name}
-            </span>
-          </div>
-          {result.arguments && Object.keys(result.arguments).length > 0 && (
-            <TruncatedResult
-              content={JSON.stringify(
-                sortArgumentsForDisplay(result.arguments),
-                null,
-                2,
-              )}
-              className="text-purple-600"
-            />
-          )}
-          {result.content && (
-            <TruncatedResult
-              content={result.content}
-              className={result.is_error ? "text-red-600" : "text-green-600"}
-            />
-          )}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-/**
- * ThinkingBlock component - displays thinking/reasoning content
- */
-function ThinkingBlock({ thinking }) {
-  // Hook must be called before any early returns
-  const [isExpanded, setIsExpanded] = useState(false);
-
-  if (!thinking) return null;
-
-  return (
-    <div className="mt-3 border border-amber-200 rounded-lg overflow-hidden">
-      <button
-        type="button"
-        onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full flex items-center justify-between px-3 py-2 bg-amber-50 hover:bg-amber-100 transition-colors text-sm"
-      >
-        <div className="flex items-center gap-2 text-amber-700">
-          <svg
-            className="w-4 h-4"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-            aria-label="Thinking icon"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"
-            />
-          </svg>
-          <span className="font-medium">Thinking</span>
-        </div>
-        <svg
-          className={`w-4 h-4 text-amber-600 transition-transform ${
-            isExpanded ? "rotate-180" : ""
-          }`}
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-          aria-label="Expand icon"
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M19 9l-7 7-7-7"
-          />
-        </svg>
-      </button>
-      {isExpanded && (
-        <div className="px-3 py-2 bg-amber-50/50 text-sm text-amber-800 whitespace-pre-wrap break-words">
-          {thinking}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/**
- * ApiLogsBlock component - displays API logs associated with a message
- */
-function ApiLogsBlock({ apiLogs }) {
-  const [isExpanded, setIsExpanded] = useState(false);
-
-  if (!apiLogs || apiLogs.length === 0) return null;
-
-  return (
-    <div className="mt-3 border border-indigo-200 rounded-lg overflow-hidden">
-      <button
-        type="button"
-        onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full flex items-center justify-between px-3 py-2 bg-indigo-50 hover:bg-indigo-100 transition-colors text-sm"
-      >
-        <div className="flex items-center gap-2 text-indigo-700">
-          <svg
-            className="w-4 h-4"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-            aria-label="API log icon"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
-            />
-          </svg>
-          <span className="font-medium">API Logs ({apiLogs.length})</span>
-        </div>
-        <svg
-          className={`w-4 h-4 text-indigo-600 transition-transform ${isExpanded ? "rotate-180" : ""}`}
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-          aria-label={isExpanded ? "Collapse" : "Expand"}
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M19 9l-7 7-7-7"
-          />
-        </svg>
-      </button>
-      {isExpanded && (
-        <div className="bg-white p-3 space-y-3 max-h-96 overflow-y-auto">
-          {apiLogs.map((log) => (
-            <div
-              key={log.timestamp}
-              className="border border-gray-200 rounded-lg overflow-hidden"
-            >
-              <div className="px-3 py-2 bg-gray-50 border-b border-gray-200 text-xs text-gray-500">
-                {new Date(log.timestamp).toLocaleTimeString()}
-              </div>
-              <pre className="p-3 text-xs text-gray-700 whitespace-pre-wrap break-words overflow-x-hidden bg-gray-50">
-                {JSON.stringify(log.payload, null, 2)}
-              </pre>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/**
- * Status banner component
- */
-function StatusBanner({ status, error, onRetry }) {
-  if (status === "connecting") {
-    return (
-      <div className="bg-blue-100 border-l-4 border-blue-500 p-4 mb-4">
-        <div className="flex items-center">
-          <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600 mr-3" />
-          <p className="text-blue-700">Connecting to agent...</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (status === "error") {
-    return (
-      <div className="bg-red-100 border-l-4 border-red-500 p-4 mb-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-red-700 font-medium">Connection failed</p>
-            <p className="text-red-600 text-sm">{error || "Unknown error"}</p>
-          </div>
-          <button
-            type="button"
-            onClick={onRetry}
-            className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors text-sm"
-          >
-            Retry
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  if (status === "disconnected") {
-    return (
-      <div className="bg-yellow-100 border-l-4 border-yellow-500 p-4 mb-4">
-        <div className="flex items-center justify-between">
-          <p className="text-yellow-700">Disconnected. Connection lost.</p>
-          <button
-            type="button"
-            onClick={onRetry}
-            className="px-4 py-2 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 transition-colors text-sm"
-          >
-            Reconnect
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  return null;
-}
-
-/**
- * Notification banner component for system notifications (non-error)
- */
-function NotificationBanner({ notification, onClose }) {
-  if (!notification) return null;
-
-  return (
-    <div className="bg-amber-50 border-l-4 border-amber-400 p-4 mb-4">
-      <div className="flex items-start justify-between">
-        <div className="flex items-start">
-          <svg
-            className="h-5 w-5 text-amber-400 mt-0.5 mr-3 flex-shrink-0"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            aria-hidden="true"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
-            />
-          </svg>
-          <p className="text-amber-800 text-sm">{notification.message}</p>
-        </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="ml-4 text-amber-400 hover:text-amber-600 transition-colors flex-shrink-0"
-          aria-label="Dismiss notification"
-        >
-          <svg
-            className="h-5 w-5"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            aria-hidden="true"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M6 18L18 6M6 6l12 12"
-            />
-          </svg>
-        </button>
-      </div>
-    </div>
-  );
-}
 
 /**
  * Chat Page component
@@ -396,6 +32,13 @@ export function ChatPage() {
   const [inputValue, setInputValue] = useState("");
   const [sendError, setSendError] = useState(null);
   const [currentMode, setCurrentMode] = useState(null);
+  // Tracks the optimistic "stop in flight" state. Flips to `true`
+  // immediately when the user clicks Stop, then back to `false`
+  // when the next `chat:status` push arrives (which carries the
+  // `idle` status that flips `isAgentBusy` to false). The
+  // optimistic flip avoids a brief window where the button
+  // reverts to Send before the stop takes effect.
+  const [stopping, setStopping] = useState(false);
 
   // Get agent cache from store
   const agentsCache = useStore((state) => state.agentsCache);
@@ -412,6 +55,15 @@ export function ChatPage() {
   const agentState = cache?.agentState ?? "idle";
   const streaming = agentState === "streaming";
   const executingTools = agentState === "executing_tools";
+  // `isAgentBusy` is true whenever the agent is doing work that
+  // can be interrupted: streaming an LLM response, or executing
+  // a tool call between LLM turns. The "busy" state replaces
+  // Send with Stop. We deliberately exclude `waitingForResponse`
+  // here — that's a transient client-side flag that flips on
+  // for a few milliseconds right after `chat:message` push and
+  // before the first `chat:status` arrives; showing Stop during
+  // that window would flicker the button.
+  const isAgentBusy = streaming || executingTools;
   const availableModes = cache?.modes ?? ["chat"];
   const defaultMode = cache?.defaultMode ?? "chat";
   const contextLimit = cache?.contextLimit ?? null;
@@ -428,6 +80,19 @@ export function ChatPage() {
       setCurrentMode(defaultMode);
     }
   }, [defaultMode, currentMode]);
+
+  // When the agent transitions out of "busy" (the server's
+  // `chat:status: idle` push has arrived), clear the optimistic
+  // "stopping" flag. The transition is driven by the same
+  // `chat:status` event that flips `agentState` to `idle`, so
+  // there's no race: the order of state updates within React
+  // guarantees `isAgentBusy` becomes false in the same render
+  // (or the one after) as `stopping` is reset.
+  useEffect(() => {
+    if (!isAgentBusy && stopping) {
+      setStopping(false);
+    }
+  }, [isAgentBusy, stopping]);
 
   // Determine status label
   const getStatusLabel = () => {
@@ -458,7 +123,7 @@ export function ChatPage() {
   }, [id]);
 
   const handleSendMessage = () => {
-    if (!inputValue.trim() || streaming) {
+    if (!inputValue.trim() || isAgentBusy) {
       return;
     }
 
@@ -471,6 +136,24 @@ export function ChatPage() {
 
     sendMessage(id, content, mode, (err) => {
       setSendError(err.message || "Failed to send message");
+    });
+  };
+
+  // User clicked Stop. Optimistically flip `stopping` to true
+  // (the button now shows "Stopping..."), then issue the
+  // `chat:stop` push to the channel. The push completes
+  // immediately (`{:ok, %{}}`); the actual stop finalization
+  // happens asynchronously on the server and arrives as a
+  // `chat:status: idle` push, which clears `stopping` via the
+  // effect above.
+  const handleStopMessage = () => {
+    setStopping(true);
+    stopMessage(id, (err) => {
+      // The push failed (e.g. agent not in the registry).
+      // Clear the optimistic flag so the UI doesn't get stuck
+      // in the "Stopping..." state.
+      setStopping(false);
+      setSendError(err.message || "Failed to stop");
     });
   };
 
@@ -497,8 +180,10 @@ export function ChatPage() {
     displayMessages.push({ ...partial, isPartial: true });
   }
 
-  // Input is disabled when not connected or streaming
-  const isInputDisabled = status !== "connected" || streaming;
+  // Input is disabled when not connected or when the agent is
+  // busy (the user shouldn't be able to type into the textarea
+  // while the model is responding or tools are running).
+  const isInputDisabled = status !== "connected" || isAgentBusy;
 
   return (
     <div className="flex flex-col h-full max-w-6xl mx-auto">
@@ -758,6 +443,9 @@ export function ChatPage() {
           value={inputValue}
           onChange={setInputValue}
           onSend={handleSendMessage}
+          onStop={handleStopMessage}
+          isBusy={isAgentBusy}
+          stopping={stopping}
           disabled={isInputDisabled}
           placeholder={
             status === "connected"

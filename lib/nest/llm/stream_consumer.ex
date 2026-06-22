@@ -24,10 +24,25 @@ defmodule Nest.LLM.StreamConsumer do
   @type t :: %__MODULE__{
           on_text: (String.t(), sent() -> sent()),
           on_thinking: (String.t(), sent() -> sent()),
-          on_signature: (term() -> any())
+          on_signature: (term() -> any()),
+          # Optional cooperative-stop callback. Invoked at the
+          # start of every event in the stream; return `true`
+          # to halt the stream with a `nil` response (so the
+          # caller can detect a user-initiated stop). The
+          # default is `:undefined` (never stop). This is the
+          # way the real consumer is interrupted when the
+          # agent is using a non-mailbox-backed stream (e.g.
+          # the mock client in tests, which iterates a list
+          # synchronously) — for mailbox-backed streams the
+          # `{:stop_chat, from}` clause in the SSE consumer
+          # is the primary interrupt path.
+          should_stop: (-> boolean()) | nil
         }
 
-  defstruct on_text: nil, on_thinking: nil, on_signature: nil
+  defstruct on_text: nil,
+            on_thinking: nil,
+            on_signature: nil,
+            should_stop: nil
 
   @doc """
   Run the reducer over `stream` and return
@@ -35,17 +50,58 @@ defmodule Nest.LLM.StreamConsumer do
 
   * `acc` is the live `Client.accumulator()`.
   * `response` is the `RunResponse` set by `{:done, _}`,
-    or `nil` if the stream ended without one.
+    or `nil` if the stream ended without one (e.g. halted
+    via `{:stop_chat, _}` from the stop handler or the
+    cooperative `should_stop` callback).
   * `error` is the error reason set by `{:error, _}`, or
     `nil`.
   * `sent` is the chars-counter state — useful for
     delta-broadcasting and the `consume_new_stream` caller.
   """
-  @spec reduce(Enumerable.t(), t()) :: {Client.accumulator(), term() | nil, term() | nil, sent()}
+  @spec reduce(Enumerable.t(), t()) ::
+          {Client.accumulator(), term() | nil, term() | nil, sent()}
   def reduce(stream, %__MODULE__{} = consumer) do
     initial = {Client.new_accumulator(), nil, nil, %{chars: 0, thinking_chars: 0}}
-    Enum.reduce(stream, initial, fn event, acc -> dispatch(event, acc, consumer) end)
+
+    Enum.reduce_while(stream, initial, fn event, acc ->
+      if stop_requested?(consumer) do
+        {:halt, acc}
+      else
+        {:cont, dispatch(event, acc, consumer)}
+      end
+    end)
   end
+
+  # Check if the consumer wants to stop. When `should_stop` is
+  # `nil` (the default), we check the chat task's mailbox for a
+  # `{:stop_chat, from}` message — that's how `LLMRunner.run/2`
+  # is interrupted for non-mailbox-backed streams like the test
+  # mock client. The `should_stop` callback is an additional hook
+  # for non-process-mailbox backends (e.g. when the test wants
+  # to inject a stop without going through the chat task's
+  # mailbox).
+  defp stop_requested?(%__MODULE__{should_stop: fun}) when is_function(fun, 0) do
+    fun.()
+  end
+
+  defp stop_requested?(%__MODULE__{should_stop: nil}) do
+    receive do
+      {:stop_chat, from} ->
+        send(from, :stopped)
+        true
+    after
+      0 -> false
+    end
+  end
+
+  @doc """
+  Dispatch a single canonical event against the reducer state.
+  Public for testability; the dispatch logic is also inlined
+  into `reduce/2` via the private `dispatch/3` clauses.
+  """
+  @spec dispatch_step(term(), {Client.accumulator(), term() | nil, term() | nil, sent()}, t()) ::
+          {Client.accumulator(), term() | nil, term() | nil, sent()}
+  def dispatch_step(event, acc, consumer), do: dispatch(event, acc, consumer)
 
   defp dispatch({:text, text}, {acc, response, error, sent}, consumer) do
     new_sent = consumer.on_text.(text, sent)

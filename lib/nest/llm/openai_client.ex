@@ -182,23 +182,40 @@ defmodule Nest.LLM.OpenAIClient do
           {:halt, nil}
 
         {parser, false} ->
-          receive do
-            {:req_chunk, chunk} ->
-              {frames, parser} = Parser.feed(parser, chunk)
-              events = Enum.flat_map(frames, &frame_to_canonical_event/1)
-              {events, {parser, false}}
-
-            :req_done ->
-              {frames, _} = Parser.flush(parser)
-              events = Enum.flat_map(frames, &frame_to_canonical_event/1)
-              {events, {parser, true}}
-          after
-            60_000 ->
-              {[{:error, :stream_timeout}], {parser, true}}
-          end
+          receive_chunk_or_done_openai(parser)
       end,
       fn _ -> :ok end
     )
+  end
+
+  defp receive_chunk_or_done_openai(parser) do
+    receive do
+      {:req_chunk, chunk} -> handle_req_chunk_openai(parser, chunk)
+      :req_done -> handle_req_done_openai(parser)
+      # The agent may interrupt the chat task mid-stream (user
+      # clicked Stop). Halt the stream so `Enum.reduce` exits
+      # and the chat task can finalize the partial accumulator.
+      {:stop_chat, from} -> handle_stop_chat_openai(parser, from)
+    after
+      60_000 -> {[{:error, :stream_timeout}], {parser, true}}
+    end
+  end
+
+  defp handle_req_chunk_openai(parser, chunk) do
+    {frames, parser} = Parser.feed(parser, chunk)
+    events = Enum.flat_map(frames, &frame_to_canonical_event/1)
+    {events, {parser, false}}
+  end
+
+  defp handle_req_done_openai(parser) do
+    {frames, _} = Parser.flush(parser)
+    events = Enum.flat_map(frames, &frame_to_canonical_event/1)
+    {events, {parser, true}}
+  end
+
+  defp handle_stop_chat_openai(parser, from) do
+    send(from, :stopped)
+    {:halt, {parser, true}}
   end
 
   defp frame_to_canonical_event({:event, _name, "[DONE]"}) do

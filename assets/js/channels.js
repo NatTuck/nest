@@ -289,6 +289,27 @@ export function sendMessage(agentId, content, modeOrOnError, onError) {
 }
 
 /**
+ * Request that the in-flight chat task for the agent halt
+ * immediately. The server finalizes whatever was streamed so
+ * far and broadcasts `chat:status: "idle"`. The reply is
+ * immediate (`{:ok, %{}}`); the actual stop finalization
+ * happens asynchronously. The optional `onError` callback
+ * fires when the server rejects the push (e.g. agent not
+ * found). A no-op when the channel isn't connected.
+ */
+export function stopMessage(agentId, onError) {
+  const channel = agentChannels.get(agentId);
+  if (!channel) {
+    if (onError) onError(new Error("Not connected to agent"));
+    return;
+  }
+
+  channel.push("chat:stop", {}).receive("error", (err) => {
+    if (onError) onError(err);
+  });
+}
+
+/**
  * Create agent via lobby
  */
 export function createAgent(model, vocationId, workspacePath, onOk, onError) {

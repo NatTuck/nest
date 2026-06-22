@@ -73,9 +73,9 @@ defmodule Nest.Agents.Agent do
           | {:tool, Tool.t()}
 
   # Fallback used when neither config nor the async probe has produced
-  # a value. 128k is a safe lower bound for modern chat models and
-  # keeps the token-usage chip rendering before the probe completes.
-  @default_context_limit 128_000
+  # a value lives in `Nest.Agents.Agent.Init`. 128k is a safe lower
+  # bound for modern chat models and keeps the token-usage chip
+  # rendering before the probe completes.
 
   # Client API
 
@@ -108,6 +108,37 @@ defmodule Nest.Agents.Agent do
   @spec chat(pid(), String.t(), String.t() | nil) :: :ok
   def chat(pid, content, mode \\ nil) do
     GenServer.cast(pid, {:chat, content, mode})
+  end
+
+  @doc """
+  Signal the in-flight chat task (if any) to stop. The agent's
+  `handle_info({:stop_chat, _}, state)` will halt the chat task at
+  its next blocking receive, finalize the partial streaming
+  accumulator, and broadcast `chat:status: "idle"`. The `from`
+  argument is the channel pid that initiated the stop; it is
+  passed through so the agent can reply `{:reply, :ok, ...}` to
+  the channel push (the reply is sent via the GenServer
+  mailbox, not directly).
+
+  A no-op when the agent is idle (no in-flight chat task).
+  Idempotent — multiple calls just re-set the `cancelled` flag.
+  """
+  @spec stop_chat(pid(), pid()) :: :ok
+  def stop_chat(pid, from \\ self()) do
+    send(pid, {:stop_chat, from})
+    :ok
+  end
+
+  @doc """
+  Test-only: returns the pid of the in-flight chat task (or
+  `nil` if the agent is idle). The pid is used by tests to
+  inject stop signals directly into the chat task's mailbox,
+  bypassing the GenServer mailbox ordering. Production code
+  should use `stop_chat/2` instead.
+  """
+  @spec get_chat_task_pid(pid()) :: pid() | nil
+  def get_chat_task_pid(pid) do
+    GenServer.call(pid, :get_chat_task_pid)
   end
 
   @doc """
@@ -237,6 +268,11 @@ defmodule Nest.Agents.Agent do
   @impl true
   def handle_call(:get_system_prompt, _from, state) do
     {:reply, state.system_prompt, state}
+  end
+
+  @impl true
+  def handle_call(:get_chat_task_pid, _from, state) do
+    {:reply, state.chat_state.chat_task_pid, state}
   end
 
   # Move the agent's current `messages` to `history` (with a

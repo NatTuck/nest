@@ -13,23 +13,32 @@ import { ChatInput } from "./ChatInput";
 function setup(props = {}) {
   const onChange = vi.fn();
   const onSend = vi.fn();
+  const onStop = vi.fn();
   const utils = render(
     <ChatInput
       value={props.value ?? ""}
       onChange={props.onChange ?? onChange}
       onSend={props.onSend ?? onSend}
+      onStop={props.onStop ?? onStop}
+      isBusy={props.isBusy ?? false}
+      stopping={props.stopping ?? false}
       disabled={props.disabled ?? false}
       placeholder={props.placeholder ?? "Type a message..."}
     />,
   );
   const textarea = screen.getByLabelText("Message");
-  const sendButton = screen.getByRole("button", { name: /send/i });
+  // The action button is one of: Send (idle), Stop (busy), or
+  // Stopping... (busy && stopping). Look it up by aria-label.
+  const sendButton = screen.queryByRole("button", { name: /send/i });
+  const stopButton = screen.queryByRole("button", { name: /stop/i });
   return {
     ...utils,
     textarea,
     sendButton,
+    stopButton,
     onChange: props.onChange ?? onChange,
     onSend: props.onSend ?? onSend,
+    onStop: props.onStop ?? onStop,
   };
 }
 
@@ -284,6 +293,83 @@ describe("ChatInput", () => {
         />,
       );
       expect(screen.getByLabelText("Mode")).toBeDisabled();
+    });
+  });
+
+  describe("action button (Send / Stop / Stopping...)", () => {
+    it("renders a Send button when the agent is idle", () => {
+      const { sendButton, stopButton } = setup({ value: "hello" });
+      expect(sendButton).toBeInTheDocument();
+      expect(stopButton).toBeNull();
+    });
+
+    it("renders a Stop button when the agent is busy", () => {
+      const { sendButton, stopButton } = setup({
+        value: "hello",
+        isBusy: true,
+      });
+      expect(sendButton).toBeNull();
+      expect(stopButton).toBeInTheDocument();
+      expect(stopButton).toHaveTextContent(/stop/i);
+      expect(stopButton).not.toBeDisabled();
+    });
+
+    it("calls onStop when the Stop button is clicked", () => {
+      const { stopButton, onStop } = setup({ value: "hello", isBusy: true });
+      fireEvent.click(stopButton);
+      expect(onStop).toHaveBeenCalledTimes(1);
+    });
+
+    it("renders a disabled 'Stopping...' button when isBusy && stopping", () => {
+      const { sendButton, stopButton } = setup({
+        value: "hello",
+        isBusy: true,
+        stopping: true,
+      });
+      expect(sendButton).toBeNull();
+      expect(stopButton).toBeInTheDocument();
+      expect(stopButton).toHaveTextContent(/stopping/i);
+      expect(stopButton).toBeDisabled();
+    });
+
+    it("does not call onStop when the Stopping... button is clicked (it's disabled)", () => {
+      const { stopButton, onStop } = setup({
+        value: "hello",
+        isBusy: true,
+        stopping: true,
+      });
+      fireEvent.click(stopButton);
+      expect(onStop).not.toHaveBeenCalled();
+    });
+
+    it("disables the textarea when isBusy is true (no typing while busy)", () => {
+      const { textarea } = setup({ value: "hello", isBusy: true });
+      expect(textarea).toBeDisabled();
+    });
+
+    it("does not call onSend on form submit when isBusy is true", () => {
+      const { onSend, rerender } = setup({ value: "hello", isBusy: true });
+      rerender(
+        <ChatInput
+          value="hello"
+          onChange={vi.fn()}
+          onSend={onSend}
+          isBusy={true}
+          placeholder="Type a message..."
+        />,
+      );
+      const form = document.querySelector("form");
+      fireEvent.submit(form);
+      expect(onSend).not.toHaveBeenCalled();
+    });
+
+    it("does not call onSend on Ctrl+Enter when isBusy is true", () => {
+      const { textarea, onSend } = setup({
+        value: "hello",
+        isBusy: true,
+      });
+      fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: true });
+      expect(onSend).not.toHaveBeenCalled();
     });
   });
 });

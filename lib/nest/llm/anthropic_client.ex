@@ -97,23 +97,39 @@ defmodule Nest.LLM.AnthropicClient do
   end
 
   defp next_chunk_or_halt({_parser, true, _state}), do: {:halt, nil}
-  defp next_chunk_or_halt({parser, false, state}), do: receive_chunk_or_done({parser, false, state})
+
+  defp next_chunk_or_halt({parser, false, state}),
+    do: receive_chunk_or_done({parser, false, state})
 
   defp receive_chunk_or_done({parser, false, state}) do
     receive do
-      {:req_chunk, chunk} ->
-        {frames, parser} = Parser.feed(parser, chunk)
-        {events, state} = frames_to_canonical_events(frames, state)
-        {events, {parser, false, state}}
-
-      :req_done ->
-        {events, final_state} = flush_and_finish(parser, state)
-        {events ++ [{:done, %{response: build_done_response(final_state)}}],
-         {parser, true, final_state}}
+      {:req_chunk, chunk} -> handle_req_chunk(parser, chunk, state)
+      :req_done -> handle_req_done(parser, state)
+      # The agent may interrupt the chat task mid-stream (user
+      # clicked Stop). Halt the stream so `Enum.reduce` exits and
+      # the chat task can finalize the partial accumulator.
+      {:stop_chat, from} -> handle_stop_chat(parser, state, from)
     after
-      60_000 ->
-        timeout_result(parser, state)
+      60_000 -> timeout_result(parser, state)
     end
+  end
+
+  defp handle_req_chunk(parser, chunk, state) do
+    {frames, parser} = Parser.feed(parser, chunk)
+    {events, state} = frames_to_canonical_events(frames, state)
+    {events, {parser, false, state}}
+  end
+
+  defp handle_req_done(parser, state) do
+    {events, final_state} = flush_and_finish(parser, state)
+
+    {events ++ [{:done, %{response: build_done_response(final_state)}}],
+     {parser, true, final_state}}
+  end
+
+  defp handle_stop_chat(parser, state, from) do
+    send(from, :stopped)
+    {:halt, {parser, true, state}}
   end
 
   defp timeout_result(parser, state) do

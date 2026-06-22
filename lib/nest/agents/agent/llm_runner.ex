@@ -88,6 +88,11 @@ defmodule Nest.Agents.Agent.LLMRunner do
     # logs since the last call) and reply with either `:proceed`
     # (use the existing snapshot) or `:compacted` (use the new
     # compacted list).
+    #
+    # `:stopped` is returned when the agent sent a `{:stop_chat, _}`
+    # while the chat task was waiting on the pre-flight. We raise
+    # `ToolLoop.StoppedError` so the chat task body can detect the
+    # stop and notify the agent.
     case run_preflight(ctx) do
       {:compacted, new_messages} ->
         run_with_new_client(%{ctx | messages: new_messages}, state)
@@ -97,6 +102,9 @@ defmodule Nest.Agents.Agent.LLMRunner do
         state = broadcast_request_log(ctx, state)
         {:ok, stream} = run_request(ctx)
         handle_new_stream(ctx, state, stream)
+
+      :stopped ->
+        raise Nest.Agents.Agent.ToolLoop.StoppedError
     end
   end
 
@@ -106,6 +114,11 @@ defmodule Nest.Agents.Agent.LLMRunner do
   # `{:compacted, new_messages}` if the compactor ran. The chat
   # task blocks here on a `receive`, mirroring the
   # `compact_context` tool's round-trip pattern.
+  #
+  # The `{:stop_chat, from}` clause lets the agent interrupt the
+  # chat task while it is waiting on a pre-flight compaction. The
+  # chat task acknowledges the stop, sends `:stopped` back, and
+  # the caller unwinds via the `:stopped` return value.
   defp run_preflight(ctx) do
     send(ctx.agent_pid, {:preflight_request, self(), ctx.messages})
 
@@ -115,6 +128,10 @@ defmodule Nest.Agents.Agent.LLMRunner do
 
       {:preflight_result, :compacted, new_messages} ->
         {:compacted, new_messages}
+
+      {:stop_chat, from} ->
+        send(from, :stopped)
+        :stopped
     after
       30_000 ->
         Logger.warning("Pre-flight request timed out; proceeding with existing messages")
@@ -179,14 +196,29 @@ defmodule Nest.Agents.Agent.LLMRunner do
     ctx.client_config.client.run(build_run_request(ctx), build_run_opts(ctx))
   end
 
+  @spec handle_new_stream(RunContext.t(), RunState.t(), Enumerable.t()) :: RunState.t()
   defp handle_new_stream(ctx, state, stream) do
-    {_acc, response, error, _sent} =
-      consume_new_stream(stream, state.message_index, ctx.agent_id, ctx.agent_pid)
+    result = consume_new_stream(stream, state.message_index, ctx.agent_id, ctx.agent_pid)
+    dispatch_reducer_result(ctx, state, result)
+  end
 
-    if error do
-      handle_failed_response(state, error, ctx)
-    else
-      handle_new_response(ctx, state, response)
+  # Dispatch on the reducer's 4-tuple. The reducer's typespec
+  # declares `response` as `term() | nil` but the type checker
+  # infers `%RunResponse{} | nil` from the dispatch clauses. We
+  # use `is_struct/2` (a runtime guard) to test the response
+  # without triggering the static type checker's
+  # "comparison between distinct types" warning.
+  @spec dispatch_reducer_result(RunContext.t(), RunState.t(), tuple()) :: RunState.t()
+  defp dispatch_reducer_result(ctx, state, {_acc, response, error, _sent}) do
+    cond do
+      error != nil ->
+        handle_failed_response(state, error, ctx)
+
+      not is_struct(response, RunResponse) ->
+        raise Nest.Agents.Agent.ToolLoop.StoppedError
+
+      true ->
+        handle_new_response(ctx, state, response)
     end
   end
 
@@ -282,6 +314,8 @@ defmodule Nest.Agents.Agent.LLMRunner do
      ctx.messages ++ [tool_call_message, tool_result_message]}
   end
 
+  @spec consume_new_stream(Enumerable.t(), non_neg_integer(), String.t(), pid()) ::
+          {Client.accumulator(), RunResponse.t() | nil, term() | nil, map()}
   defp consume_new_stream(stream, message_index, agent_id, agent_pid) do
     consumer = %StreamConsumer{
       on_text: &broadcast_text_delta(&1, &2, message_index, agent_id, agent_pid),
@@ -290,15 +324,54 @@ defmodule Nest.Agents.Agent.LLMRunner do
       # must be echoed back on subsequent turns. Forward it
       # to the agent pid so it can be persisted in the
       # assistant message's metadata.
-      on_signature: &send(agent_pid, {:thinking_signature_received, &1})
+      on_signature: &send(agent_pid, {:thinking_signature_received, &1}),
+      # Cooperative stop check: the chat task is the one
+      # consuming the stream, so it must read its own
+      # mailbox to detect a `{:stop_chat, _}` from the agent.
+      # We non-blockingly check (`:receive, 0`) on every
+      # event; if the stop message is there, the stream halts
+      # and the consumer returns `response: nil`, which the
+      # caller (`handle_new_stream/3`) translates to a
+      # `ToolLoop.StoppedError` raise.
+      should_stop: fn -> chat_task_should_stop?() end
     }
 
     {acc, response, error, sent} = StreamConsumer.reduce(stream, consumer)
-    final_response = normalize_response(response, acc)
+
+    # Preserve the `nil` response when the stream halted (user
+    # clicked Stop). `normalize_response/2` would otherwise
+    # synthesize a `%RunResponse{}` from the accumulator, which
+    # would make the dispatcher think the stream completed
+    # normally.
+    final_response =
+      if response == nil do
+        nil
+      else
+        normalize_response(response, acc)
+      end
+
     # `sent` carries chars-sent counters used for delta broadcasting;
     # the running total is already in `acc`'s text buffer at this point.
     _ = sent
     {acc, final_response, error, sent}
+  end
+
+  # Non-blocking mailbox check for a `{:stop_chat, _}` message.
+  # Returns `true` if the chat task should halt the current
+  # stream iteration. Used by the StreamConsumer's cooperative
+  # `should_stop` callback so non-mailbox-backed streams (e.g.
+  # the test mock client) can be interrupted between events.
+  # The `after 0` yields to the scheduler so the agent's
+  # `handle_info({:stop_chat, _}, state)` can run between
+  # events and deliver the stop to the chat task's mailbox.
+  defp chat_task_should_stop? do
+    receive do
+      {:stop_chat, from} ->
+        send(from, :stopped)
+        true
+    after
+      0 -> false
+    end
   end
 
   defp broadcast_text_delta(text, sent, message_index, agent_id, agent_pid) do

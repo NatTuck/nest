@@ -44,6 +44,12 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     # Broadcast user message to all subscribers
     Broadcasts.message(state.id, user_message)
 
+    # Clear the `cancelled` flag from any previous stop so the
+    # pre-flight compaction that may run for this turn can
+    # actually resume the chat task (the guard in
+    # `compaction_done` would otherwise discard the
+    # `chat_continuation`).
+    state = clear_cancelled(state)
     state = apply_user_message_to_state(state, messages, effective_mode)
     Broadcasts.status(state.id, :streaming)
 
@@ -53,6 +59,10 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     state = maybe_compact_then_chat(state, messages_for_llm, content, mode)
 
     {:noreply, state}
+  end
+
+  defp clear_cancelled(state) do
+    %{state | chat_state: %{state.chat_state | cancelled: false}}
   end
 
   @doc """
@@ -86,7 +96,9 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   Spawn the LLM call chain as a Task under the agent's
   TaskSupervisor. The task is fire-and-forget; it sends
   `:delta_received`, `:llm_usage`, `:tool_calls_received`,
-  etc. back to the agent pid as the LLM streams.
+  etc. back to the agent pid as the LLM streams. The task's
+  pid is stored on `state.chat_state.chat_task_pid` so the
+  stop handler can send it a `{:stop_chat, _}` signal.
   """
   @spec spawn_chat_task(Nest.Agents.Agent.t(), String.t(), String.t()) ::
           Nest.Agents.Agent.t()
@@ -94,24 +106,48 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     agent_pid = self()
     {effective_mode, caps} = resolve_mode_and_caps(mode, state.vocation_id)
 
-    # handle_chat has already added the user message to state.chat_state.messages
-    # and broadcast it. The last message in state.chat_state.messages is our
-    # user message; we just need to construct the LLM-bound version
-    # with the mode prefix.
-    user_message = List.last(state.chat_state.messages)
-    llm_user_message = llm_user_message(user_message, content, effective_mode)
-    messages_for_llm = Enum.drop(state.chat_state.messages, -1) ++ [llm_user_message]
+    state = broadcast_user_and_prepare_streaming(state, content, effective_mode)
+    messages_for_llm = build_llm_messages(state, content, effective_mode)
 
+    ctx = build_run_context(state, agent_pid, caps, messages_for_llm)
+    init_state = build_run_state(state)
+
+    chat_task_pid = start_chat_task(agent_pid, ctx, init_state)
+
+    %{state | chat_state: %{state.chat_state | chat_task_pid: chat_task_pid}}
+  end
+
+  # Re-broadcast the user message and transition the chat_state to
+  # `:streaming` so the LLM-bound version of the user message is
+  # visible to the chat task. The user message was already added
+  # to `state.chat_state.messages` and broadcast by `handle_chat/3`
+  # (or the compaction continuation's resume), so this is a
+  # no-op on the message list; we just re-broadcast with the
+  # mode-aware context.
+  defp broadcast_user_and_prepare_streaming(state, _content, _effective_mode) do
+    user_message = List.last(state.chat_state.messages)
     Broadcasts.message(state.id, user_message)
 
     # handle_chat (or the compaction continuation) has already
     # set state.chat_state.streaming_acc to the correct index. Don't
     # overwrite it here — that would shift the assistant's index
     # by one.
-    state = %{state | chat_state: %{state.chat_state | status: :streaming}}
-    Broadcasts.status(state.id, :streaming)
+    %{state | chat_state: %{state.chat_state | status: :streaming}}
+    |> tap(&Broadcasts.status(&1.id, :streaming))
+  end
 
-    ctx = %LLMRunner.RunContext{
+  # Build the message list passed to the LLM. The last message is
+  # the user message with the mode prefix prepended; the rest are
+  # the prior history (everything except the user message we just
+  # added).
+  defp build_llm_messages(state, content, effective_mode) do
+    user_message = List.last(state.chat_state.messages)
+    llm_user_message = llm_user_message(user_message, content, effective_mode)
+    Enum.drop(state.chat_state.messages, -1) ++ [llm_user_message]
+  end
+
+  defp build_run_context(state, agent_pid, caps, messages_for_llm) do
+    %LLMRunner.RunContext{
       client_config: state.client_config,
       tools: state.tools,
       system_prompt: state.system_prompt,
@@ -122,22 +158,58 @@ defmodule Nest.Agents.Agent.ChatPipeline do
       context_limit: state.llm_metrics.context_limit,
       context_limit_source: state.llm_metrics.context_limit_source
     }
+  end
 
-    init_state = %LLMRunner.RunState{
+  defp build_run_state(state) do
+    %LLMRunner.RunState{
       message_index: state.chat_state.streaming_acc.index,
       active_message_index: state.chat_state.active_message_index,
       api_log_sequences: state.chat_state.api_log_sequences,
       max_iterations: Nest.Agents.Agent.configured_max_tool_iterations()
     }
+  end
 
-    Task.Supervisor.start_child(Nest.Agents.TaskSupervisor, fn ->
-      %LLMRunner.RunState{api_log_sequences: updated_sequences} =
+  # Spawn the chat task under the application-wide
+  # `Task.Supervisor`. If the supervisor is saturated, fall
+  # back to a no-pid state (the stop handler treats `nil` as a
+  # no-op).
+  defp start_chat_task(agent_pid, ctx, init_state) do
+    case Task.Supervisor.start_child(
+           Nest.Agents.TaskSupervisor,
+           fn -> run_chat_task_and_notify(agent_pid, ctx, init_state) end
+         ) do
+      {:ok, pid} -> pid
+      _ -> nil
+    end
+  end
+
+  # Body of the spawned chat task. Wraps `LLMRunner.run/2` in a
+  # try/catch so we can distinguish a clean stop (the user
+  # clicked Stop, the inner receives returned `:stopped`, the
+  # tool loop raised `ToolLoop.StoppedError`) from a normal
+  # completion.
+  #
+  # On stop, send `{:chat_stopped, self()}` to the agent so its
+  # `handle_info` can finalize the partial accumulator. On normal
+  # completion, send the standard `{:api_log_sequences_updated, _}`
+  # ack. The wrapping also catches unexpected raises so the chat
+  # task never dies with a non-`:normal` reason (which would trip
+  # the agent's ExitHandler and stop the whole GenServer).
+  defp run_chat_task_and_notify(agent_pid, ctx, init_state) do
+    stopped? =
+      try do
         LLMRunner.run(ctx, init_state)
+        false
+      catch
+        :exit, _ -> true
+        :error, %Nest.Agents.Agent.ToolLoop.StoppedError{} -> true
+      end
 
-      send(agent_pid, {:api_log_sequences_updated, updated_sequences})
-    end)
-
-    state
+    if stopped? do
+      send(agent_pid, {:chat_stopped, self()})
+    else
+      send(agent_pid, {:api_log_sequences_updated, init_state})
+    end
   end
 
   # Build the persisted user message (raw content + metadata.mode)
@@ -146,6 +218,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   # saved; the LLM form is what the model sees on the next call.
   defp build_user_messages(state, content, effective_mode) do
     next_idx = state.chat_state.next_message_index
+
     user = %User{
       index: next_idx,
       timestamp: DateTime.utc_now(),
@@ -193,8 +266,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
             next_message_index: next_idx + 1,
             status: :streaming,
             active_message_index: next_idx,
-            pending_api_logs:
-              clear_pending_api_logs(state, next_idx).chat_state.pending_api_logs,
+            pending_api_logs: clear_pending_api_logs(state, next_idx).chat_state.pending_api_logs,
             streaming_acc: Streaming.new(next_idx + 1)
         }
     }
@@ -235,7 +307,11 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   """
   @spec preflight_decision([{atom(), map()}], Nest.Agents.Agent.t()) :: atom()
   def preflight_decision(messages_for_llm, state) do
-    PreFlight.check_messages(messages_for_llm, state.llm_metrics.context_limit, @preflight_reserve)
+    PreFlight.check_messages(
+      messages_for_llm,
+      state.llm_metrics.context_limit,
+      @preflight_reserve
+    )
   end
 
   @doc """

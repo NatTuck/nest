@@ -46,23 +46,50 @@ defmodule Nest.Agents.Agent.ToolLoop do
   end
 
   defp build_tool_executor(ctx) do
-    fn tool_call ->
-      case tool_call_name(tool_call) do
-        "compact_context" ->
-          # The compact_context tool needs to mutate the agent's
-          # state.chat_state.messages. The chat task can't do that
-          # directly, so it round-trips through the GenServer: send
-          # a request, the GenServer runs the compactor, then sends
-          # the result back. The chat task blocks on a receive
-          # until the result arrives.
-          {request_compaction_from_task(ctx, tool_call), @compaction_max}
+    fn tool_call -> execute_tool(ctx, tool_call) end
+  end
 
-        _ ->
-          raw = LLMTools.execute_one(ctx.tools, tool_call, %{caps: ctx.caps})
-          {content, default_max} = tool_result_for(raw, ctx, tool_call)
-          {content, default_max || @default_max_fallback}
-      end
+  defp execute_tool(ctx, tool_call) do
+    case tool_call_name(tool_call) do
+      "compact_context" -> compact_context_result(ctx, tool_call)
+      _ -> standard_tool_result(ctx, tool_call)
     end
+  end
+
+  # The compact_context tool needs to mutate the agent's
+  # state.chat_state.messages. The chat task can't do that
+  # directly, so it round-trips through the GenServer: send
+  # a request, the GenServer runs the compactor, then sends
+  # the result back. The chat task blocks on a receive
+  # until the result arrives.
+  #
+  # When the agent sends `{:stop_chat, _}` while the chat
+  # task is waiting, the receive returns `:stopped`. The
+  # tool loop then raises `StoppedError`, which the chat
+  # task's outer try/catch in `LLMRunner.run/2` turns into
+  # a clean unwind (returning the partial RunState without
+  # raising into the Task.Supervisor).
+  defp compact_context_result(ctx, tool_call) do
+    case request_compaction_from_task(ctx, tool_call) do
+      :stopped -> raise __MODULE__.StoppedError
+      text -> {text, @compaction_max}
+    end
+  end
+
+  defp standard_tool_result(ctx, tool_call) do
+    raw = LLMTools.execute_one(ctx.tools, tool_call, %{caps: ctx.caps})
+    {content, default_max} = tool_result_for(raw, ctx, tool_call)
+    {content, default_max || @default_max_fallback}
+  end
+
+  # Raised by the tool executor when the agent interrupts the chat
+  # task mid-tool-call. `LLMRunner.run/2` catches it and unwinds
+  # without making any further LLM calls; the agent's stop handler
+  # finalizes whatever is in `state.chat_state.streaming_acc` on
+  # the GenServer side.
+  defmodule StoppedError do
+    @moduledoc "Raised by `request_compaction_from_task/2` when the agent sent `{:stop_chat, _}`."
+    defexception message: "chat task stopped by user"
   end
 
   defp tool_result_for({:ok, content}, ctx, tool_call) do
@@ -78,6 +105,12 @@ defmodule Nest.Agents.Agent.ToolLoop do
   # result. The GenServer runs the compactor (in a Task) and
   # sends the new messages back. The chat task then constructs
   # a synthetic tool result for the LLM.
+  #
+  # The `{:stop_chat, from}` clause lets the agent interrupt the
+  # chat task while it is waiting on a `compact_context` call.
+  # The chat task acknowledges the stop and returns `:stopped`,
+  # which the caller (the budget loop in `LLMRunner`) treats as
+  # "unwind the chain".
   defp request_compaction_from_task(ctx, tool_call) do
     focus = get_focus_arg(tool_call)
 
@@ -89,6 +122,10 @@ defmodule Nest.Agents.Agent.ToolLoop do
 
       {:compact_context_failed, reason} ->
         "Compaction failed: #{inspect(reason)}"
+
+      {:stop_chat, from} ->
+        send(from, :stopped)
+        :stopped
     after
       @compaction_timeout ->
         "Compaction timed out"
@@ -133,7 +170,9 @@ defmodule Nest.Agents.Agent.ToolLoop do
   # behavior — better than over-aggressive truncation).
   defp compute_remaining_budget(ctx) do
     case ctx.context_limit do
-      nil -> @budget_unknown_limit
+      nil ->
+        @budget_unknown_limit
+
       limit when is_integer(limit) ->
         used = Estimator.estimate_messages(ctx.messages || [])
         max(0, limit - @budget_reserve - used)

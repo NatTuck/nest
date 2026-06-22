@@ -26,6 +26,7 @@ defmodule Nest.Agents.Agent.Handlers do
   alias Nest.Agents.Agent.Handlers.CompactionHandler
   alias Nest.Agents.Agent.Handlers.ExitHandler
   alias Nest.Agents.Agent.Handlers.LLMStreamHandler
+  alias Nest.Agents.Agent.Handlers.StopHandler
 
   @doc """
   Dispatch an arbitrary `handle_info/2` message. Returns the
@@ -44,6 +45,7 @@ defmodule Nest.Agents.Agent.Handlers do
       {:ok, ApiLogHandler} -> ApiLogHandler.handle(msg, state)
       {:ok, CompactionHandler} -> CompactionHandler.handle(msg, state)
       {:ok, ExitHandler} -> ExitHandler.handle(msg, state)
+      {:ok, StopHandler} -> StopHandler.handle(msg, state)
       {:inline_discovered, source, limit} -> discovered_context_limit(source, limit, state)
       :no_match -> unknown(state)
     end
@@ -68,6 +70,8 @@ defmodule Nest.Agents.Agent.Handlers do
   defp route_for({:preflight_request, _, _}), do: {:ok, CompactionHandler}
   defp route_for({:compaction_failed_for_preflight, _, _}), do: {:ok, CompactionHandler}
   defp route_for({:compact_context_failed, _, _}), do: {:ok, CompactionHandler}
+  defp route_for({:stop_chat, _}), do: {:ok, StopHandler}
+  defp route_for({:chat_stopped, _}), do: {:ok, StopHandler}
   defp route_for({:EXIT, _, _}), do: {:ok, ExitHandler}
 
   defp route_for({:discovered_context_limit, source, limit}) do
