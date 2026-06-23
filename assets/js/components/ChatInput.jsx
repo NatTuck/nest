@@ -39,7 +39,9 @@ const MAX_HEIGHT_PX = 240;
  * - `history`: array of `{ content: string, mode: string | null }`,
  *   ordered most-recent-first, with consecutive duplicates removed.
  *   The parent is responsible for building this list from the agent's
- *   current and archived messages.
+ *   current and archived messages. When non-empty and the input is
+ *   interactive, a small muted hint is rendered below the form to
+ *   advertise the keybinding.
  */
 export function ChatInput({
   value,
@@ -247,6 +249,8 @@ export function ChatInput({
           disabled={disabled || isBusy}
           rows={2}
           aria-label="Message"
+          aria-keyshortcuts="Control+ArrowUp Control+ArrowDown Meta+ArrowUp Meta+ArrowDown Control+Enter Meta+Enter"
+          title="Enter to newline • Ctrl/Cmd+Enter to send • Ctrl/Cmd+Up/Down to walk previous prompts"
           className="flex-1 px-4 py-3 border border-gray-300 rounded-lg resize-none overflow-y-auto leading-snug focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none disabled:bg-gray-100 disabled:cursor-not-allowed"
           style={{ maxHeight: `${MAX_HEIGHT_PX}px` }}
         />
@@ -260,6 +264,11 @@ export function ChatInput({
         )}
         {renderActionButton()}
       </div>
+      {history.length > 0 && !disabled && !isBusy && (
+        <p className="mt-1 px-1 text-xs text-gray-400" aria-hidden="true">
+          Tip: Ctrl+↑ / Ctrl+↓ to walk previous prompts
+        </p>
+      )}
     </form>
   );
 }

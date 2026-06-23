@@ -561,4 +561,81 @@ describe("ChatInput", () => {
       expect(onChange).not.toHaveBeenCalled();
     });
   });
+
+  describe("discoverability hints", () => {
+    function getHint() {
+      return screen.queryByText(/walk previous prompts/i);
+    }
+
+    it("advertises the keybinding via title on the textarea", () => {
+      setup();
+      const textarea = screen.getByLabelText("Message");
+      expect(textarea.getAttribute("title")).toMatch(/Ctrl\/Cmd\+Up\/Down/);
+    });
+
+    it("exposes the keybinding to assistive tech via aria-keyshortcuts", () => {
+      setup();
+      const textarea = screen.getByLabelText("Message");
+      const shortcuts = textarea.getAttribute("aria-keyshortcuts") || "";
+      // Should advertise both Up and Down, plus Enter to send.
+      expect(shortcuts).toMatch(/ArrowUp/);
+      expect(shortcuts).toMatch(/ArrowDown/);
+      expect(shortcuts).toMatch(/Enter/);
+    });
+
+    it("renders a visible hint when history is non-empty and input is interactive", () => {
+      render(
+        <ChatInput
+          value=""
+          onChange={() => {}}
+          onSend={() => {}}
+          history={[{ content: "x", mode: null }]}
+        />,
+      );
+      expect(getHint()).toBeInTheDocument();
+    });
+
+    it("does not render the hint when history is empty", () => {
+      render(
+        <ChatInput
+          value=""
+          onChange={() => {}}
+          onSend={() => {}}
+          history={[]}
+        />,
+      );
+      expect(getHint()).toBeNull();
+    });
+
+    it("does not render the hint when history is not provided", () => {
+      render(<ChatInput value="" onChange={() => {}} onSend={() => {}} />);
+      expect(getHint()).toBeNull();
+    });
+
+    it("does not render the hint when disabled", () => {
+      render(
+        <ChatInput
+          value=""
+          onChange={() => {}}
+          onSend={() => {}}
+          history={[{ content: "x", mode: null }]}
+          disabled
+        />,
+      );
+      expect(getHint()).toBeNull();
+    });
+
+    it("does not render the hint while the agent is busy", () => {
+      render(
+        <ChatInput
+          value=""
+          onChange={() => {}}
+          onSend={() => {}}
+          history={[{ content: "x", mode: null }]}
+          isBusy
+        />,
+      );
+      expect(getHint()).toBeNull();
+    });
+  });
 });
