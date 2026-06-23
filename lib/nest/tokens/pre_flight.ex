@@ -3,7 +3,7 @@ defmodule Nest.Tokens.PreFlight do
   Pre-flight check: would this LLM call fit in the context window?
 
   Called just before any LLM call (initial chat, after tool
-  results, from the `compact_context` tool). Returns one of:
+  results, from the `context` tool). Returns one of:
 
     * `:fits` — the projected total is within the context window
       (with reserve). Proceed.

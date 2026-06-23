@@ -7,8 +7,8 @@ defmodule Nest.Agents.Agent.ToolLoop do
   Responsibilities:
 
     * Build the executor callback that invokes each tool (with a
-      special round-trip for the `compact_context` tool that needs
-      to mutate the GenServer's state).
+      special round-trip for the `context` tool's compact action
+      that needs to mutate the GenServer's state).
     * Run the `BudgetPlanner` to truncate, skip, or pass through
       results based on the per-call budget.
     * Wrap planner results in `Nest.Messages.ToolResult` structs
@@ -52,29 +52,8 @@ defmodule Nest.Agents.Agent.ToolLoop do
 
   defp execute_tool(ctx, tool_call) do
     case tool_call_name(tool_call) do
-      "compact_context" -> compact_context_result(ctx, tool_call)
       "context" -> context_result(ctx, tool_call)
       _ -> standard_tool_result(ctx, tool_call)
-    end
-  end
-
-  # The compact_context tool needs to mutate the agent's
-  # state.chat_state.messages. The chat task can't do that
-  # directly, so it round-trips through the GenServer: send
-  # a request, the GenServer runs the compactor, then sends
-  # the result back. The chat task blocks on a receive
-  # until the result arrives.
-  #
-  # When the agent sends `{:stop_chat, _}` while the chat
-  # task is waiting, the receive returns `:stopped`. The
-  # tool loop then raises `StoppedError`, which the chat
-  # task's outer try/catch in `LLMRunner.run/2` turns into
-  # a clean unwind (returning the partial RunState without
-  # raising into the Task.Supervisor).
-  defp compact_context_result(ctx, tool_call) do
-    case request_compaction_from_task(ctx, tool_call) do
-      :stopped -> raise __MODULE__.StoppedError
-      text -> {text, @compaction_max}
     end
   end
 
@@ -85,8 +64,9 @@ defmodule Nest.Agents.Agent.ToolLoop do
   # percentage used). Does not require a GenServer round-trip;
   # the `RunContext` carries the messages and context_limit.
   #
-  # "compact" — delegates to the same compaction flow as
-  # `compact_context`, reusing `request_compaction_from_task/2`.
+  # "compact" — delegates to the compaction flow, which
+  # round-trips through the GenServer to mutate the agent's
+  # message state.
   defp context_result(ctx, tool_call) do
     case get_action_arg(tool_call) do
       "compact" ->
@@ -131,20 +111,20 @@ defmodule Nest.Agents.Agent.ToolLoop do
   # a synthetic tool result for the LLM.
   #
   # The `{:stop_chat, from}` clause lets the agent interrupt the
-  # chat task while it is waiting on a `compact_context` call.
-  # The chat task acknowledges the stop and returns `:stopped`,
-  # which the caller (the budget loop in `LLMRunner`) treats as
+  # chat task while it is waiting on a compaction call. The chat
+  # task acknowledges the stop and returns `:stopped`, which the
+  # caller (the budget loop in `LLMRunner`) treats as
   # "unwind the chain".
   defp request_compaction_from_task(ctx, tool_call) do
     focus = get_focus_arg(tool_call)
 
-    send(ctx.agent_pid, {:compact_context_from_task, self(), focus})
+    send(ctx.agent_pid, {:task_compaction_request, self(), focus})
 
     receive do
-      {:compact_context_done, new_messages} ->
+      {:task_compaction_done, new_messages} ->
         "Compacted #{state_messages_count(ctx)} messages into a summary. You now have ~#{estimate_new_working_space(new_messages, ctx.context_limit)} tokens of working space."
 
-      {:compact_context_failed, reason} ->
+      {:task_compaction_failed, reason} ->
         "Compaction failed: #{inspect(reason)}"
 
       {:stop_chat, from} ->

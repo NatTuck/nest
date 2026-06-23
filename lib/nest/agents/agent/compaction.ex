@@ -15,8 +15,8 @@ defmodule Nest.Agents.Agent.Compaction do
       wants to proceed to the next LLM call.
     * `{:preflight_continuation, task_pid}` — the pre-flight check
       asked for compaction and is waiting for the result.
-    * `{:compact_context_continuation, task_pid}` — the
-      `compact_context` tool asked for compaction.
+    * `{:task_compaction_continuation, task_pid}` — the `context`
+      tool's compact action asked for compaction.
   """
 
   alias Nest.LLM.ClientConfig
@@ -42,7 +42,7 @@ defmodule Nest.Agents.Agent.Compaction do
   @type continuation ::
           {:chat_continuation, {String.t()}}
           | {:preflight_continuation, pid()}
-          | {:compact_context_continuation, pid()}
+          | {:task_compaction_continuation, pid()}
 
   # Public API
 
@@ -98,7 +98,7 @@ defmodule Nest.Agents.Agent.Compaction do
 
   # Private
 
-  # For chat and compact_context continuations, the GenServer's
+  # For chat and task_compaction continuations, the GenServer's
   # :compaction_done handler treats the input as-is and broadcasts
   # a success log line. For preflight, the task is blocked on a
   # receive and needs an explicit failure message so it can fall
@@ -151,6 +151,8 @@ defmodule Nest.Agents.Agent.Compaction do
       end
     end
   end
+
+  defp reject_system_messages(nil), do: []
 
   defp reject_system_messages(messages) do
     Enum.reject(messages, fn

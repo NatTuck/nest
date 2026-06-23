@@ -1673,6 +1673,140 @@ describe("store", () => {
     });
   });
 
+  describe("addChatDelta thinking-vs-text split (new protocol)", () => {
+    // The store separates thinking deltas from the `content`
+    // buffer (the text that `<MessageContent>` renders). Without
+    // this split, thinking text appears twice in the chat —
+    // once in the yellow box and again as regular markdown
+    // below it — and then vanishes on finalization when the
+    // assistant message's `content` is rebuilt as text-only.
+    beforeEach(() => {
+      useStore.getState().setAgentConnecting("agent-1");
+    });
+
+    it("thinking deltas update segments but not content", () => {
+      useStore.getState().addChatDelta("agent-1", {
+        messageIndex: 5,
+        deltaIndex: 0,
+        content: "Reasoning about the answer...",
+        partType: "thinking",
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      // The thinking text is captured in `segments` (so
+      // `thinkingFor(message)` can find it for the yellow box).
+      expect(cache.streaming.segments).toHaveLength(1);
+      expect(cache.streaming.segments[0]).toMatchObject({
+        type: "thinking",
+        content: "Reasoning about the answer...",
+      });
+      // But it is NOT in `content` (so it doesn't appear in the
+      // visible reply).
+      expect(cache.streaming.content).toBe("");
+    });
+
+    it("text deltas after thinking deltas do not include the thinking text", () => {
+      useStore.getState().addChatDelta("agent-1", {
+        messageIndex: 5,
+        deltaIndex: 0,
+        content: "First thought ",
+        partType: "thinking",
+      });
+      useStore.getState().addChatDelta("agent-1", {
+        messageIndex: 5,
+        deltaIndex: 1,
+        content: "second thought",
+        partType: "thinking",
+      });
+      useStore.getState().addChatDelta("agent-1", {
+        messageIndex: 5,
+        deltaIndex: 2,
+        content: "Visible answer",
+        partType: "text",
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+
+      // The text content is the text-only buffer — no
+      // concatenated thinking text.
+      expect(cache.streaming.content).toBe("Visible answer");
+
+      // Both thinking deltas are merged into one segment (so
+      // the yellow box shows them concatenated) — `accumulateSegment`
+      // continues the existing segment if the type matches.
+      // The text delta starts a new segment.
+      expect(cache.streaming.segments).toHaveLength(2);
+      expect(cache.streaming.segments[0]).toMatchObject({
+        type: "thinking",
+        content: "First thought second thought",
+      });
+      expect(cache.streaming.segments[1]).toMatchObject({
+        type: "text",
+        content: "Visible answer",
+      });
+    });
+  });
+
+  describe("addChatDelta thinking-vs-text split (legacy partial protocol)", () => {
+    // The same split is applied to the legacy
+    // `charsStart`/`charsEnd` partial path. Thinking deltas
+    // update `segments` only; text deltas accumulate into
+    // `content` as before.
+    beforeEach(() => {
+      useStore.getState().setAgentConnecting("agent-1");
+    });
+
+    it("thinking deltas update segments but not partial.content", () => {
+      useStore.getState().addChatDelta("agent-1", {
+        index: 5,
+        charsStart: 0,
+        charsEnd: 27,
+        content: "Reasoning about the answer...",
+        partType: "thinking",
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.partial.segments).toHaveLength(1);
+      expect(cache.partial.segments[0]).toMatchObject({
+        type: "thinking",
+        content: "Reasoning about the answer...",
+      });
+      expect(cache.partial.content).toBe("");
+    });
+
+    it("text deltas accumulate into partial.content but not thinking", () => {
+      useStore.getState().addChatDelta("agent-1", {
+        index: 5,
+        charsStart: 0,
+        charsEnd: 14,
+        content: "Some reasoning",
+        partType: "thinking",
+      });
+      useStore.getState().addChatDelta("agent-1", {
+        index: 5,
+        charsStart: 14,
+        charsEnd: 28,
+        content: "Visible answer",
+        partType: "text",
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      // Text-only buffer — no thinking text mixed in.
+      expect(cache.partial.content).toBe("Visible answer");
+      // The thinking text is in the segments list, then the
+      // text delta starts a new segment.
+      expect(cache.partial.segments).toHaveLength(2);
+      expect(cache.partial.segments[0]).toMatchObject({
+        type: "thinking",
+        content: "Some reasoning",
+      });
+      expect(cache.partial.segments[1]).toMatchObject({
+        type: "text",
+        content: "Visible answer",
+      });
+    });
+  });
+
   describe("clearPartial with existing cache", () => {
     beforeEach(() => {
       useStore.getState().setAgentConnecting("agent-1");

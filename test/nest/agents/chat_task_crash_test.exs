@@ -56,8 +56,8 @@ defmodule Nest.Agents.ChatTaskCrashTest do
       # Stub the LLM runner to raise a `FunctionClauseError` —
       # the same shape the MiniMax field report exhibited.
       # This runs in the chat task; the task's try/catch
-      # converts it into a `{:chat_task_crashed, msg}` to the
-      # agent.
+      # converts it into a `{:chat_task_crashed, exception,
+      # stacktrace}` to the agent.
       Mimic.stub(Nest.Agents.Agent.LLMRunner, :run, fn _ctx, _state ->
         raise FunctionClauseError,
           module: Nest.LLM.OpenAIClient,
@@ -76,10 +76,22 @@ defmodule Nest.Agents.ChatTaskCrashTest do
 
       # The agent receives the chat_task_crashed notification
       # and broadcasts a chat:error followed by a status: idle
-      # transition.
+      # transition. The error message now carries the
+      # exception's text AND a stacktrace snippet (the user
+      # explicitly asked for the file/line of the crash to be
+      # visible so they can find it in the server log).
       assert_receive {:chat_error, %{content: content}}, 500
       assert content =~ "no function clause matching"
       assert content =~ "finish_event"
+      # The source tag is appended so the user can grep the
+      # server log for the matching `chat:error` entry.
+      assert content =~ "[Source:"
+      # The stacktrace snippet is included below the message —
+      # `Exception.format/3` leads with `** (FunctionClauseError)`,
+      # and the snippet includes the chat_pipeline.ex line that
+      # raised.
+      assert content =~ "** (FunctionClauseError)"
+      assert content =~ "chat_pipeline.ex"
 
       assert_receive {:chat_status, %{status: "idle"}}, 200
     end
@@ -102,6 +114,36 @@ defmodule Nest.Agents.ChatTaskCrashTest do
       # The agent is still alive and queryable.
       assert Process.alive?(pid)
       assert {:ok, _info} = Agent.get_public_info(pid) |> then(&{:ok, &1})
+    end
+
+    test "the user-facing message includes the file/line of the crash (stacktrace snippet)",
+         %{} do
+      # The user explicitly asked for "stuff to help pinpoint
+      # where the error is happening". We now include a
+      # multi-frame stacktrace snippet in the user-facing
+      # error message so the user can see WHERE the crash
+      # happened without grepping the server log.
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      Mimic.stub(Nest.Agents.Agent.LLMRunner, :run, fn _ctx, _state ->
+        # Raise from a known source so the stacktrace has a
+        # stable frame to assert on.
+        raise "unique_pin_marker_12345"
+      end)
+
+      Mimic.allow(Nest.Agents.Agent.LLMRunner, self(), pid)
+
+      :ok = Agent.chat(pid, "Hello")
+
+      assert_receive {:chat_error, %{content: content}}, 500
+
+      # The original exception message is at the top.
+      assert content =~ "unique_pin_marker_12345"
+      # The stacktrace includes the test file (where the raise
+      # originated) so the user can locate the crash frame
+      # even when the actual production code has moved.
+      assert content =~ "test/nest/agents/chat_task_crash_test.exs"
     end
   end
 
@@ -142,8 +184,10 @@ defmodule Nest.Agents.ChatTaskCrashTest do
                       {:assistant, %Assistant{index: 1, content: "Halfway through..."}}},
                      200
 
-      # Then the error and idle status.
-      assert_receive {:chat_error, _}, 200
+      # Then the error and idle status. The error content now
+      # includes a stacktrace snippet (per the new format).
+      assert_receive {:chat_error, %{content: content}}, 200
+      assert content =~ "stream failed"
       assert_receive {:chat_status, %{status: "idle"}}, 200
     end
   end

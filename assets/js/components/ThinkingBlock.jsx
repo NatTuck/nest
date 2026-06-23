@@ -5,33 +5,18 @@
  * reply is rendered by `<MessageContent>`. See `ChatPage.jsx`
  * and `CollapsedHistory.jsx` for callers.
  *
- * The box lives in the same place before and after a turn
- * finalizes. To make that work, the parent passes a `key` prop
- * that changes on the partial → final transition (e.g.
- * `key={isPartial ? "partial" : "final"}`). That re-mounts the
- * box, which re-initializes `useState(isPartial)` to its new
- * value:
+ * The box is always visible (the "Thinking" header) and
+ * always starts expanded when there's thinking content. The
+ * user can click the header to collapse it. We never auto-
+ * collapse on the partial → final transition — the user
+ * explicitly asked for the reasoning to remain visible after
+ * the turn completes, so the chat doesn't have a flicker
+ * between an expanded "thinking" state and a collapsed
+ * "thinking" state as the assistant message finalizes.
  *
- *   * `isPartial: true`  — the box starts **expanded** so the
- *     user can watch the reasoning stream in. The bouncing-dots
- *     indicator in the header shows the model is still writing.
- *   * `isPartial: false`, message has visible content —
- *     the box starts **collapsed** so the chat focuses on the
- *     answer. The user can click to expand and read the
- *     reasoning.
- *   * `isPartial: false`, message has **no** visible content
- *     (the model produced only reasoning) — the box starts
- *     **expanded** so the user actually sees the model's
- *     response. Without this, reasoning-only responses
- *     would show as a collapsed "Thinking" label with no
- *     visible text, and the user wouldn't know there was a
- *     response at all.
- *
- * The `hasVisibleContent` prop is the parent's hint about
- * whether the assistant message has a non-empty `content`
- * field. The parent passes a `key` prop to force a re-mount on
- * the partial↔final transition so the initializer runs again
- * with the new value.
+ * The `isPartial` prop drives the streaming indicator (the
+ * bouncing dots) in the header; it does NOT change the
+ * expanded/collapsed state.
  */
 import { useState } from "react";
 
@@ -40,16 +25,15 @@ export function ThinkingBlock({
   isPartial = false,
   hasVisibleContent = true,
 }) {
-  // The box starts expanded while partial (so the user can
-  // watch the reasoning stream in). Once the message finalizes,
-  // it stays expanded when there is no visible content
-  // (otherwise the user wouldn't see the model's response at
-  // all) and collapses when there is visible content (the
-  // normal case — the user can click to expand if curious).
-  // The parent's `key` prop forces a re-mount on the
-  // partial↔final transition so this initializer runs again
-  // with the new value.
-  const [isExpanded, setIsExpanded] = useState(isPartial || !hasVisibleContent);
+  // The box always starts expanded. The user can collapse it
+  // manually with the header button; that state survives the
+  // partial → final transition (no parent `key` re-mount).
+  //
+  // `isPartial` and `hasVisibleContent` remain in the API for
+  // a future policy change but are not used for the initial
+  // state. `isPartial` still drives the streaming dots in the
+  // header.
+  const [isExpanded, setIsExpanded] = useState(true);
 
   if (!thinking) return null;
 

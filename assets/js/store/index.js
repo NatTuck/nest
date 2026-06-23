@@ -504,6 +504,18 @@ export const useStore = create(
               partType,
             );
 
+          // Thinking deltas update `segments` (so the ThinkingBlock
+          // can render them via `thinkingFor(message)`) but NOT
+          // `content` (which `<MessageContent>` renders as visible
+          // text). Without this split, thinking text appears twice:
+          // once in the yellow box and again as regular markdown
+          // below it, then vanishes on finalization when the
+          // assistant message's `content` is rebuilt as text-only.
+          const newContent =
+            partType === "thinking"
+              ? streaming.content
+              : streaming.content + content;
+
           set((s) => ({
             agentsCache: {
               ...s.agentsCache,
@@ -511,7 +523,7 @@ export const useStore = create(
                 ...cache,
                 streaming: {
                   ...streaming,
-                  content: streaming.content + content,
+                  content: newContent,
                   nextDeltaIndex: deltaIndex + 1,
                   segments: newSegments,
                   currentType: newCurrentType,
@@ -598,6 +610,15 @@ export const useStore = create(
             partType,
           );
 
+        // Thinking deltas update `segments` (for ThinkingBlock) but
+        // NOT `content` (which `<MessageContent>` renders as visible
+        // text). See the matching comment in the new-protocol branch
+        // above for the full rationale.
+        const updatedContent =
+          partType === "thinking"
+            ? partial.content
+            : partial.content + newContent;
+
         set((s) => ({
           agentsCache: {
             ...s.agentsCache,
@@ -605,14 +626,14 @@ export const useStore = create(
               ...cache,
               partial: {
                 ...partial,
-                content: partial.content + newContent,
+                content: updatedContent,
                 charsReceived: charsEnd,
                 segments: newSegments,
                 currentType: newCurrentType,
               },
               streaming: {
                 ...partial,
-                content: partial.content + newContent,
+                content: updatedContent,
                 charsReceived: charsEnd,
                 segments: newSegments,
                 currentType: newCurrentType,

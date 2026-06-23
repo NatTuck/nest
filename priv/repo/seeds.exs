@@ -20,10 +20,11 @@ alias Nest.Vocations
     description: "A friendly chat companion for general conversation",
     system_prompt:
       "You are a helpful and friendly chat companion. Engage in natural conversation and provide thoughtful responses.",
-    tools: [],
+    tools: ["context"],
     modes: %{
       "chat" => %{
-        "description" => "General conversation. No tools available.",
+        "description" =>
+          "General conversation. The `context` tool can check usage or compact the history.",
         "caps" => %{
           "net" => false,
           "fs" => %{"read" => ["/"], "write" => ["/tmp"]}
@@ -47,7 +48,7 @@ alias Nest.Vocations
     You have access to a workspace directory where you can read and write files.
     Use tools to read files and make changes when requested.
     """,
-    tools: ["read_file", "write_file", "shell_cmd"],
+    tools: ["read_file", "write_file", "shell_cmd", "context"],
     modes: %{
       "build" => %{
         "description" => "You're clear to edit the project in the workspace.",

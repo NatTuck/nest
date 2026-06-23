@@ -427,17 +427,17 @@ defmodule Nest.ToolsTest do
       assert function.max_result_tokens == 256
     end
 
-    test "compact_context tool exists with 256-token cap" do
-      function = Tools.get_function("compact_context", "/tmp")
+    test "context tool exists with 512-token cap" do
+      function = Tools.get_function("context", "/tmp")
       assert function != nil
-      assert function.name == "compact_context"
-      assert function.max_result_tokens == 256
+      assert function.name == "context"
+      assert function.max_result_tokens == 512
     end
 
-    test "compact_context is included when added to a tool list" do
-      functions = Tools.get_functions(["compact_context"], "/tmp")
+    test "context is included when added to a tool list" do
+      functions = Tools.get_functions(["context"], "/tmp")
       assert length(functions) == 1
-      assert hd(functions).name == "compact_context"
+      assert hd(functions).name == "context"
     end
 
     test "max_result_tokens is exposed in the parameters schema" do

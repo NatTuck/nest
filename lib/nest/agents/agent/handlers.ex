@@ -59,6 +59,7 @@ defmodule Nest.Agents.Agent.Handlers do
   defp route_for({:thinking_signature_received, _}), do: {:ok, LLMStreamHandler}
   defp route_for({:llm_error, _}), do: {:ok, LLMStreamHandler}
   defp route_for({:chat_task_crashed, _}), do: {:ok, LLMStreamHandler}
+  defp route_for({:chat_task_crashed, _, _}), do: {:ok, LLMStreamHandler}
   defp route_for({:tool_calls_received, _}), do: {:ok, LLMStreamHandler}
   defp route_for({:tool_results_received, _}), do: {:ok, LLMStreamHandler}
   defp route_for({:llm_response_with_thinking, _, _}), do: {:ok, LLMStreamHandler}
@@ -66,11 +67,11 @@ defmodule Nest.Agents.Agent.Handlers do
   defp route_for({:api_log, _, _}), do: {:ok, ApiLogHandler}
   defp route_for({:api_log_sequences_updated, _}), do: {:ok, ApiLogHandler}
   defp route_for({:compaction_done, _, _}), do: {:ok, CompactionHandler}
-  defp route_for({:compact_context_from_task, _, _}), do: {:ok, CompactionHandler}
-  defp route_for({:compact_context_done, _, _}), do: {:ok, CompactionHandler}
+  defp route_for({:task_compaction_request, _, _}), do: {:ok, CompactionHandler}
+  defp route_for({:task_compaction_done, _, _}), do: {:ok, CompactionHandler}
+  defp route_for({:task_compaction_failed, _, _}), do: {:ok, CompactionHandler}
   defp route_for({:preflight_request, _, _}), do: {:ok, CompactionHandler}
   defp route_for({:compaction_failed_for_preflight, _, _}), do: {:ok, CompactionHandler}
-  defp route_for({:compact_context_failed, _, _}), do: {:ok, CompactionHandler}
   defp route_for({:stop_chat, _}), do: {:ok, StopHandler}
   defp route_for({:chat_stopped, _}), do: {:ok, StopHandler}
   defp route_for({:EXIT, _, _}), do: {:ok, ExitHandler}

@@ -72,7 +72,8 @@ defmodule Nest.Agents.AgentChatTest do
           assert_receive {:chat_error, _error}, 100
         end)
 
-      assert log =~ "LLM request failed"
+      assert log =~ "chat:error"
+      assert log =~ "LLMRunner.handle_failed_response"
       assert log =~ "Connection failed"
     end
 

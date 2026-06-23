@@ -546,14 +546,15 @@ describe("ChatPage thinking-before-content order", () => {
 
     renderChat();
 
-    // The Thinking box is collapsed by default for finalized
-    // messages, so the thinking text itself isn't visible.
-    // The reply is always visible.
+    // The Thinking box is expanded by default for finalized
+    // messages (the user wanted the reasoning to remain
+    // visible after the turn completes), so the thinking
+    // text itself is visible. The reply is also always
+    // visible.
     expect(screen.getByText("The answer is 42.")).toBeInTheDocument();
-
-    // Click the Thinking button to expand the box and verify
-    // the order in the DOM.
-    fireEvent.click(screen.getByRole("button", { name: /thinking/i }));
+    expect(
+      screen.getByText("Let me think about this carefully."),
+    ).toBeInTheDocument();
 
     const thinking = screen.getByText("Let me think about this carefully.");
     const reply = screen.getByText("The answer is 42.");
@@ -565,7 +566,12 @@ describe("ChatPage thinking-before-content order", () => {
     expect(position & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it("renders the Thinking box expanded (auto) for a partial message with thinking segments", () => {
+  it("renders the Thinking box for a partial message with thinking segments", () => {
+    // The partial's `content` field is text-only — the store
+    // excludes thinking deltas from it (so they don't appear
+    // twice in the chat, once in the yellow box and again as
+    // regular markdown). The thinking text lives in `segments`
+    // and is surfaced via `thinkingFor(message)`.
     mockAgentsCache = {
       "test-agent": {
         status: "connected",
@@ -587,12 +593,25 @@ describe("ChatPage thinking-before-content order", () => {
 
     renderChat();
 
-    // The partial's thinking segment is extracted from
-    // `segments` and rendered expanded (so the user can
-    // watch it stream in).
+    // The thinking text appears in the yellow box, expanded.
     expect(
       screen.getByText("Reasoning about the answer..."),
     ).toBeInTheDocument();
+
+    // The visible reply shows the text-only content.
+    expect(screen.getByText("Halfway through...")).toBeInTheDocument();
+
+    // The thinking text does NOT appear in the visible body
+    // (i.e. not as a second copy below the yellow box). We
+    // verify by checking that the body container doesn't
+    // contain the thinking text outside the Thinking box.
+    const thinkingEl = screen
+      .getByText("Reasoning about the answer...")
+      .closest("[class*='border-amber-200']");
+    expect(thinkingEl).toBeInTheDocument();
+    expect(
+      thinkingEl.contains(screen.getByText("Reasoning about the answer...")),
+    ).toBe(true);
 
     // The streaming indicator is visible.
     expect(screen.getByLabelText("Streaming thinking")).toBeInTheDocument();
@@ -632,6 +651,9 @@ describe("ChatPage thinking-before-content order", () => {
     expect(
       screen.getByText("First thought second thought"),
     ).toBeInTheDocument();
+
+    // The visible body shows only the text segments.
+    expect(screen.getByText("Visible answer")).toBeInTheDocument();
   });
 
   it("does not render a Thinking box when the message has no thinking content", () => {

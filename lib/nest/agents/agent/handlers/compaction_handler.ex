@@ -1,10 +1,10 @@
 defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
   @moduledoc """
   `handle_info/2` handlers for compaction-related events:
-  `{:compaction_done, _, _}`, `{:compact_context_from_task, _, _}`,
-  `{:compact_context_done, _, _}`, `{:preflight_request, _, _}`,
+  `{:compaction_done, _, _}`, `{:task_compaction_request, _, _}`,
+  `{:task_compaction_done, _, _}`, `{:preflight_request, _, _}`,
   `{:compaction_failed_for_preflight, _, _}`,
-  `{:compact_context_failed, _, _}`.
+  `{:task_compaction_failed, _, _}`.
 
   Dispatched by `Nest.Agents.Agent.Handlers` based on the
   message tag.
@@ -24,12 +24,12 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
     compaction_done(new_messages, continuation, state)
   end
 
-  def handle({:compact_context_from_task, task_pid, focus}, state) do
-    compact_context_from_task(task_pid, focus, state)
+  def handle({:task_compaction_request, task_pid, focus}, state) do
+    task_compaction_request(task_pid, focus, state)
   end
 
-  def handle({:compact_context_done, task_pid, new_messages}, state) do
-    compact_context_done(task_pid, new_messages, state)
+  def handle({:task_compaction_done, task_pid, new_messages}, state) do
+    task_compaction_done(task_pid, new_messages, state)
   end
 
   def handle({:preflight_request, task_pid, messages_for_llm}, state) do
@@ -40,8 +40,8 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
     compaction_failed_for_preflight(task_pid, reason, state)
   end
 
-  def handle({:compact_context_failed, task_pid, reason}, state) do
-    compact_context_failed(task_pid, reason, state)
+  def handle({:task_compaction_failed, task_pid, reason}, state) do
+    task_compaction_failed(task_pid, reason, state)
   end
 
   defp compaction_done(new_messages, continuation, state) do
@@ -77,43 +77,40 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
         send(task_pid, {:preflight_result, :compacted, new_messages})
         {:noreply, state}
 
-      {:compact_context_continuation, task_pid} ->
-        # The chat task invoked the `compact_context` tool and is
-        # blocked on a receive for the result. Send it the new
-        # messages so it can construct the tool result string.
+      {:task_compaction_continuation, task_pid} ->
+        # The chat task invoked the `context` tool's compact action
+        # and is blocked on a receive for the result. Send it the
+        # new messages so it can construct the tool result string.
         # Same `send`-to-dead-process semantics as
         # `{:preflight_continuation, _}` above.
-        send(task_pid, {:compact_context_done, new_messages})
+        send(task_pid, {:task_compaction_done, new_messages})
         {:noreply, state}
     end
   end
 
-  defp compact_context_from_task(task_pid, _focus, state) do
+  defp task_compaction_request(task_pid, _focus, state) do
     # The chat task is mid-flow and asked for explicit
-    # compaction. Spawn the compactor and send the result back
-    # to the task when done. The task will unblock its receive
-    # and use the result.
+    # compaction via the `context` tool. Spawn the compactor
+    # and send the result back to the task when done. The task
+    # will unblock its receive and use the result.
     Compaction.spawn(
       self(),
       state.client_config,
       state.llm_metrics.context_limit,
       state.chat_state.messages || [],
-      {:compact_context_continuation, task_pid}
+      {:task_compaction_continuation, task_pid}
     )
 
     {:noreply, state}
   end
 
-  defp compact_context_done(task_pid, new_messages, state) do
-    # Forward to a special handle_info that doesn't also run
-    # the chat continuation. We mutate state directly here
-    # and send the result back to the task.
+  defp task_compaction_done(task_pid, new_messages, state) do
     Logger.info(
-      "compact_context tool: agent=#{state.id} from=#{length(state.chat_state.messages)} to=#{length(new_messages)}"
+      "context tool compact: agent=#{state.id} from=#{length(state.chat_state.messages)} to=#{length(new_messages)}"
     )
 
     state = archive_and_compact(state, new_messages)
-    send(task_pid, {:compact_context_done, new_messages})
+    send(task_pid, {:task_compaction_done, new_messages})
     {:noreply, state}
   end
 
@@ -156,9 +153,9 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
     {:noreply, state}
   end
 
-  defp compact_context_failed(task_pid, reason, state) do
-    Logger.warning("compact_context tool failed: #{inspect(reason)}")
-    send(task_pid, {:compact_context_failed, reason})
+  defp task_compaction_failed(task_pid, reason, state) do
+    Logger.warning("context tool compact failed: #{inspect(reason)}")
+    send(task_pid, {:task_compaction_failed, reason})
     {:noreply, state}
   end
 

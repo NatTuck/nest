@@ -17,7 +17,7 @@ defmodule Nest.Tools do
   alias Nest.Tools.ShellCmd
 
   # Per-tool defaults for `max_result_tokens`. See the plan in
-  # `notes/context-and-compaction.md` for the rationale. The
+  # notes/context-and-compaction.md for the rationale. The
   # `BudgetPlanner` enforces these and may truncate the result
   # before sending it to the LLM. The LLM can override per call.
   @default_max_result_tokens 8192
@@ -43,7 +43,6 @@ defmodule Nest.Tools do
       "read_file" -> read_file_function(workspace_path, tmp_path)
       "write_file" -> write_file_function(workspace_path, tmp_path)
       "shell_cmd" -> shell_cmd_function(workspace_path, tmp_path)
-      "compact_context" -> compact_context_function()
       "context" -> context_function()
       _ -> nil
     end
@@ -119,42 +118,11 @@ defmodule Nest.Tools do
     }
   end
 
-  # The `compact_context` tool is defined here for the LLM schema,
-  # but the actual compaction logic lives in `Nest.Tokens.Compactor`
-  # (added in a later step). The function here is a placeholder
-  # that the agent intercepts in `handle_chat` before invoking the
-  # tool's normal `execute/3` path.
-  defp compact_context_function do
-    %Tool{
-      name: "compact_context",
-      description:
-        "Replace the conversation history with a summary to free up " <>
-          "context budget. Use this when you notice previous tool " <>
-          "results were truncated or skipped due to context limits.",
-      parameters_schema: %{
-        "type" => "object",
-        "properties" => %{
-          "focus" => %{
-            "type" => "string",
-            "description" =>
-              "What to preserve in the summary. Defaults to a " <>
-                "balanced summary of all messages."
-          },
-          "max_result_tokens" => max_result_tokens_schema()
-        }
-      },
-      max_result_tokens: 256,
-      function: fn _args, _context ->
-        {:ok, "Compaction request received."}
-      end
-    }
-  end
-
   # The `context` tool provides visibility into context usage and
-  # can optionally trigger compaction. Like `compact_context`, the
-  # actual execution is intercepted in `ToolLoop` because it needs
-  # access to runtime state (messages, context_limit) that the
-  # tool function doesn't have.
+  # can optionally trigger compaction. The actual execution is
+  # intercepted in `ToolLoop` because it needs access to runtime
+  # state (messages, context_limit) that the tool function
+  # doesn't have.
   defp context_function do
     %Tool{
       name: "context",
@@ -169,7 +137,7 @@ defmodule Nest.Tools do
             "enum" => ["check", "compact"],
             "description" =>
               "Action to perform. 'check' returns current context stats. " <>
-                "'compact' triggers compaction (like compact_context)."
+                "'compact' triggers compaction to free up context budget."
           },
           "focus" => %{
             "type" => "string",

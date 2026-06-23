@@ -8,7 +8,7 @@ defmodule Nest.Agents.AgentStopTest do
       transitions to `:idle`.
     * Stopping after the LLM stream completes (between turns)
       — no-op.
-    * Stopping during a `compact_context` tool call — chat
+    * Stopping during a `context` tool compaction call — chat
       task unwinds, no `:compaction_done` chat_continuation
       auto-resumes.
     * Idempotency — multiple `Agent.stop_chat/2` calls
@@ -103,16 +103,20 @@ defmodule Nest.Agents.AgentStopTest do
     end
   end
 
-  describe "stop_chat/2 during compact_context" do
+  describe "stop_chat/2 during context tool (compact action)" do
     test "the tool-call mid-execution stop unwinds without auto-resume" do
-      # Set up a stream that emits one tool call, then the
-      # chat task will enter `request_compaction_from_task`
-      # which blocks on a receive. We stop the chat task while
-      # it's blocked there.
+      # Set up a stream that emits one `context` tool call
+      # with `action: "compact"`. The chat task enters
+      # `request_compaction_from_task` which blocks on a
+      # receive. We stop the chat task while it's blocked there.
       MockClient.set_tool_response(%{
         text: "compacting",
         tool_calls: [
-          %{id: "call_1", name: "compact_context", arguments: %{"focus" => "recent"}}
+          %{
+            id: "call_1",
+            name: "context",
+            arguments: %{"action" => "compact", "focus" => "recent"}
+          }
         ]
       })
 
@@ -124,7 +128,7 @@ defmodule Nest.Agents.AgentStopTest do
       assert_receive {:chat_message, {:user, _}}, 100
       # The tool call message is broadcast; the chat task
       # is now in `request_compaction_from_task` blocking on
-      # `{:compact_context_done|_failed, _}`.
+      # `{:task_compaction_done|_failed, _}` or `{:stop_chat, _}`.
       assert_receive {:chat_message, {:assistant, %{tool_calls: [_]}}}, 500
       assert_receive {:chat_status, %{status: "executing_tools"}}, 500
 

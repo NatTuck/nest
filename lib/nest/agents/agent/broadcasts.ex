@@ -6,24 +6,91 @@ defmodule Nest.Agents.Agent.Broadcasts do
   topic `"agent:<id>"`. Status broadcasts use the wire-format
   payload produced by `status_payload/1`; chat:message and
   chat:error are simple key-value maps.
+
+  `error/3` and `error/4` are the centralized place that turns
+  a server-side error into a `chat:error` event for the UI.
+  They also log the error at `:error` level on the server (with
+  agent_id, message_index, source location, and a snippet of the
+  message) so a server log entry is always paired with a UI
+  error banner — the user can paste the `[Source: ...]` line
+  from the UI and we can grep the server log for the matching
+  stack trace.
   """
+
+  require Logger
 
   alias Nest.LLM.RunResponse
   alias Nest.Messages.Compaction
   alias Nest.Messages.Message
   alias Nest.PubSub
 
+  # The chunk of the error message that we include in the
+  # server log. We log the full message at server side, but
+  # truncate the user-facing source tag to keep it copy-pastable.
+  @log_snippet_bytes 500
+
   def message(agent_id, message) do
     Phoenix.PubSub.broadcast(PubSub, "agent:#{agent_id}", {:chat_message, message})
   end
 
+  # Broadcast a `chat:error` event AND log the error on the
+  # server. Pass `source` (a "Module.function/arity" string)
+  # to append a `[Source: ...]` tag to the user-facing message
+  # so the UI shows where the error originated.
+  def error(agent_id, message_index, error_msg, source) do
+    tagged = tag_source(error_msg, source)
+    log_error(agent_id, message_index, error_msg, source)
+    broadcast_error(agent_id, message_index, tagged)
+  end
+
+  # Backward-compat: callers that don't have a source string
+  # fall back to the unsourced form (no `[Source: ...]` tag).
+  # Internally still logs at error level so server-side
+  # observability isn't lost.
   def error(agent_id, message_index, error_msg) do
+    log_error(agent_id, message_index, error_msg, nil)
+    broadcast_error(agent_id, message_index, error_msg)
+  end
+
+  defp broadcast_error(agent_id, message_index, content) do
     Phoenix.PubSub.broadcast(
       PubSub,
       "agent:#{agent_id}",
-      {:chat_error, %{index: message_index, content: error_msg}}
+      {:chat_error, %{index: message_index, content: content}}
     )
   end
+
+  # Append a short, copy-pastable `[Source: Module.fn/arity]`
+  # line to the user-facing error message so we can grep the
+  # server log for the matching `Logger.error` entry. The
+  # newline separator keeps the source visible but distinct
+  # from the error text above.
+  defp tag_source(error_msg, source) when is_binary(source) and source != "" do
+    "#{error_msg}\n[Source: #{source}]"
+  end
+
+  defp tag_source(error_msg, _source), do: error_msg
+
+  defp log_error(agent_id, message_index, error_msg, source) do
+    snippet = truncate_for_log(error_msg)
+
+    Logger.error(fn ->
+      "[agent:#{agent_id}] chat:error msg_index=#{message_index} source=#{format_source(source)} :: #{snippet}"
+    end)
+  end
+
+  defp format_source(source) when is_binary(source) and source != "", do: source
+  defp format_source(_other), do: "unknown"
+
+  defp truncate_for_log(msg) when is_binary(msg) do
+    if byte_size(msg) > @log_snippet_bytes do
+      binary_part(msg, 0, @log_snippet_bytes) <> "...(truncated)"
+    else
+      msg
+    end
+  end
+
+  defp truncate_for_log(other), do: inspect(other)
 
   def status(agent_id, %Nest.Agents.Agent{} = state) do
     Phoenix.PubSub.broadcast(PubSub, "agent:#{agent_id}", {:chat_status, status_payload(state)})

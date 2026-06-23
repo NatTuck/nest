@@ -1,10 +1,10 @@
 /**
  * ThinkingBlock component tests.
  *
- * Covers: null/empty thinking, default collapsed state,
- * auto-expand when `isPartial` is true, expand/collapse on
- * click, the typing indicator, and the `aria-expanded`
- * attribute.
+ * Covers: null/empty thinking, default expanded state (the
+ * user explicitly wants the reasoning to remain visible after
+ * the turn completes), expand/collapse on click, the typing
+ * indicator, and the `aria-expanded` attribute.
  */
 import { describe, it, expect } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
@@ -21,79 +21,128 @@ describe("ThinkingBlock", () => {
     expect(container.firstChild).toBeNull();
   });
 
-  describe("collapsed-by-default (isPartial: false)", () => {
-    it("renders the Thinking label but not the content", () => {
+  describe("expanded-by-default", () => {
+    // The box always starts expanded so the user sees the
+    // reasoning (both during streaming and after the turn
+    // finalizes). The user can collapse it manually.
+
+    it("renders the Thinking label and the content", () => {
       render(
         <ThinkingBlock thinking="I need to think about this carefully." />,
       );
 
       expect(screen.getByText("Thinking")).toBeInTheDocument();
       expect(
-        screen.queryByText("I need to think about this carefully."),
-      ).toBeNull();
+        screen.getByText("I need to think about this carefully."),
+      ).toBeInTheDocument();
     });
 
-    it("expands to show the thinking text on click", () => {
-      render(<ThinkingBlock thinking="The answer is 42." />);
+    it("is aria-expanded on first render regardless of isPartial", () => {
+      const { rerender } = render(
+        <ThinkingBlock thinking="live reasoning" isPartial={true} />,
+      );
+      expect(screen.getByRole("button", { name: /thinking/i })).toHaveAttribute(
+        "aria-expanded",
+        "true",
+      );
 
+      // The user explicitly wanted the box to remain visible
+      // after the turn ends, so the partial → final transition
+      // does NOT collapse the box. (Previously, the parent used
+      // a `key` change to force a re-mount and re-initialize
+      // state; that's no longer needed — `useState(true)` is the
+      // default regardless of `isPartial`.)
+      rerender(<ThinkingBlock thinking="live reasoning" isPartial={false} />);
+      expect(screen.getByRole("button", { name: /thinking/i })).toHaveAttribute(
+        "aria-expanded",
+        "true",
+      );
+    });
+
+    it("is aria-expanded on first render regardless of hasVisibleContent", () => {
+      // Previously, a finalized message with visible content
+      // started collapsed. Now it starts expanded in all cases.
+      const { rerender } = render(
+        <ThinkingBlock
+          thinking="Some reasoning..."
+          isPartial={false}
+          hasVisibleContent={true}
+        />,
+      );
+      expect(screen.getByRole("button", { name: /thinking/i })).toHaveAttribute(
+        "aria-expanded",
+        "true",
+      );
+
+      rerender(
+        <ThinkingBlock
+          thinking="Some reasoning..."
+          isPartial={false}
+          hasVisibleContent={false}
+        />,
+      );
+      expect(screen.getByRole("button", { name: /thinking/i })).toHaveAttribute(
+        "aria-expanded",
+        "true",
+      );
+    });
+
+    it("preserves the expanded state across a partial → final re-render with the same key", () => {
+      // The parent used to pass `key={isPartial ? "partial" : "final"}`
+      // to force a re-mount on the transition. Now the parent
+      // passes no `key`, so the box keeps its internal state
+      // (including any user-initiated collapse) across the
+      // transition.
+      const { rerender } = render(
+        <ThinkingBlock thinking="live reasoning" isPartial={true} />,
+      );
+      // User collapses the box mid-stream.
       fireEvent.click(screen.getByRole("button", { name: /thinking/i }));
+      expect(screen.getByRole("button", { name: /thinking/i })).toHaveAttribute(
+        "aria-expanded",
+        "false",
+      );
 
-      expect(screen.getByText("The answer is 42.")).toBeInTheDocument();
+      // Re-render as finalized. The box stays collapsed because
+      // we kept the same DOM node and the user explicitly
+      // collapsed it.
+      rerender(<ThinkingBlock thinking="live reasoning" isPartial={false} />);
+      expect(screen.getByRole("button", { name: /thinking/i })).toHaveAttribute(
+        "aria-expanded",
+        "false",
+      );
     });
+  });
 
-    it("collapses the thinking text on a second click", () => {
+  describe("user toggles", () => {
+    it("collapses the thinking text on click", () => {
       render(<ThinkingBlock thinking="The answer is 42." />);
 
       const toggleButton = screen.getByRole("button", { name: /thinking/i });
       fireEvent.click(toggleButton);
-      expect(screen.getByText("The answer is 42.")).toBeInTheDocument();
-
-      fireEvent.click(toggleButton);
       expect(screen.queryByText("The answer is 42.")).toBeNull();
+      expect(toggleButton).toHaveAttribute("aria-expanded", "false");
     });
 
-    it("exposes the expanded state via aria-expanded", () => {
-      render(<ThinkingBlock thinking="reasoning" />);
+    it("re-expands the thinking text on a second click", () => {
+      render(<ThinkingBlock thinking="The answer is 42." />);
 
-      const button = screen.getByRole("button", { name: /thinking/i });
-      expect(button).toHaveAttribute("aria-expanded", "false");
-
-      fireEvent.click(button);
-      expect(button).toHaveAttribute("aria-expanded", "true");
+      const toggleButton = screen.getByRole("button", { name: /thinking/i });
+      fireEvent.click(toggleButton);
+      fireEvent.click(toggleButton);
+      expect(screen.getByText("The answer is 42.")).toBeInTheDocument();
+      expect(toggleButton).toHaveAttribute("aria-expanded", "true");
     });
+  });
 
-    it("does not show the typing indicator", () => {
-      render(<ThinkingBlock thinking="reasoning" />);
+  describe("streaming indicator", () => {
+    it("does not show the typing indicator when not partial", () => {
+      render(<ThinkingBlock thinking="reasoning" isPartial={false} />);
 
       // The streaming indicator uses animate-bounce dots and
       // carries an aria-label of "Streaming thinking".
       expect(
         screen.queryByLabelText("Streaming thinking"),
-      ).not.toBeInTheDocument();
-    });
-  });
-
-  describe("auto-expanded (isPartial: true)", () => {
-    it("starts expanded so the user can watch the reasoning stream in", () => {
-      render(
-        <ThinkingBlock thinking="I am still thinking..." isPartial={true} />,
-      );
-
-      expect(screen.getByText("I am still thinking...")).toBeInTheDocument();
-    });
-
-    it("can still be collapsed manually by the user", () => {
-      render(
-        <ThinkingBlock thinking="I am still thinking..." isPartial={true} />,
-      );
-
-      const button = screen.getByRole("button", { name: /thinking/i });
-      expect(button).toHaveAttribute("aria-expanded", "true");
-
-      fireEvent.click(button);
-      expect(button).toHaveAttribute("aria-expanded", "false");
-      expect(
-        screen.queryByText("I am still thinking..."),
       ).not.toBeInTheDocument();
     });
 
@@ -111,105 +160,4 @@ describe("ThinkingBlock", () => {
       expect(dots.length).toBe(3);
     });
   });
-
-  describe("re-mount on the partial → final transition", () => {
-    // The parent passes `key={isPartial ? "partial" : "final"}`
-    // so the box re-mounts (and `useState(isPartial ||
-    // !hasVisibleContent)` re-initializes) when the message
-    // transitions out of streaming. Simulate that here.
-    it("starts expanded when mounted as partial, collapsed when re-mounted as final (with content)", () => {
-      const { rerender } = render(
-        <ThinkingBlock
-          key="partial"
-          thinking="live reasoning"
-          isPartial={true}
-        />,
-      );
-      expect(screen.getByText("live reasoning")).toBeInTheDocument();
-
-      // Re-mount with the new key. `useState(isPartial ||
-      // !hasVisibleContent)` runs again with `isPartial: false`
-      // and `hasVisibleContent: true` (the default), so the box
-      // is collapsed.
-      rerender(
-        <ThinkingBoxFinal
-          key="final"
-          thinking="live reasoning"
-          isPartial={false}
-        />,
-      );
-      // The user is no longer watching the stream, but they
-      // can still click to expand and see the captured
-      // reasoning.
-      expect(screen.queryByText("live reasoning")).toBeNull();
-      expect(
-        screen.getByRole("button", { name: /thinking/i }),
-      ).toBeInTheDocument();
-    });
-  });
-
-  describe("auto-expanded on final (hasVisibleContent: false)", () => {
-    // Some reasoning models (e.g. MiniMax) produce a
-    // thinking-only response: the assistant message has
-    // `thinking` set and `content: nil`. Without this behavior
-    // the user would see a collapsed "Thinking" label with no
-    // visible text and no way to know there was a response. The
-    // box auto-expands in this case so the user actually sees
-    // the model's response.
-
-    it("starts expanded on a thinking-only response so the user sees the model's reply", () => {
-      render(
-        <ThinkingBlock
-          thinking="The user wants me to add the feature."
-          isPartial={false}
-          hasVisibleContent={false}
-        />,
-      );
-
-      const button = screen.getByRole("button", { name: /thinking/i });
-      expect(button).toHaveAttribute("aria-expanded", "true");
-      expect(
-        screen.getByText("The user wants me to add the feature."),
-      ).toBeInTheDocument();
-    });
-
-    it("collapses by default on a normal response that has visible content", () => {
-      render(
-        <ThinkingBlock
-          thinking="Some reasoning..."
-          isPartial={false}
-          hasVisibleContent={true}
-        />,
-      );
-
-      const button = screen.getByRole("button", { name: /thinking/i });
-      expect(button).toHaveAttribute("aria-expanded", "false");
-      // Content is hidden until the user clicks.
-      expect(screen.queryByText("Some reasoning...")).toBeNull();
-    });
-
-    it("the user can still collapse the auto-expanded thinking-only box", () => {
-      render(
-        <ThinkingBlock
-          thinking="Reasoning"
-          isPartial={false}
-          hasVisibleContent={false}
-        />,
-      );
-
-      const button = screen.getByRole("button", { name: /thinking/i });
-      expect(button).toHaveAttribute("aria-expanded", "true");
-
-      fireEvent.click(button);
-      expect(button).toHaveAttribute("aria-expanded", "false");
-      expect(screen.queryByText("Reasoning")).toBeNull();
-    });
-  });
 });
-
-// Tiny alias so the re-mount test above can assert against a
-// fresh component identity (matches the `key` change in
-// production).
-function ThinkingBoxFinal(props) {
-  return <ThinkingBlock {...props} />;
-}

@@ -25,6 +25,8 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   alias Nest.Tokens.PreFlight
   alias Nest.Vocations
 
+  require Logger
+
   @preflight_reserve 8_192
 
   @doc """
@@ -212,6 +214,13 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   # `Task.Supervisor` (see `start_chat_task/3`) which monitors —
   # not links — the task, so the agent has no other way to
   # discover a crash. This catch is the agent's only signal.
+  #
+  # On `:error` we forward the FULL exception + stacktrace to
+  # the GenServer (so the server log has the file/line of the
+  # crash and the UI can show a useful snippet). Using
+  # `Exception.message/1` alone hides the call site — see
+  # AGENTS.md-style notes above `chat_task_crashed/2` in
+  # `LLMStreamHandler` for the receiver contract.
   defp run_chat_task_and_notify(agent_pid, ctx, init_state) do
     LLMRunner.run(ctx, init_state)
     send(agent_pid, {:api_log_sequences_updated, init_state})
@@ -223,7 +232,18 @@ defmodule Nest.Agents.Agent.ChatPipeline do
       send(agent_pid, {:chat_stopped, self()})
 
     :error, exception ->
-      send(agent_pid, {:chat_task_crashed, Exception.message(exception)})
+      stacktrace = __STACKTRACE__
+
+      Logger.error(fn ->
+        formatted = Exception.format(:error, exception, stacktrace)
+
+        "[agent_chat_task] CRASHED:\n" <>
+          ("agent_id=" <>
+             ctx.agent_id <> " message_index=" <> inspect(init_state.message_index) <> "\n") <>
+          formatted
+      end)
+
+      send(agent_pid, {:chat_task_crashed, exception, stacktrace})
   end
 
   # Build the persisted user message. The mode is encoded two ways:

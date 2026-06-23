@@ -153,6 +153,8 @@ defmodule Nest.Agents.Agent.LLMRunner do
     }
   end
 
+  defp reject_system_messages(nil), do: []
+
   defp reject_system_messages(messages) do
     Enum.reject(messages, fn
       {:system, _} -> true
@@ -453,10 +455,16 @@ defmodule Nest.Agents.Agent.LLMRunner do
   defp handle_failed_response(state, error, ctx) do
     error_msg = format_error(error)
 
-    Logger.error("Agent #{ctx.agent_id} LLM request failed: #{error_msg}")
-
-    # Broadcast error to all subscribers via PubSub
-    Broadcasts.error(ctx.agent_id, state.message_index, error_msg)
+    # `Broadcasts.error/4` is the centralized error path: it logs
+    # the failure (with agent_id, message_index, and source) and
+    # broadcasts the `chat:error` event with a `[Source: ...]`
+    # tag so the UI shows where the error originated.
+    Broadcasts.error(
+      ctx.agent_id,
+      state.message_index,
+      error_msg,
+      "LLMRunner.handle_failed_response/3"
+    )
 
     # Notify agent that streaming failed (similar to successful response)
     send(ctx.agent_pid, {:llm_error, error_msg})
@@ -468,15 +476,10 @@ defmodule Nest.Agents.Agent.LLMRunner do
     state
   end
 
-  defp format_error({type, status, body}) do
-    detail =
-      case truncate_body(body) do
-        "" -> "HTTP #{status}: #{type}"
-        body_text -> "HTTP #{status}: #{type}\n#{body_text}"
-      end
+  defp format_error({type, status, ""}), do: "Error: HTTP #{status}: #{type}"
 
-    "Error: #{detail}"
-  end
+  defp format_error({type, status, body}),
+    do: "Error: HTTP #{status}: #{type}\n#{truncate_body(body)}"
 
   defp format_error(error), do: "Error: #{inspect(error)}"
 

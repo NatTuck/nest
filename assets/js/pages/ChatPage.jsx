@@ -395,18 +395,15 @@ export function ChatPage() {
                 </div>
                 {/* Thinking is rendered BEFORE the reply and
                     stays in place across the partial → final
-                    transition. The `key` prop forces a re-mount
-                    on that transition so the box's
-                    `useState(isPartial)` initializer runs again
-                    (expanded while partial; on finalization,
-                    expanded when the message has no visible
-                    text content — i.e. the model produced a
-                    thinking-only response — and collapsed
-                    otherwise). See
-                    `assets/js/components/ThinkingBlock.jsx` for
-                    the full rationale. */}
+                    transition. The box always starts expanded
+                    (the user wanted the reasoning to remain
+                    visible after the turn completes) and the
+                    user can collapse it manually — no `key`
+                    re-mount is needed since the box's state
+                    doesn't need to change on finalization. See
+                    `assets/js/components/ThinkingBlock.jsx`
+                    for the full rationale. */}
                 <ThinkingBlock
-                  key={message.isPartial ? "partial" : "final"}
                   thinking={thinkingFor(message)}
                   isPartial={message.isPartial ?? false}
                   hasVisibleContent={hasVisibleContent(message)}

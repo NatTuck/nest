@@ -16,6 +16,8 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   alias Nest.Messages.Tool
   alias Nest.Messages.ToolCall
 
+  require Logger
+
   @doc """
   Dispatch a streaming message. Returns the GenServer's reply
   tuple.
@@ -33,7 +35,15 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
     llm_error(error_msg, state)
   end
 
-  def handle({:chat_task_crashed, error_msg}, state) do
+  def handle({:chat_task_crashed, exception, stacktrace}, state) do
+    chat_task_crashed(exception, stacktrace, state)
+  end
+
+  # Backward-compat: legacy 2-tuple form. Some tests / call
+  # sites still send `{:chat_task_crashed, message_string}`.
+  # The handler wraps the string in a RuntimeError so the
+  # formatter still produces a stacktrace-shaped message.
+  def handle({:chat_task_crashed, error_msg}, state) when is_binary(error_msg) do
     chat_task_crashed(error_msg, state)
   end
 
@@ -112,18 +122,39 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
 
   # The chat task itself crashed (an unhandled raise in the LLM
   # client — typically a `FunctionClauseError` because the
-  # provider sent an unrecognized delta shape). The chat task's
+  # provider sent an unrecognized delta shape, or a
+  # `Protocol.UndefinedError` for `Enumerable` on `nil` from a
+  # missing field in a message struct). The chat task's
   # try/catch in `ChatPipeline.run_chat_task_and_notify/3`
-  # converted the raise into a `{:chat_task_crashed, msg}`
-  # message so the agent could recover; this handler is the
-  # recovery side.
+  # converted the raise into a `{:chat_task_crashed, exception,
+  # stacktrace}` message so the agent could recover; this
+  # handler is the recovery side.
   #
   # UX: save whatever was streamed before the crash as a normal
   # assistant message (so the user doesn't lose their work),
   # then broadcast a `chat:error` and transition to idle. The
   # frontend's `chat:error` handler (`assets/js/channels.js`)
   # shows the error in the StatusBanner and clears the partial.
-  defp chat_task_crashed(error_msg, state) do
+  #
+  # The exception + stacktrace is formatted server-side so the
+  # user-facing message carries the file/line of the crash —
+  # useful when debugging a `protocol Enumerable ... Got value:
+  # nil` from deep in the call chain.
+  defp chat_task_crashed(exception, stacktrace, state) do
+    error_msg = format_chat_task_error(exception, stacktrace)
+
+    # Always log the full stacktrace at error level on the
+    # server. The chat task itself already logged the full
+    # `Exception.format/3` output (see `ChatPipeline`), but
+    # logging again here gives a second log entry tagged with
+    # the agent id and message index, so we can grep by
+    # agent even when the chat task's log line is buried
+    # in another agent's output.
+    Logger.error(fn ->
+      "[agent:#{state.id}] chat_task_crashed msg_index=#{state.chat_state.next_message_index} ::\n" <>
+        Exception.format(:error, exception, stacktrace)
+    end)
+
     state =
       case has_partial_content?(state.chat_state.streaming_acc) do
         true ->
@@ -138,12 +169,76 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
 
     # Broadcast the error. The frontend's `chat:error` handler
     # shows the error banner and clears the partial.
-    Broadcasts.error(state.id, state.chat_state.next_message_index, error_msg)
+    # `Broadcasts.error/4` is the centralized error path: it
+    # logs the failure and tags the user-facing message with
+    # `[Source: ...]` so we can find the server log entry from
+    # the UI's error text.
+    Broadcasts.error(
+      state.id,
+      state.chat_state.next_message_index,
+      error_msg,
+      "LLMStreamHandler.chat_task_crashed/2"
+    )
 
     state = %{state | chat_state: %{state.chat_state | status: :idle}}
     Broadcasts.status(state.id, state)
 
     {:noreply, state}
+  end
+
+  # Backward-compat: callers (e.g. legacy code paths) that
+  # only have the message string, not the full exception.
+  # Wraps it in a `RuntimeError` so the formatted output still
+  # includes a stacktrace frame.
+  defp chat_task_crashed(error_msg, state) when is_binary(error_msg) do
+    chat_task_crashed(%RuntimeError{message: error_msg}, [], state)
+  end
+
+  # Build the user-facing error message. We lead with the
+  # exception's message (the part the user is most likely to
+  # recognize — e.g. "protocol Enumerable not implemented for
+  # Atom. ... Got value: nil") and then append a 5-frame
+  # stacktrace snippet so the UI shows where the crash
+  # happened. The full stacktrace is in the server log
+  # (logged by both the chat task and this handler).
+  @stacktrace_snippet_frames 5
+  @stacktrace_snippet_max_bytes 2000
+
+  defp format_chat_task_error(exception, stacktrace) do
+    formatted = Exception.format(:error, exception, stacktrace)
+
+    # `Exception.format/3` returns the message + the full
+    # stacktrace. Trim to the top N frames so the UI gets a
+    # useful pin without a 50-line scroll. The full
+    # formatted text is in the server log; we cap the
+    # user-facing snippet to ~2 KB as a safety net.
+    snippet = take_stacktrace_frames(formatted, @stacktrace_snippet_frames)
+    truncate_string(snippet, @stacktrace_snippet_max_bytes)
+  end
+
+  # Pull the first N stack frames out of an
+  # `Exception.format/3` string. The format puts a header line
+  # (e.g. "(protocol_undefined) ...") then each frame on its
+  # own line, indented. We keep the header and the first
+  # `N` indented frame lines.
+  defp take_stacktrace_frames(formatted, n) do
+    lines = String.split(formatted, "\n")
+
+    {header, frames} =
+      Enum.split_while(lines, fn line ->
+        not String.starts_with?(line, "    ")
+      end)
+
+    Enum.take(frames, n)
+    |> Kernel.++(if(length(frames) > n, do: ["    ..."], else: []))
+    |> Enum.concat(header)
+    |> Enum.join("\n")
+  end
+
+  defp truncate_string(s, max) when byte_size(s) <= max, do: s
+
+  defp truncate_string(s, max) do
+    binary_part(s, 0, max) <> "\n...(truncated)"
   end
 
   defp has_partial_content?(%Streaming.AssistantAccumulator{

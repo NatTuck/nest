@@ -141,7 +141,7 @@ defmodule Nest.Agents.AgentCompactionTest do
       # whose `history` field is the externally visible representation
       # of `state.history` after archiving. We assert on that
       # broadcast instead of reading internal state.
-      send(pid, {:compaction_done, new_messages, {:compact_context_continuation, self()}})
+      send(pid, {:compaction_done, new_messages, {:task_compaction_continuation, self()}})
 
       assert_receive {:chat_compaction, payload}, 100
 
@@ -152,9 +152,9 @@ defmodule Nest.Agents.AgentCompactionTest do
       assert length(payload.history) == length(old_messages) + 1
       assert match?(%{"role" => "compaction"}, List.last(payload.history))
 
-      # Drain the no-op {:compact_context_done, _} reply that the
+      # Drain the no-op {:task_compaction_done, _} reply that the
       # continuation clause sends back to the test pid.
-      assert_receive {:compact_context_done, _}, 100
+      assert_receive {:task_compaction_done, _}, 100
 
       Agent.terminate(pid)
     end
@@ -203,6 +203,72 @@ defmodule Nest.Agents.AgentCompactionTest do
     end
   end
 
+  describe "context tool compaction flow" do
+    test "context tool with action=compact triggers compaction and returns to idle" do
+      # 1st LLM call (chat task): model emits the `context` tool
+      # call with `action: "compact"`. The chat task enters
+      # `request_compaction_from_task` and blocks on a receive.
+      MockClient.set_tool_response(%{
+        text: "compacting",
+        tool_calls: [
+          %{
+            id: "call_1",
+            name: "context",
+            arguments: %{"action" => "compact", "focus" => "recent"}
+          }
+        ]
+      })
+
+      # 2nd LLM call (chat task, after the tool result): the
+      # model produces a final text response.
+      MockClient.set_response("Done")
+
+      # The compactor's own LLM call (spawned by
+      # `CompactionHandler.task_compaction_request/3`) uses a
+      # fresh process, so its MockClient lookup misses the
+      # agent's queue and falls back to a random text response.
+      # That's fine — we only care that the chain completes.
+
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      :ok = Agent.chat(pid, "compact please")
+
+      # The chat task receives the tool call. The user message
+      # is broadcast, the agent transitions to `:streaming`, the
+      # text preamble ("compacting") is streamed as a
+      # `chat_delta`, then the assistant message with the tool
+      # call is broadcast, and the chat task enters
+      # `request_compaction_from_task` blocking on a receive.
+      assert_receive {:chat_message, {:user, _}}, 100
+      assert_receive {:chat_status, %{status: "streaming"}}, 100
+      assert_receive {:chat_delta, %{content: "compacting"}}, 500
+      assert_receive {:chat_message, {:assistant, %{tool_calls: [%{name: "context"}]}}}, 500
+      assert_receive {:chat_status, %{status: "executing_tools"}}, 500
+
+      # The GenServer spawns the compactor, which calls the LLM,
+      # gets a random summary, and sends `:compaction_done` back.
+      # The GenServer archives the previous messages (broadcasting
+      # `chat:compaction`) and sends `:task_compaction_done` to
+      # the chat task, which unblocks and returns the
+      # "Compacted N messages..." tool result string.
+      assert_receive {:chat_compaction, _payload}, 500
+
+      assert_receive {:chat_message, {:tool, %Tool{tool_results: [result]}}}, 1000
+      assert result.is_error == false
+      assert String.starts_with?(result.content, "Compacted ")
+
+      # The chat task makes a second LLM call (consuming the
+      # "Done" response), broadcasts the final text, and the
+      # agent transitions to idle.
+      assert_receive {:chat_delta, %{content: "Done"}}, 1000
+      assert_receive {:chat_message, {:assistant, _}}, 1000
+      assert_receive {:chat_status, %{status: "idle"}}, 1000
+
+      Agent.terminate(pid)
+    end
+  end
+
   describe "chat:compaction broadcast" do
     test "compaction_done broadcasts chat:compaction with marker and history" do
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
@@ -224,7 +290,7 @@ defmodule Nest.Agents.AgentCompactionTest do
         %{s | chat_state: %{s.chat_state | messages: old_messages, next_message_index: 2}}
       end)
 
-      send(pid, {:compaction_done, new_messages, {:compact_context_continuation, self()}})
+      send(pid, {:compaction_done, new_messages, {:task_compaction_continuation, self()}})
 
       assert_receive {:chat_compaction, payload}, 100
 

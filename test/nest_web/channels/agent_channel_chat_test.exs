@@ -261,7 +261,8 @@ defmodule NestWeb.AgentChannelChatTest do
         end)
 
       # Verify the error was logged with the correct message
-      assert log =~ "LLM request failed"
+      assert log =~ "chat:error"
+      assert log =~ "LLMRunner.handle_failed_response"
       assert log =~ "model unavailable"
     end
 
@@ -305,7 +306,8 @@ defmodule NestWeb.AgentChannelChatTest do
         end)
 
       # Verify the error was logged with the correct message
-      assert log =~ "LLM request failed"
+      assert log =~ "chat:error"
+      assert log =~ "LLMRunner.handle_failed_response"
       assert log =~ "model failed"
     end
   end
