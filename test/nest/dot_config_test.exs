@@ -177,7 +177,7 @@ defmodule Nest.DotConfigTest do
     end
 
     test "default_max_tool_iterations/0 returns the hardcoded fallback" do
-      assert DotConfig.default_max_tool_iterations() == 25
+      assert DotConfig.default_max_tool_iterations() == 99
     end
 
     test "raises on non-positive-integer value" do

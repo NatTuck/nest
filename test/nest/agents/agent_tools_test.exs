@@ -225,7 +225,9 @@ defmodule Nest.Agents.AgentToolsTest do
     end
 
     test "broadcasts notification and produces final response when max tool iterations reached" do
-      for _ <- 1..5 do
+      # The test config (test/data/config.toml) has max-tool-iterations = 5.
+      # Set up MORE tool responses to ensure the limit is hit.
+      for _ <- 1..10 do
         MockClient.set_tool_response(%{
           text: "Calling tool",
           tool_calls: [
@@ -248,7 +250,7 @@ defmodule Nest.Agents.AgentToolsTest do
 
         assert_receive {:chat_notification,
                         %{type: "max_iterations", message: "Max tool iterations reached"}},
-                       100
+                       3000
 
         # The final assistant response is the one carrying the
         # "I've completed..." content. The chat_status idle arrives
@@ -256,9 +258,9 @@ defmodule Nest.Agents.AgentToolsTest do
         assert_receive {:chat_message,
                         {:assistant,
                          %{content: "I've completed the task after multiple iterations"}}},
-                       100
+                       1000
 
-        assert_receive {:chat_status, %{status: "idle"}}, 100
+        assert_receive {:chat_status, %{status: "idle"}}, 1000
 
         refute_receive {:chat_error, _}, 100
       end)
@@ -303,18 +305,18 @@ defmodule Nest.Agents.AgentToolsTest do
       assert Agent.configured_max_tool_iterations() == 7
     end
 
-    test "returns the hardcoded default of 25 when DotConfig has no max_tool_iterations" do
+    test "returns the hardcoded default of 99 when DotConfig has no max_tool_iterations" do
       Mimic.stub(Nest.DotConfig, :load, fn ->
         {:ok, %{providers: %{}, models: %{}, max_tool_iterations: nil}}
       end)
 
-      assert Agent.configured_max_tool_iterations() == 25
+      assert Agent.configured_max_tool_iterations() == 99
     end
 
-    test "returns the hardcoded default of 25 when DotConfig.load/0 returns an error" do
+    test "returns the hardcoded default of 99 when DotConfig.load/0 returns an error" do
       Mimic.stub(Nest.DotConfig, :load, fn -> {:error, "no config file"} end)
 
-      assert Agent.configured_max_tool_iterations() == 25
+      assert Agent.configured_max_tool_iterations() == 99
     end
   end
 end

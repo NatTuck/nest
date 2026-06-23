@@ -13,7 +13,7 @@ defmodule Nest.DotConfig do
 
   # Default cap on consecutive tool-call iterations per agent chat turn.
   # Override with the top-level `max-tool-iterations` key in config.toml.
-  @default_max_tool_iterations 25
+  @default_max_tool_iterations 99
 
   defmodule Provider do
     @moduledoc """

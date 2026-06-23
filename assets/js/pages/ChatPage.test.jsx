@@ -401,6 +401,62 @@ describe("ChatPage message rendering", () => {
     expect(screen.getByText("Welcome")).toBeInTheDocument();
   });
 
+  it("truncates system messages exceeding 20 lines with an expand button", () => {
+    const lines = Array.from({ length: 25 }, (_, i) => `line-${i + 1}`);
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "idle",
+        messages: [{ index: 0, role: "system", content: lines.join("\n") }],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+
+    renderChat();
+
+    expect(screen.getByText("System")).toBeInTheDocument();
+    // Expand button should be present
+    const expandButton = screen.getByRole("button", {
+      name: /expand 5 more lines/i,
+    });
+    expect(expandButton).toBeInTheDocument();
+
+    // The visible content should contain the first 20 lines
+    const messageContainer = screen.getByText("System").closest(".flex-1");
+    expect(messageContainer.textContent).toContain("line-1");
+    expect(messageContainer.textContent).toContain("line-20");
+    expect(messageContainer.textContent).not.toContain("line-21");
+
+    // Click expand
+    fireEvent.click(expandButton);
+
+    // Now all lines should be visible
+    expect(messageContainer.textContent).toContain("line-21");
+    expect(messageContainer.textContent).toContain("line-25");
+    // Expand button should be gone
+    expect(
+      screen.queryByRole("button", { name: /expand/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not show expand button for system messages at or under 20 lines", () => {
+    const lines = Array.from({ length: 20 }, (_, i) => `line-${i + 1}`);
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "idle",
+        messages: [{ index: 0, role: "system", content: lines.join("\n") }],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+
+    renderChat();
+
+    expect(
+      screen.queryByRole("button", { name: /expand/i }),
+    ).not.toBeInTheDocument();
+  });
+
   it("renders a tool message with the 'Tool Result' label", () => {
     mockAgentsCache = {
       "test-agent": {
@@ -713,7 +769,7 @@ describe("ChatPage status label", () => {
 describe("ChatPage mode selector", () => {
   beforeEach(() => {
     mockAgentsCache = {};
-    sendMessage.mockClear();
+    vi.clearAllMocks();
   });
 
   it("initializes the dropdown from cache.currentMode, not defaultMode", () => {

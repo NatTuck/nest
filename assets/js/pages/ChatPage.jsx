@@ -107,7 +107,7 @@ export function ChatPage() {
   // `cache.currentMode` is null and we fall back to `defaultMode`.
   useEffect(() => {
     const next = cache?.currentMode ?? defaultMode;
-    if (next && next !== currentMode) {
+    if (next) {
       setCurrentMode(next);
     }
   }, [cache?.currentMode, defaultMode]);
@@ -399,11 +399,18 @@ export function ChatPage() {
                   isPartial={message.isPartial ?? false}
                   hasVisibleContent={hasVisibleContent(message)}
                 />
-                <MessageContent
-                  content={message.content}
-                  isPartial={message.isPartial ?? false}
-                  className="text-gray-800"
-                />
+                {message.role === "system" ? (
+                  <SystemMessageContent
+                    content={message.content}
+                    isPartial={message.isPartial ?? false}
+                  />
+                ) : (
+                  <MessageContent
+                    content={message.content}
+                    isPartial={message.isPartial ?? false}
+                    className="text-gray-800"
+                  />
+                )}
                 <ToolCalls toolCalls={message.toolCalls} />
                 <ToolResults toolResults={message.toolResults} />
                 <ApiLogsBlock apiLogs={message.apiLogs} />
@@ -555,4 +562,45 @@ function hasVisibleContent(message) {
         : "";
 
   return content.trim().length > 0;
+}
+
+const SYSTEM_MESSAGE_MAX_LINES = 20;
+
+// Renders system message content with line-count truncation. If the
+// content exceeds SYSTEM_MESSAGE_MAX_LINES, only the first N lines
+// are shown with an expand link.
+function SystemMessageContent({ content, isPartial }) {
+  const [expanded, setExpanded] = useState(false);
+
+  if (!content) return null;
+  if (isPartial) {
+    return (
+      <MessageContent content={content} isPartial className="text-gray-800" />
+    );
+  }
+
+  const lines = content.split("\n");
+  const showExpand = lines.length > SYSTEM_MESSAGE_MAX_LINES;
+  const visibleLines = expanded
+    ? lines
+    : lines.slice(0, SYSTEM_MESSAGE_MAX_LINES);
+  const hiddenCount = lines.length - SYSTEM_MESSAGE_MAX_LINES;
+
+  return (
+    <div>
+      <MessageContent
+        content={visibleLines.join("\n")}
+        className="text-gray-800"
+      />
+      {showExpand && !expanded && (
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          className="mt-2 text-sm text-blue-600 hover:text-blue-800 underline"
+        >
+          Expand {hiddenCount} more line{hiddenCount !== 1 ? "s" : ""}
+        </button>
+      )}
+    </div>
+  );
 }

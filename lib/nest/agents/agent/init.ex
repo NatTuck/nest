@@ -97,6 +97,7 @@ defmodule Nest.Agents.Agent.Init do
   defp model_name(model), do: model[:name] || model["name"]
 
   defp initial_messages_with_system(nil), do: {[], 0}
+  defp initial_messages_with_system(""), do: {[], 0}
 
   defp initial_messages_with_system(system_prompt) do
     message =

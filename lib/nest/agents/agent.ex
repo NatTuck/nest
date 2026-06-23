@@ -393,33 +393,47 @@ defmodule Nest.Agents.Agent do
       vocation ->
         initial_mode = get_initial_mode(vocation.modes)
         tools = vocation.tools || []
-        # Append the mode catalog so the LLM knows which modes the
-        # user can pick. The LLM does not pick modes itself — the
-        # user does, via the UI chip. Then append the workspace
-        # path so the LLM knows where to read/write files.
+
         system_prompt =
           vocation.system_prompt <>
             Vocations.mode_catalog(vocation) <>
-            workspace_section(workspace_path)
+            build_system_prompt_suffix(workspace_path)
 
         {system_prompt, initial_mode, tools, vocation}
     end
   end
 
-  # Renders a short workspace line that tells the LLM where the
-  # agent's working directory lives. Only included when a workspace
-  # was configured at agent creation.
-  defp workspace_section(nil), do: ""
+  defp build_system_prompt_suffix(workspace_path) do
+    workspace_section(workspace_path) <>
+      tool_call_limit_section() <>
+      agents_md_section(workspace_path)
+  end
 
-  defp workspace_section(path) do
-    "\n\nWorkspace and tool working directory: #{path}\n"
+  # Renders a short workspace line for the LLM.
+  defp workspace_section(nil), do: ""
+  defp workspace_section(path), do: "\n\nWorkspace and tool working directory: #{path}\n"
+
+  defp tool_call_limit_section do
+    max = Nest.Agents.Agent.configured_max_tool_iterations()
+    "\n\nTool call budget: You have a maximum of #{max} consecutive tool call rounds per turn.\n"
+  end
+
+  defp agents_md_section(nil), do: ""
+
+  defp agents_md_section(workspace_path) do
+    case File.read(Path.join(workspace_path, "AGENTS.md")) do
+      {:ok, content} ->
+        "\n\nHere are AGENTS.md guidelines for this project:\n#{content}\n"
+
+      _ ->
+        ""
+    end
   end
 
   defp get_initial_mode(nil), do: "chat"
 
-  defp get_initial_mode(%{} = modes) when map_size(modes) > 0 do
-    modes |> Map.keys() |> List.first()
-  end
+  defp get_initial_mode(%{} = modes) when map_size(modes) > 0,
+    do: modes |> Map.keys() |> List.first()
 
   defp get_initial_mode(_), do: "chat"
 

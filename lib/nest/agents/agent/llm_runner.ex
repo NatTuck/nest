@@ -97,7 +97,8 @@ defmodule Nest.Agents.Agent.LLMRunner do
       {:compacted, new_messages} ->
         run_with_new_client(%{ctx | messages: new_messages}, state)
 
-      :proceed ->
+      {:proceed, messages} ->
+        ctx = %{ctx | messages: messages}
         Logger.info("Agent #{ctx.agent_id} sending LLM request (message #{state.message_index})")
         state = broadcast_request_log(ctx, state)
         {:ok, stream} = run_request(ctx)
@@ -123,8 +124,8 @@ defmodule Nest.Agents.Agent.LLMRunner do
     send(ctx.agent_pid, {:preflight_request, self(), ctx.messages})
 
     receive do
-      {:preflight_result, :proceed, _messages} ->
-        :proceed
+      {:preflight_result, :proceed, messages} ->
+        {:proceed, messages}
 
       {:preflight_result, :compacted, new_messages} ->
         {:compacted, new_messages}
@@ -135,7 +136,7 @@ defmodule Nest.Agents.Agent.LLMRunner do
     after
       30_000 ->
         Logger.warning("Pre-flight request timed out; proceeding with existing messages")
-        :proceed
+        {:proceed, ctx.messages}
     end
   end
 
@@ -270,7 +271,22 @@ defmodule Nest.Agents.Agent.LLMRunner do
       max_iterations: state.max_iterations - 1
     }
 
-    run_with_new_client(%{ctx | messages: updated_messages}, next_state)
+    system_prompt =
+      case iteration_warning(next_state.max_iterations) do
+        nil ->
+          ctx.system_prompt
+
+        warning when is_binary(ctx.system_prompt) ->
+          ctx.system_prompt <> "\n\n" <> warning
+
+        warning ->
+          warning
+      end
+
+    run_with_new_client(
+      %{ctx | messages: updated_messages, system_prompt: system_prompt},
+      next_state
+    )
   end
 
   defp build_tool_pair(ctx, state, response) do
@@ -312,6 +328,24 @@ defmodule Nest.Agents.Agent.LLMRunner do
 
     {tool_call_message, tool_result_message,
      ctx.messages ++ [tool_call_message, tool_result_message]}
+  end
+
+  # Return a system-prompt warning when the LLM is nearing its
+  # tool call iteration limit. At 2 rounds remaining the LLM is
+  # told to plan carefully; at 1 round it is told no more tools
+  # will be available. At 0 the caller (`run_with_new_client/2`)
+  # makes a final call with `tools: nil`.
+  defp iteration_warning(remaining) when is_integer(remaining) do
+    case remaining do
+      2 ->
+        "You have 2 tool call rounds remaining. Plan your remaining tool use carefully."
+
+      1 ->
+        "This is your last tool call round. After this, no more tools will be available — provide your final response."
+
+      _ ->
+        nil
+    end
   end
 
   @spec consume_new_stream(Enumerable.t(), non_neg_integer(), String.t(), pid()) ::
