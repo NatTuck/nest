@@ -25,7 +25,7 @@ defmodule Nest.LLM.OpenAIClient do
 
   @impl Nest.LLM.Client
   def run(%RunRequest{} = request, opts) do
-    url = opts[:base_url] <> "/chat/completions"
+    url = normalize_endpoint(opts[:base_url], "/chat/completions")
     api_key = Keyword.fetch!(opts, :api_key)
     timeout = Keyword.get(opts, :receive_timeout, :infinity)
     parent = self()
@@ -378,4 +378,22 @@ defmodule Nest.LLM.OpenAIClient do
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  # Normalizes a base URL by stripping trailing slashes and any
+  # suffix that already matches the target endpoint, then appends
+  # the correct endpoint path. Prevents doubled segments like
+  # `/v1/v1/messages` or `/chat/completions/chat/completions`.
+  @doc false
+  def normalize_endpoint(base_url, endpoint) do
+    base_url
+    |> String.trim_trailing("/")
+    |> strip_api_version_if_needed(endpoint)
+    |> String.trim_trailing(endpoint)
+    |> then(&(&1 <> endpoint))
+  end
+
+  # Only strip /v1 if the endpoint already includes it (e.g. /v1/messages).
+  # For endpoints like /chat/completions, the /v1 in the base URL is kept.
+  defp strip_api_version_if_needed(url, "/v1" <> _rest), do: String.trim_trailing(url, "/v1")
+  defp strip_api_version_if_needed(url, _endpoint), do: url
 end

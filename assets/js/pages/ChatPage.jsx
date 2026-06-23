@@ -21,6 +21,7 @@ import { StatusBanner } from "../components/StatusBanner";
 import { NotificationBanner } from "../components/NotificationBanner";
 import { CompactionMarker } from "../components/CompactionMarker";
 import { useScrollToBottom } from "../hooks/useScrollToBottom";
+import { stripModePrefix } from "../utils/stripModePrefix.js";
 
 /**
  * Chat Page component
@@ -77,13 +78,24 @@ export function ChatPage() {
   // (post-compaction) history, orders them most-recent-first, and
   // collapses consecutive duplicates so repeated presses of Up don't
   // dwell on the same message.
+  //
+  // The persisted user message content has a `[mode: <name>]\n` prefix
+  // (see ChatPipeline.build_user_messages/3). We strip it here so the
+  // recovered prompt is the user-visible text, not the LLM-facing wire
+  // form.
   const history = useMemo(() => {
     const archived = (cache?.history ?? [])
       .filter((m) => m.role === "user" && typeof m.content === "string")
-      .map((m) => ({ content: m.content, mode: m.mode ?? null }));
+      .map((m) => ({
+        content: stripModePrefix(m.content, m.mode ?? ""),
+        mode: m.mode ?? null,
+      }));
     const active = (cache?.messages ?? [])
       .filter((m) => m.role === "user" && typeof m.content === "string")
-      .map((m) => ({ content: m.content, mode: m.mode ?? null }));
+      .map((m) => ({
+        content: stripModePrefix(m.content, m.mode ?? ""),
+        mode: m.mode ?? null,
+      }));
     const ordered = [...archived, ...active];
     const deduped = [];
     for (const entry of ordered) {
@@ -406,7 +418,11 @@ export function ChatPage() {
                   />
                 ) : (
                   <MessageContent
-                    content={message.content}
+                    content={
+                      message.role === "user"
+                        ? stripModePrefix(message.content, message.mode)
+                        : message.content
+                    }
                     isPartial={message.isPartial ?? false}
                     className="text-gray-800"
                   />

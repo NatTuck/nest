@@ -361,6 +361,37 @@ describe("ChatPage message rendering", () => {
     expect(screen.getByText(/mode: build/)).toBeInTheDocument();
   });
 
+  it("strips the [mode: X]\\n prefix from user message content on render", () => {
+    // Server-side ChatPipeline.build_user_messages/3 intentionally
+    // prefixes every persisted user message with `[mode: <name>]\n`
+    // so the LLM sees the mode as part of the message text. The
+    // chat UI hides the prefix because the mode badge already
+    // displays it.
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "idle",
+        messages: [
+          {
+            index: 0,
+            role: "user",
+            content: "[mode: build]\nHello there",
+            mode: "build",
+          },
+        ],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+
+    renderChat();
+
+    // The badge shows the mode and the visible body shows just the
+    // user text. The prefix itself is not rendered.
+    expect(screen.getByText(/mode: build/)).toBeInTheDocument();
+    expect(screen.getByText("Hello there")).toBeInTheDocument();
+    expect(screen.queryByText(/^\[mode: build\]/)).toBeNull();
+  });
+
   it("renders an assistant message with the agent ID as the label", () => {
     mockAgentsCache = {
       "test-agent": {

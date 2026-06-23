@@ -15,6 +15,7 @@
 
 import { MessageContent } from "./MessageContent";
 import { ThinkingBlock } from "./ThinkingBlock";
+import { stripModePrefix } from "../utils/stripModePrefix.js";
 
 const ROLE_LABELS = {
   user: "You",
@@ -84,7 +85,11 @@ function MessageBubble({ message }) {
           <ThinkingBlock thinking={message.thinking} isPartial={false} />
         )}
         <MessageContent
-          content={message.content}
+          content={
+            message.role === "user"
+              ? stripModePrefix(message.content, message.mode)
+              : message.content
+          }
           isPartial={false}
           className="text-xs text-gray-700"
         />

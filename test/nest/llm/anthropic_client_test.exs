@@ -290,4 +290,30 @@ defmodule Nest.LLM.AnthropicClientTest do
       assert payload["max_tokens"] == 1024
     end
   end
+
+  describe "normalize_endpoint/2" do
+    test "appends endpoint to clean base URL" do
+      assert AnthropicClient.normalize_endpoint("https://api.anthropic.com/v1", "/v1/messages") ==
+               "https://api.anthropic.com/v1/messages"
+    end
+
+    test "strips trailing slash before appending" do
+      assert AnthropicClient.normalize_endpoint("https://api.anthropic.com/v1/", "/v1/messages") ==
+               "https://api.anthropic.com/v1/messages"
+    end
+
+    test "strips duplicate endpoint before appending" do
+      assert AnthropicClient.normalize_endpoint(
+               "https://api.anthropic.com/v1/messages",
+               "/v1/messages"
+             ) == "https://api.anthropic.com/v1/messages"
+    end
+
+    test "strips duplicate endpoint with trailing slash" do
+      assert AnthropicClient.normalize_endpoint(
+               "https://api.anthropic.com/v1/messages/",
+               "/v1/messages"
+             ) == "https://api.anthropic.com/v1/messages"
+    end
+  end
 end

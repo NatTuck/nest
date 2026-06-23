@@ -22,6 +22,7 @@ defmodule Nest.Tools do
   # before sending it to the LLM. The LLM can override per call.
   @default_max_result_tokens 8192
   @write_file_max_result_tokens 256
+  @context_max_result_tokens 512
 
   @doc """
   Returns a list of `Nest.LLM.Tool` structs for the given tool names.
@@ -43,6 +44,7 @@ defmodule Nest.Tools do
       "write_file" -> write_file_function(workspace_path, tmp_path)
       "shell_cmd" -> shell_cmd_function(workspace_path, tmp_path)
       "compact_context" -> compact_context_function()
+      "context" -> context_function()
       _ -> nil
     end
   end
@@ -144,6 +146,43 @@ defmodule Nest.Tools do
       max_result_tokens: 256,
       function: fn _args, _context ->
         {:ok, "Compaction request received."}
+      end
+    }
+  end
+
+  # The `context` tool provides visibility into context usage and
+  # can optionally trigger compaction. Like `compact_context`, the
+  # actual execution is intercepted in `ToolLoop` because it needs
+  # access to runtime state (messages, context_limit) that the
+  # tool function doesn't have.
+  defp context_function do
+    %Tool{
+      name: "context",
+      description:
+        "Check current context usage (tokens used, limit, message count) " <>
+          "or trigger compaction to free up space.",
+      parameters_schema: %{
+        "type" => "object",
+        "properties" => %{
+          "action" => %{
+            "type" => "string",
+            "enum" => ["check", "compact"],
+            "description" =>
+              "Action to perform. 'check' returns current context stats. " <>
+                "'compact' triggers compaction (like compact_context)."
+          },
+          "focus" => %{
+            "type" => "string",
+            "description" =>
+              "When action is 'compact': what to preserve in the summary. " <>
+                "Ignored when action is 'check'."
+          },
+          "max_result_tokens" => max_result_tokens_schema()
+        }
+      },
+      max_result_tokens: @context_max_result_tokens,
+      function: fn _args, _context ->
+        {:ok, "Context request received."}
       end
     }
   end

@@ -47,7 +47,10 @@ defmodule Nest.Agents.AgentToolsTest do
 
       # User message: first broadcast is empty, second carries the
       # request log. Match the second (non-empty api_logs).
-      assert_receive {:chat_message, {:user, %{index: 0, content: "List the files"}}}, 100
+      assert_receive {:chat_message,
+                      {:user, %{index: 0, content: "[mode: chat]\nList the files"}}},
+                     100
+
       assert_receive {:chat_status, %{status: "streaming"}}, 100
       assert_receive {:chat_delta, _}, 100
 
@@ -180,7 +183,9 @@ defmodule Nest.Agents.AgentToolsTest do
 
       :ok = Agent.chat(pid, "What else is there?")
       # Second turn: new user message (index 4) + assistant response (index 5).
-      assert_receive {:chat_message, {:user, %{index: 4, content: "What else is there?"}}}, 100
+      assert_receive {:chat_message,
+                      {:user, %{index: 4, content: "[mode: chat]\nWhat else is there?"}}},
+                     100
 
       assert_receive {:chat_message,
                       {:assistant, %{index: 5, content: "Second response received"}}},

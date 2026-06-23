@@ -33,7 +33,7 @@ defmodule Nest.LLM.AnthropicClient do
 
   @impl Nest.LLM.Client
   def run(%RunRequest{} = request, opts) do
-    url = opts[:base_url] <> "/v1/messages"
+    url = normalize_endpoint(opts[:base_url], "/v1/messages")
     api_key = Keyword.fetch!(opts, :api_key)
     timeout = Keyword.get(opts, :receive_timeout, :infinity)
     parent = self()
@@ -389,4 +389,16 @@ defmodule Nest.LLM.AnthropicClient do
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  @doc false
+  def normalize_endpoint(base_url, endpoint) do
+    base_url
+    |> String.trim_trailing("/")
+    |> strip_api_version_if_needed(endpoint)
+    |> String.trim_trailing(endpoint)
+    |> then(&(&1 <> endpoint))
+  end
+
+  defp strip_api_version_if_needed(url, "/v1" <> _rest), do: String.trim_trailing(url, "/v1")
+  defp strip_api_version_if_needed(url, _endpoint), do: url
 end

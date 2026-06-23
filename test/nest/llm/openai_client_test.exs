@@ -210,6 +210,39 @@ defmodule Nest.LLM.OpenAIClientTest do
     end
   end
 
+  describe "normalize_endpoint/2" do
+    test "appends endpoint to clean base URL" do
+      assert OpenAIClient.normalize_endpoint("https://api.example.com/v1", "/chat/completions") ==
+               "https://api.example.com/v1/chat/completions"
+    end
+
+    test "strips trailing slash before appending" do
+      assert OpenAIClient.normalize_endpoint("https://api.example.com/v1/", "/chat/completions") ==
+               "https://api.example.com/v1/chat/completions"
+    end
+
+    test "strips /v1 suffix before appending endpoint" do
+      assert OpenAIClient.normalize_endpoint(
+               "https://token-plan.example.com/apps/anthropic/v1",
+               "/chat/completions"
+             ) == "https://token-plan.example.com/apps/anthropic/v1/chat/completions"
+    end
+
+    test "strips duplicate endpoint before appending" do
+      assert OpenAIClient.normalize_endpoint(
+               "https://api.example.com/v1/chat/completions",
+               "/chat/completions"
+             ) == "https://api.example.com/v1/chat/completions"
+    end
+
+    test "strips duplicate endpoint with trailing slash" do
+      assert OpenAIClient.normalize_endpoint(
+               "https://api.example.com/v1/chat/completions/",
+               "/chat/completions"
+             ) == "https://api.example.com/v1/chat/completions"
+    end
+  end
+
   describe "delta without finish_reason (OpenAI-compatible providers)" do
     # Some OpenAI-compatible providers (e.g. MiniMax reasoning,
     # DeepSeek R1) emit reasoning-only delta frames where the

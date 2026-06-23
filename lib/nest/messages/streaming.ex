@@ -27,6 +27,17 @@ defmodule Nest.Messages.Streaming do
 
     Tracks partial state for interleaved content blocks.
     """
+    @derive {Jason.Encoder,
+             only: [
+               :index,
+               :text_buffer,
+               :thinking_buffer,
+               :thinking_signature,
+               :current_block,
+               :timestamp,
+               :chars_sent,
+               :segments
+             ]}
     defstruct [
       :index,
       text_buffer: "",

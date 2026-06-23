@@ -24,6 +24,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
 
   @default_max_fallback 8192
   @compaction_max 256
+  @context_max 512
   @compaction_timeout 60_000
   @budget_reserve 8_192
   @budget_unknown_limit 1_000_000
@@ -52,6 +53,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
   defp execute_tool(ctx, tool_call) do
     case tool_call_name(tool_call) do
       "compact_context" -> compact_context_result(ctx, tool_call)
+      "context" -> context_result(ctx, tool_call)
       _ -> standard_tool_result(ctx, tool_call)
     end
   end
@@ -73,6 +75,28 @@ defmodule Nest.Agents.Agent.ToolLoop do
     case request_compaction_from_task(ctx, tool_call) do
       :stopped -> raise __MODULE__.StoppedError
       text -> {text, @compaction_max}
+    end
+  end
+
+  # The `context` tool handles two actions:
+  #
+  # "check" — returns a summary of current context usage
+  # (message count, estimated tokens, context limit, and
+  # percentage used). Does not require a GenServer round-trip;
+  # the `RunContext` carries the messages and context_limit.
+  #
+  # "compact" — delegates to the same compaction flow as
+  # `compact_context`, reusing `request_compaction_from_task/2`.
+  defp context_result(ctx, tool_call) do
+    case get_action_arg(tool_call) do
+      "compact" ->
+        case request_compaction_from_task(ctx, tool_call) do
+          :stopped -> raise __MODULE__.StoppedError
+          text -> {text, @compaction_max}
+        end
+
+      _ ->
+        {format_context_stats(ctx), @context_max}
     end
   end
 
@@ -132,12 +156,45 @@ defmodule Nest.Agents.Agent.ToolLoop do
     end
   end
 
+  defp get_action_arg(tool_call) do
+    case tool_call.arguments do
+      %{"action" => a} when is_binary(a) -> a
+      _ -> nil
+    end
+  end
+
   defp get_focus_arg(tool_call) do
     case tool_call.arguments do
       %{"focus" => f} when is_binary(f) -> f
       _ -> nil
     end
   end
+
+  # Build and format context usage stats for the `context` tool's
+  # "check" action. Returns a human-readable string with message
+  # count, estimated tokens, context limit, and percentage used.
+  defp format_context_stats(ctx) do
+    messages = ctx.messages || []
+    message_count = length(messages)
+    tokens_used = Estimator.estimate_messages(messages)
+
+    limit_str = format_limit(ctx.context_limit)
+    pct_str = format_percentage(tokens_used, ctx.context_limit)
+
+    "Context: #{message_count} messages, ~#{tokens_used} / #{limit_str} tokens#{pct_str}"
+  end
+
+  defp format_limit(nil), do: "unknown"
+  defp format_limit(limit) when is_integer(limit), do: "#{limit}"
+
+  defp format_percentage(_used, nil), do: ""
+
+  defp format_percentage(used, limit) when is_integer(limit) and limit > 0 do
+    pct = Float.round(used / limit * 100, 1)
+    " (#{pct}%)"
+  end
+
+  defp format_percentage(_, _), do: ""
 
   # Helper for the synthetic tool result string. The "before"
   # count is whatever the chat task is using (we don't have

@@ -162,5 +162,25 @@ describe("CollapsedHistory", () => {
       // No crash; the message still renders
       expect(screen.getByText("no ts")).toBeInTheDocument();
     });
+
+    it("strips the [mode: X]\\n prefix from archived user messages", () => {
+      // Server-side ChatPipeline.build_user_messages/3 intentionally
+      // prefixes every persisted user message with `[mode: <name>]\n`.
+      // Archived (post-compaction) user messages carry the same wire
+      // form, so the history view strips the prefix on render.
+      const history = [
+        {
+          index: 0,
+          role: "user",
+          content: "[mode: build]\nHello there",
+          mode: "build",
+          apiLogs: [],
+        },
+      ];
+      render(<CollapsedHistory history={history} />);
+      const bubble = screen.getByTestId("history-message");
+      expect(bubble.textContent).toContain("Hello there");
+      expect(bubble.textContent).not.toContain("[mode: build]");
+    });
   });
 });

@@ -35,7 +35,9 @@ defmodule Nest.Agents.AgentChatTest do
 
       :ok = Agent.chat(pid, "Hello")
 
-      assert_receive {:chat_message, {:user, %{index: 0, content: "Hello"}}}, 100
+      assert_receive {:chat_message, {:user, %{index: 0, content: "[mode: chat]\nHello"}}},
+                     100
+
       assert_receive {:chat_status, %{status: "streaming"}}, 100
       assert_receive {:chat_delta, _}, 100
       assert_receive {:chat_message, {:assistant, _}}, 100
@@ -64,7 +66,9 @@ defmodule Nest.Agents.AgentChatTest do
         capture_log(fn ->
           :ok = Agent.chat(pid, "Hello")
 
-          assert_receive {:chat_message, {:user, %{index: 0, content: "Hello"}}}, 100
+          assert_receive {:chat_message, {:user, %{index: 0, content: "[mode: chat]\nHello"}}},
+                         100
+
           assert_receive {:chat_error, _error}, 100
         end)
 
@@ -82,7 +86,9 @@ defmodule Nest.Agents.AgentChatTest do
         capture_log(fn ->
           :ok = Agent.chat(pid, "Hello")
 
-          assert_receive {:chat_message, {:user, %{index: 0, content: "Hello"}}}, 100
+          assert_receive {:chat_message, {:user, %{index: 0, content: "[mode: chat]\nHello"}}},
+                         100
+
           assert_receive {:chat_error, _error}, 100
         end)
 
@@ -137,7 +143,7 @@ defmodule Nest.Agents.AgentChatTest do
 
       # Vocation-less agent has no "build" mode, falls back to "chat"
       assert_receive {:chat_message,
-                      {:user, %{content: "Read foo", metadata: %{"mode" => "chat"}}}},
+                      {:user, %{content: "[mode: chat]\nRead foo", metadata: %{"mode" => "chat"}}}},
                      100
     end
 
@@ -147,7 +153,8 @@ defmodule Nest.Agents.AgentChatTest do
 
       :ok = Agent.chat(pid, "Hello", "nonexistent-mode")
 
-      assert_receive {:chat_message, {:user, %{content: "Hello", metadata: %{"mode" => "chat"}}}},
+      assert_receive {:chat_message,
+                      {:user, %{content: "[mode: chat]\nHello", metadata: %{"mode" => "chat"}}}},
                      100
     end
 
@@ -157,7 +164,8 @@ defmodule Nest.Agents.AgentChatTest do
 
       :ok = Agent.chat(pid, "Hello")
 
-      assert_receive {:chat_message, {:user, %{content: "Hello", metadata: %{"mode" => "chat"}}}},
+      assert_receive {:chat_message,
+                      {:user, %{content: "[mode: chat]\nHello", metadata: %{"mode" => "chat"}}}},
                      100
     end
 
@@ -190,7 +198,8 @@ defmodule Nest.Agents.AgentChatTest do
 
       :ok = Agent.chat(pid, "Run", "build")
 
-      assert_receive {:chat_message, {:user, %{content: "Run", metadata: %{"mode" => "build"}}}},
+      assert_receive {:chat_message,
+                      {:user, %{content: "[mode: build]\nRun", metadata: %{"mode" => "build"}}}},
                      100
     end
 
@@ -225,7 +234,7 @@ defmodule Nest.Agents.AgentChatTest do
 
       # Default is the lexicographically first mode: "build"
       assert_receive {:chat_message,
-                      {:user, %{content: "Hello", metadata: %{"mode" => "build"}}}},
+                      {:user, %{content: "[mode: build]\nHello", metadata: %{"mode" => "build"}}}},
                      100
     end
 
@@ -262,7 +271,8 @@ defmodule Nest.Agents.AgentChatTest do
       :ok = Agent.chat(pid, "Plan this", "plan")
 
       assert_receive {:chat_message,
-                      {:user, %{content: "Plan this", metadata: %{"mode" => "plan"}}}},
+                      {:user,
+                       %{content: "[mode: plan]\nPlan this", metadata: %{"mode" => "plan"}}}},
                      100
 
       assert_receive {:chat_status, %{status: "idle", currentMode: "plan"}}, 100
@@ -372,7 +382,8 @@ defmodule Nest.Agents.AgentChatTest do
 
       # The fallback to the vocation's default ("build", lex-first)
       # is externally visible on the user message's metadata.
-      assert_receive {:chat_message, {:user, %{content: "Hi", metadata: %{"mode" => "build"}}}},
+      assert_receive {:chat_message,
+                      {:user, %{content: "[mode: build]\nHi", metadata: %{"mode" => "build"}}}},
                      100
     end
   end
@@ -412,78 +423,9 @@ defmodule Nest.Agents.AgentChatTest do
   end
 
   describe "system prompt composition" do
-    @tag :db_shared
-    test "vocation system_prompt gets the mode catalog and a [Workspace] section" do
-      valid_caps = %{
-        "net" => false,
-        "fs" => %{"read" => ["/"], "write" => []}
-      }
-
-      {:ok, vocation} =
-        Vocations.create_vocation(%{
-          name: "TestSysPrompt-#{System.unique_integer([:positive])}",
-          description: "Test",
-          system_prompt: "Base prompt.",
-          tools: [],
-          modes: %{
-            "build" => %{
-              "description" => "You're clear to edit the project in the workspace.",
-              "caps" => valid_caps
-            }
-          }
-        })
-
-      {pid, _agent_id} =
-        start_agent(%{
-          model: %{name: "qwen3.5-plus"},
-          vocation_id: vocation.id,
-          workspace_path: "/tmp/test-workspace-#{System.unique_integer([:positive])}"
-        })
-
-      # The system prompt isn't on any broadcast; only the agent's
-      # process state has it. Kept on the get_system_prompt GenServer
-      # call. Future work: include it on the chat:status payload.
-      system_prompt = get_system_prompt(pid)
-
-      assert system_prompt =~ "Base prompt."
-      assert system_prompt =~ "\n\n[Available modes]\n\n"
-      assert system_prompt =~ ~s(- build: Read only "/")
-      assert system_prompt =~ "Network disabled"
-      assert system_prompt =~ "You're clear to edit the project in the workspace."
-      assert system_prompt =~ "\n\nWorkspace and tool working directory: /tmp/test-workspace-"
-    end
-
-    @tag :db_shared
-    test "no workspace line when workspace_path is nil" do
-      valid_caps = %{
-        "net" => false,
-        "fs" => %{"read" => ["/"], "write" => []}
-      }
-
-      {:ok, vocation} =
-        Vocations.create_vocation(%{
-          name: "TestNoWorkspace-#{System.unique_integer([:positive])}",
-          description: "Test",
-          system_prompt: "Chat only.",
-          tools: [],
-          modes: %{
-            "chat" => %{
-              "description" => "General conversation.",
-              "caps" => valid_caps
-            }
-          }
-        })
-
-      {pid, _agent_id} =
-        start_agent(%{
-          model: %{name: "qwen3.5-plus"},
-          vocation_id: vocation.id
-        })
-
-      system_prompt = get_system_prompt(pid)
-
-      assert system_prompt =~ "Chat only."
-      refute system_prompt =~ "Workspace and tool working directory"
-    end
+    # The system-prompt composition tests live in
+    # `agent_system_prompt_composition_test.exs` (they were
+    # extracted from this file when it crossed the 500-line credo
+    # limit). See that file for the full coverage.
   end
 end

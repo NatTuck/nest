@@ -333,7 +333,7 @@ defmodule Nest.Agents.Agent.LLMRunner do
   defp consume_new_stream(stream, message_index, agent_id, agent_pid) do
     consumer = %StreamConsumer{
       on_text: &broadcast_text_delta(&1, &2, message_index, agent_id, agent_pid),
-      on_thinking: &forward_thinking_delta(&1, &2, agent_pid),
+      on_thinking: &forward_thinking_delta(&1, &2, message_index, agent_id, agent_pid),
       # Anthropic's extended thinking emits a signature that
       # must be echoed back on subsequent turns. Forward it
       # to the agent pid so it can be persisted in the
@@ -394,9 +394,10 @@ defmodule Nest.Agents.Agent.LLMRunner do
     %{sent | chars: sent.chars + String.length(text)}
   end
 
-  defp forward_thinking_delta(text, sent, agent_pid) do
+  defp forward_thinking_delta(text, sent, message_index, agent_id, agent_pid) do
+    Broadcasts.delta_thinking(agent_id, message_index, text, sent.chars)
     send(agent_pid, {:delta_received, text, :thinking})
-    sent
+    %{sent | chars: sent.chars + String.length(text)}
   end
 
   # The accumulator is the source of truth for parsed tool calls.

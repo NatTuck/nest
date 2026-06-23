@@ -14,6 +14,7 @@ function setup(props = {}) {
   const onChange = vi.fn();
   const onSend = vi.fn();
   const onStop = vi.fn();
+  const onModeChange = vi.fn();
   const utils = render(
     <ChatInput
       value={props.value ?? ""}
@@ -24,6 +25,9 @@ function setup(props = {}) {
       stopping={props.stopping ?? false}
       disabled={props.disabled ?? false}
       placeholder={props.placeholder ?? "Type a message..."}
+      modes={props.modes}
+      mode={props.mode}
+      onModeChange={props.onModeChange ?? onModeChange}
     />,
   );
   const textarea = screen.getByLabelText("Message");
@@ -39,6 +43,7 @@ function setup(props = {}) {
     onChange: props.onChange ?? onChange,
     onSend: props.onSend ?? onSend,
     onStop: props.onStop ?? onStop,
+    onModeChange: props.onModeChange ?? onModeChange,
   };
 }
 
@@ -138,6 +143,92 @@ describe("ChatInput", () => {
       fireEvent.keyDown(textarea, { key: "a", ctrlKey: true });
       fireEvent.keyDown(textarea, { key: " ", ctrlKey: true });
       expect(onSend).not.toHaveBeenCalled();
+    });
+
+    it("cycles to next mode on Ctrl+M", () => {
+      const onModeChange = vi.fn();
+      const { textarea } = setup({
+        value: "hello",
+        modes: ["chat", "build", "plan"],
+        mode: "chat",
+        onModeChange,
+      });
+      fireEvent.keyDown(textarea, { key: "m", ctrlKey: true });
+      expect(onModeChange).toHaveBeenCalledWith("build");
+    });
+
+    it("cycles to next mode on Meta+M (Cmd on macOS)", () => {
+      const onModeChange = vi.fn();
+      const { textarea } = setup({
+        value: "hello",
+        modes: ["chat", "build", "plan"],
+        mode: "build",
+        onModeChange,
+      });
+      fireEvent.keyDown(textarea, { key: "m", metaKey: true });
+      expect(onModeChange).toHaveBeenCalledWith("plan");
+    });
+
+    it("wraps around to first mode on Ctrl+M at last mode", () => {
+      const onModeChange = vi.fn();
+      const { textarea } = setup({
+        value: "hello",
+        modes: ["chat", "build", "plan"],
+        mode: "plan",
+        onModeChange,
+      });
+      fireEvent.keyDown(textarea, { key: "m", ctrlKey: true });
+      expect(onModeChange).toHaveBeenCalledWith("chat");
+    });
+
+    it("does not cycle on Ctrl+M when only one mode", () => {
+      const onModeChange = vi.fn();
+      const { textarea } = setup({
+        value: "hello",
+        modes: ["chat"],
+        mode: "chat",
+        onModeChange,
+      });
+      fireEvent.keyDown(textarea, { key: "m", ctrlKey: true });
+      expect(onModeChange).not.toHaveBeenCalled();
+    });
+
+    it("does not cycle on Ctrl+M when disabled", () => {
+      const onModeChange = vi.fn();
+      const { textarea } = setup({
+        value: "hello",
+        modes: ["chat", "build"],
+        mode: "chat",
+        onModeChange,
+        disabled: true,
+      });
+      fireEvent.keyDown(textarea, { key: "m", ctrlKey: true });
+      expect(onModeChange).not.toHaveBeenCalled();
+    });
+
+    it("does not cycle on Ctrl+M when isBusy", () => {
+      const onModeChange = vi.fn();
+      const { textarea } = setup({
+        value: "hello",
+        modes: ["chat", "build"],
+        mode: "chat",
+        onModeChange,
+        isBusy: true,
+      });
+      fireEvent.keyDown(textarea, { key: "m", ctrlKey: true });
+      expect(onModeChange).not.toHaveBeenCalled();
+    });
+
+    it("does not cycle on plain m without modifier", () => {
+      const onModeChange = vi.fn();
+      const { textarea } = setup({
+        value: "hello",
+        modes: ["chat", "build"],
+        mode: "chat",
+        onModeChange,
+      });
+      fireEvent.keyDown(textarea, { key: "m" });
+      expect(onModeChange).not.toHaveBeenCalled();
     });
   });
 
@@ -571,71 +662,45 @@ describe("ChatInput", () => {
       setup();
       const textarea = screen.getByLabelText("Message");
       expect(textarea.getAttribute("title")).toMatch(/Ctrl\/Cmd\+Up\/Down/);
+      expect(textarea.getAttribute("title")).toMatch(/Ctrl\/Cmd\+M/);
     });
 
     it("exposes the keybinding to assistive tech via aria-keyshortcuts", () => {
       setup();
       const textarea = screen.getByLabelText("Message");
       const shortcuts = textarea.getAttribute("aria-keyshortcuts") || "";
-      // Should advertise both Up and Down, plus Enter to send.
+      // Should advertise both Up and Down, plus Enter to send, plus M to cycle.
       expect(shortcuts).toMatch(/ArrowUp/);
       expect(shortcuts).toMatch(/ArrowDown/);
       expect(shortcuts).toMatch(/Enter/);
+      expect(shortcuts.toLowerCase()).toMatch(/\bm\b/);
     });
 
-    it("renders a visible hint when history is non-empty and input is interactive", () => {
+    it("always renders a visible hint when the input is interactive", () => {
+      setup();
+      const hint = getHint();
+      expect(hint).toBeInTheDocument();
+      expect(hint?.textContent).toMatch(/walk previous prompts/i);
+      expect(hint?.textContent).toMatch(/Ctrl\/Cmd\+M to cycle modes/i);
+    });
+
+    it("renders the hint even with no history", () => {
+      render(<ChatInput value="" onChange={() => {}} onSend={() => {}} />);
+      expect(getHint()).toBeInTheDocument();
+    });
+
+    it("renders the hint even when disabled", () => {
       render(
-        <ChatInput
-          value=""
-          onChange={() => {}}
-          onSend={() => {}}
-          history={[{ content: "x", mode: null }]}
-        />,
+        <ChatInput value="" onChange={() => {}} onSend={() => {}} disabled />,
       );
       expect(getHint()).toBeInTheDocument();
     });
 
-    it("does not render the hint when history is empty", () => {
+    it("renders the hint even while the agent is busy", () => {
       render(
-        <ChatInput
-          value=""
-          onChange={() => {}}
-          onSend={() => {}}
-          history={[]}
-        />,
+        <ChatInput value="" onChange={() => {}} onSend={() => {}} isBusy />,
       );
-      expect(getHint()).toBeNull();
-    });
-
-    it("does not render the hint when history is not provided", () => {
-      render(<ChatInput value="" onChange={() => {}} onSend={() => {}} />);
-      expect(getHint()).toBeNull();
-    });
-
-    it("does not render the hint when disabled", () => {
-      render(
-        <ChatInput
-          value=""
-          onChange={() => {}}
-          onSend={() => {}}
-          history={[{ content: "x", mode: null }]}
-          disabled
-        />,
-      );
-      expect(getHint()).toBeNull();
-    });
-
-    it("does not render the hint while the agent is busy", () => {
-      render(
-        <ChatInput
-          value=""
-          onChange={() => {}}
-          onSend={() => {}}
-          history={[{ content: "x", mode: null }]}
-          isBusy
-        />,
-      );
-      expect(getHint()).toBeNull();
+      expect(getHint()).toBeInTheDocument();
     });
   });
 });

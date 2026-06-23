@@ -77,6 +77,23 @@ defmodule Nest.Agents.Agent.Broadcasts do
     )
   end
 
+  def delta_thinking(agent_id, message_index, content, chars_start) do
+    chars_end = chars_start + String.length(content)
+
+    Phoenix.PubSub.broadcast(
+      PubSub,
+      "agent:#{agent_id}",
+      {:chat_delta,
+       %{
+         index: message_index,
+         content: content,
+         chars_start: chars_start,
+         chars_end: chars_end,
+         part_type: :thinking
+       }}
+    )
+  end
+
   # Wire-format status payload. Always include the current context_limit
   # and source so the frontend can render the token usage chip without
   # waiting for a separate init / chat:status reply. `usage` carries

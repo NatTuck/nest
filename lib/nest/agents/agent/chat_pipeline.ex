@@ -8,7 +8,10 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     * Resolve the effective mode + capabilities for an incoming
       chat turn (falling back to defaults if the requested mode
       is not in the vocation's mode map).
-    * Build the user message (persisted and LLM-facing).
+    * Build the user message (persisted and LLM-facing). Both
+      carry the same `[mode: <name>]\n` prefix on `content` so
+      the mode round-trips through any store / log / replay.
+      The chat UI strips the prefix on render.
     * Run the pre-flight check and decide whether to compact
       first or go straight to the chat task.
     * Spawn the chat task via the LLMRunner.
@@ -223,44 +226,57 @@ defmodule Nest.Agents.Agent.ChatPipeline do
       send(agent_pid, {:chat_task_crashed, Exception.message(exception)})
   end
 
-  # Build the persisted user message (raw content + metadata.mode)
-  # and the LLM-facing user message (with the mode prefixed into
-  # the content). The persisted form is what gets broadcast and
-  # saved; the LLM form is what the model sees on the next call.
+  # Build the persisted user message. The mode is encoded two ways:
+  # on the `metadata.mode` field (used by the UI badge) and as a
+  # `[mode: <name>]\n` prefix on the `content` field itself.
+  #
+  # The prefix on `content` is the source of truth for the LLM:
+  # when we re-send prior user messages on the next call (e.g. after
+  # compaction rebuilds the message list), the prefix round-trips
+  # through whatever store / log / replay we have. The client UI
+  # strips the prefix before display because the mode badge already
+  # shows it; see `assets/js/utils/stripModePrefix.js`.
   defp build_user_messages(state, content, effective_mode) do
     next_idx = state.chat_state.next_message_index
 
     user = %User{
       index: next_idx,
       timestamp: DateTime.utc_now(),
-      content: content,
+      content: "[mode: #{effective_mode}]\n#{content}",
       metadata: %{"mode" => effective_mode},
       api_logs: get_pending_api_logs(state, next_idx)
     }
 
-    llm_content = "[mode: #{effective_mode}]\n#{content}"
     user_message = {:user, user}
-    llm_user_message = {:user, %{user | content: llm_content}}
+    llm_user_message = user_message
     {user_message, llm_user_message}
   end
 
   # Build a fresh user message struct. Mirrors the user-message
   # construction in handle_chat/3 so callers (the compaction
-  # continuation flow) build the same shape.
+  # continuation flow) build the same shape. Includes the
+  # `[mode: <name>]\n` prefix on `content` for the same reason as
+  # `build_user_messages/3` (the LLM sees the prefix and the UI
+  # strips it).
   defp build_user_message(state, content, effective_mode) do
     {:user,
      %User{
        index: state.chat_state.next_message_index,
        timestamp: DateTime.utc_now(),
-       content: content,
+       content: "[mode: #{effective_mode}]\n#{content}",
        metadata: %{"mode" => effective_mode},
        api_logs: get_pending_api_logs(state, state.chat_state.next_message_index)
      }}
   end
 
-  defp llm_user_message(user_message, content, effective_mode) do
-    llm_content = "[mode: #{effective_mode}]\n#{content}"
-    {:user, %{elem(user_message, 1) | content: llm_content}}
+  # The persisted user message is already prefixed with the
+  # effective mode (see `build_user_messages/3`), so the LLM-facing
+  # version is the same struct. Kept as a separate function so the
+  # call site reads symmetrically with `build_user_messages/3` and
+  # so a future split (e.g. an LLM-only payload format) can be
+  # reintroduced without rewiring callers.
+  defp llm_user_message(user_message, _content, _effective_mode) do
+    user_message
   end
 
   # Mutate the chat_state to reflect the new user message:

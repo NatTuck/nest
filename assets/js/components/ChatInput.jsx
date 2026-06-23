@@ -23,6 +23,8 @@ const MAX_HEIGHT_PX = 240;
  *   to "draft" mode so subsequent Up/Down starts from the new text.
  * - Loading a historical entry also restores its `mode` via
  *   `onModeChange` if a mode is recorded for it.
+ * - Ctrl+M / Meta+M cycles to the next mode when multiple modes are
+ *   available. Wraps around to the first mode when at the last.
  * - Skips the keydown handler while an IME composition is in progress.
  * - Submitting via the Send button or Ctrl/Cmd+Enter calls onSend.
  * - When `modes` has more than one entry, renders a ModeSelector next
@@ -115,6 +117,25 @@ export function ChatInput({
       e.preventDefault();
       if (!value.trim()) return;
       onSend();
+      return;
+    }
+
+    // Mode cycling: Ctrl/Cmd+M cycles to the next mode when
+    // multiple modes are available. This lets power users switch
+    // modes without reaching for the mouse to click the dropdown.
+    if (e.key === "m" && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      if (modes && modes.length > 1 && onModeChange && mode !== undefined) {
+        const currentIndex = modes.indexOf(mode);
+        if (currentIndex === -1) {
+          // Current mode not found in list; switch to first mode.
+          onModeChange(modes[0]);
+        } else {
+          // Advance to next mode, wrapping around.
+          const nextIndex = (currentIndex + 1) % modes.length;
+          onModeChange(modes[nextIndex]);
+        }
+      }
       return;
     }
 
@@ -249,8 +270,8 @@ export function ChatInput({
           disabled={disabled || isBusy}
           rows={2}
           aria-label="Message"
-          aria-keyshortcuts="Control+ArrowUp Control+ArrowDown Meta+ArrowUp Meta+ArrowDown Control+Enter Meta+Enter"
-          title="Enter to newline • Ctrl/Cmd+Enter to send • Ctrl/Cmd+Up/Down to walk previous prompts"
+          aria-keyshortcuts="Control+ArrowUp Control+ArrowDown Meta+ArrowUp Meta+ArrowDown Control+Enter Meta+Enter Control+m Meta+m"
+          title="Enter to newline • Ctrl/Cmd+Enter to send • Ctrl/Cmd+Up/Down to walk previous prompts • Ctrl/Cmd+M to cycle modes"
           className="flex-1 px-4 py-3 border border-gray-300 rounded-lg resize-none overflow-y-auto leading-snug focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none disabled:bg-gray-100 disabled:cursor-not-allowed"
           style={{ maxHeight: `${MAX_HEIGHT_PX}px` }}
         />
@@ -264,11 +285,9 @@ export function ChatInput({
         )}
         {renderActionButton()}
       </div>
-      {history.length > 0 && !disabled && !isBusy && (
-        <p className="mt-1 px-1 text-xs text-gray-400" aria-hidden="true">
-          Tip: Ctrl+↑ / Ctrl+↓ to walk previous prompts
-        </p>
-      )}
+      <p className="mt-1 px-1 text-xs text-gray-400" aria-hidden="true">
+        Ctrl+↑ / Ctrl+↓ to walk previous prompts • Ctrl/Cmd+M to cycle modes
+      </p>
     </form>
   );
 }
