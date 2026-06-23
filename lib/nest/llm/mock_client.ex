@@ -117,9 +117,20 @@ defmodule Nest.LLM.MockClient do
   @doc """
   Append a raw canonical event sequence. Consumed by the next
   `run/2` call.
+
+  Options:
+
+    * `:auto_done` (default `true`) — when `true`, append a
+      synthetic `{:done, _}` event if the caller didn't end
+      the list with one. Most callers want this (it's the
+      "happy path"). When `false`, pass the events verbatim —
+      useful for tests that need to exercise the no-`:done`
+      path (e.g. the OpenAI client's `[DONE]`-synthesis
+      fix in `handle_req_done_openai/1`).
   """
-  def set_stream_events(events) when is_list(events) do
-    update_queue(&(&1 ++ [{:events, events}]))
+  def set_stream_events(events, opts \\ []) when is_list(events) do
+    auto_done = Keyword.get(opts, :auto_done, true)
+    update_queue(&(&1 ++ [{:events, {events, auto_done}}]))
   end
 
   @doc """
@@ -212,7 +223,7 @@ defmodule Nest.LLM.MockClient do
 
   defp build_stream({:text, text}), do: text_stream(text)
   defp build_stream({:tool, resp}), do: tool_stream(resp)
-  defp build_stream({:events, events}), do: events_stream(events)
+  defp build_stream({:events, payload}), do: events_stream(payload)
   defp build_stream({:error, reason}), do: error_stream(reason)
 
   defp text_stream(text) do
@@ -237,12 +248,18 @@ defmodule Nest.LLM.MockClient do
     Stream.map(events, & &1)
   end
 
-  defp events_stream(events) do
+  defp events_stream({events, true}) do
     if ends_with_done?(events) do
       Stream.map(events, & &1)
     else
       Stream.map(events ++ [done_event(%RunResponse{})], & &1)
     end
+  end
+
+  defp events_stream({events, false}) do
+    # Caller asked for verbatim passthrough — used by tests that
+    # exercise the no-`:done` path through the LLM client.
+    Stream.map(events, & &1)
   end
 
   defp ends_with_done?(events) do

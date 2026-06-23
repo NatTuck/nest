@@ -174,48 +174,94 @@ defmodule Nest.LLM.OpenAIClient do
     build_event_stream()
   end
 
+  # The third element of the state tuple tracks whether a
+  # `{:done, _}` event has been emitted by any chunk
+  # processed so far. We need to track this across calls
+  # because the `[DONE]` frame can arrive in a chunk that
+  # `handle_req_chunk_openai/2` already processed — the final
+  # `handle_req_done_openai/1` call only sees whatever was
+  # pending in the SSE parser's buffer, which is empty when
+  # the `[DONE]` frame was already consumed.
   defp build_event_stream do
     Stream.resource(
-      fn -> {Parser.new(), false} end,
+      fn -> {Parser.new(), false, false} end,
       fn
-        {_parser, true} ->
+        {_parser, true, _had_done} ->
           {:halt, nil}
 
-        {parser, false} ->
-          receive_chunk_or_done_openai(parser)
+        {parser, false, had_done} ->
+          receive_chunk_or_done_openai(parser, had_done)
       end,
       fn _ -> :ok end
     )
   end
 
-  defp receive_chunk_or_done_openai(parser) do
+  defp receive_chunk_or_done_openai(parser, had_done) do
     receive do
-      {:req_chunk, chunk} -> handle_req_chunk_openai(parser, chunk)
-      :req_done -> handle_req_done_openai(parser)
+      {:req_chunk, chunk} -> handle_req_chunk_openai(parser, chunk, had_done)
+      :req_done -> handle_req_done_openai(parser, had_done)
       # The agent may interrupt the chat task mid-stream (user
       # clicked Stop). Halt the stream so `Enum.reduce` exits
       # and the chat task can finalize the partial accumulator.
       {:stop_chat, from} -> handle_stop_chat_openai(parser, from)
     after
-      60_000 -> {[{:error, :stream_timeout}], {parser, true}}
+      60_000 -> {[{:error, :stream_timeout}], {parser, true, had_done}}
     end
   end
 
-  defp handle_req_chunk_openai(parser, chunk) do
+  defp handle_req_chunk_openai(parser, chunk, had_done) do
     {frames, parser} = Parser.feed(parser, chunk)
     events = Enum.flat_map(frames, &frame_to_canonical_event/1)
-    {events, {parser, false}}
+    chunk_had_done = Enum.any?(events, &match?({:done, _}, &1))
+    {events, {parser, false, had_done or chunk_had_done}}
   end
 
-  defp handle_req_done_openai(parser) do
+  defp handle_req_done_openai(parser, had_done) do
     {frames, _} = Parser.flush(parser)
     events = Enum.flat_map(frames, &frame_to_canonical_event/1)
-    {events, {parser, true}}
+
+    # If the upstream body ended without a `data: [DONE]\n\n`
+    # frame, synthesize one. The OpenAI wire protocol requires
+    # the server to send `[DONE]` at end-of-stream, but
+    # providers sometimes close the connection without it
+    # (notably reasoning-only responses from some OpenAI-
+    # compatible endpoints, where the server's response loop
+    # finishes without emitting a final frame). Without this
+    # synthesis, the `StreamConsumer` returns `response: nil`,
+    # which the dispatcher in `LLMRunner` interprets as a
+    # user-initiated stop and routes through `StopHandler` —
+    # tagging the partial with `metadata: %{"stopped_by_user"
+    # => true}` and skipping the response log. Synthesizing
+    # the `:done` event here routes the stream through the
+    # normal `handle_new_response/3` path, which calls
+    # `Broadcasts.api_response/4` (so the response log lands)
+    # and finalizes the partial with the correct metadata.
+    #
+    # We must check `had_done` (set by a previous chunk) AND
+    # the events from this final flush — a `[DONE]` frame
+    # could have been delivered in the last chunk and already
+    # emitted its `{:done, _}` event in `handle_req_chunk_openai/2`.
+    #
+    # The carried `%RunResponse{}` is empty so that
+    # `normalize_response/2`'s second clause
+    # (`%RunResponse{} = response, acc`) merges in text,
+    # thinking, tool_calls, thinking_signature, and usage
+    # from the accumulator. `stop_reason` is whatever was
+    # captured by any `{:finish_reason, _}` event that
+    # arrived before the connection closed.
+    events =
+      if had_done or Enum.any?(events, &match?({:done, _}, &1)) do
+        events
+      else
+        events ++ [{:done, %{response: %RunResponse{}}}]
+      end
+
+    {events, {parser, true, had_done}}
   end
 
   defp handle_stop_chat_openai(parser, from) do
     send(from, :stopped)
-    {:halt, {parser, true}}
+    {:halt, {parser, true, false}}
   end
 
   defp frame_to_canonical_event({:event, _name, "[DONE]"}) do
@@ -293,6 +339,14 @@ defmodule Nest.LLM.OpenAIClient do
 
   defp finish_event(%{"finish_reason" => nil}), do: []
   defp finish_event(%{"finish_reason" => reason}), do: [{:finish_reason, reason}]
+
+  # OpenAI-compatible providers (e.g. MiniMax reasoning, DeepSeek
+  # R1's interim frames) sometimes send delta frames whose choice
+  # has no `finish_reason` key at all. Treat the absence the same
+  # as `finish_reason: nil` — the `:finish_reason` event will
+  # arrive on the dedicated final frame (the one that carries
+  # `stop_reason` in `RunResponse`).
+  defp finish_event(_), do: []
 
   defp events_from_metadata(%{"usage" => usage}) when is_map(usage) do
     [{:usage, parse_usage(usage)}]

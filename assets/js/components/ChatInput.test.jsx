@@ -372,4 +372,193 @@ describe("ChatInput", () => {
       expect(onSend).not.toHaveBeenCalled();
     });
   });
+
+  describe("history navigation", () => {
+    // Helper: build a history prop with three most-recent-first entries,
+    // each tagged with a different mode so we can verify mode restoration.
+    const sampleHistory = [
+      { content: "third sent", mode: "plan" },
+      { content: "second sent", mode: "build" },
+      { content: "first sent", mode: "chat" },
+    ];
+
+    function setupWithHistory(props = {}) {
+      const onChange = vi.fn();
+      const onModeChange = vi.fn();
+      const utils = render(
+        <ChatInput
+          value={props.value ?? ""}
+          onChange={props.onChange ?? onChange}
+          onSend={vi.fn()}
+          onStop={vi.fn()}
+          isBusy={props.isBusy ?? false}
+          stopping={false}
+          disabled={props.disabled ?? false}
+          placeholder="Type a message..."
+          history={props.history ?? sampleHistory}
+          modes={["chat", "build", "plan"]}
+          mode={props.mode ?? "chat"}
+          onModeChange={props.onModeChange ?? onModeChange}
+        />,
+      );
+      const textarea = screen.getByLabelText("Message");
+      return {
+        ...utils,
+        textarea,
+        onChange: props.onChange ?? onChange,
+        onModeChange: props.onModeChange ?? onModeChange,
+      };
+    }
+
+    it("Ctrl+Up loads the most recent entry, then walks to older entries, and restores mode", () => {
+      const { textarea, onChange, onModeChange } = setupWithHistory();
+
+      fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
+      expect(onChange).toHaveBeenLastCalledWith("third sent");
+      expect(onModeChange).toHaveBeenLastCalledWith("plan");
+
+      fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
+      expect(onChange).toHaveBeenLastCalledWith("second sent");
+      expect(onModeChange).toHaveBeenLastCalledWith("build");
+
+      fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
+      expect(onChange).toHaveBeenLastCalledWith("first sent");
+      expect(onModeChange).toHaveBeenLastCalledWith("chat");
+
+      // Pressing Up again at the oldest entry is a no-op — onChange
+      // should not have been called a fourth time.
+      fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
+      expect(onChange).toHaveBeenCalledTimes(3);
+    });
+
+    it("Ctrl+Down restores the saved draft, then walks forward through history", () => {
+      const { textarea, onChange } = setupWithHistory({
+        value: "draft typing",
+      });
+
+      // Up -> Up: cursor at second-oldest
+      fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
+      fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
+      expect(onChange).toHaveBeenLastCalledWith("second sent");
+
+      // Down: cursor at most recent
+      fireEvent.keyDown(textarea, { key: "ArrowDown", ctrlKey: true });
+      expect(onChange).toHaveBeenLastCalledWith("third sent");
+
+      // Down again: back to draft
+      fireEvent.keyDown(textarea, { key: "ArrowDown", ctrlKey: true });
+      expect(onChange).toHaveBeenLastCalledWith("draft typing");
+
+      // Down once more at the draft is a no-op (cursor === -1).
+      fireEvent.keyDown(textarea, { key: "ArrowDown", ctrlKey: true });
+      // Total onChange calls: 2 ups + 2 downs = 4.
+      expect(onChange).toHaveBeenCalledTimes(4);
+    });
+
+    it("Cmd+Up / Cmd+Down work on macOS (Meta modifier)", () => {
+      const { textarea, onChange } = setupWithHistory();
+
+      fireEvent.keyDown(textarea, { key: "ArrowUp", metaKey: true });
+      expect(onChange).toHaveBeenLastCalledWith("third sent");
+
+      fireEvent.keyDown(textarea, { key: "ArrowDown", metaKey: true });
+      // cursor was 0, so Down returns to draft (empty string).
+      expect(onChange).toHaveBeenLastCalledWith("");
+    });
+
+    it("plain Up/Down without a modifier does NOT navigate history", () => {
+      const { textarea, onChange } = setupWithHistory();
+
+      fireEvent.keyDown(textarea, { key: "ArrowUp" });
+      fireEvent.keyDown(textarea, { key: "ArrowDown" });
+      expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it("manually editing the loaded entry resets the cursor to draft mode", () => {
+      const { textarea, onChange } = setupWithHistory({ value: "" });
+
+      // Up -> loads "third sent"
+      fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
+      expect(onChange).toHaveBeenLastCalledWith("third sent");
+
+      // User diverges by typing something different.
+      fireEvent.change(textarea, { target: { value: "my new edit" } });
+      expect(onChange).toHaveBeenLastCalledWith("my new edit");
+
+      // Down should now restore "my new edit" (the new draft), not
+      // "third sent" again.
+      fireEvent.keyDown(textarea, { key: "ArrowDown", ctrlKey: true });
+      // value was already "my new edit" before Down, so we expect
+      // onChange to be called with that exact string.
+      expect(onChange).toHaveBeenLastCalledWith("my new edit");
+    });
+
+    it("swapping in a new history array resets the cursor", () => {
+      const firstHistory = [
+        { content: "old A", mode: "chat" },
+        { content: "old B", mode: "chat" },
+      ];
+      const secondHistory = [{ content: "new A", mode: "plan" }];
+
+      const { textarea, onChange, rerender } = setupWithHistory({
+        history: firstHistory,
+      });
+
+      // Navigate into first history.
+      fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
+      expect(onChange).toHaveBeenLastCalledWith("old A");
+
+      // Parent swaps to a new history (e.g. agent switch).
+      rerender(
+        <ChatInput
+          value=""
+          onChange={onChange}
+          onSend={vi.fn()}
+          onStop={vi.fn()}
+          history={secondHistory}
+          placeholder="Type a message..."
+        />,
+      );
+
+      // Up should now load from the new array, not the old one.
+      fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
+      expect(onChange).toHaveBeenLastCalledWith("new A");
+    });
+
+    it("is a no-op when history is empty", () => {
+      const { textarea, onChange } = setupWithHistory({ history: [] });
+
+      fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
+      fireEvent.keyDown(textarea, { key: "ArrowDown", ctrlKey: true });
+      expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it("is a no-op while an IME composition is in progress", () => {
+      const { textarea, onChange } = setupWithHistory();
+
+      const event = new KeyboardEvent("keydown", {
+        key: "ArrowUp",
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      Object.defineProperty(event, "isComposing", { value: true });
+      textarea.dispatchEvent(event);
+      expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it("is a no-op when isBusy is true", () => {
+      const { textarea, onChange } = setupWithHistory({ isBusy: true });
+
+      fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
+      expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it("is a no-op when disabled", () => {
+      const { textarea, onChange } = setupWithHistory({ disabled: true });
+
+      fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
+      expect(onChange).not.toHaveBeenCalled();
+    });
+  });
 });

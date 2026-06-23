@@ -1,6 +1,7 @@
 Mimic.copy(Nest.LLM.OpenAIClient)
 Mimic.copy(Req)
 Mimic.copy(Nest.DotConfig)
+Mimic.copy(Nest.Agents.Agent.LLMRunner)
 
 ExUnit.start()
 Ecto.Adapters.SQL.Sandbox.mode(Nest.Repo, :manual)

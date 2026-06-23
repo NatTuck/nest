@@ -170,9 +170,9 @@ export function joinAgent(agentId) {
   });
 
   channel.on("chat:status", (payload) => {
-    // The backend may include the resolved context-window limit and
-    // the running usage totals on status pushes (especially the one
-    // that follows a successful /models probe and the ones that fire
+    // The backend may include the resolved context-window limit and the
+    // running usage totals on status pushes (especially the one that
+    // follows a successful /models probe and the ones that fire
     // after each LLM response). Forward those fields through
     // `setAgentState`'s extra-arg path so the chip can update live.
     const extra = {};
@@ -190,6 +190,23 @@ export function joinAgent(agentId) {
     }
 
     store.setAgentState(agentId, payload.status, extra);
+
+    // When the LLM response completes normally, the agent
+    // transitions to :idle. Clear the optimistic "Waiting for
+    // response" flag so the chat-level typing indicator
+    // disappears.
+    //
+    // Deltas normally reset it earlier via `addChatDelta`, but
+    // thinking-only deltas don't go through the chat:delta
+    // broadcast path (see `llm_runner.ex`
+    // `forward_thinking_delta/3`) — for a thinking-only
+    // response, this is the only reset. We deliberately do NOT
+    // reset on "streaming" or "executing_tools": the LLM is
+    // still in flight during those states and the indicator
+    // should stay visible.
+    if (payload.status === "idle") {
+      store.setWaitingForResponse(agentId, false);
+    }
   });
 
   channel.on("chat:notification", (payload) => {

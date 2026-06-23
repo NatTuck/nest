@@ -7,7 +7,7 @@
  *
  * The box lives in the same place before and after a turn
  * finalizes. To make that work, the parent passes a `key` prop
- * that changes on the partial→final transition (e.g.
+ * that changes on the partial → final transition (e.g.
  * `key={isPartial ? "partial" : "final"}`). That re-mounts the
  * box, which re-initializes `useState(isPartial)` to its new
  * value:
@@ -15,20 +15,41 @@
  *   * `isPartial: true`  — the box starts **expanded** so the
  *     user can watch the reasoning stream in. The bouncing-dots
  *     indicator in the header shows the model is still writing.
- *   * `isPartial: false` — the box starts **collapsed** so the
- *     chat focuses on the answer. The user can click to expand
- *     and read the reasoning.
+ *   * `isPartial: false`, message has visible content —
+ *     the box starts **collapsed** so the chat focuses on the
+ *     answer. The user can click to expand and read the
+ *     reasoning.
+ *   * `isPartial: false`, message has **no** visible content
+ *     (the model produced only reasoning) — the box starts
+ *     **expanded** so the user actually sees the model's
+ *     response. Without this, reasoning-only responses
+ *     would show as a collapsed "Thinking" label with no
+ *     visible text, and the user wouldn't know there was a
+ *     response at all.
  *
- * The user can manually toggle at any time; the auto-expand /
- * auto-collapse only sets the initial state.
+ * The `hasVisibleContent` prop is the parent's hint about
+ * whether the assistant message has a non-empty `content`
+ * field. The parent passes a `key` prop to force a re-mount on
+ * the partial↔final transition so the initializer runs again
+ * with the new value.
  */
 import { useState } from "react";
 
-export function ThinkingBlock({ thinking, isPartial = false }) {
-  // Initial state mirrors the partial flag. The parent's `key`
-  // prop forces a re-mount on the partial↔final transition so
-  // this initializer runs again with the new value.
-  const [isExpanded, setIsExpanded] = useState(isPartial);
+export function ThinkingBlock({
+  thinking,
+  isPartial = false,
+  hasVisibleContent = true,
+}) {
+  // The box starts expanded while partial (so the user can
+  // watch the reasoning stream in). Once the message finalizes,
+  // it stays expanded when there is no visible content
+  // (otherwise the user wouldn't see the model's response at
+  // all) and collapses when there is visible content (the
+  // normal case — the user can click to expand if curious).
+  // The parent's `key` prop forces a re-mount on the
+  // partial↔final transition so this initializer runs again
+  // with the new value.
+  const [isExpanded, setIsExpanded] = useState(isPartial || !hasVisibleContent);
 
   if (!thinking) return null;
 

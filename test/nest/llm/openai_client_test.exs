@@ -3,6 +3,7 @@ defmodule Nest.LLM.OpenAIClientTest do
 
   alias Nest.LLM.OpenAIClient
   alias Nest.LLM.RunRequest
+  alias Nest.LLM.RunResponse
   alias Nest.LLM.Tool
   alias Nest.Messages.Assistant
   alias Nest.Messages.System
@@ -206,6 +207,195 @@ defmodule Nest.LLM.OpenAIClientTest do
       events = run_with_chunk(error_chunk)
 
       assert {:error, "request_failed"} in events
+    end
+  end
+
+  describe "delta without finish_reason (OpenAI-compatible providers)" do
+    # Some OpenAI-compatible providers (e.g. MiniMax reasoning,
+    # DeepSeek R1) emit reasoning-only delta frames where the
+    # choice has no `finish_reason` key at all. The translator
+    # must accept these frames and emit the `{:thinking, text}`
+    # event without crashing on the missing key.
+
+    test "a reasoning-only delta translates to {:thinking, text} and does not crash" do
+      # Mirrors the exact shape that the MiniMax provider sent
+      # in the field report that motivated this fix.
+      delta_frame = %{
+        "choices" => [
+          %{
+            "index" => 0,
+            "delta" => %{
+              "name" => "MiniMax AI",
+              "role" => "assistant",
+              "audio_content" => "",
+              "reasoning_content" => "The user wants to",
+              "reasoning_details" => [
+                %{
+                  "format" => "MiniMax-response-v1",
+                  "id" => "reasoning-text-1",
+                  "index" => 0,
+                  "text" => "The user wants to",
+                  "type" => "reasoning.text"
+                }
+              ]
+            }
+          }
+        ]
+      }
+
+      chunk = "data: " <> Jason.encode!(delta_frame) <> "\n\n"
+      events = run_with_chunk(chunk)
+
+      assert {:thinking, "The user wants to"} in events
+      # The frame carried no `finish_reason` key, so no
+      # `:finish_reason` event should be emitted.
+      refute Enum.any?(events, &match?({:finish_reason, _}, &1))
+    end
+
+    test "a delta with both reasoning_content and finish_reason emits both events" do
+      delta_frame = %{
+        "choices" => [
+          %{
+            "index" => 0,
+            "finish_reason" => "stop",
+            "delta" => %{
+              "role" => "assistant",
+              "reasoning_content" => "thinking..."
+            }
+          }
+        ]
+      }
+
+      chunk = "data: " <> Jason.encode!(delta_frame) <> "\n\n"
+      events = run_with_chunk(chunk)
+
+      assert {:thinking, "thinking..."} in events
+      assert {:finish_reason, "stop"} in events
+    end
+
+    test "a delta with neither content nor reasoning_content and no finish_reason emits only a synthesized :done" do
+      # e.g. a provider sends a delta with only role/name and no
+      # meaningful content. The translator must not crash on the
+      # missing `finish_reason` key. Since the body has no
+      # `data: [DONE]` frame either, `handle_req_done_openai/1`
+      # synthesizes a `{:done, _}` so the chat task finalizes
+      # the response cleanly via the normal-completion path
+      # (which broadcasts the response log). The accumulated
+      # `text`/`thinking`/etc. are all nil because nothing was
+      # streamed — the synthesized `RunResponse` is empty.
+      delta_frame = %{
+        "choices" => [
+          %{
+            "index" => 0,
+            "delta" => %{
+              "name" => "MiniMax AI",
+              "role" => "assistant",
+              "audio_content" => ""
+            }
+          }
+        ]
+      }
+
+      chunk = "data: " <> Jason.encode!(delta_frame) <> "\n\n"
+      events = run_with_chunk(chunk)
+
+      # No content/thinking/finish_reason events — the only
+      # output is the synthesized `:done` so the chat task
+      # routes through `handle_new_response/3` instead of
+      # being misclassified as a user-initiated stop.
+      assert events == [{:done, %{response: %RunResponse{}}}]
+    end
+  end
+
+  describe "synthesized :done when the body has no [DONE] frame" do
+    # The OpenAI wire protocol requires the server to send
+    # `data: [DONE]\n\n` at end-of-stream, but providers
+    # sometimes close the connection without it (notably
+    # reasoning-only responses from some OpenAI-compatible
+    # endpoints, where the server's response loop finishes
+    # without emitting a final frame). Without the
+    # synthesis, the `StreamConsumer` returns `response: nil`,
+    # which the dispatcher misclassifies as a user-initiated
+    # stop and routes through `StopHandler` — tagging the
+    # partial with `metadata: %{"stopped_by_user" => true}`
+    # and skipping the response log. The fix synthesizes a
+    # `{:done, _}` event so the stream goes through the normal
+    # `handle_new_response/3` path, which broadcasts the
+    # response log and finalizes with the correct metadata.
+
+    test "synthesizes a :done event when the body ends without a [DONE] frame" do
+      # The chunk only has a reasoning delta — no `data: [DONE]`.
+      # This mirrors the MiniMax field report exactly: the
+      # provider streamed thinking content and then closed the
+      # connection.
+      delta_frame = %{
+        "choices" => [
+          %{
+            "index" => 0,
+            "delta" => %{
+              "name" => "MiniMax AI",
+              "role" => "assistant",
+              "reasoning_content" => "The user wants to know the project layout."
+            }
+          }
+        ]
+      }
+
+      chunk = "data: " <> Jason.encode!(delta_frame) <> "\n\n"
+      events = run_with_chunk(chunk)
+
+      assert {:thinking, "The user wants to know the project layout."} in events
+      # The synthesized terminal event. The carried
+      # %RunResponse{} is empty so `normalize_response/2`
+      # populates text/thinking/etc. from the accumulator.
+      assert {:done, %{response: %RunResponse{}}} in events
+    end
+
+    test "does not synthesize a second :done when the body already had one" do
+      # Normal happy path: the body has a final `data: [DONE]`.
+      # The translator's `{:done, _}` event (with
+      # `stop_reason: "stop"`) must not be duplicated.
+      delta_frame = %{
+        "choices" => [
+          %{
+            "index" => 0,
+            "delta" => %{"role" => "assistant", content: "Hello"},
+            "finish_reason" => "stop"
+          }
+        ]
+      }
+
+      chunk =
+        "data: " <>
+          Jason.encode!(delta_frame) <>
+          "\n\n" <>
+          "data: [DONE]\n\n"
+
+      events = run_with_chunk(chunk)
+
+      # Exactly one `:done` event (the one from `[DONE]`),
+      # not two. The carried `%RunResponse{stop_reason: "stop"}`
+      # is the original; we don't synthesize a second one.
+      done_events = Enum.filter(events, &match?({:done, _}, &1))
+      assert length(done_events) == 1
+
+      assert {:done, %{response: %RunResponse{stop_reason: "stop"}}} in events
+    end
+
+    test "the synthesized :done carries an empty RunResponse that normalize_response can populate" do
+      # The synthesized `%RunResponse{}` has no text, thinking,
+      # tool_calls, thinking_signature, or usage. The
+      # chat-task-side `normalize_response/2` is responsible
+      # for merging in the accumulator's values. This test
+      # pins the contract: the synthesized event is empty
+      # *by design* — the merge happens downstream.
+      # empty body — only :req_done, no chunks
+      chunk = ""
+      events = run_with_chunk(chunk)
+
+      assert events == [{:done, %{response: %RunResponse{}}}]
+      refute Enum.any?(events, &match?({:text, _}, &1))
+      refute Enum.any?(events, &match?({:thinking, _}, &1))
     end
   end
 

@@ -184,32 +184,42 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   end
 
   # Body of the spawned chat task. Wraps `LLMRunner.run/2` in a
-  # try/catch so we can distinguish a clean stop (the user
-  # clicked Stop, the inner receives returned `:stopped`, the
-  # tool loop raised `ToolLoop.StoppedError`) from a normal
-  # completion.
+  # try/catch so we can distinguish three exit paths:
   #
-  # On stop, send `{:chat_stopped, self()}` to the agent so its
-  # `handle_info` can finalize the partial accumulator. On normal
-  # completion, send the standard `{:api_log_sequences_updated, _}`
-  # ack. The wrapping also catches unexpected raises so the chat
-  # task never dies with a non-`:normal` reason (which would trip
-  # the agent's ExitHandler and stop the whole GenServer).
+  #   * User-initiated stop — `:exit` (the inner receives returned
+  #     `:stopped`) or `ToolLoop.StoppedError` (raised by the
+  #     tool executor when the agent sent a `{:stop_chat, _}`).
+  #     We send `{:chat_stopped, self()}` so the agent can
+  #     finalize the partial accumulator and transition to idle.
+  #
+  #   * Normal completion — `LLMRunner.run/2` returned. We send
+  #     `{:api_log_sequences_updated, _}` as the standard ack.
+  #
+  #   * Unexpected crash — any other `:error` (e.g. a
+  #     `FunctionClauseError` from an LLM client that received
+  #     an unrecognized delta shape). We send
+  #     `{:chat_task_crashed, msg}` so the agent can finalize
+  #     the partial, broadcast a `chat:error` to the UI, and
+  #     transition to idle. The task exits `:normal` either way
+  #     so the supervisor doesn't see a crash and the agent's
+  #     `ExitHandler` doesn't trip.
+  #
+  # The chat task is started under the application-wide
+  # `Task.Supervisor` (see `start_chat_task/3`) which monitors —
+  # not links — the task, so the agent has no other way to
+  # discover a crash. This catch is the agent's only signal.
   defp run_chat_task_and_notify(agent_pid, ctx, init_state) do
-    stopped? =
-      try do
-        LLMRunner.run(ctx, init_state)
-        false
-      catch
-        :exit, _ -> true
-        :error, %Nest.Agents.Agent.ToolLoop.StoppedError{} -> true
-      end
-
-    if stopped? do
+    LLMRunner.run(ctx, init_state)
+    send(agent_pid, {:api_log_sequences_updated, init_state})
+  catch
+    :exit, _ ->
       send(agent_pid, {:chat_stopped, self()})
-    else
-      send(agent_pid, {:api_log_sequences_updated, init_state})
-    end
+
+    :error, %Nest.Agents.Agent.ToolLoop.StoppedError{} ->
+      send(agent_pid, {:chat_stopped, self()})
+
+    :error, exception ->
+      send(agent_pid, {:chat_task_crashed, Exception.message(exception)})
   end
 
   # Build the persisted user message (raw content + metadata.mode)

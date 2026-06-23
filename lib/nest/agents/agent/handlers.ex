@@ -58,6 +58,7 @@ defmodule Nest.Agents.Agent.Handlers do
   defp route_for({:delta_received, _, _}), do: {:ok, LLMStreamHandler}
   defp route_for({:thinking_signature_received, _}), do: {:ok, LLMStreamHandler}
   defp route_for({:llm_error, _}), do: {:ok, LLMStreamHandler}
+  defp route_for({:chat_task_crashed, _}), do: {:ok, LLMStreamHandler}
   defp route_for({:tool_calls_received, _}), do: {:ok, LLMStreamHandler}
   defp route_for({:tool_results_received, _}), do: {:ok, LLMStreamHandler}
   defp route_for({:llm_response_with_thinking, _, _}), do: {:ok, LLMStreamHandler}

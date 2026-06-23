@@ -79,7 +79,19 @@ defmodule Nest.LLM.HttpWorker do
     # failures mid-stream surface as `:exit` (not just exceptions).
     # credo:disable-for-next-line Credo.Check.Readability.PreferImplicitTry
     try do
-      Enum.each(async_body, fn chunk -> send(parent, {:req_chunk, chunk}) end)
+      Enum.each(async_body, fn chunk ->
+        # Debug-log the first ~500 chars of each chunk so we
+        # can see what the LLM provider is actually sending
+        # when a response goes wrong (e.g. a reasoning model
+        # emits only `reasoning_content` with no visible
+        # `content`, or the connection closes before the
+        # `data: [DONE]\n\n` frame). The chunk is binary;
+        # `String.slice/2` defaults to graphemes which is
+        # what we want for human-readable log output.
+        Logger.debug(fn -> "[#{client_label}] chunk: #{String.slice(chunk, 0, 500)}" end)
+        send(parent, {:req_chunk, chunk})
+      end)
+
       send(parent, :req_done)
     catch
       kind, reason ->

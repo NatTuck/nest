@@ -137,21 +137,30 @@ describe("channels", () => {
     });
 
     it("should call onError callback on join error", async () => {
-      let errorCalled = false;
-      let errorReason = null;
-      setNextJoinResult("lobby", { error: "lobby_full" });
-      joinLobby(
-        () => {},
-        (err) => {
-          errorCalled = true;
-          errorReason = err.reason;
-        },
-      );
+      // The store intentionally logs a console.error on lobby join
+      // failure for server-side observability. Silence the leak
+      // here; the dedicated "should log console error on lobby join
+      // failure" test below asserts the error was emitted.
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        let errorCalled = false;
+        let errorReason = null;
+        setNextJoinResult("lobby", { error: "lobby_full" });
+        joinLobby(
+          () => {},
+          (err) => {
+            errorCalled = true;
+            errorReason = err.reason;
+          },
+        );
 
-      await vi.waitFor(() => {
-        assert.strictEqual(errorCalled, true);
-      });
-      assert.strictEqual(errorReason, "lobby_full");
+        await vi.waitFor(() => {
+          assert.strictEqual(errorCalled, true);
+        });
+        assert.strictEqual(errorReason, "lobby_full");
+      } finally {
+        errorSpy.mockRestore();
+      }
     });
 
     it("should log console error on lobby join failure", async () => {
@@ -366,19 +375,28 @@ describe("channels", () => {
     });
 
     it("should set agent status to error on join error", async () => {
-      setNextJoinResult("agent:agent-1", { error: "agent_not_found" });
-      joinAgent("agent-1");
+      // The store intentionally logs a console.error on join failure
+      // for server-side observability. Silence the leak here; the
+      // dedicated "should log console error on agent join failure"
+      // test below asserts the error was emitted.
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        setNextJoinResult("agent:agent-1", { error: "agent_not_found" });
+        joinAgent("agent-1");
 
-      await vi.waitFor(() => {
-        assert.strictEqual(
-          useStore.getState().agentsCache["agent-1"]?.status,
-          "error",
-        );
-        assert.strictEqual(
-          useStore.getState().agentsCache["agent-1"]?.error,
-          "agent_not_found",
-        );
-      });
+        await vi.waitFor(() => {
+          assert.strictEqual(
+            useStore.getState().agentsCache["agent-1"]?.status,
+            "error",
+          );
+          assert.strictEqual(
+            useStore.getState().agentsCache["agent-1"]?.error,
+            "agent_not_found",
+          );
+        });
+      } finally {
+        errorSpy.mockRestore();
+      }
     });
 
     it("should log console error on agent join failure", async () => {
@@ -400,19 +418,28 @@ describe("channels", () => {
     });
 
     it("should set agent status to error on join timeout", async () => {
-      setNextJoinResult("agent:agent-1", { timeout: true });
-      joinAgent("agent-1");
+      // The store intentionally logs a console.error on join timeout
+      // so server-side observability surfaces the failure. Silence
+      // the leak here; the dedicated "should log console error"
+      // test below asserts the error was emitted.
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        setNextJoinResult("agent:agent-1", { timeout: true });
+        joinAgent("agent-1");
 
-      await vi.waitFor(() => {
-        assert.strictEqual(
-          useStore.getState().agentsCache["agent-1"]?.status,
-          "error",
-        );
-        assert.strictEqual(
-          useStore.getState().agentsCache["agent-1"]?.error,
-          "Connection timed out",
-        );
-      });
+        await vi.waitFor(() => {
+          assert.strictEqual(
+            useStore.getState().agentsCache["agent-1"]?.status,
+            "error",
+          );
+          assert.strictEqual(
+            useStore.getState().agentsCache["agent-1"]?.error,
+            "Connection timed out",
+          );
+        });
+      } finally {
+        errorSpy.mockRestore();
+      }
     });
 
     it("should log console error on agent join timeout", async () => {
@@ -670,40 +697,50 @@ describe("channels", () => {
     });
 
     it("should detect overlap mismatch and continue with server data", async () => {
-      joinAgent("agent-1");
+      // The store intentionally warns on overlap mismatch so the
+      // server-side logs surface data corruption. Silence the warn
+      // here since this test deliberately exercises that path and
+      // asserts the mismatch via the return value.
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-      await vi.waitFor(() => {
+      try {
+        joinAgent("agent-1");
+
+        await vi.waitFor(() => {
+          assert.strictEqual(
+            useStore.getState().agentsCache["agent-1"]?.status,
+            "connected",
+          );
+        });
+
+        // Set up a partial that's received up to 3 chars: "Hel"
+        useStore.getState().agentsCache["agent-1"].partial = {
+          index: 0,
+          role: "assistant",
+          content: "Hel",
+          charsReceived: 3,
+        };
+
+        // Send overlapping delta with mismatch: charsStart=2, content="xyz" (overlap is 1 char)
+        // Expected overlap is "l", actual is "z"
+        const result = useStore.getState().addChatDelta("agent-1", {
+          index: 0,
+          content: "xyz",
+          charsStart: 2,
+          charsEnd: 5,
+        });
+
+        // Should have mismatch flag
+        assert.strictEqual(result.overlapMismatch, true);
+        // But still applied the new content (sliced to "yz")
+        assert.strictEqual(result.applied, true);
         assert.strictEqual(
-          useStore.getState().agentsCache["agent-1"]?.status,
-          "connected",
+          useStore.getState().agentsCache["agent-1"]?.partial?.content,
+          "Helyz",
         );
-      });
-
-      // Set up a partial that's received up to 3 chars: "Hel"
-      useStore.getState().agentsCache["agent-1"].partial = {
-        index: 0,
-        role: "assistant",
-        content: "Hel",
-        charsReceived: 3,
-      };
-
-      // Send overlapping delta with mismatch: charsStart=2, content="xyz" (overlap is 1 char)
-      // Expected overlap is "l", actual is "z"
-      const result = useStore.getState().addChatDelta("agent-1", {
-        index: 0,
-        content: "xyz",
-        charsStart: 2,
-        charsEnd: 5,
-      });
-
-      // Should have mismatch flag
-      assert.strictEqual(result.overlapMismatch, true);
-      // But still applied the new content (sliced to "yz")
-      assert.strictEqual(result.applied, true);
-      assert.strictEqual(
-        useStore.getState().agentsCache["agent-1"]?.partial?.content,
-        "Helyz",
-      );
+      } finally {
+        warnSpy.mockRestore();
+      }
     });
 
     it("should not apply delta when overlap consumes entire content", async () => {
@@ -935,6 +972,124 @@ describe("channels", () => {
       await vi.waitFor(() => {
         const cache = useStore.getState().agentsCache["agent-1"];
         assert.strictEqual(cache?.agentState, "idle");
+      });
+    });
+
+    it("should clear waitingForResponse on chat:status: idle (thinking-only response)", async () => {
+      // The LLM completed but no `chat:delta` events were applied
+      // (e.g. a thinking-only response where `forward_thinking_delta/3`
+      // doesn't broadcast a `chat:delta`). The optimistic
+      // `waitingForResponse` flag would otherwise stay stuck. The
+      // `chat:status: idle` push is the explicit "LLM is done" signal
+      // and is the right place to clear it.
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+        status: "idle",
+      });
+
+      joinAgent("agent-1");
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      // Simulate the user sending a message — this is what flips
+      // `waitingForResponse` to `true` (the channel push's `ok`
+      // callback in `sendMessage`).
+      useStore.getState().setWaitingForResponse("agent-1", true);
+
+      // Streaming starts (no deltas ever arrive — thinking-only).
+      simulateServerEvent("agent:agent-1", "chat:status", {
+        status: "streaming",
+      });
+
+      await vi.waitFor(() => {
+        const cache = useStore.getState().agentsCache["agent-1"];
+        assert.strictEqual(cache?.agentState, "streaming");
+        // `waitingForResponse` is still true — no deltas have
+        // reset it.
+        assert.strictEqual(cache?.waitingForResponse, true);
+      });
+
+      // LLM completes. The `chat:status: idle` push is the
+      // explicit signal that the response is done; reset
+      // `waitingForResponse` so the typing indicator clears.
+      simulateServerEvent("agent:agent-1", "chat:status", {
+        status: "idle",
+      });
+
+      await vi.waitFor(() => {
+        const cache = useStore.getState().agentsCache["agent-1"];
+        assert.strictEqual(cache?.agentState, "idle");
+        assert.strictEqual(cache?.waitingForResponse, false);
+      });
+    });
+
+    it("should NOT clear waitingForResponse on chat:status: streaming (LLM still in flight)", async () => {
+      // Mid-stream: the LLM is still working, the indicator
+      // should stay visible. `waitingForResponse` stays true.
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+        status: "idle",
+      });
+
+      joinAgent("agent-1");
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      useStore.getState().setWaitingForResponse("agent-1", true);
+
+      simulateServerEvent("agent:agent-1", "chat:status", {
+        status: "streaming",
+      });
+
+      await vi.waitFor(() => {
+        const cache = useStore.getState().agentsCache["agent-1"];
+        assert.strictEqual(cache?.agentState, "streaming");
+        assert.strictEqual(cache?.waitingForResponse, true);
+      });
+    });
+
+    it("should NOT clear waitingForResponse on chat:status: executing_tools (mid-tool-loop)", async () => {
+      // Mid-tool-loop: a tool call arrived, the LLM will be
+      // called again after the tool executes. The indicator
+      // should stay visible (showing "Executing tools" — the
+      // chip's label — until the final LLM response completes).
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+        status: "idle",
+      });
+
+      joinAgent("agent-1");
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      useStore.getState().setWaitingForResponse("agent-1", true);
+
+      simulateServerEvent("agent:agent-1", "chat:status", {
+        status: "executing_tools",
+      });
+
+      await vi.waitFor(() => {
+        const cache = useStore.getState().agentsCache["agent-1"];
+        assert.strictEqual(cache?.agentState, "executing_tools");
+        assert.strictEqual(cache?.waitingForResponse, true);
       });
     });
   });

@@ -560,6 +560,44 @@ describe("ChatPage thinking-before-content order", () => {
       screen.queryByRole("button", { name: /thinking/i }),
     ).not.toBeInTheDocument();
   });
+
+  it("auto-expands the Thinking box on a thinking-only response so the user sees the model's reply", () => {
+    // Some reasoning models (e.g. MiniMax) produce a
+    // thinking-only response: the assistant message has
+    // `thinking` set and `content: nil`. The ThinkingBox
+    // auto-expands in this case so the user actually sees the
+    // response — otherwise the model would appear to have
+    // produced no output at all.
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "idle",
+        messages: [
+          { index: 0, role: "user", content: "Hi" },
+          {
+            index: 1,
+            role: "assistant",
+            content: null,
+            thinking:
+              "The user said hi. I should respond warmly without any visible text — just thinking out loud.",
+          },
+        ],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+
+    renderChat();
+
+    const thinkingButton = screen.getByRole("button", { name: /thinking/i });
+    // The box is auto-expanded because there is no visible
+    // content below it.
+    expect(thinkingButton).toHaveAttribute("aria-expanded", "true");
+    expect(
+      screen.getByText(
+        "The user said hi. I should respond warmly without any visible text — just thinking out loud.",
+      ),
+    ).toBeInTheDocument();
+  });
 });
 
 describe("ChatPage error display", () => {

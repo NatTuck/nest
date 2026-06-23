@@ -6,7 +6,7 @@
  * for the agent in the URL, if any exists.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useStore } from "../store";
 import { joinAgent, leaveAgent, sendMessage, stopMessage } from "../channels";
@@ -71,6 +71,27 @@ export function ChatPage() {
   // `input_tokens` is the size of the full context for that call),
   // so the most recent value is the current context size.
   const lastInput = cache?.usage?.input_tokens ?? 0;
+
+  // History navigation list for ChatInput's Ctrl/Cmd+Up / Down support.
+  // Pulls user messages from both the active session and the archived
+  // (post-compaction) history, orders them most-recent-first, and
+  // collapses consecutive duplicates so repeated presses of Up don't
+  // dwell on the same message.
+  const history = useMemo(() => {
+    const archived = (cache?.history ?? [])
+      .filter((m) => m.role === "user" && typeof m.content === "string")
+      .map((m) => ({ content: m.content, mode: m.mode ?? null }));
+    const active = (cache?.messages ?? [])
+      .filter((m) => m.role === "user" && typeof m.content === "string")
+      .map((m) => ({ content: m.content, mode: m.mode ?? null }));
+    const ordered = [...archived, ...active];
+    const deduped = [];
+    for (const entry of ordered) {
+      const last = deduped[deduped.length - 1];
+      if (!last || last.content !== entry.content) deduped.push(entry);
+    }
+    return deduped.reverse();
+  }, [cache?.messages, cache?.history]);
 
   // When the agent's default mode arrives (or changes), reset the
   // current mode to match. This ensures the selector always starts
@@ -353,13 +374,18 @@ export function ChatPage() {
                     transition. The `key` prop forces a re-mount
                     on that transition so the box's
                     `useState(isPartial)` initializer runs again
-                    (expanded while partial, collapsed once
-                    final). See `assets/js/components/ThinkingBlock.jsx`
-                    for the full rationale. */}
+                    (expanded while partial; on finalization,
+                    expanded when the message has no visible
+                    text content — i.e. the model produced a
+                    thinking-only response — and collapsed
+                    otherwise). See
+                    `assets/js/components/ThinkingBlock.jsx` for
+                    the full rationale. */}
                 <ThinkingBlock
                   key={message.isPartial ? "partial" : "final"}
                   thinking={thinkingFor(message)}
                   isPartial={message.isPartial ?? false}
+                  hasVisibleContent={hasVisibleContent(message)}
                 />
                 <MessageContent
                   content={message.content}
@@ -466,6 +492,7 @@ export function ChatPage() {
           modes={availableModes}
           mode={currentMode ?? defaultMode}
           onModeChange={setCurrentMode}
+          history={history}
         />
       </div>
     </div>
@@ -496,4 +523,24 @@ function thinkingFor(message) {
   }
 
   return message.thinking || null;
+}
+
+// True when the message has a non-empty `content` field (i.e.
+// there's a visible-text reply to show below the ThinkingBox).
+// For a partial, `content` is the streamed text buffer; for a
+// finalized message, it's the persisted `Assistant.content`. The
+// ThinkingBlock uses this hint to auto-expand when the model
+// produced a thinking-only response so the user actually sees
+// the response.
+function hasVisibleContent(message) {
+  if (!message) return false;
+
+  const content =
+    message.isPartial && typeof message.content === "string"
+      ? message.content
+      : typeof message.content === "string"
+        ? message.content
+        : "";
+
+  return content.trim().length > 0;
 }

@@ -14,6 +14,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   alias Nest.Messages.Assistant
   alias Nest.Messages.Streaming
   alias Nest.Messages.Tool
+  alias Nest.Messages.ToolCall
 
   @doc """
   Dispatch a streaming message. Returns the GenServer's reply
@@ -30,6 +31,10 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
 
   def handle({:llm_error, error_msg}, state) do
     llm_error(error_msg, state)
+  end
+
+  def handle({:chat_task_crashed, error_msg}, state) do
+    chat_task_crashed(error_msg, state)
   end
 
   def handle({:tool_calls_received, {:assistant, %Assistant{} = msg}}, state) do
@@ -104,6 +109,112 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
     Broadcasts.status(state.id, :idle)
     {:noreply, state}
   end
+
+  # The chat task itself crashed (an unhandled raise in the LLM
+  # client — typically a `FunctionClauseError` because the
+  # provider sent an unrecognized delta shape). The chat task's
+  # try/catch in `ChatPipeline.run_chat_task_and_notify/3`
+  # converted the raise into a `{:chat_task_crashed, msg}`
+  # message so the agent could recover; this handler is the
+  # recovery side.
+  #
+  # UX: save whatever was streamed before the crash as a normal
+  # assistant message (so the user doesn't lose their work),
+  # then broadcast a `chat:error` and transition to idle. The
+  # frontend's `chat:error` handler (`assets/js/channels.js`)
+  # shows the error in the StatusBanner and clears the partial.
+  defp chat_task_crashed(error_msg, state) do
+    state =
+      case has_partial_content?(state.chat_state.streaming_acc) do
+        true ->
+          # Save the partial as a normal assistant message.
+          finalize_partial(state)
+
+        false ->
+          # No content was streamed before the crash. Just
+          # drop the accumulator and transition to idle.
+          clear_streaming_acc(state)
+      end
+
+    # Broadcast the error. The frontend's `chat:error` handler
+    # shows the error banner and clears the partial.
+    Broadcasts.error(state.id, state.chat_state.next_message_index, error_msg)
+
+    state = %{state | chat_state: %{state.chat_state | status: :idle}}
+    Broadcasts.status(state.id, :idle)
+
+    {:noreply, state}
+  end
+
+  defp has_partial_content?(%Streaming.AssistantAccumulator{
+         text_buffer: text,
+         thinking_buffer: thinking
+       }),
+       do: text != "" or thinking != ""
+
+  defp has_partial_content?(_), do: false
+
+  # Finalize the streaming accumulator into a normal assistant
+  # message and append it to the messages list. Mirrors
+  # `llm_response_with_thinking/2` but with no `thinking`
+  # argument (the partial already has its thinking) and no
+  # `stopped_by_user` flag (this is a crash, not a stop).
+  defp finalize_partial(state) do
+    acc = state.chat_state.streaming_acc
+
+    final_message =
+      {:assistant,
+       %Assistant{
+         index: acc.index,
+         timestamp: DateTime.utc_now(),
+         content: acc.text_buffer,
+         thinking: if(acc.thinking_buffer == "", do: nil, else: acc.thinking_buffer),
+         thinking_signature: acc.thinking_signature,
+         tool_calls:
+           acc.tool_calls
+           |> Map.values()
+           |> Enum.filter(& &1.complete?)
+           |> Enum.map(fn partial ->
+             %ToolCall{
+               id: partial.id,
+               name: partial.name,
+               arguments: parse_tool_args(partial.arguments_buffer)
+             }
+           end),
+         api_logs: pending_api_logs(state, acc.index)
+       }}
+
+    state = %{
+      state
+      | chat_state: %{
+          state.chat_state
+          | messages: state.chat_state.messages ++ [final_message],
+            streaming_acc: nil,
+            next_message_index: state.chat_state.next_message_index + 1,
+            active_message_index: acc.index,
+            pending_api_logs: clear_api_logs(state, acc.index).chat_state.pending_api_logs
+        }
+    }
+
+    Broadcasts.message(state.id, final_message)
+    state
+  end
+
+  defp clear_streaming_acc(state) do
+    %{state | chat_state: %{state.chat_state | streaming_acc: nil}}
+  end
+
+  # Parse a tool-call arguments buffer as JSON. Falls back to
+  # `nil` if the buffer is empty or unparseable; the consumer
+  # can decide how to render an incomplete tool call.
+  defp parse_tool_args(buffer) when is_binary(buffer) and buffer != "" do
+    case Jason.decode(buffer) do
+      {:ok, decoded} when is_map(decoded) -> decoded
+      _ -> nil
+    end
+  end
+
+  defp parse_tool_args(_), do: nil
 
   defp tool_calls_received(tool_call_message, state) do
     index = tool_call_message.index

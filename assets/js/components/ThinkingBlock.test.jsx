@@ -114,10 +114,10 @@ describe("ThinkingBlock", () => {
 
   describe("re-mount on the partial → final transition", () => {
     // The parent passes `key={isPartial ? "partial" : "final"}`
-    // so the box re-mounts (and `useState(isPartial)`
-    // re-initializes) when the message transitions out of
-    // streaming. Simulate that here.
-    it("starts expanded when mounted as partial, collapsed when re-mounted as final", () => {
+    // so the box re-mounts (and `useState(isPartial ||
+    // !hasVisibleContent)` re-initializes) when the message
+    // transitions out of streaming. Simulate that here.
+    it("starts expanded when mounted as partial, collapsed when re-mounted as final (with content)", () => {
       const { rerender } = render(
         <ThinkingBlock
           key="partial"
@@ -127,8 +127,10 @@ describe("ThinkingBlock", () => {
       );
       expect(screen.getByText("live reasoning")).toBeInTheDocument();
 
-      // Re-mount with the new key. `useState(isPartial)` runs
-      // again with `isPartial: false`, so the box is collapsed.
+      // Re-mount with the new key. `useState(isPartial ||
+      // !hasVisibleContent)` runs again with `isPartial: false`
+      // and `hasVisibleContent: true` (the default), so the box
+      // is collapsed.
       rerender(
         <ThinkingBoxFinal
           key="final"
@@ -143,6 +145,64 @@ describe("ThinkingBlock", () => {
       expect(
         screen.getByRole("button", { name: /thinking/i }),
       ).toBeInTheDocument();
+    });
+  });
+
+  describe("auto-expanded on final (hasVisibleContent: false)", () => {
+    // Some reasoning models (e.g. MiniMax) produce a
+    // thinking-only response: the assistant message has
+    // `thinking` set and `content: nil`. Without this behavior
+    // the user would see a collapsed "Thinking" label with no
+    // visible text and no way to know there was a response. The
+    // box auto-expands in this case so the user actually sees
+    // the model's response.
+
+    it("starts expanded on a thinking-only response so the user sees the model's reply", () => {
+      render(
+        <ThinkingBlock
+          thinking="The user wants me to add the feature."
+          isPartial={false}
+          hasVisibleContent={false}
+        />,
+      );
+
+      const button = screen.getByRole("button", { name: /thinking/i });
+      expect(button).toHaveAttribute("aria-expanded", "true");
+      expect(
+        screen.getByText("The user wants me to add the feature."),
+      ).toBeInTheDocument();
+    });
+
+    it("collapses by default on a normal response that has visible content", () => {
+      render(
+        <ThinkingBlock
+          thinking="Some reasoning..."
+          isPartial={false}
+          hasVisibleContent={true}
+        />,
+      );
+
+      const button = screen.getByRole("button", { name: /thinking/i });
+      expect(button).toHaveAttribute("aria-expanded", "false");
+      // Content is hidden until the user clicks.
+      expect(screen.queryByText("Some reasoning...")).toBeNull();
+    });
+
+    it("the user can still collapse the auto-expanded thinking-only box", () => {
+      render(
+        <ThinkingBlock
+          thinking="Reasoning"
+          isPartial={false}
+          hasVisibleContent={false}
+        />,
+      );
+
+      const button = screen.getByRole("button", { name: /thinking/i });
+      expect(button).toHaveAttribute("aria-expanded", "true");
+
+      fireEvent.click(button);
+      expect(button).toHaveAttribute("aria-expanded", "false");
+      expect(screen.queryByText("Reasoning")).toBeNull();
     });
   });
 });
