@@ -183,6 +183,7 @@ defmodule NestWeb.AgentChannel do
           "partial" => build_partial_payload(agent.partial),
           "contextLimit" => agent.context_limit,
           "contextLimitSource" => source_to_string(agent.context_limit_source),
+          "currentMode" => agent.current_mode,
           "usage" => agent.usage
         }
 

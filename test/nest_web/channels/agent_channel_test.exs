@@ -149,6 +149,28 @@ defmodule NestWeb.AgentChannelTest do
       assert is_integer(payload["charsEnd"])
     end
 
+    test "chat:status broadcast carries currentMode (sticky mode)", %{socket: socket} do
+      # Sending a chat:message updates the agent's `state.mode`
+      # to the resolved mode. The status push that transitions
+      # to `idle` (the one that unlocks the input) carries the
+      # new currentMode so the client can reset the dropdown.
+      ref = push(socket, "chat:message", %{"content" => "Hello", "mode" => "chat"})
+      assert_reply ref, :ok, %{}
+
+      # The user message lands first, then the LLM streams and
+      # finalizes with a chat:status: idle. Drain intermediate
+      # broadcasts with `assert_push` and `assert_receive` and
+      # then assert the final status carries `currentMode`.
+      assert_push "chat:message", %{"role" => "user"}, 500
+
+      # Drain the streaming path. We don't care about each
+      # delta — just make sure the assistant message and the
+      # idle status both arrive.
+      assert_push "chat:message", %{"role" => "assistant"}, 500
+
+      assert_push "chat:status", %{status: "idle", currentMode: "chat"}, 500
+    end
+
     test "calls LLM and broadcasts response with deltas and index", %{socket: socket} do
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
@@ -172,6 +194,19 @@ defmodule NestWeb.AgentChannelTest do
 
       assert_push "chat:message", %{"role" => "assistant", "index" => idx}, 500
       assert idx >= 0
+    end
+  end
+
+  describe "handle_in(chat:status)" do
+    test "reply includes currentMode so the client can re-sync after a reconnect",
+         %{socket: socket} do
+      ref = push(socket, "chat:status", %{})
+      assert_reply ref, :ok, payload
+
+      # currentMode must be present so the client can re-sync
+      # the dropdown on reconnect / re-fetch. For a vocation-less
+      # agent the default is "chat".
+      assert payload["currentMode"] == "chat"
     end
   end
 end

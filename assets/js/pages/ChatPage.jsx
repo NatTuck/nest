@@ -93,14 +93,24 @@ export function ChatPage() {
     return deduped.reverse();
   }, [cache?.messages, cache?.history]);
 
-  // When the agent's default mode arrives (or changes), reset the
-  // current mode to match. This ensures the selector always starts
-  // at the agent's default for the next message.
+  // Keep the dropdown in sync with the agent's current mode.
+  //
+  // The agent's `state.mode` is the source of truth and is updated
+  // each time a chat is sent ("sticky mode"). The server emits the
+  // new mode on every `chat:status` push (specifically the one that
+  // transitions to `idle` and unlocks the input), which the
+  // channels.js handler writes to `cache.currentMode`. This effect
+  // mirrors that into the local `currentMode` React state so the
+  // dropdown reflects what the server actually has.
+  //
+  // On first mount (before any chat:status has arrived),
+  // `cache.currentMode` is null and we fall back to `defaultMode`.
   useEffect(() => {
-    if (defaultMode && currentMode === null) {
-      setCurrentMode(defaultMode);
+    const next = cache?.currentMode ?? defaultMode;
+    if (next && next !== currentMode) {
+      setCurrentMode(next);
     }
-  }, [defaultMode, currentMode]);
+  }, [cache?.currentMode, defaultMode]);
 
   // When the agent transitions out of "busy" (the server's
   // `chat:status: idle` push has arrived), clear the optimistic
@@ -152,8 +162,10 @@ export function ChatPage() {
     const mode = currentMode ?? defaultMode;
     setInputValue("");
     setSendError(null);
-    // Reset to the default mode for the next message.
-    setCurrentMode(defaultMode);
+    // The mode for the next message is set by the chat:status: idle
+    // broadcast (which updates `cache.currentMode`); the effect
+    // above mirrors that into the local `currentMode` state. No
+    // client-side reset here.
 
     sendMessage(id, content, mode, (err) => {
       setSendError(err.message || "Failed to send message");

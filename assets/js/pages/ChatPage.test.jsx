@@ -709,3 +709,152 @@ describe("ChatPage status label", () => {
     expect(screen.getByText("disconnected")).toBeInTheDocument();
   });
 });
+
+describe("ChatPage mode selector", () => {
+  beforeEach(() => {
+    mockAgentsCache = {};
+    sendMessage.mockClear();
+  });
+
+  it("initializes the dropdown from cache.currentMode, not defaultMode", () => {
+    // When the agent already has a non-default current mode
+    // (e.g. set by a previous chat), the dropdown should
+    // show that, not the vocation's default.
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "idle",
+        messages: [],
+        currentMode: "plan",
+        defaultMode: "build",
+        modes: ["build", "plan"],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+
+    renderChat();
+
+    const select = screen.getByLabelText("Mode");
+    expect(select.value).toBe("plan");
+  });
+
+  it("falls back to defaultMode when cache.currentMode is not set", () => {
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "idle",
+        messages: [],
+        defaultMode: "build",
+        modes: ["build", "plan"],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+
+    renderChat();
+
+    const select = screen.getByLabelText("Mode");
+    expect(select.value).toBe("build");
+  });
+
+  it("updates the dropdown when a chat:status broadcast carries a new currentMode", () => {
+    // Regression test for the "mode resets to default after
+    // send" bug: after a chat completes, the chat:status: idle
+    // broadcast should update the dropdown to the just-used mode
+    // (NOT defaultMode).
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "idle",
+        messages: [],
+        currentMode: "build",
+        defaultMode: "build",
+        modes: ["build", "plan"],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+
+    const { rerender } = renderChat();
+
+    // User sends a "plan" message. The mode the user picked
+    // is sent in the payload.
+    const select = screen.getByLabelText("Mode");
+    fireEvent.change(select, { target: { value: "plan" } });
+    const textarea = screen.getByLabelText("Message");
+    fireEvent.change(textarea, { target: { value: "plan this" } });
+    fireEvent.click(screen.getByRole("button", { name: /send/i }));
+
+    // The send pushes a chat:message with the user-picked mode.
+    expect(sendMessage).toHaveBeenCalledWith(
+      "test-agent",
+      "plan this",
+      "plan",
+      expect.any(Function),
+    );
+
+    // Simulate the server's response: the agent transitions to
+    // streaming, then to idle with currentMode: "plan". The
+    // channels.js handler would update the cache; we
+    // simulate that here.
+    mockAgentsCache["test-agent"].agentState = "streaming";
+    mockAgentsCache["test-agent"].currentMode = "plan";
+    rerender(
+      <MemoryRouter initialEntries={["/agents/test-agent"]}>
+        <Routes>
+          <Route path="/agents/:id" element={<ChatPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    // The dropdown now reflects the broadcast currentMode,
+    // NOT defaultMode.
+    expect(screen.getByLabelText("Mode").value).toBe("plan");
+  });
+
+  it("changing the mode selector does not call sendMessage or any other server push", () => {
+    // The mode dropdown is a local UI draft. Messing with it
+    // must not affect Agent state.
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "idle",
+        messages: [],
+        currentMode: "build",
+        defaultMode: "build",
+        modes: ["build", "plan"],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+
+    renderChat();
+
+    fireEvent.change(screen.getByLabelText("Mode"), {
+      target: { value: "plan" },
+    });
+
+    // No server push should have been made.
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(joinAgent).toHaveBeenCalledTimes(1); // mount only
+    expect(leaveAgent).not.toHaveBeenCalled();
+  });
+
+  it("disables the mode dropdown when the agent is busy (locked with the input)", () => {
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "streaming",
+        messages: [],
+        currentMode: "build",
+        defaultMode: "build",
+        modes: ["build", "plan"],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+
+    renderChat();
+
+    // The textarea is disabled when busy; so is the mode
+    // dropdown.
+    expect(screen.getByLabelText("Message")).toBeDisabled();
+    expect(screen.getByLabelText("Mode")).toBeDisabled();
+  });
+});

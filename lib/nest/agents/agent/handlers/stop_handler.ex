@@ -96,7 +96,7 @@ defmodule Nest.Agents.Agent.Handlers.StopHandler do
     }
 
     Broadcasts.message(state.id, {:assistant, partial_assistant})
-    Broadcasts.status(state.id, :idle)
+    Broadcasts.status(state.id, state)
 
     {:noreply, state}
   end

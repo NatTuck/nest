@@ -185,6 +185,17 @@ export function joinAgent(agentId) {
       extra.contextLimitSource = payload.contextLimitSource;
     }
 
+    if (payload.currentMode !== undefined) {
+      // The server includes `currentMode` on every chat:status
+      // push so the client can keep the dropdown in sync with
+      // the agent's mode (which is updated on each chat send
+      // — the "sticky mode" behavior). The ChatPage's
+      // `currentMode` React state is updated from this cache
+      // value via an effect, so the next message defaults to
+      // whatever mode was just used.
+      extra.currentMode = payload.currentMode;
+    }
+
     if (payload.usage !== undefined) {
       extra.usage = payload.usage;
     }

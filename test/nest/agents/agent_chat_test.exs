@@ -253,18 +253,95 @@ defmodule Nest.Agents.AgentChatTest do
 
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
-      # The externally visible signal of the mode is the user
-      # message's `metadata.mode` field. The agent doesn't currently
-      # persist `state.mode` between chats (sticky mode is a
-      # future-work feature); this test asserts on the broadcast
-      # payload, which IS the resolved mode.
+      # The externally visible signals of the mode are the user
+      # message's `metadata.mode` field AND the `currentMode` on
+      # each `chat:status` payload. The agent now persists
+      # `state.mode` between chats ("sticky mode"), and broadcasts
+      # it on every status push so the client can keep the
+      # dropdown in sync.
       :ok = Agent.chat(pid, "Plan this", "plan")
 
       assert_receive {:chat_message,
                       {:user, %{content: "Plan this", metadata: %{"mode" => "plan"}}}},
                      100
 
-      assert_receive {:chat_status, %{status: "idle"}}, 100
+      assert_receive {:chat_status, %{status: "idle", currentMode: "plan"}}, 100
+    end
+
+    @tag :db_shared
+    test "state.mode is updated to the resolved mode after a chat (sticky mode)" do
+      valid_caps = %{
+        "net" => false,
+        "fs" => %{"read" => ["/"], "write" => []}
+      }
+
+      {:ok, vocation} =
+        Vocations.create_vocation(%{
+          name: "StickyState-#{System.unique_integer([:positive])}",
+          description: "Test",
+          system_prompt: "Test",
+          tools: [],
+          modes: %{
+            "build" => %{"caps" => valid_caps},
+            "plan" => %{"caps" => valid_caps}
+          }
+        })
+
+      {pid, _agent_id} =
+        start_agent(%{model: %{name: "qwen3.5-plus"}, vocation_id: vocation.id})
+
+      # Initial state: vocation default (lex-first: "build").
+      state = :sys.get_state(pid)
+      assert state.mode == "build"
+
+      # Send a chat with mode "plan". The agent's state.mode
+      # should update to "plan".
+      :ok = Agent.chat(pid, "Plan this", "plan")
+      state = :sys.get_state(pid)
+      assert state.mode == "plan"
+
+      # The next chat without an explicit mode arg uses the
+      # updated state.mode — confirms sticky mode is wired
+      # through handle_chat's `mode = requested_mode || state.mode`
+      # fallback.
+      :ok = Agent.chat(pid, "And another")
+      state = :sys.get_state(pid)
+      assert state.mode == "plan"
+    end
+
+    @tag :db_shared
+    test "state.mode falls back to vocation default when the requested mode is unknown" do
+      valid_caps = %{
+        "net" => false,
+        "fs" => %{"read" => ["/"], "write" => []}
+      }
+
+      {:ok, vocation} =
+        Vocations.create_vocation(%{
+          name: "StickyFallback-#{System.unique_integer([:positive])}",
+          description: "Test",
+          system_prompt: "Test",
+          tools: [],
+          modes: %{
+            "build" => %{"caps" => valid_caps},
+            "plan" => %{"caps" => valid_caps}
+          }
+        })
+
+      {pid, agent_id} =
+        start_agent(%{model: %{name: "qwen3.5-plus"}, vocation_id: vocation.id})
+
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      :ok = Agent.chat(pid, "Hello", "nonexistent")
+
+      # The fallback (vocation default, lex-first: "build") is
+      # written to state.mode.
+      state = :sys.get_state(pid)
+      assert state.mode == "build"
+
+      # And reflected in the chat:status broadcast.
+      assert_receive {:chat_status, %{status: "idle", currentMode: "build"}}, 100
     end
 
     @tag :db_shared

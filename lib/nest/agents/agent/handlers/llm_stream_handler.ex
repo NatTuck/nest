@@ -106,7 +106,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
         }
     }
 
-    Broadcasts.status(state.id, :idle)
+    Broadcasts.status(state.id, state)
     {:noreply, state}
   end
 
@@ -141,7 +141,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
     Broadcasts.error(state.id, state.chat_state.next_message_index, error_msg)
 
     state = %{state | chat_state: %{state.chat_state | status: :idle}}
-    Broadcasts.status(state.id, :idle)
+    Broadcasts.status(state.id, state)
 
     {:noreply, state}
   end
@@ -242,7 +242,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
         }
     }
 
-    Broadcasts.status(state.id, :executing_tools)
+    Broadcasts.status(state.id, state)
     {:noreply, state}
   end
 
@@ -273,7 +273,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
         }
     }
 
-    Broadcasts.status(state.id, :streaming)
+    Broadcasts.status(state.id, state)
     {:noreply, state}
   end
 
@@ -314,7 +314,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
         }
     }
 
-    Broadcasts.status(state.id, :idle)
+    Broadcasts.status(state.id, state)
     {:noreply, state}
   end
 

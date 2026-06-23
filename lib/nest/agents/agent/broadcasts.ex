@@ -85,6 +85,7 @@ defmodule Nest.Agents.Agent.Broadcasts do
   defp status_payload(%Nest.Agents.Agent{} = state) do
     %{
       status: to_string(state.chat_state.status),
+      currentMode: state.mode,
       contextLimit: state.llm_metrics.context_limit,
       contextLimitSource: state.llm_metrics.context_limit_source,
       usage: state.llm_metrics.usage_totals

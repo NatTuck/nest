@@ -51,7 +51,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     # `chat_continuation`).
     state = clear_cancelled(state)
     state = apply_user_message_to_state(state, messages, effective_mode)
-    Broadcasts.status(state.id, :streaming)
+    Broadcasts.status(state.id, state)
 
     # Pre-flight: does the next LLM call fit? If not, the
     # Compactor runs first (in a Task); the chat task spawns
@@ -79,7 +79,8 @@ defmodule Nest.Agents.Agent.ChatPipeline do
 
     state = %{
       state
-      | messages: state.chat_state.messages ++ [user_message],
+      | mode: effective_mode,
+        messages: state.chat_state.messages ++ [user_message],
         next_message_index: state.chat_state.next_message_index + 1,
         status: :streaming,
         active_message_index: state.chat_state.next_message_index,
@@ -88,7 +89,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
         streaming_acc: Streaming.new(state.chat_state.next_message_index + 1)
     }
 
-    Broadcasts.status(state.id, :streaming)
+    Broadcasts.status(state.id, state)
     spawn_chat_task(state, content, mode)
   end
 
@@ -133,7 +134,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     # overwrite it here — that would shift the assistant's index
     # by one.
     %{state | chat_state: %{state.chat_state | status: :streaming}}
-    |> tap(&Broadcasts.status(&1.id, :streaming))
+    |> tap(&Broadcasts.status(&1.id, &1))
   end
 
   # Build the message list passed to the LLM. The last message is
@@ -265,12 +266,20 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   # Mutate the chat_state to reflect the new user message:
   # append to history, advance the index, mark streaming,
   # reset pending API logs, and start a fresh streaming acc.
-  defp apply_user_message_to_state(state, messages, _effective_mode) do
+  #
+  # Also persists the resolved effective mode to `state.mode`
+  # ("sticky mode"): the next chat turn defaults to whatever
+  # mode was used most recently. The UI receives the new
+  # current mode via the `chat:status` broadcast and resets
+  # the dropdown to match, so subsequent sends keep the same
+  # mode unless the user explicitly changes it.
+  defp apply_user_message_to_state(state, messages, effective_mode) do
     next_idx = state.chat_state.next_message_index
 
     %{
       state
-      | chat_state: %{
+      | mode: effective_mode,
+        chat_state: %{
           state.chat_state
           | messages: messages,
             next_message_index: next_idx + 1,
