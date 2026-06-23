@@ -82,17 +82,6 @@ defmodule Nest.Agents.Agent.LLMRunner do
   end
 
   defp run_with_new_client(%RunContext{} = ctx, %RunState{} = state) do
-    # Plan §"Compaction flow": pre-flight runs at the start of
-    # every LLM call site. The chat task asks the GenServer to
-    # re-check (state.chat_state.messages may have grown via archived API
-    # logs since the last call) and reply with either `:proceed`
-    # (use the existing snapshot) or `:compacted` (use the new
-    # compacted list).
-    #
-    # `:stopped` is returned when the agent sent a `{:stop_chat, _}`
-    # while the chat task was waiting on the pre-flight. We raise
-    # `ToolLoop.StoppedError` so the chat task body can detect the
-    # stop and notify the agent.
     case run_preflight(ctx) do
       {:compacted, new_messages} ->
         run_with_new_client(%{ctx | messages: new_messages}, state)
@@ -109,17 +98,8 @@ defmodule Nest.Agents.Agent.LLMRunner do
     end
   end
 
-  # Asks the GenServer to run a pre-flight check on its current
-  # state.chat_state.messages. Returns `:proceed` if the next LLM call fits
-  # (or no limit is known / a stream is in progress) and
-  # `{:compacted, new_messages}` if the compactor ran. The chat
-  # task blocks here on a `receive`, mirroring the
-  # `compact_context` tool's round-trip pattern.
-  #
-  # The `{:stop_chat, from}` clause lets the agent interrupt the
-  # chat task while it is waiting on a pre-flight compaction. The
-  # chat task acknowledges the stop, sends `:stopped` back, and
-  # the caller unwinds via the `:stopped` return value.
+  # Asks the GenServer to run a pre-flight check. Returns `:proceed`,
+  # `{:compacted, new_messages}`, or `:stopped` if the user interrupted.
   defp run_preflight(ctx) do
     send(ctx.agent_pid, {:preflight_request, self(), ctx.messages})
 
@@ -470,7 +450,7 @@ defmodule Nest.Agents.Agent.LLMRunner do
   end
 
   defp handle_failed_response(state, error, ctx) do
-    error_msg = "Error: #{inspect(error)}"
+    error_msg = format_error(error)
 
     Logger.error("Agent #{ctx.agent_id} LLM request failed: #{error_msg}")
 
@@ -486,4 +466,27 @@ defmodule Nest.Agents.Agent.LLMRunner do
     # on the failure path — no new request log was generated.
     state
   end
+
+  defp format_error({type, status, body}) do
+    detail =
+      case truncate_body(body) do
+        "" -> "HTTP #{status}: #{type}"
+        body_text -> "HTTP #{status}: #{type}\n#{body_text}"
+      end
+
+    "Error: #{detail}"
+  end
+
+  defp format_error(error), do: "Error: #{inspect(error)}"
+
+  defp truncate_body(""), do: ""
+  defp truncate_body(nil), do: ""
+
+  defp truncate_body(body) when is_binary(body) do
+    if String.length(body) > 500,
+      do: String.slice(body, 0, 500) <> "\n...(truncated)",
+      else: body
+  end
+
+  defp truncate_body(other), do: inspect(other)
 end

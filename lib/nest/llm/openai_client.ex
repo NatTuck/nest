@@ -273,8 +273,8 @@ defmodule Nest.LLM.OpenAIClient do
       {:ok, %{"choices" => choices} = chunk} when is_list(choices) ->
         events_from_choices(choices) ++ events_from_metadata(chunk)
 
-      {:ok, %{"error" => error}} ->
-        [{:error, error}]
+      {:ok, error_map} when is_map_key(error_map, "error") ->
+        error_event_from_map(error_map)
 
       {:ok, _other} ->
         []
@@ -285,6 +285,17 @@ defmodule Nest.LLM.OpenAIClient do
   end
 
   defp frame_to_canonical_event(_other), do: []
+
+  defp error_event_from_map(%{"error" => error_type, "status" => status, "body" => body})
+       when is_integer(status) do
+    [{:error, {error_type, status, body}}]
+  end
+
+  defp error_event_from_map(%{"error" => error}) do
+    [{:error, error}]
+  end
+
+  defp error_event_from_map(_), do: []
 
   defp events_from_choices(choices) do
     Enum.flat_map(choices, &events_from_choice/1)

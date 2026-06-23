@@ -367,7 +367,20 @@ defmodule Nest.LLM.AnthropicClient do
   end
 
   defp frame_to_events({:event, "error", data}, state) do
-    {[{:error, data}], state}
+    error =
+      case Jason.decode(data) do
+        {:ok, %{"error" => error_type, "status" => status, "body" => body}}
+        when is_integer(status) ->
+          {error_type, status, body}
+
+        {:ok, %{"error" => error}} ->
+          error
+
+        _ ->
+          data
+      end
+
+    {[{:error, error}], state}
   end
 
   defp frame_to_events(_other, state), do: {[], state}

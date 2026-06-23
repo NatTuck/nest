@@ -592,13 +592,15 @@ function SystemMessageContent({ content, isPartial }) {
         content={visibleLines.join("\n")}
         className="text-gray-800"
       />
-      {showExpand && !expanded && (
+      {showExpand && (
         <button
           type="button"
-          onClick={() => setExpanded(true)}
+          onClick={() => setExpanded(!expanded)}
           className="mt-2 text-sm text-blue-600 hover:text-blue-800 underline"
         >
-          Expand {hiddenCount} more line{hiddenCount !== 1 ? "s" : ""}
+          {expanded
+            ? "Show less"
+            : `Expand ${hiddenCount} more line${hiddenCount !== 1 ? "s" : ""}`}
         </button>
       )}
     </div>

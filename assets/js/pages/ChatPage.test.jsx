@@ -433,10 +433,18 @@ describe("ChatPage message rendering", () => {
     // Now all lines should be visible
     expect(messageContainer.textContent).toContain("line-21");
     expect(messageContainer.textContent).toContain("line-25");
-    // Expand button should be gone
+    // Button should now show "Show less"
+    const showLessButton = screen.getByRole("button", { name: /show less/i });
+    expect(showLessButton).toBeInTheDocument();
+
+    // Click to collapse
+    fireEvent.click(showLessButton);
+
+    // Should be back to truncated state
+    expect(messageContainer.textContent).not.toContain("line-21");
     expect(
-      screen.queryByRole("button", { name: /expand/i }),
-    ).not.toBeInTheDocument();
+      screen.getByRole("button", { name: /expand 5 more lines/i }),
+    ).toBeInTheDocument();
   });
 
   it("does not show expand button for system messages at or under 20 lines", () => {

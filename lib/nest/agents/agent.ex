@@ -423,7 +423,7 @@ defmodule Nest.Agents.Agent do
   defp agents_md_section(workspace_path) do
     case File.read(Path.join(workspace_path, "AGENTS.md")) do
       {:ok, content} ->
-        "\n\nHere are AGENTS.md guidelines for this project:\n#{content}\n"
+        "\n\nHere are AGENTS.md guidelines for this project:\n\n#{content}\n"
 
       _ ->
         ""
