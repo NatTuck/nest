@@ -14,6 +14,7 @@ defmodule Nest.Tools do
   require Logger
 
   alias Nest.LLM.Tool
+  alias Nest.Tools.InspectFile
   alias Nest.Tools.ShellCmd
 
   # Per-tool defaults for `max_result_tokens`. See the plan in
@@ -44,6 +45,7 @@ defmodule Nest.Tools do
       "read_file" -> read_file_function(workspace_path, tmp_path)
       "write_file" -> write_file_function(workspace_path, tmp_path)
       "edit" -> edit_function(workspace_path, tmp_path)
+      "inspect_file" -> inspect_file_function(workspace_path, tmp_path)
       "shell_cmd" -> shell_cmd_function(workspace_path, tmp_path)
       "context" -> context_function()
       _ -> nil
@@ -146,6 +148,28 @@ defmodule Nest.Tools do
         edit(args, workspace_path, tmp_path, context)
       end
     }
+  end
+
+  # The `inspect_file` tool returns file metadata (type, size, line
+  # count, char count, estimated tokens) for the LLM to plan its
+  # context usage. It's strictly read-only: never returns file
+  # content, never modifies the file.
+  #
+  # Workflow it supports: the LLM sees a filename referenced in a
+  # task and needs to decide whether to call `read_file` (full
+  # content) or use `shell_cmd` with `head`/`tail`/`sed -n` for a
+  # partial read. Calling `inspect_file` first gives the size /
+  # token estimate so the LLM can pick.
+  #
+  # Text vs. binary: we trust the `file` command's classification
+  # when it says "ASCII text" or starts with "UTF-8", then validate
+  # with `String.valid?/1` (since ASCII is a strict subset of
+  # UTF-8, valid ASCII is automatically valid UTF-8). Anything
+  # else — UTF-16, ISO-8859, PNG, ELF, etc. — is reported as
+  # binary with a clear "do not use read_file" hint. We don't try
+  # to transcode; the LLM is told to use shell tools for those.
+  defp inspect_file_function(workspace_path, tmp_path) do
+    InspectFile.build(workspace_path, tmp_path)
   end
 
   defp shell_cmd_function(workspace_path, tmp_path) do
