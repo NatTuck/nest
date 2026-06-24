@@ -76,6 +76,11 @@ defmodule Nest.Agents.Agent.ChatTurn.HTTPWorker do
   # the chat_turn_pid's mailbox for a `{:stop_chat, _}`
   # message; when set, replies `:stopped` and returns
   # `true` to halt the stream.
+  #
+  # The `on_error` callback only sends `{:llm_error, msg}` to
+  # the Agent — it does NOT broadcast `chat:error` directly.
+  # The Agent's `LLMStreamHandler.llm_error/2` handler is the
+  # single source of `chat:error` events (one per error).
   defp build_callbacks(state) do
     agent_id = state.ctx.agent_id
     acc_index = active_message_index(state) + 1
@@ -96,7 +101,6 @@ defmodule Nest.Agents.Agent.ChatTurn.HTTPWorker do
       end,
       on_error: fn error ->
         error_msg = Nest.LLM.Runner.format_error(error)
-        Broadcasts.error(agent_id, acc_index, error_msg, "ChatTurn.run_chat_task/1")
         send(state.agent_pid, {:llm_error, error_msg})
       end,
       on_response: fn _response ->

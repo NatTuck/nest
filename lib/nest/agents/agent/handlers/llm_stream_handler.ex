@@ -6,6 +6,11 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   `{:tool_results_received, _}`,
   `{:llm_response_with_thinking, _, _}`, `{:llm_usage, _}`.
 
+  `{:llm_error, _}` is the HTTP worker's "I gave up; please
+  finalize and broadcast" signal. The Agent is the single
+  source of `chat:error` events — the worker doesn't broadcast
+  directly (avoids duplicate events).
+
   Dispatched by `Nest.Agents.Agent.Handlers` based on the
   message tag.
   """
@@ -84,9 +89,15 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
     {:noreply, %{state | chat_state: %{state.chat_state | streaming_acc: new_acc}}}
   end
 
-  # Finalize error message
+  # Finalize error message. The HTTP worker sent us the
+  # formatted error string; we are the single source of
+  # `chat:error` events (the worker no longer broadcasts
+  # directly — that double-broadcast was a bug). The error
+  # is broadcast with the `[Source: ChatTurn.run_chat_task/1]`
+  # tag so the user can grep the server log for the matching
+  # entry.
   defp llm_error(error_msg, state) do
-    error_index = state.chat_state.streaming_acc.index
+    error_index = state.chat_state.streaming_acc && state.chat_state.streaming_acc.index
 
     error_message =
       {:assistant,
@@ -96,7 +107,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
          content: error_msg,
          thinking: nil,
          tool_calls: nil,
-         api_logs: pending_api_logs(state, error_index)
+         api_logs: if(error_index, do: pending_api_logs(state, error_index), else: [])
        }}
 
     {stamped, state} = Nest.Agents.Agent.__append_message__(state, error_message)
@@ -113,6 +124,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
         }
     }
 
+    Broadcasts.error(state.id, stamped_index, error_msg, "ChatTurn.run_chat_task/1")
     Broadcasts.status(state.id, state)
     {:noreply, state}
   end

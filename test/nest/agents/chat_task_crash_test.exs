@@ -101,6 +101,14 @@ defmodule Nest.Agents.ChatTaskCrashTest do
       assert content =~ "** (FunctionClauseError)"
 
       assert_receive {:chat_status, %{status: "idle"}}, 200
+
+      # Regression: only ONE chat:error event should fire per
+      # HTTP worker error. The HTTP worker's on_error callback
+      # used to broadcast chat:error directly AND send
+      # {:llm_error, msg} to the Agent, which would broadcast
+      # again. Now the worker only sends the message; the
+      # Agent is the single source.
+      refute_receive {:chat_error, _}, 100
     end
 
     test "the agent GenServer stays alive after the HTTP worker crashes", %{} do
