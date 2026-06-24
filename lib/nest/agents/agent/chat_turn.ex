@@ -82,6 +82,14 @@ defmodule Nest.Agents.Agent.ChatTurn do
 
   defmodule State do
     @moduledoc false
+    # The ChatTurn's State is the iteration state machine's
+    # working memory. It contains ONLY iteration-scoped state
+    # (counters, worker pids, the index that the next message
+    # WILL be stamped with). Conversation state (messages,
+    # streaming_acc, next_message_index, history, llm_metrics)
+    # lives on the Agent; the ChatTurn queries via
+    # GenServer.call when it needs to read, and sends events
+    # for the Agent to write.
     defstruct agent_pid: nil,
               ctx: nil,
               iteration: 0,
@@ -89,11 +97,6 @@ defmodule Nest.Agents.Agent.ChatTurn do
               force_finalize: false,
               active_worker: nil,
               active_worker_kind: nil,
-              cancelled: false,
-              streaming_acc: nil,
-              api_log_sequences: %{},
-              last_thinking: nil,
-              messages_snapshot: [],
               active_message_index: 0
   end
 
@@ -136,11 +139,6 @@ defmodule Nest.Agents.Agent.ChatTurn do
       force_finalize: false,
       active_worker: nil,
       active_worker_kind: nil,
-      cancelled: false,
-      streaming_acc: nil,
-      api_log_sequences: %{},
-      last_thinking: nil,
-      messages_snapshot: [],
       active_message_index: 0
     }
 
@@ -210,9 +208,9 @@ defmodule Nest.Agents.Agent.ChatTurn do
 
     messages = GenServer.call(state.agent_pid, :get_messages)
     next_index = GenServer.call(state.agent_pid, :get_next_index)
-    state = %{state | messages_snapshot: messages, active_message_index: next_index}
+    state = %{state | active_message_index: next_index}
 
-    spawn_http_worker(state)
+    spawn_http_worker(state, messages)
   end
 
   # Check if we're approaching the iteration cap. If
@@ -253,10 +251,10 @@ defmodule Nest.Agents.Agent.ChatTurn do
   end
 
   # Spawn the HTTP worker as a Task. The worker calls
-  # `Nest.LLM.Runner.request/2` and sends
-  # `{:http_response, response}` or `{:http_error, error}`
-  # back to the ChatTurn.
-  defp spawn_http_worker(state) do
+  # `Nest.LLM.Runner.request/2` with the given `messages`
+  # and sends `{:http_response, response}` or
+  # `{:http_error, error}` back to the ChatTurn.
+  defp spawn_http_worker(state, messages) do
     parent = self()
     agent_pid = state.agent_pid
 
@@ -267,8 +265,8 @@ defmodule Nest.Agents.Agent.ChatTurn do
     # re-broadcast that message with the request log
     # attached (the message already exists in the messages
     # list, so the append-to-existing-message path fires).
-    request_log_index = last_message_index_for_request_log(state.messages_snapshot)
-    state = broadcast_request_log(state, request_log_index)
+    request_log_index = last_message_index_for_request_log(messages)
+    :ok = broadcast_request_log(state, request_log_index, messages)
 
     # When we've hit the iteration cap, the next call
     # is the "final" call: `tools: nil, tool_choice:
@@ -286,7 +284,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
     task =
       Task.Supervisor.start_child(
         Nest.Agents.TaskSupervisor,
-        fn -> HTTPWorker.run(state, parent) end
+        fn -> HTTPWorker.run(state, parent, messages) end
       )
 
     case task do
@@ -339,7 +337,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
     # Broadcast the response api_log to the Agent. The
     # Agent's api_log handler attaches it to the message
     # at the assistant's actual stamped index.
-    state = broadcast_response_log(state, assistant_index, response)
+    _ = broadcast_response_log(state, assistant_index, response)
 
     cond do
       state.force_finalize ->
@@ -441,7 +439,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
       Process.exit(state.active_worker, :kill)
     end
 
-    state = %{state | active_worker: nil, active_worker_kind: nil, cancelled: true}
+    state = %{state | active_worker: nil, active_worker_kind: nil}
     send(state.agent_pid, {:chat_stopped, self()})
     {:stop, :normal, state}
   end
@@ -463,7 +461,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
   # `:api_log_sequences_updated` to the Agent, then stop.
   defp finalize_turn(state) do
     send(state.agent_pid, {:chat_idle, self()})
-    send(state.agent_pid, {:api_log_sequences_updated, state.api_log_sequences})
+    send(state.agent_pid, {:api_log_sequences_updated, Nest.Agents.Agent.ChatTurn.APILog.read_sequences()})
     {:stop, :normal, state}
   end
 
@@ -483,8 +481,8 @@ defmodule Nest.Agents.Agent.ChatTurn do
 
   # --- api_log helpers ---
 
-  defp broadcast_request_log(state, message_index) do
-    Nest.Agents.Agent.ChatTurn.APILog.request(state, message_index)
+  defp broadcast_request_log(state, message_index, messages) do
+    Nest.Agents.Agent.ChatTurn.APILog.request(state, message_index, messages)
   end
 
   defp broadcast_response_log(state, message_index, response) do

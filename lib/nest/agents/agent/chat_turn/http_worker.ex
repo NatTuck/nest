@@ -15,15 +15,16 @@ defmodule Nest.Agents.Agent.ChatTurn.HTTPWorker do
   require Logger
 
   @doc """
-  Run the HTTP call. Sends `{:http_response, response}`,
-  `{:http_error, _}`, or `{:worker_crashed, _, _}` to
-  the `chat_turn_pid` on completion.
+  Run the HTTP call with the given `messages`. Sends
+  `{:http_response, response}`, `{:http_error, _}`, or
+  `{:worker_crashed, _, _}` to the `chat_turn_pid` on
+  completion.
   """
-  @spec run(map(), pid()) :: :ok
-  def run(state, chat_turn_pid) do
-    callbacks = build_callbacks(state)
+  @spec run(map(), pid(), list()) :: :ok
+  def run(state, chat_turn_pid, messages) do
+    callbacks = build_callbacks(state, messages)
 
-    ctx_with_messages = %{state.ctx | messages: state.messages_snapshot}
+    ctx_with_messages = %{state.ctx | messages: messages}
 
     try do
       dispatch_result(Nest.LLM.Runner.request(ctx_with_messages, callbacks), chat_turn_pid)
@@ -81,9 +82,12 @@ defmodule Nest.Agents.Agent.ChatTurn.HTTPWorker do
   # the Agent — it does NOT broadcast `chat:error` directly.
   # The Agent's `LLMStreamHandler.llm_error/2` handler is the
   # single source of `chat:error` events (one per error).
-  defp build_callbacks(state) do
+  defp build_callbacks(state, _messages) do
     agent_id = state.ctx.agent_id
-    acc_index = active_message_index(state) + 1
+    # The assistant message's stamped index is the Agent's
+    # `next_message_index` (queried at the start of this
+    # iteration). The delta broadcasts go to that index.
+    acc_index = state.active_message_index
 
     %{
       on_text: fn text, sent ->
@@ -120,30 +124,6 @@ defmodule Nest.Agents.Agent.ChatTurn.HTTPWorker do
         true
     after
       0 -> false
-    end
-  end
-
-  # The index of the user message (the message currently
-  # being sent to the LLM). Used to seed the `acc_index`
-  # for delta broadcasts and to scope the request
-  # api_log. Public so the ChatTurn's iteration state
-  # machine can use the same index for predicted message
-  # indices.
-  @spec active_message_index(map()) :: non_neg_integer()
-  def active_message_index(state) do
-    case state.streaming_acc do
-      %Nest.Messages.Streaming.AssistantAccumulator{index: idx} -> idx
-      nil -> last_message_index(state.messages_snapshot)
-    end
-  end
-
-  defp last_message_index([]), do: 0
-
-  defp last_message_index(messages) do
-    case List.last(messages) do
-      nil -> 0
-      {_, %{index: idx}} -> idx
-      _ -> 0
     end
   end
 end
