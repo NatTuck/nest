@@ -66,19 +66,29 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   # `Handlers` dispatcher. This module keeps the legacy
   # `chat_task_crashed` path for backward compat.
 
-  # Accumulate delta using Streaming module based on content type
+  # Accumulate delta using Streaming module based on content type.
+  # If the streaming_acc is nil (e.g. a late delta from a
+  # previous chat arrived after `chat_stopped` set the
+  # mirror to nil, or between two chats before
+  # `prepare_streaming_state` ran), no-op. The next
+  # chat's `prepare_streaming_state` will re-init the
+  # mirror; any later deltas will find it set.
   defp delta_received(delta_content, part_type, state) do
     acc = state.chat_state.streaming_acc
 
-    new_acc =
-      case part_type do
-        :text -> Streaming.append_text(acc, delta_content)
-        :thinking -> Streaming.append_thinking(acc, delta_content)
-        # For unsupported types, append as text for now
-        _ -> Streaming.append_text(acc, delta_content)
-      end
+    if acc == nil do
+      {:noreply, state}
+    else
+      new_acc =
+        case part_type do
+          :text -> Streaming.append_text(acc, delta_content)
+          :thinking -> Streaming.append_thinking(acc, delta_content)
+          # For unsupported types, append as text for now
+          _ -> Streaming.append_text(acc, delta_content)
+        end
 
-    {:noreply, %{state | chat_state: %{state.chat_state | streaming_acc: new_acc}}}
+      {:noreply, %{state | chat_state: %{state.chat_state | streaming_acc: new_acc}}}
+    end
   end
 
   # Anthropic's extended thinking emits a signature alongside the

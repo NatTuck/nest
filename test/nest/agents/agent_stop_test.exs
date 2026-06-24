@@ -25,18 +25,27 @@ defmodule Nest.Agents.AgentStopTest do
 
   setup :verify_on_exit!
 
+  import Nest.Agents.AgentTestHelpers
+
   setup do
     Process.put(:nest_test_agent_pid, self())
     MockClient.start_link()
     MockClient.clear()
+
+    # Drain the test process's mailbox at the start of
+    # each test. The previous test's chat turn may have
+    # left late events in flight (deltas, status pushes,
+    # :stopped replies) that would otherwise match this
+    # test's assert_receive patterns. The on_exit hook
+    # in start_agent/1 also drains, but it runs AFTER
+    # this setup; we drain BEFORE the test's assertions.
+    drain_test_mailbox()
 
     on_exit(fn -> Process.delete(:nest_test_agent_pid) end)
     on_exit(fn -> TaskDrain.drain() end)
 
     :ok
   end
-
-  import Nest.Agents.AgentTestHelpers
 
   describe "stop_chat/2 mid-LLM-stream" do
     test "finalizes the partial assistant message and transitions to idle" do
@@ -230,6 +239,51 @@ defmodule Nest.Agents.AgentStopTest do
       assert_receive {:chat_status, %{status: "idle"}}, 2000
       assert_receive {:chat_message, {:user, %{index: 3}}}, 100
       assert_receive {:chat_message, {:assistant, %{content: "Second turn response"}}}, 100
+    end
+  end
+
+  # Regression guard for the agent_stop_test.exs flakiness.
+  # The flakiness was caused by late deltas from a previous
+  # chat arriving at the Agent AFTER chat_stopped set the
+  # streaming_acc to nil; the delta handler then crashed
+  # with FunctionClauseError. The fix in llm_stream_handler
+  # .ex's delta_received/3 makes the handler a no-op when
+  # streaming_acc is nil. This test exercises the exact
+  # race: a streaming chat is stopped, a new chat starts
+  # while the old chat's deltas are still in flight, and
+  # the new chat must complete successfully. A future
+  # regression (re-introducing the nil-deref) would crash
+  # the Agent GenServer and fail the second chat's idle
+  # status assertion.
+  describe "stability" do
+    test "stopped chat's late deltas don't crash a subsequent chat" do
+      events = for _ <- 1..50, do: {:text, "x"}
+      MockClient.set_stream_events(events)
+
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      :ok = Agent.chat(pid, "First turn")
+      assert_receive {:chat_message, {:user, _}}, 100
+      assert_receive {:chat_delta, _}, 100
+
+      chat_turn_pid = :sys.get_state(pid).chat_state.chat_turn_pid
+      send(chat_turn_pid, {:stop_chat, self()})
+      assert_receive {:chat_status, %{status: "idle"}}, 2000
+
+      # Immediately start a new chat. The previous chat's
+      # HTTP worker may still be in flight; any late
+      # deltas must not crash the Agent.
+      MockClient.set_response("Second response")
+      :ok = Agent.chat(pid, "Second turn")
+
+      assert_receive {:chat_status, %{status: "idle"}}, 2000
+      assert_receive {:chat_message, {:user, %{index: 3}}}, 100
+      assert_receive {:chat_message, {:assistant, %{content: "Second response"}}}, 100
+
+      # The Agent GenServer must still be alive (the
+      # original bug crashed it with FunctionClauseError).
+      assert Process.alive?(pid)
     end
   end
 end

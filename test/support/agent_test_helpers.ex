@@ -65,6 +65,14 @@ defmodule Nest.Agents.AgentTestHelpers do
       # receiving broadcasts from the now-dying agent
       # (and cross-contaminate the next test's mailbox).
       Phoenix.PubSub.unsubscribe(Nest.PubSub, "agent:#{agent_id}")
+      # Give the previous test's chat turn a chance to fully
+      # settle before draining. The on_exit runs after the
+      # test's last assertion; the chat turn's last events
+      # may still be in transit. Without the pause, late
+      # messages can land in the next test's mailbox and
+      # match its `assert_receive` patterns (the source of
+      # the agent_stop_test.exs flakiness).
+      Process.sleep(200)
       # Drain any stale messages from the test process's
       # mailbox (e.g. `:stopped` replies, late deltas)
       # so they don't pollute the next test's
