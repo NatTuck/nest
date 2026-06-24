@@ -1,14 +1,15 @@
 defmodule Nest.Agents.ChatTaskCrashTest do
   @moduledoc """
-  Tests for the chat task crash-recovery flow.
+  Tests for the ChatTurn crash-recovery flow.
 
-  When the chat task (running in `Task.Supervisor` under
-  `Nest.Agents.TaskSupervisor`) raises an unhandled exception
-  (e.g. a `FunctionClauseError` because the LLM provider sent
-  an unrecognized delta shape), the task's try/catch in
-  `ChatPipeline.run_chat_task_and_notify/3` converts the
-  raise into a `{:chat_task_crashed, msg}` message to the
-  agent. The agent's `LLMStreamHandler.chat_task_crashed/2`
+  When the HTTP worker (running in `Task.Supervisor` under
+  `Nest.Agents.TaskSupervisor`, spawned by the ChatTurn)
+  raises an unhandled exception (e.g. a `FunctionClauseError`
+  because the LLM provider sent an unrecognized delta
+  shape), the ChatTurn's `try/catch` in
+  `ChatTurn.http_worker_fun/2` converts the raise into a
+  `{:chat_crashed, reason, stacktrace}` message to the
+  Agent. The Agent's `LLMStreamHandler.chat_crashed/3`
   then:
 
     1. Saves any partial content as a normal assistant
@@ -20,9 +21,15 @@ defmodule Nest.Agents.ChatTaskCrashTest do
        drops out of "Generating response...".
     4. Transitions the agent to `:idle`.
 
-  Without this flow, the chat task would die silently, the
-  agent would stay in `:streaming` status forever, and the UI
-  would be stuck on "Generating response...".
+  Without this flow, the ChatTurn would die silently, the
+  Agent would stay in `:streaming` status forever, and the
+  UI would be stuck on "Generating response...".
+
+  After the ChatTurn refactor, the crash boundary moves
+  from `Nest.Agents.Agent.LLMRunner.run/2` to
+  `Nest.LLM.MockClient.run/2` (the new HTTP client
+  boundary). The stubs in this file target the new
+  boundary.
   """
   use Nest.DataCase, async: false
 
@@ -48,17 +55,19 @@ defmodule Nest.Agents.ChatTaskCrashTest do
 
   import Nest.Agents.AgentTestHelpers
 
-  describe "chat_task_crashed when the LLM runner raises" do
+  describe "chat_crashed when the HTTP worker raises" do
     test "an unhandled FunctionClauseError is caught and the agent transitions to idle", %{} do
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
-      # Stub the LLM runner to raise a `FunctionClauseError` —
-      # the same shape the MiniMax field report exhibited.
-      # This runs in the chat task; the task's try/catch
-      # converts it into a `{:chat_task_crashed, exception,
-      # stacktrace}` to the agent.
-      Mimic.stub(Nest.Agents.Agent.LLMRunner, :run, fn _ctx, _state ->
+      # Stub the LLM client (the new crash boundary) to
+      # raise a `FunctionClauseError` — the same shape
+      # the MiniMax field report exhibited. This runs in
+      # the HTTP worker; the worker's try/catch converts
+      # it into a `{:http_error, _}` to the ChatTurn,
+      # which forwards `{:chat_crashed, reason, _}` to
+      # the Agent.
+      Mimic.stub(MockClient, :run, fn _request, _opts ->
         raise FunctionClauseError,
           module: Nest.LLM.OpenAIClient,
           function: :finish_event,
@@ -66,44 +75,42 @@ defmodule Nest.Agents.ChatTaskCrashTest do
           args: [%{"delta" => %{"role" => "assistant"}}]
       end)
 
-      Mimic.allow(Nest.Agents.Agent.LLMRunner, self(), pid)
+      Mimic.allow(MockClient, self(), pid)
 
       :ok = Agent.chat(pid, "Hello")
 
       # The user message is broadcast first (the agent builds
-      # it before the chat task runs).
+      # it before the ChatTurn starts).
       assert_receive {:chat_message, {:user, %{index: 1}}}, 200
 
-      # The agent receives the chat_task_crashed notification
-      # and broadcasts a chat:error followed by a status: idle
-      # transition. The error message now carries the
+      # The ChatTurn catches the raise and sends
+      # `{:chat_crashed, reason, stacktrace}` to the
+      # Agent. The Agent's `chat_crashed/3` handler
+      # broadcasts `chat:error` followed by a `chat:status:
+      # idle` transition. The error message carries the
       # exception's text AND a stacktrace snippet (the user
-      # explicitly asked for the file/line of the crash to be
-      # visible so they can find it in the server log).
+      # explicitly asked for the file/line of the crash to
+      # be visible so they can find it in the server log).
       assert_receive {:chat_error, %{content: content}}, 500
       assert content =~ "no function clause matching"
       assert content =~ "finish_event"
       # The source tag is appended so the user can grep the
       # server log for the matching `chat:error` entry.
       assert content =~ "[Source:"
-      # The stacktrace snippet is included below the message —
-      # `Exception.format/3` leads with `** (FunctionClauseError)`,
-      # and the snippet includes the chat_pipeline.ex line that
-      # raised.
+      # The stacktrace snippet is included below the message.
       assert content =~ "** (FunctionClauseError)"
-      assert content =~ "chat_pipeline.ex"
 
       assert_receive {:chat_status, %{status: "idle"}}, 200
     end
 
-    test "the agent GenServer stays alive after the chat task crashes", %{} do
+    test "the agent GenServer stays alive after the HTTP worker crashes", %{} do
       {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
-      Mimic.stub(Nest.Agents.Agent.LLMRunner, :run, fn _ctx, _state ->
+      Mimic.stub(MockClient, :run, fn _request, _opts ->
         raise "boom"
       end)
 
-      Mimic.allow(Nest.Agents.Agent.LLMRunner, self(), pid)
+      Mimic.allow(MockClient, self(), pid)
 
       :ok = Agent.chat(pid, "Hello")
 
@@ -126,13 +133,13 @@ defmodule Nest.Agents.ChatTaskCrashTest do
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
-      Mimic.stub(Nest.Agents.Agent.LLMRunner, :run, fn _ctx, _state ->
+      Mimic.stub(MockClient, :run, fn _request, _opts ->
         # Raise from a known source so the stacktrace has a
         # stable frame to assert on.
         raise "unique_pin_marker_12345"
       end)
 
-      Mimic.allow(Nest.Agents.Agent.LLMRunner, self(), pid)
+      Mimic.allow(MockClient, self(), pid)
 
       :ok = Agent.chat(pid, "Hello")
 
@@ -147,31 +154,27 @@ defmodule Nest.Agents.ChatTaskCrashTest do
     end
   end
 
-  describe "chat_task_crashed with partial content" do
+  describe "chat_crashed with partial content" do
     test "partial streaming content is saved as a normal assistant message before the error is broadcast",
          %{} do
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       # Simulate the crash happening *after* some content was
-      # streamed. The LLM runner's `LLMRunner.handle_new_stream/3`
-      # normally populates `state.chat_state.streaming_acc` with
-      # the deltas as they arrive; we simulate that by directly
-      # appending to the streaming accumulator via the
-      # delta_received event before the runner raises.
-      #
-      # We can't easily intercept at the delta level (the
-      # MockClient's stream is synchronous), so instead we use
-      # a stub that:
-      #   1. Sends a delta_received event to the agent (so the
-      #      streaming accumulator has some text).
-      #   2. Raises.
-      Mimic.stub(Nest.Agents.Agent.LLMRunner, :run, fn _ctx, _state ->
+      # streamed. The HTTP worker's streaming callback
+      # normally populates the Agent's `streaming_acc` with
+      # the deltas as they arrive; we simulate that by
+      # directly sending a `delta_received` event to the
+      # Agent from inside the stub before raising. The
+      # Agent's `delta_received` handler updates the
+      # mirror, and `chat_crashed`'s `finalize_partial_if_any`
+      # reads it back to build the partial message.
+      Mimic.stub(MockClient, :run, fn _request, _opts ->
         send(pid, {:delta_received, "Halfway through...", :text})
         raise "stream failed"
       end)
 
-      Mimic.allow(Nest.Agents.Agent.LLMRunner, self(), pid)
+      Mimic.allow(MockClient, self(), pid)
 
       :ok = Agent.chat(pid, "Hello")
 

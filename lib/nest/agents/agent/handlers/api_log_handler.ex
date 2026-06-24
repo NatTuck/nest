@@ -61,13 +61,16 @@ defmodule Nest.Agents.Agent.Handlers.ApiLogHandler do
   end
 
   defp api_log_sequences_updated(sequences, state) do
-    # The chat task completed normally (no stop). Clear the
-    # `chat_task_pid` and `cancelled` flag so the next chat turn
-    # can start fresh.
+    # The ChatTurn completed normally (no stop). Clear the
+    # `chat_turn_pid` and `cancelled` flag so the next chat
+    # turn can start fresh. The `:chat_idle` handler does
+    # the same; this handler exists to keep the api_log
+    # sequences consistent in case the Agent's lifecycle
+    # state diverged (defense in depth).
     chat_state =
       state.chat_state
       |> Map.put(:api_log_sequences, sequences)
-      |> Map.put(:chat_task_pid, nil)
+      |> Map.put(:chat_turn_pid, nil)
       |> Map.put(:cancelled, false)
 
     {:noreply, %{state | chat_state: chat_state}}

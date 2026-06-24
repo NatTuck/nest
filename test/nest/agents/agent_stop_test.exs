@@ -52,9 +52,9 @@ defmodule Nest.Agents.AgentStopTest do
       assert_receive {:chat_status, %{status: "streaming"}}, 100
       assert_receive {:chat_delta, _}, 100
 
-      chat_task_pid = :sys.get_state(pid).chat_state.chat_task_pid
-      assert is_pid(chat_task_pid)
-      send(chat_task_pid, {:stop_chat, self()})
+      chat_turn_pid = :sys.get_state(pid).chat_state.chat_turn_pid
+      assert is_pid(chat_turn_pid)
+      send(chat_turn_pid, {:stop_chat, self()})
 
       assert_receive {:chat_message,
                       {:assistant, %Assistant{metadata: %{"stopped_by_user" => true}}}},
@@ -74,9 +74,9 @@ defmodule Nest.Agents.AgentStopTest do
       assert_receive {:chat_message, {:user, _}}, 100
       assert_receive {:chat_delta, _}, 100
 
-      chat_task_pid = :sys.get_state(pid).chat_state.chat_task_pid
-      assert is_pid(chat_task_pid)
-      send(chat_task_pid, {:stop_chat, self()})
+      chat_turn_pid = :sys.get_state(pid).chat_state.chat_turn_pid
+      assert is_pid(chat_turn_pid)
+      send(chat_turn_pid, {:stop_chat, self()})
 
       assert_receive {:chat_message, {:assistant, %Assistant{content: content, index: 2}}},
                      2000
@@ -136,9 +136,9 @@ defmodule Nest.Agents.AgentStopTest do
       # `request_compaction_from_task/2`. Send the stop
       # directly to the chat task pid (avoids the GenServer
       # mailbox-ordering race).
-      chat_task_pid = :sys.get_state(pid).chat_state.chat_task_pid
-      assert is_pid(chat_task_pid)
-      send(chat_task_pid, {:stop_chat, self()})
+      chat_turn_pid = :sys.get_state(pid).chat_state.chat_turn_pid
+      assert is_pid(chat_turn_pid)
+      send(chat_turn_pid, {:stop_chat, self()})
 
       # The agent's stop handler waits for the chat task to
       # ack via `{:chat_stopped, _}`. The tool loop's
@@ -168,11 +168,11 @@ defmodule Nest.Agents.AgentStopTest do
       # first sets the stream to halt; the second and third
       # are picked up by no receive (the consumer has already
       # halted) so they're no-ops.
-      chat_task_pid = :sys.get_state(pid).chat_state.chat_task_pid
+      chat_turn_pid = :sys.get_state(pid).chat_state.chat_turn_pid
 
-      send(chat_task_pid, {:stop_chat, self()})
-      send(chat_task_pid, {:stop_chat, self()})
-      send(chat_task_pid, {:stop_chat, self()})
+      send(chat_turn_pid, {:stop_chat, self()})
+      send(chat_turn_pid, {:stop_chat, self()})
+      send(chat_turn_pid, {:stop_chat, self()})
 
       assert_receive {:chat_status, %{status: "idle"}}, 2000
 
@@ -180,8 +180,14 @@ defmodule Nest.Agents.AgentStopTest do
       # chat turn should work normally.
       :ok = Agent.chat(pid, "After the stop")
 
-      assert_receive {:chat_message, {:user, %{index: 3}}}, 2000
-      assert_receive {:chat_message, {:assistant, _}}, 2000
+      # Wait for the full second-turn to complete (idle
+      # status) BEFORE asserting the earlier events. This
+      # avoids mailbox pollution from the first turn that
+      # could otherwise match the second turn's assertions
+      # in a flaky way.
+      assert_receive {:chat_status, %{status: "idle"}}, 2000
+      assert_receive {:chat_message, {:user, %{index: 3}}}, 100
+      assert_receive {:chat_message, {:assistant, _}}, 100
     end
   end
 
@@ -201,8 +207,8 @@ defmodule Nest.Agents.AgentStopTest do
 
       # Send the stop directly to the chat task pid (avoids
       # the GenServer mailbox-ordering race).
-      chat_task_pid = :sys.get_state(pid).chat_state.chat_task_pid
-      send(chat_task_pid, {:stop_chat, self()})
+      chat_turn_pid = :sys.get_state(pid).chat_state.chat_turn_pid
+      send(chat_turn_pid, {:stop_chat, self()})
       assert_receive {:chat_status, %{status: "idle"}}, 2000
 
       # The `cancelled` flag must be cleared on the next turn,
@@ -215,9 +221,15 @@ defmodule Nest.Agents.AgentStopTest do
 
       :ok = Agent.chat(pid, "Second turn")
 
-      assert_receive {:chat_message, {:user, %{index: 3}}}, 2000
-      assert_receive {:chat_message, {:assistant, %{content: "Second turn response"}}}, 2000
+      # Wait for the second turn to reach :idle first
+      # (consuming the user message and assistant message
+      # along the way). This is more robust than asserting
+      # the user message first, which can flake when the
+      # first turn's stale messages pollute the test
+      # process's mailbox.
       assert_receive {:chat_status, %{status: "idle"}}, 2000
+      assert_receive {:chat_message, {:user, %{index: 3}}}, 100
+      assert_receive {:chat_message, {:assistant, %{content: "Second turn response"}}}, 100
     end
   end
 end

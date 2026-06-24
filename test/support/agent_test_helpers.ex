@@ -61,6 +61,16 @@ defmodule Nest.Agents.AgentTestHelpers do
 
     on_exit(fn ->
       MockClient.stop(pid)
+      # Unsubscribe so this test process doesn't keep
+      # receiving broadcasts from the now-dying agent
+      # (and cross-contaminate the next test's mailbox).
+      Phoenix.PubSub.unsubscribe(Nest.PubSub, "agent:#{agent_id}")
+      # Drain any stale messages from the test process's
+      # mailbox (e.g. `:stopped` replies, late deltas)
+      # so they don't pollute the next test's
+      # `assert_receive` patterns. ExUnit's test process
+      # is reused across tests in the same module.
+      drain_mailbox()
       Process.put(:nest_test_agent_pid, test_pid)
     end)
 
@@ -69,6 +79,28 @@ defmodule Nest.Agents.AgentTestHelpers do
 
   def get_system_prompt(pid) do
     GenServer.call(pid, :get_system_prompt)
+  end
+
+  @doc false
+  # Drain any remaining messages from the test process's
+  # mailbox. Called from the on_exit hook so stale
+  # messages from one test don't pollute the next
+  # test's `assert_receive` patterns.
+  defp drain_mailbox do
+    receive do
+      _ -> drain_mailbox()
+    after
+      0 -> :ok
+    end
+  end
+
+  @doc """
+  Drain the test process's mailbox. Useful at the start
+  of a test to discard any stale messages from a
+  previous test.
+  """
+  def drain_test_mailbox do
+    drain_mailbox()
   end
 
   @doc """

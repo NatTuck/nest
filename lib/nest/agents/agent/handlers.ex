@@ -23,6 +23,7 @@ defmodule Nest.Agents.Agent.Handlers do
 
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Handlers.ApiLogHandler
+  alias Nest.Agents.Agent.Handlers.ChatTurnHandler
   alias Nest.Agents.Agent.Handlers.CompactionHandler
   alias Nest.Agents.Agent.Handlers.ExitHandler
   alias Nest.Agents.Agent.Handlers.LLMStreamHandler
@@ -42,6 +43,7 @@ defmodule Nest.Agents.Agent.Handlers do
   def handle(msg, state) do
     case route_for(msg) do
       {:ok, LLMStreamHandler} -> LLMStreamHandler.handle(msg, state)
+      {:ok, ChatTurnHandler} -> ChatTurnHandler.handle(msg, state)
       {:ok, ApiLogHandler} -> ApiLogHandler.handle(msg, state)
       {:ok, CompactionHandler} -> CompactionHandler.handle(msg, state)
       {:ok, ExitHandler} -> ExitHandler.handle(msg, state)
@@ -58,13 +60,14 @@ defmodule Nest.Agents.Agent.Handlers do
   defp route_for({:delta_received, _, _}), do: {:ok, LLMStreamHandler}
   defp route_for({:thinking_signature_received, _}), do: {:ok, LLMStreamHandler}
   defp route_for({:llm_error, _}), do: {:ok, LLMStreamHandler}
-  defp route_for({:chat_task_crashed, _}), do: {:ok, LLMStreamHandler}
-  defp route_for({:chat_task_crashed, _, _}), do: {:ok, LLMStreamHandler}
   defp route_for({:tool_calls_received, _}), do: {:ok, LLMStreamHandler}
   defp route_for({:tool_results_received, _}), do: {:ok, LLMStreamHandler}
   defp route_for({:llm_response_with_thinking, _, _}), do: {:ok, LLMStreamHandler}
   defp route_for({:llm_usage, _}), do: {:ok, LLMStreamHandler}
   defp route_for({:system_reminder_received, _}), do: {:ok, LLMStreamHandler}
+  defp route_for({:chat_idle, _}), do: {:ok, ChatTurnHandler}
+  defp route_for({:chat_stopped, _}), do: {:ok, ChatTurnHandler}
+  defp route_for({:chat_crashed, _, _}), do: {:ok, ChatTurnHandler}
   defp route_for({:api_log, _, _}), do: {:ok, ApiLogHandler}
   defp route_for({:api_log_sequences_updated, _}), do: {:ok, ApiLogHandler}
   defp route_for({:compaction_done, _, _}), do: {:ok, CompactionHandler}
@@ -74,7 +77,6 @@ defmodule Nest.Agents.Agent.Handlers do
   defp route_for({:preflight_request, _, _}), do: {:ok, CompactionHandler}
   defp route_for({:compaction_failed_for_preflight, _, _}), do: {:ok, CompactionHandler}
   defp route_for({:stop_chat, _}), do: {:ok, StopHandler}
-  defp route_for({:chat_stopped, _}), do: {:ok, StopHandler}
   defp route_for({:EXIT, _, _}), do: {:ok, ExitHandler}
 
   defp route_for({:discovered_context_limit, source, limit}) do

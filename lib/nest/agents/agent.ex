@@ -134,15 +134,15 @@ defmodule Nest.Agents.Agent do
   end
 
   @doc """
-  Test-only: returns the pid of the in-flight chat task (or
+  Test-only: returns the pid of the in-flight ChatTurn (or
   `nil` if the agent is idle). The pid is used by tests to
-  inject stop signals directly into the chat task's mailbox,
+  inject stop signals directly into the ChatTurn's mailbox,
   bypassing the GenServer mailbox ordering. Production code
   should use `stop_chat/2` instead.
   """
-  @spec get_chat_task_pid(pid()) :: pid() | nil
-  def get_chat_task_pid(pid) do
-    GenServer.call(pid, :get_chat_task_pid)
+  @spec get_chat_turn_pid(pid()) :: pid() | nil
+  def get_chat_turn_pid(pid) do
+    GenServer.call(pid, :get_chat_turn_pid)
   end
 
   @doc """
@@ -278,8 +278,8 @@ defmodule Nest.Agents.Agent do
   end
 
   @impl true
-  def handle_call(:get_chat_task_pid, _from, state) do
-    {:reply, state.chat_state.chat_task_pid, state}
+  def handle_call(:get_chat_turn_pid, _from, state) do
+    {:reply, state.chat_state.chat_turn_pid, state}
   end
 
   # The canonical message-append path. The Agent is the single

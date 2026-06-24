@@ -152,6 +152,29 @@ defmodule Nest.Agents.Agent.ChatTurn.Helpers do
   providers that hash the system prompt and (b) failed to
   actually reach the LLM in the wire payload.
   """
+  @spec maybe_inject_budget_reminder(integer()) :: {:system, System.t()} | nil
+  def maybe_inject_budget_reminder(remaining) when remaining > 2 or remaining <= 0, do: nil
+
+  def maybe_inject_budget_reminder(remaining) do
+    warning =
+      case remaining do
+        2 ->
+          "You have 2 tool call rounds remaining. Plan your remaining tool use carefully."
+
+        1 ->
+          "This is your last tool call round. After this, no more tools will be available — provide your final response."
+      end
+
+    {:system, %System{content: warning, timestamp: DateTime.utc_now()}}
+  end
+
+  @doc false
+  # Kept for backward compat with existing tests and any
+  # legacy callers. New code should call
+  # `maybe_inject_budget_reminder/1` and route the
+  # resulting message through the Agent via
+  # `GenServer.call({:append_message, _})` rather than
+  # relying on the side-effecting `send/2`.
   @spec maybe_inject_budget_warning(
           [tuple()],
           map(),
@@ -164,22 +187,17 @@ defmodule Nest.Agents.Agent.ChatTurn.Helpers do
   end
 
   def maybe_inject_budget_warning(messages, _ctx, remaining, agent_pid) do
-    warning =
-      case remaining do
-        2 ->
-          "You have 2 tool call rounds remaining. Plan your remaining tool use carefully."
+    case maybe_inject_budget_reminder(remaining) do
+      nil ->
+        messages
 
-        1 ->
-          "This is your last tool call round. After this, no more tools will be available — provide your final response."
-      end
+      reminder ->
+        if agent_pid do
+          send(agent_pid, {:system_reminder_received, reminder})
+        end
 
-    reminder = {:system, %System{content: warning, timestamp: DateTime.utc_now()}}
-
-    if agent_pid do
-      send(agent_pid, {:system_reminder_received, reminder})
+        messages ++ [reminder]
     end
-
-    messages ++ [reminder]
   end
 
   @doc false

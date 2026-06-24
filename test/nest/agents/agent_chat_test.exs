@@ -73,7 +73,7 @@ defmodule Nest.Agents.AgentChatTest do
         end)
 
       assert log =~ "chat:error"
-      assert log =~ "LLMRunner.handle_failed_response"
+      assert log =~ "ChatTurn.run_chat_task/1"
       assert log =~ "Connection failed"
     end
 
