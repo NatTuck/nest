@@ -210,7 +210,55 @@ defmodule Nest.Agents.Agent.ChatTurn do
     next_index = GenServer.call(state.agent_pid, :get_next_index)
     state = %{state | active_message_index: next_index}
 
-    spawn_http_worker(state, messages)
+    # Mid-iteration preflight: ask the Agent to compact the
+    # messages list if it's about to overflow the context
+    # window. The pre-PR-3 LLMRunner did this before every
+    # LLM call. The Agent's `CompactionHandler.preflight_request/3`
+    # runs the preflight decision and replies with either
+    # `:proceed` (no compaction needed) or `:compacted` (the
+    # compactor ran and returned new messages). The receive
+    # blocks the ChatTurn for up to 30 seconds; if the Agent
+    # doesn't respond we proceed with the existing messages
+    # (avoid deadlock).
+    case run_preflight(state) do
+      :proceed ->
+        spawn_http_worker(state, messages)
+
+      {:compacted, compacted_messages} ->
+        spawn_http_worker(state, compacted_messages)
+
+      :stopped ->
+        # User clicked Stop mid-preflight. Notify the
+        # Agent and stop.
+        send(state.agent_pid, {:chat_stopped, self()})
+        {:stop, :normal, state}
+    end
+  end
+
+  # Ask the Agent to run a pre-flight compaction check
+  # before this LLM call. Returns:
+  #   - `:proceed` if the existing messages fit
+  #   - `{:compacted, messages}` if the compactor ran
+  #   - `:stopped` if the user clicked Stop while waiting
+  def run_preflight(state) do
+    messages = GenServer.call(state.agent_pid, :get_messages)
+    send(state.agent_pid, {:preflight_request, self(), messages})
+
+    receive do
+      {:preflight_result, :proceed, _messages} ->
+        :proceed
+
+      {:preflight_result, :compacted, new_messages} ->
+        {:compacted, new_messages}
+
+      {:stop_chat, from} ->
+        send(from, :stopped)
+        :stopped
+    after
+      30_000 ->
+        Logger.warning("Pre-flight request timed out; proceeding with existing messages")
+        :proceed
+    end
   end
 
   # Check if we're approaching the iteration cap. If
