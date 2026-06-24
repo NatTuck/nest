@@ -20,8 +20,10 @@ import { ApiLogsBlock } from "../components/ApiLogsBlock";
 import { StatusBanner } from "../components/StatusBanner";
 import { NotificationBanner } from "../components/NotificationBanner";
 import { CompactionMarker } from "../components/CompactionMarker";
+import { CopyButton } from "../components/CopyButton";
 import { useScrollToBottom } from "../hooks/useScrollToBottom";
 import { stripModePrefix } from "../utils/stripModePrefix.js";
+import { messageToMarkdown } from "../utils/formatMessage.js";
 
 /**
  * Chat Page component
@@ -68,10 +70,12 @@ export function ChatPage() {
   const availableModes = cache?.modes ?? ["chat"];
   const defaultMode = cache?.defaultMode ?? "chat";
   const contextLimit = cache?.contextLimit ?? null;
-  // `usage.input_tokens` is overwritten per LLM call (each call's
-  // `input_tokens` is the size of the full context for that call),
-  // so the most recent value is the current context size.
-  const lastInput = cache?.usage?.input_tokens ?? 0;
+  // Pass the full `usage` object to the chip — the chip reads
+  // `context_input_tokens` (server-derived) for the current
+  // context fill, and the cumulative `total_*` fields for the
+  // session cost estimate. See `TokenUsageChip.jsx` for the
+  // full field-by-field layout.
+  const usage = cache?.usage ?? null;
 
   // History navigation list for ChatInput's Ctrl/Cmd+Up / Down support.
   // Pulls user messages from both the active session and the archived
@@ -254,7 +258,7 @@ export function ChatPage() {
             </p>
           </div>
           <div className="flex flex-col items-end gap-2">
-            <TokenUsageChip lastInput={lastInput} contextLimit={contextLimit} />
+            <TokenUsageChip usage={usage} contextLimit={contextLimit} />
             <div className="flex items-center gap-2">
               <div
                 className={`
@@ -392,6 +396,12 @@ export function ChatPage() {
                   {message.isPartial && (
                     <span className="text-xs text-gray-400">(typing...)</span>
                   )}
+                  <span className="ml-auto">
+                    <CopyButton
+                      text={messageToMarkdown(message)}
+                      label="Copy message"
+                    />
+                  </span>
                 </div>
                 {/* Thinking is rendered BEFORE the reply and
                     stays in place across the partial → final
@@ -582,10 +592,25 @@ const SYSTEM_MESSAGE_MAX_LINES = 20;
 // Renders system message content with line-count truncation. If the
 // content exceeds SYSTEM_MESSAGE_MAX_LINES, only the first N lines
 // are shown with an expand link.
+//
+// An empty system message (no system prompt was configured for
+// this agent) is still rendered — as a dimmed placeholder — so the
+// user can see that a system message was sent to the LLM (the
+// `AGENTS.md` transparency rule: the UI always includes everything
+// that happened). Without this, an agent with no system prompt
+// would have no visible representation of position 0 in the
+// messages list, and the conversation history would be confusing.
 function SystemMessageContent({ content, isPartial }) {
   const [expanded, setExpanded] = useState(false);
 
-  if (!content) return null;
+  if (!content) {
+    return (
+      <div className="text-sm italic text-gray-400 border-l-2 border-gray-200 pl-2">
+        (empty system message — no system prompt was configured for this agent)
+      </div>
+    );
+  }
+
   if (isPartial) {
     return (
       <MessageContent content={content} isPartial className="text-gray-800" />

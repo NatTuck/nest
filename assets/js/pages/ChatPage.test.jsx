@@ -432,6 +432,27 @@ describe("ChatPage message rendering", () => {
     expect(screen.getByText("Welcome")).toBeInTheDocument();
   });
 
+  it("renders an empty system message with a dimmed placeholder (transparency)", () => {
+    // Per the AGENTS.md transparency rule: the UI always
+    // includes everything that happened. An empty system
+    // message (no system prompt was configured) is still
+    // broadcast from the server, and the UI renders a
+    // visible placeholder rather than hiding the message.
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "idle",
+        messages: [{ index: 0, role: "system", content: "" }],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+
+    renderChat();
+
+    expect(screen.getByText("System")).toBeInTheDocument();
+    expect(screen.getByText(/empty system message/i)).toBeInTheDocument();
+  });
+
   it("truncates system messages exceeding 20 lines with an expand button", () => {
     const lines = Array.from({ length: 25 }, (_, i) => `line-${i + 1}`);
     mockAgentsCache = {
@@ -973,5 +994,131 @@ describe("ChatPage mode selector", () => {
     // dropdown.
     expect(screen.getByLabelText("Message")).toBeDisabled();
     expect(screen.getByLabelText("Mode")).toBeDisabled();
+  });
+});
+
+describe("ChatPage message copy button", () => {
+  let writeText;
+
+  beforeEach(() => {
+    mockAgentsCache = {};
+    // jsdom doesn't ship `navigator.clipboard`; install a mock so
+    // the per-message copy button's `copyToClipboard` resolves
+    // successfully.
+    writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+      writable: true,
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("renders a 'Copy message' button on every finalized message", () => {
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "idle",
+        messages: [
+          { index: 0, role: "user", content: "Hello" },
+          { index: 1, role: "assistant", content: "Hi back" },
+          { index: 2, role: "system", content: "Welcome" },
+        ],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+
+    renderChat();
+
+    // Three messages → three copy buttons.
+    expect(
+      screen.getAllByRole("button", { name: /copy message/i }),
+    ).toHaveLength(3);
+  });
+
+  it("clicking a user message's copy button writes the content (with the [mode: X]\\n prefix stripped) to the clipboard", async () => {
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "idle",
+        messages: [
+          {
+            index: 0,
+            role: "user",
+            mode: "build",
+            content: "[mode: build]\nHello world",
+          },
+        ],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+
+    renderChat();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /copy message/i }));
+    });
+
+    expect(writeText).toHaveBeenCalledWith("Hello world");
+  });
+
+  it("clicking an assistant message's copy button writes the content (including thinking, separated by a horizontal rule)", async () => {
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "idle",
+        messages: [
+          {
+            index: 0,
+            role: "user",
+            content: "Hi",
+          },
+          {
+            index: 1,
+            role: "assistant",
+            thinking: "Reasoning here.",
+            content: "Answer here.",
+          },
+        ],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+
+    renderChat();
+
+    // Two messages → two copy buttons; the assistant one is
+    // index 1, i.e. the second one.
+    const buttons = screen.getAllByRole("button", {
+      name: /copy message/i,
+    });
+    await act(async () => {
+      fireEvent.click(buttons[1]);
+    });
+
+    expect(writeText).toHaveBeenCalledWith(
+      "Reasoning here.\n\n---\n\nAnswer here.",
+    );
+  });
+
+  it("the copy button on a message flips to 'Copied' after a successful click", async () => {
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "idle",
+        messages: [{ index: 0, role: "user", content: "Hi" }],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+
+    renderChat();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /copy message/i }));
+    });
+
+    expect(screen.getByRole("button", { name: /copied/i })).toBeInTheDocument();
   });
 });

@@ -179,49 +179,142 @@ defmodule Nest.Agents.Agent.Broadcasts do
   # Initial / reset state for `usage_totals`. Distinct from the
   # `nil` value the accumulator produces: the agent always has a
   # map, even before the first LLM call has returned.
+  #
+  # The map carries two axes of state:
+  #
+  #   * **Per-call (overwrite)** — the most recent LLM call's
+  #     values, suitable for "what does the context look like
+  #     right now" displays. These are `input_tokens`,
+  #     `cache_read_input_tokens`, `cache_creation_input_tokens`,
+  #     `last_output`, and the derived `context_input_tokens`.
+  #
+  #   * **Session (sum)** — cumulative values across every call
+  #     the agent has made, suitable for cost estimation and
+  #     usage dashboards. These are `output_tokens`,
+  #     `total_input_tokens`, `total_cache_read_input_tokens`,
+  #     `total_cache_creation_input_tokens`, `total_tokens`, and
+  #     `reasoning_tokens`.
   def empty_usage_totals do
     %{
+      # Per-call (overwrite)
       input_tokens: 0,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 0,
+      context_input_tokens: 0,
+      last_output: 0,
+      # Session (sum)
       output_tokens: 0,
+      total_input_tokens: 0,
+      total_cache_read_input_tokens: 0,
+      total_cache_creation_input_tokens: 0,
       total_tokens: 0,
-      reasoning_tokens: 0,
-      last_output: 0
+      reasoning_tokens: 0
     }
   end
 
   # Combine a fresh usage payload into the running totals.
   #
   # The canonical usage map emitted by both clients uses
-  # `:input_tokens` (the size of the full context for that call)
-  # and `:output_tokens` (the tokens just generated). Providers
-  # may also surface `:reasoning_tokens` (Anthropic, o1-style
-  # OpenAI) and `:cache_read_input_tokens` / `:cache_creation_input_tokens`
-  # (Anthropic).
+  # `:input_tokens` (new / non-cached input for the most recent
+  # call), `:cache_read_input_tokens` (served from cache),
+  # `:cache_creation_input_tokens` (newly written to cache;
+  # Anthropic only), `:output_tokens` (billed output, reasoning
+  # included as a subset), and `:reasoning_tokens` (the
+  # reasoning subset of output).
   #
-  # - `input_tokens` overwrites, not adds: it is the size of the
-  #   full context for that call, so the most recent value is
-  #   the current context size.
+  # - `input_tokens`, `cache_read_input_tokens`,
+  #   `cache_creation_input_tokens` overwrite (most recent call
+  #   is the current state). `context_input_tokens` is derived
+  #   as the sum of those three — the real size of the context
+  #   window for the most recent call.
   # - `last_output` mirrors the same overwrite semantics for the
   #   assistant turn that just finished.
-  # - `output_tokens`, `total_tokens`, `reasoning_tokens` are
-  #   summed across the session.
+  # - `total_input_tokens`, `total_cache_read_input_tokens`,
+  #   `total_cache_creation_input_tokens`, `output_tokens`,
+  #   `total_tokens`, `reasoning_tokens` are summed across the
+  #   session. The cost module reads the `total_*` session
+  #   fields, not the per-call fields, so it can estimate the
+  #   cumulative spend.
   # - A `nil` `usage` is a no-op (callers that don't populate it
   #   shouldn't zero out the running totals).
   def merge_usage_totals(current, nil), do: current
 
   def merge_usage_totals(current, usage) when is_map(usage) do
-    input = Map.get(usage, :input_tokens)
-    output = Map.get(usage, :output_tokens, 0)
-    total = Map.get(usage, :total_tokens, 0)
-    reasoning = Map.get(usage, :reasoning_tokens, 0)
+    new_call? = Map.has_key?(usage, :input_tokens)
 
-    %{
-      input_tokens: if(input != nil, do: input, else: current.input_tokens),
-      output_tokens: current.output_tokens + output,
-      total_tokens: current.total_tokens + total,
-      reasoning_tokens: current.reasoning_tokens + reasoning,
-      last_output: if(input != nil, do: output, else: current.last_output)
-    }
+    current
+    |> apply_per_call_fields(usage, new_call?)
+    |> apply_session_fields(usage)
+    |> put_context_input_tokens()
+  end
+
+  # Per-call (overwrite) fields. When this usage payload
+  # represents a new LLM call (carries `input_tokens`), pull
+  # the per-call value from the payload; otherwise preserve the
+  # current value. Cache fields default to 0 when the payload
+  # omits them (newer providers may report them; older ones
+  # don't).
+  defp apply_per_call_fields(current, usage, new_call?) do
+    Map.merge(current, %{
+      input_tokens: per_call_value(usage, :input_tokens, current, new_call?),
+      cache_read_input_tokens:
+        per_call_value(usage, :cache_read_input_tokens, current, new_call?),
+      cache_creation_input_tokens:
+        per_call_value(usage, :cache_creation_input_tokens, current, new_call?),
+      last_output: per_call_value(usage, :output_tokens, current, new_call?)
+    })
+  end
+
+  # Session (sum) fields. Each `total_*` field is the running
+  # sum of the per-call value across every LLM call. The
+  # `per_call_or_zero` helper returns the per-call value when
+  # this payload represents a new call, and 0 otherwise, so
+  # session totals are preserved on usage-only updates.
+  defp apply_session_fields(current, usage) do
+    Map.merge(current, %{
+      output_tokens: current.output_tokens + per_call_or_zero(usage, :output_tokens),
+      total_input_tokens: current.total_input_tokens + per_call_or_zero(usage, :input_tokens),
+      total_cache_read_input_tokens:
+        current.total_cache_read_input_tokens +
+          per_call_or_zero(usage, :cache_read_input_tokens),
+      total_cache_creation_input_tokens:
+        current.total_cache_creation_input_tokens +
+          per_call_or_zero(usage, :cache_creation_input_tokens),
+      total_tokens: current.total_tokens + per_call_or_zero(usage, :total_tokens),
+      reasoning_tokens: current.reasoning_tokens + per_call_or_zero(usage, :reasoning_tokens)
+    })
+  end
+
+  # `context_input_tokens` is derived: the per-call sum of the
+  # three input fields. Extracted so the merge helpers stay
+  # focused on data flow.
+  defp put_context_input_tokens(totals) do
+    Map.put(
+      totals,
+      :context_input_tokens,
+      totals.input_tokens + totals.cache_read_input_tokens +
+        totals.cache_creation_input_tokens
+    )
+  end
+
+  # For "per-call (overwrite)" fields: when this usage payload
+  # represents a new LLM call, use the new value. Otherwise
+  # keep the prior value.
+  defp per_call_value(usage, key, _current, true),
+    do: Map.get(usage, key, 0)
+
+  defp per_call_value(_usage, key, current, false),
+    do: Map.get(current, key)
+
+  # For "session (sum)" fields: when the payload represents a
+  # new LLM call, add the per-call value to the running total.
+  # When it doesn't (e.g. a usage update with only output
+  # tokens), add 0 so the running total is preserved.
+  defp per_call_or_zero(usage, key) do
+    case Map.fetch(usage, key) do
+      {:ok, v} when is_integer(v) -> v
+      _ -> 0
+    end
   end
 
   def api_log(agent_pid, message_index, api_log_id, api_payload) do

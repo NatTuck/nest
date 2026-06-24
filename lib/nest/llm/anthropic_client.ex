@@ -294,7 +294,9 @@ defmodule Nest.LLM.AnthropicClient do
       message_id: nil,
       stop_reason: nil,
       input_tokens: 0,
-      output_tokens: 0
+      output_tokens: 0,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 0
     }
   end
 
@@ -310,6 +312,8 @@ defmodule Nest.LLM.AnthropicClient do
     %{
       input_tokens: state.input_tokens,
       output_tokens: state.output_tokens,
+      cache_read_input_tokens: state.cache_read_input_tokens,
+      cache_creation_input_tokens: state.cache_creation_input_tokens,
       total_tokens: state.input_tokens + state.output_tokens
     }
   end
@@ -326,6 +330,14 @@ defmodule Nest.LLM.AnthropicClient do
           |> put_field(:model, msg["model"])
           |> put_field(:message_id, msg["id"])
           |> put_field(:input_tokens, get_in(msg, ["usage", "input_tokens"]) || 0)
+          |> put_field(
+            :cache_read_input_tokens,
+            get_in(msg, ["usage", "cache_read_input_tokens"]) || 0
+          )
+          |> put_field(
+            :cache_creation_input_tokens,
+            get_in(msg, ["usage", "cache_creation_input_tokens"]) || 0
+          )
 
         {[], state}
 
@@ -377,24 +389,12 @@ defmodule Nest.LLM.AnthropicClient do
 
   defp frame_to_events({:event, "message_delta", data}, state) do
     decoded = Jason.decode(data)
+    usage = usage_from_decoded(decoded)
 
-    {state, events} =
-      case decoded do
-        {:ok, %{"delta" => %{"stop_reason" => reason}}} when not is_nil(reason) ->
-          {put_field(state, :stop_reason, reason), [{:finish_reason, reason}]}
-
-        _ ->
-          {state, []}
-      end
-
-    state =
-      case decoded do
-        {:ok, %{"usage" => %{"output_tokens" => n}}} when is_integer(n) ->
-          put_field(state, :output_tokens, n)
-
-        _ ->
-          state
-      end
+    {state, events} = apply_stop_reason(state, decoded)
+    state = apply_usage_field(state, usage, :output_tokens)
+    state = apply_usage_field(state, usage, :cache_read_input_tokens)
+    state = apply_usage_field(state, usage, :cache_creation_input_tokens)
 
     {events, state}
   end
@@ -417,6 +417,34 @@ defmodule Nest.LLM.AnthropicClient do
   end
 
   defp frame_to_events(_other, state), do: {[], state}
+
+  defp apply_stop_reason(state, {:ok, %{"delta" => %{"stop_reason" => reason}}})
+       when not is_nil(reason) do
+    {put_field(state, :stop_reason, reason), [{:finish_reason, reason}]}
+  end
+
+  defp apply_stop_reason(state, _), do: {state, []}
+
+  defp usage_from_decoded({:ok, %{"usage" => usage}}) when is_map(usage), do: usage
+  defp usage_from_decoded(_), do: %{}
+
+  # The final `message_delta.usage` block is the authoritative
+  # source for the cache fields — it carries the up-to-date
+  # `cache_read_input_tokens` and `cache_creation_input_tokens`
+  # totals for the completed request. Override the
+  # `message_start` values when present; leave the prior
+  # values in place when the API didn't report the field on
+  # this delta.
+  #
+  # `usage` is a JSON map with string keys; the state struct
+  # uses atom keys. We look up by string and write the value
+  # into the state by atom.
+  defp apply_usage_field(state, usage, key) do
+    case Map.get(usage, Atom.to_string(key)) do
+      n when is_integer(n) -> put_field(state, key, n)
+      _ -> state
+    end
+  end
 
   defp put_field(state, key, value), do: Map.put(state, key, value)
 

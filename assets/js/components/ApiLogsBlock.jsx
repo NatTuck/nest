@@ -3,8 +3,15 @@
  * logs associated with a message. The block is collapsed by
  * default; expanding it shows a JSON-formatted dump of each
  * log entry's payload.
+ *
+ * The header carries a small "Copy as JSON" button that copies
+ * the same JSON the expanded `<pre>` blocks render, so a
+ * developer can paste the full log into a ticket or pretty-
+ * printer without scrolling to select text.
  */
 import { useState } from "react";
+import { CopyButton } from "./CopyButton";
+import { formatApiLogsAsJson } from "../utils/formatMessage.js";
 
 export function ApiLogsBlock({ apiLogs }) {
   const [isExpanded, setIsExpanded] = useState(false);
@@ -13,12 +20,13 @@ export function ApiLogsBlock({ apiLogs }) {
 
   return (
     <div className="mt-3 border border-indigo-200 rounded-lg overflow-hidden">
-      <button
-        type="button"
-        onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full flex items-center justify-between px-3 py-2 bg-indigo-50 hover:bg-indigo-100 transition-colors text-sm"
-      >
-        <div className="flex items-center gap-2 text-indigo-700">
+      <div className="w-full flex items-center justify-between px-3 py-2 bg-indigo-50 text-sm">
+        <button
+          type="button"
+          onClick={() => setIsExpanded(!isExpanded)}
+          aria-label="Toggle API logs"
+          className="flex items-center gap-2 text-indigo-700 hover:text-indigo-900"
+        >
           <svg
             className="w-4 h-4"
             fill="none"
@@ -34,22 +42,23 @@ export function ApiLogsBlock({ apiLogs }) {
             />
           </svg>
           <span className="font-medium">API Logs ({apiLogs.length})</span>
-        </div>
-        <svg
-          className={`w-4 h-4 text-indigo-600 transition-transform ${isExpanded ? "rotate-180" : ""}`}
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-          aria-label={isExpanded ? "Collapse" : "Expand"}
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M19 9l-7 7-7-7"
-          />
-        </svg>
-      </button>
+          <svg
+            className={`w-4 h-4 text-indigo-600 transition-transform ${isExpanded ? "rotate-180" : ""}`}
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+            aria-label={isExpanded ? "Collapse" : "Expand"}
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M19 9l-7 7-7-7"
+            />
+          </svg>
+        </button>
+        <CopyButton text={formatApiLogsAsJson(apiLogs)} label="Copy API logs" />
+      </div>
       {isExpanded && (
         <div className="bg-white p-3 space-y-3 max-h-96 overflow-y-auto">
           {apiLogs.map((log) => (

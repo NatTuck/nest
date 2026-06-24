@@ -362,12 +362,28 @@ defmodule Nest.LLM.OpenAIClient do
   defp events_from_metadata(_), do: []
 
   defp parse_usage(usage) do
-    input = Map.get(usage, "prompt_tokens", 0)
+    total_input = Map.get(usage, "prompt_tokens", 0)
     output = Map.get(usage, "completion_tokens", 0)
+    # OpenAI's `prompt_tokens_details.cached_tokens` is a subset of
+    # `prompt_tokens` served from cache. We split it out so the
+    # downstream cost estimation can discount it (the way it does
+    # for Anthropic's `cache_read_input_tokens`). The remaining
+    # `input_tokens` is the new (non-cached) portion, matching the
+    # wire-format semantics of the Anthropic client.
+    cached = get_in(usage, ["prompt_tokens_details", "cached_tokens"]) || 0
+    input = max(total_input - cached, 0)
+    # `completion_tokens_details.reasoning_tokens` is a subset of
+    # `completion_tokens` charged at the same rate as regular
+    # output; the cost module treats `output_tokens` as the
+    # total billable output (reasoning included).
+    reasoning = get_in(usage, ["completion_tokens_details", "reasoning_tokens"]) || 0
 
     %{
       input_tokens: input,
       output_tokens: output,
+      cache_read_input_tokens: cached,
+      cache_creation_input_tokens: 0,
+      reasoning_tokens: reasoning,
       total_tokens: Map.get(usage, "total_tokens", input + output)
     }
   end

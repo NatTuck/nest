@@ -69,14 +69,16 @@ defmodule Nest.Agents.Agent.Init do
   def run_post_init(state, client_config) do
     # The system message is always at position 0 of
     # `state.chat_state.messages` (see
-    # `initial_messages_with_system/1`). An empty system
-    # message (when the agent was created with no system
-    # prompt) is intentionally not broadcast — it would
-    # render as an empty chat bubble in the UI.
+    # `initial_messages_with_system/1`). We always broadcast
+    # it — even when empty — because the system message
+    # exists in the LLM's view and the AGENTS.md
+    # transparency rule says the UI must include everything
+    # that happened. The UI decides how to render an empty
+    # system message (a dimmed placeholder); we don't hide
+    # it here.
     case state.chat_state.messages do
-      [{:system, %System{content: content}} | _]
-      when is_binary(content) and content != "" ->
-        Broadcasts.message(state.id, hd(state.chat_state.messages))
+      [{:system, %System{}} | _] = messages ->
+        Broadcasts.message(state.id, hd(messages))
 
       _ ->
         :ok

@@ -17,7 +17,7 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
 
   alias Nest.Agents.Agent
   alias Nest.LLM.MockClient
-  alias Nest.Messages.System
+  alias Nest.Messages.System, as: SystemMsg
   alias Nest.Test.TaskDrain
 
   setup :verify_on_exit!
@@ -42,24 +42,34 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
       state = :sys.get_state(pid)
       first = hd(state.chat_state.messages)
 
-      assert match?({:system, %System{}}, first)
+      assert match?({:system, %SystemMsg{}}, first)
     end
 
-    test "when the system prompt is empty, the empty system message is in state but not broadcast" do
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+    test "the empty system message is in state AND is broadcast (transparency)" do
+      # The empty system message is broadcast during
+      # `init/1`, so we need to subscribe to the PubSub
+      # topic BEFORE the agent starts. Pre-compute the id
+      # and use `start_supervised!/1` directly instead of
+      # the `start_agent/1` helper (which generates the id
+      # internally). We don't need MockClient here — we're
+      # only verifying the broadcast happens during init,
+      # not running a chat turn.
+      agent_id = "transparency-agent-#{System.unique_integer([:positive])}"
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
+      pid =
+        start_supervised!({Agent, %{id: agent_id, model: %{name: "qwen3.5-plus"}}})
+
+      # The empty system message is broadcast so the UI can
+      # render a placeholder (per the AGENTS.md transparency
+      # rule: the UI always includes everything that
+      # happened). Hiding it server-side would violate the
+      # principle. Regression guard.
+      assert_receive {:chat_message, {:system, %SystemMsg{content: ""}}}, 1000
+
+      # And it's still in state.
       state = :sys.get_state(pid)
-      assert {:system, %System{content: ""}} = hd(state.chat_state.messages)
-
-      MockClient.set_response("Hello back")
-      :ok = Agent.chat(pid, "Hi")
-
-      # The empty system message is in state but was NOT broadcast
-      # (would render as an empty chat bubble). The chat_status
-      # transition to idle is the proof the chat completed.
-      assert_receive {:chat_status, %{status: "idle"}}, 1000
-      refute_receive {:chat_message, {:system, _}}, 100
+      assert {:system, %SystemMsg{content: ""}} = hd(state.chat_state.messages)
     end
   end
 
@@ -93,7 +103,7 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
         # We expect at least one late system reminder mid-stream.
         # The reminder's content matches "2 tool call rounds remaining"
         # (injected when remaining goes from 3 to 2).
-        assert_receive {:chat_message, {:system, %System{content: content}}}, 2000
+        assert_receive {:chat_message, {:system, %SystemMsg{content: content}}}, 2000
         assert content =~ "tool call rounds remaining"
       end)
     end
@@ -127,7 +137,7 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
 
       system_messages =
         Enum.filter(state.chat_state.messages, fn
-          {:system, %System{}} -> true
+          {:system, %SystemMsg{}} -> true
           _ -> false
         end)
 

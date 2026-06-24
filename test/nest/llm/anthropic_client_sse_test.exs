@@ -186,6 +186,103 @@ defmodule Nest.LLM.AnthropicClientSSETest do
       refute Enum.any?(events, &match?({:ping, _}, &1))
       assert {:finish_reason, "end_turn"} in events
     end
+
+    test "captures cache_read and cache_creation tokens from message_start" do
+      sse = """
+      event: message_start
+      data: {"message":{"id":"msg_7","model":"claude-3-opus-20240229","usage":{"input_tokens":100,"cache_read_input_tokens":3200,"cache_creation_input_tokens":0,"output_tokens":1}}}
+
+      event: content_block_start
+      data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+      event: content_block_delta
+      data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}
+
+      event: content_block_stop
+      data: {"type":"content_block_stop","index":0}
+
+      event: message_delta
+      data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}
+
+      event: message_stop
+      data: {"type":"message_stop"}
+
+      """
+
+      events = run_with_sse(sse)
+      {:done, %{response: %RunResponse{usage: usage}}} = List.last(events)
+
+      assert usage.input_tokens == 100
+      assert usage.cache_read_input_tokens == 3200
+      assert usage.cache_creation_input_tokens == 0
+      assert usage.output_tokens == 7
+    end
+
+    test "message_delta overrides cache values when present (final values win)" do
+      # The final `message_delta.usage` block is the authoritative
+      # source for cache totals. It should override whatever
+      # `message_start` reported.
+      sse = """
+      event: message_start
+      data: {"message":{"id":"msg_8","model":"claude-3-opus-20240229","usage":{"input_tokens":100,"cache_read_input_tokens":3000,"cache_creation_input_tokens":0,"output_tokens":1}}}
+
+      event: content_block_start
+      data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+      event: content_block_delta
+      data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}
+
+      event: content_block_stop
+      data: {"type":"content_block_stop","index":0}
+
+      event: message_delta
+      data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7,"cache_read_input_tokens":3500,"cache_creation_input_tokens":50}}
+
+      event: message_stop
+      data: {"type":"message_stop"}
+
+      """
+
+      events = run_with_sse(sse)
+      {:done, %{response: %RunResponse{usage: usage}}} = List.last(events)
+
+      # The `message_delta` values (final) win.
+      assert usage.cache_read_input_tokens == 3500
+      assert usage.cache_creation_input_tokens == 50
+    end
+
+    test "cache fields default to 0 when absent from both events" do
+      # Backward-compat: providers that don't support prompt
+      # caching don't include the cache fields in the usage
+      # block. They should be reported as 0, not crash.
+      sse = """
+      event: message_start
+      data: {"message":{"id":"msg_9","model":"claude-3-opus-20240229","usage":{"input_tokens":50,"output_tokens":1}}}
+
+      event: content_block_start
+      data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+      event: content_block_delta
+      data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}
+
+      event: content_block_stop
+      data: {"type":"content_block_stop","index":0}
+
+      event: message_delta
+      data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}
+
+      event: message_stop
+      data: {"type":"message_stop"}
+
+      """
+
+      events = run_with_sse(sse)
+      {:done, %{response: %RunResponse{usage: usage}}} = List.last(events)
+
+      assert usage.input_tokens == 50
+      assert usage.cache_read_input_tokens == 0
+      assert usage.cache_creation_input_tokens == 0
+    end
   end
 
   describe "error handling" do

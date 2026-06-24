@@ -21,7 +21,9 @@ defmodule Nest.LLM.RunResponse do
           prompt_tokens: non_neg_integer(),
           completion_tokens: non_neg_integer(),
           total_tokens: non_neg_integer(),
-          reasoning_tokens: non_neg_integer() | nil
+          reasoning_tokens: non_neg_integer() | nil,
+          cache_read_input_tokens: non_neg_integer() | nil,
+          cache_creation_input_tokens: non_neg_integer() | nil
         }
 
   @type t :: %__MODULE__{
