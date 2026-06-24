@@ -16,13 +16,13 @@ defmodule Nest.Tokens.BudgetPlannerTest do
   alias Nest.Messages.ToolCall
   alias Nest.Tokens.BudgetPlanner
 
-  # A small executor that returns {result, default_max} for each
+  # A small executor that returns {:ok, result, default_max} for each
   # call. The default_max is the tool's "max_result_tokens" cap.
   defp make_executor(results) do
     fn %ToolCall{id: id} = _call ->
       case Map.fetch(results, id) do
-        {:ok, value} -> {value, 8192}
-        :error -> {"", 8192}
+        {:ok, value} -> {:ok, value, 8192}
+        :error -> {:ok, "", 8192}
       end
     end
   end
@@ -30,8 +30,8 @@ defmodule Nest.Tokens.BudgetPlannerTest do
   defp make_executor_with_max(results) do
     fn %ToolCall{id: id} = _call ->
       case Map.fetch(results, id) do
-        {:ok, {value, max_tokens}} -> {value, max_tokens}
-        :error -> {"", 8192}
+        {:ok, {value, max_tokens}} -> {:ok, value, max_tokens}
+        :error -> {:ok, "", 8192}
       end
     end
   end
@@ -60,8 +60,8 @@ defmodule Nest.Tokens.BudgetPlannerTest do
         )
 
       assert length(out) == 2
-      assert Enum.at(out, 0) == {%ToolCall{id: "1", name: "foo", arguments: %{}}, "small"}
-      assert Enum.at(out, 1) == {%ToolCall{id: "2", name: "bar", arguments: %{}}, "tiny"}
+      assert Enum.at(out, 0) == {%ToolCall{id: "1", name: "foo", arguments: %{}}, {:ok, "small"}}
+      assert Enum.at(out, 1) == {%ToolCall{id: "2", name: "bar", arguments: %{}}, {:ok, "tiny"}}
     end
   end
 
@@ -70,7 +70,7 @@ defmodule Nest.Tokens.BudgetPlannerTest do
       big = String.duplicate("a", 5000)
       results = %{"1" => big}
 
-      [{call, result}] =
+      [{call, {kind, result}}] =
         BudgetPlanner.execute(
           [%ToolCall{id: "1", name: "foo", arguments: %{}}],
           make_executor(results),
@@ -82,6 +82,7 @@ defmodule Nest.Tokens.BudgetPlannerTest do
       assert String.length(result) < 5000
       # And the note should be present
       assert result =~ "[truncated:"
+      assert kind == :ok
     end
   end
 
@@ -91,13 +92,14 @@ defmodule Nest.Tokens.BudgetPlannerTest do
       big = String.duplicate("a", 100_000)
       results = %{"1" => big}
 
-      [{_call, result}] =
+      [{_call, {kind, result}}] =
         BudgetPlanner.execute(
           [%ToolCall{id: "1", name: "foo", arguments: %{}}],
           make_executor(results),
           100
         )
 
+      assert kind == :ok
       assert result =~ "[skipped:"
       assert result =~ "foo"
     end
@@ -124,7 +126,7 @@ defmodule Nest.Tokens.BudgetPlannerTest do
       # to be useful.
       assert length(out) == 3
       # At least one of the later calls should be skipped
-      assert Enum.any?(out, fn {_, r} -> String.contains?(r, "[skipped:") end)
+      assert Enum.any?(out, fn {_, {_, r}} -> String.contains?(r, "[skipped:") end)
     end
   end
 
@@ -139,11 +141,12 @@ defmodule Nest.Tokens.BudgetPlannerTest do
         %ToolCall{id: "1", name: "foo", arguments: %{"max_result_tokens" => 500}}
       ]
 
-      [{_call, result}] =
+      [{_call, {kind, result}}] =
         BudgetPlanner.execute(calls, make_executor(results), 10_000)
 
       # Should be truncated (capped at ~500 tokens, not 8192)
       assert String.length(result) < 5000
+      assert kind == :ok
       assert result =~ "[truncated:"
     end
 
@@ -157,9 +160,10 @@ defmodule Nest.Tokens.BudgetPlannerTest do
         %ToolCall{id: "1", name: "foo", arguments: %{"max_result_tokens" => 100}}
       ]
 
-      [{_call, result}] =
+      [{_call, {kind, result}}] =
         BudgetPlanner.execute(calls, make_executor(results), 10_000)
 
+      assert kind == :ok
       assert result =~ "[skipped:"
     end
 
@@ -168,13 +172,14 @@ defmodule Nest.Tokens.BudgetPlannerTest do
       # Result is 5000 chars, but tool cap is only 100 tokens.
       results = %{"1" => {String.duplicate("a", 5000), 100}}
 
-      [{_call, result}] =
+      [{_call, {kind, result}}] =
         BudgetPlanner.execute(
           [%ToolCall{id: "1", name: "foo", arguments: %{}}],
           make_executor_with_max(results),
           10_000
         )
 
+      assert kind == :ok
       # Should be truncated to ~100 tokens
       assert String.length(result) < 1000
     end
@@ -192,7 +197,7 @@ defmodule Nest.Tokens.BudgetPlannerTest do
 
       out = BudgetPlanner.execute(calls, make_executor(results), 10_000)
 
-      assert Enum.map(out, fn {c, _} -> c.id end) == ["1", "2", "3"]
+      assert Enum.map(out, fn {c, {_, _}} -> c.id end) == ["1", "2", "3"]
     end
   end
 
@@ -218,14 +223,14 @@ defmodule Nest.Tokens.BudgetPlannerTest do
         )
 
       # First fits
-      assert elem(first, 1) =~ "small enough"
-      refute elem(first, 1) =~ "[truncated:"
+      assert elem(elem(first, 1), 1) =~ "small enough"
+      refute elem(elem(first, 1), 1) =~ "[truncated:"
 
       # Second is truncated
-      assert elem(second, 1) =~ "[truncated:"
+      assert elem(elem(second, 1), 1) =~ "[truncated:"
 
       # Third is skipped (budget exhausted by first two)
-      assert elem(third, 1) =~ "[skipped:"
+      assert elem(elem(third, 1), 1) =~ "[skipped:"
     end
   end
 
@@ -235,7 +240,7 @@ defmodule Nest.Tokens.BudgetPlannerTest do
       huge = String.duplicate("x", 100_000)
       results = %{"1" => huge}
 
-      [{_call, result}] = BudgetPlanner.execute(calls, make_executor(results), 50)
+      [{_call, {_kind, result}}] = BudgetPlanner.execute(calls, make_executor(results), 50)
       assert result =~ "shell_cmd"
     end
 
@@ -244,8 +249,38 @@ defmodule Nest.Tokens.BudgetPlannerTest do
       calls = [%{id: "1"}]
       results = %{"1" => String.duplicate("x", 100_000)}
 
-      [{_call, result}] = BudgetPlanner.execute(calls, make_executor(results), 50)
+      [{_call, {_kind, result}}] = BudgetPlanner.execute(calls, make_executor(results), 50)
       assert result =~ "unknown"
+    end
+
+    test "preserves :error kind from the executor through the whole pipeline" do
+      # The executor can return {:error, content, max} for a dispatch
+      # error (unknown tool, missing required args, tool crash). The
+      # kind tag must travel all the way to the consumer so the
+      # chat loop can mark the ToolResult as is_error: true. The
+      # BudgetPlanner doesn't transform the tag — it only operates
+      # on the content string.
+      error_executor = fn %ToolCall{id: id} ->
+        case id do
+          "1" -> {:error, "Unknown tool: nope", 256}
+          "2" -> {:error, "Missing required arguments: path", 256}
+          _ -> {:ok, "small", 8192}
+        end
+      end
+
+      calls = [
+        %ToolCall{id: "1", name: "nope", arguments: %{}},
+        %ToolCall{id: "2", name: "write_file", arguments: %{}},
+        %ToolCall{id: "3", name: "ok", arguments: %{}}
+      ]
+
+      out = BudgetPlanner.execute(calls, error_executor, 10_000)
+
+      assert [
+               {%ToolCall{id: "1"}, {:error, "Unknown tool: nope"}},
+               {%ToolCall{id: "2"}, {:error, "Missing required arguments: path"}},
+               {%ToolCall{id: "3"}, {:ok, "small"}}
+             ] = out
     end
   end
 end

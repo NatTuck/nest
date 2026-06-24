@@ -71,18 +71,24 @@ defmodule Nest.Agents.Agent.ToolLoop do
       "compact" ->
         case request_compaction_from_task(ctx, tool_call) do
           :stopped -> raise __MODULE__.StoppedError
-          text -> {text, @compaction_max}
+          text -> {:ok, text, @compaction_max}
         end
 
       _ ->
-        {format_context_stats(ctx), @context_max}
+        {:ok, format_context_stats(ctx), @context_max}
     end
   end
 
   defp standard_tool_result(ctx, tool_call) do
-    raw = LLMTools.execute_one(ctx.tools, tool_call, %{caps: ctx.caps})
-    {content, default_max} = tool_result_for(raw, ctx, tool_call)
-    {content, default_max || @default_max_fallback}
+    case LLMTools.execute_one(ctx.tools, tool_call, %{caps: ctx.caps}) do
+      {:ok, content} ->
+        {:ok, content,
+         LLMTools.default_max_result_tokens(ctx.tools, tool_call_name(tool_call)) ||
+           @default_max_fallback}
+
+      {:error, reason} ->
+        {:error, reason, @default_max_fallback}
+    end
   end
 
   # Raised by the tool executor when the agent interrupts the chat
@@ -92,14 +98,6 @@ defmodule Nest.Agents.Agent.ToolLoop do
   defmodule StoppedError do
     @moduledoc "Raised by `request_compaction_from_task/2` when the agent sent `{:stop_chat, _}`."
     defexception message: "chat task stopped by user"
-  end
-
-  defp tool_result_for({:ok, content}, ctx, tool_call) do
-    {content, LLMTools.default_max_result_tokens(ctx.tools, tool_call_name(tool_call))}
-  end
-
-  defp tool_result_for({:error, reason}, ctx, tool_call) do
-    {reason, LLMTools.default_max_result_tokens(ctx.tools, tool_call_name(tool_call))}
   end
 
   # Round-trip the compaction request through the GenServer. The
@@ -213,7 +211,17 @@ defmodule Nest.Agents.Agent.ToolLoop do
     end
   end
 
-  defp wrap_result({tool_call, result_string}) do
+  defp wrap_result({tool_call, {:error, result_string}}) do
+    %ToolResult{
+      tool_call_id: tool_call.id,
+      name: tool_call_name(tool_call),
+      content: ensure_non_empty_tool_result(result_string),
+      arguments: tool_call_arguments(tool_call),
+      is_error: true
+    }
+  end
+
+  defp wrap_result({tool_call, {:ok, result_string}}) do
     %ToolResult{
       tool_call_id: tool_call.id,
       name: tool_call_name(tool_call),

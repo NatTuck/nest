@@ -52,7 +52,10 @@ defmodule Nest.Tokens.BudgetPlanner do
 
   @type tool_call :: ToolCall.t() | map()
   @type result :: String.t()
-  @type executor :: (tool_call() -> {result(), pos_integer()})
+  @type kind :: :ok | :error
+  @type executor ::
+          (tool_call() ->
+             {:ok, result(), pos_integer()} | {:error, result(), pos_integer()})
 
   @doc """
   Execute a batch of tool calls under `budget_remaining` tokens.
@@ -78,7 +81,7 @@ defmodule Nest.Tokens.BudgetPlanner do
       the executor doesn't return one (default #{@default_max_result_tokens})
   """
   @spec execute([tool_call()], executor(), pos_integer(), keyword()) ::
-          [{tool_call(), result()}]
+          [{tool_call(), {kind(), result()}}]
   def execute(tool_calls, executor_fn, budget_remaining, opts \\ [])
       when is_list(tool_calls) and is_function(executor_fn, 1) and
              is_integer(budget_remaining) do
@@ -112,25 +115,25 @@ defmodule Nest.Tokens.BudgetPlanner do
       # Not enough room for any useful call — skip this and all
       # remaining. Charge each skip at the configured size.
       Enum.map([call | rest], fn tc ->
-        {tc, SkipResponse.render(call_name(tc), budget_for_this)}
+        {tc, {:ok, SkipResponse.render(call_name(tc), budget_for_this)}}
       end)
     end
   end
 
   defp run_or_skip(call, rest, executor_fn, remaining, budget_for_this, cfg) do
-    {raw_result, default_max} = executor_fn.(call)
+    {kind, raw_result, default_max} = executor_fn.(call)
     effective_max = effective_max_result_tokens(call, default_max)
     max_content_budget = min(budget_for_this - cfg.note_size, effective_max)
 
     cond do
       should_skip?(max_content_budget, cfg) ->
-        skip_remaining(call, rest, executor_fn, remaining, budget_for_this, cfg)
+        skip_remaining(call, kind, rest, executor_fn, remaining, budget_for_this, cfg)
 
       fits?(raw_result, max_content_budget, cfg) ->
-        keep_as_is(call, raw_result, rest, executor_fn, remaining, cfg)
+        keep_as_is(call, kind, raw_result, rest, executor_fn, remaining, cfg)
 
       true ->
-        truncate(call, raw_result, max_content_budget, rest, executor_fn, remaining, cfg)
+        truncate(call, kind, raw_result, max_content_budget, rest, executor_fn, remaining, cfg)
     end
   end
 
@@ -139,11 +142,11 @@ defmodule Nest.Tokens.BudgetPlanner do
     max_content_budget < cfg.min_truncatable
   end
 
-  defp skip_remaining(call, rest, executor_fn, remaining, budget_for_this, cfg) do
+  defp skip_remaining(call, kind, rest, executor_fn, remaining, budget_for_this, cfg) do
     skip = SkipResponse.render(call_name(call), budget_for_this)
 
     [
-      {call, skip}
+      {call, {kind, skip}}
       | do_execute(
           rest,
           executor_fn,
@@ -153,20 +156,20 @@ defmodule Nest.Tokens.BudgetPlanner do
     ]
   end
 
-  defp keep_as_is(call, raw_result, rest, executor_fn, remaining, cfg) do
+  defp keep_as_is(call, kind, raw_result, rest, executor_fn, remaining, cfg) do
     # Fits within both budget and tool cap; keep as-is.
     [
-      {call, raw_result}
+      {call, {kind, raw_result}}
       | do_execute(rest, executor_fn, remaining - charge(raw_result, cfg), cfg)
     ]
   end
 
-  defp truncate(call, raw_result, max_content_budget, rest, executor_fn, remaining, cfg) do
+  defp truncate(call, kind, raw_result, max_content_budget, rest, executor_fn, remaining, cfg) do
     # Truncate to the smaller of (budget, tool cap).
     {kept, note} = Truncate.head_with_note(raw_result, max_content_budget, cfg.note_size)
 
     [
-      {call, kept <> note}
+      {call, {kind, kept <> note}}
       | do_execute(rest, executor_fn, remaining - charge(kept, cfg) - cfg.note_size, cfg)
     ]
   end
