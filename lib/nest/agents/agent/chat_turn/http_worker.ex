@@ -92,12 +92,12 @@ defmodule Nest.Agents.Agent.ChatTurn.HTTPWorker do
     %{
       on_text: fn text, sent ->
         Broadcasts.delta_text(agent_id, acc_index, text, sent.chars)
-        send(state.agent_pid, {:delta_received, text, :text})
+        send(state.ctx.agent_pid, {:delta_received, text, :text})
         %{sent | chars: sent.chars + String.length(text)}
       end,
       on_thinking: fn text, sent ->
         Broadcasts.delta_thinking(agent_id, acc_index, text, sent.chars)
-        send(state.agent_pid, {:delta_received, text, :thinking})
+        send(state.ctx.agent_pid, {:delta_received, text, :thinking})
         %{sent | chars: sent.chars + String.length(text)}
       end,
       on_signature: fn _sig ->
@@ -105,7 +105,7 @@ defmodule Nest.Agents.Agent.ChatTurn.HTTPWorker do
       end,
       on_error: fn error ->
         error_msg = Nest.LLM.Runner.format_error(error)
-        send(state.agent_pid, {:llm_error, error_msg})
+        send(state.ctx.agent_pid, {:llm_error, error_msg})
       end,
       on_response: fn _response ->
         :ok

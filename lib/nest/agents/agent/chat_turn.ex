@@ -90,8 +90,10 @@ defmodule Nest.Agents.Agent.ChatTurn do
     # lives on the Agent; the ChatTurn queries via
     # GenServer.call when it needs to read, and sends events
     # for the Agent to write.
-    defstruct agent_pid: nil,
-              ctx: nil,
+    #
+    # The Agent's pid is read from `ctx.agent_pid` (ctx is
+    # the per-iteration config snapshot). No duplicate field.
+    defstruct ctx: nil,
               iteration: 0,
               max_iterations: 0,
               force_finalize: false,
@@ -132,7 +134,6 @@ defmodule Nest.Agents.Agent.ChatTurn do
     Process.send(self(), :iterate, [])
 
     state = %State{
-      agent_pid: agent_pid,
       ctx: ctx,
       iteration: 0,
       max_iterations: Nest.Agents.Agent.configured_max_tool_iterations(),
@@ -166,7 +167,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
     # stacktrace to the Agent so the Agent's
     # `chat_crashed/3` handler can finalize the partial,
     # broadcast `chat:error`, and transition to `:idle`.
-    send(state.agent_pid, {:chat_crashed, exception, stacktrace})
+    send(state.ctx.agent_pid, {:chat_crashed, exception, stacktrace})
     {:stop, :normal, state}
   end
 
@@ -206,8 +207,8 @@ defmodule Nest.Agents.Agent.ChatTurn do
       })
     end
 
-    messages = GenServer.call(state.agent_pid, :get_messages)
-    next_index = GenServer.call(state.agent_pid, :get_next_index)
+    messages = GenServer.call(state.ctx.agent_pid, :get_messages)
+    next_index = GenServer.call(state.ctx.agent_pid, :get_next_index)
     state = %{state | active_message_index: next_index}
 
     # Mid-iteration preflight: ask the Agent to compact the
@@ -230,7 +231,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
       :stopped ->
         # User clicked Stop mid-preflight. Notify the
         # Agent and stop.
-        send(state.agent_pid, {:chat_stopped, self()})
+        send(state.ctx.agent_pid, {:chat_stopped, self()})
         {:stop, :normal, state}
     end
   end
@@ -241,8 +242,8 @@ defmodule Nest.Agents.Agent.ChatTurn do
   #   - `{:compacted, messages}` if the compactor ran
   #   - `:stopped` if the user clicked Stop while waiting
   def run_preflight(state) do
-    messages = GenServer.call(state.agent_pid, :get_messages)
-    send(state.agent_pid, {:preflight_request, self(), messages})
+    messages = GenServer.call(state.ctx.agent_pid, :get_messages)
+    send(state.ctx.agent_pid, {:preflight_request, self(), messages})
 
     receive do
       {:preflight_result, :proceed, _messages} ->
@@ -274,7 +275,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
         state
 
       reminder ->
-        _stamped = GenServer.call(state.agent_pid, {:append_message, reminder})
+        _stamped = GenServer.call(state.ctx.agent_pid, {:append_message, reminder})
         state
     end
   end
@@ -304,7 +305,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
   # `{:http_error, error}` back to the ChatTurn.
   defp spawn_http_worker(state, messages) do
     parent = self()
-    agent_pid = state.agent_pid
+    agent_pid = state.ctx.agent_pid
 
     # The request log is queued at the last message's index
     # (the message that triggered this LLM call: the user
@@ -359,7 +360,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
     # fresh numbers. `usage` is `nil` for clients that
     # don't populate it; the merge helper treats nil as
     # a no-op so the running totals are preserved.
-    send(state.agent_pid, {:llm_usage, response.usage})
+    send(state.ctx.agent_pid, {:llm_usage, response.usage})
 
     # Build the Assistant message from the response. The
     # Agent's `tool_calls_received/2` handler stamps the
@@ -379,7 +380,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
     # the lookup succeeds.
     {role, msg} = build_assistant_message(response)
     assistant_msg = {role, msg}
-    send(state.agent_pid, {:tool_calls_received, assistant_msg})
+    send(state.ctx.agent_pid, {:tool_calls_received, assistant_msg})
     assistant_index = state.active_message_index
 
     # Broadcast the response api_log to the Agent. The
@@ -400,7 +401,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
         # always finalizes regardless of what the LLM
         # does.
         tool_msg = build_synthetic_error_tool_results(response)
-        _stamped_tool = GenServer.call(state.agent_pid, {:append_message, tool_msg})
+        _stamped_tool = GenServer.call(state.ctx.agent_pid, {:append_message, tool_msg})
         state = %{state | force_finalize: true}
         Process.send(self(), :iterate, [])
         {:noreply, state}
@@ -426,7 +427,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
   defp handle_tool_results(results, state) do
     state = %{state | active_worker: nil, active_worker_kind: nil}
     tool_msg = build_tool_message(results)
-    send(state.agent_pid, {:tool_results_received, tool_msg})
+    send(state.ctx.agent_pid, {:tool_results_received, tool_msg})
     Process.send(self(), :iterate, [])
     {:noreply, state}
   end
@@ -473,7 +474,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
         {:noreply, %{state | active_worker: pid, active_worker_kind: :tools}}
 
       _ ->
-        send(state.agent_pid, {:chat_crashed, :saturated, []})
+        send(state.ctx.agent_pid, {:chat_crashed, :saturated, []})
         {:stop, :normal, state}
     end
   end
@@ -488,7 +489,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
     end
 
     state = %{state | active_worker: nil, active_worker_kind: nil}
-    send(state.agent_pid, {:chat_stopped, self()})
+    send(state.ctx.agent_pid, {:chat_stopped, self()})
     {:stop, :normal, state}
   end
 
@@ -501,15 +502,15 @@ defmodule Nest.Agents.Agent.ChatTurn do
   defp worker_exited(_pid, :killed, state), do: {:noreply, state}
 
   defp worker_exited(_pid, reason, state) do
-    send(state.agent_pid, {:chat_crashed, reason, []})
+    send(state.ctx.agent_pid, {:chat_crashed, reason, []})
     {:stop, :normal, state}
   end
 
   # End of turn. Send `:chat_idle` and the
   # `:api_log_sequences_updated` to the Agent, then stop.
   defp finalize_turn(state) do
-    send(state.agent_pid, {:chat_idle, self()})
-    send(state.agent_pid, {:api_log_sequences_updated, Nest.Agents.Agent.ChatTurn.APILog.read_sequences()})
+    send(state.ctx.agent_pid, {:chat_idle, self()})
+    send(state.ctx.agent_pid, {:api_log_sequences_updated, Nest.Agents.Agent.ChatTurn.APILog.read_sequences()})
     {:stop, :normal, state}
   end
 

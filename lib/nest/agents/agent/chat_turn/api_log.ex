@@ -58,7 +58,7 @@ defmodule Nest.Agents.Agent.ChatTurn.APILog do
     payload = Nest.LLM.Runner.format_request_payload(state.ctx.client_config, request, opts)
     {api_log_id, sequences} = Broadcasts.next_api_log_id(message_index, get_sequences())
     put_sequences(sequences)
-    Broadcasts.api_log(state.agent_pid, message_index, api_log_id, payload)
+    Broadcasts.api_log(state.ctx.agent_pid, message_index, api_log_id, payload)
     :ok
   end
 
@@ -72,7 +72,7 @@ defmodule Nest.Agents.Agent.ChatTurn.APILog do
     payload = Broadcasts.api_response_from_run(response)
     {api_log_id, sequences} = Broadcasts.next_api_log_id(message_index, get_sequences())
     put_sequences(sequences)
-    Broadcasts.api_response(state.agent_pid, message_index, api_log_id, payload)
+    Broadcasts.api_response(state.ctx.agent_pid, message_index, api_log_id, payload)
     sequences
   end
 
