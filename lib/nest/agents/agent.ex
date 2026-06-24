@@ -261,6 +261,11 @@ defmodule Nest.Agents.Agent do
   end
 
   @impl true
+  def handle_call(:get_next_index, _from, state) do
+    {:reply, state.chat_state.next_message_index, state}
+  end
+
+  @impl true
   def handle_call(:get_history, _from, state) do
     {:reply, state.chat_state.history || [], state}
   end

@@ -93,7 +93,8 @@ defmodule Nest.Agents.Agent.ChatTurn do
               streaming_acc: nil,
               api_log_sequences: %{},
               last_thinking: nil,
-              messages_snapshot: []
+              messages_snapshot: [],
+              active_message_index: 0
   end
 
   # Client API
@@ -139,7 +140,8 @@ defmodule Nest.Agents.Agent.ChatTurn do
       streaming_acc: nil,
       api_log_sequences: %{},
       last_thinking: nil,
-      messages_snapshot: []
+      messages_snapshot: [],
+      active_message_index: 0
     }
 
     {:ok, state}
@@ -207,7 +209,8 @@ defmodule Nest.Agents.Agent.ChatTurn do
     end
 
     messages = GenServer.call(state.agent_pid, :get_messages)
-    state = %{state | messages_snapshot: messages}
+    next_index = GenServer.call(state.agent_pid, :get_next_index)
+    state = %{state | messages_snapshot: messages, active_message_index: next_index}
 
     spawn_http_worker(state)
   end
@@ -257,13 +260,15 @@ defmodule Nest.Agents.Agent.ChatTurn do
     parent = self()
     agent_pid = state.agent_pid
 
-    # Use the streaming_acc's index for the request log
-    # (this is the user message's index, which is the
-    # index of the messages we're sending). If the
-    # streaming_acc is nil, query the Agent for the
-    # last user message.
-    active_index = HTTPWorker.active_message_index(state)
-    state = broadcast_request_log(state, active_index)
+    # The request log is queued at the last message's index
+    # (the message that triggered this LLM call: the user
+    # message on a fresh turn, the tool message on a
+    # continuation). The Agent's `api_log_handler` will
+    # re-broadcast that message with the request log
+    # attached (the message already exists in the messages
+    # list, so the append-to-existing-message path fires).
+    request_log_index = last_message_index_for_request_log(state.messages_snapshot)
+    state = broadcast_request_log(state, request_log_index)
 
     # When we've hit the iteration cap, the next call
     # is the "final" call: `tools: nil, tool_choice:
@@ -297,13 +302,6 @@ defmodule Nest.Agents.Agent.ChatTurn do
     end
   end
 
-  # The index of the user message (the message currently
-  # being sent to the LLM). Used to seed the assistant
-  # message's predicted index.
-  defp active_message_index(state) do
-    HTTPWorker.active_message_index(state)
-  end
-
   # The HTTP worker returned a normalized response. Build
   # the Assistant message, append it to the Agent, then
   # dispatch on the response shape.
@@ -325,21 +323,22 @@ defmodule Nest.Agents.Agent.ChatTurn do
     # Agent's status to `:executing_tools` and broadcasts
     # the status change — the same flow the old LLMRunner
     # used for tool-call messages.
+    #
+    # The message is built with `index: nil` (the Agent
+    # stamps it). The Agent's handler uses the current
+    # `next_message_index` (which equals the `active_message_index`
+    # we queried at the start of this iteration) for the
+    # `pending_api_logs[message_index]` lookup. The request
+    # api_log was queued at `active_message_index` above, so
+    # the lookup succeeds.
     {role, msg} = build_assistant_message(response)
-    msg = %{msg | index: predicted_assistant_index(state)}
     assistant_msg = {role, msg}
     send(state.agent_pid, {:tool_calls_received, assistant_msg})
-    # We don't have the stamped message back here (the
-    # tool_calls_received handler is async via send/2);
-    # use the predicted index for the response log. The
-    # api_log handler checks both the index AND a
-    # fallback search, so a mismatch doesn't lose the
-    # log.
-    assistant_index = predicted_assistant_index(state)
+    assistant_index = state.active_message_index
 
     # Broadcast the response api_log to the Agent. The
     # Agent's api_log handler attaches it to the message
-    # at the response's actual stamped index.
+    # at the assistant's actual stamped index.
     state = broadcast_response_log(state, assistant_index, response)
 
     cond do
@@ -370,19 +369,6 @@ defmodule Nest.Agents.Agent.ChatTurn do
     end
   end
 
-  # Predicted index for the assistant message. Used as
-  # the `index` field on the assistant message so the
-  # Agent's `tool_calls_received/2` handler's
-  # `pending_api_logs(message_index)` lookup finds the
-  # request log we sent at the start of the iteration.
-  # The Agent's `__append_message__/2` overwrites this
-  # with the actual stamped index; the lookup still
-  # succeeds because the request log was sent at the
-  # same predicted index.
-  defp predicted_assistant_index(state) do
-    active_message_index(state) + 1
-  end
-
   # The tool worker returned a list of `ToolResult`
   # structs. Append them to the Agent as a single
   # `{:tool, _}` message, then start the next
@@ -397,6 +383,25 @@ defmodule Nest.Agents.Agent.ChatTurn do
     send(state.agent_pid, {:tool_results_received, tool_msg})
     Process.send(self(), :iterate, [])
     {:noreply, state}
+  end
+
+  # Return the index of the last message in the messages
+  # list. The request api_log is queued at this index so
+  # the message that triggered this LLM call (the user
+  # message on a fresh turn, the tool message on a
+  # continuation) is re-broadcast with the request log
+  # attached. The Agent's
+  # `api_log_handler.append_to_existing_message/3` finds
+  # the triggering message already in the list and
+  # re-broadcasts it.
+  defp last_message_index_for_request_log([]), do: 0
+
+  defp last_message_index_for_request_log(messages) do
+    case List.last(messages) do
+      nil -> 0
+      {_, %{index: idx}} -> idx
+      _ -> 0
+    end
   end
 
   # Spawn the tool worker as a Task. The worker calls

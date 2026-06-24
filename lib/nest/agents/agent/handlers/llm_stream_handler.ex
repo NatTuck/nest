@@ -136,8 +136,19 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   # stacktrace snippet so the UI shows where the crash
   # happened. The full stacktrace is in the server log
   # (logged by both the chat task and this handler).
+  # The pending api_logs lookup uses the Agent's
+  # `next_message_index` (the value the ChatTurn queried
+  # at the start of the iteration) rather than the
+  # message's `index` field. The ChatTurn builds the
+  # assistant/tool message with `index: nil` and queues
+  # the request api_log at `active_message_index` (which
+  # equals `next_message_index` at the time of the
+  # request). When the Agent stamps the message via
+  # `__append_message__/2`, the message's `index` IS the
+  # same number, but the lookup happens BEFORE the stamp
+  # — so we use `next_message_index` (the pre-stamp value).
   defp tool_calls_received(tool_call_message, state) do
-    pending_logs = pending_api_logs(state, tool_call_message.index)
+    pending_logs = pending_api_logs(state, state.chat_state.next_message_index)
 
     tool_call_message =
       if pending_logs != [] do
@@ -168,7 +179,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   end
 
   defp tool_results_received(tool_result_message, state) do
-    pending_logs = pending_api_logs(state, tool_result_message.index)
+    pending_logs = pending_api_logs(state, state.chat_state.next_message_index)
 
     tool_result_message =
       if pending_logs != [] do
