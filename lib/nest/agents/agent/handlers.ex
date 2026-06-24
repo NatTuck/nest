@@ -62,9 +62,7 @@ defmodule Nest.Agents.Agent.Handlers do
   defp route_for({:llm_error, _}), do: {:ok, LLMStreamHandler}
   defp route_for({:tool_calls_received, _}), do: {:ok, LLMStreamHandler}
   defp route_for({:tool_results_received, _}), do: {:ok, LLMStreamHandler}
-  defp route_for({:llm_response_with_thinking, _, _}), do: {:ok, LLMStreamHandler}
   defp route_for({:llm_usage, _}), do: {:ok, LLMStreamHandler}
-  defp route_for({:system_reminder_received, _}), do: {:ok, LLMStreamHandler}
   defp route_for({:chat_idle, _}), do: {:ok, ChatTurnHandler}
   defp route_for({:chat_stopped, _}), do: {:ok, ChatTurnHandler}
   defp route_for({:chat_crashed, _, _}), do: {:ok, ChatTurnHandler}

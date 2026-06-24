@@ -3,13 +3,22 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   `handle_info/2` handlers for LLM streaming events:
   `{:delta_received, _}`, `{:thinking_signature_received, _}`,
   `{:llm_error, _}`, `{:tool_calls_received, _}`,
-  `{:tool_results_received, _}`,
-  `{:llm_response_with_thinking, _, _}`, `{:llm_usage, _}`.
+  `{:tool_results_received, _}`, `{:llm_usage, _}`.
 
   `{:llm_error, _}` is the HTTP worker's "I gave up; please
   finalize and broadcast" signal. The Agent is the single
   source of `chat:error` events — the worker doesn't broadcast
   directly (avoids duplicate events).
+
+  `{:delta_received, _}` and `{:thinking_signature_received, _}`
+  update the Agent's `streaming_acc` mirror for
+  `get_public_info.partial`. The mirror is the source of
+  truth for the UI's in-flight text render.
+
+  `{:tool_calls_received, _}` and `{:tool_results_received, _}`
+  pair the message-append with the status transition
+  (`:streaming → :executing_tools → :streaming`) and seed a
+  fresh `streaming_acc` for the next iteration's response.
 
   Dispatched by `Nest.Agents.Agent.Handlers` based on the
   message tag.
@@ -18,7 +27,6 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Messages.Assistant
   alias Nest.Messages.Streaming
-  alias Nest.Messages.System
   alias Nest.Messages.Tool
 
   require Logger
@@ -48,16 +56,8 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
     tool_results_received(msg, state)
   end
 
-  def handle({:llm_response_with_thinking, _response, thinking}, state) do
-    llm_response_with_thinking(thinking, state)
-  end
-
   def handle({:llm_usage, usage}, state) do
     llm_usage(usage, state)
-  end
-
-  def handle({:system_reminder_received, {:system, %System{} = reminder}}, state) do
-    system_reminder_received(reminder, state)
   end
 
   # The ChatTurn's lifecycle signals (`{:chat_idle, _}`,
@@ -210,45 +210,6 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
     {:noreply, state}
   end
 
-  # Finalize assistant message with thinking using Streaming.finalize
-  defp llm_response_with_thinking(thinking, state) do
-    acc = state.chat_state.streaming_acc
-    assistant = Streaming.finalize(acc)
-
-    final_message =
-      {:assistant,
-       %Assistant{
-         index: nil,
-         timestamp: DateTime.utc_now(),
-         content: assistant.content,
-         thinking: thinking,
-         # Anthropic's extended-thinking signature, echoed back on
-         # subsequent turns. The AnthropicClient reads this field
-         # directly when rebuilding the assistant content block
-         # array for the next request.
-         thinking_signature: acc.thinking_signature,
-         tool_calls: assistant.tool_calls,
-         api_logs: pending_api_logs(state, acc.index)
-       }}
-
-    {stamped, state} = Nest.Agents.Agent.__append_message__(state, final_message)
-    stamped_index = Nest.Agents.Agent.stamped_index(stamped)
-
-    state = %{
-      state
-      | chat_state: %{
-          state.chat_state
-          | streaming_acc: nil,
-            active_message_index: stamped_index,
-            pending_api_logs: clear_api_logs(state, stamped_index).chat_state.pending_api_logs,
-            status: :idle
-        }
-    }
-
-    Broadcasts.status(state.id, state)
-    {:noreply, state}
-  end
-
   defp llm_usage(usage, state) do
     # Merge per-call usage into the running totals and broadcast a
     # fresh `chat:status` so the chip can update mid-stream.
@@ -266,21 +227,6 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
     }
 
     Broadcasts.status(state.id, state)
-    {:noreply, state}
-  end
-
-  # A late system reminder was injected into the LLM-bound messages
-  # list by `LLMRunner.maybe_inject_budget_warning/3`. We persist it
-  # to `state.chat_state.messages` (for transparency and to keep the
-  # GenServer's view of the conversation consistent with what the
-  # LLM saw) and broadcast it as a regular `chat:message` event so
-  # the UI can render it.
-  #
-  # Stale reminders (from a previous turn that was near the cap)
-  # stay in the message list. We accept this as the cost of
-  # transparency — see `notes/normalize-system-messages.md`.
-  defp system_reminder_received(reminder, state) do
-    {_, state} = Nest.Agents.Agent.__append_message__(state, {:system, %{reminder | index: nil}})
     {:noreply, state}
   end
 
