@@ -38,7 +38,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     # Validate mode against the vocation; fall back to default if invalid.
     {effective_mode, _caps} = resolve_mode_and_caps(mode, state.vocation_id)
 
-    {user_message, llm_user_message} = build_user_messages(state, content, effective_mode)
+    {user_message, llm_user_message} = build_user_message(state, content, effective_mode)
 
     # Clear the `cancelled` flag from any previous stop so the
     # pre-flight compaction that may run for this turn can
@@ -170,7 +170,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   # `index: nil` — the Agent stamps the actual index via
   # `__append_message__/2`. The ChatTurn is no longer the
   # authority on which slot the user message occupies.
-  defp build_user_messages(state, content, effective_mode) do
+  defp build_user_message(state, content, effective_mode) do
     next_idx = state.chat_state.next_message_index
 
     user = %User{
@@ -184,23 +184,6 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     user_message = {:user, user}
     llm_user_message = user_message
     {user_message, llm_user_message}
-  end
-
-  # Build a fresh user message struct. Mirrors the user-message
-  # construction in handle_chat/3 so callers (the compaction
-  # continuation flow) build the same shape. Includes the
-  # `[mode: <name>]\n` prefix on `content` for the same reason as
-  # `build_user_messages/3` (the LLM sees the prefix and the UI
-  # strips it).
-  defp build_user_message(state, content, effective_mode) do
-    {:user,
-     %User{
-       index: nil,
-       timestamp: DateTime.utc_now(),
-       content: "[mode: #{effective_mode}]\n#{content}",
-       metadata: %{"mode" => effective_mode},
-       api_logs: get_pending_api_logs(state, state.chat_state.next_message_index)
-     }}
   end
 
   # Pre-flight: would the LLM call we'd make next fit in the

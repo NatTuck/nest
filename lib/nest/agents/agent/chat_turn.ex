@@ -74,6 +74,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
   use GenServer, restart: :temporary
 
   alias Nest.Agents.Agent.Broadcasts
+  alias Nest.Agents.Agent.ChatTurn.APILog
   alias Nest.Agents.Agent.ChatTurn.HTTPWorker
   alias Nest.Agents.Agent.ChatTurn.Messages
   alias Nest.LLM.RunResponse
@@ -315,7 +316,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
     # attached (the message already exists in the messages
     # list, so the append-to-existing-message path fires).
     request_log_index = last_message_index_for_request_log(messages)
-    :ok = broadcast_request_log(state, request_log_index, messages)
+    :ok = APILog.request(state, request_log_index, messages)
 
     # When we've hit the iteration cap, the next call
     # is the "final" call: `tools: nil, tool_choice:
@@ -378,7 +379,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
     # `pending_api_logs[message_index]` lookup. The request
     # api_log was queued at `active_message_index` above, so
     # the lookup succeeds.
-    {role, msg} = build_assistant_message(response)
+    {role, msg} = Messages.assistant(response)
     assistant_msg = {role, msg}
     send(state.ctx.agent_pid, {:tool_calls_received, assistant_msg})
     assistant_index = state.active_message_index
@@ -386,7 +387,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
     # Broadcast the response api_log to the Agent. The
     # Agent's api_log handler attaches it to the message
     # at the assistant's actual stamped index.
-    _ = broadcast_response_log(state, assistant_index, response)
+    _ = APILog.response(state, assistant_index, response)
 
     cond do
       state.force_finalize ->
@@ -400,7 +401,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
         # `force_finalize: true` so the next call
         # always finalizes regardless of what the LLM
         # does.
-        tool_msg = build_synthetic_error_tool_results(response)
+        tool_msg = Messages.synthetic_error_tool_results(response)
         _stamped_tool = GenServer.call(state.ctx.agent_pid, {:append_message, tool_msg})
         state = %{state | force_finalize: true}
         Process.send(self(), :iterate, [])
@@ -426,7 +427,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
   # streaming_acc for the next iteration's response.
   defp handle_tool_results(results, state) do
     state = %{state | active_worker: nil, active_worker_kind: nil}
-    tool_msg = build_tool_message(results)
+    tool_msg = Messages.tool(results)
     send(state.ctx.agent_pid, {:tool_results_received, tool_msg})
     Process.send(self(), :iterate, [])
     {:noreply, state}
@@ -510,31 +511,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
   # `:api_log_sequences_updated` to the Agent, then stop.
   defp finalize_turn(state) do
     send(state.ctx.agent_pid, {:chat_idle, self()})
-    send(state.ctx.agent_pid, {:api_log_sequences_updated, Nest.Agents.Agent.ChatTurn.APILog.read_sequences()})
+    send(state.ctx.agent_pid, {:api_log_sequences_updated, APILog.read_sequences()})
     {:stop, :normal, state}
-  end
-
-  # --- Message builders ---
-
-  defp build_assistant_message(response) do
-    Messages.assistant(response)
-  end
-
-  defp build_tool_message(results) do
-    Messages.tool(results)
-  end
-
-  defp build_synthetic_error_tool_results(response) do
-    Messages.synthetic_error_tool_results(response)
-  end
-
-  # --- api_log helpers ---
-
-  defp broadcast_request_log(state, message_index, messages) do
-    Nest.Agents.Agent.ChatTurn.APILog.request(state, message_index, messages)
-  end
-
-  defp broadcast_response_log(state, message_index, response) do
-    Nest.Agents.Agent.ChatTurn.APILog.response(state, message_index, response)
   end
 end
