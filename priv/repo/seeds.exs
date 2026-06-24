@@ -48,7 +48,7 @@ alias Nest.Vocations
     You have access to a workspace directory where you can read and write files.
     Use tools to read files and make changes when requested.
     """,
-    tools: ["read_file", "write_file", "shell_cmd", "context"],
+    tools: ["read_file", "write_file", "edit", "shell_cmd", "context"],
     modes: %{
       "build" => %{
         "description" => "You're clear to edit the project in the workspace.",

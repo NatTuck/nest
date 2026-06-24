@@ -23,6 +23,7 @@ defmodule Nest.Tools do
   @default_max_result_tokens 8192
   @write_file_max_result_tokens 256
   @context_max_result_tokens 512
+  @edit_max_result_tokens 256
 
   @doc """
   Returns a list of `Nest.LLM.Tool` structs for the given tool names.
@@ -42,6 +43,7 @@ defmodule Nest.Tools do
     case name do
       "read_file" -> read_file_function(workspace_path, tmp_path)
       "write_file" -> write_file_function(workspace_path, tmp_path)
+      "edit" -> edit_function(workspace_path, tmp_path)
       "shell_cmd" -> shell_cmd_function(workspace_path, tmp_path)
       "context" -> context_function()
       _ -> nil
@@ -92,6 +94,56 @@ defmodule Nest.Tools do
       max_result_tokens: @write_file_max_result_tokens,
       function: fn %{"path" => path, "content" => content}, context ->
         write_file(path, content, workspace_path, tmp_path, context)
+      end
+    }
+  end
+
+  # The `edit` tool performs an exact string replacement in a file
+  # (Claude Code's Edit semantics). `old_text` must match uniquely
+  # unless `replace_all` is true. On mismatch, the tool returns a
+  # structured error and the file is left unchanged. The LLM is
+  # expected to retry with a more specific `old_text` (or with
+  # `replace_all: true` if it really wanted to change every match).
+  defp edit_function(workspace_path, tmp_path) do
+    %Tool{
+      name: "edit",
+      description:
+        "Perform an exact string replacement in a file. Reads the file, " <>
+          "replaces the first (or all) occurrence(s) of `old_text` with " <>
+          "`new_text`, and writes it back. With `replace_all: false` " <>
+          "(the default), `old_text` must match exactly once or the call fails.",
+      parameters_schema: %{
+        "type" => "object",
+        "properties" => %{
+          "path" => %{
+            "type" => "string",
+            "description" => "Relative path to the file from the workspace root"
+          },
+          "old_text" => %{
+            "type" => "string",
+            "description" =>
+              "The exact text to find. Must match the file content exactly, " <>
+                "including whitespace and indentation."
+          },
+          "new_text" => %{
+            "type" => "string",
+            "description" => "The text to replace `old_text` with."
+          },
+          "replace_all" => %{
+            "type" => "boolean",
+            "description" =>
+              "Replace every occurrence of `old_text` instead of just the first. " <>
+                "Default: false. When false, the call errors if `old_text` matches " <>
+                "more than one location.",
+            "default" => false
+          },
+          "max_result_tokens" => max_result_tokens_schema()
+        },
+        "required" => ["path", "old_text", "new_text"]
+      },
+      max_result_tokens: @edit_max_result_tokens,
+      function: fn args, context ->
+        edit(args, workspace_path, tmp_path, context)
       end
     }
   end
@@ -227,6 +279,101 @@ defmodule Nest.Tools do
         {:error, reason} ->
           {:error, "Failed to write file: #{reason}"}
       end
+    end
+  end
+
+  # Edit implementation: read the file (via the same sandboxed cat
+  # path as read_file), apply String.replace in Elixir, then write
+  # back via the same sandboxed cat path as write_file. Splitting
+  # on `old_text` is how we cheaply detect "not found" (parts == 1)
+  # and "ambiguous" (parts > 2 with `replace_all: false`).
+  defp edit(args, workspace_path, tmp_path, context) do
+    path = args["path"]
+    old_text = args["old_text"]
+    new_text = args["new_text"]
+    replace_all = Map.get(args, "replace_all", false)
+
+    caps = caps_from_context(context)
+    Logger.info("Tool edit: #{path} (replace_all: #{replace_all})")
+
+    with {:ok, full_path} <- resolve_full_path(path, workspace_path),
+         {:ok, current} <- read_file_via_shell(full_path, workspace_path, tmp_path, caps),
+         {:ok, replacement_count, updated} <-
+           compute_replacement(current, old_text, new_text, replace_all) do
+      case ShellCmd.execute(
+             "cat > #{shell_escape(full_path)}",
+             workspace_path,
+             tmp_path,
+             caps,
+             stdin: updated
+           ) do
+        {:ok, _} ->
+          {:ok, "Replaced #{replacement_count} occurrence(s) in #{path}"}
+
+        {:error, reason} ->
+          {:error, "Failed to write file: #{reason}"}
+      end
+    end
+  end
+
+  defp resolve_full_path(path, workspace_path) do
+    if Path.type(path) == :absolute do
+      {:ok, path}
+    else
+      if is_nil(workspace_path) do
+        {:error, "No workspace configured for this agent"}
+      else
+        {:ok, Path.join(workspace_path, path)}
+      end
+    end
+  end
+
+  defp read_file_via_shell(full_path, workspace_path, tmp_path, caps) do
+    ShellCmd.execute("cat -- #{shell_escape(full_path)}", workspace_path, tmp_path, caps)
+  end
+
+  # Returns {:ok, count, new_content} on success, {:error, reason}
+  # when old_text is missing or ambiguous (and replace_all is false).
+  defp compute_replacement(_current, "", _new_text, _replace_all) do
+    {:error, "old_text must be a non-empty string"}
+  end
+
+  defp compute_replacement(current, old_text, new_text, true) do
+    case count_matches(current, old_text) do
+      0 ->
+        {:error, "old_text not found in file"}
+
+      count ->
+        {:ok, count, String.replace(current, old_text, new_text)}
+    end
+  end
+
+  defp compute_replacement(current, old_text, new_text, false) do
+    parts = String.split(current, old_text)
+
+    case parts do
+      [single] when single == current ->
+        {:error, "old_text not found in file"}
+
+      [_before, _after] ->
+        {:ok, 1, String.replace(current, old_text, new_text, global: false)}
+
+      parts when length(parts) > 2 ->
+        {:error,
+         "old_text matches #{length(parts) - 1} locations; " <>
+           "pass replace_all: true to replace all, or make old_text more specific"}
+
+      _ ->
+        # Unreachable given the non-empty `old_text` guard and the
+        # cases above; defensive catch-all in case String.split
+        # returns an unexpected shape.
+        {:error, "old_text not found in file"}
+    end
+  end
+
+  defp count_matches(content, pattern) do
+    case String.split(content, pattern) do
+      parts -> max(0, length(parts) - 1)
     end
   end
 
