@@ -50,6 +50,17 @@ defmodule Nest.Agents.Agent.LLMRunner.LateCallHandlers do
         ) ::
           {{:assistant, Assistant.t()}, {:tool, Tool.t()}, [tuple()]}
   def build_tool_pair(ctx, state, response) do
+    # The Agent stamps the actual index via
+    # `__append_message__/2`. We carry the LLMRunner's
+    # `state.message_index` prediction through as a *hint* on
+    # the message struct: the Agent's handler reads
+    # `pending_api_logs(message.index)` to attach the response
+    # log the LLMRunner stored against its predicted index.
+    # In the normal case the prediction equals the Agent's
+    # `next_message_index` so the lookup succeeds; in the
+    # rare budget-reminder case the prediction drifts by one
+    # and the response log is lost (known limitation; fixed
+    # in PR 3 by querying the Agent for the next index).
     tool_call_message =
       {:assistant,
        %Assistant{

@@ -282,6 +282,55 @@ defmodule Nest.Agents.Agent do
     {:reply, state.chat_state.chat_task_pid, state}
   end
 
+  # The canonical message-append path. The Agent is the single
+  # writer of `index`: every message — user, assistant, tool
+  # result, system reminder — flows through this handler. This
+  # closes the dual-counter bug class (the old code had the
+  # LLMRunner maintaining its own `state.message_index` counter
+  # in parallel with `next_message_index`; the two drifted
+  # whenever a side-channel message like a budget reminder was
+  # injected, causing the reminder and the next response to
+  # share an index).
+  @impl true
+  def handle_call({:append_message, message}, _from, state) do
+    {stamped, state} = __append_message__(state, message)
+    {:reply, stamped, state}
+  end
+
+  @doc false
+  # In-process variant of `handle_call({:append_message, _})`
+  # for callers that don't want the mailbox round-trip. The
+  # message is a `{role, %{index: _}}` tuple; the inner
+  # struct's `index` is overwritten with
+  # `state.chat_state.next_message_index`. Returns
+  # `{stamped_message, new_state}`.
+  @spec __append_message__(t(), {atom(), map()}) :: {term(), t()}
+  def __append_message__(state, message) do
+    index = state.chat_state.next_message_index
+    stamped = put_message_index(message, index)
+
+    messages = state.chat_state.messages ++ [stamped]
+
+    state = %{
+      state
+      | chat_state: %{state.chat_state | messages: messages, next_message_index: index + 1}
+    }
+
+    Broadcasts.message(state.id, stamped)
+    {stamped, state}
+  end
+
+  # Extract the index from a stamped message tuple. Exposed
+  # so in-process callers can read back the stamped index
+  # without re-doing the pattern match.
+  @doc false
+  @spec stamped_index(term()) :: non_neg_integer()
+  def stamped_index({_role, %{index: index}}), do: index
+
+  defp put_message_index({role, %{index: _} = msg}, index) do
+    {role, %{msg | index: index}}
+  end
+
   defp system_prompt_from_messages([{:system, %{content: content}} | _]) when is_binary(content),
     do: content
 

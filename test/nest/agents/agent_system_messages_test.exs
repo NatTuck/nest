@@ -147,5 +147,55 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
       # the agent shows).
       assert length(system_messages) >= 2
     end
+
+    test "the budget reminder and the final response get distinct indices (regression: dual-counter bug)" do
+      # Regression guard for the disappearing-reminder bug.
+      # Before the Agent was the sole writer of `index`, the
+      # budget reminder (stamped at `next_message_index` by
+      # the Agent) shared the same index as the next LLM
+      # response (predicted by the LLMRunner's `+ 2` math
+      # from `state.message_index`). React's `key={message.index}`
+      # would reuse the same DOM node, and the JS
+      # `addChatMessage` merge would overwrite the reminder
+      # with the response. After PR 1 the Agent stamps every
+      # message at the next free slot, so the reminder and
+      # the response are at distinct indices and both are
+      # visible in the UI.
+      for i <- 1..4 do
+        MockClient.set_tool_response(%{
+          text: "loop #{i}",
+          tool_calls: [
+            %{
+              id: "call_#{:rand.uniform(100_000)}",
+              name: "shell_cmd",
+              arguments: %{"command" => "echo loop"}
+            }
+          ]
+        })
+      end
+
+      MockClient.set_response("All done, used tools 4 times")
+
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      capture_log(fn ->
+        :ok = Agent.chat(pid, "Loop until done")
+
+        # The reminder is broadcast.
+        assert_receive {:chat_message,
+                        {:system, %SystemMsg{index: reminder_index, content: content}}},
+                       2000
+
+        assert content =~ "tool call rounds remaining"
+
+        # The final response is broadcast at a different index.
+        # Before the fix, both would share the same index.
+        assert_receive {:chat_message, {:assistant, %{index: response_index}}}, 2000
+
+        assert response_index != reminder_index,
+               "reminder (index #{reminder_index}) and response (index #{response_index}) share an index — dual-counter bug"
+      end)
+    end
   end
 end

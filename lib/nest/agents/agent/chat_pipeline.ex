@@ -43,20 +43,32 @@ defmodule Nest.Agents.Agent.ChatPipeline do
 
     {user_message, llm_user_message} = build_user_messages(state, content, effective_mode)
 
-    messages = state.chat_state.messages ++ [user_message]
-    messages_for_llm = state.chat_state.messages ++ [llm_user_message]
-
-    # Broadcast user message to all subscribers
-    Broadcasts.message(state.id, user_message)
-
     # Clear the `cancelled` flag from any previous stop so the
     # pre-flight compaction that may run for this turn can
     # actually resume the chat task (the guard in
     # `compaction_done` would otherwise discard the
     # `chat_continuation`).
     state = clear_cancelled(state)
-    state = apply_user_message_to_state(state, messages, effective_mode)
+
+    # Append the user message via the canonical Agent path so
+    # the Agent stamps `index` and the next response's
+    # `streaming_acc` is built from the actual stamped index
+    # (no more `next_idx + 1` prediction that could drift from
+    # `next_message_index` if a side-channel message were
+    # appended first). The broadcast happens inside
+    # `__append_message__/2`.
+    {stamped_user, state} = Nest.Agents.Agent.__append_message__(state, user_message)
+
+    state =
+      prepare_streaming_state(
+        state,
+        effective_mode,
+        Nest.Agents.Agent.stamped_index(stamped_user)
+      )
+
     Broadcasts.status(state.id, state)
+
+    messages_for_llm = state.chat_state.messages ++ [llm_user_message]
 
     # Pre-flight: does the next LLM call fit? If not, the
     # Compactor runs first (in a Task); the chat task spawns
@@ -80,19 +92,15 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   def resume_after_compaction(state, content, mode) do
     {effective_mode, _} = resolve_mode_and_caps(mode, state.vocation_id)
     user_message = build_user_message(state, content, effective_mode)
-    Broadcasts.message(state.id, user_message)
 
-    state = %{
-      state
-      | mode: effective_mode,
-        messages: state.chat_state.messages ++ [user_message],
-        next_message_index: state.chat_state.next_message_index + 1,
-        status: :streaming,
-        active_message_index: state.chat_state.next_message_index,
-        pending_api_logs:
-          clear_pending_api_logs(state, state.chat_state.next_message_index).chat_state.pending_api_logs,
-        streaming_acc: Streaming.new(state.chat_state.next_message_index + 1)
-    }
+    {stamped_user, state} = Nest.Agents.Agent.__append_message__(state, user_message)
+
+    state =
+      prepare_streaming_state(
+        state,
+        effective_mode,
+        Nest.Agents.Agent.stamped_index(stamped_user)
+      )
 
     Broadcasts.status(state.id, state)
     spawn_chat_task(state, content, mode)
@@ -150,6 +158,29 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     user_message = List.last(state.chat_state.messages)
     llm_user_message = llm_user_message(user_message, content, effective_mode)
     Enum.drop(state.chat_state.messages, -1) ++ [llm_user_message]
+  end
+
+  # Transition the chat_state to `:streaming` after a user message
+  # has been appended via `__append_message__/2`. Sets the
+  # `active_message_index` (used by the LLMRunner for the request
+  # API log) to the user message's actual stamped index, and
+  # starts a fresh streaming accumulator for the response at
+  # `stamped_index + 1`. Both indices come from the Agent's
+  # authoritative `next_message_index`, not from a local
+  # prediction.
+  defp prepare_streaming_state(state, effective_mode, stamped_index) do
+    %{
+      state
+      | mode: effective_mode,
+        chat_state: %{
+          state.chat_state
+          | status: :streaming,
+            active_message_index: stamped_index,
+            pending_api_logs:
+              clear_pending_api_logs(state, stamped_index).chat_state.pending_api_logs,
+            streaming_acc: Streaming.new(stamped_index + 1)
+        }
+    }
   end
 
   defp build_run_context(state, agent_pid, caps, messages_for_llm) do
@@ -255,11 +286,15 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   # through whatever store / log / replay we have. The client UI
   # strips the prefix before display because the mode badge already
   # shows it; see `assets/js/utils/stripModePrefix.js`.
+  #
+  # `index: nil` — the Agent stamps the actual index via
+  # `__append_message__/2`. The LLMRunner is no longer the
+  # authority on which slot the user message occupies.
   defp build_user_messages(state, content, effective_mode) do
     next_idx = state.chat_state.next_message_index
 
     user = %User{
-      index: next_idx,
+      index: nil,
       timestamp: DateTime.utc_now(),
       content: "[mode: #{effective_mode}]\n#{content}",
       metadata: %{"mode" => effective_mode},
@@ -280,7 +315,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   defp build_user_message(state, content, effective_mode) do
     {:user,
      %User{
-       index: state.chat_state.next_message_index,
+       index: nil,
        timestamp: DateTime.utc_now(),
        content: "[mode: #{effective_mode}]\n#{content}",
        metadata: %{"mode" => effective_mode},
@@ -296,34 +331,6 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   # reintroduced without rewiring callers.
   defp llm_user_message(user_message, _content, _effective_mode) do
     user_message
-  end
-
-  # Mutate the chat_state to reflect the new user message:
-  # append to history, advance the index, mark streaming,
-  # reset pending API logs, and start a fresh streaming acc.
-  #
-  # Also persists the resolved effective mode to `state.mode`
-  # ("sticky mode"): the next chat turn defaults to whatever
-  # mode was used most recently. The UI receives the new
-  # current mode via the `chat:status` broadcast and resets
-  # the dropdown to match, so subsequent sends keep the same
-  # mode unless the user explicitly changes it.
-  defp apply_user_message_to_state(state, messages, effective_mode) do
-    next_idx = state.chat_state.next_message_index
-
-    %{
-      state
-      | mode: effective_mode,
-        chat_state: %{
-          state.chat_state
-          | messages: messages,
-            next_message_index: next_idx + 1,
-            status: :streaming,
-            active_message_index: next_idx,
-            pending_api_logs: clear_pending_api_logs(state, next_idx).chat_state.pending_api_logs,
-            streaming_acc: Streaming.new(next_idx + 1)
-        }
-    }
   end
 
   # Pre-flight: would the LLM call we'd make next fit in the

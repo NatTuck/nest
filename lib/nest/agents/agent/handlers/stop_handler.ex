@@ -79,23 +79,24 @@ defmodule Nest.Agents.Agent.Handlers.StopHandler do
   defp chat_stopped(_task_pid, state) do
     {:assistant, partial_assistant} = build_partial_assistant(state)
 
+    {stamped, state} =
+      Nest.Agents.Agent.__append_message__(state, {:assistant, %{partial_assistant | index: nil}})
+
+    stamped_index = Nest.Agents.Agent.stamped_index(stamped)
+
     state = %{
       state
       | chat_state: %{
           state.chat_state
-          | messages: state.chat_state.messages ++ [{:assistant, partial_assistant}],
-            streaming_acc: nil,
-            next_message_index: state.chat_state.next_message_index + 1,
-            active_message_index: partial_assistant.index,
-            pending_api_logs:
-              clear_api_logs(state, partial_assistant.index).chat_state.pending_api_logs,
+          | streaming_acc: nil,
+            active_message_index: stamped_index,
+            pending_api_logs: clear_api_logs(state, stamped_index).chat_state.pending_api_logs,
             status: :idle,
             chat_task_pid: nil,
             cancelled: false
         }
     }
 
-    Broadcasts.message(state.id, {:assistant, partial_assistant})
     Broadcasts.status(state.id, state)
 
     {:noreply, state}
@@ -108,6 +109,11 @@ defmodule Nest.Agents.Agent.Handlers.StopHandler do
   # any text was streamed (e.g. the user clicked Stop before the
   # first delta), the persisted message has `content: nil` and
   # `thinking: nil` — a deliberate "empty" assistant turn.
+  #
+  # The returned message has `index: nil` — the Agent stamps it
+  # via `__append_message__/2` so the dual-counter bug class
+  # can't recur (a budget reminder injected between the stop
+  # and the unwinding would otherwise share the same index).
   defp build_partial_assistant(state) do
     case state.chat_state.streaming_acc do
       %Streaming.AssistantAccumulator{} = acc ->
@@ -116,7 +122,8 @@ defmodule Nest.Agents.Agent.Handlers.StopHandler do
         {:assistant,
          %Assistant{
            finalized
-           | timestamp: DateTime.utc_now(),
+           | index: nil,
+             timestamp: DateTime.utc_now(),
              thinking_signature: acc.thinking_signature,
              api_logs: pending_api_logs(state, acc.index),
              metadata: %{"stopped_by_user" => true}
@@ -129,7 +136,7 @@ defmodule Nest.Agents.Agent.Handlers.StopHandler do
 
         {:assistant,
          %Assistant{
-           index: index,
+           index: nil,
            timestamp: DateTime.utc_now(),
            content: nil,
            thinking: nil,

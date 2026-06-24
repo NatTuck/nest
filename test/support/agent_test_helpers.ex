@@ -6,6 +6,7 @@ defmodule Nest.Agents.AgentTestHelpers do
   """
 
   import ExUnit.Callbacks
+  import ExUnit.Assertions
 
   alias Nest.Agents.Agent
   alias Nest.DotConfig
@@ -68,5 +69,33 @@ defmodule Nest.Agents.AgentTestHelpers do
 
   def get_system_prompt(pid) do
     GenServer.call(pid, :get_system_prompt)
+  end
+
+  @doc """
+  Assert every message in `state.chat_state.messages` has a
+  unique `index` field. Regression guard for the
+  dual-counter bug class: a budget reminder and the next
+  response used to share an index, causing the UI's
+  `addChatMessage` merge to silently overwrite the reminder
+  with the response. Call this at the end of any
+  chat-flow integration test that drives a turn to
+  completion.
+
+  Compaction markers (which are `{:compaction, _}` tuples
+  with their own `index` field) are ignored — only the four
+  persisted message roles are asserted.
+  """
+  def assert_unique_message_indices(state) do
+    indices =
+      state.chat_state.messages
+      |> Enum.flat_map(fn
+        {_, %{index: idx}} -> [idx]
+        _ -> []
+      end)
+
+    duplicates = indices -- Enum.uniq(indices)
+
+    assert duplicates == [],
+           "duplicate message indices: #{inspect(duplicates)} — dual-counter bug"
   end
 end

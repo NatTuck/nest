@@ -93,30 +93,29 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
 
   # Finalize error message
   defp llm_error(error_msg, state) do
+    error_index = state.chat_state.streaming_acc.index
+
     error_message =
       {:assistant,
        %Assistant{
-         index: state.chat_state.streaming_acc.index,
+         index: nil,
          timestamp: DateTime.utc_now(),
          content: error_msg,
          thinking: nil,
          tool_calls: nil,
-         api_logs: pending_api_logs(state, state.chat_state.streaming_acc.index)
+         api_logs: pending_api_logs(state, error_index)
        }}
 
-    messages = state.chat_state.messages ++ [error_message]
-    Broadcasts.message(state.id, error_message)
+    {stamped, state} = Nest.Agents.Agent.__append_message__(state, error_message)
+    stamped_index = Nest.Agents.Agent.stamped_index(stamped)
 
     state = %{
       state
       | chat_state: %{
           state.chat_state
-          | messages: messages,
-            streaming_acc: nil,
-            next_message_index: state.chat_state.next_message_index + 1,
-            active_message_index: state.chat_state.streaming_acc.index,
-            pending_api_logs:
-              clear_api_logs(state, state.chat_state.streaming_acc.index).chat_state.pending_api_logs,
+          | streaming_acc: nil,
+            active_message_index: stamped_index,
+            pending_api_logs: clear_api_logs(state, stamped_index).chat_state.pending_api_logs,
             status: :idle
         }
     }
@@ -265,7 +264,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
     final_message =
       {:assistant,
        %Assistant{
-         index: acc.index,
+         index: nil,
          timestamp: DateTime.utc_now(),
          content: acc.text_buffer,
          thinking: if(acc.thinking_buffer == "", do: nil, else: acc.thinking_buffer),
@@ -284,20 +283,18 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
          api_logs: pending_api_logs(state, acc.index)
        }}
 
-    state = %{
+    {stamped, state} = Nest.Agents.Agent.__append_message__(state, final_message)
+    stamped_index = Nest.Agents.Agent.stamped_index(stamped)
+
+    %{
       state
       | chat_state: %{
           state.chat_state
-          | messages: state.chat_state.messages ++ [final_message],
-            streaming_acc: nil,
-            next_message_index: state.chat_state.next_message_index + 1,
-            active_message_index: acc.index,
-            pending_api_logs: clear_api_logs(state, acc.index).chat_state.pending_api_logs
+          | streaming_acc: nil,
+            active_message_index: stamped_index,
+            pending_api_logs: clear_api_logs(state, stamped_index).chat_state.pending_api_logs
         }
     }
-
-    Broadcasts.message(state.id, final_message)
-    state
   end
 
   defp clear_streaming_acc(state) do
@@ -317,27 +314,28 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   defp parse_tool_args(_), do: nil
 
   defp tool_calls_received(tool_call_message, state) do
-    index = tool_call_message.index
-    pending_logs = pending_api_logs(state, index)
+    pending_logs = pending_api_logs(state, tool_call_message.index)
 
     tool_call_message =
       if pending_logs != [] do
         {:assistant,
-         %{tool_call_message | api_logs: (tool_call_message.api_logs || []) ++ pending_logs}}
+         %{
+           tool_call_message
+           | api_logs: (tool_call_message.api_logs || []) ++ pending_logs,
+             index: nil
+         }}
       else
-        {:assistant, tool_call_message}
+        {:assistant, %{tool_call_message | index: nil}}
       end
 
-    messages = state.chat_state.messages ++ [tool_call_message]
-    Broadcasts.message(state.id, tool_call_message)
+    {stamped, state} = Nest.Agents.Agent.__append_message__(state, tool_call_message)
+    stamped_index = Nest.Agents.Agent.stamped_index(stamped)
 
     state = %{
       state
       | chat_state: %{
           state.chat_state
-          | messages: messages,
-            next_message_index: state.chat_state.next_message_index + 1,
-            pending_api_logs: clear_api_logs(state, index).chat_state.pending_api_logs,
+          | pending_api_logs: clear_api_logs(state, stamped_index).chat_state.pending_api_logs,
             status: :executing_tools
         }
     }
@@ -347,29 +345,30 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   end
 
   defp tool_results_received(tool_result_message, state) do
-    index = tool_result_message.index
-    pending_logs = pending_api_logs(state, index)
+    pending_logs = pending_api_logs(state, tool_result_message.index)
 
     tool_result_message =
       if pending_logs != [] do
         {:tool,
-         %{tool_result_message | api_logs: (tool_result_message.api_logs || []) ++ pending_logs}}
+         %{
+           tool_result_message
+           | api_logs: (tool_result_message.api_logs || []) ++ pending_logs,
+             index: nil
+         }}
       else
-        {:tool, tool_result_message}
+        {:tool, %{tool_result_message | index: nil}}
       end
 
-    messages = state.chat_state.messages ++ [tool_result_message]
-    Broadcasts.message(state.id, tool_result_message)
+    {stamped, state} = Nest.Agents.Agent.__append_message__(state, tool_result_message)
+    stamped_index = Nest.Agents.Agent.stamped_index(stamped)
 
     state = %{
       state
       | chat_state: %{
           state.chat_state
-          | messages: messages,
-            next_message_index: state.chat_state.next_message_index + 1,
-            pending_api_logs: clear_api_logs(state, index).chat_state.pending_api_logs,
+          | pending_api_logs: clear_api_logs(state, stamped_index).chat_state.pending_api_logs,
             status: :streaming,
-            streaming_acc: Streaming.new(state.chat_state.next_message_index + 1)
+            streaming_acc: Streaming.new(stamped_index + 1)
         }
     }
 
@@ -379,12 +378,13 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
 
   # Finalize assistant message with thinking using Streaming.finalize
   defp llm_response_with_thinking(thinking, state) do
-    assistant = Streaming.finalize(state.chat_state.streaming_acc)
+    acc = state.chat_state.streaming_acc
+    assistant = Streaming.finalize(acc)
 
     final_message =
       {:assistant,
        %Assistant{
-         index: assistant.index,
+         index: nil,
          timestamp: DateTime.utc_now(),
          content: assistant.content,
          thinking: thinking,
@@ -392,24 +392,21 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
          # subsequent turns. The AnthropicClient reads this field
          # directly when rebuilding the assistant content block
          # array for the next request.
-         thinking_signature: state.chat_state.streaming_acc.thinking_signature,
+         thinking_signature: acc.thinking_signature,
          tool_calls: assistant.tool_calls,
-         api_logs: pending_api_logs(state, state.chat_state.streaming_acc.index)
+         api_logs: pending_api_logs(state, acc.index)
        }}
 
-    messages = state.chat_state.messages ++ [final_message]
-    Broadcasts.message(state.id, final_message)
+    {stamped, state} = Nest.Agents.Agent.__append_message__(state, final_message)
+    stamped_index = Nest.Agents.Agent.stamped_index(stamped)
 
     state = %{
       state
       | chat_state: %{
           state.chat_state
-          | messages: messages,
-            streaming_acc: nil,
-            next_message_index: state.chat_state.next_message_index + 1,
-            active_message_index: state.chat_state.streaming_acc.index,
-            pending_api_logs:
-              clear_api_logs(state, state.chat_state.streaming_acc.index).chat_state.pending_api_logs,
+          | streaming_acc: nil,
+            active_message_index: stamped_index,
+            pending_api_logs: clear_api_logs(state, stamped_index).chat_state.pending_api_logs,
             status: :idle
         }
     }
@@ -449,19 +446,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   # stay in the message list. We accept this as the cost of
   # transparency — see `notes/normalize-system-messages.md`.
   defp system_reminder_received(reminder, state) do
-    reminder_message = {:system, %{reminder | index: state.chat_state.next_message_index}}
-    messages = state.chat_state.messages ++ [reminder_message]
-    Broadcasts.message(state.id, reminder_message)
-
-    state = %{
-      state
-      | chat_state: %{
-          state.chat_state
-          | messages: messages,
-            next_message_index: state.chat_state.next_message_index + 1
-        }
-    }
-
+    {_, state} = Nest.Agents.Agent.__append_message__(state, {:system, %{reminder | index: nil}})
     {:noreply, state}
   end
 
