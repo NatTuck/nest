@@ -1,6 +1,6 @@
-defmodule Nest.Agents.Agent.LLMRunner.LateCallHandlersTest do
+defmodule Nest.Agents.Agent.ChatTurn.HelpersTest do
   @moduledoc """
-  Unit tests for `Nest.Agents.Agent.LLMRunner.LateCallHandlers`.
+  Unit tests for `Nest.Agents.Agent.ChatTurn.Helpers`.
 
   These helpers own the LLM-loop end-of-iteration dispatch:
   injecting budget reminders as system messages, and building
@@ -9,8 +9,8 @@ defmodule Nest.Agents.Agent.LLMRunner.LateCallHandlersTest do
 
   use ExUnit.Case, async: true
 
+  alias Nest.Agents.Agent.ChatTurn.Helpers
   alias Nest.Agents.Agent.LLMRunner
-  alias Nest.Agents.Agent.LLMRunner.LateCallHandlers
   alias Nest.Messages.Assistant
   alias Nest.Messages.System
   alias Nest.Messages.Tool
@@ -27,21 +27,21 @@ defmodule Nest.Agents.Agent.LLMRunner.LateCallHandlersTest do
   describe "maybe_inject_budget_warning/4" do
     test "returns messages unchanged when remaining is greater than 2" do
       messages = [{:user, :stub}]
-      assert LateCallHandlers.maybe_inject_budget_warning(messages, ctx(), 3, self()) == messages
-      assert LateCallHandlers.maybe_inject_budget_warning(messages, ctx(), 5, self()) == messages
+      assert Helpers.maybe_inject_budget_warning(messages, ctx(), 3, self()) == messages
+      assert Helpers.maybe_inject_budget_warning(messages, ctx(), 5, self()) == messages
     end
 
     test "returns messages unchanged when remaining is 0 or negative" do
       messages = [{:user, :stub}]
-      assert LateCallHandlers.maybe_inject_budget_warning(messages, ctx(), 0, self()) == messages
+      assert Helpers.maybe_inject_budget_warning(messages, ctx(), 0, self()) == messages
 
-      assert LateCallHandlers.maybe_inject_budget_warning(messages, ctx(), -1, self()) ==
+      assert Helpers.maybe_inject_budget_warning(messages, ctx(), -1, self()) ==
                messages
     end
 
     test "appends a '2 rounds left' reminder when remaining is 2 and sends it to the pid" do
       messages = [{:user, :stub}]
-      result = LateCallHandlers.maybe_inject_budget_warning(messages, ctx(), 2, self())
+      result = Helpers.maybe_inject_budget_warning(messages, ctx(), 2, self())
 
       assert {:system, %System{content: content}} = List.last(result)
       assert content =~ "2 tool call rounds remaining"
@@ -56,7 +56,7 @@ defmodule Nest.Agents.Agent.LLMRunner.LateCallHandlersTest do
 
     test "appends a 'last round' reminder when remaining is 1" do
       messages = [{:user, :stub}]
-      result = LateCallHandlers.maybe_inject_budget_warning(messages, ctx(), 1, self())
+      result = Helpers.maybe_inject_budget_warning(messages, ctx(), 1, self())
 
       assert {:system, %System{content: content}} = List.last(result)
       assert content =~ "last tool call round"
@@ -64,7 +64,7 @@ defmodule Nest.Agents.Agent.LLMRunner.LateCallHandlersTest do
 
     test "works without a pid (pure data, no broadcast)" do
       messages = [{:user, :stub}]
-      result = LateCallHandlers.maybe_inject_budget_warning(messages, ctx(), 1, nil)
+      result = Helpers.maybe_inject_budget_warning(messages, ctx(), 1, nil)
 
       assert length(result) == 2
       assert {:system, _} = List.last(result)
@@ -84,7 +84,7 @@ defmodule Nest.Agents.Agent.LLMRunner.LateCallHandlersTest do
       }
 
       {tool_call_message, tool_result_message, appended} =
-        LateCallHandlers.build_tool_pair(ctx(), state(5), response)
+        Helpers.build_tool_pair(ctx(), state(5), response)
 
       assert {:assistant, %Assistant{}} = tool_call_message
       assert {:tool, %Tool{}} = tool_result_message
@@ -110,7 +110,7 @@ defmodule Nest.Agents.Agent.LLMRunner.LateCallHandlersTest do
       }
 
       {tool_call_message, tool_result_message, appended} =
-        LateCallHandlers.build_synthetic_error_pair(ctx(), state(7), response)
+        Helpers.build_synthetic_error_pair(ctx(), state(7), response)
 
       assert {:assistant, %Assistant{tool_calls: calls}} = tool_call_message
       assert length(calls) == 2
@@ -130,7 +130,7 @@ defmodule Nest.Agents.Agent.LLMRunner.LateCallHandlersTest do
       response = %Nest.LLM.RunResponse{text: "no calls", tool_calls: []}
 
       {_, tool_result_message, appended} =
-        LateCallHandlers.build_synthetic_error_pair(ctx(), state(0), response)
+        Helpers.build_synthetic_error_pair(ctx(), state(0), response)
 
       assert {:tool, %Tool{tool_results: []}} = tool_result_message
       assert length(appended) == 2

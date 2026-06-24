@@ -1,26 +1,17 @@
-defmodule Nest.Agents.Agent.LLMRunner.LateCallHandlers do
+defmodule Nest.Agents.Agent.ChatTurn.Helpers do
   @moduledoc """
-  End-of-iteration dispatch for the LLM call chain.
+  Message-construction helpers for the chat turn's iteration
+  coordinator. Pure functions: they take the LLM-bound
+  messages list, the response, and the iteration state, and
+  return the new messages + the messages-for-next-call
+  list. The caller is responsible for sending the messages
+  to the Agent and stamping their indices.
 
-  Two paths live here:
-
-    * `build_synthetic_error_pair/3` — when the LLM hits the
-      iteration cap and then ignores `tool_choice: :none` on
-      the final call, we synthesize error tool results so the
-      LLM can see the constraint.
-
-    * `maybe_inject_budget_warning/3` — when the LLM is
-      approaching the iteration cap, we inject a system
-      reminder into the messages list so it can plan
-      accordingly.
-
-  Both helpers are pure (data in, data out). The caller
-  (`Nest.Agents.Agent.LLMRunner`) is responsible for
-  sending the resulting messages to the GenServer and for
-  recursing into the next LLM call.
-
-  Extracted from `LLMRunner` to keep the orchestrator under
-  the 500-line credo limit.
+  Extracted from `LLMRunner` (where the same functions
+  lived as `LateCallHandlers.build_tool_pair/3` and
+  `LateCallHandlers.maybe_inject_budget_warning/4`) so the
+  iteration coordinator doesn't need to depend on the
+  runner module for message construction.
   """
 
   alias Nest.Agents.Agent.LLMRunner
@@ -35,32 +26,33 @@ defmodule Nest.Agents.Agent.LLMRunner.LateCallHandlers do
                                   "Please provide a final response to the user based on the conversation so far."
 
   @doc """
-  Build the `(tool_call_message, tool_result_message, appended_messages)`
-  triple for the normal tool-call path. The `tool_results` come from
-  `ToolLoop.execute/3` (the BudgetPlanner), which fits / truncates /
-  skips each result before persisting it.
+  Build the `(tool_call_message, tool_result_message,
+  messages_with_pair)` triple for the normal tool-call
+  path. The `tool_results` come from `ToolLoop.execute/3`
+  (the BudgetPlanner), which fits / truncates / skips each
+  result before persisting it.
 
-  The caller is responsible for sending the two messages to the
-  GenServer and recursing into the next LLM call.
+  The `state.message_index` is the LLMRunner's predicted
+  index for the tool call message (the response's index).
+  The Agent stamps the actual index when appending; the
+  prediction is used here only so the
+  `pending_api_logs(message.index)` lookup in the Agent's
+  handler finds the response log the LLMRunner stored at
+  its predicted index. In the normal case the prediction
+  equals the Agent's `next_message_index` so the lookup
+  succeeds; in the rare budget-reminder case the
+  prediction drifts and the response log is lost (fixed
+  in PR 3 by querying the Agent for the next index).
+
+  The `tool_result_message` carries `state.message_index +
+  1` as a hint; the Agent's handler reads pending api_logs
+  at the LLMRunner's predicted index for the tool
+  message, which is the request log for the next LLM
+  call.
   """
-  @spec build_tool_pair(
-          LLMRunner.RunContext.t(),
-          LLMRunner.RunState.t(),
-          Nest.LLM.RunResponse.t()
-        ) ::
+  @spec build_tool_pair(map(), map(), RunResponse.t()) ::
           {{:assistant, Assistant.t()}, {:tool, Tool.t()}, [tuple()]}
   def build_tool_pair(ctx, state, response) do
-    # The Agent stamps the actual index via
-    # `__append_message__/2`. We carry the LLMRunner's
-    # `state.message_index` prediction through as a *hint* on
-    # the message struct: the Agent's handler reads
-    # `pending_api_logs(message.index)` to attach the response
-    # log the LLMRunner stored against its predicted index.
-    # In the normal case the prediction equals the Agent's
-    # `next_message_index` so the lookup succeeds; in the
-    # rare budget-reminder case the prediction drifts by one
-    # and the response log is lost (known limitation; fixed
-    # in PR 3 by querying the Agent for the next index).
     tool_call_message =
       {:assistant,
        %Assistant{
@@ -98,21 +90,17 @@ defmodule Nest.Agents.Agent.LLMRunner.LateCallHandlers do
   end
 
   @doc """
-  Build a `(tool_call_message, tool_result_message, appended_messages)`
-  triple where the tool results carry `is_error: true` and a
-  human-readable explanation.
+  Build a `(tool_call_message, tool_result_message,
+  messages_with_pair)` triple where the tool results carry
+  `is_error: true` and a human-readable explanation.
 
   Used to inject a second-chance tool call when the LLM
-  ignores `tool_choice: :none` on the max-iterations final
-  call. The caller is responsible for sending the two
-  messages to the GenServer and recursing with
+  ignores `tool_choice: :none` on the max-iterations
+  final call. The caller is responsible for sending the
+  two messages to the Agent and recursing with
   `force_finalize: true`.
   """
-  @spec build_synthetic_error_pair(
-          LLMRunner.RunContext.t(),
-          LLMRunner.RunState.t(),
-          Nest.LLM.RunResponse.t()
-        ) ::
+  @spec build_synthetic_error_pair(map(), map(), RunResponse.t()) ::
           {{:assistant, Assistant.t()}, {:tool, Tool.t()}, [tuple()]}
   def build_synthetic_error_pair(ctx, state, response) do
     tool_calls = response.tool_calls || []
@@ -153,20 +141,20 @@ defmodule Nest.Agents.Agent.LLMRunner.LateCallHandlers do
   end
 
   @doc """
-  When the LLM is nearing the iteration cap, append a system
-  reminder to the messages list (in order, at the current end).
-  The reminder is broadcast to the UI and persisted in
-  `state.chat_state.messages` via the `:system_reminder_received`
-  GenServer tag.
+  When the LLM is nearing the iteration cap, append a
+  system reminder to the messages list (in order, at the
+  current end). The reminder is broadcast to the UI and
+  persisted in `state.chat_state.messages` via the
+  `:system_reminder_received` GenServer tag.
 
-  Replaces the previous code that mutated `ctx.system_prompt`,
-  which (a) broke prompt caching on providers that hash the
-  system prompt and (b) failed to actually reach the LLM in
-  the wire payload.
+  Replaces the previous code that mutated
+  `ctx.system_prompt`, which (a) broke prompt caching on
+  providers that hash the system prompt and (b) failed to
+  actually reach the LLM in the wire payload.
   """
   @spec maybe_inject_budget_warning(
           [tuple()],
-          LLMRunner.RunContext.t(),
+          map(),
           integer(),
           pid() | nil
         ) :: [tuple()]
@@ -192,5 +180,20 @@ defmodule Nest.Agents.Agent.LLMRunner.LateCallHandlers do
     end
 
     messages ++ [reminder]
+  end
+
+  @doc false
+  # Exposed for tests that need to construct a fake
+  # `LLMRunner.RunState` to drive `build_tool_pair/3` and
+  # friends. Kept here (rather than in `LLMRunner`) so the
+  # helpers don't depend on the runner module.
+  def new_state(message_index, active_message_index, max_iterations, api_log_sequences) do
+    %LLMRunner.RunState{
+      message_index: message_index,
+      active_message_index: active_message_index,
+      api_log_sequences: api_log_sequences,
+      max_iterations: max_iterations,
+      force_finalize: false
+    }
   end
 end
