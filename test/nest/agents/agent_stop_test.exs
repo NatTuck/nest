@@ -48,7 +48,7 @@ defmodule Nest.Agents.AgentStopTest do
 
       :ok = Agent.chat(pid, "Start")
 
-      assert_receive {:chat_message, {:user, %{index: 0}}}, 100
+      assert_receive {:chat_message, {:user, %{index: 1}}}, 100
       assert_receive {:chat_status, %{status: "streaming"}}, 100
       assert_receive {:chat_delta, _}, 100
 
@@ -78,7 +78,7 @@ defmodule Nest.Agents.AgentStopTest do
       assert is_pid(chat_task_pid)
       send(chat_task_pid, {:stop_chat, self()})
 
-      assert_receive {:chat_message, {:assistant, %Assistant{content: content, index: 1}}},
+      assert_receive {:chat_message, {:assistant, %Assistant{content: content, index: 2}}},
                      2000
 
       assert is_binary(content)
@@ -180,7 +180,7 @@ defmodule Nest.Agents.AgentStopTest do
       # chat turn should work normally.
       :ok = Agent.chat(pid, "After the stop")
 
-      assert_receive {:chat_message, {:user, %{index: 2}}}, 2000
+      assert_receive {:chat_message, {:user, %{index: 3}}}, 2000
       assert_receive {:chat_message, {:assistant, _}}, 2000
     end
   end
@@ -215,7 +215,7 @@ defmodule Nest.Agents.AgentStopTest do
 
       :ok = Agent.chat(pid, "Second turn")
 
-      assert_receive {:chat_message, {:user, %{index: 2}}}, 2000
+      assert_receive {:chat_message, {:user, %{index: 3}}}, 2000
       assert_receive {:chat_message, {:assistant, %{content: "Second turn response"}}}, 2000
       assert_receive {:chat_status, %{status: "idle"}}, 2000
     end

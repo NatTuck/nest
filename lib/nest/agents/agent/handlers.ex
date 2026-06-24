@@ -64,6 +64,7 @@ defmodule Nest.Agents.Agent.Handlers do
   defp route_for({:tool_results_received, _}), do: {:ok, LLMStreamHandler}
   defp route_for({:llm_response_with_thinking, _, _}), do: {:ok, LLMStreamHandler}
   defp route_for({:llm_usage, _}), do: {:ok, LLMStreamHandler}
+  defp route_for({:system_reminder_received, _}), do: {:ok, LLMStreamHandler}
   defp route_for({:api_log, _, _}), do: {:ok, ApiLogHandler}
   defp route_for({:api_log_sequences_updated, _}), do: {:ok, ApiLogHandler}
   defp route_for({:compaction_done, _, _}), do: {:ok, CompactionHandler}

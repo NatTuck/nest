@@ -26,16 +26,16 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 0, "role" => "user"}, 500
-      assert_push "chat:message", %{"index" => 1, "role" => "assistant"}, 500
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 500
+      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 500
 
       # Sync verifies state via the channel's sync handler (a sync
       # GenServer.call). The reply includes the agent's messages.
       sync_ref = push(socket, "chat:sync", %{"lastIndex" => -1})
       assert_reply sync_ref, :ok, %{"messages" => messages, "messageCount" => msg_count}
 
-      assert length(messages) == 2
-      assert msg_count >= 2
+      assert length(messages) == 3
+      assert msg_count >= 3
 
       Process.unlink(socket.channel_pid)
       channel_pid = socket.channel_pid
@@ -60,8 +60,8 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       ref1 = push(socket, "chat:message", %{"content" => "Message 1"})
       assert_reply ref1, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 0, "role" => "user"}, 500
-      assert_push "chat:message", %{"index" => 1, "role" => "assistant"}, 500
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 500
+      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 500
 
       channel_pid = socket.channel_pid
       mon = Process.monitor(channel_pid)
@@ -104,52 +104,52 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       # message is broadcast first (empty api_logs), then
       # re-broadcast after the request log is attached. Match the
       # re-broadcast version with non-empty apiLogs.
-      assert_push "chat:message", %{"index" => 0, "role" => "user", "apiLogs" => [user1_log]}, 500
+      assert_push "chat:message", %{"index" => 1, "role" => "user", "apiLogs" => [user1_log]}, 500
 
       assert_push "chat:message",
-                  %{"index" => 1, "role" => "assistant", "apiLogs" => [asst1_log]},
+                  %{"index" => 2, "role" => "assistant", "apiLogs" => [asst1_log]},
                   500
 
       assert user1_log["type"] == "request"
-      assert user1_log["id"] == "000.000"
+      assert user1_log["id"] == "001.000"
       assert is_map(user1_log["payload"])
 
       assert asst1_log["type"] == "response"
-      assert asst1_log["id"] == "001.000"
+      assert asst1_log["id"] == "002.000"
       assert is_map(asst1_log["payload"])
 
       # === Round 2 ===
       ref2 = push(socket, "chat:message", %{"content" => "How are you?"})
       assert_reply ref2, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 2, "role" => "user", "apiLogs" => [user2_log]}, 500
+      assert_push "chat:message", %{"index" => 3, "role" => "user", "apiLogs" => [user2_log]}, 500
 
       assert_push "chat:message",
-                  %{"index" => 3, "role" => "assistant", "apiLogs" => [asst2_log]},
+                  %{"index" => 4, "role" => "assistant", "apiLogs" => [asst2_log]},
                   500
 
       assert user2_log["type"] == "request"
-      assert user2_log["id"] == "002.000"
+      assert user2_log["id"] == "003.000"
 
       assert asst2_log["type"] == "response"
-      assert asst2_log["id"] == "003.000"
+      assert asst2_log["id"] == "004.000"
     end
 
     test "API call payload contains conversation history and tool calls", %{socket: socket} do
       ref = push(socket, "chat:message", %{"content" => "First message"})
       assert_reply ref, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 0, "role" => "user", "apiLogs" => [user_req]}, 500
+      assert_push "chat:message", %{"index" => 1, "role" => "user", "apiLogs" => [user_req]}, 500
 
       assert_push "chat:message",
-                  %{"index" => 1, "role" => "assistant", "apiLogs" => [asst_resp]},
+                  %{"index" => 2, "role" => "assistant", "apiLogs" => [asst_resp]},
                   500
 
-      assert user_req["id"] == "000.000"
+      assert user_req["id"] == "001.000"
       assert is_map(user_req["payload"])
       assert user_req["timestamp"] != nil
 
-      assert asst_resp["id"] == "001.000"
+      assert asst_resp["id"] == "002.000"
       assert is_map(asst_resp["payload"])
       assert asst_resp["timestamp"] != nil
     end
@@ -173,14 +173,14 @@ defmodule NestWeb.AgentChannelAdvancedTest do
 
       # The tool message is re-broadcast after its api_logs are
       # populated. Match the version with non-empty apiLogs.
-      assert_push "chat:message", %{"index" => 2, "role" => "tool", "apiLogs" => [tool_req]}, 500
+      assert_push "chat:message", %{"index" => 3, "role" => "tool", "apiLogs" => [tool_req]}, 500
 
       assert_push "chat:message",
-                  %{"index" => 3, "role" => "assistant", "apiLogs" => [_asst_resp]},
+                  %{"index" => 4, "role" => "assistant", "apiLogs" => [_asst_resp]},
                   500
 
       assert tool_req["type"] == "request"
-      assert tool_req["id"] == "002.000"
+      assert tool_req["id"] == "003.000"
       assert is_map(tool_req["payload"])
       assert tool_req["timestamp"] != nil
 
@@ -232,8 +232,8 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 0, "role" => "user"}, 500
-      assert_push "chat:message", %{"index" => 1, "role" => "assistant"}, 500
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 500
+      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 500
 
       tool_result_message =
         {:tool,
@@ -286,8 +286,8 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 0, "role" => "user"}, 500
-      assert_push "chat:message", %{"index" => 1, "role" => "assistant"}, 500
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 500
+      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 500
 
       message_with_api_logs =
         {:assistant,

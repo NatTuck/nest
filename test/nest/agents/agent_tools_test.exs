@@ -48,7 +48,7 @@ defmodule Nest.Agents.AgentToolsTest do
       # User message: first broadcast is empty, second carries the
       # request log. Match the second (non-empty api_logs).
       assert_receive {:chat_message,
-                      {:user, %{index: 0, content: "[mode: chat]\nList the files"}}},
+                      {:user, %{index: 1, content: "[mode: chat]\nList the files"}}},
                      100
 
       assert_receive {:chat_status, %{status: "streaming"}}, 100
@@ -57,19 +57,19 @@ defmodule Nest.Agents.AgentToolsTest do
       assert_receive {:chat_message,
                       {:assistant,
                        %{
-                         index: 1,
+                         index: 2,
                          content: "I'll run that command for you",
                          tool_calls: [tool_call]
                        }}},
                      100
 
       assert_receive {:chat_status, %{status: "executing_tools"}}, 100
-      assert_receive {:chat_message, {:tool, %{index: 2, tool_results: [tool_result]}}}, 100
+      assert_receive {:chat_message, {:tool, %{index: 3, tool_results: [tool_result]}}}, 100
       assert_receive {:chat_status, %{status: "streaming"}}, 100
       assert_receive {:chat_delta, _}, 100
 
       assert_receive {:chat_message,
-                      {:assistant, %{index: 3, content: "Here are the directory contents"}}},
+                      {:assistant, %{index: 4, content: "Here are the directory contents"}}},
                      100
 
       assert_receive {:chat_status, %{status: "idle"}}, 100
@@ -128,7 +128,7 @@ defmodule Nest.Agents.AgentToolsTest do
 
       assert_receive {:chat_message,
                       {:assistant,
-                       %{index: 1, content: "Let me calculate that", tool_calls: [tool_call]}}},
+                       %{index: 2, content: "Let me calculate that", tool_calls: [tool_call]}}},
                      100
 
       assert_receive {:chat_status, %{status: "idle"}}, 100
@@ -155,7 +155,7 @@ defmodule Nest.Agents.AgentToolsTest do
       :ok = Agent.chat(pid, "What's the weather?")
 
       assert_receive {:chat_message, {:user, _}}, 100
-      assert_receive {:chat_message, {:tool, %Tool{index: 2, tool_results: tool_results}}}, 100
+      assert_receive {:chat_message, {:tool, %Tool{index: 3, tool_results: tool_results}}}, 100
       assert_receive {:chat_status, %{status: "idle"}}, 100
 
       assert tool_results != []
@@ -184,11 +184,11 @@ defmodule Nest.Agents.AgentToolsTest do
       :ok = Agent.chat(pid, "What else is there?")
       # Second turn: new user message (index 4) + assistant response (index 5).
       assert_receive {:chat_message,
-                      {:user, %{index: 4, content: "[mode: chat]\nWhat else is there?"}}},
+                      {:user, %{index: 5, content: "[mode: chat]\nWhat else is there?"}}},
                      100
 
       assert_receive {:chat_message,
-                      {:assistant, %{index: 5, content: "Second response received"}}},
+                      {:assistant, %{index: 6, content: "Second response received"}}},
                      100
 
       assert_receive {:chat_status, %{status: "idle"}}, 100
@@ -213,9 +213,9 @@ defmodule Nest.Agents.AgentToolsTest do
 
       # The tool message is re-broadcast after its api_logs are
       # populated. Match the version with at least one request log.
-      assert_receive {:chat_message, {:tool, %{index: 2, api_logs: [_ | _] = tool_logs}}}, 100
+      assert_receive {:chat_message, {:tool, %{index: 3, api_logs: [_ | _] = tool_logs}}}, 100
 
-      assert_receive {:chat_message, {:assistant, %{index: 3, api_logs: [_ | _] = final_logs}}},
+      assert_receive {:chat_message, {:assistant, %{index: 4, api_logs: [_ | _] = final_logs}}},
                      100
 
       assert_receive {:chat_status, %{status: "idle"}}, 100
@@ -296,6 +296,74 @@ defmodule Nest.Agents.AgentToolsTest do
 
       assert_receive {:chat_status, %{status: "idle"}}, 100
       refute_receive {:chat_notification, %{type: "max_iterations"}}, 100
+
+      MockClient.clear()
+    end
+
+    test "max-iterations + LLM ignoring tool_choice: :none triggers a second-chance call" do
+      # The LLM hits the iteration cap. We then make a final
+      # call with `tools: nil, tool_choice: :none`. Some
+      # providers (e.g. qwen3.5-plus via model-studio) ignore
+      # `tool_choice: :none` and still emit tool calls. The
+      # runner must give the LLM one more chance via
+      # synthetic error tool results, then force-finalize.
+      #
+      # Setup: 5 tool responses to exhaust the cap, then a
+      # 6th tool response that the LLM should NOT honor (it
+      # sees the synthetic errors), then a final text response
+      # that the LLM produces after the second-chance
+      # force-finalize.
+      for _ <- 1..5 do
+        MockClient.set_tool_response(%{
+          text: "Calling tool",
+          tool_calls: [
+            %{
+              id: "call_#{:rand.uniform(100_000)}",
+              name: "shell_cmd",
+              arguments: %{"command" => "echo loop"}
+            }
+          ]
+        })
+      end
+
+      # The 6th response is what the LLM produces on the
+      # max-iterations final call. It still emits tool calls
+      # (ignoring tool_choice: :none). After the runner
+      # synthesizes errors, the LLM sees them and gives a
+      # final text response.
+      MockClient.set_tool_response(%{
+        text: "Trying one more tool",
+        tool_calls: [
+          %{
+            id: "call_#{:rand.uniform(100_000)}",
+            name: "shell_cmd",
+            arguments: %{"command" => "echo last"}
+          }
+        ]
+      })
+
+      MockClient.set_response("Forced final answer after second-chance")
+
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      capture_log(fn ->
+        :ok = Agent.chat(pid, "Exhaust iterations")
+
+        # The max-iterations notification fires once.
+        assert_receive {:chat_notification,
+                        %{type: "max_iterations", message: "Max tool iterations reached"}},
+                       3000
+
+        # The chat eventually finalizes with the second-chance
+        # forced text (no chat:error).
+        assert_receive {:chat_message,
+                        {:assistant, %{content: "Forced final answer after second-chance"}}},
+                       2000
+
+        assert_receive {:chat_status, %{status: "idle"}}, 1000
+        refute_receive {:chat_error, _}, 100
+      end)
 
       MockClient.clear()
     end

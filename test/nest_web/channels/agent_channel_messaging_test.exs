@@ -15,30 +15,32 @@ defmodule NestWeb.AgentChannelMessagingTest do
   setup :verify_on_exit!
 
   describe "message indexing rules" do
-    test "assistant messages have odd indexes", %{socket: socket} do
+    test "assistant message index follows user message index", %{socket: socket} do
       ref = push(socket, "chat:message", %{"content" => "First"})
       assert_reply ref, :ok, %{}
 
-      # The user message (index 0, even) is broadcast first, then
-      # the assistant (index 1, odd). Match the assistant and assert
-      # on the index parity.
-      assert_push "chat:message", %{"index" => 0, "role" => "user"}, 500
-      assert_push "chat:message", %{"index" => idx, "role" => "assistant"}, 500
+      # The user message is broadcast first, then the assistant.
+      # After the system message at position 0, the user lands at
+      # index 1 and the assistant at index 2. Verify the
+      # assistant's index is exactly one more than the user's.
+      assert_push "chat:message", %{"index" => user_idx, "role" => "user"}, 500
+      assert_push "chat:message", %{"index" => asst_idx, "role" => "assistant"}, 500
 
-      assert rem(idx, 2) == 1
+      assert asst_idx == user_idx + 1
     end
 
     test "messageCount is highest complete (non-partial) message", %{socket: socket} do
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 0, "role" => "user"}, 500
-      assert_push "chat:message", %{"index" => 1, "role" => "assistant"}, 500
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 500
+      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 500
 
       ref_status = push(socket, "chat:status", %{"lastIndex" => -1})
       assert_reply ref_status, :ok, %{"messageCount" => final_count}
 
-      assert final_count == 2
+      # System + user + assistant = 3 messages
+      assert final_count == 3
     end
   end
 
@@ -100,20 +102,20 @@ defmodule NestWeb.AgentChannelMessagingTest do
       assert_reply ref, :ok, %{}
 
       # First client receives user + assistant.
-      assert_push "chat:message", %{"index" => 0, "role" => "user"}, 500
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 500
 
       assert_push "chat:message",
                   %{"index" => idx, "role" => "assistant"} = assistant_payload,
                   500
 
-      assert rem(idx, 2) == 1
+      assert idx == 2
       assert is_binary(assistant_payload["content"])
 
       # Second client also receives both.
-      assert_push "chat:message", %{"index" => 0, "role" => "user"}, 500
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 500
       assert_push "chat:message", %{"index" => idx2, "role" => "assistant"}, 500
 
-      assert rem(idx2, 2) == 1
+      assert idx2 == 2
 
       Process.unlink(socket2.channel_pid)
       GenServer.stop(socket2.channel_pid, :normal)
@@ -123,12 +125,12 @@ defmodule NestWeb.AgentChannelMessagingTest do
       ref = push(socket, "chat:message", %{"content" => "Test"})
       assert_reply ref, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 0, "role" => "user"}, 500
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 500
       assert_push "chat:message", %{"index" => idx, "role" => "assistant"} = payload, 500
 
       assert is_binary(payload["content"])
       assert idx >= 1
-      assert rem(idx, 2) == 1
+      assert idx == 2
     end
   end
 
@@ -147,8 +149,8 @@ defmodule NestWeb.AgentChannelMessagingTest do
       assert_reply ref2, :ok, %{}
 
       # Wait for chat completion via known broadcasts.
-      assert_push "chat:message", %{"index" => 0, "role" => "user"}, 500
-      assert_push "chat:message", %{"index" => 1, "role" => "assistant"}, 500
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 500
+      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 500
 
       ref3 = push(socket, "chat:status", %{"lastIndex" => -1})
       assert_reply ref3, :ok, %{"status" => "idle"}

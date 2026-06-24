@@ -156,7 +156,6 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     %LLMRunner.RunContext{
       client_config: state.client_config,
       tools: state.tools,
-      system_prompt: state.system_prompt,
       messages: messages_for_llm,
       agent_pid: agent_pid,
       agent_id: state.id,

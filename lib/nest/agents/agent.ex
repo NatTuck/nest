@@ -36,7 +36,6 @@ defmodule Nest.Agents.Agent do
     :client_config,
     :vocation_id,
     :vocation,
-    :system_prompt,
     :workspace_path,
     :tmp_path,
     :tools,
@@ -50,6 +49,12 @@ defmodule Nest.Agents.Agent do
   # both live in `Nest.Agents.Agent.LLMRunner`. The GenServer
   # constructs a `RunContext` from the Agent state in
   # `spawn_chat_task/3` and dispatches to `LLMRunner.run/2`.
+  #
+  # The agent's system prompt lives at position 0 of
+  # `state.chat_state.messages` (a `{:system, %System{}}` tuple).
+  # There is no separate `system_prompt` field — the messages
+  # array is the single source of truth for the immutable initial
+  # system content as well as any late runtime reminders.
 
   @type t :: %__MODULE__{
           id: String.t(),
@@ -57,7 +62,6 @@ defmodule Nest.Agents.Agent do
           client_config: ClientConfig.t(),
           vocation_id: integer() | nil,
           vocation: Vocations.Vocation.t() | nil,
-          system_prompt: String.t() | nil,
           workspace_path: String.t() | nil,
           tmp_path: String.t() | nil,
           tools: [Nest.LLM.Tool.t()],
@@ -262,18 +266,26 @@ defmodule Nest.Agents.Agent do
     {:reply, state.chat_state.history || [], state}
   end
 
-  # Test-only introspection: returns the assembled system prompt. Not
-  # part of the public API; used by the system_prompt composition
-  # tests in agent_test.exs.
+  # Test-only introspection: returns the assembled system prompt
+  # (the content of the `{:system, _}` message at position 0 of
+  # `state.chat_state.messages`). Not part of the public API; used
+  # by the system-prompt composition tests in
+  # `agent_system_prompt_composition_test.exs` and
+  # `agent_agents_md_test.exs`.
   @impl true
   def handle_call(:get_system_prompt, _from, state) do
-    {:reply, state.system_prompt, state}
+    {:reply, system_prompt_from_messages(state.chat_state.messages), state}
   end
 
   @impl true
   def handle_call(:get_chat_task_pid, _from, state) do
     {:reply, state.chat_state.chat_task_pid, state}
   end
+
+  defp system_prompt_from_messages([{:system, %{content: content}} | _]) when is_binary(content),
+    do: content
+
+  defp system_prompt_from_messages(_), do: nil
 
   # Move the agent's current `messages` to `history` (with a
   # compaction marker), then replace `messages` with the new
@@ -378,64 +390,6 @@ defmodule Nest.Agents.Agent do
       send(agent_pid, {:discovered_context_limit, source, limit})
     end)
   end
-
-  def __fetch_vocation_config__(vocation_id, workspace_path) do
-    do_fetch_vocation_config(vocation_id, workspace_path)
-  end
-
-  defp do_fetch_vocation_config(nil, _workspace_path), do: {nil, "chat", [], nil}
-
-  defp do_fetch_vocation_config(vocation_id, workspace_path) do
-    case Vocations.get_vocation(vocation_id) do
-      nil ->
-        {nil, "chat", [], nil}
-
-      vocation ->
-        initial_mode = get_initial_mode(vocation.modes)
-        tools = vocation.tools || []
-
-        system_prompt =
-          vocation.system_prompt <>
-            Vocations.mode_catalog(vocation) <>
-            build_system_prompt_suffix(workspace_path)
-
-        {system_prompt, initial_mode, tools, vocation}
-    end
-  end
-
-  defp build_system_prompt_suffix(workspace_path) do
-    workspace_section(workspace_path) <>
-      tool_call_limit_section() <>
-      agents_md_section(workspace_path)
-  end
-
-  # Renders a short workspace line for the LLM.
-  defp workspace_section(nil), do: ""
-  defp workspace_section(path), do: "\n\nWorkspace and tool working directory: #{path}\n"
-
-  defp tool_call_limit_section do
-    max = Nest.Agents.Agent.configured_max_tool_iterations()
-    "\n\nTool call budget: You have a maximum of #{max} consecutive tool call rounds per turn.\n"
-  end
-
-  defp agents_md_section(nil), do: ""
-
-  defp agents_md_section(workspace_path) do
-    case File.read(Path.join(workspace_path, "AGENTS.md")) do
-      {:ok, content} ->
-        "\n\nHere are AGENTS.md guidelines for this project:\n\n#{content}\n"
-
-      _ ->
-        ""
-    end
-  end
-
-  defp get_initial_mode(nil), do: "chat"
-
-  defp get_initial_mode(%{} = modes) when map_size(modes) > 0,
-    do: modes |> Map.keys() |> List.first()
-
-  defp get_initial_mode(_), do: "chat"
 
   # Create a per-agent tmp directory for sandbox use
   # Pattern: /tmp/nest-{BEAM_pid}/agent-{agent_id}

@@ -72,7 +72,7 @@ defmodule Nest.Agents.ChatTaskCrashTest do
 
       # The user message is broadcast first (the agent builds
       # it before the chat task runs).
-      assert_receive {:chat_message, {:user, %{index: 0}}}, 200
+      assert_receive {:chat_message, {:user, %{index: 1}}}, 200
 
       # The agent receives the chat_task_crashed notification
       # and broadcasts a chat:error followed by a status: idle
@@ -176,12 +176,12 @@ defmodule Nest.Agents.ChatTaskCrashTest do
       :ok = Agent.chat(pid, "Hello")
 
       # Wait for the user message first.
-      assert_receive {:chat_message, {:user, %{index: 0}}}, 200
+      assert_receive {:chat_message, {:user, %{index: 1}}}, 200
 
       # The partial content is saved as a normal assistant
       # message before the error is broadcast.
       assert_receive {:chat_message,
-                      {:assistant, %Assistant{index: 1, content: "Halfway through..."}}},
+                      {:assistant, %Assistant{index: 2, content: "Halfway through..."}}},
                      200
 
       # Then the error and idle status. The error content now

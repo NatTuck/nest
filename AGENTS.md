@@ -5,11 +5,37 @@ All browser JS and other assets are in ./assets. This is most of the UI.
 
 ## ⚠️ CRITICAL: JS Package Location
 
-Our JavaScript code lives exclusively in `./assets/`.
+Our JavaScript/browser code lives exclusively in `./assets/`.
 
-- **NEVER** run `pnpm`, `npm`, or `yarn` commands in the project root
+- Our package manager is pnpm. Don't use npm or others.
+- **NEVER** run `pnpm` commands in the project root
 - **ALWAYS** `cd assets` first before running any JS package commands
-- If you see `package.json` or `node_modules` in the project root, something is wrong - delete them immediately
+- If you see `package.json`, `node_modules`, or other similar JS artifacts in the project 
+root, something is wrong - delete them immediately
+
+## Project Design
+
+### LLM Calls
+
+- Once we have an active conversation, we *NEVER* make changes that would
+disrupt prefix caching.
+- Specifically, that means our main system message is fixed once set and can
+never be changed. We can add more system / developer messages later if needed
+(depending on protocol).
+- The main system message explains things that will always be true for the
+current session. This includes a fixed vocation (and thus mode list) and a
+project root (and thus an AGENTS.md if present).
+- If stuff like vocation or project root were to change, that'd necessarily
+be a new session, although it could be built (like a compaction) from a previous
+session if that made sense.
+- User messages are tagged with a `[mode: $MODE]\n` prefix.
+- We are *very* careful with any sort of transient message. 
+
+### UI Transparency
+
+- We don't hide stuff from the user. If it gets sent to the LLM or the LLM sends
+it back then it's visible in the UI (maybe collapsed, in rare edge cases may be
+just in the API log, but the UI always includes everything that happened).
 
 ## Project guidelines
 

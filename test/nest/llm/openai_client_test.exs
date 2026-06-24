@@ -31,8 +31,11 @@ defmodule Nest.LLM.OpenAIClientTest do
       assert payload["tool_choice"] == "auto"
     end
 
-    test "prepends a system message when request.system_prompt is set" do
-      req = %RunRequest{system_prompt: "be brief", messages: []}
+    test "maps a leading {:system, _} message in the messages array" do
+      req = %RunRequest{
+        messages: [{:system, %System{index: 0, content: "be brief"}}]
+      }
+
       payload = OpenAIClient.format_request_payload(req, [])
 
       assert payload["messages"] == [
@@ -40,7 +43,25 @@ defmodule Nest.LLM.OpenAIClientTest do
              ]
     end
 
-    test "omits the system message when request.system_prompt is nil" do
+    test "preserves a late {:system, _} reminder at its position" do
+      req = %RunRequest{
+        messages: [
+          {:system, %System{index: 0, content: "be brief"}},
+          {:user, %User{index: 1, content: "hi"}},
+          {:system, %System{index: 2, content: "2 rounds left"}}
+        ]
+      }
+
+      payload = OpenAIClient.format_request_payload(req, [])
+
+      assert payload["messages"] == [
+               %{"role" => "system", "content" => "be brief"},
+               %{"role" => "user", "content" => "hi"},
+               %{"role" => "system", "content" => "2 rounds left"}
+             ]
+    end
+
+    test "omits the system message when the messages array has none" do
       req = %RunRequest{messages: [{:user, %User{index: 1, content: "hi"}}]}
       payload = OpenAIClient.format_request_payload(req, [])
 

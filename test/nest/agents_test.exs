@@ -61,7 +61,7 @@ defmodule Nest.AgentsTest do
       assert info.id == id
       assert info.model.name == "qwen3.5-plus"
       assert info.status == :idle
-      assert info.message_count == 0
+      assert info.message_count == 1
       assert info.partial == nil
     end
 
@@ -112,7 +112,7 @@ defmodule Nest.AgentsTest do
 
       # Verify via get_info that message count increased
       {:ok, info} = Agents.get_info(id)
-      assert info.message_count == 1
+      assert info.message_count == 2
     end
 
     test "returns error for non-existent agent" do

@@ -7,6 +7,7 @@ defmodule Nest.LLM.AnthropicClientTest do
   alias Nest.LLM.RunRequest
   alias Nest.LLM.Tool, as: LLMTool
   alias Nest.Messages.Assistant
+  alias Nest.Messages.System
   alias Nest.Messages.Tool, as: ToolMessage
   alias Nest.Messages.ToolCall
   alias Nest.Messages.ToolResult
@@ -33,10 +34,12 @@ defmodule Nest.LLM.AnthropicClientTest do
       refute Map.has_key?(payload, "tools")
     end
 
-    test "lifts request.system_prompt into the top-level system field" do
+    test "lifts the leading {:system, _} message into the top-level system field" do
       req = %RunRequest{
-        system_prompt: "be brief",
-        messages: [{:user, %User{index: 1, content: "hi"}}]
+        messages: [
+          {:system, %System{index: 0, content: "be brief"}},
+          {:user, %User{index: 1, content: "hi"}}
+        ]
       }
 
       payload = AnthropicClient.format_request_payload(req, [])
@@ -45,12 +48,52 @@ defmodule Nest.LLM.AnthropicClientTest do
       assert payload["messages"] == [%{"role" => "user", "content" => "hi"}]
     end
 
-    test "omits the system field entirely when system_prompt is nil" do
+    test "keeps a late {:system, _} reminder in the messages array" do
+      req = %RunRequest{
+        messages: [
+          {:system, %System{index: 0, content: "be brief"}},
+          {:user, %User{index: 1, content: "hi"}},
+          {:system, %System{index: 2, content: "2 rounds left"}}
+        ]
+      }
+
+      payload = AnthropicClient.format_request_payload(req, [])
+
+      assert payload["system"] == "be brief"
+
+      assert payload["messages"] == [
+               %{"role" => "user", "content" => "hi"},
+               %{"role" => "system", "content" => "2 rounds left"}
+             ]
+    end
+
+    test "omits the system field when no leading {:system, _} is present" do
       req = %RunRequest{messages: [{:user, %User{index: 1, content: "hi"}}]}
 
       payload = AnthropicClient.format_request_payload(req, [])
 
       refute Map.has_key?(payload, "system")
+    end
+
+    test "emits a leading {:system, _} with empty content as a role: system message in the array" do
+      req = %RunRequest{
+        messages: [
+          {:system, %System{index: 0, content: ""}},
+          {:user, %User{index: 1, content: "hi"}}
+        ]
+      }
+
+      payload = AnthropicClient.format_request_payload(req, [])
+
+      # Empty system content is treated as "no initial system" —
+      # the top-level `system` field is omitted, and the empty
+      # `{:system, _}` tuple flows into the messages array.
+      refute Map.has_key?(payload, "system")
+
+      assert payload["messages"] == [
+               %{"role" => "system", "content" => ""},
+               %{"role" => "user", "content" => "hi"}
+             ]
     end
 
     test "emits tools in the Anthropic shape" do

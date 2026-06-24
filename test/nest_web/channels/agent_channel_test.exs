@@ -19,7 +19,7 @@ defmodule NestWeb.AgentChannelTest do
       assert_push "init", payload
       assert payload["id"] == id
       assert payload["model"][:name] == "qwen3.5-plus"
-      assert payload["messageCount"] == 0
+      assert payload["messageCount"] == 1
       assert payload["status"] == "idle"
       # Init includes partial (nil when not streaming)
       assert Map.has_key?(payload, "partial")
@@ -89,8 +89,8 @@ defmodule NestWeb.AgentChannelTest do
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 0, "role" => "user"}, 2000
-      assert_push "chat:message", %{"index" => 1, "role" => "assistant"}, 2000
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 2000
+      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 2000
 
       # Drop the first channel and wait for it to actually terminate
       # before rejoining. Monitor + :DOWN is the synchronous Erlang
@@ -105,7 +105,7 @@ defmodule NestWeb.AgentChannelTest do
         subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{id}")
 
       assert_push "init", payload, 2000
-      assert payload["messageCount"] == 2
+      assert payload["messageCount"] == 3
     end
   end
 
@@ -139,7 +139,7 @@ defmodule NestWeb.AgentChannelTest do
       assert_reply ref, :ok, %{}
 
       # Receive user message broadcast first
-      assert_push "chat:message", %{"index" => 0, "role" => "user"}, 500
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 500
 
       # Then receive streaming deltas
       assert_push "chat:delta", payload, 500

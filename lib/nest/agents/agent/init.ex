@@ -14,6 +14,8 @@ defmodule Nest.Agents.Agent.Init do
   require Logger
 
   alias Nest.Agents.Agent.Broadcasts
+  alias Nest.Agents.Agent.SystemPrompt
+  alias Nest.Messages.System
   alias Nest.Tools
 
   @default_context_limit 128_000
@@ -34,7 +36,7 @@ defmodule Nest.Agents.Agent.Init do
     # state so subsequent mode/caps resolution is a pure read of
     # the cached struct (no DB lookups on the per-message path).
     {system_prompt, mode, tool_names, vocation} =
-      fetch_vocation_config(vocation_id, workspace_path)
+      SystemPrompt.fetch_vocation_config(vocation_id, workspace_path)
 
     tmp_path = create_tmp_space(id)
     tools = Tools.get_functions(tool_names, workspace_path, tmp_path)
@@ -48,7 +50,6 @@ defmodule Nest.Agents.Agent.Init do
       client_config: client_config,
       vocation: vocation,
       vocation_id: vocation_id,
-      system_prompt: system_prompt,
       workspace_path: workspace_path,
       tmp_path: tmp_path,
       tools: tools,
@@ -60,14 +61,25 @@ defmodule Nest.Agents.Agent.Init do
 
   @doc """
   Run the post-construction side effects: broadcast the
-  system message (if any), spawn the async context-limit
-  probe (when the source was the default), and log the
-  agent's startup info.
+  initial system message (if it has non-empty content), spawn
+  the async context-limit probe (when the source was the
+  default), and log the agent's startup info.
   """
   @spec run_post_init(Nest.Agents.Agent.t(), Nest.LLM.ClientConfig.t()) :: :ok
   def run_post_init(state, client_config) do
-    if state.system_prompt do
-      Broadcasts.message(state.id, List.first(state.chat_state.messages))
+    # The system message is always at position 0 of
+    # `state.chat_state.messages` (see
+    # `initial_messages_with_system/1`). An empty system
+    # message (when the agent was created with no system
+    # prompt) is intentionally not broadcast — it would
+    # render as an empty chat bubble in the UI.
+    case state.chat_state.messages do
+      [{:system, %System{content: content}} | _]
+      when is_binary(content) and content != "" ->
+        Broadcasts.message(state.id, hd(state.chat_state.messages))
+
+      _ ->
+        :ok
     end
 
     if state.llm_metrics.context_limit_source == :default do
@@ -96,15 +108,20 @@ defmodule Nest.Agents.Agent.Init do
 
   defp model_name(model), do: model[:name] || model["name"]
 
-  defp initial_messages_with_system(nil), do: {[], 0}
-  defp initial_messages_with_system(""), do: {[], 0}
-
   defp initial_messages_with_system(system_prompt) do
+    # Always return a system message at position 0, even when
+    # the composed system prompt is nil/empty. The LLM-bound
+    # messages array always starts with a `{:system, _}` so
+    # the Anthropic client can special-case position 0 for the
+    # top-level `"system"` field without conditional logic in
+    # the wire conversion. Empty content is fine — Anthropic
+    # accepts it, and OpenAI's `role: "system"` with empty
+    # content is a no-op.
     message =
       {:system,
-       %Nest.Messages.System{
+       %System{
          index: 0,
-         content: system_prompt,
+         content: system_prompt || "",
          timestamp: DateTime.utc_now(),
          api_logs: []
        }}
@@ -132,10 +149,6 @@ defmodule Nest.Agents.Agent.Init do
 
   # Forwarded to the GenServer module which owns the canonical
   # implementations. The `__` prefix marks them as internal.
-  defp fetch_vocation_config(vocation_id, workspace_path) do
-    Nest.Agents.Agent.__fetch_vocation_config__(vocation_id, workspace_path)
-  end
-
   defp create_tmp_space(agent_id) do
     Nest.Agents.Agent.__create_tmp_space__(agent_id)
   end

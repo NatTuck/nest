@@ -88,7 +88,7 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
       :ok = Agent.chat(pid, "List the files")
 
       # Wait for the first turn's tool-call assistant message.
-      assert_receive {:chat_message, {:assistant, %{index: 1, tool_calls: [_]}}}, 200
+      assert_receive {:chat_message, {:assistant, %{index: 2, tool_calls: [_]}}}, 200
 
       # Wait for the second turn's assistant message. Its
       # `content` must be the visible text, and its `thinking`
@@ -96,7 +96,7 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
       assert_receive {:chat_message,
                       {:assistant,
                        %{
-                         index: 3,
+                         index: 4,
                          content: "There are 3 files in the directory.",
                          thinking:
                            "The directory has a few files. Let me summarize them for the user."
@@ -151,7 +151,7 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
       # The final assistant message carries its api_logs
       # (re-broadcast after the response log lands). Match the
       # version with a non-empty api_logs list.
-      assert_receive {:chat_message, {:assistant, %{index: 3, api_logs: [_ | _] = logs}}}, 500
+      assert_receive {:chat_message, {:assistant, %{index: 4, api_logs: [_ | _] = logs}}}, 500
 
       # The response log's `content` field is the visible text,
       # not the thinking. (Before the fix, this assertion
@@ -215,10 +215,77 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
       # the reasoning.
       assert_receive {:chat_message,
                       {:assistant,
-                       %{index: 3, content: nil, thinking: "The user wants a count." <> _}}},
+                       %{index: 4, content: nil, thinking: "The user wants a count." <> _}}},
                      500
 
       assert_receive {:chat_status, %{status: "idle"}}, 500
+
+      MockClient.clear()
+    end
+  end
+
+  describe "thinking + text + tool_call in one turn" do
+    test "the tool-call assistant message preserves thinking from the response" do
+      # A single LLM turn emits thinking, visible text, AND a
+      # tool call. The persisted assistant message (which is
+      # the one broadcast to the UI as `chat:message`) must
+      # carry the `thinking` field — otherwise the client-side
+      # `addChatMessage` reducer would replace the streaming
+      # partial (which has the thinking in `segments`) with a
+      # thinking-less final, and the yellow Thinking box would
+      # disappear the moment the tool call lands.
+      #
+      # Regression for the `build_tool_pair/3` omission bug.
+      MockClient.set_stream_events([
+        {:thinking, "Let me check the directory listing. "},
+        {:thinking, "I'll run ls."},
+        {:text, "Running ls"},
+        {:tool_call_start, %{id: "call_1", name: "shell_cmd"}},
+        {:tool_call_delta, %{id: "call_1", arguments_delta: "{}"}},
+        {:usage, %{input_tokens: 100, output_tokens: 20, total_tokens: 120}},
+        {:finish_reason, "tool_calls"},
+        {:done,
+         %{
+           response: %RunResponse{
+             text: "Running ls",
+             thinking: "Let me check the directory listing. I'll run ls.",
+             tool_calls: [%ToolCall{id: "call_1", name: "shell_cmd", arguments: %{}}],
+             stop_reason: "tool_calls"
+           }
+         }}
+      ])
+
+      # Second turn after the tool result.
+      MockClient.set_stream_events([
+        {:text, "Done."},
+        {:finish_reason, "stop"},
+        {:done,
+         %{
+           response: %RunResponse{
+             text: "Done.",
+             stop_reason: "stop"
+           }
+         }}
+      ])
+
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      :ok = Agent.chat(pid, "List the files")
+
+      # The tool-call assistant message carries the thinking
+      # field — that's the regression guard.
+      assert_receive {:chat_message,
+                      {:assistant,
+                       %{
+                         index: 2,
+                         tool_calls: [_],
+                         thinking: "Let me check the directory listing. I'll run ls."
+                       }}},
+                     500
+
+      # The agent still goes idle after the post-tool reply.
+      assert_receive {:chat_status, %{status: "idle"}}, 1000
 
       MockClient.clear()
     end

@@ -17,8 +17,14 @@ defmodule NestWeb.AgentChannelChatTest do
 
   describe "handle_in(chat:sync)" do
     test "returns empty sync for new agent", %{socket: socket} do
+      # The new agent has a single system message at position 0
+      # (added by `initial_messages_with_system/1`). Sync from
+      # lastIndex=-1 returns that one message.
       ref = push(socket, "chat:sync", %{"lastIndex" => -1})
-      assert_reply ref, :ok, %{"messages" => [], "partial" => nil, "status" => "idle"}
+
+      assert_reply ref, :ok, %{"messages" => [system_msg], "partial" => nil, "status" => "idle"}
+
+      assert system_msg["role"] == "system"
     end
 
     test "returns messages after lastIndex", %{socket: socket} do
@@ -26,24 +32,24 @@ defmodule NestWeb.AgentChannelChatTest do
       ref1 = push(socket, "chat:message", %{"content" => "First"})
       assert_reply ref1, :ok, %{}
 
-      # Wait for user message (even index), then assistant message (odd index)
-      assert_push "chat:message", %{"index" => 0, "role" => "user"}, 2000
-      assert_push "chat:message", %{"index" => 1, "role" => "assistant"}, 2000
+      # Wait for user message (index 1), then assistant message (index 2)
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 2000
+      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 2000
 
       # Sync should return no new messages (we're up to date)
-      ref_sync = push(socket, "chat:sync", %{"lastIndex" => 1})
+      ref_sync = push(socket, "chat:sync", %{"lastIndex" => 2})
       assert_reply ref_sync, :ok, %{"messages" => [], "partial" => nil, "status" => "idle"}
 
       # Send second message
       ref2 = push(socket, "chat:message", %{"content" => "Second"})
       assert_reply ref2, :ok, %{}
 
-      # Wait for second user message (index 2), then assistant (index 3)
-      assert_push "chat:message", %{"index" => 2, "role" => "user"}, 2000
-      assert_push "chat:message", %{"index" => 3, "role" => "assistant"}, 2000
+      # Wait for second user message (index 3), then assistant (index 4)
+      assert_push "chat:message", %{"index" => 3, "role" => "user"}, 2000
+      assert_push "chat:message", %{"index" => 4, "role" => "assistant"}, 2000
 
-      # Sync from index 1 should return messages at index 2 and 3
-      ref_sync2 = push(socket, "chat:sync", %{"lastIndex" => 1})
+      # Sync from index 2 should return messages at index 3 and 4
+      ref_sync2 = push(socket, "chat:sync", %{"lastIndex" => 2})
 
       assert_reply ref_sync2, :ok, %{
         "messages" => messages,
@@ -72,7 +78,7 @@ defmodule NestWeb.AgentChannelChatTest do
       assert_reply ref, :ok, %{}
 
       # Wait for completion
-      assert_push "chat:message", %{"index" => 1, "role" => "assistant"}, 2000
+      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 2000
 
       # Sync after completion - partial should be nil again
       ref_sync2 = push(socket, "chat:sync", %{"lastIndex" => -1})
@@ -114,7 +120,7 @@ defmodule NestWeb.AgentChannelChatTest do
 
       assert status_id == id
       assert model[:name] == "qwen3.5-plus"
-      assert last_index == 0
+      assert last_index == 1
       assert status == "idle"
     end
 
@@ -147,8 +153,8 @@ defmodule NestWeb.AgentChannelChatTest do
       assert_reply ref, :ok, %{}
 
       # Wait for completion (user message first, then assistant)
-      assert_push "chat:message", %{"index" => 0, "role" => "user"}, 2000
-      assert_push "chat:message", %{"index" => 1, "role" => "assistant"}, 2000
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 2000
+      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 2000
 
       ref_status = push(socket, "chat:status", %{"lastIndex" => -1})
 
@@ -169,7 +175,7 @@ defmodule NestWeb.AgentChannelChatTest do
       assert_reply ref, :ok, %{}
 
       # Wait for completion
-      assert_push "chat:message", %{"index" => 1, "role" => "assistant"}, 2000
+      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 2000
 
       # After completion, status should be back to "idle"
       ref_status = push(socket, "chat:status", %{"lastIndex" => -1})
@@ -214,7 +220,7 @@ defmodule NestWeb.AgentChannelChatTest do
 
       assert_reply ref, :ok, reply
 
-      assert reply["messageCount"] == 0
+      assert reply["messageCount"] == 1
     end
 
     test "sync with lastIndex: -1 returns all complete messages", %{socket: socket} do
@@ -223,8 +229,8 @@ defmodule NestWeb.AgentChannelChatTest do
       assert_reply ref1, :ok, %{}
 
       # Wait for completion (user message first, then assistant)
-      assert_push "chat:message", %{"index" => 0, "role" => "user"}, 2000
-      assert_push "chat:message", %{"index" => 1, "role" => "assistant"}, 2000
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 2000
+      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 2000
 
       # Sync with -1 should return all messages (user + assistant)
       ref_sync = push(socket, "chat:sync", %{"lastIndex" => -1})
@@ -255,7 +261,7 @@ defmodule NestWeb.AgentChannelChatTest do
           assert_reply ref, :ok, %{}
 
           assert_push "chat:error", payload, 2000
-          assert payload["index"] == 1
+          assert payload["index"] == 2
           assert is_binary(payload["content"])
           assert payload["content"] =~ "unavailable" or payload["content"] =~ "error"
         end)
@@ -350,8 +356,8 @@ defmodule NestWeb.AgentChannelChatTest do
       ref_msg = push(socket, "chat:message", %{"content" => "First"})
       assert_reply ref_msg, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 0, "role" => "user"}, 2000
-      assert_push "chat:message", %{"index" => 1, "role" => "assistant"}, 2000
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 2000
+      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 2000
       assert_push "chat:status", %{status: "idle"}, 2000
 
       # No-op stop on an idle agent.
@@ -363,10 +369,10 @@ defmodule NestWeb.AgentChannelChatTest do
       ref2 = push(socket, "chat:message", %{"content" => "Second"})
       assert_reply ref2, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 2, "role" => "user"}, 2000
+      assert_push "chat:message", %{"index" => 3, "role" => "user"}, 2000
 
       assert_push "chat:message",
-                  %{"index" => 3, "role" => "assistant", "content" => content},
+                  %{"index" => 4, "role" => "assistant", "content" => content},
                   2000
 
       assert content == "After the stop"

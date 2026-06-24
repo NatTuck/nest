@@ -14,13 +14,11 @@ defmodule Nest.Agents.Agent.LLMRunner do
   """
 
   alias Nest.Agents.Agent.Broadcasts
-  alias Nest.Agents.Agent.ToolLoop
+  alias Nest.Agents.Agent.LLMRunner.LateCallHandlers
   alias Nest.LLM.Client
   alias Nest.LLM.RunRequest
   alias Nest.LLM.RunResponse
   alias Nest.LLM.StreamConsumer
-  alias Nest.Messages.Assistant
-  alias Nest.Messages.Tool
 
   require Logger
 
@@ -29,7 +27,6 @@ defmodule Nest.Agents.Agent.LLMRunner do
     defstruct client_config: nil,
               tools: [],
               tool_choice: :auto,
-              system_prompt: nil,
               messages: [],
               agent_pid: nil,
               agent_id: nil,
@@ -43,7 +40,8 @@ defmodule Nest.Agents.Agent.LLMRunner do
     defstruct message_index: 0,
               active_message_index: 0,
               api_log_sequences: %{},
-              max_iterations: nil
+              max_iterations: nil,
+              force_finalize: false
   end
 
   @type run_context :: RunContext.t()
@@ -139,27 +137,15 @@ defmodule Nest.Agents.Agent.LLMRunner do
 
   defp build_run_request(ctx) do
     %RunRequest{
-      # Strip leading `{:system, _}` tuples — the system prompt
-      # is now carried in `system_prompt` so both providers
-      # (Anthropic's top-level `system` field, OpenAI's leading
-      # `system` message) can shape it without scanning the
-      # messages array.
-      messages: reject_system_messages(ctx.messages),
+      # System messages (initial at position 0, late reminders at
+      # later positions) stay in the messages array. Each client
+      # shapes them for its wire protocol.
+      messages: ctx.messages,
       tools: ctx.tools,
       tool_choice: ctx.tool_choice,
       model: ctx.client_config.model,
-      system_prompt: ctx.system_prompt,
       metadata: %{}
     }
-  end
-
-  defp reject_system_messages(nil), do: []
-
-  defp reject_system_messages(messages) do
-    Enum.reject(messages, fn
-      {:system, _} -> true
-      _ -> false
-    end)
   end
 
   defp build_run_opts(ctx) do
@@ -222,10 +208,21 @@ defmodule Nest.Agents.Agent.LLMRunner do
     # helper treats nil as a no-op.
     send(ctx.agent_pid, {:llm_usage, response.usage})
 
-    if RunResponse.has_tool_calls?(response) do
-      run_with_new_client_after_tool_calls(ctx, state, response)
-    else
-      send_final_assistant(ctx, state, response)
+    cond do
+      state.force_finalize ->
+        # Second-chance call after max-iterations: force-finalize
+        # regardless of what the LLM returned, so we don't loop
+        # forever if it ignores `tool_choice: :none` again.
+        send_final_assistant(ctx, state, response)
+
+      state.max_iterations <= 0 and RunResponse.has_tool_calls?(response) ->
+        handle_max_iterations_with_tool_calls(ctx, state, response)
+
+      RunResponse.has_tool_calls?(response) ->
+        run_with_new_client_after_tool_calls(ctx, state, response)
+
+      true ->
+        send_final_assistant(ctx, state, response)
     end
   end
 
@@ -239,9 +236,46 @@ defmodule Nest.Agents.Agent.LLMRunner do
     state
   end
 
+  # The LLM hit the iteration cap and we made the final call with
+  # `tools: nil, tool_choice: :none`. If the LLM still emitted tool
+  # calls anyway (some providers don't honor `tool_choice: :none`),
+  # give it one more chance: synthesize error tool results so it
+  # sees the constraint, then call again with `force_finalize: true`
+  # so the second-chance text becomes the final answer no matter
+  # what.
+  defp handle_max_iterations_with_tool_calls(ctx, state, response) do
+    Logger.warning(
+      "Agent #{ctx.agent_id} LLM emitted tool calls on max-iterations " <>
+        "final call; sending synthetic errors and trying once more"
+    )
+
+    {tool_call_message, tool_result_message, messages_with_synthesized} =
+      LateCallHandlers.build_synthetic_error_pair(ctx, state, response)
+
+    send(ctx.agent_pid, {:tool_calls_received, tool_call_message})
+    send(ctx.agent_pid, {:tool_results_received, tool_result_message})
+
+    # Recurse with the second-chance flag, no tools, and
+    # `max_iterations: 0` (the second-chance call doesn't get its
+    # own tool budget). `force_finalize: true` makes
+    # `handle_new_response/3` always return the text response.
+    next_state = %RunState{
+      message_index: state.message_index + 2,
+      active_message_index: state.message_index + 1,
+      api_log_sequences: state.api_log_sequences,
+      max_iterations: 0,
+      force_finalize: true
+    }
+
+    run_with_new_client(
+      %{ctx | messages: messages_with_synthesized, tools: nil, tool_choice: :none},
+      next_state
+    )
+  end
+
   defp run_with_new_client_after_tool_calls(ctx, state, response) do
     {tool_call_message, tool_result_message, updated_messages} =
-      build_tool_pair(ctx, state, response)
+      LateCallHandlers.build_tool_pair(ctx, state, response)
 
     send(ctx.agent_pid, {:tool_calls_received, tool_call_message})
     send(ctx.agent_pid, {:tool_results_received, tool_result_message})
@@ -253,81 +287,18 @@ defmodule Nest.Agents.Agent.LLMRunner do
       max_iterations: state.max_iterations - 1
     }
 
-    system_prompt =
-      case iteration_warning(next_state.max_iterations) do
-        nil ->
-          ctx.system_prompt
-
-        warning when is_binary(ctx.system_prompt) ->
-          ctx.system_prompt <> "\n\n" <> warning
-
-        warning ->
-          warning
-      end
-
-    run_with_new_client(
-      %{ctx | messages: updated_messages, system_prompt: system_prompt},
-      next_state
-    )
-  end
-
-  defp build_tool_pair(ctx, state, response) do
-    tool_call_message =
-      {:assistant,
-       %Assistant{
-         index: state.message_index,
-         timestamp: DateTime.utc_now(),
-         content: response.text,
-         tool_calls: response.tool_calls,
-         # Anthropic's extended-thinking signature, echoed back on
-         # subsequent turns. The AnthropicClient reads this field
-         # directly when rebuilding assistant content blocks for
-         # the next request.
-         thinking_signature: response.thinking_signature,
-         api_logs: []
-       }}
-
-    # The BudgetPlanner runs each tool call through the budget loop
-    # (fits / truncates / skips / cascade-skip). It preserves call
-    # order in its output. We rebuild the ToolResult list from the
-    # planner's output — the planner's strings already include
-    # truncation notes and skip responses where appropriate.
-    tool_results =
-      ToolLoop.execute(
+    messages_with_reminder =
+      LateCallHandlers.maybe_inject_budget_warning(
+        updated_messages,
         ctx,
-        state,
-        response.tool_calls || []
+        next_state.max_iterations,
+        ctx.agent_pid
       )
 
-    tool_result_message =
-      {:tool,
-       %Tool{
-         index: state.message_index + 1,
-         timestamp: DateTime.utc_now(),
-         tool_results: tool_results,
-         api_logs: []
-       }}
-
-    {tool_call_message, tool_result_message,
-     ctx.messages ++ [tool_call_message, tool_result_message]}
-  end
-
-  # Return a system-prompt warning when the LLM is nearing its
-  # tool call iteration limit. At 2 rounds remaining the LLM is
-  # told to plan carefully; at 1 round it is told no more tools
-  # will be available. At 0 the caller (`run_with_new_client/2`)
-  # makes a final call with `tools: nil`.
-  defp iteration_warning(remaining) when is_integer(remaining) do
-    case remaining do
-      2 ->
-        "You have 2 tool call rounds remaining. Plan your remaining tool use carefully."
-
-      1 ->
-        "This is your last tool call round. After this, no more tools will be available — provide your final response."
-
-      _ ->
-        nil
-    end
+    run_with_new_client(
+      %{ctx | messages: messages_with_reminder},
+      next_state
+    )
   end
 
   @spec consume_new_stream(Enumerable.t(), non_neg_integer(), String.t(), pid()) ::

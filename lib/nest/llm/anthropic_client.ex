@@ -23,6 +23,7 @@ defmodule Nest.LLM.AnthropicClient do
   alias Nest.LLM.RunResponse
   alias Nest.LLM.SSE.Parser
   alias Nest.Messages.Assistant
+  alias Nest.Messages.System
   alias Nest.Messages.Tool
   alias Nest.Messages.ToolCall
   alias Nest.Messages.ToolResult
@@ -146,19 +147,42 @@ defmodule Nest.LLM.AnthropicClient do
 
   @impl Nest.LLM.Client
   def format_request_payload(%RunRequest{} = request, _opts) do
-    payload = %{
-      "model" => request.model,
-      "max_tokens" => request.max_tokens || @max_tokens_default,
-      "messages" => Enum.map(request.messages, &message_to_wire/1),
-      "stream" => true
-    }
+    {initial_system, conversation_messages} = split_initial_system(request.messages)
 
-    payload
-    |> maybe_put("system", request.system_prompt)
+    request
+    |> build_base_payload(conversation_messages)
+    |> maybe_put("system", initial_system)
     |> maybe_put("tools", build_wire_tools(request.tools))
     |> maybe_put("tool_choice", normalize_tool_choice(request.tool_choice))
     |> maybe_put("temperature", request.temperature)
     |> maybe_put("top_p", request.top_p)
+  end
+
+  # The first `{:system, _}` message in `request.messages` is the
+  # agent's immutable initial system prompt and belongs in
+  # Anthropic's top-level `"system"` field. Late system
+  # reminders (e.g. budget warnings) stay in the messages array
+  # and are mapped by the `message_to_wire/1` clause for
+  # `{:system, _}` (uses Anthropic's `role: "system"` in the
+  # messages array, supported as of May 2026).
+  defp split_initial_system(messages) do
+    case messages do
+      [{:system, %System{content: content}} | rest]
+      when is_binary(content) and content != "" ->
+        {content, rest}
+
+      other ->
+        {nil, other}
+    end
+  end
+
+  defp build_base_payload(request, conversation_messages) do
+    %{
+      "model" => request.model,
+      "max_tokens" => request.max_tokens || @max_tokens_default,
+      "messages" => Enum.map(conversation_messages, &message_to_wire/1),
+      "stream" => true
+    }
   end
 
   defp build_wire_tools(nil), do: nil
@@ -181,6 +205,15 @@ defmodule Nest.LLM.AnthropicClient do
   # Anthropic has no `:required` tool_choice; fall back to `auto`.
   defp normalize_tool_choice(:required), do: %{"type" => "auto"}
   defp normalize_tool_choice({:tool, name}), do: %{"type" => "tool", "name" => name}
+
+  # Late system reminder (Anthropic's `role: "system"` in the
+  # messages array, supported as of May 2026). The initial
+  # system message was extracted by `format_request_payload/2`
+  # and is in the top-level `"system"` field; this clause only
+  # fires for any reminder at a later position.
+  defp message_to_wire({:system, %System{content: content}}) do
+    %{"role" => "system", "content" => content || ""}
+  end
 
   # User: scalar text or list of pre-shaped content blocks.
   defp message_to_wire({:user, %User{content: content}}) when is_binary(content) do

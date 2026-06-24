@@ -35,7 +35,7 @@ defmodule Nest.Agents.AgentChatTest do
 
       :ok = Agent.chat(pid, "Hello")
 
-      assert_receive {:chat_message, {:user, %{index: 0, content: "[mode: chat]\nHello"}}},
+      assert_receive {:chat_message, {:user, %{index: 1, content: "[mode: chat]\nHello"}}},
                      100
 
       assert_receive {:chat_status, %{status: "streaming"}}, 100
@@ -66,7 +66,7 @@ defmodule Nest.Agents.AgentChatTest do
         capture_log(fn ->
           :ok = Agent.chat(pid, "Hello")
 
-          assert_receive {:chat_message, {:user, %{index: 0, content: "[mode: chat]\nHello"}}},
+          assert_receive {:chat_message, {:user, %{index: 1, content: "[mode: chat]\nHello"}}},
                          100
 
           assert_receive {:chat_error, _error}, 100
@@ -87,7 +87,7 @@ defmodule Nest.Agents.AgentChatTest do
         capture_log(fn ->
           :ok = Agent.chat(pid, "Hello")
 
-          assert_receive {:chat_message, {:user, %{index: 0, content: "[mode: chat]\nHello"}}},
+          assert_receive {:chat_message, {:user, %{index: 1, content: "[mode: chat]\nHello"}}},
                          100
 
           assert_receive {:chat_error, _error}, 100

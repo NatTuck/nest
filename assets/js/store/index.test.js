@@ -1389,6 +1389,103 @@ describe("store", () => {
       expect(messages[0].toolResults).toHaveLength(1);
       expect(messages[0].toolResults[0].tool_call_id).toBe("call_123");
     });
+
+    it("falls back to streaming segments thinking when broadcast omits thinking (and logs regression)", () => {
+      // Regression guard for the tool-call finalization bug:
+      // when the server's broadcast assistant message omits
+      // `thinking` but the streaming partial had it in
+      // `segments`, the store must preserve it. The fallback
+      // triggers a `console.error` with the `[NEST REGRESSION]`
+      // prefix so the regression is visible in the browser dev
+      // tools.
+      const consoleErrorSpy = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+
+      // Seed a streaming partial with thinking in `segments`
+      // (the shape produced by `addChatDelta` for thinking
+      // deltas).
+      useStore.setState((state) => ({
+        agentsCache: {
+          ...state.agentsCache,
+          "agent-1": {
+            ...state.agentsCache["agent-1"],
+            streaming: {
+              messageIndex: 1,
+              content: "",
+              segments: [
+                { type: "thinking", content: "Let me check the directory. " },
+                { type: "thinking", content: "I'll run ls." },
+              ],
+            },
+          },
+        },
+      }));
+
+      // Broadcast the tool-call assistant message with NO
+      // thinking field (the regression shape).
+      useStore.getState().addChatMessage("agent-1", {
+        index: 1,
+        role: "assistant",
+        content: "Running ls",
+        toolCalls: [{ id: "call_1", name: "shell_cmd", arguments: {} }],
+      });
+
+      const messages = useStore.getState().agentsCache["agent-1"].messages;
+      expect(messages[0].thinking).toBe(
+        "Let me check the directory. I'll run ls.",
+      );
+      expect(messages[0].toolCalls).toHaveLength(1);
+
+      // The fallback must have triggered the regression warning.
+      expect(consoleErrorSpy).toHaveBeenCalled();
+      const firstCallArgs = consoleErrorSpy.mock.calls[0];
+      expect(firstCallArgs[0]).toContain("[NEST REGRESSION]");
+      expect(firstCallArgs[0]).toContain("build_tool_pair/3");
+
+      // Streaming is cleared.
+      expect(useStore.getState().agentsCache["agent-1"].streaming).toBeNull();
+
+      consoleErrorSpy.mockRestore();
+    });
+
+    it("does NOT override broadcast thinking with partial segments thinking", () => {
+      // The inverse: when the broadcast message has thinking,
+      // the partial's segments are NOT used. The broadcast is
+      // the source of truth.
+      const consoleErrorSpy = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+
+      useStore.setState((state) => ({
+        agentsCache: {
+          ...state.agentsCache,
+          "agent-1": {
+            ...state.agentsCache["agent-1"],
+            streaming: {
+              messageIndex: 1,
+              content: "",
+              segments: [
+                { type: "thinking", content: "Stale partial thinking" },
+              ],
+            },
+          },
+        },
+      }));
+
+      useStore.getState().addChatMessage("agent-1", {
+        index: 1,
+        role: "assistant",
+        content: "Hello",
+        thinking: "Authoritative broadcast thinking",
+      });
+
+      const messages = useStore.getState().agentsCache["agent-1"].messages;
+      expect(messages[0].thinking).toBe("Authoritative broadcast thinking");
+      expect(consoleErrorSpy).not.toHaveBeenCalled();
+
+      consoleErrorSpy.mockRestore();
+    });
   });
 
   describe("setWaitingForResponse during tool execution", () => {

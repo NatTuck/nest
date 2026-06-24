@@ -39,12 +39,12 @@ defmodule Nest.Agents.AgentObservabilityTest do
       # api_logs, then re-broadcast after the LLM call attaches
       # the request log. Match the second broadcast (non-empty
       # api_logs) to capture the externally visible state.
-      assert_receive {:chat_message, {:user, %{index: 0, api_logs: [_ | _]} = user_msg}}, 100
+      assert_receive {:chat_message, {:user, %{index: 1, api_logs: [_ | _]} = user_msg}}, 100
       assert_receive {:chat_status, %{status: "streaming"}}, 100
       assert_receive {:chat_delta, _}, 100
 
       assert_receive {:chat_message,
-                      {:assistant, %{index: 1, api_logs: [_ | _]} = assistant_msg}},
+                      {:assistant, %{index: 2, api_logs: [_ | _]} = assistant_msg}},
                      100
 
       assert_receive {:chat_status, %{status: "idle"}}, 100
@@ -71,17 +71,17 @@ defmodule Nest.Agents.AgentObservabilityTest do
 
       :ok = Agent.chat(pid, "Run a command")
 
-      assert_receive {:chat_message, {:user, %{index: 0, api_logs: [_ | _]} = user_msg}}, 100
+      assert_receive {:chat_message, {:user, %{index: 1, api_logs: [_ | _]} = user_msg}}, 100
       assert_receive {:chat_status, %{status: "streaming"}}, 100
       assert_receive {:chat_delta, _}, 100
 
-      assert_receive {:chat_message, {:assistant, %{index: 1, api_logs: [_ | _]} = assistant1}},
+      assert_receive {:chat_message, {:assistant, %{index: 2, api_logs: [_ | _]} = assistant1}},
                      100
 
-      assert_receive {:chat_message, {:tool, %{index: 2, api_logs: [_ | _]} = tool_msg}}, 100
+      assert_receive {:chat_message, {:tool, %{index: 3, api_logs: [_ | _]} = tool_msg}}, 100
       assert_receive {:chat_delta, _}, 100
 
-      assert_receive {:chat_message, {:assistant, %{index: 3, api_logs: [_ | _]} = assistant2}},
+      assert_receive {:chat_message, {:assistant, %{index: 4, api_logs: [_ | _]} = assistant2}},
                      100
 
       assert_receive {:chat_status, %{status: "idle"}}, 100
@@ -118,25 +118,25 @@ defmodule Nest.Agents.AgentObservabilityTest do
 
       :ok = Agent.chat(pid, "List files")
 
-      assert_receive {:chat_message, {:user, %{index: 0, api_logs: [user_log]}}}, 100
+      assert_receive {:chat_message, {:user, %{index: 1, api_logs: [user_log]}}}, 100
       assert_receive {:chat_status, %{status: "streaming"}}, 100
       assert_receive {:chat_delta, _}, 100
-      assert_receive {:chat_message, {:assistant, %{index: 1, api_logs: [asst1_log]}}}, 100
-      assert_receive {:chat_message, {:tool, %{index: 2, api_logs: [tool_log]}}}, 100
+      assert_receive {:chat_message, {:assistant, %{index: 2, api_logs: [asst1_log]}}}, 100
+      assert_receive {:chat_message, {:tool, %{index: 3, api_logs: [tool_log]}}}, 100
       assert_receive {:chat_delta, _}, 100
-      assert_receive {:chat_message, {:assistant, %{index: 3, api_logs: [asst2_log]}}}, 100
+      assert_receive {:chat_message, {:assistant, %{index: 4, api_logs: [asst2_log]}}}, 100
       assert_receive {:chat_status, %{status: "idle"}}, 100
 
-      assert user_log.id == "000.000"
+      assert user_log.id == "001.000"
       assert user_log.type == :request
 
-      assert asst1_log.id == "001.000"
+      assert asst1_log.id == "002.000"
       assert asst1_log.type == :response
 
-      assert tool_log.id == "002.000"
+      assert tool_log.id == "003.000"
       assert tool_log.type == :request
 
-      assert asst2_log.id == "003.000"
+      assert asst2_log.id == "004.000"
       assert asst2_log.type == :response
 
       MockClient.clear()

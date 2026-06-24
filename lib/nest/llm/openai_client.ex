@@ -67,7 +67,7 @@ defmodule Nest.LLM.OpenAIClient do
   def format_request_payload(%RunRequest{} = request, _opts) do
     payload = %{
       "model" => request.model,
-      "messages" => build_wire_messages(request.messages, request.system_prompt),
+      "messages" => build_wire_messages(request.messages),
       "stream" => true,
       "stream_options" => %{"include_usage" => true}
     }
@@ -84,16 +84,12 @@ defmodule Nest.LLM.OpenAIClient do
     format_request_payload(request, opts)
   end
 
-  defp build_wire_messages(messages, system_prompt) do
-    messages
-    |> prepend_system_message(system_prompt)
-    |> Enum.flat_map(&message_to_wire/1)
-  end
-
-  defp prepend_system_message(messages, nil), do: messages
-
-  defp prepend_system_message(messages, prompt) do
-    [{:system, %System{index: -1, content: prompt}} | messages]
+  # System messages (the initial at position 0 and any late
+  # reminders at later positions) stay in `request.messages`; the
+  # `message_to_wire/1` clause for `{:system, _}` maps them to
+  # `{"role": "system", ...}` at their position in the array.
+  defp build_wire_messages(messages) do
+    Enum.flat_map(messages, &message_to_wire/1)
   end
 
   defp message_to_wire({:system, %System{content: content}}) do

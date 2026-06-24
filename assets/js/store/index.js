@@ -709,6 +709,35 @@ export const useStore = create(
 
           const exists = cache.messages.some((m) => m.index === message.index);
 
+          // Defensive fallback: if the server's broadcast message
+          // omitted `thinking` but the streaming partial had it in
+          // `segments`, preserve it. This guards against server-side
+          // regressions of the same shape that dropped thinking on
+          // tool-call finalization (see `build_tool_pair/3` in
+          // `llm_runner.ex`). When the fallback triggers, log a
+          // prominent, grep-able error so the regression is visible
+          // in the browser dev tools.
+          const mergedThinking = (() => {
+            if (message.thinking) return message.thinking;
+            if (!streaming?.segments) return message.thinking ?? null;
+            const fromSegments = streaming.segments
+              .filter((s) => s && s.type === "thinking")
+              .map((s) => s.content || "")
+              .join("");
+            if (fromSegments) {
+              console.error(
+                "[NEST REGRESSION] Thinking lost on tool-call finalization; " +
+                  "fell back to streaming partial. " +
+                  "The server's `build_tool_pair/3` is dropping the " +
+                  "`thinking` field again — see llm_runner.ex:274-288. " +
+                  "Preserved thinking:",
+                fromSegments,
+              );
+              return fromSegments;
+            }
+            return message.thinking ?? null;
+          })();
+
           // Merge apiLogs, toolCalls, and toolResults if updating an existing message
           const newMessages = exists
             ? cache.messages.map((m) => {
@@ -726,6 +755,7 @@ export const useStore = create(
                     : m.toolResults || [];
                   return {
                     ...message,
+                    thinking: mergedThinking,
                     apiLogs: mergedApiLogs,
                     toolCalls: mergedToolCalls,
                     toolResults: mergedToolResults,
@@ -733,7 +763,7 @@ export const useStore = create(
                 }
                 return m;
               })
-            : [...cache.messages, message];
+            : [...cache.messages, { ...message, thinking: mergedThinking }];
 
           return {
             agentsCache: {

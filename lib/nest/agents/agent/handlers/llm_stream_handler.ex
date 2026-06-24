@@ -13,6 +13,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Messages.Assistant
   alias Nest.Messages.Streaming
+  alias Nest.Messages.System
   alias Nest.Messages.Tool
   alias Nest.Messages.ToolCall
 
@@ -61,6 +62,10 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
 
   def handle({:llm_usage, usage}, state) do
     llm_usage(usage, state)
+  end
+
+  def handle({:system_reminder_received, {:system, %System{} = reminder}}, state) do
+    system_reminder_received(reminder, state)
   end
 
   # Accumulate delta using Streaming module based on content type
@@ -430,6 +435,33 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
     }
 
     Broadcasts.status(state.id, state)
+    {:noreply, state}
+  end
+
+  # A late system reminder was injected into the LLM-bound messages
+  # list by `LLMRunner.maybe_inject_budget_warning/3`. We persist it
+  # to `state.chat_state.messages` (for transparency and to keep the
+  # GenServer's view of the conversation consistent with what the
+  # LLM saw) and broadcast it as a regular `chat:message` event so
+  # the UI can render it.
+  #
+  # Stale reminders (from a previous turn that was near the cap)
+  # stay in the message list. We accept this as the cost of
+  # transparency — see `notes/normalize-system-messages.md`.
+  defp system_reminder_received(reminder, state) do
+    reminder_message = {:system, %{reminder | index: state.chat_state.next_message_index}}
+    messages = state.chat_state.messages ++ [reminder_message]
+    Broadcasts.message(state.id, reminder_message)
+
+    state = %{
+      state
+      | chat_state: %{
+          state.chat_state
+          | messages: messages,
+            next_message_index: state.chat_state.next_message_index + 1
+        }
+    }
+
     {:noreply, state}
   end
 

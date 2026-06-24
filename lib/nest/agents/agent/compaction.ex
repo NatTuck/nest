@@ -23,6 +23,7 @@ defmodule Nest.Agents.Agent.Compaction do
   alias Nest.LLM.RunRequest
   alias Nest.LLM.RunResponse
   alias Nest.LLM.StreamConsumer
+  alias Nest.Messages.System
   alias Nest.Tokens.Compactor
 
   require Logger
@@ -125,12 +126,16 @@ defmodule Nest.Agents.Agent.Compaction do
   # the chat PubSub topic. The compactor task ignores them.
   defp build_summarization_llm_call(%ClientConfig{} = client_config, compaction_pid) do
     fn messages ->
+      # Prepend the compactor's summarization system prompt as a
+      # `{:system, _}` message. The original system's content is
+      # dropped — the compactor builds a fresh conversation for
+      # the summarization LLM and doesn't need the agent's
+      # session-level instructions.
       request = %RunRequest{
-        messages: reject_system_messages(messages),
+        messages: prepend_summarization_system(messages),
         tools: nil,
         tool_choice: :none,
         model: client_config.model,
-        system_prompt: @summarization_prompt,
         stream: true,
         metadata: %{}
       }
@@ -152,13 +157,19 @@ defmodule Nest.Agents.Agent.Compaction do
     end
   end
 
-  defp reject_system_messages(nil), do: []
+  # Strip any `{:system, _}` messages from the input and prepend
+  # the compactor's own summarization system message at position
+  # 0. The compactor builds a fresh conversation for the
+  # summarization LLM, so the agent's session-level system
+  # instructions aren't included.
+  defp prepend_summarization_system(messages) do
+    summarization_message =
+      {:system, %System{content: @summarization_prompt, timestamp: DateTime.utc_now()}}
 
-  defp reject_system_messages(messages) do
-    Enum.reject(messages, fn
-      {:system, _} -> true
-      _ -> false
-    end)
+    messages
+    |> List.wrap()
+    |> Enum.reject(&match?({:system, _}, &1))
+    |> Kernel.++([summarization_message])
   end
 
   # Consume a streaming response without broadcasting. The
