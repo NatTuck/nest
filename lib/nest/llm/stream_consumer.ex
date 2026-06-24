@@ -1,7 +1,7 @@
 defmodule Nest.LLM.StreamConsumer do
   @moduledoc """
   Shared canonical-event-stream reducer for the LLM consumer
-  paths (`Nest.Agents.Agent.LLMRunner.consume_new_stream/4`
+  paths (`Nest.Agents.Agent.ChatTurn.HTTPWorker.run/2`
   and `Nest.Agents.Agent.Compaction.consume_quietly/2`).
 
   Walks the canonical event stream produced by the LLM
@@ -74,7 +74,7 @@ defmodule Nest.LLM.StreamConsumer do
 
   # Check if the consumer wants to stop. When `should_stop` is
   # `nil` (the default), we check the chat task's mailbox for a
-  # `{:stop_chat, from}` message — that's how `LLMRunner.run/2`
+  # `{:stop_chat, from}` message — that's how the HTTP worker
   # is interrupted for non-mailbox-backed streams like the test
   # mock client. The `should_stop` callback is an additional hook
   # for non-process-mailbox backends (e.g. when the test wants

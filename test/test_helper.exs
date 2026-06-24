@@ -1,7 +1,6 @@
 Mimic.copy(Nest.LLM.OpenAIClient)
 Mimic.copy(Req)
 Mimic.copy(Nest.DotConfig)
-Mimic.copy(Nest.Agents.Agent.LLMRunner)
 Mimic.copy(Nest.LLM.MockClient)
 
 ExUnit.start()

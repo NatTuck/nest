@@ -42,11 +42,11 @@ defmodule Nest.Agents.Agent.ChatTurnSupervisor do
   the messages list — the ChatTurn never mutates it
   directly, only via `GenServer.call({:append_message, _})`.
   """
-  @spec start_chat_turn(pid(), map(), map()) :: DynamicSupervisor.on_start_child()
-  def start_chat_turn(agent_pid, ctx, init_state) do
+  @spec start_chat_turn(pid(), map()) :: DynamicSupervisor.on_start_child()
+  def start_chat_turn(agent_pid, ctx) do
     spec = %{
       id: {__MODULE__, agent_pid, System.unique_integer([:positive])},
-      start: {Nest.Agents.Agent.ChatTurn, :start_link, [{agent_pid, ctx, init_state}]},
+      start: {Nest.Agents.Agent.ChatTurn, :start_link, [{agent_pid, ctx}]},
       restart: :temporary,
       type: :worker
     }

@@ -44,11 +44,10 @@ defmodule Nest.Agents.Agent do
     chat_state: %__MODULE__.ChatState{}
   ]
 
-  # Read-only context threaded through a single LLM call chain
-  # (`RunContext`) and the per-iteration mutable state (`RunState`)
-  # both live in `Nest.Agents.Agent.LLMRunner`. The GenServer
-  # constructs a `RunContext` from the Agent state in
-  # `spawn_chat_task/3` and dispatches to `LLMRunner.run/2`.
+  # Read-only context threaded through a single chat turn is
+  # constructed by `ChatPipeline.spawn_chat_turn/1` and lives on
+  # the ChatTurn's `ctx` field. The Agent is the storage layer
+  # + lifecycle router; the ChatTurn drives the iteration.
   #
   # The agent's system prompt lives at position 0 of
   # `state.chat_state.messages` (a `{:system, %System{}}` tuple).

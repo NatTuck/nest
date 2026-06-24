@@ -74,10 +74,8 @@ defmodule Nest.Agents.Agent.ChatTurn do
   use GenServer, restart: :temporary
 
   alias Nest.Agents.Agent.Broadcasts
-  alias Nest.Agents.Agent.ChatTurn.Helpers
   alias Nest.Agents.Agent.ChatTurn.HTTPWorker
   alias Nest.Agents.Agent.ChatTurn.Messages
-  alias Nest.Agents.Agent.LLMRunner
   alias Nest.LLM.RunResponse
 
   require Logger
@@ -102,21 +100,19 @@ defmodule Nest.Agents.Agent.ChatTurn do
 
   @doc """
   Start a ChatTurn child under the ChatTurnSupervisor.
-  The `init_state` is currently unused; the ChatTurn
-  reads its config from `ctx`. Kept in the signature
-  for symmetry with the previous Task-based chat pipeline
-  and so future fields can be threaded in without
-  rewiring callers.
+  The args are `{agent_pid, ctx}` — the ctx map carries
+  everything the ChatTurn needs (client_config, tools,
+  caps, context_limit, agent_id, agent_pid).
   """
-  @spec start_link({pid(), map(), map()}) :: GenServer.on_start()
-  def start_link({_agent_pid, _ctx, _init_state} = args) do
+  @spec start_link({pid(), map()}) :: GenServer.on_start()
+  def start_link({_agent_pid, _ctx} = args) do
     GenServer.start_link(__MODULE__, args)
   end
 
   # Server Callbacks
 
   @impl true
-  def init({agent_pid, ctx, _init_state}) do
+  def init({agent_pid, ctx}) do
     Process.flag(:trap_exit, true)
     # Mimic permissions: when a test sets `Mimic.allow/3`
     # on the Agent's pid (e.g. `Mimic.allow(MockClient,
@@ -224,7 +220,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
   defp maybe_inject_budget_reminder(state) do
     remaining = state.max_iterations - state.iteration
 
-    case Helpers.maybe_inject_budget_reminder(remaining) do
+    case do_inject_budget_reminder(remaining) do
       nil ->
         state
 
@@ -232,6 +228,25 @@ defmodule Nest.Agents.Agent.ChatTurn do
         _stamped = GenServer.call(state.agent_pid, {:append_message, reminder})
         state
     end
+  end
+
+  # Build a system reminder to inject when the iteration is
+  # approaching the cap. Returns `nil` when there's no need
+  # to warn (more than 2 rounds remaining, or the cap is
+  # already past).
+  defp do_inject_budget_reminder(remaining) when remaining > 2 or remaining <= 0, do: nil
+
+  defp do_inject_budget_reminder(remaining) do
+    warning =
+      case remaining do
+        2 ->
+          "You have 2 tool call rounds remaining. Plan your remaining tool use carefully."
+
+        1 ->
+          "This is your last tool call round. After this, no more tools will be available — provide your final response."
+      end
+
+    {:system, %Nest.Messages.System{content: warning, timestamp: DateTime.utc_now()}}
   end
 
   # Spawn the HTTP worker as a Task. The worker calls
@@ -387,31 +402,18 @@ defmodule Nest.Agents.Agent.ChatTurn do
   # Spawn the tool worker as a Task. The worker calls
   # `Nest.Agents.Agent.ToolLoop.execute/3` and sends
   # `{:tool_results, results}` back to the ChatTurn.
+  # The `state.ctx` map carries everything ToolLoop needs
+  # (tools, caps, messages, context_limit, agent_pid).
   defp spawn_tool_worker(state, tool_calls) do
     parent = self()
-
-    # Build a minimal RunContext for ToolLoop. The
-    # full context lives in state.ctx; the loop only
-    # reads caps, tools, agent_pid, context_limit, and
-    # the messages list.
-    tool_loop_ctx = %LLMRunner.RunContext{
-      client_config: state.ctx.client_config,
-      tools: state.ctx.tools,
-      tool_choice: state.ctx.tool_choice,
-      messages: state.messages_snapshot,
-      agent_pid: state.ctx.agent_pid,
-      agent_id: state.ctx.agent_id,
-      caps: state.ctx.caps,
-      context_limit: state.ctx.context_limit,
-      context_limit_source: state.ctx.context_limit_source
-    }
-
-    tool_loop_state = %LLMRunner.RunState{}
 
     task =
       Task.Supervisor.start_child(
         Nest.Agents.TaskSupervisor,
-        fn -> tool_worker_fun(tool_loop_ctx, tool_loop_state, tool_calls, parent) end
+        fn ->
+          results = Nest.Agents.Agent.ToolLoop.execute(state.ctx, %{}, tool_calls)
+          send(parent, {:tool_results, results})
+        end
       )
 
     case task do
@@ -422,13 +424,6 @@ defmodule Nest.Agents.Agent.ChatTurn do
       _ ->
         send(state.agent_pid, {:chat_crashed, :saturated, []})
         {:stop, :normal, state}
-    end
-  end
-
-  defp tool_worker_fun(ctx, loop_state, tool_calls, chat_turn_pid) do
-    case Nest.Agents.Agent.ToolLoop.execute(ctx, loop_state, tool_calls) do
-      results ->
-        send(chat_turn_pid, {:tool_results, results})
     end
   end
 

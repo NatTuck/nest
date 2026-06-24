@@ -121,18 +121,10 @@ defmodule Nest.Agents.Agent.ChatPipeline do
       tool_choice: :auto,
       caps: caps,
       context_limit: state.llm_metrics.context_limit,
-      context_limit_source: state.llm_metrics.context_limit_source,
       messages: state.chat_state.messages
     }
 
-    init_state = %{
-      message_index: state.chat_state.streaming_acc && state.chat_state.streaming_acc.index,
-      active_message_index: state.chat_state.active_message_index,
-      api_log_sequences: state.chat_state.api_log_sequences,
-      max_iterations: Nest.Agents.Agent.configured_max_tool_iterations()
-    }
-
-    case Nest.Agents.Agent.ChatTurnSupervisor.start_chat_turn(agent_pid, ctx, init_state) do
+    case Nest.Agents.Agent.ChatTurnSupervisor.start_chat_turn(agent_pid, ctx) do
       {:ok, chat_turn_pid} ->
         %{state | chat_state: %{state.chat_state | chat_turn_pid: chat_turn_pid}}
 

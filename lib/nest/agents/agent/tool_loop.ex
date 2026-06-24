@@ -1,7 +1,7 @@
 defmodule Nest.Agents.Agent.ToolLoop do
   @moduledoc """
   Per-tool execution and budget enforcement for the LLM tool-call
-  loop. Called by `Nest.Agents.Agent.LLMRunner` after a response
+  loop. Called by `Nest.Agents.Agent.ChatTurn` after a response
   with `tool_calls` is received.
 
   Responsibilities:
@@ -15,7 +15,6 @@ defmodule Nest.Agents.Agent.ToolLoop do
       for the next LLM turn.
   """
 
-  alias Nest.Agents.Agent.RunContext
   alias Nest.LLM.ToolCall
   alias Nest.LLM.Tools, as: LLMTools
   alias Nest.Messages.ToolResult
@@ -37,7 +36,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
   The `state` argument is unused; it's kept in the signature for
   symmetry with the orchestration call site and for future use.
   """
-  @spec execute(RunContext.t(), term(), [ToolCall.t()]) :: [ToolResult.t()]
+  @spec execute(map(), term(), [ToolCall.t()]) :: [ToolResult.t()]
   def execute(ctx, _state, tool_calls) do
     budget_remaining = compute_remaining_budget(ctx)
     executor = build_tool_executor(ctx)
@@ -62,7 +61,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
   # "check" — returns a summary of current context usage
   # (message count, estimated tokens, context limit, and
   # percentage used). Does not require a GenServer round-trip;
-  # the `RunContext` carries the messages and context_limit.
+  # the `ctx` map carries the messages and context_limit.
   #
   # "compact" — delegates to the compaction flow, which
   # round-trips through the GenServer to mutate the agent's
@@ -87,10 +86,9 @@ defmodule Nest.Agents.Agent.ToolLoop do
   end
 
   # Raised by the tool executor when the agent interrupts the chat
-  # task mid-tool-call. `LLMRunner.run/2` catches it and unwinds
-  # without making any further LLM calls; the agent's stop handler
-  # finalizes whatever is in `state.chat_state.streaming_acc` on
-  # the GenServer side.
+  # task mid-tool-call. The tool worker unwinds without making any
+  # further LLM calls; the agent's stop handler finalizes whatever
+  # is in `state.chat_state.streaming_acc` on the GenServer side.
   defmodule StoppedError do
     @moduledoc "Raised by `request_compaction_from_task/2` when the agent sent `{:stop_chat, _}`."
     defexception message: "chat task stopped by user"
@@ -113,8 +111,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
   # The `{:stop_chat, from}` clause lets the agent interrupt the
   # chat task while it is waiting on a compaction call. The chat
   # task acknowledges the stop and returns `:stopped`, which the
-  # caller (the budget loop in `LLMRunner`) treats as
-  # "unwind the chain".
+  # caller (the tool worker) treats as "unwind the chain".
   defp request_compaction_from_task(ctx, tool_call) do
     focus = get_focus_arg(tool_call)
 

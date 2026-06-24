@@ -907,15 +907,262 @@ The Agent needs new `handle_call` and `handle_info` clauses to support the ChatT
 
 ---
 
-## Completion criteria
+## TODO: Complete the refactor
+
+PR 3 (`dac5d45`) shipped a working ChatTurn + HTTP worker architecture and **closed the dual-counter bug class**, but it left the codebase in a hybrid state. The `lib/nest/agents/agent/llm_runner.ex` file is 390 lines of dead code; `chat_turn/helpers.ex` is 217 lines of mostly-dead code; one real bug (double-broadcast on error) was introduced; one real functional regression (mid-iteration preflight is gone) was introduced; and `agent_stop_test.exs` is flaky.
+
+### Design intent (recap)
+
+The original plan was **zero duplication of conversation state**. The Agent owns:
+- `messages` (the conversation)
+- `next_message_index` (the index allocator)
+- `streaming_acc` (the partial mirror for `get_public_info.partial`)
+- `api_log_sequences` (the per-message sequence counter)
+- `chat_state` (status, active_message_index, pending_api_logs, chat_turn_pid, cancelled, history)
+
+The ChatTurn owns only **iteration state**:
+- `iteration` (current round counter)
+- `max_iterations` (cap, set at spawn)
+- `force_finalize` (flag for the second-chance path)
+- `active_worker` + `active_worker_kind` (live worker pid, for `Process.exit/2` on stop)
+
+The `ctx` field on ChatTurn is a **per-iteration configuration snapshot** (client_config, tools, caps, agent_id, context_limit) — *not* conversation state. It's iteration-static (set once at spawn) and recreated each turn. This is the design intent: no conversation-state duplication, but iteration-static config is reasonable to snapshot.
+
+The Agent's `streaming_acc` mirror is **not** duplication — it's the canonical source of truth for `get_public_info.partial` (the UI's in-flight text). Moving it to the ChatTurn would force the UI to query the ChatTurn or the Agent to forward on every delta. Both are worse than the current mirror pattern.
+
+### Commit order (easy cleanups first, then architectural shifts, then polish)
+
+Eleven commits. The first four are pure cleanups (~700 lines deleted, no behavior change). The middle three are architectural shifts (one bug fix, one regression fix, one math fix). The last four are polish and stabilization.
+
+---
+
+### Commit 1: "chore: delete dead code and fix stale references"
+
+Easy stuff. No behavior change. Should pass `mix precommit` and `mix test` cleanly.
+
+1. Delete `lib/nest/agents/agent/llm_runner.ex` (390 lines, fully dead).
+2. Delete `lib/nest/agents/agent/chat_turn/helpers.ex` (217 lines, mostly dead). The one useful function, `maybe_inject_budget_reminder/1`, moves to `chat_turn.ex` as a private function (`defp do_inject_budget_reminder(remaining)`).
+3. Delete `Mimic.copy(Nest.Agents.Agent.LLMRunner)` from `test/test_helper.exs:4`.
+4. Fix `tool_loop.ex:18`: drop the `alias Nest.Agents.Agent.RunContext` (broken since LLMRunner is gone) and update the spec to use a plain `map()`: `@spec execute(map(), term(), [ToolCall.t()]) :: [ToolResult.t()]`.
+5. Delete `chat_turn.ex:397-409` — the `LLMRunner.RunContext`/`RunState` construction. Replace `spawn_tool_worker/2`'s body with:
+   ```elixir
+   fn ->
+     results = Nest.Agents.Agent.ToolLoop.execute(state.ctx, %{}, tool_calls)
+     send(parent, {:tool_results, results})
+   end
+   ```
+6. Remove the `alias Nest.Agents.Agent.LLMRunner` from `chat_turn.ex:80` (unused after the above).
+7. Update the `ctx` map in `chat_pipeline.ex:116-126` to drop the `messages` field (ChatTurn never reads it; it queries `:get_messages`).
+8. Drop the `init_state` over-specification in `chat_pipeline.ex:128-133`. The ChatTurn only uses `max_iterations`. Change `ChatTurnSupervisor.start_chat_turn/3` to take just `(agent_pid, ctx)` and `ChatTurn.start_link/1` to take `{agent_pid, ctx}`.
+9. Drop `ctx.context_limit_source` from the `ctx` map (ToolLoop doesn't read it).
+10. Replace the stale comment block at `agent.ex:47-51` with: `# Iteration lives in ChatTurn. This module is the storage layer + lifecycle router.`
+11. Delete the stale moduledoc at `llm_runner.ex:1-24` (whole file goes).
+12. Delete the stale comments at `lib/nest/llm/stream_consumer.ex:4` and `lib/nest/llm/stream_consumer.ex:77` (both reference `LLMRunner.run/2`).
+13. Delete the stale comment at `tool_loop.ex:90` (`# task mid-tool-call. LLMRunner.run/2 catches it...`).
+
+**Verify:** `mix precommit` clean. `mix test` clean (all 613 tests, 0 failures, single run). `grep -rn "LLMRunner" lib/ test/` should return only `LLMRunner` in unrelated comments or docstrings (probably none after this).
+
+---
+
+### Commit 2: "fix: drop duplicate chat:error broadcast on HTTP worker errors"
+
+Single targeted fix. No behavior change for the happy path; fixes the bug where a single error event gets broadcast twice.
+
+1. In `http_worker.ex:97-101`, drop the `Broadcasts.error(...)` call. The `on_error` callback now only sends `{:llm_error, msg}` to the Agent. The Agent's `llm_error` handler in `llm_stream_handler.ex:88` does the broadcast.
+2. Update the moduledoc at `http_worker.ex:71-78` to match the new flow.
+3. Update the moduledoc at `llm_stream_handler.ex:1-11` to clarify: `{:llm_error, _}` is the worker's "I gave up; please finalize and broadcast" signal.
+4. Add a regression test in `chat_task_crash_test.exs`: after asserting the first `chat:error` event, add `refute_receive {:chat_error, _}, 100` to assert no second event fires.
+
+**Verify:** `mix precommit` clean. `mix test` clean. The new `refute_receive` passes.
+
+---
+
+### Commit 3: "refactor: drop the predicted-index math, use get_next_index"
+
+The `api_log` and the assistant message share an index that's queried from the Agent before the LLM call. No more `predicted_assistant_index/1`. The ChatTurn never assigns an index.
+
+1. In `agent.ex:260-262`, add a new `handle_call(:get_next_index, _from, state)` that returns `state.chat_state.next_message_index`.
+2. In `chat_turn.ex:213-217`, before the `GenServer.call(:get_messages)` in `iterate/1`, add:
+   ```elixir
+   next_index = GenServer.call(state.agent_pid, :get_next_index)
+   state = %{state | active_message_index: next_index}
+   ```
+   and drop the `messages_snapshot` field setting (use the messages result directly).
+3. In `chat_turn.ex:250`, change the request log to use `state.active_message_index` (which is now the actual `next_message_index`, not a prediction).
+4. In `chat_turn.ex:314` (the assistant message build), drop the `index: predicted_assistant_index(state)` override. Build with `index: nil`. The Agent stamps it.
+5. In `chat_turn.ex:323`, drop `predicted_assistant_index/1`. Use `state.active_message_index` for the response api_log key (which now equals the assistant's stamped index because both come from the same `next_message_index` snapshot).
+6. In `llm_stream_handler.ex:127-156` (`tool_calls_received/2`) and `:158-188` (`tool_results_received/2`), change the `pending_api_logs(message.index)` lookup to `pending_api_logs(state.chat_state.next_message_index)`. The message's `index` field is about to be overwritten by `__append_message__` to the same number; the lookup needs the un-stamped value.
+7. Update `Messages.assistant/1` to set `index: nil` (already does) and add a comment: "The Agent stamps the index via `__append_message__/2`."
+8. Drop the `state.active_message_index` field from `ChatTurn.State` (now lives only on the Agent's `ChatState`).
+9. Drop `defp predicted_assistant_index/1` from `chat_turn.ex:367-369`.
+10. Drop `defp active_message_index/1` from `chat_turn.ex:288-290` (HTTPWorker has its own now).
+11. Add a regression test in `chat_turn_test.exs` that asserts the `active_message_index` field is no longer on the ChatTurn's State.
+
+**Verify:** `mix precommit` clean. `mix test` clean. The `assert_unique_message_indices/1` regression guard in `agent_test_helpers.ex` still passes for every test that drives a turn to completion.
+
+---
+
+### Commit 4: "refactor: drop conversation-state duplication from ChatTurn State"
+
+The State struct has 12 fields. Of these, only 4 are iteration state; the rest are conversation state in disguise (duplicating the Agent's `chat_state`).
+
+| Field | Type | Verdict |
+|---|---|---|
+| `agent_pid` | reference | **keep** (a pid, not state) |
+| `ctx` | per-iteration config snapshot | **keep** (client_config, tools, caps, agent_id — iteration-static) |
+| `iteration` | counter | **keep** (iteration state) |
+| `max_iterations` | cap | **keep** (turn-scoped config, set at spawn) |
+| `force_finalize` | flag | **keep** (iteration state, set in second-chance path) |
+| `active_worker` | pid | **keep** (liveness tracking) |
+| `active_worker_kind` | atom | **keep** (tied to active_worker) |
+| `streaming_acc` | struct | **DROP** — Agent owns the mirror for `get_public_info.partial` |
+| `api_log_sequences` | map | **DROP** — counter, can be local to `APILog` |
+| `last_thinking` | string | **DROP** — set, never read; pure dead state |
+| `messages_snapshot` | list | **DROP** — duplicate of Agent's `chat_state.messages`; query via `:get_messages` |
+| `cancelled` | flag | **DROP** — set in `stop_chat/2`, never read; Agent has its own `chat_state.cancelled` |
+
+1. Drop `state.messages_snapshot` field. The HTTP worker receives `messages` as an arg to `HTTPWorker.run/3`. `chat_turn.ex:213-214` sets it; `chat_turn.ex:401` reads it; `api_log.ex:25` reads it. Replace all reads with the function arg.
+2. Drop `state.streaming_acc` field. Set to `nil` at `chat_turn.ex:143` and never read. Pure dead code.
+3. Drop `state.last_thinking` field. Set at `chat_turn.ex:296`, never read. Pure dead code.
+4. Drop `state.api_log_sequences` field. Move the counter into the `APILog` module as a process-local value (a small counter threaded through `iterate/1` instead of stored in State). The value is only used for log ID generation; it doesn't need to be in State.
+5. Drop `state.cancelled` field. Set at `chat_turn.ex:444`, never read in the ChatTurn. The Agent's `state.chat_state.cancelled` is the live one.
+6. Update `chat_turn/http_worker.ex:128-144` to remove the `state.streaming_acc` reference (use the function arg `messages` instead).
+7. Update `chat_turn.ex` everywhere it reads `state.messages_snapshot` to use the function arg or query the Agent.
+
+After this commit, the State has 6 fields: `agent_pid`, `ctx`, `iteration`, `max_iterations`, `force_finalize`, `active_worker`, `active_worker_kind`. Down from 12. This is "largely stateless."
+
+**Verify:** `mix precommit` clean. `mix test` clean.
+
+---
+
+### Commit 5: "feat: re-enable mid-iteration preflight compaction"
+
+The functional regression. The pre-PR-3 `LLMRunner.run_with_new_client/2` ran a preflight check before every LLM call. The new ChatTurn skips it. Add it back.
+
+1. In `chat_turn.ex:iterate/1`, before the HTTP worker spawn, send `{:preflight_request, self(), messages}` to the Agent and wait for `{:preflight_result, decision, messages}`. Use a `receive` with a 30-second timeout (matches the pre-PR-3 behavior in `llm_runner.ex:124`).
+2. Add `handle_info({:preflight_result, :proceed, _messages}, state)` — no-op, proceed to spawn HTTP worker.
+3. Add `handle_info({:preflight_result, :compacted, messages}, state)` — re-query `:get_messages` to get the compacted list, then spawn HTTP worker.
+4. Add `handle_info({:preflight_result, _, _}, state)` for the `:stopped` case — reply `:stopped` to the sender, kill the active worker (none in this path), send `{:chat_stopped, self()}` to Agent, stop.
+5. The existing `CompactionHandler.preflight_request/3` works as-is (it accepts any `task_pid`).
+6. Add a regression test in `chat_turn_test.exs`: queue 4 tool responses + 1 final. With `max_iterations = 5`, the second iteration should call the preflight handler (we can stub the Agent's `preflight_request/3` via Mimic to assert it's called).
+
+**Verify:** `mix precommit` clean. `mix test` clean. The new test passes. The existing `agent_compaction_test.exs` still passes.
+
+---
+
+### Commit 6: "refactor: drop dead clauses from llm_stream_handler.ex"
+
+After Commits 1-5, two clauses in `llm_stream_handler.ex` have no senders:
+- `handle({:llm_response_with_thinking, _response, thinking}, state)` (line 46) — only LLMRunner sent this; LLMRunner is gone.
+- `handle({:system_reminder_received, {:system, _}, state}` (line 54) — only `Helpers.maybe_inject_budget_warning/4` sent this; that function is gone with the Helpers module.
+- `defp llm_response_with_thinking/2` (lines 191-227) — dead.
+- `defp system_reminder_received/2` (lines 259-262) — dead.
+
+1. Drop all four.
+2. Drop the `route_for/1` clauses for these tags in `handlers.ex:65,67`.
+3. Fix the stale source string `LLMRunner.handle_failed_response/3` at `llm_stream_handler.ex:204` (it was already updated in the new `http_worker.ex:99` to use `ChatTurn.run_chat_task/1`; this is the missed old copy).
+
+**Verify:** `mix precommit` clean. `mix test` clean. The 11 remaining `LLMStreamHandler.handle/2` clauses are all real (the streaming_acc mirror updates, plus `tool_calls_received`/`tool_results_received` for status transitions).
+
+---
+
+### Commit 7: "refactor: drop redundant agent_pid field from ChatTurn State"
+
+`state.agent_pid` is used 12 times. All but one can be `state.ctx.agent_pid`. The exception is `init/1` where the field is set from the function arg before being copied to `state.ctx`; just use the function arg directly.
+
+1. Drop the `agent_pid` field from `State` (already defaults to `nil`).
+2. Update all `state.agent_pid` references to `state.ctx.agent_pid`. The `init/1` clause uses the function arg.
+3. Verify: `mix precommit` clean. `mix test` clean.
+
+---
+
+### Commit 8: "refactor: clean up remaining state complexity"
+
+Minor polish. Drops total line count by another ~50.
+
+1. In `chat_turn.ex`, inline `build_assistant_message/1`, `build_tool_message/1`, `build_synthetic_error_tool_results/1` (the three `defp` wrappers around `Messages.*`). Just call `Messages.assistant/1` directly in `handle_response/2`.
+2. In `chat_turn.ex`, inline `broadcast_request_log/2` and `broadcast_response_log/3` (the two `defp` wrappers around `APILog.*`). Just call `APILog.request/2` directly.
+3. In `chat_turn.ex`, delete the now-unused `defp active_message_index/1` at line 288-290 (it just delegates to `HTTPWorker.active_message_index/1`).
+4. In `chat_turn.ex`, delete the comment block at lines 33-72 (the moduledoc that lists every event) — the code itself is now self-documenting.
+5. Shrink `chat_pipeline.ex:181-212` (`build_user_messages/3` and `build_user_message/3`) into a single function with two clauses. Saves ~15 lines.
+
+**Verify:** `mix precommit` clean. `mix test` clean. The total file sizes match the targets within 20%.
+
+---
+
+### Commit 9: "fix: stabilize flaky stop tests"
+
+The `agent_stop_test.exs` tests at lines 154-192 (`idempotency`) and 194-234 (`cancelled flag`) are flaky due to test-process mailbox pollution.
+
+1. In `test/support/agent_test_helpers.ex:62-75` (the `on_exit` hook), add a `Process.sleep(50)` before `drain_mailbox()`. This gives the previous test's chat turn a chance to fully settle before the drain.
+2. Add a per-test setup helper `drain_test_mailbox/0` (already exists at line 102) to the test's `setup` block. Each test starts with a clean mailbox.
+3. In the two flaky tests, reorder the assertions to drain the second turn's events before asserting on the first turn's events. The current code does this partially (line 188-190); make it more robust by waiting for `:idle` status from the second turn BEFORE asserting on the second turn's user/assistant messages.
+4. Add a regression test that runs the full `agent_stop_test.exs` file 10 times in a loop (in a single test). Asserts no failures. This catches future flakiness regressions.
+
+**Verify:** `mix test` 20× clean (no failures on any run). The new loop test runs in <30 seconds.
+
+---
+
+### Commit 10: "test: assert plan invariants"
+
+The final guard. Asserts that the refactor's structural goals are met.
+
+1. Add a test in `test/nest/agents/agent/chat_turn_test.exs` (or a new `chat_turn_state_test.exs`) that asserts the `State` struct has exactly the expected fields: `ctx`, `iteration`, `max_iterations`, `force_finalize`, `active_worker`, `active_worker_kind`, `agent_pid`. If anyone adds a field back, this test fails.
+2. Add a test that asserts `lib/nest/agents/agent/llm_runner.ex` does not exist (the file is gone). If anyone recreates it, this test fails. Use `File.exists?/1` and an assertion.
+3. Add a test that asserts `Mimic.copy(Nest.Agents.Agent.LLMRunner)` is not in `test_helper.exs` (use `File.read!/1` + a string match).
+4. Add a test that asserts the `Helpers` module no longer exports `build_tool_pair/3`, `build_synthetic_error_pair/3`, `maybe_inject_budget_warning/4`, `new_state/4`. Use `function_exported?/3`.
+
+**Verify:** `mix precommit` clean. `mix test` clean. The structural assertions all pass.
+
+---
+
+### Commit 11: "docs: update plan completion status"
+
+Mark the plan's `Completion criteria` section as fully ✅. Delete the TODO list (it's served its purpose). The plan becomes a historical record.
+
+No code change. `git commit --allow-empty -m "docs: agent state refactor complete"`.
+
+---
+
+## Final file targets
+
+| File | Before | After | Change |
+|---|---|---|---|
+| `chat_turn.ex` | 493 | ~250 | -243 |
+| `chat_turn/http_worker.ex` | 145 | ~110 | -35 |
+| `chat_turn/messages.ex` | 73 | 73 | 0 |
+| `chat_turn/api_log.ex` | 58 | ~60 | +2 |
+| `chat_turn/helpers.ex` | 217 | 0 (deleted) | -217 |
+| `llm_runner.ex` | 390 | 0 (deleted) | -390 |
+| `chat_pipeline.ex` | 315 | ~100 | -215 |
+| `agent.ex` | 494 | ~470 | -24 |
+| `llm_stream_handler.ex` | 278 | ~200 | -78 |
+| `chat_turn_handler.ex` | 265 | 265 | 0 |
+| `stop_handler.ex` | 84 | 84 | 0 |
+| `compaction_handler.ex` | 167 | 167 | 0 |
+| `tool_loop.ex` | 245 | 244 | -1 |
+| **Total** | **3,224** | **~2,024** | **-1,200** |
+
+Net: ~37% of the agent code goes away. Plus: one real bug fixed (double-broadcast on error), one real functional regression fixed (mid-iteration preflight), flaky tests stabilized, structural invariants guarded.
+
+---
+
+## Completion criteria (updated)
 
 The refactor is complete when all of the following are true:
 
-1. All 613 tests pass.
-2. `mix precommit` is clean.
-3. The ChatTurn owns the iteration. `lib/nest/agents/agent/llm_runner.ex` is deleted.
-4. The Agent is the single source of truth for `messages`. The ChatTurn queries via `GenServer.call(:get_messages)`.
-5. The dual-counter bug class is structurally fixed. `assert_unique_message_indices/1` passes for every test that drives a turn to completion.
-6. The budget reminder is a regular appended system message. The reminder and the next response have distinct indices. Verified by `test/nest/agents/agent_system_messages_test.exs:151`.
-7. The stop signal flows Agent → ChatTurn → HTTP worker (kill). The partial is finalized by the Agent's `chat_stopped` handler. Verified by `test/nest/agents/agent_stop_test.exs`.
-8. The crash signal flows HTTP worker → ChatTurn → Agent. The Agent's `chat_crashed` handler finalizes the partial and broadcasts `chat:error`. Verified by `test/nest/agents/chat_task_crash_test.exs`.
+1. All 613 tests pass on every run (no flakiness). ✅ already (with flakiness fix from Commit 9)
+2. `mix precommit` is clean. ✅ already
+3. The ChatTurn owns the iteration. `lib/nest/agents/agent/llm_runner.ex` is deleted. ⚠️ partial (file still exists, dead) — addressed by Commit 1
+4. The Agent is the single source of truth for `messages`. The ChatTurn queries via `GenServer.call(:get_messages)`. ✅
+5. The dual-counter bug class is structurally fixed. `assert_unique_message_indices/1` passes for every test that drives a turn to completion. ✅
+6. The budget reminder is a regular appended system message. The reminder and the next response have distinct indices. Verified by `test/nest/agents/agent_system_messages_test.exs:151`. ✅
+7. The stop signal flows Agent → ChatTurn → HTTP worker (kill). The partial is finalized by the Agent's `chat_stopped` handler. Verified by `test/nest/agents/agent_stop_test.exs`. ✅
+8. The crash signal flows HTTP worker → ChatTurn → Agent. The Agent's `chat_crashed` handler finalizes the partial and broadcasts `chat:error`. Verified by `test/nest/agents/chat_task_crash_test.exs`. ✅
+9. Mid-iteration preflight compaction works. The ChatTurn issues `{:preflight_request, ...}` before each LLM call. ❌ broken (regression) — addressed by Commit 5
+10. The ChatTurn has no copies of conversation state. `messages_snapshot`, `streaming_acc`, `last_thinking`, `api_log_sequences`, `cancelled` are all removed. ⚠️ partial — addressed by Commits 4 and 7
+11. The Agent's `streaming_acc` mirror is the source of truth for `get_public_info.partial`. The ChatTurn never duplicates the mirror. ✅ (this is the corrected design intent)
+12. Only one `chat:error` event fires per HTTP worker error. ⚠️ partial (double-broadcast bug) — addressed by Commit 2
+13. File counts and line counts match the table above. ❌ broken — addressed by Commits 1, 4, 6, 8
+
+Items 3, 9, 10, 12, 13 are addressed by the 11-commit plan above.
