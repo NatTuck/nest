@@ -18,6 +18,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   """
 
   alias Nest.Agents.Agent.Broadcasts
+  alias Nest.Agents.Agent.ChatTurnSupervisor
   alias Nest.Agents.Agent.Compaction
   alias Nest.Messages.Streaming
   alias Nest.Messages.User
@@ -124,7 +125,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
       messages: state.chat_state.messages
     }
 
-    case Nest.Agents.Agent.ChatTurnSupervisor.start_chat_turn(agent_pid, ctx) do
+    case ChatTurnSupervisor.start_chat_turn(agent_pid, ctx) do
       {:ok, chat_turn_pid} ->
         %{state | chat_state: %{state.chat_state | chat_turn_pid: chat_turn_pid}}
 

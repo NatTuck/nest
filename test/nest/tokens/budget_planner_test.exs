@@ -134,7 +134,9 @@ defmodule Nest.Tokens.BudgetPlannerTest do
     test "LLM override is respected (smaller than default)" do
       # Default cap is 8192, but LLM asks for 500 — a value above
       # min_truncatable (256) so it triggers truncation, not skip.
-      big = String.duplicate("a", 50_000)
+      # 5k chars keeps the test well under the 1s per-test timeout
+      # (Tiktoken is ~10ms/kB).
+      big = String.duplicate("a", 5_000)
       results = %{"1" => big}
 
       calls = [
@@ -153,7 +155,8 @@ defmodule Nest.Tokens.BudgetPlannerTest do
     test "LLM override below min_truncatable triggers skip" do
       # The LLM requested 100 tokens which is below the 256-token
       # minimum useful threshold — the call is skipped instead.
-      big = String.duplicate("a", 50_000)
+      # 5k chars keeps the test well under the 1s per-test timeout.
+      big = String.duplicate("a", 5_000)
       results = %{"1" => big}
 
       calls = [
@@ -205,7 +208,7 @@ defmodule Nest.Tokens.BudgetPlannerTest do
     test "first fits, second truncates, third skips" do
       small = "small enough"
       medium = String.duplicate("m", 3000)
-      huge = String.duplicate("h", 50_000)
+      huge = String.duplicate("h", 5_000)
 
       results = %{"1" => small, "2" => medium, "3" => huge}
 
@@ -237,7 +240,7 @@ defmodule Nest.Tokens.BudgetPlannerTest do
   describe "execute/4 — tool_name extracted for skip messages" do
     test "skip response includes the tool name" do
       calls = [%ToolCall{id: "1", name: "shell_cmd", arguments: %{}}]
-      huge = String.duplicate("x", 100_000)
+      huge = String.duplicate("x", 5_000)
       results = %{"1" => huge}
 
       [{_call, {_kind, result}}] = BudgetPlanner.execute(calls, make_executor(results), 50)
@@ -247,7 +250,7 @@ defmodule Nest.Tokens.BudgetPlannerTest do
     test "uses 'unknown' when name is missing" do
       # Map with no name
       calls = [%{id: "1"}]
-      results = %{"1" => String.duplicate("x", 100_000)}
+      results = %{"1" => String.duplicate("x", 5_000)}
 
       [{_call, {_kind, result}}] = BudgetPlanner.execute(calls, make_executor(results), 50)
       assert result =~ "unknown"

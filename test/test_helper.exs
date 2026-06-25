@@ -3,6 +3,7 @@ Mimic.copy(Req)
 Mimic.copy(Nest.DotConfig)
 Mimic.copy(Nest.LLM.MockClient)
 
+ExUnit.configure(timeout: 5_000)
 ExUnit.start()
 Ecto.Adapters.SQL.Sandbox.mode(Nest.Repo, :manual)
 

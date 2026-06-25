@@ -75,41 +75,16 @@ defmodule Nest.Agents.Agent.ChatTurn do
 
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ChatTurn.APILog
+  alias Nest.Agents.Agent.ChatTurn.BudgetReminder
   alias Nest.Agents.Agent.ChatTurn.ContextReminder
   alias Nest.Agents.Agent.ChatTurn.HTTPWorker
   alias Nest.Agents.Agent.ChatTurn.Messages
+  alias Nest.Agents.Agent.ChatTurn.Preflight
+  alias Nest.Agents.Agent.ChatTurn.State
+  alias Nest.Agents.Agent.ToolLoop
   alias Nest.LLM.RunResponse
 
   require Logger
-
-  defmodule State do
-    @moduledoc false
-    # The ChatTurn's State is the iteration state machine's
-    # working memory. It contains ONLY iteration-scoped state
-    # (counters, worker pids, the index that the next message
-    # WILL be stamped with). Conversation state (messages,
-    # streaming_acc, next_message_index, history, llm_metrics)
-    # lives on the Agent; the ChatTurn queries via
-    # GenServer.call when it needs to read, and sends events
-    # for the Agent to write.
-    #
-    # The Agent's pid is read from `ctx.agent_pid` (ctx is
-    # the per-iteration config snapshot). No duplicate field.
-    #
-    # `crossed_thresholds` tracks which context-usage
-    # thresholds (25/50/75%) have already been announced
-    # in this ChatTurn. Cleared on compaction so the
-    # thresholds re-fire if usage rises again after the
-    # history was summarized.
-    defstruct ctx: nil,
-              iteration: 0,
-              max_iterations: 0,
-              force_finalize: false,
-              active_worker: nil,
-              active_worker_kind: nil,
-              active_message_index: 0,
-              crossed_thresholds: %MapSet{}
-  end
 
   # Client API
 
@@ -194,12 +169,17 @@ defmodule Nest.Agents.Agent.ChatTurn do
 
   def handle_info(_msg, state), do: {:noreply, state}
 
-  # The iteration step. Maybe inject a budget reminder,
-  # bump the iteration counter, broadcast the
-  # max-iterations notification if we're at the cap,
-  # query the Agent for the current messages list, and
-  # spawn the HTTP worker.
+  # The iteration step. Wrapped in an implicit `try/catch` so
+  # a dead agent (e.g. `Agent.terminate/1` mid-turn) doesn't
+  # crash the ChatTurn with an unhandled `:exit` from
+  # `GenServer.call/2` — we just stop cleanly.
   defp iterate(state) do
+    safe_iterate(state)
+  catch
+    :exit, _ -> {:stop, :normal, state}
+  end
+
+  defp safe_iterate(state) do
     state = maybe_inject_budget_reminder(state)
     state = %{state | iteration: state.iteration + 1}
 
@@ -230,7 +210,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
     # blocks the ChatTurn for up to 30 seconds; if the Agent
     # doesn't respond we proceed with the existing messages
     # (avoid deadlock).
-    case run_preflight(state) do
+    case Preflight.run(state) do
       :proceed ->
         state = maybe_inject_context_warning(state, messages)
         spawn_http_worker(state, messages)
@@ -241,10 +221,11 @@ defmodule Nest.Agents.Agent.ChatTurn do
         # the warnings can re-fire on the way back up. The
         # reminder check uses the *post-compaction* messages
         # because that's what the LLM is about to see.
-        state = maybe_inject_context_warning(
-          %{state | crossed_thresholds: MapSet.new()},
-          compacted_messages
-        )
+        state =
+          maybe_inject_context_warning(
+            %{state | crossed_thresholds: MapSet.new()},
+            compacted_messages
+          )
 
         spawn_http_worker(state, compacted_messages)
 
@@ -276,32 +257,6 @@ defmodule Nest.Agents.Agent.ChatTurn do
     end
   end
 
-  # Ask the Agent to run a pre-flight compaction check
-  # before this LLM call. Returns:
-  #   - `:proceed` if the existing messages fit
-  #   - `{:compacted, messages}` if the compactor ran
-  #   - `:stopped` if the user clicked Stop while waiting
-  def run_preflight(state) do
-    messages = GenServer.call(state.ctx.agent_pid, :get_messages)
-    send(state.ctx.agent_pid, {:preflight_request, self(), messages})
-
-    receive do
-      {:preflight_result, :proceed, _messages} ->
-        :proceed
-
-      {:preflight_result, :compacted, new_messages} ->
-        {:compacted, new_messages}
-
-      {:stop_chat, from} ->
-        send(from, :stopped)
-        :stopped
-    after
-      30_000 ->
-        Logger.warning("Pre-flight request timed out; proceeding with existing messages")
-        :proceed
-    end
-  end
-
   # Check if we're approaching the iteration cap. If
   # so, build a system reminder and append it via the
   # Agent. The Agent stamps the index; the next
@@ -310,7 +265,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
   defp maybe_inject_budget_reminder(state) do
     remaining = state.max_iterations - state.iteration
 
-    case do_inject_budget_reminder(remaining) do
+    case BudgetReminder.build(remaining) do
       nil ->
         state
 
@@ -318,25 +273,6 @@ defmodule Nest.Agents.Agent.ChatTurn do
         _stamped = GenServer.call(state.ctx.agent_pid, {:append_message, reminder})
         state
     end
-  end
-
-  # Build a system reminder to inject when the iteration is
-  # approaching the cap. Returns `nil` when there's no need
-  # to warn (more than 2 rounds remaining, or the cap is
-  # already past).
-  defp do_inject_budget_reminder(remaining) when remaining > 2 or remaining <= 0, do: nil
-
-  defp do_inject_budget_reminder(remaining) do
-    warning =
-      case remaining do
-        2 ->
-          "You have 2 tool call rounds remaining. Plan your remaining tool use carefully."
-
-        1 ->
-          "This is your last tool call round. After this, no more tools will be available — provide your final response."
-      end
-
-    {:system, %Nest.Messages.System{content: warning, timestamp: DateTime.utc_now()}}
   end
 
   # Spawn the HTTP worker as a Task. The worker calls
@@ -503,7 +439,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
       Task.Supervisor.start_child(
         Nest.Agents.TaskSupervisor,
         fn ->
-          results = Nest.Agents.Agent.ToolLoop.execute(state.ctx, %{}, tool_calls)
+          results = ToolLoop.execute(state.ctx, %{}, tool_calls)
           send(parent, {:tool_results, results})
         end
       )

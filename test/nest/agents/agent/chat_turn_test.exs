@@ -323,9 +323,15 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
 
       Mimic.allow(MockClient, self(), pid)
 
-      :ok = Agent.chat(pid, "Hello")
+      # capture_log swallows the `Logger.error` calls in
+      # `Broadcasts.log_error/4` (the agent logs the error
+      # before broadcasting the structured `chat:error`
+      # event).
+      capture_log(fn ->
+        :ok = Agent.chat(pid, "Hello")
 
-      assert :ok = wait_for_idle(pid)
+        assert :ok = wait_for_idle(pid)
+      end)
 
       state = :sys.get_state(pid)
 

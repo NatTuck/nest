@@ -88,6 +88,7 @@ defmodule Nest.Agents.Agent.ChatTurnStructureTest do
 
     test "Mimic.copy(Nest.Agents.Agent.LLMRunner) is not in test_helper.exs" do
       content = File.read!("test/test_helper.exs")
+
       refute content =~ "Mimic.copy(Nest.Agents.Agent.LLMRunner)",
              "test_helper.exs must not reference the deleted LLMRunner module"
     end
@@ -114,6 +115,7 @@ defmodule Nest.Agents.Agent.ChatTurnStructureTest do
       for path <- files_to_check do
         if File.exists?(path) do
           content = File.read!(path)
+
           refute content =~ "LLMRunner.run(",
                  "#{path} must not reference LLMRunner.run/2 (deleted in Commit 1)"
         end

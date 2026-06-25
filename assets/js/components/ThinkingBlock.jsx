@@ -20,19 +20,15 @@
  */
 import { useState } from "react";
 
-export function ThinkingBlock({
-  thinking,
-  isPartial = false,
-  hasVisibleContent = true,
-}) {
+export function ThinkingBlock({ thinking, isPartial = false }) {
   // The box always starts expanded. The user can collapse it
   // manually with the header button; that state survives the
   // partial → final transition (no parent `key` re-mount).
   //
-  // `isPartial` and `hasVisibleContent` remain in the API for
-  // a future policy change but are not used for the initial
-  // state. `isPartial` still drives the streaming dots in the
-  // header.
+  // `isPartial` still drives the streaming dots in the header.
+  // The `hasVisibleContent` prop is accepted for API stability
+  // (the parent passes it) but is intentionally not destructured
+  // here — it's reserved for a future policy change.
   const [isExpanded, setIsExpanded] = useState(true);
 
   if (!thinking) return null;

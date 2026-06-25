@@ -57,6 +57,11 @@ the test.
 
 ### More Testing Rules
 
+- NO development work is done until `mix precommit` runs perfectly with no
+errors or warnings, `mix test` runs in under 10 seconds with no stray prints. NO
+EXCEPTIONS, NO EXCUSES.
+- NEVER run the test suite and throw away the output by piping to tail, head,
+grep or similar. If you run tests, look at the whole output every time.
 - *NEVER* sleep directly in tests; use vi.waitFor for async conditions or one of
 the Elixir helpers (e.g. eventually).
 - Clean patterns without accessing mock internals

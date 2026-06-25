@@ -15,6 +15,10 @@ defmodule Nest.DotConfig do
   # Override with the top-level `max-tool-iterations` key in config.toml.
   @default_max_tool_iterations 99
 
+  # Default maximum depth for agent delegation (sub-agents).
+  # Override with the top-level `max-depth` key in config.toml.
+  @default_max_depth 3
+
   defmodule Provider do
     @moduledoc """
     Provider configuration struct.
@@ -164,6 +168,21 @@ defmodule Nest.DotConfig do
   def default_max_tool_iterations, do: @default_max_tool_iterations
 
   @doc """
+  Returns the configured `max-depth` value, or `nil` when unset.
+  Callers should fall back to `default_max_depth/0` when this
+  returns `nil`.
+  """
+  def max_depth(config) do
+    Map.get(config, :max_depth)
+  end
+
+  @doc """
+  Returns the hardcoded fallback for the `max-depth` setting,
+  used when config.toml does not specify a value.
+  """
+  def default_max_depth, do: @default_max_depth
+
+  @doc """
   Resolve API key value (handles env var substitution)
   """
   def resolve_api_key(key_value) do
@@ -234,7 +253,8 @@ defmodule Nest.DotConfig do
     %{
       providers: providers,
       models: models,
-      max_tool_iterations: parse_max_tool_iterations(Map.get(raw_config, "max-tool-iterations"))
+      max_tool_iterations: parse_max_tool_iterations(Map.get(raw_config, "max-tool-iterations")),
+      max_depth: parse_max_depth(Map.get(raw_config, "max-depth"))
     }
   end
 
@@ -247,6 +267,17 @@ defmodule Nest.DotConfig do
 
   defp parse_max_tool_iterations(other) do
     raise "Invalid max-tool-iterations #{inspect(other)}: must be a positive integer"
+  end
+
+  # Parses and validates the top-level `max-depth` setting.
+  # Returns `nil` when absent. Raises on invalid values so config errors
+  # surface at startup, not on the first delegation attempt.
+  defp parse_max_depth(nil), do: nil
+
+  defp parse_max_depth(n) when is_integer(n) and n > 0, do: n
+
+  defp parse_max_depth(other) do
+    raise "Invalid max-depth #{inspect(other)}: must be a positive integer"
   end
 
   defp parse_provider(name, data) do

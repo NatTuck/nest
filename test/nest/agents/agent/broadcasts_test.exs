@@ -32,11 +32,13 @@ defmodule Nest.Agents.Agent.BroadcastsTest do
 
   describe "error/4 (canonical form with source)" do
     test "appends [Source: ...] to the user-facing message", %{agent_id: agent_id} do
-      Broadcasts.error(agent_id, 5, "Something broke", "Foo.bar/2")
+      capture_log(fn ->
+        Broadcasts.error(agent_id, 5, "Something broke", "Foo.bar/2")
 
-      assert_receive {:chat_error, %{index: 5, content: content}}, 100
+        assert_receive {:chat_error, %{index: 5, content: content}}, 100
 
-      assert content == "Something broke\n[Source: Foo.bar/2]"
+        assert content == "Something broke\n[Source: Foo.bar/2]"
+      end)
     end
 
     test "logs the error at error level with structured context", %{agent_id: agent_id} do
@@ -75,20 +77,24 @@ defmodule Nest.Agents.Agent.BroadcastsTest do
     end
 
     test "ignores an empty source string (treats it as no source)", %{agent_id: agent_id} do
-      Broadcasts.error(agent_id, 1, "msg", "")
+      capture_log(fn ->
+        Broadcasts.error(agent_id, 1, "msg", "")
 
-      assert_receive {:chat_error, %{content: content}}, 100
-      # Empty source is filtered out by `tag_source/2` — only
-      # non-empty sources get the `[Source: ...]` suffix.
-      assert content == "msg"
+        assert_receive {:chat_error, %{content: content}}, 100
+        # Empty source is filtered out by `tag_source/2` — only
+        # non-empty sources get the `[Source: ...]` suffix.
+        assert content == "msg"
+      end)
     end
   end
 
   describe "error/3 (backward-compat, no source)" do
     test "broadcasts the message verbatim (no [Source: ...] tag)", %{agent_id: agent_id} do
-      Broadcasts.error(agent_id, 2, "Plain error")
+      capture_log(fn ->
+        Broadcasts.error(agent_id, 2, "Plain error")
 
-      assert_receive {:chat_error, %{index: 2, content: "Plain error"}}, 100
+        assert_receive {:chat_error, %{index: 2, content: "Plain error"}}, 100
+      end)
     end
 
     test "still logs the error at error level", %{agent_id: agent_id} do

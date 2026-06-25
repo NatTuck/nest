@@ -10,6 +10,7 @@ defmodule Nest.Agents.Agent.ChatTurn.HTTPWorker do
   """
 
   alias Nest.Agents.Agent.Broadcasts
+  alias Nest.LLM.Runner
   alias Nest.LLM.RunResponse
 
   require Logger
@@ -27,7 +28,7 @@ defmodule Nest.Agents.Agent.ChatTurn.HTTPWorker do
     ctx_with_messages = %{state.ctx | messages: messages}
 
     try do
-      dispatch_result(Nest.LLM.Runner.request(ctx_with_messages, callbacks), chat_turn_pid)
+      dispatch_result(Runner.request(ctx_with_messages, callbacks), chat_turn_pid)
     catch
       kind, reason ->
         forward_crash(kind, reason, __STACKTRACE__, state.ctx.agent_id, chat_turn_pid)
@@ -104,7 +105,7 @@ defmodule Nest.Agents.Agent.ChatTurn.HTTPWorker do
         :ok
       end,
       on_error: fn error ->
-        error_msg = Nest.LLM.Runner.format_error(error)
+        error_msg = Runner.format_error(error)
         send(state.ctx.agent_pid, {:llm_error, error_msg})
       end,
       on_response: fn _response ->

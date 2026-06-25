@@ -65,6 +65,7 @@ defmodule Nest.ToolsEditTest do
       File.write!(path, "hello world\nbye world\n")
 
       function = Tools.get_function("edit", dir)
+
       assert {:ok, msg} =
                invoke(function, %{
                  "path" => "foo.txt",
@@ -81,6 +82,7 @@ defmodule Nest.ToolsEditTest do
       File.write!(path, "hello world\n")
 
       function = Tools.get_function("edit", dir)
+
       assert {:error, msg} =
                invoke(function, %{"path" => "foo.txt", "old_text" => "missing", "new_text" => "x"})
 
@@ -94,6 +96,7 @@ defmodule Nest.ToolsEditTest do
       File.write!(path, "foo\nfoo\nfoo\n")
 
       function = Tools.get_function("edit", dir)
+
       assert {:error, msg} =
                invoke(function, %{"path" => "foo.txt", "old_text" => "foo", "new_text" => "bar"})
 
@@ -107,6 +110,7 @@ defmodule Nest.ToolsEditTest do
       File.write!(path, "foo\nfoo\nfoo\n")
 
       function = Tools.get_function("edit", dir)
+
       assert {:ok, msg} =
                invoke(function, %{
                  "path" => "foo.txt",
@@ -124,6 +128,7 @@ defmodule Nest.ToolsEditTest do
       File.write!(path, "hello\n")
 
       function = Tools.get_function("edit", dir)
+
       assert {:error, msg} =
                invoke(function, %{"path" => "foo.txt", "old_text" => "", "new_text" => "x"})
 
@@ -132,7 +137,14 @@ defmodule Nest.ToolsEditTest do
 
     test "returns error when the file does not exist", %{tmp: dir} do
       function = Tools.get_function("edit", dir)
-      assert {:error, msg} = invoke(function, %{"path" => "missing.txt", "old_text" => "foo", "new_text" => "bar"})
+
+      assert {:error, msg} =
+               invoke(function, %{
+                 "path" => "missing.txt",
+                 "old_text" => "foo",
+                 "new_text" => "bar"
+               })
+
       assert msg =~ "missing.txt" or msg =~ "No such file"
     end
 
@@ -141,6 +153,7 @@ defmodule Nest.ToolsEditTest do
       File.write!(path, "header\ntarget line\nfooter\n")
 
       function = Tools.get_function("edit", dir)
+
       assert {:ok, _} =
                invoke(function, %{
                  "path" => "foo.txt",

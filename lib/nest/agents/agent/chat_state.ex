@@ -1,3 +1,20 @@
+defmodule Nest.Agents.Agent.LlmMetrics do
+  @moduledoc """
+  LLM call metrics and the resolved context limit. Lives in a
+  sub-struct so the `Agent` struct stays focused on identity
+  and configuration.
+
+  `descendant_usage` tracks the cumulative token usage from all
+  descendant agents (children, grandchildren, etc.). It has the
+  same session-sum fields as `usage_totals`. The `total_usage`
+  is computed as `usage_totals + descendant_usage`.
+  """
+  defstruct context_limit: nil,
+            context_limit_source: nil,
+            usage_totals: nil,
+            descendant_usage: nil
+end
+
 defmodule Nest.Agents.Agent.ChatState do
   @moduledoc """
   Per-agent chat operation state. Holds the live and archived
@@ -17,6 +34,14 @@ defmodule Nest.Agents.Agent.ChatState do
   `chat_continuation` branch so an in-flight compaction result
   does not auto-resume a new chat turn after the user has
   already stopped.
+
+  The `pending_children` map tracks child agents that this
+  agent has spawned via `clone_agent`. Keys are child agent
+  IDs (strings), values are the pid of the blocked tool task
+  waiting for the child's response. When a child completes,
+  its GenServer sends `{:child_completed, child_id, response, total_usage}`
+  to the parent, and the parent routes the response to the
+  waiting tool task.
   """
   defstruct messages: [],
             history: [],
@@ -27,5 +52,6 @@ defmodule Nest.Agents.Agent.ChatState do
             api_log_sequences: %{},
             pending_api_logs: %{},
             chat_turn_pid: nil,
-            cancelled: false
+            cancelled: false,
+            pending_children: %{}
 end

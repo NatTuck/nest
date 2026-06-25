@@ -18,6 +18,7 @@ defmodule Nest.Agents.Agent.ChatTurn.APILog do
   """
 
   alias Nest.Agents.Agent.Broadcasts
+  alias Nest.LLM.Runner
 
   # The per-message api_log sequence counter. Stored in
   # the ChatTurn's process dictionary (one ChatTurn per
@@ -55,7 +56,7 @@ defmodule Nest.Agents.Agent.ChatTurn.APILog do
       agent_pid: state.ctx.agent_pid
     ]
 
-    payload = Nest.LLM.Runner.format_request_payload(state.ctx.client_config, request, opts)
+    payload = Runner.format_request_payload(state.ctx.client_config, request, opts)
     {api_log_id, sequences} = Broadcasts.next_api_log_id(message_index, get_sequences())
     put_sequences(sequences)
     Broadcasts.api_log(state.ctx.agent_pid, message_index, api_log_id, payload)

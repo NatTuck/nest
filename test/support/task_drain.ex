@@ -19,12 +19,21 @@ defmodule Nest.Test.TaskDrain do
   Waits up to #{@timeout_ms}ms for all children of
   `Nest.Agents.TaskSupervisor` to finish.
 
-  Wrapped in `ExUnit.CaptureLog.capture_log/2` so any crash output from
-  a leaked Task (e.g. the test-only `ReqNullAdapter` crash) is swallowed
-  rather than polluting the test runner output.
+  Note: this is called from `on_exit`, where `ExUnit.CaptureLog` is no
+  longer available (the per-test `CaptureServer` is already torn down).
+  Any crash output from a leaked Task (e.g. the test-only
+  `ReqNullAdapter` crash) is allowed to reach the logger; the next
+  test's `TaskDrain.drain/0` will pick up the cleanup.
+
+  Safe to call when `Nest.Agents.TaskSupervisor` is already down (the
+  test's supervisor chain may have been stopped before `on_exit`
+  fires); the call short-circuits in that case.
   """
   def drain do
-    ExUnit.CaptureLog.capture_log(fn -> do_drain() end)
+    if Process.whereis(Nest.Agents.TaskSupervisor) do
+      do_drain()
+    end
+
     :ok
   end
 

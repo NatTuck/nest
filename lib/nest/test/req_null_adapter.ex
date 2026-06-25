@@ -5,6 +5,11 @@ defmodule Nest.Test.ReqNullAdapter do
   Used in test mode to prevent real HTTP requests. Only allows requests to
   /models endpoints for auto-discovery testing. All other requests cause
   an immediate crash with a clear error message.
+
+  Elixir's default exception formatting includes the full stacktrace
+  on uncaught raises, so the caller info is preserved without us
+  having to format it manually (which is fragile — stacktrace
+  frame shapes vary between Erlang/Elixir and try/catch boundaries).
   """
 
   alias Req.Response
@@ -33,7 +38,9 @@ defmodule Nest.Test.ReqNullAdapter do
 
       {request, response}
     else
-      # Crash immediately for any unexpected HTTP request
+      # Crash immediately for any unexpected HTTP request. The full
+      # stacktrace is included by Elixir's default exception
+      # formatting, so the caller doesn't need to be embedded here.
       raise """
       WTF YOU TRIED TO DO A REAL HTTP REQUEST
 

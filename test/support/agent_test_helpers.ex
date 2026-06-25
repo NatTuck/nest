@@ -15,38 +15,58 @@ defmodule Nest.Agents.AgentTestHelpers do
 
   def start_agent(attrs) do
     agent_id = "test-agent-#{System.unique_integer([:positive])}"
+    pid = start_supervised!({Agent, build_attrs(agent_id, attrs)})
 
+    allow_mimic_stubs(pid)
+    swap_to_mock_client(pid)
+
+    test_pid = Process.get(:nest_test_agent_pid)
+    transfer_mock_queue(pid, test_pid)
+
+    Process.put(:nest_test_agent_pid, pid)
+    # NB: no MockClient.clear() here — that would wipe the
+    # transferred items.
+
+    register_on_exit_cleanup(pid, agent_id, test_pid)
+
+    {pid, agent_id}
+  end
+
+  defp build_attrs(agent_id, attrs) do
     defaults = %{
       id: agent_id,
       model: %{name: "qwen3.5-plus", provider: "model-studio"}
     }
 
-    attrs = Map.merge(defaults, attrs)
-    pid = start_supervised!({Agent, attrs})
+    Map.merge(defaults, attrs)
+  end
 
-    # In async mode, Mimic stubs are per-test-process by default.
-    # The agent's `handle_info` and chat task run in separate
-    # processes and need explicit access to stubs set on
-    # `Mimic.expect(Req, :get, ...)` etc. No-op for tests that
-    # don't use Mimic.
+  # In async mode, Mimic stubs are per-test-process by default.
+  # The agent's `handle_info` and chat task run in separate
+  # processes and need explicit access to stubs set on
+  # `Mimic.expect(Req, :get, ...)` etc. No-op for tests that
+  # don't use Mimic.
+  defp allow_mimic_stubs(pid) do
     Mimic.allow(OpenAIClient, self(), pid)
     Mimic.allow(Req, self(), pid)
     Mimic.allow(DotConfig, self(), pid)
+  end
 
-    # Swap the agent's client_config.client to MockClient and start
-    # a per-agent queue. The agent threads its pid through
-    # `build_run_opts/1`, so the chat task (in a separate process)
-    # calls MockClient.run/2 and finds this test's queue via
-    # `opts[:agent_pid]`.
+  # Swap the agent's client_config.client to MockClient and start
+  # a per-agent queue. The agent threads its pid through
+  # `build_run_opts/1`, so the chat task (in a separate process)
+  # calls MockClient.run/2 and finds this test's queue via
+  # `opts[:agent_pid]`.
+  defp swap_to_mock_client(pid) do
     :sys.replace_state(pid, fn state ->
       %{state | client_config: %{state.client_config | client: MockClient}}
     end)
+  end
 
-    # Transfer any pre-existing queued items from the test-pid queue
-    # (set up in `setup`) to the per-agent queue. This handles
-    # tests that call `MockClient.set_*` before `start_agent/1`.
-    test_pid = Process.get(:nest_test_agent_pid)
-
+  # Transfer any pre-existing queued items from the test-pid queue
+  # (set up in `setup`) to the per-agent queue. This handles
+  # tests that call `MockClient.set_*` before `start_agent/1`.
+  defp transfer_mock_queue(pid, test_pid) do
     if test_pid && test_pid != pid do
       items = MockClient.take_pending(test_pid)
       MockClient.start_link(pid)
@@ -54,35 +74,21 @@ defmodule Nest.Agents.AgentTestHelpers do
     else
       MockClient.start_link(pid)
     end
+  end
 
-    Process.put(:nest_test_agent_pid, pid)
-    # NB: no MockClient.clear() here — that would wipe the
-    # transferred items.
-
+  # on_exit runs after the test's last assertion. Give the chat
+  # turn a moment to settle (otherwise late messages can land in
+  # the next test's mailbox and match its `assert_receive`
+  # patterns — the source of the agent_stop_test.exs flakiness),
+  # then unsubscribe + drain the test process's mailbox.
+  defp register_on_exit_cleanup(pid, agent_id, test_pid) do
     on_exit(fn ->
       MockClient.stop(pid)
-      # Unsubscribe so this test process doesn't keep
-      # receiving broadcasts from the now-dying agent
-      # (and cross-contaminate the next test's mailbox).
       Phoenix.PubSub.unsubscribe(Nest.PubSub, "agent:#{agent_id}")
-      # Give the previous test's chat turn a chance to fully
-      # settle before draining. The on_exit runs after the
-      # test's last assertion; the chat turn's last events
-      # may still be in transit. Without the pause, late
-      # messages can land in the next test's mailbox and
-      # match its `assert_receive` patterns (the source of
-      # the agent_stop_test.exs flakiness).
       Process.sleep(200)
-      # Drain any stale messages from the test process's
-      # mailbox (e.g. `:stopped` replies, late deltas)
-      # so they don't pollute the next test's
-      # `assert_receive` patterns. ExUnit's test process
-      # is reused across tests in the same module.
       drain_mailbox()
       Process.put(:nest_test_agent_pid, test_pid)
     end)
-
-    {pid, agent_id}
   end
 
   def get_system_prompt(pid) do
