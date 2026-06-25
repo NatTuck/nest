@@ -147,7 +147,9 @@ defmodule Nest.Tools.ShellCmd do
            ]
          ) do
       {:ok, _pid, os_pid} ->
-        collect_output(os_pid, timeout, %{stdout: "", stderr: "", exit_code: nil})
+        # Buffers are IO lists (prepend in O(1)); `combine_output/1`
+        # flattens to a single binary at the end.
+        collect_output(os_pid, timeout, %{stdout: [], stderr: [], exit_code: nil})
 
       {:error, reason} ->
         {:error, "Failed to start process: #{inspect(reason)}"}
@@ -157,11 +159,11 @@ defmodule Nest.Tools.ShellCmd do
   defp collect_output(os_pid, timeout, acc) do
     receive do
       {:stdout, ^os_pid, data} ->
-        acc = %{acc | stdout: acc.stdout <> to_string(data)}
+        acc = %{acc | stdout: [to_string(data) | acc.stdout]}
         collect_output(os_pid, timeout, acc)
 
       {:stderr, ^os_pid, data} ->
-        acc = %{acc | stderr: acc.stderr <> to_string(data)}
+        acc = %{acc | stderr: [to_string(data) | acc.stderr]}
         collect_output(os_pid, timeout, acc)
 
       {:DOWN, _ref, :process, _pid, :normal} ->
@@ -181,16 +183,13 @@ defmodule Nest.Tools.ShellCmd do
   end
 
   defp combine_output(acc) do
-    output = acc.stdout
+    output = acc.stdout |> Enum.reverse() |> IO.iodata_to_binary()
 
-    output =
-      if acc.stderr != "" do
-        output <> "\n[stderr]\n" <> acc.stderr
-      else
-        output
-      end
-
-    output
+    if acc.stderr == [] do
+      output
+    else
+      output <> "\n[stderr]\n" <> (acc.stderr |> Enum.reverse() |> IO.iodata_to_binary())
+    end
   end
 
   defp escape_shell(command) do

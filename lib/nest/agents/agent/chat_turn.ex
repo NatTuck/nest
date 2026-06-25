@@ -34,7 +34,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
 
     * `{:delta_received, text, :text | :thinking}` —
       the Agent re-broadcasts and updates its
-      streaming_acc mirror for `get_public_info`
+      streaming_acc accumulator for `get_public_info`
     * `{:thinking_signature_received, sig}` — no-op
       (the ChatTurn captures the signature into the
       assistant message it builds from the response)
@@ -206,7 +206,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
     # in this ChatTurn's mailbox — which can be many events
     # later if a long stream is queued. The agent's
     # `chat_stopped` handler does the actual finalization
-    # (it has the current `streaming_acc` mirror).
+    # (it has the current `streaming_acc` accumulator).
     if cancelled do
       send(state.ctx.agent_pid, {:chat_stopped, self()})
       {:stop, :normal, state}

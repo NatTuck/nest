@@ -67,13 +67,18 @@ defmodule Nest.LLM.Client do
   a thinking `signature`; OpenAI does not), but the common skeleton
   is shared.
 
+  `text` and `thinking` are IO lists (nested lists of binaries) to
+  avoid the O(n²) cost of repeated string concatenation. They are
+  converted to binaries by `finalize/2`. The `arguments_buffer` on
+  each tool call is also an IO list.
+
   `tool_index_map` is lazy: it is only present on the accumulator
   after the first `tool_call_start` has been seen. Callers that
   want a uniform shape can fall back to `%{}` when reading it.
   """
   @type accumulator :: %{
-          text: String.t(),
-          thinking: String.t(),
+          text: IO.iodata(),
+          thinking: IO.iodata(),
           thinking_signature: String.t() | nil,
           tool_calls: %{
             String.t() =>
@@ -82,7 +87,7 @@ defmodule Nest.LLM.Client do
                   id: String.t(),
                   name: String.t(),
                   index: non_neg_integer(),
-                  arguments_buffer: String.t()
+                  arguments_buffer: IO.iodata()
                 }
           },
           tool_index_map: %{non_neg_integer() => String.t()} | nil,
@@ -98,14 +103,18 @@ defmodule Nest.LLM.Client do
   Provided as a default implementation so clients don't have to
   reimplement the accumulation logic unless they need provider-
   specific quirks.
+
+  String fields (`text`, `thinking`, `arguments_buffer`) are built
+  as IO lists — O(1) per append. `finalize/2` converts to
+  binaries.
   """
   @spec accumulate(accumulator(), event()) :: accumulator()
   def accumulate(acc, {:text, text}) do
-    %{acc | text: acc.text <> text}
+    %{acc | text: [text | acc.text]}
   end
 
   def accumulate(acc, {:thinking, text}) do
-    %{acc | thinking: acc.thinking <> text}
+    %{acc | thinking: [text | acc.thinking]}
   end
 
   def accumulate(acc, {:thinking_signature, signature}) do
@@ -118,7 +127,7 @@ defmodule Nest.LLM.Client do
 
   def accumulate(acc, {:tool_call_start, %{id: id, name: name} = event}) do
     idx = Map.get(event, :index, 0)
-    acc = put_in(acc, [:tool_calls, id], %{id: id, name: name, index: idx, arguments_buffer: ""})
+    acc = put_in(acc, [:tool_calls, id], %{id: id, name: name, index: idx, arguments_buffer: []})
     # Lazily seed the index→id map on the first tool call start;
     # text-only / refusal-only runs never need it.
     Map.update(acc, :tool_index_map, %{idx => id}, &Map.put(&1, idx, id))
@@ -126,13 +135,13 @@ defmodule Nest.LLM.Client do
 
   def accumulate(acc, {:tool_call_delta, %{id: id, arguments_delta: frag}})
       when is_binary(id) do
-    update_in(acc, [:tool_calls, Access.key(id), :arguments_buffer], &(&1 <> frag))
+    update_in(acc, [:tool_calls, Access.key(id), :arguments_buffer], &[frag | &1])
   end
 
   def accumulate(acc, {:tool_call_delta, %{id: :by_index, index: idx, arguments_delta: frag}}) do
     case Map.get(Map.get(acc, :tool_index_map, %{}), idx) do
       nil -> acc
-      id -> update_in(acc, [:tool_calls, Access.key(id), :arguments_buffer], &(&1 <> frag))
+      id -> update_in(acc, [:tool_calls, Access.key(id), :arguments_buffer], &[frag | &1])
     end
   end
 
@@ -148,6 +157,8 @@ defmodule Nest.LLM.Client do
 
   @doc """
   Build a `RunResponse` from a fully-populated accumulator.
+  Converts the IO-list text/thinking/arguments buffers to
+  binaries.
   """
   @spec finalize(accumulator(), String.t() | nil) :: RunResponse.t()
   def finalize(acc, model \\ nil) do
@@ -183,8 +194,8 @@ defmodule Nest.LLM.Client do
   # fresh accumulator for a text-only or refusal-only response
   # never needs it.
   @empty_acc %{
-    text: "",
-    thinking: "",
+    text: [],
+    thinking: [],
     thinking_signature: nil,
     tool_calls: %{},
     refusal: nil,
@@ -198,15 +209,23 @@ defmodule Nest.LLM.Client do
   @spec new_accumulator() :: accumulator()
   def new_accumulator, do: @empty_acc
 
-  defp nil_if_empty(""), do: nil
-  defp nil_if_empty(s) when is_binary(s), do: s
+  # Empty IO list → nil; non-empty → binary. The list is in
+  # reverse insertion order (we prepend for O(1) appends), so
+  # reverse before flattening. Matches the `RunResponse`
+  # struct's `text | nil` and `thinking | nil` shape so a
+  # no-content response stays nil.
+  defp nil_if_empty([]), do: nil
 
-  defp decode_arguments(""), do: %{}
-
-  defp decode_arguments(buffer) when is_binary(buffer) do
-    case Jason.decode(buffer) do
-      {:ok, decoded} when is_map(decoded) -> decoded
-      _ -> %{}
-    end
+  defp nil_if_empty(iolist) do
+    iolist |> Enum.reverse() |> IO.iodata_to_binary()
   end
+
+  defp decode_arguments([]), do: %{}
+
+  defp decode_arguments(buffer) do
+    buffer |> Enum.reverse() |> IO.iodata_to_binary() |> Jason.decode() |> handle_decode_result()
+  end
+
+  defp handle_decode_result({:ok, decoded}) when is_map(decoded), do: decoded
+  defp handle_decode_result(_), do: %{}
 end

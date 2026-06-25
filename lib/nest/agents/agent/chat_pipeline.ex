@@ -241,7 +241,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   """
   @spec streaming_active?(term()) :: boolean()
   def streaming_active?(%Streaming.AssistantAccumulator{} = acc) do
-    acc.text_buffer != "" or acc.thinking_buffer != ""
+    acc.text_buffer != [] or acc.thinking_buffer != []
   end
 
   def streaming_active?(_), do: false

@@ -64,8 +64,8 @@ defmodule Nest.LLM.StreamConsumerTest do
       {acc, _resp, _err, _sent} =
         StreamConsumer.dispatch_step({:text, "Hello"}, initial_state(consumer), consumer)
 
-      assert acc.text == "Hello"
-      assert acc.thinking == ""
+      assert acc.text |> Enum.reverse() |> IO.iodata_to_binary() == "Hello"
+      assert acc.thinking |> Enum.reverse() |> IO.iodata_to_binary() == ""
     end
 
     test "a {:thinking, _} event folds into acc.thinking, not acc.text" do
@@ -78,8 +78,8 @@ defmodule Nest.LLM.StreamConsumerTest do
           consumer
         )
 
-      assert acc.thinking == "Let me think..."
-      assert acc.text == ""
+      assert acc.thinking |> Enum.reverse() |> IO.iodata_to_binary() == "Let me think..."
+      assert acc.text |> Enum.reverse() |> IO.iodata_to_binary() == ""
     end
 
     test "a {:thinking_signature, _} event sets acc.thinking_signature, not acc.thinking" do
@@ -93,7 +93,7 @@ defmodule Nest.LLM.StreamConsumerTest do
         )
 
       assert acc.thinking_signature == "sig_xyz"
-      assert acc.thinking == ""
+      assert acc.thinking |> Enum.reverse() |> IO.iodata_to_binary() == ""
     end
 
     test "subsequent text/thinking/signature events accumulate in their own slots" do
@@ -125,8 +125,8 @@ defmodule Nest.LLM.StreamConsumerTest do
           consumer
         )
 
-      assert acc4.text == "Hello world"
-      assert acc4.thinking == "reasoning..."
+      assert acc4.text |> Enum.reverse() |> IO.iodata_to_binary() == "Hello world"
+      assert acc4.thinking |> Enum.reverse() |> IO.iodata_to_binary() == "reasoning..."
       assert acc4.thinking_signature == "sig_abc"
     end
 
@@ -147,8 +147,8 @@ defmodule Nest.LLM.StreamConsumerTest do
           consumer
         )
 
-      assert acc_after_thinking.text == "visible answer"
-      assert acc_after_thinking.thinking == "hidden reasoning"
+      assert acc_after_thinking.text |> Enum.reverse() |> IO.iodata_to_binary() == "visible answer"
+      assert acc_after_thinking.thinking |> Enum.reverse() |> IO.iodata_to_binary() == "hidden reasoning"
     end
 
     test "a {:thinking_signature, _} event does not concatenate the signature into the thinking text" do
@@ -168,7 +168,7 @@ defmodule Nest.LLM.StreamConsumerTest do
           consumer
         )
 
-      assert acc_after_sig.thinking == "reasoning"
+      assert acc_after_sig.thinking |> Enum.reverse() |> IO.iodata_to_binary() == "reasoning"
       assert acc_after_sig.thinking_signature == "sig_long_blob_xyz"
     end
   end
@@ -245,8 +245,8 @@ defmodule Nest.LLM.StreamConsumerTest do
 
       {acc, response, _error, _sent} = StreamConsumer.reduce(stream, build_consumer())
 
-      assert acc.thinking == "Let me think about this"
-      assert acc.text == ""
+      assert acc.thinking |> Enum.reverse() |> IO.iodata_to_binary() == "Let me think about this"
+      assert acc.text |> Enum.reverse() |> IO.iodata_to_binary() == ""
       assert response == %RunResponse{text: nil}
     end
 
@@ -261,8 +261,8 @@ defmodule Nest.LLM.StreamConsumerTest do
 
       {acc, _response, _error, _sent} = StreamConsumer.reduce(stream, build_consumer())
 
-      assert acc.text == "answer continuation"
-      assert acc.thinking == "reasoning more reasoning"
+      assert acc.text |> Enum.reverse() |> IO.iodata_to_binary() == "answer continuation"
+      assert acc.thinking |> Enum.reverse() |> IO.iodata_to_binary() == "reasoning more reasoning"
     end
 
     test "a thinking signature mid-stream is preserved separately from the thinking text" do
@@ -275,9 +275,9 @@ defmodule Nest.LLM.StreamConsumerTest do
 
       {acc, _response, _error, _sent} = StreamConsumer.reduce(stream, build_consumer())
 
-      assert acc.thinking == "Anthropic-style reasoning"
+      assert acc.thinking |> Enum.reverse() |> IO.iodata_to_binary() == "Anthropic-style reasoning"
       assert acc.thinking_signature == "sig_abc"
-      assert acc.text == "The answer is 42."
+      assert acc.text |> Enum.reverse() |> IO.iodata_to_binary() == "The answer is 42."
     end
 
     test "the consumer's on_text/on_thinking hooks fire for every text/thinking event" do
@@ -321,7 +321,7 @@ defmodule Nest.LLM.StreamConsumerTest do
       {acc, _response, _error, _sent} = StreamConsumer.reduce(stream, consumer)
 
       # Only the first event was processed before the halt.
-      assert acc.text == "first"
+      assert acc.text |> Enum.reverse() |> IO.iodata_to_binary() == "first"
     end
 
     test "the should_stop callback is consulted before each event" do
@@ -349,7 +349,7 @@ defmodule Nest.LLM.StreamConsumerTest do
 
       {acc, _response, _error, _sent} = StreamConsumer.reduce(stream, consumer)
 
-      assert acc.text == "abc"
+      assert acc.text |> Enum.reverse() |> IO.iodata_to_binary() == "abc"
       # Consulted once per event (3 events, plus the first
       # re-check before any event). Allow >= 3.
       assert :counters.get(call_count, 1) >= 3

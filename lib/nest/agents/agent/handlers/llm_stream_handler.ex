@@ -11,9 +11,12 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   directly (avoids duplicate events).
 
   `{:delta_received, _}` and `{:thinking_signature_received, _}`
-  update the Agent's `streaming_acc` mirror for
-  `get_public_info.partial`. The mirror is the source of
-  truth for the UI's in-flight text render.
+  update `state.chat_state.streaming_acc` (the authoritative
+  in-flight accumulator) and broadcast `chat:delta` from here.
+  Broadcasting from the Agent — not the HTTP worker — guarantees
+  the test/UI sees the broadcast only after the accumulator is
+  updated, so `assert_receive {:chat_delta, _}` is a reliable
+  sync point for the accumulator's state.
 
   `{:tool_calls_received, _}` and `{:tool_results_received, _}`
   pair the message-append with the status transition
@@ -68,27 +71,52 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
 
   # Accumulate delta using Streaming module based on content type.
   # If the streaming_acc is nil (e.g. a late delta from a
-  # previous chat arrived after `chat_stopped` set the
-  # mirror to nil, or between two chats before
-  # `prepare_streaming_state` ran), no-op. The next
-  # chat's `prepare_streaming_state` will re-init the
-  # mirror; any later deltas will find it set.
-  defp delta_received(delta_content, part_type, state) do
+  # previous chat arrived after `chat_stopped` cleared it,
+  # or between two chats before `prepare_streaming_state`
+  # ran), no-op. The next chat's `prepare_streaming_state`
+  # will re-init the accumulator; any later deltas will find
+  # it set.
+  #
+  # Broadcasts `chat:delta` from here (not from the HTTP
+  # worker) so subscribers only see the event after the
+  # accumulator is updated. This eliminates the race where
+  # a test receives `chat:delta` and then `Agent.stop_chat`
+  # fires before the agent has processed the corresponding
+  # `{:delta_received, _}` — leaving `streaming_acc` nil when
+  # the `chat_stopped` handler tries to finalize the partial.
+  defp delta_received(delta_content, :text, state) do
     acc = state.chat_state.streaming_acc
 
     if acc == nil do
       {:noreply, state}
     else
-      new_acc =
-        case part_type do
-          :text -> Streaming.append_text(acc, delta_content)
-          :thinking -> Streaming.append_thinking(acc, delta_content)
-          # For unsupported types, append as text for now
-          _ -> Streaming.append_text(acc, delta_content)
-        end
-
+      chars_start = acc.chars_sent
+      new_acc = Streaming.append_text(acc, delta_content)
+      Broadcasts.delta_text(state.id, new_acc.index, delta_content, chars_start)
       {:noreply, %{state | chat_state: %{state.chat_state | streaming_acc: new_acc}}}
     end
+  end
+
+  defp delta_received(delta_content, :thinking, state) do
+    acc = state.chat_state.streaming_acc
+
+    if acc == nil do
+      {:noreply, state}
+    else
+      # `chars_sent` tracks text + thinking combined (see
+      # `Streaming.append_thinking/3`), so the same
+      # `acc.chars_sent` works as `chars_start` for both
+      # text and thinking deltas.
+      chars_start = acc.chars_sent
+      new_acc = Streaming.append_thinking(acc, delta_content)
+      Broadcasts.delta_thinking(state.id, new_acc.index, delta_content, chars_start)
+      {:noreply, %{state | chat_state: %{state.chat_state | streaming_acc: new_acc}}}
+    end
+  end
+
+  defp delta_received(delta_content, _part_type, state) do
+    # For unsupported types, append as text for now.
+    delta_received(delta_content, :text, state)
   end
 
   # Anthropic's extended thinking emits a signature alongside the

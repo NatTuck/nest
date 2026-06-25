@@ -9,10 +9,10 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
 
     * `{:chat_idle, _chat_turn_pid}` — the ChatTurn
       finished its iteration normally. Clear the
-      `chat_turn_pid`, the `cancelled` flag, the
-      `streaming_acc` mirror (the assistant message is in
-      the list, the live partial is no longer valid), and
-      transition to `:idle`.
+      `chat_turn_pid`, the `cancelled` flag, and the
+      `streaming_acc` accumulator (the assistant message is
+      in the list, the live partial is no longer valid),
+      and transition to `:idle`.
     * `{:chat_stopped, _chat_turn_pid}` — the user clicked
       Stop. The ChatTurn killed the active worker and is
       winding down. Finalize the partial
@@ -56,8 +56,8 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
 
   # The ChatTurn finished its iteration normally. Clear
   # the chat_turn_pid (the supervisor's child is done),
-  # the cancelled flag, the streaming_acc mirror (the
-  # message is in the list, the live partial is no
+  # the cancelled flag, the streaming_acc accumulator
+  # (the message is in the list, the live partial is no
   # longer valid), and transition to :idle.
   defp chat_idle(state) do
     state = %{
@@ -81,9 +81,9 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
   # with `metadata.stopped_by_user: true`, transition to
   # :idle, and clear bookkeeping.
   #
-  # If the mirror is `nil` (no deltas arrived before the
-  # stop), we still append a placeholder message with
-  # `content: nil` and `metadata.stopped_by_user: true`
+  # If the streaming_acc accumulator is `nil` (no deltas
+  # arrived before the stop), we still append a placeholder
+  # message with `content: nil` and `metadata.stopped_by_user: true`
   # so the message list is consistent — the user clicked
   # Stop, so the assistant turn exists, just empty.
   defp chat_stopped(state) do
@@ -144,12 +144,13 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
     {:noreply, state}
   end
 
-  # Finalize the streaming_acc mirror (Agent-side) into a
-  # normal assistant message and append it via the
+  # Finalize the streaming_acc accumulator (Agent-side)
+  # into a normal assistant message and append it via the
   # canonical path. Returns the new state.
   #
-  # Always appends a message — even if the mirror is `nil`
-  # (no deltas arrived) or empty (zero text/thinking).
+  # Always appends a message — even if the streaming_acc
+  # accumulator is `nil` (no deltas arrived) or empty
+  # (zero text/thinking).
   # The user clicked Stop during a turn, so the assistant
   # turn exists; we just record it as empty. The message
   # carries `metadata.stopped_by_user: true` so the UI
@@ -167,8 +168,16 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
          %Assistant{
            index: nil,
            timestamp: DateTime.utc_now(),
-           content: if(acc.text_buffer == "", do: nil, else: acc.text_buffer),
-           thinking: if(acc.thinking_buffer == "", do: nil, else: acc.thinking_buffer),
+           content:
+             if(acc.text_buffer == [],
+               do: nil,
+               else: IO.iodata_to_binary(acc.text_buffer)
+             ),
+           thinking:
+             if(acc.thinking_buffer == [],
+               do: nil,
+               else: IO.iodata_to_binary(acc.thinking_buffer)
+             ),
            thinking_signature: acc.thinking_signature,
            tool_calls:
              acc.tool_calls
@@ -252,6 +261,13 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
       {:ok, decoded} when is_map(decoded) -> decoded
       _ -> nil
     end
+  end
+
+  # `arguments_buffer` is now an IO list (see
+  # `Streaming.PartialToolCall`); convert to a binary before
+  # `Jason.decode`.
+  defp parse_tool_args(buffer) when is_list(buffer) and buffer != [] do
+    buffer |> Enum.reverse() |> IO.iodata_to_binary() |> parse_tool_args()
   end
 
   defp parse_tool_args(_), do: nil

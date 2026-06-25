@@ -9,7 +9,6 @@ defmodule Nest.Agents.Agent.ChatTurn.HTTPWorker do
   machine under the credo line and complexity limits.
   """
 
-  alias Nest.Agents.Agent.Broadcasts
   alias Nest.LLM.Runner
   alias Nest.LLM.RunResponse
 
@@ -71,33 +70,28 @@ defmodule Nest.Agents.Agent.ChatTurn.HTTPWorker do
   end
 
   # Build the streaming callbacks for `LLM.Runner.request/2`.
-  # Each callback re-broadcasts the event through the
-  # Agent (via `Broadcasts`) and forwards a tagged message
-  # to the Agent's GenServer (for state updates and the
-  # streaming_acc mirror). The `should_stop` callback reads
-  # the chat_turn_pid's mailbox for a `{:stop_chat, _}`
-  # message; when set, replies `:stopped` and returns
-  # `true` to halt the stream.
+  # Each callback forwards a tagged message to the Agent's
+  # GenServer, which updates `state.chat_state.streaming_acc`
+  # and broadcasts `chat:delta`. The HTTP worker does NOT
+  # broadcast directly — the Agent is the single source of
+  # `chat:delta` events (avoids the race where a subscriber
+  # sees the broadcast before the accumulator is updated).
+  #
+  # The `should_stop` callback reads the chat_turn_pid's
+  # mailbox for a `{:stop_chat, _}` message; when set, replies
+  # `:stopped` and returns `true` to halt the stream.
   #
   # The `on_error` callback only sends `{:llm_error, msg}` to
   # the Agent — it does NOT broadcast `chat:error` directly.
   # The Agent's `LLMStreamHandler.llm_error/2` handler is the
   # single source of `chat:error` events (one per error).
   defp build_callbacks(state, _messages) do
-    agent_id = state.ctx.agent_id
-    # The assistant message's stamped index is the Agent's
-    # `next_message_index` (queried at the start of this
-    # iteration). The delta broadcasts go to that index.
-    acc_index = state.active_message_index
-
     %{
       on_text: fn text, sent ->
-        Broadcasts.delta_text(agent_id, acc_index, text, sent.chars)
         send(state.ctx.agent_pid, {:delta_received, text, :text})
         %{sent | chars: sent.chars + String.length(text)}
       end,
       on_thinking: fn text, sent ->
-        Broadcasts.delta_thinking(agent_id, acc_index, text, sent.chars)
         send(state.ctx.agent_pid, {:delta_received, text, :thinking})
         %{sent | chars: sent.chars + String.length(text)}
       end,

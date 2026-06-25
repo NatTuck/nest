@@ -12,7 +12,9 @@ defmodule Nest.LLM.ClientTest do
           {:tool_call_delta, %{id: :by_index, index: 0, arguments_delta: "{\"command\":\"ls\"}"}}
         )
 
-      assert acc.tool_calls["toolu_1"].arguments_buffer == "{\"command\":\"ls\"}"
+      assert IO.iodata_to_binary(acc.tool_calls["toolu_1"].arguments_buffer) ==
+               "{\"command\":\"ls\"}"
+
       assert Map.has_key?(acc, :tool_index_map)
       assert acc.tool_index_map[0] == "toolu_1"
     end
