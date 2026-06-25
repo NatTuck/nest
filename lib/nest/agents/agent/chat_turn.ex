@@ -134,7 +134,24 @@ defmodule Nest.Agents.Agent.ChatTurn do
   def handle_info(:iterate, state), do: iterate(state)
 
   def handle_info({:http_response, response}, state) when is_map(response) do
-    handle_response(response, state)
+    # Check for a pending stop before processing the response.
+    # The worker sends `{:http_response, _}` when it finishes
+    # the stream. The agent sends `{:stop_chat, _}` when the
+    # user clicks Stop. If both are in the mailbox, the stop
+    # must be processed first — otherwise the chat turn would
+    # finalize the full response and `stop_chat/2` would never
+    # run, so the partial message (with `stopped_by_user: true`)
+    # would never be appended. This is the racy case: the
+    # worker finishes its 1000-event stream in microseconds
+    # (MockClient yields events instantly), the test receives
+    # the first delta and calls stop, but the stop arrives at
+    # the chat turn AFTER the http_response. Without this
+    # check, the chat turn would finalize and stop, discarding
+    # the stop message. With it, we honor the user's intent.
+    case drain_stop_message() do
+      {:stop, from} -> stop_chat(from, state)
+      nil -> handle_response(response, state)
+    end
   end
 
   def handle_info({:http_error, _error}, state) do
@@ -479,6 +496,17 @@ defmodule Nest.Agents.Agent.ChatTurn do
     state = %{state | active_worker: nil, active_worker_kind: nil}
     send(state.ctx.agent_pid, {:chat_stopped, self()})
     {:stop, :normal, state}
+  end
+
+  # Non-blocking mailbox check for `{:stop_chat, _}`. Used
+  # by `handle_info({:http_response, _}, state)` to honor a
+  # pending stop before processing the response.
+  defp drain_stop_message do
+    receive do
+      {:stop_chat, from} -> {:stop, from}
+    after
+      0 -> nil
+    end
   end
 
   # A worker died. `:normal` and `:killed` are expected

@@ -147,8 +147,11 @@ defmodule Nest.LLM.StreamConsumerTest do
           consumer
         )
 
-      assert acc_after_thinking.text |> Enum.reverse() |> IO.iodata_to_binary() == "visible answer"
-      assert acc_after_thinking.thinking |> Enum.reverse() |> IO.iodata_to_binary() == "hidden reasoning"
+      assert acc_after_thinking.text |> Enum.reverse() |> IO.iodata_to_binary() ==
+               "visible answer"
+
+      assert acc_after_thinking.thinking |> Enum.reverse() |> IO.iodata_to_binary() ==
+               "hidden reasoning"
     end
 
     test "a {:thinking_signature, _} event does not concatenate the signature into the thinking text" do
@@ -275,7 +278,9 @@ defmodule Nest.LLM.StreamConsumerTest do
 
       {acc, _response, _error, _sent} = StreamConsumer.reduce(stream, build_consumer())
 
-      assert acc.thinking |> Enum.reverse() |> IO.iodata_to_binary() == "Anthropic-style reasoning"
+      assert acc.thinking |> Enum.reverse() |> IO.iodata_to_binary() ==
+               "Anthropic-style reasoning"
+
       assert acc.thinking_signature == "sig_abc"
       assert acc.text |> Enum.reverse() |> IO.iodata_to_binary() == "The answer is 42."
     end

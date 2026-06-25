@@ -36,7 +36,7 @@ defmodule Nest.LLM.StreamConsumer do
           # synchronously) — for mailbox-backed streams the
           # `{:stop_chat, from}` clause in the SSE consumer
           # is the primary interrupt path.
-          should_stop: (-> boolean()) | nil
+          should_stop: (term() -> boolean()) | nil
         }
 
   defstruct on_text: nil,
@@ -64,7 +64,7 @@ defmodule Nest.LLM.StreamConsumer do
     initial = {Client.new_accumulator(), nil, nil, %{chars: 0, thinking_chars: 0}}
 
     Enum.reduce_while(stream, initial, fn event, acc ->
-      if stop_requested?(consumer) do
+      if stop_requested?(consumer, acc) do
         {:halt, acc}
       else
         {:cont, dispatch(event, acc, consumer)}
@@ -80,11 +80,15 @@ defmodule Nest.LLM.StreamConsumer do
   # for non-process-mailbox backends (e.g. when the test wants
   # to inject a stop without going through the chat task's
   # mailbox).
-  defp stop_requested?(%__MODULE__{should_stop: fun}) when is_function(fun, 0) do
+  defp stop_requested?(%__MODULE__{should_stop: fun}, acc) when is_function(fun, 1) do
+    fun.(acc)
+  end
+
+  defp stop_requested?(%__MODULE__{should_stop: fun}, _acc) when is_function(fun, 0) do
     fun.()
   end
 
-  defp stop_requested?(%__MODULE__{should_stop: nil}) do
+  defp stop_requested?(%__MODULE__{should_stop: nil}, _acc) do
     receive do
       {:stop_chat, from} ->
         send(from, :stopped)

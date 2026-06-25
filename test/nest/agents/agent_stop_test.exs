@@ -63,9 +63,9 @@ defmodule Nest.Agents.AgentStopTest do
 
       assert_receive {:chat_message,
                       {:assistant, %Assistant{metadata: %{"stopped_by_user" => true}}}},
-                     2000
+                     500
 
-      assert_receive {:chat_status, %{status: "idle"}}, 2000
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
 
     test "the finalized assistant message carries the partial text content" do
