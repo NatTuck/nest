@@ -27,7 +27,8 @@ defmodule Nest.Agents.Agent.ChatTurnStructureTest do
         :force_finalize,
         :active_worker,
         :active_worker_kind,
-        :active_message_index
+        :active_message_index,
+        :crossed_thresholds
       ]
 
       actual_fields = State.__struct__() |> Map.from_struct() |> Map.keys() |> Enum.sort()
@@ -39,9 +40,9 @@ defmodule Nest.Agents.Agent.ChatTurnStructureTest do
                "got #{inspect(actual_fields)}"
     end
 
-    test "has 7 fields (largely stateless per the refactor's design intent)" do
+    test "has 8 fields (largely stateless per the refactor's design intent)" do
       field_count = State.__struct__() |> Map.from_struct() |> map_size()
-      assert field_count == 7
+      assert field_count == 8
     end
 
     test "does not duplicate Agent conversation state" do

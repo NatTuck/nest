@@ -32,16 +32,26 @@ defmodule Nest.Agents.Agent.Init do
     vocation_id = Map.get(attrs, :vocation_id)
     workspace_path = Map.get(attrs, :workspace_path)
 
+    # Resolve the context limit before building the system prompt
+    # so the prompt can include the limit as a static piece of
+    # context. The async probe (spawned in `run_post_init/2`) may
+    # later overwrite the default; the system prompt's
+    # `:default` wording acknowledges that.
+    {context_limit, context_limit_source} = initial_context_limit(model)
+
     # Fetch vocation if provided; the Vocation struct is stored in
     # state so subsequent mode/caps resolution is a pure read of
     # the cached struct (no DB lookups on the per-message path).
     {system_prompt, mode, tool_names, vocation} =
-      SystemPrompt.fetch_vocation_config(vocation_id, workspace_path)
+      SystemPrompt.fetch_vocation_config(
+        vocation_id,
+        workspace_path,
+        {context_limit, context_limit_source}
+      )
 
     tmp_path = create_tmp_space(id)
     tools = Tools.get_functions(tool_names, workspace_path, tmp_path)
 
-    {context_limit, context_limit_source} = initial_context_limit(model)
     {initial_messages, next_index} = initial_messages_with_system(system_prompt)
 
     %Nest.Agents.Agent{

@@ -75,6 +75,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
 
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ChatTurn.APILog
+  alias Nest.Agents.Agent.ChatTurn.ContextReminder
   alias Nest.Agents.Agent.ChatTurn.HTTPWorker
   alias Nest.Agents.Agent.ChatTurn.Messages
   alias Nest.LLM.RunResponse
@@ -94,13 +95,20 @@ defmodule Nest.Agents.Agent.ChatTurn do
     #
     # The Agent's pid is read from `ctx.agent_pid` (ctx is
     # the per-iteration config snapshot). No duplicate field.
+    #
+    # `crossed_thresholds` tracks which context-usage
+    # thresholds (25/50/75%) have already been announced
+    # in this ChatTurn. Cleared on compaction so the
+    # thresholds re-fire if usage rises again after the
+    # history was summarized.
     defstruct ctx: nil,
               iteration: 0,
               max_iterations: 0,
               force_finalize: false,
               active_worker: nil,
               active_worker_kind: nil,
-              active_message_index: 0
+              active_message_index: 0,
+              crossed_thresholds: %MapSet{}
   end
 
   # Client API
@@ -224,9 +232,20 @@ defmodule Nest.Agents.Agent.ChatTurn do
     # (avoid deadlock).
     case run_preflight(state) do
       :proceed ->
+        state = maybe_inject_context_warning(state, messages)
         spawn_http_worker(state, messages)
 
       {:compacted, compacted_messages} ->
+        # Compaction just ran — usage dropped, the previously
+        # announced thresholds are stale. Clear the set so
+        # the warnings can re-fire on the way back up. The
+        # reminder check uses the *post-compaction* messages
+        # because that's what the LLM is about to see.
+        state = maybe_inject_context_warning(
+          %{state | crossed_thresholds: MapSet.new()},
+          compacted_messages
+        )
+
         spawn_http_worker(state, compacted_messages)
 
       :stopped ->
@@ -234,6 +253,26 @@ defmodule Nest.Agents.Agent.ChatTurn do
         # Agent and stop.
         send(state.ctx.agent_pid, {:chat_stopped, self()})
         {:stop, :normal, state}
+    end
+  end
+
+  # If the current messages cross a context-usage threshold
+  # that hasn't been announced yet, append a `{:system, _}`
+  # reminder. See `Nest.Agents.Agent.ChatTurn.ContextReminder`
+  # for the firing rules. Skipped when `ctx.context_limit`
+  # is nil (probe hasn't completed).
+  defp maybe_inject_context_warning(state, messages) do
+    limit = state.ctx.context_limit
+
+    with limit when is_integer(limit) and limit > 0 <- limit,
+         used = ContextReminder.estimate_messages(messages),
+         atom when not is_nil(atom) <-
+           ContextReminder.highest_unannounced(used, limit, state.crossed_thresholds) do
+      msg = ContextReminder.build_message(atom, used, limit)
+      _stamped = GenServer.call(state.ctx.agent_pid, {:append_message, msg})
+      %{state | crossed_thresholds: MapSet.put(state.crossed_thresholds, atom)}
+    else
+      _ -> state
     end
   end
 

@@ -104,4 +104,76 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
       refute system_prompt =~ "Workspace and tool working directory"
     end
   end
+
+  describe "context-limit section" do
+    @tag :db_shared
+    test "configured context limit shows the confident value with its source" do
+      # qwen3.5-plus has a configured context_limit in
+      # priv/config.toml (512000). The system prompt should
+      # render the "resolved from config" line, not the
+      # "default" caveat.
+      valid_caps = %{
+        "net" => false,
+        "fs" => %{"read" => ["/"], "write" => []}
+      }
+
+      {:ok, vocation} =
+        Vocations.create_vocation(%{
+          name: "TestCtxCfg-#{System.unique_integer([:positive])}",
+          description: "Test",
+          system_prompt: "x",
+          tools: [],
+          modes: %{"chat" => %{"description" => "Chat", "caps" => valid_caps}}
+        })
+
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: vocation.id
+        })
+
+      system_prompt = get_system_prompt(pid)
+
+      assert system_prompt =~ "Context limit:"
+      assert system_prompt =~ "tokens"
+      assert system_prompt =~ "resolved from config"
+      assert system_prompt =~ ~s|"compact"|
+      refute system_prompt =~ "default"
+      refute system_prompt =~ "may differ"
+    end
+
+    @tag :db_shared
+    test "default context limit (no configured value) shows the default caveat" do
+      # MiniMax-M2.5 exists in the test config but has no
+      # `context-limit` set, so `configured_context_limit/1`
+      # returns nil and the init falls back to the 128k
+      # default. The prompt should show the "~128000 tokens"
+      # line with the "default" caveat.
+      valid_caps = %{
+        "net" => false,
+        "fs" => %{"read" => ["/"], "write" => []}
+      }
+
+      {:ok, vocation} =
+        Vocations.create_vocation(%{
+          name: "TestCtxDef-#{System.unique_integer([:positive])}",
+          description: "Test",
+          system_prompt: "x",
+          tools: [],
+          modes: %{"chat" => %{"description" => "Chat", "caps" => valid_caps}}
+        })
+
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "MiniMax-M2.5"},
+          vocation_id: vocation.id
+        })
+
+      system_prompt = get_system_prompt(pid)
+
+      assert system_prompt =~ "Context limit: ~128000 tokens"
+      assert system_prompt =~ "default"
+      assert system_prompt =~ "may differ"
+    end
+  end
 end
