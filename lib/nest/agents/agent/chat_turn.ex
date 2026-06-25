@@ -73,14 +73,13 @@ defmodule Nest.Agents.Agent.ChatTurn do
 
   use GenServer, restart: :temporary
 
-  alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ChatTurn.APILog
   alias Nest.Agents.Agent.ChatTurn.BudgetReminder
-  alias Nest.Agents.Agent.ChatTurn.ContextReminder
-  alias Nest.Agents.Agent.ChatTurn.HTTPWorker
+  alias Nest.Agents.Agent.ChatTurn.Iteration
+  alias Nest.Agents.Agent.ChatTurn.Lifecycle
   alias Nest.Agents.Agent.ChatTurn.Messages
-  alias Nest.Agents.Agent.ChatTurn.Preflight
   alias Nest.Agents.Agent.ChatTurn.State
+  alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.ToolLoop
   alias Nest.LLM.RunResponse
 
@@ -120,7 +119,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
     state = %State{
       ctx: ctx,
       iteration: 0,
-      max_iterations: Nest.Agents.Agent.configured_max_tool_iterations(),
+      max_iterations: Config.configured_max_tool_iterations(),
       force_finalize: false,
       active_worker: nil,
       active_worker_kind: nil,
@@ -148,8 +147,8 @@ defmodule Nest.Agents.Agent.ChatTurn do
     # the chat turn AFTER the http_response. Without this
     # check, the chat turn would finalize and stop, discarding
     # the stop message. With it, we honor the user's intent.
-    case drain_stop_message() do
-      {:stop, from} -> stop_chat(from, state)
+    case Lifecycle.drain_stop_message() do
+      {:stop, from} -> Lifecycle.stop_chat(from, state)
       nil -> handle_response(response, state)
     end
   end
@@ -158,7 +157,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
     # The on_error callback already broadcast :llm_error to
     # the Agent and the Agent's llm_error handler transitioned
     # to :idle. We're done.
-    finalize_turn(state)
+    Lifecycle.finalize_turn(state)
   end
 
   def handle_info({:worker_crashed, exception, stacktrace}, state) do
@@ -177,11 +176,11 @@ defmodule Nest.Agents.Agent.ChatTurn do
   end
 
   def handle_info({:stop_chat, from}, state) do
-    stop_chat(from, state)
+    Lifecycle.stop_chat(from, state)
   end
 
   def handle_info({:EXIT, pid, reason}, state) do
-    worker_exited(pid, reason, state)
+    Lifecycle.worker_exited(pid, reason, state)
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
@@ -200,18 +199,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
     state = maybe_inject_budget_reminder(state)
     state = %{state | iteration: state.iteration + 1}
 
-    # If we've just hit the iteration cap, broadcast a
-    # `chat_notification` so the UI can show a banner
-    # ("Max tool iterations reached"). The OLD LLMRunner
-    # did this in the `max_iterations: 0` branch of
-    # `run_with_new_client/2`; we do it here before
-    # making the final (tools-disabled) call.
-    if state.iteration > state.max_iterations do
-      Broadcasts.notification(state.ctx.agent_id, %{
-        type: "max_iterations",
-        message: "Max tool iterations reached"
-      })
-    end
+    Iteration.notify_max_iterations(state)
 
     {messages, cancelled} = GenServer.call(state.ctx.agent_pid, :get_messages_with_cancelled)
     next_index = GenServer.call(state.ctx.agent_pid, :get_next_index)
@@ -225,64 +213,9 @@ defmodule Nest.Agents.Agent.ChatTurn do
     # `chat_stopped` handler does the actual finalization
     # (it has the current `streaming_acc` accumulator).
     if cancelled do
-      send(state.ctx.agent_pid, {:chat_stopped, self()})
-      {:stop, :normal, state}
+      Iteration.finalize_cancelled(state)
     else
-      # Mid-iteration preflight: ask the Agent to compact the
-      # messages list if it's about to overflow the context
-      # window. The pre-PR-3 LLMRunner did this before every
-      # LLM call. The Agent's `CompactionHandler.preflight_request/3`
-      # runs the preflight decision and replies with either
-      # `:proceed` (no compaction needed) or `:compacted` (the
-      # compactor ran and returned new messages). The receive
-      # blocks the ChatTurn for up to 30 seconds; if the Agent
-      # doesn't respond we proceed with the existing messages
-      # (avoid deadlock).
-      case Preflight.run(state) do
-        :proceed ->
-          state = maybe_inject_context_warning(state, messages)
-          spawn_http_worker(state, messages)
-
-        {:compacted, compacted_messages} ->
-          # Compaction just ran — usage dropped, the previously
-          # announced thresholds are stale. Clear the set so
-          # the warnings can re-fire on the way back up. The
-          # reminder check uses the *post-compaction* messages
-          # because that's what the LLM is about to see.
-          state =
-            maybe_inject_context_warning(
-              %{state | crossed_thresholds: MapSet.new()},
-              compacted_messages
-            )
-
-          spawn_http_worker(state, compacted_messages)
-
-        :stopped ->
-          # User clicked Stop mid-preflight. Notify the
-          # Agent and stop.
-          send(state.ctx.agent_pid, {:chat_stopped, self()})
-          {:stop, :normal, state}
-      end
-    end
-  end
-
-  # If the current messages cross a context-usage threshold
-  # that hasn't been announced yet, append a `{:system, _}`
-  # reminder. See `Nest.Agents.Agent.ChatTurn.ContextReminder`
-  # for the firing rules. Skipped when `ctx.context_limit`
-  # is nil (probe hasn't completed).
-  defp maybe_inject_context_warning(state, messages) do
-    limit = state.ctx.context_limit
-
-    with limit when is_integer(limit) and limit > 0 <- limit,
-         used = ContextReminder.estimate_messages(messages),
-         atom when not is_nil(atom) <-
-           ContextReminder.highest_unannounced(used, limit, state.crossed_thresholds) do
-      msg = ContextReminder.build_message(atom, used, limit)
-      _stamped = GenServer.call(state.ctx.agent_pid, {:append_message, msg})
-      %{state | crossed_thresholds: MapSet.put(state.crossed_thresholds, atom)}
-    else
-      _ -> state
+      Iteration.dispatch_preflight(state, messages)
     end
   end
 
@@ -301,56 +234,6 @@ defmodule Nest.Agents.Agent.ChatTurn do
       reminder ->
         _stamped = GenServer.call(state.ctx.agent_pid, {:append_message, reminder})
         state
-    end
-  end
-
-  # Spawn the HTTP worker as a Task. The worker calls
-  # `Nest.LLM.Runner.request/2` with the given `messages`
-  # and sends `{:http_response, response}` or
-  # `{:http_error, error}` back to the ChatTurn.
-  defp spawn_http_worker(state, messages) do
-    parent = self()
-    agent_pid = state.ctx.agent_pid
-
-    # The request log is queued at the last message's index
-    # (the message that triggered this LLM call: the user
-    # message on a fresh turn, the tool message on a
-    # continuation). The Agent's `api_log_handler` will
-    # re-broadcast that message with the request log
-    # attached (the message already exists in the messages
-    # list, so the append-to-existing-message path fires).
-    request_log_index = last_message_index_for_request_log(messages)
-    :ok = APILog.request(state, request_log_index, messages)
-
-    # When we've hit the iteration cap, the next call
-    # is the "final" call: `tools: nil, tool_choice:
-    # :none` so the LLM sees the tool results and
-    # produces a text response. The MockClient honors
-    # `tools: nil` by skipping any queued tool
-    # responses and returning the next text response.
-    {tools, tool_choice} =
-      if state.iteration > state.max_iterations,
-        do: {nil, :none},
-        else: {state.ctx.tools, state.ctx.tool_choice}
-
-    state = %{state | ctx: %{state.ctx | tools: tools, tool_choice: tool_choice}}
-
-    task =
-      Task.Supervisor.start_child(
-        Nest.Agents.TaskSupervisor,
-        fn -> HTTPWorker.run(state, parent, messages) end
-      )
-
-    case task do
-      {:ok, pid} ->
-        Process.monitor(pid)
-        {:noreply, %{state | active_worker: pid, active_worker_kind: :http}}
-
-      _ ->
-        # Saturated supervisor. Send a crash to the Agent
-        # and stop cleanly.
-        send(agent_pid, {:chat_crashed, :saturated, []})
-        {:stop, :normal, state}
     end
   end
 
@@ -395,7 +278,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
 
     cond do
       state.force_finalize ->
-        finalize_turn(state)
+        Lifecycle.finalize_turn(state)
 
       RunResponse.has_tool_calls?(response) and state.iteration > state.max_iterations ->
         # Past max iterations, LLM still emitted tool
@@ -417,7 +300,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
 
       true ->
         # Final text response.
-        finalize_turn(state)
+        Lifecycle.finalize_turn(state)
     end
   end
 
@@ -435,25 +318,6 @@ defmodule Nest.Agents.Agent.ChatTurn do
     send(state.ctx.agent_pid, {:tool_results_received, tool_msg})
     Process.send(self(), :iterate, [])
     {:noreply, state}
-  end
-
-  # Return the index of the last message in the messages
-  # list. The request api_log is queued at this index so
-  # the message that triggered this LLM call (the user
-  # message on a fresh turn, the tool message on a
-  # continuation) is re-broadcast with the request log
-  # attached. The Agent's
-  # `api_log_handler.append_to_existing_message/3` finds
-  # the triggering message already in the list and
-  # re-broadcasts it.
-  defp last_message_index_for_request_log([]), do: 0
-
-  defp last_message_index_for_request_log(messages) do
-    case List.last(messages) do
-      nil -> 0
-      {_, %{index: idx}} -> idx
-      _ -> 0
-    end
   end
 
   # Spawn the tool worker as a Task. The worker calls
@@ -482,51 +346,5 @@ defmodule Nest.Agents.Agent.ChatTurn do
         send(state.ctx.agent_pid, {:chat_crashed, :saturated, []})
         {:stop, :normal, state}
     end
-  end
-
-  # User clicked Stop. Reply `:stopped`, kill the active
-  # worker, notify the Agent, and stop.
-  defp stop_chat(from, state) do
-    send(from, :stopped)
-
-    if state.active_worker do
-      Process.exit(state.active_worker, :kill)
-    end
-
-    state = %{state | active_worker: nil, active_worker_kind: nil}
-    send(state.ctx.agent_pid, {:chat_stopped, self()})
-    {:stop, :normal, state}
-  end
-
-  # Non-blocking mailbox check for `{:stop_chat, _}`. Used
-  # by `handle_info({:http_response, _}, state)` to honor a
-  # pending stop before processing the response.
-  defp drain_stop_message do
-    receive do
-      {:stop_chat, from} -> {:stop, from}
-    after
-      0 -> nil
-    end
-  end
-
-  # A worker died. `:normal` and `:killed` are expected
-  # exits (the stop handler killed the worker, or the
-  # tool worker completed normally). Other reasons are
-  # crashes and become a `{:chat_crashed, _, _}` to
-  # the Agent.
-  defp worker_exited(_pid, :normal, state), do: {:noreply, state}
-  defp worker_exited(_pid, :killed, state), do: {:noreply, state}
-
-  defp worker_exited(_pid, reason, state) do
-    send(state.ctx.agent_pid, {:chat_crashed, reason, []})
-    {:stop, :normal, state}
-  end
-
-  # End of turn. Send `:chat_idle` and the
-  # `:api_log_sequences_updated` to the Agent, then stop.
-  defp finalize_turn(state) do
-    send(state.ctx.agent_pid, {:chat_idle, self()})
-    send(state.ctx.agent_pid, {:api_log_sequences_updated, APILog.read_sequences()})
-    {:stop, :normal, state}
   end
 end

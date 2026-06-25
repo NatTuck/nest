@@ -373,7 +373,7 @@ defmodule Nest.Agents.AgentToolsTest do
         {:ok, %{providers: %{}, models: %{}, max_tool_iterations: 7}}
       end)
 
-      assert Agent.configured_max_tool_iterations() == 7
+      assert Agent.Config.configured_max_tool_iterations() == 7
     end
 
     test "returns the hardcoded default of 99 when DotConfig has no max_tool_iterations" do
@@ -381,13 +381,13 @@ defmodule Nest.Agents.AgentToolsTest do
         {:ok, %{providers: %{}, models: %{}, max_tool_iterations: nil}}
       end)
 
-      assert Agent.configured_max_tool_iterations() == 99
+      assert Agent.Config.configured_max_tool_iterations() == 99
     end
 
     test "returns the hardcoded default of 99 when DotConfig.load/0 returns an error" do
       Mimic.stub(Nest.DotConfig, :load, fn -> {:error, "no config file"} end)
 
-      assert Agent.configured_max_tool_iterations() == 99
+      assert Agent.Config.configured_max_tool_iterations() == 99
     end
   end
 end

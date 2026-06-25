@@ -14,6 +14,7 @@ defmodule Nest.Agents.Agent.Init do
   require Logger
 
   alias Nest.Agents.Agent.Broadcasts
+  alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.SystemPrompt
   alias Nest.Messages.System
   alias Nest.Tools
@@ -112,7 +113,7 @@ defmodule Nest.Agents.Agent.Init do
   # to 3s on slow providers, so we keep the initial value cheap and
   # update it via handle_info.
   defp initial_context_limit(model) do
-    case Nest.Agents.Agent.configured_context_limit(model_name(model)) do
+    case Config.configured_context_limit(model_name(model)) do
       nil -> {@default_context_limit, :default}
       limit -> {limit, :config}
     end

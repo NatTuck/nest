@@ -15,6 +15,9 @@ defmodule Nest.MixProject do
       test_coverage: [
         tool: ExCoveralls,
         summary: [threshold: 74]
+      ],
+      test_ignore_filters: [
+        &String.starts_with?(&1, "test/support/credo/")
       ]
     ]
   end
@@ -36,7 +39,14 @@ defmodule Nest.MixProject do
   end
 
   # Specifies which paths to compile per environment.
-  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(:test) do
+    test_support_files =
+      Path.wildcard("test/support/**/*.ex")
+      |> Enum.reject(&String.contains?(&1, "credo/"))
+
+    ["lib" | test_support_files]
+  end
+
   defp elixirc_paths(_), do: ["lib"]
 
   # Specifies your project dependencies.

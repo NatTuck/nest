@@ -16,11 +16,10 @@ defmodule Nest.Agents.Agent do
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ChatPipeline
   alias Nest.Agents.Agent.Compaction
+  alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Handlers
   alias Nest.Agents.Agent.Init
   alias Nest.Agents.Registry
-  alias Nest.ChatModel
-  alias Nest.DotConfig
   alias Nest.LLM.ClientConfig
   alias Nest.LLM.Discover
   alias Nest.Messages.Assistant
@@ -200,7 +199,7 @@ defmodule Nest.Agents.Agent do
     id = Map.fetch!(attrs, :id)
     model = Map.fetch!(attrs, :model)
 
-    case create_client_config(model) do
+    case Config.create_client_config(model) do
       {:ok, client_config} ->
         state = Init.build_state(attrs, client_config)
         Init.run_post_init(state, client_config)
@@ -396,52 +395,6 @@ defmodule Nest.Agents.Agent do
   end
 
   # Private functions
-
-  defp create_client_config(model) do
-    model_name = model[:name] || model["name"]
-
-    if model_name do
-      ChatModel.new(model: model_name)
-    else
-      {:error, :no_model_name}
-    end
-  end
-
-  # Look up the user-configured `context-limit` for this model in
-  # DotConfig. Returns `nil` when absent so the caller can decide
-  # whether to fall through to the probe.
-  @doc false
-  def configured_context_limit(nil), do: nil
-
-  def configured_context_limit(model_name) when is_binary(model_name) do
-    case DotConfig.load() do
-      {:ok, config} ->
-        case DotConfig.get_model(config, model_name) do
-          nil -> nil
-          model -> model.context_limit
-        end
-
-      _ ->
-        nil
-    end
-  end
-
-  # Resolves the per-chat tool-call iteration cap. Reads the optional
-  # top-level `max-tool-iterations` value from DotConfig; falls back
-  # to `DotConfig.default_max_tool_iterations/0` (25) when unset.
-  @doc false
-  def configured_max_tool_iterations do
-    case DotConfig.load() do
-      {:ok, config} ->
-        case DotConfig.max_tool_iterations(config) do
-          nil -> DotConfig.default_max_tool_iterations()
-          n -> n
-        end
-
-      _ ->
-        DotConfig.default_max_tool_iterations()
-    end
-  end
 
   # Fire-and-forget probe against the provider's /models endpoint.
   # The result is delivered to the GenServer via `send/2` so init/1

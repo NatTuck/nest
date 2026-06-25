@@ -134,15 +134,13 @@ defmodule Nest.Agents.Agent.ChatTurn.HTTPWorker do
   # messages to the Agent's mailbox. Each system message is
   # processed in O(1) and doesn't block the Agent's hot path.
   defp check_should_stop?(state) do
-    try do
-      state.ctx.agent_pid
-      |> :sys.get_state()
-      |> Map.get(:chat_state)
-      |> Map.get(:cancelled)
-    catch
-      # Agent is gone (test cleanup, supervisor teardown).
-      # Nothing to stop against; let the stream finish.
-      :exit, _reason -> false
-    end
+    state.ctx.agent_pid
+    |> :sys.get_state()
+    |> Map.get(:chat_state)
+    |> Map.get(:cancelled)
+  catch
+    # Agent is gone (test cleanup, supervisor teardown).
+    # Nothing to stop against; let the stream finish.
+    :exit, _reason -> false
   end
 end

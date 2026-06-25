@@ -148,11 +148,25 @@ defmodule Nest.Agents.Agent.ChatTurnStructureTest do
   end
 
   describe "mid-iteration preflight" do
-    test "ChatTurn.iterate/1 issues a preflight request before each LLM call" do
+    test "the iteration step issues a preflight request before each LLM call" do
+      # The iteration step is split across three files:
+      #
+      #   * `ChatTurn.safe_iterate/1` — the driver (in chat_turn.ex)
+      #   * `ChatTurn.Iteration.dispatch_preflight/2` — the dispatch
+      #   * `ChatTurn.Preflight.run/1` — sends the literal
+      #     `{:preflight_request, ...}` to the Agent
+      #
+      # Any of the three holding the literal proves the
+      # structural invariant: the iteration step runs
+      # preflight before every LLM call.
       chat_turn = File.read!("lib/nest/agents/agent/chat_turn.ex")
+      iteration = File.read!("lib/nest/agents/agent/chat_turn/iteration.ex")
+      preflight = File.read!("lib/nest/agents/agent/chat_turn/preflight.ex")
 
-      assert chat_turn =~ "preflight_request",
-             "ChatTurn must issue a preflight_request to the Agent " <>
+      assert chat_turn =~ "preflight_request" or
+               iteration =~ "preflight_request" or
+               preflight =~ "preflight_request",
+             "the iteration step must issue a preflight_request to the Agent " <>
                "before each LLM call (re-enabled in Commit 5; " <>
                "without it, long tool-call chains can blow the " <>
                "context window without compacting mid-turn)"

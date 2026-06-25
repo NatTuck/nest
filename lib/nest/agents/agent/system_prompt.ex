@@ -12,6 +12,7 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   messages list.
   """
 
+  alias Nest.Agents.Agent.Config
   alias Nest.Vocations
 
   @doc """
@@ -66,7 +67,7 @@ defmodule Nest.Agents.Agent.SystemPrompt do
     do: "\n\nWorkspace and tool working directory: #{path}\n"
 
   defp tool_call_limit_section do
-    max = Nest.Agents.Agent.configured_max_tool_iterations()
+    max = Config.configured_max_tool_iterations()
 
     "\n\nTool call budget: You have a maximum of #{max} consecutive tool call rounds per turn.\n"
   end
