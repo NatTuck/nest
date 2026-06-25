@@ -19,7 +19,7 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
   the model's hidden reasoning, while the user-visible
   assistant message's `content` was empty.
   """
-  use Nest.DataCase, async: false
+  use ExUnit.Case, async: true
 
   import Mimic
 
@@ -283,7 +283,7 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
                      500
 
       # The agent still goes idle after the post-tool reply.
-      assert_receive {:chat_status, %{status: "idle"}}, 1000
+      assert_receive {:chat_status, %{status: "idle"}}, 500
 
       MockClient.clear()
     end

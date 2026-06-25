@@ -46,17 +46,21 @@ defmodule Nest.LLM.OpenAIClient do
   # `Nest.LLM.HttpWorker.handle_response/4`; this function only
   # owns the OpenAI-specific Req options.
   defp http_worker(parent, url, api_key, request, opts, timeout) do
-    result =
-      Req.post(url,
-        auth: {:bearer, api_key},
-        json: build_payload(request, opts),
-        receive_timeout: timeout,
-        into: :self,
-        http_errors: :return,
-        max_retries: 0
-      )
+    try do
+      result =
+        Req.post(url,
+          auth: {:bearer, api_key},
+          json: build_payload(request, opts),
+          receive_timeout: timeout,
+          into: :self,
+          http_errors: :return,
+          max_retries: 0
+        )
 
-    HttpWorker.handle_response(result, parent, "OpenAIClient", &format_error_chunk/3)
+      HttpWorker.handle_response(result, parent, "OpenAIClient", &format_error_chunk/3)
+    rescue
+      exception -> reraise exception, __STACKTRACE__
+    end
   end
 
   defp format_error_chunk(kind, status, body) do

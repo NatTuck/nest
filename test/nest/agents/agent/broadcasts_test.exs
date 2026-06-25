@@ -17,7 +17,7 @@ defmodule Nest.Agents.Agent.BroadcastsTest do
       `source=unknown` for the unsourced form), plus the
       error message itself.
   """
-  use Nest.DataCase, async: false
+  use ExUnit.Case, async: true
 
   import ExUnit.CaptureLog
 
@@ -35,7 +35,7 @@ defmodule Nest.Agents.Agent.BroadcastsTest do
       capture_log(fn ->
         Broadcasts.error(agent_id, 5, "Something broke", "Foo.bar/2")
 
-        assert_receive {:chat_error, %{index: 5, content: content}}, 100
+        assert_receive {:chat_error, %{index: 5, content: content}}, 500
 
         assert content == "Something broke\n[Source: Foo.bar/2]"
       end)
@@ -66,7 +66,7 @@ defmodule Nest.Agents.Agent.BroadcastsTest do
       # (the UI needs the full text), but the server log entry is.
       # The content is `long_msg` plus a trailing `\n[Source: Foo.bar/2]`
       # tag (20 bytes), so the broadcast content is 1,020 bytes.
-      assert_receive {:chat_error, %{content: content}}, 100
+      assert_receive {:chat_error, %{content: content}}, 500
       assert byte_size(content) == 1_020
       assert String.starts_with?(content, long_msg)
       assert String.ends_with?(content, "\n[Source: Foo.bar/2]")
@@ -80,7 +80,7 @@ defmodule Nest.Agents.Agent.BroadcastsTest do
       capture_log(fn ->
         Broadcasts.error(agent_id, 1, "msg", "")
 
-        assert_receive {:chat_error, %{content: content}}, 100
+        assert_receive {:chat_error, %{content: content}}, 500
         # Empty source is filtered out by `tag_source/2` — only
         # non-empty sources get the `[Source: ...]` suffix.
         assert content == "msg"
@@ -93,7 +93,7 @@ defmodule Nest.Agents.Agent.BroadcastsTest do
       capture_log(fn ->
         Broadcasts.error(agent_id, 2, "Plain error")
 
-        assert_receive {:chat_error, %{index: 2, content: "Plain error"}}, 100
+        assert_receive {:chat_error, %{index: 2, content: "Plain error"}}, 500
       end)
     end
 

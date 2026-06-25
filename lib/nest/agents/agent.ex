@@ -261,6 +261,17 @@ defmodule Nest.Agents.Agent do
   end
 
   @impl true
+  # Internal: returns `{messages, cancelled}` so the ChatTurn
+  # can short-circuit on user-initiated stops without waiting
+  # for the next `:stop_chat` message to be processed. The
+  # chat turn checks `cancelled` after every iteration; when
+  # true, it finalizes the partial assistant message (via
+  # the agent's `chat_stopped` handler) and stops.
+  def handle_call(:get_messages_with_cancelled, _from, state) do
+    {:reply, {state.chat_state.messages, state.chat_state.cancelled}, state}
+  end
+
+  @impl true
   def handle_call(:get_next_index, _from, state) do
     {:reply, state.chat_state.next_message_index, state}
   end

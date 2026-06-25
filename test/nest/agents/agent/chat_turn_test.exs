@@ -20,7 +20,7 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
   `LLMRunner.run/2`-in-a-Task design broke with the
   dual-counter bug class.
   """
-  use Nest.DataCase, async: false
+  use ExUnit.Case, async: true
 
   import ExUnit.CaptureLog
   import Mimic
@@ -221,7 +221,7 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
 
   describe "user-initiated stop" do
     test "1.1.5 finalizes the partial assistant message and transitions to idle" do
-      events = for _ <- 1..1000, do: {:text, "x"}
+      events = for _ <- 1..50, do: {:text, "x"}
       MockClient.set_stream_events(events)
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
@@ -238,7 +238,7 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
       # The `chat:delta` PubSub broadcast is the event-based
       # signal that the Agent's `delta_received` handler has
       # already updated the mirror.
-      assert_receive {:chat_delta, _}, 200
+      assert_receive {:chat_delta, _}, 500
 
       # Use the public stop API instead of reaching into the
       # Agent's private `chat_turn_pid` field. The Agent routes

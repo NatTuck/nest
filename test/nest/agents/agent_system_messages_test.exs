@@ -10,7 +10,7 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
   credo limit.
   """
 
-  use Nest.DataCase, async: false
+  use ExUnit.Case, async: true
 
   import ExUnit.CaptureLog
   import Mimic
@@ -63,7 +63,7 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
       # rule: the UI always includes everything that
       # happened). Hiding it server-side would violate the
       # principle. Regression guard.
-      assert_receive {:chat_message, {:system, %SystemMsg{content: ""}}}, 1000
+      assert_receive {:chat_message, {:system, %SystemMsg{content: ""}}}, 500
 
       # And it's still in state.
       state = :sys.get_state(pid)

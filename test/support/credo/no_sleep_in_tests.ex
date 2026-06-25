@@ -90,7 +90,8 @@ defmodule Nest.Credo.Check.NoSleepInTests do
 
   defp issue_for(source_file, line) do
     format_issue(source_file,
-      message: "Process.sleep/1 is forbidden in tests (use assert_receive / refute_receive instead).",
+      message:
+        "Process.sleep/1 is forbidden in tests (use assert_receive / refute_receive instead).",
       line_no: line
     )
   end

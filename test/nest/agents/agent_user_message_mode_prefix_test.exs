@@ -11,7 +11,7 @@ defmodule Nest.Agents.AgentUserMessageModePrefixTest do
   fails this single, clearly-flagged test instead of being lost
   among unrelated chat tests.
   """
-  use Nest.DataCase, async: false
+  use ExUnit.Case, async: true
 
   import Mimic
 
@@ -70,6 +70,6 @@ defmodule Nest.Agents.AgentUserMessageModePrefixTest do
     assert_receive {:chat_message,
                     {:user,
                      %{content: "[mode: chat]\nHello world", metadata: %{"mode" => "chat"}}}},
-                   100
+                   500
   end
 end

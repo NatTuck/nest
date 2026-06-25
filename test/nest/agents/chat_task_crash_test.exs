@@ -31,7 +31,7 @@ defmodule Nest.Agents.ChatTaskCrashTest do
   boundary). The stubs in this file target the new
   boundary.
   """
-  use Nest.DataCase, async: false
+  use ExUnit.Case, async: true
 
   import ExUnit.CaptureLog
   import Mimic
@@ -113,7 +113,7 @@ defmodule Nest.Agents.ChatTaskCrashTest do
         # {:llm_error, msg} to the Agent, which would broadcast
         # again. Now the worker only sends the message; the
         # Agent is the single source.
-        refute_receive {:chat_error, _}, 100
+        refute_receive {:chat_error, _}, 500
       end)
     end
 

@@ -2,7 +2,7 @@ defmodule Nest.Agents.AgentTest do
   @moduledoc """
   Agent lifecycle tests: `start_link/1`.
   """
-  use Nest.DataCase, async: false
+  use ExUnit.Case, async: true
 
   alias Nest.Agents.Agent
   alias Nest.Agents.Registry

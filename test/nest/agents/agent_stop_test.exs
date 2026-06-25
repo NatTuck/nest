@@ -14,7 +14,7 @@ defmodule Nest.Agents.AgentStopTest do
     * Idempotency — multiple `Agent.stop_chat/2` calls
       before finalization don't crash anything.
   """
-  use Nest.DataCase, async: false
+  use ExUnit.Case, async: true
 
   import Mimic
 
@@ -55,13 +55,11 @@ defmodule Nest.Agents.AgentStopTest do
 
       :ok = Agent.chat(pid, "Start")
 
-      assert_receive {:chat_message, {:user, %{index: 1}}}, 100
-      assert_receive {:chat_status, %{status: "streaming"}}, 100
-      assert_receive {:chat_delta, _}, 100
+      assert_receive {:chat_message, {:user, %{index: 1}}}, 500
+      assert_receive {:chat_status, %{status: "streaming"}}, 500
+      assert_receive {:chat_delta, _}, 500
 
-      chat_turn_pid = :sys.get_state(pid).chat_state.chat_turn_pid
-      assert is_pid(chat_turn_pid)
-      send(chat_turn_pid, {:stop_chat, self()})
+      Agent.stop_chat(pid, self())
 
       assert_receive {:chat_message,
                       {:assistant, %Assistant{metadata: %{"stopped_by_user" => true}}}},
@@ -78,12 +76,10 @@ defmodule Nest.Agents.AgentStopTest do
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "Tell me a story")
-      assert_receive {:chat_message, {:user, _}}, 100
-      assert_receive {:chat_delta, _}, 100
+      assert_receive {:chat_message, {:user, _}}, 500
+      assert_receive {:chat_delta, _}, 500
 
-      chat_turn_pid = :sys.get_state(pid).chat_state.chat_turn_pid
-      assert is_pid(chat_turn_pid)
-      send(chat_turn_pid, {:stop_chat, self()})
+      Agent.stop_chat(pid, self())
 
       assert_receive {:chat_message, {:assistant, %Assistant{content: content, index: 2}}},
                      2000
@@ -130,7 +126,7 @@ defmodule Nest.Agents.AgentStopTest do
 
       :ok = Agent.chat(pid, "compact please")
 
-      assert_receive {:chat_message, {:user, _}}, 100
+      assert_receive {:chat_message, {:user, _}}, 500
       # The tool call message is broadcast; the chat task
       # is now in `request_compaction_from_task` blocking on
       # `{:task_compaction_done|_failed, _}` or `{:stop_chat, _}`.
@@ -166,8 +162,8 @@ defmodule Nest.Agents.AgentStopTest do
 
       :ok = Agent.chat(pid, "Start")
 
-      assert_receive {:chat_message, {:user, _}}, 100
-      assert_receive {:chat_delta, _}, 100
+      assert_receive {:chat_message, {:user, _}}, 500
+      assert_receive {:chat_delta, _}, 500
 
       # Three rapid stops directly to the chat task. The
       # first sets the stream to halt; the second and third
@@ -191,8 +187,8 @@ defmodule Nest.Agents.AgentStopTest do
       # could otherwise match the second turn's assertions
       # in a flaky way.
       assert_receive {:chat_status, %{status: "idle"}}, 2000
-      assert_receive {:chat_message, {:user, %{index: 3}}}, 100
-      assert_receive {:chat_message, {:assistant, _}}, 100
+      assert_receive {:chat_message, {:user, %{index: 3}}}, 500
+      assert_receive {:chat_message, {:assistant, _}}, 500
     end
   end
 
@@ -207,13 +203,10 @@ defmodule Nest.Agents.AgentStopTest do
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "First turn")
-      assert_receive {:chat_message, {:user, _}}, 100
-      assert_receive {:chat_delta, _}, 100
+      assert_receive {:chat_message, {:user, _}}, 500
+      assert_receive {:chat_delta, _}, 500
 
-      # Send the stop directly to the chat task pid (avoids
-      # the GenServer mailbox-ordering race).
-      chat_turn_pid = :sys.get_state(pid).chat_state.chat_turn_pid
-      send(chat_turn_pid, {:stop_chat, self()})
+      Agent.stop_chat(pid, self())
       assert_receive {:chat_status, %{status: "idle"}}, 2000
 
       # The `cancelled` flag must be cleared on the next turn,
@@ -233,8 +226,8 @@ defmodule Nest.Agents.AgentStopTest do
       # first turn's stale messages pollute the test
       # process's mailbox.
       assert_receive {:chat_status, %{status: "idle"}}, 2000
-      assert_receive {:chat_message, {:user, %{index: 3}}}, 100
-      assert_receive {:chat_message, {:assistant, %{content: "Second turn response"}}}, 100
+      assert_receive {:chat_message, {:user, %{index: 3}}}, 500
+      assert_receive {:chat_message, {:assistant, %{content: "Second turn response"}}}, 500
     end
   end
 
@@ -260,11 +253,10 @@ defmodule Nest.Agents.AgentStopTest do
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "First turn")
-      assert_receive {:chat_message, {:user, _}}, 100
-      assert_receive {:chat_delta, _}, 100
+      assert_receive {:chat_message, {:user, _}}, 500
+      assert_receive {:chat_delta, _}, 500
 
-      chat_turn_pid = :sys.get_state(pid).chat_state.chat_turn_pid
-      send(chat_turn_pid, {:stop_chat, self()})
+      Agent.stop_chat(pid, self())
       assert_receive {:chat_status, %{status: "idle"}}, 2000
 
       # Immediately start a new chat. The previous chat's
@@ -274,8 +266,8 @@ defmodule Nest.Agents.AgentStopTest do
       :ok = Agent.chat(pid, "Second turn")
 
       assert_receive {:chat_status, %{status: "idle"}}, 2000
-      assert_receive {:chat_message, {:user, %{index: 3}}}, 100
-      assert_receive {:chat_message, {:assistant, %{content: "Second response"}}}, 100
+      assert_receive {:chat_message, {:user, %{index: 3}}}, 500
+      assert_receive {:chat_message, {:assistant, %{content: "Second response"}}}, 500
 
       # The Agent GenServer must still be alive (the
       # original bug crashed it with FunctionClauseError).

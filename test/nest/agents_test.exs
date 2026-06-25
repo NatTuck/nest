@@ -8,6 +8,8 @@ defmodule Nest.AgentsTest do
   import Mimic
 
   alias Nest.Agents
+  alias Nest.Agents.Supervisor
+  alias Nest.LLM.MockClient
 
   setup :verify_on_exit!
 
@@ -106,11 +108,31 @@ defmodule Nest.AgentsTest do
   describe "chat/2" do
     test "sends message to agent" do
       {:ok, id} = Agents.create_agent(%{name: "qwen3.5-plus"})
+      {:ok, agent_pid} = Supervisor.get_agent(id)
+
+      MockClient.start_link(agent_pid)
+      Process.put(:nest_test_agent_pid, agent_pid)
+
+      on_exit(fn ->
+        MockClient.stop(agent_pid)
+        Process.delete(:nest_test_agent_pid)
+      end)
+
+      MockClient.set_response("Hi there!")
+
+      :sys.replace_state(agent_pid, fn state ->
+        %{state | client_config: %{state.client_config | client: MockClient}}
+      end)
+
       :ok = Agents.chat(id, "Hello, agent!")
 
-      # Verify via get_info that message count increased
-      {:ok, info} = Agents.get_info(id)
-      assert info.message_count == 2
+      assert eventually(
+               fn ->
+                 {:ok, info} = Agents.get_info(id)
+                 info.message_count == 3
+               end,
+               timeout: 1000
+             )
     end
 
     test "returns error for non-existent agent" do

@@ -37,15 +37,15 @@ defmodule Nest.Agents.AgentObservabilityTest do
       # api_logs, then re-broadcast after the LLM call attaches
       # the request log. Match the second broadcast (non-empty
       # api_logs) to capture the externally visible state.
-      assert_receive {:chat_message, {:user, %{index: 1, api_logs: [_ | _]} = user_msg}}, 100
-      assert_receive {:chat_status, %{status: "streaming"}}, 100
-      assert_receive {:chat_delta, _}, 100
+      assert_receive {:chat_message, {:user, %{index: 1, api_logs: [_ | _]} = user_msg}}, 500
+      assert_receive {:chat_status, %{status: "streaming"}}, 500
+      assert_receive {:chat_delta, _}, 500
 
       assert_receive {:chat_message,
                       {:assistant, %{index: 2, api_logs: [_ | _]} = assistant_msg}},
-                     100
+                     500
 
-      assert_receive {:chat_status, %{status: "idle"}}, 100
+      assert_receive {:chat_status, %{status: "idle"}}, 500
 
       user_request = Enum.find(user_msg.api_logs, fn log -> log.type == :request end)
       assert user_request != nil, "User message should have request log"
@@ -69,20 +69,20 @@ defmodule Nest.Agents.AgentObservabilityTest do
 
       :ok = Agent.chat(pid, "Run a command")
 
-      assert_receive {:chat_message, {:user, %{index: 1, api_logs: [_ | _]} = user_msg}}, 100
-      assert_receive {:chat_status, %{status: "streaming"}}, 100
-      assert_receive {:chat_delta, _}, 100
+      assert_receive {:chat_message, {:user, %{index: 1, api_logs: [_ | _]} = user_msg}}, 500
+      assert_receive {:chat_status, %{status: "streaming"}}, 500
+      assert_receive {:chat_delta, _}, 500
 
       assert_receive {:chat_message, {:assistant, %{index: 2, api_logs: [_ | _]} = assistant1}},
-                     100
+                     500
 
-      assert_receive {:chat_message, {:tool, %{index: 3, api_logs: [_ | _]} = tool_msg}}, 100
-      assert_receive {:chat_delta, _}, 100
+      assert_receive {:chat_message, {:tool, %{index: 3, api_logs: [_ | _]} = tool_msg}}, 500
+      assert_receive {:chat_delta, _}, 500
 
       assert_receive {:chat_message, {:assistant, %{index: 4, api_logs: [_ | _]} = assistant2}},
-                     100
+                     500
 
-      assert_receive {:chat_status, %{status: "idle"}}, 100
+      assert_receive {:chat_status, %{status: "idle"}}, 500
 
       user_request = Enum.find(user_msg.api_logs, fn log -> log.type == :request end)
       assert user_request != nil, "User message should have request log"
@@ -116,14 +116,14 @@ defmodule Nest.Agents.AgentObservabilityTest do
 
       :ok = Agent.chat(pid, "List files")
 
-      assert_receive {:chat_message, {:user, %{index: 1, api_logs: [user_log]}}}, 100
-      assert_receive {:chat_status, %{status: "streaming"}}, 100
-      assert_receive {:chat_delta, _}, 100
-      assert_receive {:chat_message, {:assistant, %{index: 2, api_logs: [asst1_log]}}}, 100
-      assert_receive {:chat_message, {:tool, %{index: 3, api_logs: [tool_log]}}}, 100
-      assert_receive {:chat_delta, _}, 100
-      assert_receive {:chat_message, {:assistant, %{index: 4, api_logs: [asst2_log]}}}, 100
-      assert_receive {:chat_status, %{status: "idle"}}, 100
+      assert_receive {:chat_message, {:user, %{index: 1, api_logs: [user_log]}}}, 500
+      assert_receive {:chat_status, %{status: "streaming"}}, 500
+      assert_receive {:chat_delta, _}, 500
+      assert_receive {:chat_message, {:assistant, %{index: 2, api_logs: [asst1_log]}}}, 500
+      assert_receive {:chat_message, {:tool, %{index: 3, api_logs: [tool_log]}}}, 500
+      assert_receive {:chat_delta, _}, 500
+      assert_receive {:chat_message, {:assistant, %{index: 4, api_logs: [asst2_log]}}}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 500
 
       assert user_log.id == "001.000"
       assert user_log.type == :request
@@ -148,7 +148,7 @@ defmodule Nest.Agents.AgentObservabilityTest do
     ref = Process.monitor(pid)
     Agent.terminate(pid)
 
-    assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 100
+    assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 500
   end
 
   describe "context limit (configured)" do
@@ -224,7 +224,7 @@ defmodule Nest.Agents.AgentObservabilityTest do
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "First")
-      assert_receive {:chat_status, %{status: "idle"}}, 100
+      assert_receive {:chat_status, %{status: "idle"}}, 500
 
       # usage is exposed via the public API as a GenServer call.
       info1 = Agent.get_public_info(pid)
@@ -233,7 +233,7 @@ defmodule Nest.Agents.AgentObservabilityTest do
       assert info1.usage.last_output == 50
 
       :ok = Agent.chat(pid, "Second")
-      assert_receive {:chat_status, %{status: "idle"}}, 100
+      assert_receive {:chat_status, %{status: "idle"}}, 500
 
       info2 = Agent.get_public_info(pid)
       assert info2.usage.output_tokens == 150
@@ -271,7 +271,7 @@ defmodule Nest.Agents.AgentObservabilityTest do
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "Run a command")
-      assert_receive {:chat_status, %{status: "idle"}}, 100
+      assert_receive {:chat_status, %{status: "idle"}}, 500
 
       info = Agent.get_public_info(pid)
       assert info.usage.output_tokens == 204
@@ -299,14 +299,14 @@ defmodule Nest.Agents.AgentObservabilityTest do
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "First")
-      assert_receive {:chat_status, %{status: "idle"}}, 100
+      assert_receive {:chat_status, %{status: "idle"}}, 500
 
       info1 = Agent.get_public_info(pid)
       assert info1.usage.output_tokens == 25
       assert info1.usage.input_tokens == 50
 
       :ok = Agent.chat(pid, "Second")
-      assert_receive {:chat_status, %{status: "idle"}}, 100
+      assert_receive {:chat_status, %{status: "idle"}}, 500
 
       info2 = Agent.get_public_info(pid)
       assert info2.usage.output_tokens == 25

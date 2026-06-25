@@ -196,44 +196,56 @@ defmodule Nest.Agents.Agent.ChatTurn do
       })
     end
 
-    messages = GenServer.call(state.ctx.agent_pid, :get_messages)
+    {messages, cancelled} = GenServer.call(state.ctx.agent_pid, :get_messages_with_cancelled)
     next_index = GenServer.call(state.ctx.agent_pid, :get_next_index)
     state = %{state | active_message_index: next_index}
 
-    # Mid-iteration preflight: ask the Agent to compact the
-    # messages list if it's about to overflow the context
-    # window. The pre-PR-3 LLMRunner did this before every
-    # LLM call. The Agent's `CompactionHandler.preflight_request/3`
-    # runs the preflight decision and replies with either
-    # `:proceed` (no compaction needed) or `:compacted` (the
-    # compactor ran and returned new messages). The receive
-    # blocks the ChatTurn for up to 30 seconds; if the Agent
-    # doesn't respond we proceed with the existing messages
-    # (avoid deadlock).
-    case Preflight.run(state) do
-      :proceed ->
-        state = maybe_inject_context_warning(state, messages)
-        spawn_http_worker(state, messages)
+    # Short-circuit: if the user clicked Stop, finalize the
+    # partial and stop. Without this, the stop would only be
+    # honored when the next `:stop_chat` message is processed
+    # in this ChatTurn's mailbox — which can be many events
+    # later if a long stream is queued. The agent's
+    # `chat_stopped` handler does the actual finalization
+    # (it has the current `streaming_acc` mirror).
+    if cancelled do
+      send(state.ctx.agent_pid, {:chat_stopped, self()})
+      {:stop, :normal, state}
+    else
+      # Mid-iteration preflight: ask the Agent to compact the
+      # messages list if it's about to overflow the context
+      # window. The pre-PR-3 LLMRunner did this before every
+      # LLM call. The Agent's `CompactionHandler.preflight_request/3`
+      # runs the preflight decision and replies with either
+      # `:proceed` (no compaction needed) or `:compacted` (the
+      # compactor ran and returned new messages). The receive
+      # blocks the ChatTurn for up to 30 seconds; if the Agent
+      # doesn't respond we proceed with the existing messages
+      # (avoid deadlock).
+      case Preflight.run(state) do
+        :proceed ->
+          state = maybe_inject_context_warning(state, messages)
+          spawn_http_worker(state, messages)
 
-      {:compacted, compacted_messages} ->
-        # Compaction just ran — usage dropped, the previously
-        # announced thresholds are stale. Clear the set so
-        # the warnings can re-fire on the way back up. The
-        # reminder check uses the *post-compaction* messages
-        # because that's what the LLM is about to see.
-        state =
-          maybe_inject_context_warning(
-            %{state | crossed_thresholds: MapSet.new()},
-            compacted_messages
-          )
+        {:compacted, compacted_messages} ->
+          # Compaction just ran — usage dropped, the previously
+          # announced thresholds are stale. Clear the set so
+          # the warnings can re-fire on the way back up. The
+          # reminder check uses the *post-compaction* messages
+          # because that's what the LLM is about to see.
+          state =
+            maybe_inject_context_warning(
+              %{state | crossed_thresholds: MapSet.new()},
+              compacted_messages
+            )
 
-        spawn_http_worker(state, compacted_messages)
+          spawn_http_worker(state, compacted_messages)
 
-      :stopped ->
-        # User clicked Stop mid-preflight. Notify the
-        # Agent and stop.
-        send(state.ctx.agent_pid, {:chat_stopped, self()})
-        {:stop, :normal, state}
+        :stopped ->
+          # User clicked Stop mid-preflight. Notify the
+          # Agent and stop.
+          send(state.ctx.agent_pid, {:chat_stopped, self()})
+          {:stop, :normal, state}
+      end
     end
   end
 
