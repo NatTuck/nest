@@ -7,7 +7,6 @@ defmodule Nest.Agents.SupervisorTest do
   import Eventually
 
   alias Nest.Agents.{Registry, Supervisor}
-  alias Nest.Test.TaskDrain
 
   setup do
     # Note: we deliberately do NOT call `Supervisor.stop_agent/1`
@@ -22,7 +21,6 @@ defmodule Nest.Agents.SupervisorTest do
     # shared across all tests in this BEAM VM and wiping in setup
     # races with concurrent async tests' agents. Per-agent cleanup
     # is the agent's own responsibility in `terminate/2`.
-    on_exit(fn -> TaskDrain.drain() end)
 
     :ok
   end

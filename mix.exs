@@ -99,7 +99,7 @@ defmodule Nest.MixProject do
         "deps.unlock --unused",
         "format",
         "credo",
-        "cmd timeout 10 mix test",
+        "cmd timeout 5 mix test",
         "cmd --cd assets pnpm biome ci",
         "test --cover",
         "assets.test"

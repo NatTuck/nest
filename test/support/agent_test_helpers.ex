@@ -76,16 +76,17 @@ defmodule Nest.Agents.AgentTestHelpers do
     end
   end
 
-  # on_exit runs after the test's last assertion. Give the chat
-  # turn a moment to settle (otherwise late messages can land in
-  # the next test's mailbox and match its `assert_receive`
-  # patterns — the source of the agent_stop_test.exs flakiness),
-  # then unsubscribe + drain the test process's mailbox.
+  # on_exit runs after the test's last assertion. Unsubscribe from
+  # the agent's PubSub topic first (so late broadcasts from the
+  # still-cleaning-up chat task can't land in the next test's
+  # mailbox) then drain anything the test process already
+  # received. The unsubscribe + drain is sufficient — `send/2`
+  # messages from the chat task (e.g. the `:stopped` reply) are
+  # already in the mailbox by the time the test ends.
   defp register_on_exit_cleanup(pid, agent_id, test_pid) do
     on_exit(fn ->
       MockClient.stop(pid)
       Phoenix.PubSub.unsubscribe(Nest.PubSub, "agent:#{agent_id}")
-      Process.sleep(200)
       drain_mailbox()
       Process.put(:nest_test_agent_pid, test_pid)
     end)

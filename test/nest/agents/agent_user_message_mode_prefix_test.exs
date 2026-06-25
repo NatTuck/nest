@@ -17,7 +17,6 @@ defmodule Nest.Agents.AgentUserMessageModePrefixTest do
 
   alias Nest.Agents.Agent
   alias Nest.LLM.MockClient
-  alias Nest.Test.TaskDrain
 
   setup :verify_on_exit!
 
@@ -27,7 +26,6 @@ defmodule Nest.Agents.AgentUserMessageModePrefixTest do
     MockClient.clear()
 
     on_exit(fn -> Process.delete(:nest_test_agent_pid) end)
-    on_exit(fn -> TaskDrain.drain() end)
 
     :ok
   end

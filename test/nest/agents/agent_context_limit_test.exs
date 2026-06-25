@@ -17,8 +17,6 @@ defmodule Nest.Agents.AgentContextLimitTest do
   alias Nest.Agents.Agent
   alias Nest.LLM.MockClient
 
-  import Eventually
-
   setup :set_mimic_global
   setup :verify_on_exit!
 
@@ -62,16 +60,17 @@ defmodule Nest.Agents.AgentContextLimitTest do
        }}
     end)
 
-    {pid, _agent_id} =
+    agent_id = "probe-anthropic-#{System.unique_integer([:positive])}"
+    Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+    {pid, _} =
       start_probe_agent(%{
-        id: "probe-anthropic-#{System.unique_integer([:positive])}",
+        id: agent_id,
         model: %{name: "claude-3-opus-20240229"}
       })
 
-    eventually(fn ->
-      info = Agent.get_public_info(pid)
-      info.context_limit == 200_000 and info.context_limit_source == :openrouter
-    end)
+    assert_receive {:chat_status, %{contextLimit: 200_000, contextLimitSource: :openrouter}},
+                   2000
 
     Agent.terminate(pid)
   end

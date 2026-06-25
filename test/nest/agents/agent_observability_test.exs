@@ -11,7 +11,6 @@ defmodule Nest.Agents.AgentObservabilityTest do
   alias Nest.LLM.MockClient
   alias Nest.LLM.RunResponse
   alias Nest.Messages.ToolCall
-  alias Nest.Test.TaskDrain
 
   setup :verify_on_exit!
 
@@ -21,7 +20,6 @@ defmodule Nest.Agents.AgentObservabilityTest do
     MockClient.clear()
 
     on_exit(fn -> Process.delete(:nest_test_agent_pid) end)
-    on_exit(fn -> TaskDrain.drain() end)
 
     :ok
   end

@@ -39,7 +39,6 @@ defmodule Nest.Agents.ChatTaskCrashTest do
   alias Nest.Agents.Agent
   alias Nest.LLM.MockClient
   alias Nest.Messages.Assistant
-  alias Nest.Test.TaskDrain
 
   setup :verify_on_exit!
 
@@ -49,7 +48,6 @@ defmodule Nest.Agents.ChatTaskCrashTest do
     MockClient.clear()
 
     on_exit(fn -> Process.delete(:nest_test_agent_pid) end)
-    on_exit(fn -> TaskDrain.drain() end)
 
     :ok
   end
@@ -120,7 +118,8 @@ defmodule Nest.Agents.ChatTaskCrashTest do
     end
 
     test "the agent GenServer stays alive after the HTTP worker crashes", %{} do
-      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       Mimic.stub(MockClient, :run, fn _request, _opts ->
         raise "boom"
@@ -131,9 +130,11 @@ defmodule Nest.Agents.ChatTaskCrashTest do
       capture_log(fn ->
         :ok = Agent.chat(pid, "Hello")
 
-        # Wait for the agent to settle (broadcast happens, then
-        # the agent goes idle).
-        Process.sleep(100)
+        # Wait for the crash-recovery flow to complete. The
+        # Agent's `chat_crashed/3` handler broadcasts
+        # `chat:status: idle` after finalizing the partial
+        # and transitioning out of `:streaming`.
+        assert_receive {:chat_status, %{status: "idle"}}, 2000
       end)
 
       # The agent is still alive and queryable.

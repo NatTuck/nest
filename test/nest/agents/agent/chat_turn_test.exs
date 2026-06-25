@@ -30,7 +30,6 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
   alias Nest.LLM.MockClient
   alias Nest.Messages.Assistant
   alias Nest.Messages.System, as: SystemMsg
-  alias Nest.Test.TaskDrain
 
   setup :verify_on_exit!
 
@@ -40,34 +39,11 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
     MockClient.clear()
 
     on_exit(fn -> Process.delete(:nest_test_agent_pid) end)
-    on_exit(fn -> TaskDrain.drain() end)
 
     :ok
   end
 
   import Nest.Agents.AgentTestHelpers
-
-  defp wait_for_idle(pid, timeout \\ 2000) do
-    start = System.monotonic_time(:millisecond)
-    do_wait_for_idle(pid, timeout, start)
-  end
-
-  defp do_wait_for_idle(pid, timeout, start) do
-    state = :sys.get_state(pid)
-
-    if state.chat_state.status == :idle do
-      :ok
-    else
-      elapsed = System.monotonic_time(:millisecond) - start
-
-      if elapsed > timeout do
-        :timeout
-      else
-        Process.sleep(10)
-        do_wait_for_idle(pid, timeout, start)
-      end
-    end
-  end
 
   defp message_indices(state) do
     state.chat_state.messages
@@ -81,11 +57,12 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
     test "1.1.1 appends user + assistant, transitions to idle" do
       MockClient.set_response("Hello back")
 
-      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "Hello")
 
-      assert :ok = wait_for_idle(pid)
+      assert_receive {:chat_status, %{status: "idle"}}, 2000
 
       state = :sys.get_state(pid)
 
@@ -119,11 +96,12 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
 
       MockClient.set_response("Tool result was hi")
 
-      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "Run a command")
 
-      assert :ok = wait_for_idle(pid)
+      assert_receive {:chat_status, %{status: "idle"}}, 2000
 
       state = :sys.get_state(pid)
 
@@ -147,11 +125,12 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
 
       MockClient.set_response("All done")
 
-      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       capture_log(fn ->
         :ok = Agent.chat(pid, "Loop until done")
-        assert :ok = wait_for_idle(pid)
+        assert_receive {:chat_status, %{status: "idle"}}, 2000
       end)
 
       state = :sys.get_state(pid)
@@ -206,11 +185,12 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
         })
       end
 
-      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       capture_log(fn ->
         :ok = Agent.chat(pid, "Keep looping")
-        assert :ok = wait_for_idle(pid)
+        assert_receive {:chat_status, %{status: "idle"}}, 2000
       end)
 
       state = :sys.get_state(pid)
@@ -244,26 +224,28 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
       events = for _ <- 1..1000, do: {:text, "x"}
       MockClient.set_stream_events(events)
 
-      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "Tell me a long story")
 
-      # Wait for the chat turn to start streaming.
-      state_after_start = wait_for_streaming(pid)
-      chat_turn_pid = state_after_start.chat_state.chat_turn_pid
-      assert is_pid(chat_turn_pid), "expected a chat_turn_pid while streaming"
+      # The Agent broadcasts `chat:status: streaming` when the
+      # chat turn starts streaming.
+      assert_receive {:chat_status, %{status: "streaming"}}, 2000
 
-      # Wait for at least one delta so we have something
-      # in the streaming_acc mirror to finalize. The
-      # stop-finalized message is always appended (with
-      # `content: nil` if no deltas arrived), but this
-      # test asserts non-nil content, so we make sure
-      # at least one delta was processed before stopping.
-      Process.sleep(20)
+      # Wait for at least one delta to be processed so the
+      # Agent's `streaming_acc` mirror has content to finalize.
+      # The `chat:delta` PubSub broadcast is the event-based
+      # signal that the Agent's `delta_received` handler has
+      # already updated the mirror.
+      assert_receive {:chat_delta, _}, 200
 
-      send(chat_turn_pid, {:stop_chat, self()})
+      # Use the public stop API instead of reaching into the
+      # Agent's private `chat_turn_pid` field. The Agent routes
+      # the stop signal to the ChatTurn internally.
+      Agent.stop_chat(pid, self())
 
-      assert :ok = wait_for_idle(pid)
+      assert_receive {:chat_status, %{status: "idle"}}, 2000
 
       state = :sys.get_state(pid)
 
@@ -281,37 +263,12 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
 
       AgentTestHelpers.assert_unique_message_indices(state)
     end
-
-    defp wait_for_streaming(pid, timeout \\ 1000) do
-      start = System.monotonic_time(:millisecond)
-      do_wait_for_streaming(pid, timeout, start)
-    end
-
-    defp do_wait_for_streaming(pid, timeout, start) do
-      state = :sys.get_state(pid)
-
-      streaming? =
-        state.chat_state.status == :streaming and
-          state.chat_state.chat_turn_pid != nil
-
-      if streaming? do
-        state
-      else
-        elapsed = System.monotonic_time(:millisecond) - start
-
-        if elapsed > timeout do
-          state
-        else
-          Process.sleep(5)
-          do_wait_for_streaming(pid, timeout, start)
-        end
-      end
-    end
   end
 
   describe "HTTP worker crash" do
     test "1.1.6 Agent receives {:chat_crashed, _}, broadcasts chat:error, transitions to idle" do
-      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       Mimic.stub(MockClient, :run, fn _request, _opts ->
         raise FunctionClauseError,
@@ -330,7 +287,7 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
       capture_log(fn ->
         :ok = Agent.chat(pid, "Hello")
 
-        assert :ok = wait_for_idle(pid)
+        assert_receive {:chat_status, %{status: "idle"}}, 2000
       end)
 
       state = :sys.get_state(pid)
@@ -345,16 +302,17 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
       MockClient.set_response("First response")
       MockClient.set_response("Second response with no usage event")
 
-      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "First")
-      assert :ok = wait_for_idle(pid)
+      assert_receive {:chat_status, %{status: "idle"}}, 2000
 
       first_info = Agent.get_public_info(pid)
       first_output = first_info.usage.output_tokens || 0
 
       :ok = Agent.chat(pid, "Second")
-      assert :ok = wait_for_idle(pid)
+      assert_receive {:chat_status, %{status: "idle"}}, 2000
 
       second_info = Agent.get_public_info(pid)
       second_output = second_info.usage.output_tokens || 0
@@ -370,13 +328,14 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
       MockClient.set_response("First")
       MockClient.set_response("Second")
 
-      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "First chat")
-      assert :ok = wait_for_idle(pid)
+      assert_receive {:chat_status, %{status: "idle"}}, 2000
 
       :ok = Agent.chat(pid, "Second chat")
-      assert :ok = wait_for_idle(pid)
+      assert_receive {:chat_status, %{status: "idle"}}, 2000
 
       state = :sys.get_state(pid)
       indices = message_indices(state)

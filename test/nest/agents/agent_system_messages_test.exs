@@ -18,7 +18,6 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
   alias Nest.Agents.Agent
   alias Nest.LLM.MockClient
   alias Nest.Messages.System, as: SystemMsg
-  alias Nest.Test.TaskDrain
 
   setup :verify_on_exit!
 
@@ -28,7 +27,6 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
     MockClient.clear()
 
     on_exit(fn -> Process.delete(:nest_test_agent_pid) end)
-    on_exit(fn -> TaskDrain.drain() end)
 
     :ok
   end
@@ -124,13 +122,15 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
 
       MockClient.set_response("All done")
 
-      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       capture_log(fn ->
         :ok = Agent.chat(pid, "Loop until done")
-        # Wait for the chat to finish.
-        _ = :sys.get_state(pid)
-        Process.sleep(200)
+        # Wait for the chat to finish. The Agent broadcasts
+        # `chat:status: idle` on every finalization (after
+        # the budget reminder has been persisted).
+        assert_receive {:chat_status, %{status: "idle"}}, 2000
       end)
 
       state = :sys.get_state(pid)

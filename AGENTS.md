@@ -54,11 +54,13 @@ failing, they are failing.
 the task.
 - **NEVER** remove correct partial testing logic to get a test to pass. Finish
 the test.
+- **NEVER** look at the git history of code you haven't read as a debugging or
+explanation tool.
 
 ### More Testing Rules
 
 - NO development work is done until `mix precommit` runs perfectly with no
-errors or warnings, `mix test` runs in under 10 seconds with no stray prints. NO
+errors or warnings, `mix test` runs in under 5 seconds with no stray prints. NO
 EXCEPTIONS, NO EXCUSES.
 - NEVER run the test suite and throw away the output by piping to tail, head,
 grep or similar. If you run tests, look at the whole output every time.

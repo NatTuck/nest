@@ -21,7 +21,6 @@ defmodule Nest.Agents.AgentStopTest do
   alias Nest.Agents.Agent
   alias Nest.LLM.MockClient
   alias Nest.Messages.Assistant
-  alias Nest.Test.TaskDrain
 
   setup :verify_on_exit!
 
@@ -42,7 +41,6 @@ defmodule Nest.Agents.AgentStopTest do
     drain_test_mailbox()
 
     on_exit(fn -> Process.delete(:nest_test_agent_pid) end)
-    on_exit(fn -> TaskDrain.drain() end)
 
     :ok
   end
@@ -103,11 +101,9 @@ defmodule Nest.Agents.AgentStopTest do
 
       # No chat turn is in flight. The stop handler runs
       # without crashing; no `chat:status: idle` is broadcast
-      # because the agent is already idle.
+      # because the agent is already idle. The `refute_receive`
+      # waits up to 50ms for a broadcast that should never come.
       :ok = Agent.stop_chat(pid, self())
-
-      # Give the (no-op) handler a chance to run.
-      Process.sleep(20)
       refute_receive {:chat_status, _}, 50
     end
   end

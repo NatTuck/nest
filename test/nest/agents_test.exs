@@ -8,7 +8,6 @@ defmodule Nest.AgentsTest do
   import Mimic
 
   alias Nest.Agents
-  alias Nest.Test.TaskDrain
 
   setup :verify_on_exit!
 
@@ -23,7 +22,6 @@ defmodule Nest.AgentsTest do
     # shared across all tests in this BEAM VM and wiping in setup
     # races with concurrent async tests' agents. Per-agent cleanup
     # is the agent's own responsibility in `terminate/2`.
-    on_exit(fn -> TaskDrain.drain() end)
 
     :ok
   end

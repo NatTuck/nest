@@ -15,7 +15,6 @@ defmodule Nest.Agents.AgentCompactionTest do
   alias Nest.Messages.Streaming
   alias Nest.Messages.Tool
   alias Nest.Messages.User
-  alias Nest.Test.TaskDrain
   alias Nest.Vocations
 
   setup :verify_on_exit!
@@ -26,7 +25,6 @@ defmodule Nest.Agents.AgentCompactionTest do
     MockClient.clear()
 
     on_exit(fn -> Process.delete(:nest_test_agent_pid) end)
-    on_exit(fn -> TaskDrain.drain() end)
 
     :ok
   end

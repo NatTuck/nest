@@ -13,7 +13,6 @@ defmodule NestWeb.AgentChannelTestHelpers do
       alias Nest.Agents
       alias Nest.Agents.Supervisor
       alias Nest.LLM.MockClient
-      alias Nest.Test.TaskDrain
       alias NestWeb.AgentChannel
       alias NestWeb.UserSocket
 
@@ -41,8 +40,6 @@ defmodule NestWeb.AgentChannelTestHelpers do
         # Connect socket and join agent channel
         {:ok, _, socket} =
           subscribe_and_join(socket(UserSocket), AgentChannel, "agent:#{id}")
-
-        on_exit(fn -> TaskDrain.drain() end)
 
         {:ok, socket: socket, agent_id: id}
       end

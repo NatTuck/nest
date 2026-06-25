@@ -12,7 +12,6 @@ defmodule Nest.Agents.AgentTmpPathTest do
 
   alias Nest.Agents.Agent
   alias Nest.LLM.MockClient
-  alias Nest.Test.TaskDrain
 
   setup :verify_on_exit!
 
@@ -23,7 +22,6 @@ defmodule Nest.Agents.AgentTmpPathTest do
     parent_dir = "/tmp/nest-#{System.pid()}"
     File.rm_rf(parent_dir)
     on_exit(fn -> File.rm_rf(parent_dir) end)
-    on_exit(fn -> TaskDrain.drain() end)
 
     Process.put(:nest_test_agent_pid, self())
     MockClient.start_link()

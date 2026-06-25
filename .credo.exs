@@ -153,6 +153,7 @@
           {Credo.Check.Warning.SpecWithStruct, []},
           {Credo.Check.Warning.StructFieldAmount, [max_fields: 16]},
           {Nest.Credo.Check.SourceFileMaxLines, [max_lines: 500]},
+          {Nest.Credo.Check.NoSleepInTests, []},
           {Credo.Check.Warning.UnsafeExec, []},
           {Credo.Check.Warning.UnusedEnumOperation, []},
           {Credo.Check.Warning.UnusedFileOperation, []},
