@@ -1,5 +1,5 @@
 defmodule Nest.VocationsTest do
-  use Nest.DataCase, async: false
+  use Nest.DataCase, async: true
 
   alias Nest.Vocations
   alias Nest.Vocations.Vocation

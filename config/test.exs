@@ -6,8 +6,11 @@ import Config
 # to provide built-in test partitioning in CI environment.
 # Run `mix help test` for more information.
 config :nest, Nest.Repo,
-  database: Path.expand("../db/nest_test.db", __DIR__),
-  pool_size: 8,
+  username: System.fetch_env!("USER"),
+  socket_dir: "/var/run/postgresql",
+  database: "nest_test",
+  pool_size: 20,
+  ownership_timeout: 30_000,
   pool: Ecto.Adapters.SQL.Sandbox
 
 # We don't run a server during test. If one is required,

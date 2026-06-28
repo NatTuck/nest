@@ -6,7 +6,7 @@ defmodule Nest.Repo.Migrations.CreateVocations do
       add :name, :string
       add :description, :string
       add :system_prompt, :text
-      add :tools, :map
+      add :tools, {:array, :string}, default: []
       add :modes, :map
 
       timestamps(type: :utc_datetime)

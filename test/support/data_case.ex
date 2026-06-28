@@ -8,10 +8,9 @@ defmodule Nest.DataCase do
 
   Finally, if the test case interacts with the database,
   we enable the SQL sandbox, so changes done to the database
-  are reverted at the end of every test. If you are using
-  PostgreSQL, you can even run database tests asynchronously
-  by setting `use Nest.DataCase, async: true`, although
-  this option is not recommended for other databases.
+  are reverted at the end of every test. Database tests can
+  be run asynchronously by setting `use Nest.DataCase,
+  async: true`.
   """
 
   use ExUnit.CaseTemplate
@@ -37,13 +36,18 @@ defmodule Nest.DataCase do
   @doc """
   Sets up the sandbox based on the test tags.
 
-  Tests tagged with `:db_shared` (or that match the optional second
-  argument) opt into `shared: true`, which lets spawned children
-  (e.g. an `Agent` GenServer whose `init/1` queries the DB) use
-  the test's checked-out connection without a separate
-  `Sandbox.allow/3` call. This is needed for async tests that
-  start a GenServer doing DB work in `init/1`; without it, the
-  GenServer's `init/1` fails with `DBConnection.OwnershipError`.
+  Sync tests opt into `shared: true` automatically (the default
+  pattern for shared mode). Async tests opt in via the `:db_shared`
+  tag, which lets spawned children (e.g. an `Agent` GenServer
+  whose `init/1` queries the DB) use the test's checked-out
+  connection without a separate `Sandbox.allow/3` call. Without
+  it, async tests get `shared: false` and any child doing DB work
+  in `init/1` fails with `DBConnection.OwnershipError`.
+
+  Note: the `{:shared, pid}` ownership mode is REPO-WIDE — only
+  one process can hold it at a time. Tests tagged `:db_shared`
+  serialize against each other for shared-mode acquisition, so
+  the tag should only be applied to tests that genuinely need it.
   """
   def setup_sandbox(tags, db_shared_tag \\ :db_shared) do
     shared = tags[db_shared_tag] || not tags[:async]

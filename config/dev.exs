@@ -10,7 +10,9 @@ config :phoenix_copy,
 
 # Configure your database
 config :nest, Nest.Repo,
-  database: Path.expand("../db/nest_dev.db", __DIR__),
+  username: System.fetch_env!("USER"),
+  socket_dir: "/var/run/postgresql",
+  database: "nest_dev",
   pool_size: 5,
   stacktrace: true,
   show_sensitive_data_on_connection_error: true

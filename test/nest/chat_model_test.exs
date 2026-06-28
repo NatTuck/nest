@@ -9,7 +9,7 @@ defmodule Nest.ChatModelTest do
   - Endpoint construction (URL building)
   """
 
-  use Nest.DataCase, async: false
+  use Nest.DataCase, async: true
 
   alias Nest.ChatModel
   alias Nest.DotConfig
