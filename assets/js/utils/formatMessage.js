@@ -40,20 +40,37 @@ export function messageToMarkdown(message) {
   if (!message || typeof message !== "object") return "";
 
   const role = message.role;
-  const content = typeof message.content === "string" ? message.content : "";
-  const thinking = typeof message.thinking === "string" ? message.thinking : "";
+  // Derive the flat text/thinking from `parts` (the new
+  // canonical wire format). Falls back to legacy `content` /
+  // `thinking` fields for compatibility.
+  const text = Array.isArray(message.parts)
+    ? message.parts
+        .filter((p) => p && p.kind === "text")
+        .map((p) => p.text || "")
+        .join("")
+    : typeof message.content === "string"
+      ? message.content
+      : "";
+  const thinking = Array.isArray(message.parts)
+    ? message.parts
+        .filter((p) => p && p.kind === "thinking")
+        .map((p) => p.thinking || "")
+        .join("")
+    : typeof message.thinking === "string"
+      ? message.thinking
+      : "";
 
   if (role === "user") {
-    return stripModePrefix(content, message.mode ?? "");
+    return stripModePrefix(text, message.mode ?? "");
   }
 
   if (role === "assistant") {
-    if (thinking && content) return `${thinking}\n\n---\n\n${content}`;
+    if (thinking && text) return `${thinking}\n\n---\n\n${text}`;
     if (thinking) return thinking;
-    return content;
+    return text;
   }
 
-  return content;
+  return text;
 }
 
 /**

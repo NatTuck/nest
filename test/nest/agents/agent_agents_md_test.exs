@@ -2,7 +2,7 @@ defmodule Nest.Agents.AgentAgentsMdTest do
   @moduledoc """
   Tests for AGENTS.md loading into the system prompt.
   """
-  use Nest.DataCase, async: false
+  use Nest.DataCase, async: true
 
   import Mimic
 

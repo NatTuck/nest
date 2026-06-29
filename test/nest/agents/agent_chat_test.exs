@@ -3,13 +3,14 @@ defmodule Nest.Agents.AgentChatTest do
   Agent chat tests: `chat/2`, delta handling, `chat/3` with mode,
   the Vocation struct in state, and system prompt composition.
   """
-  use Nest.DataCase, async: false
+  use Nest.DataCase, async: true
 
   import ExUnit.CaptureLog
   import Mimic
 
   alias Nest.Agents.Agent
   alias Nest.LLM.MockClient
+  alias Nest.Messages.Part
   alias Nest.Vocations
 
   setup :verify_on_exit!
@@ -33,7 +34,8 @@ defmodule Nest.Agents.AgentChatTest do
 
       :ok = Agent.chat(pid, "Hello")
 
-      assert_receive {:chat_message, {:user, %{index: 1, content: "[mode: chat]\nHello"}}},
+      assert_receive {:chat_message,
+                      {:user, %{index: 1, parts: [%Part.Text{text: "[mode: chat]\nHello"}]}}},
                      100
 
       assert_receive {:chat_status, %{status: "streaming"}}, 100
@@ -64,7 +66,8 @@ defmodule Nest.Agents.AgentChatTest do
         capture_log(fn ->
           :ok = Agent.chat(pid, "Hello")
 
-          assert_receive {:chat_message, {:user, %{index: 1, content: "[mode: chat]\nHello"}}},
+          assert_receive {:chat_message,
+                          {:user, %{index: 1, parts: [%Part.Text{text: "[mode: chat]\nHello"}]}}},
                          100
 
           assert_receive {:chat_error, _error}, 100
@@ -85,7 +88,8 @@ defmodule Nest.Agents.AgentChatTest do
         capture_log(fn ->
           :ok = Agent.chat(pid, "Hello")
 
-          assert_receive {:chat_message, {:user, %{index: 1, content: "[mode: chat]\nHello"}}},
+          assert_receive {:chat_message,
+                          {:user, %{index: 1, parts: [%Part.Text{text: "[mode: chat]\nHello"}]}}},
                          100
 
           assert_receive {:chat_error, _error}, 100
@@ -109,8 +113,9 @@ defmodule Nest.Agents.AgentChatTest do
 
       # The assistant message broadcast carries the full accumulated
       # content as the externally visible result.
-      assert_receive {:chat_message, {:assistant, %{content: full_text}}}, 100
+      assert_receive {:chat_message, {:assistant, %{parts: parts}}}, 100
 
+      full_text = text_from_parts(parts)
       assert partial_text != ""
       assert full_text != ""
       assert String.contains?(full_text, partial_text) or partial_text == full_text
@@ -142,7 +147,11 @@ defmodule Nest.Agents.AgentChatTest do
 
       # Vocation-less agent has no "build" mode, falls back to "chat"
       assert_receive {:chat_message,
-                      {:user, %{content: "[mode: chat]\nRead foo", metadata: %{"mode" => "chat"}}}},
+                      {:user,
+                       %{
+                         parts: [%Part.Text{text: "[mode: chat]\nRead foo"}],
+                         metadata: %{"mode" => "chat"}
+                       }}},
                      100
     end
 
@@ -153,7 +162,11 @@ defmodule Nest.Agents.AgentChatTest do
       :ok = Agent.chat(pid, "Hello", "nonexistent-mode")
 
       assert_receive {:chat_message,
-                      {:user, %{content: "[mode: chat]\nHello", metadata: %{"mode" => "chat"}}}},
+                      {:user,
+                       %{
+                         parts: [%Part.Text{text: "[mode: chat]\nHello"}],
+                         metadata: %{"mode" => "chat"}
+                       }}},
                      100
     end
 
@@ -164,7 +177,11 @@ defmodule Nest.Agents.AgentChatTest do
       :ok = Agent.chat(pid, "Hello")
 
       assert_receive {:chat_message,
-                      {:user, %{content: "[mode: chat]\nHello", metadata: %{"mode" => "chat"}}}},
+                      {:user,
+                       %{
+                         parts: [%Part.Text{text: "[mode: chat]\nHello"}],
+                         metadata: %{"mode" => "chat"}
+                       }}},
                      100
     end
 
@@ -198,7 +215,11 @@ defmodule Nest.Agents.AgentChatTest do
       :ok = Agent.chat(pid, "Run", "build")
 
       assert_receive {:chat_message,
-                      {:user, %{content: "[mode: build]\nRun", metadata: %{"mode" => "build"}}}},
+                      {:user,
+                       %{
+                         parts: [%Part.Text{text: "[mode: build]\nRun"}],
+                         metadata: %{"mode" => "build"}
+                       }}},
                      100
     end
 
@@ -233,7 +254,11 @@ defmodule Nest.Agents.AgentChatTest do
 
       # Default is the lexicographically first mode: "build"
       assert_receive {:chat_message,
-                      {:user, %{content: "[mode: build]\nHello", metadata: %{"mode" => "build"}}}},
+                      {:user,
+                       %{
+                         parts: [%Part.Text{text: "[mode: build]\nHello"}],
+                         metadata: %{"mode" => "build"}
+                       }}},
                      100
     end
 
@@ -271,7 +296,10 @@ defmodule Nest.Agents.AgentChatTest do
 
       assert_receive {:chat_message,
                       {:user,
-                       %{content: "[mode: plan]\nPlan this", metadata: %{"mode" => "plan"}}}},
+                       %{
+                         parts: [%Part.Text{text: "[mode: plan]\nPlan this"}],
+                         metadata: %{"mode" => "plan"}
+                       }}},
                      100
 
       assert_receive {:chat_status, %{status: "idle", currentMode: "plan"}}, 100
@@ -382,7 +410,11 @@ defmodule Nest.Agents.AgentChatTest do
       # The fallback to the vocation's default ("build", lex-first)
       # is externally visible on the user message's metadata.
       assert_receive {:chat_message,
-                      {:user, %{content: "[mode: build]\nHi", metadata: %{"mode" => "build"}}}},
+                      {:user,
+                       %{
+                         parts: [%Part.Text{text: "[mode: build]\nHi"}],
+                         metadata: %{"mode" => "build"}
+                       }}},
                      100
     end
   end

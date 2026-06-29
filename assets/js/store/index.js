@@ -653,12 +653,28 @@ export const useStore = create(
           const cache = state.agentsCache[id];
           if (!cache) return state;
 
+          // Helper: extract concatenated text from a parts list,
+          // falling back to a flat `content` string (legacy shape
+          // or messages from non-text parts only). Keeps the
+          // streaming-comparison code below working regardless of
+          // which shape the server sent.
+          const flatten = (m) => {
+            if (!m) return "";
+            if (Array.isArray(m.parts)) {
+              return m.parts
+                .filter((p) => p && p.kind === "text")
+                .map((p) => p.text || "")
+                .join("");
+            }
+            return m.content || "";
+          };
+
           // Check both streaming (new) and partial (legacy) for backward compatibility
           const streaming = cache.streaming || cache.partial;
           const streamingIndex = streaming?.messageIndex ?? streaming?.index;
           if (streaming && streamingIndex === message.index) {
             const streamingContent = streaming.content || "";
-            const messageContent = message.content || "";
+            const messageContent = flatten(message);
 
             if (streamingContent !== messageContent) {
               const extraInPartial =
@@ -718,8 +734,20 @@ export const useStore = create(
           // prominent, grep-able error so the regression is visible
           // in the browser dev tools.
           const mergedThinking = (() => {
-            if (message.thinking) return message.thinking;
-            if (!streaming?.segments) return message.thinking ?? null;
+            // Extract concatenated thinking from the parts list
+            // (new format) or the legacy `thinking` field.
+            const fromParts = (parts) => {
+              if (!Array.isArray(parts)) return null;
+              const text = parts
+                .filter((p) => p && p.kind === "thinking")
+                .map((p) => p.thinking || "")
+                .join("");
+              return text || null;
+            };
+
+            const direct = fromParts(message.parts) ?? message.thinking;
+            if (direct) return direct;
+            if (!streaming?.segments) return direct ?? null;
             const fromSegments = streaming.segments
               .filter((s) => s && s.type === "thinking")
               .map((s) => s.content || "")
@@ -729,16 +757,75 @@ export const useStore = create(
                 "[NEST REGRESSION] Thinking lost on tool-call finalization; " +
                   "fell back to streaming partial. " +
                   "The server's `build_tool_pair/3` is dropping the " +
-                  "`thinking` field again — see llm_runner.ex:274-288. " +
+                  "thinking field again — see llm_runner.ex:274-288. " +
                   "Preserved thinking:",
                 fromSegments,
               );
               return fromSegments;
             }
-            return message.thinking ?? null;
+            return direct ?? null;
           })();
 
-          // Merge apiLogs, toolCalls, and toolResults if updating an existing message
+          // Merge apiLogs and tool parts if updating an existing message.
+          // The new wire format uses `parts` (mixed-kind list). The
+          // legacy shape had `toolCalls` + `toolResults` fields —
+          // we derive those views from `parts` for the merged
+          // message so the rest of the UI keeps working. Returns
+          // `null` when no relevant parts are present so
+          // downstream code can fall through to the legacy
+          // `message.toolCalls` / `message.toolResults` fields.
+          const toolCallsFromParts = (parts) => {
+            if (!Array.isArray(parts)) return null;
+            const tcs = parts.filter((p) => p && p.kind === "tool_use");
+            if (tcs.length === 0) return null;
+            return tcs.map((p) => ({
+              id: p.id,
+              name: p.name,
+              arguments: p.arguments || {},
+            }));
+          };
+
+          const toolResultsFromParts = (parts) => {
+            if (!Array.isArray(parts)) return null;
+            const trs = parts.filter((p) => p && p.kind === "tool_result");
+            if (trs.length === 0) return null;
+            return trs.map((p) => ({
+              tool_call_id: p.toolCallId,
+              name: p.name,
+              content: p.content || "",
+              is_error: !!p.isError,
+            }));
+          };
+
+          // Helper: derive a parts-list view from a message's
+          // either-`parts` or legacy-`toolCalls`/`toolResults`
+          // fields. Used by the merge path below so messages
+          // sent in either shape populate the right `toolCalls`
+          // / `toolResults` derivation. Always returns an array
+          // (possibly empty).
+          const partsShape = (m) => {
+            if (!m) return [];
+            if (Array.isArray(m.parts)) return m.parts;
+            if (m.role === "assistant" && Array.isArray(m.toolCalls)) {
+              return m.toolCalls.map((tc) => ({
+                kind: "tool_use",
+                id: tc.id,
+                name: tc.name,
+                arguments: tc.arguments || {},
+              }));
+            }
+            if (m.role === "tool" && Array.isArray(m.toolResults)) {
+              return m.toolResults.map((tr) => ({
+                kind: "tool_result",
+                toolCallId: tr.tool_call_id,
+                name: tr.name,
+                content: tr.content || "",
+                isError: !!tr.is_error,
+              }));
+            }
+            return [];
+          };
+
           const newMessages = exists
             ? cache.messages.map((m) => {
                 if (m.index === message.index) {
@@ -746,15 +833,33 @@ export const useStore = create(
                   const mergedApiLogs = message.apiLogs?.length
                     ? message.apiLogs
                     : m.apiLogs || [];
-                  // Preserve toolCalls and toolResults from existing message if not in new message
-                  const mergedToolCalls = message.toolCalls?.length
-                    ? message.toolCalls
-                    : m.toolCalls || [];
-                  const mergedToolResults = message.toolResults?.length
-                    ? message.toolResults
-                    : m.toolResults || [];
+
+                  // Derive tool calls / results from `parts` (new
+                  // format) or fall back to legacy fields. Prefer
+                  // the new message's data; preserve the existing
+                  // message's data if the new one doesn't carry
+                  // tool parts.
+                  const newToolCalls = toolCallsFromParts(message.parts) || [];
+                  const mergedToolCalls = newToolCalls.length
+                    ? newToolCalls
+                    : toolCallsFromParts(partsShape(m)) || [];
+
+                  const newToolResults =
+                    toolResultsFromParts(message.parts) || [];
+                  const mergedToolResults = newToolResults.length
+                    ? newToolResults
+                    : toolResultsFromParts(partsShape(m)) || [];
+
                   return {
                     ...message,
+                    // Derive the legacy `content`/`thinking`
+                    // fields from `parts` so downstream components
+                    // that still read those flat fields keep
+                    // working. `mergedThinking` already does this
+                    // for the thinking path; the content field
+                    // here is the visible text (concatenated text
+                    // parts).
+                    content: flatten(message) || m.content || "",
                     thinking: mergedThinking,
                     apiLogs: mergedApiLogs,
                     toolCalls: mergedToolCalls,
@@ -763,7 +868,24 @@ export const useStore = create(
                 }
                 return m;
               })
-            : [...cache.messages, { ...message, thinking: mergedThinking }];
+            : [
+                ...cache.messages,
+                {
+                  ...message,
+                  // Derive the legacy `content` field for
+                  // downstream code that reads it as a flat string.
+                  content: flatten(message) || message.content || "",
+                  thinking: mergedThinking,
+                  toolCalls:
+                    toolCallsFromParts(message.parts) ||
+                    toolCallsFromParts(partsShape(message)) ||
+                    [],
+                  toolResults:
+                    toolResultsFromParts(message.parts) ||
+                    toolResultsFromParts(partsShape(message)) ||
+                    [],
+                },
+              ];
 
           return {
             agentsCache: {

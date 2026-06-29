@@ -158,7 +158,9 @@ defmodule Nest.ChatModelTest do
 
       request = %Nest.LLM.RunRequest{
         model: config.model,
-        messages: [{:user, %Nest.Messages.User{index: 1, content: "hi"}}]
+        messages: [
+          {:user, %Nest.Messages.User{index: 1, parts: [%Nest.Messages.Part.Text{text: "hi"}]}}
+        ]
       }
 
       # Smoke-check the wire shape and base_url. The AnthropicClient

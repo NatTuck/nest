@@ -9,9 +9,11 @@ defmodule Nest.Agents.AgentTestHelpers do
   import ExUnit.Assertions
 
   alias Nest.Agents.Agent
+  alias Nest.Agents.Agent.Init
   alias Nest.DotConfig
   alias Nest.LLM.MockClient
   alias Nest.LLM.OpenAIClient
+  alias Nest.Messages.Part
 
   def start_agent(attrs) do
     agent_id = "test-agent-#{System.unique_integer([:positive])}"
@@ -38,7 +40,21 @@ defmodule Nest.Agents.AgentTestHelpers do
       model: %{name: "qwen3.5-plus", provider: "model-studio"}
     }
 
-    Map.merge(defaults, attrs)
+    merged = Map.merge(defaults, attrs)
+
+    # Pre-fetch the vocation in the test process so the agent's
+    # `init/1` has no DB work. The test process owns the sandbox
+    # connection (via `DataCase.setup_sandbox`) and uses it for
+    # this read; subsequent DB writes from the agent's handlers
+    # walk `$callers` back to the test pid and use the same
+    # connection. No `Sandbox.allow/3` per agent pid needed.
+    case Map.get(merged, :vocation_id) do
+      nil ->
+        merged
+
+      vocation_id ->
+        Map.put_new(merged, :vocation, Init.load_vocation(vocation_id))
+    end
   end
 
   # In async mode, Mimic stubs are per-test-process by default.
@@ -94,6 +110,25 @@ defmodule Nest.Agents.AgentTestHelpers do
 
   def get_system_prompt(pid) do
     GenServer.call(pid, :get_system_prompt)
+  end
+
+  @doc """
+  Concatenate the text from a list of `Part` structs, in order.
+  Used by tests that used to assert on `message.content` to
+  bridge to the parts-based representation. Skips non-text
+  parts.
+  """
+  @spec text_from_parts([Part.t()]) :: String.t()
+  def text_from_parts(nil), do: ""
+  def text_from_parts([]), do: ""
+
+  def text_from_parts(parts) when is_list(parts) do
+    Enum.map_join(parts, "", fn
+      %Part.Text{text: text} -> text
+      %Part.Thinking{thinking: text} -> text
+      %Part.Refusal{refusal: text} -> text
+      _ -> ""
+    end)
   end
 
   @doc false

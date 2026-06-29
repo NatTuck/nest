@@ -4,7 +4,7 @@ defmodule Nest.Agents.AgentCompactionTest do
   compaction history, pre-flight streaming guard, and
   `chat:compaction` broadcast.
   """
-  use Nest.DataCase, async: false
+  use Nest.DataCase, async: true
 
   import Mimic
 
@@ -12,6 +12,7 @@ defmodule Nest.Agents.AgentCompactionTest do
   alias Nest.LLM.MockClient
   alias Nest.LLM.RunResponse
   alias Nest.Messages.Assistant
+  alias Nest.Messages.Part
   alias Nest.Messages.Streaming
   alias Nest.Messages.Tool
   alias Nest.Messages.User
@@ -81,18 +82,19 @@ defmodule Nest.Agents.AgentCompactionTest do
       assert_receive {:chat_message, {:user, _}}, 100
       assert_receive {:chat_status, %{status: "streaming"}}, 100
       assert_receive {:chat_delta, %{content: "Reading file"}}, 100
-      assert_receive {:chat_message, {:tool, %Tool{tool_results: [result]}}}, 100
+      assert_receive {:chat_message, {:tool, %Tool{parts: [result_part | _]}}}, 100
       assert_receive {:chat_delta, %{content: "Done"}}, 100
       assert_receive {:chat_message, {:assistant, _}}, 100
       assert_receive {:chat_status, %{status: "idle"}}, 100
 
-      refute String.contains?(result.content, "[truncated:")
-      refute String.contains?(result.content, "[skipped:")
-      assert result.is_error == false
+      %Part.ToolResult{content: content, is_error: is_error} = result_part
+      refute String.contains?(content, "[truncated:")
+      refute String.contains?(content, "[skipped:")
+      assert is_error == false
       # The tool actually ran (we have a Programmer vocation with
       # shell_cmd registered), so the result should be the
       # command's output, not "Unknown tool: ...".
-      assert result.content =~ "small"
+      assert content =~ "small"
 
       Agent.terminate(pid)
     end
@@ -137,13 +139,13 @@ defmodule Nest.Agents.AgentCompactionTest do
       assert_receive {:chat_message, {:user, _}}, 100
       assert_receive {:chat_status, %{status: "streaming"}}, 100
       assert_receive {:chat_delta, %{content: "Running two commands"}}, 100
-      assert_receive {:chat_message, {:tool, %Tool{tool_results: results}}}, 100
+      assert_receive {:chat_message, {:tool, %Tool{parts: parts}}}, 100
       assert_receive {:chat_delta, %{content: "All done"}}, 100
       assert_receive {:chat_message, {:assistant, _}}, 100
       assert_receive {:chat_status, %{status: "idle"}}, 100
 
-      assert length(results) == 2
-      assert Enum.map(results, & &1.tool_call_id) == ["call_1", "call_2"]
+      assert length(parts) == 2
+      assert Enum.map(parts, & &1.tool_call_id) == ["call_1", "call_2"]
 
       Agent.terminate(pid)
     end
@@ -155,16 +157,19 @@ defmodule Nest.Agents.AgentCompactionTest do
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       old_messages = [
-        {:user, %User{index: 0, content: "First", api_logs: []}},
-        {:assistant, %Assistant{index: 1, content: "A1", api_logs: []}},
-        {:user, %User{index: 2, content: "Second", api_logs: []}},
-        {:assistant, %Assistant{index: 3, content: "A2", api_logs: []}}
+        {:user, %User{index: 0, parts: [%Part.Text{text: "First"}], api_logs: []}},
+        {:assistant, %Assistant{index: 1, parts: [%Part.Text{text: "A1"}], api_logs: []}},
+        {:user, %User{index: 2, parts: [%Part.Text{text: "Second"}], api_logs: []}},
+        {:assistant, %Assistant{index: 3, parts: [%Part.Text{text: "A2"}], api_logs: []}}
       ]
 
       new_messages = [
         {:system,
-         %Nest.Messages.System{index: 4, content: "[Summary of earlier conversation]:\n\n..."}},
-        {:user, %User{index: 5, content: "Third", api_logs: []}}
+         %Nest.Messages.System{
+           index: 4,
+           parts: [%Part.Text{text: "[Summary of earlier conversation]:\n\n..."}]
+         }},
+        {:user, %User{index: 5, parts: [%Part.Text{text: "Third"}], api_logs: []}}
       ]
 
       :sys.replace_state(pid, fn s ->
@@ -277,7 +282,11 @@ defmodule Nest.Agents.AgentCompactionTest do
       assert_receive {:chat_message, {:user, _}}, 100
       assert_receive {:chat_status, %{status: "streaming"}}, 100
       assert_receive {:chat_delta, %{content: "compacting"}}, 500
-      assert_receive {:chat_message, {:assistant, %{tool_calls: [%{name: "context"}]}}}, 500
+
+      assert_receive {:chat_message,
+                      {:assistant, %{parts: [_text, %Part.ToolUse{name: "context"} | _]}}},
+                     500
+
       assert_receive {:chat_status, %{status: "executing_tools"}}, 500
 
       # The GenServer spawns the compactor, which calls the LLM,
@@ -288,9 +297,10 @@ defmodule Nest.Agents.AgentCompactionTest do
       # "Compacted N messages..." tool result string.
       assert_receive {:chat_compaction, _payload}, 500
 
-      assert_receive {:chat_message, {:tool, %Tool{tool_results: [result]}}}, 1000
-      assert result.is_error == false
-      assert String.starts_with?(result.content, "Compacted ")
+      assert_receive {:chat_message, {:tool, %Tool{parts: [result_part | _]}}}, 1000
+      %Part.ToolResult{content: content, is_error: is_error} = result_part
+      assert is_error == false
+      assert String.starts_with?(content, "Compacted ")
 
       # The chat task makes a second LLM call (consuming the
       # "Done" response), broadcasts the final text, and the
@@ -310,14 +320,17 @@ defmodule Nest.Agents.AgentCompactionTest do
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       old_messages = [
-        {:user, %User{index: 0, content: "First", api_logs: []}},
-        {:assistant, %Assistant{index: 1, content: "A1", api_logs: []}}
+        {:user, %User{index: 0, parts: [%Part.Text{text: "First"}], api_logs: []}},
+        {:assistant, %Assistant{index: 1, parts: [%Part.Text{text: "A1"}], api_logs: []}}
       ]
 
       new_messages = [
         {:system,
-         %Nest.Messages.System{index: 2, content: "[Summary of earlier conversation]:\n\n..."}},
-        {:user, %User{index: 3, content: "Next", api_logs: []}}
+         %Nest.Messages.System{
+           index: 2,
+           parts: [%Part.Text{text: "[Summary of earlier conversation]:\n\n..."}]
+         }},
+        {:user, %User{index: 3, parts: [%Part.Text{text: "Next"}], api_logs: []}}
       ]
 
       :sys.replace_state(pid, fn s ->

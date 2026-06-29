@@ -6,18 +6,18 @@ defmodule Nest.LLM.OpenAIClientTest do
   alias Nest.LLM.RunResponse
   alias Nest.LLM.Tool
   alias Nest.Messages.Assistant
+  alias Nest.Messages.Part
   alias Nest.Messages.System
-  alias Nest.Messages.ToolCall
-  alias Nest.Messages.ToolResult
   alias Nest.Messages.User
+
+  defp user_msg(text), do: {:user, %User{index: 1, parts: [%Part.Text{text: text}]}}
+  defp sys_msg(index, text), do: {:system, %System{index: index, parts: [%Part.Text{text: text}]}}
 
   describe "format_request_payload/2" do
     test "emits model, messages, stream, and stream_options.include_usage" do
       req = %RunRequest{
         model: "gpt-4o",
-        messages: [
-          {:user, %User{index: 1, content: "hi"}}
-        ]
+        messages: [user_msg("hi")]
       }
 
       payload = OpenAIClient.format_request_payload(req, [])
@@ -33,7 +33,7 @@ defmodule Nest.LLM.OpenAIClientTest do
 
     test "maps a leading {:system, _} message in the messages array" do
       req = %RunRequest{
-        messages: [{:system, %System{index: 0, content: "be brief"}}]
+        messages: [sys_msg(0, "be brief")]
       }
 
       payload = OpenAIClient.format_request_payload(req, [])
@@ -46,9 +46,9 @@ defmodule Nest.LLM.OpenAIClientTest do
     test "preserves a late {:system, _} reminder at its position" do
       req = %RunRequest{
         messages: [
-          {:system, %System{index: 0, content: "be brief"}},
-          {:user, %User{index: 1, content: "hi"}},
-          {:system, %System{index: 2, content: "2 rounds left"}}
+          sys_msg(0, "be brief"),
+          user_msg("hi"),
+          sys_msg(2, "2 rounds left")
         ]
       }
 
@@ -62,7 +62,7 @@ defmodule Nest.LLM.OpenAIClientTest do
     end
 
     test "omits the system message when the messages array has none" do
-      req = %RunRequest{messages: [{:user, %User{index: 1, content: "hi"}}]}
+      req = %RunRequest{messages: [user_msg("hi")]}
       payload = OpenAIClient.format_request_payload(req, [])
 
       assert payload["messages"] == [%{"role" => "user", "content" => "hi"}]
@@ -104,9 +104,9 @@ defmodule Nest.LLM.OpenAIClientTest do
           {:assistant,
            %Assistant{
              index: 2,
-             content: "calling shell",
-             tool_calls: [
-               %ToolCall{id: "call_1", name: "shell_cmd", arguments: %{"command" => "ls"}}
+             parts: [
+               %Part.Text{text: "calling shell"},
+               %Part.ToolUse{id: "call_1", name: "shell_cmd", arguments: %{"command" => "ls"}}
              ]
            }}
         ]
@@ -138,9 +138,9 @@ defmodule Nest.LLM.OpenAIClientTest do
           {:tool,
            %Nest.Messages.Tool{
              index: 3,
-             tool_results: [
-               %ToolResult{tool_call_id: "call_1", name: "shell_cmd", content: "out1"},
-               %ToolResult{tool_call_id: "call_2", name: "read_file", content: "out2"}
+             parts: [
+               %Part.ToolResult{tool_call_id: "call_1", name: "shell_cmd", content: "out1"},
+               %Part.ToolResult{tool_call_id: "call_2", name: "read_file", content: "out2"}
              ]
            }}
         ]
@@ -181,9 +181,7 @@ defmodule Nest.LLM.OpenAIClientTest do
 
     test "drops the system message key from the request when no system message is in history" do
       req = %RunRequest{
-        messages: [
-          {:user, %User{index: 1, content: "hi"}}
-        ]
+        messages: [user_msg("hi")]
       }
 
       payload = OpenAIClient.format_request_payload(req, [])
@@ -194,8 +192,8 @@ defmodule Nest.LLM.OpenAIClientTest do
     test "preserves system messages already in the request history" do
       req = %RunRequest{
         messages: [
-          {:system, %System{index: 0, content: "be brief"}},
-          {:user, %User{index: 1, content: "hi"}}
+          sys_msg(0, "be brief"),
+          user_msg("hi")
         ]
       }
 

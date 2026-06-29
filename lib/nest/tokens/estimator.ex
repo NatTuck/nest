@@ -33,10 +33,9 @@ defmodule Nest.Tokens.Estimator do
 
   alias Nest.Messages.Assistant
   alias Nest.Messages.Message
+  alias Nest.Messages.Part
   alias Nest.Messages.System
   alias Nest.Messages.Tool
-  alias Nest.Messages.ToolCall
-  alias Nest.Messages.ToolResult
   alias Nest.Messages.User
 
   # 20% safety multiplier on top of the real cl100k_base count.
@@ -107,77 +106,56 @@ defmodule Nest.Tokens.Estimator do
   Returns a conservative token count for a single message.
   """
   @spec estimate_message(Message.t()) :: pos_integer()
-  def estimate_message({:system, %System{content: content}}),
-    do: estimate(content || "")
+  def estimate_message({:system, %System{parts: parts}}),
+    do: estimate_parts(parts) + @per_message_overhead
 
-  def estimate_message({:user, %User{content: content}}),
-    do: estimate(content || "")
+  def estimate_message({:user, %User{parts: parts}}),
+    do: estimate_parts(parts) + @per_message_overhead
 
-  def estimate_message({:assistant, %Assistant{} = msg}) do
-    text = (msg.content || "") <> (msg.thinking || "")
-    text_size = estimate(text)
-    thinking_sig_size = if(msg.thinking_signature, do: estimate(msg.thinking_signature), else: 0)
-    tool_calls_size = estimate_tool_calls(msg.tool_calls)
-    text_size + thinking_sig_size + tool_calls_size
-  end
+  def estimate_message({:assistant, %Assistant{parts: parts}}),
+    do: estimate_parts(parts) + @per_message_overhead
 
-  def estimate_message({:tool, %Tool{tool_results: results}}) do
-    estimate_tool_results(results || [])
-  end
+  def estimate_message({:tool, %Tool{parts: parts}}),
+    do: estimate_parts(parts) + @per_message_overhead
 
   def estimate_message(_), do: @per_message_overhead
 
   @doc """
-  Returns a conservative token count for a list of tool results.
+  Returns a conservative token count for a list of parts.
   """
-  @spec estimate_tool_results([ToolResult.t()] | nil) :: pos_integer()
-  def estimate_tool_results(nil), do: 0
-  def estimate_tool_results([]), do: 0
+  @spec estimate_parts([Part.t()]) :: pos_integer()
+  def estimate_parts(nil), do: 0
+  def estimate_parts([]), do: 0
 
-  def estimate_tool_results(results) when is_list(results) do
-    Enum.reduce(results, 0, fn result, acc ->
-      acc + estimate_tool_result(result)
+  def estimate_parts(parts) when is_list(parts) do
+    Enum.reduce(parts, 0, fn part, acc ->
+      acc + estimate_part(part)
     end)
   end
 
-  def estimate_tool_results(_), do: 0
+  def estimate_parts(_), do: 0
 
   @doc """
-  Returns a conservative token count for a single tool result.
+  Returns a conservative token count for a single part.
   """
-  @spec estimate_tool_result(ToolResult.t()) :: pos_integer()
-  def estimate_tool_result(%ToolResult{content: content} = result) do
-    content_size = estimate(content || "")
-    args_size = estimate_json(result.arguments)
-    content_size + args_size
+  @spec estimate_part(Part.t()) :: pos_integer()
+  def estimate_part(%Part.Text{text: text}), do: estimate(text || "")
+
+  def estimate_part(%Part.Thinking{thinking: text, signature: signature}) do
+    estimate(text || "") + if(signature, do: estimate(signature), else: 0)
   end
 
-  def estimate_tool_result(_), do: @per_message_overhead
-
-  @doc """
-  Returns a conservative token count for a list of tool calls
-  (assistant-side; not the results).
-  """
-  @spec estimate_tool_calls([ToolCall.t()] | nil) :: pos_integer()
-  def estimate_tool_calls(nil), do: 0
-  def estimate_tool_calls([]), do: 0
-
-  def estimate_tool_calls(tool_calls) when is_list(tool_calls) do
-    Enum.reduce(tool_calls, 0, fn call, acc ->
-      acc + estimate_tool_call(call)
-    end)
+  def estimate_part(%Part.ToolUse{name: name, arguments: args}) do
+    estimate(name || "") + estimate_json(args) + 20
   end
 
-  def estimate_tool_calls(_), do: 0
-
-  defp estimate_tool_call(%ToolCall{name: name, arguments: args}) do
-    name_size = estimate(name || "")
-    args_size = estimate_json(args)
-    # Per-tool-call wire format overhead (function wrapper, id, etc.)
-    name_size + args_size + 20
+  def estimate_part(%Part.ToolResult{content: content, arguments: args}) do
+    estimate(content || "") + estimate_json(args)
   end
 
-  defp estimate_tool_call(_), do: @per_message_overhead
+  def estimate_part(%Part.Refusal{refusal: text}), do: estimate(text || "")
+
+  def estimate_part(_), do: @per_message_overhead
 
   # JSON encoding is the closest approximation to what the LLM
   # actually sees. We use Jason for the encoding so the size matches

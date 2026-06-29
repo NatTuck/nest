@@ -29,6 +29,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
 
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Messages.Assistant
+  alias Nest.Messages.Part
   alias Nest.Messages.Streaming
   alias Nest.Messages.Tool
 
@@ -142,9 +143,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
        %Assistant{
          index: nil,
          timestamp: DateTime.utc_now(),
-         content: error_msg,
-         thinking: nil,
-         tool_calls: nil,
+         parts: [%Part.Text{text: error_msg}],
          api_logs: if(error_index, do: pending_api_logs(state, error_index), else: [])
        }}
 

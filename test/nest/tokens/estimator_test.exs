@@ -13,12 +13,28 @@ defmodule Nest.Tokens.EstimatorTest do
   use ExUnit.Case, async: true
 
   alias Nest.Messages.Assistant
+  alias Nest.Messages.Part
   alias Nest.Messages.System
   alias Nest.Messages.Tool
-  alias Nest.Messages.ToolCall
-  alias Nest.Messages.ToolResult
   alias Nest.Messages.User
   alias Nest.Tokens.Estimator
+
+  defp sys_msg(text), do: {:system, %System{parts: [%Part.Text{text: text}]}}
+  defp user_msg(text), do: {:user, %User{parts: [%Part.Text{text: text}]}}
+  defp assistant_text_msg(text), do: {:assistant, %Assistant{parts: [%Part.Text{text: text}]}}
+
+  defp assistant_parts_msg(parts) do
+    {:assistant, %Assistant{parts: parts}}
+  end
+
+  defp tool_msg(results) do
+    parts = Enum.map(results, &tool_result_to_part/1)
+    {:tool, %Tool{parts: parts}}
+  end
+
+  defp tool_result_to_part(%{tool_call_id: id, name: name, content: content}) do
+    %Part.ToolResult{tool_call_id: id, name: name, content: content}
+  end
 
   describe "raw_count/1" do
     test "returns the real cl100k_base count for ASCII" do
@@ -74,9 +90,9 @@ defmodule Nest.Tokens.EstimatorTest do
   describe "estimate_messages/1" do
     test "sums per-message estimates" do
       messages = [
-        {:system, %System{content: "You are helpful"}},
-        {:user, %User{content: "Hello"}},
-        {:assistant, %Assistant{content: "Hi there"}}
+        sys_msg("You are helpful"),
+        user_msg("Hello"),
+        assistant_text_msg("Hi there")
       ]
 
       total = Estimator.estimate_messages(messages)
@@ -94,22 +110,16 @@ defmodule Nest.Tokens.EstimatorTest do
 
     test "handles all message types" do
       messages = [
-        {:system, %System{content: "System prompt"}},
-        {:user, %User{content: "User msg"}},
-        {:assistant,
-         %Assistant{
-           content: "Assistant response",
-           thinking: "Internal thought",
-           tool_calls: [
-             %ToolCall{id: "1", name: "shell_cmd", arguments: %{"cmd" => "ls"}}
-           ]
-         }},
-        {:tool,
-         %Tool{
-           tool_results: [
-             %ToolResult{tool_call_id: "1", name: "shell_cmd", content: "file1\nfile2"}
-           ]
-         }}
+        sys_msg("System prompt"),
+        user_msg("User msg"),
+        assistant_parts_msg([
+          %Part.Text{text: "Assistant response"},
+          %Part.Thinking{thinking: "Internal thought"},
+          %Part.ToolUse{id: "1", name: "shell_cmd", arguments: %{"cmd" => "ls"}}
+        ]),
+        tool_msg([
+          %{tool_call_id: "1", name: "shell_cmd", content: "file1\nfile2"}
+        ])
       ]
 
       total = Estimator.estimate_messages(messages)
@@ -123,24 +133,30 @@ defmodule Nest.Tokens.EstimatorTest do
 
   describe "estimate_message/1" do
     test "system message" do
-      assert Estimator.estimate_message({:system, %System{content: "hi"}}) ==
-               Estimator.estimate("hi")
+      assert Estimator.estimate_message(sys_msg("hi")) ==
+               Estimator.estimate_parts([%Part.Text{text: "hi"}]) + 10
     end
 
     test "system message with nil content" do
       # Should not crash
-      result = Estimator.estimate_message({:system, %System{content: nil}})
+      result = Estimator.estimate_message({:system, %System{parts: nil}})
       assert is_integer(result)
       assert result > 0
     end
 
     test "user message" do
-      assert Estimator.estimate_message({:user, %User{content: "hello"}}) ==
-               Estimator.estimate("hello")
+      assert Estimator.estimate_message(user_msg("hello")) ==
+               Estimator.estimate_parts([%Part.Text{text: "hello"}]) + 10
     end
 
     test "assistant message with content and thinking" do
-      msg = %Assistant{content: "hi", thinking: "thoughtful"}
+      msg = %Assistant{
+        parts: [
+          %Part.Text{text: "hi"},
+          %Part.Thinking{thinking: "thoughtful"}
+        ]
+      }
+
       result = Estimator.estimate_message({:assistant, msg})
       # Should be at least the sum of the two texts
       assert result >= Estimator.estimate("hi") + Estimator.estimate("thoughtful") - 10
@@ -148,9 +164,8 @@ defmodule Nest.Tokens.EstimatorTest do
 
     test "assistant message with tool calls sizes JSON args" do
       msg = %Assistant{
-        content: nil,
-        tool_calls: [
-          %ToolCall{
+        parts: [
+          %Part.ToolUse{
             id: "call_1",
             name: "shell_cmd",
             arguments: %{"command" => "ls -la /tmp"}
@@ -165,31 +180,40 @@ defmodule Nest.Tokens.EstimatorTest do
 
     test "assistant message with thinking signature" do
       msg = %Assistant{
-        content: "hi",
-        thinking_signature: "abc123signature"
-      }
-
-      result = Estimator.estimate_message({:assistant, msg})
-      assert result > Estimator.estimate_message({:assistant, %Assistant{content: "hi"}})
-    end
-
-    test "tool message with multiple results" do
-      msg = %Tool{
-        tool_results: [
-          %ToolResult{tool_call_id: "1", name: "foo", content: "result 1"},
-          %ToolResult{tool_call_id: "2", name: "bar", content: "result 2"}
+        parts: [
+          %Part.Text{text: "hi"},
+          %Part.Thinking{thinking: "hmm", signature: "abc123signature"}
         ]
       }
 
-      result = Estimator.estimate_message({:tool, msg})
-      individual = Estimator.estimate_tool_results(msg.tool_results)
+      sig_msg = %Assistant{
+        parts: [
+          %Part.Text{text: "hi"},
+          %Part.Thinking{thinking: "hmm", signature: nil}
+        ]
+      }
+
+      result = Estimator.estimate_message({:assistant, msg})
+      result_no_sig = Estimator.estimate_message({:assistant, sig_msg})
+      assert result > result_no_sig
+    end
+
+    test "tool message with multiple results" do
+      results = [
+        %{tool_call_id: "1", name: "foo", content: "result 1"},
+        %{tool_call_id: "2", name: "bar", content: "result 2"}
+      ]
+
+      result = Estimator.estimate_message(tool_msg(results))
+      parts = Enum.map(results, &tool_result_to_part/1)
+      individual = Estimator.estimate_parts(parts) + 10
       assert result == individual
     end
 
-    test "tool message with nil tool_results" do
-      msg = %Tool{tool_results: nil}
+    test "tool message with nil parts" do
+      msg = %Tool{parts: nil}
       result = Estimator.estimate_message({:tool, msg})
-      assert result == 0
+      assert result == 10
     end
 
     test "unknown message variant returns per-message overhead" do
@@ -197,66 +221,39 @@ defmodule Nest.Tokens.EstimatorTest do
     end
   end
 
-  describe "estimate_tool_calls/1" do
-    test "nil returns 0" do
-      assert Estimator.estimate_tool_calls(nil) == 0
+  describe "estimate_part/1" do
+    test "text" do
+      assert Estimator.estimate_part(%Part.Text{text: "hi"}) == Estimator.estimate("hi")
     end
 
-    test "empty list returns 0" do
-      assert Estimator.estimate_tool_calls([]) == 0
+    test "thinking" do
+      part = %Part.Thinking{thinking: "hmm"}
+      assert Estimator.estimate_part(part) == Estimator.estimate("hmm")
     end
 
-    test "non-list returns 0" do
-      assert Estimator.estimate_tool_calls(:nope) == 0
+    test "tool_use" do
+      part = %Part.ToolUse{id: "x", name: "foo", arguments: %{"a" => 1}}
+      assert Estimator.estimate_part(part) > 0
     end
 
-    test "estimates per call and sums" do
-      calls = [
-        %ToolCall{id: "1", name: "foo", arguments: %{"a" => 1}},
-        %ToolCall{id: "2", name: "bar", arguments: %{"b" => 2}}
-      ]
+    test "tool_result" do
+      part = %Part.ToolResult{tool_call_id: "x", name: "foo", content: "y"}
+      assert Estimator.estimate_part(part) == Estimator.estimate("y")
+    end
 
-      result = Estimator.estimate_tool_calls(calls)
-      assert result > 0
+    test "refusal" do
+      part = %Part.Refusal{refusal: "no"}
+      assert Estimator.estimate_part(part) == Estimator.estimate("no")
     end
   end
 
-  describe "estimate_tool_results/1" do
+  describe "estimate_parts/1" do
     test "nil returns 0" do
-      assert Estimator.estimate_tool_results(nil) == 0
+      assert Estimator.estimate_parts(nil) == 0
     end
 
     test "empty list returns 0" do
-      assert Estimator.estimate_tool_results([]) == 0
-    end
-
-    test "estimates per result" do
-      results = [
-        %ToolResult{tool_call_id: "1", name: "foo", content: "a result"},
-        %ToolResult{tool_call_id: "2", name: "bar", content: "another"}
-      ]
-
-      total = Estimator.estimate_tool_results(results)
-      assert total > Estimator.estimate("a result")
-    end
-
-    test "includes JSON args in estimate" do
-      small = %ToolResult{
-        tool_call_id: "1",
-        name: "foo",
-        content: "x",
-        arguments: %{}
-      }
-
-      big = %ToolResult{
-        tool_call_id: "1",
-        name: "foo",
-        content: "x",
-        arguments: %{"key" => String.duplicate("a", 500)}
-      }
-
-      assert Estimator.estimate_tool_result(big) >
-               Estimator.estimate_tool_result(small)
+      assert Estimator.estimate_parts([]) == 0
     end
   end
 
@@ -272,10 +269,7 @@ defmodule Nest.Tokens.EstimatorTest do
 
     test "estimate_messages applies safety to every message" do
       # Two messages of equal raw size should give equal estimates
-      msgs = [
-        {:user, %User{content: "hello world"}},
-        {:user, %User{content: "hello world"}}
-      ]
+      msgs = [user_msg("hello world"), user_msg("hello world")]
 
       [est1, est2] = Enum.map(msgs, &Estimator.estimate_message/1)
       assert est1 == est2
@@ -310,9 +304,9 @@ defmodule Nest.Tokens.EstimatorTest do
       messages =
         for i <- 1..50 do
           if rem(i, 2) == 1 do
-            {:user, %User{content: "Question #{i}: how do I do thing #{i}?"}}
+            user_msg("Question #{i}: how do I do thing #{i}?")
           else
-            {:assistant, %Assistant{content: "Answer #{i}: here's how to do thing #{i}."}}
+            assistant_text_msg("Answer #{i}: here's how to do thing #{i}.")
           end
         end
 

@@ -15,10 +15,11 @@ defmodule Nest.Agents.Agent do
 
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ChatPipeline
-  alias Nest.Agents.Agent.Compaction
+  alias Nest.Agents.Agent.Compaction.Lifecycle, as: CompactionLifecycle
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Handlers
   alias Nest.Agents.Agent.Init
+  alias Nest.Agents.Agent.Persistence, as: AgentPersistence
   alias Nest.Agents.Registry
   alias Nest.LLM.ClientConfig
   alias Nest.LLM.Discover
@@ -202,6 +203,14 @@ defmodule Nest.Agents.Agent do
     case Config.create_client_config(model) do
       {:ok, client_config} ->
         state = Init.build_state(attrs, client_config)
+
+        # If the Supervisor passed a `:preloaded_messages` list
+        # (the lazy-restore path), seed it into the chat state
+        # and bump `next_message_index` to one past the highest
+        # stamped index. The preloaded list is already
+        # `message_index`-sorted by `Persistence.load_active_messages/1`.
+        state = seed_preloaded_messages(state, Map.get(attrs, :preloaded_messages, []))
+
         Init.run_post_init(state, client_config)
         {:ok, state}
 
@@ -209,6 +218,24 @@ defmodule Nest.Agents.Agent do
         cleanup_tmp(id)
         {:stop, reason}
     end
+  end
+
+  defp seed_preloaded_messages(state, []), do: state
+
+  defp seed_preloaded_messages(state, preloaded) do
+    highest_index =
+      preloaded
+      |> Enum.map(fn {_role, %{index: idx}} -> idx end)
+      |> Enum.max(fn -> -1 end)
+
+    %{
+      state
+      | chat_state: %{
+          state.chat_state
+          | messages: preloaded,
+            next_message_index: highest_index + 1
+        }
+    }
   end
 
   @impl true
@@ -232,8 +259,11 @@ defmodule Nest.Agents.Agent do
 
   @impl true
   def handle_call(:get_public_info, _from, state) do
-    vocation =
-      if state.vocation_id, do: Vocations.get_vocation(state.vocation_id), else: nil
+    # Use the cached Vocation struct from state — no DB work in
+    # the handler. The struct was loaded by the calling process
+    # (test helper or production wrapper) and passed into init/1
+    # via `:vocation` in attrs.
+    vocation = state.vocation
 
     public_info = %{
       id: state.id,
@@ -318,6 +348,13 @@ defmodule Nest.Agents.Agent do
   # struct's `index` is overwritten with
   # `state.chat_state.next_message_index`. Returns
   # `{stamped_message, new_state}`.
+  #
+  # After stamping and broadcasting, the message is
+  # persisted into the `messages` table and the agent's
+  # `next_message_index` is bumped on the row. Both writes
+  # run in this process, walking `$callers` back to the
+  # test's sandboxed connection (or the production pool)
+  # without per-pid `Sandbox.allow/3`.
   @spec __append_message__(t(), {atom(), map()}) :: {term(), t()}
   def __append_message__(state, message) do
     index = state.chat_state.next_message_index
@@ -331,7 +368,16 @@ defmodule Nest.Agents.Agent do
     }
 
     Broadcasts.message(state.id, stamped)
+    persist_appended_message(state, stamped)
     {stamped, state}
+  end
+
+  # Persist a freshly-appended message. Failures are logged
+  # but don't crash the in-memory append — the live state
+  # is the source of truth for the current turn; the
+  # persisted row is for cross-restart recovery.
+  defp persist_appended_message(state, stamped) do
+    AgentPersistence.append_message(state.id, stamped, state.chat_state.next_message_index)
   end
 
   # Extract the index from a stamped message tuple. Exposed
@@ -345,8 +391,11 @@ defmodule Nest.Agents.Agent do
     {role, %{msg | index: index}}
   end
 
-  defp system_prompt_from_messages([{:system, %{content: content}} | _]) when is_binary(content),
-    do: content
+  defp system_prompt_from_messages([{:system, %{parts: parts}} | _]) when is_list(parts) do
+    parts
+    |> Enum.filter(&match?(%Nest.Messages.Part.Text{}, &1))
+    |> Enum.map_join("", & &1.text)
+  end
 
   defp system_prompt_from_messages(_), do: nil
 
@@ -355,39 +404,9 @@ defmodule Nest.Agents.Agent do
   # compacted state. The marker is a `{:compaction, _}` tuple
   # that lives in `history` only — it never reaches the LLM.
   #
-  # Indices are reassigned so the sequence stays monotonic and
-  # the LLM never sees a gap.
-  def __archive_and_compact__(state, new_messages) do
-    archived_count = length(state.chat_state.messages || [])
-    marker_index = state.chat_state.next_message_index
-
-    marker =
-      {:compaction,
-       %Nest.Messages.Compaction{
-         index: marker_index,
-         archived_count: archived_count,
-         occurred_at: DateTime.utc_now(),
-         metadata: nil
-       }}
-
-    # The new compacted state starts at marker_index + 1.
-    new_start = marker_index + 1
-    assigned_new = Compaction.assign_indices(new_messages, new_start)
-
-    state = %{
-      state
-      | chat_state: %{
-          state.chat_state
-          | messages: assigned_new,
-            history:
-              (state.chat_state.history || []) ++ (state.chat_state.messages || []) ++ [marker]
-        }
-    }
-
-    Broadcasts.compaction(state.id, marker, state.chat_state.history)
-
-    state
-  end
+  # Implementation lives in `CompactionLifecycle`; this is a
+  # thin forwarder so the GenServer module stays small.
+  defdelegate __archive_and_compact__(state, new_messages), to: CompactionLifecycle, as: :apply
 
   @impl true
   def handle_info(msg, state) do

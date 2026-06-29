@@ -3,6 +3,7 @@ defmodule Nest.LLM.RunRequestTest do
 
   alias Nest.LLM.RunRequest
   alias Nest.LLM.Tool
+  alias Nest.Messages.Part
   alias Nest.Messages.System
   alias Nest.Messages.User
 
@@ -24,8 +25,8 @@ defmodule Nest.LLM.RunRequestTest do
 
   describe "custom values" do
     test "every field round-trips when set explicitly" do
-      sys = {:system, %System{index: 0, content: "be helpful"}}
-      user = {:user, %User{index: 1, content: "hi"}}
+      sys = {:system, %System{index: 0, parts: [%Part.Text{text: "be helpful"}]}}
+      user = {:user, %User{index: 1, parts: [%Part.Text{text: "hi"}]}}
 
       tool = %Tool{
         name: "shell_cmd",

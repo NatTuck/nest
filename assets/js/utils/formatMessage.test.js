@@ -81,6 +81,39 @@ describe("messageToMarkdown", () => {
     ).toBe("File written successfully.");
   });
 
+  it("derives content from `parts` (text kind) when no legacy `content` is present", () => {
+    expect(
+      messageToMarkdown({
+        role: "assistant",
+        parts: [{ kind: "text", text: "from parts" }],
+      }),
+    ).toBe("from parts");
+  });
+
+  it("derives thinking from `parts` (thinking kind) when no legacy `thinking` is present", () => {
+    expect(
+      messageToMarkdown({
+        role: "assistant",
+        parts: [
+          { kind: "thinking", thinking: "hidden thought" },
+          { kind: "text", text: "visible" },
+        ],
+      }),
+    ).toBe("hidden thought\n\n---\n\nvisible");
+  });
+
+  it("ignores non-text/think part kinds when deriving content/thinking", () => {
+    expect(
+      messageToMarkdown({
+        role: "assistant",
+        parts: [
+          { kind: "tool_use", id: "call_1", name: "shell_cmd", arguments: {} },
+          { kind: "text", text: "calling tool" },
+        ],
+      }),
+    ).toBe("calling tool");
+  });
+
   it("returns an empty string for missing/empty content with no thinking fallback", () => {
     expect(messageToMarkdown(null)).toBe("");
     expect(messageToMarkdown(undefined)).toBe("");

@@ -13,6 +13,7 @@ defmodule Nest.Tokens.CompactorTest do
   use ExUnit.Case, async: true
 
   alias Nest.Messages.Assistant
+  alias Nest.Messages.Part
   alias Nest.Messages.System
   alias Nest.Messages.User
   alias Nest.Tokens.Compactor
@@ -21,11 +22,11 @@ defmodule Nest.Tokens.CompactorTest do
   # pairs.
   defp build_messages do
     [
-      {:system, %System{index: 0, content: "You are helpful"}},
-      {:user, %User{index: 1, content: "First question"}},
-      {:assistant, %Assistant{index: 2, content: "First answer"}},
-      {:user, %User{index: 3, content: "Second question"}},
-      {:assistant, %Assistant{index: 4, content: "Second answer"}}
+      {:system, %System{index: 0, parts: [%Part.Text{text: "You are helpful"}]}},
+      {:user, %User{index: 1, parts: [%Part.Text{text: "First question"}]}},
+      {:assistant, %Assistant{index: 2, parts: [%Part.Text{text: "First answer"}]}},
+      {:user, %User{index: 3, parts: [%Part.Text{text: "Second question"}]}},
+      {:assistant, %Assistant{index: 4, parts: [%Part.Text{text: "Second answer"}]}}
     ]
   end
 
@@ -51,14 +52,14 @@ defmodule Nest.Tokens.CompactorTest do
     end
 
     test "single system message returns as-is (no compaction needed)" do
-      msgs = [{:system, %System{index: 0, content: "Only system"}}]
+      msgs = [{:system, %System{index: 0, parts: [%Part.Text{text: "Only system"}]}}]
       assert Compactor.compact(msgs, 32_768, mock_llm_call("anything")) == msgs
     end
 
     test "no user message returns as-is" do
       msgs = [
-        {:system, %System{index: 0, content: "System"}},
-        {:assistant, %Assistant{index: 1, content: "Assistant reply"}}
+        {:system, %System{index: 0, parts: [%Part.Text{text: "System"}]}},
+        {:assistant, %Assistant{index: 1, parts: [%Part.Text{text: "Assistant reply"}]}}
       ]
 
       assert Compactor.compact(msgs, 32_768, mock_llm_call("anything")) == msgs
@@ -87,15 +88,16 @@ defmodule Nest.Tokens.CompactorTest do
       assert match?({:assistant, %Assistant{}}, Enum.at(new_messages, 3))
 
       # The head summary should contain the LLM's output
-      {:system, %System{content: head_content}} = Enum.at(new_messages, 1)
+      {:system, %System{parts: [head_part | _]}} = Enum.at(new_messages, 1)
+      head_content = head_part.text
       assert head_content =~ "Summary of the earlier conversation"
 
       # The last user and assistant should be unchanged
-      {:user, %User{content: last_user_content}} = Enum.at(new_messages, 2)
-      assert last_user_content == "Second question"
+      {:user, %User{parts: [last_user_part | _]}} = Enum.at(new_messages, 2)
+      assert last_user_part.text == "Second question"
 
-      {:assistant, %Assistant{content: last_asst_content}} = Enum.at(new_messages, 3)
-      assert last_asst_content == "Second answer"
+      {:assistant, %Assistant{parts: [last_asst_part | _]}} = Enum.at(new_messages, 3)
+      assert last_asst_part.text == "Second answer"
     end
 
     test "pass 1 input includes system + head (NOT responses)" do
@@ -150,8 +152,8 @@ defmodule Nest.Tokens.CompactorTest do
       # also has the big content (wrapped with a prefix). Use
       # a prefix check to avoid trailing-whitespace gotchas from
       # String.trim inside wrap_summary.
-      {:system, %System{content: tail_content}} = Enum.at(new_messages, 3)
-      assert String.contains?(tail_content, String.slice(big_head, 0, 100))
+      {:system, %System{parts: [tail_part | _]}} = Enum.at(new_messages, 3)
+      assert String.contains?(tail_part.text, String.slice(big_head, 0, 100))
     end
 
     test "pass 2 input includes system + head_summary + last_user + responses" do
@@ -184,8 +186,8 @@ defmodule Nest.Tokens.CompactorTest do
       test_pid = self()
 
       msgs = [
-        {:system, %System{index: 0, content: "Sys"}},
-        {:user, %User{index: 1, content: "Q"}}
+        {:system, %System{index: 0, parts: [%Part.Text{text: "Sys"}]}},
+        {:user, %User{index: 1, parts: [%Part.Text{text: "Q"}]}}
       ]
 
       new_messages =

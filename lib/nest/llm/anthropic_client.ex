@@ -23,10 +23,9 @@ defmodule Nest.LLM.AnthropicClient do
   alias Nest.LLM.RunResponse
   alias Nest.LLM.SSE.Parser
   alias Nest.Messages.Assistant
+  alias Nest.Messages.Part
   alias Nest.Messages.System
   alias Nest.Messages.Tool
-  alias Nest.Messages.ToolCall
-  alias Nest.Messages.ToolResult
   alias Nest.Messages.User
 
   @anthropic_version "2023-06-01"
@@ -167,13 +166,19 @@ defmodule Nest.LLM.AnthropicClient do
   # messages array, supported as of May 2026).
   defp split_initial_system(messages) do
     case messages do
-      [{:system, %System{content: content}} | rest]
-      when is_binary(content) and content != "" ->
-        {content, rest}
+      [{:system, %System{parts: parts}} | rest] ->
+        text = system_text_from_parts(parts)
+        if text != "", do: {text, rest}, else: {nil, messages}
 
       other ->
         {nil, other}
     end
+  end
+
+  defp system_text_from_parts(parts) do
+    parts
+    |> Enum.filter(&match?(%Part.Text{}, &1))
+    |> Enum.map_join("", & &1.text)
   end
 
   defp build_base_payload(request, conversation_messages) do
@@ -211,62 +216,46 @@ defmodule Nest.LLM.AnthropicClient do
   # system message was extracted by `format_request_payload/2`
   # and is in the top-level `"system"` field; this clause only
   # fires for any reminder at a later position.
-  defp message_to_wire({:system, %System{content: content}}) do
-    %{"role" => "system", "content" => content || ""}
+  defp message_to_wire({:system, %System{parts: parts}}) do
+    %{"role" => "system", "content" => system_text_from_parts(parts)}
   end
 
-  # User: scalar text or list of pre-shaped content blocks.
-  defp message_to_wire({:user, %User{content: content}}) when is_binary(content) do
-    %{"role" => "user", "content" => content}
+  # User: walk the parts list. Each text part becomes a
+  # `text` content block; tool results on the user role are
+  # not produced by the agent (the tool role carries them),
+  # so this path emits a list of text blocks.
+  defp message_to_wire({:user, %User{parts: parts}}) do
+    %{"role" => "user", "content" => Enum.map(parts || [], &user_part_to_wire/1)}
   end
 
-  defp message_to_wire({:user, %User{content: parts}}) when is_list(parts) do
-    %{"role" => "user", "content" => Enum.map(parts, &content_block_to_wire/1)}
-  end
-
-  # Assistant: rebuild the Anthropic content block array so we
-  # preserve text, thinking (with signature), and tool_use blocks
-  # in the correct order.
-  defp message_to_wire({:assistant, %Assistant{} = msg}) do
-    %{"role" => "assistant", "content" => build_assistant_blocks(msg)}
+  # Assistant: rebuild the Anthropic content block array from
+  # the parts list, preserving text, thinking (with signature),
+  # and tool_use blocks in the correct order.
+  defp message_to_wire({:assistant, %Assistant{parts: parts}}) do
+    %{"role" => "assistant", "content" => Enum.map(parts || [], &assistant_part_to_wire/1)}
   end
 
   # Tool results: Anthropic expects them in a user-role message with
   # `tool_result` content blocks (not a dedicated tool role).
-  defp message_to_wire({:tool, %Tool{tool_results: results}}) when is_list(results) do
-    %{"role" => "user", "content" => Enum.map(results, &tool_result_to_wire/1)}
+  defp message_to_wire({:tool, %Tool{parts: parts}}) do
+    %{"role" => "user", "content" => Enum.map(parts || [], &tool_result_part_to_wire/1)}
   end
 
-  defp build_assistant_blocks(%Assistant{} = msg) do
-    []
-    |> maybe_add_text_block(msg.content)
-    |> maybe_add_thinking_block(msg.thinking, msg.thinking_signature)
-    |> maybe_add_tool_use_blocks(msg.tool_calls)
+  defp user_part_to_wire(%Part.Text{text: text}),
+    do: %{"type" => "text", "text" => text}
+
+  defp user_part_to_wire(other), do: %{"type" => "text", "text" => part_to_text(other)}
+
+  defp assistant_part_to_wire(%Part.Text{text: text}) when text != "" and not is_nil(text),
+    do: %{"type" => "text", "text" => text}
+
+  defp assistant_part_to_wire(%Part.Thinking{thinking: text, signature: signature})
+       when text != "" and not is_nil(text) do
+    block = %{"type" => "thinking", "thinking" => text}
+    if signature, do: Map.put(block, "signature", signature), else: block
   end
 
-  defp maybe_add_text_block(blocks, nil), do: blocks
-  defp maybe_add_text_block(blocks, ""), do: blocks
-
-  defp maybe_add_text_block(blocks, content),
-    do: blocks ++ [%{"type" => "text", "text" => content}]
-
-  defp maybe_add_thinking_block(blocks, nil, _sig), do: blocks
-  defp maybe_add_thinking_block(blocks, "", _sig), do: blocks
-
-  defp maybe_add_thinking_block(blocks, thinking, signature) do
-    block = %{"type" => "thinking", "thinking" => thinking}
-    block = if signature, do: Map.put(block, "signature", signature), else: block
-    blocks ++ [block]
-  end
-
-  defp maybe_add_tool_use_blocks(blocks, nil), do: blocks
-  defp maybe_add_tool_use_blocks(blocks, []), do: blocks
-
-  defp maybe_add_tool_use_blocks(blocks, calls) do
-    blocks ++ Enum.map(calls, &tool_call_to_wire/1)
-  end
-
-  defp tool_call_to_wire(%ToolCall{id: id, name: name, arguments: args}) do
+  defp assistant_part_to_wire(%Part.ToolUse{id: id, name: name, arguments: args}) do
     %{
       "type" => "tool_use",
       "id" => id,
@@ -275,7 +264,15 @@ defmodule Nest.LLM.AnthropicClient do
     }
   end
 
-  defp tool_result_to_wire(%ToolResult{tool_call_id: id, content: content, is_error: is_error}) do
+  defp assistant_part_to_wire(%Part.Refusal{refusal: text}) do
+    %{"type" => "text", "text" => text}
+  end
+
+  defp tool_result_part_to_wire(%Part.ToolResult{
+         tool_call_id: id,
+         content: content,
+         is_error: is_error
+       }) do
     %{
       "type" => "tool_result",
       "tool_use_id" => id,
@@ -284,9 +281,12 @@ defmodule Nest.LLM.AnthropicClient do
     }
   end
 
-  defp content_block_to_wire(%{type: type, content: content}) do
-    %{"type" => to_string(type), "content" => content}
-  end
+  # Render a non-text part as a string for the user-role's
+  # flat-text path. Today nothing in the user role carries
+  # non-text parts (the tool role carries tool results), so
+  # this is a defensive fallback for malformed data.
+  defp part_to_text(%Part.Text{text: text}), do: text
+  defp part_to_text(other), do: inspect(other)
 
   defp initial_state do
     %{

@@ -12,8 +12,8 @@ defmodule NestWeb.AgentChannelAdvancedTest do
   alias Nest.Agents.Supervisor
   alias Nest.LLM.MockClient
   alias Nest.Messages.Assistant
+  alias Nest.Messages.Part
   alias Nest.Messages.Tool
-  alias Nest.Messages.ToolResult
 
   setup :verify_on_exit!
 
@@ -195,8 +195,8 @@ defmodule NestWeb.AgentChannelAdvancedTest do
          %Tool{
            index: 2,
            timestamp: DateTime.utc_now(),
-           tool_results: [
-             %ToolResult{
+           parts: [
+             %Part.ToolResult{
                tool_call_id: "call_123",
                name: "shell_cmd",
                content: "total 4\ndrwxrwxr-x 1 user user 18 May 29 10:49 .",
@@ -213,19 +213,18 @@ defmodule NestWeb.AgentChannelAdvancedTest do
 
       assert payload["index"] == 2
       assert payload["role"] == "tool"
-      assert payload["content"] == nil
-      assert is_list(payload["toolResults"])
-      assert length(payload["toolResults"]) == 1
+      assert is_list(payload["parts"])
+      assert length(payload["parts"]) == 1
 
-      tool_result = List.first(payload["toolResults"])
+      part = List.first(payload["parts"])
 
-      assert is_map(tool_result)
-      refute is_struct(tool_result)
-      assert tool_result["tool_call_id"] == "call_123"
-      assert tool_result["name"] == "shell_cmd"
-      assert tool_result["content"] == "total 4\ndrwxrwxr-x 1 user user 18 May 29 10:49 ."
-      assert tool_result["arguments"] == %{"command" => "ls -la"}
-      assert tool_result["is_error"] == false
+      assert is_map(part)
+      assert part["kind"] == "tool_result"
+      assert part["toolCallId"] == "call_123"
+      assert part["name"] == "shell_cmd"
+      assert part["content"] == "total 4\ndrwxrwxr-x 1 user user 18 May 29 10:49 ."
+      assert part["arguments"] == %{"command" => "ls -la"}
+      assert part["isError"] == false
     end
 
     test "chat:sync handles messages with ToolResult structs", %{socket: socket, agent_id: id} do
@@ -240,8 +239,8 @@ defmodule NestWeb.AgentChannelAdvancedTest do
          %Tool{
            index: 2,
            timestamp: DateTime.utc_now(),
-           tool_results: [
-             %ToolResult{
+           parts: [
+             %Part.ToolResult{
                tool_call_id: "call_123",
                name: "shell_cmd",
                content: "total 4\ndrwxrwxr-x 1 user user 18 May 29 10:49 .",
@@ -270,13 +269,13 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       tool_message = Enum.find(messages, fn m -> m["role"] == "tool" end)
       assert tool_message != nil
 
-      assert is_list(tool_message["toolResults"])
-      tool_result = List.first(tool_message["toolResults"])
-      assert is_map(tool_result)
-      refute is_struct(tool_result)
-      assert tool_result["tool_call_id"] == "call_123"
-      assert tool_result["content"] == "total 4\ndrwxrwxr-x 1 user user 18 May 29 10:49 ."
-      assert tool_result["arguments"] == %{"command" => "ls -la"}
+      assert is_list(tool_message["parts"])
+      part = List.first(tool_message["parts"])
+      assert is_map(part)
+      assert part["kind"] == "tool_result"
+      assert part["toolCallId"] == "call_123"
+      assert part["content"] == "total 4\ndrwxrwxr-x 1 user user 18 May 29 10:49 ."
+      assert part["arguments"] == %{"command" => "ls -la"}
     end
 
     test "chat:sync handles messages with ToolResult structs in api_logs", %{
@@ -294,7 +293,7 @@ defmodule NestWeb.AgentChannelAdvancedTest do
          %Assistant{
            index: 2,
            timestamp: DateTime.utc_now(),
-           content: "Response with API logs",
+           parts: [%Part.Text{text: "Response with API logs"}],
            api_logs: [
              %{
                id: "api_001",

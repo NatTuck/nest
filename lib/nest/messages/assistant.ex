@@ -1,16 +1,22 @@
 defmodule Nest.Messages.Assistant do
-  @moduledoc "Assistant message that can contain text, thinking, or tool calls"
+  @moduledoc """
+  Assistant message. Carries a list of `Part` structs in the
+  order the LLM produced them (text, thinking, tool_use, refusal).
+  Also carries the response-level metadata (usage, finish_reason,
+  model) that the LLM client returned with the response. Those
+  fields are persisted alongside `parts` in the jsonb `content`
+  column so a restored agent can re-emit them on the next turn.
+  """
 
   alias Nest.Messages.Message
-  alias Nest.Messages.ToolCall
+  alias Nest.Messages.Part
 
   defstruct [
     :index,
-    :content,
-    :thinking,
-    :thinking_signature,
-    :tool_calls,
-    :refusal,
+    :parts,
+    :usage,
+    :finish_reason,
+    :model,
     :timestamp,
     :metadata,
     :api_logs
@@ -18,21 +24,27 @@ defmodule Nest.Messages.Assistant do
 
   @type t :: %__MODULE__{
           index: non_neg_integer(),
-          content: String.t() | nil,
-          thinking: String.t() | nil,
-          # Anthropic's extended-thinking signature, which must be
-          # echoed back on subsequent turns so the model can verify
-          # the prior reasoning block. `nil` for providers that
-          # don't emit one (OpenAI reasoning models emit `thinking`
-          # text only).
-          thinking_signature: String.t() | nil,
-          tool_calls: [ToolCall.t()] | nil,
-          refusal: String.t() | nil,
+          parts: [Part.t()],
+          # Token usage from the LLM response. `nil` for clients
+          # that don't populate it (or for streaming responses
+          # that arrived in pieces). Shape matches the wire
+          # `usage` object: `%{input_tokens, output_tokens,
+          # total_tokens, ...}`.
+          usage: map() | nil,
+          # LLM client-normalized finish reason
+          # ("end_turn" / "tool_calls" / "max_tokens" / etc.).
+          finish_reason: String.t() | nil,
+          # The model the response was generated with. Useful
+          # when the agent is configured to fall back across
+          # models (the response may differ from the request's
+          # model).
+          model: String.t() | nil,
           timestamp: DateTime.t() | nil,
-          # Free-form bag for client-specific data. Known keys today:
-          # none — clients with provider-specific payloads should
-          # add named fields to this struct rather than reach into
-          # metadata.
+          # Free-form bag for client-specific data. Known keys
+          # today: `"stopped_by_user"` (set by the stop handler
+          # when finalizing a partial). Clients with
+          # provider-specific payloads should add named fields
+          # to this struct rather than reach into metadata.
           metadata: map() | nil,
           api_logs: [map()] | nil
         }
@@ -45,11 +57,10 @@ defmodule Nest.Messages.Assistant do
     %{
       "index" => msg.index,
       "role" => "assistant",
-      "content" => msg.content || "",
-      "toolCalls" => format_tool_calls(msg.tool_calls),
-      "toolResults" => nil,
-      "thinking" => msg.thinking,
-      "thinkingSignature" => msg.thinking_signature,
+      "parts" => Enum.map(msg.parts, &Part.to_json/1),
+      "usage" => msg.usage,
+      "finishReason" => msg.finish_reason,
+      "model" => msg.model,
       "apiLogs" => Message.format_api_logs(msg.api_logs),
       "metadata" => stringify_metadata(msg.metadata)
     }
@@ -63,12 +74,5 @@ defmodule Nest.Messages.Assistant do
 
   defp stringify_metadata(metadata) when is_map(metadata) do
     Map.new(metadata, fn {k, v} -> {if(is_atom(k), do: Atom.to_string(k), else: k), v} end)
-  end
-
-  defp format_tool_calls(nil), do: nil
-  defp format_tool_calls([]), do: nil
-
-  defp format_tool_calls(tool_calls) do
-    Enum.map(tool_calls, &ToolCall.to_json/1)
   end
 end

@@ -79,7 +79,8 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminderTest do
 
   describe "build_message/3" do
     test "returns a {:system, %System{}} tuple with the formatted content" do
-      assert {:system, %System{content: content, timestamp: %DateTime{}}} =
+      assert {:system,
+              %System{parts: [%Nest.Messages.Part.Text{text: content}], timestamp: %DateTime{}}} =
                ContextReminder.build_message(:p50, 100_000, 200_000)
 
       assert content =~ "50%"

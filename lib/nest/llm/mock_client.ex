@@ -275,32 +275,45 @@ defmodule Nest.LLM.MockClient do
     {:done, %{response: response}}
   end
 
-  defp message_to_wire({:assistant, %{content: content, tool_calls: tool_calls}}) do
-    base = %{"role" => "assistant", "content" => content || ""}
+  defp message_to_wire({:assistant, %{parts: parts}}) do
+    base = %{"role" => "assistant", "content" => text_from_parts(parts)}
 
-    case tool_calls do
-      nil -> [base]
+    case tool_calls_from_parts(parts) do
       [] -> [base]
       calls -> [Map.put(base, "tool_calls", Enum.map(calls, &tool_call_to_wire/1))]
     end
   end
 
-  defp message_to_wire({:user, %{content: content}}) when is_binary(content) do
-    %{"role" => "user", "content" => content}
+  defp message_to_wire({:user, %{parts: parts}}) do
+    %{"role" => "user", "content" => text_from_parts(parts)}
   end
 
-  defp message_to_wire({:system, %{content: content}}) when is_binary(content) do
-    %{"role" => "system", "content" => content}
+  defp message_to_wire({:system, %{parts: parts}}) do
+    %{"role" => "system", "content" => text_from_parts(parts)}
   end
 
-  defp message_to_wire({:tool, %{tool_results: results}}) when is_list(results) do
-    Enum.map(results, fn r ->
+  defp message_to_wire({:tool, %{parts: parts}}) do
+    Enum.map(parts || [], fn part ->
       %{
         "role" => "tool",
-        "tool_call_id" => r.tool_call_id,
-        "content" => r.content || ""
+        "tool_call_id" => part.tool_call_id,
+        "content" => part.content || ""
       }
     end)
+  end
+
+  defp text_from_parts(nil), do: ""
+
+  defp text_from_parts(parts) do
+    parts
+    |> Enum.filter(&match?(%Nest.Messages.Part.Text{}, &1))
+    |> Enum.map_join("", & &1.text)
+  end
+
+  defp tool_calls_from_parts(nil), do: []
+
+  defp tool_calls_from_parts(parts) do
+    Enum.filter(parts, &match?(%Nest.Messages.Part.ToolUse{}, &1))
   end
 
   defp tool_call_to_wire(%{id: id, name: name, arguments: args}) do

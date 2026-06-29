@@ -39,6 +39,7 @@ defmodule Nest.Agents.ChatTaskCrashTest do
   alias Nest.Agents.Agent
   alias Nest.LLM.MockClient
   alias Nest.Messages.Assistant
+  alias Nest.Messages.Part
 
   setup :verify_on_exit!
 
@@ -206,7 +207,8 @@ defmodule Nest.Agents.ChatTaskCrashTest do
         # The partial content is saved as a normal assistant
         # message before the error is broadcast.
         assert_receive {:chat_message,
-                        {:assistant, %Assistant{index: 2, content: "Halfway through..."}}},
+                        {:assistant,
+                         %Assistant{index: 2, parts: [%Part.Text{text: "Halfway through..."}]}}},
                        200
 
         # Then the error and idle status. The error content now

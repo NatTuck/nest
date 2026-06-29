@@ -79,7 +79,10 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
 
       assert user.index == 1
       assert assistant.index == 2
-      assert assistant.content == "Hello back"
+
+      assert [%Nest.Messages.Part.Text{text: text} | _] = assistant.parts
+      assert text == "Hello back"
+
       assert indices == Enum.sort(indices)
       assert Enum.uniq(indices) == indices
     end
@@ -137,9 +140,14 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
 
       reminders =
         Enum.filter(state.chat_state.messages, fn
-          {:system, %SystemMsg{content: content}} when is_binary(content) ->
-            String.contains?(content, "tool call rounds remaining") or
-              String.contains?(content, "last tool call round")
+          {:system, %SystemMsg{parts: parts}} when is_list(parts) ->
+            text =
+              parts
+              |> Enum.filter(&match?(%Nest.Messages.Part.Text{}, &1))
+              |> Enum.map_join("", & &1.text)
+
+            String.contains?(text, "tool call rounds remaining") or
+              String.contains?(text, "last tool call round")
 
           _ ->
             false
@@ -151,8 +159,14 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
 
       responses =
         Enum.filter(state.chat_state.messages, fn
-          {:assistant, %Assistant{tool_calls: tc}} -> tc in [nil, []]
-          _ -> false
+          {:assistant, %Assistant{parts: parts}} when is_list(parts) ->
+            Enum.all?(parts, fn
+              %Nest.Messages.Part.ToolUse{} -> false
+              _ -> true
+            end)
+
+          _ ->
+            false
         end)
 
       response_indices = Enum.map(responses, fn {_, %{index: idx}} -> idx end)
@@ -254,8 +268,14 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
 
       final_assistants =
         Enum.filter(state.chat_state.messages, fn
-          {:assistant, %Assistant{content: content}} when is_binary(content) -> true
-          _ -> false
+          {:assistant, %Assistant{parts: parts}} when is_list(parts) ->
+            Enum.any?(parts, fn
+              %Nest.Messages.Part.Text{text: text} when is_binary(text) -> true
+              _ -> false
+            end)
+
+          _ ->
+            false
         end)
 
       assert final_assistants != [],

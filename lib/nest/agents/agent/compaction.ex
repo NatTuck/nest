@@ -23,6 +23,7 @@ defmodule Nest.Agents.Agent.Compaction do
   alias Nest.LLM.RunRequest
   alias Nest.LLM.RunResponse
   alias Nest.LLM.StreamConsumer
+  alias Nest.Messages.Part
   alias Nest.Messages.System
   alias Nest.Tokens.Compactor
 
@@ -164,7 +165,11 @@ defmodule Nest.Agents.Agent.Compaction do
   # instructions aren't included.
   defp prepend_summarization_system(messages) do
     summarization_message =
-      {:system, %System{content: @summarization_prompt, timestamp: DateTime.utc_now()}}
+      {:system,
+       %System{
+         parts: [%Part.Text{text: @summarization_prompt}],
+         timestamp: DateTime.utc_now()
+       }}
 
     messages
     |> List.wrap()

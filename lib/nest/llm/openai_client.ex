@@ -17,10 +17,9 @@ defmodule Nest.LLM.OpenAIClient do
   alias Nest.LLM.RunResponse
   alias Nest.LLM.SSE.Parser
   alias Nest.Messages.Assistant
+  alias Nest.Messages.Part
   alias Nest.Messages.System
   alias Nest.Messages.Tool
-  alias Nest.Messages.ToolCall
-  alias Nest.Messages.ToolResult
   alias Nest.Messages.User
 
   @impl Nest.LLM.Client
@@ -92,31 +91,44 @@ defmodule Nest.LLM.OpenAIClient do
     Enum.flat_map(messages, &message_to_wire/1)
   end
 
-  defp message_to_wire({:system, %System{content: content}}) do
-    [%{"role" => "system", "content" => content || ""}]
+  defp message_to_wire({:system, %System{parts: parts}}) do
+    [%{"role" => "system", "content" => text_from_parts(parts)}]
   end
 
-  defp message_to_wire({:user, %User{content: content}}) do
-    [%{"role" => "user", "content" => content}]
+  defp message_to_wire({:user, %User{parts: parts}}) do
+    [%{"role" => "user", "content" => text_from_parts(parts)}]
   end
 
-  defp message_to_wire({:assistant, %Assistant{content: content, tool_calls: tool_calls}}) do
-    base = %{"role" => "assistant", "content" => content || ""}
+  defp message_to_wire({:assistant, %Assistant{parts: parts}}) do
+    base = %{"role" => "assistant", "content" => text_from_parts(parts)}
 
-    case tool_calls do
-      nil -> [base]
+    case tool_calls_from_parts(parts) do
       [] -> [base]
       calls -> [Map.put(base, "tool_calls", Enum.map(calls, &tool_call_to_wire/1))]
     end
   end
 
-  defp message_to_wire({:tool, %Tool{tool_results: results}}) do
-    Enum.map(results, fn %ToolResult{tool_call_id: id, content: content} ->
+  defp message_to_wire({:tool, %Tool{parts: parts}}) do
+    Enum.map(parts || [], fn %Part.ToolResult{tool_call_id: id, content: content} ->
       %{"role" => "tool", "tool_call_id" => id, "content" => content || ""}
     end)
   end
 
-  defp tool_call_to_wire(%ToolCall{id: id, name: name, arguments: args}) do
+  defp text_from_parts(nil), do: ""
+
+  defp text_from_parts(parts) do
+    parts
+    |> Enum.filter(&match?(%Part.Text{}, &1))
+    |> Enum.map_join("", & &1.text)
+  end
+
+  defp tool_calls_from_parts(nil), do: []
+
+  defp tool_calls_from_parts(parts) do
+    Enum.filter(parts, &match?(%Part.ToolUse{}, &1))
+  end
+
+  defp tool_call_to_wire(%Part.ToolUse{id: id, name: name, arguments: args}) do
     %{
       "id" => id,
       "type" => "function",

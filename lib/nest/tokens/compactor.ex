@@ -188,7 +188,7 @@ defmodule Nest.Tokens.Compactor do
      %Nest.Messages.System{
        # will be re-assigned by the caller
        index: 0,
-       content: content,
+       parts: [%Nest.Messages.Part.Text{text: content}],
        timestamp: DateTime.utc_now(),
        api_logs: []
      }}

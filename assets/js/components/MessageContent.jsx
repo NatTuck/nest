@@ -1,5 +1,18 @@
 import { Markdown } from "@llamaindex/chat-ui/widgets";
 
+/**
+ * Concatenate the text from a list of Part objects, in order.
+ * Skips non-text parts. Used by components that previously
+ * worked with a flat `content` string.
+ */
+export function textFromParts(parts) {
+  if (!Array.isArray(parts)) return "";
+  return parts
+    .filter((p) => p && p.kind === "text")
+    .map((p) => p.text || "")
+    .join("");
+}
+
 export function parseBlocks(content) {
   if (!content) return { completed: [], incomplete: "" };
 
@@ -61,9 +74,15 @@ export function parseBlocks(content) {
 /**
  * Renders the visible (markdown) content of a chat message.
  *
- * Thinking / reasoning content is handled separately by
- * `ThinkingBlock` — see `ChatPage.jsx` and `CollapsedHistory.jsx`.
- * This component only handles the visible text body.
+ * Accepts either:
+ *   - `parts`: a list of Part objects (the canonical wire format
+ *     from the backend; only `text` parts contribute to the
+ *     visible content)
+ *   - `content`: a flat string (legacy / pre-parts shape)
+ *
+ * The component flattens `parts` to a string before rendering so
+ * the markdown layout, progressive block formatting, and code-fence
+ * handling all work unchanged.
  *
  * For partial / streaming messages, completed paragraphs (those
  * terminated by a blank line or a closed code fence) are
@@ -73,8 +92,10 @@ export function parseBlocks(content) {
  * stays at the end without prematurely closing a code fence or
  * list.
  */
-export function MessageContent({ content, isPartial, className = "" }) {
-  if (!content) return null;
+export function MessageContent({ parts, content, isPartial, className = "" }) {
+  const text = typeof content === "string" ? content : textFromParts(parts);
+
+  if (!text) return null;
 
   // The wrapper applies `&_*` descendant selectors that tame the
   // @llamaindex/chat-ui `<Markdown>` component's HTML output —
@@ -83,7 +104,7 @@ export function MessageContent({ content, isPartial, className = "" }) {
   // plugin's 65ch max-width is removed. These are inherited by
   // every rendered Markdown block, partial or complete.
   if (isPartial) {
-    const { completed, incomplete } = parseBlocks(content);
+    const { completed, incomplete } = parseBlocks(text);
 
     if (completed.length === 0 && incomplete) {
       return <p className={`${className} whitespace-pre-wrap`}>{incomplete}</p>;
@@ -103,7 +124,7 @@ export function MessageContent({ content, isPartial, className = "" }) {
 
   return (
     <div className="space-y-2 [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_pre]:overflow-x-hidden [&_p]:[overflow-wrap:anywhere] [&_li]:[overflow-wrap:anywhere] [&_.prose]:max-w-none">
-      <Markdown content={content} className={className} />
+      <Markdown content={text} className={className} />
     </div>
   );
 }

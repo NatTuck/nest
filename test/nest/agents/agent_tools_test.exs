@@ -10,8 +10,8 @@ defmodule Nest.Agents.AgentToolsTest do
 
   alias Nest.Agents.Agent
   alias Nest.LLM.MockClient
+  alias Nest.Messages.Part
   alias Nest.Messages.Tool
-  alias Nest.Messages.ToolCall
 
   setup :verify_on_exit!
 
@@ -46,7 +46,8 @@ defmodule Nest.Agents.AgentToolsTest do
       # User message: first broadcast is empty, second carries the
       # request log. Match the second (non-empty api_logs).
       assert_receive {:chat_message,
-                      {:user, %{index: 1, content: "[mode: chat]\nList the files"}}},
+                      {:user,
+                       %{index: 1, parts: [%Part.Text{text: "[mode: chat]\nList the files"}]}}},
                      500
 
       assert_receive {:chat_status, %{status: "streaming"}}, 500
@@ -56,23 +57,23 @@ defmodule Nest.Agents.AgentToolsTest do
                       {:assistant,
                        %{
                          index: 2,
-                         content: "I'll run that command for you",
-                         tool_calls: [tool_call]
+                         parts: [%Part.Text{text: "I'll run that command for you"}, tool_call]
                        }}},
                      500
 
       assert_receive {:chat_status, %{status: "executing_tools"}}, 500
-      assert_receive {:chat_message, {:tool, %{index: 3, tool_results: [tool_result]}}}, 500
+      assert_receive {:chat_message, {:tool, %{index: 3, parts: [tool_result]}}}, 500
       assert_receive {:chat_status, %{status: "streaming"}}, 500
       assert_receive {:chat_delta, _}, 500
 
       assert_receive {:chat_message,
-                      {:assistant, %{index: 4, content: "Here are the directory contents"}}},
+                      {:assistant,
+                       %{index: 4, parts: [%Part.Text{text: "Here are the directory contents"}]}}},
                      500
 
       assert_receive {:chat_status, %{status: "idle"}}, 500
 
-      assert %ToolCall{} = tool_call
+      assert %Part.ToolUse{} = tool_call
       assert tool_call.id == "call_123"
       assert tool_call.name == "shell_cmd"
 
@@ -126,7 +127,10 @@ defmodule Nest.Agents.AgentToolsTest do
 
       assert_receive {:chat_message,
                       {:assistant,
-                       %{index: 2, content: "Let me calculate that", tool_calls: [tool_call]}}},
+                       %{
+                         index: 2,
+                         parts: [%Part.Text{text: "Let me calculate that"}, tool_call]
+                       }}},
                      500
 
       assert_receive {:chat_status, %{status: "idle"}}, 500
@@ -153,7 +157,7 @@ defmodule Nest.Agents.AgentToolsTest do
       :ok = Agent.chat(pid, "What's the weather?")
 
       assert_receive {:chat_message, {:user, _}}, 500
-      assert_receive {:chat_message, {:tool, %Tool{index: 3, tool_results: tool_results}}}, 500
+      assert_receive {:chat_message, {:tool, %Tool{index: 3, parts: tool_results}}}, 500
       assert_receive {:chat_status, %{status: "idle"}}, 500
 
       assert tool_results != []
@@ -182,11 +186,13 @@ defmodule Nest.Agents.AgentToolsTest do
       :ok = Agent.chat(pid, "What else is there?")
       # Second turn: new user message (index 4) + assistant response (index 5).
       assert_receive {:chat_message,
-                      {:user, %{index: 5, content: "[mode: chat]\nWhat else is there?"}}},
+                      {:user,
+                       %{index: 5, parts: [%Part.Text{text: "[mode: chat]\nWhat else is there?"}]}}},
                      500
 
       assert_receive {:chat_message,
-                      {:assistant, %{index: 6, content: "Second response received"}}},
+                      {:assistant,
+                       %{index: 6, parts: [%Part.Text{text: "Second response received"}]}}},
                      500
 
       assert_receive {:chat_status, %{status: "idle"}}, 500
@@ -260,7 +266,11 @@ defmodule Nest.Agents.AgentToolsTest do
         # after that.
         assert_receive {:chat_message,
                         {:assistant,
-                         %{content: "I've completed the task after multiple iterations"}}},
+                         %{
+                           parts: [
+                             %Part.Text{text: "I've completed the task after multiple iterations"}
+                           ]
+                         }}},
                        500
 
         assert_receive {:chat_status, %{status: "idle"}}, 500
@@ -356,7 +366,12 @@ defmodule Nest.Agents.AgentToolsTest do
         # The chat eventually finalizes with the second-chance
         # forced text (no chat:error).
         assert_receive {:chat_message,
-                        {:assistant, %{content: "Forced final answer after second-chance"}}},
+                        {:assistant,
+                         %{
+                           parts: [
+                             %Part.Text{text: "Forced final answer after second-chance"}
+                           ]
+                         }}},
                        2000
 
         assert_receive {:chat_status, %{status: "idle"}}, 500

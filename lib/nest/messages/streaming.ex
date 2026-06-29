@@ -12,7 +12,6 @@ defmodule Nest.Messages.Streaming do
   """
 
   alias Nest.Messages.Assistant
-  alias Nest.Messages.ToolCall
 
   defmodule PartialToolCall do
     @moduledoc "Partial tool call during streaming"
@@ -169,31 +168,111 @@ defmodule Nest.Messages.Streaming do
 
   @doc """
   Finalize the accumulator into a complete Assistant message.
-  Converts the IO-list buffers to binaries.
+  Converts the IO-list buffers to binaries and assembles the
+  parts list in the order the events arrived.
   """
   @spec finalize(AssistantAccumulator.t()) :: Assistant.t()
   def finalize(%AssistantAccumulator{} = acc) do
-    tool_calls =
-      acc.tool_calls
-      |> Map.values()
-      |> Enum.filter(& &1.complete?)
-      |> Enum.map(fn partial ->
-        %ToolCall{
-          id: partial.id,
-          name: partial.name,
-          arguments: parse_arguments(partial.arguments_buffer)
-        }
-      end)
+    parts = build_parts(acc)
 
     %Assistant{
       index: acc.index,
-      content: text_to_string_or_nil(acc.text_buffer),
-      thinking: text_to_string_or_nil(acc.thinking_buffer),
-      tool_calls: if(tool_calls == [], do: nil, else: tool_calls),
-      refusal: acc.refusal,
+      parts: parts,
       timestamp: acc.timestamp
     }
   end
+
+  # Walk the segments (which include both text/thinking blocks
+  # AND tool-use markers; segments are stored in reverse) and
+  # emit a Part in the order the events arrived. When a segment
+  # is a `{:tool_use, id}` marker, we splice in the matching
+  # `ToolUse` part (built from the completed tool_calls map) at
+  # that position. Tool calls are de-duplicated by id.
+  defp build_parts(acc) do
+    tool_call_by_id =
+      acc.tool_calls
+      |> Map.values()
+      |> Enum.filter(& &1.complete?)
+      |> Map.new(fn partial ->
+        {partial.id,
+         %Nest.Messages.Part.ToolUse{
+           id: partial.id,
+           name: partial.name,
+           arguments: parse_arguments(partial.arguments_buffer)
+         }}
+      end)
+
+    # Segments are stored in reverse chronological order
+    # (prepend is O(1) on the agent's hot path). We walk them
+    # in reverse to get chronological order, and prepend each
+    # new part to the accumulator so the final list is also
+    # in chronological order — no final reverse needed.
+    {parts, _emitted} =
+      acc.segments
+      |> Enum.reverse()
+      |> Enum.reduce({[], MapSet.new()}, fn seg, {acc_parts, emitted} ->
+        parts_for_segment(seg, acc.thinking_signature, tool_call_by_id, emitted, acc_parts)
+      end)
+
+    Enum.reject(parts, &empty_part?/1)
+  end
+
+  # Each segment in `acc.segments` is either a `:text` /
+  # `:thinking` block (with its IO-list content) or a
+  # `{:tool_use, id}` marker (no content — the args went
+  # straight into the tool_calls map). For text/thinking,
+  # emit a Part with the flattened binary content. For
+  # tool-use markers, splice in the matching `Part.ToolUse`
+  # (built from the completed tool_calls map) and skip
+  # any subsequent segments for the same id.
+  defp parts_for_segment(
+         %{type: :text, content: content},
+         _signature,
+         _tc_by_id,
+         _emitted,
+         acc_parts
+       ) do
+    text = IO.iodata_to_binary(content)
+    {[%Nest.Messages.Part.Text{text: text} | acc_parts], MapSet.new()}
+  end
+
+  defp parts_for_segment(
+         %{type: :thinking, content: content},
+         signature,
+         _tc_by_id,
+         _emitted,
+         acc_parts
+       ) do
+    text = IO.iodata_to_binary(content)
+    part = %Nest.Messages.Part.Thinking{thinking: text, signature: signature}
+    {[part | acc_parts], MapSet.new()}
+  end
+
+  defp parts_for_segment(
+         %{type: {:tool_use, id}},
+         _signature,
+         tc_by_id,
+         emitted,
+         acc_parts
+       ) do
+    if MapSet.member?(emitted, id) do
+      {acc_parts, emitted}
+    else
+      case Map.get(tc_by_id, id) do
+        nil ->
+          {acc_parts, emitted}
+
+        part ->
+          {[part | acc_parts], MapSet.put(emitted, id)}
+      end
+    end
+  end
+
+  defp parts_for_segment(_other, _sig, _tc, _emitted, acc_parts), do: {acc_parts, MapSet.new()}
+
+  defp empty_part?(%Nest.Messages.Part.Text{text: text}), do: text in [nil, ""]
+  defp empty_part?(%Nest.Messages.Part.Thinking{thinking: text}), do: text in [nil, ""]
+  defp empty_part?(_), do: false
 
   @doc """
   Convert accumulator to JSON-compatible map for wire format.
@@ -238,16 +317,6 @@ defmodule Nest.Messages.Streaming do
   defp update_segments(segments, type, content, _current_block) do
     new_segment = %{type: type, content: [content]}
     {[new_segment | segments], new_segment}
-  end
-
-  # Empty IO list → nil; non-empty → binary. The list is in
-  # reverse insertion order (we prepend for O(1) appends), so
-  # reverse before flattening. Used by `finalize/1` to match
-  # the `Assistant` struct's `content | nil` shape.
-  defp text_to_string_or_nil([]), do: nil
-
-  defp text_to_string_or_nil(buffer) do
-    buffer |> Enum.reverse() |> IO.iodata_to_binary()
   end
 
   defp parse_arguments(buffer) do

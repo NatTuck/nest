@@ -27,6 +27,10 @@ defmodule Nest.Agents.Agent.ChatTurn.BudgetReminder do
           "This is your last tool call round. After this, no more tools will be available — provide your final response."
       end
 
-    {:system, %Nest.Messages.System{content: warning, timestamp: DateTime.utc_now()}}
+    {:system,
+     %Nest.Messages.System{
+       parts: [%Nest.Messages.Part.Text{text: warning}],
+       timestamp: DateTime.utc_now()
+     }}
   end
 end

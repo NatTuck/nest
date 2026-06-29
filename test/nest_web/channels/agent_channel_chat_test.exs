@@ -378,9 +378,10 @@ defmodule NestWeb.AgentChannelChatTest do
       assert_push "chat:message", %{"index" => 3, "role" => "user"}, 2000
 
       assert_push "chat:message",
-                  %{"index" => 4, "role" => "assistant", "content" => content},
+                  %{"index" => 4, "role" => "assistant", "parts" => parts},
                   2000
 
+      assert [%{"kind" => "text", "text" => content} | _] = parts
       assert content == "After the stop"
 
       # Sanity check: the agent is still queryable after the stop.

@@ -7,21 +7,21 @@ defmodule Nest.LLM.AnthropicClientTest do
   alias Nest.LLM.RunRequest
   alias Nest.LLM.Tool, as: LLMTool
   alias Nest.Messages.Assistant
+  alias Nest.Messages.Part
   alias Nest.Messages.System
   alias Nest.Messages.Tool, as: ToolMessage
-  alias Nest.Messages.ToolCall
-  alias Nest.Messages.ToolResult
   alias Nest.Messages.User
 
   setup :verify_on_exit!
+
+  defp user_msg(text), do: {:user, %User{index: 1, parts: [%Part.Text{text: text}]}}
+  defp sys_msg(index, text), do: {:system, %System{index: index, parts: [%Part.Text{text: text}]}}
 
   describe "format_request_payload/2" do
     test "emits model, max_tokens, messages, and stream: true" do
       req = %RunRequest{
         model: "claude-3-opus-20240229",
-        messages: [
-          {:user, %User{index: 1, content: "hi"}}
-        ]
+        messages: [user_msg("hi")]
       }
 
       payload = AnthropicClient.format_request_payload(req, [])
@@ -29,7 +29,11 @@ defmodule Nest.LLM.AnthropicClientTest do
       assert payload["model"] == "claude-3-opus-20240229"
       assert payload["stream"] == true
       assert payload["max_tokens"] == 4096
-      assert payload["messages"] == [%{"role" => "user", "content" => "hi"}]
+
+      assert payload["messages"] == [
+               %{"role" => "user", "content" => [%{"type" => "text", "text" => "hi"}]}
+             ]
+
       refute Map.has_key?(payload, "system")
       refute Map.has_key?(payload, "tools")
     end
@@ -37,23 +41,8 @@ defmodule Nest.LLM.AnthropicClientTest do
     test "lifts the leading {:system, _} message into the top-level system field" do
       req = %RunRequest{
         messages: [
-          {:system, %System{index: 0, content: "be brief"}},
-          {:user, %User{index: 1, content: "hi"}}
-        ]
-      }
-
-      payload = AnthropicClient.format_request_payload(req, [])
-
-      assert payload["system"] == "be brief"
-      assert payload["messages"] == [%{"role" => "user", "content" => "hi"}]
-    end
-
-    test "keeps a late {:system, _} reminder in the messages array" do
-      req = %RunRequest{
-        messages: [
-          {:system, %System{index: 0, content: "be brief"}},
-          {:user, %User{index: 1, content: "hi"}},
-          {:system, %System{index: 2, content: "2 rounds left"}}
+          sys_msg(0, "be brief"),
+          user_msg("hi")
         ]
       }
 
@@ -62,13 +51,31 @@ defmodule Nest.LLM.AnthropicClientTest do
       assert payload["system"] == "be brief"
 
       assert payload["messages"] == [
-               %{"role" => "user", "content" => "hi"},
+               %{"role" => "user", "content" => [%{"type" => "text", "text" => "hi"}]}
+             ]
+    end
+
+    test "keeps a late {:system, _} reminder in the messages array" do
+      req = %RunRequest{
+        messages: [
+          sys_msg(0, "be brief"),
+          user_msg("hi"),
+          sys_msg(2, "2 rounds left")
+        ]
+      }
+
+      payload = AnthropicClient.format_request_payload(req, [])
+
+      assert payload["system"] == "be brief"
+
+      assert payload["messages"] == [
+               %{"role" => "user", "content" => [%{"type" => "text", "text" => "hi"}]},
                %{"role" => "system", "content" => "2 rounds left"}
              ]
     end
 
     test "omits the system field when no leading {:system, _} is present" do
-      req = %RunRequest{messages: [{:user, %User{index: 1, content: "hi"}}]}
+      req = %RunRequest{messages: [user_msg("hi")]}
 
       payload = AnthropicClient.format_request_payload(req, [])
 
@@ -78,8 +85,8 @@ defmodule Nest.LLM.AnthropicClientTest do
     test "emits a leading {:system, _} with empty content as a role: system message in the array" do
       req = %RunRequest{
         messages: [
-          {:system, %System{index: 0, content: ""}},
-          {:user, %User{index: 1, content: "hi"}}
+          sys_msg(0, ""),
+          user_msg("hi")
         ]
       }
 
@@ -92,7 +99,7 @@ defmodule Nest.LLM.AnthropicClientTest do
 
       assert payload["messages"] == [
                %{"role" => "system", "content" => ""},
-               %{"role" => "user", "content" => "hi"}
+               %{"role" => "user", "content" => [%{"type" => "text", "text" => "hi"}]}
              ]
     end
 
@@ -128,11 +135,14 @@ defmodule Nest.LLM.AnthropicClientTest do
           {:assistant,
            %Assistant{
              index: 2,
-             content: "I'll run that for you",
-             thinking: "let me think...",
-             thinking_signature: "sig_abc",
-             tool_calls: [
-               %ToolCall{id: "toolu_1", name: "shell_cmd", arguments: %{"command" => "ls"}}
+             parts: [
+               %Part.Text{text: "I'll run that for you"},
+               %Part.Thinking{thinking: "let me think...", signature: "sig_abc"},
+               %Part.ToolUse{
+                 id: "toolu_1",
+                 name: "shell_cmd",
+                 arguments: %{"command" => "ls"}
+               }
              ]
            }}
         ]
@@ -167,9 +177,9 @@ defmodule Nest.LLM.AnthropicClientTest do
           {:assistant,
            %Assistant{
              index: 2,
-             content: "plain text",
-             tool_calls: [
-               %ToolCall{id: "toolu_1", name: "shell_cmd", arguments: %{}}
+             parts: [
+               %Part.Text{text: "plain text"},
+               %Part.ToolUse{id: "toolu_1", name: "shell_cmd", arguments: %{}}
              ]
            }}
         ]
@@ -199,9 +209,7 @@ defmodule Nest.LLM.AnthropicClientTest do
           {:assistant,
            %Assistant{
              index: 2,
-             content: nil,
-             thinking: "just thinking",
-             tool_calls: nil
+             parts: [%Part.Thinking{thinking: "just thinking", signature: nil}]
            }}
         ]
       }
@@ -228,10 +236,15 @@ defmodule Nest.LLM.AnthropicClientTest do
       # order convention.
       stored = %Assistant{
         index: 4,
-        content: "I'll run that for you",
-        thinking: "let me check",
-        thinking_signature: "sig_round_trip_42",
-        tool_calls: [%ToolCall{id: "toolu_9", name: "shell_cmd", arguments: %{"command" => "ls"}}]
+        parts: [
+          %Part.Text{text: "I'll run that for you"},
+          %Part.Thinking{thinking: "let me check", signature: "sig_round_trip_42"},
+          %Part.ToolUse{
+            id: "toolu_9",
+            name: "shell_cmd",
+            arguments: %{"command" => "ls"}
+          }
+        ]
       }
 
       payload =
@@ -264,14 +277,14 @@ defmodule Nest.LLM.AnthropicClientTest do
           {:tool,
            %ToolMessage{
              index: 3,
-             tool_results: [
-               %ToolResult{
+             parts: [
+               %Part.ToolResult{
                  tool_call_id: "toolu_1",
                  name: "shell_cmd",
                  content: "out1",
                  is_error: false
                },
-               %ToolResult{
+               %Part.ToolResult{
                  tool_call_id: "toolu_2",
                  name: "read_file",
                  content: "boom",

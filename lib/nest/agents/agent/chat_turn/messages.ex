@@ -8,6 +8,7 @@ defmodule Nest.Agents.Agent.ChatTurn.Messages do
   """
 
   alias Nest.Messages.Assistant
+  alias Nest.Messages.Part
   alias Nest.Messages.Tool
   alias Nest.Messages.ToolResult
 
@@ -17,6 +18,13 @@ defmodule Nest.Agents.Agent.ChatTurn.Messages do
   @doc """
   Build an assistant message from a `RunResponse`. The
   Agent stamps the index via `__append_message__/2`.
+
+  Assembles a parts list in the order the response carries
+  them: text first, then thinking (with signature), then tool
+  uses. Refusal text becomes a `Part.Refusal`. The
+  response-level `usage`, `finish_reason`, and `model` are
+  preserved on the `Assistant` struct so they round-trip
+  through persistence.
   """
   @spec assistant(Nest.LLM.RunResponse.t()) :: {:assistant, Assistant.t()}
   def assistant(response) do
@@ -24,18 +32,50 @@ defmodule Nest.Agents.Agent.ChatTurn.Messages do
      %Assistant{
        index: nil,
        timestamp: DateTime.utc_now(),
-       content: response.text,
-       thinking: response.thinking,
-       thinking_signature: response.thinking_signature,
-       tool_calls: response.tool_calls,
-       refusal: response.refusal,
+       parts: build_assistant_parts(response),
+       usage: response.usage,
+       finish_reason: response.stop_reason,
+       model: response.model,
        api_logs: []
      }}
   end
 
+  defp build_assistant_parts(response) do
+    text_part =
+      if response.text && response.text != "",
+        do: [%Part.Text{text: response.text}],
+        else: []
+
+    thinking_part =
+      if response.thinking && response.thinking != "",
+        do: [%Part.Thinking{thinking: response.thinking, signature: response.thinking_signature}],
+        else: []
+
+    tool_use_parts = Enum.map(response.tool_calls || [], &tool_call_to_part/1)
+
+    refusal_part =
+      if response.refusal && response.refusal != "",
+        do: [%Part.Refusal{refusal: response.refusal}],
+        else: []
+
+    text_part ++ thinking_part ++ tool_use_parts ++ refusal_part
+  end
+
+  defp tool_call_to_part(%Nest.Messages.ToolCall{} = tc) do
+    %Part.ToolUse{id: tc.id, name: tc.name, arguments: tc.arguments || %{}}
+  end
+
+  # Wire-format tool calls (plain maps from some clients) — coerce
+  # to Part.ToolUse by reading the same fields.
+  defp tool_call_to_part(%{"id" => id, "name" => name, "arguments" => args}) do
+    %Part.ToolUse{id: id, name: name, arguments: args || %{}}
+  end
+
+  defp tool_call_to_part(_other), do: %Part.ToolUse{id: nil, name: "unknown", arguments: %{}}
+
   @doc """
   Build a `{:tool, _}` message wrapping a list of
-  `ToolResult` structs.
+  `ToolResult` structs as `Part.ToolResult` parts.
   """
   @spec tool([ToolResult.t()]) :: {:tool, Tool.t()}
   def tool(results) do
@@ -43,9 +83,19 @@ defmodule Nest.Agents.Agent.ChatTurn.Messages do
      %Tool{
        index: nil,
        timestamp: DateTime.utc_now(),
-       tool_results: results,
+       parts: Enum.map(results, &tool_result_to_part/1),
        api_logs: []
      }}
+  end
+
+  defp tool_result_to_part(%ToolResult{} = tr) do
+    %Part.ToolResult{
+      tool_call_id: tr.tool_call_id,
+      name: tr.name,
+      content: tr.content,
+      arguments: tr.arguments,
+      is_error: tr.is_error || false
+    }
   end
 
   @doc """

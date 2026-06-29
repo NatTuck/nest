@@ -109,7 +109,7 @@ defmodule NestWeb.AgentChannelMessagingTest do
                   500
 
       assert idx == 2
-      assert is_binary(assistant_payload["content"])
+      assert is_list(assistant_payload["parts"])
 
       # Second client also receives both.
       assert_push "chat:message", %{"index" => 1, "role" => "user"}, 500
@@ -128,7 +128,7 @@ defmodule NestWeb.AgentChannelMessagingTest do
       assert_push "chat:message", %{"index" => 1, "role" => "user"}, 500
       assert_push "chat:message", %{"index" => idx, "role" => "assistant"} = payload, 500
 
-      assert is_binary(payload["content"])
+      assert is_list(payload["parts"])
       assert idx >= 1
       assert idx == 2
     end

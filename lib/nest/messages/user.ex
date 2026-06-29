@@ -2,12 +2,13 @@ defmodule Nest.Messages.User do
   @moduledoc "User message with text content"
 
   alias Nest.Messages.Message
+  alias Nest.Messages.Part
 
-  defstruct [:index, :content, :timestamp, :metadata, :api_logs]
+  defstruct [:index, :parts, :timestamp, :metadata, :api_logs]
 
   @type t :: %__MODULE__{
           index: non_neg_integer(),
-          content: String.t(),
+          parts: [Part.t()],
           timestamp: DateTime.t() | nil,
           metadata: map() | nil,
           api_logs: [map()] | nil
@@ -21,11 +22,8 @@ defmodule Nest.Messages.User do
     %{
       "index" => msg.index,
       "role" => "user",
-      "content" => msg.content,
+      "parts" => Enum.map(msg.parts, &Part.to_json/1),
       "mode" => msg.metadata && msg.metadata["mode"],
-      "toolCalls" => nil,
-      "toolResults" => nil,
-      "thinking" => nil,
       "apiLogs" => Message.format_api_logs(msg.api_logs)
     }
   end

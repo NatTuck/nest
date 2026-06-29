@@ -66,8 +66,8 @@ defmodule Nest.Tokens.PreFlightTest do
   describe "check_messages/3" do
     test "estimates the message list and applies the check" do
       messages = [
-        {:system, %System{content: "You are helpful"}},
-        {:user, %User{content: "Hello"}}
+        {:system, %System{parts: [%Nest.Messages.Part.Text{text: "You are helpful"}]}},
+        {:user, %User{parts: [%Nest.Messages.Part.Text{text: "Hello"}]}}
       ]
 
       # With a 32k context, two short messages fit
@@ -75,7 +75,7 @@ defmodule Nest.Tokens.PreFlightTest do
     end
 
     test "no_limit_known when context_limit is nil" do
-      messages = [{:user, %User{content: "Hello"}}]
+      messages = [{:user, %User{parts: [%Nest.Messages.Part.Text{text: "Hello"}]}}]
       assert PreFlight.check_messages(messages, nil) == :no_limit_known
     end
 
@@ -88,7 +88,7 @@ defmodule Nest.Tokens.PreFlightTest do
       # under BPE, so 100k chars isn't actually that big in tokens.
       # Use a 4 MB string to reliably overflow a 32k context.
       huge = String.duplicate("a ", 2_000_000)
-      messages = [{:user, %User{content: huge}}]
+      messages = [{:user, %User{parts: [%Nest.Messages.Part.Text{text: huge}]}}]
       # 4M chars at ~3-4 tokens per char on alternating content,
       # plus 20% safety, plus 8192 reserve — way over 32k.
       assert PreFlight.check_messages(messages, 32_768) == :needs_compaction

@@ -17,6 +17,7 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
 
   alias Nest.Agents.Agent
   alias Nest.LLM.MockClient
+  alias Nest.Messages.Part
   alias Nest.Messages.System, as: SystemMsg
 
   setup :verify_on_exit!
@@ -63,11 +64,11 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
       # rule: the UI always includes everything that
       # happened). Hiding it server-side would violate the
       # principle. Regression guard.
-      assert_receive {:chat_message, {:system, %SystemMsg{content: ""}}}, 500
+      assert_receive {:chat_message, {:system, %SystemMsg{parts: [%Part.Text{text: ""}]}}}, 500
 
       # And it's still in state.
       state = :sys.get_state(pid)
-      assert {:system, %SystemMsg{content: ""}} = hd(state.chat_state.messages)
+      assert {:system, %SystemMsg{parts: [%Part.Text{text: ""}]}} = hd(state.chat_state.messages)
     end
   end
 
@@ -101,7 +102,9 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
         # We expect at least one late system reminder mid-stream.
         # The reminder's content matches "2 tool call rounds remaining"
         # (injected when remaining goes from 3 to 2).
-        assert_receive {:chat_message, {:system, %SystemMsg{content: content}}}, 2000
+        assert_receive {:chat_message, {:system, %SystemMsg{parts: [%Part.Text{text: content}]}}},
+                       2000
+
         assert content =~ "tool call rounds remaining"
       end)
     end
@@ -184,7 +187,8 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
 
         # The reminder is broadcast.
         assert_receive {:chat_message,
-                        {:system, %SystemMsg{index: reminder_index, content: content}}},
+                        {:system,
+                         %SystemMsg{index: reminder_index, parts: [%Part.Text{text: content}]}}},
                        2000
 
         assert content =~ "tool call rounds remaining"

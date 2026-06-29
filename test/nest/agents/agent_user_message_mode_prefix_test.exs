@@ -69,7 +69,10 @@ defmodule Nest.Agents.AgentUserMessageModePrefixTest do
 
     assert_receive {:chat_message,
                     {:user,
-                     %{content: "[mode: chat]\nHello world", metadata: %{"mode" => "chat"}}}},
+                     %{
+                       parts: [%Nest.Messages.Part.Text{text: "[mode: chat]\nHello world"}],
+                       metadata: %{"mode" => "chat"}
+                     }}},
                    500
   end
 end

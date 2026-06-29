@@ -21,6 +21,7 @@ defmodule Nest.Agents.AgentStopTest do
   alias Nest.Agents.Agent
   alias Nest.LLM.MockClient
   alias Nest.Messages.Assistant
+  alias Nest.Messages.Part
 
   setup :verify_on_exit!
 
@@ -81,7 +82,8 @@ defmodule Nest.Agents.AgentStopTest do
 
       Agent.stop_chat(pid, self())
 
-      assert_receive {:chat_message, {:assistant, %Assistant{content: content, index: 2}}},
+      assert_receive {:chat_message,
+                      {:assistant, %Assistant{parts: [%Part.Text{text: content}], index: 2}}},
                      2000
 
       assert is_binary(content)
@@ -130,7 +132,10 @@ defmodule Nest.Agents.AgentStopTest do
       # The tool call message is broadcast; the chat task
       # is now in `request_compaction_from_task` blocking on
       # `{:task_compaction_done|_failed, _}` or `{:stop_chat, _}`.
-      assert_receive {:chat_message, {:assistant, %{tool_calls: [_]}}}, 500
+      assert_receive {:chat_message, {:assistant, %{parts: parts}}},
+                     500
+
+      assert Enum.any?(parts, &match?(%Part.ToolUse{}, &1))
       assert_receive {:chat_status, %{status: "executing_tools"}}, 500
 
       # The chat task is now in the blocking receive inside
@@ -227,7 +232,10 @@ defmodule Nest.Agents.AgentStopTest do
       # process's mailbox.
       assert_receive {:chat_status, %{status: "idle"}}, 2000
       assert_receive {:chat_message, {:user, %{index: 3}}}, 500
-      assert_receive {:chat_message, {:assistant, %{content: "Second turn response"}}}, 500
+
+      assert_receive {:chat_message,
+                      {:assistant, %{parts: [%Part.Text{text: "Second turn response"}]}}},
+                     500
     end
   end
 
@@ -267,7 +275,10 @@ defmodule Nest.Agents.AgentStopTest do
 
       assert_receive {:chat_status, %{status: "idle"}}, 2000
       assert_receive {:chat_message, {:user, %{index: 3}}}, 500
-      assert_receive {:chat_message, {:assistant, %{content: "Second response"}}}, 500
+
+      assert_receive {:chat_message,
+                      {:assistant, %{parts: [%Part.Text{text: "Second response"}]}}},
+                     500
 
       # The Agent GenServer must still be alive (the
       # original bug crashed it with FunctionClauseError).

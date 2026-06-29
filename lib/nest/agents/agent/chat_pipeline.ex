@@ -20,6 +20,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ChatTurnSupervisor
   alias Nest.Agents.Agent.Compaction
+  alias Nest.Messages.Part
   alias Nest.Messages.Streaming
   alias Nest.Messages.User
   alias Nest.Tokens.PreFlight
@@ -37,7 +38,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     # Resolve mode: explicit > agent's current mode > "chat"
     mode = requested_mode || state.mode
     # Validate mode against the vocation; fall back to default if invalid.
-    {effective_mode, _caps} = resolve_mode_and_caps(mode, state.vocation_id)
+    {effective_mode, _caps} = resolve_mode_and_caps(mode, state.vocation)
 
     {user_message, llm_user_message} = build_user_message(state, content, effective_mode)
 
@@ -82,7 +83,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   @spec resume_after_compaction(Nest.Agents.Agent.t(), String.t(), String.t()) ::
           Nest.Agents.Agent.t()
   def resume_after_compaction(state, content, mode) do
-    {effective_mode, _} = resolve_mode_and_caps(mode, state.vocation_id)
+    {effective_mode, _} = resolve_mode_and_caps(mode, state.vocation)
     user_message = build_user_message(state, content, effective_mode)
 
     {stamped_user, state} = Nest.Agents.Agent.__append_message__(state, user_message)
@@ -111,7 +112,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   """
   @spec spawn_chat_turn(Nest.Agents.Agent.t()) :: Nest.Agents.Agent.t()
   def spawn_chat_turn(state) do
-    {_effective_mode, caps} = resolve_mode_and_caps(state.mode, state.vocation_id)
+    {_effective_mode, caps} = resolve_mode_and_caps(state.mode, state.vocation)
     agent_pid = self()
 
     ctx = %{
@@ -159,10 +160,10 @@ defmodule Nest.Agents.Agent.ChatPipeline do
 
   # Build the persisted user message. The mode is encoded two ways:
   # on the `metadata.mode` field (used by the UI badge) and as a
-  # `[mode: <name>]\n` prefix on the `content` field itself.
+  # `[mode: <name>]\n` prefix on the text part itself.
   #
-  # The prefix on `content` is the source of truth for the LLM:
-  # when we re-send prior user messages on the next call (e.g. after
+  # The prefix is the source of truth for the LLM: when we
+  # re-send prior user messages on the next call (e.g. after
   # compaction rebuilds the message list), the prefix round-trips
   # through whatever store / log / replay we have. The client UI
   # strips the prefix before display because the mode badge already
@@ -177,7 +178,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     user = %User{
       index: nil,
       timestamp: DateTime.utc_now(),
-      content: "[mode: #{effective_mode}]\n#{content}",
+      parts: [%Part.Text{text: "[mode: #{effective_mode}]\n#{content}"}],
       metadata: %{"mode" => effective_mode},
       api_logs: get_pending_api_logs(state, next_idx)
     }
@@ -252,22 +253,21 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   # Otherwise fall back to the vocation's default mode (or "chat" if
   # the vocation has no modes). This matches the LLM-visible
   # `[mode: X]` prefix: we always emit a valid mode to the LLM.
-  defp resolve_mode_and_caps(mode, vocation_id) do
-    case if(vocation_id, do: Vocations.get_vocation(vocation_id), else: nil) do
-      nil ->
-        # No vocation: only "chat" is valid.
-        {"chat", Nest.Sandbox.default_caps()}
+  defp resolve_mode_and_caps(mode, %Nest.Vocations.Vocation{} = vocation) do
+    modes = Vocations.list_modes(vocation)
 
-      vocation ->
-        modes = Vocations.list_modes(vocation)
-
-        if mode in modes do
-          {mode, elem(Vocations.get_caps(vocation, mode), 1)}
-        else
-          default = Vocations.default_mode(vocation)
-          {default, elem(Vocations.get_caps(vocation, default), 1)}
-        end
+    if mode in modes do
+      {mode, elem(Vocations.get_caps(vocation, mode), 1)}
+    else
+      default = Vocations.default_mode(vocation)
+      {default, elem(Vocations.get_caps(vocation, default), 1)}
     end
+  end
+
+  defp resolve_mode_and_caps(_mode, _no_vocation_or_id) do
+    # No vocation struct or vocation_id available: only "chat"
+    # is valid.
+    {"chat", Nest.Sandbox.default_caps()}
   end
 
   # Read any pending api_logs queued for the given message_index.

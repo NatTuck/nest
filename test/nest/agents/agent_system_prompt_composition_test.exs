@@ -6,7 +6,7 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
   `agent_chat_test.exs` so the chat-flow file stays under the
   500-line credo limit.
   """
-  use Nest.DataCase, async: false
+  use Nest.DataCase, async: true
 
   import Mimic
 

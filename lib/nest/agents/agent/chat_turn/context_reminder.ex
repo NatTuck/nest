@@ -32,6 +32,7 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
   module under the 500-line Credo cap.
   """
 
+  alias Nest.Messages.Part
   alias Nest.Messages.System
   alias Nest.Tokens.Estimator
 
@@ -81,7 +82,7 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
   def build_message(atom, used, limit) do
     {:system,
      %System{
-       content: format(atom, used, limit),
+       parts: [%Part.Text{text: format(atom, used, limit)}],
        timestamp: DateTime.utc_now()
      }}
   end

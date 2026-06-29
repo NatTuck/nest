@@ -26,6 +26,7 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
   alias Nest.Agents.Agent
   alias Nest.LLM.MockClient
   alias Nest.LLM.RunResponse
+  alias Nest.Messages.Part
   alias Nest.Messages.ToolCall
 
   setup :verify_on_exit!
@@ -41,6 +42,18 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
   end
 
   import Nest.Agents.AgentTestHelpers
+
+  defp only_text(parts) do
+    parts
+    |> Enum.filter(&match?(%Part.Text{}, &1))
+    |> Enum.map_join("", & &1.text)
+  end
+
+  defp only_thinking(parts) do
+    parts
+    |> Enum.filter(&match?(%Part.Thinking{}, &1))
+    |> Enum.map_join("", & &1.thinking)
+  end
 
   describe "post-tool-call content vs. thinking routing" do
     test "the post-tool assistant message's content and thinking stay in their own fields" do
@@ -86,20 +99,27 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
       :ok = Agent.chat(pid, "List the files")
 
       # Wait for the first turn's tool-call assistant message.
-      assert_receive {:chat_message, {:assistant, %{index: 2, tool_calls: [_]}}}, 200
+      assert_receive {:chat_message, {:assistant, %{index: 2, parts: parts_with_tool}}},
+                     200
+
+      assert Enum.any?(parts_with_tool, &match?(%Part.ToolUse{}, &1))
 
       # Wait for the second turn's assistant message. Its
-      # `content` must be the visible text, and its `thinking`
-      # must be the model's reasoning.
+      # parts must include the visible text and the thinking
+      # (order depends on the build path; here we match the
+      # parts by content rather than position).
       assert_receive {:chat_message,
                       {:assistant,
                        %{
                          index: 4,
-                         content: "There are 3 files in the directory.",
-                         thinking:
-                           "The directory has a few files. Let me summarize them for the user."
+                         parts: parts
                        }}},
                      200
+
+      text = only_text(parts)
+      thinking = only_thinking(parts)
+      assert text == "There are 3 files in the directory."
+      assert thinking == "The directory has a few files. Let me summarize them for the user."
 
       assert_receive {:chat_status, %{status: "idle"}}, 200
 
@@ -208,12 +228,15 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
 
       :ok = Agent.chat(pid, "How many?")
 
-      # The final assistant message has nil content (no
-      # visible text was streamed) and a thinking field with
+      # The final assistant message has no text part (no
+      # visible text was streamed) and a thinking part with
       # the reasoning.
       assert_receive {:chat_message,
                       {:assistant,
-                       %{index: 4, content: nil, thinking: "The user wants a count." <> _}}},
+                       %{
+                         index: 4,
+                         parts: [%Part.Thinking{thinking: "The user wants a count." <> _}]
+                       }}},
                      500
 
       assert_receive {:chat_status, %{status: "idle"}}, 500
@@ -272,15 +295,16 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
       :ok = Agent.chat(pid, "List the files")
 
       # The tool-call assistant message carries the thinking
-      # field — that's the regression guard.
-      assert_receive {:chat_message,
-                      {:assistant,
-                       %{
-                         index: 2,
-                         tool_calls: [_],
-                         thinking: "Let me check the directory listing. I'll run ls."
-                       }}},
+      # part — that's the regression guard.
+      assert_receive {:chat_message, {:assistant, %{index: 2, parts: parts}}},
                      500
+
+      assert only_text(parts) == "Running ls"
+
+      assert only_thinking(parts) ==
+               "Let me check the directory listing. I'll run ls."
+
+      assert Enum.any?(parts, &match?(%Part.ToolUse{}, &1))
 
       # The agent still goes idle after the post-tool reply.
       assert_receive {:chat_status, %{status: "idle"}}, 500

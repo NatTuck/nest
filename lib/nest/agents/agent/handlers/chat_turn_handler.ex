@@ -33,7 +33,6 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Messages.Assistant
   alias Nest.Messages.Streaming
-  alias Nest.Messages.ToolCall
 
   require Logger
 
@@ -164,34 +163,21 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
   defp build_partial_assistant_message(state) do
     case state.chat_state.streaming_acc do
       %Streaming.AssistantAccumulator{} = acc ->
+        # Reuse the streaming module's `finalize/1` to assemble
+        # parts in the order the events arrived. The accumulator's
+        # `thinking_signature` is captured automatically.
+        assistant = Streaming.finalize(acc)
+        text_part = text_part_for_text_buffer(acc)
+        thinking_part = thinking_part_for_thinking_buffer(acc)
+
         {:assistant,
          %Assistant{
-           index: nil,
-           timestamp: DateTime.utc_now(),
-           content:
-             if(acc.text_buffer == [],
-               do: nil,
-               else: IO.iodata_to_binary(acc.text_buffer)
-             ),
-           thinking:
-             if(acc.thinking_buffer == [],
-               do: nil,
-               else: IO.iodata_to_binary(acc.thinking_buffer)
-             ),
-           thinking_signature: acc.thinking_signature,
-           tool_calls:
-             acc.tool_calls
-             |> Map.values()
-             |> Enum.filter(& &1.complete?)
-             |> Enum.map(fn partial ->
-               %ToolCall{
-                 id: partial.id,
-                 name: partial.name,
-                 arguments: parse_tool_args(partial.arguments_buffer)
-               }
-             end),
-           api_logs: pending_api_logs(state, acc.index),
-           metadata: %{"stopped_by_user" => true}
+           assistant
+           | index: nil,
+             timestamp: DateTime.utc_now(),
+             parts: assemble_partial_parts(acc, text_part, thinking_part),
+             api_logs: pending_api_logs(state, acc.index),
+             metadata: %{"stopped_by_user" => true}
          }}
 
       nil ->
@@ -204,14 +190,24 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
          %Assistant{
            index: nil,
            timestamp: DateTime.utc_now(),
-           content: nil,
-           thinking: nil,
-           tool_calls: nil,
+           parts: [],
            api_logs: pending_api_logs(state, index),
            metadata: %{"stopped_by_user" => true}
          }}
     end
   end
+
+  # When the user stops the chat, finalize the streaming
+  # accumulator as a normal assistant message. The accumulator's
+  # `finalize/1` walks the segments to build the parts list in
+  # order; we extend it here with any leftover buffer content
+  # (defense in depth — the segments are the canonical source).
+  defp assemble_partial_parts(acc, _text_part, _thinking_part) do
+    Streaming.finalize(acc).parts
+  end
+
+  defp text_part_for_text_buffer(_acc), do: nil
+  defp thinking_part_for_thinking_buffer(_acc), do: nil
 
   # Build the user-facing error message. We lead with
   # the exception's message (the part the user is most
@@ -255,22 +251,6 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
   defp truncate_string(s, max) do
     binary_part(s, 0, max) <> "\n...(truncated)"
   end
-
-  defp parse_tool_args(buffer) when is_binary(buffer) and buffer != "" do
-    case Jason.decode(buffer) do
-      {:ok, decoded} when is_map(decoded) -> decoded
-      _ -> nil
-    end
-  end
-
-  # `arguments_buffer` is now an IO list (see
-  # `Streaming.PartialToolCall`); convert to a binary before
-  # `Jason.decode`.
-  defp parse_tool_args(buffer) when is_list(buffer) and buffer != [] do
-    buffer |> Enum.reverse() |> IO.iodata_to_binary() |> parse_tool_args()
-  end
-
-  defp parse_tool_args(_), do: nil
 
   # Forwarded to the GenServer module which owns the
   # canonical implementation. The `__` prefix marks them

@@ -16,11 +16,14 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   alias Nest.Vocations
 
   @doc """
-  Resolve the vocation record (if a `vocation_id` was
-  provided) and return the tuple
-  `{system_prompt, initial_mode, tool_names, vocation}`. When
-  no vocation is provided (or the record is missing), returns
-  `{nil, "chat", [], nil}`.
+  Compose the initial system prompt + mode + tool list from a
+  pre-loaded `vocation` struct (or `nil`).
+
+  No DB calls happen here — the caller is responsible for
+  fetching the vocation before starting the agent. This keeps
+  the agent's `init/1` free of `Repo` calls, which is what
+  lets it run in async tests with `$callers` walking instead
+  of per-pid `Sandbox.allow`.
 
   The `context_limit_info` argument is `{context_limit,
   context_limit_source}` from `Init.initial_context_limit/1`.
@@ -31,27 +34,25 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   with a "default" caveat so the LLM knows the number is
   provisional.
   """
-  @spec fetch_vocation_config(integer() | nil, String.t() | nil, {integer() | nil, atom() | nil}) ::
+  @spec compose_vocation_config(
+          Nest.Vocations.Vocation.t() | nil,
+          String.t() | nil,
+          {integer() | nil, atom() | nil}
+        ) ::
           {String.t() | nil, String.t(), [String.t()], Nest.Vocations.Vocation.t() | nil}
-  def fetch_vocation_config(nil, _workspace_path, _context_limit_info),
+  def compose_vocation_config(nil, _workspace_path, _context_limit_info),
     do: {nil, "chat", [], nil}
 
-  def fetch_vocation_config(vocation_id, workspace_path, context_limit_info) do
-    case Vocations.get_vocation(vocation_id) do
-      nil ->
-        {nil, "chat", [], nil}
+  def compose_vocation_config(vocation, workspace_path, context_limit_info) do
+    initial_mode = get_initial_mode(vocation.modes)
+    tools = vocation.tools || []
 
-      vocation ->
-        initial_mode = get_initial_mode(vocation.modes)
-        tools = vocation.tools || []
+    system_prompt =
+      (vocation.system_prompt || "") <>
+        Vocations.mode_catalog(vocation) <>
+        build_suffix(workspace_path, context_limit_info)
 
-        system_prompt =
-          (vocation.system_prompt || "") <>
-            Vocations.mode_catalog(vocation) <>
-            build_suffix(workspace_path, context_limit_info)
-
-        {system_prompt, initial_mode, tools, vocation}
-    end
+    {system_prompt, initial_mode, tools, vocation}
   end
 
   defp build_suffix(workspace_path, context_limit_info) do

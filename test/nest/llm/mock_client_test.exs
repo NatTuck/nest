@@ -182,8 +182,9 @@ defmodule Nest.LLM.MockClientTest do
       req = %RunRequest{
         model: "gpt-4o",
         messages: [
-          {:system, %Nest.Messages.System{index: 0, content: "be brief"}},
-          {:user, %Nest.Messages.User{index: 1, content: "hi"}}
+          {:system,
+           %Nest.Messages.System{index: 0, parts: [%Nest.Messages.Part.Text{text: "be brief"}]}},
+          {:user, %Nest.Messages.User{index: 1, parts: [%Nest.Messages.Part.Text{text: "hi"}]}}
         ]
       }
 

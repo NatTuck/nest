@@ -3,7 +3,7 @@ import Config
 # Configure your database
 #
 # The MIX_TEST_PARTITION environment variable can be used
-# to provide built-in test partitioning in CI environment.
+# to provide test partitioning in CI environment.
 # Run `mix help test` for more information.
 config :nest, Nest.Repo,
   username: System.fetch_env!("USER"),
@@ -12,6 +12,17 @@ config :nest, Nest.Repo,
   pool_size: 20,
   ownership_timeout: 30_000,
   pool: Ecto.Adapters.SQL.Sandbox
+
+# Disable agent persistence in tests. The agent process
+# runs in a child of the test process; the Ecto Sandbox's
+# private-mode connection (async tests) doesn't survive
+# the test's lifecycle, and the test process exits before
+# the agent's async writes complete, so a sync `Repo.insert`
+# from the agent would race the test cleanup and fail.
+# `Persistence` is still exercised by its own test
+# (persistence_test.exs) which uses its own connection
+# setup that doesn't depend on the agent's lifecycle.
+config :nest, persistence: [enabled: false]
 
 # We don't run a server during test. If one is required,
 # you can enable the server option below.

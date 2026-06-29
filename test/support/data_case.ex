@@ -34,25 +34,43 @@ defmodule Nest.DataCase do
   end
 
   @doc """
-  Sets up the sandbox based on the test tags.
+  Sets up the sandbox by checking out a connection in the test
+  process itself.
 
-  Sync tests opt into `shared: true` automatically (the default
-  pattern for shared mode). Async tests opt in via the `:db_shared`
-  tag, which lets spawned children (e.g. an `Agent` GenServer
-  whose `init/1` queries the DB) use the test's checked-out
-  connection without a separate `Sandbox.allow/3` call. Without
-  it, async tests get `shared: false` and any child doing DB work
-  in `init/1` fails with `DBConnection.OwnershipError`.
+  The test pid becomes the connection owner. Processes spawned by
+  the test (via `start_supervised!` etc.) inherit `$callers` from
+  the test process, and any `Repo` call inside them walks the
+  caller chain via `proxy_for/2`, hitting the test's connection
+  automatically. This means **no `Sandbox.allow/3` is needed per
+  child pid**, regardless of how deeply the agent tree is nested.
+
+  Sync tests (`async: false`) opt into `shared: true` because
+  they don't have parallel siblings to fight for the repo-wide
+  shared lock. Async tests default to `shared: false`; the test
+  pid still owns the connection but no other process holds the
+  shared flag, so concurrent async tests don't collide.
 
   Note: the `{:shared, pid}` ownership mode is REPO-WIDE — only
-  one process can hold it at a time. Tests tagged `:db_shared`
-  serialize against each other for shared-mode acquisition, so
-  the tag should only be applied to tests that genuinely need it.
+  one process can hold it at a time, so any test (sync or async)
+  that uses `shared: true` serializes against other shared-mode
+  tests. Use `:db_shared` only when a test needs shared mode and
+  cannot pre-fetch its DB data in the test process.
   """
   def setup_sandbox(tags, db_shared_tag \\ :db_shared) do
-    shared = tags[db_shared_tag] || not tags[:async]
-    pid = Sandbox.start_owner!(Nest.Repo, shared: shared)
-    on_exit(fn -> Sandbox.stop_owner(pid) end)
+    parent = self()
+
+    case Sandbox.checkout(Nest.Repo, []) do
+      :ok ->
+        if tags[db_shared_tag] || not tags[:async] do
+          Sandbox.mode(Nest.Repo, {:shared, parent})
+        end
+
+        on_exit(fn -> Sandbox.checkin(Nest.Repo, []) end)
+
+      {:already, _kind} ->
+        # Already checked out by an ancestor setup; nothing to do.
+        :ok
+    end
   end
 
   @doc """

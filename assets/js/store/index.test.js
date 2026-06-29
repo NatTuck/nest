@@ -1208,16 +1208,19 @@ describe("store", () => {
         charsReceived: 15,
       };
 
-      // Add message with null content to trigger content || "" branch
+      // Add message with no content and no parts — the new
+      // store derives `content` from `parts` and defaults to "".
       useStore.getState().addChatMessage("agent-1", {
         index: 0,
         role: "assistant",
         content: null,
+        parts: null,
       });
 
-      // Should complete without errors
+      // Should complete without errors and the content
+      // field on the merged message defaults to "".
       const messages = useStore.getState().agentsCache["agent-1"].messages;
-      expect(messages[0].content).toBeNull();
+      expect(messages[0].content).toBe("");
 
       warnSpy.mockRestore();
     });
@@ -1336,11 +1339,22 @@ describe("store", () => {
     });
 
     it("preserves toolCalls when updating existing message", () => {
-      // Add initial message with toolCalls
+      // Add initial message with tool calls as parts (the new
+      // canonical wire format). Legacy `toolCalls` is also
+      // provided to verify the store derives it from parts.
       useStore.getState().addChatMessage("agent-1", {
         index: 0,
         role: "assistant",
         content: "Let me help",
+        parts: [
+          { kind: "text", text: "Let me help" },
+          {
+            kind: "tool_use",
+            id: "call_123",
+            name: "shell_cmd",
+            arguments: { command: "ls" },
+          },
+        ],
         toolCalls: [
           {
             id: "call_123",
@@ -1350,11 +1364,12 @@ describe("store", () => {
         ],
       });
 
-      // Update the message without toolCalls (simulating a sync)
+      // Update the message without tool calls (simulating a sync)
       useStore.getState().addChatMessage("agent-1", {
         index: 0,
         role: "assistant",
         content: "Let me help",
+        parts: [{ kind: "text", text: "Let me help" }],
       });
 
       const messages = useStore.getState().agentsCache["agent-1"].messages;
@@ -1363,11 +1378,22 @@ describe("store", () => {
     });
 
     it("preserves toolResults when updating existing message", () => {
-      // Add initial message with toolResults
+      // Add initial message with tool results as parts (the new
+      // canonical wire format). Legacy `toolResults` is also
+      // provided to verify the store derives it from parts.
       useStore.getState().addChatMessage("agent-1", {
         index: 0,
         role: "tool",
         content: "Tool result",
+        parts: [
+          {
+            kind: "tool_result",
+            toolCallId: "call_123",
+            name: "shell_cmd",
+            content: "file1.txt file2.txt",
+            isError: false,
+          },
+        ],
         toolResults: [
           {
             tool_call_id: "call_123",
@@ -1378,11 +1404,20 @@ describe("store", () => {
         ],
       });
 
-      // Update the message without toolResults (simulating a sync)
+      // Update the message without tool results (simulating a sync)
       useStore.getState().addChatMessage("agent-1", {
         index: 0,
         role: "tool",
         content: "Tool result",
+        parts: [
+          {
+            kind: "tool_result",
+            toolCallId: "call_123",
+            name: "shell_cmd",
+            content: "",
+            isError: false,
+          },
+        ],
       });
 
       const messages = useStore.getState().agentsCache["agent-1"].messages;
@@ -1423,12 +1458,17 @@ describe("store", () => {
       }));
 
       // Broadcast the tool-call assistant message with NO
-      // thinking field (the regression shape).
+      // thinking field (the regression shape). The new wire
+      // format uses `parts` (text + tool_use, no thinking) so
+      // the store must fall back to the streaming partial's
+      // thinking segments.
       useStore.getState().addChatMessage("agent-1", {
         index: 1,
         role: "assistant",
-        content: "Running ls",
-        toolCalls: [{ id: "call_1", name: "shell_cmd", arguments: {} }],
+        parts: [
+          { kind: "text", text: "Running ls" },
+          { kind: "tool_use", id: "call_1", name: "shell_cmd", arguments: {} },
+        ],
       });
 
       const messages = useStore.getState().agentsCache["agent-1"].messages;

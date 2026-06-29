@@ -16,8 +16,10 @@ defmodule Nest.Agents.Agent.Init do
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.SystemPrompt
+  alias Nest.Messages.Part
   alias Nest.Messages.System
   alias Nest.Tools
+  alias Nest.Vocations
 
   @default_context_limit 128_000
 
@@ -25,6 +27,13 @@ defmodule Nest.Agents.Agent.Init do
   Build the initial state struct. Pure: no broadcasts, no
   probes, no logging. Caller must call `run_post_init/2`
   after this to perform the side effects.
+
+  The caller is responsible for providing the loaded vocation
+  struct via `:vocation` in `attrs` (typically fetched via
+  `Persistence.load_vocation/1` or `Vocations.get_vocation/1`
+  in the calling process). This keeps `init/1` free of DB
+  work, which is what lets the agent run in async tests with
+  `$callers` walking instead of per-pid `Sandbox.allow`.
   """
   @spec build_state(map(), Nest.LLM.ClientConfig.t()) :: Nest.Agents.Agent.t()
   def build_state(attrs, client_config) do
@@ -32,6 +41,7 @@ defmodule Nest.Agents.Agent.Init do
     model = Map.fetch!(attrs, :model)
     vocation_id = Map.get(attrs, :vocation_id)
     workspace_path = Map.get(attrs, :workspace_path)
+    vocation = Map.get(attrs, :vocation)
 
     # Resolve the context limit before building the system prompt
     # so the prompt can include the limit as a static piece of
@@ -40,12 +50,13 @@ defmodule Nest.Agents.Agent.Init do
     # `:default` wording acknowledges that.
     {context_limit, context_limit_source} = initial_context_limit(model)
 
-    # Fetch vocation if provided; the Vocation struct is stored in
-    # state so subsequent mode/caps resolution is a pure read of
-    # the cached struct (no DB lookups on the per-message path).
-    {system_prompt, mode, tool_names, vocation} =
-      SystemPrompt.fetch_vocation_config(
-        vocation_id,
+    # Compose system prompt from the pre-loaded vocation (no DB
+    # work here). The Vocation struct is stored in state so
+    # subsequent mode/caps resolution is a pure read of the
+    # cached struct.
+    {system_prompt, mode, tool_names, cached_vocation} =
+      SystemPrompt.compose_vocation_config(
+        vocation,
         workspace_path,
         {context_limit, context_limit_source}
       )
@@ -59,7 +70,7 @@ defmodule Nest.Agents.Agent.Init do
       id: id,
       model: model,
       client_config: client_config,
-      vocation: vocation,
+      vocation: cached_vocation,
       vocation_id: vocation_id,
       workspace_path: workspace_path,
       tmp_path: tmp_path,
@@ -69,6 +80,19 @@ defmodule Nest.Agents.Agent.Init do
       chat_state: build_chat_state(initial_messages, next_index)
     }
   end
+
+  @doc """
+  Resolve a `vocation_id` (or `nil`) into a loaded Vocation struct
+  (or `nil`). Pure Repo read; callers in async tests should run
+  this in the test process and pass the result into attrs via
+  `:vocation`, not call it from inside a child process.
+
+  Production callers can use this directly from a request handler
+  before starting the agent. See `Persistence.load_vocation/1`.
+  """
+  @spec load_vocation(integer() | nil) :: Vocations.Vocation.t() | nil
+  def load_vocation(nil), do: nil
+  def load_vocation(vocation_id), do: Vocations.get_vocation(vocation_id)
 
   @doc """
   Run the post-construction side effects: broadcast the
@@ -134,7 +158,7 @@ defmodule Nest.Agents.Agent.Init do
       {:system,
        %System{
          index: 0,
-         content: system_prompt || "",
+         parts: [%Part.Text{text: system_prompt || ""}],
          timestamp: DateTime.utc_now(),
          api_logs: []
        }}
