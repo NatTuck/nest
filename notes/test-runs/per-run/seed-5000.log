@@ -1,0 +1,867 @@
+Running ExUnit with seed: 5000, max_cases: 64
+
+...............................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+
+  1) test delta event details delta index matches message being streamed (NestWeb.AgentChannelMessagingTest)
+     test/nest_web/channels/agent_channel_messaging_test.exs:48
+     Assertion failed, no matching message after 500ms
+     Showing 7 of 7 messages in the mailbox
+     code: assert_receive %{
+             __struct__: Phoenix.Socket.Message,
+             event: "chat:delta",
+             payload: %{"content" => "First ", "index" => first_idx}
+           }
+     mailbox:
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:delta",
+                  payload: %{"content" => "First ", "index" => first_idx}
+                }
+       value:   %Phoenix.Socket.Message{
+                  topic: "agent:typical-duck",
+                  event: "init",
+                  payload: %{
+                    "contextLimit" => 512000,
+                    "contextLimitSource" => "config",
+                    "currentMode" => "chat",
+                    "defaultMode" => "chat",
+                    "history" => [],
+                    "id" => "typical-duck",
+                    "messageCount" => 1,
+                    "model" => %{
+                      name: "qwen3.5-plus",
+                      provider: "model-studio"
+                    },
+                    "modes" => ["chat"],
+                    "partial" => nil,
+                    "status" => "idle",
+                    "usage" => %{
+                      cache_creation_input_tokens: 0,
+                      cache_read_input_tokens: 0,
+                      input_tokens: 0,
+                      output_tokens: 0,
+                      reasoning_tokens: 0,
+                      total_tokens: 0,
+                      total_input_tokens: 0,
+                      total_cache_read_input_tokens: 0,
+                      context_input_tokens: 0,
+                      last_output: 0,
+                      total_cache_creation_input_tokens: 0
+                    },
+                    "vocation" => nil
+                  },
+                  ref: nil,
+                  join_ref: 13060
+                }
+
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:delta",
+                  payload: %{"content" => "First ", "index" => first_idx}
+                }
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\nHello"
+                      }
+                    ],
+                    timestamp: ~U[2026-07-01 23:55:31.399497Z],
+                    metadata: %{"mode" => "chat"},
+                    api_logs: []
+                  }}}
+
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:delta",
+                  payload: %{"content" => "First ", "index" => first_idx}
+                }
+       value:   %Phoenix.Socket.Message{
+                  topic: "agent:typical-duck",
+                  event: "chat:message",
+                  payload: %{
+                    "apiLogs" => [],
+                    "index" => 1,
+                    "mode" => "chat",
+                    "parts" => [
+                      %{
+                        "kind" => "text",
+                        "text" => "[mode: chat]\nHello"
+                      }
+                    ],
+                    "role" => "user"
+                  },
+                  ref: nil,
+                  join_ref: 13060
+                }
+
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:delta",
+                  payload: %{"content" => "First ", "index" => first_idx}
+                }
+       value:   %Phoenix.Socket.Message{
+                  topic: "agent:typical-duck",
+                  event: "chat:message",
+                  payload: %{
+                    "apiLogs" => [],
+                    "index" => 1,
+                    "mode" => "chat",
+                    "parts" => [
+                      %{
+                        "kind" => "text",
+                        "text" => "[mode: chat]\nHello"
+                      }
+                    ],
+                    "role" => "user"
+                  },
+                  ref: nil,
+                  join_ref: 13060
+                }
+
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:delta",
+                  payload: %{"content" => "First ", "index" => first_idx}
+                }
+       value:   %Phoenix.Socket.Message{
+                  topic: "agent:typical-duck",
+                  event: "chat:status",
+                  payload: %{
+                    status: "streaming",
+                    usage: %{
+                      cache_creation_input_tokens: 0,
+                      cache_read_input_tokens: 0,
+                      input_tokens: 0,
+                      output_tokens: 0,
+                      reasoning_tokens: 0,
+                      total_tokens: 0,
+                      total_input_tokens: 0,
+                      total_cache_read_input_tokens: 0,
+                      context_input_tokens: 0,
+                      last_output: 0,
+                      total_cache_creation_input_tokens: 0
+                    },
+                    contextLimit: 512000,
+                    contextLimitSource: :config,
+                    currentMode: "chat"
+                  },
+                  ref: nil,
+                  join_ref: 13060
+                }
+
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:delta",
+                  payload: %{"content" => "First ", "index" => first_idx}
+                }
+       value:   %Phoenix.Socket.Message{
+                  topic: "agent:typical-duck",
+                  event: "chat:status",
+                  payload: %{
+                    status: "streaming",
+                    usage: %{
+                      cache_creation_input_tokens: 0,
+                      cache_read_input_tokens: 0,
+                      input_tokens: 0,
+                      output_tokens: 0,
+                      reasoning_tokens: 0,
+                      total_tokens: 0,
+                      total_input_tokens: 0,
+                      total_cache_read_input_tokens: 0,
+                      context_input_tokens: 0,
+                      last_output: 0,
+                      total_cache_creation_input_tokens: 0
+                    },
+                    contextLimit: 512000,
+                    contextLimitSource: :config,
+                    currentMode: "chat"
+                  },
+                  ref: nil,
+                  join_ref: 13060
+                }
+
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:delta",
+                  payload: %{"content" => "First ", "index" => first_idx}
+                }
+       value:   {:chat_status,
+                 %{
+                   status: "streaming",
+                   usage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     context_input_tokens: 0,
+                     last_output: 0,
+                     total_cache_creation_input_tokens: 0
+                   },
+                   contextLimit: 512000,
+                   contextLimitSource: :config,
+                   currentMode: "chat"
+                 }}
+     stacktrace:
+       test/nest_web/channels/agent_channel_messaging_test.exs:66: (test)
+
+
+
+  2) test handle_in(chat:message) chat:status broadcast carries currentMode (sticky mode) (NestWeb.AgentChannelTest)
+     test/nest_web/channels/agent_channel_test.exs:158
+     Assertion failed, no matching message after 500ms
+     Showing 6 of 6 messages in the mailbox
+     code: assert_receive %{__struct__: Phoenix.Socket.Message, event: "chat:message", payload: %{"role" => "assistant"}}
+     mailbox:
+       pattern: %{__struct__: Phoenix.Socket.Message, event: "chat:message", payload: %{"role" => "assistant"}}
+       value:   %Phoenix.Socket.Message{
+                  topic: "agent:emotional-tick",
+                  event: "init",
+                  payload: %{
+                    "contextLimit" => 512000,
+                    "contextLimitSource" => "config",
+                    "currentMode" => "chat",
+                    "defaultMode" => "chat",
+                    "history" => [],
+                    "id" => "emotional-tick",
+                    "messageCount" => 1,
+                    "model" => %{
+                      name: "qwen3.5-plus",
+                      provider: "model-studio"
+                    },
+                    "modes" => ["chat"],
+                    "partial" => nil,
+                    "status" => "idle",
+                    "usage" => %{
+                      cache_creation_input_tokens: 0,
+                      cache_read_input_tokens: 0,
+                      input_tokens: 0,
+                      output_tokens: 0,
+                      reasoning_tokens: 0,
+                      total_tokens: 0,
+                      total_input_tokens: 0,
+                      total_cache_read_input_tokens: 0,
+                      context_input_tokens: 0,
+                      last_output: 0,
+                      total_cache_creation_input_tokens: 0
+                    },
+                    "vocation" => nil
+                  },
+                  ref: nil,
+                  join_ref: 23301
+                }
+
+       pattern: %{__struct__: Phoenix.Socket.Message, event: "chat:message", payload: %{"role" => "assistant"}}
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\nHello"
+                      }
+                    ],
+                    timestamp: ~U[2026-07-01 23:55:31.402642Z],
+                    metadata: %{"mode" => "chat"},
+                    api_logs: []
+                  }}}
+
+       pattern: %{__struct__: Phoenix.Socket.Message, event: "chat:message", payload: %{"role" => "assistant"}}
+       value:   %Phoenix.Socket.Message{
+                  topic: "agent:emotional-tick",
+                  event: "chat:message",
+                  payload: %{
+                    "apiLogs" => [],
+                    "index" => 1,
+                    "mode" => "chat",
+                    "parts" => [
+                      %{
+                        "kind" => "text",
+                        "text" => "[mode: chat]\nHello"
+                      }
+                    ],
+                    "role" => "user"
+                  },
+                  ref: nil,
+                  join_ref: 23301
+                }
+
+       pattern: %{__struct__: Phoenix.Socket.Message, event: "chat:message", payload: %{"role" => "assistant"}}
+       value:   {:chat_status,
+                 %{
+                   status: "streaming",
+                   usage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     context_input_tokens: 0,
+                     last_output: 0,
+                     total_cache_creation_input_tokens: 0
+                   },
+                   contextLimit: 512000,
+                   contextLimitSource: :config,
+                   currentMode: "chat"
+                 }}
+
+       pattern: %{__struct__: Phoenix.Socket.Message, event: "chat:message", payload: %{"role" => "assistant"}}
+       value:   %Phoenix.Socket.Message{
+                  topic: "agent:emotional-tick",
+                  event: "chat:status",
+                  payload: %{
+                    status: "streaming",
+                    usage: %{
+                      cache_creation_input_tokens: 0,
+                      cache_read_input_tokens: 0,
+                      input_tokens: 0,
+                      output_tokens: 0,
+                      reasoning_tokens: 0,
+                      total_tokens: 0,
+                      total_input_tokens: 0,
+                      total_cache_read_input_tokens: 0,
+                      context_input_tokens: 0,
+                      last_output: 0,
+                      total_cache_creation_input_tokens: 0
+                    },
+                    contextLimit: 512000,
+                    contextLimitSource: :config,
+                    currentMode: "chat"
+                  },
+                  ref: nil,
+                  join_ref: 23301
+                }
+
+       pattern: %{__struct__: Phoenix.Socket.Message, event: "chat:message", payload: %{"role" => "assistant"}}
+       value:   %Phoenix.Socket.Message{
+                  topic: "agent:emotional-tick",
+                  event: "chat:status",
+                  payload: %{
+                    status: "streaming",
+                    usage: %{
+                      cache_creation_input_tokens: 0,
+                      cache_read_input_tokens: 0,
+                      input_tokens: 0,
+                      output_tokens: 0,
+                      reasoning_tokens: 0,
+                      total_tokens: 0,
+                      total_input_tokens: 0,
+                      total_cache_read_input_tokens: 0,
+                      context_input_tokens: 0,
+                      last_output: 0,
+                      total_cache_creation_input_tokens: 0
+                    },
+                    contextLimit: 512000,
+                    contextLimitSource: :config,
+                    currentMode: "chat"
+                  },
+                  ref: nil,
+                  join_ref: 23301
+                }
+     stacktrace:
+       test/nest_web/channels/agent_channel_test.exs:175: (test)
+
+....
+
+  3) test API logs every message in simple conversation has API log (Nest.Agents.AgentObservabilityTest)
+     test/nest/agents/agent_observability_test.exs:30
+     Assertion failed, no matching message after 500ms
+     Showing 2 of 2 messages in the mailbox
+     code: assert_receive {:chat_message, {:user, %{index: 1, api_logs: [_ | _]} = user_msg}}
+     mailbox:
+       pattern: {:chat_message, {:user, %{index: 1, api_logs: [_ | _]} = user_msg}}
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\nHello"
+                      }
+                    ],
+                    timestamp: ~U[2026-07-01 23:55:31.397150Z],
+                    metadata: %{"mode" => "chat"},
+                    api_logs: []
+                  }}}
+
+       pattern: {:chat_message, {:user, %{index: 1, api_logs: [_ | _]} = user_msg}}
+       value:   {:chat_status,
+                 %{
+                   status: "streaming",
+                   usage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     context_input_tokens: 0,
+                     last_output: 0,
+                     total_cache_creation_input_tokens: 0
+                   },
+                   contextLimit: 512000,
+                   contextLimitSource: :config,
+                   currentMode: "chat"
+                 }}
+     stacktrace:
+       test/nest/agents/agent_observability_test.exs:40: (test)
+
+.
+
+  4) test chat/2 with tool calls second message after tool execution serializes tool results correctly (Nest.Agents.AgentToolsTest)
+     test/nest/agents/agent_tools_test.exs:168
+     Assertion failed, no matching message after 500ms
+     Showing 10 of 10 messages in the mailbox
+     code: assert_receive {:chat_status, %{status: "idle"}}
+     mailbox:
+       pattern: {:chat_status, %{status: "idle"}}
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\nList files"
+                      }
+                    ],
+                    timestamp: ~U[2026-07-01 23:55:31.359786Z],
+                    metadata: %{"mode" => "chat"},
+                    api_logs: []
+                  }}}
+
+       pattern: {:chat_status, %{status: "idle"}}
+       value:   {:chat_status,
+                 %{
+                   status: "streaming",
+                   usage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     context_input_tokens: 0,
+                     last_output: 0,
+                     total_cache_creation_input_tokens: 0
+                   },
+                   contextLimit: 512000,
+                   contextLimitSource: :config,
+                   currentMode: "chat"
+                 }}
+
+       pattern: {:chat_status, %{status: "idle"}}
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\nList files"
+                      }
+                    ],
+                    timestamp: ~U[2026-07-01 23:55:31.359786Z],
+                    metadata: %{"mode" => "chat"},
+                    api_logs: [
+                      %{
+                        id: "001.000",
+                        timestamp: ~U[2026-07-01 23:55:31.371159Z],
+                        type: :request,
+                        payload: %{
+                          "max_tokens" => nil,
+                          "messages" => [
+                            %{
+                              "content" => "",
+                              "role" => "system"
+                            },
+                            %{
+                              "content" => "[mode: chat]\nList files",
+                              "role" => "user"
+                            }
+                          ],
+                          "model" => "qwen3.5-plus",
+                          "stream" => true,
+                          "temperature" => nil,
+                          "tool_choice" => :auto,
+                          "top_p" => nil
+                        }
+                      }
+                    ]
+                  }}}
+
+       pattern: {:chat_status, %{status: "idle"}}
+       value:   {:chat_delta,
+                 %{
+                   index: 2,
+                   content: "I'll check the directory",
+                   chars_start: 0,
+                   chars_end: 24,
+                   part_type: :text
+                 }}
+
+       pattern: {:chat_status, %{status: "idle"}}
+       value:   {:chat_status,
+                 %{
+                   status: "streaming",
+                   usage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     context_input_tokens: 0,
+                     last_output: 0,
+                     total_cache_creation_input_tokens: 0
+                   },
+                   contextLimit: 512000,
+                   contextLimitSource: :config,
+                   currentMode: "chat"
+                 }}
+
+       pattern: {:chat_status, %{status: "idle"}}
+       value:   {:chat_message,
+                 {:assistant,
+                  %Nest.Messages.Assistant{
+                    index: 2,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "I'll check the directory"
+                      },
+                      %Nest.Messages.Part.ToolUse{
+                        id: "call_first",
+                        name: "shell_cmd",
+                        arguments: %{"command" => "ls"}
+                      }
+                    ],
+                    usage: nil,
+                    finish_reason: "tool_calls",
+                    model: nil,
+                    timestamp: ~U[2026-07-01 23:55:31.388553Z],
+                    metadata: nil,
+                    api_logs: []
+                  }}}
+
+       pattern: {:chat_status, %{status: "idle"}}
+       value:   {:chat_status,
+                 %{
+                   status: "executing_tools",
+                   usage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     context_input_tokens: 0,
+                     last_output: 0,
+                     total_cache_creation_input_tokens: 0
+                   },
+                   contextLimit: 512000,
+                   contextLimitSource: :config,
+                   currentMode: "chat"
+                 }}
+
+       pattern: {:chat_status, %{status: "idle"}}
+       value:   {:chat_message,
+                 {:assistant,
+                  %Nest.Messages.Assistant{
+                    index: 2,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "I'll check the directory"
+                      },
+                      %Nest.Messages.Part.ToolUse{
+                        id: "call_first",
+                        name: "shell_cmd",
+                        arguments: %{"command" => "ls"}
+                      }
+                    ],
+                    usage: nil,
+                    finish_reason: "tool_calls",
+                    model: nil,
+                    timestamp: ~U[2026-07-01 23:55:31.388553Z],
+                    metadata: nil,
+                    api_logs: [
+                      %{
+                        id: "002.000",
+                        timestamp: ~U[2026-07-01 23:55:31.388558Z],
+                        type: :response,
+                        payload: %{
+                          usage: nil,
+                          role: :assistant,
+                          content: "I'll check the directory",
+                          stop_reason: "tool_calls",
+                          tool_calls: [
+                            %Nest.Messages.ToolCall{
+                              id: "call_first",
+                              name: "shell_cmd",
+                              arguments: %{"command" => "ls"}
+                            }
+                          ],
+                          tool_results: nil
+                        }
+                      }
+                    ]
+                  }}}
+
+       pattern: {:chat_status, %{status: "idle"}}
+       value:   {:chat_message,
+                 {:tool,
+                  %Nest.Messages.Tool{
+                    index: 3,
+                    parts: [
+                      %Nest.Messages.Part.ToolResult{
+                        tool_call_id: "call_first",
+                        name: "shell_cmd",
+                        content: "Unknown tool: shell_cmd",
+                        arguments: %{"command" => "ls"},
+                        is_error: true
+                      }
+                    ],
+                    timestamp: ~U[2026-07-01 23:55:31.388733Z],
+                    metadata: nil,
+                    api_logs: []
+                  }}}
+
+       pattern: {:chat_status, %{status: "idle"}}
+       value:   {:chat_status,
+                 %{
+                   status: "streaming",
+                   usage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     context_input_tokens: 0,
+                     last_output: 0,
+                     total_cache_creation_input_tokens: 0
+                   },
+                   contextLimit: 512000,
+                   contextLimitSource: :config,
+                   currentMode: "chat"
+                 }}
+     stacktrace:
+       test/nest/agents/agent_tools_test.exs:182: (test)
+
+...
+
+  5) test chat_crashed when the HTTP worker raises an unhandled FunctionClauseError is caught and the agent transitions to idle (Nest.Agents.ChatTaskCrashTest)
+     test/nest/agents/chat_task_crash_test.exs:59
+     Assertion failed, no matching message after 500ms
+     Showing 1 of 1 message in the mailbox
+     code: assert_receive {:chat_error, %{content: content}}
+     mailbox:
+       pattern: {:chat_error, %{content: content}}
+       value:   {:chat_status,
+                 %{
+                   status: "streaming",
+                   usage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     context_input_tokens: 0,
+                     last_output: 0,
+                     total_cache_creation_input_tokens: 0
+                   },
+                   contextLimit: 512000,
+                   contextLimitSource: :config,
+                   currentMode: "chat"
+                 }}
+     stacktrace:
+       test/nest/agents/chat_task_crash_test.exs:100: anonymous fn/1 in Nest.Agents.ChatTaskCrashTest."test chat_crashed when the HTTP worker raises an unhandled FunctionClauseError is caught and the agent transitions to idle"/1
+       (ex_unit 1.19.5) lib/ex_unit/capture_log.ex:121: ExUnit.CaptureLog.with_log/2
+       (ex_unit 1.19.5) lib/ex_unit/capture_log.ex:83: ExUnit.CaptureLog.capture_log/2
+       test/nest/agents/chat_task_crash_test.exs:85: (test)
+
+................................................................................FUNCTION                                                                                   CALLS        %  TIME  [uS / CALLS]
+--------                                                                                   -----  -------  ----  [----------]
+maps:remove/2                                                                                  1     0.00     0  [      0.00]
+maps:without/2                                                                                 1     0.00     0  [      0.00]
+erlang:atom_to_list/1                                                                          2     0.00     0  [      0.00]
+erlang:integer_to_list/1                                                                       1     0.00     0  [      0.00]
+erlang:make_ref/0                                                                              1     0.00     0  [      0.00]
+erlang:monitor/3                                                                               2     0.00     0  [      0.00]
+erlang:put/2                                                                                   2     0.00     0  [      0.00]
+erlang:'++'/2                                                                                  3     0.00     0  [      0.00]
+'Elixir.Keyword':fetch/2                                                                       1     0.00     0  [      0.00]
+'Elixir.Keyword':pop/2                                                                         1     0.00     0  [      0.00]
+'Elixir.Keyword':pop/3                                                                         1     0.00     0  [      0.00]
+logger_h_common:filesync/2                                                                     1     0.00     0  [      0.00]
+logger_h_common:filter_config/1                                                                1     0.00     0  [      0.00]
+unicode:characters_to_binary/3                                                                 1     0.00     0  [      0.00]
+unicode:no_conversion_needed/3                                                                 1     0.00     0  [      0.00]
+unicode:characters_to_binary_int/3                                                             1     0.00     0  [      0.00]
+'Elixir.Logger':flush/0                                                                        1     0.00     0  [      0.00]
+logger:'-get_handler_config/0-lc$^0/1-0-'/1                                                    4     0.00     0  [      0.00]
+gen:start/5                                                                                    1     0.00     0  [      0.00]
+gen:do_spawn/5                                                                                 1     0.00     0  [      0.00]
+gen:init_it/6                                                                                  1     0.00     0  [      0.00]
+gen:call/3                                                                                     1     0.00     0  [      0.00]
+gen:do_for_proc/2                                                                              2     0.00     0  [      0.00]
+gen:name/1                                                                                     1     0.00     0  [      0.00]
+gen:timeout/1                                                                                  1     0.00     0  [      0.00]
+gen:spawn_opts/1                                                                               1     0.00     0  [      0.00]
+gen:hibernate_after/1                                                                          1     0.00     0  [      0.00]
+gen:debug_options/2                                                                            1     0.00     0  [      0.00]
+gen:'-call/4-fun-0-'/4                                                                         2     0.00     0  [      0.00]
+code:ensure_loaded/1                                                                           2     0.00     0  [      0.00]
+logger_std_h:filesync/1                                                                        1     0.00     0  [      0.00]
+logger_std_h:filter_config/1                                                                   1     0.00     0  [      0.00]
+proc_lib:spawn_opt/4                                                                           1     0.00     0  [      0.00]
+proc_lib:init_p_do_apply/3                                                                     1     0.00     0  [      0.00]
+proc_lib:exit_p/3                                                                              1     0.00     0  [      0.00]
+proc_lib:exit_reason/3                                                                         1     0.00     0  [      0.00]
+proc_lib:start/5                                                                               1     0.00     0  [      0.00]
+proc_lib:make_dummy_args/2                                                                     2     0.00     0  [      0.00]
+proc_lib:trans_init/3                                                                          1     0.00     0  [      0.00]
+proc_lib:crash_report/4                                                                        1     0.00     0  [      0.00]
+proc_lib:get_my_name/0                                                                         1     0.00     0  [      0.00]
+proc_lib:get_ancestors/0                                                                       1     0.00     0  [      0.00]
+proc_lib:proc_info/2                                                                           1     0.00     0  [      0.00]
+'Elixir.Process':whereis/1                                                                     2     0.00     0  [      0.00]
+'Elixir.Enum':reduce/3                                                                         1     0.00     0  [      0.00]
+'Elixir.Access':get/2                                                                          3     0.00     0  [      0.00]
+'Elixir.Access':get/3                                                                          3     0.00     0  [      0.00]
+'Elixir.Nest.Agents.Agent':chat/2                                                              1     0.00     0  [      0.00]
+'Elixir.Nest.Agents.Agent':chat/3                                                              1     0.00     0  [      0.00]
+'Elixir.StringIO':close/1                                                                      1     0.00     0  [      0.00]
+.'Elixir.StringIO':handle_info/2                                                                1     0.00     0  [      0.00]
+'Elixir.StringIO':init/1                                                                       1     0.00     0  [      0.00]
+'Elixir.StringIO':io_reply/3                                                                   1     0.00     0  [      0.00]
+'Elixir.StringIO':io_request/2                                                                 1     0.00     0  [      0.00]
+'Elixir.StringIO':io_request/4                                                                 1     0.00     0  [      0.00]
+'Elixir.StringIO':open/1                                                                       1     0.00     0  [      0.00]
+'Elixir.StringIO':open/2                                                                       1     0.00     0  [      0.00]
+error_handler:undefined_function/3                                                             2     0.00     0  [      0.00]
+error_handler:crash/3                                                                          2     0.00     0  [      0.00]
+error_handler:crash/1                                                                          2     0.00     0  [      0.00]
+error_handler:ensure_loaded/1                                                                  2     0.00     0  [      0.00]
+lists:member/2                                                                                 1     0.00     0  [      0.00]
+lists:reverse/2                                                                                1     0.00     0  [      0.00]
+lists:concat/1                                                                                 1     0.00     0  [      0.00]
+lists:thing_to_list/1                                                                          3     0.00     0  [      0.00]
+lists:flatten/1                                                                                1     0.00     0  [      0.00]
+lists:do_flatten/2                                                                            10     0.00     0  [      0.00]
+lists:sort/2                                                                                   1     0.00     0  [      0.00]
+lists:flatmap/2                                                                                1     0.00     0  [      0.00]
+lists:flatmap_1/2                                                                              4     0.00     0  [      0.00]
+lists:foldl/3                                                                                  1     0.00     0  [      0.00]
+lists:foldl_1/3                                                                                1     0.00     0  [      0.00]
+lists:fsplit_1/6                                                                               2     0.00     0  [      0.00]
+lists:fmergel/4                                                                                1     0.00     0  [      0.00]
+lists:rfmergel/4                                                                               1     0.00     0  [      0.00]
+'Elixir.GenServer':call/2                                                                      1     0.00     0  [      0.00]
+'Elixir.GenServer':cast/2                                                                      1     0.00     0  [      0.00]
+'Elixir.GenServer':cast_msg/1                                                                  1     0.00     0  [      0.00]
+'Elixir.GenServer':do_send/2                                                                   1     0.00     0  [      0.00]
+'Elixir.GenServer':start/3                                                                     1     0.00     0  [      0.00]
+'Elixir.ExUnit.CaptureServer':log_capture_off/1                                                1     0.00     0  [      0.00]
+'Elixir.ExUnit.CaptureServer':log_capture_on/3                                                 1     0.00     0  [      0.00]
+'Elixir.ExProf':stop/0                                                                         1     0.00     0  [      0.00]
+logger_config:get/1                                                                            1     0.00     0  [      0.00]
+gen_server:call/2                                                                              1     0.00     0  [      0.00]
+gen_server:call/3                                                                              1     0.00     0  [      0.00]
+gen_server:reply/2                                                                             1     0.00     0  [      0.00]
+gen_server:loop/4                                                                              2     0.00     0  [      0.00]
+gen_server:cancel_timer/1                                                                      2     0.00     0  [      0.00]
+gen_server:decode_msg/4                                                                        2     0.00     0  [      0.00]
+gen_server:try_handle_info/3                                                                   1     0.00     0  [      0.00]
+gen_server:try_handle_call/4                                                                   1     0.00     0  [      0.00]
+gen_server:try_terminate/3                                                                     1     0.00     0  [      0.00]
+gen_server:handle_msg/3                                                                        2     0.00     0  [      0.00]
+gen_server:handle_common_reply/5                                                               1     0.00     0  [      0.00]
+gen_server:terminate/7                                                                         1     0.00     0  [      0.00]
+gen_server:terminate/9                                                                         1     0.00     0  [      0.00]
+gen_server:catch_result/3                                                                      1     0.00     0  [      0.00]
+'Elixir.ExUnit.CaptureLog':capture_log/1                                                       1     0.00     0  [      0.00]
+'Elixir.ExUnit.CaptureLog':capture_log/2                                                       1     0.00     0  [      0.00]
+erlang:function_exported/3                                                                     8     0.74     1  [      0.13]
+erlang:list_to_atom/1                                                                          2     0.74     1  [      0.50]
+erlang:module_loaded/1                                                                         2     0.74     1  [      0.50]
+erlang:monitor/2                                                                               4     0.74     1  [      0.25]
+erlang:send/2                                                                                  2     0.74     1  [      0.50]
+logger_h_common:call/3                                                                         1     0.74     1  [      1.00]
+'Elixir.Logger':'-flush/0-fun-0-'/2                                                            3     0.74     1  [      0.33]
+logger:filter_config/1                                                                         3     0.74     1  [      0.33]
+logger:get_handler_config/0                                                                    1     0.74     1  [      1.00]
+logger:'-get_handler_config/0-fun-1-'/2                                                        2     0.74     1  [      0.50]
+gen:init_it2/7                                                                                 1     0.74     1  [      1.00]
+gen:call/4                                                                                     5     0.74     1  [      0.20]
+gen:reply/2                                                                                    1     0.74     1  [      1.00]
+proc_lib:init_p/5                                                                              1     0.74     1  [      1.00]
+proc_lib:sync_start/2                                                                          1     0.74     1  [      1.00]
+proc_lib:init_ack/2                                                                            1     0.74     1  [      1.00]
+'Elixir.StringIO':put_chars/4                                                                  1     0.74     1  [      1.00]
+error_handler:call_undefined_function_handler/3                                                2     0.74     1  [      0.50]
+lists:keyfind/3                                                                                9     0.74     1  [      0.11]
+'Elixir.GenServer':call/3                                                                      3     0.74     1  [      0.33]
+'Elixir.GenServer':do_start/4                                                                  1     0.74     1  [      1.00]
+'Elixir.GenServer':whereis/1                                                                   3     0.74     1  [      0.33]
+logger_olp:call/2                                                                              1     0.74     1  [      1.00]
+gen_server:init_it/2                                                                           1     0.74     1  [      1.00]
+gen_server:decode_msg/6                                                                        2     0.74     1  [      0.50]
+erlang:make_fun/3                                                                              4     1.48     2  [      0.50]
+unicode:characters_to_binary/2                                                                 1     1.48     2  [      2.00]
+'Elixir.Enum':'-reduce/3-lists^foldl/2-0-'/3                                                   4     1.48     2  [      0.50]
+gen_server:init_it/6                                                                           2     1.48     2  [      1.00]
+gen_server:loop/5                                                                              2     1.48     2  [      1.00]
+erlang:send/3                                                                                  2     2.22     3  [      1.50]
+'Elixir.StringIO':handle_call/3                                                                1     2.22     3  [      3.00]
+erlang:process_info/2                                                                          2     2.96     4  [      2.00]
+erlang:error/1                                                                                 2     3.70     5  [      2.50]
+erlang:raise/3                                                                                 4     3.70     5  [      1.25]
+'Elixir.ExUnit.Assertions':'__timeout__'/2                                                     3     3.70     5  [      1.67]
+erlang:whereis/1                                                                               6     4.44     6  [      1.00]
+erlang:spawn_opt/4                                                                             1     4.44     6  [      6.00]
+'Elixir.ExUnit.CaptureLog':with_log/2                                                          1     4.44     6  [      6.00]
+erlang:demonitor/2                                                                             6     6.67     9  [      1.50]
+'Elixir.Nest.Agents.AgentChatTest':'-test chat/2 handles LLM error gracefully/1-fun-3-'/1      1     6.67     9  [      9.00]
+gen:do_call/4                                                                                  5     8.89    12  [      2.40]
+ets:match/2                                                                                    1    20.00    27  [     27.00]
+-----------------------------------------------------------------------------------------  -----  -------  ----  [----------]
+Total:                                                                                       249  100.00%   135  [      0.54]
+.
+
+  6) test chat/2 handles LLM error gracefully (Nest.Agents.AgentChatTest)
+     test/nest/agents/agent_chat_test.exs:60
+     ** (ArgumentError) errors were found at the given arguments:
+
+       * 1st argument: not a textual representation of an integer
+
+     code: records = ExProf.analyze()
+     stacktrace:
+       :erlang.binary_to_integer("handles")
+       (exprof 0.2.4) lib/exprof/reader.ex:24: ExProf.Reader.parse_record/1
+       (exprof 0.2.4) lib/exprof/reader.ex:15: ExProf.Reader.parse/2
+       (exprof 0.2.4) lib/exprof.ex:34: ExProf.analyze/0
+       test/nest/agents/agent_chat_test.exs:80: (test)
+
+..........................................................
+Finished in 2.9 seconds (2.8s async, 0.1s sync)
+697 tests, 6 failures

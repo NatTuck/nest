@@ -1,0 +1,55 @@
+Running ExUnit with seed: 500, max_cases: 64
+
+.................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+
+  1) test chat/2 handles LLM error gracefully (Nest.Agents.AgentChatTest)
+     test/nest/agents/agent_chat_test.exs:60
+     Assertion failed, no matching message after 100ms
+     Showing 2 of 2 messages in the mailbox
+     code: assert_receive {:chat_status, %{status: "idle"}}
+     mailbox:
+       pattern: {:chat_status, %{status: "idle"}}
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\nHello"
+                      }
+                    ],
+                    timestamp: ~U[2026-07-01 21:31:09.243741Z],
+                    metadata: %{"mode" => "chat"},
+                    api_logs: []
+                  }}}
+
+       pattern: {:chat_status, %{status: "idle"}}
+       value:   {:chat_status,
+                 %{
+                   status: "streaming",
+                   usage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     context_input_tokens: 0,
+                     last_output: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     total_cache_creation_input_tokens: 0
+                   },
+                   currentMode: "chat",
+                   contextLimit: 512000,
+                   contextLimitSource: :config
+                 }}
+     stacktrace:
+       test/nest/agents/agent_chat_test.exs:70: anonymous fn/1 in Nest.Agents.AgentChatTest."test chat/2 handles LLM error gracefully"/1
+       (ex_unit 1.19.5) lib/ex_unit/capture_log.ex:121: ExUnit.CaptureLog.with_log/2
+       (ex_unit 1.19.5) lib/ex_unit/capture_log.ex:83: ExUnit.CaptureLog.capture_log/2
+       test/nest/agents/agent_chat_test.exs:67: (test)
+
+.......................................................................................................................................
+Finished in 2.4 seconds (2.3s async, 0.08s sync)
+697 tests, 1 failure

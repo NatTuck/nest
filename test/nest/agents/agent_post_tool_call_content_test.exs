@@ -98,9 +98,16 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
 
       :ok = Agent.chat(pid, "List the files")
 
+      # Fence on idle: 500ms accounts for preflight BPE init
+      # (Tiktoken CL100K count_tokens is a DirtyCpu NIF; first
+      # call on each of BEAM's 32 dirty CPU threads pays a
+      # 200-325ms init cost). Once the fence passes, every
+      # earlier chat message has already arrived in the test's
+      # mailbox.
+      assert_receive {:chat_status, %{status: "idle"}}, 500
+
       # Wait for the first turn's tool-call assistant message.
-      assert_receive {:chat_message, {:assistant, %{index: 2, parts: parts_with_tool}}},
-                     200
+      assert_received {:chat_message, {:assistant, %{index: 2, parts: parts_with_tool}}}
 
       assert Enum.any?(parts_with_tool, &match?(%Part.ToolUse{}, &1))
 
@@ -108,20 +115,17 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
       # parts must include the visible text and the thinking
       # (order depends on the build path; here we match the
       # parts by content rather than position).
-      assert_receive {:chat_message,
-                      {:assistant,
-                       %{
-                         index: 4,
-                         parts: parts
-                       }}},
-                     200
+      assert_received {:chat_message,
+                       {:assistant,
+                        %{
+                          index: 4,
+                          parts: parts
+                        }}}
 
       text = only_text(parts)
       thinking = only_thinking(parts)
       assert text == "There are 3 files in the directory."
       assert thinking == "The directory has a few files. Let me summarize them for the user."
-
-      assert_receive {:chat_status, %{status: "idle"}}, 200
 
       MockClient.clear()
     end

@@ -79,7 +79,8 @@ defmodule Nest.MixProject do
       {:unique_names_generator, "~> 0.2.0"},
       {:erlexec, "~> 2.0"},
       {:mustache, "~> 0.5"},
-      {:tiktoken, "~> 0.4.2"}
+      {:tiktoken, "~> 0.4.2"},
+      {:exprof, "~> 0.2", only: :test}
     ]
   end
 

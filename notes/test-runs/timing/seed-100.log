@@ -1,0 +1,1329 @@
+Running ExUnit with seed: 100, max_cases: 64
+
+......................................................................................................................................................................................................................................................................................................................20:46:55.051 [warning] ESTIMATE_TIMING label=text raw_count=318383µs rest=2µs bytes=15
+.20:46:55.051 [warning] ESTIMATE_TIMING label=parts total=319642µs count=1
+20:46:55.054 [warning] ESTIMATE_TIMING label=text raw_count=232191µs rest=0µs bytes=18
+.........20:46:55.068 [warning] ESTIMATE_TIMING label=text raw_count=197104µs rest=0µs bytes=7
+....................................20:46:55.071 [warning] ESTIMATE_TIMING label=text raw_count=149225µs rest=0µs bytes=60000
+.....20:46:55.074 [warning] ESTIMATE_TIMING label=text raw_count=304123µs rest=1µs bytes=5000
+20:46:55.075 [warning] ESTIMATE_TIMING label=text raw_count=3395µs rest=0µs bytes=60000
+..20:46:55.082 [warning] ESTIMATE_TIMING label=text raw_count=6416µs rest=0µs bytes=120000
+......20:46:55.085 [warning] ESTIMATE_TIMING label=text raw_count=2123µs rest=0µs bytes=2880
+..................................................................................     warning: :dbg.stop_clear/0 is deprecated. It will be removed in OTP 27. Use dbg:stop/0 instead
+     │
+ 215 │           :dbg.stop_clear()
+     │                ~
+     │
+     └─ test/nest/agents/agent_chat_test.exs:215:16: Nest.Agents.AgentChatTest."test delta handling accumulates deltas with correct character counts"/1
+
+     warning: :dbg.stop_clear/0 is deprecated. It will be removed in OTP 27. Use dbg:stop/0 instead
+     │
+ 293 │           :dbg.stop_clear()
+     │                ~
+     │
+     └─ test/nest/agents/agent_compaction_test.exs:293:16: Nest.Agents.AgentCompactionTest."test pre-flight streaming guard preflight_request with empty streaming_acc and fits returns :proceed"/1
+
+
+
+  1) test chat/2 broadcasts user message and LLM response via PubSub (Nest.Agents.AgentChatTest)
+     test/nest/agents/agent_chat_test.exs:31
+     Assertion failed, no matching message after 100ms
+     Showing 2 of 2 messages in the mailbox
+     code: assert_receive {:chat_status, %{status: "idle"}}
+     mailbox:
+       pattern: {:chat_status, %{status: "idle"}}
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\nHello"
+                      }
+                    ],
+                    timestamp: ~U[2026-07-02 00:46:55.027228Z],
+                    metadata: %{"mode" => "chat"},
+                    api_logs: []
+                  }}}
+
+       pattern: {:chat_status, %{status: "idle"}}
+       value:   {:chat_status,
+                 %{
+                   status: "streaming",
+                   usage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     context_input_tokens: 0,
+                     last_output: 0,
+                     total_cache_creation_input_tokens: 0
+                   },
+                   currentMode: "chat",
+                   contextLimit: 512000,
+                   contextLimitSource: :config
+                 }}
+     stacktrace:
+       test/nest/agents/agent_chat_test.exs:37: (test)
+
+..............................................................................
+
+  2) test message indexing rules assistant message index follows user message index (NestWeb.AgentChannelMessagingTest)
+     test/nest_web/channels/agent_channel_messaging_test.exs:18
+     Assertion failed, no matching message after 500ms
+     Showing 9 of 9 messages in the mailbox
+     code: assert_receive %{
+             __struct__: Phoenix.Socket.Message,
+             event: "chat:message",
+             payload: %{"index" => asst_idx, "role" => "assistant"}
+           }
+     mailbox:
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:message",
+                  payload: %{"index" => asst_idx, "role" => "assistant"}
+                }
+       value:   %Phoenix.Socket.Message{
+                  topic: "agent:lost-iguana",
+                  event: "init",
+                  payload: %{
+                    "contextLimit" => 512000,
+                    "contextLimitSource" => "config",
+                    "currentMode" => "chat",
+                    "defaultMode" => "chat",
+                    "history" => [],
+                    "id" => "lost-iguana",
+                    "messageCount" => 1,
+                    "model" => %{
+                      name: "qwen3.5-plus",
+                      provider: "model-studio"
+                    },
+                    "modes" => ["chat"],
+                    "partial" => nil,
+                    "status" => "idle",
+                    "usage" => %{
+                      cache_creation_input_tokens: 0,
+                      cache_read_input_tokens: 0,
+                      input_tokens: 0,
+                      output_tokens: 0,
+                      reasoning_tokens: 0,
+                      total_tokens: 0,
+                      total_input_tokens: 0,
+                      total_cache_read_input_tokens: 0,
+                      context_input_tokens: 0,
+                      last_output: 0,
+                      total_cache_creation_input_tokens: 0
+                    },
+                    "vocation" => nil
+                  },
+                  ref: nil,
+                  join_ref: 4482
+                }
+
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:message",
+                  payload: %{"index" => asst_idx, "role" => "assistant"}
+                }
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\nFirst"
+                      }
+                    ],
+                    timestamp: ~U[2026-07-02 00:46:55.085557Z],
+                    metadata: %{"mode" => "chat"},
+                    api_logs: []
+                  }}}
+
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:message",
+                  payload: %{"index" => asst_idx, "role" => "assistant"}
+                }
+       value:   {:chat_status,
+                 %{
+                   status: "streaming",
+                   usage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     context_input_tokens: 0,
+                     last_output: 0,
+                     total_cache_creation_input_tokens: 0
+                   },
+                   currentMode: "chat",
+                   contextLimit: 512000,
+                   contextLimitSource: :config
+                 }}
+
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:message",
+                  payload: %{"index" => asst_idx, "role" => "assistant"}
+                }
+       value:   %Phoenix.Socket.Message{
+                  topic: "agent:lost-iguana",
+                  event: "chat:message",
+                  payload: %{
+                    "apiLogs" => [],
+                    "index" => 1,
+                    "mode" => "chat",
+                    "parts" => [
+                      %{
+                        "kind" => "text",
+                        "text" => "[mode: chat]\nFirst"
+                      }
+                    ],
+                    "role" => "user"
+                  },
+                  ref: nil,
+                  join_ref: 4482
+                }
+
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:message",
+                  payload: %{"index" => asst_idx, "role" => "assistant"}
+                }
+       value:   %Phoenix.Socket.Message{
+                  topic: "agent:lost-iguana",
+                  event: "chat:status",
+                  payload: %{
+                    status: "streaming",
+                    usage: %{
+                      cache_creation_input_tokens: 0,
+                      cache_read_input_tokens: 0,
+                      input_tokens: 0,
+                      output_tokens: 0,
+                      reasoning_tokens: 0,
+                      total_tokens: 0,
+                      total_input_tokens: 0,
+                      total_cache_read_input_tokens: 0,
+                      context_input_tokens: 0,
+                      last_output: 0,
+                      total_cache_creation_input_tokens: 0
+                    },
+                    currentMode: "chat",
+                    contextLimit: 512000,
+                    contextLimitSource: :config
+                  },
+                  ref: nil,
+                  join_ref: 4482
+                }
+
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:message",
+                  payload: %{"index" => asst_idx, "role" => "assistant"}
+                }
+       value:   %Phoenix.Socket.Message{
+                  topic: "agent:lost-iguana",
+                  event: "chat:status",
+                  payload: %{
+                    status: "streaming",
+                    usage: %{
+                      cache_creation_input_tokens: 0,
+                      cache_read_input_tokens: 0,
+                      input_tokens: 0,
+                      output_tokens: 0,
+                      reasoning_tokens: 0,
+                      total_tokens: 0,
+                      total_input_tokens: 0,
+                      total_cache_read_input_tokens: 0,
+                      context_input_tokens: 0,
+                      last_output: 0,
+                      total_cache_creation_input_tokens: 0
+                    },
+                    currentMode: "chat",
+                    contextLimit: 512000,
+                    contextLimitSource: :config
+                  },
+                  ref: nil,
+                  join_ref: 4482
+                }
+
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:message",
+                  payload: %{"index" => asst_idx, "role" => "assistant"}
+                }
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\nFirst"
+                      }
+                    ],
+                    timestamp: ~U[2026-07-02 00:46:55.085557Z],
+                    metadata: %{"mode" => "chat"},
+                    api_logs: [
+                      %{
+                        id: "001.000",
+                        timestamp: ~U[2026-07-02 00:46:55.131512Z],
+                        type: :request,
+                        payload: %{
+                          "max_tokens" => nil,
+                          "messages" => [
+                            %{
+                              "content" => "",
+                              "role" => "system"
+                            },
+                            %{
+                              "content" => "[mode: chat]\nFirst",
+                              "role" => "user"
+                            }
+                          ],
+                          "model" => "qwen3.5-plus",
+                          "stream" => true,
+                          "temperature" => nil,
+                          "tool_choice" => :auto,
+                          "top_p" => nil
+                        }
+                      }
+                    ]
+                  }}}
+
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:message",
+                  payload: %{"index" => asst_idx, "role" => "assistant"}
+                }
+       value:   %Phoenix.Socket.Message{
+                  topic: "agent:lost-iguana",
+                  event: "chat:message",
+                  payload: %{
+                    "apiLogs" => [
+                      %{
+                        "id" => "001.000",
+                        "payload" => %{
+                          "max_tokens" => "[FILTERED]",
+                          "messages" => [
+                            %{
+                              "content" => "",
+                              "role" => "system"
+                            },
+                            %{
+                              "content" => "[mode: chat]\nFirst",
+                              "role" => "user"
+                            }
+                          ],
+                          "model" => "qwen3.5-plus",
+                          "stream" => true,
+                          "temperature" => nil,
+                          "tool_choice" => "auto",
+                          "top_p" => nil
+                        },
+                        "timestamp" => "2026-07-02T00:46:55.131512Z",
+                        "type" => "request"
+                      }
+                    ],
+                    "index" => 1,
+                    "mode" => "chat",
+                    "parts" => [
+                      %{
+                        "kind" => "text",
+                        "text" => "[mode: chat]\nFirst"
+                      }
+                    ],
+                    "role" => "user"
+                  },
+                  ref: nil,
+                  join_ref: 4482
+                }
+
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:message",
+                  payload: %{"index" => asst_idx, "role" => "assistant"}
+                }
+       value:   %Phoenix.Socket.Message{
+                  topic: "agent:lost-iguana",
+                  event: "chat:message",
+                  payload: %{
+                    "apiLogs" => [
+                      %{
+                        "id" => "001.000",
+                        "payload" => %{
+                          "max_tokens" => "[FILTERED]",
+                          "messages" => [
+                            %{
+                              "content" => "",
+                              "role" => "system"
+                            },
+                            %{
+                              "content" => "[mode: chat]\nFirst",
+                              "role" => "user"
+                            }
+                          ],
+                          "model" => "qwen3.5-plus",
+                          "stream" => true,
+                          "temperature" => nil,
+                          "tool_choice" => "auto",
+                          "top_p" => nil
+                        },
+                        "timestamp" => "2026-07-02T00:46:55.131512Z",
+                        "type" => "request"
+                      }
+                    ],
+                    "index" => 1,
+                    "mode" => "chat",
+                    "parts" => [
+                      %{
+                        "kind" => "text",
+                        "text" => "[mode: chat]\nFirst"
+                      }
+                    ],
+                    "role" => "user"
+                  },
+                  ref: nil,
+                  join_ref: 4482
+                }
+     stacktrace:
+       test/nest_web/channels/agent_channel_messaging_test.exs:27: (test)
+
+
+
+  3) test agent process isolation sync returns correct messages after multiple rejoins (NestWeb.AgentChannelAdvancedTest)
+     test/nest_web/channels/agent_channel_advanced_test.exs:59
+     Assertion failed, no matching message after 500ms
+     Showing 9 of 9 messages in the mailbox
+     code: assert_receive %{
+             __struct__: Phoenix.Socket.Message,
+             event: "chat:message",
+             payload: %{"index" => 2, "role" => "assistant"}
+           }
+     mailbox:
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:message",
+                  payload: %{"index" => 2, "role" => "assistant"}
+                }
+       value:   %Phoenix.Socket.Message{
+                  topic: "agent:zygotic-rodent",
+                  event: "init",
+                  payload: %{
+                    "contextLimit" => 512000,
+                    "contextLimitSource" => "config",
+                    "currentMode" => "chat",
+                    "defaultMode" => "chat",
+                    "history" => [],
+                    "id" => "zygotic-rodent",
+                    "messageCount" => 1,
+                    "model" => %{
+                      name: "qwen3.5-plus",
+                      provider: "model-studio"
+                    },
+                    "modes" => ["chat"],
+                    "partial" => nil,
+                    "status" => "idle",
+                    "usage" => %{
+                      cache_creation_input_tokens: 0,
+                      cache_read_input_tokens: 0,
+                      input_tokens: 0,
+                      output_tokens: 0,
+                      reasoning_tokens: 0,
+                      total_tokens: 0,
+                      total_input_tokens: 0,
+                      total_cache_read_input_tokens: 0,
+                      context_input_tokens: 0,
+                      last_output: 0,
+                      total_cache_creation_input_tokens: 0
+                    },
+                    "vocation" => nil
+                  },
+                  ref: nil,
+                  join_ref: 2446
+                }
+
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:message",
+                  payload: %{"index" => 2, "role" => "assistant"}
+                }
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\nMessage 1"
+                      }
+                    ],
+                    timestamp: ~U[2026-07-02 00:46:55.101440Z],
+                    metadata: %{"mode" => "chat"},
+                    api_logs: []
+                  }}}
+
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:message",
+                  payload: %{"index" => 2, "role" => "assistant"}
+                }
+       value:   {:chat_status,
+                 %{
+                   status: "streaming",
+                   usage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     context_input_tokens: 0,
+                     last_output: 0,
+                     total_cache_creation_input_tokens: 0
+                   },
+                   currentMode: "chat",
+                   contextLimit: 512000,
+                   contextLimitSource: :config
+                 }}
+
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:message",
+                  payload: %{"index" => 2, "role" => "assistant"}
+                }
+       value:   %Phoenix.Socket.Message{
+                  topic: "agent:zygotic-rodent",
+                  event: "chat:message",
+                  payload: %{
+                    "apiLogs" => [],
+                    "index" => 1,
+                    "mode" => "chat",
+                    "parts" => [
+                      %{
+                        "kind" => "text",
+                        "text" => "[mode: chat]\nMessage 1"
+                      }
+                    ],
+                    "role" => "user"
+                  },
+                  ref: nil,
+                  join_ref: 2446
+                }
+
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:message",
+                  payload: %{"index" => 2, "role" => "assistant"}
+                }
+       value:   %Phoenix.Socket.Message{
+                  topic: "agent:zygotic-rodent",
+                  event: "chat:status",
+                  payload: %{
+                    status: "streaming",
+                    usage: %{
+                      cache_creation_input_tokens: 0,
+                      cache_read_input_tokens: 0,
+                      input_tokens: 0,
+                      output_tokens: 0,
+                      reasoning_tokens: 0,
+                      total_tokens: 0,
+                      total_input_tokens: 0,
+                      total_cache_read_input_tokens: 0,
+                      context_input_tokens: 0,
+                      last_output: 0,
+                      total_cache_creation_input_tokens: 0
+                    },
+                    currentMode: "chat",
+                    contextLimit: 512000,
+                    contextLimitSource: :config
+                  },
+                  ref: nil,
+                  join_ref: 2446
+                }
+
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:message",
+                  payload: %{"index" => 2, "role" => "assistant"}
+                }
+       value:   %Phoenix.Socket.Message{
+                  topic: "agent:zygotic-rodent",
+                  event: "chat:status",
+                  payload: %{
+                    status: "streaming",
+                    usage: %{
+                      cache_creation_input_tokens: 0,
+                      cache_read_input_tokens: 0,
+                      input_tokens: 0,
+                      output_tokens: 0,
+                      reasoning_tokens: 0,
+                      total_tokens: 0,
+                      total_input_tokens: 0,
+                      total_cache_read_input_tokens: 0,
+                      context_input_tokens: 0,
+                      last_output: 0,
+                      total_cache_creation_input_tokens: 0
+                    },
+                    currentMode: "chat",
+                    contextLimit: 512000,
+                    contextLimitSource: :config
+                  },
+                  ref: nil,
+                  join_ref: 2446
+                }
+
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:message",
+                  payload: %{"index" => 2, "role" => "assistant"}
+                }
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\nMessage 1"
+                      }
+                    ],
+                    timestamp: ~U[2026-07-02 00:46:55.101440Z],
+                    metadata: %{"mode" => "chat"},
+                    api_logs: [
+                      %{
+                        id: "001.000",
+                        timestamp: ~U[2026-07-02 00:46:55.131512Z],
+                        type: :request,
+                        payload: %{
+                          "max_tokens" => nil,
+                          "messages" => [
+                            %{
+                              "content" => "",
+                              "role" => "system"
+                            },
+                            %{
+                              "content" => "[mode: chat]\nMessage 1",
+                              "role" => "user"
+                            }
+                          ],
+                          "model" => "qwen3.5-plus",
+                          "stream" => true,
+                          "temperature" => nil,
+                          "tool_choice" => :auto,
+                          "top_p" => nil
+                        }
+                      }
+                    ]
+                  }}}
+
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:message",
+                  payload: %{"index" => 2, "role" => "assistant"}
+                }
+       value:   %Phoenix.Socket.Message{
+                  topic: "agent:zygotic-rodent",
+                  event: "chat:message",
+                  payload: %{
+                    "apiLogs" => [
+                      %{
+                        "id" => "001.000",
+                        "payload" => %{
+                          "max_tokens" => "[FILTERED]",
+                          "messages" => [
+                            %{
+                              "content" => "",
+                              "role" => "system"
+                            },
+                            %{
+                              "content" => "[mode: chat]\nMessage 1",
+                              "role" => "user"
+                            }
+                          ],
+                          "model" => "qwen3.5-plus",
+                          "stream" => true,
+                          "temperature" => nil,
+                          "tool_choice" => "auto",
+                          "top_p" => nil
+                        },
+                        "timestamp" => "2026-07-02T00:46:55.131512Z",
+                        "type" => "request"
+                      }
+                    ],
+                    "index" => 1,
+                    "mode" => "chat",
+                    "parts" => [
+                      %{
+                        "kind" => "text",
+                        "text" => "[mode: chat]\nMessage 1"
+                      }
+                    ],
+                    "role" => "user"
+                  },
+                  ref: nil,
+                  join_ref: 2446
+                }
+
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:message",
+                  payload: %{"index" => 2, "role" => "assistant"}
+                }
+       value:   %Phoenix.Socket.Message{
+                  topic: "agent:zygotic-rodent",
+                  event: "chat:message",
+                  payload: %{
+                    "apiLogs" => [
+                      %{
+                        "id" => "001.000",
+                        "payload" => %{
+                          "max_tokens" => "[FILTERED]",
+                          "messages" => [
+                            %{
+                              "content" => "",
+                              "role" => "system"
+                            },
+                            %{
+                              "content" => "[mode: chat]\nMessage 1",
+                              "role" => "user"
+                            }
+                          ],
+                          "model" => "qwen3.5-plus",
+                          "stream" => true,
+                          "temperature" => nil,
+                          "tool_choice" => "auto",
+                          "top_p" => nil
+                        },
+                        "timestamp" => "2026-07-02T00:46:55.131512Z",
+                        "type" => "request"
+                      }
+                    ],
+                    "index" => 1,
+                    "mode" => "chat",
+                    "parts" => [
+                      %{
+                        "kind" => "text",
+                        "text" => "[mode: chat]\nMessage 1"
+                      }
+                    ],
+                    "role" => "user"
+                  },
+                  ref: nil,
+                  join_ref: 2446
+                }
+     stacktrace:
+       test/nest_web/channels/agent_channel_advanced_test.exs:64: (test)
+
+...
+
+  4) test chat_crashed when the HTTP worker raises an unhandled FunctionClauseError is caught and the agent transitions to idle (Nest.Agents.ChatTaskCrashTest)
+     test/nest/agents/chat_task_crash_test.exs:59
+     Assertion failed, no matching message after 500ms
+     Showing 2 of 2 messages in the mailbox
+     code: assert_receive {:chat_error, %{content: content}}
+     mailbox:
+       pattern: {:chat_error, %{content: content}}
+       value:   {:chat_status,
+                 %{
+                   status: "streaming",
+                   usage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     context_input_tokens: 0,
+                     last_output: 0,
+                     total_cache_creation_input_tokens: 0
+                   },
+                   currentMode: "chat",
+                   contextLimit: 512000,
+                   contextLimitSource: :config
+                 }}
+
+       pattern: {:chat_error, %{content: content}}
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\nHello"
+                      }
+                    ],
+                    timestamp: ~U[2026-07-02 00:46:55.088585Z],
+                    metadata: %{"mode" => "chat"},
+                    api_logs: [
+                      %{
+                        id: "001.000",
+                        timestamp: ~U[2026-07-02 00:46:55.131563Z],
+                        type: :request,
+                        payload: %{
+                          "max_tokens" => nil,
+                          "messages" => [
+                            %{
+                              "content" => "",
+                              "role" => "system"
+                            },
+                            %{
+                              "content" => "[mode: chat]\nHello",
+                              "role" => "user"
+                            }
+                          ],
+                          "model" => "qwen3.5-plus",
+                          "stream" => true,
+                          "temperature" => nil,
+                          "tool_choice" => :auto,
+                          "top_p" => nil
+                        }
+                      }
+                    ]
+                  }}}
+     stacktrace:
+       test/nest/agents/chat_task_crash_test.exs:100: anonymous fn/1 in Nest.Agents.ChatTaskCrashTest."test chat_crashed when the HTTP worker raises an unhandled FunctionClauseError is caught and the agent transitions to idle"/1
+       (ex_unit 1.19.5) lib/ex_unit/capture_log.ex:121: ExUnit.CaptureLog.with_log/2
+       (ex_unit 1.19.5) lib/ex_unit/capture_log.ex:83: ExUnit.CaptureLog.capture_log/2
+       test/nest/agents/chat_task_crash_test.exs:85: (test)
+
+
+
+  5) test API logs every message in simple conversation has API log (Nest.Agents.AgentObservabilityTest)
+     test/nest/agents/agent_observability_test.exs:30
+     Assertion failed, no matching message after 500ms
+     Showing 1 of 1 message in the mailbox
+     code: assert_receive {:chat_delta, _}
+     mailbox:
+       pattern: {:chat_delta, _}
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\nHello"
+                      }
+                    ],
+                    timestamp: ~U[2026-07-02 00:46:55.027190Z],
+                    metadata: %{"mode" => "chat"},
+                    api_logs: []
+                  }}}
+     stacktrace:
+       test/nest/agents/agent_observability_test.exs:42: (test)
+
+
+
+  6) test stop_chat/2 mid-LLM-stream finalizes the partial assistant message and transitions to idle (Nest.Agents.AgentStopTest)
+     test/nest/agents/agent_stop_test.exs:50
+     Assertion failed, no matching message after 500ms
+     Showing 1 of 1 message in the mailbox
+     code: assert_receive {:chat_delta, _}
+     mailbox:
+       pattern: {:chat_delta, _}
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\nStart"
+                      }
+                    ],
+                    timestamp: ~U[2026-07-02 00:46:55.027264Z],
+                    metadata: %{"mode" => "chat"},
+                    api_logs: [
+                      %{
+                        id: "001.000",
+                        timestamp: ~U[2026-07-02 00:46:55.141139Z],
+                        type: :request,
+                        payload: %{
+                          "max_tokens" => nil,
+                          "messages" => [
+                            %{
+                              "content" => "",
+                              "role" => "system"
+                            },
+                            %{
+                              "content" => "[mode: chat]\nStart",
+                              "role" => "user"
+                            }
+                          ],
+                          "model" => "qwen3.5-plus",
+                          "stream" => true,
+                          "temperature" => nil,
+                          "tool_choice" => :auto,
+                          "top_p" => nil
+                        }
+                      }
+                    ]
+                  }}}
+     stacktrace:
+       test/nest/agents/agent_stop_test.exs:61: (test)
+
+
+
+  7) test tool budget loop small tool results pass through unchanged (Nest.Agents.AgentCompactionTest)
+     test/nest/agents/agent_compaction_test.exs:62
+     Assertion failed, no matching message after 100ms
+     Showing 1 of 1 message in the mailbox
+     code: assert_receive {:chat_delta, %{content: "Reading file"}}
+     mailbox:
+       pattern: {:chat_delta, %{content: "Reading file"}}
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: build]\nRead a file"
+                      }
+                    ],
+                    timestamp: ~U[2026-07-02 00:46:55.085789Z],
+                    metadata: %{"mode" => "build"},
+                    api_logs: [
+                      %{
+                        id: "001.000",
+                        timestamp: ~U[2026-07-02 00:46:55.131512Z],
+                        type: :request,
+                        payload: %{
+                          "max_tokens" => nil,
+                          "messages" => [
+                            %{
+                              "content" => "Test programmer prompt.\n\n[Available modes]\n\nThe user picks a mode per message via the UI. Each mode changes the sandbox profile (filesystem permissions, network access).\n\n- build: Read only \"/\". Read and write workspace and /tmp. Network enabled. Test mode\n\n\nTool call budget: You have a maximum of 5 consecutive tool call rounds per turn.\n\n\nContext limit: 512000 tokens (resolved from config). You can check current usage via the `context` tool (action: \"check\") and trigger compaction via the `context` tool (action: \"compact\").\n",
+                              "role" => "system"
+                            },
+                            %{
+                              "content" => "[mode: build]\nRead a file",
+                              "role" => "user"
+                            }
+                          ],
+                          "model" => "qwen3.5-plus",
+                          "stream" => true,
+                          "temperature" => nil,
+                          "tool_choice" => :auto,
+                          "tools" => [
+                            %{
+                              "function" => %{
+                                "description" => "Read the contents of a file from the workspace",
+                                "name" => "read_file",
+                                "parameters" => %{
+                                  "properties" => %{
+                                    "max_result_tokens" => %{
+                                      "description" => "Maximum tokens to return. Defaults to the tool's configured max; capped at 50% of the model's context window. Increase for files you know are large.",
+                                      "type" => "integer"
+                                    },
+                                    "path" => %{
+                                      "description" => "Relative path to the file from the workspace root",
+                                      "type" => "string"
+                                    }
+                                  },
+                                  "required" => ["path"],
+                                  "type" => "object"
+                                }
+                              },
+                              "type" => "function"
+                            },
+                            %{
+                              "function" => %{
+                                "description" => "Write content to a file in the workspace",
+                                "name" => "write_file",
+                                "parameters" => %{
+                                  "properties" => %{
+                                    "content" => %{
+                                      "description" => "Content to write to the file",
+                                      "type" => "string"
+                                    },
+                                    "max_result_tokens" => %{
+                                      "description" => "Maximum tokens to return. Defaults to the tool's configured max; capped at 50% of the model's context window. Increase for files you know are large.",
+                                      "type" => "integer"
+                                    },
+                                    "path" => %{
+                                      "description" => "Relative path to the file from the workspace root",
+                                      "type" => "string"
+                                    }
+                                  },
+                                  "required" => ["path",
+                                   "content"],
+                                  "type" => "object"
+                                }
+                              },
+                              "type" => "function"
+                            },
+                            %{
+                              "function" => %{
+                                "description" => "Perform an exact string replacement in a file. Reads the file, replaces the first (or all) occurrence(s) of `old_text` with `new_text`, and writes it back. With `replace_all: false` (the default), `old_text` must match exactly once or the call fails.",
+                                "name" => "edit",
+                                "parameters" => %{
+                                  "properties" => %{
+                                    "max_result_tokens" => %{
+                                      "description" => "Maximum tokens to return. Defaults to the tool's configured max; capped at 50% of the model's context window. Increase for files you know are large.",
+                                      "type" => "integer"
+                                    },
+                                    "new_text" => %{
+                                      "description" => "The text to replace `old_text` with.",
+                                      "type" => "string"
+                                    },
+                                    "old_text" => %{
+                                      "description" => "The exact text to find. Must match the file content exactly, including whitespace and indentation.",
+                                      "type" => "string"
+                                    },
+                                    "path" => %{
+                                      "description" => "Relative path to the file from the workspace root",
+                                      "type" => "string"
+                                    },
+                                    "replace_all" => %{
+                                      "default" => false,
+                                      "description" => "Replace every occurrence of `old_text` instead of just the first. Default: false. When false, the call errors if `old_text` matches more than one location.",
+                                      "type" => "boolean"
+                                    }
+                                  },
+                                  "required" => ["path",
+                                   "old_text", "new_text"],
+                                  "type" => "object"
+                                }
+                              },
+                              "type" => "function"
+                            },
+                            %{
+                              "function" => %{
+                                "description" => "Execute a shell command and return output",
+                                "name" => "shell_cmd",
+                                "parameters" => %{
+                                  "properties" => %{...},
+                                  ...
+                                }
+                              },
+                              ...
+                            },
+                            ...
+                          ],
+                          ...
+                        }
+                      }
+                    ]
+                  }}}
+     stacktrace:
+       test/nest/agents/agent_compaction_test.exs:84: (test)
+
+
+
+  8) test chat/2 with tool calls broadcasts complete tool call flow: user → assistant+tools → tool → assistant (Nest.Agents.AgentToolsTest)
+     test/nest/agents/agent_tools_test.exs:31
+     Assertion failed, no matching message after 500ms
+     Showing 1 of 1 message in the mailbox
+     code: assert_receive {:chat_delta, _}
+     mailbox:
+       pattern: {:chat_delta, _}
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\nList the files"
+                      }
+                    ],
+                    timestamp: ~U[2026-07-02 00:46:55.027238Z],
+                    metadata: %{"mode" => "chat"},
+                    api_logs: [
+                      %{
+                        id: "001.000",
+                        timestamp: ~U[2026-07-02 00:46:55.138343Z],
+                        type: :request,
+                        payload: %{
+                          "max_tokens" => nil,
+                          "messages" => [
+                            %{
+                              "content" => "",
+                              "role" => "system"
+                            },
+                            %{
+                              "content" => "[mode: chat]\nList the files",
+                              "role" => "user"
+                            }
+                          ],
+                          "model" => "qwen3.5-plus",
+                          "stream" => true,
+                          "temperature" => nil,
+                          "tool_choice" => :auto,
+                          "top_p" => nil
+                        }
+                      }
+                    ]
+                  }}}
+     stacktrace:
+       test/nest/agents/agent_tools_test.exs:54: (test)
+
+
+
+  9) test post-tool-call content vs. thinking routing the post-tool assistant message's content and thinking stay in their own fields (Nest.Agents.AgentPostToolCallContentTest)
+     test/nest/agents/agent_post_tool_call_content_test.exs:59
+     Assertion failed, no matching message after 200ms
+     Showing 3 of 3 messages in the mailbox
+     code: assert_receive {:chat_message, {:assistant, %{index: 2, parts: parts_with_tool}}}
+     mailbox:
+       pattern: {:chat_message, {:assistant, %{index: 2, parts: parts_with_tool}}}
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\nList the files"
+                      }
+                    ],
+                    timestamp: ~U[2026-07-02 00:46:55.027187Z],
+                    metadata: %{"mode" => "chat"},
+                    api_logs: []
+                  }}}
+
+       pattern: {:chat_message, {:assistant, %{index: 2, parts: parts_with_tool}}}
+       value:   {:chat_status,
+                 %{
+                   status: "streaming",
+                   usage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     context_input_tokens: 0,
+                     last_output: 0,
+                     total_cache_creation_input_tokens: 0
+                   },
+                   currentMode: "chat",
+                   contextLimit: 512000,
+                   contextLimitSource: :config
+                 }}
+
+       pattern: {:chat_message, {:assistant, %{index: 2, parts: parts_with_tool}}}
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\nList the files"
+                      }
+                    ],
+                    timestamp: ~U[2026-07-02 00:46:55.027187Z],
+                    metadata: %{"mode" => "chat"},
+                    api_logs: [
+                      %{
+                        id: "001.000",
+                        timestamp: ~U[2026-07-02 00:46:55.134835Z],
+                        type: :request,
+                        payload: %{
+                          "max_tokens" => nil,
+                          "messages" => [
+                            %{
+                              "content" => "",
+                              "role" => "system"
+                            },
+                            %{
+                              "content" => "[mode: chat]\nList the files",
+                              "role" => "user"
+                            }
+                          ],
+                          "model" => "qwen3.5-plus",
+                          "stream" => true,
+                          "temperature" => nil,
+                          "tool_choice" => :auto,
+                          "top_p" => nil
+                        }
+                      }
+                    ]
+                  }}}
+     stacktrace:
+       test/nest/agents/agent_post_tool_call_content_test.exs:102: (test)
+
+......................................................................................FUNCTION                                                                                   CALLS        %  TIME  [uS / CALLS]
+--------                                                                                   -----  -------  ----  [----------]
+maps:remove/2                                                                                  1     0.00     0  [      0.00]
+maps:without/2                                                                                 1     0.00     0  [      0.00]
+erlang:integer_to_list/1                                                                       1     0.00     0  [      0.00]
+erlang:make_ref/0                                                                              1     0.00     0  [      0.00]
+erlang:put/2                                                                                   2     0.00     0  [      0.00]
+erlang:make_fun/3                                                                              4     0.00     0  [      0.00]
+erlang:'++'/2                                                                                  3     0.00     0  [      0.00]
+'Elixir.Keyword':fetch/2                                                                       1     0.00     0  [      0.00]
+'Elixir.Keyword':pop/2                                                                         1     0.00     0  [      0.00]
+'Elixir.Keyword':pop/3                                                                         1     0.00     0  [      0.00]
+logger_h_common:filesync/2                                                                     1     0.00     0  [      0.00]
+logger_h_common:filter_config/1                                                                1     0.00     0  [      0.00]
+logger:'-get_handler_config/0-lc$^0/1-0-'/1                                                    4     0.00     0  [      0.00]
+gen:start/5                                                                                    1     0.00     0  [      0.00]
+gen:init_it/6                                                                                  1     0.00     0  [      0.00]
+gen:init_it2/7                                                                                 1     0.00     0  [      0.00]
+gen:call/3                                                                                     1     0.00     0  [      0.00]
+gen:do_for_proc/2                                                                              2     0.00     0  [      0.00]
+gen:name/1                                                                                     1     0.00     0  [      0.00]
+gen:timeout/1                                                                                  1     0.00     0  [      0.00]
+gen:spawn_opts/1                                                                               1     0.00     0  [      0.00]
+gen:hibernate_after/1                                                                          1     0.00     0  [      0.00]
+gen:debug_options/2                                                                            1     0.00     0  [      0.00]
+gen:'-call/4-fun-0-'/4                                                                         2     0.00     0  [      0.00]
+code:ensure_loaded/1                                                                           2     0.00     0  [      0.00]
+logger_std_h:filesync/1                                                                        1     0.00     0  [      0.00]
+logger_std_h:filter_config/1                                                                   1     0.00     0  [      0.00]
+proc_lib:spawn_opt/4                                                                           1     0.00     0  [      0.00]
+proc_lib:init_p_do_apply/3                                                                     1     0.00     0  [      0.00]
+proc_lib:exit_p/3                                                                              1     0.00     0  [      0.00]
+proc_lib:exit_reason/3                                                                         1     0.00     0  [      0.00]
+proc_lib:make_dummy_args/2                                                                     2     0.00     0  [      0.00]
+proc_lib:trans_init/3                                                                          1     0.00     0  [      0.00]
+proc_lib:crash_report/4                                                                        1     0.00     0  [      0.00]
+proc_lib:get_my_name/0                                                                         1     0.00     0  [      0.00]
+proc_lib:get_ancestors/0                                                                       1     0.00     0  [      0.00]
+proc_lib:proc_info/2                                                                           1     0.00     0  [      0.00]
+'Elixir.Process':whereis/1                                                                     2     0.00     0  [      0.00]
+'Elixir.Enum':reduce/3                                                                         1     0.00     0  [      0.00]
+'Elixir.Access':get/2                                                                          3     0.00     0  [      0.00]
+'Elixir.Access':get/3                                                                          3     0.00     0  [      0.00]
+'Elixir.Nest.Agents.Agent':chat/2                                                              1     0.00     0  [      0.00]
+'Elixir.Nest.Agents.Agent':chat/3                                                              1     0.00     0  [      0.00]
+'Elixir.StringIO':close/1                                                                      1     0.00     0  [      0.00]
+'Elixir.StringIO':handle_call/3                                                                1     0.00     0  [      0.00]
+'Elixir.StringIO':init/1                                                                       1     0.00     0  [      0.00]
+'Elixir.StringIO':open/1                                                                       1     0.00     0  [      0.00]
+'Elixir.StringIO':open/2                                                                       1     0.00     0  [      0.00]
+error_handler:crash/3                                                                          2     0.00     0  [      0.00]
+error_handler:crash/1                                                                          2     0.00     0  [      0.00]
+error_handler:ensure_loaded/1                                                                  2     0.00     0  [      0.00]
+lists:keyfind/3                                                                                9     0.00     0  [      0.00]
+lists:member/2                                                                                 1     0.00     0  [      0.00]
+lists:reverse/2                                                                                1     0.00     0  [      0.00]
+lists:concat/1                                                                                 1     0.00     0  [      0.00]
+lists:thing_to_list/1                                                                          3     0.00     0  [      0.00]
+.lists:flatten/1                                                                                1     0.00     0  [      0.00]
+lists:flatmap/2                                                                                1     0.00     0  [      0.00]
+lists:foldl/3                                                                                  1     0.00     0  [      0.00]
+lists:foldl_1/3                                                                                1     0.00     0  [      0.00]
+lists:fmergel/4                                                                                1     0.00     0  [      0.00]
+'Elixir.GenServer':call/2                                                                      1     0.00     0  [      0.00]
+'Elixir.GenServer':cast/2                                                                      1     0.00     0  [      0.00]
+'Elixir.GenServer':cast_msg/1                                                                  1     0.00     0  [      0.00]
+'Elixir.GenServer':do_send/2                                                                   1     0.00     0  [      0.00]
+'Elixir.GenServer':start/3                                                                     1     0.00     0  [      0.00]
+logger_olp:call/2                                                                              1     0.00     0  [      0.00]
+'Elixir.ExUnit.CaptureServer':log_capture_off/1                                                1     0.00     0  [      0.00]
+'Elixir.ExUnit.CaptureServer':log_capture_on/3                                                 1     0.00     0  [      0.00]
+'Elixir.ExProf':stop/0                                                                         1     0.00     0  [      0.00]
+logger_config:get/1                                                                            1     0.00     0  [      0.00]
+gen_server:call/2                                                                              1     0.00     0  [      0.00]
+gen_server:call/3                                                                              1     0.00     0  [      0.00]
+gen_server:reply/2                                                                             1     0.00     0  [      0.00]
+gen_server:init_it/2                                                                           1     0.00     0  [      0.00]
+gen_server:try_handle_call/4                                                                   1     0.00     0  [      0.00]
+gen_server:try_terminate/3                                                                     1     0.00     0  [      0.00]
+gen_server:terminate/7                                                                         1     0.00     0  [      0.00]
+gen_server:terminate/9                                                                         1     0.00     0  [      0.00]
+gen_server:catch_result/3                                                                      1     0.00     0  [      0.00]
+'Elixir.ExUnit.CaptureLog':capture_log/1                                                       1     0.00     0  [      0.00]
+'Elixir.ExUnit.CaptureLog':capture_log/2                                                       1     0.00     0  [      0.00]
+erlang:atom_to_list/1                                                                          2     0.48     1  [      0.50]
+erlang:list_to_atom/1                                                                          2     0.48     1  [      0.50]
+erlang:module_loaded/1                                                                         2     0.48     1  [      0.50]
+erlang:monitor/2                                                                               4     0.48     1  [      0.25]
+erlang:monitor/3                                                                               2     0.48     1  [      0.50]
+erlang:process_info/2                                                                          2     0.48     1  [      0.50]
+logger_h_common:call/3                                                                         1     0.48     1  [      1.00]
+unicode:no_conversion_needed/3                                                                 5     0.48     1  [      0.20]
+'Elixir.Logger':flush/0                                                                        1     0.48     1  [      1.00]
+'Elixir.Logger':'-flush/0-fun-0-'/2                                                            3     0.48     1  [      0.33]
+logger:'-get_handler_config/0-fun-1-'/2                                                        3     0.48     1  [      0.33]
+gen:do_spawn/5                                                                                 1     0.48     1  [      1.00]
+gen:call/4                                                                                     5     0.48     1  [      0.20]
+proc_lib:start/5                                                                               1     0.48     1  [      1.00]
+proc_lib:sync_start/2                                                                          1     0.48     1  [      1.00]
+'Elixir.Enum':'-reduce/3-lists^foldl/2-0-'/3                                                   4     0.48     1  [      0.25]
+'Elixir.StringIO':io_reply/3                                                                   5     0.48     1  [      0.20]
+error_handler:undefined_function/3                                                             2     0.48     1  [      0.50]
+error_handler:call_undefined_function_handler/3                                                2     0.48     1  [      0.50]
+lists:do_flatten/2                                                                            10     0.48     1  [      0.10]
+lists:sort/2                                                                                   1     0.48     1  [      1.00]
+lists:flatmap_1/2                                                                              4     0.48     1  [      0.25]
+lists:fsplit_1/6                                                                               2     0.48     1  [      0.50]
+lists:rfmergel/4                                                                               1     0.48     1  [      1.00]
+'Elixir.GenServer':call/3                                                                      3     0.48     1  [      0.33]
+'Elixir.GenServer':do_start/4                                                                  1     0.48     1  [      1.00]
+'Elixir.GenServer':whereis/1                                                                   3     0.48     1  [      0.33]
+gen_server:init_it/6                                                                           2     0.48     1  [      0.50]
+gen_server:loop/4                                                                              6     0.48     1  [      0.17]
+gen_server:cancel_timer/1                                                                      6     0.48     1  [      0.17]
+gen_server:handle_common_reply/5                                                               5     0.48     1  [      0.20]
+erlang:function_exported/3                                                                     8     0.96     2  [      0.25]
+erlang:send/2                                                                                  6     0.96     2  [      0.33]
+erlang:send/3                                                                                  2     0.96     2  [      1.00]
+unicode:characters_to_binary/3                                                                 5     0.96     2  [      0.40]
+unicode:characters_to_binary_int/3                                                             5     0.96     2  [      0.40]
+logger:filter_config/1                                                                         3     0.96     2  [      0.67]
+logger:get_handler_config/0                                                                    1     0.96     2  [      2.00]
+gen:reply/2                                                                                    1     0.96     2  [      2.00]
+proc_lib:init_p/5                                                                              1     0.96     2  [      2.00]
+'Elixir.StringIO':handle_info/2                                                                5     0.96     2  [      0.40]
+'Elixir.StringIO':io_request/4                                                                 5     0.96     2  [      0.40]
+gen_server:try_handle_info/3                                                                   5     0.96     2  [      0.40]
+gen_server:handle_msg/3                                                                        6     0.96     2  [      0.33]
+gen_server:decode_msg/6                                                                        6     1.44     3  [      0.50]
+erlang:spawn_opt/4                                                                             1     1.91     4  [      4.00]
+'Elixir.StringIO':put_chars/4                                                                  5     1.91     4  [      0.80]
+'Elixir.ExUnit.CaptureLog':with_log/2                                                          1     1.91     4  [      4.00]
+erlang:whereis/1                                                                               6     2.39     5  [      0.83]
+'Elixir.StringIO':io_request/2                                                                 5     2.39     5  [      1.00]
+erlang:raise/3                                                                                 4     2.87     6  [      1.50]
+erlang:demonitor/2                                                                             6     3.35     7  [      1.17]
+'Elixir.ExUnit.Assertions':'__timeout__'/2                                                     3     3.35     7  [      2.33]
+erlang:error/1                                                                                 2     3.83     8  [      4.00]
+gen_server:loop/5                                                                              6     3.83     8  [      1.33]
+proc_lib:init_ack/2                                                                            1     4.31     9  [      9.00]
+unicode:characters_to_binary/2                                                                 5     6.22    13  [      2.60]
+gen_server:decode_msg/4                                                                        6     6.22    13  [      2.17]
+'Elixir.Nest.Agents.AgentChatTest':'-test chat/2 handles LLM error gracefully/1-fun-3-'/1      1     7.18    15  [     15.00]
+gen:do_call/4                                                                                  5     8.13    17  [      3.40]
+ets:match/2                                                                                    1    11.48    24  [     24.00]
+-----------------------------------------------------------------------------------------  -----  -------  ----  [----------]
+Total:                                                                                       322  100.00%   209  [      0.65]
+.
+
+ 10) test chat/2 handles LLM error gracefully (Nest.Agents.AgentChatTest)
+     test/nest/agents/agent_chat_test.exs:60
+     ** (ArgumentError) errors were found at the given arguments:
+
+       * 1st argument: not a textual representation of an integer
+
+     code: records = ExProf.analyze()
+     stacktrace:
+       :erlang.binary_to_integer("handles")
+       (exprof 0.2.4) lib/exprof/reader.ex:24: ExProf.Reader.parse_record/1
+       (exprof 0.2.4) lib/exprof/reader.ex:15: ExProf.Reader.parse/2
+       (exprof 0.2.4) lib/exprof.ex:34: ExProf.analyze/0
+       test/nest/agents/agent_chat_test.exs:80: (test)
+
+............20:46:56.279 [warning] PREFLIGHT_TIMING id=test-agent-9991 decision=fits total=21µs streaming_check=0µs decision=20µs send=1µs
+20:46:56.279 [warning] PREFLIGHT_TIMING id=test-agent-9991 decision=fits total=55µs streaming_check=0µs decision=54µs send=1µs
+....20:46:56.815 [warning] PREFLIGHT_TIMING id=test-agent-10247 decision=fits total=14µs streaming_check=1µs decision=12µs send=1µs
+20:46:56.816 [warning] PREFLIGHT_TIMING id=test-agent-10247 decision=fits total=40µs streaming_check=0µs decision=39µs send=1µs
+20:46:56.816 [warning] PREFLIGHT_TIMING id=test-agent-10247 decision=fits total=57µs streaming_check=0µs decision=56µs send=1µs
+..20:46:57.320 [warning] PREFLIGHT_TIMING id=test-agent-10759 decision=fits total=26µs streaming_check=1µs decision=23µs send=2µs
+20:46:57.320 [warning] PREFLIGHT_TIMING id=test-agent-10759 decision=fits total=40µs streaming_check=0µs decision=39µs send=1µs
+.20:46:57.322 [warning] PREFLIGHT_TIMING id=test-agent-11143 decision=fits total=11µs streaming_check=0µs decision=11µs send=0µs
+20:46:57.322 [warning] PREFLIGHT_TIMING id=test-agent-11143 decision=fits total=36µs streaming_check=0µs decision=34µs send=2µs
+20:46:57.323 [warning] PREFLIGHT_TIMING id=test-agent-11143 decision=fits total=42µs streaming_check=0µs decision=40µs send=2µs
+.........20:46:57.343 [warning] PREFLIGHT_TIMING id=remaining-sloth decision=fits total=19µs streaming_check=0µs decision=18µs send=1µs
+.......................................
+Finished in 2.9 seconds (2.8s async, 0.1s sync)
+697 tests, 10 failures

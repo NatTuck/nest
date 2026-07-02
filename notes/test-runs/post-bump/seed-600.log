@@ -1,0 +1,52 @@
+Running ExUnit with seed: 600, max_cases: 64
+
+.......................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+
+  1) test post-tool-call content vs. thinking routing the post-tool assistant message's content and thinking stay in their own fields (Nest.Agents.AgentPostToolCallContentTest)
+     test/nest/agents/agent_post_tool_call_content_test.exs:59
+     Assertion failed, no matching message after 200ms
+     Showing 2 of 2 messages in the mailbox
+     code: assert_receive {:chat_message, {:assistant, %{index: 2, parts: parts_with_tool}}}
+     mailbox:
+       pattern: {:chat_message, {:assistant, %{index: 2, parts: parts_with_tool}}}
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\nList the files"
+                      }
+                    ],
+                    timestamp: ~U[2026-07-02 16:27:42.942578Z],
+                    metadata: %{"mode" => "chat"},
+                    api_logs: []
+                  }}}
+
+       pattern: {:chat_message, {:assistant, %{index: 2, parts: parts_with_tool}}}
+       value:   {:chat_status,
+                 %{
+                   status: "streaming",
+                   usage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     context_input_tokens: 0,
+                     last_output: 0,
+                     total_cache_creation_input_tokens: 0
+                   },
+                   contextLimit: 512000,
+                   contextLimitSource: :config,
+                   currentMode: "chat"
+                 }}
+     stacktrace:
+       test/nest/agents/agent_post_tool_call_content_test.exs:102: (test)
+
+.................................................................................................................................
+Finished in 2.3 seconds (2.3s async, 0.09s sync)
+697 tests, 1 failure

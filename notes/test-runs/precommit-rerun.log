@@ -1,0 +1,32 @@
+Checking 175 source files (this might take a while) ...
+
+Please report incorrect results: https://github.com/rrrene/credo/issues
+
+Analysis took 0.5 seconds (0.05s to load, 0.5s running 72 checks on 175 files)
+1319 mods/funs, found no issues.
+
+Use `mix credo explain` to explain issues, `mix credo --help` for options.
+Running ExUnit with seed: 718169, max_cases: 64
+
+....................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+
+  1) test chat:compaction broadcast compaction_done broadcasts chat:compaction with marker and history (Nest.Agents.AgentCompactionTest)
+     test/nest/agents/agent_compaction_test.exs:322
+     Assertion failed, no matching message after 100ms
+     The process mailbox is empty.
+     code: assert_receive {:chat_compaction, payload}
+     stacktrace:
+       test/nest/agents/agent_compaction_test.exs:347: (test)
+
+............................................................................................................................................................................................
+Finished in 2.8 seconds (2.8s async, 0.00s sync)
+641 tests, 1 failure
+** (EXIT from #PID<0.95.0>) exited in: GenServer.call(Mimic.Server, {:reset, Nest.LLM.OpenAIClient}, 60000)
+    ** (EXIT) shutdown
+
+** (exit) 124
+    (mix 1.19.5) lib/mix/tasks/cmd.ex:135: Mix.Tasks.Cmd.run/1
+    (mix 1.19.5) lib/mix/task.ex:499: anonymous fn/3 in Mix.Task.run_task/5
+    (mix 1.19.5) lib/mix/task.ex:573: Mix.Task.run_alias/6
+    (mix 1.19.5) lib/mix/cli.ex:129: Mix.CLI.run_task/2
+    /home/nat/.local/share/mise/installs/elixir/1.19.5-otp-28/bin/mix:7: (file)

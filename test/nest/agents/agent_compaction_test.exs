@@ -79,13 +79,14 @@ defmodule Nest.Agents.AgentCompactionTest do
 
       :ok = Agent.chat(pid, "Read a file")
 
-      assert_receive {:chat_message, {:user, _}}, 100
-      assert_receive {:chat_status, %{status: "streaming"}}, 100
-      assert_receive {:chat_delta, %{content: "Reading file"}}, 100
-      assert_receive {:chat_message, {:tool, %Tool{parts: [result_part | _]}}}, 100
-      assert_receive {:chat_delta, %{content: "Done"}}, 100
-      assert_receive {:chat_message, {:assistant, _}}, 100
-      assert_receive {:chat_status, %{status: "idle"}}, 100
+      assert_receive {:chat_status, %{status: "idle"}}, 500
+
+      assert_received {:chat_message, {:user, _}}
+      assert_received {:chat_status, %{status: "streaming"}}
+      assert_received {:chat_delta, %{content: "Reading file"}}
+      assert_received {:chat_message, {:tool, %Tool{parts: [result_part | _]}}}
+      assert_received {:chat_delta, %{content: "Done"}}
+      assert_received {:chat_message, {:assistant, _}}
 
       %Part.ToolResult{content: content, is_error: is_error} = result_part
       refute String.contains?(content, "[truncated:")
@@ -136,13 +137,14 @@ defmodule Nest.Agents.AgentCompactionTest do
 
       :ok = Agent.chat(pid, "Run two")
 
-      assert_receive {:chat_message, {:user, _}}, 100
-      assert_receive {:chat_status, %{status: "streaming"}}, 100
-      assert_receive {:chat_delta, %{content: "Running two commands"}}, 100
-      assert_receive {:chat_message, {:tool, %Tool{parts: parts}}}, 100
-      assert_receive {:chat_delta, %{content: "All done"}}, 100
-      assert_receive {:chat_message, {:assistant, _}}, 100
-      assert_receive {:chat_status, %{status: "idle"}}, 100
+      assert_receive {:chat_status, %{status: "idle"}}, 500
+
+      assert_received {:chat_message, {:user, _}}
+      assert_received {:chat_status, %{status: "streaming"}}
+      assert_received {:chat_delta, %{content: "Running two commands"}}
+      assert_received {:chat_message, {:tool, %Tool{parts: parts}}}
+      assert_received {:chat_delta, %{content: "All done"}}
+      assert_received {:chat_message, {:assistant, _}}
 
       assert length(parts) == 2
       assert Enum.map(parts, & &1.tool_call_id) == ["call_1", "call_2"]
@@ -215,8 +217,10 @@ defmodule Nest.Agents.AgentCompactionTest do
       fake_task = self()
       send(pid, {:preflight_request, fake_task, state_before.chat_state.messages || []})
 
-      # Known reply from the preflight handler.
-      assert_receive {:preflight_result, :proceed, _}, 100
+      # 500ms (not 100ms): preflight calls Tiktoken.CL100K.count_tokens
+      # (DirtyCpu NIF); first call on each of BEAM's 32 dirty CPU threads
+      # pays a 200-325ms BPE-encoder init cost. See notes/flaky-tests.md.
+      assert_receive {:preflight_result, :proceed, _}, 500
 
       # The preflight handler does not broadcast anything; the only
       # externally visible signal is the {:preflight_result, ...} reply
@@ -236,7 +240,8 @@ defmodule Nest.Agents.AgentCompactionTest do
 
       send(pid, {:preflight_request, self(), state_before.chat_state.messages || []})
 
-      assert_receive {:preflight_result, :proceed, _}, 100
+      # 500ms: preflight BPE-init latency on dirty CPU threads (see line 219).
+      assert_receive {:preflight_result, :proceed, _}, 500
 
       Agent.terminate(pid)
     end

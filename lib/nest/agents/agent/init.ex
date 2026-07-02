@@ -7,8 +7,7 @@ defmodule Nest.Agents.Agent.Init do
   The `init/1` callback delegates to `build_state/2` here for
   the struct construction (no side effects) and to
   `run_post_init/2` for the side-effectful post-init work
-  (system-message broadcast, async context-limit probe,
-  startup log).
+  (async context-limit probe, startup log).
   """
 
   require Logger
@@ -95,30 +94,12 @@ defmodule Nest.Agents.Agent.Init do
   def load_vocation(vocation_id), do: Vocations.get_vocation(vocation_id)
 
   @doc """
-  Run the post-construction side effects: broadcast the
-  initial system message (if it has non-empty content), spawn
-  the async context-limit probe (when the source was the
-  default), and log the agent's startup info.
+  Run the post-construction side effects: spawn the async
+  context-limit probe (when the source was the default) and
+  log the agent's startup info.
   """
   @spec run_post_init(Nest.Agents.Agent.t(), Nest.LLM.ClientConfig.t()) :: :ok
   def run_post_init(state, client_config) do
-    # The system message is always at position 0 of
-    # `state.chat_state.messages` (see
-    # `initial_messages_with_system/1`). We always broadcast
-    # it — even when empty — because the system message
-    # exists in the LLM's view and the AGENTS.md
-    # transparency rule says the UI must include everything
-    # that happened. The UI decides how to render an empty
-    # system message (a dimmed placeholder); we don't hide
-    # it here.
-    case state.chat_state.messages do
-      [{:system, %System{}} | _] = messages ->
-        Broadcasts.message(state.id, hd(messages))
-
-      _ ->
-        :ok
-    end
-
     if state.llm_metrics.context_limit_source == :default do
       spawn_context_limit_probe(client_config, self())
     end

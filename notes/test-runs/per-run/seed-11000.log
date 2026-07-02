@@ -1,0 +1,218 @@
+Running ExUnit with seed: 11000, max_cases: 64
+
+...............................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+
+  1) test chat/2 LLM error path returns a RunState (Task body destructures successfully) (Nest.Agents.AgentChatTest)
+     test/nest/agents/agent_chat_test.exs:93
+     Assertion failed, no matching message after 100ms
+     Showing 2 of 2 messages in the mailbox
+     code: assert_receive {:chat_status, %{status: "idle"}}
+     mailbox:
+       pattern: {:chat_status, %{status: "idle"}}
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\nHello"
+                      }
+                    ],
+                    timestamp: ~U[2026-07-01 23:57:16.636324Z],
+                    metadata: %{"mode" => "chat"},
+                    api_logs: []
+                  }}}
+
+       pattern: {:chat_status, %{status: "idle"}}
+       value:   {:chat_status,
+                 %{
+                   status: "streaming",
+                   usage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     context_input_tokens: 0,
+                     last_output: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     total_cache_creation_input_tokens: 0
+                   },
+                   currentMode: "chat",
+                   contextLimit: 512000,
+                   contextLimitSource: :config
+                 }}
+     stacktrace:
+       test/nest/agents/agent_chat_test.exs:103: anonymous fn/1 in Nest.Agents.AgentChatTest."test chat/2 LLM error path returns a RunState (Task body destructures successfully)"/1
+       (ex_unit 1.19.5) lib/ex_unit/capture_log.ex:121: ExUnit.CaptureLog.with_log/2
+       (ex_unit 1.19.5) lib/ex_unit/capture_log.ex:83: ExUnit.CaptureLog.capture_log/2
+       test/nest/agents/agent_chat_test.exs:100: (test)
+
+...............................................................................FUNCTION                                                                                   CALLS        %  TIME  [uS / CALLS]
+--------                                                                                   -----  -------  ----  [----------]
+maps:remove/2                                                                                  1     0.00     0  [      0.00]
+maps:without/2                                                                                 1     0.00     0  [      0.00]
+erlang:atom_to_list/1                                                                          2     0.00     0  [      0.00]
+erlang:integer_to_list/1                                                                       1     0.00     0  [      0.00]
+erlang:make_ref/0                                                                              1     0.00     0  [      0.00]
+erlang:put/2                                                                                   2     0.00     0  [      0.00]
+erlang:'++'/2                                                                                  3     0.00     0  [      0.00]
+'Elixir.Keyword':fetch/2                                                                       1     0.00     0  [      0.00]
+'Elixir.Keyword':pop/2                                                                         1     0.00     0  [      0.00]
+'Elixir.Keyword':pop/3                                                                         1     0.00     0  [      0.00]
+logger_h_common:filesync/2                                                                     1     0.00     0  [      0.00]
+logger_h_common:filter_config/1                                                                1     0.00     0  [      0.00]
+unicode:characters_to_binary/3                                                                 1     0.00     0  [      0.00]
+unicode:no_conversion_needed/3                                                                 1     0.00     0  [      0.00]
+unicode:characters_to_binary_int/3                                                             1     0.00     0  [      0.00]
+'Elixir.Logger':flush/0                                                                        1     0.00     0  [      0.00]
+logger:'-get_handler_config/0-lc$^0/1-0-'/1                                                    4     0.00     0  [      0.00]
+gen:start/5                                                                                    1     0.00     0  [      0.00]
+gen:init_it/6                                                                                  1     0.00     0  [      0.00]
+gen:init_it2/7                                                                                 1     0.00     0  [      0.00]
+gen:call/3                                                                                     1     0.00     0  [      0.00]
+gen:do_for_proc/2                                                                              2     0.00     0  [      0.00]
+gen:name/1                                                                                     1     0.00     0  [      0.00]
+gen:timeout/1                                                                                  1     0.00     0  [      0.00]
+gen:spawn_opts/1                                                                               1     0.00     0  [      0.00]
+gen:hibernate_after/1                                                                          1     0.00     0  [      0.00]
+gen:debug_options/2                                                                            1     0.00     0  [      0.00]
+gen:'-call/4-fun-0-'/4                                                                         2     0.00     0  [      0.00]
+code:ensure_loaded/1                                                                           2     0.00     0  [      0.00]
+logger_std_h:filesync/1                                                                        1     0.00     0  [      0.00]
+logger_std_h:filter_config/1                                                                   1     0.00     0  [      0.00]
+proc_lib:spawn_opt/4                                                                           1     0.00     0  [      0.00]
+proc_lib:init_p/5                                                                              1     0.00     0  [      0.00]
+proc_lib:init_p_do_apply/3                                                                     1     0.00     0  [      0.00]
+proc_lib:exit_p/3                                                                              1     0.00     0  [      0.00]
+proc_lib:exit_reason/3                                                                         1     0.00     0  [      0.00]
+proc_lib:start/5                                                                               1     0.00     0  [      0.00]
+proc_lib:make_dummy_args/2                                                                     2     0.00     0  [      0.00]
+proc_lib:trans_init/3                                                                          1     0.00     0  [      0.00]
+proc_lib:crash_report/4                                                                        1     0.00     0  [      0.00]
+proc_lib:get_my_name/0                                                                         1     0.00     0  [      0.00]
+proc_lib:get_ancestors/0                                                                       1     0.00     0  [      0.00]
+proc_lib:proc_info/2                                                                           1     0.00     0  [      0.00]
+'Elixir.Process':whereis/1                                                                     2     0.00     0  [      0.00]
+'Elixir.Enum':reduce/3                                                                         1     0.00     0  [      0.00]
+'Elixir.Enum':'-reduce/3-lists^foldl/2-0-'/3                                                   4     0.00     0  [      0.00]
+'Elixir.Access':get/2                                                                          3     0.00     0  [      0.00]
+'Elixir.Access':get/3                                                                          3     0.00     0  [      0.00]
+'Elixir.Nest.Agents.Agent':chat/2                                                              1     0.00     0  [      0.00]
+'Elixir.Nest.Agents.Agent':chat/3                                                              1     0.00     0  [      0.00]
+'Elixir.StringIO':close/1                                                                      1     0.00     0  [      0.00]
+'Elixir.StringIO':handle_info/2                                                                1     0.00     0  [      0.00]
+'Elixir.StringIO':init/1                                                                       1     0.00     0  [      0.00]
+'Elixir.StringIO':io_reply/3                                                                   1     0.00     0  [      0.00]
+'Elixir.StringIO':io_request/2                                                                 1     0.00     0  [      0.00]
+'Elixir.StringIO':io_request/4                                                                 1     0.00     0  [      0.00]
+'Elixir.StringIO':open/1                                                                       1     0.00     0  [      0.00]
+'Elixir.StringIO':open/2                                                                       1     0.00     0  [      0.00]
+error_handler:crash/3                                                                          2     0.00     0  [      0.00]
+error_handler:crash/1                                                                          2     0.00     0  [      0.00]
+error_handler:call_undefined_function_handler/3                                                2     0.00     0  [      0.00]
+lists:keyfind/3                                                                                9     0.00     0  [      0.00]
+lists:member/2                                                                                 1     0.00     0  [      0.00]
+lists:reverse/2                                                                                1     0.00     0  [      0.00]
+lists:concat/1                                                                                 1     0.00     0  [      0.00]
+lists:thing_to_list/1                                                                          3     0.00     0  [      0.00]
+lists:flatten/1                                                                                1     0.00     0  [      0.00]
+lists:flatmap/2                                                                                1     0.00     0  [      0.00]
+lists:flatmap_1/2                                                                              4     0.00     0  [      0.00]
+lists:foldl/3                                                                                  1     0.00     0  [      0.00]
+lists:foldl_1/3                                                                                1     0.00     0  [      0.00]
+lists:fsplit_1/6                                                                               2     0.00     0  [      0.00]
+lists:fmergel/4                                                                                1     0.00     0  [      0.00]
+lists:rfmergel/4                                                                               1     0.00     0  [      0.00]
+'Elixir.GenServer':call/2                                                                      1     0.00     0  [      0.00]
+'Elixir.GenServer':cast/2                                                                      1     0.00     0  [      0.00]
+'Elixir.GenServer':cast_msg/1                                                                  1     0.00     0  [      0.00]
+'Elixir.GenServer':do_send/2                                                                   1     0.00     0  [      0.00]
+'Elixir.GenServer':start/3                                                                     1     0.00     0  [      0.00]
+logger_olp:call/2                                                                              1     0.00     0  [      0.00]
+'Elixir.ExUnit.CaptureServer':log_capture_off/1                                                1     0.00     0  [      0.00]
+'Elixir.ExUnit.CaptureServer':log_capture_on/3                                                 1     0.00     0  [      0.00]
+'Elixir.ExProf':stop/0                                                                         1     0.00     0  [      0.00]
+logger_config:get/1                                                                            1     0.00     0  [      0.00]
+gen_server:call/2                                                                              1     0.00     0  [      0.00]
+gen_server:call/3                                                                              1     0.00     0  [      0.00]
+gen_server:reply/2                                                                             1     0.00     0  [      0.00]
+gen_server:loop/4                                                                              2     0.00     0  [      0.00]
+gen_server:cancel_timer/1                                                                      2     0.00     0  [      0.00]
+gen_server:decode_msg/6                                                                        2     0.00     0  [      0.00]
+gen_server:decode_msg/4                                                                        2     0.00     0  [      0.00]
+gen_server:try_handle_info/3                                                                   1     0.00     0  [      0.00]
+gen_server:try_handle_call/4                                                                   1     0.00     0  [      0.00]
+gen_server:try_terminate/3                                                                     1     0.00     0  [      0.00]
+gen_server:handle_msg/3                                                                        2     0.00     0  [      0.00]
+gen_server:handle_common_reply/5                                                               1     0.00     0  [      0.00]
+gen_server:terminate/7                                                                         1     0.00     0  [      0.00]
+gen_server:terminate/9                                                                         1     0.00     0  [      0.00]
+gen_server:catch_result/3                                                                      1     0.00     0  [      0.00]
+'Elixir.ExUnit.CaptureLog':capture_log/1                                                       1     0.00     0  [      0.00]
+'Elixir.ExUnit.CaptureLog':capture_log/2                                                       1     0.00     0  [      0.00]
+erlang:module_loaded/1                                                                         2     0.71     1  [      0.50]
+erlang:monitor/2                                                                               4     0.71     1  [      0.25]
+erlang:monitor/3                                                                               2     0.71     1  [      0.50]
+erlang:send/2                                                                                  2     0.71     1  [      0.50]
+logger_h_common:call/3                                                                         1     0.71     1  [      1.00]
+'Elixir.Logger':'-flush/0-fun-0-'/2                                                            3     0.71     1  [      0.33]
+logger:get_handler_config/0                                                                    1     0.71     1  [      1.00]
+logger:'-get_handler_config/0-fun-1-'/2                                                        3     0.71     1  [      0.33]
+gen:do_spawn/5                                                                                 1     0.71     1  [      1.00]
+gen:call/4                                                                                     5     0.71     1  [      0.20]
+proc_lib:sync_start/2                                                                          1     0.71     1  [      1.00]
+'Elixir.StringIO':put_chars/4                                                                  1     0.71     1  [      1.00]
+error_handler:undefined_function/3                                                             2     0.71     1  [      0.50]
+error_handler:ensure_loaded/1                                                                  2     0.71     1  [      0.50]
+lists:do_flatten/2                                                                            10     0.71     1  [      0.10]
+lists:sort/2                                                                                   1     0.71     1  [      1.00]
+'Elixir.GenServer':call/3                                                                      3     0.71     1  [      0.33]
+'Elixir.GenServer':do_start/4                                                                  1     0.71     1  [      1.00]
+'Elixir.GenServer':whereis/1                                                                   3     0.71     1  [      0.33]
+gen_server:init_it/6                                                                           2     0.71     1  [      0.50]
+gen_server:init_it/2                                                                           1     0.71     1  [      1.00]
+erlang:function_exported/3                                                                     8     1.42     2  [      0.25]
+erlang:list_to_atom/1                                                                          2     1.42     2  [      1.00]
+erlang:make_fun/3                                                                              4     1.42     2  [      0.50]
+erlang:send/3                                                                                  2     1.42     2  [      1.00]
+logger:filter_config/1                                                                         3     1.42     2  [      0.67]
+gen:reply/2                                                                                    1     1.42     2  [      2.00]
+proc_lib:init_ack/2                                                                            1     1.42     2  [      2.00]
+'Elixir.StringIO':handle_call/3                                                                1     1.42     2  [      2.00]
+gen_server:loop/5                                                                              2     1.42     2  [      1.00]
+unicode:characters_to_binary/2                                                                 1     2.13     3  [      3.00]
+erlang:process_info/2                                                                          2     2.84     4  [      2.00]
+'Elixir.ExUnit.CaptureLog':with_log/2                                                          1     2.84     4  [      4.00]
+erlang:whereis/1                                                                               6     3.55     5  [      0.83]
+erlang:spawn_opt/4                                                                             1     3.55     5  [      5.00]
+erlang:raise/3                                                                                 4     4.26     6  [      1.50]
+'Elixir.ExUnit.Assertions':'__timeout__'/2                                                     3     4.96     7  [      2.33]
+erlang:error/1                                                                                 2     5.67     8  [      4.00]
+'Elixir.Nest.Agents.AgentChatTest':'-test chat/2 handles LLM error gracefully/1-fun-3-'/1      1     5.67     8  [      8.00]
+erlang:demonitor/2                                                                             6     8.51    12  [      2.00]
+gen:do_call/4                                                                                  5     9.22    13  [      2.60]
+ets:match/2                                                                                    1    19.15    27  [     27.00]
+-----------------------------------------------------------------------------------------  -----  -------  ----  [----------]
+Total:                                                                                       250  100.00%   141  [      0.56]
+
+
+  2) test chat/2 handles LLM error gracefully (Nest.Agents.AgentChatTest)
+     test/nest/agents/agent_chat_test.exs:60
+     ** (ArgumentError) errors were found at the given arguments:
+
+       * 1st argument: not a textual representation of an integer
+
+     code: records = ExProf.analyze()
+     stacktrace:
+       :erlang.binary_to_integer("handles")
+       (exprof 0.2.4) lib/exprof/reader.ex:24: ExProf.Reader.parse_record/1
+       (exprof 0.2.4) lib/exprof/reader.ex:15: ExProf.Reader.parse/2
+       (exprof 0.2.4) lib/exprof.ex:34: ExProf.analyze/0
+       test/nest/agents/agent_chat_test.exs:80: (test)
+
+.........................................................
+Finished in 2.5 seconds (2.4s async, 0.1s sync)
+697 tests, 2 failures

@@ -71,7 +71,7 @@ defmodule Nest.Tokens.Estimator do
   def raw_count(_), do: 0
 
   @doc """
-  Returns a **conservative** token count for a string.
+  Returns a conservative token count for a string.
 
   Applies a 20% safety multiplier on top of `raw_count/1`. Use this
   for budget checks.

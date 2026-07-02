@@ -83,6 +83,13 @@ Make it always fail, and make it log "FIXME: HIGH PRIORITY FLAKY TEST".
 longer, that's a major issue that needs to be addressed immediately.
 - **NO** test may be async: false without a clear comment as to why that's
 actually required.
+- **NEVER EVER** increase an existing timeout to try to get a test to pass
+unless you have a concrete reason to believe that there's some external reason
+why we expect things to take a specific amount of time. A test unexpectedly
+hitting a timeout, even occasionally, means the test is critically broken and 
+needs to be fixed so it's not timing-dependent.
+- **NEVER** run tests and throw away the output. If you expect long output,
+redirect to a temporary file (e.g. notes/test-runs/test-run.log).
 
 ### Test Coverage
 

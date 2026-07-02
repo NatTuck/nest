@@ -1,0 +1,738 @@
+Running ExUnit with seed: 700, max_cases: 64
+
+............................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+
+  1) test chat/2 accumulates delta content from streaming LLM response (Nest.Agents.AgentChatTest)
+     test/nest/agents/agent_chat_test.exs:115
+     Assertion failed, no matching message after 100ms
+     Showing 2 of 2 messages in the mailbox
+     code: assert_receive {:chat_status, %{status: "idle"}}
+     mailbox:
+       pattern: {:chat_status, %{status: "idle"}}
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\nHello"
+                      }
+                    ],
+                    timestamp: ~U[2026-07-01 23:56:45.843163Z],
+                    metadata: %{"mode" => "chat"},
+                    api_logs: []
+                  }}}
+
+       pattern: {:chat_status, %{status: "idle"}}
+       value:   {:chat_status,
+                 %{
+                   status: "streaming",
+                   usage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     context_input_tokens: 0,
+                     last_output: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     total_cache_creation_input_tokens: 0
+                   },
+                   currentMode: "chat",
+                   contextLimit: 512000,
+                   contextLimitSource: :config
+                 }}
+     stacktrace:
+       test/nest/agents/agent_chat_test.exs:121: (test)
+
+...............
+
+  2) test tool result serialization chat:sync handles messages with ToolResult structs in api_logs (NestWeb.AgentChannelAdvancedTest)
+     test/nest_web/channels/agent_channel_advanced_test.exs:281
+     Assertion failed, no matching message after 500ms
+     Showing 6 of 6 messages in the mailbox
+     code: assert_receive %{
+             __struct__: Phoenix.Socket.Message,
+             event: "chat:message",
+             payload: %{"index" => 2, "role" => "assistant"}
+           }
+     mailbox:
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:message",
+                  payload: %{"index" => 2, "role" => "assistant"}
+                }
+       value:   %Phoenix.Socket.Message{
+                  topic: "agent:inquisitive-hare",
+                  event: "init",
+                  payload: %{
+                    "contextLimit" => 512000,
+                    "contextLimitSource" => "config",
+                    "currentMode" => "chat",
+                    "defaultMode" => "chat",
+                    "history" => [],
+                    "id" => "inquisitive-hare",
+                    "messageCount" => 1,
+                    "model" => %{
+                      name: "qwen3.5-plus",
+                      provider: "model-studio"
+                    },
+                    "modes" => ["chat"],
+                    "partial" => nil,
+                    "status" => "idle",
+                    "usage" => %{
+                      cache_creation_input_tokens: 0,
+                      cache_read_input_tokens: 0,
+                      input_tokens: 0,
+                      output_tokens: 0,
+                      reasoning_tokens: 0,
+                      total_tokens: 0,
+                      context_input_tokens: 0,
+                      last_output: 0,
+                      total_input_tokens: 0,
+                      total_cache_read_input_tokens: 0,
+                      total_cache_creation_input_tokens: 0
+                    },
+                    "vocation" => nil
+                  },
+                  ref: nil,
+                  join_ref: 7938
+                }
+
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:message",
+                  payload: %{"index" => 2, "role" => "assistant"}
+                }
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\nHello"
+                      }
+                    ],
+                    timestamp: ~U[2026-07-01 23:56:45.987072Z],
+                    metadata: %{"mode" => "chat"},
+                    api_logs: []
+                  }}}
+
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:message",
+                  payload: %{"index" => 2, "role" => "assistant"}
+                }
+       value:   {:chat_status,
+                 %{
+                   status: "streaming",
+                   usage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     context_input_tokens: 0,
+                     last_output: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     total_cache_creation_input_tokens: 0
+                   },
+                   currentMode: "chat",
+                   contextLimit: 512000,
+                   contextLimitSource: :config
+                 }}
+
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:message",
+                  payload: %{"index" => 2, "role" => "assistant"}
+                }
+       value:   %Phoenix.Socket.Message{
+                  topic: "agent:inquisitive-hare",
+                  event: "chat:message",
+                  payload: %{
+                    "apiLogs" => [],
+                    "index" => 1,
+                    "mode" => "chat",
+                    "parts" => [
+                      %{
+                        "kind" => "text",
+                        "text" => "[mode: chat]\nHello"
+                      }
+                    ],
+                    "role" => "user"
+                  },
+                  ref: nil,
+                  join_ref: 7938
+                }
+
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:message",
+                  payload: %{"index" => 2, "role" => "assistant"}
+                }
+       value:   %Phoenix.Socket.Message{
+                  topic: "agent:inquisitive-hare",
+                  event: "chat:status",
+                  payload: %{
+                    status: "streaming",
+                    usage: %{
+                      cache_creation_input_tokens: 0,
+                      cache_read_input_tokens: 0,
+                      input_tokens: 0,
+                      output_tokens: 0,
+                      reasoning_tokens: 0,
+                      total_tokens: 0,
+                      context_input_tokens: 0,
+                      last_output: 0,
+                      total_input_tokens: 0,
+                      total_cache_read_input_tokens: 0,
+                      total_cache_creation_input_tokens: 0
+                    },
+                    currentMode: "chat",
+                    contextLimit: 512000,
+                    contextLimitSource: :config
+                  },
+                  ref: nil,
+                  join_ref: 7938
+                }
+
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:message",
+                  payload: %{"index" => 2, "role" => "assistant"}
+                }
+       value:   %Phoenix.Socket.Message{
+                  topic: "agent:inquisitive-hare",
+                  event: "chat:status",
+                  payload: %{
+                    status: "streaming",
+                    usage: %{
+                      cache_creation_input_tokens: 0,
+                      cache_read_input_tokens: 0,
+                      input_tokens: 0,
+                      output_tokens: 0,
+                      reasoning_tokens: 0,
+                      total_tokens: 0,
+                      context_input_tokens: 0,
+                      last_output: 0,
+                      total_input_tokens: 0,
+                      total_cache_read_input_tokens: 0,
+                      total_cache_creation_input_tokens: 0
+                    },
+                    currentMode: "chat",
+                    contextLimit: 512000,
+                    contextLimitSource: :config
+                  },
+                  ref: nil,
+                  join_ref: 7938
+                }
+     stacktrace:
+       test/nest_web/channels/agent_channel_advanced_test.exs:289: (test)
+
+...
+
+  3) test user-initiated stop 1.1.5 finalizes the partial assistant message and transitions to idle (Nest.Agents.Agent.ChatTurnTest)
+     test/nest/agents/agent/chat_turn_test.exs:237
+     Assertion failed, no matching message after 500ms
+     Showing 1 of 1 message in the mailbox
+     code: assert_receive {:chat_delta, _}
+     mailbox:
+       pattern: {:chat_delta, _}
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\nTell me a long story"
+                      }
+                    ],
+                    timestamp: ~U[2026-07-01 23:56:45.843164Z],
+                    metadata: %{"mode" => "chat"},
+                    api_logs: []
+                  }}}
+     stacktrace:
+       test/nest/agents/agent/chat_turn_test.exs:255: (test)
+
+
+
+  4) test post-tool-call content vs. thinking routing a turn with only thinking events and no visible text has nil content and non-nil thinking (Nest.Agents.AgentPostToolCallContentTest)
+     test/nest/agents/agent_post_tool_call_content_test.exs:191
+     Assertion failed, no matching message after 500ms
+     Showing 2 of 2 messages in the mailbox
+     code: assert_receive {:chat_message,
+            {:assistant, %{index: 4, parts: [%Part.Thinking{thinking: "The user wants a count." <> _}]}}}
+     mailbox:
+       pattern: {:chat_message,
+                 {:assistant,
+                  %{index: 4, parts: [%Nest.Messages.Part.Thinking{thinking: "The user wants a count." <> _}]}}}
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\nHow many?"
+                      }
+                    ],
+                    timestamp: ~U[2026-07-01 23:56:45.923691Z],
+                    metadata: %{"mode" => "chat"},
+                    api_logs: []
+                  }}}
+
+       pattern: {:chat_message,
+                 {:assistant,
+                  %{index: 4, parts: [%Nest.Messages.Part.Thinking{thinking: "The user wants a count." <> _}]}}}
+       value:   {:chat_status,
+                 %{
+                   status: "streaming",
+                   usage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     context_input_tokens: 0,
+                     last_output: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     total_cache_creation_input_tokens: 0
+                   },
+                   currentMode: "chat",
+                   contextLimit: 512000,
+                   contextLimitSource: :config
+                 }}
+     stacktrace:
+       test/nest/agents/agent_post_tool_call_content_test.exs:234: (test)
+
+
+
+  5) test token usage aggregation accumulates usage across tool iterations (Nest.Agents.AgentObservabilityTest)
+     test/nest/agents/agent_observability_test.exs:246
+     Assertion failed, no matching message after 500ms
+     Showing 2 of 2 messages in the mailbox
+     code: assert_receive {:chat_status, %{status: "idle"}}
+     mailbox:
+       pattern: {:chat_status, %{status: "idle"}}
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\nRun a command"
+                      }
+                    ],
+                    timestamp: ~U[2026-07-01 23:56:45.929076Z],
+                    metadata: %{"mode" => "chat"},
+                    api_logs: []
+                  }}}
+
+       pattern: {:chat_status, %{status: "idle"}}
+       value:   {:chat_status,
+                 %{
+                   status: "streaming",
+                   usage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     context_input_tokens: 0,
+                     last_output: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     total_cache_creation_input_tokens: 0
+                   },
+                   currentMode: "chat",
+                   contextLimit: 512000,
+                   contextLimitSource: :config
+                 }}
+     stacktrace:
+       test/nest/agents/agent_observability_test.exs:274: (test)
+
+
+
+  6) test chat_crashed when the HTTP worker raises the user-facing message includes the file/line of the crash (stacktrace snippet) (Nest.Agents.ChatTaskCrashTest)
+     test/nest/agents/chat_task_crash_test.exs:146
+     Assertion failed, no matching message after 500ms
+     Showing 2 of 2 messages in the mailbox
+     code: assert_receive {:chat_error, %{content: content}}
+     mailbox:
+       pattern: {:chat_error, %{content: content}}
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\nHello"
+                      }
+                    ],
+                    timestamp: ~U[2026-07-01 23:56:45.923645Z],
+                    metadata: %{"mode" => "chat"},
+                    api_logs: []
+                  }}}
+
+       pattern: {:chat_error, %{content: content}}
+       value:   {:chat_status,
+                 %{
+                   status: "streaming",
+                   usage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     context_input_tokens: 0,
+                     last_output: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     total_cache_creation_input_tokens: 0
+                   },
+                   currentMode: "chat",
+                   contextLimit: 512000,
+                   contextLimitSource: :config
+                 }}
+     stacktrace:
+       test/nest/agents/chat_task_crash_test.exs:167: anonymous fn/1 in Nest.Agents.ChatTaskCrashTest."test chat_crashed when the HTTP worker raises the user-facing message includes the file/line of the crash (stacktrace snippet)"/1
+       (ex_unit 1.19.5) lib/ex_unit/capture_log.ex:121: ExUnit.CaptureLog.with_log/2
+       (ex_unit 1.19.5) lib/ex_unit/capture_log.ex:83: ExUnit.CaptureLog.capture_log/2
+       test/nest/agents/chat_task_crash_test.exs:164: (test)
+
+
+
+  7) test context tool compaction flow context tool with action=compact triggers compaction and returns to idle (Nest.Agents.AgentCompactionTest)
+     test/nest/agents/agent_compaction_test.exs:302
+     Assertion failed, no matching message after 500ms
+     Showing 4 of 4 messages in the mailbox
+     code: assert_receive {:chat_compaction, _payload}
+     mailbox:
+       pattern: {:chat_compaction, _payload}
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\ncompact please"
+                      }
+                    ],
+                    timestamp: ~U[2026-07-01 23:56:45.955389Z],
+                    metadata: %{"mode" => "chat"},
+                    api_logs: [
+                      %{
+                        id: "001.000",
+                        timestamp: ~U[2026-07-01 23:56:45.957319Z],
+                        type: :request,
+                        payload: %{
+                          "max_tokens" => nil,
+                          "messages" => [
+                            %{
+                              "content" => "",
+                              "role" => "system"
+                            },
+                            %{
+                              "content" => "[mode: chat]\ncompact please",
+                              "role" => "user"
+                            }
+                          ],
+                          "model" => "qwen3.5-plus",
+                          "stream" => true,
+                          "temperature" => nil,
+                          "tool_choice" => :auto,
+                          "top_p" => nil
+                        }
+                      }
+                    ]
+                  }}}
+
+       pattern: {:chat_compaction, _payload}
+       value:   {:chat_status,
+                 %{
+                   status: "streaming",
+                   usage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     context_input_tokens: 0,
+                     last_output: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     total_cache_creation_input_tokens: 0
+                   },
+                   currentMode: "chat",
+                   contextLimit: 512000,
+                   contextLimitSource: :config
+                 }}
+
+       pattern: {:chat_compaction, _payload}
+       value:   {:chat_message,
+                 {:assistant,
+                  %Nest.Messages.Assistant{
+                    index: 2,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "compacting"
+                      },
+                      %Nest.Messages.Part.ToolUse{
+                        id: "call_1",
+                        name: "context",
+                        arguments: %{
+                          "action" => "compact",
+                          "focus" => "recent"
+                        }
+                      }
+                    ],
+                    usage: nil,
+                    finish_reason: "tool_calls",
+                    model: nil,
+                    timestamp: ~U[2026-07-01 23:56:45.968548Z],
+                    metadata: nil,
+                    api_logs: [
+                      %{
+                        id: "002.000",
+                        timestamp: ~U[2026-07-01 23:56:45.968580Z],
+                        type: :response,
+                        payload: %{
+                          usage: nil,
+                          role: :assistant,
+                          content: "compacting",
+                          stop_reason: "tool_calls",
+                          tool_calls: [
+                            %Nest.Messages.ToolCall{
+                              id: "call_1",
+                              name: "context",
+                              arguments: %{
+                                "action" => "compact",
+                                "focus" => "recent"
+                              }
+                            }
+                          ],
+                          tool_results: nil
+                        }
+                      }
+                    ]
+                  }}}
+
+       pattern: {:chat_compaction, _payload}
+       value:   {:chat_delta,
+                 %{
+                   index: 2,
+                   content: "This bright insight reveals that the model is working correctly. 93be1896",
+                   chars_start: 10,
+                   chars_end: 83,
+                   part_type: :text
+                 }}
+     stacktrace:
+       test/nest/agents/agent_compaction_test.exs:354: (test)
+
+.
+
+  8) test stop_chat/2 idempotency multiple stop clicks don't crash the agent (Nest.Agents.AgentStopTest)
+     test/nest/agents/agent_stop_test.exs:161
+     Assertion failed, no matching message after 500ms
+     Showing 1 of 1 message in the mailbox
+     code: assert_receive {:chat_delta, _}
+     mailbox:
+       pattern: {:chat_delta, _}
+       value:   {:chat_status,
+                 %{
+                   status: "streaming",
+                   usage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     context_input_tokens: 0,
+                     last_output: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     total_cache_creation_input_tokens: 0
+                   },
+                   currentMode: "chat",
+                   contextLimit: 512000,
+                   contextLimitSource: :config
+                 }}
+     stacktrace:
+       test/nest/agents/agent_stop_test.exs:171: (test)
+
+................................................................................FUNCTION                                                                                   CALLS        %  TIME  [uS / CALLS]
+--------                                                                                   -----  -------  ----  [----------]
+maps:remove/2                                                                                  1     0.00     0  [      0.00]
+maps:without/2                                                                                 1     0.00     0  [      0.00]
+erlang:integer_to_list/1                                                                       1     0.00     0  [      0.00]
+erlang:make_ref/0                                                                              1     0.00     0  [      0.00]
+erlang:monitor/3                                                                               2     0.00     0  [      0.00]
+erlang:'++'/2                                                                                  3     0.00     0  [      0.00]
+'Elixir.Keyword':fetch/2                                                                       1     0.00     0  [      0.00]
+'Elixir.Keyword':pop/2                                                                         1     0.00     0  [      0.00]
+'Elixir.Keyword':pop/3                                                                         1     0.00     0  [      0.00]
+logger_h_common:filesync/2                                                                     1     0.00     0  [      0.00]
+logger_h_common:filter_config/1                                                                1     0.00     0  [      0.00]
+unicode:characters_to_binary/3                                                                 1     0.00     0  [      0.00]
+unicode:no_conversion_needed/3                                                                 1     0.00     0  [      0.00]
+unicode:characters_to_binary_int/3                                                             1     0.00     0  [      0.00]
+gen:start/5                                                                                    1     0.00     0  [      0.00]
+gen:init_it/6                                                                                  1     0.00     0  [      0.00]
+gen:call/3                                                                                     1     0.00     0  [      0.00]
+gen:do_for_proc/2                                                                              2     0.00     0  [      0.00]
+gen:name/1                                                                                     1     0.00     0  [      0.00]
+gen:timeout/1                                                                                  1     0.00     0  [      0.00]
+gen:spawn_opts/1                                                                               1     0.00     0  [      0.00]
+gen:hibernate_after/1                                                                          1     0.00     0  [      0.00]
+gen:debug_options/2                                                                            1     0.00     0  [      0.00]
+gen:'-call/4-fun-0-'/4                                                                         2     0.00     0  [      0.00]
+code:ensure_loaded/1                                                                           2     0.00     0  [      0.00]
+logger_std_h:filesync/1                                                                        1     0.00     0  [      0.00]
+logger_std_h:filter_config/1                                                                   1     0.00     0  [      0.00]
+proc_lib:init_p_do_apply/3                                                                     1     0.00     0  [      0.00]
+proc_lib:exit_p/3                                                                              1     0.00     0  [      0.00]
+proc_lib:exit_reason/3                                                                         1     0.00     0  [      0.00]
+proc_lib:make_dummy_args/2                                                                     2     0.00     0  [      0.00]
+proc_lib:trans_init/3                                                                          1     0.00     0  [      0.00]
+proc_lib:crash_report/4                                                                        1     0.00     0  [      0.00]
+proc_lib:get_my_name/0                                                                         1     0.00     0  [      0.00]
+proc_lib:get_ancestors/0                                                                       1     0.00     0  [      0.00]
+proc_lib:proc_info/2                                                                           1     0.00     0  [      0.00]
+'Elixir.Process':whereis/1                                                                     2     0.00     0  [      0.00]
+'Elixir.Enum':reduce/3                                                                         1     0.00     0  [      0.00]
+'Elixir.Access':get/2                                                                          3     0.00     0  [      0.00]
+'Elixir.Access':get/3                                                                          3     0.00     0  [      0.00]
+'Elixir.Nest.Agents.Agent':chat/2                                                              1     0.00     0  [      0.00]
+'Elixir.Nest.Agents.Agent':chat/3                                                              1     0.00     0  [      0.00]
+'Elixir.StringIO':close/1                                                                      1     0.00     0  [      0.00]
+'Elixir.StringIO':handle_info/2                                                                1     0.00     0  [      0.00]
+'Elixir.StringIO':init/1                                                                       1     0.00     0  [      0.00]
+'Elixir.StringIO':io_reply/3                                                                   1     0.00     0  [      0.00]
+'Elixir.StringIO':io_request/2                                                                 1     0.00     0  [      0.00]
+'Elixir.StringIO':io_request/4                                                                 1     0.00     0  [      0.00]
+'Elixir.StringIO':open/1                                                                       1     0.00     0  [      0.00]
+'Elixir.StringIO':open/2                                                                       1     0.00     0  [      0.00]
+'Elixir.StringIO':put_chars/4                                                                  1     0.00     0  [      0.00]
+error_handler:crash/3                                                                          2     0.00     0  [      0.00]
+error_handler:crash/1                                                                          2     0.00     0  [      0.00]
+lists:keyfind/3                                                                                9     0.00     0  [      0.00]
+lists:member/2                                                                                 1     0.00     0  [      0.00]
+lists:reverse/2                                                                                1     0.00     0  [      0.00]
+lists:concat/1                                                                                 1     0.00     0  [      0.00]
+lists:thing_to_list/1                                                                          3     0.00     0  [      0.00]
+lists:flatten/1                                                                                1     0.00     0  [      0.00]
+lists:flatmap/2                                                                                1     0.00     0  [      0.00]
+lists:foldl/3                                                                                  1     0.00     0  [      0.00]
+lists:foldl_1/3                                                                                1     0.00     0  [      0.00]
+lists:fsplit_1/6                                                                               2     0.00     0  [      0.00]
+lists:fmergel/4                                                                                1     0.00     0  [      0.00]
+lists:rfmergel/4                                                                               1     0.00     0  [      0.00]
+'Elixir.GenServer':call/2                                                                      1     0.00     0  [      0.00]
+'Elixir.GenServer':cast/2                                                                      1     0.00     0  [      0.00]
+'Elixir.GenServer':cast_msg/1                                                                  1     0.00     0  [      0.00]
+'Elixir.GenServer':do_send/2                                                                   1     0.00     0  [      0.00]
+'Elixir.GenServer':start/3                                                                     1     0.00     0  [      0.00]
+logger_olp:call/2                                                                              1     0.00     0  [      0.00]
+'Elixir.ExUnit.CaptureServer':log_capture_off/1                                                1     0.00     0  [      0.00]
+'Elixir.ExUnit.CaptureServer':log_capture_on/3                                                 1     0.00     0  [      0.00]
+'Elixir.ExProf':stop/0                                                                         1     0.00     0  [      0.00]
+logger_config:get/1                                                                            1     0.00     0  [      0.00]
+gen_server:call/2                                                                              1     0.00     0  [      0.00]
+gen_server:call/3                                                                              1     0.00     0  [      0.00]
+gen_server:reply/2                                                                             1     0.00     0  [      0.00]
+gen_server:init_it/2                                                                           1     0.00     0  [      0.00]
+gen_server:loop/4                                                                              2     0.00     0  [      0.00]
+gen_server:cancel_timer/1                                                                      2     0.00     0  [      0.00]
+gen_server:decode_msg/4                                                                        2     0.00     0  [      0.00]
+gen_server:try_handle_info/3                                                                   1     0.00     0  [      0.00]
+gen_server:try_handle_call/4                                                                   1     0.00     0  [      0.00]
+gen_server:try_terminate/3                                                                     1     0.00     0  [      0.00]
+gen_server:handle_msg/3                                                                        2     0.00     0  [      0.00]
+gen_server:handle_common_reply/5                                                               1     0.00     0  [      0.00]
+gen_server:terminate/7                                                                         1     0.00     0  [      0.00]
+gen_server:terminate/9                                                                         1     0.00     0  [      0.00]
+gen_server:catch_result/3                                                                      1     0.00     0  [      0.00]
+'Elixir.ExUnit.CaptureLog':capture_log/1                                                       1     0.00     0  [      0.00]
+'Elixir.ExUnit.CaptureLog':capture_log/2                                                       1     0.00     0  [      0.00]
+erlang:atom_to_list/1                                                                          2     0.68     1  [      0.50]
+erlang:list_to_atom/1                                                                          2     0.68     1  [      0.50]
+erlang:monitor/2                                                                               4     0.68     1  [      0.25]
+erlang:put/2                                                                                   2     0.68     1  [      0.50]
+erlang:send/2                                                                                  2     0.68     1  [      0.50]
+logger_h_common:call/3                                                                         1     0.68     1  [      1.00]
+'Elixir.Logger':flush/0                                                                        1     0.68     1  [      1.00]
+'Elixir.Logger':'-flush/0-fun-0-'/2                                                            3     0.68     1  [      0.33]
+logger:'-get_handler_config/0-fun-1-'/2                                                        2     0.68     1  [      0.50]
+logger:'-get_handler_config/0-lc$^0/1-0-'/1                                                    4     0.68     1  [      0.25]
+gen:do_spawn/5                                                                                 1     0.68     1  [      1.00]
+gen:init_it2/7                                                                                 1     0.68     1  [      1.00]
+gen:call/4                                                                                     5     0.68     1  [      0.20]
+gen:reply/2                                                                                    1     0.68     1  [      1.00]
+proc_lib:spawn_opt/4                                                                           1     0.68     1  [      1.00]
+proc_lib:start/5                                                                               1     0.68     1  [      1.00]
+proc_lib:sync_start/2                                                                          1     0.68     1  [      1.00]
+proc_lib:init_ack/2                                                                            1     0.68     1  [      1.00]
+'Elixir.Enum':'-reduce/3-lists^foldl/2-0-'/3                                                   4     0.68     1  [      0.25]
+error_handler:undefined_function/3                                                             2     0.68     1  [      0.50]
+error_handler:ensure_loaded/1                                                                  2     0.68     1  [      0.50]
+error_handler:call_undefined_function_handler/3                                                2     0.68     1  [      0.50]
+lists:do_flatten/2                                                                            10     0.68     1  [      0.10]
+lists:sort/2                                                                                   1     0.68     1  [      1.00]
+lists:flatmap_1/2                                                                              4     0.68     1  [      0.25]
+'Elixir.GenServer':call/3                                                                      3     0.68     1  [      0.33]
+'Elixir.GenServer':do_start/4                                                                  1     0.68     1  [      1.00]
+'Elixir.GenServer':whereis/1                                                                   3     0.68     1  [      0.33]
+gen_server:decode_msg/6                                                                        2     0.68     1  [      0.50]
+erlang:function_exported/3                                                                     8     1.37     2  [      0.25]
+erlang:module_loaded/1                                                                         2     1.37     2  [      1.00]
+erlang:make_fun/3                                                                              4     1.37     2  [      0.50]
+erlang:send/3                                                                                  2     1.37     2  [      1.00]
+unicode:characters_to_binary/2                                                                 1     1.37     2  [      2.00]
+logger:get_handler_config/0                                                                    1     1.37     2  [      2.00]
+proc_lib:init_p/5                                                                              1     1.37     2  [      2.00]
+gen_server:loop/5                                                                              2     1.37     2  [      1.00]
+erlang:process_info/2                                                                          2     2.05     3  [      1.50]
+logger:filter_config/1                                                                         3     2.05     3  [      1.00]
+'Elixir.StringIO':handle_call/3                                                                1     2.05     3  [      3.00]
+gen_server:init_it/6                                                                           2     2.05     3  [      1.50]
+erlang:spawn_opt/4                                                                             1     3.42     5  [      5.00]
+'Elixir.ExUnit.CaptureLog':with_log/2                                                          1     3.42     5  [      5.00]
+erlang:raise/3                                                                                 4     4.11     6  [      1.50]
+erlang:whereis/1                                                                               6     4.11     6  [      1.00]
+'Elixir.ExUnit.Assertions':'__timeout__'/2                                                     3     4.11     6  [      2.00]
+erlang:error/1                                                                                 2     4.79     7  [      3.50]
+'Elixir.Nest.Agents.AgentChatTest':'-test chat/2 handles LLM error gracefully/1-fun-3-'/1      1     5.48     8  [      8.00]
+erlang:demonitor/2                                                                             6     6.16     9  [      1.50]
+gen:do_call/4                                                                                  5     7.53    11  [      2.20]
+ets:match/2                                                                                    1    17.81    26  [     26.00]
+-----------------------------------------------------------------------------------------  -----  -------  ----  [----------]
+Total:                                                                                       249  100.00%   146  [      0.59]
+
+
+  9) test chat/2 handles LLM error gracefully (Nest.Agents.AgentChatTest)
+     test/nest/agents/agent_chat_test.exs:60
+     ** (ArgumentError) errors were found at the given arguments:
+
+       * 1st argument: not a textual representation of an integer
+
+     code: records = ExProf.analyze()
+     stacktrace:
+       :erlang.binary_to_integer("handles")
+       (exprof 0.2.4) lib/exprof/reader.ex:24: ExProf.Reader.parse_record/1
+       (exprof 0.2.4) lib/exprof/reader.ex:15: ExProf.Reader.parse/2
+       (exprof 0.2.4) lib/exprof.ex:34: ExProf.analyze/0
+       test/nest/agents/agent_chat_test.exs:80: (test)
+
+.................................................................
+Finished in 2.4 seconds (2.3s async, 0.1s sync)
+697 tests, 9 failures

@@ -28,7 +28,6 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
   import Nest.Agents.AgentTestHelpers
 
   describe "vocation system_prompt composition" do
-    @tag :db_shared
     test "vocation system_prompt gets the mode catalog and a [Workspace] section" do
       valid_caps = %{
         "net" => false,
@@ -69,7 +68,6 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
       assert system_prompt =~ "\n\nWorkspace and tool working directory: /tmp/test-workspace-"
     end
 
-    @tag :db_shared
     test "no workspace line when workspace_path is nil" do
       valid_caps = %{
         "net" => false,
@@ -104,7 +102,6 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
   end
 
   describe "context-limit section" do
-    @tag :db_shared
     test "configured context limit shows the confident value with its source" do
       # qwen3.5-plus has a configured context_limit in
       # priv/config.toml (512000). The system prompt should
@@ -140,7 +137,6 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
       refute system_prompt =~ "may differ"
     end
 
-    @tag :db_shared
     test "default context limit (no configured value) shows the default caveat" do
       # MiniMax-M2.5 exists in the test config but has no
       # `context-limit` set, so `configured_context_limit/1`

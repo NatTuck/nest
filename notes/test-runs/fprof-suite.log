@@ -1,0 +1,100 @@
+Warmup...
+Running ExUnit with seed: 859503, max_cases: 64
+
+.........................................................................................................................................................................................................................................................................................................................................................................................................................................................
+
+  1) test pre-flight streaming guard preflight_request with empty streaming_acc and fits returns :proceed (Nest.Agents.AgentCompactionTest)
+     test/nest/agents/agent_compaction_test.exs:231
+     Assertion failed, no matching message after 100ms
+     The process mailbox is empty.
+     code: assert_receive {:preflight_result, :proceed, _}
+     stacktrace:
+       test/nest/agents/agent_compaction_test.exs:239: (test)
+
+..............................................................
+
+  2) test chat/2 accumulates delta content from streaming LLM response (Nest.Agents.AgentChatTest)
+     test/nest/agents/agent_chat_test.exs:105
+     Assertion failed, no matching message after 100ms
+     Showing 2 of 2 messages in the mailbox
+     code: assert_receive {:chat_status, %{status: "idle"}}
+     mailbox:
+       pattern: {:chat_status, %{status: "idle"}}
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\nHello"
+                      }
+                    ],
+                    timestamp: ~U[2026-07-01 21:33:47.470219Z],
+                    metadata: %{"mode" => "chat"},
+                    api_logs: []
+                  }}}
+
+       pattern: {:chat_status, %{status: "idle"}}
+       value:   {:chat_status,
+                 %{
+                   status: "streaming",
+                   usage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     context_input_tokens: 0,
+                     last_output: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     total_cache_creation_input_tokens: 0
+                   },
+                   contextLimit: 512000,
+                   contextLimitSource: :config,
+                   currentMode: "chat"
+                 }}
+     stacktrace:
+       test/nest/agents/agent_chat_test.exs:111: (test)
+
+................................................................................................................................................................................................
+Finished in 2.4 seconds (2.3s async, 0.09s sync)
+697 tests, 2 failures
+Reading trace data...
+
+End of trace!
+Processing data...
+Creating output...
+Done!
+
+                                                                   CNT    ACC (ms)    OWN (ms)     
+Total                                                               41       0.147       0.124     
+:fprof.apply_start_stop/4                                            0       0.147       0.012     
+anonymous fn/0 in :elixir_compiler_3.__FILE__/1                      1       0.135       0.003     
+Mix.Task.run/2                                                       1       0.132       0.001     
+Mix.Task.do_run/3                                                    1       0.131       0.010     
+Mix.ProjectStack.peek/0                                              2       0.097       0.002     
+Mix.ProjectStack.get_stack/1                                         2       0.095       0.013     
+GenServer.call/3                                                     2       0.071       0.007     
+Mix.Project.get/0                                                    1       0.055       0.003     
+:gen.call/4                                                          2       0.051       0.002     
+:gen.do_call/4                                                       2       0.049       0.019     
+Mix.Project.config/0                                                 1       0.047       0.002     
+:suspend                                                             3       0.023       0.000     
+GenServer.whereis/1                                                  2       0.013       0.002     
+Process.whereis/1                                                    2       0.011       0.006     
+:garbage_collect                                                     1       0.011       0.011     
+Access.get/2                                                         2       0.008       0.002     
+Access.get/3                                                         2       0.006       0.004     
+:erlang.whereis/1                                                    2       0.005       0.005     
+Mix.TasksServer.run/1                                                1       0.005       0.002     
+:erlang.demonitor/2                                                  2       0.004       0.004     
+:ets.insert_new/2                                                    1       0.003       0.003     
+:erlang.monitor/2                                                    2       0.003       0.003     
+:erlang.binary_to_atom/1                                             1       0.003       0.002     
+Mix.TasksServer.get/1                                                1       0.003       0.002     
+:lists.keyfind/3                                                     2       0.002       0.002     
+:ets.member/2                                                        1       0.001       0.001     
+:erlang.binary_to_atom/2                                             1       0.001       0.001     
+:undefined                                                           0       0.000       0.000     

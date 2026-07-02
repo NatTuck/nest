@@ -44,31 +44,19 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
       assert match?({:system, %SystemMsg{}}, first)
     end
 
-    test "the empty system message is in state AND is broadcast (transparency)" do
-      # The empty system message is broadcast during
-      # `init/1`, so we need to subscribe to the PubSub
-      # topic BEFORE the agent starts. Pre-compute the id
-      # and use `start_supervised!/1` directly instead of
-      # the `start_agent/1` helper (which generates the id
-      # internally). We don't need MockClient here — we're
-      # only verifying the broadcast happens during init,
-      # not running a chat turn.
-      agent_id = "transparency-agent-#{System.unique_integer([:positive])}"
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+    test "the empty system message is in state (transparency)" do
+      # Per the AGENTS.md transparency rule: the UI always
+      # includes everything that happened. The WS channel
+      # gets this via `Agents.get_messages/1` in its `init`
+      # push (`agent_channel.ex:handle_info({:after_join, ...})`).
+      # This test mirrors that — the system message is at
+      # position 0 of the agent's message list, reachable
+      # through the public API.
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
-      pid =
-        start_supervised!({Agent, %{id: agent_id, model: %{name: "qwen3.5-plus"}}})
+      messages = Nest.Agents.Agent.get_messages(pid)
 
-      # The empty system message is broadcast so the UI can
-      # render a placeholder (per the AGENTS.md transparency
-      # rule: the UI always includes everything that
-      # happened). Hiding it server-side would violate the
-      # principle. Regression guard.
-      assert_receive {:chat_message, {:system, %SystemMsg{parts: [%Part.Text{text: ""}]}}}, 500
-
-      # And it's still in state.
-      state = :sys.get_state(pid)
-      assert {:system, %SystemMsg{parts: [%Part.Text{text: ""}]}} = hd(state.chat_state.messages)
+      assert {:system, %SystemMsg{parts: [%Part.Text{text: ""}]}} = hd(messages)
     end
   end
 

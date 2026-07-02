@@ -85,9 +85,17 @@ defmodule Nest.Agents.ChatTaskCrashTest do
       capture_log(fn ->
         :ok = Agent.chat(pid, "Hello")
 
+        # Fence on idle: 500ms accounts for preflight BPE init
+        # (Tiktoken CL100K count_tokens is a DirtyCpu NIF; the
+        # first call on each of BEAM's 32 dirty CPU threads pays
+        # a 200-325ms init cost). Once the fence passes, every
+        # earlier message in the chat pipeline has already
+        # arrived in the test's mailbox.
+        assert_receive {:chat_status, %{status: "idle"}}, 500
+
         # The user message is broadcast first (the agent builds
         # it before the ChatTurn starts).
-        assert_receive {:chat_message, {:user, %{index: 1}}}, 200
+        assert_received {:chat_message, {:user, %{index: 1}}}
 
         # The ChatTurn catches the raise and sends
         # `{:chat_crashed, reason, stacktrace}` to the
@@ -97,7 +105,7 @@ defmodule Nest.Agents.ChatTaskCrashTest do
         # exception's text AND a stacktrace snippet (the user
         # explicitly asked for the file/line of the crash to
         # be visible so they can find it in the server log).
-        assert_receive {:chat_error, %{content: content}}, 500
+        assert_received {:chat_error, %{content: content}}
         assert content =~ "no function clause matching"
         assert content =~ "finish_event"
         # The source tag is appended so the user can grep the
@@ -106,14 +114,14 @@ defmodule Nest.Agents.ChatTaskCrashTest do
         # The stacktrace snippet is included below the message.
         assert content =~ "** (FunctionClauseError)"
 
-        assert_receive {:chat_status, %{status: "idle"}}, 200
-
         # Regression: only ONE chat:error event should fire per
         # HTTP worker error. The HTTP worker's on_error callback
         # used to broadcast chat:error directly AND send
         # {:llm_error, msg} to the Agent, which would broadcast
         # again. Now the worker only sends the message; the
-        # Agent is the single source.
+        # Agent is the single source. refute_receive can't be
+        # converted to refute_received (which checks the current
+        # mailbox snapshot), so it stays as a timed wait.
         refute_receive {:chat_error, _}, 500
       end)
     end
@@ -201,21 +209,24 @@ defmodule Nest.Agents.ChatTaskCrashTest do
       capture_log(fn ->
         :ok = Agent.chat(pid, "Hello")
 
+        # Fence on idle (see comment in the test above for
+        # the 500ms rationale — preflight + crash recovery
+        # under concurrent test load).
+        assert_receive {:chat_status, %{status: "idle"}}, 500
+
         # Wait for the user message first.
-        assert_receive {:chat_message, {:user, %{index: 1}}}, 200
+        assert_received {:chat_message, {:user, %{index: 1}}}
 
         # The partial content is saved as a normal assistant
         # message before the error is broadcast.
-        assert_receive {:chat_message,
-                        {:assistant,
-                         %Assistant{index: 2, parts: [%Part.Text{text: "Halfway through..."}]}}},
-                       200
+        assert_received {:chat_message,
+                         {:assistant,
+                          %Assistant{index: 2, parts: [%Part.Text{text: "Halfway through..."}]}}}
 
         # Then the error and idle status. The error content now
         # includes a stacktrace snippet (per the new format).
-        assert_receive {:chat_error, %{content: content}}, 200
+        assert_received {:chat_error, %{content: content}}
         assert content =~ "stream failed"
-        assert_receive {:chat_status, %{status: "idle"}}, 200
       end)
     end
   end

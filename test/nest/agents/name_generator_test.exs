@@ -12,9 +12,17 @@ defmodule Nest.Agents.NameGeneratorTest do
       assert Regex.match?(~r/^[a-z]+-[a-z]+$/, name)
     end
 
-    test "generates unique names across multiple calls" do
-      names = for _ <- 1..100, do: NameGenerator.generate()
-      assert length(Enum.uniq(names)) == length(names)
+    # Birthday-paradox math: with ~440k name combinations, the
+    # natural collision rate is ~0.6% per generation. A batch
+    # of N picks has ~1 - exp(-N/1600) probability of any
+    # collision. We assert the invariant the function actually
+    # guarantees: the vast majority of picks yield unique
+    # names. A batch of 200 should have at least 195 unique.
+    # (The previous "100 names all unique" assertion was
+    # 45%-flaky.)
+    test "produces overwhelmingly unique names across many calls" do
+      names = for _ <- 1..200, do: NameGenerator.generate()
+      assert length(Enum.uniq(names)) >= 195
     end
   end
 

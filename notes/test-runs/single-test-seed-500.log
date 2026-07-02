@@ -1,0 +1,91 @@
+     warning: using single-quoted strings to represent charlists is deprecated.
+     Use ~c"" if you indeed want a charlist or use "" instead.
+     You may run "mix format --migrate" to change all single-quoted
+     strings to use the ~c sigil and fix this warning.
+     │
+ 156 │       :dbg.p(pid, [:timestamp, 'receive', 'send'])
+     │                                ~
+     │
+     └─ test/nest/agents/agent_chat_test.exs:156:32
+
+     warning: using single-quoted strings to represent charlists is deprecated.
+     Use ~c"" if you indeed want a charlist or use "" instead.
+     You may run "mix format --migrate" to change all single-quoted
+     strings to use the ~c sigil and fix this warning.
+     │
+ 156 │       :dbg.p(pid, [:timestamp, 'receive', 'send'])
+     │                                           ~
+     │
+     └─ test/nest/agents/agent_chat_test.exs:156:43
+
+Running ExUnit with seed: 500, max_cases: 64
+Excluding tags: [:test]
+Including tags: [line: 141]
+
+...........................................     warning: :dbg.stop_clear/0 is deprecated. It will be removed in OTP 27. Use dbg:stop/0 instead
+     │
+ 160 │           :dbg.stop_clear()
+     │                ~
+     │
+     └─ test/nest/agents/agent_chat_test.exs:160:16: Nest.Agents.AgentChatTest."test delta handling accumulates deltas with correct character counts"/1
+
+......
+
+  1) test delta handling accumulates deltas with correct character counts (Nest.Agents.AgentChatTest)
+     test/nest/agents/agent_chat_test.exs:141
+     Assertion failed, no matching message after 100ms
+     Showing 2 of 2 messages in the mailbox
+     code: assert_receive {:chat_status, %{status: "idle"}}
+     mailbox:
+       pattern: {:chat_status, %{status: "idle"}}
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\nHello"
+                      }
+                    ],
+                    timestamp: ~U[2026-07-01 21:57:18.894989Z],
+                    metadata: %{"mode" => "chat"},
+                    api_logs: []
+                  }}}
+
+       pattern: {:chat_status, %{status: "idle"}}
+       value:   {:chat_status,
+                 %{
+                   status: "streaming",
+                   usage: %{
+                     cache_creation_input_tokens: 0,
+                     cache_read_input_tokens: 0,
+                     input_tokens: 0,
+                     output_tokens: 0,
+                     reasoning_tokens: 0,
+                     total_tokens: 0,
+                     context_input_tokens: 0,
+                     last_output: 0,
+                     total_input_tokens: 0,
+                     total_cache_read_input_tokens: 0,
+                     total_cache_creation_input_tokens: 0
+                   },
+                   currentMode: "chat",
+                   contextLimit: 512000,
+                   contextLimitSource: :config
+                 }}
+     stacktrace:
+       test/nest/agents/agent_chat_test.exs:170: (test)
+
+.
+
+  2) test tool budget loop order is preserved when multiple tool calls are returned (Nest.Agents.AgentCompactionTest)
+     test/nest/agents/agent_compaction_test.exs:102
+     Assertion failed, no matching message after 100ms
+     The process mailbox is empty.
+     code: assert_receive {:chat_delta, %{content: "Running two commands"}}
+     stacktrace:
+       test/nest/agents/agent_compaction_test.exs:141: (test)
+
+...............
+Finished in 0.9 seconds (0.9s async, 0.01s sync)
+67 tests, 2 failures (630 excluded)

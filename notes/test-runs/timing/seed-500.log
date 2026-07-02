@@ -1,0 +1,482 @@
+Running ExUnit with seed: 500, max_cases: 64
+
+............................................................................................................................................................................................................................................................................................................................................................................................................................................................................     warning: :dbg.stop_clear/0 is deprecated. It will be removed in OTP 27. Use dbg:stop/0 instead
+     │
+ 215 │           :dbg.stop_clear()
+     │                ~
+     │
+     └─ test/nest/agents/agent_chat_test.exs:215:16: Nest.Agents.AgentChatTest."test delta handling accumulates deltas with correct character counts"/1
+
+     warning: :dbg.stop_clear/0 is deprecated. It will be removed in OTP 27. Use dbg:stop/0 instead
+     │
+ 293 │           :dbg.stop_clear()
+     │                ~
+     │
+     └─ test/nest/agents/agent_compaction_test.exs:293:16: Nest.Agents.AgentCompactionTest."test pre-flight streaming guard preflight_request with empty streaming_acc and fits returns :proceed"/1
+
+
+
+  1) test post-tool-call content vs. thinking routing a turn with only thinking events and no visible text has nil content and non-nil thinking (Nest.Agents.AgentPostToolCallContentTest)
+     test/nest/agents/agent_post_tool_call_content_test.exs:191
+     Assertion failed, no matching message after 500ms
+     Showing 1 of 1 message in the mailbox
+     code: assert_receive {:chat_message,
+            {:assistant, %{index: 4, parts: [%Part.Thinking{thinking: "The user wants a count." <> _}]}}}
+     mailbox:
+       pattern: {:chat_message,
+                 {:assistant,
+                  %{index: 4, parts: [%Nest.Messages.Part.Thinking{thinking: "The user wants a count." <> _}]}}}
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\nHow many?"
+                      }
+                    ],
+                    timestamp: ~U[2026-07-02 00:47:10.261603Z],
+                    metadata: %{"mode" => "chat"},
+                    api_logs: []
+                  }}}
+     stacktrace:
+       test/nest/agents/agent_post_tool_call_content_test.exs:234: (test)
+
+.
+
+  2) test compaction history compaction_done archives previous messages to history with a marker (Nest.Agents.AgentCompactionTest)
+     test/nest/agents/agent_compaction_test.exs:155
+     Assertion failed, no matching message after 100ms
+     The process mailbox is empty.
+     code: assert_receive {:chat_compaction, payload}
+     stacktrace:
+       test/nest/agents/agent_compaction_test.exs:185: (test)
+
+
+
+  3) test chat/2 with tool calls does NOT hit max-iterations when iterations stay below the configured cap (Nest.Agents.AgentToolsTest)
+     test/nest/agents/agent_tools_test.exs:284
+     Assertion failed, no matching message after 500ms
+     Showing 1 of 1 message in the mailbox
+     code: assert_receive {:chat_status, %{status: "idle"}}
+     mailbox:
+       pattern: {:chat_status, %{status: "idle"}}
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\nBrief loop"
+                      }
+                    ],
+                    timestamp: ~U[2026-07-02 00:47:10.261785Z],
+                    metadata: %{"mode" => "chat"},
+                    api_logs: []
+                  }}}
+     stacktrace:
+       test/nest/agents/agent_tools_test.exs:305: (test)
+
+
+
+  4) test token usage aggregation accumulates output_tokens across turns (Nest.Agents.AgentObservabilityTest)
+     test/nest/agents/agent_observability_test.exs:208
+     Assertion failed, no matching message after 500ms
+     Showing 1 of 1 message in the mailbox
+     code: assert_receive {:chat_status, %{status: "idle"}}
+     mailbox:
+       pattern: {:chat_status, %{status: "idle"}}
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\nFirst"
+                      }
+                    ],
+                    timestamp: ~U[2026-07-02 00:47:10.261599Z],
+                    metadata: %{"mode" => "chat"},
+                    api_logs: []
+                  }}}
+     stacktrace:
+       test/nest/agents/agent_observability_test.exs:227: (test)
+
+
+
+  5) test status value constraints status transitions idle -> streaming -> idle (NestWeb.AgentChannelMessagingTest)
+     test/nest_web/channels/agent_channel_messaging_test.exs:144
+     Assertion failed, no matching message after 500ms
+     Showing 3 of 3 messages in the mailbox
+     code: assert_receive %{
+             __struct__: Phoenix.Socket.Message,
+             event: "chat:message",
+             payload: %{"index" => 2, "role" => "assistant"}
+           }
+     mailbox:
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:message",
+                  payload: %{"index" => 2, "role" => "assistant"}
+                }
+       value:   %Phoenix.Socket.Message{
+                  topic: "agent:querulous-meerkat",
+                  event: "init",
+                  payload: %{
+                    "contextLimit" => 512000,
+                    "contextLimitSource" => "config",
+                    "currentMode" => "chat",
+                    "defaultMode" => "chat",
+                    "history" => [],
+                    "id" => "querulous-meerkat",
+                    "messageCount" => 1,
+                    "model" => %{
+                      name: "qwen3.5-plus",
+                      provider: "model-studio"
+                    },
+                    "modes" => ["chat"],
+                    "partial" => nil,
+                    "status" => "idle",
+                    "usage" => %{
+                      cache_creation_input_tokens: 0,
+                      cache_read_input_tokens: 0,
+                      input_tokens: 0,
+                      output_tokens: 0,
+                      reasoning_tokens: 0,
+                      total_tokens: 0,
+                      context_input_tokens: 0,
+                      last_output: 0,
+                      total_input_tokens: 0,
+                      total_cache_read_input_tokens: 0,
+                      total_cache_creation_input_tokens: 0
+                    },
+                    "vocation" => nil
+                  },
+                  ref: nil,
+                  join_ref: 3971
+                }
+
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:message",
+                  payload: %{"index" => 2, "role" => "assistant"}
+                }
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\nHello"
+                      }
+                    ],
+                    timestamp: ~U[2026-07-02 00:47:10.261629Z],
+                    metadata: %{"mode" => "chat"},
+                    api_logs: []
+                  }}}
+
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:message",
+                  payload: %{"index" => 2, "role" => "assistant"}
+                }
+       value:   %Phoenix.Socket.Message{
+                  topic: "agent:querulous-meerkat",
+                  event: "chat:message",
+                  payload: %{
+                    "apiLogs" => [],
+                    "index" => 1,
+                    "mode" => "chat",
+                    "parts" => [
+                      %{
+                        "kind" => "text",
+                        "text" => "[mode: chat]\nHello"
+                      }
+                    ],
+                    "role" => "user"
+                  },
+                  ref: nil,
+                  join_ref: 3971
+                }
+     stacktrace:
+       test/nest_web/channels/agent_channel_messaging_test.exs:153: (test)
+
+.
+
+  6) test tool result serialization chat:sync handles messages with ToolResult structs (NestWeb.AgentChannelAdvancedTest)
+     test/nest_web/channels/agent_channel_advanced_test.exs:230
+     Assertion failed, no matching message after 500ms
+     Showing 3 of 3 messages in the mailbox
+     code: assert_receive %{
+             __struct__: Phoenix.Socket.Message,
+             event: "chat:message",
+             payload: %{"index" => 2, "role" => "assistant"}
+           }
+     mailbox:
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:message",
+                  payload: %{"index" => 2, "role" => "assistant"}
+                }
+       value:   %Phoenix.Socket.Message{
+                  topic: "agent:blushing-woodpecker",
+                  event: "init",
+                  payload: %{
+                    "contextLimit" => 512000,
+                    "contextLimitSource" => "config",
+                    "currentMode" => "chat",
+                    "defaultMode" => "chat",
+                    "history" => [],
+                    "id" => "blushing-woodpecker",
+                    "messageCount" => 1,
+                    "model" => %{
+                      name: "qwen3.5-plus",
+                      provider: "model-studio"
+                    },
+                    "modes" => ["chat"],
+                    "partial" => nil,
+                    "status" => "idle",
+                    "usage" => %{
+                      cache_creation_input_tokens: 0,
+                      cache_read_input_tokens: 0,
+                      input_tokens: 0,
+                      output_tokens: 0,
+                      reasoning_tokens: 0,
+                      total_tokens: 0,
+                      context_input_tokens: 0,
+                      last_output: 0,
+                      total_input_tokens: 0,
+                      total_cache_read_input_tokens: 0,
+                      total_cache_creation_input_tokens: 0
+                    },
+                    "vocation" => nil
+                  },
+                  ref: nil,
+                  join_ref: 3721
+                }
+
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:message",
+                  payload: %{"index" => 2, "role" => "assistant"}
+                }
+       value:   {:chat_message,
+                 {:user,
+                  %Nest.Messages.User{
+                    index: 1,
+                    parts: [
+                      %Nest.Messages.Part.Text{
+                        text: "[mode: chat]\nHello"
+                      }
+                    ],
+                    timestamp: ~U[2026-07-02 00:47:10.261634Z],
+                    metadata: %{"mode" => "chat"},
+                    api_logs: []
+                  }}}
+
+       pattern: %{
+                  __struct__: Phoenix.Socket.Message,
+                  event: "chat:message",
+                  payload: %{"index" => 2, "role" => "assistant"}
+                }
+       value:   %Phoenix.Socket.Message{
+                  topic: "agent:blushing-woodpecker",
+                  event: "chat:message",
+                  payload: %{
+                    "apiLogs" => [],
+                    "index" => 1,
+                    "mode" => "chat",
+                    "parts" => [
+                      %{
+                        "kind" => "text",
+                        "text" => "[mode: chat]\nHello"
+                      }
+                    ],
+                    "role" => "user"
+                  },
+                  ref: nil,
+                  join_ref: 3721
+                }
+     stacktrace:
+       test/nest_web/channels/agent_channel_advanced_test.exs:235: (test)
+
+.......................................................................................................
+
+  7) test tool budget loop order is preserved when multiple tool calls are returned (Nest.Agents.AgentCompactionTest)
+     test/nest/agents/agent_compaction_test.exs:102
+     Assertion failed, no matching message after 100ms
+     The process mailbox is empty.
+     code: assert_receive {:chat_delta, %{content: "Running two commands"}}
+     stacktrace:
+       test/nest/agents/agent_compaction_test.exs:141: (test)
+
+..........................................................FUNCTION                                                                                   CALLS        %  TIME  [uS / CALLS]
+--------                                                                                   -----  -------  ----  [----------]
+maps:remove/2                                                                                  1     0.00     0  [      0.00]
+maps:without/2                                                                                 1     0.00     0  [      0.00]
+erlang:atom_to_list/1                                                                          2     0.00     0  [      0.00]
+erlang:integer_to_list/1                                                                       1     0.00     0  [      0.00]
+erlang:make_ref/0                                                                              1     0.00     0  [      0.00]
+erlang:module_loaded/1                                                                         2     0.00     0  [      0.00]
+erlang:'++'/2                                                                                  3     0.00     0  [      0.00]
+'Elixir.Keyword':fetch/2                                                                       1     0.00     0  [      0.00]
+'Elixir.Keyword':pop/2                                                                         1     0.00     0  [      0.00]
+'Elixir.Keyword':pop/3                                                                         1     0.00     0  [      0.00]
+logger_h_common:filesync/2                                                                     1     0.00     0  [      0.00]
+logger_h_common:filter_config/1                                                                1     0.00     0  [      0.00]
+'Elixir.Logger':flush/0                                                                        1     0.00     0  [      0.00]
+logger:'-get_handler_config/0-lc$^0/1-0-'/1                                                    4     0.00     0  [      0.00]
+gen:start/5                                                                                    1     0.00     0  [      0.00]
+gen:init_it/6                                                                                  1     0.00     0  [      0.00]
+gen:call/3                                                                                     1     0.00     0  [      0.00]
+gen:do_for_proc/2                                                                              2     0.00     0  [      0.00]
+gen:name/1                                                                                     1     0.00     0  [      0.00]
+gen:timeout/1                                                                                  1     0.00     0  [      0.00]
+gen:spawn_opts/1                                                                               1     0.00     0  [      0.00]
+gen:hibernate_after/1                                                                          1     0.00     0  [      0.00]
+gen:debug_options/2                                                                            1     0.00     0  [      0.00]
+gen:'-call/4-fun-0-'/4                                                                         2     0.00     0  [      0.00]
+code:ensure_loaded/1                                                                           2     0.00     0  [      0.00]
+logger_std_h:filesync/1                                                                        1     0.00     0  [      0.00]
+logger_std_h:filter_config/1                                                                   1     0.00     0  [      0.00]
+proc_lib:exit_p/3                                                                              1     0.00     0  [      0.00]
+proc_lib:exit_reason/3                                                                         1     0.00     0  [      0.00]
+proc_lib:make_dummy_args/2                                                                     2     0.00     0  [      0.00]
+proc_lib:trans_init/3                                                                          1     0.00     0  [      0.00]
+proc_lib:crash_report/4                                                                        1     0.00     0  [      0.00]
+proc_lib:get_my_name/0                                                                         1     0.00     0  [      0.00]
+proc_lib:proc_info/2                                                                           1     0.00     0  [      0.00]
+'Elixir.Access':get/2                                                                          3     0.00     0  [      0.00]
+'Elixir.Access':get/3                                                                          3     0.00     0  [      0.00]
+'Elixir.Nest.Agents.Agent':chat/2                                                              1     0.00     0  [      0.00]
+'Elixir.Nest.Agents.Agent':chat/3                                                              1     0.00     0  [      0.00]
+'Elixir.StringIO':close/1                                                                      1     0.00     0  [      0.00]
+'Elixir.StringIO':handle_call/3                                                                1     0.00     0  [      0.00]
+'Elixir.StringIO':init/1                                                                       1     0.00     0  [      0.00]
+'Elixir.StringIO':open/1                                                                       1     0.00     0  [      0.00]
+error_handler:undefined_function/3                                                             2     0.00     0  [      0.00]
+error_handler:crash/3                                                                          2     0.00     0  [      0.00]
+error_handler:crash/1                                                                          2     0.00     0  [      0.00]
+error_handler:ensure_loaded/1                                                                  2     0.00     0  [      0.00]
+error_handler:call_undefined_function_handler/3                                                2     0.00     0  [      0.00]
+lists:keyfind/3                                                                                9     0.00     0  [      0.00]
+lists:member/2                                                                                 1     0.00     0  [      0.00]
+lists:concat/1                                                                                 1     0.00     0  [      0.00]
+lists:thing_to_list/1                                                                          3     0.00     0  [      0.00]
+lists:flatten/1                                                                                1     0.00     0  [      0.00]
+lists:sort/2                                                                                   1     0.00     0  [      0.00]
+lists:flatmap/2                                                                                1     0.00     0  [      0.00]
+lists:foldl/3                                                                                  1     0.00     0  [      0.00]
+lists:foldl_1/3                                                                                1     0.00     0  [      0.00]
+lists:fsplit_2/6                                                                               2     0.00     0  [      0.00]
+lists:fmergel/4                                                                                1     0.00     0  [      0.00]
+'Elixir.GenServer':call/2                                                                      1     0.00     0  [      0.00]
+'Elixir.GenServer':cast/2                                                                      1     0.00     0  [      0.00]
+'Elixir.GenServer':cast_msg/1                                                                  1     0.00     0  [      0.00]
+'Elixir.GenServer':do_send/2                                                                   1     0.00     0  [      0.00]
+'Elixir.GenServer':start/3                                                                     1     0.00     0  [      0.00]
+logger_olp:call/2                                                                              1     0.00     0  [      0.00]
+'Elixir.ExUnit.CaptureServer':log_capture_off/1                                                1     0.00     0  [      0.00]
+'Elixir.ExUnit.CaptureServer':log_capture_on/3                                                 1     0.00     0  [      0.00]
+'Elixir.ExProf':stop/0                                                                         1     0.00     0  [      0.00]
+logger_config:get/1                                                                            1     0.00     0  [      0.00]
+gen_server:call/2                                                                              1     0.00     0  [      0.00]
+gen_server:call/3                                                                              1     0.00     0  [      0.00]
+gen_server:reply/2                                                                             1     0.00     0  [      0.00]
+gen_server:try_handle_call/4                                                                   1     0.00     0  [      0.00]
+gen_server:try_terminate/3                                                                     1     0.00     0  [      0.00]
+gen_server:terminate/7                                                                         1     0.00     0  [      0.00]
+gen_server:terminate/9                                                                         1     0.00     0  [      0.00]
+gen_server:catch_result/3                                                                      1     0.00     0  [      0.00]
+'Elixir.ExUnit.CaptureLog':capture_log/1                                                       1     0.00     0  [      0.00]
+'Elixir.ExUnit.CaptureLog':capture_log/2                                                       1     0.00     0  [      0.00]
+erlang:function_exported/3                                                                     8     0.20     1  [      0.13]
+erlang:list_to_atom/1                                                                          2     0.20     1  [      0.50]
+erlang:monitor/2                                                                               4     0.20     1  [      0.25]
+erlang:monitor/3                                                                               2     0.20     1  [      0.50]
+erlang:put/2                                                                                   2     0.20     1  [      0.50]
+erlang:make_fun/3                                                                              4     0.20     1  [      0.25]
+erlang:process_info/2                                                                          2     0.20     1  [      0.50]
+logger_h_common:call/3                                                                         1     0.20     1  [      1.00]
+'Elixir.Logger':'-flush/0-fun-0-'/2                                                            3     0.20     1  [      0.33]
+logger:filter_config/1                                                                         3     0.20     1  [      0.33]
+logger:get_handler_config/0                                                                    1     0.20     1  [      1.00]
+logger:'-get_handler_config/0-fun-1-'/2                                                        3     0.20     1  [      0.33]
+gen:do_spawn/5                                                                                 1     0.20     1  [      1.00]
+gen:init_it2/7                                                                                 1     0.20     1  [      1.00]
+gen:call/4                                                                                     5     0.20     1  [      0.20]
+proc_lib:spawn_opt/4                                                                           1     0.20     1  [      1.00]
+proc_lib:init_p_do_apply/3                                                                     1     0.20     1  [      1.00]
+proc_lib:start/5                                                                               1     0.20     1  [      1.00]
+proc_lib:sync_start/2                                                                          1     0.20     1  [      1.00]
+proc_lib:init_ack/2                                                                            1     0.20     1  [      1.00]
+proc_lib:get_ancestors/0                                                                       1     0.20     1  [      1.00]
+'Elixir.Process':whereis/1                                                                     2     0.20     1  [      0.50]
+'Elixir.Enum':reduce/3                                                                         1     0.20     1  [      1.00]
+'Elixir.Enum':'-reduce/3-lists^foldl/2-0-'/3                                                   4     0.20     1  [      0.25]
+'Elixir.StringIO':open/2                                                                       1     0.20     1  [      1.00]
+lists:do_flatten/2                                                                            10     0.20     1  [      0.10]
+lists:flatmap_1/2                                                                              4     0.20     1  [      0.25]
+'Elixir.GenServer':call/3                                                                      3     0.20     1  [      0.33]
+'Elixir.GenServer':do_start/4                                                                  1     0.20     1  [      1.00]
+'Elixir.GenServer':whereis/1                                                                   3     0.20     1  [      0.33]
+gen_server:init_it/2                                                                           1     0.20     1  [      1.00]
+erlang:send/3                                                                                  2     0.39     2  [      1.00]
+proc_lib:init_p/5                                                                              1     0.39     2  [      2.00]
+erlang:whereis/1                                                                               6     0.59     3  [      0.50]
+gen:reply/2                                                                                    1     0.79     4  [      4.00]
+gen_server:init_it/6                                                                           2     0.79     4  [      2.00]
+'Elixir.ExUnit.CaptureLog':with_log/2                                                          1     0.99     5  [      5.00]
+erlang:error/1                                                                                 2     1.18     6  [      3.00]
+gen_server:loop/4                                                                             44     1.18     6  [      0.14]
+erlang:raise/3                                                                                 4     1.38     7  [      1.75]
+erlang:spawn_opt/4                                                                             1     1.38     7  [      7.00]
+unicode:no_conversion_needed/3                                                                43     1.38     7  [      0.16]
+'Elixir.StringIO':io_request/2                                                                43     1.38     7  [      0.16]
+gen_server:handle_common_reply/5                                                              43     1.38     7  [      0.16]
+'Elixir.ExUnit.Assertions':'__timeout__'/2                                                     3     1.58     8  [      2.67]
+gen_server:cancel_timer/1                                                                     44     1.58     8  [      0.18]
+'Elixir.StringIO':handle_info/2                                                               43     1.97    10  [      0.23]
+'Elixir.StringIO':io_reply/3                                                                  43     1.97    10  [      0.23]
+unicode:characters_to_binary_int/3                                                            43     2.17    11  [      0.26]
+gen_server:try_handle_info/3                                                                  43     2.17    11  [      0.26]
+gen_server:handle_msg/3                                                                       44     2.17    11  [      0.25]
+erlang:demonitor/2                                                                             6     2.37    12  [      2.00]
+unicode:characters_to_binary/3                                                                43     2.37    12  [      0.28]
+gen:do_call/4                                                                                  5     2.37    12  [      2.40]
+erlang:send/2                                                                                 44     2.56    13  [      0.30]
+'Elixir.StringIO':io_request/4                                                                43     2.56    13  [      0.30]
+gen_server:decode_msg/4                                                                       44     2.96    15  [      0.34]
+gen_server:decode_msg/6                                                                       44     3.35    17  [      0.39]
+ets:match/2                                                                                    1     5.13    26  [     26.00]
+'Elixir.StringIO':put_chars/4                                                                 43     5.52    28  [      0.65]
+gen_server:loop/5                                                                             44    10.45    53  [      1.20]
+'Elixir.Nest.Agents.AgentChatTest':'-test chat/2 handles LLM error gracefully/1-fun-3-'/1      1    10.85    55  [     55.00]
+unicode:characters_to_binary/2                                                                43    16.57    84  [      1.95]
+-----------------------------------------------------------------------------------------  -----  -------  ----  [----------]
+Total:                                                                                      1004  100.00%   507  [      0.50]
+
+
+  8) test chat/2 handles LLM error gracefully (Nest.Agents.AgentChatTest)
+     test/nest/agents/agent_chat_test.exs:60
+     ** (ArgumentError) errors were found at the given arguments:
+
+       * 1st argument: not a textual representation of an integer
+
+     code: records = ExProf.analyze()
+     stacktrace:
+       :erlang.binary_to_integer("handles")
+       (exprof 0.2.4) lib/exprof/reader.ex:24: ExProf.Reader.parse_record/1
+       (exprof 0.2.4) lib/exprof/reader.ex:15: ExProf.Reader.parse/2
+       (exprof 0.2.4) lib/exprof.ex:34: ExProf.analyze/0
+       test/nest/agents/agent_chat_test.exs:80: (test)
+
+.................20:47:12.042 [warning] PREFLIGHT_TIMING id=test-agent-8199 decision=fits total=13µs streaming_check=1µs decision=12µs send=0µs
+20:47:12.043 [warning] PREFLIGHT_TIMING id=test-agent-8199 decision=fits total=60µs streaming_check=0µs decision=59µs send=1µs
+20:47:12.043 [warning] PREFLIGHT_TIMING id=test-agent-8199 decision=fits total=55µs streaming_check=0µs decision=54µs send=1µs
+.20:47:12.046 [warning] PREFLIGHT_TIMING id=test-agent-16386 decision=fits total=12µs streaming_check=0µs decision=12µs send=0µs
+20:47:12.047 [warning] PREFLIGHT_TIMING id=test-agent-16386 decision=fits total=34µs streaming_check=0µs decision=33µs send=1µs
+...................20:47:12.085 [warning] PREFLIGHT_TIMING id=vitreous-junglefowl decision=fits total=16µs streaming_check=0µs decision=15µs send=1µs
+.............................
+Finished in 2.4 seconds (2.3s async, 0.1s sync)
+697 tests, 8 failures

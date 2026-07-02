@@ -1,0 +1,30 @@
+trace start agent_pid=#PID<0.513.0>
+{:trace_ts, #PID<0.513.0>, :receive, {:preflight_request, #PID<0.509.0>, [system: %Nest.Messages.System{index: 0, parts: [%Nest.Messages.Part.Text{text: ""}], timestamp: ~U[2026-07-02 00:46:47.062721Z], metadata: nil, api_logs: []}]}, {1782, 953207, 74600}}
+{:trace_ts, #PID<0.513.0>, :send, {:code_call, #PID<0.513.0>, {:get_object_code_for_loading, Tiktoken.Native}}, :code_server, {1782, 953207, 74623}}
+{:trace_ts, #PID<0.513.0>, :receive, {:code_server, {:missing, ~c"/home/nat/Code/nest/_build/test/lib/tiktoken/ebin/Elixir.Tiktoken.Native.beam", #Reference<0.1191450883.2506096645.104813>}}, {1782, 953207, 74958}}
+{:trace_ts, #PID<0.513.0>, :send, {:code_call, #PID<0.513.0>, {:load_ok, #Reference<0.1191450883.2506227717.104814>, Tiktoken.Native, ~c"/home/nat/Code/nest/_build/test/lib/tiktoken/ebin/Elixir.Tiktoken.Native.beam", #Reference<0.1191450883.2506096645.104813>}}, :code_server, {1782, 953207, 75166}}
+{:trace_ts, #PID<0.513.0>, :receive, {:code_server, {:module, Tiktoken.Native}}, {1782, 953207, 78651}}
+{:trace_ts, #PID<0.513.0>, :send, {:code_call, #PID<0.513.0>, {:get_object_code_for_loading, Tiktoken.CL100K}}, :code_server, {1782, 953207, 78706}}
+{:trace_ts, #PID<0.513.0>, :receive, {:code_server, {:missing, ~c"/home/nat/Code/nest/_build/test/lib/tiktoken/ebin/Elixir.Tiktoken.CL100K.beam", #Reference<0.1191450883.2506096641.105663>}}, {1782, 953207, 79230}}
+{:trace_ts, #PID<0.513.0>, :send, {:code_call, #PID<0.513.0>, {:load_ok, #Reference<0.1191450883.2506227713.105665>, Tiktoken.CL100K, ~c"/home/nat/Code/nest/_build/test/lib/tiktoken/ebin/Elixir.Tiktoken.CL100K.beam", #Reference<0.1191450883.2506096641.105663>}}, :code_server, {1782, 953207, 79340}}
+{:trace_ts, #PID<0.513.0>, :receive, {:code_server, {:module, Tiktoken.CL100K}}, {1782, 953207, 80011}}
+{:trace_ts, #PID<0.513.0>, :send, {:code_call, #PID<0.513.0>, {:get_object_code_for_loading, :calendar}}, :code_server, {1782, 953207, 108864}}
+{:trace_ts, #PID<0.513.0>, :receive, {:code_server, {:missing, ~c"/home/nat/.local/share/mise/installs/erlang/28.5/lib/stdlib-7.3/ebin/calendar.beam", #Reference<0.1191450883.2506096644.102227>}}, {1782, 953207, 109017}}
+{:trace_ts, #PID<0.513.0>, :send, {:code_call, #PID<0.513.0>, {:load_ok, #Reference<0.1191450883.2506227713.105685>, :calendar, ~c"/home/nat/.local/share/mise/installs/erlang/28.5/lib/stdlib-7.3/ebin/calendar.beam", #Reference<0.1191450883.2506096644.102227>}}, :code_server, {1782, 953207, 109723}}
+{:trace_ts, #PID<0.513.0>, :receive, {:code_server, {:module, :calendar}}, {1782, 953207, 111025}}
+{:trace_ts, #PID<0.513.0>, :send, {:"$gen_cast", {:"$olp_load", "20:46:47.108 [warning] ESTIMATE_TIMING label=text raw_count=34168µs rest=3µs bytes=0\n"}}, #PID<0.257.0>, {1782, 953207, 111113}}
+{:trace_ts, #PID<0.513.0>, :send, {:"$gen_cast", {:"$olp_load", "20:46:47.111 [warning] ESTIMATE_TIMING label=parts total=36512µs count=1\n"}}, #PID<0.257.0>, {1782, 953207, 111178}}
+{:trace_ts, #PID<0.513.0>, :send, {:preflight_result, :proceed, [system: %Nest.Messages.System{index: 0, parts: [%Nest.Messages.Part.Text{text: ""}], timestamp: ~U[2026-07-02 00:46:47.062721Z], metadata: nil, api_logs: []}]}, #PID<0.509.0>, {1782, 953207, 111186}}
+{:trace_ts, #PID<0.513.0>, :receive, {:system, {#PID<0.509.0>, #Reference<0.1191450883.2506096641.105704>}, {:terminate, :normal}}, {1782, 953207, 111217}}
+{:trace_ts, #PID<0.513.0>, :send, {:"$gen_cast", {:"$olp_load", "20:46:47.111 [warning] PREFLIGHT_TIMING id=test-agent-2567 decision=fits total=36583µs streaming_check=1µs decision=36573µs send=9µs\n"}}, #PID<0.257.0>, {1782, 953207, 111315}}
+{:trace_ts, #PID<0.513.0>, :send, {#Reference<0.1191450883.2506096641.105704>, :ok}, #PID<0.509.0>, {1782, 953207, 111319}}
+{:trace_ts, #PID<0.513.0>, :send, {:"$gen_call", {#PID<0.513.0>, #Reference<0.1191450883.2506096641.105716>}, {:read_link_info, "/tmp/nest-3403950/agent-test-agent-2567"}}, #PID<0.53.0>, {1782, 953207, 111333}}
+{:trace_ts, #PID<0.513.0>, :receive, {#Reference<0.1191450883.2506096641.105716>, {:ok, {:file_info, 0, :directory, :read_write, {{2026, 7, 1}, {20, 46, 47}}, {{2026, 7, 1}, {20, 46, 47}}, {{2026, 7, 1}, {20, 46, 47}}, 16893, 1, 31, 0, 8948225, 1000, 1000}}}, {1782, 953207, 111396}}
+{:trace_ts, #PID<0.513.0>, :send, {:"$gen_call", {#PID<0.513.0>, #Reference<0.1191450883.2506096641.105723>}, {:list_dir_all, "/tmp/nest-3403950/agent-test-agent-2567"}}, #PID<0.53.0>, {1782, 953207, 111398}}
+{:trace_ts, #PID<0.513.0>, :receive, {#Reference<0.1191450883.2506096641.105723>, {:ok, []}}, {1782, 953207, 111464}}
+{:trace_ts, #PID<0.513.0>, :send, {:"$gen_call", {#PID<0.513.0>, #Reference<0.1191450883.2506096641.105728>}, {:del_dir, "/tmp/nest-3403950/agent-test-agent-2567"}}, #PID<0.53.0>, {1782, 953207, 111466}}
+{:trace_ts, #PID<0.513.0>, :receive, {#Reference<0.1191450883.2506096641.105728>, :ok}, {1782, 953207, 111509}}
+{:trace_ts, #PID<0.513.0>, :send, {:"$gen_call", {#PID<0.513.0>, #Reference<0.1191450883.2506096641.105733>}, {:list_dir, "/tmp/nest-3403950"}}, #PID<0.53.0>, {1782, 953207, 111515}}
+{:trace_ts, #PID<0.513.0>, :receive, {#Reference<0.1191450883.2506096641.105733>, {:ok, []}}, {1782, 953207, 111531}}
+{:trace_ts, #PID<0.513.0>, :send, {:"$gen_call", {#PID<0.513.0>, #Reference<0.1191450883.2506096641.105737>}, {:del_dir, "/tmp/nest-3403950"}}, #PID<0.53.0>, {1782, 953207, 111533}}
+{:trace_ts, #PID<0.513.0>, :receive, {#Reference<0.1191450883.2506096641.105737>, :ok}, {1782, 953207, 111604}}
