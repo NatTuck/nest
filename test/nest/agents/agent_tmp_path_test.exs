@@ -68,17 +68,20 @@ defmodule Nest.Agents.AgentTmpPathTest do
     end
 
     test "uses unique tmp_path per agent" do
-      agent_id1 = "unique-test-1-#{System.unique_integer([:positive])}"
-      pid1 = start_supervised!({Agent, %{id: agent_id1, model: %{name: "qwen3.5-plus"}}})
+      agent_name1 = "unique-test-1-#{System.unique_integer([:positive])}"
+
+      pid1 =
+        start_supervised!({Agent, %{name: agent_name1, model: %{name: "qwen3.5-plus"}}})
+
       info1 = Agent.get_public_info(pid1)
 
-      assert info1.tmp_path =~ ~r|/tmp/nest-#{System.pid()}/agent-#{agent_id1}|
+      assert info1.tmp_path =~ ~r|/tmp/nest-#{System.pid()}/agent-#{agent_name1}|
     end
 
     test "cleans up tmp directory when stopped via Supervisor.stop_agent/1" do
       alias Nest.Agents.Supervisor
 
-      {:ok, agent_id} = Supervisor.start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {:ok, agent_id} = Supervisor.fetch_or_start_agent(%{model: %{name: "qwen3.5-plus"}})
       expected_tmp_path = "/tmp/nest-#{System.pid()}/agent-#{agent_id}"
 
       assert File.exists?(expected_tmp_path),
@@ -135,8 +138,11 @@ defmodule Nest.Agents.AgentTmpPathTest do
       id1 = "parent-cleanup-a-#{unique}"
       id2 = "parent-cleanup-b-#{unique}"
 
-      {:ok, agent_id1} = Supervisor.start_agent(%{id: id1, model: %{name: "qwen3.5-plus"}})
-      {:ok, agent_id2} = Supervisor.start_agent(%{id: id2, model: %{name: "qwen3.5-plus"}})
+      {:ok, agent_id1} =
+        Supervisor.fetch_or_start_agent(%{name: id1, model: %{name: "qwen3.5-plus"}})
+
+      {:ok, agent_id2} =
+        Supervisor.fetch_or_start_agent(%{name: id2, model: %{name: "qwen3.5-plus"}})
 
       parent_dir = "/tmp/nest-#{System.pid()}"
       path1 = "#{parent_dir}/agent-#{agent_id1}"

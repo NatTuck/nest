@@ -6,26 +6,24 @@ defmodule Nest.Agents.Agent.Init do
 
   The `init/1` callback delegates to `build_state/2` here for
   the struct construction (no side effects) and to
-  `run_post_init/2` for the side-effectful post-init work
-  (async context-limit probe, startup log).
+  `persist_initial_system_message/1` for the DB write of the
+  initial system message row.
   """
 
   require Logger
 
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Config
+  alias Nest.Agents.Agent.Persistence, as: AgentPersistence
   alias Nest.Agents.Agent.SystemPrompt
   alias Nest.Messages.Part
   alias Nest.Messages.System
   alias Nest.Tools
   alias Nest.Vocations
 
-  @default_context_limit 128_000
-
   @doc """
-  Build the initial state struct. Pure: no broadcasts, no
-  probes, no logging. Caller must call `run_post_init/2`
-  after this to perform the side effects.
+  Build the initial state struct. Pure: no DB writes, no
+  broadcasts, no logging.
 
   The caller is responsible for providing the loaded vocation
   struct via `:vocation` in `attrs` (typically fetched via
@@ -36,7 +34,7 @@ defmodule Nest.Agents.Agent.Init do
   """
   @spec build_state(map(), Nest.LLM.ClientConfig.t()) :: Nest.Agents.Agent.t()
   def build_state(attrs, client_config) do
-    id = Map.fetch!(attrs, :id)
+    name = Map.fetch!(attrs, :name)
     model = Map.fetch!(attrs, :model)
     vocation_id = Map.get(attrs, :vocation_id)
     workspace_path = Map.get(attrs, :workspace_path)
@@ -44,15 +42,11 @@ defmodule Nest.Agents.Agent.Init do
 
     # Resolve the context limit before building the system prompt
     # so the prompt can include the limit as a static piece of
-    # context. The async probe (spawned in `run_post_init/2`) may
-    # later overwrite the default; the system prompt's
-    # `:default` wording acknowledges that.
+    # context. The cache lookup is synchronous (read from `Nest.Models`)
+    # — no async probe, no `:default` source in the rendered
+    # prompt.
     {context_limit, context_limit_source} = initial_context_limit(model)
 
-    # Compose system prompt from the pre-loaded vocation (no DB
-    # work here). The Vocation struct is stored in state so
-    # subsequent mode/caps resolution is a pure read of the
-    # cached struct.
     {system_prompt, mode, tool_names, cached_vocation} =
       SystemPrompt.compose_vocation_config(
         vocation,
@@ -60,13 +54,13 @@ defmodule Nest.Agents.Agent.Init do
         {context_limit, context_limit_source}
       )
 
-    tmp_path = create_tmp_space(id)
+    tmp_path = create_tmp_space(name)
     tools = Tools.get_functions(tool_names, workspace_path, tmp_path)
 
     {initial_messages, next_index} = initial_messages_with_system(system_prompt)
 
     %Nest.Agents.Agent{
-      id: id,
+      name: name,
       model: model,
       client_config: client_config,
       vocation: cached_vocation,
@@ -94,47 +88,59 @@ defmodule Nest.Agents.Agent.Init do
   def load_vocation(vocation_id), do: Vocations.get_vocation(vocation_id)
 
   @doc """
-  Run the post-construction side effects: spawn the async
-  context-limit probe (when the source was the default) and
-  log the agent's startup info.
+  Persist the initial system message built by `build_state/2`
+  into the `messages` table. No-op when persistence is disabled
+  or when the agent's `chat_state.messages` list is empty.
+
+  This is what makes the system prompt survive a BEAM restart;
+  `Supervisor.fetch_or_start_agent/1`'s restore path reads the
+  active messages and seeds them into `state.chat_state.messages`.
+  Subsequent re-renders (via `seed_preloaded_messages/2`) keep
+  the system prompt at position 0 either because the persisted
+    row already exists or because the in-memory system message
+    is prepended defensively.
   """
-  @spec run_post_init(Nest.Agents.Agent.t(), Nest.LLM.ClientConfig.t()) :: :ok
-  def run_post_init(state, client_config) do
-    if state.llm_metrics.context_limit_source == :default do
-      spawn_context_limit_probe(client_config, self())
+  @spec persist_initial_system_message(Nest.Agents.Agent.t()) :: :ok
+  def persist_initial_system_message(state) do
+    case state.chat_state.messages do
+      [{:system, sys_struct} | _] when is_struct(sys_struct, System) ->
+        AgentPersistence.append_message(
+          state.name,
+          {:system, sys_struct},
+          state.chat_state.next_message_index
+        )
+
+        :ok
+
+      _ ->
+        :ok
     end
-
-    Logger.info(
-      "Agent started: #{state.id} with vocation_id: #{inspect(state.vocation_id)}, mode: #{state.mode}, tools: #{length(state.tools)}, client: #{inspect(client_config.client)}, context_limit: #{inspect(state.llm_metrics.context_limit)} (#{state.llm_metrics.context_limit_source})"
-    )
-
-    :ok
   end
 
-  # Resolve the configured context limit from DotConfig; if absent,
-  # default to 128k and let the async probe (spawned in `post_init/2`)
-  # refine the value once the provider's /models endpoint has been
-  # queried. The synchronous Discover call would block init/1 for up
-  # to 3s on slow providers, so we keep the initial value cheap and
-  # update it via handle_info.
+  # Resolve the configured context limit from DotConfig; if
+  # absent, ask `Nest.Models.context_limit/2` (populated by the
+  # auto-provider `/models` fetch on application startup). When
+  # neither source has a value, return `nil` (the system prompt's
+  # context-limit section is omitted entirely).
   defp initial_context_limit(model) do
-    case Config.configured_context_limit(model_name(model)) do
-      nil -> {@default_context_limit, :default}
-      limit -> {limit, :config}
+    provider = model[:provider] || model["provider"]
+    model_name = model_name(model)
+
+    case Config.configured_context_limit(model_name) do
+      limit when is_integer(limit) ->
+        {limit, :config}
+
+      _ ->
+        case Nest.Models.context_limit(provider, model_name) do
+          {source, limit} when is_integer(limit) -> {limit, source}
+          _ -> {nil, nil}
+        end
     end
   end
 
   defp model_name(model), do: model[:name] || model["name"]
 
   defp initial_messages_with_system(system_prompt) do
-    # Always return a system message at position 0, even when
-    # the composed system prompt is nil/empty. The LLM-bound
-    # messages array always starts with a `{:system, _}` so
-    # the Anthropic client can special-case position 0 for the
-    # top-level `"system"` field without conditional logic in
-    # the wire conversion. Empty content is fine — Anthropic
-    # accepts it, and OpenAI's `role: "system"` with empty
-    # content is a no-op.
     message =
       {:system,
        %System{
@@ -165,13 +171,7 @@ defmodule Nest.Agents.Agent.Init do
     }
   end
 
-  # Forwarded to the GenServer module which owns the canonical
-  # implementations. The `__` prefix marks them as internal.
-  defp create_tmp_space(agent_id) do
-    Nest.Agents.Agent.__create_tmp_space__(agent_id)
-  end
-
-  defp spawn_context_limit_probe(client_config, agent_pid) do
-    Nest.Agents.Agent.__spawn_context_limit_probe__(client_config, agent_pid)
+  defp create_tmp_space(agent_name) do
+    Nest.Agents.Agent.__create_tmp_space__(agent_name)
   end
 end

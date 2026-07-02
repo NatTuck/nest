@@ -65,7 +65,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
         Nest.Agents.Agent.stamped_index(stamped_user)
       )
 
-    Broadcasts.status(state.id, state)
+    Broadcasts.status(state.name, state)
 
     state = maybe_compact_then_spawn(state, [llm_user_message], content, mode)
     {:noreply, state}
@@ -117,7 +117,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
 
     ctx = %{
       agent_pid: agent_pid,
-      agent_id: state.id,
+      agent_name: state.name,
       client_config: state.client_config,
       tools: state.tools,
       tool_choice: :auto,

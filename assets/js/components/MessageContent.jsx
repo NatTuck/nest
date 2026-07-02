@@ -1,17 +1,6 @@
 import { Markdown } from "@llamaindex/chat-ui/widgets";
 
-/**
- * Concatenate the text from a list of Part objects, in order.
- * Skips non-text parts. Used by components that previously
- * worked with a flat `content` string.
- */
-export function textFromParts(parts) {
-  if (!Array.isArray(parts)) return "";
-  return parts
-    .filter((p) => p && p.kind === "text")
-    .map((p) => p.text || "")
-    .join("");
-}
+import { textFromParts } from "../utils/messageText.js";
 
 export function parseBlocks(content) {
   if (!content) return { completed: [], incomplete: "" };
@@ -74,15 +63,11 @@ export function parseBlocks(content) {
 /**
  * Renders the visible (markdown) content of a chat message.
  *
- * Accepts either:
- *   - `parts`: a list of Part objects (the canonical wire format
- *     from the backend; only `text` parts contribute to the
- *     visible content)
- *   - `content`: a flat string (legacy / pre-parts shape)
- *
- * The component flattens `parts` to a string before rendering so
- * the markdown layout, progressive block formatting, and code-fence
- * handling all work unchanged.
+ * Accepts `parts` (the canonical wire format from the backend;
+ * only `text` parts contribute to the visible content). The
+ * component flattens `parts` to a string before rendering so
+ * the markdown layout, progressive block formatting, and
+ * code-fence handling all work unchanged.
  *
  * For partial / streaming messages, completed paragraphs (those
  * terminated by a blank line or a closed code fence) are
@@ -92,8 +77,8 @@ export function parseBlocks(content) {
  * stays at the end without prematurely closing a code fence or
  * list.
  */
-export function MessageContent({ parts, content, isPartial, className = "" }) {
-  const text = typeof content === "string" ? content : textFromParts(parts);
+export function MessageContent({ parts, isPartial, className = "" }) {
+  const text = textFromParts(parts);
 
   if (!text) return null;
 

@@ -10,7 +10,7 @@ vi.mock("@llamaindex/chat-ui/widgets", () => ({
 beforeEach(() => {
   mockMarkdown.mockReset();
   mockMarkdown.mockImplementation(({ content }) => (
-    <div data-testid="markdown-rendered" data-content={content}>
+    <div data-testid="markdown-rendered" data-text={content}>
       {content}
     </div>
   ));
@@ -19,7 +19,12 @@ beforeEach(() => {
 describe("MessageContent", () => {
   describe("partial/streaming messages", () => {
     it("renders plain text when isPartial is true", () => {
-      render(<MessageContent content="Hello world" isPartial={true} />);
+      render(
+        <MessageContent
+          parts={[{ kind: "text", text: "Hello world" }]}
+          isPartial={true}
+        />,
+      );
 
       const element = screen.getByText("Hello world");
       expect(element.tagName).toBe("P");
@@ -28,14 +33,19 @@ describe("MessageContent", () => {
 
     it("preserves whitespace in partial messages", () => {
       const content = "Line 1\nLine 2\n\nLine 4";
-      render(<MessageContent content={content} isPartial={true} />);
+      render(
+        <MessageContent
+          parts={[{ kind: "text", text: content }]}
+          isPartial={true}
+        />,
+      );
 
       expect(screen.getByTestId("markdown-rendered")).toBeInTheDocument();
       expect(screen.getByText(/Line 4/)).toBeInTheDocument();
     });
 
     it("renders empty content gracefully when partial", () => {
-      render(<MessageContent content="" isPartial={true} />);
+      render(<MessageContent parts={[]} isPartial={true} />);
 
       expect(screen.queryByTestId("markdown-rendered")).not.toBeInTheDocument();
     });
@@ -43,7 +53,7 @@ describe("MessageContent", () => {
     it("applies custom className to partial messages", () => {
       render(
         <MessageContent
-          content="Test content"
+          parts={[{ kind: "text", text: "Test content" }]}
           isPartial={true}
           className="custom-class"
         />,
@@ -58,7 +68,10 @@ describe("MessageContent", () => {
   describe("layout", () => {
     it("wraps code blocks and prose so content never overflows horizontally", () => {
       const { container } = render(
-        <MessageContent content="Hello world" isPartial={false} />,
+        <MessageContent
+          parts={[{ kind: "text", text: "Hello world" }]}
+          isPartial={false}
+        />,
       );
 
       const root = container.firstChild;
@@ -75,7 +88,10 @@ describe("MessageContent", () => {
       // complete messages were stuck at 65ch regardless of column width.
       // The wrapper applies [&_.prose]:max-w-none to remove that cap.
       const { container } = render(
-        <MessageContent content="Hello world" isPartial={false} />,
+        <MessageContent
+          parts={[{ kind: "text", text: "Hello world" }]}
+          isPartial={false}
+        />,
       );
 
       const root = container.firstChild;
@@ -85,29 +101,44 @@ describe("MessageContent", () => {
 
   describe("complete messages", () => {
     it("renders with Markdown component when isPartial is false", () => {
-      render(<MessageContent content="Hello world" isPartial={false} />);
+      render(
+        <MessageContent
+          parts={[{ kind: "text", text: "Hello world" }]}
+          isPartial={false}
+        />,
+      );
 
       expect(screen.getByTestId("markdown-rendered")).toBeInTheDocument();
       expect(screen.getByTestId("markdown-rendered")).toHaveAttribute(
-        "data-content",
+        "data-text",
         "Hello world",
       );
     });
 
     it("renders markdown headings", () => {
       const content = "# Heading 1\n## Heading 2";
-      render(<MessageContent content={content} isPartial={false} />);
+      render(
+        <MessageContent
+          parts={[{ kind: "text", text: content }]}
+          isPartial={false}
+        />,
+      );
 
       expect(screen.getByTestId("markdown-rendered")).toBeInTheDocument();
     });
 
     it("renders code blocks", () => {
       const codeContent = "```javascript\nconst x = 1;\n```";
-      render(<MessageContent content={codeContent} isPartial={false} />);
+      render(
+        <MessageContent
+          parts={[{ kind: "text", text: codeContent }]}
+          isPartial={false}
+        />,
+      );
 
       expect(screen.getByTestId("markdown-rendered")).toBeInTheDocument();
       expect(screen.getByTestId("markdown-rendered")).toHaveAttribute(
-        "data-content",
+        "data-text",
         codeContent,
       );
     });
@@ -115,7 +146,7 @@ describe("MessageContent", () => {
     it("renders inline code", () => {
       render(
         <MessageContent
-          content="Use `npm install` to install"
+          parts={[{ kind: "text", text: "Use `npm install` to install" }]}
           isPartial={false}
         />,
       );
@@ -125,7 +156,12 @@ describe("MessageContent", () => {
 
     it("renders lists", () => {
       const content = "- Item 1\n- Item 2\n- Item 3";
-      render(<MessageContent content={content} isPartial={false} />);
+      render(
+        <MessageContent
+          parts={[{ kind: "text", text: content }]}
+          isPartial={false}
+        />,
+      );
 
       expect(screen.getByTestId("markdown-rendered")).toBeInTheDocument();
     });
@@ -133,7 +169,7 @@ describe("MessageContent", () => {
     it("renders links", () => {
       render(
         <MessageContent
-          content="[Click here](https://example.com)"
+          parts={[{ kind: "text", text: "[Click here](https://example.com)" }]}
           isPartial={false}
         />,
       );
@@ -144,14 +180,14 @@ describe("MessageContent", () => {
     it("renders LaTeX inline math", () => {
       render(
         <MessageContent
-          content="The formula is $E = mc^2$"
+          parts={[{ kind: "text", text: "The formula is $E = mc^2$" }]}
           isPartial={false}
         />,
       );
 
       expect(screen.getByTestId("markdown-rendered")).toBeInTheDocument();
       expect(screen.getByTestId("markdown-rendered")).toHaveAttribute(
-        "data-content",
+        "data-text",
         "The formula is $E = mc^2$",
       );
     });
@@ -159,23 +195,33 @@ describe("MessageContent", () => {
     it("renders LaTeX block math", () => {
       const latexContent =
         "$$Area = \\frac{1}{2} \\times base \\times height$$";
-      render(<MessageContent content={latexContent} isPartial={false} />);
+      render(
+        <MessageContent
+          parts={[{ kind: "text", text: latexContent }]}
+          isPartial={false}
+        />,
+      );
 
       expect(screen.getByTestId("markdown-rendered")).toBeInTheDocument();
       expect(screen.getByTestId("markdown-rendered")).toHaveAttribute(
-        "data-content",
+        "data-text",
         latexContent,
       );
     });
 
     it("renders empty content gracefully when complete", () => {
-      render(<MessageContent content="" isPartial={false} />);
+      render(<MessageContent parts={[]} isPartial={false} />);
 
       expect(screen.queryByTestId("markdown-rendered")).not.toBeInTheDocument();
     });
 
     it("renders null content gracefully", () => {
-      render(<MessageContent content={null} isPartial={false} />);
+      render(
+        <MessageContent
+          parts={[{ kind: "text", text: null }]}
+          isPartial={false}
+        />,
+      );
 
       expect(screen.queryByTestId("markdown-rendered")).not.toBeInTheDocument();
     });
@@ -184,13 +230,21 @@ describe("MessageContent", () => {
   describe("transition from partial to complete", () => {
     it("switches from plain text to markdown when isPartial changes", () => {
       const { rerender } = render(
-        <MessageContent content="Hello world" isPartial={true} />,
+        <MessageContent
+          parts={[{ kind: "text", text: "Hello world" }]}
+          isPartial={true}
+        />,
       );
 
       expect(screen.getByText("Hello world").tagName).toBe("P");
       expect(screen.queryByTestId("markdown-rendered")).not.toBeInTheDocument();
 
-      rerender(<MessageContent content="Hello world" isPartial={false} />);
+      rerender(
+        <MessageContent
+          parts={[{ kind: "text", text: "Hello world" }]}
+          isPartial={false}
+        />,
+      );
 
       expect(screen.getByTestId("markdown-rendered")).toBeInTheDocument();
       expect(screen.getByTestId("markdown-rendered").textContent).toBe(
@@ -200,30 +254,46 @@ describe("MessageContent", () => {
 
     it("re-renders markdown when content updates while complete", () => {
       const { rerender } = render(
-        <MessageContent content="Initial content" isPartial={false} />,
+        <MessageContent
+          parts={[{ kind: "text", text: "Initial content" }]}
+          isPartial={false}
+        />,
       );
 
       expect(screen.getByTestId("markdown-rendered")).toHaveAttribute(
-        "data-content",
+        "data-text",
         "Initial content",
       );
 
-      rerender(<MessageContent content="Updated content" isPartial={false} />);
+      rerender(
+        <MessageContent
+          parts={[{ kind: "text", text: "Updated content" }]}
+          isPartial={false}
+        />,
+      );
 
       expect(screen.getByTestId("markdown-rendered")).toHaveAttribute(
-        "data-content",
+        "data-text",
         "Updated content",
       );
     });
 
     it("re-renders plain text when content updates while partial", () => {
       const { rerender } = render(
-        <MessageContent content="Initial" isPartial={true} />,
+        <MessageContent
+          parts={[{ kind: "text", text: "Initial" }]}
+          isPartial={true}
+        />,
       );
 
       expect(screen.getByText("Initial")).toBeInTheDocument();
 
-      rerender(<MessageContent content="Initial + more" isPartial={true} />);
+      rerender(
+        <MessageContent
+          parts={[{ kind: "text", text: "Initial + more" }]}
+          isPartial={true}
+        />,
+      );
 
       expect(screen.getByText("Initial + more")).toBeInTheDocument();
     });
@@ -297,7 +367,12 @@ describe("MessageContent", () => {
   describe("progressive block formatting", () => {
     it("renders completed paragraph with markdown when ends with blank line", () => {
       const content = "Complete paragraph.\n\nIncomplete text";
-      render(<MessageContent content={content} isPartial={true} />);
+      render(
+        <MessageContent
+          parts={[{ kind: "text", text: content }]}
+          isPartial={true}
+        />,
+      );
 
       expect(mockMarkdown).toHaveBeenCalled();
       expect(screen.getByTestId("markdown-rendered")).toBeInTheDocument();
@@ -306,14 +381,24 @@ describe("MessageContent", () => {
 
     it("renders completed code block with markdown when closed", () => {
       const content = "```javascript\nconst x = 1;\n```\nStreaming...";
-      render(<MessageContent content={content} isPartial={true} />);
+      render(
+        <MessageContent
+          parts={[{ kind: "text", text: content }]}
+          isPartial={true}
+        />,
+      );
 
       expect(screen.getByTestId("markdown-rendered")).toBeInTheDocument();
     });
 
     it("treats unclosed code block as partial", () => {
       const content = "```javascript\nconst x = 1;";
-      render(<MessageContent content={content} isPartial={true} />);
+      render(
+        <MessageContent
+          parts={[{ kind: "text", text: content }]}
+          isPartial={true}
+        />,
+      );
 
       expect(screen.queryByTestId("markdown-rendered")).not.toBeInTheDocument();
       expect(screen.getByText(/```javascript/)).toBeInTheDocument();
@@ -321,7 +406,12 @@ describe("MessageContent", () => {
 
     it("handles mixed completed and incomplete blocks", () => {
       const content = "# Heading\n\nParagraph done.\n\n**Incomplete";
-      render(<MessageContent content={content} isPartial={true} />);
+      render(
+        <MessageContent
+          parts={[{ kind: "text", text: content }]}
+          isPartial={true}
+        />,
+      );
 
       expect(screen.getAllByTestId("markdown-rendered").length).toBe(2);
       expect(screen.getByText(/Incomplete/)).toBeInTheDocument();
@@ -329,21 +419,36 @@ describe("MessageContent", () => {
 
     it("handles list items followed by blank line as complete", () => {
       const content = "- Item 1\n- Item 2\n\nStreaming...";
-      render(<MessageContent content={content} isPartial={true} />);
+      render(
+        <MessageContent
+          parts={[{ kind: "text", text: content }]}
+          isPartial={true}
+        />,
+      );
 
       expect(screen.getByTestId("markdown-rendered")).toBeInTheDocument();
     });
 
     it("handles multi-block code block with middle blocks", () => {
       const content = "```python\n\nprint('hello')\n\n```";
-      render(<MessageContent content={content} isPartial={true} />);
+      render(
+        <MessageContent
+          parts={[{ kind: "text", text: content }]}
+          isPartial={true}
+        />,
+      );
 
       expect(screen.getByTestId("markdown-rendered")).toBeInTheDocument();
     });
 
     it("handles unclosed multi-block code block as partial", () => {
       const content = "```python\n\nprint('hello')";
-      render(<MessageContent content={content} isPartial={true} />);
+      render(
+        <MessageContent
+          parts={[{ kind: "text", text: content }]}
+          isPartial={true}
+        />,
+      );
 
       expect(screen.queryByTestId("markdown-rendered")).not.toBeInTheDocument();
     });

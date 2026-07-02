@@ -448,9 +448,13 @@ describe("store", () => {
 
       expect(result.applied).toBe(true);
       expect(result.overlapMismatch).toBeFalsy();
-      expect(useStore.getState().agentsCache["agent-1"].partial.content).toBe(
-        "Hello 💡 world",
-      );
+      expect(
+        useStore
+          .getState()
+          .agentsCache["agent-1"].partial.parts.filter((p) => p.kind === "text")
+          .map((p) => p.text || "")
+          .join(""),
+      ).toBe("Hello 💡 world");
     });
 
     it("shows OK integrity check with emoji content", () => {
@@ -502,9 +506,13 @@ describe("store", () => {
 
       expect(result.applied).toBe(true);
       // Content should be: "Hello 💡🎉! more" (overlap matches, no mismatch warning)
-      expect(useStore.getState().agentsCache["agent-1"].partial.content).toBe(
-        "Hello 💡🎉! more",
-      );
+      expect(
+        useStore
+          .getState()
+          .agentsCache["agent-1"].partial.parts.filter((p) => p.kind === "text")
+          .map((p) => p.text || "")
+          .join(""),
+      ).toBe("Hello 💡🎉! more");
       expect(
         useStore.getState().agentsCache["agent-1"].partial.charsReceived,
       ).toBe(13);
@@ -621,7 +629,12 @@ describe("store", () => {
 
       expect(result).toEqual({ applied: true, needsSync: false });
       const cache = useStore.getState().agentsCache["agent-1"];
-      expect(cache.streaming.content).toBe("Hello");
+      expect(
+        cache.streaming.parts
+          .filter((p) => p.kind === "text")
+          .map((p) => p.text || "")
+          .join(""),
+      ).toBe("Hello");
       expect(cache.streaming.nextDeltaIndex).toBe(1);
       expect(cache.streaming.messageIndex).toBe(5);
     });
@@ -645,7 +658,12 @@ describe("store", () => {
 
       expect(result).toEqual({ applied: true, needsSync: false });
       const cache = useStore.getState().agentsCache["agent-1"];
-      expect(cache.streaming.content).toBe("Hello world");
+      expect(
+        cache.streaming.parts
+          .filter((p) => p.kind === "text")
+          .map((p) => p.text || "")
+          .join(""),
+      ).toBe("Hello world");
       expect(cache.streaming.nextDeltaIndex).toBe(2);
     });
 
@@ -672,9 +690,15 @@ describe("store", () => {
         outOfOrder: false,
       });
       // Content should not change
-      expect(useStore.getState().agentsCache["agent-1"].streaming.content).toBe(
-        "Hello",
-      );
+      expect(
+        useStore
+          .getState()
+          .agentsCache["agent-1"].streaming.parts.filter(
+            (p) => p.kind === "text",
+          )
+          .map((p) => p.text || "")
+          .join(""),
+      ).toBe("Hello");
     });
 
     it("detects out-of-order delta and requests sync", () => {
@@ -700,9 +724,15 @@ describe("store", () => {
         outOfOrder: true,
       });
       // Content should not change
-      expect(useStore.getState().agentsCache["agent-1"].streaming.content).toBe(
-        "First",
-      );
+      expect(
+        useStore
+          .getState()
+          .agentsCache["agent-1"].streaming.parts.filter(
+            (p) => p.kind === "text",
+          )
+          .map((p) => p.text || "")
+          .join(""),
+      ).toBe("First");
     });
 
     it("resets streaming state when message index changes", () => {
@@ -725,7 +755,12 @@ describe("store", () => {
       expect(result).toEqual({ applied: true, needsSync: false });
       const cache = useStore.getState().agentsCache["agent-1"];
       expect(cache.streaming.messageIndex).toBe(6);
-      expect(cache.streaming.content).toBe("Message 6");
+      expect(
+        cache.streaming.parts
+          .filter((p) => p.kind === "text")
+          .map((p) => p.text || "")
+          .join(""),
+      ).toBe("Message 6");
       expect(cache.streaming.nextDeltaIndex).toBe(1);
     });
 
@@ -803,7 +838,12 @@ describe("store", () => {
       });
 
       const partial = useStore.getState().agentsCache["agent-1"].partial;
-      expect(partial.content).toBe("Hello world");
+      expect(
+        partial.parts
+          .filter((p) => p.kind === "text")
+          .map((p) => p.text || "")
+          .join(""),
+      ).toBe("Hello world");
       expect(partial.index).toBe(5);
     });
 
@@ -822,7 +862,12 @@ describe("store", () => {
       });
 
       const partial = useStore.getState().agentsCache["agent-1"].partial;
-      expect(partial.content).toBe("New content");
+      expect(
+        partial.parts
+          .filter((p) => p.kind === "text")
+          .map((p) => p.text || "")
+          .join(""),
+      ).toBe("New content");
       expect(partial.index).toBe(5);
     });
 
@@ -841,9 +886,13 @@ describe("store", () => {
       });
 
       expect(result).toEqual({ applied: false, needsSync: true });
-      expect(useStore.getState().agentsCache["agent-1"].partial.content).toBe(
-        "Hello",
-      );
+      expect(
+        useStore
+          .getState()
+          .agentsCache["agent-1"].partial.parts.filter((p) => p.kind === "text")
+          .map((p) => p.text || "")
+          .join(""),
+      ).toBe("Hello");
     });
 
     it("handles overlap without mismatch by slicing and appending", () => {
@@ -862,9 +911,13 @@ describe("store", () => {
 
       expect(result.applied).toBe(true);
       expect(result.overlapMismatch).toBeFalsy();
-      expect(useStore.getState().agentsCache["agent-1"].partial.content).toBe(
-        "Hello world",
-      );
+      expect(
+        useStore
+          .getState()
+          .agentsCache["agent-1"].partial.parts.filter((p) => p.kind === "text")
+          .map((p) => p.text || "")
+          .join(""),
+      ).toBe("Hello world");
     });
 
     it("detects overlap mismatch with content length truncation", () => {
@@ -958,9 +1011,13 @@ describe("store", () => {
 
       expect(result.applied).toBe(false);
       expect(result.overlapMismatch).toBeFalsy();
-      expect(useStore.getState().agentsCache["agent-1"].partial.content).toBe(
-        "Hello world",
-      );
+      expect(
+        useStore
+          .getState()
+          .agentsCache["agent-1"].partial.parts.filter((p) => p.kind === "text")
+          .map((p) => p.text || "")
+          .join(""),
+      ).toBe("Hello world");
     });
 
     it("includes overlapMismatch: false when fully overlapped with no mismatch", () => {
@@ -1437,7 +1494,7 @@ describe("store", () => {
         .spyOn(console, "error")
         .mockImplementation(() => {});
 
-      // Seed a streaming partial with thinking in `segments`
+      // Seed a streaming partial with thinking in `parts`
       // (the shape produced by `addChatDelta` for thinking
       // deltas).
       useStore.setState((state) => ({
@@ -1447,10 +1504,9 @@ describe("store", () => {
             ...state.agentsCache["agent-1"],
             streaming: {
               messageIndex: 1,
-              content: "",
-              segments: [
-                { type: "thinking", content: "Let me check the directory. " },
-                { type: "thinking", content: "I'll run ls." },
+              parts: [
+                { kind: "thinking", thinking: "Let me check the directory. " },
+                { kind: "thinking", thinking: "I'll run ls." },
               ],
             },
           },
@@ -1650,7 +1706,7 @@ describe("store", () => {
   describe("removeAgent", () => {
     it("removes agent from agents list and deletes cache", () => {
       // Setup
-      useStore.getState().addAgent({ id: "agent-1", model: "gpt-4" });
+      useStore.getState().addAgent({ name: "agent-1", model: "gpt-4" });
       useStore.getState().setAgentConnecting("agent-1");
 
       expect(useStore.getState().agents).toHaveLength(1);
@@ -1666,7 +1722,7 @@ describe("store", () => {
   describe("clearAgentCache", () => {
     it("deletes only the agent cache while keeping agents list", () => {
       // Setup
-      useStore.getState().addAgent({ id: "agent-1", model: "gpt-4" });
+      useStore.getState().addAgent({ name: "agent-1", model: "gpt-4" });
       useStore.getState().setAgentConnecting("agent-1");
 
       expect(useStore.getState().agents).toHaveLength(1);
@@ -1746,9 +1802,9 @@ describe("store", () => {
       expect(cache.partial).toMatchObject({
         index: 1,
         role: "assistant",
-        content: "",
         charsReceived: 0,
       });
+      expect(cache.partial.parts).toEqual([]);
     });
   });
 
@@ -1798,14 +1854,14 @@ describe("store", () => {
       });
 
       const cache = useStore.getState().agentsCache["agent-1"];
-      expect(cache.streaming.segments).toHaveLength(2);
-      expect(cache.streaming.segments[0]).toMatchObject({
-        type: "text",
-        content: "Hello ",
+      expect(cache.streaming.parts).toHaveLength(2);
+      expect(cache.streaming.parts[0]).toMatchObject({
+        kind: "text",
+        text: "Hello ",
       });
-      expect(cache.streaming.segments[1]).toMatchObject({
-        type: "tool_arguments",
-        content: '{"key": "val"}',
+      expect(cache.streaming.parts[1]).toMatchObject({
+        kind: "tool_arguments",
+        text: '{"key": "val"}',
       });
     });
   });
@@ -1830,16 +1886,21 @@ describe("store", () => {
       });
 
       const cache = useStore.getState().agentsCache["agent-1"];
-      // The thinking text is captured in `segments` (so
+      // The thinking text is captured in `parts` (so
       // `thinkingFor(message)` can find it for the yellow box).
-      expect(cache.streaming.segments).toHaveLength(1);
-      expect(cache.streaming.segments[0]).toMatchObject({
-        type: "thinking",
-        content: "Reasoning about the answer...",
+      expect(cache.streaming.parts).toHaveLength(1);
+      expect(cache.streaming.parts[0]).toMatchObject({
+        kind: "thinking",
+        thinking: "Reasoning about the answer...",
       });
       // But it is NOT in `content` (so it doesn't appear in the
       // visible reply).
-      expect(cache.streaming.content).toBe("");
+      expect(
+        cache.streaming.parts
+          .filter((p) => p.kind === "text")
+          .map((p) => p.text || "")
+          .join(""),
+      ).toBe("");
     });
 
     it("text deltas after thinking deltas do not include the thinking text", () => {
@@ -1866,20 +1927,25 @@ describe("store", () => {
 
       // The text content is the text-only buffer — no
       // concatenated thinking text.
-      expect(cache.streaming.content).toBe("Visible answer");
+      expect(
+        cache.streaming.parts
+          .filter((p) => p.kind === "text")
+          .map((p) => p.text || "")
+          .join(""),
+      ).toBe("Visible answer");
 
-      // Both thinking deltas are merged into one segment (so
-      // the yellow box shows them concatenated) — `accumulateSegment`
-      // continues the existing segment if the type matches.
-      // The text delta starts a new segment.
-      expect(cache.streaming.segments).toHaveLength(2);
-      expect(cache.streaming.segments[0]).toMatchObject({
-        type: "thinking",
-        content: "First thought second thought",
+      // Both thinking deltas are merged into one part (so
+      // the yellow box shows them concatenated) — `accumulatePart`
+      // continues the existing part if the kind matches.
+      // The text delta starts a new part.
+      expect(cache.streaming.parts).toHaveLength(2);
+      expect(cache.streaming.parts[0]).toMatchObject({
+        kind: "thinking",
+        thinking: "First thought second thought",
       });
-      expect(cache.streaming.segments[1]).toMatchObject({
-        type: "text",
-        content: "Visible answer",
+      expect(cache.streaming.parts[1]).toMatchObject({
+        kind: "text",
+        text: "Visible answer",
       });
     });
   });
@@ -1893,7 +1959,7 @@ describe("store", () => {
       useStore.getState().setAgentConnecting("agent-1");
     });
 
-    it("thinking deltas update segments but not partial.content", () => {
+    it("thinking deltas update segments but not text content", () => {
       useStore.getState().addChatDelta("agent-1", {
         index: 5,
         charsStart: 0,
@@ -1903,15 +1969,20 @@ describe("store", () => {
       });
 
       const cache = useStore.getState().agentsCache["agent-1"];
-      expect(cache.partial.segments).toHaveLength(1);
-      expect(cache.partial.segments[0]).toMatchObject({
-        type: "thinking",
-        content: "Reasoning about the answer...",
+      expect(cache.partial.parts).toHaveLength(1);
+      expect(cache.partial.parts[0]).toMatchObject({
+        kind: "thinking",
+        thinking: "Reasoning about the answer...",
       });
-      expect(cache.partial.content).toBe("");
+      expect(
+        cache.partial.parts
+          .filter((p) => p.kind === "text")
+          .map((p) => p.text || "")
+          .join(""),
+      ).toBe("");
     });
 
-    it("text deltas accumulate into partial.content but not thinking", () => {
+    it("text deltas accumulate into text parts but not thinking", () => {
       useStore.getState().addChatDelta("agent-1", {
         index: 5,
         charsStart: 0,
@@ -1929,17 +2000,22 @@ describe("store", () => {
 
       const cache = useStore.getState().agentsCache["agent-1"];
       // Text-only buffer — no thinking text mixed in.
-      expect(cache.partial.content).toBe("Visible answer");
+      expect(
+        cache.partial.parts
+          .filter((p) => p.kind === "text")
+          .map((p) => p.text || "")
+          .join(""),
+      ).toBe("Visible answer");
       // The thinking text is in the segments list, then the
       // text delta starts a new segment.
-      expect(cache.partial.segments).toHaveLength(2);
-      expect(cache.partial.segments[0]).toMatchObject({
-        type: "thinking",
-        content: "Some reasoning",
+      expect(cache.partial.parts).toHaveLength(2);
+      expect(cache.partial.parts[0]).toMatchObject({
+        kind: "thinking",
+        thinking: "Some reasoning",
       });
-      expect(cache.partial.segments[1]).toMatchObject({
-        type: "text",
-        content: "Visible answer",
+      expect(cache.partial.parts[1]).toMatchObject({
+        kind: "text",
+        text: "Visible answer",
       });
     });
   });
@@ -2122,7 +2198,7 @@ describe("store", () => {
     });
 
     it("setAgents updates agents list", () => {
-      useStore.getState().setAgents([{ id: "agent-1", model: "gpt-4" }]);
+      useStore.getState().setAgents([{ name: "agent-1", model: "gpt-4" }]);
       expect(useStore.getState().agents).toHaveLength(1);
     });
 

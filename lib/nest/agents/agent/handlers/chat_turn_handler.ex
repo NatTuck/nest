@@ -70,7 +70,7 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
         }
     }
 
-    Broadcasts.status(state.id, state)
+    Broadcasts.status(state.name, state)
     {:noreply, state}
   end
 
@@ -98,7 +98,7 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
         }
     }
 
-    Broadcasts.status(state.id, state)
+    Broadcasts.status(state.name, state)
     {:noreply, state}
   end
 
@@ -126,19 +126,19 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
     error_msg = format_chat_task_error(exception, stacktrace)
 
     Logger.error(fn ->
-      "[agent:#{state.id}] chat_crashed msg_index=#{state.chat_state.next_message_index} ::\n" <>
+      "[agent:#{state.name}] chat_crashed msg_index=#{state.chat_state.next_message_index} ::\n" <>
         Exception.format(:error, exception, stacktrace)
     end)
 
     Broadcasts.error(
-      state.id,
+      state.name,
       state.chat_state.next_message_index,
       error_msg,
       "ChatTurn.run_chat_task/1"
     )
 
     state = %{state | chat_state: %{state.chat_state | status: :idle, chat_turn_pid: nil}}
-    Broadcasts.status(state.id, state)
+    Broadcasts.status(state.name, state)
 
     {:noreply, state}
   end

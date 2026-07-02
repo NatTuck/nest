@@ -17,7 +17,7 @@ defmodule NestWeb.AgentChannelTest do
     } do
       assert socket.topic == "agent:#{id}"
       assert_push "init", payload
-      assert payload["id"] == id
+      assert payload["name"] == id
       assert payload["model"][:name] == "qwen3.5-plus"
       assert payload["messageCount"] == 1
       assert payload["status"] == "idle"

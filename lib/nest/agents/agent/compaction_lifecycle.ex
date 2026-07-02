@@ -63,8 +63,8 @@ defmodule Nest.Agents.Agent.Compaction.Lifecycle do
 
   defp persist_and_broadcast(state, new_state, archived_count, marker_index, marker) do
     first_index = compute_first_index(new_state.chat_state.history || [], marker_index)
-    AgentPersistence.archive_and_compact(state.id, first_index, marker_index, archived_count)
-    Broadcasts.compaction(state.id, marker, new_state.chat_state.history)
+    AgentPersistence.archive_and_compact(state.name, first_index, marker_index, archived_count)
+    Broadcasts.compaction(state.name, marker, new_state.chat_state.history)
   end
 
   # Returns the index of the first archived message after the

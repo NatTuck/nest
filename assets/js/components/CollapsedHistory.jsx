@@ -85,10 +85,15 @@ function MessageBubble({ message }) {
           <ThinkingBlock thinking={message.thinking} isPartial={false} />
         )}
         <MessageContent
-          content={
+          parts={
             message.role === "user"
-              ? stripModePrefix(message.content, message.mode)
-              : message.content
+              ? [
+                  {
+                    kind: "text",
+                    text: stripModePrefix(message.content || "", message.mode),
+                  },
+                ]
+              : message.parts
           }
           isPartial={false}
           className="text-xs text-gray-700"

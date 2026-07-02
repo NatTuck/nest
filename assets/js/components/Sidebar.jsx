@@ -94,11 +94,11 @@ export function Sidebar() {
             <ul className="space-y-1">
               {agents.map((agent) => {
                 const isCurrentAgent =
-                  location.pathname === `/agent/${agent.id}`;
+                  location.pathname === `/agent/${agent.name}`;
                 return (
-                  <li key={agent.id}>
+                  <li key={agent.name}>
                     <Link
-                      to={`/agent/${agent.id}`}
+                      to={`/agent/${agent.name}`}
                       className={`
                       flex items-center justify-between px-3 py-2 rounded-lg
                       transition-colors duration-200 group
@@ -117,21 +117,21 @@ export function Sidebar() {
                         `}
                         />
                         <span className="truncate text-sm font-medium">
-                          {agent.id}
+                          {agent.name}
                         </span>
                       </div>
 
                       {/* Delete button */}
                       <button
                         type="button"
-                        onClick={(e) => handleDeleteAgent(e, agent.id)}
+                        onClick={(e) => handleDeleteAgent(e, agent.name)}
                         className="
                         opacity-0 group-hover:opacity-100
                         p-1 rounded hover:bg-red-100 text-gray-400 hover:text-red-600
                         transition-all duration-200
                       "
-                        title={`Delete ${agent.id}`}
-                        aria-label={`Delete ${agent.id}`}
+                        title={`Delete ${agent.name}`}
+                        aria-label={`Delete ${agent.name}`}
                       >
                         <svg
                           className="w-4 h-4"

@@ -26,8 +26,6 @@ alias Nest.Vocations
     You are a skilled programmer. Help users write, review, and understand code.
     You have access to a workspace directory where you can read and write files.
     Use tools to read files and make changes when requested.
-
-    Actively
     """,
     tools: ["read_file", "inspect_file", "write_file", "edit", "shell_cmd", "context"],
     modes: %{

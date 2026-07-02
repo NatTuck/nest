@@ -76,7 +76,7 @@ const router = createBrowserRouter([
         element: <NewAgentPage />,
       },
       {
-        path: "agent/:id",
+        path: "agent/:name",
         element: <ChatPage />,
       },
       {

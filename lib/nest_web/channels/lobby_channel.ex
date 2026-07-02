@@ -57,16 +57,16 @@ defmodule NestWeb.LobbyChannel do
 
     # Create the agent
     case Agents.create_agent(%{name: model_name, provider: model_provider}, opts) do
-      {:ok, id} ->
+      {:ok, name} ->
         # Broadcast to all clients with full agent info
         broadcast(socket, "agent:created", %{
-          "id" => id,
+          "name" => name,
           "model" => %{"name" => model_name, "provider" => model_provider},
           "vocation_id" => vocation_id,
           "workspace_path" => workspace_path
         })
 
-        {:reply, {:ok, %{"id" => id}}, socket}
+        {:reply, {:ok, %{"name" => name}}, socket}
 
       {:error, reason} ->
         Logger.error("Failed to create agent: #{inspect(reason)}")
@@ -75,10 +75,10 @@ defmodule NestWeb.LobbyChannel do
   end
 
   @impl true
-  def handle_in("delete_agent", %{"id" => id}, socket) do
-    case Agents.delete_agent(id) do
+  def handle_in("delete_agent", %{"name" => name}, socket) do
+    case Agents.delete_agent(name) do
       :ok ->
-        broadcast(socket, "agent:deleted", %{"id" => id})
+        broadcast(socket, "agent:deleted", %{"name" => name})
         {:reply, {:ok, %{}}, socket}
 
       {:error, :not_found} ->

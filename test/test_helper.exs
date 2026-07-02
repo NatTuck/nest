@@ -2,6 +2,7 @@ Mimic.copy(Nest.LLM.OpenAIClient)
 Mimic.copy(Req)
 Mimic.copy(Nest.DotConfig)
 Mimic.copy(Nest.LLM.MockClient)
+Mimic.copy(Nest.Models)
 
 ExUnit.configure(timeout: 5_000)
 ExUnit.start()

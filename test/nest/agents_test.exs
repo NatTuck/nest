@@ -56,9 +56,9 @@ defmodule Nest.AgentsTest do
 
   describe "get_info/1" do
     test "returns agent public info" do
-      {:ok, id} = Agents.create_agent(%{name: "qwen3.5-plus"})
-      {:ok, info} = Agents.get_info(id)
-      assert info.id == id
+      {:ok, name} = Agents.create_agent(%{name: "qwen3.5-plus"})
+      {:ok, info} = Agents.get_info(name)
+      assert info.name == name
       assert info.model.name == "qwen3.5-plus"
       assert info.status == :idle
       assert info.message_count == 1
@@ -71,7 +71,7 @@ defmodule Nest.AgentsTest do
   end
 
   describe "list_agents/0" do
-    test "returns list of agent IDs" do
+    test "returns list of agent names" do
       {:ok, id1} = Agents.create_agent(%{name: "qwen3.5-plus"})
       {:ok, id2} = Agents.create_agent(%{name: "MiniMax-M2.5"})
 
@@ -94,10 +94,10 @@ defmodule Nest.AgentsTest do
       {:ok, id2} = Agents.create_agent(%{name: "MiniMax-M2.5"})
 
       # See note in list_agents/0 test: async file, so we only
-      # verify our two IDs are present, not the total count.
+      # verify our two names are present, not the total count.
       agents_info = Agents.list_agents_info()
-      assert Enum.any?(agents_info, fn info -> info.id == id1 end)
-      assert Enum.any?(agents_info, fn info -> info.id == id2 end)
+      assert Enum.any?(agents_info, fn info -> info.name == id1 end)
+      assert Enum.any?(agents_info, fn info -> info.name == id2 end)
     end
 
     test "returns empty list when no agents" do

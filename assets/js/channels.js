@@ -66,7 +66,7 @@ export function joinLobby(onOk, onError) {
 
   lobbyChannel.on("agent:deleted", (payload) => {
     const store = getStore();
-    store.removeAgent(payload.id);
+    store.removeAgent(payload.name);
   });
 
   lobbyChannel

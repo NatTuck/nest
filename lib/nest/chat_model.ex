@@ -9,6 +9,7 @@ defmodule Nest.ChatModel do
   alias Nest.DotConfig
   alias Nest.LLM.AnthropicClient
   alias Nest.LLM.ClientConfig
+  alias Nest.LLM.Discover
   alias Nest.LLM.OpenAIClient
   alias Nest.Models
 
@@ -197,19 +198,11 @@ defmodule Nest.ChatModel do
   Lists all available models from a provider by querying the /models endpoint.
   """
   def list_models(%DotConfig.Provider{} = provider) do
-    url = provider.base_url <> "/models"
-    headers = [{"Authorization", "Bearer #{DotConfig.resolve_api_key(provider.api_key)}"}]
-
-    case Req.get(url, headers: headers) do
-      {:ok, %{status: 200, body: body}} ->
+    case fetch_models_body(provider) do
+      {:ok, body} ->
         extract_all_models(body)
 
-      {:ok, %{status: status}} ->
-        log_list_status(provider, status)
-        []
-
-      {:error, reason} ->
-        log_list_error(provider, reason)
+      :error ->
         []
     end
   end
@@ -226,12 +219,83 @@ defmodule Nest.ChatModel do
     end
   end
 
+  @doc """
+  Like `list_models/1`, but returns one entry per model that
+  carries both the name and the extracted context-limit
+  source + value. Used by `Nest.Models` to populate its
+  context-limit cache alongside the merged model list.
+
+  Each entry has shape:
+
+      %{name: String.t(), source: source(), limit: pos_integer()}
+
+  Missing / unparseable entries are silently dropped; a
+  failure to fetch any models returns `[]` so the caller
+  can populate only the names it found.
+  """
+  @spec list_models_with_limits(DotConfig.Provider.t()) :: [map()]
+  def list_models_with_limits(%DotConfig.Provider{} = provider) do
+    case fetch_models_body(provider) do
+      {:ok, body} ->
+        body
+        |> list_models_with_limits_from_body()
+
+      :error ->
+        []
+    end
+  end
+
+  defp fetch_models_body(provider) do
+    url = provider.base_url <> "/models"
+    headers = [{"Authorization", "Bearer #{DotConfig.resolve_api_key(provider.api_key)}"}]
+
+    case Req.get(url, headers: headers) do
+      {:ok, %{status: 200, body: body}} ->
+        {:ok, body}
+
+      {:ok, %{status: status}} ->
+        log_list_status(provider, status)
+        :error
+
+      {:error, reason} ->
+        log_list_error(provider, reason)
+        :error
+    end
+  end
+
+  defp list_models_with_limits_from_body(body) do
+    body
+    |> extract_model_entries()
+    |> Enum.flat_map(fn entry ->
+      with name when is_binary(name) <- Discover.model_id(entry),
+           {source, limit} when source != nil <- Discover.extract_limit_from_model(entry) do
+        [%{name: name, source: source, limit: limit}]
+      else
+        _ -> []
+      end
+    end)
+  end
+
   defp log_list_status(provider, status) do
     Logger.warning("Provider returned status #{status} when listing models from #{provider.name}")
   end
 
   defp log_list_error(provider, reason) do
     Logger.warning("Failed to list models from #{provider.name}: #{inspect(reason)}")
+  end
+
+  # Walk a /models response body and return one normalized
+  # entry per model. Tolerant of OpenAI-shaped (`{"data": [...]}`)
+  # and Ollama-shaped (`{"models": [...]}`) bodies, plus a bare
+  # list. Each entry is the raw map that `extract_limit_from_model`
+  # will inspect.
+  defp extract_model_entries(body) do
+    case body do
+      %{"data" => data} when is_list(data) -> data
+      %{"models" => models} when is_list(models) -> models
+      list when is_list(list) -> list
+      _ -> []
+    end
   end
 
   # Extract model names from a /models response (OpenAI shape or generic)

@@ -36,7 +36,7 @@ defmodule Nest.Agents.Agent.Handlers.ApiLogHandler do
     messages = Enum.map(state.chat_state.messages, &append_api_log(&1, message_index, api_log))
     updated_message = find_message_by_index(messages, message_index)
 
-    Broadcasts.message(state.id, updated_message)
+    Broadcasts.message(state.name, updated_message)
 
     {:noreply, %{state | chat_state: %{state.chat_state | messages: messages}}}
   end

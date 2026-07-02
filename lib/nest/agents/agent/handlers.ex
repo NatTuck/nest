@@ -16,12 +16,12 @@ defmodule Nest.Agents.Agent.Handlers do
     * `Nest.Agents.Agent.Handlers.ExitHandler` — process
       exit signals.
 
-  The context-limit event (`{:discovered_context_limit, _, _}`)
-  is handled inline because it has a single, simple
-  implementation that doesn't justify its own module.
+  Context-limit resolution happens once at startup in
+  `Nest.Agents.Agent.Init.initial_context_limit/1` (synchronous,
+  reads the cached `Nest.Models` cache) — there is no
+  mid-flight discovery event to handle here.
   """
 
-  alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Handlers.ApiLogHandler
   alias Nest.Agents.Agent.Handlers.ChatTurnHandler
   alias Nest.Agents.Agent.Handlers.CompactionHandler
@@ -48,15 +48,12 @@ defmodule Nest.Agents.Agent.Handlers do
       {:ok, CompactionHandler} -> CompactionHandler.handle(msg, state)
       {:ok, ExitHandler} -> ExitHandler.handle(msg, state)
       {:ok, StopHandler} -> StopHandler.handle(msg, state)
-      {:inline_discovered, source, limit} -> discovered_context_limit(source, limit, state)
       :no_match -> unknown(state)
     end
   end
 
   # Tag → sub-handler module. An unknown tag falls through to
-  # the `unknown/1` catch-all. `discovered_context_limit` is
-  # the one event we handle inline (single impl, no need for
-  # its own module).
+  # the `unknown/1` catch-all.
   defp route_for({:delta_received, _, _}), do: {:ok, LLMStreamHandler}
   defp route_for({:thinking_signature_received, _}), do: {:ok, LLMStreamHandler}
   defp route_for({:llm_error, _}), do: {:ok, LLMStreamHandler}
@@ -77,24 +74,7 @@ defmodule Nest.Agents.Agent.Handlers do
   defp route_for({:stop_chat, _}), do: {:ok, StopHandler}
   defp route_for({:EXIT, _, _}), do: {:ok, ExitHandler}
 
-  defp route_for({:discovered_context_limit, source, limit}) do
-    {:inline_discovered, source, limit}
-  end
-
   defp route_for(_), do: :no_match
-
-  # Update state with the discovered limit and broadcast a fresh
-  # chat:status so the frontend can swap the chip's denominator from
-  # the default to the real value.
-  defp discovered_context_limit(source, limit, state) do
-    state = %{
-      state
-      | llm_metrics: %{state.llm_metrics | context_limit: limit, context_limit_source: source}
-    }
-
-    Broadcasts.status(state.id, state)
-    {:noreply, state}
-  end
 
   defp unknown(state), do: {:noreply, state}
 end

@@ -24,12 +24,13 @@ import { CopyButton } from "../components/CopyButton";
 import { useScrollToBottom } from "../hooks/useScrollToBottom";
 import { stripModePrefix } from "../utils/stripModePrefix.js";
 import { messageToMarkdown } from "../utils/formatMessage.js";
+import { messageText, streamingText } from "../utils/messageText.js";
 
 /**
  * Chat Page component
  */
 export function ChatPage() {
-  const { id } = useParams();
+  const { name } = useParams();
   const [scrollContainerEl, setScrollContainerEl] = useState(null);
   const [messagesEndEl, setMessagesEndEl] = useState(null);
   const [inputValue, setInputValue] = useState("");
@@ -45,7 +46,7 @@ export function ChatPage() {
 
   // Get agent cache from store
   const agentsCache = useStore((state) => state.agentsCache);
-  const cache = agentsCache[id];
+  const cache = agentsCache[name];
 
   // Is this an unknown agent (never attempted to join)?
   const isUnknown = !cache;
@@ -153,21 +154,21 @@ export function ChatPage() {
   const { isAtBottom, hasNewContent, jumpToBottom } = useScrollToBottom(
     scrollContainerEl,
     messagesEndEl,
-    id,
-    partial?.content ?? messages,
+    name,
+    partial ? streamingText(partial) : messages,
   );
 
-  // Join agent channel on mount/id change
+  // Join agent channel on mount/name change
   useEffect(() => {
-    if (!id) return;
+    if (!name) return;
 
     // Idempotent: joinAgent handles already-connected case
-    joinAgent(id);
+    joinAgent(name);
 
     return () => {
-      leaveAgent(id);
+      leaveAgent(name);
     };
-  }, [id]);
+  }, [name]);
 
   const handleSendMessage = () => {
     if (!inputValue.trim() || isAgentBusy) {
@@ -183,7 +184,7 @@ export function ChatPage() {
     // above mirrors that into the local `currentMode` state. No
     // client-side reset here.
 
-    sendMessage(id, content, mode, (err) => {
+    sendMessage(name, content, mode, (err) => {
       setSendError(err.message || "Failed to send message");
     });
   };
@@ -197,7 +198,7 @@ export function ChatPage() {
   // effect above.
   const handleStopMessage = () => {
     setStopping(true);
-    stopMessage(id, (err) => {
+    stopMessage(name, (err) => {
       // The push failed (e.g. agent not in the registry).
       // Clear the optimistic flag so the UI doesn't get stuck
       // in the "Stopping..." state.
@@ -208,7 +209,7 @@ export function ChatPage() {
 
   const handleRetry = () => {
     setSendError(null);
-    joinAgent(id);
+    joinAgent(name);
   };
 
   // Show initial loading state while we attempt first join
@@ -241,7 +242,7 @@ export function ChatPage() {
         <div className="flex items-end justify-between gap-4">
           <div className="min-w-0">
             <h1 className="text-2xl font-bold text-gray-900">
-              {id}
+              {name}
               {cache?.vocation?.name && (
                 <span className="text-gray-500 font-normal">
                   ({cache.vocation.name})
@@ -283,7 +284,7 @@ export function ChatPage() {
       {/* Notification banner */}
       <NotificationBanner
         notification={cache?.notification}
-        onClose={() => useStore.getState().clearNotification(id)}
+        onClose={() => useStore.getState().clearNotification(name)}
       />
 
       {/* Send error */}
@@ -386,7 +387,7 @@ export function ChatPage() {
                         ? "System"
                         : message.role === "tool"
                           ? "Tool Result"
-                          : id}
+                          : name}
                   </span>
                   {message.role === "user" && message.mode && (
                     <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">
@@ -420,15 +421,23 @@ export function ChatPage() {
                 />
                 {message.role === "system" ? (
                   <SystemMessageContent
-                    content={message.content}
+                    parts={message.parts}
                     isPartial={message.isPartial ?? false}
                   />
                 ) : (
                   <MessageContent
-                    content={
+                    parts={
                       message.role === "user"
-                        ? stripModePrefix(message.content, message.mode)
-                        : message.content
+                        ? [
+                            {
+                              kind: "text",
+                              text: stripModePrefix(
+                                messageText(message),
+                                message.mode,
+                              ),
+                            },
+                          ]
+                        : message.parts
                     }
                     isPartial={message.isPartial ?? false}
                     className="text-gray-800"
@@ -542,49 +551,37 @@ export function ChatPage() {
 }
 
 // Extract the thinking/reasoning text for any message shape.
-// The `Streaming.AssistantAccumulator` (used while partial)
-// carries the reasoning as `:thinking` segments inside
-// `message.segments`; the finalized `%Assistant{}` (used after
-// the partial resolves) carries it as a single `message.thinking`
-// string. Anthropic-style reasoning models emit a single
-// contiguous thinking block before the visible text, so the
-// segment list is typically `[{:thinking, ...}, {:text, ...}]` —
-// we concatenate any thinking segments (handles the rare case
-// of multiple thinking segments in one turn) so the unified
-// `<ThinkingBlock>` has one string to render.
+// The streaming accumulator carries `parts` (the canonical
+// `[{kind: "thinking"|"text", text|thinking}]` list). The
+// finalized message also carries `parts`. Anthropic-style
+// reasoning models emit a single contiguous thinking block
+// before the visible text, so the parts list is typically
+// `[{thinking}, {text}]` — we concatenate any thinking parts
+// (handles the rare case of multiple thinking parts in one
+// turn) so the unified `<ThinkingBlock>` has one string to
+// render. The legacy `message.thinking` field is consulted
+// last (only seen on wire-format messages that pre-date the
+// parts cleanup).
 function thinkingFor(message) {
   if (!message) return null;
 
-  if (message.isPartial && Array.isArray(message.segments)) {
-    const thinking = message.segments
-      .filter((s) => s && s.type === "thinking")
-      .map((s) => s.content || "")
+  if (Array.isArray(message.parts)) {
+    const thinking = message.parts
+      .filter((p) => p && p.kind === "thinking")
+      .map((p) => p.thinking || "")
       .join("");
 
-    return thinking || null;
+    if (thinking) return thinking;
   }
 
   return message.thinking || null;
 }
 
-// True when the message has a non-empty `content` field (i.e.
-// there's a visible-text reply to show below the ThinkingBox).
-// For a partial, `content` is the streamed text buffer; for a
-// finalized message, it's the persisted `Assistant.content`. The
-// ThinkingBlock uses this hint to auto-expand when the model
-// produced a thinking-only response so the user actually sees
-// the response.
+// True when the message has visible text below the ThinkingBox.
+// Uses the shared `messageText` helper (which reads `parts`
+// first, with a `content` fallback for legacy shapes).
 function hasVisibleContent(message) {
-  if (!message) return false;
-
-  const content =
-    message.isPartial && typeof message.content === "string"
-      ? message.content
-      : typeof message.content === "string"
-        ? message.content
-        : "";
-
-  return content.trim().length > 0;
+  return messageText(message).trim().length > 0;
 }
 
 const SYSTEM_MESSAGE_MAX_LINES = 20;
@@ -600,10 +597,17 @@ const SYSTEM_MESSAGE_MAX_LINES = 20;
 // that happened). Without this, an agent with no system prompt
 // would have no visible representation of position 0 in the
 // messages list, and the conversation history would be confusing.
-function SystemMessageContent({ content, isPartial }) {
+function SystemMessageContent({ parts, isPartial }) {
   const [expanded, setExpanded] = useState(false);
 
-  if (!content) {
+  const text = Array.isArray(parts)
+    ? parts
+        .filter((p) => p && p.kind === "text")
+        .map((p) => p.text || "")
+        .join("")
+    : "";
+
+  if (!text) {
     return (
       <div className="text-sm italic text-gray-400 border-l-2 border-gray-200 pl-2">
         (empty system message — no system prompt was configured for this agent)
@@ -613,11 +617,15 @@ function SystemMessageContent({ content, isPartial }) {
 
   if (isPartial) {
     return (
-      <MessageContent content={content} isPartial className="text-gray-800" />
+      <MessageContent
+        parts={[{ kind: "text", text }]}
+        isPartial
+        className="text-gray-800"
+      />
     );
   }
 
-  const lines = content.split("\n");
+  const lines = text.split("\n");
   const showExpand = lines.length > SYSTEM_MESSAGE_MAX_LINES;
   const visibleLines = expanded
     ? lines
@@ -627,7 +635,7 @@ function SystemMessageContent({ content, isPartial }) {
   return (
     <div>
       <MessageContent
-        content={visibleLines.join("\n")}
+        parts={[{ kind: "text", text: visibleLines.join("\n") }]}
         className="text-gray-800"
       />
       {showExpand && (

@@ -93,7 +93,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
     else
       chars_start = acc.chars_sent
       new_acc = Streaming.append_text(acc, delta_content)
-      Broadcasts.delta_text(state.id, new_acc.index, delta_content, chars_start)
+      Broadcasts.delta_text(state.name, new_acc.index, delta_content, chars_start)
       {:noreply, %{state | chat_state: %{state.chat_state | streaming_acc: new_acc}}}
     end
   end
@@ -110,7 +110,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
       # text and thinking deltas.
       chars_start = acc.chars_sent
       new_acc = Streaming.append_thinking(acc, delta_content)
-      Broadcasts.delta_thinking(state.id, new_acc.index, delta_content, chars_start)
+      Broadcasts.delta_thinking(state.name, new_acc.index, delta_content, chars_start)
       {:noreply, %{state | chat_state: %{state.chat_state | streaming_acc: new_acc}}}
     end
   end
@@ -161,8 +161,8 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
         }
     }
 
-    Broadcasts.error(state.id, stamped_index, error_msg, "ChatTurn.run_chat_task/1")
-    Broadcasts.status(state.id, state)
+    Broadcasts.error(state.name, stamped_index, error_msg, "ChatTurn.run_chat_task/1")
+    Broadcasts.status(state.name, state)
     {:noreply, state}
   end
 
@@ -211,7 +211,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
         }
     }
 
-    Broadcasts.status(state.id, state)
+    Broadcasts.status(state.name, state)
     {:noreply, state}
   end
 
@@ -243,7 +243,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
         }
     }
 
-    Broadcasts.status(state.id, state)
+    Broadcasts.status(state.name, state)
     {:noreply, state}
   end
 
@@ -263,7 +263,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
         }
     }
 
-    Broadcasts.status(state.id, state)
+    Broadcasts.status(state.name, state)
     {:noreply, state}
   end
 

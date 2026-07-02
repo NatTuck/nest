@@ -112,13 +112,13 @@ defmodule NestWeb.AgentChannelChatTest do
       ref = push(socket, "chat:status", %{"lastIndex" => -1})
 
       assert_reply ref, :ok, %{
-        "id" => status_id,
+        "name" => status_name,
         "model" => model,
         "messageCount" => last_index,
         "status" => status
       }
 
-      assert status_id == id
+      assert status_name == id
       assert model[:name] == "qwen3.5-plus"
       assert last_index == 1
       assert status == "idle"
@@ -165,12 +165,12 @@ defmodule NestWeb.AgentChannelChatTest do
       ref_status = push(socket, "chat:status", %{"lastIndex" => -1})
 
       assert_reply ref_status, :ok, %{
-        "id" => status_id,
+        "name" => status_name,
         "messageCount" => last_index,
         "status" => status
       }
 
-      assert status_id == id
+      assert status_name == id
       assert last_index >= 0
       assert status == "idle"
     end
@@ -385,7 +385,7 @@ defmodule NestWeb.AgentChannelChatTest do
       assert content == "After the stop"
 
       # Sanity check: the agent is still queryable after the stop.
-      assert {:ok, %{id: ^id}} = Agents.get_info(id)
+      assert {:ok, %{name: ^id}} = Agents.get_info(id)
     end
 
     test "returns error when agent does not exist" do

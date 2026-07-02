@@ -191,9 +191,9 @@ defmodule NestWeb.LobbyChannelTest do
         subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
 
       ref = push(socket, "create_agent", %{"model" => %{"name" => "qwen3.5-plus"}})
-      assert_reply ref, :ok, %{"id" => id}
-      assert Regex.match?(~r/^[a-z]+-[a-z]+$/, id)
-      assert_broadcast "agent:created", %{"id" => ^id, "model" => %{"name" => "qwen3.5-plus"}}
+      assert_reply ref, :ok, %{"name" => name}
+      assert Regex.match?(~r/^[a-z]+-[a-z]+$/, name)
+      assert_broadcast "agent:created", %{"name" => ^name, "model" => %{"name" => "qwen3.5-plus"}}
     end
 
     test "forwards provider from the model params to the created agent" do
@@ -211,14 +211,14 @@ defmodule NestWeb.LobbyChannelTest do
           "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
         })
 
-      assert_reply ref, :ok, %{"id" => id}
+      assert_reply ref, :ok, %{"name" => name}
 
-      assert {:ok, info} = Agents.get_info(id)
+      assert {:ok, info} = Agents.get_info(name)
       assert info.model.name == "qwen3.5-plus"
       assert info.model.provider == "model-studio"
 
       assert_broadcast "agent:created", %{
-        "id" => ^id,
+        "name" => ^name,
         "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
       }
     end
@@ -231,14 +231,14 @@ defmodule NestWeb.LobbyChannelTest do
         subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
 
       # First create an agent
-      {:ok, id} = Agents.create_agent(%{name: "qwen3.5-plus"})
+      {:ok, name} = Agents.create_agent(%{name: "qwen3.5-plus"})
 
-      ref = push(socket, "delete_agent", %{"id" => id})
+      ref = push(socket, "delete_agent", %{"name" => name})
       assert_reply ref, :ok, %{}
-      assert_broadcast "agent:deleted", %{"id" => ^id}
+      assert_broadcast "agent:deleted", %{"name" => ^name}
 
       # Verify agent is gone
-      assert {:error, :not_found} = Agents.get_info(id)
+      assert {:error, :not_found} = Agents.get_info(name)
     end
 
     test "returns error for non-existent agent" do
@@ -246,7 +246,7 @@ defmodule NestWeb.LobbyChannelTest do
       {:ok, _, socket} =
         subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
 
-      ref = push(socket, "delete_agent", %{"id" => "nonexistent"})
+      ref = push(socket, "delete_agent", %{"name" => "nonexistent"})
       assert_reply ref, :error, %{"reason" => "not_found"}
     end
   end

@@ -21,7 +21,7 @@ defmodule Nest.Agents do
     - `:workspace_path` - Path to the workspace directory
 
   ## Returns
-  - `{:ok, id}` - Agent created successfully with readable ID
+  - `{:ok, name}` - Agent created successfully with readable name
   - `{:error, reason}` - Failed to create agent
 
   ## Examples
@@ -38,7 +38,7 @@ defmodule Nest.Agents do
       workspace_path: Keyword.get(opts, :workspace_path)
     }
 
-    Supervisor.start_agent(attrs)
+    Supervisor.fetch_or_start_agent(attrs)
   end
 
   # Adds `:provider` to the model map if it's missing and the model is
@@ -62,7 +62,7 @@ defmodule Nest.Agents do
   defp enrich_model(model), do: model
 
   @doc """
-  Gets the public info of an agent by its ID.
+  Gets the public info of an agent by its name.
 
   ## Returns
   - `{:ok, info}` - Agent found with public info
@@ -71,12 +71,12 @@ defmodule Nest.Agents do
   ## Examples
 
       {:ok, info} = Agents.get_info("clever-raven")
-      # info.id, info.model, info.message_count, info.status, info.partial
+      # info.name, info.model, info.message_count, info.status, info.partial
 
   """
   @spec get_info(String.t()) :: {:ok, map()} | {:error, :not_found}
-  def get_info(id) do
-    case Supervisor.get_agent(id) do
+  def get_info(name) do
+    case Supervisor.get_agent(name) do
       {:ok, pid} ->
         if Process.alive?(pid) do
           {:ok, Agent.get_public_info(pid)}
@@ -84,13 +84,13 @@ defmodule Nest.Agents do
           {:error, :not_found}
         end
 
-      {:error, :not_found} ->
-        {:error, :not_found}
+      {:error, _} = err ->
+        err
     end
   end
 
   @doc """
-  Gets the full agent state by its ID.
+  Gets the full agent state by its name.
 
   ## Returns
   - `{:ok, agent}` - Agent found with full state including messages
@@ -98,8 +98,8 @@ defmodule Nest.Agents do
 
   """
   @spec get_agent(String.t()) :: {:ok, map()} | {:error, :not_found}
-  def get_agent(id) do
-    case Supervisor.get_agent(id) do
+  def get_agent(name) do
+    case Supervisor.get_agent(name) do
       {:ok, pid} -> build_agent_data(pid)
       {:error, :not_found} -> {:error, :not_found}
     end
@@ -111,7 +111,7 @@ defmodule Nest.Agents do
     vocation = get_vocation_info(info.vocation_id)
 
     agent = %{
-      id: info.id,
+      name: info.name,
       model: info.model,
       vocation: vocation,
       messages: messages,
@@ -139,9 +139,9 @@ defmodule Nest.Agents do
   end
 
   @doc """
-  Lists all running agent IDs.
+  Lists all running agent names.
 
-  Returns a list of agent ID strings.
+  Returns a list of agent name strings.
 
   ## Examples
 
@@ -160,7 +160,7 @@ defmodule Nest.Agents do
 
   ## Examples
 
-      [%{id: "clever-raven", model: %{name: "gpt-4"}, status: :idle, message_count: 0}, ...]
+      [%{name: "clever-raven", model: %{name: "gpt-4"}, status: :idle, message_count: 0}, ...]
 
   """
   @spec list_agents_info() :: list(map())
@@ -175,7 +175,7 @@ defmodule Nest.Agents do
   end
 
   @doc """
-  Gets the messages for an agent by its ID.
+  Gets the messages for an agent by its name.
 
   ## Returns
   - `{:ok, messages}` - Agent found with messages
@@ -183,8 +183,8 @@ defmodule Nest.Agents do
 
   """
   @spec get_messages(String.t()) :: {:ok, [map()]} | {:error, :not_found}
-  def get_messages(id) do
-    case Supervisor.get_agent(id) do
+  def get_messages(name) do
+    case Supervisor.get_agent(name) do
       {:ok, pid} ->
         if Process.alive?(pid) do
           {:ok, Agent.get_messages(pid)}
@@ -194,6 +194,9 @@ defmodule Nest.Agents do
 
       {:error, :not_found} ->
         {:error, :not_found}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -220,14 +223,17 @@ defmodule Nest.Agents do
 
   """
   @spec chat(String.t(), String.t(), String.t() | nil) :: :ok | {:error, :not_found}
-  def chat(id, content, mode \\ nil) do
-    case Supervisor.get_agent(id) do
+  def chat(name, content, mode \\ nil) do
+    case Supervisor.get_agent(name) do
       {:ok, pid} ->
         Agent.chat(pid, content, mode)
         :ok
 
       {:error, :not_found} ->
         {:error, :not_found}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -249,19 +255,22 @@ defmodule Nest.Agents do
   - `{:error, :not_found}` - Agent doesn't exist
   """
   @spec stop_chat(String.t(), pid()) :: :ok | {:error, :not_found}
-  def stop_chat(id, from) do
-    case Supervisor.get_agent(id) do
+  def stop_chat(name, from) do
+    case Supervisor.get_agent(name) do
       {:ok, pid} ->
         Agent.stop_chat(pid, from)
         :ok
 
       {:error, :not_found} ->
         {:error, :not_found}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
   @doc """
-  Deletes an agent by its ID.
+  Deletes an agent by its name.
 
   ## Returns
   - `:ok` - Agent deleted successfully
@@ -273,7 +282,7 @@ defmodule Nest.Agents do
 
   """
   @spec delete_agent(String.t()) :: :ok | {:error, :not_found}
-  def delete_agent(id) do
-    Supervisor.stop_agent(id)
+  def delete_agent(name) do
+    Supervisor.stop_agent(name)
   end
 end

@@ -27,12 +27,10 @@ defmodule Nest.Agents.Agent.SystemPrompt do
 
   The `context_limit_info` argument is `{context_limit,
   context_limit_source}` from `Init.initial_context_limit/1`.
-  When the limit is `nil` (no model configured, no probe
-  pending), the context-limit section is omitted from the
-  prompt. When the source is `:default` (the 128k fallback
-  before the async probe completes), the section is included
-  with a "default" caveat so the LLM knows the number is
-  provisional.
+  Both fields are populated eagerly at startup (DotConfig
+  first, then `Models.context_limit/2` cache) so the rendered
+  prompt is always confident — there is no `:default`
+  placeholder.
   """
   @spec compose_vocation_config(
           Nest.Vocations.Vocation.t() | nil,
@@ -73,19 +71,14 @@ defmodule Nest.Agents.Agent.SystemPrompt do
     "\n\nTool call budget: You have a maximum of #{max} consecutive tool call rounds per turn.\n"
   end
 
-  # Renders the context-limit section. Three cases:
-  #   - nil limit (no model, no probe pending)  -> omit
-  #   - :default source (128k fallback)          -> "default" caveat
-  #   - :configured or :probed source            -> confident value
-  # The async probe may later overwrite the default; the LLM is
-  # told via mid-iteration reminders when usage crosses 25/50/75%
-  # of the *current* limit (the live one, not this static one).
+  # Renders the context-limit section. The limit is always
+  # populated eagerly at startup (no async probe, no
+  # `:default` placeholder); the source describes where the
+  # number came from (`:config` for DotConfig, or the
+  # provider shape that `Nest.Models` resolved from the
+  # `/models` endpoint — `:vllm`, `:openrouter`,
+  # `:llama_cpp`).
   defp context_limit_section({nil, _}), do: ""
-
-  defp context_limit_section({limit, :default}) do
-    "\n\nContext limit: ~#{limit} tokens (default; the actual limit " <>
-      "may differ after the model's limit is resolved).\n"
-  end
 
   defp context_limit_section({limit, source}) do
     "\n\nContext limit: #{limit} tokens (resolved from #{source}). " <>

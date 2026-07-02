@@ -52,7 +52,7 @@ defmodule Nest.Agents.PersistedMessage do
 
   @type t :: %__MODULE__{
           id: integer() | nil,
-          agent_id: String.t() | nil,
+          agent_id: integer() | nil,
           message_index: non_neg_integer() | nil,
           role: String.t() | nil,
           content: map(),
@@ -63,13 +63,11 @@ defmodule Nest.Agents.PersistedMessage do
           compaction_occurred_at: DateTime.t() | nil
         }
 
-  @primary_key {:id, :bigserial}
   @primary_key {:id, :id, autogenerate: true}
   schema "messages" do
     belongs_to :agent, Nest.Agents.PersistedAgent,
       foreign_key: :agent_id,
-      references: :id,
-      type: :string
+      references: :id
 
     field :message_index, :integer
     field :role, :string
@@ -114,12 +112,12 @@ defmodule Nest.Agents.PersistedMessage do
   a `role: "compaction"` row with `compaction_archived_count`
   and `compaction_occurred_at` populated.
 
-  `agent_id` is the owning agent's string id. `index` is the
-  message's `index` field (read off the inner struct); the
-  caller's Agent process has already stamped it. The
-  `message_index` column must be unique per agent.
+  `agent_id` is the owning agent's integer `id` (the FK column).
+  `index` is the message's `index` field (read off the inner
+  struct); the caller's Agent process has already stamped it.
+  The `message_index` column must be unique per agent.
   """
-  @spec from_runtime(String.t(), Message.t()) :: map()
+  @spec from_runtime(integer(), Message.t()) :: map()
   def from_runtime(agent_id, {role, struct}) do
     base = %{
       agent_id: agent_id,

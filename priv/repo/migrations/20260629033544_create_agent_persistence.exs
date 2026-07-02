@@ -5,11 +5,12 @@ defmodule Nest.Repo.Migrations.CreateAgentPersistence do
 
   ## agents
 
-  One row per agent. The primary key is the agent's string `id`
-  (e.g. `"clever-raven"`) — the same key the in-process `Registry`
-  uses — so upserts from `Supervisor.start_agent/1` are idempotent
-  and the lazy-restore path in `Supervisor.get_agent/1` can fetch
-  by id.
+  One row per agent. The primary key is a server-internal `bigserial`
+  `id`; the human-readable `name` (e.g. `"clever-raven"`) lives in a
+  separate `VARCHAR` column with a `UNIQUE` constraint and is the
+  identifier used everywhere outside the DB (URL path, channel topic,
+  Registry key, frontend). The integer `id` is for FK joins and
+  internal row identity only.
 
   `model` is stored as a jsonb map so we can rehydrate the
   `Nest.LLM.ClientConfig` on restore. `next_message_index` is
@@ -25,6 +26,8 @@ defmodule Nest.Repo.Migrations.CreateAgentPersistence do
   (the same `Nest.Messages.Part` structs the runtime uses); the
   assistant role additionally carries `usage`, `finish_reason`, and
   `model` keys.
+
+  `agent_id` is a `BIGINT` FK to `agents.id`.
 
   No `api_logs` table — the response-level metadata (usage,
   finish_reason) is folded into `messages.content` for assistant
@@ -53,7 +56,8 @@ defmodule Nest.Repo.Migrations.CreateAgentPersistence do
 
   def change do
     create table(:agents, primary_key: false) do
-      add :id, :string, primary_key: true
+      add :id, :bigserial, primary_key: true
+      add :name, :string, null: false
       add :vocation_id, references(:vocations, on_delete: :nilify_all)
       add :model, :map, null: false
       add :workspace_path, :string
@@ -62,11 +66,13 @@ defmodule Nest.Repo.Migrations.CreateAgentPersistence do
       add :updated_at, :utc_datetime, null: false
     end
 
+    create unique_index(:agents, [:name])
+
     create table(:messages, primary_key: false) do
       add :id, :bigserial, primary_key: true
 
       add :agent_id,
-          references(:agents, column: :id, type: :string, on_delete: :delete_all),
+          references(:agents, column: :id, on_delete: :delete_all),
           null: false
 
       add :message_index, :integer, null: false

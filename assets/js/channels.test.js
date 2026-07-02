@@ -90,7 +90,7 @@ describe("channels", () => {
     it("should set store.agents when receiving init event", async () => {
       setNextJoinResult("lobby", {
         autoInit: {
-          agents: [{ id: "agent-1", name: "Test Agent" }],
+          agents: [{ name: "agent-1", model: { name: "Test Agent" } }],
           models: [],
         },
       });
@@ -102,7 +102,7 @@ describe("channels", () => {
       });
 
       assert.deepStrictEqual(useStore.getState().agents, [
-        { id: "agent-1", name: "Test Agent" },
+        { name: "agent-1", model: { name: "Test Agent" } },
       ]);
     });
 
@@ -216,20 +216,20 @@ describe("channels", () => {
       });
 
       simulateServerEvent("lobby", "agent:created", {
-        id: "new-agent",
+        name: "new-agent",
         model: { name: "gpt-4", provider: "openai" },
       });
 
       await vi.waitFor(() => {
         assert.strictEqual(useStore.getState().agents.length, 1);
       });
-      assert.strictEqual(useStore.getState().agents[0].id, "new-agent");
+      assert.strictEqual(useStore.getState().agents[0].name, "new-agent");
     });
 
     it("should remove agent from store.agents on agent:deleted event", async () => {
       setNextJoinResult("lobby", {
         autoInit: {
-          agents: [{ id: "agent-1", model: { name: "gpt-4" } }],
+          agents: [{ name: "agent-1", model: { name: "gpt-4" } }],
           models: [],
         },
       });
@@ -239,7 +239,7 @@ describe("channels", () => {
         assert.strictEqual(useStore.getState().agents.length, 1);
       });
 
-      simulateServerEvent("lobby", "agent:deleted", { id: "agent-1" });
+      simulateServerEvent("lobby", "agent:deleted", { name: "agent-1" });
 
       await vi.waitFor(() => {
         assert.strictEqual(useStore.getState().agents.length, 0);
@@ -249,7 +249,7 @@ describe("channels", () => {
     it("should clear agent cache when agent is deleted", async () => {
       setNextJoinResult("lobby", {
         autoInit: {
-          agents: [{ id: "agent-1", model: { name: "gpt-4" } }],
+          agents: [{ name: "agent-1", model: { name: "gpt-4" } }],
           models: [],
         },
       });
@@ -263,7 +263,7 @@ describe("channels", () => {
         assert.strictEqual(useStore.getState().agents.length, 1);
       });
 
-      simulateServerEvent("lobby", "agent:deleted", { id: "agent-1" });
+      simulateServerEvent("lobby", "agent:deleted", { name: "agent-1" });
 
       await vi.waitFor(() => {
         assert.strictEqual(useStore.getState().agents.length, 0);
@@ -519,10 +519,12 @@ describe("channels", () => {
       });
 
       await vi.waitFor(() => {
-        assert.strictEqual(
-          useStore.getState().agentsCache["agent-1"]?.partial?.content,
-          "Hello",
-        );
+        const partial = useStore.getState().agentsCache["agent-1"]?.partial;
+        const text = (partial?.parts ?? [])
+          .filter((p) => p.kind === "text")
+          .map((p) => p.text || "")
+          .join("");
+        assert.strictEqual(text, "Hello");
       });
     });
 
@@ -545,7 +547,13 @@ describe("channels", () => {
 
       await vi.waitFor(() => {
         assert.strictEqual(
-          useStore.getState().agentsCache["agent-1"]?.partial?.content,
+          useStore
+            .getState()
+            .agentsCache["agent-1"].partial?.parts?.filter(
+              (p) => p.kind === "text",
+            )
+            .map((p) => p.text || "")
+            .join(""),
           "Hel",
         );
       });
@@ -559,7 +567,13 @@ describe("channels", () => {
 
       await vi.waitFor(() => {
         assert.strictEqual(
-          useStore.getState().agentsCache["agent-1"]?.partial?.content,
+          useStore
+            .getState()
+            .agentsCache["agent-1"].partial?.parts?.filter(
+              (p) => p.kind === "text",
+            )
+            .map((p) => p.text || "")
+            .join(""),
           "Hello",
         );
       });
@@ -590,7 +604,13 @@ describe("channels", () => {
           3,
         );
         assert.strictEqual(
-          useStore.getState().agentsCache["agent-1"]?.partial?.content,
+          useStore
+            .getState()
+            .agentsCache["agent-1"].partial?.parts?.filter(
+              (p) => p.kind === "text",
+            )
+            .map((p) => p.text || "")
+            .join(""),
           "New",
         );
       });
@@ -652,7 +672,13 @@ describe("channels", () => {
       assert.deepStrictEqual(result, { applied: false, needsSync: true });
       // Content should not have changed
       assert.strictEqual(
-        useStore.getState().agentsCache["agent-1"]?.partial?.content,
+        useStore
+          .getState()
+          .agentsCache["agent-1"].partial?.parts?.filter(
+            (p) => p.kind === "text",
+          )
+          .map((p) => p.text || "")
+          .join(""),
         "Hel",
       );
     });
@@ -686,7 +712,13 @@ describe("channels", () => {
       await vi.waitFor(() => {
         // Should have sliced to just "lo" and appended
         assert.strictEqual(
-          useStore.getState().agentsCache["agent-1"]?.partial?.content,
+          useStore
+            .getState()
+            .agentsCache["agent-1"].partial?.parts?.filter(
+              (p) => p.kind === "text",
+            )
+            .map((p) => p.text || "")
+            .join(""),
           "Hello",
         );
         assert.strictEqual(
@@ -735,7 +767,13 @@ describe("channels", () => {
         // But still applied the new content (sliced to "yz")
         assert.strictEqual(result.applied, true);
         assert.strictEqual(
-          useStore.getState().agentsCache["agent-1"]?.partial?.content,
+          useStore
+            .getState()
+            .agentsCache["agent-1"].partial?.parts?.filter(
+              (p) => p.kind === "text",
+            )
+            .map((p) => p.text || "")
+            .join(""),
           "Helyz",
         );
       } finally {
@@ -772,7 +810,13 @@ describe("channels", () => {
       // Should not have applied anything new
       assert.strictEqual(result.applied, false);
       assert.strictEqual(
-        useStore.getState().agentsCache["agent-1"]?.partial?.content,
+        useStore
+          .getState()
+          .agentsCache["agent-1"].partial?.parts?.filter(
+            (p) => p.kind === "text",
+          )
+          .map((p) => p.text || "")
+          .join(""),
         "Hello",
       );
     });
@@ -1618,16 +1662,34 @@ describe("channels", () => {
       useStore.getState().setAgentConnected("agent-1", {
         model: { name: "gpt-4" },
         messageCount: 0,
-        messages: [{ index: 0, role: "user", content: "Hello" }],
+        messages: [
+          { index: 0, role: "user", parts: [{ kind: "text", text: "Hello" }] },
+        ],
       });
 
       useStore.getState().syncAgentMessages("agent-1", {
         messages: [
-          { index: 1, role: "assistant", content: "Response 1" },
-          { index: 2, role: "user", content: "Question" },
-          { index: 3, role: "assistant", content: "Response 2" },
+          {
+            index: 1,
+            role: "assistant",
+            parts: [{ kind: "text", text: "Response 1" }],
+          },
+          {
+            index: 2,
+            role: "user",
+            parts: [{ kind: "text", text: "Question" }],
+          },
+          {
+            index: 3,
+            role: "assistant",
+            parts: [{ kind: "text", text: "Response 2" }],
+          },
         ],
-        partial: { index: 4, role: "assistant", content: "Streaming..." },
+        partial: {
+          index: 4,
+          role: "assistant",
+          parts: [{ kind: "text", text: "Streaming..." }],
+        },
         status: "streaming",
         messageCount: 3,
       });
@@ -1637,13 +1699,14 @@ describe("channels", () => {
       assert.deepStrictEqual(cache.messages[3], {
         index: 3,
         role: "assistant",
-        content: "Response 2",
+        parts: [{ kind: "text", text: "Response 2" }],
       });
       assert.deepStrictEqual(cache.partial, {
         index: 4,
         role: "assistant",
-        content: "Streaming...",
+        parts: [{ kind: "text", text: "Streaming..." }],
         charsReceived: 0,
+        currentKind: null,
       });
       assert.strictEqual(cache.status, "connected");
       assert.strictEqual(cache.agentState, "streaming");

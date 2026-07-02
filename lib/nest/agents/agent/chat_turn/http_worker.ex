@@ -30,7 +30,7 @@ defmodule Nest.Agents.Agent.ChatTurn.HTTPWorker do
       dispatch_result(Runner.request(ctx_with_messages, callbacks), chat_turn_pid)
     catch
       kind, reason ->
-        forward_crash(kind, reason, __STACKTRACE__, state.ctx.agent_id, chat_turn_pid)
+        forward_crash(kind, reason, __STACKTRACE__, state.ctx.agent_name, chat_turn_pid)
     end
   end
 

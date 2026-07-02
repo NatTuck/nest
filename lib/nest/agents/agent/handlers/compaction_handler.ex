@@ -46,7 +46,7 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
 
   defp compaction_done(new_messages, continuation, state) do
     Logger.info(
-      "Compaction complete: agent=#{state.id} from=#{length(state.chat_state.messages)} to=#{length(new_messages)}"
+      "Compaction complete: agent=#{state.name} from=#{length(state.chat_state.messages)} to=#{length(new_messages)}"
     )
 
     # Archive the previous messages to history with a marker,
@@ -106,7 +106,7 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
 
   defp task_compaction_done(task_pid, new_messages, state) do
     Logger.info(
-      "context tool compact: agent=#{state.id} from=#{length(state.chat_state.messages)} to=#{length(new_messages)}"
+      "context tool compact: agent=#{state.name} from=#{length(state.chat_state.messages)} to=#{length(new_messages)}"
     )
 
     state = archive_and_compact(state, new_messages)

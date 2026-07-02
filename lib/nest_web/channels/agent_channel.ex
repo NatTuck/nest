@@ -7,7 +7,7 @@ defmodule NestWeb.AgentChannel do
   - Sending/receiving chat messages
   - Streaming responses via deltas
 
-  Topic format: "agent:ID" (e.g., "agent:clever-raven")
+  Topic format: "agent:NAME" (e.g., "agent:clever-raven")
 
   Uses Phoenix.PubSub for broadcasting to all connected clients.
   """
@@ -21,12 +21,12 @@ defmodule NestWeb.AgentChannel do
   alias Nest.Messages.Streaming
 
   @impl true
-  def join("agent:" <> agent_id, _payload, socket) do
-    case Agents.get_agent(agent_id) do
+  def join("agent:" <> agent_name, _payload, socket) do
+    case Agents.get_agent(agent_name) do
       {:ok, agent} ->
         # Subscribe to PubSub topic for this agent
         # All channels connected to this agent will receive broadcasts
-        Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+        Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_name}")
 
         # Send initial state via handle_info. The init is published
         # to the test's mailbox as a socket push. Tests use
@@ -34,7 +34,7 @@ defmodule NestWeb.AgentChannel do
         # the first event after the channel is established).
         send(self(), {:after_join, agent})
 
-        {:ok, assign(socket, :agent_id, agent_id)}
+        {:ok, assign(socket, :agent_name, agent_name)}
 
       {:error, :not_found} ->
         {:error, %{"reason" => "agent not found"}}
@@ -44,7 +44,7 @@ defmodule NestWeb.AgentChannel do
   @impl true
   def handle_info({:after_join, agent}, socket) do
     init_payload = %{
-      "id" => agent.id,
+      "name" => agent.name,
       "model" => agent.model,
       "vocation" => agent.vocation,
       "messageCount" => length(agent.messages),
@@ -140,43 +140,40 @@ defmodule NestWeb.AgentChannel do
 
   @impl true
   def handle_in("chat:message", %{"content" => content} = payload, socket) do
-    agent_id = socket.assigns.agent_id
+    agent_name = socket.assigns.agent_name
     mode = Map.get(payload, "mode")
 
-    case Agents.chat(agent_id, content, mode) do
+    case Agents.chat(agent_name, content, mode) do
       :ok ->
         {:reply, {:ok, %{}}, socket}
 
       {:error, :not_found} ->
         {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
+
+      {:error, reason} ->
+        {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
     end
   end
 
-  # User clicked Stop on the chat page. The reply is
-  # immediate (`{:ok, %{}}`); the actual stop finalization
-  # happens asynchronously when the chat task unwinds and the
-  # agent's `handle_info({:chat_stopped, _}, _)` finalizes
-  # the partial accumulator. The client uses its own local
-  # "stopping" state to render the button as "Stopping..."
-  # until the next `chat:status` push arrives.
   @impl true
   def handle_in("chat:stop", _payload, socket) do
-    agent_id = socket.assigns.agent_id
+    agent_name = socket.assigns.agent_name
 
-    case Agents.stop_chat(agent_id, self()) do
+    case Agents.stop_chat(agent_name, self()) do
       :ok -> {:reply, {:ok, %{}}, socket}
       {:error, :not_found} -> {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
+      {:error, reason} -> {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
     end
   end
 
   @impl true
   def handle_in("chat:status", _payload, socket) do
-    agent_id = socket.assigns.agent_id
+    agent_name = socket.assigns.agent_name
 
-    case Agents.get_agent(agent_id) do
+    case Agents.get_agent(agent_name) do
       {:ok, agent} ->
         reply = %{
-          "id" => agent.id,
+          "name" => agent.name,
           "model" => agent.model,
           "messageCount" => length(agent.messages),
           "status" => to_string(agent.status),
@@ -191,14 +188,17 @@ defmodule NestWeb.AgentChannel do
 
       {:error, :not_found} ->
         {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
+
+      {:error, reason} ->
+        {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
     end
   end
 
   @impl true
   def handle_in("chat:sync", %{"lastIndex" => last_index}, socket) do
-    agent_id = socket.assigns.agent_id
+    agent_name = socket.assigns.agent_name
 
-    case Agents.get_agent(agent_id) do
+    case Agents.get_agent(agent_name) do
       {:ok, agent} ->
         new_messages =
           agent.messages
@@ -218,6 +218,9 @@ defmodule NestWeb.AgentChannel do
 
       {:error, :not_found} ->
         {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
+
+      {:error, reason} ->
+        {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
     end
   end
 
@@ -239,9 +242,9 @@ defmodule NestWeb.AgentChannel do
   # Cleanup: Unsubscribe from PubSub when channel terminates
   @impl true
   def terminate(_reason, socket) do
-    # Only unsubscribe if agent_id was assigned (join completed successfully)
-    if agent_id = socket.assigns[:agent_id] do
-      Phoenix.PubSub.unsubscribe(Nest.PubSub, "agent:#{agent_id}")
+    # Only unsubscribe if agent_name was assigned (join completed successfully)
+    if agent_name = socket.assigns[:agent_name] do
+      Phoenix.PubSub.unsubscribe(Nest.PubSub, "agent:#{agent_name}")
     end
 
     {:ok, socket}

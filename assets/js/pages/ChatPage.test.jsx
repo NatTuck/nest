@@ -32,11 +32,11 @@ vi.mock("../hooks/useScrollToBottom", () => ({
 
 import { ChatPage } from "./ChatPage";
 
-function renderChat(agentId = "test-agent") {
+function renderChat(agentName = "test-agent") {
   return render(
-    <MemoryRouter initialEntries={[`/agents/${agentId}`]}>
+    <MemoryRouter initialEntries={[`/agent/${agentName}`]}>
       <Routes>
-        <Route path="/agents/:id" element={<ChatPage />} />
+        <Route path="/agent/:name" element={<ChatPage />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -230,9 +230,9 @@ describe("ChatPage stop button", () => {
     // Agent transitions to idle (server pushed chat:status: idle).
     mockAgentsCache["test-agent"].agentState = "idle";
     rerender(
-      <MemoryRouter initialEntries={["/agents/test-agent"]}>
+      <MemoryRouter initialEntries={["/agent/test-agent"]}>
         <Routes>
-          <Route path="/agents/:id" element={<ChatPage />} />
+          <Route path="/agent/:name" element={<ChatPage />} />
         </Routes>
       </MemoryRouter>,
     );
@@ -307,11 +307,13 @@ describe("ChatPage loading and empty states", () => {
       "test-agent": {
         status: "connected",
         agentState: "streaming",
-        messages: [{ index: 0, role: "user", content: "Hi" }],
+        messages: [
+          { index: 0, role: "user", parts: [{ kind: "text", text: "Hi" }] },
+        ],
         partial: {
           index: 1,
           role: "assistant",
-          content: "I'm thinking",
+          parts: [{ kind: "thinking", thinking: "I'm thinking" }],
         },
         model: { name: "qwen3.5-plus" },
       },
@@ -335,7 +337,9 @@ describe("ChatPage message rendering", () => {
       "test-agent": {
         status: "connected",
         agentState: "idle",
-        messages: [{ index: 0, role: "user", content: "Hello" }],
+        messages: [
+          { index: 0, role: "user", parts: [{ kind: "text", text: "Hello" }] },
+        ],
         model: { name: "qwen3.5-plus" },
       },
     };
@@ -351,7 +355,14 @@ describe("ChatPage message rendering", () => {
       "test-agent": {
         status: "connected",
         agentState: "idle",
-        messages: [{ index: 0, role: "user", content: "Hello", mode: "build" }],
+        messages: [
+          {
+            index: 0,
+            role: "user",
+            mode: "build",
+            parts: [{ kind: "text", text: "Hello" }],
+          },
+        ],
         model: { name: "qwen3.5-plus" },
       },
     };
@@ -375,7 +386,7 @@ describe("ChatPage message rendering", () => {
           {
             index: 0,
             role: "user",
-            content: "[mode: build]\nHello there",
+            parts: [{ kind: "text", text: "[mode: build]\nHello there" }],
             mode: "build",
           },
         ],
@@ -398,8 +409,12 @@ describe("ChatPage message rendering", () => {
         status: "connected",
         agentState: "idle",
         messages: [
-          { index: 0, role: "user", content: "Hi" },
-          { index: 1, role: "assistant", content: "Hello there" },
+          { index: 0, role: "user", parts: [{ kind: "text", text: "Hi" }] },
+          {
+            index: 1,
+            role: "assistant",
+            parts: [{ kind: "text", text: "Hello there" }],
+          },
         ],
         model: { name: "qwen3.5-plus" },
       },
@@ -421,7 +436,13 @@ describe("ChatPage message rendering", () => {
       "test-agent": {
         status: "connected",
         agentState: "idle",
-        messages: [{ index: 0, role: "system", content: "Welcome" }],
+        messages: [
+          {
+            index: 0,
+            role: "system",
+            parts: [{ kind: "text", text: "Welcome" }],
+          },
+        ],
         model: { name: "qwen3.5-plus" },
       },
     };
@@ -442,7 +463,9 @@ describe("ChatPage message rendering", () => {
       "test-agent": {
         status: "connected",
         agentState: "idle",
-        messages: [{ index: 0, role: "system", content: "" }],
+        messages: [
+          { index: 0, role: "system", parts: [{ kind: "text", text: "" }] },
+        ],
         model: { name: "qwen3.5-plus" },
       },
     };
@@ -459,7 +482,13 @@ describe("ChatPage message rendering", () => {
       "test-agent": {
         status: "connected",
         agentState: "idle",
-        messages: [{ index: 0, role: "system", content: lines.join("\n") }],
+        messages: [
+          {
+            index: 0,
+            role: "system",
+            parts: [{ kind: "text", text: lines.join("\n") }],
+          },
+        ],
         model: { name: "qwen3.5-plus" },
       },
     };
@@ -505,7 +534,13 @@ describe("ChatPage message rendering", () => {
       "test-agent": {
         status: "connected",
         agentState: "idle",
-        messages: [{ index: 0, role: "system", content: lines.join("\n") }],
+        messages: [
+          {
+            index: 0,
+            role: "system",
+            parts: [{ kind: "text", text: lines.join("\n") }],
+          },
+        ],
         model: { name: "qwen3.5-plus" },
       },
     };
@@ -522,7 +557,13 @@ describe("ChatPage message rendering", () => {
       "test-agent": {
         status: "connected",
         agentState: "idle",
-        messages: [{ index: 0, role: "tool", content: "ls output" }],
+        messages: [
+          {
+            index: 0,
+            role: "tool",
+            parts: [{ kind: "text", text: "ls output" }],
+          },
+        ],
         model: { name: "qwen3.5-plus" },
       },
     };
@@ -553,11 +594,11 @@ describe("ChatPage thinking-before-content order", () => {
         status: "connected",
         agentState: "idle",
         messages: [
-          { index: 0, role: "user", content: "Hi" },
+          { index: 0, role: "user", parts: [{ kind: "text", text: "Hi" }] },
           {
             index: 1,
             role: "assistant",
-            content: "The answer is 42.",
+            parts: [{ kind: "text", text: "The answer is 42." }],
             thinking: "Let me think about this carefully.",
           },
         ],
@@ -597,16 +638,17 @@ describe("ChatPage thinking-before-content order", () => {
       "test-agent": {
         status: "connected",
         agentState: "streaming",
-        messages: [{ index: 0, role: "user", content: "Hi" }],
+        messages: [
+          { index: 0, role: "user", parts: [{ kind: "text", text: "Hi" }] },
+        ],
         partial: {
           index: 1,
           role: "assistant",
-          content: "Halfway through...",
-          isPartial: true,
-          segments: [
-            { type: "thinking", content: "Reasoning about the answer..." },
-            { type: "text", content: "Halfway through..." },
+          parts: [
+            { kind: "thinking", thinking: "Reasoning about the answer..." },
+            { kind: "text", text: "Halfway through..." },
           ],
+          isPartial: true,
         },
         model: { name: "qwen3.5-plus" },
       },
@@ -648,17 +690,19 @@ describe("ChatPage thinking-before-content order", () => {
       "test-agent": {
         status: "connected",
         agentState: "streaming",
-        messages: [{ index: 0, role: "user", content: "Hi" }],
+        messages: [
+          { index: 0, role: "user", parts: [{ kind: "text", text: "Hi" }] },
+        ],
         partial: {
           index: 1,
           role: "assistant",
           content: "Visible answer",
           isPartial: true,
-          segments: [
-            { type: "thinking", content: "First thought " },
-            { type: "text", content: "Visible " },
-            { type: "thinking", content: "second thought" },
-            { type: "text", content: "answer" },
+          parts: [
+            { kind: "thinking", thinking: "First thought " },
+            { kind: "text", text: "Visible " },
+            { kind: "thinking", thinking: "second thought" },
+            { kind: "text", text: "answer" },
           ],
         },
         model: { name: "qwen3.5-plus" },
@@ -683,8 +727,12 @@ describe("ChatPage thinking-before-content order", () => {
         status: "connected",
         agentState: "idle",
         messages: [
-          { index: 0, role: "user", content: "Hi" },
-          { index: 1, role: "assistant", content: "Plain answer" },
+          { index: 0, role: "user", parts: [{ kind: "text", text: "Hi" }] },
+          {
+            index: 1,
+            role: "assistant",
+            parts: [{ kind: "text", text: "Plain answer" }],
+          },
         ],
         model: { name: "qwen3.5-plus" },
       },
@@ -711,7 +759,7 @@ describe("ChatPage thinking-before-content order", () => {
         status: "connected",
         agentState: "idle",
         messages: [
-          { index: 0, role: "user", content: "Hi" },
+          { index: 0, role: "user", parts: [{ kind: "text", text: "Hi" }] },
           {
             index: 1,
             role: "assistant",
@@ -936,9 +984,9 @@ describe("ChatPage mode selector", () => {
     mockAgentsCache["test-agent"].agentState = "streaming";
     mockAgentsCache["test-agent"].currentMode = "plan";
     rerender(
-      <MemoryRouter initialEntries={["/agents/test-agent"]}>
+      <MemoryRouter initialEntries={["/agent/test-agent"]}>
         <Routes>
-          <Route path="/agents/:id" element={<ChatPage />} />
+          <Route path="/agent/:name" element={<ChatPage />} />
         </Routes>
       </MemoryRouter>,
     );
@@ -1023,9 +1071,17 @@ describe("ChatPage message copy button", () => {
         status: "connected",
         agentState: "idle",
         messages: [
-          { index: 0, role: "user", content: "Hello" },
-          { index: 1, role: "assistant", content: "Hi back" },
-          { index: 2, role: "system", content: "Welcome" },
+          { index: 0, role: "user", parts: [{ kind: "text", text: "Hello" }] },
+          {
+            index: 1,
+            role: "assistant",
+            parts: [{ kind: "text", text: "Hi back" }],
+          },
+          {
+            index: 2,
+            role: "system",
+            parts: [{ kind: "text", text: "Welcome" }],
+          },
         ],
         model: { name: "qwen3.5-plus" },
       },
@@ -1049,7 +1105,7 @@ describe("ChatPage message copy button", () => {
             index: 0,
             role: "user",
             mode: "build",
-            content: "[mode: build]\nHello world",
+            parts: [{ kind: "text", text: "[mode: build]\nHello world" }],
           },
         ],
         model: { name: "qwen3.5-plus" },
@@ -1074,13 +1130,15 @@ describe("ChatPage message copy button", () => {
           {
             index: 0,
             role: "user",
-            content: "Hi",
+            parts: [{ kind: "text", text: "Hi" }],
           },
           {
             index: 1,
             role: "assistant",
-            thinking: "Reasoning here.",
-            content: "Answer here.",
+            parts: [
+              { kind: "thinking", thinking: "Reasoning here." },
+              { kind: "text", text: "Answer here." },
+            ],
           },
         ],
         model: { name: "qwen3.5-plus" },
@@ -1108,7 +1166,9 @@ describe("ChatPage message copy button", () => {
       "test-agent": {
         status: "connected",
         agentState: "idle",
-        messages: [{ index: 0, role: "user", content: "Hi" }],
+        messages: [
+          { index: 0, role: "user", parts: [{ kind: "text", text: "Hi" }] },
+        ],
         model: { name: "qwen3.5-plus" },
       },
     };

@@ -3,7 +3,7 @@ defmodule Nest.Agents.Agent do
   GenServer that manages an individual agent's state and chat.
 
   Each agent runs as an independent process with:
-  - A unique readable ID (e.g., "clever-raven")
+  - A unique readable name (e.g., "clever-raven")
   - Message history with tool calling support
   - LLM client config for model communication
   - Streaming broadcast support for real-time responses via PubSub
@@ -22,7 +22,6 @@ defmodule Nest.Agents.Agent do
   alias Nest.Agents.Agent.Persistence, as: AgentPersistence
   alias Nest.Agents.Registry
   alias Nest.LLM.ClientConfig
-  alias Nest.LLM.Discover
   alias Nest.Messages.Assistant
   alias Nest.Messages.Message
   alias Nest.Messages.System
@@ -31,7 +30,7 @@ defmodule Nest.Agents.Agent do
   alias Nest.Vocations
 
   defstruct [
-    :id,
+    :name,
     :model,
     :client_config,
     :vocation_id,
@@ -56,7 +55,7 @@ defmodule Nest.Agents.Agent do
   # system content as well as any late runtime reminders.
 
   @type t :: %__MODULE__{
-          id: String.t(),
+          name: String.t(),
           model: map(),
           client_config: ClientConfig.t(),
           vocation_id: integer() | nil,
@@ -75,26 +74,21 @@ defmodule Nest.Agents.Agent do
           | {:assistant, Assistant.t()}
           | {:tool, Tool.t()}
 
-  # Fallback used when neither config nor the async probe has produced
-  # a value lives in `Nest.Agents.Agent.Init`. 128k is a safe lower
-  # bound for modern chat models and keeps the token-usage chip
-  # rendering before the probe completes.
-
   # Client API
 
   @doc """
   Starts an agent process with the given attributes.
 
   Required keys:
-  - `:id` - Unique readable agent ID
+  - `:name` - Unique readable agent name (the human identifier)
   - `:model` - Model configuration map with :name key
 
-  The agent registers itself in the Registry under its ID.
+  The agent registers itself in the Registry under its name.
   """
   @spec start_link(attrs :: map()) :: GenServer.on_start()
   def start_link(attrs) do
-    id = Map.fetch!(attrs, :id)
-    GenServer.start_link(__MODULE__, attrs, name: Registry.via_tuple(id))
+    name = Map.fetch!(attrs, :name)
+    GenServer.start_link(__MODULE__, attrs, name: Registry.via_tuple(name))
   end
 
   @doc """
@@ -197,7 +191,7 @@ defmodule Nest.Agents.Agent do
     # Trap exits to ensure cleanup runs when agent is stopped
     Process.flag(:trap_exit, true)
 
-    id = Map.fetch!(attrs, :id)
+    name = Map.fetch!(attrs, :name)
     model = Map.fetch!(attrs, :model)
 
     case Config.create_client_config(model) do
@@ -211,11 +205,16 @@ defmodule Nest.Agents.Agent do
         # `message_index`-sorted by `Persistence.load_active_messages/1`.
         state = seed_preloaded_messages(state, Map.get(attrs, :preloaded_messages, []))
 
-        Init.run_post_init(state, client_config)
+        Init.persist_initial_system_message(state)
+
+        Logger.info(
+          "Agent started: #{state.name} with vocation_id: #{inspect(state.vocation_id)}, mode: #{state.mode}, tools: #{length(state.tools)}, client: #{inspect(state.client_config.client)}, context_limit: #{inspect(state.llm_metrics.context_limit)} (#{state.llm_metrics.context_limit_source})"
+        )
+
         {:ok, state}
 
       {:error, reason} ->
-        cleanup_tmp(id)
+        cleanup_tmp(name)
         {:stop, reason}
     end
   end
@@ -223,6 +222,22 @@ defmodule Nest.Agents.Agent do
   defp seed_preloaded_messages(state, []), do: state
 
   defp seed_preloaded_messages(state, preloaded) do
+    seed_with_system_if_needed(state, preloaded)
+  end
+
+  # When the in-memory system message is already at position 0
+  # of the preloaded list, use the list as-is.
+  defp seed_with_system_if_needed(state, preloaded) do
+    has_system? = Enum.any?(preloaded, &match?({:system, _}, &1))
+
+    if has_system? do
+      do_seed(state, preloaded)
+    else
+      prepend_system(state, preloaded)
+    end
+  end
+
+  defp do_seed(state, preloaded) do
     highest_index =
       preloaded
       |> Enum.map(fn {_role, %{index: idx}} -> idx end)
@@ -238,10 +253,25 @@ defmodule Nest.Agents.Agent do
     }
   end
 
+  # Defensive prepend: pre-existing rows may have messages
+  # but no persisted system row. Shift the preloaded list
+  # up by one and seed the in-memory system message at
+  # position 0 so the system prompt survives BEAM restart.
+  defp prepend_system(state, preloaded) do
+    [system | _] = state.chat_state.messages
+
+    shifted =
+      Enum.map(preloaded, fn {role, %{index: idx} = msg} ->
+        {role, %{msg | index: idx + 1}}
+      end)
+
+    do_seed(state, [system | shifted])
+  end
+
   @impl true
   def terminate(_reason, state) do
     # Cleanup /tmp per design specification
-    cleanup_tmp(state.id)
+    cleanup_tmp(state.name)
 
     # Note: workspace is preserved for review/debugging (per design)
     :ok
@@ -266,7 +296,7 @@ defmodule Nest.Agents.Agent do
     vocation = state.vocation
 
     public_info = %{
-      id: state.id,
+      name: state.name,
       model: state.model,
       message_count: length(state.chat_state.messages),
       status: state.chat_state.status,
@@ -367,7 +397,7 @@ defmodule Nest.Agents.Agent do
       | chat_state: %{state.chat_state | messages: messages, next_message_index: index + 1}
     }
 
-    Broadcasts.message(state.id, stamped)
+    Broadcasts.message(state.name, stamped)
     persist_appended_message(state, stamped)
     {stamped, state}
   end
@@ -377,7 +407,7 @@ defmodule Nest.Agents.Agent do
   # is the source of truth for the current turn; the
   # persisted row is for cross-restart recovery.
   defp persist_appended_message(state, stamped) do
-    AgentPersistence.append_message(state.id, stamped, state.chat_state.next_message_index)
+    AgentPersistence.append_message(state.name, stamped, state.chat_state.next_message_index)
   end
 
   # Extract the index from a stamped message tuple. Exposed
@@ -414,18 +444,6 @@ defmodule Nest.Agents.Agent do
   end
 
   # Private functions
-
-  # Fire-and-forget probe against the provider's /models endpoint.
-  # The result is delivered to the GenServer via `send/2` so init/1
-  # can return immediately. Failures and unparseable bodies fall
-  # through to the default inside `Discover.context_limit/1`, so
-  # this task never raises into the GenServer mailbox.
-  def __spawn_context_limit_probe__(%ClientConfig{} = client_config, agent_pid) do
-    Task.Supervisor.start_child(Nest.Agents.TaskSupervisor, fn ->
-      {source, limit} = Discover.context_limit(client_config)
-      send(agent_pid, {:discovered_context_limit, source, limit})
-    end)
-  end
 
   # Create a per-agent tmp directory for sandbox use
   # Pattern: /tmp/nest-{BEAM_pid}/agent-{agent_id}

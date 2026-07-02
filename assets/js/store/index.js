@@ -39,59 +39,175 @@ const initialState = {
  * Normalize streaming state from wire format to internal format.
  * Wire format uses "lastDeltaIndex" to describe position.
  * Internal format uses "nextDeltaIndex" to track expected next delta.
+ *
+ * The accumulator's wire format still uses the legacy `content`,
+ * `segments: [{type, content}]`, and `currentType` keys. We
+ * translate them into the canonical `parts: [{kind, text|thinking}]`
+ * and `currentKind` shape that the rest of the store expects.
  */
 const normalizeStreaming = (streaming) => {
   if (!streaming) return null;
   const { lastDeltaIndex, ...rest } = streaming;
-  return { ...rest, nextDeltaIndex: (lastDeltaIndex ?? -1) + 1 };
+  const { parts, currentKind } = legacyToParts(rest);
+  return {
+    ...rest,
+    parts,
+    currentKind,
+    nextDeltaIndex: (lastDeltaIndex ?? -1) + 1,
+  };
 };
 
 /**
  * Normalize partial message from wire format to internal format (legacy).
  * Wire format uses "charsEnd" to describe position.
- * Internal format uses "charsReceived" to track state.
+ * Internal format uses "charsReceived" to track state, and
+ * translates the `content` / `segments: [{type, content}]` /
+ * `currentType` keys into the canonical `parts` / `currentKind`.
+ *
  * @deprecated Use normalizeStreaming instead
  */
 const normalizePartial = (partial) => {
   if (!partial) return null;
   const { charsEnd, ...rest } = partial;
-  return { ...rest, charsReceived: charsEnd ?? 0 };
+  const { parts, currentKind } = legacyToParts(rest);
+  return {
+    ...rest,
+    parts,
+    currentKind,
+    charsReceived: charsEnd ?? 0,
+  };
 };
 
 /**
- * Helper to accumulate content into segments based on type.
- * Returns updated segments array and current type.
+ * Helper to accumulate a delta into a parts list based on kind.
+ *
+ * Returns `{ parts, currentKind }`. `parts` is the canonical
+ * assistant-message shape: `[{ kind: "text"|"thinking",
+ * text|thinking }, ...]`. When the incoming kind matches the
+ * trailing part's kind, the text is appended; otherwise a
+ * new part is pushed.
  */
-const accumulateSegment = (segments, _currentType, content, partType) => {
-  const type = partType || "text";
+const accumulatePart = (parts, _currentKind, content, partType) => {
+  const kind = partType || "text";
 
-  if (segments.length === 0) {
-    // First segment
+  if (!Array.isArray(parts) || parts.length === 0) {
     return {
-      segments: [{ type, content }],
-      currentType: type,
+      parts: [newPart(kind, content)],
+      currentKind: kind,
     };
   }
 
-  const lastSegment = segments[segments.length - 1];
-  if (lastSegment.type === type) {
-    // Continue existing segment
-    const updatedSegments = [...segments];
-    updatedSegments[updatedSegments.length - 1] = {
-      ...lastSegment,
-      content: lastSegment.content + content,
-    };
+  const last = parts[parts.length - 1];
+  if (last.kind === kind) {
+    const updated = [...parts];
+    updated[updated.length - 1] = appendPart(last, content);
     return {
-      segments: updatedSegments,
-      currentType: type,
-    };
-  } else {
-    // Start new segment
-    return {
-      segments: [...segments, { type, content }],
-      currentType: type,
+      parts: updated,
+      currentKind: kind,
     };
   }
+
+  return {
+    parts: [...parts, newPart(kind, content)],
+    currentKind: kind,
+  };
+};
+
+const newPart = (kind, content) => {
+  if (kind === "thinking") {
+    return { kind: "thinking", thinking: content };
+  }
+  if (kind === "refusal") {
+    return { kind: "refusal", refusal: content };
+  }
+  if (kind === "tool_use") {
+    return {
+      kind: "tool_use",
+      id: null,
+      name: null,
+      arguments: null,
+      text: content,
+    };
+  }
+  if (kind === "tool_result") {
+    return {
+      kind: "tool_result",
+      toolCallId: null,
+      name: null,
+      content,
+      isError: false,
+      text: content,
+    };
+  }
+  if (kind === "tool_arguments") {
+    return { kind: "tool_arguments", text: content };
+  }
+  if (kind === "text") {
+    return { kind: "text", text: content };
+  }
+
+  return { kind: "text", text: content };
+};
+
+const appendPart = (last, content) => {
+  if (last.kind === "thinking") {
+    return { ...last, thinking: (last.thinking || "") + content };
+  }
+  if (last.kind === "refusal") {
+    return { ...last, refusal: (last.refusal || "") + content };
+  }
+  return { ...last, text: (last.text || "") + content };
+};
+
+// Flatten a streaming/partial parts list to a single string —
+// only text parts contribute to visible content; thinking parts
+// are returned by `partialThinking` below. Used by the
+// overlap-integrity check in `addChatDelta/2`.
+const partialPartsToText = (parts) =>
+  parts
+    .filter((p) => p && p.kind === "text")
+    .map((p) => p.text || "")
+    .join("");
+
+// Legacy streaming accumulator wire format (kept on the BEAM
+// side as `content` + `segments: [{type, content}]` +
+// `currentType`) → canonical `parts: [{kind, text|thinking}]`
+// + `currentKind`. Returns `{parts: [], currentKind: null}`
+// when neither shape is present (e.g. fresh accumulator).
+//
+// Also tolerates the legacy flat-string `content` shape (still
+// seeded in legacy tests) by folding it into a single text
+// part.
+const legacyToParts = (acc) => {
+  if (!acc) return { parts: [], currentKind: null };
+
+  if (Array.isArray(acc.parts)) {
+    return {
+      parts: acc.parts,
+      currentKind: acc.currentKind ?? null,
+    };
+  }
+
+  if (Array.isArray(acc.segments)) {
+    const parts = acc.segments.map((seg) =>
+      seg?.type === "thinking"
+        ? { kind: "thinking", thinking: seg.content || "" }
+        : { kind: "text", text: seg.content || "" },
+    );
+    return {
+      parts,
+      currentKind: acc.currentType ?? null,
+    };
+  }
+
+  if (typeof acc.content === "string" && acc.content.length > 0) {
+    return {
+      parts: [{ kind: "text", text: acc.content }],
+      currentKind: acc.currentType ?? "text",
+    };
+  }
+
+  return { parts: [], currentKind: null };
 };
 
 /**
@@ -150,7 +266,7 @@ export const useStore = create(
         set((state) => ({
           agents: [
             ...state.agents,
-            { id: agent.id, model: agent.model, status: "idle" },
+            { name: agent.name, model: agent.model, status: "idle" },
           ],
         }));
       },
@@ -158,12 +274,12 @@ export const useStore = create(
       /**
        * Remove deleted agent
        */
-      removeAgent: (id) => {
+      removeAgent: (name) => {
         set((state) => {
           const newCache = { ...state.agentsCache };
-          delete newCache[id];
+          delete newCache[name];
           return {
-            agents: state.agents.filter((a) => a.id !== id),
+            agents: state.agents.filter((a) => a.name !== name),
             agentsCache: newCache,
           };
         });
@@ -472,9 +588,8 @@ export const useStore = create(
               : {
                   messageIndex: messageIndex,
                   nextDeltaIndex: 0,
-                  content: "",
-                  segments: [],
-                  currentType: null,
+                  parts: [],
+                  currentKind: null,
                 };
 
           // Check if this is the expected delta
@@ -496,25 +611,13 @@ export const useStore = create(
           }
 
           // Apply the delta
-          const { segments: newSegments, currentType: newCurrentType } =
-            accumulateSegment(
-              streaming.segments || [],
-              streaming.currentType,
+          const { parts: newParts, currentKind: newCurrentKind } =
+            accumulatePart(
+              streaming.parts || [],
+              streaming.currentKind,
               content,
               partType,
             );
-
-          // Thinking deltas update `segments` (so the ThinkingBlock
-          // can render them via `thinkingFor(message)`) but NOT
-          // `content` (which `<MessageContent>` renders as visible
-          // text). Without this split, thinking text appears twice:
-          // once in the yellow box and again as regular markdown
-          // below it, then vanishes on finalization when the
-          // assistant message's `content` is rebuilt as text-only.
-          const newContent =
-            partType === "thinking"
-              ? streaming.content
-              : streaming.content + content;
 
           set((s) => ({
             agentsCache: {
@@ -523,10 +626,9 @@ export const useStore = create(
                 ...cache,
                 streaming: {
                   ...streaming,
-                  content: newContent,
                   nextDeltaIndex: deltaIndex + 1,
-                  segments: newSegments,
-                  currentType: newCurrentType,
+                  parts: newParts,
+                  currentKind: newCurrentKind,
                   toolCallId: payload.toolCallId || streaming.toolCallId,
                   toolCallName: payload.toolCallName || streaming.toolCallName,
                 },
@@ -544,11 +646,47 @@ export const useStore = create(
             : {
                 index: messageIndex,
                 role: "assistant",
-                content: "",
                 charsReceived: 0,
-                segments: [],
-                currentType: null,
+                parts: [],
+                currentKind: null,
               };
+
+        // Migrate a legacy-shaped partial (`content` flat string,
+        // no `parts`) on the fly so tests that seed partials in
+        // the old shape still work. New code paths always read
+        // and write `parts`.
+        const existingParts = Array.isArray(partial.parts)
+          ? partial.parts
+          : partial.content
+            ? [{ kind: "text", text: partial.content }]
+            : [];
+        const existingCurrentKind =
+          partial.currentKind ?? (partial.content ? "text" : null);
+
+        // Persist the migration when we encounter a legacy partial
+        // so downstream code (and assertions) see the new shape
+        // rather than the half-updated shape with both legacy
+        // `content` and new `parts` fields.
+        if (
+          cache.partial &&
+          !Array.isArray(cache.partial.parts) &&
+          cache.partial.content
+        ) {
+          set((s) => ({
+            agentsCache: {
+              ...s.agentsCache,
+              [id]: {
+                ...cache,
+                partial: {
+                  ...cache.partial,
+                  content: undefined,
+                  parts: existingParts,
+                  currentKind: existingCurrentKind,
+                },
+              },
+            },
+          }));
+        }
 
         const currentReceived = partial.charsReceived || 0;
 
@@ -560,7 +698,8 @@ export const useStore = create(
         let overlapMismatch = false;
         if (charsStart < currentReceived) {
           const overlap = currentReceived - charsStart;
-          const expectedOverlap = graphemeLast(partial.content, overlap);
+          const streamingText = partialPartsToText(existingParts);
+          const expectedOverlap = graphemeLast(streamingText, overlap);
           const actualOverlap = graphemeSlice(content, 0, overlap);
           overlapMismatch = expectedOverlap !== actualOverlap;
 
@@ -576,11 +715,11 @@ export const useStore = create(
               partial: {
                 index: partial.index,
                 charsReceived: currentReceived,
-                graphemeCount: graphemeCount(partial.content),
+                graphemeCount: graphemeCount(streamingText),
                 content:
-                  graphemeCount(partial.content) > 100
-                    ? `...${graphemeLast(partial.content, 50)}`
-                    : partial.content,
+                  graphemeCount(streamingText) > 100
+                    ? `...${graphemeLast(streamingText, 50)}`
+                    : streamingText,
               },
               overlapCalc: {
                 overlapChars: overlap,
@@ -589,9 +728,9 @@ export const useStore = create(
               },
               integrityCheck: {
                 contentVsCharsReceived:
-                  graphemeCount(partial.content) === currentReceived
+                  graphemeCount(streamingText) === currentReceived
                     ? "OK"
-                    : `MISMATCH: graphemeCount=${graphemeCount(partial.content)}, charsReceived=${currentReceived}`,
+                    : `MISMATCH: graphemeCount=${graphemeCount(streamingText)}, charsReceived=${currentReceived}`,
               },
             });
           }
@@ -602,42 +741,29 @@ export const useStore = create(
           }
         }
 
-        const { segments: newSegments, currentType: newCurrentType } =
-          accumulateSegment(
-            partial.segments || [],
-            partial.currentType,
-            newContent,
-            partType,
-          );
+        const { parts: newParts, currentKind: newCurrentKind } = accumulatePart(
+          existingParts,
+          existingCurrentKind,
+          newContent,
+          partType,
+        );
 
-        // Thinking deltas update `segments` (for ThinkingBlock) but
-        // NOT `content` (which `<MessageContent>` renders as visible
-        // text). See the matching comment in the new-protocol branch
-        // above for the full rationale.
-        const updatedContent =
-          partType === "thinking"
-            ? partial.content
-            : partial.content + newContent;
+        const updatedPartial = {
+          ...partial,
+          // Drop the legacy `content` once we've migrated.
+          content: undefined,
+          charsReceived: charsEnd,
+          parts: newParts,
+          currentKind: newCurrentKind,
+        };
 
         set((s) => ({
           agentsCache: {
             ...s.agentsCache,
             [id]: {
               ...cache,
-              partial: {
-                ...partial,
-                content: updatedContent,
-                charsReceived: charsEnd,
-                segments: newSegments,
-                currentType: newCurrentType,
-              },
-              streaming: {
-                ...partial,
-                content: updatedContent,
-                charsReceived: charsEnd,
-                segments: newSegments,
-                currentType: newCurrentType,
-              },
+              partial: updatedPartial,
+              streaming: { ...updatedPartial, messageIndex },
               waitingForResponse: false,
             },
           },
@@ -653,28 +779,33 @@ export const useStore = create(
           const cache = state.agentsCache[id];
           if (!cache) return state;
 
-          // Helper: extract concatenated text from a parts list,
-          // falling back to a flat `content` string (legacy shape
-          // or messages from non-text parts only). Keeps the
-          // streaming-comparison code below working regardless of
-          // which shape the server sent.
-          const flatten = (m) => {
+          // Helper: read the message's text via parts first
+          // (the canonical wire format), falling back to a flat
+          // legacy `content` string.
+          const messageText = (m) => {
             if (!m) return "";
             if (Array.isArray(m.parts)) {
-              return m.parts
+              const out = m.parts
                 .filter((p) => p && p.kind === "text")
                 .map((p) => p.text || "")
                 .join("");
+              if (out) return out;
             }
-            return m.content || "";
+            return typeof m.content === "string" ? m.content : "";
           };
 
-          // Check both streaming (new) and partial (legacy) for backward compatibility
+          // The streaming accumulator carries `parts` (new format)
+          // or `segments` (legacy). Compare via text. Tolerate the
+          // older flat `content` shape that's still seeded in
+          // tests by routing through `legacyToParts` first.
           const streaming = cache.streaming || cache.partial;
           const streamingIndex = streaming?.messageIndex ?? streaming?.index;
           if (streaming && streamingIndex === message.index) {
-            const streamingContent = streaming.content || "";
-            const messageContent = flatten(message);
+            const parts = (streaming.parts ?? []).length
+              ? streaming.parts
+              : legacyToParts(streaming).parts;
+            const streamingContent = partialPartsToText(parts);
+            const messageContent = messageText(message);
 
             if (streamingContent !== messageContent) {
               const extraInPartial =
@@ -725,17 +856,12 @@ export const useStore = create(
 
           const exists = cache.messages.some((m) => m.index === message.index);
 
-          // Defensive fallback: if the server's broadcast message
-          // omitted `thinking` but the streaming partial had it in
-          // `segments`, preserve it. This guards against server-side
-          // regressions of the same shape that dropped thinking on
-          // tool-call finalization (see `build_tool_pair/3` in
-          // `llm_runner.ex`). When the fallback triggers, log a
-          // prominent, grep-able error so the regression is visible
-          // in the browser dev tools.
+          // Derive the legacy `content`/`thinking` fields from
+          // `parts` so downstream components that still read those
+          // flat fields keep working. `mergedThinking` already
+          // does this for the thinking path; the content field
+          // here is the visible text (concatenated text parts).
           const mergedThinking = (() => {
-            // Extract concatenated thinking from the parts list
-            // (new format) or the legacy `thinking` field.
             const fromParts = (parts) => {
               if (!Array.isArray(parts)) return null;
               const text = parts
@@ -747,33 +873,34 @@ export const useStore = create(
 
             const direct = fromParts(message.parts) ?? message.thinking;
             if (direct) return direct;
-            if (!streaming?.segments) return direct ?? null;
-            const fromSegments = streaming.segments
-              .filter((s) => s && s.type === "thinking")
-              .map((s) => s.content || "")
+            const streamingParts =
+              (streaming?.parts ?? []).length > 0
+                ? streaming.parts
+                : legacyToParts(streaming).parts;
+            if (!streamingParts.length) return direct ?? null;
+            const fromStreaming = streamingParts
+              .filter((p) => p && p.kind === "thinking")
+              .map((p) => p.thinking || "")
               .join("");
-            if (fromSegments) {
+            if (fromStreaming) {
               console.error(
                 "[NEST REGRESSION] Thinking lost on tool-call finalization; " +
                   "fell back to streaming partial. " +
                   "The server's `build_tool_pair/3` is dropping the " +
                   "thinking field again — see llm_runner.ex:274-288. " +
                   "Preserved thinking:",
-                fromSegments,
+                fromStreaming,
               );
-              return fromSegments;
+              return fromStreaming;
             }
             return direct ?? null;
           })();
 
-          // Merge apiLogs and tool parts if updating an existing message.
-          // The new wire format uses `parts` (mixed-kind list). The
-          // legacy shape had `toolCalls` + `toolResults` fields —
-          // we derive those views from `parts` for the merged
-          // message so the rest of the UI keeps working. Returns
-          // `null` when no relevant parts are present so
-          // downstream code can fall through to the legacy
-          // `message.toolCalls` / `message.toolResults` fields.
+          // Derive tool calls / results from `parts` (the new
+          // wire format). Returns `null` when no relevant parts
+          // are present so downstream code can fall through to the
+          // legacy `message.toolCalls` / `message.toolResults`
+          // fields.
           const toolCallsFromParts = (parts) => {
             if (!Array.isArray(parts)) return null;
             const tcs = parts.filter((p) => p && p.kind === "tool_use");
@@ -852,14 +979,12 @@ export const useStore = create(
 
                   return {
                     ...message,
-                    // Derive the legacy `content`/`thinking`
-                    // fields from `parts` so downstream components
-                    // that still read those flat fields keep
-                    // working. `mergedThinking` already does this
-                    // for the thinking path; the content field
-                    // here is the visible text (concatenated text
-                    // parts).
-                    content: flatten(message) || m.content || "",
+                    // Derive the legacy `content` field from
+                    // `parts` for components that still read it
+                    // as a flat string. The thinking path
+                    // (`mergedThinking`) already handles the
+                    // thinking merge.
+                    content: messageText(message) || m.content || "",
                     thinking: mergedThinking,
                     apiLogs: mergedApiLogs,
                     toolCalls: mergedToolCalls,
@@ -872,9 +997,7 @@ export const useStore = create(
                 ...cache.messages,
                 {
                   ...message,
-                  // Derive the legacy `content` field for
-                  // downstream code that reads it as a flat string.
-                  content: flatten(message) || message.content || "",
+                  content: messageText(message) || message.content || "",
                   thinking: mergedThinking,
                   toolCalls:
                     toolCallsFromParts(message.parts) ||
@@ -914,6 +1037,11 @@ export const useStore = create(
           const userMessage = {
             index: newIndex,
             role: "user",
+            parts: [{ kind: "text", text: content }],
+            // Flat `content` for components that haven't migrated
+            // off the legacy field. The ChatInput mode-prefix
+            // stripper and the messageToMarkdown copy path both
+            // still read it.
             content,
             mode,
             timestamp: new Date().toISOString(),
@@ -922,20 +1050,18 @@ export const useStore = create(
           const streamingState = {
             messageIndex: newIndex + 1,
             role: "assistant",
-            content: "",
             nextDeltaIndex: 0,
-            segments: [],
-            currentType: null,
+            parts: [],
+            currentKind: null,
           };
 
           // Legacy partial state for backward compatibility
           const partialState = {
             index: newIndex + 1,
             role: "assistant",
-            content: "",
             charsReceived: 0,
-            segments: [],
-            currentType: null,
+            parts: [],
+            currentKind: null,
           };
 
           return {

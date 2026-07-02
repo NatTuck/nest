@@ -16,8 +16,8 @@ defmodule Nest.Agents.AgentTestHelpers do
   alias Nest.Messages.Part
 
   def start_agent(attrs) do
-    agent_id = "test-agent-#{System.unique_integer([:positive])}"
-    pid = start_supervised!({Agent, build_attrs(agent_id, attrs)})
+    agent_name = "test-agent-#{System.unique_integer([:positive])}"
+    pid = start_supervised!({Agent, build_attrs(agent_name, attrs)})
 
     allow_mimic_stubs(pid)
     swap_to_mock_client(pid)
@@ -29,14 +29,14 @@ defmodule Nest.Agents.AgentTestHelpers do
     # NB: no MockClient.clear() here — that would wipe the
     # transferred items.
 
-    register_on_exit_cleanup(pid, agent_id, test_pid)
+    register_on_exit_cleanup(pid, agent_name, test_pid)
 
-    {pid, agent_id}
+    {pid, agent_name}
   end
 
-  defp build_attrs(agent_id, attrs) do
+  defp build_attrs(agent_name, attrs) do
     defaults = %{
-      id: agent_id,
+      name: agent_name,
       model: %{name: "qwen3.5-plus", provider: "model-studio"}
     }
 

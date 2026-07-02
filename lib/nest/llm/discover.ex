@@ -1,24 +1,31 @@
 defmodule Nest.LLM.Discover do
   @moduledoc """
-  Best-effort discovery of a model's context-window limit by probing the
-  provider's `/v1/models` endpoint.
+  Best-effort discovery of a model's context-window limit by
+  matching provider-specific response shapes from a
+  `/v1/models` request.
 
-  Designed for self-hosted and OpenAI-compatible providers that do not
-  surface the limit in the streaming chat `usage` chunk:
+  Designed for self-hosted and OpenAI-compatible providers:
 
   - **vLLM** — top-level `max_model_len` per model
   - **OpenRouter** — top-level `context_length` per model
-  - **llama.cpp** — `meta.n_ctx` (configured) or `meta.n_ctx_train` (model's
-    training max) on each model
+  - **llama.cpp** — `meta.n_ctx` (configured) or
+    `meta.n_ctx_train` (model's training max)
 
-  On any failure (network error, non-200, malformed body, missing fields,
-  multi-model response with no id match and more than one model) the
-  function falls back to `{:default, 128_000}` so the UI always has a
-  usable denominator. Callers do not need to handle the empty case.
+  The probe is intentionally silent on failure: not knowing
+  the limit is not an error, and logging every failed fetch
+  would flood logs when an agent is spawned against a
+  provider that has not yet been started.
 
-  The probe is intentionally silent on failure: it is not an error to
-  not know the limit, and we do not want logs to fill up when an agent
-  is spawned against a provider that has not yet been started.
+  ## Two entry points
+
+  * `context_limit/1` — for a single model: probes the
+    provider, matches the model by id, returns
+    `{source, limit}` or a 128k default.
+  * `extract_limit_from_model/1` — bulk extraction across
+    one row in a `/models` response: returns
+    `{source, limit}` when a recognized field is present,
+    `nil` otherwise. Used by `Nest.Models` to populate
+    its per-model cache.
   """
 
   alias Nest.LLM.ClientConfig
@@ -26,30 +33,86 @@ defmodule Nest.LLM.Discover do
   @default_limit 128_000
   @probe_timeout 3_000
 
-  @type source :: :vllm | :openrouter | :llama_cpp | :default
+  @type source :: :vllm | :openrouter | :llama_cpp
 
   @doc """
-  Returns `{source, limit}` for the given client config. The probe is
-  fired against `client_config.base_url <> "/models"` with the same auth
-  header the chat client would use.
+  Probe a provider's `/v1/models` endpoint for the
+  context-window limit of the model named in
+  `client_config.model`. Returns `{source, limit}` when
+  recognized, or `{:default, 128_000}` on failure.
   """
-  @spec context_limit(ClientConfig.t()) :: {source(), pos_integer()}
+  @spec context_limit(ClientConfig.t()) :: {source() | :default, pos_integer()}
   def context_limit(%ClientConfig{} = client_config) do
     case fetch_models(client_config) do
       {:ok, body} ->
         match_model(body, client_config.model)
         |> extract_limit()
+        |> wrap_or_default()
 
       _ ->
         {:default, @default_limit}
     end
   end
 
-  # `nil` client_config or `nil` base_url means we cannot probe. This
-  # handles the case where a future client type doesn't expose an HTTP
-  # endpoint we can hit for the model list.
   def context_limit(_), do: {:default, @default_limit}
 
+  defp wrap_or_default({source, _limit} = pair) when source != :default, do: pair
+  defp wrap_or_default(_), do: {:default, @default_limit}
+
+  @doc """
+  Return the extracted context-limit source + value for a
+  single model map from a `/models` response, or `nil` when
+  no recognized field is present.
+
+  Used by `Nest.Models` to populate its context-limit cache
+  without ever producing the 128k default — a missing entry
+  in the cache means "this model isn't known by
+  `ProviderShapes`", not "we have a 128k default for it".
+  """
+  @spec extract_limit_from_model(map() | nil) :: {source(), pos_integer()} | nil
+  def extract_limit_from_model(nil), do: nil
+
+  def extract_limit_from_model(%{} = model) do
+    cond do
+      is_integer(model["max_model_len"]) ->
+        {:vllm, model["max_model_len"]}
+
+      is_integer(model["context_length"]) ->
+        {:openrouter, model["context_length"]}
+
+      (meta = model["meta"]) && is_map(meta) ->
+        cond do
+          is_integer(meta["n_ctx"]) -> {:llama_cpp, meta["n_ctx"]}
+          is_integer(meta["n_ctx_train"]) -> {:llama_cpp, meta["n_ctx_train"]}
+          true -> nil
+        end
+
+      true ->
+        nil
+    end
+  end
+
+  def extract_limit_from_model(_), do: nil
+
+  @doc """
+  Extract the model id from a `/models` response entry.
+  Handles the two common shapes (`id` for OpenAI / vLLM
+  and `name` for Ollama-shaped bodies).
+  """
+  @spec model_id(map() | nil) :: String.t() | nil
+  def model_id(%{} = model) do
+    cond do
+      is_binary(model["id"]) -> model["id"]
+      is_binary(model["name"]) -> model["name"]
+      true -> nil
+    end
+  end
+
+  def model_id(_), do: nil
+
+  # Private helpers — internal to the probe path. Body parsing
+  # tolerates OpenAI's `{"data": [...]}` and the alternate
+  # `{"models": [...]}` (Ollama) and bare-list bodies.
   defp fetch_models(%ClientConfig{base_url: nil}), do: :error
 
   defp fetch_models(%ClientConfig{base_url: base_url, api_key: api_key}) do
@@ -62,35 +125,24 @@ defmodule Nest.LLM.Discover do
     end
   end
 
-  # The OpenAI `/v1/models` shape is `{"object": "list", "data": [...]}`.
-  # We tolerate a bare array (`[...]`) or a top-level `models` key for
-  # providers with non-standard shapes.
   defp models_from_body(%{"data" => data}) when is_list(data), do: data
   defp models_from_body(%{"models" => models}) when is_list(models), do: models
   defp models_from_body(models) when is_list(models), do: models
   defp models_from_body(_), do: []
 
-  # Pick the right model from the response.
-  #
-  # 1. Exact match on `id` — what the client config asked for.
-  # 2. Exact match on `id` with a leading path stripped — handles
-  #    vLLM / llama.cpp responses that return GGUF file paths
-  #    (e.g. `/data/models/llama-3.1-8b.Q4_K_M.gguf`).
-  # 3. If the response has exactly one model, use it regardless of id.
-  # 4. Otherwise, no match.
-  defp match_model(body, model_id) do
+  defp match_model(body, wanted) do
     models = models_from_body(body)
 
     exact =
-      Enum.find(models, fn model -> get_id(model) == model_id end)
+      Enum.find(models, fn model -> public_model_id(model) == wanted end)
 
     cond do
       exact != nil ->
         exact
 
-      (stripped = strip_path(model_id)) != nil ->
+      (stripped = strip_path(wanted)) != nil ->
         stripped_match =
-          Enum.find(models, fn model -> get_id(model) == stripped end)
+          Enum.find(models, fn model -> public_model_id(model) == stripped end)
 
         if stripped_match, do: stripped_match, else: single_or_nil(models)
 
@@ -112,7 +164,7 @@ defmodule Nest.LLM.Discover do
 
   defp strip_path(_), do: nil
 
-  defp get_id(model) when is_map(model) do
+  defp public_model_id(model) when is_map(model) do
     cond do
       is_binary(model["id"]) -> model["id"]
       is_binary(model["name"]) -> model["name"]
@@ -120,27 +172,12 @@ defmodule Nest.LLM.Discover do
     end
   end
 
-  defp get_id(_), do: nil
+  defp public_model_id(_), do: nil
 
-  # Try each known provider shape in priority order. Anything we
-  # recognize wins; anything we don't yields the default.
   defp extract_limit(%{} = model) do
-    cond do
-      is_integer(model["max_model_len"]) ->
-        {:vllm, model["max_model_len"]}
-
-      is_integer(model["context_length"]) ->
-        {:openrouter, model["context_length"]}
-
-      (meta = model["meta"]) && is_map(meta) ->
-        cond do
-          is_integer(meta["n_ctx"]) -> {:llama_cpp, meta["n_ctx"]}
-          is_integer(meta["n_ctx_train"]) -> {:llama_cpp, meta["n_ctx_train"]}
-          true -> {:default, @default_limit}
-        end
-
-      true ->
-        {:default, @default_limit}
+    case extract_limit_from_model(model) do
+      nil -> {:default, @default_limit}
+      {source, limit} -> {source, limit}
     end
   end
 

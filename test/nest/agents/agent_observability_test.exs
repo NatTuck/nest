@@ -142,8 +142,10 @@ defmodule Nest.Agents.AgentObservabilityTest do
   end
 
   test "stops agent process" do
-    agent_id = "terminating-agent-#{System.unique_integer([:positive])}"
-    pid = start_supervised!({Agent, %{id: agent_id, model: %{name: "qwen3.5-plus"}}})
+    agent_name = "terminating-agent-#{System.unique_integer([:positive])}"
+
+    pid =
+      start_supervised!({Agent, %{name: agent_name, model: %{name: "qwen3.5-plus"}}})
 
     ref = Process.monitor(pid)
     Agent.terminate(pid)

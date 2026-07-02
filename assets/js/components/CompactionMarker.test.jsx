@@ -166,9 +166,27 @@ describe("CompactionMarker", () => {
 
     it("renders the archived messages when expanded", () => {
       const history = [
-        { index: 0, role: "user", content: "Hello", apiLogs: [] },
-        { index: 1, role: "assistant", content: "Hi there", apiLogs: [] },
-        { index: 2, role: "user", content: "How are you?", apiLogs: [] },
+        {
+          index: 0,
+          role: "user",
+          parts: [{ kind: "text", text: "Hello" }],
+          content: "Hello",
+          apiLogs: [],
+        },
+        {
+          index: 1,
+          role: "assistant",
+          parts: [{ kind: "text", text: "Hi there" }],
+          content: "Hi there",
+          apiLogs: [],
+        },
+        {
+          index: 2,
+          role: "user",
+          parts: [{ kind: "text", text: "How are you?" }],
+          content: "How are you?",
+          apiLogs: [],
+        },
       ];
       render(
         <CompactionMarker

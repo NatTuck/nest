@@ -1,13 +1,15 @@
 defmodule Nest.Agents.AgentContextLimitTest do
   @moduledoc """
-  Tests for the Agent's async context-limit probe.
+  Tests for the Agent's context-limit resolution at init.
 
-  These tests stub `Req.get/2` with `Mimic.expect/3` and rely on
-  Mimic's cross-process stub visibility (it uses persistent_term
-  in non-async mode). They cannot run in the main `AgentTest`
-  case, which is `async: true` — in async mode Mimic stubs are
-  per-test-process and the probe runs in a `Task.Supervisor`
-  child of the test, so the stub isn't seen.
+  These tests stub `Nest.Models.context_limit/2` (rather than
+  `Req.get/2`) since the per-agent async probe has been
+  consolidated into the `Nest.Models` cache. They use
+  `Mimic.expect/3` against `Nest.Models` so the call inside
+  `Init.initial_context_limit/1` is intercepted. Cannot
+  run as `async: true` — Mimic stubs are per-test-process
+  by default and the agent's `init/1` runs in a child of
+  the test process.
   """
 
   use Nest.DataCase, async: false
@@ -16,26 +18,27 @@ defmodule Nest.Agents.AgentContextLimitTest do
 
   alias Nest.Agents.Agent
   alias Nest.LLM.MockClient
+  alias Nest.Models
 
   setup :set_mimic_global
   setup :verify_on_exit!
 
   defp start_probe_agent(attrs) do
-    agent_id = "probe-agent-#{System.unique_integer([:positive])}"
+    agent_name = "probe-agent-#{System.unique_integer([:positive])}"
 
     defaults = %{
-      id: agent_id,
+      name: agent_name,
       model: %{name: "qwen3.5-plus", provider: "model-studio"}
     }
 
     attrs = Map.merge(defaults, attrs)
     pid = start_supervised!({Agent, attrs})
 
-    # The agent swaps to MockClient via `:sys.replace_state/2` in
-    # the chat path. These tests don't make LLM calls, but
-    # swapping keeps the test surface consistent with `AgentTest`
-    # and avoids a half-initialized state if a future test does
-    # chat from the same agent.
+    # The cache lookup happens during the agent's `init/1`. The
+    # test process owns the Mimic stub (set in each test), and
+    # the stub applies globally (see `set_mimic_global` in
+    # `setup`) so the agent's `init/1` sees it without an
+    # explicit `Mimic.allow/3`.
     :sys.replace_state(pid, fn state ->
       %{state | client_config: %{state.client_config | client: MockClient}}
     end)
@@ -44,77 +47,47 @@ defmodule Nest.Agents.AgentContextLimitTest do
 
     on_exit(fn -> MockClient.stop(pid) end)
 
-    {pid, agent_id}
+    {pid, agent_name}
   end
 
-  test "probes the provider's /models endpoint when no config value is set" do
-    Mimic.expect(Req, :get, fn _url, _opts ->
-      {:ok,
-       %{
-         status: 200,
-         body: %{
-           "data" => [
-             %{"id" => "claude-3-opus-20240229", "context_length" => 200_000}
-           ]
-         }
-       }}
+  test "uses the cached discovered context-limit when no config value is set" do
+    test_pid = self()
+
+    Mimic.expect(Models, :context_limit, fn _provider, model_name ->
+      send(test_pid, {:cache_lookup, model_name})
+      {:openrouter, 200_000}
     end)
 
-    agent_id = "probe-anthropic-#{System.unique_integer([:positive])}"
-    Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+    agent_name = "probe-anthropic-#{System.unique_integer([:positive])}"
 
     {pid, _} =
       start_probe_agent(%{
-        id: agent_id,
+        name: agent_name,
         model: %{name: "claude-3-opus-20240229"}
       })
 
-    assert_receive {:chat_status, %{contextLimit: 200_000, contextLimitSource: :openrouter}},
-                   2000
+    state = :sys.get_state(pid)
+    assert state.llm_metrics.context_limit == 200_000
+    assert state.llm_metrics.context_limit_source == :openrouter
+    assert_received {:cache_lookup, "claude-3-opus-20240229"}
 
     Agent.terminate(pid)
   end
 
-  test "broadcasts a chat:status with the discovered context limit" do
-    Mimic.expect(Req, :get, fn _url, _opts ->
-      {:ok,
-       %{
-         status: 200,
-         body: %{
-           "data" => [
-             %{"id" => "claude-3-opus-20240229", "context_length" => 200_000}
-           ]
-         }
-       }}
+  test "handles a `nil` cache hit (model not in /models response)" do
+    Mimic.expect(Models, :context_limit, fn _provider, _model ->
+      nil
     end)
 
-    agent_id = "probe-bcast-#{System.unique_integer([:positive])}"
-    Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
-
-    {pid, _} =
+    {pid, _agent_name} =
       start_probe_agent(%{
-        id: agent_id,
+        name: "probe-missing-#{System.unique_integer([:positive])}",
         model: %{name: "claude-3-opus-20240229"}
       })
 
-    assert_receive {:chat_status, %{contextLimit: 200_000, contextLimitSource: :openrouter}},
-                   2000
-
-    Agent.terminate(pid)
-  end
-
-  test "falls back to 128k default when the probe fails" do
-    Mimic.expect(Req, :get, fn _url, _opts -> {:error, :econnrefused} end)
-
-    {pid, _agent_id} =
-      start_probe_agent(%{
-        id: "probe-fail-#{System.unique_integer([:positive])}",
-        model: %{name: "claude-3-opus-20240229"}
-      })
-
-    info = Agent.get_public_info(pid)
-    assert info.context_limit == 128_000
-    assert info.context_limit_source == :default
+    state = :sys.get_state(pid)
+    assert state.llm_metrics.context_limit == nil
+    assert state.llm_metrics.context_limit_source == nil
 
     Agent.terminate(pid)
   end
