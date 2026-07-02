@@ -1,8 +1,0 @@
-Warmup...
-
-error: module Nest.DataCase is not loaded and could not be found
-└─ nofile:6: Nest.Agents.AgentChatTest (module)
-
-** (CompileError) nofile: cannot compile module Nest.Agents.AgentChatTest (errors have been logged)
-    (elixir 1.19.5) expanding macro: Kernel.use/2
-    nofile:6: Nest.Agents.AgentChatTest (module)

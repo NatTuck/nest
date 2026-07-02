@@ -90,6 +90,7 @@ hitting a timeout, even occasionally, means the test is critically broken and
 needs to be fixed so it's not timing-dependent.
 - **NEVER** run tests and throw away the output. If you expect long output,
 redirect to a temporary file (e.g. notes/test-runs/test-run.log).
+- **ALL** test run output should go under notes/test-runs
 
 ### Test Coverage
 

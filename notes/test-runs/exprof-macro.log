@@ -1,3 +1,0 @@
-** (UndefinedFunctionError) function ExProf.profile/2 is undefined or private
-    (exprof 0.2.4) ExProf.profile(#Function<0.116643785 in file:/tmp/exprof_macro_runner.exs>, [])
-    /tmp/exprof_macro_runner.exs:6: (file)
