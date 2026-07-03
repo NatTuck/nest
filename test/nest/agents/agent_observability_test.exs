@@ -8,6 +8,7 @@ defmodule Nest.Agents.AgentObservabilityTest do
   import Mimic
 
   alias Nest.Agents.Agent
+  alias Nest.Agents.AgentTestHelpers
   alias Nest.LLM.MockClient
   alias Nest.LLM.RunResponse
   alias Nest.Messages.ToolCall
@@ -145,7 +146,14 @@ defmodule Nest.Agents.AgentObservabilityTest do
     agent_name = "terminating-agent-#{System.unique_integer([:positive])}"
 
     pid =
-      start_supervised!({Agent, %{name: agent_name, model: %{name: "qwen3.5-plus"}}})
+      start_supervised!(
+        {Agent,
+         %{
+           name: agent_name,
+           model: %{name: "qwen3.5-plus"},
+           vocation_id: AgentTestHelpers.vocation_id_for_test()
+         }}
+      )
 
     ref = Process.monitor(pid)
     Agent.terminate(pid)

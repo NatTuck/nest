@@ -11,6 +11,7 @@ defmodule Nest.Agents.AgentTmpPathTest do
   import Mimic
 
   alias Nest.Agents.Agent
+  alias Nest.Agents.AgentTestHelpers
   alias Nest.LLM.MockClient
 
   setup :verify_on_exit!
@@ -71,7 +72,14 @@ defmodule Nest.Agents.AgentTmpPathTest do
       agent_name1 = "unique-test-1-#{System.unique_integer([:positive])}"
 
       pid1 =
-        start_supervised!({Agent, %{name: agent_name1, model: %{name: "qwen3.5-plus"}}})
+        start_supervised!(
+          {Agent,
+           %{
+             name: agent_name1,
+             model: %{name: "qwen3.5-plus"},
+             vocation_id: AgentTestHelpers.vocation_id_for_test()
+           }}
+        )
 
       info1 = Agent.get_public_info(pid1)
 
@@ -81,7 +89,13 @@ defmodule Nest.Agents.AgentTmpPathTest do
     test "cleans up tmp directory when stopped via Supervisor.stop_agent/1" do
       alias Nest.Agents.Supervisor
 
-      {:ok, agent_id} = Supervisor.fetch_or_start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {:ok, agent_id} =
+        Supervisor.fetch_or_start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: 0,
+          vocation: nil
+        })
+
       expected_tmp_path = "/tmp/nest-#{System.pid()}/agent-#{agent_id}"
 
       assert File.exists?(expected_tmp_path),
@@ -139,10 +153,20 @@ defmodule Nest.Agents.AgentTmpPathTest do
       id2 = "parent-cleanup-b-#{unique}"
 
       {:ok, agent_id1} =
-        Supervisor.fetch_or_start_agent(%{name: id1, model: %{name: "qwen3.5-plus"}})
+        Supervisor.fetch_or_start_agent(%{
+          name: id1,
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: 0,
+          vocation: nil
+        })
 
       {:ok, agent_id2} =
-        Supervisor.fetch_or_start_agent(%{name: id2, model: %{name: "qwen3.5-plus"}})
+        Supervisor.fetch_or_start_agent(%{
+          name: id2,
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: 0,
+          vocation: nil
+        })
 
       parent_dir = "/tmp/nest-#{System.pid()}"
       path1 = "#{parent_dir}/agent-#{agent_id1}"

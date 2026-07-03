@@ -14,6 +14,7 @@ defmodule Nest.Agents.AgentTestHelpers do
   alias Nest.LLM.MockClient
   alias Nest.LLM.OpenAIClient
   alias Nest.Messages.Part
+  alias Nest.Vocations
 
   def start_agent(attrs) do
     agent_name = "test-agent-#{System.unique_integer([:positive])}"
@@ -34,10 +35,50 @@ defmodule Nest.Agents.AgentTestHelpers do
     {pid, agent_name}
   end
 
+  @doc """
+  Returns a `vocation_id` for use in test attrs that bypass
+  `start_agent/1` (e.g. tests that call `start_supervised!({Agent, ...})`
+  directly). Upserts a shared "Test Default" vocation in the
+  calling process (sandboxed connection) and returns its id.
+
+  `agents.vocation_id` is `NOT NULL`, so every test that
+  starts an agent must supply one. This helper is the
+  no-ceremony way to get a valid id.
+  """
+  def vocation_id_for_test do
+    {:ok, %Vocations.Vocation{id: vid}} =
+      Vocations.upsert_vocation(%{
+        name: "Test Default",
+        description: "Default vocation for tests",
+        system_prompt: "You are a helpful test assistant.",
+        tools: ["context"],
+        modes: %{
+          "chat" => %{
+            "description" => "General conversation.",
+            "caps" => %{
+              "net" => false,
+              "fs" => %{"read" => ["/"], "write" => ["/tmp"]}
+            }
+          }
+        }
+      })
+
+    vid
+  end
+
   defp build_attrs(agent_name, attrs) do
     defaults = %{
       name: agent_name,
-      model: %{name: "qwen3.5-plus", provider: "model-studio"}
+      model: %{name: "qwen3.5-plus", provider: "model-studio"},
+      # `agents.vocation_id` is NOT NULL, so every test must
+      # supply one. Use a sentinel id (never dereferenced) plus
+      # `vocation: nil` to short-circuit the system-prompt
+      # composition to a minimal default. Tests that need a
+      # real vocation (e.g. for the compaction regeneration
+      # path) should pass an explicit `vocation_id:` plus
+      # `vocation:` from `vocation_id_for_test/0`.
+      vocation_id: 0,
+      vocation: nil
     }
 
     merged = Map.merge(defaults, attrs)
@@ -48,12 +89,15 @@ defmodule Nest.Agents.AgentTestHelpers do
     # this read; subsequent DB writes from the agent's handlers
     # walk `$callers` back to the test pid and use the same
     # connection. No `Sandbox.allow/3` per agent pid needed.
-    case Map.get(merged, :vocation_id) do
-      nil ->
-        merged
-
-      vocation_id ->
-        Map.put_new(merged, :vocation, Init.load_vocation(vocation_id))
+    #
+    # Always overwrite `vocation` so the loaded struct wins
+    # over the `nil` default — `Map.put_new_lazy` would skip
+    # the upsert because the key is present (with value `nil`).
+    if Map.get(merged, :vocation_id) == 0 do
+      merged
+    else
+      vocation_id = Map.fetch!(merged, :vocation_id)
+      Map.put(merged, :vocation, Init.load_vocation(vocation_id))
     end
   end
 

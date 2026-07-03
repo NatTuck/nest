@@ -24,6 +24,7 @@ import {
   joinAgent,
   leaveAgent,
   sendMessage,
+  stopMessage,
   createAgent,
   deleteAgent,
   clearAgentChannels,
@@ -1019,6 +1020,47 @@ describe("channels", () => {
       });
     });
 
+    it("should forward contextLimit, currentMode, and usage from chat:status payload", async () => {
+      // The chat:status push from the BEAM may carry extra fields
+      // (contextLimit, contextLimitSource, currentMode, usage) that
+      // the chat:status handler must forward into the agent cache
+      // via setAgentState's extra-arg path. This test exercises
+      // all four conditional branches in one push.
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+        status: "idle",
+      });
+
+      joinAgent("agent-1");
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      simulateServerEvent("agent:agent-1", "chat:status", {
+        status: "idle",
+        contextLimit: 200000,
+        contextLimitSource: "auto",
+        currentMode: "build",
+        usage: { promptTokens: 12, completionTokens: 34 },
+      });
+
+      await vi.waitFor(() => {
+        const cache = useStore.getState().agentsCache["agent-1"];
+        assert.strictEqual(cache?.contextLimit, 200000);
+        assert.strictEqual(cache?.contextLimitSource, "auto");
+        assert.strictEqual(cache?.currentMode, "build");
+        assert.deepStrictEqual(cache?.usage, {
+          promptTokens: 12,
+          completionTokens: 34,
+        });
+      });
+    });
+
     it("should clear waitingForResponse on chat:status: idle (thinking-only response)", async () => {
       // The LLM completed but no `chat:delta` events were applied
       // (e.g. a thinking-only response where `forward_thinking_delta/3`
@@ -1492,8 +1534,8 @@ describe("channels", () => {
       });
     });
 
-    it("should call onOk with agent ID on create success", async () => {
-      setNextPushResult("lobby", "create_agent", { ok: { id: "new-agent" } });
+    it("should call onOk with agent name on create success", async () => {
+      setNextPushResult("lobby", "create_agent", { ok: { name: "new-agent" } });
       joinLobby();
 
       await vi.waitFor(() => {
@@ -1501,16 +1543,40 @@ describe("channels", () => {
       });
 
       let okCalled = false;
-      let agentId = null;
-      createAgent("gpt-4", 1, null, (id) => {
+      let agentName = null;
+      createAgent("gpt-4", 1, null, (name) => {
         okCalled = true;
-        agentId = id;
+        agentName = name;
       });
 
       await vi.waitFor(() => {
         assert.strictEqual(okCalled, true);
       });
-      assert.strictEqual(agentId, "new-agent");
+      assert.strictEqual(agentName, "new-agent");
+    });
+
+    it("should pass the agent name (not undefined) to onOk", async () => {
+      // Regression for the /agent/undefined redirect bug. The server
+      // returns {name: "..."} and the createAgent wrapper must read
+      // that field; reading resp.id would silently deliver undefined
+      // to NewAgentPage's navigate() callback.
+      setNextPushResult("lobby", "create_agent", {
+        ok: { name: "clever-raven" },
+      });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().agents.length >= 0, true);
+      });
+
+      let onOkArg = "sentinel";
+      createAgent("gpt-4", 1, null, (arg) => {
+        onOkArg = arg;
+      });
+
+      await vi.waitFor(() => {
+        assert.strictEqual(onOkArg, "clever-raven");
+      });
     });
 
     it("should call onError on create failure", async () => {
@@ -1539,7 +1605,7 @@ describe("channels", () => {
       });
     });
     it("should include workspace_path in payload when provided", async () => {
-      setNextPushResult("lobby", "create_agent", { ok: { id: "new-agent" } });
+      setNextPushResult("lobby", "create_agent", { ok: { name: "new-agent" } });
       joinLobby();
 
       await vi.waitFor(() => {
@@ -1547,7 +1613,7 @@ describe("channels", () => {
       });
 
       let okCalled = false;
-      createAgent("gpt-4", 1, "/path/to/workspace", (_id) => {
+      createAgent("gpt-4", 1, "/path/to/workspace", (_name) => {
         okCalled = true;
       });
 
@@ -1557,7 +1623,7 @@ describe("channels", () => {
     });
 
     it("should include vocation_id in payload when provided", async () => {
-      setNextPushResult("lobby", "create_agent", { ok: { id: "new-agent" } });
+      setNextPushResult("lobby", "create_agent", { ok: { name: "new-agent" } });
       joinLobby();
 
       await vi.waitFor(() => {
@@ -1565,7 +1631,7 @@ describe("channels", () => {
       });
 
       let okCalled = false;
-      createAgent("gpt-4", 42, null, (_id) => {
+      createAgent("gpt-4", 42, null, (_name) => {
         okCalled = true;
       });
 
@@ -1574,8 +1640,30 @@ describe("channels", () => {
       });
     });
 
+    it("should omit vocation_id from payload when null", async () => {
+      // Pin the falsy branch of `if (vocationId)` in createAgent.
+      // All other createAgent tests pass a non-null vocationId, so
+      // the omit-path is otherwise untested.
+      const capturePromise = captureNextPush("lobby", "create_agent");
+      setNextPushResult("lobby", "create_agent", { ok: { name: "new-agent" } });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().agents.length >= 0, true);
+      });
+
+      createAgent("gpt-4", null, null, () => {});
+
+      const captured = await capturePromise;
+      assert.strictEqual(
+        Object.hasOwn(captured, "vocation_id"),
+        false,
+        "vocation_id must be omitted when null",
+      );
+    });
+
     it("should work without onOk callback on success", async () => {
-      setNextPushResult("lobby", "create_agent", { ok: { id: "new-agent" } });
+      setNextPushResult("lobby", "create_agent", { ok: { name: "new-agent" } });
       joinLobby();
 
       await vi.waitFor(() => {
@@ -1654,6 +1742,58 @@ describe("channels", () => {
 
       // Just wait a bit to ensure no errors
       await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+  });
+
+  describe("stopMessage", () => {
+    it("should call onError when not connected to agent", async () => {
+      let errorCalled = false;
+      stopMessage("missing-agent", (_err) => {
+        errorCalled = true;
+      });
+
+      await vi.waitFor(() => {
+        assert.strictEqual(errorCalled, true);
+      });
+    });
+
+    it("should not throw when not connected and onError is omitted", () => {
+      // No channel exists for this agent; onError is undefined.
+      assert.doesNotThrow(() => {
+        stopMessage("missing-agent");
+      });
+    });
+
+    it("should push chat:stop and invoke onError on push failure", async () => {
+      setNextJoinResult("agent:agent-1", {
+        autoInit: {
+          id: "agent-1",
+          model: { name: "gpt-4", provider: "openai" },
+          messageCount: 0,
+          status: "idle",
+        },
+      });
+      joinAgent("agent-1");
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      setNextPushResult("agent:agent-1", "chat:stop", {
+        error: { reason: "agent_not_found" },
+      });
+
+      let errorCalled = false;
+      stopMessage("agent-1", (_err) => {
+        errorCalled = true;
+      });
+
+      await vi.waitFor(() => {
+        assert.strictEqual(errorCalled, true);
+      });
     });
   });
 

@@ -33,7 +33,7 @@ defmodule Nest.Persistence do
   `insert_message/2` immediately after appending to in-memory
   state; on `__archive_and_compact__/2` it calls
   `archive_and_compact/4`. `load_active_messages/1` is used by
-  the lazy-restore path in `Supervisor.fetch_or_start_agent/1`.
+  the on-demand-load path in `Supervisor.fetch_or_start_agent/1`.
 
   Externally, callers pass `name` (a String). Internally,
   `messages.agent_id` is the bigserial `agents.id` (an
@@ -156,7 +156,7 @@ defmodule Nest.Persistence do
   # when `:name` or `:model` is missing — the supervisor's
   # `do_fetch_or_start_with_persistence/1` relies on this sentinel
   # to translate the failure into `:not_found` for callers that
-  # only had a name (the `get_agent/1` lazy-restore path).
+  # only had a name (the `get_agent/1` on-demand-load path).
   defp build_insert_base(attrs, now) do
     name = Map.get(attrs, :name)
     model = Map.get(attrs, :model)
@@ -255,7 +255,10 @@ defmodule Nest.Persistence do
 
         %PersistedMessage{}
         |> PersistedMessage.changeset(attrs)
-        |> Repo.insert()
+        |> Repo.insert(
+          on_conflict: :nothing,
+          conflict_target: [:agent_id, :message_index]
+        )
     end
   end
 
@@ -350,7 +353,7 @@ defmodule Nest.Persistence do
   `message_index` order. Returns a list of `Message.t()`
   tagged tuples (the canonical runtime shape).
 
-  Used by the lazy-restore path in
+  Used by the on-demand-load path in
   `Supervisor.fetch_or_start_agent/1`. The caller is
   responsible for converting the list into the agent's
   `state.chat_state.messages` and stamping the
@@ -387,7 +390,7 @@ defmodule Nest.Persistence do
   `state.chat_state.messages`.
 
   Used by `Supervisor.fetch_or_start_agent/1`'s
-  lazy-restore path.
+  on-demand-load path.
   """
   @spec build_attrs_for_start(String.t()) ::
           {:ok, map()} | {:error, :not_found}
@@ -400,6 +403,7 @@ defmodule Nest.Persistence do
         attrs = %{
           name: row.name,
           model: row.model,
+          vocation_id: row.vocation_id,
           workspace_path: row.workspace_path,
           next_message_index: row.next_message_index,
           preloaded_messages: load_active_messages(agent_name),

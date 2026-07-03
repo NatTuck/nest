@@ -1,8 +1,10 @@
 defmodule Nest.Agents.AgentCompactionTest do
   @moduledoc """
   Agent compaction and pre-flight tests: tool budget loop,
-  compaction history, pre-flight streaming guard, and
-  `chat:compaction` broadcast.
+  compaction history, pre-flight streaming guard,
+  `chat:compaction` broadcast, and system prompt regeneration
+  on compaction (the on-demand-load fix — see
+  `notes/update-system-msg-on-compaction.md`).
   """
   use Nest.DataCase, async: true
 
@@ -38,7 +40,7 @@ defmodule Nest.Agents.AgentCompactionTest do
   defp programmer_vocation_id do
     {:ok, vocation} =
       Vocations.create_vocation(%{
-        name: "Test Programmer (#{System.unique_integer([:positive])})",
+        name: "Test Programmer (#{Elixir.System.unique_integer([:positive])})",
         description: "A coding assistant that can read and write files in a workspace",
         system_prompt: "Test programmer prompt.",
         tools: ["read_file", "write_file", "edit", "shell_cmd", "context"],

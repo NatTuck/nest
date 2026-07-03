@@ -2,11 +2,13 @@ defmodule Nest.Agents.AgentAgentsMdTest do
   @moduledoc """
   Tests for AGENTS.md loading into the system prompt.
   """
-  use Nest.DataCase, async: true
+  use Nest.DataCase, async: false
 
   import Mimic
 
   alias Nest.LLM.MockClient
+  alias Nest.Messages.Part
+  alias Nest.Messages.User
   alias Nest.Vocations
 
   setup :verify_on_exit!
@@ -26,7 +28,7 @@ defmodule Nest.Agents.AgentAgentsMdTest do
   defp create_vocation do
     {:ok, vocation} =
       Vocations.create_vocation(%{
-        name: "TestAgentsMd-#{System.unique_integer([:positive])}",
+        name: "TestAgentsMd-#{Elixir.System.unique_integer([:positive])}",
         description: "Test",
         system_prompt: "Test system prompt",
         tools: []
@@ -95,6 +97,53 @@ defmodule Nest.Agents.AgentAgentsMdTest do
       system_prompt = get_system_prompt(pid)
       assert is_binary(system_prompt)
       refute system_prompt =~ "Here are AGENTS.md guidelines for this project:"
+
+      MockClient.clear()
+    end
+
+    test "AGENTS.md changes between init and compaction are reflected in the regenerated system prompt" do
+      # Mutate AGENTS.md on disk between init and the
+      # compaction regeneration. The new prompt at position 0
+      # must reflect the latest file content.
+      workspace =
+        Path.join(
+          Elixir.System.tmp_dir!(),
+          "agents-md-#{Elixir.System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(workspace)
+      File.write!(Path.join(workspace, "AGENTS.md"), "FIRST version")
+      on_exit(fn -> File.rm_rf!(workspace) end)
+
+      vocation = create_vocation()
+      MockClient.set_response("OK")
+
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          workspace_path: workspace,
+          vocation_id: vocation.id
+        })
+
+      # Mutate AGENTS.md after init.
+      File.write!(Path.join(workspace, "AGENTS.md"), "SECOND version")
+
+      compactor_messages = [
+        {:system,
+         %Nest.Messages.System{
+           index: 1,
+           parts: [%Part.Text{text: "[Summary of earlier conversation]:\n\n..."}]
+         }},
+        {:user, %User{index: 2, parts: [%Part.Text{text: "Next"}], api_logs: []}}
+      ]
+
+      send(pid, {:compaction_done, compactor_messages, {:task_compaction_continuation, self()}})
+      assert_receive {:task_compaction_done, _}, 200
+
+      system_prompt = get_system_prompt(pid)
+      assert is_binary(system_prompt)
+      assert system_prompt =~ "SECOND version"
+      refute system_prompt =~ "FIRST version"
 
       MockClient.clear()
     end

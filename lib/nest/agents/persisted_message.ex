@@ -101,6 +101,7 @@ defmodule Nest.Agents.PersistedMessage do
     )
     |> validate_required([:agent_id, :message_index, :role, :content])
     |> foreign_key_constraint(:agent_id)
+    |> unique_constraint(:message_index, name: :messages_agent_id_message_index_index)
   end
 
   @doc """

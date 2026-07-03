@@ -298,27 +298,17 @@ defmodule Nest.ChatModel do
     end
   end
 
-  # Extract model names from a /models response (OpenAI shape or generic)
+  # Extract model names from a /models response using the same
+  # shape + field tolerance as `Discover.model_id/1`. Routes
+  # OpenAI `{"data": [...]}`, Ollama `{"models": [...]}`,
+  # and bare-list bodies through `extract_model_entries/1`
+  # (which yields raw entries) and then resolves each entry's
+  # id via `id` or `name`.
   defp extract_all_models(body) do
-    models =
-      case body do
-        %{"data" => data} when is_list(data) ->
-          Enum.map(data, fn
-            %{"id" => model_id} -> model_id
-            _ -> nil
-          end)
-
-        %{"models" => models} when is_list(models) ->
-          Enum.map(models, fn
-            %{"name" => model_name} -> model_name
-            _ -> nil
-          end)
-
-        _ ->
-          []
-      end
-
-    Enum.reject(models, &is_nil/1)
+    body
+    |> extract_model_entries()
+    |> Enum.map(&Discover.model_id/1)
+    |> Enum.reject(&is_nil/1)
   end
 
   defp discover_model(provider) do

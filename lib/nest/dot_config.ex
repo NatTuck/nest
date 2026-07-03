@@ -26,6 +26,12 @@ defmodule Nest.DotConfig do
     `timeout_seconds` is the per-provider LLM call receive timeout. Defaults
     to `Nest.DotConfig.@default_timeout_seconds` (300s = 5 minutes) if not
     set in the config file.
+
+    `default_context_limit` is the optional provider-wide fallback for
+    `context-window` size, used when neither the per-model
+    `[[providers.<name>.models]]` block nor the auto-discovery cache
+    carries a value. Parsed from the optional `default-context-limit`
+    TOML key on `[providers.<name>]`. `nil` when absent.
     """
     defstruct [
       :name,
@@ -35,7 +41,8 @@ defmodule Nest.DotConfig do
       :auto_models,
       :tags,
       :models,
-      :timeout_seconds
+      :timeout_seconds,
+      :default_context_limit
     ]
   end
 
@@ -301,7 +308,9 @@ defmodule Nest.DotConfig do
       auto_models: Map.get(data, "auto-models", false),
       tags: Map.get(data, "tags", []),
       models: models,
-      timeout_seconds: parse_timeout(Map.get(data, "timeout"), name)
+      timeout_seconds: parse_timeout(Map.get(data, "timeout"), name),
+      default_context_limit:
+        parse_default_context_limit(Map.get(data, "default-context-limit"), name)
     }
   end
 
@@ -316,6 +325,21 @@ defmodule Nest.DotConfig do
 
   defp parse_timeout(seconds, provider_name) do
     raise "Provider #{provider_name}: invalid timeout #{inspect(seconds)}: must be a positive integer (seconds)"
+  end
+
+  # Parses and validates the optional `default-context-limit` for a
+  # provider. Returns `nil` when the key is absent (no provider-wide
+  # fallback). Raises on invalid values so config errors surface at
+  # startup, not on the first chat turn.
+  defp parse_default_context_limit(nil, _provider_name), do: nil
+
+  defp parse_default_context_limit(limit, _provider_name)
+       when is_integer(limit) and limit > 0 do
+    limit
+  end
+
+  defp parse_default_context_limit(limit, provider_name) do
+    raise "Provider #{provider_name}: invalid default-context-limit #{inspect(limit)}: must be a positive integer"
   end
 
   defp parse_model(model_data) do

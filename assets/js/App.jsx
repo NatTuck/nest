@@ -7,7 +7,7 @@
  *
  * Routes:
  * - / → NewAgentPage (create new agent)
- * - /agent/:id → ChatPage (chat with agent)
+ * - /agent/:name → ChatPage (chat with agent)
  * - /about → AboutPage (about with mascot)
  */
 

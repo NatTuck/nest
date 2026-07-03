@@ -315,20 +315,41 @@ defmodule Nest.LLM.OpenAIClient do
 
   defp events_from_choice(_other), do: []
 
-  defp delta_events(%{"content" => text}) when is_binary(text) and text != "",
-    do: [{:text, text}]
+  # Walk every present delta field and emit one event per
+  # non-empty value. The OpenAI protocol itself only emits one
+  # field per frame, but several OpenAI-compatible providers
+  # combine them (notably MiniMax-M3 emits `content` and
+  # `tool_calls` in the same frame, and DeepSeek R1-style
+  # reasoning models can emit `reasoning_content` alongside
+  # `content`). The walk covers all 16 combinations of
+  # {content, reasoning_content, refusal, tool_calls} (minus
+  # the all-empty case), so no field is silently dropped.
+  #
+  # The order is fixed: text, thinking, refusal, tool_calls.
+  # Downstream consumers don't care about the cross-field
+  # order (each is its own canonical event), but pinning the
+  # order keeps the test assertions stable.
+  @delta_field_extractors [
+    {"content", :text},
+    {"reasoning_content", :thinking},
+    {"refusal", :refusal},
+    {"tool_calls", :tool_calls}
+  ]
 
-  defp delta_events(%{"reasoning_content" => text}) when is_binary(text) and text != "",
-    do: [{:thinking, text}]
+  defp delta_events(delta) do
+    Enum.flat_map(@delta_field_extractors, fn {key, kind} ->
+      case Map.get(delta, key) do
+        text when is_binary(text) and text != "" and kind != :tool_calls ->
+          [{kind, text}]
 
-  defp delta_events(%{"refusal" => text}) when is_binary(text) and text != "",
-    do: [{:refusal, text}]
+        calls when is_list(calls) and kind == :tool_calls ->
+          Enum.flat_map(calls, &tool_call_delta_events/1)
 
-  defp delta_events(%{"tool_calls" => calls}) when is_list(calls) do
-    Enum.flat_map(calls, &tool_call_delta_events/1)
+        _ ->
+          []
+      end
+    end)
   end
-
-  defp delta_events(_), do: []
 
   # OpenAI's first tool-call delta for a given index carries the
   # `id` and `function.name`; subsequent deltas only carry the

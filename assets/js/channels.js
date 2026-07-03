@@ -357,7 +357,7 @@ export function createAgent(model, vocationId, workspacePath, onOk, onError) {
   lobbyChannel
     .push("create_agent", payload)
     .receive("ok", (resp) => {
-      if (onOk) onOk(resp.id);
+      if (onOk) onOk(resp.name);
     })
     .receive("error", (err) => {
       if (onError) onError(err);
@@ -367,13 +367,13 @@ export function createAgent(model, vocationId, workspacePath, onOk, onError) {
 /**
  * Delete agent via lobby
  */
-export function deleteAgent(id, onError) {
+export function deleteAgent(name, onError) {
   if (!lobbyChannel) {
     if (onError) onError(new Error("Not connected to lobby"));
     return;
   }
 
-  lobbyChannel.push("delete_agent", { id }).receive("error", (err) => {
+  lobbyChannel.push("delete_agent", { name }).receive("error", (err) => {
     if (onError) onError(err);
   });
 }

@@ -7,6 +7,25 @@ defmodule Nest.Agents.Agent.Compaction do
   Communicates with the GenServer via messages only — never touches
   the Agent state struct directly.
 
+  ## Output contract
+
+  The `new_messages` sent back to the agent pid **always starts with
+  a `{:system, _}` message**. The agent's compaction handler
+  (`Nest.Agents.Agent.Handlers.CompactionHandler`) pattern-matches
+  this invariant: it extracts the compactor's summary text from
+  position 0 and re-encodes it as a `{:user, _}` "Summary of
+  earlier conversation" message at position 1 of the regenerated
+  list, with a freshly-rendered base system prompt at position 0.
+
+  The contract is structurally guaranteed by `Nest.Tokens.Compactor`:
+  the `:too_short` branch returns the input unchanged (the agent's
+  state always starts with a system message), and the other
+  branches explicitly prepend the original system message. If this
+  module ever stops producing a leading `{:system, _}`, the
+  handler's pattern match will raise — that is intentional, as a
+  malformed compactor output would silently corrupt the agent's
+  state.
+
   ## Continuations
 
   The continuation tuple describes what should happen after

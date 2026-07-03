@@ -58,8 +58,7 @@ defmodule Nest.Agents.Agent do
           name: String.t(),
           model: map(),
           client_config: ClientConfig.t(),
-          vocation_id: integer() | nil,
-          vocation: Vocations.Vocation.t() | nil,
+          vocation: Vocations.Vocation.t(),
           workspace_path: String.t() | nil,
           tmp_path: String.t() | nil,
           tools: [Nest.LLM.Tool.t()],
@@ -199,7 +198,7 @@ defmodule Nest.Agents.Agent do
         state = Init.build_state(attrs, client_config)
 
         # If the Supervisor passed a `:preloaded_messages` list
-        # (the lazy-restore path), seed it into the chat state
+        # (the on-demand-load path), seed it into the chat state
         # and bump `next_message_index` to one past the highest
         # stamped index. The preloaded list is already
         # `message_index`-sorted by `Persistence.load_active_messages/1`.

@@ -63,8 +63,8 @@ defmodule Nest.DotConfigTest do
           }
         end)
 
-      # Verify structure (4 models: 2 from model-studio + 2 from anthropic-provider)
-      assert length(models_list) == 4
+      # Verify structure (6 models: 2 from model-studio + 2 from anthropic-provider + 2 from pegasus)
+      assert length(models_list) == 6
 
       # All models should have string keys (for JSON serialization)
       Enum.each(models_list, fn model ->
@@ -143,6 +143,83 @@ defmodule Nest.DotConfigTest do
       on_exit(fn -> File.rm(tmp_path) end)
 
       assert_raise RuntimeError, ~r/invalid timeout/, fn ->
+        DotConfig.load(tmp_path)
+      end
+    end
+  end
+
+  describe "provider default-context-limit" do
+    test "parses the configured value when present" do
+      {:ok, config} = DotConfig.load()
+      assert config.providers["pegasus"].default_context_limit == 512_000
+    end
+
+    test "is nil for providers that don't set it" do
+      {:ok, config} = DotConfig.load()
+      assert config.providers["model-studio"].default_context_limit == nil
+      assert config.providers["anthropic-provider"].default_context_limit == nil
+    end
+
+    test "is nil when absent from a TOML with only a provider block" do
+      toml = """
+      [providers.foo]
+      base-url = "http://example.com/v1"
+      api-key = "x"
+      """
+
+      tmp_path =
+        Path.join(
+          System.tmp_dir!(),
+          "no_default_limit_#{System.unique_integer([:positive])}.toml"
+        )
+
+      File.write!(tmp_path, toml)
+      on_exit(fn -> File.rm(tmp_path) end)
+
+      {:ok, config} = DotConfig.load(tmp_path)
+      assert config.providers["foo"].default_context_limit == nil
+    end
+
+    test "raises on invalid (non-positive-integer) value" do
+      bad_toml = """
+      [providers.bad]
+      base-url = "http://example.com/v1"
+      api-key = "x"
+      default-context-limit = 0
+      """
+
+      tmp_path =
+        Path.join(
+          System.tmp_dir!(),
+          "bad_default_limit_#{System.unique_integer([:positive])}.toml"
+        )
+
+      File.write!(tmp_path, bad_toml)
+      on_exit(fn -> File.rm(tmp_path) end)
+
+      assert_raise RuntimeError, ~r/invalid default-context-limit/, fn ->
+        DotConfig.load(tmp_path)
+      end
+    end
+
+    test "raises on non-integer value" do
+      bad_toml = """
+      [providers.bad]
+      base-url = "http://example.com/v1"
+      api-key = "x"
+      default-context-limit = "200000"
+      """
+
+      tmp_path =
+        Path.join(
+          System.tmp_dir!(),
+          "bad_default_limit_str_#{System.unique_integer([:positive])}.toml"
+        )
+
+      File.write!(tmp_path, bad_toml)
+      on_exit(fn -> File.rm(tmp_path) end)
+
+      assert_raise RuntimeError, ~r/invalid default-context-limit/, fn ->
         DotConfig.load(tmp_path)
       end
     end

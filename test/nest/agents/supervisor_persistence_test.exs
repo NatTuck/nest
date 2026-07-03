@@ -3,7 +3,7 @@ defmodule Nest.Agents.SupervisorPersistenceTest do
   Regression tests for `Supervisor.get_agent/1` with persistence enabled.
 
   These tests must use `Nest.DataCase` (a sandboxed connection)
-  because they exercise the DB-backed lazy-restore path. Kept
+  because they exercise the DB-backed on-demand-load path. Kept
   in a separate file from `supervisor_test.exs` so the
   in-process `Registry`-only tests in that file can stay
   `async: true`.
@@ -27,12 +27,34 @@ defmodule Nest.Agents.SupervisorPersistenceTest do
 
   alias Nest.Agents.Supervisor
   alias Nest.Persistence
+  alias Nest.Vocations
 
   setup do
     previous = Application.get_env(:nest, :persistence, %{})
     Application.put_env(:nest, :persistence, enabled: true)
     on_exit(fn -> Application.put_env(:nest, :persistence, previous) end)
     :ok
+  end
+
+  defp test_vocation_id do
+    {:ok, %Vocations.Vocation{id: id}} =
+      Vocations.upsert_vocation(%{
+        name: "Supervisor Persistence Test Default",
+        description: "Default for supervisor persistence tests",
+        system_prompt: "You are a helpful test assistant.",
+        tools: ["context"],
+        modes: %{
+          "chat" => %{
+            "description" => "General conversation.",
+            "caps" => %{
+              "net" => false,
+              "fs" => %{"read" => ["/"], "write" => ["/tmp"]}
+            }
+          }
+        }
+      })
+
+    id
   end
 
   describe "get_agent/1" do
@@ -47,7 +69,8 @@ defmodule Nest.Agents.SupervisorPersistenceTest do
       {:ok, _row} =
         Persistence.insert_agent(%{
           name: name,
-          model: %{name: "qwen3.5-plus"}
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: test_vocation_id()
         })
 
       assert {:ok, pid} = Supervisor.get_agent(name)

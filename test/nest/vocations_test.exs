@@ -19,9 +19,13 @@ defmodule Nest.VocationsTest do
   describe "vocations" do
     @invalid_attrs %{name: nil, description: nil, modes: nil, tools: nil, system_prompt: nil}
 
-    test "list_vocations/0 returns all vocations" do
+    test "list_vocations/0 includes the created vocation" do
       vocation = vocation_fixture()
-      assert Vocations.list_vocations() == [vocation]
+      # Pre-existing test data may be present in the DB (the SQL
+      # sandbox rolls back per-test, but auto-increment ids do not
+      # reset between runs), so we check membership rather than
+      # list-equality.
+      assert vocation in Vocations.list_vocations()
     end
 
     test "get_vocation!/1 returns the vocation with given id" do
@@ -81,9 +85,80 @@ defmodule Nest.VocationsTest do
       assert_raise Ecto.NoResultsError, fn -> Vocations.get_vocation!(vocation.id) end
     end
 
+    test "delete_vocation/1 returns :agents_using_vocation when an agent references the vocation" do
+      # `agents.vocation_id` is `NOT NULL` with `ON DELETE RESTRICT`,
+      # so deleting a vocation that any agent references is
+      # rejected. The Vocations context catches this before the
+      # DELETE and returns a friendly error.
+      vocation = vocation_fixture()
+
+      {:ok, _} =
+        Nest.Persistence.insert_agent(%{
+          name: "uses-#{System.unique_integer([:positive])}",
+          model: %{name: "test"},
+          vocation_id: vocation.id
+        })
+
+      assert {:error, :agents_using_vocation} = Vocations.delete_vocation(vocation)
+      # The vocation is still present.
+      assert fetched = Vocations.get_vocation(vocation.id)
+      assert fetched.id == vocation.id
+    end
+
     test "change_vocation/1 returns a vocation changeset" do
       vocation = vocation_fixture()
       assert %Ecto.Changeset{} = Vocations.change_vocation(vocation)
+    end
+
+    test "upsert_vocation/1 inserts when no row exists for the name" do
+      attrs = %{
+        name: "upsert-new-#{System.unique_integer([:positive])}",
+        description: "first version",
+        system_prompt: "original prompt",
+        tools: [],
+        modes: %{}
+      }
+
+      assert {:ok, %Vocation{id: id}} = Vocations.upsert_vocation(attrs)
+      assert is_integer(id)
+
+      assert %Vocation{description: "first version", system_prompt: "original prompt"} =
+               Vocations.get_vocation!(id)
+    end
+
+    test "upsert_vocation/1 updates the existing row when the name already exists" do
+      original =
+        vocation_fixture(%{
+          description: "first version",
+          system_prompt: "original prompt"
+        })
+
+      updated_attrs = %{
+        name: original.name,
+        description: "updated version",
+        system_prompt: "updated prompt",
+        tools: original.tools,
+        modes: original.modes
+      }
+
+      assert {:ok, %Vocation{} = updated} = Vocations.upsert_vocation(updated_attrs)
+
+      # `id` is preserved so any `agents.vocation_id` FK references
+      # stay valid across the re-seed.
+      assert updated.id == original.id
+      assert updated.description == "updated version"
+      assert updated.system_prompt == "updated prompt"
+    end
+
+    test "upsert_vocation/1 returns the validation changeset when attrs are invalid" do
+      assert {:error, %Ecto.Changeset{}} =
+               Vocations.upsert_vocation(%{
+                 name: nil,
+                 description: nil,
+                 system_prompt: nil,
+                 tools: nil,
+                 modes: nil
+               })
     end
   end
 

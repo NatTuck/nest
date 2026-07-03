@@ -6,6 +6,14 @@ api-key = "none"
 auto-models = true
 tags = ["local"]
 timeout = 60
+default-context-limit = 512000
+
+[[providers.pegasus.models]]
+name = "pegasus-per-model-test"
+context-limit = 32000
+
+[[providers.pegasus.models]]
+name = "pegasus-default-only"
 
 [providers.model-studio]
 base-url = "https://coding-intl.dashscope.aliyuncs.com/v1"

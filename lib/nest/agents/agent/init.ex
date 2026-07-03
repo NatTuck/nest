@@ -36,7 +36,7 @@ defmodule Nest.Agents.Agent.Init do
   def build_state(attrs, client_config) do
     name = Map.fetch!(attrs, :name)
     model = Map.fetch!(attrs, :model)
-    vocation_id = Map.get(attrs, :vocation_id)
+    vocation_id = Map.fetch!(attrs, :vocation_id)
     workspace_path = Map.get(attrs, :workspace_path)
     vocation = Map.get(attrs, :vocation)
 
@@ -117,22 +117,58 @@ defmodule Nest.Agents.Agent.Init do
     end
   end
 
-  # Resolve the configured context limit from DotConfig; if
-  # absent, ask `Nest.Models.context_limit/2` (populated by the
-  # auto-provider `/models` fetch on application startup). When
-  # neither source has a value, return `nil` (the system prompt's
-  # context-limit section is omitted entirely).
-  defp initial_context_limit(model) do
+  @doc """
+  Resolve the model's context limit by walking three layers,
+  most-specific first.
+
+  Used by `build_state/2` at init time, and by the compaction
+  handler's `regenerate_for_compaction/2` to re-resolve after
+  a Models-cache refresh or dotconfig reload.
+
+  ## Layers
+
+    1. Per-model static `context-limit` (in `[[providers.<name>.models]]`)
+    2. Auto-discovery cache (`Nest.Models.context_limit/2`)
+    3. Provider-wide `default-context-limit` on `[providers.<name>]`
+
+  When none has a value, returns `{nil, nil}` and the system
+  prompt's context-limit section is omitted entirely.
+
+  The resolutions are captured as 0-arity closures so each
+  lookup only runs when the previous tier missed — calling
+  `Nest.Models.context_limit/2` once costs a `GenServer.call`,
+  and `DotConfig.load/0` reads + parses TOML.
+  """
+  @spec initial_context_limit(map()) :: {non_neg_integer() | nil, atom() | nil}
+  def initial_context_limit(model) do
     provider = model[:provider] || model["provider"]
     model_name = model_name(model)
 
-    case Config.configured_context_limit(model_name) do
+    context_limit_layer(
+      fn -> Config.configured_context_limit(model_name) end,
+      fn -> Nest.Models.context_limit(provider, model_name) end,
+      fn -> Config.configured_provider_default_context_limit(provider) end
+    )
+  end
+
+  defp context_limit_layer(configured, cache, provider_default) do
+    case configured.() do
       limit when is_integer(limit) ->
         {limit, :config}
 
       _ ->
-        case Nest.Models.context_limit(provider, model_name) do
-          {source, limit} when is_integer(limit) -> {limit, source}
+        resolve_cache_or_default(cache, provider_default)
+    end
+  end
+
+  defp resolve_cache_or_default(cache, provider_default) do
+    case cache.() do
+      {source, limit} when is_integer(limit) ->
+        {limit, source}
+
+      _ ->
+        case provider_default.() do
+          limit when is_integer(limit) -> {limit, :provider_default}
           _ -> {nil, nil}
         end
     end

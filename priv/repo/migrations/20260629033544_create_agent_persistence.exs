@@ -58,7 +58,7 @@ defmodule Nest.Repo.Migrations.CreateAgentPersistence do
     create table(:agents, primary_key: false) do
       add :id, :bigserial, primary_key: true
       add :name, :string, null: false
-      add :vocation_id, references(:vocations, on_delete: :nilify_all)
+      add :vocation_id, references(:vocations, on_delete: :restrict), null: false
       add :model, :map, null: false
       add :workspace_path, :string
       add :next_message_index, :integer, default: 0, null: false

@@ -59,6 +59,31 @@ defmodule Nest.Agents.Agent.Config do
   end
 
   @doc """
+  Look up the provider-wide `default-context-limit` for this
+  provider in DotConfig. Returns `nil` when absent so the caller
+  can decide whether to fall through to `nil`.
+
+  Used by the agent's context-limit resolution chain as a
+  fallback when neither the per-model `context-limit` nor the
+  auto-discovery cache has a value.
+  """
+  @spec configured_provider_default_context_limit(String.t() | nil) :: non_neg_integer() | nil
+  def configured_provider_default_context_limit(nil), do: nil
+
+  def configured_provider_default_context_limit(provider_name) when is_binary(provider_name) do
+    case DotConfig.load() do
+      {:ok, config} ->
+        case DotConfig.get_provider(config, provider_name) do
+          nil -> nil
+          provider -> provider.default_context_limit
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  @doc """
   Resolve the per-chat tool-call iteration cap. Reads the
   optional top-level `max-tool-iterations` value from
   DotConfig; falls back to `DotConfig.default_max_tool_iterations/0`

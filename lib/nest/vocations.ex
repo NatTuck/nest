@@ -4,6 +4,7 @@ defmodule Nest.Vocations do
   """
 
   import Ecto.Query, warn: false
+
   alias Nest.Repo
 
   alias Nest.Vocations.Vocation
@@ -102,7 +103,55 @@ defmodule Nest.Vocations do
 
   """
   def delete_vocation(%Vocation{} = vocation) do
-    Repo.delete(vocation)
+    if agents_using_vocation?(vocation.id) do
+      {:error, :agents_using_vocation}
+    else
+      try do
+        Repo.delete(vocation)
+      rescue
+        Ecto.ConstraintError -> {:error, :agents_using_vocation}
+      end
+    end
+  end
+
+  defp agents_using_vocation?(vocation_id) do
+    from(a in Nest.Agents.PersistedAgent, where: a.vocation_id == ^vocation_id)
+    |> Repo.exists?()
+  end
+
+  @doc """
+  Insert-or-update a vocation by `:name`.
+
+  Looks up the row by `name`; if found, updates it in place
+  (preserving `id` so any FK references like
+  `agents.vocation_id` stay valid); if not found, inserts a
+  new row. The result shape mirrors `create_vocation/1` and
+  `update_vocation/2`: `{:ok, %Vocation{}}` on success,
+  `{:error, %Ecto.Changeset{}}` on validation failure.
+
+  Used by `priv/repo/seeds.exs` so re-running seeds updates
+  the existing rows (system prompts, modes, tools) in place
+  rather than failing on duplicate names or creating a second
+  row. Single-process at seed time, so the lookup-then-write
+  race window is acceptable; a concurrent caller would need a
+  real unique index on `name` to be safe.
+  """
+  def upsert_vocation(attrs) do
+    name = attrs[:name] || attrs["name"]
+
+    if name do
+      case Repo.get_by(Vocation, name: name) do
+        nil -> create_vocation(attrs)
+        %Vocation{} = existing -> update_vocation(existing, attrs)
+      end
+    else
+      # No name → no lookup possible; the changeset will reject
+      # the missing required field and return the validation
+      # error to the caller. Ecto's `get_by/2` would raise on
+      # `name: nil`, so we short-circuit before it gets that
+      # far.
+      create_vocation(attrs)
+    end
   end
 
   @doc """

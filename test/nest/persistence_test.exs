@@ -34,6 +34,7 @@ defmodule Nest.PersistenceTest do
   alias Nest.Messages.Tool
   alias Nest.Messages.User
   alias Nest.Persistence
+  alias Nest.Vocations
 
   setup do
     # The `Agent` GenServer reads `persistence_enabled?/0` from
@@ -238,6 +239,68 @@ defmodule Nest.PersistenceTest do
     end
   end
 
+  describe "insert_message/2 idempotency" do
+    # Regression for the /agent/defeated-jackal crash: when the
+    # Agent's `init/1` re-inserts the initial system message at
+    # index 0, the unique constraint on (agent_id, message_index)
+    # would fire. `on_conflict: :nothing` makes the insert a
+    # silent no-op so the restore path doesn't crash. The
+    # `PersistedMessage.changeset/2` declares the constraint so
+    # any future caller without `on_conflict` gets a Changeset
+    # error instead of a raised exception.
+    test "is a no-op when a row at the same (agent_id, message_index) already exists" do
+      attrs = agent_attrs("dup-msg-#{Elixir.System.unique_integer([:positive])}")
+      {:ok, _} = Persistence.insert_agent(attrs)
+
+      original =
+        {:system, %MsgSystem{index: 0, parts: [%Part.Text{text: "original prompt"}]}}
+
+      assert {:ok, first} = Persistence.insert_message(attrs.name, original)
+      first_id = first.id
+
+      # Duplicate insert at the same index — must not raise, must
+      # not return a Changeset error. Ecto's `on_conflict: :nothing`
+      # returns `{:ok, %PersistedMessage{id: nil}}` on a no-op
+      # insert (the struct echoes back, but `id: nil` pins that
+      # no row was written).
+      duplicate =
+        {:system, %MsgSystem{index: 0, parts: [%Part.Text{text: "different prompt"}]}}
+
+      assert {:ok, %PersistedMessage{id: nil}} =
+               Persistence.insert_message(attrs.name, duplicate)
+
+      # Original row is unchanged — the duplicate was a true no-op,
+      # not an upsert.
+      assert [%PersistedMessage{id: ^first_id}] =
+               Nest.Repo.all(PersistedMessage)
+    end
+
+    test "is idempotent across the full Agent.init/1 restore path" do
+      # End-to-end regression for the production crash. Simulate
+      # what happens when a user joins an existing agent channel:
+      # the supervisor loads the row + preloaded messages, starts
+      # a fresh Agent process, and `init/1` re-inserts the system
+      # message. Before the `on_conflict: :nothing` fix, this
+      # raised `Ecto.ConstraintError` and the channel join
+      # crashed. With the fix, the second insert is a no-op.
+      attrs = agent_attrs("restore-#{Elixir.System.unique_integer([:positive])}")
+      {:ok, _} = Persistence.insert_agent(attrs)
+
+      system_msg = {:system, %MsgSystem{index: 0, parts: [%Part.Text{text: "sys"}]}}
+      assert {:ok, _} = Persistence.insert_message(attrs.name, system_msg)
+
+      # The Agent's init/1 calls Init.persist_initial_system_message
+      # which routes through AgentPersistence.append_message →
+      # do_append_message → Persistence.insert_message. Pin that
+      # the second call (with the same index 0) doesn't raise.
+      second_call = fn ->
+        Persistence.insert_message(attrs.name, system_msg)
+      end
+
+      assert {:ok, _} = second_call.()
+    end
+  end
+
   describe "load_active_messages/1" do
     test "returns active (non-archived) messages in message_index order" do
       attrs = agent_attrs("load-active-#{Elixir.System.unique_integer([:positive])}")
@@ -400,7 +463,36 @@ defmodule Nest.PersistenceTest do
     %{
       name: name,
       model: %{name: "test-model", provider: "test"},
-      workspace_path: nil
+      workspace_path: nil,
+      vocation_id: test_vocation_id()
     }
+  end
+
+  defp test_vocation_id do
+    case Process.get(:nest_persistence_test_vocation_id) do
+      nil ->
+        {:ok, %Vocations.Vocation{id: id}} =
+          Vocations.upsert_vocation(%{
+            name: "Persistence Test Default",
+            description: "Default for persistence tests",
+            system_prompt: "You are a helpful test assistant.",
+            tools: ["context"],
+            modes: %{
+              "chat" => %{
+                "description" => "General conversation.",
+                "caps" => %{
+                  "net" => false,
+                  "fs" => %{"read" => ["/"], "write" => ["/tmp"]}
+                }
+              }
+            }
+          })
+
+        Process.put(:nest_persistence_test_vocation_id, id)
+        id
+
+      id ->
+        id
+    end
   end
 end

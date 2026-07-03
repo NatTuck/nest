@@ -129,22 +129,29 @@ defmodule Nest.Models do
         {Map.merge(acc_models, models), Map.merge(acc_limits, limits)}
       end)
 
-    merged_models = Map.merge(config.models, auto_models)
+    merged_models = Map.merge(auto_models, config.models)
 
     {:noreply, %{state | models: merged_models, context_limits: limits_by_provider}}
   end
 
   # Private functions
 
+  # Auto-discovered models are registered in `Models.list/0`
+  # regardless of whether a recognized context-window field is
+  # present in the response — `ChatModel.list_models/1`
+  # returns names only, while `ChatModel.list_models_with_limits/1`
+  # is the (separate, filtered) source for the cache.
   defp query_provider(provider) do
-    models_with_limits =
-      provider
-      |> ChatModel.list_models_with_limits()
+    names = ChatModel.list_models(provider)
+    models_with_limits = ChatModel.list_models_with_limits(provider)
 
-    model_names = Enum.map(models_with_limits, & &1.name)
+    limits =
+      Map.new(models_with_limits, fn entry ->
+        {entry.name, {entry.source, entry.limit}}
+      end)
 
     models =
-      model_names
+      names
       |> Enum.map(fn name ->
         {name,
          %DotConfig.Model{
@@ -156,23 +163,59 @@ defmodule Nest.Models do
       end)
       |> Map.new()
 
-    limits =
-      Map.new(models_with_limits, fn entry ->
-        {entry.name, {entry.source, entry.limit}}
-      end)
-
     {models, %{provider.name => limits}}
   end
 
-  defp build_model_list(%{models: models}) do
+  # Composes the merged model list for `Models.list/0`. The
+  # `context_limit` returned per entry is the *effective* value
+  # (i.e. "the number the app will use") resolved across the
+  # three layers in priority order:
+  #
+  #   1. Per-model static `context-limit` (already on the merged
+  #      `DotConfig.Model` struct when present in TOML)
+  #   2. Auto-discovery cache (per-{provider, model_id})
+  #   3. Provider-level `default-context-limit`
+  #
+  # Computed at read time so a future re-parse of dotconfig
+  # takes effect without forcing a refresh of the GenServer.
+  defp build_model_list(%{models: models} = state) do
+    cache = Map.get(state, :context_limits, %{})
+    providers = provider_map(state)
+
     models
     |> Map.values()
     |> Enum.map(fn model ->
       %{
         "name" => model.name,
         "provider" => model.provider_name,
-        "context_limit" => model.context_limit
+        "context_limit" => effective_context_limit(model, cache, providers)
       }
     end)
   end
+
+  defp effective_context_limit(model, cache, providers) do
+    cond do
+      is_integer(model.context_limit) ->
+        model.context_limit
+
+      limit = get_in(cache, [model.provider_name, model.name]) ->
+        case limit do
+          {_source, n} when is_integer(n) -> n
+          _ -> provider_default(providers, model.provider_name)
+        end
+
+      true ->
+        provider_default(providers, model.provider_name)
+    end
+  end
+
+  defp provider_default(providers, provider_name) do
+    case Map.get(providers, provider_name) do
+      %{default_context_limit: limit} when is_integer(limit) -> limit
+      _ -> nil
+    end
+  end
+
+  defp provider_map(%{static_config: %{providers: providers}}), do: providers
+  defp provider_map(_), do: %{}
 end

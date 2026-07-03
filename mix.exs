@@ -14,7 +14,7 @@ defmodule Nest.MixProject do
       listeners: [Phoenix.CodeReloader],
       test_coverage: [
         tool: ExCoveralls,
-        summary: [threshold: 74]
+        summary: [threshold: 77]
       ],
       test_ignore_filters: [
         &String.starts_with?(&1, "test/support/credo/")

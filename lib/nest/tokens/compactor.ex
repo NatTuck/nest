@@ -67,6 +67,25 @@ defmodule Nest.Tokens.Compactor do
 
   Returns the new message list. If the history is already empty
   or has only a system message, returns it unchanged.
+
+  ## Output contract
+
+  The returned list **always starts with a `{:system, _}` message**.
+  This invariant is structurally guaranteed:
+
+  - The `:too_short` branch returns the input unchanged. The caller
+    (the agent's `state.chat_state.messages`) always starts with a
+    system message, so the output also starts with one.
+  - The other branches explicitly prepend the original system message
+    (extracted from `List.first(head)` where `head` is everything
+    before the last user message).
+
+  Summary messages (the head and tail summaries produced by the
+  two-pass algorithm) are also tagged as `{:system, _}` via
+  `wrap_summary/2`. This is the convention the agent's compaction
+  handler relies on: position 0 of the compactor's output is always
+  a system message, and the handler can re-encode it as a user
+  "Summary of earlier conversation" message without ambiguity.
   """
   @spec compact([Message.t()], pos_integer(), llm_call()) :: [Message.t()]
   def compact(messages, context_limit, llm_call_fn)
@@ -168,6 +187,14 @@ defmodule Nest.Tokens.Compactor do
   # matching the message variants. The summary lives as a
   # "system" message in the new history (since it's not from
   # the user or a real assistant turn).
+  #
+  # Contract: always returns a `{:system, %System{}}` tuple, even
+  # when the LLM returned an empty string. The caller (the agent's
+  # compaction handler) relies on this — it pattern-matches the
+  # compactor's output's position 0 as `{:system, _}` and re-encodes
+  # the summary as a user message. Violating this contract (e.g.
+  # returning a user message for a tail summary) would break the
+  # handler.
   defp wrap_summary(text, kind) do
     # Empty summaries are still emitted as a system message so
     # the message indices remain contiguous. The caller may later

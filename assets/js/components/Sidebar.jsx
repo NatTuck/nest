@@ -20,15 +20,15 @@ export function Sidebar() {
   const navigate = useNavigate();
   const { agents } = useStore();
 
-  const handleDeleteAgent = (e, id) => {
+  const handleDeleteAgent = (e, name) => {
     e.preventDefault();
     e.stopPropagation();
 
-    deleteAgent(id, (error) => {
+    deleteAgent(name, (error) => {
       console.error("Failed to delete agent:", error);
     });
     // If we deleted the current agent, navigate home
-    if (location.pathname === `/agent/${id}`) {
+    if (location.pathname === `/agent/${name}`) {
       navigate("/");
     }
   };

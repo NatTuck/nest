@@ -62,8 +62,8 @@ export function NewAgentPage() {
       model,
       vocationId,
       workspace,
-      (id) => {
-        navigate(`/agent/${id}`);
+      (name) => {
+        navigate(`/agent/${name}`);
       },
       (err) => {
         setError(err.message || "Failed to create agent");

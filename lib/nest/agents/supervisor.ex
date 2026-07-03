@@ -24,12 +24,21 @@ defmodule Nest.Agents.Supervisor do
   the agent's `init/1` has no DB work and `$callers` walking
   covers the post-startup message-write path.
 
-  `get_agent/1` keeps the lazy-restore semantics: it
-  consults the `Registry` first, and falls through to
-  `fetch_or_start_agent/1` (which inserts a row for an
-  existing name or starts a fresh process for a known
-  name) when the in-process `Registry` doesn't have the
-  agent.
+  `get_agent/1` keeps the **on-demand-load** semantics: the
+  agent row, all active messages, and the vocation are not
+  loaded at boot. They are loaded the first time
+  `get_agent/1` is called and the in-process `Registry`
+  misses.
+
+  The loading itself is **eager**:
+  `Persistence.build_attrs_for_start/1` materializes the
+  full active message list and the `Vocation` struct in a
+  single round-trip. The Agent's `init/1` then composes the
+  system prompt and (idempotently) re-inserts the system
+  message at index 0 — the unique constraint on
+  `(agent_id, message_index)` makes that re-insert a no-op
+  when the row was loaded from the DB. See
+  `Init.persist_initial_system_message/1` for the contract.
   """
 
   use DynamicSupervisor
@@ -272,25 +281,25 @@ defmodule Nest.Agents.Supervisor do
         {:ok, pid}
 
       {:error, :not_found} ->
-        # Lazy-restore. With persistence enabled, ask the
+        # On-demand load. With persistence enabled, ask the
         # DB-backed path; the caller might be asking for a
         # name that exists in another BEAM. Without
         # persistence, the in-process `Registry` is the
         # only source of truth and the answer is always
         # `:not_found`.
-        lazy_restore(name)
+        on_demand_load(name)
     end
   end
 
-  defp lazy_restore(name) do
+  defp on_demand_load(name) do
     if persistence_enabled?() do
-      do_lazy_restore_with_persistence(name)
+      do_on_demand_load_with_persistence(name)
     else
       {:error, :not_found}
     end
   end
 
-  defp do_lazy_restore_with_persistence(name) do
+  defp do_on_demand_load_with_persistence(name) do
     case fetch_or_start_agent(%{name: name}) do
       {:ok, ^name} ->
         Registry.lookup(name)

@@ -17,6 +17,7 @@ defmodule Nest.Agents.AgentContextLimitTest do
   import Mimic
 
   alias Nest.Agents.Agent
+  alias Nest.Agents.AgentTestHelpers
   alias Nest.LLM.MockClient
   alias Nest.Models
 
@@ -28,7 +29,8 @@ defmodule Nest.Agents.AgentContextLimitTest do
 
     defaults = %{
       name: agent_name,
-      model: %{name: "qwen3.5-plus", provider: "model-studio"}
+      model: %{name: "qwen3.5-plus", provider: "model-studio"},
+      vocation_id: AgentTestHelpers.vocation_id_for_test()
     }
 
     attrs = Map.merge(defaults, attrs)
@@ -88,6 +90,54 @@ defmodule Nest.Agents.AgentContextLimitTest do
     state = :sys.get_state(pid)
     assert state.llm_metrics.context_limit == nil
     assert state.llm_metrics.context_limit_source == nil
+
+    Agent.terminate(pid)
+  end
+
+  test "uses the provider's `default-context-limit` when per-model config and cache are both nil" do
+    # `[providers.pegasus]` in `test/data/config.toml` has
+    # `default-context-limit = 512000` but no static entry for the
+    # test model name, so per-model returns nil. The cache
+    # stub returns nil. The provider default kicks in.
+    Mimic.expect(Models, :context_limit, fn _provider, _model ->
+      nil
+    end)
+
+    agent_name = "probe-provider-default-#{System.unique_integer([:positive])}"
+
+    {pid, _} =
+      start_probe_agent(%{
+        name: agent_name,
+        model: %{name: "pegasus-default-only", provider: "pegasus"}
+      })
+
+    state = :sys.get_state(pid)
+    assert state.llm_metrics.context_limit == 512_000
+    assert state.llm_metrics.context_limit_source == :provider_default
+
+    Agent.terminate(pid)
+  end
+
+  test "per-model `context-limit` wins over provider-level `default-context-limit`" do
+    # `pegasus-per-model-test` is a static-config entry under
+    # `[providers.pegasus]` with `context-limit = 32000`. The
+    # same provider has `default-context-limit = 512000`. The
+    # per-model value wins per the resolution precedence.
+    #
+    # No `Models.context_limit/2` stub here: the per-model hit
+    # short-circuits the resolution chain, so the cache closure
+    # is captured but never invoked.
+    agent_name = "probe-per-model-wins-#{System.unique_integer([:positive])}"
+
+    {pid, _} =
+      start_probe_agent(%{
+        name: agent_name,
+        model: %{name: "pegasus-per-model-test", provider: "pegasus"}
+      })
+
+    state = :sys.get_state(pid)
+    assert state.llm_metrics.context_limit == 32_000
+    assert state.llm_metrics.context_limit_source == :config
 
     Agent.terminate(pid)
   end
