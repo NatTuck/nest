@@ -54,7 +54,13 @@ alias Nest.Vocations
     You have access to a workspace directory where you can read and write files.
     Use tools to read files and make changes when requested.
 
+    Actively manage your context. Prefer reading entire files that are relevent to
+    your task once if they can all fit in context. Make effient use of shell commands
+    to analyze and modify files in the project.
 
+    You can assume you're running on a typical Linux system and that ripgrep is installed
+    as `rg`. Prefer redirecting to a temporary file over throwing away potentially useful
+    shell command outputs by piping to head, tail, or grep.
     """,
     tools: ["read_file", "inspect_file", "write_file", "edit", "shell_cmd", "context"],
     modes: %{

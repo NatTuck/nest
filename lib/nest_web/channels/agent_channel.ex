@@ -101,7 +101,17 @@ defmodule NestWeb.AgentChannel do
   @impl true
   def handle_info({:chat_status, status_payload}, socket) do
     push(socket, "chat:status", status_payload)
+    {:noreply, socket}
+  end
 
+  # Handle a `chat:compaction` event from PubSub (broadcast
+  # by `Broadcasts.compaction/3` after a successful
+  # `archive_and_compact` DB write). The payload carries
+  # the marker and the full archived history; the JS side
+  # uses it to render the compaction divider in the UI.
+  @impl true
+  def handle_info({:chat_compaction, payload}, socket) do
+    push(socket, "chat:compaction", payload)
     {:noreply, socket}
   end
 

@@ -40,7 +40,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     # Validate mode against the vocation; fall back to default if invalid.
     {effective_mode, _caps} = resolve_mode_and_caps(mode, state.vocation)
 
-    {user_message, llm_user_message} = build_user_message(state, content, effective_mode)
+    user_message = build_user_message(state, content, effective_mode)
 
     # Clear the `cancelled` flag from any previous stop so the
     # pre-flight compaction that may run for this turn can
@@ -67,7 +67,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
 
     Broadcasts.status(state.name, state)
 
-    state = maybe_compact_then_spawn(state, [llm_user_message], content, mode)
+    state = maybe_compact_then_spawn(state, content, mode)
     {:noreply, state}
   end
 
@@ -183,9 +183,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
       api_logs: get_pending_api_logs(state, next_idx)
     }
 
-    user_message = {:user, user}
-    llm_user_message = user_message
-    {user_message, llm_user_message}
+    {:user, user}
   end
 
   # Pre-flight: would the LLM call we'd make next fit in the
@@ -194,7 +192,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   # back; the Agent's `compaction_done` handler then spawns
   # the ChatTurn via `resume_after_compaction/3` with the
   # compacted messages.
-  defp maybe_compact_then_spawn(state, _messages_for_llm, content, mode) do
+  defp maybe_compact_then_spawn(state, content, mode) do
     # Plan §"In-progress state": compaction is disallowed
     # while streaming. The pre-flight will re-run on the
     # next call (which is the next chat turn, since the

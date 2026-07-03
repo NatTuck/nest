@@ -1514,6 +1514,102 @@ describe("channels", () => {
       const payload = await pushCapture;
       assert.deepStrictEqual(payload, { content: "Hello" });
     });
+
+    it("does not duplicate the user message when the server echoes with a different index (regression: optimistic/server race)", async () => {
+      // Regression test for the duplicate user messages bug.
+      //
+      // The init event includes `messageCount: 1` (the server
+      // has the system message at index 0) but does NOT include
+      // the `messages` array. The client's `lastIndex` stays
+      // at -1 until the chat:sync response arrives. If the user
+      // sends a message in that small window, the optimistic
+      // add uses `lastIndex + 1 = 0` while the server stamps
+      // the user message at its authoritative index 1.
+      //
+      // The pre-fix `addChatMessage` de-dup'd only by index, so
+      // the server's echo with index 1 was appended as a new
+      // message and the user saw their own message twice.
+      //
+      // The streaming-vs-final check inside `addChatMessage`
+      // fires a `console.warn` when the (empty) assistant
+      // partial text doesn't match the incoming user message
+      // text. In production those indices never coincide (the
+      // user message and the assistant's expected slot differ),
+      // but this test uses a fresh cache with `lastIndex = -1`
+      // so the optimistic user lands at index 0 and the
+      // streaming assistant slot is computed as 0 + 1 = 1 —
+      // which collides with the server's authoritative index
+      // 1. Silence the false positive so the test output
+      // stays clean.
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      try {
+        setNextJoinResult("agent:agent-1", {
+          autoInit: {
+            id: "agent-1",
+            model: { name: "gpt-4", provider: "openai" },
+            messageCount: 1,
+            status: "idle",
+          },
+        });
+        joinAgent("agent-1");
+
+        await vi.waitFor(() => {
+          assert.strictEqual(
+            useStore.getState().agentsCache["agent-1"]?.status,
+            "connected",
+          );
+        });
+
+        // Sanity: the client hasn't received the chat:sync
+        // response yet, so lastIndex is still -1.
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"].lastIndex,
+          -1,
+        );
+
+        setNextPushResult("agent:agent-1", "chat:message", { ok: {} });
+        sendMessage("agent-1", "Hello");
+
+        // Optimistic add lands the message at index 0 (the
+        // client's stale `lastIndex + 1`).
+        await vi.waitFor(() => {
+          assert.strictEqual(
+            useStore.getState().agentsCache["agent-1"].messages.length,
+            1,
+          );
+          assert.strictEqual(
+            useStore.getState().agentsCache["agent-1"].messages[0].index,
+            0,
+          );
+        });
+
+        // The server echoes the user message with its
+        // authoritative index 1 (the system message is at 0
+        // server-side).
+        simulateServerEvent("agent:agent-1", "chat:message", {
+          index: 1,
+          role: "user",
+          parts: [{ kind: "text", text: "Hello" }],
+          mode: "chat",
+        });
+
+        // The optimistic message is reconciled in place: the
+        // index is updated to 1, no duplicate is added.
+        await vi.waitFor(() => {
+          const messages = useStore.getState().agentsCache["agent-1"].messages;
+          assert.strictEqual(messages.length, 1);
+          assert.strictEqual(messages[0].index, 1);
+          assert.strictEqual(messages[0].content, "Hello");
+        });
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"].lastIndex,
+          1,
+        );
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
   });
 
   describe("createAgent", () => {

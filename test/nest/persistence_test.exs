@@ -380,10 +380,14 @@ defmodule Nest.PersistenceTest do
           {:assistant, %Assistant{index: 1, parts: [%Part.Text{text: "Reply"}]}}
         )
 
-      # Archive indices 0..1 (both messages) and insert a
-      # marker at index 2.
+      # Archive messages in the half-open range
+      # [first_index, marker_index) — i.e. both user (0)
+      # and assistant (1) — and insert a marker at
+      # marker_index (2). The marker is excluded from
+      # `load_active_messages/1` because it lives in
+      # `state.chat_state.history`, not `messages`.
       assert {:ok, %PersistedMessage{} = marker} =
-               Persistence.archive_and_compact(attrs.name, 0, 1, 2)
+               Persistence.archive_and_compact(attrs.name, 0, 2, 2)
 
       assert marker.role == "compaction"
       assert marker.message_index == 2
@@ -391,10 +395,7 @@ defmodule Nest.PersistenceTest do
       assert marker.compaction_occurred_at != nil
 
       active = Persistence.load_active_messages(attrs.name)
-      assert length(active) == 1
-
-      [{:compaction, m}] = active
-      assert m.archived_count == 2
+      assert active == []
 
       from_db = Nest.Repo.all(PersistedMessage)
       assert length(from_db) == 3

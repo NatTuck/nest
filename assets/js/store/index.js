@@ -854,7 +854,49 @@ export const useStore = create(
             }
           }
 
-          const exists = cache.messages.some((m) => m.index === message.index);
+          // First try to find the message by index (the canonical case).
+          // If the server echoes at a different index — which happens
+          // when the user sends a message in the small window between
+          // the `init` event and the `chat:sync` response (the client's
+          // `lastIndex` is stale because it doesn't yet know about
+          // pre-existing messages) — fall back to a content+recency
+          // match against an optimistic message.
+          //
+          // The race: the client optimistic-adds at `lastIndex + 1`
+          // using a stale `lastIndex` (e.g. -1 or a lower value). The
+          // server stamps the user message at its authoritative
+          // `next_message_index` and broadcasts `chat:message` with
+          // the correct index. The index-based de-dup misses, so the
+          // server's echo is appended as a new message, leaving the
+          // user with two copies of their own message.
+          let matchedIndex = cache.messages.findIndex(
+            (m) => m.index === message.index,
+          );
+
+          if (matchedIndex === -1) {
+            // Look for an optimistic message with matching role+content
+            // that was created recently (within 30s). The optimistic
+            // add stamps `timestamp: new Date().toISOString()`; the
+            // server's echo has a different `timestamp`, but the
+            // content is the user's input and should match.
+            //
+            // 30s is deliberately generous — it covers any plausible
+            // user typing/clicking window. The only false positive is
+            // the user sending the exact same message twice in <30s;
+            // in that case the indices get re-bound in order, which
+            // matches what the user sees in the UI.
+            const recentThresholdMs = 30_000;
+            const now = Date.now();
+            const incomingContent = messageText(message);
+
+            matchedIndex = cache.messages.findIndex((m) => {
+              if (m.role !== message.role) return false;
+              if (messageText(m) !== incomingContent) return false;
+              const ts = m.timestamp ? Date.parse(m.timestamp) : 0;
+              if (Number.isNaN(ts)) return false;
+              return now - ts < recentThresholdMs;
+            });
+          }
 
           // Derive the legacy `content`/`thinking` fields from
           // `parts` so downstream components that still read those
@@ -953,62 +995,71 @@ export const useStore = create(
             return [];
           };
 
-          const newMessages = exists
-            ? cache.messages.map((m) => {
-                if (m.index === message.index) {
-                  // Merge apiLogs, preferring the new message's apiLogs if they exist
-                  const mergedApiLogs = message.apiLogs?.length
-                    ? message.apiLogs
-                    : m.apiLogs || [];
+          // Build the merge-update for a matched message.
+          // Used by both the index-match and content-reconcile
+          // paths. `m` is the existing cache message (optimistic
+          // or already-finalized), `message` is the incoming
+          // server echo. We prefer the server's authoritative
+          // fields (index, apiLogs, mode-prefixed parts) but
+          // preserve user-visible fields from the optimistic
+          // add when the server doesn't carry them.
+          const buildMerged = (m) => {
+            // Merge apiLogs, preferring the new message's apiLogs if they exist
+            const mergedApiLogs = message.apiLogs?.length
+              ? message.apiLogs
+              : m.apiLogs || [];
 
-                  // Derive tool calls / results from `parts` (new
-                  // format) or fall back to legacy fields. Prefer
-                  // the new message's data; preserve the existing
-                  // message's data if the new one doesn't carry
-                  // tool parts.
-                  const newToolCalls = toolCallsFromParts(message.parts) || [];
-                  const mergedToolCalls = newToolCalls.length
-                    ? newToolCalls
-                    : toolCallsFromParts(partsShape(m)) || [];
+            // Derive tool calls / results from `parts` (new
+            // format) or fall back to legacy fields. Prefer
+            // the new message's data; preserve the existing
+            // message's data if the new one doesn't carry
+            // tool parts.
+            const newToolCalls = toolCallsFromParts(message.parts) || [];
+            const mergedToolCalls = newToolCalls.length
+              ? newToolCalls
+              : toolCallsFromParts(partsShape(m)) || [];
 
-                  const newToolResults =
-                    toolResultsFromParts(message.parts) || [];
-                  const mergedToolResults = newToolResults.length
-                    ? newToolResults
-                    : toolResultsFromParts(partsShape(m)) || [];
+            const newToolResults = toolResultsFromParts(message.parts) || [];
+            const mergedToolResults = newToolResults.length
+              ? newToolResults
+              : toolResultsFromParts(partsShape(m)) || [];
 
-                  return {
+            return {
+              ...message,
+              // Derive the legacy `content` field from
+              // `parts` for components that still read it
+              // as a flat string. The thinking path
+              // (`mergedThinking`) already handles the
+              // thinking merge.
+              content: messageText(message) || m.content || "",
+              thinking: mergedThinking,
+              apiLogs: mergedApiLogs,
+              toolCalls: mergedToolCalls,
+              toolResults: mergedToolResults,
+            };
+          };
+
+          const newMessages =
+            matchedIndex === -1
+              ? [
+                  ...cache.messages,
+                  {
                     ...message,
-                    // Derive the legacy `content` field from
-                    // `parts` for components that still read it
-                    // as a flat string. The thinking path
-                    // (`mergedThinking`) already handles the
-                    // thinking merge.
-                    content: messageText(message) || m.content || "",
+                    content: messageText(message) || message.content || "",
                     thinking: mergedThinking,
-                    apiLogs: mergedApiLogs,
-                    toolCalls: mergedToolCalls,
-                    toolResults: mergedToolResults,
-                  };
-                }
-                return m;
-              })
-            : [
-                ...cache.messages,
-                {
-                  ...message,
-                  content: messageText(message) || message.content || "",
-                  thinking: mergedThinking,
-                  toolCalls:
-                    toolCallsFromParts(message.parts) ||
-                    toolCallsFromParts(partsShape(message)) ||
-                    [],
-                  toolResults:
-                    toolResultsFromParts(message.parts) ||
-                    toolResultsFromParts(partsShape(message)) ||
-                    [],
-                },
-              ];
+                    toolCalls:
+                      toolCallsFromParts(message.parts) ||
+                      toolCallsFromParts(partsShape(message)) ||
+                      [],
+                    toolResults:
+                      toolResultsFromParts(message.parts) ||
+                      toolResultsFromParts(partsShape(message)) ||
+                      [],
+                  },
+                ]
+              : cache.messages.map((m, i) =>
+                  i === matchedIndex ? buildMerged(m) : m,
+                );
 
           return {
             agentsCache: {

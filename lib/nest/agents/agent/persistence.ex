@@ -29,9 +29,11 @@ defmodule Nest.Agents.Agent.Persistence do
     end
   end
 
-  def archive_and_compact(agent_id, first_index, last_index, archived_count) do
+  def archive_and_compact(agent_id, first_index, marker_index, archived_count) do
     if persistence_enabled?() do
-      do_archive_and_compact(agent_id, first_index, last_index, archived_count)
+      do_archive_and_compact(agent_id, first_index, marker_index, archived_count)
+    else
+      :ok
     end
   end
 
@@ -45,13 +47,14 @@ defmodule Nest.Agents.Agent.Persistence do
     end
   end
 
-  defp do_archive_and_compact(agent_id, first_index, last_index, archived_count) do
-    case Persistence.archive_and_compact(agent_id, first_index, last_index, archived_count) do
+  defp do_archive_and_compact(agent_id, first_index, marker_index, archived_count) do
+    case Persistence.archive_and_compact(agent_id, first_index, marker_index, archived_count) do
       {:ok, _row} ->
         :ok
 
       {:error, reason} ->
         Logger.warning("Failed to persist compaction for agent #{agent_id}: #{inspect(reason)}")
+        {:error, reason}
     end
   end
 

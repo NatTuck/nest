@@ -1493,6 +1493,12 @@ describe("store", () => {
       const consoleErrorSpy = vi
         .spyOn(console, "error")
         .mockImplementation(() => {});
+      // The streaming-vs-final check inside `addChatMessage`
+      // also fires a `console.warn` (a false positive here —
+      // the partial has thinking but no text, so the diff is
+      // expected). Silence it so the test output stays focused
+      // on the regression guard's own error log.
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
       // Seed a streaming partial with thinking in `parts`
       // (the shape produced by `addChatDelta` for thinking
@@ -1543,6 +1549,7 @@ describe("store", () => {
       expect(useStore.getState().agentsCache["agent-1"].streaming).toBeNull();
 
       consoleErrorSpy.mockRestore();
+      warnSpy.mockRestore();
     });
 
     it("does NOT override broadcast thinking with partial segments thinking", () => {
@@ -1552,6 +1559,9 @@ describe("store", () => {
       const consoleErrorSpy = vi
         .spyOn(console, "error")
         .mockImplementation(() => {});
+      // Silence the streaming-vs-final false-positive warning
+      // (the partial has no text, the broadcast has text).
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
       useStore.setState((state) => ({
         agentsCache: {
@@ -1581,6 +1591,187 @@ describe("store", () => {
       expect(consoleErrorSpy).not.toHaveBeenCalled();
 
       consoleErrorSpy.mockRestore();
+      warnSpy.mockRestore();
+    });
+  });
+
+  describe("addChatMessage index-mismatch reconcile (regression: optimistic/server race)", () => {
+    // The user reports seeing their own message twice in the
+    // chat UI. Root cause: the client optimistic-adds at
+    // `lastIndex + 1` (a stale value when the user sends a
+    // message in the small window between the `init` event and
+    // the `chat:sync` response). The server stamps the user
+    // message at its authoritative `next_message_index` and
+    // broadcasts `chat:message` with that index. The
+    // index-based de-dup misses, so the server's echo is
+    // appended as a new message.
+    //
+    // Fix: when the index-based match fails, fall back to a
+    // content+role+recency match against an optimistic message.
+    // The matched message's index is updated in place to the
+    // server's authoritative value.
+
+    // The streaming-vs-final check inside `addChatMessage` fires
+    // a `console.warn` when the (empty) assistant partial text
+    // doesn't match the incoming user message text. In production
+    // those indices never coincide (the user message and the
+    // assistant's expected slot differ), but these tests use a
+    // fresh cache with `lastIndex = -1` so the optimistic user
+    // lands at index 0 and the streaming assistant slot is
+    // computed as 0 + 1 = 1 — which collides with the server's
+    // authoritative index 1 for the user message. Silence the
+    // false positive so the test output stays clean.
+    let warnSpy;
+    beforeEach(() => {
+      useStore.getState().setAgentConnecting("agent-1");
+      // messageCount: 1 simulates the server having a system
+      // message at index 0 that the client hasn't synced yet.
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 1,
+      });
+      warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    });
+    afterEach(() => {
+      warnSpy.mockRestore();
+    });
+
+    it("reconciles the optimistic user message when the server echo has a different index", () => {
+      // Optimistic add uses `lastIndex + 1`. lastIndex is -1
+      // here (the chat:sync response hasn't arrived), so the
+      // optimistic message lands at index 0.
+      useStore.getState().addUserMessage("agent-1", "Hello");
+      expect(useStore.getState().agentsCache["agent-1"].messages).toHaveLength(
+        1,
+      );
+      expect(useStore.getState().agentsCache["agent-1"].messages[0].index).toBe(
+        0,
+      );
+
+      // Server echoes with the authoritative index 1 (the
+      // system message is at index 0 server-side).
+      useStore.getState().addChatMessage("agent-1", {
+        index: 1,
+        role: "user",
+        parts: [{ kind: "text", text: "Hello" }],
+        mode: "chat",
+      });
+
+      // The optimistic message is reconciled: the index is
+      // updated to the server's value, no duplicate is added.
+      const messages = useStore.getState().agentsCache["agent-1"].messages;
+      expect(messages).toHaveLength(1);
+      expect(messages[0].index).toBe(1);
+      expect(messages[0].role).toBe("user");
+      expect(messages[0].content).toBe("Hello");
+      // lastIndex follows the server's authoritative index.
+      expect(useStore.getState().agentsCache["agent-1"].lastIndex).toBe(1);
+    });
+
+    it("does not reconcile with a message whose content differs", () => {
+      useStore.getState().addUserMessage("agent-1", "Hello");
+      expect(useStore.getState().agentsCache["agent-1"].messages).toHaveLength(
+        1,
+      );
+
+      // Server echoes a different message (e.g. a previously
+      // broadcast message that the client had lost). Content
+      // doesn't match the optimistic "Hello", so this is a
+      // brand-new message and must be appended.
+      useStore.getState().addChatMessage("agent-1", {
+        index: 1,
+        role: "user",
+        parts: [{ kind: "text", text: "Completely different" }],
+        mode: "chat",
+      });
+
+      const messages = useStore.getState().agentsCache["agent-1"].messages;
+      expect(messages).toHaveLength(2);
+      expect(messages[0].content).toBe("Hello");
+      expect(messages[0].index).toBe(0);
+      expect(messages[1].content).toBe("Completely different");
+      expect(messages[1].index).toBe(1);
+    });
+
+    it("does not reconcile with a message older than the recency threshold", () => {
+      // Seed an "old" message with a timestamp 60 seconds in
+      // the past. A real user can't have an optimistic message
+      // older than 30 seconds in normal use, so the reconcile
+      // path must not match this.
+      const oldTimestamp = new Date(Date.now() - 60_000).toISOString();
+      useStore.setState((state) => ({
+        agentsCache: {
+          ...state.agentsCache,
+          "agent-1": {
+            ...state.agentsCache["agent-1"],
+            messages: [
+              {
+                index: 0,
+                role: "user",
+                parts: [{ kind: "text", text: "Hello" }],
+                content: "Hello",
+                timestamp: oldTimestamp,
+              },
+            ],
+            lastIndex: 0,
+          },
+        },
+      }));
+
+      useStore.getState().addChatMessage("agent-1", {
+        index: 5,
+        role: "user",
+        parts: [{ kind: "text", text: "Hello" }],
+        mode: "chat",
+      });
+
+      // The old message is too old to reconcile, so a new
+      // message is appended at index 5 instead.
+      const messages = useStore.getState().agentsCache["agent-1"].messages;
+      expect(messages).toHaveLength(2);
+      expect(messages[0].content).toBe("Hello");
+      expect(messages[0].index).toBe(0);
+      expect(messages[1].content).toBe("Hello");
+      expect(messages[1].index).toBe(5);
+    });
+
+    it("does not reconcile with a message whose timestamp is missing or malformed", () => {
+      // Messages with no `timestamp` (e.g. legacy fixtures) or
+      // with a malformed `timestamp` (e.g. from a buggy
+      // client) must not be reconciled — the recency check
+      // can't compute a delta, so it conservatively skips
+      // matching.
+      useStore.setState((state) => ({
+        agentsCache: {
+          ...state.agentsCache,
+          "agent-1": {
+            ...state.agentsCache["agent-1"],
+            messages: [
+              {
+                index: 0,
+                role: "user",
+                parts: [{ kind: "text", text: "Hello" }],
+                content: "Hello",
+                // No timestamp field.
+              },
+            ],
+            lastIndex: 0,
+          },
+        },
+      }));
+
+      useStore.getState().addChatMessage("agent-1", {
+        index: 3,
+        role: "user",
+        parts: [{ kind: "text", text: "Hello" }],
+        mode: "chat",
+      });
+
+      // The mismatched-timestamp message is not reconciled.
+      const messages = useStore.getState().agentsCache["agent-1"].messages;
+      expect(messages).toHaveLength(2);
+      expect(messages[0].index).toBe(0);
+      expect(messages[1].index).toBe(3);
     });
   });
 
@@ -2217,6 +2408,14 @@ describe("store", () => {
         messageCount: 0,
       });
 
+      // Silence the streaming-vs-final false-positive warning
+      // (the optimistic user message sets up a streaming slot
+      // at index 1 for the assistant; the first broadcast at
+      // index 1 happens to collide with that slot, but the
+      // test is about the 4-message flow, not the partial
+      // diff).
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
       // Message 0: User message
       useStore.getState().addUserMessage("agent-1", "List the files");
 
@@ -2288,6 +2487,8 @@ describe("store", () => {
         role: "assistant",
         content: "Here are the directory contents",
       });
+
+      warnSpy.mockRestore();
     });
 
     it("separates assistant message with toolCalls from tool result message", () => {

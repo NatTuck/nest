@@ -17,7 +17,6 @@ defmodule Nest.Messages.StreamingTest do
   use ExUnit.Case, async: true
 
   alias Nest.Messages.Streaming
-  alias Nest.Messages.Streaming.AssistantAccumulator
 
   test "new/1 creates an empty accumulator" do
     acc = Streaming.new(0)

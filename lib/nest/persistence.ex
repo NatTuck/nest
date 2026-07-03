@@ -263,17 +263,27 @@ defmodule Nest.Persistence do
   end
 
   @doc """
-  Mark the messages in `[first_index..last_index]` as
-  archived, then insert the compaction marker at
-  `last_index + 1`, all in one transaction.
+  Mark the messages in `[first_index..marker_index - 1]`
+  as archived, then insert the compaction marker at
+  `marker_index`, all in one transaction.
 
   The caller is `Agent.__archive_and_compact__/2`; it
-  computes `first_index` and `last_index` from the agent's
+  computes `first_index` and `marker_index` from the agent's
   in-memory `state.chat_state.messages` and the
-  compactor-produced `new_messages`. The marker is
-  rendered as a `role: "compaction"` row with
+  pre-swap `state.chat_state.next_message_index`. The marker
+  is rendered as a `role: "compaction"` row with
   `compaction_archived_count` and `compaction_occurred_at`
   populated.
+
+  `marker_index` is supplied directly by the caller (rather
+  than being computed as `last_index + 1`) so the marker
+  cannot collide with the first row of the new compacted
+  state, which `regenerate_for_compaction/2` has already
+  persisted at `marker_index + 1` (the fresh system
+  message). The unique index on `(agent_id, message_index)`
+  would otherwise reject the marker INSERT and the whole
+  transaction would roll back, leaving the in-memory
+  compaction without a corresponding DB marker.
 
   Returns the new compaction row on success, or
   `{:error, term()}` on failure (including
@@ -282,17 +292,16 @@ defmodule Nest.Persistence do
   """
   @spec archive_and_compact(String.t(), non_neg_integer(), non_neg_integer(), non_neg_integer()) ::
           {:ok, PersistedMessage.t()} | {:error, term()}
-  def archive_and_compact(agent_name, first_index, last_index, archived_count) do
+  def archive_and_compact(agent_name, first_index, marker_index, archived_count) do
     case fetch_agent_by_name(agent_name) do
       {:ok, %PersistedAgent{id: agent_id}} ->
         now = DateTime.utc_now() |> DateTime.truncate(:second)
-        marker_index = last_index + 1
 
         Repo.transaction(fn ->
           from(m in PersistedMessage,
             where:
               m.agent_id == ^agent_id and m.message_index >= ^first_index and
-                m.message_index <= ^last_index
+                m.message_index < ^marker_index
           )
           |> Repo.update_all(set: [archived_at: now])
 
@@ -349,9 +358,19 @@ defmodule Nest.Persistence do
   end
 
   @doc """
-  Load the active (non-archived) messages for an agent, in
-  `message_index` order. Returns a list of `Message.t()`
-  tagged tuples (the canonical runtime shape).
+  Load the active (non-archived, non-marker) messages for
+  an agent, in `message_index` order. Returns a list of
+  `Message.t()` tagged tuples (the canonical runtime
+  shape).
+
+  Compaction markers (`role: "compaction"`) are excluded
+  because they live in `state.chat_state.history`, not in
+  `state.chat_state.messages` — `apply/2`'s swap moves the
+  marker into history and the in-memory state has no place
+  for a `{:compaction, _}` tuple at the messages level. On
+  a fresh agent restart, including the marker would put
+  a `{:compaction, _}` row into the agent's `messages`
+  list and confuse the LLM-facing rendering.
 
   Used by the on-demand-load path in
   `Supervisor.fetch_or_start_agent/1`. The caller is
@@ -364,7 +383,7 @@ defmodule Nest.Persistence do
     case fetch_agent_by_name(agent_name) do
       {:ok, %PersistedAgent{id: agent_id}} ->
         from(m in PersistedMessage,
-          where: m.agent_id == ^agent_id and is_nil(m.archived_at),
+          where: m.agent_id == ^agent_id and is_nil(m.archived_at) and m.role != "compaction",
           order_by: [asc: m.message_index]
         )
         |> Repo.all()
