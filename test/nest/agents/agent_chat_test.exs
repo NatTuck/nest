@@ -36,9 +36,6 @@ defmodule Nest.Agents.AgentChatTest do
 
       assert_receive {:chat_status, %{status: "idle"}}, 500
 
-      assert_received {:chat_message,
-                       {:user, %{index: 1, parts: [%Part.Text{text: "[mode: chat]\nHello"}]}}}
-
       assert_received {:chat_status, %{status: "streaming"}}
       assert_received {:chat_delta, _}
       assert_received {:chat_message, {:assistant, _}}

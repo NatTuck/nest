@@ -53,6 +53,12 @@ export function ChatInput({
   isBusy,
   stopping,
   disabled,
+  // When `true`, the input is hidden entirely and the StatusBanner
+  // takes over the chat footer area. Used while the agent is in a
+  // compaction-frozen state (`:compacting` / `:compaction_failed`).
+  // Distinct from `disabled` (which greys out the textarea but keeps
+  // it visible — used for transient reasons like `isBusy`).
+  frozen = false,
   placeholder,
   modes,
   mode,
@@ -249,6 +255,13 @@ export function ChatInput({
       </button>
     );
   };
+
+  // When `frozen` is true, the entire input is hidden — the
+  // StatusBanner takes over the chat footer area. This is the
+  // compaction-frozen state (`:compacting` or `:compaction_failed`).
+  if (frozen) {
+    return null;
+  }
 
   return (
     <form

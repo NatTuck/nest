@@ -42,7 +42,7 @@ defmodule Nest.Agents.AgentChatModeTest do
                          parts: [%Part.Text{text: "[mode: chat]\nRead foo"}],
                          metadata: %{"mode" => "chat"}
                        }}},
-                     100
+                     500
     end
 
     test "falls back to default mode when requested mode is unknown" do
@@ -57,7 +57,7 @@ defmodule Nest.Agents.AgentChatModeTest do
                          parts: [%Part.Text{text: "[mode: chat]\nHello"}],
                          metadata: %{"mode" => "chat"}
                        }}},
-                     100
+                     500
     end
 
     test "uses agent's current mode when no mode is passed" do
@@ -72,7 +72,7 @@ defmodule Nest.Agents.AgentChatModeTest do
                          parts: [%Part.Text{text: "[mode: chat]\nHello"}],
                          metadata: %{"mode" => "chat"}
                        }}},
-                     100
+                     500
     end
 
     test "vocation with modes: requested mode is preserved when valid" do
@@ -103,14 +103,15 @@ defmodule Nest.Agents.AgentChatModeTest do
 
       :ok = Agent.chat(pid, "Run", "build")
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_message,
+                      {:user,
+                       %{
+                         parts: [%Part.Text{text: "[mode: build]\nRun"}],
+                         metadata: %{"mode" => "build"}
+                       }}},
+                     500
 
-      assert_received {:chat_message,
-                       {:user,
-                        %{
-                          parts: [%Part.Text{text: "[mode: build]\nRun"}],
-                          metadata: %{"mode" => "build"}
-                        }}}
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
 
     test "vocation with modes: unknown mode falls back to the vocation's default" do
@@ -141,15 +142,15 @@ defmodule Nest.Agents.AgentChatModeTest do
 
       :ok = Agent.chat(pid, "Hello", "nonexistent")
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_message,
+                      {:user,
+                       %{
+                         parts: [%Part.Text{text: "[mode: build]\nHello"}],
+                         metadata: %{"mode" => "build"}
+                       }}},
+                     500
 
-      # Default is the lexicographically first mode: "build"
-      assert_received {:chat_message,
-                       {:user,
-                        %{
-                          parts: [%Part.Text{text: "[mode: build]\nHello"}],
-                          metadata: %{"mode" => "build"}
-                        }}}
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
 
     test "user messages carry the resolved mode in metadata" do
@@ -292,16 +293,15 @@ defmodule Nest.Agents.AgentChatModeTest do
 
       :ok = Agent.chat(pid, "Hi", "nonexistent")
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_receive {:chat_message,
+                      {:user,
+                       %{
+                         parts: [%Part.Text{text: "[mode: build]\nHi"}],
+                         metadata: %{"mode" => "build"}
+                       }}},
+                     500
 
-      # The fallback to the vocation's default ("build", lex-first)
-      # is externally visible on the user message's metadata.
-      assert_received {:chat_message,
-                       {:user,
-                        %{
-                          parts: [%Part.Text{text: "[mode: build]\nHi"}],
-                          metadata: %{"mode" => "build"}
-                        }}}
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
   end
 end

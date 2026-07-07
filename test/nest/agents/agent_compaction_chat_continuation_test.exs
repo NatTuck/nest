@@ -121,14 +121,25 @@ defmodule Nest.Agents.AgentCompactionChatContinuationTest do
         })
 
       # Pre-seed next_message_index so marker_index is well-defined.
+      # Also pre-seed `pending_user_message` (per TODO 4 in
+      # `notes/extract-compaction-and-resumable-chat-turn.md`):
+      # `ChatPipeline.resume_with_pending/1` reads the user message
+      # from this field rather than from the legacy
+      # `{:chat_continuation, {content, mode}}` tuple.
       :sys.replace_state(pid, fn state ->
-        %{state | chat_state: %{state.chat_state | next_message_index: 1}}
+        %{
+          state
+          | chat_state: %{
+              state.chat_state
+              | next_message_index: 1,
+                pending_user_message: {"What was the last question?", "build"}
+            }
+        }
       end)
 
       send(
         pid,
-        {:compaction_done, compactor_output(),
-         {:chat_continuation, {"What was the last question?", "build"}}}
+        {:compaction_done, compactor_output(), {:chat_continuation, :pending}}
       )
 
       # The handler runs the swap and then calls

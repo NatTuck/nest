@@ -13,7 +13,17 @@ defmodule Nest.Agents.AgentCompactionConsistencyTest do
   compactor; the handler pattern-matches the invariant and
   raises loudly if it's broken.
 
-  See `notes/update-system-msg-on-compaction.md` for the design.
+  Note: per the compaction-ownership redesign (TODO 1), the
+  compactor no longer wraps the LLM's summary text with
+  "Summary of earlier conversation:" / "Summary of recent work:"
+  prefixes — those are added by the agent's compaction handler when
+  it re-encodes the summary as a user message. The compactor returns
+  the raw LLM text. Empty LLM responses are surfaced as
+  `{:error, :llm_returned_empty}` rather than as a placeholder
+  summary.
+
+  See `notes/extract-compaction-and-resumable-chat-turn.md` for the
+  design.
   """
   use ExUnit.Case, async: true
 
@@ -27,35 +37,37 @@ defmodule Nest.Agents.AgentCompactionConsistencyTest do
     test "new_messages always starts with the original system message" do
       messages = build_messages()
 
-      result =
-        Compactor.compact(messages, 100_000, fn _ -> "head summary text" end)
+      assert {:ok, result} =
+               Compactor.compact(messages, 100_000, fn _ -> {:ok, "head summary text"} end)
 
       assert [{:system, %System{}} | _] = result
     end
 
-    test "head summary is wrapped as {:system, _} at position 1" do
+    test "head summary is wrapped as {:system, _} at position 1 (raw LLM text)" do
       messages = build_messages()
 
-      result =
-        Compactor.compact(messages, 100_000, fn _ -> "head summary text" end)
+      assert {:ok, result} =
+               Compactor.compact(messages, 100_000, fn _ -> {:ok, "head summary text"} end)
 
       # Position 0 is the original system; position 1 is the
-      # head summary wrapped as `{:system, _}`.
+      # head summary wrapped as `{:system, _}`. The compactor
+      # stores the raw LLM text — the agent's handler adds the
+      # user-visible "Summary of earlier conversation:" prefix
+      # when it re-encodes this as a user message.
       assert [
                {:system, %System{parts: [%Part.Text{text: position0_text}]}},
                {:system, %System{parts: [%Part.Text{text: position1_text}]}} | _
              ] = result
 
       assert position0_text == "You are helpful"
-      assert position1_text =~ "Summary of earlier conversation"
-      assert position1_text =~ "head summary text"
+      assert position1_text == "head summary text"
     end
 
     test "last user and its responses are preserved at the tail" do
       messages = build_messages()
 
-      result =
-        Compactor.compact(messages, 100_000, fn _ -> "head summary" end)
+      assert {:ok, result} =
+               Compactor.compact(messages, 100_000, fn _ -> {:ok, "head summary"} end)
 
       # Position 2 is the last user; the responses after it
       # (the assistant turn that came after "Second question")
@@ -73,9 +85,9 @@ defmodule Nest.Agents.AgentCompactionConsistencyTest do
       # both responses are wrapped as {:system, _} per the contract.
       messages = build_messages()
 
-      llm_call = fn _ -> "the summary" end
+      llm_call = fn _ -> {:ok, "the summary"} end
 
-      result = Compactor.compact(messages, 10, llm_call)
+      assert {:ok, result} = Compactor.compact(messages, 10, llm_call)
 
       # Position 0: original system. Position 1: head summary.
       # Position 2: last user. Position 3: tail summary.
@@ -83,37 +95,35 @@ defmodule Nest.Agents.AgentCompactionConsistencyTest do
 
       assert {:system, %System{}} = Enum.at(result, 0)
       assert {:system, %System{parts: [%Part.Text{text: p1_text}]}} = Enum.at(result, 1)
-      assert p1_text =~ "Summary of earlier conversation"
+      assert p1_text == "the summary"
       assert {:user, %User{}} = Enum.at(result, 2)
       assert {:system, %System{parts: [%Part.Text{text: p3_text}]}} = Enum.at(result, 3)
-      assert p3_text =~ "Summary of recent work"
+      assert p3_text == "the summary"
     end
 
-    test "too-short input returns unchanged (still starts with system)" do
+    test "too-short input returns {:ok, [system]} unchanged" do
       # Single-element list (just the system message). The
-      # compactor returns it as-is; the contract still holds
-      # because the input starts with system.
+      # compactor returns it under the new {:ok, _} shape; the
+      # contract still holds because the input starts with system.
       [system] = build_messages() |> Enum.take(1)
 
-      result = Compactor.compact([system], 100_000, fn _ -> "unused" end)
+      assert {:ok, [result]} = Compactor.compact([system], 100_000, fn _ -> {:ok, "unused"} end)
 
-      assert result == [system]
-      assert [{:system, %System{}}] = result
+      assert result == system
+      assert [{:system, %System{}}] = [result]
     end
 
-    test "summary messages are always wrapped as {:system, _} even when LLM returns empty" do
-      # wrap_summary/2 must return a `{:system, _}` even when
-      # the LLM returned an empty string (so indices stay
-      # contiguous). The handler relies on this — if the
-      # compactor ever returns a user message for a summary,
-      # the pattern match in `regenerate_for_compaction/2`
-      # raises.
+    test "empty LLM response surfaces as {:error, :llm_returned_empty}" do
+      # Per TODO 1: the compactor no longer synthesizes a
+      # "[Summary of earlier conversation]" placeholder when the
+      # LLM returns an empty string. The failure is surfaced
+      # through the new {:error, :llm_returned_empty} contract
+      # so the agent's compaction handler can set
+      # :compaction_failed status and broadcast chat:error.
       messages = build_messages()
 
-      result = Compactor.compact(messages, 100_000, fn _ -> "" end)
-
-      [{:system, _}, {:system, %System{parts: [%Part.Text{text: p1_text}]}} | _] = result
-      assert p1_text == "[Summary of earlier conversation]"
+      assert {:error, :llm_returned_empty} =
+               Compactor.compact(messages, 100_000, fn _ -> {:ok, ""} end)
     end
   end
 

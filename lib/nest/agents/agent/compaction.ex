@@ -64,7 +64,7 @@ defmodule Nest.Agents.Agent.Compaction do
   """
 
   @type continuation ::
-          {:chat_continuation, {String.t()}}
+          {:chat_continuation, {String.t(), String.t() | nil}}
           | {:task_compaction_continuation, pid()}
 
   # Public API
@@ -83,15 +83,12 @@ defmodule Nest.Agents.Agent.Compaction do
       result =
         try do
           llm_call = build_summarization_llm_call(client_config, agent_pid)
-
-          {:ok, Compactor.compact(messages_to_compact, context_limit, llm_call)}
+          Compactor.compact(messages_to_compact, context_limit, llm_call)
         catch
           kind, reason ->
-            Logger.warning(
-              "Compaction failed: #{inspect(kind)} #{inspect(reason)}. Proceeding with original messages."
-            )
+            Logger.warning("Compaction crashed: #{inspect(kind)} #{inspect(reason)}")
 
-            {:error, {kind, reason}}
+            {:error, {:crash, kind, reason}}
         end
 
       case result do
@@ -99,7 +96,7 @@ defmodule Nest.Agents.Agent.Compaction do
           send(agent_pid, {:compaction_done, new_messages, continuation})
 
         {:error, reason} ->
-          send_failure(agent_pid, messages_to_compact, continuation, reason)
+          send_failure(agent_pid, reason, continuation)
       end
     end)
   end
@@ -121,11 +118,13 @@ defmodule Nest.Agents.Agent.Compaction do
 
   # Private
 
-  # For chat and task_compaction continuations, the GenServer's
-  # :compaction_done handler treats the input as-is and broadcasts
-  # a success log line.
-  defp send_failure(agent_pid, messages_to_compact, continuation, _reason) do
-    send(agent_pid, {:compaction_done, messages_to_compact, continuation})
+  # Single failure path: send `{:compaction_failed, reason, continuation}`
+  # to the Agent. The Agent's compaction handler routes by continuation
+  # shape and sets `:compaction_failed` status + broadcasts `chat:error`.
+  # The previous behavior — sending `{:compaction_done, original_messages, _}`
+  # and silently masking failures — was a state-corruption bug.
+  defp send_failure(agent_pid, reason, continuation) do
+    send(agent_pid, {:compaction_failed, reason, continuation})
   end
 
   # The LLM call the compactor uses. Wraps the chat client so the
@@ -135,6 +134,12 @@ defmodule Nest.Agents.Agent.Compaction do
   # Deltas are sent to `compaction_pid` (the compactor task), not
   # broadcast — we don't want summarization progress to leak into
   # the chat PubSub topic. The compactor task ignores them.
+  #
+  # Returns `{:ok, text}` on success or `{:error, reason}` on
+  # transport-level failure. An empty `text` is returned as
+  # `{:ok, ""}` — the compactor's `require_summary/1` then converts
+  # that to `{:error, :llm_returned_empty}` so the failure surfaces
+  # to the Agent's compaction handler.
   defp build_summarization_llm_call(%ClientConfig{} = client_config, compaction_pid) do
     fn messages ->
       # Prepend the compactor's summarization system prompt as a
@@ -159,11 +164,10 @@ defmodule Nest.Agents.Agent.Compaction do
 
       case client_config.client.run(request, opts) do
         {:ok, stream} ->
-          text = consume_quietly(stream, compaction_pid)
-          text || ""
+          consume_quietly(stream, compaction_pid)
 
-        {:error, _reason} ->
-          ""
+        {:error, reason} ->
+          {:error, reason}
       end
     end
   end
@@ -190,6 +194,11 @@ defmodule Nest.Agents.Agent.Compaction do
   # Consume a streaming response without broadcasting. The
   # `compaction_pid` receives delta messages (so the task can
   # observe progress if it wants), but no PubSub broadcast.
+  #
+  # Returns `{:ok, text}` with the streamed response text, or
+  # `{:error, reason}` if the stream errored out mid-flight.
+  # An empty string is returned as `{:ok, ""}` — the compactor
+  # detects the empty summary and surfaces the failure.
   defp consume_quietly(stream, compaction_pid) do
     consumer = %StreamConsumer{
       on_text: &forward_text_delta(&1, &2, compaction_pid),
@@ -197,11 +206,12 @@ defmodule Nest.Agents.Agent.Compaction do
       on_signature: fn _sig -> :ok end
     }
 
-    {_acc, response, _error, _sent} = StreamConsumer.reduce(stream, consumer)
+    {_acc, response, error, _sent} = StreamConsumer.reduce(stream, consumer)
 
-    case response do
-      %RunResponse{text: text} -> text
-      _ -> nil
+    cond do
+      not is_nil(error) -> {:error, error}
+      match?(%RunResponse{}, response) -> {:ok, response.text || ""}
+      true -> {:error, :no_response}
     end
   end
 

@@ -270,6 +270,27 @@ defmodule Nest.Agents do
   end
 
   @doc """
+  Retry a compaction that previously failed. The agent must be in
+  `:compaction_failed` status (otherwise this is a no-op and returns
+  `{:error, :not_in_compaction_failed_state}`). On success, the
+  compactor runs again; on failure, the agent stays in
+  `:compaction_failed` and the user can retry again.
+  """
+  @spec retry_compaction(String.t()) :: :ok | {:error, atom()}
+  def retry_compaction(name) do
+    case Supervisor.get_agent(name) do
+      {:ok, pid} ->
+        Agent.retry_compaction(pid)
+
+      {:error, :not_found} ->
+        {:error, :not_found}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
   Deletes an agent by its name.
 
   ## Returns

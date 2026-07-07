@@ -140,6 +140,31 @@ defmodule Nest.AgentsTest do
     end
   end
 
+  describe "retry_compaction/1" do
+    test "sends :retry_compaction to the agent pid" do
+      {:ok, id} = Agents.create_agent(%{name: "qwen3.5-plus"})
+
+      # The function returns :ok synchronously; the agent then
+      # runs `handle_info(:retry_compaction, state)` and decides
+      # whether to actually re-run the compactor based on its
+      # current status. Since the agent is in :idle status (not
+      # :compaction_failed), the handler logs a warning and is
+      # a no-op. We capture the log and assert the warning.
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert :ok = Agents.retry_compaction(id)
+        end)
+
+      assert log =~ "retry_compaction ignored"
+      assert log =~ ":idle"
+      assert log =~ ":compaction_failed"
+    end
+
+    test "returns error for non-existent agent" do
+      assert {:error, :not_found} = Agents.retry_compaction("nonexistent")
+    end
+  end
+
   describe "delete_agent/1" do
     test "removes agent" do
       {:ok, id} = Agents.create_agent(%{name: "qwen3.5-plus"})

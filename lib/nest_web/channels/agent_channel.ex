@@ -153,15 +153,39 @@ defmodule NestWeb.AgentChannel do
     agent_name = socket.assigns.agent_name
     mode = Map.get(payload, "mode")
 
-    case Agents.chat(agent_name, content, mode) do
-      :ok ->
-        {:reply, {:ok, %{}}, socket}
+    case Agents.get_agent(agent_name) do
+      {:ok, %{status: status}} when status in [:compacting, :compaction_failed] ->
+        # Reject incoming messages while the agent is in a
+        # compaction-frozen state. The frontend hides the chat
+        # input and shows a banner with a Retry button in this
+        # case; this is the server-side enforcement.
+        {:reply, {:error, %{"reason" => "agent_status_#{status}"}}, socket}
+
+      {:ok, _agent} ->
+        case Agents.chat(agent_name, content, mode) do
+          :ok ->
+            {:reply, {:ok, %{}}, socket}
+
+          {:error, :not_found} ->
+            {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
+
+          {:error, reason} ->
+            {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
+        end
 
       {:error, :not_found} ->
         {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
+    end
+  end
 
-      {:error, reason} ->
-        {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
+  @impl true
+  def handle_in("chat:retry-compaction", _payload, socket) do
+    agent_name = socket.assigns.agent_name
+
+    case Agents.retry_compaction(agent_name) do
+      :ok -> {:reply, {:ok, %{}}, socket}
+      {:error, :not_found} -> {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
+      {:error, reason} -> {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
     end
   end
 

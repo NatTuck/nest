@@ -324,6 +324,74 @@ defmodule NestWeb.AgentChannelChatTest do
     end
   end
 
+  describe "handle_in(chat:message) compaction-frozen state rejection" do
+    test "rejects chat:message when the agent is :compacting", %{socket: socket, agent_id: id} do
+      {:ok, agent_pid} = Supervisor.get_agent(id)
+
+      :sys.replace_state(agent_pid, fn state ->
+        %{state | chat_state: %{state.chat_state | status: :compacting}}
+      end)
+
+      ref = push(socket, "chat:message", %{"content" => "during compaction"})
+
+      assert_reply ref, :error, %{"reason" => "agent_status_compacting"}
+    end
+
+    test "rejects chat:message when the agent is :compaction_failed", %{
+      socket: socket,
+      agent_id: id
+    } do
+      {:ok, agent_pid} = Supervisor.get_agent(id)
+
+      :sys.replace_state(agent_pid, fn state ->
+        %{state | chat_state: %{state.chat_state | status: :compaction_failed}}
+      end)
+
+      ref = push(socket, "chat:message", %{"content" => "after failure"})
+
+      assert_reply ref, :error, %{"reason" => "agent_status_compaction_failed"}
+    end
+
+    test "accepts chat:message when the agent is idle", %{socket: socket, agent_id: _id} do
+      # No `:sys.replace_state` — the agent defaults to :idle after
+      # join. The first chat:message should succeed normally.
+      MockClient.set_response("Response")
+
+      ref = push(socket, "chat:message", %{"content" => "Hello"})
+
+      assert_reply ref, :ok, %{}
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 2000
+    end
+  end
+
+  describe "handle_in(chat:retry-compaction)" do
+    test "forwards to Agents.retry_compaction/1", %{socket: socket, agent_id: id} do
+      {:ok, agent_pid} = Supervisor.get_agent(id)
+
+      :sys.replace_state(agent_pid, fn state ->
+        %{state | chat_state: %{state.chat_state | status: :compaction_failed}}
+      end)
+
+      ref = push(socket, "chat:retry-compaction", %{})
+
+      assert_reply ref, :ok, %{}
+
+      # The agent transitions back to :compacting on retry, then
+      # the compactor runs and broadcasts chat:status: idle (or
+      # chat:error if the retry also fails).
+      assert_receive {:chat_status, %{status: "compacting"}}, 500
+    end
+
+    test "returns error when agent does not exist", %{socket: _socket} do
+      assert {:error, %{"reason" => "agent not found"}} =
+               subscribe_and_join(
+                 socket(NestWeb.UserSocket),
+                 NestWeb.AgentChannel,
+                 "agent:nonexistent"
+               )
+    end
+  end
+
   describe "handle_in(chat:stop)" do
     test "reply is immediate {:ok, %{}} and does not block on the agent", %{socket: socket} do
       # The `chat:stop` push is fire-and-forget from the channel's

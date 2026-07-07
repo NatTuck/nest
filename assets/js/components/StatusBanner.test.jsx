@@ -59,4 +59,51 @@ describe("StatusBanner", () => {
 
     expect(container.firstChild).toBeNull();
   });
+
+  it("renders a compacting spinner with no Retry button", () => {
+    const onRetryCompaction = vi.fn();
+
+    const { container } = render(
+      <StatusBanner
+        status="compacting"
+        onRetry={() => {}}
+        onRetryCompaction={onRetryCompaction}
+      />,
+    );
+
+    expect(screen.getByText("Compacting conversation...")).toBeInTheDocument();
+    // The compacting banner is informational — no button.
+    expect(container.querySelector("button")).toBeNull();
+  });
+
+  it("renders a compaction_failed banner with a Retry-compaction button", () => {
+    const onRetryCompaction = vi.fn();
+
+    render(
+      <StatusBanner
+        status="compaction_failed"
+        compactionError="LLM returned empty summary"
+        onRetry={() => {}}
+        onRetryCompaction={onRetryCompaction}
+      />,
+    );
+
+    expect(screen.getByText("Compaction failed")).toBeInTheDocument();
+    expect(screen.getByText("LLM returned empty summary")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /retry compaction/i }));
+    expect(onRetryCompaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to the default compaction_failed message when error is not provided", () => {
+    render(
+      <StatusBanner
+        status="compaction_failed"
+        onRetry={() => {}}
+        onRetryCompaction={() => {}}
+      />,
+    );
+
+    expect(screen.getByText("Click Retry to try again.")).toBeInTheDocument();
+  });
 });

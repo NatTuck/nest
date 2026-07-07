@@ -9,7 +9,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useStore } from "../store";
-import { joinAgent, leaveAgent, sendMessage, stopMessage } from "../channels";
+import {
+  joinAgent,
+  leaveAgent,
+  sendMessage,
+  stopMessage,
+  retryCompaction,
+} from "../channels";
 import { MessageContent } from "../components/MessageContent";
 import { ChatInput } from "../components/ChatInput";
 import { TokenUsageChip } from "../components/TokenUsageChip";
@@ -212,6 +218,16 @@ export function ChatPage() {
     joinAgent(name);
   };
 
+  // Re-run the compactor after a `:compaction_failed` banner.
+  // The server validates the agent is in `:compaction_failed`
+  // status; otherwise the push is rejected with an error reason
+  // that we surface via `setSendError` for visibility.
+  const handleRetryCompaction = () => {
+    retryCompaction(name, (err) => {
+      setSendError(err?.reason || "Failed to retry compaction");
+    });
+  };
+
   // Show initial loading state while we attempt first join
   if (isUnknown) {
     return (
@@ -274,11 +290,16 @@ export function ChatPage() {
         </div>
       </div>
 
-      {/* Status banner */}
+      {/* Status banner — `agentState` carries the agent's GenServer
+          state (including `:compacting` / `:compaction_failed`),
+          distinct from the connection-level `status`. The banner
+          handles both axes. */}
       <StatusBanner
-        status={status}
+        status={agentState ?? status}
         error={cache?.error}
         onRetry={handleRetry}
+        onRetryCompaction={handleRetryCompaction}
+        compactionError={cache?.compactionError}
       />
 
       {/* Notification banner */}
@@ -535,6 +556,12 @@ export function ChatPage() {
           isBusy={isAgentBusy}
           stopping={stopping}
           disabled={isInputDisabled}
+          // Hide the input entirely while the agent is in a
+          // compaction-frozen state. The StatusBanner shows the
+          // compacting spinner or the Retry-compaction button.
+          frozen={
+            agentState === "compacting" || agentState === "compaction_failed"
+          }
           placeholder={
             status === "connected"
               ? "Type a message..."

@@ -342,6 +342,77 @@ describe("store", () => {
     });
   });
 
+  describe("setCompactionError", () => {
+    it("sets compactionError on existing cache", () => {
+      useStore.getState().setAgentConnecting("agent-1");
+
+      useStore
+        .getState()
+        .setCompactionError(
+          "agent-1",
+          "Compaction failed: LLM returned empty summary.",
+        );
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.compactionError).toBe(
+        "Compaction failed: LLM returned empty summary.",
+      );
+    });
+
+    it("is a no-op when the agent isn't in the cache", () => {
+      const before = useStore.getState().agentsCache;
+      useStore.getState().setCompactionError("missing-agent", "msg");
+      expect(useStore.getState().agentsCache).toBe(before);
+    });
+  });
+
+  describe("clearCompactionError", () => {
+    it("clears compactionError from the cache", () => {
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setCompactionError("agent-1", "msg");
+
+      useStore.getState().clearCompactionError("agent-1");
+
+      expect(
+        useStore.getState().agentsCache["agent-1"].compactionError,
+      ).toBeNull();
+    });
+
+    it("is a no-op when the agent isn't in the cache", () => {
+      const before = useStore.getState().agentsCache;
+      useStore.getState().clearCompactionError("missing-agent");
+      expect(useStore.getState().agentsCache).toBe(before);
+    });
+  });
+
+  describe("setAgentState compaction-failure clearing", () => {
+    it("clears compactionError when agentState transitions out of compaction_failed", () => {
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentState("agent-1", "compaction_failed");
+      useStore.getState().setCompactionError("agent-1", "old error");
+
+      // Simulate the user clicking Retry: the agent transitions
+      // back to :compacting and the stale error text should clear.
+      useStore.getState().setAgentState("agent-1", "compacting");
+
+      expect(
+        useStore.getState().agentsCache["agent-1"].compactionError,
+      ).toBeNull();
+    });
+
+    it("preserves compactionError when agentState stays at compaction_failed", () => {
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentState("agent-1", "compaction_failed");
+      useStore.getState().setCompactionError("agent-1", "preserved");
+
+      useStore.getState().setAgentState("agent-1", "compaction_failed");
+
+      expect(useStore.getState().agentsCache["agent-1"].compactionError).toBe(
+        "preserved",
+      );
+    });
+  });
+
   describe("setNotification and clearNotification", () => {
     it("sets notification for existing agent", () => {
       useStore.getState().setAgentConnected("agent-1", {

@@ -24,13 +24,14 @@ function setup(props = {}) {
       isBusy={props.isBusy ?? false}
       stopping={props.stopping ?? false}
       disabled={props.disabled ?? false}
+      frozen={props.frozen ?? false}
       placeholder={props.placeholder ?? "Type a message..."}
       modes={props.modes}
       mode={props.mode}
       onModeChange={props.onModeChange ?? onModeChange}
     />,
   );
-  const textarea = screen.getByLabelText("Message");
+  const textarea = props.frozen ? null : screen.getByLabelText("Message");
   // The action button is one of: Send (idle), Stop (busy), or
   // Stopping... (busy && stopping). Look it up by aria-label.
   const sendButton = screen.queryByRole("button", { name: /send/i });
@@ -274,6 +275,14 @@ describe("ChatInput", () => {
       expect(textarea).toBeDisabled();
       expect(textarea.className).toContain("disabled:bg-gray-100");
       expect(textarea.className).toContain("disabled:cursor-not-allowed");
+    });
+  });
+
+  describe("frozen state", () => {
+    it("renders nothing when frozen (compacting/compaction_failed)", () => {
+      const { container, textarea } = setup({ frozen: true });
+      expect(container.firstChild).toBeNull();
+      expect(textarea).toBeNull();
     });
   });
 

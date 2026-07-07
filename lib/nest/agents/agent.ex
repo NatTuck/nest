@@ -107,17 +107,10 @@ defmodule Nest.Agents.Agent do
   end
 
   @doc """
-  Signal the in-flight chat task (if any) to stop. The agent's
-  `handle_info({:stop_chat, _}, state)` will halt the chat task at
-  its next blocking receive, finalize the partial streaming
-  accumulator, and broadcast `chat:status: "idle"`. The `from`
-  argument is the channel pid that initiated the stop; it is
-  passed through so the agent can reply `{:reply, :ok, ...}` to
-  the channel push (the reply is sent via the GenServer
-  mailbox, not directly).
-
-  A no-op when the agent is idle (no in-flight chat task).
-  Idempotent — multiple calls just re-set the `cancelled` flag.
+  Signal the in-flight chat task (if any) to stop. `from` is the
+  channel pid that initiated the stop (used so the agent can
+  reply `{:reply, :ok, ...}` via the GenServer mailbox). A no-op
+  when idle; idempotent.
   """
   @spec stop_chat(pid(), pid()) :: :ok
   def stop_chat(pid, from \\ self()) do
@@ -126,11 +119,19 @@ defmodule Nest.Agents.Agent do
   end
 
   @doc """
+  Re-run the compactor after a failed compaction. The handler
+  only acts when the agent is in `:compaction_failed` status.
+  """
+  @spec retry_compaction(pid()) :: :ok
+  def retry_compaction(pid) do
+    send(pid, :retry_compaction)
+    :ok
+  end
+
+  @doc """
   Test-only: returns the pid of the in-flight ChatTurn (or
-  `nil` if the agent is idle). The pid is used by tests to
-  inject stop signals directly into the ChatTurn's mailbox,
-  bypassing the GenServer mailbox ordering. Production code
-  should use `stop_chat/2` instead.
+  `nil` if the agent is idle). Production code should use
+  `stop_chat/2` instead.
   """
   @spec get_chat_turn_pid(pid()) :: pid() | nil
   def get_chat_turn_pid(pid) do

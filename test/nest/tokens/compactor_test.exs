@@ -8,6 +8,7 @@ defmodule Nest.Tokens.CompactorTest do
   - Edge cases: empty, system-only, no head to summarize
   - LLM call ordering and content passed to it
   - Output message structure (system + head summary + last user + tail/responses)
+  - Error cases: empty LLM response, LLM callback error
   """
 
   use ExUnit.Case, async: true
@@ -30,10 +31,11 @@ defmodule Nest.Tokens.CompactorTest do
     ]
   end
 
-  # A trivial LLM callback that returns a fixed summary. Tests can
-  # use the capture variant to inspect what the compactor passed.
+  # A trivial LLM callback that returns a fixed summary wrapped in
+  # the new {:ok, text} | {:error, _} shape. Tests can use the
+  # capture variant to inspect what the compactor passed.
   defp mock_llm_call(text) do
-    fn _messages -> text end
+    fn _messages -> {:ok, text} end
   end
 
   # A capture-based callback: records the messages it received
@@ -41,28 +43,32 @@ defmodule Nest.Tokens.CompactorTest do
   defp capture_llm_call(parent, summary) do
     fn messages ->
       send(parent, {:llm_called, messages})
-      summary
+      {:ok, summary}
     end
   end
 
+  # LLM callback that always errors. Useful for error-path tests.
+  defp error_llm_call(reason) do
+    fn _messages -> {:error, reason} end
+  end
+
   describe "compact/3 — edge cases" do
-    test "empty messages returns empty" do
-      result = Compactor.compact([], 32_768, mock_llm_call("anything"))
-      assert result == []
+    test "empty messages returns {:ok, []}" do
+      assert Compactor.compact([], 32_768, mock_llm_call("anything")) == {:ok, []}
     end
 
-    test "single system message returns as-is (no compaction needed)" do
+    test "single system message returns {:ok, msgs} unchanged (no compaction needed)" do
       msgs = [{:system, %System{index: 0, parts: [%Part.Text{text: "Only system"}]}}]
-      assert Compactor.compact(msgs, 32_768, mock_llm_call("anything")) == msgs
+      assert Compactor.compact(msgs, 32_768, mock_llm_call("anything")) == {:ok, msgs}
     end
 
-    test "no user message returns as-is" do
+    test "no user message returns {:ok, msgs} unchanged" do
       msgs = [
         {:system, %System{index: 0, parts: [%Part.Text{text: "System"}]}},
         {:assistant, %Assistant{index: 1, parts: [%Part.Text{text: "Assistant reply"}]}}
       ]
 
-      assert Compactor.compact(msgs, 32_768, mock_llm_call("anything")) == msgs
+      assert Compactor.compact(msgs, 32_768, mock_llm_call("anything")) == {:ok, msgs}
     end
   end
 
@@ -70,12 +76,12 @@ defmodule Nest.Tokens.CompactorTest do
     test "summarizes the head, keeps recent slice verbatim" do
       test_pid = self()
 
-      new_messages =
-        Compactor.compact(
-          build_messages(),
-          32_768,
-          capture_llm_call(test_pid, "Summary of the earlier conversation")
-        )
+      assert {:ok, new_messages} =
+               Compactor.compact(
+                 build_messages(),
+                 32_768,
+                 capture_llm_call(test_pid, "Summary of the earlier conversation")
+               )
 
       # Should have received exactly one LLM call (pass 1)
       assert_received {:llm_called, _input}
@@ -87,10 +93,11 @@ defmodule Nest.Tokens.CompactorTest do
       assert match?({:user, %User{}}, Enum.at(new_messages, 2))
       assert match?({:assistant, %Assistant{}}, Enum.at(new_messages, 3))
 
-      # The head summary should contain the LLM's output
+      # The head summary contains the LLM's raw text (no placeholder
+      # prefix added by the compactor — the agent's handler adds the
+      # user-visible "Summary of earlier conversation:" prefix).
       {:system, %System{parts: [head_part | _]}} = Enum.at(new_messages, 1)
-      head_content = head_part.text
-      assert head_content =~ "Summary of the earlier conversation"
+      assert head_part.text == "Summary of the earlier conversation"
 
       # The last user and assistant should be unchanged
       {:user, %User{parts: [last_user_part | _]}} = Enum.at(new_messages, 2)
@@ -129,12 +136,12 @@ defmodule Nest.Tokens.CompactorTest do
       # the intent.
       big_head = String.duplicate("hello world ", 5_000)
 
-      new_messages =
-        Compactor.compact(
-          build_messages(),
-          8_192,
-          capture_llm_call(test_pid, big_head)
-        )
+      assert {:ok, new_messages} =
+               Compactor.compact(
+                 build_messages(),
+                 8_192,
+                 capture_llm_call(test_pid, big_head)
+               )
 
       # Two calls: first returns the big head, second returns tail
       assert_received {:llm_called, _input1}
@@ -148,10 +155,7 @@ defmodule Nest.Tokens.CompactorTest do
       assert match?({:system, %System{}}, Enum.at(new_messages, 3))
 
       # The third (tail summary) should contain the tail LLM call
-      # output. Since both calls return big_head, the tail summary
-      # also has the big content (wrapped with a prefix). Use
-      # a prefix check to avoid trailing-whitespace gotchas from
-      # String.trim inside wrap_summary.
+      # output — the raw text, no prefix.
       {:system, %System{parts: [tail_part | _]}} = Enum.at(new_messages, 3)
       assert String.contains?(tail_part.text, String.slice(big_head, 0, 100))
     end
@@ -190,12 +194,12 @@ defmodule Nest.Tokens.CompactorTest do
         {:user, %User{index: 1, parts: [%Part.Text{text: "Q"}]}}
       ]
 
-      new_messages =
-        Compactor.compact(
-          msgs,
-          32_768,
-          capture_llm_call(test_pid, "")
-        )
+      assert {:ok, new_messages} =
+               Compactor.compact(
+                 msgs,
+                 32_768,
+                 capture_llm_call(test_pid, "head text")
+               )
 
       # Pass 1 ran (with empty head)
       assert_received {:llm_called, input}
@@ -203,7 +207,7 @@ defmodule Nest.Tokens.CompactorTest do
       assert length(input) == 1
       assert match?({:system, %System{}}, hd(input))
 
-      # Output: system, [head summary placeholder], user
+      # Output: system, head summary, user
       assert length(new_messages) == 3
       assert match?({:system, %System{}}, Enum.at(new_messages, 0))
       assert match?({:system, %System{}}, Enum.at(new_messages, 1))
@@ -218,12 +222,12 @@ defmodule Nest.Tokens.CompactorTest do
       # ~500 tokens with safety — well under 2k → single pass.
       head = String.duplicate("hello world ", 200)
 
-      new_messages =
-        Compactor.compact(
-          build_messages(),
-          8_192,
-          capture_llm_call(test_pid, head)
-        )
+      assert {:ok, new_messages} =
+               Compactor.compact(
+                 build_messages(),
+                 8_192,
+                 capture_llm_call(test_pid, head)
+               )
 
       # Single pass
       assert_received {:llm_called, _}
@@ -238,12 +242,12 @@ defmodule Nest.Tokens.CompactorTest do
       # with safety, way over the 2k threshold → two passes.
       head = String.duplicate("hello world ", 10_000)
 
-      new_messages =
-        Compactor.compact(
-          build_messages(),
-          8_192,
-          capture_llm_call(test_pid, head)
-        )
+      assert {:ok, new_messages} =
+               Compactor.compact(
+                 build_messages(),
+                 8_192,
+                 capture_llm_call(test_pid, head)
+               )
 
       # Two passes
       assert_received {:llm_called, _}
@@ -251,6 +255,75 @@ defmodule Nest.Tokens.CompactorTest do
 
       # Four messages: system, head summary, user, tail summary
       assert length(new_messages) == 4
+    end
+  end
+
+  describe "compact/3 — error cases" do
+    test "head LLM returns empty → {:error, :llm_returned_empty}" do
+      result = Compactor.compact(build_messages(), 32_768, mock_llm_call(""))
+      assert result == {:error, :llm_returned_empty}
+    end
+
+    test "head LLM callback errors → error propagates" do
+      result =
+        Compactor.compact(
+          build_messages(),
+          32_768,
+          error_llm_call(:timeout)
+        )
+
+      assert result == {:error, :timeout}
+    end
+
+    test "tail LLM returns empty → {:error, :llm_returned_empty}" do
+      test_pid = self()
+
+      # Big head to force two-pass; second call returns empty.
+      big_head = String.duplicate("hello world ", 5_000)
+
+      fn messages ->
+        send(test_pid, {:llm_called, messages})
+
+        case Process.get(:call_count, 0) do
+          0 ->
+            Process.put(:call_count, 1)
+            {:ok, big_head}
+
+          _ ->
+            {:ok, ""}
+        end
+      end
+      |> then(fn llm_call ->
+        Compactor.compact(build_messages(), 8_192, llm_call)
+      end)
+      |> then(fn result ->
+        assert result == {:error, :llm_returned_empty}
+      end)
+    end
+
+    test "tail LLM callback errors → error propagates" do
+      test_pid = self()
+
+      big_head = String.duplicate("hello world ", 5_000)
+
+      fn messages ->
+        send(test_pid, {:llm_called, messages})
+
+        case Process.get(:call_count, 0) do
+          0 ->
+            Process.put(:call_count, 1)
+            {:ok, big_head}
+
+          _ ->
+            {:error, :transport_error}
+        end
+      end
+      |> then(fn llm_call ->
+        Compactor.compact(build_messages(), 8_192, llm_call)
+      end)
+      |> then(fn result ->
+        assert result == {:error, :transport_error}
+      end)
     end
   end
 end

@@ -66,9 +66,11 @@ defmodule Nest.Agents.Agent.Handlers do
   defp route_for({:api_log, _, _}), do: {:ok, ApiLogHandler}
   defp route_for({:api_log_sequences_updated, _}), do: {:ok, ApiLogHandler}
   defp route_for({:compaction_done, _, _}), do: {:ok, CompactionHandler}
+  defp route_for({:compaction_failed, _, _}), do: {:ok, CompactionHandler}
   defp route_for({:task_compaction_request, _, _}), do: {:ok, CompactionHandler}
   defp route_for({:task_compaction_done, _, _}), do: {:ok, CompactionHandler}
   defp route_for({:task_compaction_failed, _, _}), do: {:ok, CompactionHandler}
+  defp route_for(:retry_compaction), do: {:ok, CompactionHandler}
   defp route_for({:stop_chat, _}), do: {:ok, StopHandler}
   defp route_for({:EXIT, _, _}), do: {:ok, ExitHandler}
 

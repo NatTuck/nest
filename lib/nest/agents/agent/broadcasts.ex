@@ -60,6 +60,32 @@ defmodule Nest.Agents.Agent.Broadcasts do
     )
   end
 
+  # Broadcast a `chat:error` event for a compaction failure. The
+  # `compactionError: true` marker lets the JS channel handler
+  # route the message to `setCompactionError` (which stores the
+  # user-facing text on the cache) instead of `setAgentError`
+  # (which would flip the connection-level status to "error").
+  # The Agent's `chat:status: "compaction_failed"` broadcast
+  # immediately after this event drives the banner rendering.
+  @doc """
+  Broadcast a compaction-failure `chat:error` event. Distinct from
+  `error/3,4` because the failure context is agent-level
+  (`:compaction_failed` status), not connection-level.
+  """
+  def compaction_error(agent_id, error_msg, source) do
+    tagged = tag_source(error_msg, source)
+    log_error(agent_id, nil, error_msg, source)
+    broadcast_compaction_error(agent_id, tagged)
+  end
+
+  defp broadcast_compaction_error(agent_id, content) do
+    Phoenix.PubSub.broadcast(
+      PubSub,
+      "agent:#{agent_id}",
+      {:chat_error, %{index: nil, content: content, compactionError: true}}
+    )
+  end
+
   # Append a short, copy-pastable `[Source: Module.fn/arity]`
   # line to the user-facing error message so we can grep the
   # server log for the matching `Logger.error` entry. The

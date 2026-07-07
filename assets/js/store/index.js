@@ -429,6 +429,43 @@ export const useStore = create(
       },
 
       /**
+       * Set a compaction-failure error message on the agent cache.
+       * The `chat:status` event with `status: "compaction_failed"` sets
+       * `agentState`; this stores the user-facing error text so the
+       * StatusBanner can show it next to the Retry button.
+       */
+      setCompactionError: (id, error) => {
+        set((state) => {
+          const cache = state.agentsCache[id];
+          if (!cache) return state;
+          return {
+            agentsCache: {
+              ...state.agentsCache,
+              [id]: { ...cache, compactionError: error },
+            },
+          };
+        });
+      },
+
+      /**
+       * Clear the compaction-error text. Called when the user retries
+       * and the agent transitions back to `:compacting` (so the banner
+       * text updates to "Compacting..." without the stale error).
+       */
+      clearCompactionError: (id) => {
+        set((state) => {
+          const cache = state.agentsCache[id];
+          if (!cache) return state;
+          return {
+            agentsCache: {
+              ...state.agentsCache,
+              [id]: { ...cache, compactionError: null },
+            },
+          };
+        });
+      },
+
+      /**
        * Set agent's GenServer state (idle, streaming, executing_tools).
        * Optionally updates the resolved context-window limit and its
        * source in the same write — used by the chat:status handler
@@ -438,10 +475,18 @@ export const useStore = create(
         set((state) => {
           const cache = state.agentsCache[id];
           if (!cache) return state;
+
+          // When the agent transitions out of `:compaction_failed`
+          // (either to `:compacting` for a retry, or to `:idle` /
+          // streaming after a successful compaction), clear the stale
+          // error text so the banner switches to the right message.
+          const patch =
+            agentState !== "compaction_failed" ? { compactionError: null } : {};
+
           return {
             agentsCache: {
               ...state.agentsCache,
-              [id]: { ...cache, agentState, ...(extra || {}) },
+              [id]: { ...cache, agentState, ...patch, ...(extra || {}) },
             },
           };
         });

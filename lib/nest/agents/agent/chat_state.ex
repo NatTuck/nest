@@ -42,6 +42,17 @@ defmodule Nest.Agents.Agent.ChatState do
   its GenServer sends `{:child_completed, child_id, response, total_usage}`
   to the parent, and the parent routes the response to the
   waiting tool task.
+
+  The `pending_user_message` field holds the user's incoming
+  message — `{content, mode}` — until we know whether compaction
+  fires. `handle_chat/3` stores the message here and runs the
+  preflight; if preflight fits, the field is consumed by
+  `handle_chat/3`'s append path. If preflight needs compaction,
+  the field is preserved across the compaction; on success, the
+  compaction handler's `chat_continuation` branch appends it
+  via `ChatPipeline.resume_with_pending/1`. On failure, the
+  field stays set so `chat:retry-compaction` can re-attach it
+  to the next compaction attempt.
   """
   defstruct messages: [],
             history: [],
@@ -53,5 +64,6 @@ defmodule Nest.Agents.Agent.ChatState do
             pending_api_logs: %{},
             chat_turn_pid: nil,
             cancelled: false,
-            pending_children: %{}
+            pending_children: %{},
+            pending_user_message: nil
 end

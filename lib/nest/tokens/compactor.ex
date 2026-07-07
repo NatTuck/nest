@@ -50,7 +50,9 @@ defmodule Nest.Tokens.Compactor do
 
   @recent_threshold 0.25
 
-  @type llm_call :: ([Message.t()] -> String.t())
+  @type llm_call :: ([Message.t()] -> {:ok, String.t()} | {:error, term()})
+
+  @type compact_result :: {:ok, [Message.t()]} | {:error, term()}
 
   @doc """
   Compact the given `messages` list.
@@ -61,12 +63,23 @@ defmodule Nest.Tokens.Compactor do
     * `context_limit` — the model's context window in tokens, used
       for the 25% threshold
     * `llm_call` — callback that takes the messages to summarize
-      and returns the summary text. The caller is responsible for
-      building the actual LLM request (including the summarization
-      system prompt).
+      and returns `{:ok, summary_text}` on success or
+      `{:error, reason}` on transport / parse failure. The caller
+      is responsible for building the actual LLM request (including
+      the summarization system prompt).
 
-  Returns the new message list. If the history is already empty
-  or has only a system message, returns it unchanged.
+  ## Return values
+
+    * `{:ok, messages}` — success. The `:too_short` branch (empty /
+      system-only / no-user) returns the input unchanged under the
+      same `{:ok, messages}` shape; callers that care can detect it
+      by comparing lengths.
+    * `{:error, :llm_returned_empty}` — the LLM call returned an
+      empty string for either the head or tail summary. The compactor
+      does not synthesize a placeholder summary; it surfaces the
+      failure to the caller.
+    * `{:error, reason}` — transport-level error from the LLM call
+      (timeout, network, etc.) propagated through the callback.
 
   ## Output contract
 
@@ -87,13 +100,13 @@ defmodule Nest.Tokens.Compactor do
   a system message, and the handler can re-encode it as a user
   "Summary of earlier conversation" message without ambiguity.
   """
-  @spec compact([Message.t()], pos_integer(), llm_call()) :: [Message.t()]
+  @spec compact([Message.t()], pos_integer(), llm_call()) :: compact_result()
   def compact(messages, context_limit, llm_call_fn)
       when is_list(messages) and is_integer(context_limit) and
              context_limit > 0 and is_function(llm_call_fn, 1) do
     case split_messages(messages) do
       :too_short ->
-        messages
+        {:ok, messages}
 
       {:ok, system, head, last_user, responses} ->
         run_two_pass(system, head, last_user, responses, context_limit, llm_call_fn)
@@ -153,29 +166,61 @@ defmodule Nest.Tokens.Compactor do
     # Pass 1: head summary. The system prompt is prepended to the
     # input so the LLM knows the conversation context.
     head_input = prepend_system(system, head)
-    head_summary = llm_call_fn.(head_input)
 
-    # Size check: do the recent slice + head summary fit in
-    # 25% of the context?
-    head_tokens = Estimator.estimate(head_summary || "")
-    last_user_tokens = Estimator.estimate_message(last_user)
-    responses_tokens = Estimator.estimate_messages(responses)
-    recent_total = head_tokens + last_user_tokens + responses_tokens
-
-    recent_threshold = round(context_limit * @recent_threshold)
-
-    if recent_total <= recent_threshold do
-      [system, wrap_summary(head_summary, :head), last_user] ++ responses
-    else
-      # Pass 2: tail summary. Shares [system, head_summary] prefix
-      # with pass 1's output.
-      tail_input =
-        prepend_system(system, [wrap_summary(head_summary, :head), last_user] ++ responses)
-
-      tail_summary = llm_call_fn.(tail_input)
-      [system, wrap_summary(head_summary, :head), last_user, wrap_summary(tail_summary, :tail)]
+    with {:ok, head_summary} <- llm_call_fn.(head_input),
+         :ok <- require_summary(head_summary) do
+      summarize_or_compact(
+        system,
+        head_summary,
+        last_user,
+        responses,
+        context_limit,
+        llm_call_fn
+      )
     end
   end
+
+  # Decide between single-pass (recent slice fits in 25% of context)
+  # and two-pass (tail summary needed). Extracted from
+  # `run_two_pass/6` to keep that function under the ABC / nesting
+  # limits.
+  defp summarize_or_compact(
+         system,
+         head_summary,
+         last_user,
+         responses,
+         context_limit,
+         llm_call_fn
+       ) do
+    recent_total = recent_slice_tokens(head_summary, last_user, responses)
+
+    if recent_total <= round(context_limit * @recent_threshold) do
+      {:ok, [system, wrap_summary(head_summary), last_user] ++ responses}
+    else
+      tail_summarize(system, head_summary, last_user, responses, llm_call_fn)
+    end
+  end
+
+  defp recent_slice_tokens(head_summary, last_user, responses) do
+    head_tokens = Estimator.estimate(head_summary)
+    last_user_tokens = Estimator.estimate_message(last_user)
+    responses_tokens = Estimator.estimate_messages(responses)
+    head_tokens + last_user_tokens + responses_tokens
+  end
+
+  # Pass 2: tail summary. Shares [system, head_summary] prefix
+  # with pass 1's output.
+  defp tail_summarize(system, head_summary, last_user, responses, llm_call_fn) do
+    tail_input = prepend_system(system, [wrap_summary(head_summary), last_user] ++ responses)
+
+    with {:ok, tail_summary} <- llm_call_fn.(tail_input),
+         :ok <- require_summary(tail_summary) do
+      {:ok, [system, wrap_summary(head_summary), last_user, wrap_summary(tail_summary)]}
+    end
+  end
+
+  defp require_summary(""), do: {:error, :llm_returned_empty}
+  defp require_summary(_text), do: :ok
 
   # Prepends the system message to the input. If the system
   # message is nil (no system at all), returns the input as-is.
@@ -183,39 +228,23 @@ defmodule Nest.Tokens.Compactor do
   defp prepend_system(system, []), do: [system]
   defp prepend_system(system, messages), do: [system | messages]
 
-  # Wraps the raw summary text from the LLM in a tagged tuple
-  # matching the message variants. The summary lives as a
-  # "system" message in the new history (since it's not from
-  # the user or a real assistant turn).
-  #
-  # Contract: always returns a `{:system, %System{}}` tuple, even
-  # when the LLM returned an empty string. The caller (the agent's
-  # compaction handler) relies on this — it pattern-matches the
-  # compactor's output's position 0 as `{:system, _}` and re-encodes
-  # the summary as a user message. Violating this contract (e.g.
-  # returning a user message for a tail summary) would break the
-  # handler.
-  defp wrap_summary(text, kind) do
-    # Empty summaries are still emitted as a system message so
-    # the message indices remain contiguous. The caller may later
-    # elide them in the UI.
-    prefix =
-      case kind do
-        :head -> "[Summary of earlier conversation]"
-        :tail -> "[Summary of recent work]"
-      end
-
-    content =
-      case String.trim(text || "") do
-        "" -> prefix
-        non_empty -> prefix <> ":\n\n" <> non_empty
-      end
-
+  defp wrap_summary(text) do
+    # Returns the raw LLM summary text wrapped as a system message.
+    # No prefix or placeholder is added; the agent's compaction
+    # handler is responsible for prefixing when it re-encodes the
+    # summary as a user message.
+    #
+    # Contract: returns a {:system, %System{}} tuple. The handler
+    # pattern-matches the compactor's output's position 0 as
+    # {:system, _} and extracts the summary text from there.
+    # Empty text never reaches this function: require_summary/1
+    # short-circuits with {:error, :llm_returned_empty} before
+    # wrap_summary/1 is called.
     {:system,
      %Nest.Messages.System{
        # will be re-assigned by the caller
        index: 0,
-       parts: [%Nest.Messages.Part.Text{text: content}],
+       parts: [%Nest.Messages.Part.Text{text: text}],
        timestamp: DateTime.utc_now(),
        api_logs: []
      }}

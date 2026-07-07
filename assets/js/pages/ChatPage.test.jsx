@@ -17,12 +17,19 @@ vi.mock("../store", () => ({
 }));
 
 // Mock channels — ChatPage calls joinAgent/leaveAgent on mount.
-import { joinAgent, leaveAgent, sendMessage, stopMessage } from "../channels";
+import {
+  joinAgent,
+  leaveAgent,
+  sendMessage,
+  stopMessage,
+  retryCompaction,
+} from "../channels";
 vi.mock("../channels", () => ({
   joinAgent: vi.fn(),
   leaveAgent: vi.fn(),
   sendMessage: vi.fn(),
   stopMessage: vi.fn(),
+  retryCompaction: vi.fn(),
 }));
 
 // Mock useScrollToBottom (not relevant to these tests).
@@ -1180,5 +1187,84 @@ describe("ChatPage message copy button", () => {
     });
 
     expect(screen.getByRole("button", { name: /copied/i })).toBeInTheDocument();
+  });
+});
+
+describe("ChatPage compaction-frozen state", () => {
+  beforeEach(() => {
+    mockAgentsCache = {};
+    vi.clearAllMocks();
+  });
+
+  function setupCompacting() {
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "compacting",
+        messages: [],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+    renderChat();
+  }
+
+  function setupCompactionFailed() {
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "compaction_failed",
+        compactionError: "LLM returned empty summary.",
+        messages: [],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+    renderChat();
+  }
+
+  it("hides the chat input when the agent is compacting", () => {
+    setupCompacting();
+
+    expect(screen.queryByRole("textbox", { name: /message/i })).toBeNull();
+    expect(screen.getByText("Compacting conversation...")).toBeInTheDocument();
+  });
+
+  it("hides the chat input and shows a Retry-compaction button when compaction_failed", () => {
+    setupCompactionFailed();
+
+    expect(screen.queryByRole("textbox", { name: /message/i })).toBeNull();
+    expect(screen.getByText("Compaction failed")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /retry compaction/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("clicking Retry compaction pushes chat:retry-compaction to the channel", async () => {
+    setupCompactionFailed();
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole("button", { name: /retry compaction/i }),
+      );
+    });
+
+    expect(retryCompaction).toHaveBeenCalledWith(
+      "test-agent",
+      expect.any(Function),
+    );
+  });
+
+  it("surfaces the server's rejection reason via sendError", async () => {
+    retryCompaction.mockImplementation((_id, onError) => {
+      onError({ reason: "agent_status_compacting" });
+    });
+    setupCompactionFailed();
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole("button", { name: /retry compaction/i }),
+      );
+    });
+
+    expect(screen.getByText("agent_status_compacting")).toBeInTheDocument();
   });
 });

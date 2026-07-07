@@ -40,8 +40,6 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     # Validate mode against the vocation; fall back to default if invalid.
     {effective_mode, _caps} = resolve_mode_and_caps(mode, state.vocation)
 
-    user_message = build_user_message(state, content, effective_mode)
-
     # Clear the `cancelled` flag from any previous stop so the
     # pre-flight compaction that may run for this turn can
     # actually resume the chat task (the guard in
@@ -49,25 +47,21 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     # `chat_continuation`).
     state = clear_cancelled(state)
 
-    # Append the user message via the canonical Agent path so
-    # the Agent stamps `index` and the next response's
-    # `streaming_acc` is built from the actual stamped index
-    # (no more `next_idx + 1` prediction that could drift from
-    # `next_message_index` if a side-channel message were
-    # appended first). The broadcast happens inside
-    # `__append_message__/2`.
-    {stamped_user, state} = Nest.Agents.Agent.__append_message__(state, user_message)
+    # Store the user message in `pending_user_message` instead
+    # of appending immediately. The pre-flight check uses
+    # `messages ++ [pending_user_message_struct]` to decide
+    # whether compaction fires. If preflight fits, `handle_chat`
+    # consumes the pending field via
+    # `append_pending_user_message/1`. If preflight needs
+    # compaction, the field stays set across the compaction;
+    # the compaction handler's `chat_continuation` branch
+    # appends it after compaction succeeds. We store the
+    # post-resolution `effective_mode` so the message struct's
+    # `[mode: ...]` prefix and `metadata.mode` match what the
+    # LLM would see after `resolve_mode_and_caps`.
+    state = put_pending_user_message(state, {content, effective_mode})
 
-    state =
-      prepare_streaming_state(
-        state,
-        effective_mode,
-        Nest.Agents.Agent.stamped_index(stamped_user)
-      )
-
-    Broadcasts.status(state.name, state)
-
-    state = maybe_compact_then_spawn(state, content, mode)
+    state = maybe_compact_then_spawn(state, effective_mode)
     {:noreply, state}
   end
 
@@ -75,27 +69,78 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     %{state | chat_state: %{state.chat_state | cancelled: false}}
   end
 
-  @doc """
-  Resume the chat after a compaction completed. Mirrors
-  `handle_chat/3`'s user-message + state-transition logic, but
-  skips the pre-flight (we just compacted).
-  """
-  @spec resume_after_compaction(Nest.Agents.Agent.t(), String.t(), String.t()) ::
-          Nest.Agents.Agent.t()
-  def resume_after_compaction(state, content, mode) do
-    {effective_mode, _} = resolve_mode_and_caps(mode, state.vocation)
-    user_message = build_user_message(state, content, effective_mode)
+  # Store `{content, mode}` in `state.chat_state.pending_user_message`.
+  # The field is the source of truth for the user's incoming
+  # message until we know whether compaction fires.
+  defp put_pending_user_message(state, pending) do
+    %{state | chat_state: %{state.chat_state | pending_user_message: pending}}
+  end
 
-    {stamped_user, state} = Nest.Agents.Agent.__append_message__(state, user_message)
+  defp clear_pending_user_message(state) do
+    %{state | chat_state: %{state.chat_state | pending_user_message: nil}}
+  end
+
+  # Build the `Message.t()` struct for the pending user message
+  # without appending. Returns `nil` if the field is not set.
+  @spec pending_user_message_struct(Nest.Agents.Agent.t()) :: {:user, User.t()} | nil
+  defp pending_user_message_struct(state) do
+    case state.chat_state.pending_user_message do
+      nil -> nil
+      {content, effective_mode} -> build_user_message(state, content, effective_mode)
+    end
+  end
+
+  # Append the pending user message via the canonical Agent
+  # path so the Agent stamps `index` and the next response's
+  # `streaming_acc` is built from the actual stamped index.
+  # After appending, the field is cleared.
+  defp append_pending_user_message(state) do
+    case pending_user_message_struct(state) do
+      nil ->
+        {nil, state}
+
+      pending_message ->
+        {stamped_user, state} = Nest.Agents.Agent.__append_message__(state, pending_message)
+        state = clear_pending_user_message(state)
+        {stamped_user, state}
+    end
+  end
+
+  @doc """
+  Resume the chat after a compaction completed. Appends the
+  pending user message, prepares the streaming state, and
+  spawns the chat turn. Called from the compaction handler's
+  `chat_continuation` branch.
+  """
+  @spec resume_with_pending(Nest.Agents.Agent.t()) :: Nest.Agents.Agent.t()
+  def resume_with_pending(state) do
+    {_stamped_user, state} = append_pending_user_message(state)
+
+    effective_mode =
+      case state.chat_state.pending_user_message do
+        # After `append_pending_user_message/1`, the field is cleared;
+        # fall back to the agent's current mode.
+        nil -> state.mode
+        # Defensive: if the field is somehow still set, use its mode.
+        {_content, mode} -> mode || state.mode
+      end
 
     state =
       prepare_streaming_state(
         state,
         effective_mode,
-        Nest.Agents.Agent.stamped_index(stamped_user)
+        state.chat_state.active_message_index
       )
 
     spawn_chat_turn(state)
+  end
+
+  # Backward-compat alias used by older test fixtures. Routes
+  # through `resume_with_pending/1` so the pending message is
+  # appended exactly once.
+  @deprecated "Use resume_with_pending/1 instead"
+  def resume_after_compaction(state, _content, _mode) do
+    resume_with_pending(state)
   end
 
   @doc """
@@ -193,30 +238,59 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   # back; the Agent's `compaction_done` handler then spawns
   # the ChatTurn via `resume_after_compaction/3` with the
   # compacted messages.
-  defp maybe_compact_then_spawn(state, content, mode) do
+  defp maybe_compact_then_spawn(state, effective_mode) do
     # Plan §"In-progress state": compaction is disallowed
     # while streaming. The pre-flight will re-run on the
     # next call (which is the next chat turn, since the
     # in-progress stream is finalizing).
     if streaming_active?(state.chat_state.streaming_acc) do
-      spawn_chat_turn(state)
+      append_and_spawn(state, effective_mode)
     else
-      case preflight_decision(state.chat_state.messages, state) do
+      case preflight_decision(messages_with_pending(state), state) do
         decision when decision in [:fits, :no_limit_known] ->
-          spawn_chat_turn(state)
+          append_and_spawn(state, effective_mode)
 
         :needs_compaction ->
+          state = %{state | chat_state: %{state.chat_state | status: :compacting}}
+          Broadcasts.status(state.name, state)
+
           Compaction.spawn(
             self(),
             state.client_config,
             state.llm_metrics.context_limit,
             state.chat_state.messages,
-            {:chat_continuation, {content, mode}}
+            {:chat_continuation, :pending}
           )
 
           state
       end
     end
+  end
+
+  # The message list for the pre-flight check: existing messages
+  # plus the pending user message struct (not yet appended).
+  defp messages_with_pending(state) do
+    case pending_user_message_struct(state) do
+      nil -> state.chat_state.messages
+      pending -> state.chat_state.messages ++ [pending]
+    end
+  end
+
+  # Append the pending user message, prepare the streaming
+  # state, and spawn the chat turn. Used on the no-compaction
+  # path.
+  defp append_and_spawn(state, effective_mode) do
+    {{:user, _user}, state} = append_pending_user_message(state)
+
+    state =
+      prepare_streaming_state(
+        state,
+        effective_mode,
+        state.chat_state.active_message_index
+      )
+
+    Broadcasts.status(state.name, state)
+    spawn_chat_turn(state)
   end
 
   @doc """

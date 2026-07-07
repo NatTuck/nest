@@ -1,8 +1,9 @@
 defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
   @moduledoc """
   `handle_info/2` handlers for compaction-related events:
-  `{:compaction_done, _, _}`, `{:task_compaction_request, _, _}`,
-  `{:task_compaction_done, _, _}`, `{:task_compaction_failed, _, _}`.
+  `{:compaction_done, _, _}`, `{:compaction_failed, _, _}`,
+  `{:task_compaction_request, _, _}`, `{:task_compaction_done, _, _}`,
+  `{:task_compaction_failed, _, _}`.
 
   Dispatched by `Nest.Agents.Agent.Handlers` based on the
   message tag.
@@ -20,6 +21,7 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
 
   require Logger
 
+  alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ChatPipeline
   alias Nest.Agents.Agent.Compaction
   alias Nest.Agents.Agent.Init
@@ -40,6 +42,10 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
     compaction_done(new_messages, continuation, state)
   end
 
+  def handle({:compaction_failed, reason, continuation}, state) do
+    compaction_failed(reason, continuation, state)
+  end
+
   def handle({:task_compaction_request, task_pid, focus}, state) do
     task_compaction_request(task_pid, focus, state)
   end
@@ -50,6 +56,10 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
 
   def handle({:task_compaction_failed, task_pid, reason}, state) do
     task_compaction_failed(task_pid, reason, state)
+  end
+
+  def handle(:retry_compaction, state) do
+    retry_compaction(state)
   end
 
   defp compaction_done(new_messages, continuation, state) do
@@ -67,15 +77,32 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
     state = archive_and_compact(state, new_messages)
 
     case continuation do
-      {:chat_continuation, {content, mode}} ->
-        # The `cancelled` flag is set when the user clicked Stop
-        # while a pre-flight compaction was in flight. Discard the
-        # continuation — the agent's chat task has already exited
-        # (or is about to) and we don't want to spawn a new one.
+      {:chat_continuation, :pending} ->
+        # The user message was held in `state.chat_state.pending_user_message`
+        # across the compaction. Append it now via
+        # `ChatPipeline.resume_with_pending/1`, then spawn the new
+        # chat turn. If the user clicked Stop while compaction was
+        # in flight, discard the continuation — the agent's chat task
+        # has already exited (or is about to) and we don't want to
+        # spawn a new one.
+        if state.chat_state.cancelled do
+          state = clear_pending_user_message(state)
+          {:noreply, state}
+        else
+          state = ChatPipeline.resume_with_pending(state)
+          {:noreply, state}
+        end
+
+      # Legacy shape: tests that send {:compaction_done, _, {:chat_continuation, {content, mode}}}
+      # directly to the agent pid. Routes through `resume_with_pending/1`
+      # too — the agent's pending_user_message field is the source of
+      # truth, and `resume_after_compaction/3` (the legacy alias) reads
+      # from it.
+      {:chat_continuation, {_content, _mode}} ->
         if state.chat_state.cancelled do
           {:noreply, state}
         else
-          state = ChatPipeline.resume_after_compaction(state, content, mode)
+          state = ChatPipeline.resume_with_pending(state)
           {:noreply, state}
         end
 
@@ -91,11 +118,18 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
     end
   end
 
+  defp clear_pending_user_message(state) do
+    %{state | chat_state: %{state.chat_state | pending_user_message: nil}}
+  end
+
   defp task_compaction_request(task_pid, _focus, state) do
     # The chat task is mid-flow and asked for explicit
     # compaction via the `context` tool. Spawn the compactor
     # and send the result back to the task when done. The task
     # will unblock its receive and use the result.
+    state = %{state | chat_state: %{state.chat_state | status: :compacting}}
+    Broadcasts.status(state.name, state)
+
     Compaction.spawn(
       self(),
       state.client_config,
@@ -123,6 +157,70 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
     send(task_pid, {:task_compaction_failed, reason})
     {:noreply, state}
   end
+
+  # Trigger B or Trigger C compaction failed. Set Agent status
+  # to `:compaction_failed`, broadcast `chat:error` + `chat:status`,
+  # preserve `state.chat_state.pending_user_message` so a
+  # `chat:retry-compaction` can re-attach it. The old chat task
+  # has already exited (the failure message arrives after the
+  # GenServer returns from `handle_cast({:chat, _, _})` and the
+  # task unwinds); we do not spawn a replacement.
+  #
+  # The retry path is `chat:retry-compaction` →
+  # `Agents.retry_compaction/1` → `Agent.retry_compaction/1` →
+  # `handle_info(:retry_compaction, state)`, which re-spawns
+  # `Compaction.spawn/5` with the preserved pending message.
+  defp compaction_failed(reason, _continuation, state) do
+    Logger.warning("Compaction failed: agent=#{state.name} reason=#{inspect(reason)}")
+
+    state = %{state | chat_state: %{state.chat_state | status: :compaction_failed}}
+
+    Broadcasts.status(state.name, state)
+
+    Broadcasts.compaction_error(
+      state.name,
+      "Compaction failed: #{format_reason(reason)}. Click Retry to try again.",
+      "Nest.Agents.Agent.Handlers.CompactionHandler.compaction_failed/3"
+    )
+
+    {:noreply, state}
+  end
+
+  # Re-spawn the compactor from `:compaction_failed` state. Routes
+  # through `task_compaction_request/3` (Trigger C path), which sets
+  # status to `:compacting` and preserves `pending_user_message`.
+  # On success, `compaction_done/3`'s `chat_continuation` branch
+  # calls `ChatPipeline.resume_with_pending/1`, which appends the
+  # pending user message and spawns the chat turn. On failure,
+  # `compaction_failed/3` returns the agent to `:compaction_failed`
+  # status and the user can retry again.
+  #
+  # Guard: only valid when the agent is in `:compaction_failed`
+  # status. If the agent is in any other state (idle, streaming,
+  # compacting), this is a no-op — the retry is meaningless
+  # outside of a failed-compaction context.
+  defp retry_compaction(state) do
+    if state.chat_state.status == :compaction_failed do
+      task_compaction_request(self(), :retry, state)
+    else
+      Logger.warning(
+        "retry_compaction ignored: agent=#{state.name} status=#{inspect(state.chat_state.status)} (expected :compaction_failed)"
+      )
+
+      {:noreply, state}
+    end
+  end
+
+  # Render the compaction failure reason as a user-facing string.
+  # `:llm_returned_empty` → "LLM returned empty summary". Crash
+  # tuples get `inspect/1`'d. Anything else falls through to a
+  # generic "internal error" so users don't see raw exception text.
+  defp format_reason(:llm_returned_empty), do: "LLM returned empty summary"
+  defp format_reason(:timeout), do: "request timed out"
+  defp format_reason(:transport_error), do: "transport error"
+  defp format_reason({:crash, _kind, _reason}), do: "internal error"
+  defp format_reason(reason) when is_binary(reason), do: reason
+  defp format_reason(_other), do: "internal error"
 
   # `archive_and_compact` lives in the GenServer module because
   # it mutates chat history; we forward to it from here.

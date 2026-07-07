@@ -160,7 +160,26 @@ export function joinAgent(agentId) {
   });
 
   channel.on("chat:error", (error) => {
-    store.setAgentError(agentId, error.content);
+    // The server broadcasts `chat:error` for two distinct failure
+    // shapes: chat-task errors (network/LLM/provider failures) and
+    // compaction failures. The compaction path is identified by
+    // the `chat:error` payload carrying a `compactionError` marker
+    // — see `Broadcasts.error/4` in `lib/nest/agents/agent/broadcasts.ex`
+    // and the compaction-failed handler in
+    // `lib/nest/agents/agent/handlers/compaction_handler.ex`.
+    //
+    // We can't tell the two apart from `error.content` alone (both
+    // are user-facing strings), so the server also broadcasts a
+    // `chat:status` event right after with `status: "compaction_failed"`.
+    // The chat:error handler stores the error message; the chat:status
+    // handler updates `agentState`. The StatusBanner reads both to
+    // render the banner.
+    if (error?.compactionError) {
+      store.setCompactionError(agentId, error.content);
+    } else {
+      store.setAgentError(agentId, error.content);
+    }
+
     store.clearPartial(agentId);
     store.setWaitingForResponse(agentId, false);
   });
@@ -333,6 +352,30 @@ export function stopMessage(agentId, onError) {
   }
 
   channel.push("chat:stop", {}).receive("error", (err) => {
+    if (onError) onError(err);
+  });
+}
+
+/**
+ * Re-run the compactor after a `chat:error` broadcast for a
+ * `:compaction_failed` Agent status. The server replies immediately
+ * with `{:ok, %{}}` and broadcasts `chat:status: "compacting"` then
+ * eventually `chat:status: "compaction_failed"` (if the retry
+ * itself failed) or `chat:status: "idle"` (if it succeeded and the
+ * pending user message was appended + a chat turn was spawned).
+ *
+ * A no-op when the channel isn't connected. The optional `onError`
+ * callback fires when the server rejects the push (e.g. agent not
+ * found, or agent is not in `:compaction_failed` status).
+ */
+export function retryCompaction(agentId, onError) {
+  const channel = agentChannels.get(agentId);
+  if (!channel) {
+    if (onError) onError(new Error("Not connected to agent"));
+    return;
+  }
+
+  channel.push("chat:retry-compaction", {}).receive("error", (err) => {
     if (onError) onError(err);
   });
 }

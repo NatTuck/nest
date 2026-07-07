@@ -25,6 +25,7 @@ import {
   leaveAgent,
   sendMessage,
   stopMessage,
+  retryCompaction,
   createAgent,
   deleteAgent,
   clearAgentChannels,
@@ -973,6 +974,41 @@ describe("channels", () => {
         assert.strictEqual(cache?.waitingForResponse, false);
       });
     });
+
+    it("routes compactionError to setCompactionError (not setAgentError)", async () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+      });
+
+      joinAgent("agent-1");
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      // The compaction_handler broadcasts `chat:error` with
+      // `compactionError: true` to distinguish from chat-task
+      // failures. The frontend routes to setCompactionError,
+      // which sets `cache.compactionError` without flipping the
+      // connection-level status to "error".
+      simulateServerEvent("agent:agent-1", "chat:error", {
+        index: null,
+        content: "Compaction failed: LLM returned empty summary.",
+        compactionError: true,
+      });
+
+      await vi.waitFor(() => {
+        const cache = useStore.getState().agentsCache["agent-1"];
+        assert.strictEqual(
+          cache?.compactionError,
+          "Compaction failed: LLM returned empty summary.",
+        );
+        assert.strictEqual(cache?.status, "connected");
+      });
+    });
   });
 
   describe("agent chat:status events", () => {
@@ -1889,6 +1925,84 @@ describe("channels", () => {
 
       await vi.waitFor(() => {
         assert.strictEqual(errorCalled, true);
+      });
+    });
+  });
+
+  describe("retryCompaction", () => {
+    it("should call onError when not connected to agent", async () => {
+      let errorCalled = false;
+      retryCompaction("missing-agent", (_err) => {
+        errorCalled = true;
+      });
+
+      await vi.waitFor(() => {
+        assert.strictEqual(errorCalled, true);
+      });
+    });
+
+    it("should not throw when not connected and onError is omitted", () => {
+      assert.doesNotThrow(() => {
+        retryCompaction("missing-agent");
+      });
+    });
+
+    it("should push chat:retry-compaction and invoke onError on push failure", async () => {
+      setNextJoinResult("agent:agent-1", {
+        autoInit: {
+          id: "agent-1",
+          model: { name: "gpt-4", provider: "openai" },
+          messageCount: 0,
+          status: "idle",
+        },
+      });
+      joinAgent("agent-1");
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      setNextPushResult("agent:agent-1", "chat:retry-compaction", {
+        error: { reason: "agent_status_idle" },
+      });
+
+      let errorCalled = false;
+      retryCompaction("agent-1", (_err) => {
+        errorCalled = true;
+      });
+
+      await vi.waitFor(() => {
+        assert.strictEqual(errorCalled, true);
+      });
+    });
+
+    it("should not throw on push failure when onError is omitted", async () => {
+      setNextJoinResult("agent:agent-1", {
+        autoInit: {
+          id: "agent-1",
+          model: { name: "gpt-4", provider: "openai" },
+          messageCount: 0,
+          status: "idle",
+        },
+      });
+      joinAgent("agent-1");
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      setNextPushResult("agent:agent-1", "chat:retry-compaction", {
+        error: { reason: "agent_status_idle" },
+      });
+
+      assert.doesNotThrow(() => {
+        retryCompaction("agent-1");
       });
     });
   });
