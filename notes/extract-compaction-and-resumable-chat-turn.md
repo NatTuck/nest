@@ -1,4 +1,4 @@
-# Extract compaction from the chat task; make the chat task resumable
+# Extract compaction from the chat task; replace per-iteration preflight with deterministic tool-size accounting
 
 ## Background
 
@@ -19,13 +19,41 @@ messages: it queries via `GenServer.call(:get_messages_with_cancelled)`
 before each iteration and appends via
 `GenServer.call({:append_message, _})` after each response.
 
-Compaction currently happens *inside* the chat task's loop. This
-note describes why that's wrong, what the current flow looks like,
-and what the redesign should be.
+Compaction currently happens in three places:
+
+- **Trigger A (per-iteration):** `ChatTurn.Iteration.dispatch_preflight/2`
+  fires at the start of every iteration of the chat task's
+  `safe_iterate/1`, calling `ChatTurn.Preflight.run/1` which sends
+  `{:preflight_request, self(), messages}` to the Agent. The Agent
+  decides "fit" or "needs compaction" and replies.
+- **Trigger B (per-handle_chat):** `ChatPipeline.maybe_compact_then_spawn/4`
+  runs once when a `chat:message` arrives from the user.
+- **Trigger C (LLM-driven):** The LLM emits a `context` tool call
+  with `action: "compact"`, intercepted in `ToolLoop` via
+  `request_compaction_from_task/2`.
+
+This note describes the problems with the current flow and the
+redesign that fixes them by:
+
+1. **Removing per-iteration compaction** (Trigger A) entirely.
+   The chat task's iteration loop becomes purely mechanical: receive
+   an LLM response → run a batch preflight → execute tools →
+   append → repeat.
+2. **Making tool result sizes deterministic.** Each tool declares its
+   output-size policy. The chat task's new `BatchSizer` module owns
+   the preflight + execution + post-execution keep-or-summarize
+   decision for `execute_command`.
+3. **Restricting compaction to user-turn boundaries** (Trigger B)
+   and the LLM-driven `context.compact` path (Trigger C). Both
+   paths delegate to the Agent, which owns the compactor lifecycle.
+4. **Keeping the doc's prior redesign** for compaction ownership:
+   `pending_user_message`, `chat:retry-compaction`,
+   `:compaction_failed` status, channel-side rejection, frontend
+   retry UX — all unchanged.
 
 ## Current flow
 
-### Preflight (every iteration)
+### Trigger A: per-iteration preflight (to be removed)
 
 Every iteration of the chat task starts with a preflight check:
 
@@ -41,159 +69,130 @@ ChatTurn.safe_iterate/1
 ```
 
 The Agent's `CompactionHandler.preflight_request/3` decides whether
-to compact and either:
+to compact and either replies `:proceed` or spawns a `Compaction`
+task with `{:preflight_continuation, task_pid}`. Compaction can fire
+at any of the chat task's iterations, including inside a single
+user-message's tool-call sequence.
 
-- Replies `:proceed` (no compaction needed), or
-- Calls `Compaction.spawn/5` with `{:preflight_continuation, task_pid}`,
-  then waits for `{:compaction_done, _, _}` or
-  `{:compaction_failed_for_preflight, task_pid, _}`. On failure,
-  the existing handler replies `:proceed` with the original
-  messages, on the theory that "any snapshot is better than
-  deadlock."
+### Streaming shortcut
 
-When the preflight finishes, the chat task uses the returned
-messages (either the compacted set or the existing snapshot) for
-its next LLM call.
+Both Trigger A and Trigger B contain a `streaming_active?` shortcut
+that replies `:proceed` if `state.chat_state.streaming_acc` is
+non-empty (i.e., the LLM's response is still streaming in).
+**This is forbidden under our constraint** ("never send an LLM
+request whose message list predictably overflows"). Removal is part
+of the redesign — the batch preflight only runs after
+`streaming_acc` has been finalized into `state.chat_state.messages`.
 
-### `context` tool's `compact` action
+### Trigger B: per-handle_chat preflight
+
+`ChatPipeline.maybe_compact_then_spawn/4` runs once when `handle_chat/3`
+is invoked from `chat:message`. Decides whether the user's incoming
+message would exceed the context budget; if so, calls
+`Compaction.spawn/5` with `{:chat_continuation, {content, mode}}`.
+
+### Trigger C: `context.compact` tool action
 
 When the LLM emits a tool call for the `context` tool with
 `action: "compact"`, the chat task's `request_compaction_from_task/2`
 sends `{:task_compaction_request, self(), focus}` to the Agent and
-**blocks in a `receive`** for the result:
+**blocks in a `receive`** for up to 60 seconds. The Agent spawns a
+`Compaction` task with `{:task_compaction_continuation, task_pid}`.
 
-```
-receive do
-  {:task_compaction_done, new_messages} -> "Compacted N messages..."
-  {:task_compaction_failed, reason} -> "Compaction failed: ..."
-  {:stop_chat, from} -> :stopped
-after
-  @compaction_timeout -> "Compaction timed out"
-end
-```
+### `context.compact` mid-batch (new constraint)
 
-This is the *only* `compact`-action entry point from the chat task.
-The chat task synthesizes the tool result string and the next LLM
-call (with the tool result in the messages) happens on the same
-chat task.
+The LLM may emit `context.compact` as part of a batch with other
+tools. Under the redesign, **`context.compact` must be the sole tool
+in a batch.** If it appears with other tools, the entire batch is
+refused (per-call synthetic error: "context.compact must be the sole
+tool in a batch; reformulate"). The LLM retries with a singleton
+batch. This keeps the batch preflight's post-state projection
+unambiguous.
 
-### Compaction itself (`Compaction.spawn/5`)
+### Compactor (`Compaction.spawn/5`)
 
-`Compaction.spawn/5` runs a `Task.Supervisor.start_child` that
-calls `Nest.Tokens.Compactor.compact/3`. On `{:ok, _}` it sends
+`Compaction.spawn/5` runs a `Task.Supervisor.start_child` that calls
+`Nest.Tokens.Compactor.compact/3`. On `{:ok, _}` it sends
 `{:compaction_done, new_messages, continuation}` to the Agent. On
-`{:error, _}` it dispatches to one of three failure paths keyed by
-the continuation shape:
-
-- `{:preflight_continuation, task_pid}` → `{:compaction_failed_for_preflight, task_pid, reason}` — chat task proceeds with original messages.
-- `{:task_compaction_continuation, task_pid}` → `{:task_compaction_failed, task_pid, reason}` — chat task turns the reason into a synthetic error tool result.
-- `{:chat_continuation, _}` → fall back to `send_failure/4` which sends `{:compaction_done, original_messages, continuation}` — the Agent proceeds as if compaction succeeded with the original messages as the "compacted" output. This is wrong: the user's message is appended once in `handle_chat/3` and again in `resume_after_compaction/3`.
-
-### `CompactionHandler.compaction_done/3` (success)
-
-When the compactor returns `{:ok, _}`, the Agent's handler:
-
-1. Calls `regenerate_for_compaction/2` (extracts the compactor's
-   summary text from position 0, re-renders the system prompt,
-   encodes the summary as a user message, and renumbers the
-   compactor's other output starting at `marker_index + 3`).
-2. Calls `archive_and_compact/2` which:
-   - Archives `state.chat_state.messages` in the DB with
-     `archived_at` set.
-   - Inserts a `:compaction` marker at `marker_index`
-     (= pre-swap `next_message_index`).
-   - Replaces `state.chat_state.messages` with the re-encoded
-     compacted state.
-   - Persists the marker and the new state to the DB.
-3. Routes by continuation:
-   - `{:chat_continuation, {content, mode}}` → calls
-     `ChatPipeline.resume_after_compaction/3` which builds a new
-     user message, calls `__append_message__/2` (appending the
-     user message *again* — see below), and spawns a chat turn.
-   - `{:preflight_continuation, task_pid}` → sends `{:preflight_result, :compacted, new_messages}` to the chat task. The chat task uses these for the next LLM call.
-   - `{:task_compaction_continuation, task_pid}` → sends `{:task_compaction_done, new_messages}` to the chat task. The chat task synthesizes the tool result and makes the next LLM call.
+`{:error, _}` it dispatches to one of two failure paths keyed by
+the continuation shape (`{:chat_continuation, _}` or
+`{:task_compaction_continuation, _}`). The third legacy shape
+(`{:preflight_continuation, _}`) goes away.
 
 ## Problems with the current flow
 
 ### 1. The chat task waits synchronously for the compactor
 
-`request_compaction_from_task/2` blocks the chat task in a
-`receive` for up to 60 seconds (`@compaction_timeout`). If the
-compactor fails and the user wants to retry three weeks later, the
-chat task is already dead — the retry can't continue its
-conversation.
+`request_compaction_from_task/2` blocks the chat task in a `receive`
+for up to 60 seconds. If the compactor fails and the user wants to
+retry three weeks later, the chat task is already dead — the retry
+can't continue its conversation.
 
-Same problem with the preflight path: the chat task blocks in
-`Preflight.run/1` for up to 30 seconds. If the preflight decides
-compaction is needed and the user wants to retry three weeks
-later, the chat task is dead.
+Same problem with Trigger A's preflight path: the chat task blocks
+in `Preflight.run/1` for up to 30 seconds. The redesign eliminates
+Trigger A entirely — preflight only happens once per batch (after
+the tools run, with actual sizes in hand) and once at user-turn
+boundary (Trigger B).
 
 ### 2. The `chat_continuation` path silently corrupts state on failure
 
 `Compaction.spawn/5`'s `send_failure/4` for `{:chat_continuation, _}`
 sends `{:compaction_done, original_messages, continuation}` — the
 original messages treated as if they were the compacted output.
-The Agent's `compaction_done/3` then runs `regenerate_for_compaction/2`
-on the original messages, which extracts the leading system as the
-"summary" and re-encodes the rest. The result is a corrupted
-in-memory state.
 
 ### 3. The `chat_continuation` path appends the user message twice
 
 `handle_chat/3` appends the user message via `__append_message__/2`.
 On compactor success, `ChatPipeline.resume_after_compaction/3` calls
-`__append_message__/2` *again* with a freshly-built user message
-using the same `(content, mode)`. The original is archived by the
-compactor's swap, so the user message appears in both the archived
-history and the active state.
+`__append_message__/2` *again* with a freshly-built user message.
 
-### 4. The compactor's failure mode pretends success
-
-Even on LLM-call failure, the Agent proceeds with the
-"compaction done" path (with the original messages as the
-"compacted" output). The agent doesn't know the compaction failed,
-the DB write happens anyway, and the broadcast `chat:compaction`
-fires. There's no signal to the user that the compaction didn't
-actually compact anything.
-
-### 5. The compactor emits literal placeholders
+### 4. The compactor emits literal placeholders
 
 `Compactor.wrap_summary/2` produces `"[Summary of earlier conversation]"`
 when the LLM returns empty, and wraps real summaries with
-`"[Summary of earlier conversation]:\n\n<text>"`. This violates
-the project's UI transparency principle. The handler then extracts
-the wrong position (`summary_text` comes from position 0 — the
-original system — instead of position 1 — the wrapped summary), so
-the user sees "Summary of earlier conversation:\n\n" followed by the
-original system prompt with the actual summary appended later as a
-synthetic system message. (See `notes/compact_agent_history.exs` —
-the script ran with the wrong semantics on `overall-crawdad`.)
+`"[Summary of earlier conversation]:\n\n<text>"`.
 
-### 6. The AgentChannel crashes on `chat:compaction` broadcasts
-
-`NestWeb.AgentChannel.handle_info/2` had no clause for
-`{:chat_compaction, _}` — every channel would crash with
-`FunctionClauseError` on every compaction broadcast. Fixed in the
-previous round, but the fix only addresses the channel-side crash;
-the broadcast still goes out from `Broadcasts.compaction/3` even
-when the DB write fails.
-
-### 7. Three different continuation shapes
+### 5. Three different continuation shapes
 
 `{:chat_continuation, _}`, `{:preflight_continuation, _}`,
-`{:task_compaction_continuation, _}`. Each has its own failure
-path with different semantics. The new chat task doesn't need to
-know which one it was spawned by — the post-compaction state is
-self-describing.
+`{:task_compaction_continuation, _}`. Each has its own failure path.
+The redesign collapses them to `{:chat_continuation, _}` and
+`{:task_compaction_continuation, _}`; the third goes away with the
+removal of Trigger A.
+
+### 6. Heuristic tool-result truncation hides real overflow
+
+`BudgetPlanner.execute/4` post-hoc truncates tool results that
+exceed a per-call budget. The truncation is arbitrary (head cuts,
+forward-reservation for skip responses, three-tier
+keep/truncate/skip decision per tool). It does not guarantee the
+cumulative post-batch state fits in `context_limit`. The new design
+replaces this with deterministic size accounting: each tool's
+output size is known after execution, the chat task projects the
+post-batch state, and either keeps results in full or replaces
+individual `execute_command` outputs with a deterministic summary.
+
+### 7. Mid-iteration compaction races with streaming finalization
+
+The `streaming_active?` shortcut in Trigger A lets the chat task
+proceed with an LLM call while the previous iteration's
+`streaming_acc` is still mutating. This can result in an LLM
+request whose message list predictably overflows or whose index
+accounting is broken (deltas from the still-streaming message
+collide with later compaction's renumbered indices).
 
 ## Redesign
 
-### Principle: compaction is owned by the Agent, not the chat task
+### Principle: compaction is owned by the Agent
 
-The chat task is short-lived and single-shot. It makes LLM calls
-and processes responses. When it needs compaction (preflight or
-`context` tool's `compact` action), it signals "time for compaction"
-to the Agent and exits. The Agent owns the compaction flow:
+Compaction can only fire at user-turn boundaries (Trigger B) or via
+LLM-driven `context.compact` calls (Trigger C). The chat task never
+triggers compaction mid-sequence. Within a user turn (the LLM
+iteration loop driven by tool calls), the loop is purely mechanical.
+
+When compaction is needed (Trigger B or C), the chat task signals
+"time for compaction" to the Agent and exits. The Agent owns the
+compaction flow:
 
 1. Ensures all in-memory messages are persisted.
 2. Spawns the compactor.
@@ -202,7 +201,7 @@ to the Agent and exits. The Agent owns the compaction flow:
 4. On compactor failure, sets `status: :compaction_failed`,
    broadcasts `chat:error`, preserves the pending user message
    (and any other in-memory state), and waits for the user's
-   retry.
+   retry via `chat:retry-compaction`.
 
 The new chat task is independent of the old one. It reads the
 post-compaction state and decides what to do:
@@ -235,10 +234,9 @@ The `:too_short` branch is `{:ok, messages}` (no-op). When the LLM
 call returns empty (or non-string), the compactor returns
 `{:error, :llm_returned_empty}`. No more synthetic
 "[Summary of earlier conversation]" / "[Summary of recent work]"
-placeholders — `wrap_summary/2` returns the raw LLM text. The
-caller (the handler) extracts the summary text from position 1 of
-the compactor's output (not position 0, which is the original
-system prompt).
+placeholders — `wrap_summary/2` returns the raw LLM text. The caller
+(handler) extracts the summary text from position 1 of the
+compactor's output.
 
 ### Single failure path: `:compaction_failed`
 
@@ -249,9 +247,7 @@ system prompt).
 ```
 
 The Agent's handler routes by continuation shape to decide what to
-do next. There's no need to store the continuation in
-`state.chat_state` — the new chat task can derive everything it
-needs from the post-compaction state.
+do next.
 
 ### `:compaction_failed` is a frozen state
 
@@ -265,12 +261,12 @@ When compaction fails, the Agent:
    any chat task. The old chat task already exited.
 
 The user can retry. The retry re-spawns the compactor. The
-failure path is uniform across all three continuations.
+failure path is uniform across both continuations.
 
 ### Channel rejects new messages while frozen
 
-`chat:message` is rejected when the agent's status is
-`"compacting"` or `"compaction_failed"`. Reply:
+`chat:message` is rejected when the agent's status is `"compacting"`
+or `"compaction_failed"`. Reply:
 `{:error, %{"reason" => "agent_status_compacting"}}` or
 `"agent_status_compaction_failed"`.
 
@@ -286,127 +282,299 @@ banner carries a `Retry compaction` button (disabled in
 `"compacting"`). The button calls
 `channel.push("chat:retry-compaction", {})`.
 
-## Edge case: multiple tool calls in the last agent response
+## Tool size policies
 
-When the LLM emits multiple tool calls in one response (e.g.,
-`context.compact` plus another tool), the chat task persists the
-assistant's response (with all tool calls) and the tool results
-for the satisfied ones. Then it signals compaction. The state at
-compaction time:
+This section is the core of the redesign. Each tool's output size
+must be deterministic so the BatchSizer can project the post-batch
+message list before the next LLM call is made.
+
+### Per-tool sizing
+
+| Tool | Pre-batch projection | Post-execution |
+|------|----------------------|----------------|
+| `read_file` | Stat-then-cap (100 MB). If under: `File.read` → `Estimator.estimate(content)` exact. If over: refuse batch. | Always kept full. |
+| `execute_command` | Empty summary baseline + 20% padding (`Estimator.estimate(empty_line_1) * 1.20`). | Sequential keep-or-summarize (see below). |
+| `context` (action: "check") | `Estimator.estimate("Context: N messages, ~X / Y tokens (Z%)")` with N, X, Y, Z substituted. | Always kept (call-result string already bounded). |
+| `context` (action: "compact") | Special: not subject to BatchSizer; `ToolLoop` intercepts. | Not a normal tool result. |
+| `write_file` | `Estimator.estimate("Successfully wrote N bytes to <path>.")` (or the bounded error message). | Always kept. |
+| `edit` | `Estimator.estimate("Replaced N occurrence(s) in <path>.")` (or the bounded error). | Always kept. |
+| `inspect_file` | `Estimator.estimate(<full report>)` after running the `file -- <path>` and stats queries. The format is deterministic, only path and stats vary. | Always kept. |
+
+The `context.tool` with `action: "compact"` is intercepted in
+`ToolLoop` before the BatchSizer runs. If the batch contains
+`context.compact` with other tools, the entire batch is refused.
+If `context.compact` is alone, the existing
+`request_compaction_from_task/2` flow runs unchanged.
+
+### `read_file` implementation
+
+Replaces the current `ShellCmd.execute("cat -- ...")` with a direct
+`File.read/1`. Stat-then-cap matching `InspectFile`'s 100 MB cap:
 
 ```
-- assistant: T1 (some tool), T2 (context.compact)
-- tool: R1 (T1's result)
+stat = File.stat(path)
+if {:ok, %{size: s}} when s <= 100_000_000 → File.read(path) and estimate.
+else → {:error, "File too large; use shell_cmd ..."}.
 ```
 
-After compaction:
+The cap is by bytes. The estimator (cl100k_base + 20% safety
+multiplier) translates bytes to tokens. The LLM's `inspect_file` is
+the proper preflight for large files; `read_file` assumes the LLM
+has already inspected.
+
+### `execute_command` implementation
+
+`ShellCmd.execute/5` (or its renamed `execute_command` equivalent)
+runs the command unchanged. The tool does *not* do its own
+summarization — the BatchSizer owns the keep-or-summarize decision
+after the command returns. The tool returns `{:ok, full_output}`
+or `{:error, full_output}`; the BatchSizer decides what to keep.
+
+Other tools (`write_file`, `edit`, `inspect_file`) likewise return
+their full result; the BatchSizer applies `Estimator.estimate/1` to
+compute the actual charge.
+
+## BatchSizer: preflight + execute + sequential decide
+
+A new module `Nest.Agents.Agent.BatchSizer` (in
+`lib/nest/agents/agent/batch_sizer.ex`) replaces the current
+`BudgetPlanner.execute/4` path inside `ToolLoop.execute/3`.
+
+### Public API
 
 ```
-- new system
-- new summary
-- assistant: T1, T2 (in renumbered_rest)
-- tool: R1
+@spec run([ToolCall.t()], ctx :: map()) ::
+  {:ok, [ToolResult.t()]} |                # batch ran; results ready to append
+  {:refuse, [ToolResult.t()]}              # batch refused; ToolResults are synthetic errors
+def run(tool_calls, ctx)
 ```
 
-T2 is unsatisfied. The new chat task synthesizes the tool result
-for T2 (e.g., `"Compacted N messages into a summary..."`) and
-appends it. The LLM sees T1 + R1 + T2 + synthesized R2 in the next
-call.
+`ctx` carries messages, context_limit, tools list, agent_pid, and
+agent_tmp_path (the per-agent temp directory).
 
-If the last agent response is *really long* (lots of text plus
-tool calls), the long text can be included in the compaction's
-input (the compactor already sees it in `state.chat_state.messages`).
-After compaction, the agent's handler can strip the long text from
-the last assistant message before passing to the post-compaction
-state. The new chat task reads the modified state and constructs
-the LLM request.
+### Three phases
 
-For now, the primary implementation handles the simple case
-(single unsatisfied `context.compact` tool call). The
-multi-tool-call and long-response cases are noted as design
-specifications for the test plan.
+#### Phase 1: Preflight (before any tool runs)
+
+1. Inspect the batch for `context.compact`. If present with other
+   tools: refuse the entire batch with per-call synthetic errors.
+   If alone: defer to `ToolLoop.request_compaction_from_task/2`
+   (special handling — bypasses BatchSizer).
+2. Project each tool's minimum size using its sizing policy.
+3. For `read_file`: do `File.stat` and `File.read` to get the
+   exact size. If file > 100 MB, refuse the batch.
+4. Sum: `current_messages_size + Σ(proj_sizes) + @preflight_reserve`.
+5. If `> context_limit`: refuse batch.
+6. Else: proceed to execution.
+
+The 20% padding for `execute_command` is included in the
+projection; once actual sizes are known post-execution, the
+post-execution step reconciles.
+
+#### Phase 2: Execute all tools
+
+Run all remaining tools. Each tool returns its full result; sizes
+are computed via `Estimator.estimate/1` (for text results) or via
+the tool's policy (e.g., `read_file` already returned the exact
+size from Phase 1).
+
+`write_file`, `edit`, `inspect_file`, `context` (check) — all keep
+their full content. No branch logic in the post-execution step.
+
+#### Phase 3: Sequential keep-or-summarize (only `execute_command`)
+
+For each `execute_command` result, in batch order, build a
+`running_total` of all tool sizes appended so far (plus the
+pre-batch current size plus `@preflight_reserve`).
+
+For each `execute_command` result:
+
+- If `running_total + Estimator.estimate(full_output) ≤ context_limit`:
+  keep full. Charge `Estimator.estimate(full_output)`.
+- Else: write `full_output` to
+  `<agent_tmp_path>/<random>.txt` (autocleaned at agent
+  termination). Build the deterministic summary (see below). Charge
+  `summary_size = Estimator.estimate(assembled_summary)`.
+
+The post-execution sum is guaranteed to fit because the preflight
+padded `execute_command` projections (Phase 1) were inflated by 20%,
+and Phase 3 either keeps (smaller than inflated projection) or
+summarizes (matches inflated projection up to actual size).
+
+### Summary template (execute_command)
+
+```
+Command output of '<command>' (<N> tokens) saved to <path>.
+
+<first M tokens of output, where M is derived from remaining summary budget>
+```
+
+- Line 1 size: `Estimator.estimate(format_with_command_N_path)`.
+  Both `command` and `N` are variable; the format string is fixed.
+- Line 3 size: `Estimator.estimate(<head text>)`.
+- `head` is selected by walking the actual output line-by-line and
+  taking as many lines as fit in the remaining summary budget
+  (`head_budget = remaining_for_this_summary` minus the line-1
+  size). M is derived from the output and budget — no hardcoded
+  constant.
+
+The summary is computed by the BatchSizer from the format, the
+command string, the path, and the head text. Its size is whatever
+`Estimator.estimate/1` returns for the assembled text. No
+hardcoded constants exist anywhere.
+
+### Output: ready-to-append results
+
+`run/2` returns `[%ToolResult{...}]` in batch order. Some entries
+may be synthetic errors (batch refused), some may be full output,
+some may be the `<path>`-and-head summary. The chat task's
+`spawn_tool_worker` appends each via `__append_message__/2` and
+proceeds to the next iteration without further preflight (the
+BatchSizer's running_total already accounts for everything).
+
+### Streaming deferral
+
+The BatchSizer runs only after the chat task's iteration has
+received the LLM's response and `streaming_acc` has been finalized
+into a normal `Assistant` message in `state.chat_state.messages`.
+The chat task waits for this in its existing iteration loop
+(`safe_iterate/1`'s `:get_messages_with_cancelled` call returns
+once the Agent's finalize handler completes).
+
+### Single-flight in the chat task
+
+Within a single chat task, only one LLM-call → BatchSizer sequence
+is in flight at a time. The chat task's `safe_iterate/1` only
+continues to the next iteration after `{:tool_results, _}` is
+received from the tool worker. This is unchanged from current
+behavior; the BatchSizer's three-phase flow runs inside the existing
+tool worker.
+
+## Edge case: multiple tool calls in one assistant response
+
+The LLM may emit multiple tool calls in one assistant message (e.g.,
+`read_file_1`, `read_file_2`, `execute_command_1`). The BatchSizer
+handles the batch atomically: a single preflight, a single
+execution, a single sequential decide pass. If any one tool in the
+batch would refuse (e.g., `read_file` over cap), the whole batch is
+refused.
+
+`context.compact` is never co-batched. If present, it must be the
+sole tool in the batch, and is handled by the existing special
+flow.
+
+If multiple `execute_command`s share a batch and one exceeds the
+running budget, only that one is summarized; earlier ones in the
+batch order are kept full because the budget allows them.
 
 ## Implementation outline
 
-1. **`lib/nest/tokens/compactor.ex`**: change `compact/3` return
-   type to `{:ok, _} | {:error, _}`. Remove the placeholder logic
-   in `wrap_summary/2`. Update moduledoc.
+1. **`lib/nest/agents/agent/batch_sizer.ex`** (new):
+   - `BatchSizer.run/2` implements Phase 1 + Phase 2 + Phase 3.
+   - `BatchSizer.summarize/4` builds the summary template and
+     computes its actual size via `Estimator`.
+   - `BatchSizer.project_size/2` returns the pre-batch projection
+     for a single tool call (delegates to the tool's policy).
 
-2. **`lib/nest/agents/agent.ex`**:
-   - Add `state.chat_state.pending_user_message` field.
-   - In `handle_chat/3` (in `chat_pipeline.ex`): build the user
-     message with `build_user_message/3`, store it in
-     `pending_user_message` (no `__append_message__/2`). Decide
-     whether to compact:
-     - **No compaction**: append the pending message with
-       `__append_message__/2`, then call `spawn_chat_turn(state)`.
-     - **Compaction needed**: send `{:chat_needs_compaction,
-       :preflight}` to self. The handler picks it up.
-   - **New** `handle_info({:chat_needs_compaction, reason},
-     state)`: log the reason, set `status: :compacting`,
-     broadcast `chat:status`, spawn `Compaction.spawn/5` on
-     `state.chat_state.messages`.
-   - **New** `handle_info(:retry_compaction, state)`: if
-     `status: :compaction_failed`, re-spawn `Compaction.spawn/5`
-     on `state.chat_state.messages`. Set `status: :compacting`.
-     Broadcast `chat:status`.
+2. **`lib/nest/agents/agent/tool_loop.ex`**:
+   - `execute/3` delegates entirely to `BatchSizer.run/2`.
+   - `context.compact` interception stays here — runs *before*
+     BatchSizer and either handles the solo batch via
+     `request_compaction_from_task/2` or refuses the multi-tool
+     batch.
 
-3. **`lib/nest/agents/agent/tool_loop.ex`**:
-   `request_compaction_from_task/2` no longer waits for the
-   compactor. It sends `{:chat_needs_compaction, :tool_compaction}`
-   to the Agent and exits. The chat task process dies.
+3. **`lib/nest/agents/agent/chat_turn/iteration.ex`**:
+   - `Iteration.dispatch_preflight/2` replaced with
+     `Iteration.dispatch_batch/2`. No GenServer round-trip; just
+     spawns the tool worker which calls BatchSizer.
 
-4. **`lib/nest/agents/agent/handlers/compaction_handler.ex`**:
-   - On compactor success (`{:compaction_done, new_messages, _}`):
-     - `regenerate_for_compaction/2`, `archive_and_compact/2`.
-     - If `pending_user_message` is non-nil: append with
-       `__append_message__/2`. Clear the field.
-     - Spawn a new chat task with the post-compaction state (a
-       new `spawn_post_compaction_chat_task/1` private helper).
-     - Set `status: :streaming` (or `:idle` if the LLM returns a
-       final answer on the next iteration).
-   - On compactor failure (`{:compaction_failed, reason, _}`):
-     - `Logger.warning`.
-     - `Broadcasts.error/4` with the user-facing message.
-     - `status: :compaction_failed`, `cancelled: false`.
-     - `Broadcasts.status(state.name, state)`.
-     - Preserve `pending_user_message`.
-     - No further sends.
+4. **`lib/nest/agents/agent/chat_turn.ex`**:
+   - `safe_iterate/1`'s call to `Iteration.dispatch_preflight`
+     updates to `Iteration.dispatch_batch`.
 
-5. **`lib/nest/agents/agent/compaction.ex`**:
-   - `Compaction.spawn/5`: on `{:ok, _}`, send
-     `{:compaction_done, new_messages, continuation}`. On
-     `{:error, reason}`, send `{:compaction_failed, reason,
-     continuation}`.
-   - Drop the `try/catch` and the old `send_failure/4`.
+5. **`lib/nest/agents/agent/handlers/compaction_handler.ex`**:
+   - `preflight_request/3` clause removed.
+   - `task_compaction_request/3`, `task_compaction_done/3`,
+     `compaction_done/3`, `compaction_failed_for_preflight/3`
+     remain unchanged.
+   - Continuation shapes: only `{:chat_continuation, _}` and
+     `{:task_compaction_continuation, _}` survive.
 
-6. **`lib/nest_web/channels/agent_channel.ex`**:
-   - `handle_in("chat:message", ...)`: reject when `agent.status
-     in ["compacting", "compaction_failed"]`.
-   - **New** `handle_in("chat:retry-compaction", _payload, socket)`:
-     send `:retry_compaction` to the Agent pid.
+6. **`lib/nest/tools.ex`** and **`lib/nest/tools/inspect_file.ex`**:
+   - `read_file_function/2` replaces `ShellCmd.execute("cat -- ...")`
+     with direct `File.read` + `Estimator.estimate`.
+   - `inspect_file`'s stat-then-cap pattern (`@max_bytes =
+     100_000_000`) is mirrored by `read_file`.
+   - `execute_command`'s function (`function: fn ... -> ShellCmd.execute(...)` )
+     unchanged in form; only the BatchSizer owns the keep-or-summarize
+     decision post-execution.
 
-7. **`lib/nest/agents.ex`**: **New** `retry_compaction/1`.
+7. **`lib/nest/tokens/budget_planner.ex`** — deleted.
+8. **`lib/nest/tokens/skip_response.ex`** — deleted.
+9. **`lib/nest/tokens/truncate.ex`** — deleted (the summary template
+   in BatchSizer is the only "reduction" path for `execute_command`,
+   and it's deterministic).
 
-8. **Frontend**: hide chat input + show retry button when
-   `status` is `"compacting"` or `"compaction_failed"`. Button
-   enabled only when `"compaction_failed"`. Button calls
-   `channel.push("chat:retry-compaction", {})`.
+10. **`lib/nest/llm/tool.ex`** — unchanged. The function signature
+    stays `{:ok | :error, content}`.
+
+11. **Tests**:
+    - **NEW: `test/nest/agents/batch_sizer_test.exs`** — covers
+      BatchSizer's decision branches.
+    - **`test/nest/agents/agent_compaction_test.exs`** — invert the
+      `"preflight_request with active streaming returns :proceed"`
+      test (the constraint says preflight must not skip while
+      streaming). Add: `"BatchSizer refuses single tool batch that
+      would overflow"`, `"BatchSizer keeps execute_command full
+      when budget allows"`, `"BatchSizer summarizes
+      execute_command when budget forces it"`,
+      `"BatchSizer summary size is Estimator-computed, no
+      hardcoded constant"`.
+    - Add tests for `read_file` stat-then-cap (refusal at 100 MB,
+      exact sizing below cap), `inspect_file` size projection,
+      `write_file`/`edit` size projections, `context.check` size
+      projection, `context.compact` co-batch refused.
+
+12. **`lib/nest/agents/agent.ex`** — add
+    `state.chat_state.pending_user_message` field (per the doc's
+    prior redesign); unchanged otherwise.
+
+13. **`lib/nest_web/channels/agent_channel.ex`**: reject
+    `chat:message` while compacting/`:compaction_failed`; add
+    `chat:retry-compaction` handler (per the doc's prior redesign).
+14. **`lib/nest/agents.ex`**: new `retry_compaction/1` (per the
+    doc's prior redesign).
+15. **Frontend**: hide chat input + show retry button when status
+    is `"compacting"` or `"compaction_failed"` (per the doc's prior
+    redesign).
 
 ## Verification
 
-- `mix precommit` clean.
-- A failed compaction (stubbed LLM returns empty) puts the Agent
-  in `:compaction_failed`. The chat page renders the retry
-  button. Clicking it re-spawns the compactor. If the retry
-  succeeds, the new chat task makes the LLM call. If it fails
-  again, the Agent stays in `:compaction_failed`.
+- `mix precommit` clean (credo, biome, format).
+- `mix test` under 10 seconds; existing tests + BatchSizer tests
+  pass.
+- New test file alone targets line coverage of `BatchSizer.run/2`'s
+  three phases.
+- Tool sizing tests:
+  - `read_file` (stat-then-cap; exact sizing within cap).
+  - `execute_command` (empty-summary preflight projection;
+    keep-or-summarize decision across budget boundaries).
+  - `write_file`/`edit`/`inspect_file`/`context.check` (sizing
+    projections are Estimator-computed; matches actual result).
+- Existing `agent_compaction_test.exs`'s streaming-bypass test is
+  inverted, not deleted (the constraint is still binding).
+- The doc's verification section absorbs: "execute_command results
+  longer than budget can fit are replaced with a path-and-head
+  summary whose size is computed from the format via Estimator
+  (no hardcoded summary_tokens constant)."
 
-- A long pause between the failure and the retry works correctly:
-  the compactor re-runs on the latest `state.chat_state.messages`
-  (which preserves the user's pending message and any persisted
-  in-flight tool results).
+## Out of scope (carried over from prior doc)
 
-- The new chat task constructs the LLM request from the
-  post-compaction state plus any synthesized tool result. The
-  LLM sees a complete, coherent conversation.
+- `:compaction_failed` Agent status, `chat:retry-compaction`
+  channel handler, frontend retry UX, `pending_user_message`
+  mechanism — all unchanged from the doc's prior redesign.
+- The doc's "long assistant response" trim-mid-stream concern
+  remains a future item; under the redesign, an extremely long
+  assistant message simply becomes a very-large assistant message
+  in `state.chat_state.messages`, and the next batch's preflight
+  refuses or summarize-decides around it.
