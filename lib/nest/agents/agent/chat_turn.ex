@@ -215,7 +215,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
     if cancelled do
       Iteration.finalize_cancelled(state)
     else
-      Iteration.dispatch_preflight(state, messages)
+      Iteration.dispatch_batch(state, messages)
     end
   end
 

@@ -69,8 +69,6 @@ defmodule Nest.Agents.Agent.Handlers do
   defp route_for({:task_compaction_request, _, _}), do: {:ok, CompactionHandler}
   defp route_for({:task_compaction_done, _, _}), do: {:ok, CompactionHandler}
   defp route_for({:task_compaction_failed, _, _}), do: {:ok, CompactionHandler}
-  defp route_for({:preflight_request, _, _}), do: {:ok, CompactionHandler}
-  defp route_for({:compaction_failed_for_preflight, _, _}), do: {:ok, CompactionHandler}
   defp route_for({:stop_chat, _}), do: {:ok, StopHandler}
   defp route_for({:EXIT, _, _}), do: {:ok, ExitHandler}
 

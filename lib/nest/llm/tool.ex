@@ -8,13 +8,14 @@ defmodule Nest.LLM.Tool do
   on failure.
 
   `max_result_tokens` is the default cap on the result size, in
-  tokens. The agent's `BudgetPlanner` enforces this cap and may
-  truncate the result before sending it to the LLM. The LLM can
+  tokens. The agent's `Nest.Agents.Agent.BatchSizer` enforces
+  this cap and may summarize (replace with a path-and-head
+  summary) when the result would exceed the budget. The LLM can
   override the cap on a per-call basis by passing
   `max_result_tokens` in the call's arguments; the override is
   also capped at 50% of the model's context window (enforced at
-  the tool-schema layer; the planner trusts whatever override it
-  receives).
+  the tool-schema layer; the BatchSizer trusts whatever override
+  it receives).
   """
 
   defstruct name: nil,

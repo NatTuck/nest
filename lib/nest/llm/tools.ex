@@ -86,9 +86,9 @@ defmodule Nest.LLM.Tools do
 
   Returns the underlying `{:ok, content}` / `{:error, reason}`
   tuple from the tool's function without wrapping it in a
-  `ToolResult` struct. Used by the agent's per-call budget loop
-  (`Nest.Tokens.BudgetPlanner`) which wraps, truncates, or skips
-  the result before persisting it.
+  `ToolResult` struct. Used by `Nest.Agents.Agent.BatchSizer`,
+  which sizes each result and decides keep-or-summarize before
+  persisting.
   """
   @spec execute_one([Tool.t()], ToolCall.t(), map()) ::
           {:ok, String.t()} | {:error, String.t()}

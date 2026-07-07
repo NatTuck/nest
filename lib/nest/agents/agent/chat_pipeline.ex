@@ -123,7 +123,8 @@ defmodule Nest.Agents.Agent.ChatPipeline do
       tool_choice: :auto,
       caps: caps,
       context_limit: state.llm_metrics.context_limit,
-      messages: state.chat_state.messages
+      messages: state.chat_state.messages,
+      tmp_path: state.tmp_path
     }
 
     case ChatTurnSupervisor.start_chat_turn(agent_pid, ctx) do

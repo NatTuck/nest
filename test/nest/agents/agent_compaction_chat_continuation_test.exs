@@ -297,16 +297,20 @@ defmodule Nest.Agents.AgentCompactionChatContinuationTest do
         vocation: Init.load_vocation(vocation_id)
       }
 
-      pid = start_supervised!({Agent, attrs})
-
-      # Insert the agent row in the test process so the
-      # agent's `fetch_agent_by_name/1` finds it.
+      # Insert the agent row BEFORE `start_supervised!` so the
+      # Agent's `init/1` -> `persist_initial_system_message/1` ->
+      # `append_message` finds the row and succeeds cleanly. The
+      # row also needs to exist for the post-compaction marker
+      # INSERT (tested below via Bug 3's `archive_and_compact`
+      # collision path).
       {:ok, _} =
         Nest.Persistence.insert_agent(%{
           name: agent_name,
           model: %{name: "qwen3.5-plus"},
           vocation_id: vocation_id
         })
+
+      pid = start_supervised!({Agent, attrs})
 
       # Pre-insert a row at marker_index (= 1) so the marker's
       # INSERT will hit the unique constraint. The

@@ -13,21 +13,41 @@ defmodule Nest.Agents.Agent.ChatTurn.Iteration do
     * short-circuiting when the user clicked Stop during
       the previous iteration (the Agent's `cancelled` flag
       is checked via `:get_messages_with_cancelled`);
-    * dispatching on the `Preflight.run/1` result —
-      `:proceed`, `{:compacted, _}`, or `:stopped` — and
-      spawning the HTTP worker.
+    * dispatching the LLM call — inject a context warning
+      if appropriate, then spawn the HTTP worker.
 
   Each public helper returns either `:ok` or the GenServer
   reply tuple (`{:noreply, state}` / `{:stop, :normal, state}`)
   so the ChatTurn's `safe_iterate/1` can chain them or
   return them directly.
+
+  ## Why no preflight here?
+
+  The previous design ran a per-iteration preflight (Trigger A
+  in `notes/extract-compaction-and-resumable-chat-turn.md`)
+  that asked the Agent to compact if the message list would
+  exceed `context_limit`. That has been replaced by the
+  three-phase `Nest.Agents.Agent.BatchSizer`:
+
+    * Batch preflight runs *after* tools execute, against
+      their actual sizes.
+    * Mid-sequence compaction is forbidden: the chat task's
+      iteration loop is purely mechanical.
+    * Compaction fires only at user-turn boundaries
+      (`ChatPipeline.handle_chat/3`) or via LLM-driven
+      `context.compact` calls.
+
+  The "never send an LLM request whose message list
+  predictably overflows" constraint is now satisfied by the
+  BatchSizer's preflight + keep-or-summarize decision; this
+  module just spawns the HTTP worker with the latest
+  `state.chat_state.messages`.
   """
 
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ChatTurn.APILog
   alias Nest.Agents.Agent.ChatTurn.ContextReminder
   alias Nest.Agents.Agent.ChatTurn.HTTPWorker
-  alias Nest.Agents.Agent.ChatTurn.Preflight
   alias Nest.Agents.Agent.ChatTurn.State
 
   @doc """
@@ -60,48 +80,22 @@ defmodule Nest.Agents.Agent.ChatTurn.Iteration do
   end
 
   @doc """
-  Dispatch on the result of `Preflight.run/1`:
+  Spawn the HTTP worker with the current `messages` list.
+  Injects a context warning if a new threshold was crossed
+  before doing so.
 
-    * `:proceed` — no compaction was needed; inject a
-      context warning if appropriate and spawn the HTTP
-      worker with the existing messages.
-    * `{:compacted, compacted_messages}` — the compactor
-      ran; clear `crossed_thresholds` (the previously
-      announced thresholds are stale after compaction),
-      inject a fresh context warning, and spawn the HTTP
-      worker with the compacted messages.
-    * `:stopped` — the user clicked Stop while waiting
-      on the preflight; notify the Agent and stop.
+  No preflight or compaction is triggered from this step.
+  Compaction can only fire at user-turn boundaries or via
+  the `context.compact` tool action; both are owned by the
+  Agent, not the chat task's iteration loop.
 
   Returns the GenServer reply tuple.
   """
-  @spec dispatch_preflight(State.t(), list()) ::
+  @spec dispatch_batch(State.t(), list()) ::
           {:noreply, State.t()} | {:stop, :normal, State.t()}
-  def dispatch_preflight(state, messages) do
-    case Preflight.run(state) do
-      :proceed ->
-        state = inject_context_warning(state, messages)
-        spawn_http_worker(state, messages)
-
-      {:compacted, compacted_messages} ->
-        # Compaction just ran — usage dropped, the
-        # previously announced thresholds are stale.
-        # Clear the set so the warnings can re-fire on
-        # the way back up. The reminder check uses the
-        # *post-compaction* messages because that's
-        # what the LLM is about to see.
-        state =
-          inject_context_warning(
-            %{state | crossed_thresholds: MapSet.new()},
-            compacted_messages
-          )
-
-        spawn_http_worker(state, compacted_messages)
-
-      :stopped ->
-        send(state.ctx.agent_pid, {:chat_stopped, self()})
-        {:stop, :normal, state}
-    end
+  def dispatch_batch(state, messages) do
+    state = inject_context_warning(state, messages)
+    spawn_http_worker(state, messages)
   end
 
   # If the current messages cross a context-usage

@@ -147,29 +147,43 @@ defmodule Nest.Agents.Agent.ChatTurnStructureTest do
     end
   end
 
-  describe "mid-iteration preflight" do
-    test "the iteration step issues a preflight request before each LLM call" do
-      # The iteration step is split across three files:
+  describe "iteration architecture (post-BatchSizer)" do
+    test "the iteration step does NOT issue a per-iteration preflight_request" do
+      # Per `notes/extract-compaction-and-resumable-chat-turn.md`,
+      # Trigger A (per-iteration preflight compaction) has been
+      # removed in favor of:
+      #   * `Nest.Agents.Agent.BatchSizer.run/2` — post-execution
+      #     preflight + keep-or-summarize for tool results.
+      #   * `ChatPipeline.maybe_compact_then_spawn/4` — Trigger B
+      #     (per-handle_chat preflight) at user-turn boundaries.
       #
-      #   * `ChatTurn.safe_iterate/1` — the driver (in chat_turn.ex)
-      #   * `ChatTurn.Iteration.dispatch_preflight/2` — the dispatch
-      #   * `ChatTurn.Preflight.run/1` — sends the literal
-      #     `{:preflight_request, ...}` to the Agent
-      #
-      # Any of the three holding the literal proves the
-      # structural invariant: the iteration step runs
-      # preflight before every LLM call.
+      # The chat task's iteration loop is purely mechanical; it
+      # must not send `{:preflight_request, _, _}` to the Agent.
       chat_turn = File.read!("lib/nest/agents/agent/chat_turn.ex")
       iteration = File.read!("lib/nest/agents/agent/chat_turn/iteration.ex")
-      preflight = File.read!("lib/nest/agents/agent/chat_turn/preflight.ex")
 
-      assert chat_turn =~ "preflight_request" or
-               iteration =~ "preflight_request" or
-               preflight =~ "preflight_request",
-             "the iteration step must issue a preflight_request to the Agent " <>
-               "before each LLM call (re-enabled in Commit 5; " <>
-               "without it, long tool-call chains can blow the " <>
-               "context window without compacting mid-turn)"
+      refute chat_turn =~ "preflight_request",
+             "chat_turn.ex must not issue a mid-iteration preflight_request " <>
+               "(removed; see BatchSizer + notes/extract-compaction-and-resumable-chat-turn.md)"
+
+      refute iteration =~ "preflight_request",
+             "chat_turn/iteration.ex must not issue a mid-iteration " <>
+               "preflight_request (removed; see BatchSizer + notes/extract-compaction-and-resumable-chat-turn.md)"
+
+      refute File.exists?("lib/nest/agents/agent/chat_turn/preflight.ex"),
+             "chat_turn/preflight.ex was the per-iteration preflight module; " <>
+               "it's been deleted in favor of BatchSizer"
+    end
+
+    test "Iteration dispatches through dispatch_batch/2 (not dispatch_preflight/2)" do
+      iteration = File.read!("lib/nest/agents/agent/chat_turn/iteration.ex")
+
+      assert iteration =~ "def dispatch_batch(",
+             "Iteration must expose dispatch_batch/2 after the redesign"
+
+      refute iteration =~ "def dispatch_preflight(",
+             "dispatch_preflight/2 must be removed from Iteration " <>
+               "(replaced by dispatch_batch/2)"
     end
   end
 

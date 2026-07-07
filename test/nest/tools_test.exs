@@ -89,7 +89,7 @@ defmodule Nest.ToolsTest do
       assert {:error, error_msg} =
                function.function.(%{"path" => "nonexistent.txt"}, nil)
 
-      assert error_msg =~ "No such file or directory"
+      assert error_msg =~ "File not found: nonexistent.txt"
     end
 
     test "returns error when workspace is nil" do

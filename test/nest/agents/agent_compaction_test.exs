@@ -15,7 +15,6 @@ defmodule Nest.Agents.AgentCompactionTest do
   alias Nest.LLM.RunResponse
   alias Nest.Messages.Assistant
   alias Nest.Messages.Part
-  alias Nest.Messages.Streaming
   alias Nest.Messages.Tool
   alias Nest.Messages.User
   alias Nest.Vocations
@@ -203,49 +202,56 @@ defmodule Nest.Agents.AgentCompactionTest do
     end
   end
 
-  describe "pre-flight streaming guard" do
-    test "preflight_request with active streaming returns :proceed without compacting" do
+  describe "per-iteration preflight has been removed" do
+    test "CompactionHandler does not accept {:preflight_request, _, _} (Trigger A is gone)" do
       {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
-      :sys.replace_state(pid, fn s ->
-        acc = Streaming.new(s.chat_state.next_message_index)
-        acc = %{acc | text_buffer: "partial response..."}
-        %{s | chat_state: %{s.chat_state | streaming_acc: acc}}
-      end)
-
+      # Per-iteration preflight compaction was removed in favor of
+      # the BatchSizer + Trigger B (per-handle_chat). The Agent
+      # must NOT have a handler for `{:preflight_request, _, _}` —
+      # any such message lands in the Agent's mailbox unhandled
+      # and is silently discarded.
       state_before = :sys.get_state(pid)
-      msg_count = length(state_before.chat_state.messages || [])
-
       fake_task = self()
+
       send(pid, {:preflight_request, fake_task, state_before.chat_state.messages || []})
 
-      # 500ms (not 100ms): preflight calls Tiktoken.CL100K.count_tokens
-      # (DirtyCpu NIF); first call on each of BEAM's 32 dirty CPU threads
-      # pays a 200-325ms BPE-encoder init cost. See notes/flaky-tests.md.
-      assert_receive {:preflight_result, :proceed, _}, 500
-
-      # The preflight handler does not broadcast anything; the only
-      # externally visible signal is the {:preflight_result, ...} reply
-      # above. To verify "didn't touch state.messages" we have to
-      # inspect state — kept as a legitimate :sys.get_state use.
-      state_after = :sys.get_state(pid)
-      assert length(state_after.chat_state.messages || []) == msg_count
+      # Wait briefly to ensure the Agent (if it had a handler) would have
+      # processed the message and replied. There should be NO
+      # `:preflight_result` reply.
+      refute_receive {:preflight_result, _, _}, 200
 
       Agent.terminate(pid)
     end
 
-    test "preflight_request with empty streaming_acc and fits returns :proceed" do
+    test "CompactionHandler does not accept {:compaction_failed_for_preflight, _, _}" do
       {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
-      state_before = :sys.get_state(pid)
-      assert state_before.chat_state.streaming_acc == nil
+      fake_task = self()
 
-      send(pid, {:preflight_request, self(), state_before.chat_state.messages || []})
+      send(pid, {:compaction_failed_for_preflight, fake_task, :llm_returned_empty})
 
-      # 500ms: preflight BPE-init latency on dirty CPU threads (see line 219).
-      assert_receive {:preflight_result, :proceed, _}, 500
+      refute_receive {:preflight_result, _, _}, 200
 
       Agent.terminate(pid)
+    end
+
+    test "streaming_acc is no longer consulted by any preflight path" do
+      # The legacy design had a `streaming_active?` shortcut that
+      # returned `:proceed` while the LLM was still streaming the
+      # response. That shortcut is forbidden under our constraint
+      # ("never send an LLM request whose message list predictably
+      # overflows"). Streaming_acc still exists — the BatchSizer
+      # waits for the assistant message to be finalized before
+      # running — but no preflight handler reads it.
+      #
+      # Structural assertion: the CompactionHandler has no path
+      # that consults `streaming_acc`.
+      handler = File.read!("lib/nest/agents/agent/handlers/compaction_handler.ex")
+
+      refute handler =~ "streaming_acc",
+             "CompactionHandler must not consult streaming_acc " <>
+               "(forbidden under the never-overflow constraint)"
     end
   end
 

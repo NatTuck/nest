@@ -29,13 +29,16 @@ defmodule Nest.Agents.Agent.Compaction do
   ## Continuations
 
   The continuation tuple describes what should happen after
-  compaction completes. Three shapes are supported:
+  compaction completes. Two shapes are supported:
     * `{:chat_continuation, {content}}` — the original chat task
-      wants to proceed to the next LLM call.
-    * `{:preflight_continuation, task_pid}` — the pre-flight check
-      asked for compaction and is waiting for the result.
+      wants to proceed to the next LLM call (Trigger B from
+      `notes/extract-compaction-and-resumable-chat-turn.md`).
     * `{:task_compaction_continuation, task_pid}` — the `context`
-      tool's compact action asked for compaction.
+      tool's compact action asked for compaction (Trigger C).
+
+  Per-iteration preflight compaction has been removed; the
+  BatchSizer handles tool-result sizing instead. See the doc
+  for the redesign.
   """
 
   alias Nest.LLM.ClientConfig
@@ -62,7 +65,6 @@ defmodule Nest.Agents.Agent.Compaction do
 
   @type continuation ::
           {:chat_continuation, {String.t()}}
-          | {:preflight_continuation, pid()}
           | {:task_compaction_continuation, pid()}
 
   # Public API
@@ -121,18 +123,7 @@ defmodule Nest.Agents.Agent.Compaction do
 
   # For chat and task_compaction continuations, the GenServer's
   # :compaction_done handler treats the input as-is and broadcasts
-  # a success log line. For preflight, the task is blocked on a
-  # receive and needs an explicit failure message so it can fall
-  # back to its existing snapshot.
-  defp send_failure(
-         agent_pid,
-         _messages_to_compact,
-         {:preflight_continuation, task_pid},
-         reason
-       ) do
-    send(agent_pid, {:compaction_failed_for_preflight, task_pid, reason})
-  end
-
+  # a success log line.
   defp send_failure(agent_pid, messages_to_compact, continuation, _reason) do
     send(agent_pid, {:compaction_done, messages_to_compact, continuation})
   end

@@ -18,13 +18,15 @@ defmodule Nest.Tools do
   alias Nest.Tools.ShellCmd
 
   # Per-tool defaults for `max_result_tokens`. See the plan in
-  # notes/context-and-compaction.md for the rationale. The
-  # `BudgetPlanner` enforces these and may truncate the result
-  # before sending it to the LLM. The LLM can override per call.
+  # notes/context-and-compaction.md for the rationale. The LLM
+  # can override per call. Tool result sizing is owned by
+  # `Nest.Agents.Agent.BatchSizer` — see
+  # notes/extract-compaction-and-resumable-chat-turn.md.
   @default_max_result_tokens 8192
   @write_file_max_result_tokens 256
   @context_max_result_tokens 512
   @edit_max_result_tokens 256
+  @max_read_file_bytes 100 * 1_000_000
 
   @doc """
   Returns a list of `Nest.LLM.Tool` structs for the given tool names.
@@ -72,6 +74,65 @@ defmodule Nest.Tools do
         read_file(path, workspace_path, tmp_path, context)
       end
     }
+  end
+
+  # Read the file directly via `File.read/1` (not via `ShellCmd`).
+  # Stat-then-cap mirrors `InspectFile`'s 100 MB cap so the
+  # BatchSizer's preflight can refuse before doing the read work.
+  # Failed reads return bounded error strings whose sizes are
+  # tracked accurately via `Estimator`.
+  defp read_file(path, workspace_path, _tmp_path, _context) do
+    case resolve_read_path(path, workspace_path) do
+      {:ok, full_path} -> read_after_stat(full_path, path)
+      {:error, _} = err -> err
+    end
+  end
+
+  defp resolve_read_path(path, workspace_path) do
+    cond do
+      Path.type(path) == :absolute -> {:ok, path}
+      is_nil(workspace_path) -> {:error, "No workspace configured for this agent"}
+      true -> {:ok, Path.join(workspace_path, path)}
+    end
+  end
+
+  defp read_after_stat(full_path, original_path) do
+    case File.stat(full_path) do
+      {:ok, %{size: size}} when size > @max_read_file_bytes ->
+        mb = div(size, 1_000_000)
+
+        {:error,
+         "File is #{mb} MB; read_file is capped at 100 MB. " <>
+           "Use inspect_file or shell_cmd with head/tail/sed for partial reads."}
+
+      {:ok, _} ->
+        read_file_content(full_path)
+
+      {:error, :enoent} ->
+        {:error, "File not found: #{original_path}"}
+
+      {:error, reason} ->
+        {:error, "Cannot stat file: #{inspect(reason)}"}
+    end
+  end
+
+  defp read_file_content(full_path) do
+    case File.read(full_path) do
+      {:ok, content} ->
+        validate_utf8(content)
+
+      {:error, reason} ->
+        {:error, "Read failed: #{inspect(reason)}"}
+    end
+  end
+
+  defp validate_utf8(content) do
+    if String.valid?(content) do
+      {:ok, content}
+    else
+      {:error,
+       "File is not valid UTF-8; use shell_cmd with hexdump or xxd for binary inspection."}
+    end
   end
 
   defp write_file_function(workspace_path, tmp_path) do
@@ -246,29 +307,6 @@ defmodule Nest.Tools do
   end
 
   # Tool implementations
-
-  defp read_file(path, workspace_path, tmp_path, context) do
-    caps = caps_from_context(context)
-    Logger.info("Tool read_file: #{path} (workspace: #{workspace_path || "none"})")
-
-    # Build the full path - if absolute, use as-is (sandbox will enforce)
-    # if relative, join with workspace (requires workspace_path)
-    full_path_result =
-      if Path.type(path) == :absolute do
-        {:ok, path}
-      else
-        if is_nil(workspace_path) do
-          {:error, "No workspace configured for this agent"}
-        else
-          {:ok, Path.join(workspace_path, path)}
-        end
-      end
-
-    with {:ok, full_path} <- full_path_result do
-      # Use cat via sandboxed shell command to read file
-      ShellCmd.execute("cat -- #{shell_escape(full_path)}", workspace_path, tmp_path, caps)
-    end
-  end
 
   defp write_file(path, content, workspace_path, tmp_path, context) do
     caps = caps_from_context(context)
