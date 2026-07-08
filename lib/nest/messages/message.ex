@@ -83,4 +83,14 @@ defmodule Nest.Messages.Message do
     do: to_string(v)
 
   defp format_api_payload_value(v), do: v
+
+  # Conditionally add the `tokens` field to the JSON payload.
+  # Used by every message struct's `to_json/1` so the wire
+  # format stays uniform: the field is present (and the right
+  # shape) when set, omitted when nil.
+  @spec maybe_put_tokens(map(), integer() | nil) :: map()
+  def maybe_put_tokens(map, nil), do: map
+
+  def maybe_put_tokens(map, n) when is_integer(n) and n >= 0,
+    do: Map.put(map, "tokens", n)
 end

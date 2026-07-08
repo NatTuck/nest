@@ -34,7 +34,7 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
 
   alias Nest.Messages.Part
   alias Nest.Messages.System
-  alias Nest.Tokens.Estimator
+  alias Nest.Tokens.ConversationSize
 
   # Ordered list of thresholds. `highest_unannounced/3` takes
   # the last one whose `pct` is met, so the list MUST stay
@@ -112,14 +112,15 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
   pass the result into `highest_unannounced/3` and
   `build_message/3` without re-computing.
 
-  Thin wrapper over `Nest.Tokens.Estimator.estimate_messages/1`
+  Thin wrapper over `Nest.Tokens.ConversationSize.size/1`
   — kept here so the chat-turn call site only depends on
-  this module, not the estimator directly. Makes future
-  refinements (e.g. provider-specific tokenizers) a
-  one-file change.
+  this module, not the size/estimator directly. Makes
+  future refinements (e.g. provider-specific tokenizers) a
+  one-file change. The name is preserved for backward
+  compatibility with existing call sites.
   """
   @spec estimate_messages([term()]) :: non_neg_integer()
   def estimate_messages(messages) do
-    Estimator.estimate_messages(messages)
+    ConversationSize.size(messages)
   end
 end

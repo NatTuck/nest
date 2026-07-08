@@ -326,6 +326,107 @@ defmodule Nest.Agents.AgentCompactionTest do
     end
   end
 
+  describe "context_overflow preflight (cannot_compact)" do
+    test "system + first user message exceeds limit → status :context_overflow, no compaction, error broadcast" do
+      # The realistic API-log scenario: a moderate system prompt
+      # (~8400 estimated tokens) plus a small user message plus
+      # the 8192-token reserve already overflow the configured
+      # 10k context_limit. Compaction would be a no-op (the
+      # compactor returns :too_short for `[system, user]` with
+      # an empty head), so the chat pipeline must refuse the
+      # user's request: clear `pending_user_message`, set
+      # `:context_overflow` status, broadcast a `chat:error`
+      # with the actual numbers, and stay idle. No chat turn
+      # is spawned.
+      {pid, agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id()
+        })
+
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      # Drop the agent's context_limit to 10k so the test
+      # matches the API log scenario. The default for
+      # qwen3.5-plus is much larger, so the system prompt
+      # would otherwise fit.
+      :sys.replace_state(pid, fn s ->
+        %{s | llm_metrics: %{s.llm_metrics | context_limit: 10_000}}
+      end)
+
+      # And inflate the system prompt so the projected total
+      # (system + user + 8192 reserve) exceeds 10k even after
+      # the empty-head compaction short-circuit.
+      :sys.replace_state(pid, fn s ->
+        [{:system, sys_struct} | rest] = s.chat_state.messages
+
+        inflated_system =
+          {:system, %{sys_struct | parts: [%Part.Text{text: String.duplicate("z", 7_000)}]}}
+
+        %{s | chat_state: %{s.chat_state | messages: [inflated_system | rest]}}
+      end)
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          Agent.chat(pid, "What do we need to do?")
+
+          # The chat pipeline detects `:cannot_compact` and sets
+          # the new status, broadcasts the error with the actual
+          # numbers, and does NOT spawn a chat turn.
+          assert_receive {:chat_status, %{status: "context_overflow"}}, 500
+
+          # The chat:error is broadcast with `compactionError`
+          # NOT set (so the JS routes it to `setAgentError`,
+          # not `setCompactionError`) and carries the actual
+          # numbers (limit, system prompt size, reserve).
+          assert_receive {:chat_error, payload}, 500
+          refute Map.get(payload, :compactionError) == true
+          assert payload.content =~ "context limit (10000)"
+          assert payload.content =~ "system prompt"
+          assert payload.content =~ "reserved response budget (8192 tokens)"
+        end)
+
+      # The handler logs at info or warning level for debugging.
+      assert log =~ "context_overflow" or log =~ "context limit"
+
+      # The agent stays idle (no chat turn was spawned).
+      state_after = :sys.get_state(pid)
+      assert state_after.chat_state.status == :context_overflow
+      assert state_after.chat_state.pending_user_message == nil
+
+      # The user message was NOT appended to the conversation.
+      assert length(state_after.chat_state.messages) == 1
+      assert match?({:system, _}, hd(state_after.chat_state.messages))
+
+      Agent.terminate(pid)
+    end
+
+    test "first user message within limit → chat turn spawned, no overflow" do
+      # Regression guard: when the conversation actually fits,
+      # the preflight returns `:fits` and the chat turn proceeds
+      # normally. We use a generous context_limit (128k) so the
+      # default system prompt + user message + reserve all fit.
+      {pid, agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id()
+        })
+
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      MockClient.set_response("Hello back")
+
+      Agent.chat(pid, "Hello")
+
+      # The user message is broadcast, the chat turn starts,
+      # and the LLM responds. No context_overflow status.
+      assert_receive {:chat_message, {:user, _}}, 500
+      refute_receive {:chat_status, %{status: "context_overflow"}}, 200
+
+      Agent.terminate(pid)
+    end
+  end
+
   describe "chat:compaction broadcast" do
     test "compaction_done broadcasts chat:compaction with marker and history" do
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})

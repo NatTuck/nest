@@ -412,26 +412,13 @@ defmodule Nest.ToolsTest do
   end
 
   describe "max_result_tokens" do
-    test "read_file has a 8192-token default" do
-      function = Tools.get_function("read_file", "/tmp")
-      assert function.max_result_tokens == 8192
-    end
+    test "Tool struct does not carry a per-tool max_result_tokens field; cap is enforced by BatchSizer" do
+      for name <- ["read_file", "shell_cmd", "write_file", "context"] do
+        function = Tools.get_function(name, "/tmp")
 
-    test "shell_cmd has a 8192-token default" do
-      function = Tools.get_function("shell_cmd", "/tmp")
-      assert function.max_result_tokens == 8192
-    end
-
-    test "write_file has a 256-token default (result is naturally small)" do
-      function = Tools.get_function("write_file", "/tmp")
-      assert function.max_result_tokens == 256
-    end
-
-    test "context tool exists with 512-token cap" do
-      function = Tools.get_function("context", "/tmp")
-      assert function != nil
-      assert function.name == "context"
-      assert function.max_result_tokens == 512
+        refute Map.has_key?(function, :max_result_tokens),
+               "#{name} still has a per-tool :max_result_tokens field; cap is enforced by BatchSizer"
+      end
     end
 
     test "context is included when added to a tool list" do

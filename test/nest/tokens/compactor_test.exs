@@ -186,12 +186,28 @@ defmodule Nest.Tokens.CompactorTest do
   end
 
   describe "compact/3 — minimum input" do
-    test "system + single user: head is empty, pass 1 still runs" do
+    test "system + single user: empty head short-circuits to :too_short" do
+      msgs = [
+        {:system, %System{index: 0, parts: [%Part.Text{text: "Sys"}]}},
+        {:user, %User{index: 1, parts: [%Part.Text{text: "Q"}]}}
+      ]
+
+      # When the head between system and last user is empty,
+      # compaction cannot help — the compactor short-circuits
+      # and returns the input unchanged (callers can detect by
+      # comparing lengths or by checking :too_short). No LLM
+      # call is made.
+      assert Compactor.compact(msgs, 32_768, mock_llm_call("head text")) == {:ok, msgs}
+    end
+
+    test "system + user + assistant: head has one user, pass 1 still runs" do
       test_pid = self()
 
       msgs = [
         {:system, %System{index: 0, parts: [%Part.Text{text: "Sys"}]}},
-        {:user, %User{index: 1, parts: [%Part.Text{text: "Q"}]}}
+        {:user, %User{index: 1, parts: [%Part.Text{text: "Q1"}]}},
+        {:assistant, %Assistant{index: 2, parts: [%Part.Text{text: "A1"}]}},
+        {:user, %User{index: 3, parts: [%Part.Text{text: "Q2"}]}}
       ]
 
       assert {:ok, new_messages} =
@@ -201,13 +217,14 @@ defmodule Nest.Tokens.CompactorTest do
                  capture_llm_call(test_pid, "head text")
                )
 
-      # Pass 1 ran (with empty head)
+      # Pass 1 ran; the head had one user + one assistant
       assert_received {:llm_called, input}
-      # Input was [system] (head was empty, just system prepended)
-      assert length(input) == 1
-      assert match?({:system, %System{}}, hd(input))
+      assert length(input) == 3
+      assert match?({:system, %System{}}, Enum.at(input, 0))
+      assert match?({:user, %User{}}, Enum.at(input, 1))
+      assert match?({:assistant, %Assistant{}}, Enum.at(input, 2))
 
-      # Output: system, head summary, user
+      # Output: system, head summary, last user
       assert length(new_messages) == 3
       assert match?({:system, %System{}}, Enum.at(new_messages, 0))
       assert match?({:system, %System{}}, Enum.at(new_messages, 1))

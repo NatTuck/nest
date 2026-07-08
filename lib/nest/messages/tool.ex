@@ -8,14 +8,16 @@ defmodule Nest.Messages.Tool do
   alias Nest.Messages.Message
   alias Nest.Messages.Part
 
-  defstruct [:index, :parts, :timestamp, :metadata, :api_logs]
+  defstruct [:index, :parts, :timestamp, :metadata, :api_logs, :tokens]
 
   @type t :: %__MODULE__{
           index: non_neg_integer(),
           parts: [Part.ToolResult.t()],
           timestamp: DateTime.t() | nil,
           metadata: map() | nil,
-          api_logs: [map()] | nil
+          api_logs: [map()] | nil,
+          # See `Nest.Messages.System.t()` for the full contract.
+          tokens: non_neg_integer() | nil
         }
 
   @doc """
@@ -29,5 +31,6 @@ defmodule Nest.Messages.Tool do
       "parts" => Enum.map(msg.parts, &Part.to_json/1),
       "apiLogs" => Message.format_api_logs(msg.api_logs)
     }
+    |> Message.maybe_put_tokens(msg.tokens)
   end
 end

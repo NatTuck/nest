@@ -248,6 +248,15 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   end
 
   defp llm_usage(usage, state) do
+    # Mark the last message in the Agent's messages list with
+    # the API-reported total tokens for this LLM call. This
+    # happens BEFORE the assistant message is appended (the
+    # `:tool_calls_received` handler is sequenced after `:llm_usage`
+    # in the Agent's mailbox), so the last message in the list
+    # IS the last message the LLM saw in its input. Future
+    # `ConversationSize.size/1` calls will use this as the floor.
+    state = mark_last_message_tokens(state, usage)
+
     # Merge per-call usage into the running totals and broadcast a
     # fresh `chat:status` so the chip can update mid-stream.
     # `last_input` is overwritten (not summed): each LLM call's
@@ -266,6 +275,40 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
     Broadcasts.status(state.name, state)
     {:noreply, state}
   end
+
+  # Mark the last message in `state.chat_state.messages` with
+  # the API-reported total tokens (input + cache_read +
+  # cache_creation). No-op when `usage` lacks `input_tokens` or
+  # the messages list is empty (defensive — shouldn't happen in
+  # practice but keeps the handler robust).
+  @spec mark_last_message_tokens(Nest.Agents.Agent.t(), map() | nil) ::
+          Nest.Agents.Agent.t()
+  defp mark_last_message_tokens(state, %{input_tokens: n} = usage)
+       when is_integer(n) and n > 0 do
+    total =
+      n + Map.get(usage, :cache_read_input_tokens, 0) +
+        Map.get(usage, :cache_creation_input_tokens, 0)
+
+    messages = state.chat_state.messages
+
+    case List.last(messages) do
+      nil ->
+        state
+
+      {role, msg} ->
+        # Update the last tuple in place: replace the inner
+        # struct with a copy that has `:tokens` set. We use
+        # `List.update_at/3` directly because `put_in` with
+        # `Access.elem/1` traverses through the inner struct
+        # and requires the Access behaviour, which the message
+        # structs don't auto-derive for this nested case.
+        updated_last = {role, %{msg | tokens: total}}
+        new_messages = List.replace_at(messages, length(messages) - 1, updated_last)
+        %{state | chat_state: %{state.chat_state | messages: new_messages}}
+    end
+  end
+
+  defp mark_last_message_tokens(state, _usage), do: state
 
   # The ChatTurn's lifecycle signals (`{:chat_idle, _}`,
   # `{:chat_stopped, _}`, `{:chat_crashed, _, _}`) are

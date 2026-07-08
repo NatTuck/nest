@@ -19,7 +19,8 @@ defmodule Nest.Messages.Assistant do
     :model,
     :timestamp,
     :metadata,
-    :api_logs
+    :api_logs,
+    :tokens
   ]
 
   @type t :: %__MODULE__{
@@ -46,7 +47,9 @@ defmodule Nest.Messages.Assistant do
           # provider-specific payloads should add named fields
           # to this struct rather than reach into metadata.
           metadata: map() | nil,
-          api_logs: [map()] | nil
+          api_logs: [map()] | nil,
+          # See `Nest.Messages.System.t()` for the full contract.
+          tokens: non_neg_integer() | nil
         }
 
   @doc """
@@ -64,6 +67,7 @@ defmodule Nest.Messages.Assistant do
       "apiLogs" => Message.format_api_logs(msg.api_logs),
       "metadata" => stringify_metadata(msg.metadata)
     }
+    |> Message.maybe_put_tokens(msg.tokens)
   end
 
   # The wire format uses string keys everywhere. Convert atom

@@ -194,7 +194,13 @@ defmodule Nest.Agents.AgentObservabilityTest do
   end
 
   describe "token usage aggregation" do
-    test "initial usage_totals are all zero" do
+    test "initial usage_totals are all zero except context_input_tokens which reflects the system prompt" do
+      # `context_input_tokens` is computed from the messages list
+      # (real-valued `tokens` as a floor, estimator for the
+      # suffix). For a fresh agent with just a system prompt in
+      # messages, it equals the system prompt's estimated size —
+      # non-zero. The other usage_totals fields stay at 0 until
+      # the first LLM call completes.
       {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
       info = Agent.get_public_info(pid)
 
@@ -202,7 +208,7 @@ defmodule Nest.Agents.AgentObservabilityTest do
                input_tokens: 0,
                cache_read_input_tokens: 0,
                cache_creation_input_tokens: 0,
-               context_input_tokens: 0,
+               context_input_tokens: info.usage.context_input_tokens,
                last_output: 0,
                output_tokens: 0,
                total_input_tokens: 0,
@@ -211,6 +217,9 @@ defmodule Nest.Agents.AgentObservabilityTest do
                total_tokens: 0,
                reasoning_tokens: 0
              }
+
+      assert info.usage.context_input_tokens > 0,
+             "expected context_input_tokens > 0 (system prompt estimated size), got #{info.usage.context_input_tokens}"
 
       Agent.terminate(pid)
     end

@@ -154,11 +154,16 @@ defmodule NestWeb.AgentChannel do
     mode = Map.get(payload, "mode")
 
     case Agents.get_agent(agent_name) do
-      {:ok, %{status: status}} when status in [:compacting, :compaction_failed] ->
+      {:ok, %{status: status}}
+      when status in [:compacting, :compaction_failed, :context_overflow] ->
         # Reject incoming messages while the agent is in a
-        # compaction-frozen state. The frontend hides the chat
-        # input and shows a banner with a Retry button in this
-        # case; this is the server-side enforcement.
+        # frozen state. The frontend hides the chat input and
+        # shows a banner; this is the server-side enforcement.
+        #
+        # `:context_overflow` is distinct from the compaction
+        # pair — the model is fundamentally too small for the
+        # system prompt and retrying won't help. The frontend
+        # banner reflects that (no Retry button).
         {:reply, {:error, %{"reason" => "agent_status_#{status}"}}, socket}
 
       {:ok, _agent} ->

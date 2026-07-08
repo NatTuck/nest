@@ -148,6 +148,7 @@ defmodule Nest.Agents.PersistedMessage do
 
   defp serialize_content(role, struct) when role in [:system, :user, :tool] do
     %{"parts" => Enum.map(struct.parts || [], &Part.to_json/1)}
+    |> maybe_put_tokens(struct.tokens)
   end
 
   defp serialize_content(:assistant, %Assistant{} = struct) do
@@ -156,10 +157,16 @@ defmodule Nest.Agents.PersistedMessage do
     |> maybe_put("finishReason", struct.finish_reason)
     |> maybe_put("model", struct.model)
     |> maybe_put("metadata", stringify_keys(struct.metadata))
+    |> maybe_put_tokens(struct.tokens)
   end
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  defp maybe_put_tokens(map, nil), do: map
+
+  defp maybe_put_tokens(map, n) when is_integer(n) and n >= 0,
+    do: Map.put(map, "tokens", n)
 
   # Convert atom-keyed metadata to string keys so the jsonb
   # value is uniform with the rest of `content`. The
@@ -186,7 +193,8 @@ defmodule Nest.Agents.PersistedMessage do
        parts: parts_from_json(content),
        timestamp: row.inserted_at,
        metadata: metadata,
-       api_logs: []
+       api_logs: [],
+       tokens: content["tokens"]
      }}
   end
 
@@ -197,7 +205,8 @@ defmodule Nest.Agents.PersistedMessage do
        parts: parts_from_json(content),
        timestamp: row.inserted_at,
        metadata: metadata,
-       api_logs: []
+       api_logs: [],
+       tokens: content["tokens"]
      }}
   end
 
@@ -211,7 +220,8 @@ defmodule Nest.Agents.PersistedMessage do
        model: content["model"],
        timestamp: row.inserted_at,
        metadata: metadata,
-       api_logs: []
+       api_logs: [],
+       tokens: content["tokens"]
      }}
   end
 
@@ -222,7 +232,8 @@ defmodule Nest.Agents.PersistedMessage do
        parts: parts_from_json(content),
        timestamp: row.inserted_at,
        metadata: metadata,
-       api_logs: []
+       api_logs: [],
+       tokens: content["tokens"]
      }}
   end
 

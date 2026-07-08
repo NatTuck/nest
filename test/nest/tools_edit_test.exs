@@ -25,9 +25,10 @@ defmodule Nest.ToolsEditTest do
       assert function.description =~ "string replacement"
     end
 
-    test "edit has a 256-token default for max_result_tokens", %{tmp: dir} do
+    test "edit struct does not carry a per-tool max_result_tokens field; cap is enforced by BatchSizer",
+         %{tmp: dir} do
       function = Tools.get_function("edit", dir)
-      assert function.max_result_tokens == 256
+      refute Map.has_key?(function, :max_result_tokens)
     end
   end
 

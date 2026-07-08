@@ -3,6 +3,12 @@ defmodule Nest.LLM.ToolTest do
 
   alias Nest.LLM.Tool
 
+  describe "struct shape" do
+    test "Tool struct does not carry a :max_result_tokens field (cap is enforced by BatchSizer)" do
+      refute Map.has_key?(%Tool{}, :max_result_tokens)
+    end
+  end
+
   describe "execute/3" do
     test "invokes the function with args and context and returns the result" do
       captured = self()

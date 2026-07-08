@@ -53,6 +53,15 @@ defmodule Nest.Agents.Agent.ChatState do
   via `ChatPipeline.resume_with_pending/1`. On failure, the
   field stays set so `chat:retry-compaction` can re-attach it
   to the next compaction attempt.
+
+  The `mid_turn_compaction` field is set when a mid-turn
+  compaction is in flight or has failed. Its presence tells
+  `retry_compaction/1` to resume with `:mid_turn_continuation`
+  (spawn a fresh ChatTurn to execute the LLM's pending tool
+  calls) instead of the Trigger B path (append a held user
+  message). It carries the iteration count and max-iterations
+  so the tool-call iteration cap is enforced across the
+  compaction boundary.
   """
   defstruct messages: [],
             history: [],
@@ -65,5 +74,9 @@ defmodule Nest.Agents.Agent.ChatState do
             chat_turn_pid: nil,
             cancelled: false,
             pending_children: %{},
-            pending_user_message: nil
+            pending_user_message: nil,
+            mid_turn_compaction: nil
+
+  @type mid_turn_compaction ::
+          %{iteration: non_neg_integer(), max_iterations: pos_integer()}
 end

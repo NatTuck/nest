@@ -88,29 +88,56 @@ call, skip *this and all remaining* unprocessed calls in the batch.
 
 ## Per-tool `max_result_tokens`
 
-A field on `Nest.LLM.Tool`, set per tool definition, with a uniform
-default of 8,192. The LLM can override on a per-call basis by passing
-`max_result_tokens` as a call arg. The effective cap is:
+The LLM may pass `max_result_tokens` in any tool call's arguments
+to ask for a tighter inline cap. The cap is enforced by
+`Nest.Agents.Agent.BatchSizer` as a **gate** (does the result fit
+inline, or do we route it through a different path?), never as a
+**shrinker** (we never truncate a result to fit). Two principles:
+
+1. **No truncations** — the LLM never sees a partially-degraded
+   tool result. Either full content or a summary pointing to a tmp
+   file, or an explicit error with the size counts.
+2. **No overflows** — the BatchSizer's preflight guarantees space
+   for the minimum size of every tool call in the batch *before*
+   any tool runs. The cap is the inline-vs-summary threshold,
+   not a sizing guarantee.
+
+### Formula
+
+Computed once per batch in `BatchSizer.run/2`:
 
 ```
-effective_cap = case tool_call.args["max_result_tokens"] do
-  nil      -> tool.max_result_tokens        # default
-  override -> min(override, context_limit / 2)  # capped at 50% of context
-end
-# Then: truncate result to effective_cap if larger
+usable       = context_limit - estimate_messages(messages) - @preflight_reserve
+default_cap  = floor(usable * 0.80)
+effective_cap = min(LLM_override, default_cap)   # LLM may only lower
 ```
 
-The 50% ceiling prevents a single tool call from blowing half the
-context window. Tools get:
+When `context_limit: nil`, no cap is enforced
+(degraded-but-hopeful path). When `usable ≤ 0`, the preflight has
+already refused the batch, so this branch is unreachable in
+practice.
 
-| Tool | Default | Rationale |
-|---|---|---|
-| `read_file` | 8,192 | Most source files fit; huge ones (generated, lockfiles) get truncated |
-| `shell_cmd` | 8,192 | Same; tool description steers LLM to be specific with commands, no grep/head nudging |
-| `write_file` | 256 | Returns a small fixed-size ack; cap is a no-op |
+### Per-tool behavior when the cap is exceeded
 
-The cap is enforced at the tool-execution layer (BudgetPlanner) before
-the context-budget check. Two layers of defense.
+| Tool | Action |
+|---|---|
+| `execute_command` | Write full output to `<tmp>/exec-<rand>.txt`. Return path-and-head summary inline. |
+| `read_file` | Return `{:error, "File is X tokens which exceeds your requested limit of Y."}`. |
+| `write_file` / `edit` / `context` / `inspect_file` | Log warning, keep full. Cap unreachable in practice (bounded output by construction). |
+
+The LLM gets the structured error message in `read_file` so it
+knows whether to retry with a higher `max_result_tokens` or use
+`inspect_file` / `shell_cmd head|tail|sed -n` for a partial read.
+
+### Removal of per-tool struct field
+
+The legacy `Tool` struct carried a per-tool `max_result_tokens`
+field (8,192 for `read_file` / `shell_cmd`, 256 for `write_file` /
+`edit`, 512 for `context`). That field is gone — tool caps are
+owned by the BatchSizer, not by individual tool builders. The
+JSON schema still advertises `max_result_tokens` on every tool so
+the LLM can request a tighter cap on a per-call basis, but the
+default is global (80% of remaining usable) rather than per-tool.
 
 ## Compaction algorithm
 

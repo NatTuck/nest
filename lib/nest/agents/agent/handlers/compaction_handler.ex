@@ -58,6 +58,10 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
     task_compaction_failed(task_pid, reason, state)
   end
 
+  def handle({:needs_compaction, _chat_turn_pid, iteration, max_iterations}, state) do
+    needs_compaction(iteration, max_iterations, state)
+  end
+
   def handle(:retry_compaction, state) do
     retry_compaction(state)
   end
@@ -66,6 +70,12 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
     Logger.info(
       "Compaction complete: agent=#{state.name} from=#{length(state.chat_state.messages)} to=#{length(new_messages)}"
     )
+
+    # Clear the mid-turn bookkeeping so a future retry doesn't
+    # think we're still mid-turn. The continuation shape below
+    # tells us whether this was a mid-turn compaction (so we
+    # don't accidentally fire the wrong continuation on retry).
+    state = %{state | chat_state: %{state.chat_state | mid_turn_compaction: nil}}
 
     # Regenerate the system prompt and persist the new messages
     # before swapping. See `regenerate_for_compaction/2` for the
@@ -115,6 +125,21 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
         # in a dead process's mailbox and is silently discarded.
         send(task_pid, {:task_compaction_done, new_messages})
         {:noreply, state}
+
+      {:mid_turn_continuation, iteration, max_iterations} ->
+        # Mid-turn compaction succeeded. Spawn a new ChatTurn
+        # seeded with the compacted messages and `:mid_turn` info.
+        # The new ChatTurn will see the assistant+ToolUse message
+        # at the tail and execute those tool calls rather than
+        # calling the LLM again. Iteration count is preserved.
+        ChatPipeline.spawn_resumed_chat_turn(
+          state,
+          new_messages,
+          iteration,
+          max_iterations
+        )
+
+        {:noreply, state}
     end
   end
 
@@ -158,6 +183,38 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
     {:noreply, state}
   end
 
+  # Mid-turn compaction request from a ChatTurn. The ChatTurn
+  # detected that the projected tool results would push the
+  # conversation past the budget (post-response preflight). It
+  # exited cleanly with `{:needs_compaction, self(), iteration,
+  # max_iterations}`. We spawn the compactor with a continuation
+  # that, on success, respawns a fresh ChatTurn with
+  # `:mid_turn` info (so it executes the LLM's already-emitted
+  # tool calls rather than calling the LLM again). Iteration
+  # count is preserved across the compaction boundary.
+  defp needs_compaction(iteration, max_iterations, state) do
+    state = %{
+      state
+      | chat_state: %{
+          state.chat_state
+          | status: :compacting,
+            mid_turn_compaction: %{iteration: iteration, max_iterations: max_iterations}
+        }
+    }
+
+    Broadcasts.status(state.name, state)
+
+    Compaction.spawn(
+      self(),
+      state.client_config,
+      state.llm_metrics.context_limit,
+      state.chat_state.messages,
+      {:mid_turn_continuation, iteration, max_iterations}
+    )
+
+    {:noreply, state}
+  end
+
   # Trigger B or Trigger C compaction failed. Set Agent status
   # to `:compaction_failed`, broadcast `chat:error` + `chat:status`,
   # preserve `state.chat_state.pending_user_message` so a
@@ -186,28 +243,34 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
     {:noreply, state}
   end
 
-  # Re-spawn the compactor from `:compaction_failed` state. Routes
-  # through `task_compaction_request/3` (Trigger C path), which sets
-  # status to `:compacting` and preserves `pending_user_message`.
-  # On success, `compaction_done/3`'s `chat_continuation` branch
-  # calls `ChatPipeline.resume_with_pending/1`, which appends the
-  # pending user message and spawns the chat turn. On failure,
-  # `compaction_failed/3` returns the agent to `:compaction_failed`
-  # status and the user can retry again.
+  # Re-spawn the compactor from `:compaction_failed` state.
+  # Branches on whether the failed compaction was Trigger B
+  # (user-turn boundary, `pending_user_message` is set) or
+  # mid-turn (`mid_turn_compaction` is set). Both paths route
+  # through the compactor and re-use the same continuation shape
+  # as the original; the resulting chat turn is what differs.
   #
   # Guard: only valid when the agent is in `:compaction_failed`
   # status. If the agent is in any other state (idle, streaming,
   # compacting), this is a no-op — the retry is meaningless
   # outside of a failed-compaction context.
   defp retry_compaction(state) do
-    if state.chat_state.status == :compaction_failed do
-      task_compaction_request(self(), :retry, state)
-    else
-      Logger.warning(
-        "retry_compaction ignored: agent=#{state.name} status=#{inspect(state.chat_state.status)} (expected :compaction_failed)"
-      )
+    cond do
+      state.chat_state.status != :compaction_failed ->
+        Logger.warning(
+          "retry_compaction ignored: agent=#{state.name} status=#{inspect(state.chat_state.status)} (expected :compaction_failed)"
+        )
 
-      {:noreply, state}
+        {:noreply, state}
+
+      mid_turn_info = state.chat_state.mid_turn_compaction ->
+        needs_compaction(mid_turn_info.iteration, mid_turn_info.max_iterations, state)
+
+      true ->
+        # Trigger B retry: user message is held in pending_user_message;
+        # on success, the compactor's chat_continuation branch appends
+        # it via `ChatPipeline.resume_with_pending/1`.
+        task_compaction_request(self(), :retry, state)
     end
   end
 

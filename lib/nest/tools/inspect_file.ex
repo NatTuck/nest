@@ -34,7 +34,6 @@ defmodule Nest.Tools.InspectFile do
   alias Nest.Tokens.Estimator
   alias Nest.Tools.ShellCmd
 
-  @max_result_tokens 256
   @max_bytes 100 * 1_000_000
 
   @doc """
@@ -63,7 +62,6 @@ defmodule Nest.Tools.InspectFile do
         },
         "required" => ["path"]
       },
-      max_result_tokens: @max_result_tokens,
       function: fn args, context ->
         execute(args, workspace_path, tmp_path, context)
       end
@@ -231,15 +229,17 @@ defmodule Nest.Tools.InspectFile do
 
   # JSON schema fragment for the `max_result_tokens` call arg.
   # The LLM sees this on every tool and learns it can request a
-  # specific cap; the agent's tool schema layer enforces the 50%
-  # context-window ceiling.
+  # specific cap. The BatchSizer treats this as an inline-vs-summary
+  # threshold; `inspect_file`'s output is bounded by construction so
+  # the cap is unreachable in practice, but the schema entry is kept
+  # consistent with the rest of the tool set.
   defp max_result_tokens_schema do
     %{
       "type" => "integer",
       "description" =>
-        "Maximum tokens to return. Defaults to the tool's configured max; " <>
-          "capped at 50% of the model's context window. Increase for files " <>
-          "you know are large."
+        "Maximum tokens for the inline result. Defaults to 80% of the " <>
+          "remaining usable context window. For `inspect_file` the cap " <>
+          "is unreachable in practice (output is bounded)."
     }
   end
 

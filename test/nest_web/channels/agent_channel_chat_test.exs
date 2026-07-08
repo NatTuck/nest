@@ -138,11 +138,18 @@ defmodule NestWeb.AgentChannelChatTest do
       assert source == "config"
       # `assert_reply` captures the Erlang reply, so the map keys
       # are still atoms. The wire format is JSON for the frontend.
+      #
+      # `context_input_tokens` is computed from the messages list
+      # (real-valued `tokens` from prior LLM responses as a floor,
+      # estimator for the suffix). For a fresh agent with just a
+      # system prompt in the messages list, it's the system
+      # prompt's estimated size — non-zero, so the chip displays a
+      # meaningful fill rate from the moment the page loads.
       assert usage == %{
                input_tokens: 0,
                cache_read_input_tokens: 0,
                cache_creation_input_tokens: 0,
-               context_input_tokens: 0,
+               context_input_tokens: usage.context_input_tokens,
                last_output: 0,
                output_tokens: 0,
                total_input_tokens: 0,
@@ -151,6 +158,9 @@ defmodule NestWeb.AgentChannelChatTest do
                total_tokens: 0,
                reasoning_tokens: 0
              }
+
+      assert usage.context_input_tokens > 0,
+             "expected context_input_tokens > 0 (system prompt estimated size), got #{usage.context_input_tokens}"
     end
 
     test "returns status with messageCount after messages", %{socket: socket, agent_id: id} do
@@ -350,6 +360,26 @@ defmodule NestWeb.AgentChannelChatTest do
       ref = push(socket, "chat:message", %{"content" => "after failure"})
 
       assert_reply ref, :error, %{"reason" => "agent_status_compaction_failed"}
+    end
+
+    test "rejects chat:message when the agent is :context_overflow", %{
+      socket: socket,
+      agent_id: id
+    } do
+      # The context-overflow state is distinct from the compaction
+      # pair: the model is fundamentally too small for the system
+      # prompt and a Retry button would be misleading. The channel
+      # still rejects `chat:message` so the user can't keep adding
+      # messages to an agent that can't respond.
+      {:ok, agent_pid} = Supervisor.get_agent(id)
+
+      :sys.replace_state(agent_pid, fn state ->
+        %{state | chat_state: %{state.chat_state | status: :context_overflow}}
+      end)
+
+      ref = push(socket, "chat:message", %{"content" => "this won't fit"})
+
+      assert_reply ref, :error, %{"reason" => "agent_status_context_overflow"}
     end
 
     test "accepts chat:message when the agent is idle", %{socket: socket, agent_id: _id} do

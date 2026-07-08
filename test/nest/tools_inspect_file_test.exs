@@ -25,9 +25,10 @@ defmodule Nest.ToolsInspectFileTest do
       assert function.description =~ "metadata"
     end
 
-    test "inspect_file has a 256-token default for max_result_tokens", %{tmp: dir} do
+    test "inspect_file struct does not carry a per-tool max_result_tokens field; cap is enforced by BatchSizer",
+         %{tmp: dir} do
       function = Tools.get_function("inspect_file", dir)
-      assert function.max_result_tokens == 256
+      refute Map.has_key?(function, :max_result_tokens)
     end
   end
 

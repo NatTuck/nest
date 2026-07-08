@@ -23,6 +23,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   alias Nest.Messages.Part
   alias Nest.Messages.Streaming
   alias Nest.Messages.User
+  alias Nest.Tokens.Estimator
   alias Nest.Tokens.PreFlight
   alias Nest.Vocations
 
@@ -108,9 +109,10 @@ defmodule Nest.Agents.Agent.ChatPipeline do
 
   @doc """
   Resume the chat after a compaction completed. Appends the
-  pending user message, prepares the streaming state, and
-  spawns the chat turn. Called from the compaction handler's
-  `chat_continuation` branch.
+  pending user message. The compaction handler has already
+  replaced the messages list with the compacted state; we
+  spawn a ChatTurn with `:user_message` info after appending
+  the held user message via `append_pending_user_message/1`.
   """
   @spec resume_with_pending(Nest.Agents.Agent.t()) :: Nest.Agents.Agent.t()
   def resume_with_pending(state) do
@@ -118,10 +120,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
 
     effective_mode =
       case state.chat_state.pending_user_message do
-        # After `append_pending_user_message/1`, the field is cleared;
-        # fall back to the agent's current mode.
         nil -> state.mode
-        # Defensive: if the field is somehow still set, use its mode.
         {_content, mode} -> mode || state.mode
       end
 
@@ -132,7 +131,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
         state.chat_state.active_message_index
       )
 
-    spawn_chat_turn(state)
+    spawn_chat_turn(state, %{kind: :user_message})
   end
 
   # Backward-compat alias used by older test fixtures. Routes
@@ -156,7 +155,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   the next chat turn will retry.
   """
   @spec spawn_chat_turn(Nest.Agents.Agent.t()) :: Nest.Agents.Agent.t()
-  def spawn_chat_turn(state) do
+  def spawn_chat_turn(state, info \\ nil) do
     {_effective_mode, caps} = resolve_mode_and_caps(state.mode, state.vocation)
     agent_pid = self()
 
@@ -172,7 +171,47 @@ defmodule Nest.Agents.Agent.ChatPipeline do
       tmp_path: state.tmp_path
     }
 
-    case ChatTurnSupervisor.start_chat_turn(agent_pid, ctx) do
+    case ChatTurnSupervisor.start_chat_turn(agent_pid, ctx, info) do
+      {:ok, chat_turn_pid} ->
+        %{state | chat_state: %{state.chat_state | chat_turn_pid: chat_turn_pid}}
+
+      _ ->
+        %{state | chat_state: %{state.chat_state | chat_turn_pid: nil}}
+    end
+  end
+
+  @doc """
+  Spawn a ChatTurn after a mid-turn compaction. The new ChatTurn
+  is seeded with the compacted messages and `:mid_turn` info, so
+  it executes the tool calls the LLM already emitted rather than
+  calling the LLM again. Iteration count is preserved across the
+  compaction boundary.
+  """
+  @spec spawn_resumed_chat_turn(
+          Nest.Agents.Agent.t(),
+          [Message.t()],
+          non_neg_integer(),
+          pos_integer()
+        ) ::
+          Nest.Agents.Agent.t()
+  def spawn_resumed_chat_turn(state, compacted_messages, iteration, max_iterations) do
+    state = %{state | chat_state: %{state.chat_state | messages: compacted_messages}}
+    {_effective_mode, caps} = resolve_mode_and_caps(state.mode, state.vocation)
+    agent_pid = self()
+
+    ctx = %{
+      agent_pid: agent_pid,
+      agent_name: state.name,
+      client_config: state.client_config,
+      tools: state.tools,
+      tool_choice: :auto,
+      caps: caps,
+      context_limit: state.llm_metrics.context_limit,
+      messages: compacted_messages,
+      tmp_path: state.tmp_path
+    }
+
+    case ChatTurnSupervisor.start_chat_turn_resumed(agent_pid, ctx, iteration, max_iterations) do
       {:ok, chat_turn_pid} ->
         %{state | chat_state: %{state.chat_state | chat_turn_pid: chat_turn_pid}}
 
@@ -251,6 +290,12 @@ defmodule Nest.Agents.Agent.ChatPipeline do
           append_and_spawn(state, effective_mode)
 
         :needs_compaction ->
+          # The pending user message stays in `pending_user_message`
+          # during compaction (so the compactor doesn't try to
+          # summarize a brand-new user turn). After compaction
+          # succeeds, the `compaction_done` handler resumes by
+          # spawning a new ChatTurn with `info: :user_message` —
+          # the new ChatTurn appends the held user message itself.
           state = %{state | chat_state: %{state.chat_state | status: :compacting}}
           Broadcasts.status(state.name, state)
 
@@ -263,8 +308,50 @@ defmodule Nest.Agents.Agent.ChatPipeline do
           )
 
           state
+
+        :cannot_compact ->
+          # The conversation cannot fit even after compaction
+          # would run (system prompt alone exceeds the limit, or
+          # the head between system and last user is empty).
+          # Refuse the user's request: clear the pending
+          # message, set `:context_overflow` status, broadcast
+          # a `chat:error` with the actual numbers, and stay
+          # idle. The chat channel rejects `chat:message` while
+          # the agent is in `:context_overflow` status, so the
+          # user can't add more messages until they restart
+          # the agent or change the model.
+          state = clear_pending_user_message(state)
+          state = %{state | chat_state: %{state.chat_state | status: :context_overflow}}
+
+          Broadcasts.status(state.name, state)
+
+          Broadcasts.error(
+            state.name,
+            nil,
+            overflow_message(state),
+            "Nest.Agents.Agent.ChatPipeline.maybe_compact_then_spawn/2"
+          )
+
+          state
       end
     end
+  end
+
+  # Build the user-facing `chat:error` message for a context
+  # overflow. Includes the actual numbers so the user can see
+  # why the conversation cannot start. When no system message
+  # is present (defensive — should never happen), the estimate
+  # falls back to the full message-list size.
+  defp overflow_message(state) do
+    limit = state.llm_metrics.context_limit
+
+    sys_size =
+      case Enum.find(state.chat_state.messages, &match?({:system, _}, &1)) do
+        nil -> Estimator.estimate_messages(state.chat_state.messages)
+        sys_msg -> Estimator.estimate_message(sys_msg)
+      end
+
+    "Cannot start a conversation: model context limit (#{limit}) cannot fit the system prompt (~#{sys_size} tokens) + reserved response budget (#{@preflight_reserve} tokens). Use a model with a larger context window, or clear conversation history."
   end
 
   # The message list for the pre-flight check: existing messages
@@ -276,9 +363,11 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     end
   end
 
-  # Append the pending user message, prepare the streaming
-  # state, and spawn the chat turn. Used on the no-compaction
-  # path.
+  # Spawn the chat turn. The user message has already been
+  # appended to the Agent (via `append_pending_user_message/1`).
+  # `info` is a marker indicating this ChatTurn was spawned from
+  # the user-turn-boundary path; the ChatTurn's dispatch is the
+  # same as the default flow.
   defp append_and_spawn(state, effective_mode) do
     {{:user, _user}, state} = append_pending_user_message(state)
 
@@ -290,7 +379,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
       )
 
     Broadcasts.status(state.name, state)
-    spawn_chat_turn(state)
+    spawn_chat_turn(state, %{kind: :user_message})
   end
 
   @doc """

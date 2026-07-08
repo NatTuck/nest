@@ -42,15 +42,38 @@ defmodule Nest.Agents.Agent.ChatTurnSupervisor do
   the messages list — the ChatTurn never mutates it
   directly, only via `GenServer.call({:append_message, _})`.
   """
-  @spec start_chat_turn(pid(), map()) :: DynamicSupervisor.on_start_child()
-  def start_chat_turn(agent_pid, ctx) do
+  @spec start_chat_turn(pid(), map(), Nest.Agents.Agent.ChatTurn.State.info()) ::
+          DynamicSupervisor.on_start_child()
+  def start_chat_turn(agent_pid, ctx, info \\ nil) do
     spec = %{
       id: {__MODULE__, agent_pid, System.unique_integer([:positive])},
-      start: {Nest.Agents.Agent.ChatTurn, :start_link, [{agent_pid, ctx}]},
+      start: {Nest.Agents.Agent.ChatTurn, :start_link, [{agent_pid, ctx, info}]},
       restart: :temporary,
       type: :worker
     }
 
     DynamicSupervisor.start_child(__MODULE__, spec)
+  end
+
+  @doc """
+  Spawn a ChatTurn child after a mid-turn compaction. The
+  ChatTurn is seeded with `info = %{kind: :mid_turn,
+  iteration, max_iterations}` so its first action is to
+  execute the tool calls the LLM already emitted, rather
+  than calling the LLM again.
+
+  Iteration count is preserved across the compaction boundary
+  so the tool-call iteration limit is enforced continuously.
+  """
+  @spec start_chat_turn_resumed(pid(), map(), non_neg_integer(), pos_integer()) ::
+          DynamicSupervisor.on_start_child()
+  def start_chat_turn_resumed(agent_pid, ctx, iteration, max_iterations) do
+    info = %{
+      kind: :mid_turn,
+      iteration: iteration,
+      max_iterations: max_iterations
+    }
+
+    start_chat_turn(agent_pid, ctx, info)
   end
 end

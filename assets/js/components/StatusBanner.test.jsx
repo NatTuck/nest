@@ -106,4 +106,46 @@ describe("StatusBanner", () => {
 
     expect(screen.getByText("Click Retry to try again.")).toBeInTheDocument();
   });
+
+  it("renders a context_overflow banner with the actual numbers and NO Retry button", () => {
+    // Context overflow is a fundamentally-different failure mode
+    // from compaction_failed: retrying will not help (the model
+    // is too small for the system prompt). The banner must show
+    // the actual numbers so the user can see why and instruct
+    // them to switch models — but it must NOT render a Retry
+    // button (which would be misleading).
+    const onRetryCompaction = vi.fn();
+
+    const overflowMessage =
+      "Cannot start a conversation: model context limit (10000) cannot fit the system prompt (~8400 tokens) + reserved response budget (8192 tokens). Use a model with a larger context window, or clear conversation history.";
+
+    const { container } = render(
+      <StatusBanner
+        status="context_overflow"
+        error={overflowMessage}
+        onRetry={() => {}}
+        onRetryCompaction={onRetryCompaction}
+      />,
+    );
+
+    expect(screen.getByText("Context too small")).toBeInTheDocument();
+    expect(screen.getByText(overflowMessage)).toBeInTheDocument();
+
+    // No Retry button — switching models is the only way forward.
+    expect(container.querySelector("button")).toBeNull();
+  });
+
+  it("falls back to a default message for context_overflow when error is not provided", () => {
+    render(
+      <StatusBanner
+        status="context_overflow"
+        onRetry={() => {}}
+        onRetryCompaction={() => {}}
+      />,
+    );
+
+    expect(
+      screen.getByText(/context window cannot fit even the system prompt/i),
+    ).toBeInTheDocument();
+  });
 });

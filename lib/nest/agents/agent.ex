@@ -13,6 +13,7 @@ defmodule Nest.Agents.Agent do
 
   require Logger
 
+  alias Nest.Agents.Agent.ApiLogs
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ChatPipeline
   alias Nest.Agents.Agent.Compaction.Lifecycle, as: CompactionLifecycle
@@ -20,6 +21,7 @@ defmodule Nest.Agents.Agent do
   alias Nest.Agents.Agent.Handlers
   alias Nest.Agents.Agent.Init
   alias Nest.Agents.Agent.Persistence, as: AgentPersistence
+  alias Nest.Agents.Agent.TmpSpace
   alias Nest.Agents.Registry
   alias Nest.LLM.ClientConfig
   alias Nest.Messages.Assistant
@@ -27,6 +29,7 @@ defmodule Nest.Agents.Agent do
   alias Nest.Messages.System
   alias Nest.Messages.Tool
   alias Nest.Messages.User
+  alias Nest.Tokens.ConversationSize
   alias Nest.Vocations
 
   defstruct [
@@ -308,7 +311,20 @@ defmodule Nest.Agents.Agent do
       current_mode: state.mode,
       context_limit: state.llm_metrics.context_limit,
       context_limit_source: state.llm_metrics.context_limit_source,
-      usage: state.llm_metrics.usage_totals
+      # `context_input_tokens` is computed from the messages list
+      # (real-valued `tokens` from prior LLM responses as a floor,
+      # estimator for the suffix) rather than from the raw
+      # usage_totals map. This is what the chip renders as the
+      # numerator — without this fix, a fresh or loaded agent
+      # ships `context_input_tokens: 0` and the chip shows
+      # "0 / N tokens" until the first LLM call completes. See
+      # `Nest.Tokens.ConversationSize` for the algorithm.
+      usage:
+        Map.put(
+          state.llm_metrics.usage_totals,
+          :context_input_tokens,
+          ConversationSize.size(state.chat_state.messages)
+        )
     }
 
     {:reply, public_info, state}
@@ -445,55 +461,20 @@ defmodule Nest.Agents.Agent do
 
   # Private functions
 
-  # Create a per-agent tmp directory for sandbox use
-  # Pattern: /tmp/nest-{BEAM_pid}/agent-{agent_id}
-  def __create_tmp_space__(agent_id) do
-    tmp_path = "/tmp/nest-#{Elixir.System.pid()}/agent-#{agent_id}"
-    File.mkdir_p!(tmp_path)
-    Logger.info("Created tmp space for agent #{agent_id}: #{tmp_path}")
-    tmp_path
-  end
-
-  # Clean up the per-agent tmp directory and parent if empty
-  defp cleanup_tmp(agent_id) do
-    tmp_path = "/tmp/nest-#{Elixir.System.pid()}/agent-#{agent_id}"
-    File.rm_rf(tmp_path)
-    Logger.info("Cleaned up tmp space for agent #{agent_id}: #{tmp_path}")
-
-    # Try to clean up parent directory if empty
-    parent_path = Path.dirname(tmp_path)
-
-    case File.ls(parent_path) do
-      {:ok, []} ->
-        File.rmdir(parent_path)
-        Logger.info("Cleaned up empty parent directory: #{parent_path}")
-
-      _ ->
-        :ok
-    end
-  end
+  # Clean up the per-agent tmp directory and parent if empty.
+  # Delegates to `Nest.Agents.Agent.TmpSpace.cleanup/1` so this
+  # module doesn't carry the boilerplate.
+  defp cleanup_tmp(agent_id), do: TmpSpace.cleanup(agent_id)
 
   @doc false
   # Public-for-Handlers: the message-construction logic in
   # `Nest.Agents.Agent.Handlers` needs to read the queued
   # api_logs for a given message_index when assembling the
   # assistant/tool response message. The canonical impl lives
-  # here; the `__` prefix marks it as internal.
-  def __pending_api_logs__(state, message_index) do
-    Map.get(state.chat_state.pending_api_logs, message_index, [])
-  end
-
-  @doc false
-  # Public-for-Handlers: clear the queued api_logs for a
-  # message_index after the message has been built. Returns
-  # the new state so callers can chain updates.
-  def __clear_pending_api_logs__(state, message_index) do
-    %{
-      state
-      | chat_state: %{
-          state.chat_state
-          | pending_api_logs: Map.delete(state.chat_state.pending_api_logs, message_index)
-        }
-    }
-  end
+  # in `Nest.Agents.Agent.ApiLogs`; the `__` prefix marks it
+  # as internal. See the `ApiLogs` module for why this is
+  # extracted.
+  defdelegate __pending_api_logs__(state, message_index), to: ApiLogs, as: :get
+  defdelegate __clear_pending_api_logs__(state, message_index), to: ApiLogs, as: :clear
+  defdelegate __create_tmp_space__(agent_id), to: TmpSpace, as: :create
 end

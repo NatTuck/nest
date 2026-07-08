@@ -5,6 +5,13 @@
  * states: compacting (spinner, no button), compaction_failed
  * (with Retry button that calls onRetryCompaction).
  *
+ * `context_overflow` is distinct from compaction_failed: the
+ * model is fundamentally too small for the system prompt and
+ * retrying will not help. The banner therefore omits the Retry
+ * button and instructs the user to switch models or clear the
+ * conversation. The `error` prop carries the actual numbers
+ * (system prompt size, context limit) from the server.
+ *
  * Returns `null` for the connected/idle state — the chat input
  * is then the primary UI.
  */
@@ -91,6 +98,26 @@ export function StatusBanner({
           >
             Retry compaction
           </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (status === "context_overflow") {
+    return (
+      <div className="bg-red-100 border-l-4 border-red-500 p-4 mb-4">
+        <div className="flex items-start">
+          <div>
+            <p className="text-red-700 font-medium">Context too small</p>
+            <p className="text-red-600 text-sm whitespace-pre-line">
+              {error ||
+                "The model's context window cannot fit even the system prompt. Use a model with a larger context window, or start a new conversation."}
+            </p>
+            <p className="text-red-600 text-sm mt-2">
+              Switching to a model with a larger context window is the only way
+              forward — retrying will not help.
+            </p>
+          </div>
         </div>
       </div>
     );

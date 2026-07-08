@@ -31,8 +31,27 @@ defmodule Nest.Agents.Agent.BatchSizer do
   exceeds `context_limit`. Earlier results get keep-full; later
   results get summarized as the budget tightens. Other tools
   are always kept full.
+
+  ## Tool-result cap (`max_result_tokens`)
+
+  The LLM may pass `max_result_tokens` in a tool call's arguments
+  to ask for a tighter inline cap. The effective cap is computed
+  once per batch as 80% of the remaining usable context window;
+  the LLM may only lower the cap (raise it past the 80% default
+  is clamped). Per-tool behavior when the cap is exceeded:
+
+    * `execute_command` → write full output to tmp, return
+      path-and-head summary inline.
+    * `read_file`        → return `{:error, "File is X tokens
+      which exceeds your requested limit of Y."}`.
+    * Other tools        → log warning, keep full (cap unreachable
+      in practice because their outputs are bounded by construction).
+
+  When `ctx.context_limit` is `nil`, no cap is enforced (the
+  degraded-but-hopeful path).
   """
 
+  alias Nest.Agents.Agent.CapCalculator
   alias Nest.LLM.Tools, as: LLMTools
   alias Nest.Messages.ToolCall
   alias Nest.Messages.ToolResult
@@ -103,6 +122,18 @@ defmodule Nest.Agents.Agent.BatchSizer do
         :fits
     end
   end
+
+  @doc """
+  Remaining usable context window in tokens. Delegates to
+  `Nest.Agents.Agent.CapCalculator.usable_remaining/1`.
+  """
+  defdelegate usable_remaining(ctx), to: CapCalculator
+
+  @doc """
+  The effective inline-result cap for a tool call. Delegates to
+  `Nest.Agents.Agent.CapCalculator.effective_max_result_tokens/2`.
+  """
+  defdelegate effective_max_result_tokens(tool_call, usable), to: CapCalculator
 
   # ---- Phase 1: per-tool projected sizes (pre-execution) ----
 
@@ -196,7 +227,8 @@ defmodule Nest.Agents.Agent.BatchSizer do
   defp cook(executed, ctx) do
     limit = ctx.context_limit
     base = Estimator.estimate_messages(ctx.messages || [])
-    initial = %{running: base + @preflight_reserve, limit: limit}
+    usable = usable_remaining(ctx)
+    initial = %{running: base + @preflight_reserve, limit: limit, usable: usable}
 
     {cooked, _final_acc} =
       Enum.map_reduce(executed, initial, fn entry, acc ->
@@ -225,9 +257,40 @@ defmodule Nest.Agents.Agent.BatchSizer do
 
   # Like `apply_one/3` but threaded through the running acc.
   # Returns `{cooked_entry, updated_acc}`.
+  #
+  # Decision tree:
+  #   1. Compute `full_size` for the actual content.
+  #   2. If the cap (`effective_max_result_tokens/2`) is set and
+  #      `full_size > cap`, route per-tool:
+  #        * `execute_command` → write-to-tmp + path-and-head summary.
+  #        * `read_file`        → return error result with size hint.
+  #        * other tools        → log warning, keep full.
+  #   3. Otherwise, decide keep-full vs. summarize against the
+  #      running batch budget (`keep_full?/3`). The batch budget
+  #      should always accommodate `full_size` post-preflight, but
+  #      we fall back to the existing summary path for
+  #      `execute_command` if it doesn't.
   defp apply_one_with_acc({tc, :ok, content}, ctx, acc) do
     full_size = Estimator.estimate(content) + per_message_overhead()
+    cap = effective_max_result_tokens(tc, acc.usable)
 
+    if cap && full_size > cap do
+      handle_over_cap(tc, content, full_size, ctx, acc)
+    else
+      fit_in_batch_budget(tc, content, full_size, ctx, acc)
+    end
+  end
+
+  defp apply_one_with_acc({tc, :error, reason}, _ctx, acc) do
+    error_size = Estimator.estimate(reason) + per_message_overhead()
+    {{tc, :error, reason}, advance(acc, error_size)}
+  end
+
+  # Decision for tools whose output fits the inline cap but might
+  # overflow the running batch budget. Same per-tool routing as
+  # `handle_over_cap/5`, but the trigger is the batch budget rather
+  # than the inline cap.
+  defp fit_in_batch_budget(tc, content, full_size, ctx, acc) do
     cond do
       keep_full?(tc, acc, full_size) ->
         {{tc, :ok, content}, advance(acc, full_size)}
@@ -245,9 +308,28 @@ defmodule Nest.Agents.Agent.BatchSizer do
     end
   end
 
-  defp apply_one_with_acc({tc, :error, reason}, _ctx, acc) do
-    error_size = Estimator.estimate(reason) + per_message_overhead()
-    {{tc, :error, reason}, advance(acc, error_size)}
+  # Per-tool routing when the inline cap is exceeded.
+  # The cap was set by `effective_max_result_tokens/2` — the LLM
+  # either asked for it (via `max_result_tokens`) or got the 80%
+  # default. In either case, the LLM gets a *complete* answer
+  # (either the full content via tmp + summary, or an explicit
+  # error explaining the rejection) — never a truncated inline
+  # version.
+  defp handle_over_cap(%ToolCall{name: "execute_command"} = tc, content, _full_size, ctx, acc) do
+    {summary, summary_size} = build_summary_with_size(tc, content, ctx, acc)
+    {{tc, :ok, summary}, advance(acc, summary_size)}
+  end
+
+  defp handle_over_cap(%ToolCall{name: "read_file"} = tc, _content, full_size, _ctx, acc) do
+    cap = effective_max_result_tokens(tc, acc.usable)
+    error = "File is #{full_size} tokens which exceeds your requested limit of #{cap}."
+    error_size = Estimator.estimate(error) + per_message_overhead()
+    {{tc, :error, error}, advance(acc, error_size)}
+  end
+
+  defp handle_over_cap(%ToolCall{name: name} = tc, content, full_size, _ctx, acc) do
+    Logger.warning("BatchSizer: #{name} exceeded max_result_tokens cap; keeping full anyway")
+    {{tc, :ok, content}, advance(acc, full_size)}
   end
 
   # Build the deterministic summary template + return its

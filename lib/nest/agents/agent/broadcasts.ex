@@ -23,6 +23,7 @@ defmodule Nest.Agents.Agent.Broadcasts do
   alias Nest.Messages.Compaction
   alias Nest.Messages.Message
   alias Nest.PubSub
+  alias Nest.Tokens.ConversationSize
 
   # The chunk of the error message that we include in the
   # server log. We log the full message at server side, but
@@ -192,13 +193,29 @@ defmodule Nest.Agents.Agent.Broadcasts do
   # waiting for a separate init / chat:status reply. `usage` carries
   # the running totals (prompt_tokens, completion_tokens, etc.) so the
   # chip numerator updates mid-stream.
+  #
+  # `context_input_tokens` is computed from the messages list at
+  # broadcast time (via `ConversationSize.size/1`) rather than from
+  # the cumulative usage_totals map. The latter only knows about
+  # the most recent LLM call's per-call fields; the former walks
+  # the messages and uses the last known `tokens` value (which
+  # `LLMStreamHandler.mark_last_message_tokens/2` populates) as a
+  # floor, then estimates the suffix. This means the chip's
+  # numerator reflects the current message list even when no LLM
+  # call has happened yet (the suffix is fully estimated) and
+  # transitions to API-reported values as the LLM responds.
   defp status_payload(%Nest.Agents.Agent{} = state) do
     %{
       status: to_string(state.chat_state.status),
       currentMode: state.mode,
       contextLimit: state.llm_metrics.context_limit,
       contextLimitSource: state.llm_metrics.context_limit_source,
-      usage: state.llm_metrics.usage_totals
+      usage:
+        Map.put(
+          state.llm_metrics.usage_totals,
+          :context_input_tokens,
+          ConversationSize.size(state.chat_state.messages)
+        )
     }
   end
 
@@ -271,7 +288,6 @@ defmodule Nest.Agents.Agent.Broadcasts do
     current
     |> apply_per_call_fields(usage, new_call?)
     |> apply_session_fields(usage)
-    |> put_context_input_tokens()
   end
 
   # Per-call (overwrite) fields. When this usage payload
@@ -309,18 +325,6 @@ defmodule Nest.Agents.Agent.Broadcasts do
       total_tokens: current.total_tokens + per_call_or_zero(usage, :total_tokens),
       reasoning_tokens: current.reasoning_tokens + per_call_or_zero(usage, :reasoning_tokens)
     })
-  end
-
-  # `context_input_tokens` is derived: the per-call sum of the
-  # three input fields. Extracted so the merge helpers stay
-  # focused on data flow.
-  defp put_context_input_tokens(totals) do
-    Map.put(
-      totals,
-      :context_input_tokens,
-      totals.input_tokens + totals.cache_read_input_tokens +
-        totals.cache_creation_input_tokens
-    )
   end
 
   # For "per-call (overwrite)" fields: when this usage payload

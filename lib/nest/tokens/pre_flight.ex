@@ -7,8 +7,14 @@ defmodule Nest.Tokens.PreFlight do
 
     * `:fits` — the projected total is within the context window
       (with reserve). Proceed.
-    * `:needs_compaction` — the projected total would overflow.
-      The caller should compact before making the call.
+    * `:needs_compaction` — the projected total would overflow,
+      and compaction can help. The caller should compact before
+      making the call.
+    * `:cannot_compact` — the projected total would overflow,
+      but compaction would be a no-op (system prompt alone exceeds
+      the limit, or there's nothing in the conversation history
+      to summarize). The caller should reject the user's request
+      with a clear error.
     * `:no_limit_known` — we don't have a context limit for this
       model (no config, no probe). Skip the check; proceed
       optimistically.
@@ -17,19 +23,32 @@ defmodule Nest.Tokens.PreFlight do
 
       projected_total = estimated_messages_size + reserve
       decision = projected_total > context_limit
-                  ? :needs_compaction
+                  ? (:system_alone_exceeds OR :compaction_no_op
+                      ? :cannot_compact
+                      : :needs_compaction)
                   : :fits
 
   The reserve is the budget we want to leave for the LLM's
   response and any subsequent compaction. Defaults to 8,192
   tokens.
+
+  ## Why `:cannot_compact`
+
+  Compaction summarizes the *conversation* (everything between the
+  system prompt and the last user message). If that span is empty
+  — or if the system prompt alone exceeds the limit — compaction
+  cannot reduce the message size. The caller would otherwise
+  trigger a compaction that produces either a no-op (`:too_short`)
+  or a meaningless LLM call (summarizing the bare system prompt),
+  leaving the conversation over budget and locking the agent into
+  a tool-refusal loop.
   """
 
-  alias Nest.Tokens.Estimator
+  alias Nest.Tokens.ConversationSize
 
   @default_reserve 8_192
 
-  @type decision :: :fits | :needs_compaction | :no_limit_known
+  @type decision :: :fits | :needs_compaction | :cannot_compact | :no_limit_known
 
   @doc """
   Decide whether a planned LLM call fits in the context.
@@ -43,7 +62,7 @@ defmodule Nest.Tokens.PreFlight do
     * `reserve` — tokens to leave free for the LLM's response
       and any subsequent compaction (default #{@default_reserve})
 
-  Returns one of `:fits | :needs_compaction | :no_limit_known`.
+  Returns one of `:fits | :needs_compaction | :cannot_compact | :no_limit_known`.
   """
   @spec check(non_neg_integer(), pos_integer() | nil, pos_integer()) :: decision()
   def check(estimated_size, context_limit, reserve \\ @default_reserve)
@@ -54,20 +73,87 @@ defmodule Nest.Tokens.PreFlight do
       when is_integer(estimated_size) and estimated_size >= 0 and
              is_integer(context_limit) and context_limit > 0 and
              is_integer(reserve) and reserve >= 0 do
-    if estimated_size + reserve > context_limit do
-      :needs_compaction
-    else
+    if estimated_size + reserve <= context_limit do
       :fits
+    else
+      :needs_compaction
     end
   end
 
   @doc """
   Convenience: pass a list of messages and the context limit, get
-  a decision back. Wraps `Nest.Tokens.Estimator.estimate_messages/1`.
+  a decision back. Uses `Nest.Tokens.ConversationSize.size/1`
+  internally, which combines real-valued tokens (from prior
+  LLM responses) with the estimator for any suffix.
+
+  Returns `:cannot_compact` when the conversation fits the
+  `:needs_compaction` shape but compaction would be a no-op
+  (system prompt alone exceeds the limit, or the head to
+  summarize is empty).
   """
   @spec check_messages([Nest.Messages.Message.t()], pos_integer() | nil, pos_integer()) ::
           decision()
   def check_messages(messages, context_limit, reserve \\ @default_reserve) do
-    check(Estimator.estimate_messages(messages), context_limit, reserve)
+    cond do
+      is_nil(context_limit) ->
+        :no_limit_known
+
+      fits_with_reserve?(messages, context_limit, reserve) ->
+        :fits
+
+      system_alone_exceeds?(messages, context_limit, reserve) ->
+        :cannot_compact
+
+      compaction_no_op?(messages) ->
+        :cannot_compact
+
+      true ->
+        :needs_compaction
+    end
+  end
+
+  defp fits_with_reserve?(messages, limit, reserve) do
+    ConversationSize.size(messages) + reserve <= limit
+  end
+
+  # The system prompt alone exceeds (context_limit - reserve).
+  # No conversation history is small enough to bring us under;
+  # the model is fundamentally too small for this configuration.
+  defp system_alone_exceeds?(messages, limit, reserve) do
+    case Enum.find(messages, &match?({:system, _}, &1)) do
+      nil -> false
+      sys_msg -> ConversationSize.size([sys_msg]) + reserve > limit
+    end
+  end
+
+  # Mirrors `Nest.Tokens.Compactor.split_messages/1`'s `:too_short`
+  # cases. If the compactor would return `:too_short` (and thus
+  # produce an unchanged input), compaction cannot help — there's
+  # nothing in the conversation history to summarize away.
+  defp compaction_no_op?(messages) do
+    case find_last_user_index(messages) do
+      nil -> true
+      0 -> true
+      user_idx -> Enum.empty?(head_to_summarize(messages, user_idx))
+    end
+  end
+
+  defp head_to_summarize(messages, user_idx) do
+    {head, _} = Enum.split(messages, user_idx)
+
+    case head do
+      [] -> []
+      [_system | rest] -> rest
+      _ -> head
+    end
+  end
+
+  defp find_last_user_index(messages) do
+    messages
+    |> Enum.with_index()
+    |> Enum.reverse()
+    |> Enum.find_value(fn {msg, idx} ->
+      if match?({:user, _}, msg), do: idx
+    end)
   end
 end

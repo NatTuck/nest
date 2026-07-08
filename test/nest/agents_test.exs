@@ -143,6 +143,7 @@ defmodule Nest.AgentsTest do
   describe "retry_compaction/1" do
     test "sends :retry_compaction to the agent pid" do
       {:ok, id} = Agents.create_agent(%{name: "qwen3.5-plus"})
+      {:ok, agent_pid} = Supervisor.get_agent(id)
 
       # The function returns :ok synchronously; the agent then
       # runs `handle_info(:retry_compaction, state)` and decides
@@ -150,9 +151,16 @@ defmodule Nest.AgentsTest do
       # current status. Since the agent is in :idle status (not
       # :compaction_failed), the handler logs a warning and is
       # a no-op. We capture the log and assert the warning.
+      # We sync the GenServer mailbox via `:sys.get_state/2` to
+      # make the test deterministic — the previous version relied
+      # on async delivery which was racy.
       log =
         ExUnit.CaptureLog.capture_log(fn ->
           assert :ok = Agents.retry_compaction(id)
+          # Force the GenServer to process the message before
+          # `capture_log` returns. `:sys.get_state/2` is
+          # synchronous and runs after every queued message.
+          :sys.get_state(agent_pid)
         end)
 
       assert log =~ "retry_compaction ignored"

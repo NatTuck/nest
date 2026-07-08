@@ -7,22 +7,27 @@ defmodule Nest.LLM.Tool do
   and returns `{:ok, String.t()}` on success or `{:error, String.t()}`
   on failure.
 
-  `max_result_tokens` is the default cap on the result size, in
-  tokens. The agent's `Nest.Agents.Agent.BatchSizer` enforces
-  this cap and may summarize (replace with a path-and-head
-  summary) when the result would exceed the budget. The LLM can
-  override the cap on a per-call basis by passing
-  `max_result_tokens` in the call's arguments; the override is
-  also capped at 50% of the model's context window (enforced at
-  the tool-schema layer; the BatchSizer trusts whatever override
-  it receives).
+  Tool-result sizing is enforced by `Nest.Agents.Agent.BatchSizer`,
+  not by this struct. The BatchSizer computes an inline cap per
+  batch equal to 80% of the remaining usable context window and
+  routes results that exceed the cap through a per-tool path:
+
+    * `execute_command` → path-and-head summary (full output saved to tmp)
+    * `read_file`        → `{:error, "File is X tokens which exceeds your requested limit of Y."}`
+    * Other tools        → log warning, keep full (cap unreachable in practice)
+
+  The LLM may override the cap on a per-call basis by passing
+  `max_result_tokens` in the call's arguments; the override may
+  only lower the cap (lower it to force a summary/error path even
+  when full content would fit inline). The schema for
+  `max_result_tokens` lives on `parameters_schema`, not on the
+  struct.
   """
 
   defstruct name: nil,
             description: nil,
             parameters_schema: nil,
-            function: nil,
-            max_result_tokens: nil
+            function: nil
 
   @type execute_result :: {:ok, String.t()} | {:error, String.t()}
 
@@ -30,8 +35,7 @@ defmodule Nest.LLM.Tool do
           name: String.t(),
           description: String.t(),
           parameters_schema: map() | nil,
-          function: (map(), map() -> execute_result()) | nil,
-          max_result_tokens: pos_integer() | nil
+          function: (map(), map() -> execute_result()) | nil
         }
 
   @doc """

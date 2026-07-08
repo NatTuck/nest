@@ -177,18 +177,6 @@ defmodule Nest.LLM.Tools do
       {:error, "Tool `#{name}` crashed: #{Exception.message(e)}"}
   end
 
-  @doc """
-  Look up a tool's `max_result_tokens` default by name. Returns
-  `nil` if the tool isn't found.
-  """
-  @spec default_max_result_tokens([Tool.t()], String.t()) :: pos_integer() | nil
-  def default_max_result_tokens(tool_defs, name) do
-    case Enum.find(tool_defs, fn %Tool{name: n} -> n == name end) do
-      nil -> nil
-      %Tool{max_result_tokens: max} -> max
-    end
-  end
-
   defp to_result(id, name, args, {:ok, content}) do
     %ToolResult{
       tool_call_id: id,

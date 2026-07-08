@@ -7,15 +7,19 @@ defmodule Nest.Agents.Agent.Broadcasts.UsageTotalsTest do
   receives. It maintains two axes of state:
 
     * **Per-call (overwrite)** — the most recent LLM call's
-      values, used by the chip's primary display and the
-      progress bar.
+      values, used by the cost estimate's per-call math.
     * **Session (sum)** — cumulative values across every call,
-      used by the cost estimate and any future usage dashboards.
+      used by the cost estimate.
 
-  These tests pin both axes: the per-call fields reflect the
-  most recent call only, the session fields sum across calls,
-  and `context_input_tokens` is derived as the sum of the
-  per-call cache fields (not summed across calls).
+  The `context_input_tokens` field is no longer derived here.
+  It is computed at broadcast time by
+  `Broadcasts.status_payload/1` via
+  `Nest.Tokens.ConversationSize.size/1`, which combines the
+  real-valued `tokens` from prior LLM responses (set by
+  `LLMStreamHandler.mark_last_message_tokens/2`) with the
+  estimator's projection of any suffix. Tests for the field's
+  value live in `ConversationSizeTest`; this file pins the
+  shape and the merge's per-call / session discipline.
   """
 
   use ExUnit.Case, async: true
@@ -66,8 +70,10 @@ defmodule Nest.Agents.Agent.Broadcasts.UsageTotalsTest do
       assert next.cache_read_input_tokens == 50
       assert next.cache_creation_input_tokens == 10
       assert next.last_output == 25
-      # Derived from per-call fields.
-      assert next.context_input_tokens == 160
+      # `context_input_tokens` is left at the current value
+      # (0 for a fresh agent). The status_payload broadcasts
+      # the real value computed from the messages list.
+      assert next.context_input_tokens == 0
     end
 
     test "session fields sum across calls" do
@@ -122,43 +128,12 @@ defmodule Nest.Agents.Agent.Broadcasts.UsageTotalsTest do
       assert next.input_tokens == 50
       assert next.cache_read_input_tokens == 30
       assert next.last_output == 5
-      assert next.context_input_tokens == 80
 
       # Session: cumulative sum.
       assert next.total_input_tokens == 1050
       assert next.output_tokens == 205
       assert next.total_tokens == 1285
       assert next.reasoning_tokens == 50
-    end
-
-    test "context_input_tokens = input + cache_read + cache_creation (per-call sum)" do
-      # The derived field is the sum of the three per-call
-      # fields, NOT the cumulative session sum. Pin that here
-      # so a future refactor doesn't accidentally sum it.
-      current = Broadcasts.empty_usage_totals()
-
-      next =
-        Broadcasts.merge_usage_totals(current, %{
-          input_tokens: 100,
-          cache_read_input_tokens: 50,
-          cache_creation_input_tokens: 25,
-          output_tokens: 10
-        })
-
-      # Even after multiple calls with cache reads, the
-      # `context_input_tokens` shown to the user is the size of
-      # the most recent call's context, not the total.
-      later =
-        Broadcasts.merge_usage_totals(next, %{
-          input_tokens: 200,
-          cache_read_input_tokens: 80,
-          cache_creation_input_tokens: 0,
-          output_tokens: 5
-        })
-
-      assert later.context_input_tokens == 280
-      # ...but the session-cumulative fields have grown.
-      assert later.total_cache_read_input_tokens == 130
     end
 
     test "cache fields missing from the usage payload default to 0" do
@@ -175,7 +150,6 @@ defmodule Nest.Agents.Agent.Broadcasts.UsageTotalsTest do
       assert next.input_tokens == 100
       assert next.cache_read_input_tokens == 0
       assert next.cache_creation_input_tokens == 0
-      assert next.context_input_tokens == 100
       # Session cumulative cache totals stay at 0.
       assert next.total_cache_read_input_tokens == 0
     end
@@ -204,9 +178,25 @@ defmodule Nest.Agents.Agent.Broadcasts.UsageTotalsTest do
 
       assert next.input_tokens == 100
       assert next.last_output == 25
-      assert next.context_input_tokens == 100
       # The output STILL sums (session sum semantics).
       assert next.output_tokens == 35
+    end
+
+    test "context_input_tokens is not derived here (computed by status_payload instead)" do
+      # Even with non-zero per-call fields, merge_usage_totals
+      # leaves `context_input_tokens` at its prior value (0 for
+      # a fresh agent). The status broadcast computes it from
+      # the messages list via ConversationSize.size/1.
+      current = Broadcasts.empty_usage_totals()
+
+      next =
+        Broadcasts.merge_usage_totals(current, %{
+          input_tokens: 100,
+          cache_read_input_tokens: 50,
+          cache_creation_input_tokens: 25
+        })
+
+      assert next.context_input_tokens == 0
     end
   end
 end

@@ -517,6 +517,73 @@ command string, the path, and the head text. Its size is whatever
 `Estimator.estimate/1` returns for the assembled text. No
 hardcoded constants exist anywhere.
 
+### Tool-result cap (`max_result_tokens`)
+
+The BatchSizer also enforces a per-batch inline-vs-summary cap on
+tool results. The LLM may pass `max_result_tokens` in a tool call's
+arguments to ask for a tighter cap; the BatchSizer treats this as a
+**gate** (does the result fit inline, or do we route it?), never a
+**shrinker** (we never truncate a result to fit).
+
+**Formula** (computed once per batch in `BatchSizer.run/2`):
+
+```
+usable       = context_limit - estimate_messages(messages) - @preflight_reserve
+default_cap  = floor(usable * 0.80)
+effective_cap = min(LLM_override, default_cap)   # LLM may only lower
+```
+
+When `context_limit: nil`, no cap is enforced
+(degraded-but-hopeful path).
+
+**Per-tool behavior when the cap is exceeded:**
+
+| Tool | Cap exceeded action |
+|------|---------------------|
+| `execute_command` | Write full output to `<tmp>/exec-<rand>.txt`. Return `Command output of '<cmd>' (<N> tokens) saved to <path>.\n\n<head>` inline. |
+| `read_file` | Return `{:error, "File is X tokens which exceeds your requested limit of Y."}` (LLM gets a structured error with the actual vs. requested counts). |
+| `write_file` / `edit` / `context` / `inspect_file` | Log warning, keep full. Cap is unreachable in practice (these tools return bounded output by construction). |
+
+**Decision tree in `apply_one_with_acc/3`:**
+
+```
+1. full_size = Estimator.estimate(content) + per_message_overhead()
+
+2. If cap is set and full_size > cap:
+     Per-tool routing (see table above). For execute_command this
+     reuses the existing summary path; for read_file this returns
+     a structured error; for others we keep full with a warning.
+
+3. Else (content fits the inline cap):
+     If keep_full?(tc, acc, full_size):
+       Return full content
+     Else (rare — batch budget overflow post-preflight):
+       Same per-tool routing (execute_command → summary, others → log + full).
+```
+
+**Two principles, no compromises:**
+
+1. **No truncations** — the LLM never sees a partially-degraded tool
+   result. Either full content or a summary pointing to a tmp file,
+   or an explicit error with the size counts.
+2. **No overflows** — the BatchSizer's preflight guarantees space
+   for the minimum size of every tool call in the batch *before*
+   any tool runs (via `summary_baseline_size() * @safety_padding`
+   for `execute_command`). The cap is the inline-vs-summary
+   threshold, not a sizing guarantee.
+
+The cap is **static per batch** (computed once in `run/2`,
+threaded through `cook` via `acc.usable`). Prior tools in the
+batch do not shrink later tools' caps.
+
+**Removal of per-tool defaults:** the legacy `Tool` struct carried
+a per-tool `max_result_tokens` field. That field is gone — tool
+caps are owned by the BatchSizer, not by individual tool builders.
+The JSON schema still advertises `max_result_tokens` on every
+tool so the LLM can request a tighter cap on a per-call basis,
+but the actual default is global (80% of remaining usable) rather
+than per-tool.
+
 ### Output: ready-to-append results
 
 `run/2` returns `[%ToolResult{...}]` in batch order. Some entries

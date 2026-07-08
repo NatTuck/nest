@@ -17,15 +17,8 @@ defmodule Nest.Tools do
   alias Nest.Tools.InspectFile
   alias Nest.Tools.ShellCmd
 
-  # Per-tool defaults for `max_result_tokens`. See the plan in
-  # notes/context-and-compaction.md for the rationale. The LLM
-  # can override per call. Tool result sizing is owned by
-  # `Nest.Agents.Agent.BatchSizer` — see
-  # notes/extract-compaction-and-resumable-chat-turn.md.
-  @default_max_result_tokens 8192
-  @write_file_max_result_tokens 256
-  @context_max_result_tokens 512
-  @edit_max_result_tokens 256
+  # Stat-then-cap mirrors `InspectFile`'s 100 MB cap so the
+  # BatchSizer's preflight can refuse before doing the read work.
   @max_read_file_bytes 100 * 1_000_000
 
   @doc """
@@ -69,7 +62,6 @@ defmodule Nest.Tools do
         },
         "required" => ["path"]
       },
-      max_result_tokens: @default_max_result_tokens,
       function: fn %{"path" => path}, context ->
         read_file(path, workspace_path, tmp_path, context)
       end
@@ -154,7 +146,6 @@ defmodule Nest.Tools do
         },
         "required" => ["path", "content"]
       },
-      max_result_tokens: @write_file_max_result_tokens,
       function: fn %{"path" => path, "content" => content}, context ->
         write_file(path, content, workspace_path, tmp_path, context)
       end
@@ -204,7 +195,6 @@ defmodule Nest.Tools do
         },
         "required" => ["path", "old_text", "new_text"]
       },
-      max_result_tokens: @edit_max_result_tokens,
       function: fn args, context ->
         edit(args, workspace_path, tmp_path, context)
       end
@@ -248,7 +238,6 @@ defmodule Nest.Tools do
         },
         "required" => ["command"]
       },
-      max_result_tokens: @default_max_result_tokens,
       function: fn %{"command" => command}, context ->
         shell_cmd(command, workspace_path, tmp_path, context)
       end
@@ -285,7 +274,6 @@ defmodule Nest.Tools do
           "max_result_tokens" => max_result_tokens_schema()
         }
       },
-      max_result_tokens: @context_max_result_tokens,
       function: fn _args, _context ->
         {:ok, "Context request received."}
       end
@@ -294,15 +282,27 @@ defmodule Nest.Tools do
 
   # JSON schema fragment for the `max_result_tokens` call arg.
   # The LLM sees this on every tool and learns it can request a
-  # specific cap; the agent's tool schema layer enforces the 50%
-  # context-window ceiling.
+  # specific cap. The BatchSizer treats this as an inline-vs-summary
+  # threshold:
+  #
+  #   * `execute_command` → if exceeded, write the full output to a
+  #     tmp file and return a path-and-head summary inline.
+  #   * `read_file` → if exceeded, return an error result with the
+  #     actual vs. requested token counts.
+  #   * Other tools → bounded output by construction (cap unreachable).
+  #
+  # The default is 80% of the remaining usable context window.
+  # The LLM may only lower the cap (e.g. to force a summary/error
+  # path even when full content fits inline).
   defp max_result_tokens_schema do
     %{
       "type" => "integer",
       "description" =>
-        "Maximum tokens to return. Defaults to the tool's configured max; " <>
-          "capped at 50% of the model's context window. Increase for files " <>
-          "you know are large."
+        "Maximum tokens for the inline result. Defaults to 80% of the " <>
+          "remaining usable context window. Lower this to force a " <>
+          "path-and-head summary (execute_command) or an error result " <>
+          "(read_file); the value is clamped to the 80% default if you " <>
+          "ask for more."
     }
   end
 

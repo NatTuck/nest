@@ -66,6 +66,7 @@ defmodule Nest.Agents.Agent.Compaction do
   @type continuation ::
           {:chat_continuation, {String.t(), String.t() | nil}}
           | {:task_compaction_continuation, pid()}
+          | {:mid_turn_continuation, non_neg_integer(), pos_integer()}
 
   # Public API
 

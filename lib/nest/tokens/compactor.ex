@@ -147,7 +147,19 @@ defmodule Nest.Tokens.Compactor do
             _ -> head
           end
 
-        {:ok, system, head_to_summarize, last_user, responses}
+        if Enum.empty?(head_to_summarize) do
+          # Nothing between the system prompt and the last user
+          # message — the conversation has no history to summarize.
+          # Asking the LLM to summarize the bare system prompt
+          # produces a meaningless call (empty result or a
+          # re-statement of the system prompt), so return the
+          # input unchanged. Callers that detect this case should
+          # refuse the user's request rather than trigger
+          # compaction.
+          :too_short
+        else
+          {:ok, system, head_to_summarize, last_user, responses}
+        end
     end
   end
 

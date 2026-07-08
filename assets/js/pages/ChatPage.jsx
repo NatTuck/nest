@@ -557,10 +557,15 @@ export function ChatPage() {
           stopping={stopping}
           disabled={isInputDisabled}
           // Hide the input entirely while the agent is in a
-          // compaction-frozen state. The StatusBanner shows the
-          // compacting spinner or the Retry-compaction button.
+          // frozen state. The StatusBanner shows the relevant
+          // banner: a spinner for `:compacting`, a Retry button
+          // for `:compaction_failed`, or the context-too-small
+          // message for `:context_overflow` (no Retry — switching
+          // to a larger model is the only way forward).
           frozen={
-            agentState === "compacting" || agentState === "compaction_failed"
+            agentState === "compacting" ||
+            agentState === "compaction_failed" ||
+            agentState === "context_overflow"
           }
           placeholder={
             status === "connected"

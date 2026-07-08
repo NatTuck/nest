@@ -42,15 +42,18 @@ defmodule NestWeb.AgentChannelTest do
       # in test/data/config.toml.
       assert payload["contextLimit"] == 512_000
       assert payload["contextLimitSource"] == "config"
-      # No chat has happened yet, so usage is the initial zero map.
-      # Note: `assert_push` captures the Erlang term, not the wire
-      # format, so the map keys are still atoms here. The wire
-      # format (JSON) is what the frontend sees.
+      # `context_input_tokens` is computed from the messages list
+      # (real-valued `tokens` from prior LLM responses as a floor,
+      # estimator for the suffix). For a fresh agent with just a
+      # system prompt in the messages list, it's the system
+      # prompt's estimated size — non-zero, so the chip displays
+      # a meaningful fill rate from the moment the page loads.
+      # The other usage fields stay at 0 (no LLM call has run).
       assert payload["usage"] == %{
                input_tokens: 0,
                cache_read_input_tokens: 0,
                cache_creation_input_tokens: 0,
-               context_input_tokens: 0,
+               context_input_tokens: payload["usage"][:context_input_tokens],
                last_output: 0,
                output_tokens: 0,
                total_input_tokens: 0,
@@ -59,6 +62,9 @@ defmodule NestWeb.AgentChannelTest do
                total_tokens: 0,
                reasoning_tokens: 0
              }
+
+      assert payload["usage"][:context_input_tokens] > 0,
+             "expected context_input_tokens > 0 (system prompt estimated size), got #{payload["usage"][:context_input_tokens]}"
     end
 
     test "init payload includes provider in the model map", %{socket: _socket} do
