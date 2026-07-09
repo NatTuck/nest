@@ -1,40 +1,42 @@
 defmodule Nest.Agents.AgentCompactionChatContinuationTest do
   @moduledoc """
-  Regression tests for the `chat_continuation` path of the
-  compaction handler. This path was the one that crashed the
-  `overall-crawdad` agent in production: after a compaction
-  completes, the handler calls `ChatPipeline.resume_after_compaction/3`
-  to append the user message that triggered the compaction and
-  spawn the next chat turn.
+  Regression tests for the post-compaction message-append
+  contract. These tests pin three invariants the compaction
+  refactor changed:
 
-  Pre-fix, two bugs collided here:
+    * The carried user message (`{:user_message, User.t()}`)
+      lands at `state.chat_state.next_message_index` (the
+      post-swap bump), not the pre-swap value.
+    * The compaction marker is stored at the pre-swap
+      `next_message_index` (= `marker_index`), not at
+      `marker_index + 1`. A unique-constraint collision with
+      the regenerated system message at `marker_index + 1`
+      was the original `overall-crawdad` crash.
+    * `Compaction.Lifecycle.swap_messages/3` bumps
+      `state.chat_state.next_message_index` past the new
+      compacted state so the resumed user message doesn't
+      stamp below it.
 
-  1. `ChatPipeline.build_user_message/3` returned a 2-tuple of
-     `{:user, _}` tuples instead of a single tuple, so
-     `__append_message__/2`'s `put_message_index/2` raised
-     `FunctionClauseError`. The `handle_chat/3` caller
-     destructured the result correctly; `resume_after_compaction/3`
-     did not.
+  ## Continuation shapes (post-refactor)
 
-  2. `CompactionLifecycle.swap_messages/5` re-assigned the new
-     compacted state's indices but did NOT bump
-     `state.chat_state.next_message_index` past the new state.
-     The post-compaction user message was therefore stamped at
-     the pre-swap `next_message_index`, which collided with (or
-     sat below) the new compacted state's first row.
+  The continuations carried in `{:compaction_done, _, c}` /
+  `{:compaction_failed, _, c}` are the unified
+  `Nest.Agents.Agent.ChatTurn.State.continuation/0` shapes:
 
-  This file pins the fixed contract:
+    * `{:user_message, %User{index: nil, ...}}` — Trigger 1.
+      Bare user struct; `append_continuation_tail/2` wraps
+      it in `{:user, _}` when appending to
+      `state.chat_state.messages`.
+    * `{:tool_call, {%assistant, %Assistant{...}}, n, m}` —
+      Trigger 2. (Not exercised here.)
+    * `{:compact_tool, [{:assistant, _}, {:tool, _}], n, m}` —
+      Trigger 3. The carried pair is appended together.
 
-    * The user message is stamped at exactly
-      `state.chat_state.next_message_index` (which is now
-      `marker_index + length(new_state) + 1` post-swap, not the
-      pre-swap value).
-    * `state.chat_state.next_message_index` advances by 1 after
-      the append.
-    * The new compacted state's indices (set by
-      `regenerate_for_compaction/2`) are preserved through the
-      resume (no re-numbering that would shift the assistant
-      slot or break `streaming_acc`).
+  Legacy tuples (`{:chat_continuation, _}`,
+  `{:task_compaction_continuation, _}`,
+  `{:mid_turn_continuation, n, m}`) are translated upstream
+  by `CompactionHandler.normalize_continuation/2`. These
+  tests use the new shapes directly.
 
   `async: false` for the same reason as the other compaction
   tests (sandbox connection walks `$callers` at the agent
@@ -48,10 +50,12 @@ defmodule Nest.Agents.AgentCompactionChatContinuationTest do
   import Nest.Agents.AgentTestHelpers, only: [start_agent: 1]
 
   alias Nest.Agents.Agent
-  alias Nest.Agents.Agent.Init
+  alias Nest.Agents.Agent.Config, as: AgentConfig
   alias Nest.LLM.MockClient
+  alias Nest.Messages.Assistant
   alias Nest.Messages.Part
   alias Nest.Messages.System
+  alias Nest.Messages.Tool
   alias Nest.Messages.User
   alias Nest.Vocations
 
@@ -98,11 +102,52 @@ defmodule Nest.Agents.AgentCompactionChatContinuationTest do
     vocation.id
   end
 
-  # Three compactor messages: leading system with the
-  # encoded summary, then a user message, then an assistant
-  # reply. The handler extracts the summary from the
-  # leading system, re-renders it as a user message at
-  # position 1, and re-numbers the rest from position 3.
+  # The shared dance for every regression test in this file:
+  #
+  # 1. Disable persistence so the Agent's init-time
+  #    `persist_initial_system_message/1` (which would log
+  #    `Failed to persist message…` for `:agent_not_found`) is
+  #    a silent no-op.
+  # 2. Start the agent via `start_agent/1` (MockClient-wired).
+  # 3. Re-enable persistence AND insert the agents row so the
+  #    post-compaction marker INSERT and the regenerator's
+  #    per-message INSERTs find a target.
+  # 4. Pin `next_message_index` so `marker_index` is
+  #    well-defined (= the given value).
+  #
+  # AGENTS.md forbids noisy test output; this dance keeps
+  # the suite silent.
+  defp start_agent_with_row(next_message_index) do
+    vocation_id = programmer_vocation_id()
+
+    Application.put_env(:nest, :persistence, enabled: false)
+
+    {pid, agent_id} =
+      start_agent(%{
+        model: %{name: "qwen3.5-plus"},
+        vocation_id: vocation_id
+      })
+
+    Application.put_env(:nest, :persistence, enabled: true)
+
+    Nest.Persistence.insert_agent(%{
+      name: agent_id,
+      model: %{name: "qwen3.5-plus"},
+      vocation_id: vocation_id
+    })
+
+    :sys.replace_state(pid, fn state ->
+      %{state | chat_state: %{state.chat_state | next_message_index: next_message_index}}
+    end)
+
+    {pid, agent_id}
+  end
+
+  # Two compactor messages: leading system with the encoded
+  # summary, then a user message. The handler extracts the
+  # summary from the leading system, re-renders it as a
+  # user message at position 1, and re-numbers the rest from
+  # position 3.
   defp compactor_output do
     [
       {:system,
@@ -114,76 +159,90 @@ defmodule Nest.Agents.AgentCompactionChatContinuationTest do
     ]
   end
 
-  describe "resume_after_compaction/3 (regression: optimistic/server race)" do
-    test "stamps the resumed user message at next_message_index (Bug 1 + Bug 4)" do
+  # The carried pair for a `:compact_tool` continuation:
+  # `[{:assistant, +ToolUse}, {:tool, +ToolResult}]`.
+  #
+  # `iter` defaults to 0 to match the pre-refactor
+  # `normalize_continuation/2` literal; `max` defaults to the
+  # configured tool-iteration cap. The handler doesn't inspect
+  # `state.chat_state.messages` for the trailing tool call —
+  # the pair is carried in the continuation itself.
+  defp compact_tool_continuation(iter \\ 0, max \\ AgentConfig.configured_max_tool_iterations()) do
+    tool_call_id = "compact_call_#{Elixir.System.unique_integer([:positive])}"
+    arguments = %{"action" => "compact"}
+
+    tool_call_msg =
+      {:assistant,
+       %Assistant{
+         index: nil,
+         parts: [%Part.ToolUse{id: tool_call_id, name: "context", arguments: arguments}],
+         api_logs: []
+       }}
+
+    tool_result_msg =
+      {:tool,
+       %Tool{
+         index: nil,
+         timestamp: DateTime.utc_now(),
+         parts: [
+           %Part.ToolResult{
+             tool_call_id: tool_call_id,
+             name: "context",
+             arguments: arguments,
+             content: "Compacted from N token previous context.",
+             is_error: false
+           }
+         ],
+         api_logs: []
+       }}
+
+    {:compact_tool, [tool_call_msg, tool_result_msg], iter, max}
+  end
+
+  describe "compaction_done: append_continuation_tail stamps at the post-swap next_message_index" do
+    test "stamps the carried user message at next_message_index (Bug 1 + Bug 4)" do
       # Pre-fix, `build_user_message/3` returned a 2-tuple, and
       # `next_message_index` was the pre-swap value. Both crashed
-      # here. Post-fix, the user message lands at the post-swap
-      # `next_message_index` (= marker_index + 1 + 1 + 1 = 3 in
-      # this setup: marker_index=1, fresh_system=2, summary=3,
-      # no other renumbered output, so next_message_index=3).
-      vocation_id = programmer_vocation_id()
+      # here. Post-fix, the carried user message lands at the
+      # post-swap `next_message_index` (= 5 in this setup:
+      # marker_index=1, fresh_system=2, summary_user=3,
+      # compactor_user=4, carried_user=5).
+      #
+      # The pre-refactor test pre-seeded
+      # `state.chat_state.pending_user_message` and used the
+      # legacy `{:chat_continuation, :pending}` continuation.
+      # The post-refactor design carries the user struct in
+      # the `{:user_message, User.t()}` continuation directly —
+      # no transient field. `append_continuation_tail/2` wraps
+      # the bare struct in `{:user, _}` and `compaction_completed`
+      # stamps it via the post-swap `next_message_index`.
+      {pid, _agent_id} = start_agent_with_row(1)
 
-      # Disable persistence for the agent's `init/1` so its
-      # `persist_initial_system_message/1` call (which would
-      # fail with `:agent_not_found` and emit
-      # `Logger.warning`) is a silent no-op. Then re-enable
-      # persistence AND insert the agents row BEFORE driving the
-      # compaction cycle — the marker INSERT, the regenerator
-      # output, and `ChatPipeline.resume_with_pending/1` all need
-      # the row to be visible, otherwise they emit
-      # `Logger.warning` for `:agent_not_found`. AGENTS.md
-      # forbids noisy test output.
-      Application.put_env(:nest, :persistence, enabled: false)
+      # `index: nil` — the handler stamps it during
+      # `compaction_completed`. The `[mode: build]\n` prefix
+      # mirrors what `ChatPipeline.build_user_message/3` would
+      # have emitted so the LLM sees the same on-the-wire format.
+      user_msg = %User{
+        index: nil,
+        parts: [%Part.Text{text: "[mode: build]\nWhat was the last question?"}],
+        metadata: %{"mode" => "build"},
+        api_logs: []
+      }
 
-      {pid, agent_id} =
-        start_agent(%{
-          model: %{name: "qwen3.5-plus"},
-          vocation_id: vocation_id
-        })
+      send(pid, {:compaction_done, compactor_output(), {:user_message, user_msg}})
 
-      Application.put_env(:nest, :persistence, enabled: true)
-
-      Nest.Persistence.insert_agent(%{
-        name: agent_id,
-        model: %{name: "qwen3.5-plus"},
-        vocation_id: vocation_id
-      })
-
-      # Pre-seed next_message_index so marker_index is well-defined.
-      # Also pre-seed `pending_user_message` (per TODO 4 in
-      # `notes/extract-compaction-and-resumable-chat-turn.md`):
-      # `ChatPipeline.resume_with_pending/1` reads the user message
-      # from this field rather than from the legacy
-      # `{:chat_continuation, {content, mode}}` tuple.
-      :sys.replace_state(pid, fn state ->
-        %{
-          state
-          | chat_state: %{
-              state.chat_state
-              | next_message_index: 1,
-                pending_user_message: {"What was the last question?", "build"}
-            }
-        }
-      end)
-
-      send(
-        pid,
-        {:compaction_done, compactor_output(), {:chat_continuation, :pending}}
-      )
-
-      # The handler runs the swap and then calls
-      # `ChatPipeline.resume_after_compaction/3`, which calls
-      # `__append_message__/2` on the user message. The pre-fix
+      # The handler runs `regenerate_for_compaction/2`,
+      # `append_continuation_tail/2`, then
+      # `compaction_completed/2`. The pre-fix
       # `put_message_index/2` FunctionClauseError would crash
-      # the GenServer here; the test would observe a DOWN
-      # rather than a state update.
+      # the GenServer here; the test would observe a DOWN rather
+      # than a state update. `:sys.get_state/1` queues behind
+      # `:compaction_done` and returns only after the
+      # same-callback work is done.
       state_after = :sys.get_state(pid, 500)
 
-      # Find the last user message in the post-swap state.
-      # The handler appends the resumed user message via
-      # `__append_message__/2` AFTER the swap, so it lives at
-      # the tail of `state.chat_state.messages`.
+      # `append_continuation_tail/2` wraps the bare struct in
+      # `{:user, _}` so the post-swap `match?` finds it.
       last_user =
         state_after.chat_state.messages
         |> Enum.reverse()
@@ -192,76 +251,62 @@ defmodule Nest.Agents.AgentCompactionChatContinuationTest do
       assert last_user != nil, "expected a user message in state.chat_state.messages"
 
       {_, %User{index: user_index}} = last_user
-      # The compactor output has 2 messages, so
-      # `regenerate_for_compaction/2` produces 3 messages
-      # (fresh_system at 2, summary_user at 3, compactor user
-      # at 4). Post-swap next_message_index = marker_index (1)
-      # + length(new_state) (3) + 1 = 5. The resumed user
-      # message is stamped at 5, then next_message_index
-      # advances to 6.
+
+      # compactor has 2 messages → `regenerate_for_compaction/2`
+      # produces 3 (fresh_system@2, summary_user@3,
+      # compactor_user@4). Plus the carried user message at @5.
+      # Post-swap `next_message_index = marker_index + length +
+      # 1 = 1 + 4 + 1 = 6`. The carried user message lands at
+      # index 5 (Bug 4 — without the bump the carried user
+      # message would stamp at 1, colliding with / sat below
+      # the fresh system at 2).
       assert user_index == 5,
              "expected user message at index 5, got #{user_index}"
 
-      # next_message_index advanced by 1 after the append.
       assert state_after.chat_state.next_message_index == 6
 
       Agent.terminate(pid)
     end
+  end
 
+  describe "compaction_done: marker and compaction_completed invariants" do
     test "compaction marker is at marker_index, not marker_index + 1 (Bug 2)" do
       # Regression for the marker-index off-by-one: the
-      # agent's `chat_state.history` ends with a `{:compaction, _}`
-      # marker whose `.index` field is the pre-swap
-      # `next_message_index` (= 1 in this setup). Pre-fix the
-      # DB-side `record_compaction/3` tried to insert the
-      # marker at `last_index + 1 = 2` and collided with the
-      # fresh system message that `regenerate_for_compaction/2`
-      # had already persisted at index 2.
-      vocation_id = programmer_vocation_id()
+      # agent's `chat_state.history` ends with a
+      # `{:compaction, _}` marker whose `.index` field is the
+      # pre-swap `next_message_index` (= 1 in this setup).
+      # Pre-fix the DB-side `record_compaction/3` tried to
+      # insert the marker at `last_index + 1 = 2` and
+      # collided with the fresh system message that
+      # `regenerate_for_compaction/2` had already persisted
+      # at index 2.
+      #
+      # Under the new `:compact_tool` continuation the
+      # carried pair [tool_call, tool_result] is appended via
+      # `append_continuation_tail/2` — the handler no longer
+      # peeks at `state.chat_state.messages` for the trailing
+      # tool call.
+      {pid, _agent_id} = start_agent_with_row(1)
 
-      # Same persistence disable/re-enable dance as the previous
-      # test: AGENTS.md forbids noisy test output, and the
-      # agent's init-time `persist_initial_system_message/1`
-      # would otherwise emit `Logger.warning("Failed to persist
-      # message…")` for `:agent_not_found`. We also insert the
-      # agents row before driving the compaction cycle so the
-      # marker INSERT and regenerator output find it.
-      Application.put_env(:nest, :persistence, enabled: false)
+      send(pid, {:compaction_done, compactor_output(), compact_tool_continuation()})
 
-      {pid, agent_id} =
-        start_agent(%{
-          model: %{name: "qwen3.5-plus"},
-          vocation_id: vocation_id
-        })
-
-      Application.put_env(:nest, :persistence, enabled: true)
-
-      Nest.Persistence.insert_agent(%{
-        name: agent_id,
-        model: %{name: "qwen3.5-plus"},
-        vocation_id: vocation_id
-      })
-
-      :sys.replace_state(pid, fn state ->
-        %{state | chat_state: %{state.chat_state | next_message_index: 1}}
-      end)
-
-      send(
-        pid,
-        {:compaction_done, compactor_output(), {:task_compaction_continuation, self()}}
-      )
-
-      assert_receive {:task_compaction_done, _}, 200
+      # `:task_compaction_done` is gone in the new design —
+      # the handler synchronously appends the carried pair
+      # via `append_continuation_tail/2` and spawns a fresh
+      # ChatTurn via `ChatTurnSpawner.spawn/4`. We don't
+      # care about the spawned ChatTurn's downstream work
+      # for this test — just that the marker index and the
+      # first new message are correct.
+      _ = :sys.get_state(pid, 500)
 
       state_after = :sys.get_state(pid)
 
-      # The compaction marker is the last entry in history.
       [{:compaction, marker} | _] = Enum.reverse(state_after.chat_state.history)
 
       assert marker.index == 1,
              "expected marker index == 1, got #{marker.index}"
 
-      # And the new compacted state's first row is the fresh
+      # The new compacted state's first row is the fresh
       # system at marker_index + 1.
       [first | _] = state_after.chat_state.messages
       assert {_, %{index: 2}} = first
@@ -271,55 +316,52 @@ defmodule Nest.Agents.AgentCompactionChatContinuationTest do
 
     test "swap_messages bumps next_message_index past the new compacted state (Bug 4)" do
       # Without the bump, the resumed user message in the
-      # first test would be stamped at the pre-swap value (1),
-      # below the fresh system (2). With the bump, the post-swap
-      # next_message_index is one past the new compacted state
-      # — verifiable without driving a chat continuation.
-      vocation_id = programmer_vocation_id()
-
-      Application.put_env(:nest, :persistence, enabled: false)
-
-      {pid, agent_id} =
-        start_agent(%{
-          model: %{name: "qwen3.5-plus"},
-          vocation_id: vocation_id
-        })
-
-      Application.put_env(:nest, :persistence, enabled: true)
-
-      Nest.Persistence.insert_agent(%{
-        name: agent_id,
-        model: %{name: "qwen3.5-plus"},
-        vocation_id: vocation_id
-      })
-
-      :sys.replace_state(pid, fn state ->
-        %{state | chat_state: %{state.chat_state | next_message_index: 5}}
-      end)
+      # first test would be stamped at the pre-swap value
+      # (1), below the fresh system (2). With the bump, the
+      # post-swap `next_message_index` is one past the new
+      # compacted state — verifiable without driving a chat
+      # continuation.
+      #
+      # Under the new `:compact_tool` continuation, the
+      # carried [tool_call, tool_result] pair adds 2 more
+      # rows to the post-swap messages list than the legacy
+      # `{:task_compaction_continuation, _}` path did. The
+      # bump test still verifies that `next_message_index`
+      # is one past the LAST row, not stuck at the legacy
+      # 4-row boundary.
+      {pid, _agent_id} = start_agent_with_row(5)
 
       # Three-message compactor output: leading system with
       # the summary, then user, then assistant. After
       # rebuild: fresh_system at 6, summary_user at 7,
-      # user at 8, assistant at 9. Post-swap
-      # next_message_index = 5 + 4 + 1 = 10.
+      # user at 8, assistant at 9. Plus the `:compact_tool`
+      # carried pair (tool_call, tool_result) appended via
+      # `append_continuation_tail/2`, stamped at 10 and 11.
+      # Post-swap next_message_index = 5 + 6 + 1 = 12.
       compactor_messages = [
         {:system, %System{index: 0, parts: [%Part.Text{text: "[Summary]"}]}},
         {:user, %User{index: 1, parts: [%Part.Text{text: "u"}], api_logs: []}},
-        {:assistant,
-         %Nest.Messages.Assistant{index: 2, parts: [%Part.Text{text: "a"}], api_logs: []}}
+        {:assistant, %Assistant{index: 2, parts: [%Part.Text{text: "a"}], api_logs: []}}
       ]
 
       send(
         pid,
-        {:compaction_done, compactor_messages, {:task_compaction_continuation, self()}}
+        {:compaction_done, compactor_messages, compact_tool_continuation()}
       )
 
-      assert_receive {:task_compaction_done, _}, 200
+      _ = :sys.get_state(pid, 500)
 
       state_after = :sys.get_state(pid)
-      # 4 new messages (fresh_system, summary_user, user, assistant)
-      assert length(state_after.chat_state.messages) == 4
-      assert state_after.chat_state.next_message_index == 10
+
+      # 6 messages: fresh_system, summary_user, user,
+      # assistant, tool_call, tool_result. The bump from 4
+      # to 6 reflects the carried pair appended by
+      # `append_continuation_tail/2`.
+      assert length(state_after.chat_state.messages) == 6,
+             "expected 6 messages, got #{length(state_after.chat_state.messages)}"
+
+      assert state_after.chat_state.next_message_index == 12,
+             "expected next_message_index == 12, got #{state_after.chat_state.next_message_index}"
 
       Agent.terminate(pid)
     end
@@ -337,49 +379,41 @@ defmodule Nest.Agents.AgentCompactionChatContinuationTest do
       # because there was no handler for the message.
       #
       # Post-fix, the broadcast is gated on the DB write's
-      # success. We trigger a real DB failure by pre-inserting
-      # a row at the marker_index, so the marker's INSERT hits
-      # the `(agent_id, message_index)` unique constraint and
-      # the transaction rolls back. The wrapper's
-      # `do_record_compaction/3` logs the warning, returns
-      # `{:error, reason}`, and `persist_and_broadcast/5`
-      # logs the second warning and skips the broadcast.
-      # (`persistence_enabled` is on for the whole suite via
-      # the `setup` block above.)
-      vocation_id = programmer_vocation_id()
+      # success. We trigger a real DB failure by
+      # pre-inserting a row at the marker_index, so the
+      # marker's INSERT hits the `(agent_id, message_index)`
+      # unique constraint and the transaction rolls back.
+      # The wrapper's `do_record_compaction/3` logs the
+      # warning, returns `{:error, reason}`, and
+      # `persist_and_broadcast/5` logs the second warning
+      # and skips the broadcast.
+      #
+      # Migration note: the `:compact_tool` continuation
+      # carries the tool_call/tool_result pair directly, so
+      # the chat task no longer needs to receive the
+      # `{:task_compaction_done, _}` reply to unblock its
+      # receive — the handler appends the pair inline. We
+      # wait for the handler via `_ = :sys.get_state/2`
+      # rather than an `assert_receive` on the reply.
+      #
+      # `start_agent/1` (rather than a raw
+      # `start_supervised!({Agent, _})`) so MockClient is
+      # wired up — the new path spawns a fresh ChatTurn at
+      # the end of `compaction_done`, and the spawned turn
+      # would otherwise try to make a real HTTP call (via
+      # OpenAIClient → ReqNullAdapter → raises) for the
+      # post-swap resumption. The MockClient queue is empty
+      # so the turn returns a random text response and
+      # finalizes; the test asserts on log + broadcast, not
+      # on the turn's output.
+      {pid, agent_name} = start_agent_with_row(1)
 
-      # Bypass `start_agent/1` for this test: it calls
-      # `Mimic.allow/3` (and we don't need stubs here) and
-      # we want fine-grained control over the agent row and
-      # pre-inserted collision row.
-      agent_name = "test-agent-#{Elixir.System.unique_integer([:positive])}"
-
-      attrs = %{
-        name: agent_name,
-        model: %{name: "qwen3.5-plus", provider: "model-studio"},
-        vocation_id: vocation_id,
-        vocation: Init.load_vocation(vocation_id)
-      }
-
-      # Insert the agent row BEFORE `start_supervised!` so the
-      # Agent's `init/1` -> `persist_initial_system_message/1` ->
-      # `append_message` finds the row and succeeds cleanly. The
-      # row also needs to exist for the post-compaction marker
-      # INSERT (tested below via Bug 3's `record_compaction`
-      # collision path).
-      {:ok, _} =
-        Nest.Persistence.insert_agent(%{
-          name: agent_name,
-          model: %{name: "qwen3.5-plus"},
-          vocation_id: vocation_id
-        })
-
-      pid = start_supervised!({Agent, attrs})
-
-      # Pre-insert a row at marker_index (= 1) so the marker's
-      # INSERT will hit the unique constraint. The
-      # `regenerate_for_compaction/2` persists the fresh
-      # system at marker_index + 1 (= 2); the marker
+      # `start_agent/1` doesn't insert the agents row — we
+      # do so explicitly via `start_agent_with_row/1`. Now
+      # pre-insert a row at marker_index (= 1) so the
+      # marker's INSERT will hit the unique constraint.
+      # The `regenerate_for_compaction/2` persists the
+      # fresh system at marker_index + 1 (= 2); the marker
       # INSERT at marker_index (= 1) on a different role
       # collides on `(agent_id, message_index)`.
       {:ok, _} =
@@ -388,30 +422,24 @@ defmodule Nest.Agents.AgentCompactionChatContinuationTest do
           {:user, %User{index: 1, parts: [%Part.Text{text: "pre-existing"}]}}
         )
 
-      :sys.replace_state(pid, fn state ->
-        %{state | chat_state: %{state.chat_state | next_message_index: 1}}
-      end)
-
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_name}")
 
       log =
         capture_log(fn ->
-          send(
-            pid,
-            {:compaction_done, compactor_output(), {:task_compaction_continuation, self()}}
-          )
+          send(pid, {:compaction_done, compactor_output(), compact_tool_continuation()})
 
-          assert_receive {:task_compaction_done, _}, 500
+          # `:task_compaction_done` is gone in the new
+          # design. `:sys.get_state/2` queues behind the
+          # compaction handler and returns only after the
+          # marker INSERT (which fails), the DB rollback,
+          # and the broadcast-skip log line have all run.
+          _ = :sys.get_state(pid, 500)
         end)
 
-      # The wrapper logged the DB failure.
       assert log =~ "Failed to persist compaction"
-
-      # The new code logged the broadcast skip.
       assert log =~ "Compaction DB write failed"
       assert log =~ "skipping chat:compaction broadcast"
 
-      # No `chat:compaction` broadcast was sent.
       refute_receive {:chat_compaction, _payload}, 100
 
       Agent.terminate(pid)

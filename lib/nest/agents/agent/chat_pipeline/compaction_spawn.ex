@@ -34,7 +34,7 @@ defmodule Nest.Agents.Agent.ChatPipeline.CompactionSpawn do
           Nest.Agents.Agent.t(),
           [tuple()],
           tuple() | nil,
-          Nest.Agents.Agent.Compaction.continuation(),
+          Nest.Agents.Agent.ChatTurn.State.continuation(),
           String.t() | nil
         ) :: :ok
   def spawn_compaction!(parent, state, messages, system_msg, continuation, optional_guidance)

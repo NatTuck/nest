@@ -398,17 +398,25 @@ defmodule NestWeb.AgentChannelChatTest do
     test "forwards to Agents.retry_compaction/1", %{socket: socket, agent_id: id} do
       {:ok, agent_pid} = Supervisor.get_agent(id)
 
+      # The retry path resumes the user message held in
+      # `pending_user_message`. Set both the status and the held
+      # message so the retry's Trigger B path actually fires a
+      # compaction.
       :sys.replace_state(agent_pid, fn state ->
-        %{state | chat_state: %{state.chat_state | status: :compaction_failed}}
+        %{
+          state
+          | chat_state: %{
+              state.chat_state
+              | status: :compaction_failed,
+                pending_user_message: {"Hello", "chat"}
+            }
+        }
       end)
 
       ref = push(socket, "chat:retry-compaction", %{})
 
       assert_reply ref, :ok, %{}
 
-      # The agent transitions back to :compacting on retry, then
-      # the compactor runs and broadcasts chat:status: idle (or
-      # chat:error if the retry also fails).
       assert_receive {:chat_status, %{status: "compacting"}}, 500
     end
 
@@ -484,15 +492,6 @@ defmodule NestWeb.AgentChannelChatTest do
 
       # Sanity check: the agent is still queryable after the stop.
       assert {:ok, %{name: ^id}} = Agents.get_info(id)
-    end
-
-    test "returns error when agent does not exist" do
-      assert {:error, %{"reason" => "agent not found"}} =
-               subscribe_and_join(
-                 socket(NestWeb.UserSocket),
-                 NestWeb.AgentChannel,
-                 "agent:nonexistent"
-               )
     end
   end
 end

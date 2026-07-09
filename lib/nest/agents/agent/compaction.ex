@@ -50,17 +50,28 @@ defmodule Nest.Agents.Agent.Compaction do
 
   ## Continuations
 
-  The continuation tuple describes what should happen after
-  compaction completes. Three shapes are supported:
-    * `{:chat_continuation, :pending}` — Trigger B (user-turn
-      boundary); `ChatPipeline.resume_with_pending/1` reads the
-      held user message and spawns the next chat turn.
-    * `{:task_compaction_continuation, task_pid}` — Trigger C;
-      the `context` tool's compact action invoked compaction.
-    * `{:mid_turn_continuation, iteration, max_iterations}` —
-      mid-turn preflight failure; a new ChatTurn seeded with
-      `:mid_turn` info executes the LLM's already-emitted tool
-      calls rather than calling the LLM again.
+  The continuation tuple is the "what's the outstanding
+  content for this chat turn's first iteration?" payload —
+  identical to `Nest.Agents.Agent.ChatTurn.State.continuation/0`:
+
+    * `{:user_message, User.t()}` — Trigger 1 (user-turn
+      boundary); the user message is appended to the
+      post-compaction active list and the new ChatTurn's
+      first iter calls the LLM.
+
+    * `{:tool_call, Assistant.t(), non_neg_integer(),
+      pos_integer()}` — Trigger 2 (mid-turn preflight failure
+      after the LLM emitted tool calls); the carried
+      assistant+ToolUse is preserved on the post-compaction
+      active list and the new ChatTurn's first iter runs the
+      tool calls (iteration count preserved).
+
+    * `{:compact_tool, [Assistant.t(), Tool.t()],
+      non_neg_integer(), pos_integer()}` — Trigger 3 (LLM
+      called `context.compact`); the carried pair [tool_call,
+      synthetic_tool_result] ends up on the post-compaction
+      active list and the new ChatTurn's first iter falls
+      through to the LLM (iteration count preserved).
 
   Per-iteration preflight compaction has been removed; the
   BatchSizer handles tool-result sizing instead. See the doc
@@ -74,11 +85,7 @@ defmodule Nest.Agents.Agent.Compaction do
 
   require Logger
 
-  @type continuation ::
-          {:chat_continuation, :pending}
-          | {:chat_continuation, {String.t(), String.t() | nil}}
-          | {:task_compaction_continuation, pid()}
-          | {:mid_turn_continuation, non_neg_integer(), pos_integer()}
+  @type continuation :: Nest.Agents.Agent.ChatTurn.State.continuation()
 
   # Public API
 

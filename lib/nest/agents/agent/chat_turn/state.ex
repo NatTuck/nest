@@ -18,29 +18,47 @@ defmodule Nest.Agents.Agent.ChatTurn.State do
   # thresholds re-fire if usage rises again after the
   # history was summarized.
   #
-  # `info` carries the start-state intent for this ChatTurn.
-  # Two shapes:
+  # `info :: continuation` carries the start-state intent for
+  # this ChatTurn. A continuation is the "what's the
+  # outstanding content for this turn's first iteration?"
+  # payload, structured as one of three (or nil) shapes:
   #
-  #   * `%{kind: :user_message}` — marker indicating the
-  #     ChatTurn was spawned after a Trigger B compaction
-  #     (or from the no-compaction `:fits` path). The user
-  #     message has already been appended to the Agent's
-  #     state by the chat pipeline before the spawn. The
-  #     ChatTurn's first action is to call the LLM. Same
-  #     dispatch as `nil` (the default); the marker exists
-  #     for observability and as a sanity-check handle.
+  #   * `nil` — defstruct default. The ChatTurn was started
+  #     without any continuation payload (legacy default;
+  #     no production path passes `nil` to the spawner
+  #     today; the runtime tolerates it).
   #
-  #   * `%{kind: :mid_turn, iteration, max_iterations}` —
-  #     mid-turn resume after compaction. The user message
-  #     and the assistant's tool-call response are already in
-  #     `state.chat_state.messages`. The last message should
-  #     be an assistant message with `%Part.ToolUse{}` parts;
-  #     the ChatTurn's first action is to execute those tool
-  #     calls rather than call the LLM. Iteration count is
-  #     preserved across the compaction boundary so the
-  #     tool-call iteration cap is enforced continuously.
+  #   * `{:user_message, User.t()}` — Trigger 1 (and the
+  #     user's idle pipeline input). The user message has
+  #     already been appended to `state.chat_state.messages`
+  #     by the spawner (the pipeline appends; the compaction
+  #     handler appends after the swap; the chat turn in
+  #     both cases reads it from `state.chat_state.messages`).
+  #     The ChatTurn's first action is to call the LLM.
   #
-  #   * `nil` — default. Same dispatch as `:user_message`.
+  #   * `{:tool_call, Assistant.t(), non_neg_integer(),
+  #     pos_integer()}` — Trigger 2. The carried
+  #     assistant+ToolUse is at the tail of
+  #     `state.chat_state.messages`. The ChatTurn's first
+  #     action is to run `execute_pending_tool_calls`
+  #     (preserves iteration count via the trailing two
+  #     fields).
+  #
+  #   * `{:compact_tool, [Assistant.t(), Tool.t()],
+  #     non_neg_integer(), pos_integer()}` — Trigger 3. The
+  #     carried pair [tool_call, synthetic_tool_result] is
+  #     at the tail of `state.chat_state.messages`. The
+  #     ChatTurn's first action falls through to the LLM
+  #     (last message is a `{:tool, _}`, not a tool_call).
+  #     Iteration count preserved.
+  #
+  # The continuation is the contract — no
+  # `state.chat_state.messages`-tail inspection happens after
+  # the spawner hands the messages off. The carried content
+  # is placed in the active messages list at the trigger
+  # site (where the swap hasn't happened yet) and carried
+  # forward through the compactor's swap by the
+  # `append_continuation_tail/2` helper in `CompactionHandler`.
   defstruct ctx: nil,
             iteration: 0,
             max_iterations: 0,
@@ -51,8 +69,12 @@ defmodule Nest.Agents.Agent.ChatTurn.State do
             crossed_thresholds: %MapSet{},
             info: nil
 
-  @type info ::
-          %{kind: :user_message}
-          | %{kind: :mid_turn, iteration: non_neg_integer(), max_iterations: pos_integer()}
-          | nil
+  @type tool_pair :: [Nest.Messages.Assistant.t() | Nest.Messages.Tool.t()]
+  @type continuation ::
+          nil
+          | {:user_message, Nest.Messages.User.t()}
+          | {:tool_call, Nest.Messages.Assistant.t(), non_neg_integer(), pos_integer()}
+          | {:compact_tool, tool_pair, non_neg_integer(), pos_integer()}
+
+  @type info :: continuation
 end

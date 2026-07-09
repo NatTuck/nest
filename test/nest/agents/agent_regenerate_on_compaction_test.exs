@@ -23,9 +23,12 @@ defmodule Nest.Agents.AgentRegenerateOnCompactionTest do
   import Nest.Agents.AgentTestHelpers, only: [start_agent: 1]
 
   alias Nest.Agents.Agent
+  alias Nest.Agents.Agent.Config, as: AgentConfig
   alias Nest.LLM.MockClient
+  alias Nest.Messages.Assistant
   alias Nest.Messages.Part
   alias Nest.Messages.System
+  alias Nest.Messages.Tool
   alias Nest.Messages.User
   alias Nest.Vocations
 
@@ -99,6 +102,85 @@ defmodule Nest.Agents.AgentRegenerateOnCompactionTest do
     ]
   end
 
+  # Append an `assistant+ToolUse[context.compact]` to the
+  # agent's `state.chat_state.messages` so the messages list
+  # ends with the trailing tool call (matching production
+  # where the chat turn has already emitted the tool call
+  # before the compaction fires). Returns the tool_call_id
+  # so the carried pair can reference the same call.
+  defp seed_compact_tool_call(pid) do
+    tool_call_id = "compact_call_#{Elixir.System.unique_integer([:positive])}"
+
+    :sys.replace_state(pid, fn state ->
+      %{
+        state
+        | chat_state: %{
+            state.chat_state
+            | messages:
+                (state.chat_state.messages || []) ++
+                  [
+                    {:assistant,
+                     %Assistant{
+                       index: nil,
+                       parts: [
+                         %Part.ToolUse{
+                           id: tool_call_id,
+                           name: "context",
+                           arguments: %{"action" => "compact"}
+                         }
+                       ],
+                       api_logs: []
+                     }}
+                  ]
+          }
+      }
+    end)
+
+    tool_call_id
+  end
+
+  # Build the carried `[tool_call, tool_result]` pair for the
+  # `:compact_tool` continuation. `iter` defaults to 0 and
+  # `max` defaults to the configured tool-iteration cap,
+  # matching the post-refactor `normalize_continuation/2`
+  # literal. The handler doesn't inspect
+  # `state.chat_state.messages` for the trailing tool call —
+  # the pair is carried in the continuation itself.
+  defp compact_tool_continuation(
+         tool_call_id,
+         iter \\ 0,
+         max \\ AgentConfig.configured_max_tool_iterations()
+       ) do
+    arguments = %{"action" => "compact"}
+
+    tool_call_msg =
+      {:assistant,
+       %Assistant{
+         index: nil,
+         parts: [%Part.ToolUse{id: tool_call_id, name: "context", arguments: arguments}],
+         api_logs: []
+       }}
+
+    tool_result_msg =
+      {:tool,
+       %Tool{
+         index: nil,
+         timestamp: DateTime.utc_now(),
+         parts: [
+           %Part.ToolResult{
+             tool_call_id: tool_call_id,
+             name: "context",
+             arguments: arguments,
+             content: "Compacted from N token previous context.",
+             is_error: false
+           }
+         ],
+         api_logs: []
+       }}
+
+    {:compact_tool, [tool_call_msg, tool_result_msg], iter, max}
+  end
+
   defp extract_position0_text(state) do
     [{:system, %System{parts: [%Part.Text{text: text}]}} | _] = state.chat_state.messages
     text
@@ -116,13 +198,18 @@ defmodule Nest.Agents.AgentRegenerateOnCompactionTest do
         %{system_prompt: "UPDATED via Vocations.update_vocation/2"}
       )
 
+      tool_call_id = seed_compact_tool_call(pid)
+
       send(
         pid,
         {:compaction_done, compactor_messages_with("[Summary of earlier conversation]:\n\n..."),
-         {:task_compaction_continuation, self()}}
+         compact_tool_continuation(tool_call_id)}
       )
 
-      assert_receive {:task_compaction_done, _}, 200
+      # `:task_compaction_done` is gone in the new design.
+      # `:sys.get_state/2` queues behind the compaction handler
+      # and returns only after the handler has run.
+      _ = :sys.get_state(pid, 500)
 
       text0 = extract_position0_text(:sys.get_state(pid))
       assert text0 =~ "UPDATED via Vocations.update_vocation/2"
@@ -147,13 +234,18 @@ defmodule Nest.Agents.AgentRegenerateOnCompactionTest do
       # Mutate AGENTS.md on disk.
       File.write!(Path.join(workspace, "AGENTS.md"), "SECOND version")
 
+      tool_call_id = seed_compact_tool_call(pid)
+
       send(
         pid,
         {:compaction_done, compactor_messages_with("[Summary of earlier conversation]:\n\n..."),
-         {:task_compaction_continuation, self()}}
+         compact_tool_continuation(tool_call_id)}
       )
 
-      assert_receive {:task_compaction_done, _}, 200
+      # `:task_compaction_done` is gone in the new design.
+      # `:sys.get_state/2` queues behind the compaction handler
+      # and returns only after the handler has run.
+      _ = :sys.get_state(pid, 500)
 
       text0 = extract_position0_text(:sys.get_state(pid))
       assert text0 =~ "SECOND version"
@@ -173,13 +265,18 @@ defmodule Nest.Agents.AgentRegenerateOnCompactionTest do
         %{description: "UPDATED description for the fresh fetch"}
       )
 
+      tool_call_id = seed_compact_tool_call(pid)
+
       send(
         pid,
         {:compaction_done, compactor_messages_with("[Summary of earlier conversation]:\n\n..."),
-         {:task_compaction_continuation, self()}}
+         compact_tool_continuation(tool_call_id)}
       )
 
-      assert_receive {:task_compaction_done, _}, 200
+      # `:task_compaction_done` is gone in the new design.
+      # `:sys.get_state/2` queues behind the compaction handler
+      # and returns only after the handler has run.
+      _ = :sys.get_state(pid, 500)
 
       state = :sys.get_state(pid)
       assert state.vocation.description == "UPDATED description for the fresh fetch"
@@ -193,19 +290,28 @@ defmodule Nest.Agents.AgentRegenerateOnCompactionTest do
       {pid, _agent_id} =
         start_agent(%{model: %{name: "qwen3.5-plus"}, vocation_id: vocation_id})
 
+      tool_call_id = seed_compact_tool_call(pid)
+
       send(
         pid,
         {:compaction_done,
          compactor_messages_with("[Summary of earlier conversation]:\n\nkey facts"),
-         {:task_compaction_continuation, self()}}
+         compact_tool_continuation(tool_call_id)}
       )
 
-      assert_receive {:task_compaction_done, _}, 200
+      # `:task_compaction_done` is gone in the new design.
+      # `:sys.get_state/2` queues behind the compaction handler
+      # and returns only after the handler has run.
+      _ = :sys.get_state(pid, 500)
 
       state = :sys.get_state(pid)
-      assert length(state.chat_state.messages) == 3
+      # 3-message compactor input + the carried pair
+      # [tool_call, tool_result] appended via
+      # `append_continuation_tail/2` = 5 total in-memory
+      # messages after the swap.
+      assert length(state.chat_state.messages) == 5
 
-      [_, {:user, %User{parts: [%Part.Text{text: text1}]}}, _] = state.chat_state.messages
+      [_, {:user, %User{parts: [%Part.Text{text: text1}]}}, _, _, _] = state.chat_state.messages
       assert text1 =~ "Summary of earlier conversation"
       assert text1 =~ "key facts"
 
@@ -241,16 +347,21 @@ defmodule Nest.Agents.AgentRegenerateOnCompactionTest do
         {:user, %User{parts: [%Part.Text{text: "post-compaction remainder"}], api_logs: []}}
       ]
 
+      tool_call_id = seed_compact_tool_call(pid)
+
       send(
         pid,
-        {:compaction_done, real_compactor_output, {:task_compaction_continuation, self()}}
+        {:compaction_done, real_compactor_output, compact_tool_continuation(tool_call_id)}
       )
 
-      assert_receive {:task_compaction_done, _}, 200
+      # `:task_compaction_done` is gone in the new design.
+      # `:sys.get_state/2` queues behind the compaction handler
+      # and returns only after the handler has run.
+      _ = :sys.get_state(pid, 500)
 
       state = :sys.get_state(pid)
 
-      [_, {:user, %User{parts: [%Part.Text{text: text1}]}}, _] = state.chat_state.messages
+      [_, {:user, %User{parts: [%Part.Text{text: text1}]}}, _, _, _] = state.chat_state.messages
       # The encoded summary-as-user MUST carry the LLM summary
       # text, NOT the original system prompt.
       assert text1 =~ "REAL_LLM_SUMMARY_TEXT"
@@ -277,16 +388,21 @@ defmodule Nest.Agents.AgentRegenerateOnCompactionTest do
       vocation = Vocations.get_vocation!(vocation_id)
       Nest.Repo.delete!(vocation)
 
+      tool_call_id = seed_compact_tool_call(pid)
+
       log =
         capture_log(fn ->
           send(
             pid,
             {:compaction_done,
              compactor_messages_with("[Summary of earlier conversation]:\n\n..."),
-             {:task_compaction_continuation, self()}}
+             compact_tool_continuation(tool_call_id)}
           )
 
-          assert_receive {:task_compaction_done, _}, 200
+          # `:task_compaction_done` is gone in the new design.
+          # `:sys.get_state/2` queues behind the compaction
+          # handler and returns only after the handler has run.
+          _ = :sys.get_state(pid, 500)
         end)
 
       # The fallback path is observable: a warning is logged
@@ -297,9 +413,18 @@ defmodule Nest.Agents.AgentRegenerateOnCompactionTest do
       state = :sys.get_state(pid)
       # The compactor's output is used as-is; the cached
       # vocation stays. The fixture mimics the compactor's
-      # `[original_system, wrap_summary, ...rest]` shape, so
-      # all three input messages survive unchanged.
-      assert length(state.chat_state.messages) == 3
+      # `[original_system, wrap_summary, ...rest]` shape (3
+      # input messages), plus the carried pair [tool_call,
+      # tool_result] appended via `append_continuation_tail/2`
+      # = 5 messages in the post-swap list. The fresh ChatTurn
+      # spawned by the `:compact_tool` continuation also iterates
+      # and (in the typical case) appends a final assistant
+      # message from the (random) MockClient response — but its
+      # iter is async, so the 6th message may or may not be in
+      # `state.chat_state.messages` by the time this assertion
+      # runs. Assert the 5 messages we care about rather than
+      # the exact total.
+      assert length(state.chat_state.messages) >= 5
       assert {:system, %System{}} = hd(state.chat_state.messages)
       assert state.vocation.id == vocation_id
 

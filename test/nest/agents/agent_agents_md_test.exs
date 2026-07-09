@@ -6,8 +6,11 @@ defmodule Nest.Agents.AgentAgentsMdTest do
 
   import Mimic
 
+  alias Nest.Agents.Agent.Config, as: AgentConfig
   alias Nest.LLM.MockClient
+  alias Nest.Messages.Assistant
   alias Nest.Messages.Part
+  alias Nest.Messages.Tool
   alias Nest.Messages.User
   alias Nest.Vocations
 
@@ -137,8 +140,66 @@ defmodule Nest.Agents.AgentAgentsMdTest do
         {:user, %User{index: 2, parts: [%Part.Text{text: "Next"}], api_logs: []}}
       ]
 
-      send(pid, {:compaction_done, compactor_messages, {:task_compaction_continuation, self()}})
-      assert_receive {:task_compaction_done, _}, 200
+      iter = 0
+      max = AgentConfig.configured_max_tool_iterations()
+
+      tool_call_msg =
+        {:assistant,
+         %Assistant{
+           index: 1,
+           parts: [
+             %Part.ToolUse{
+               id: "call_1",
+               name: "context",
+               arguments: %{"action" => "compact"}
+             }
+           ],
+           api_logs: []
+         }}
+
+      tool_result_msg =
+        {:tool,
+         %Tool{
+           index: nil,
+           timestamp: DateTime.utc_now(),
+           parts: [
+             %Part.ToolResult{
+               tool_call_id: "call_1",
+               name: "context",
+               arguments: %{"action" => "compact"},
+               content: "Compacted from N token previous context.",
+               is_error: false
+             }
+           ],
+           api_logs: []
+         }}
+
+      # Pre-seed `state.chat_state.messages` to end with the
+      # assistant+ToolUse for `context.compact`. The new
+      # `:compact_tool` continuation carries the pair inline; the
+      # pre-seeded copy lands in `state.chat_state.history` after
+      # the swap.
+      :sys.replace_state(pid, fn state ->
+        %{
+          state
+          | chat_state: %{
+              state.chat_state
+              | messages: state.chat_state.messages ++ [tool_call_msg]
+            }
+        }
+      end)
+
+      send(
+        pid,
+        {:compaction_done, compactor_messages,
+         {:compact_tool, [tool_call_msg, tool_result_msg], iter, max}}
+      )
+
+      # The new path spawns a ChatTurn; wait for the handler to
+      # finish via `:sys.get_state/2` rather than receiving a
+      # `:task_compaction_done` reply (the legacy path's tool
+      # worker reply is gone in the unified design).
+      _ = :sys.get_state(pid, 500)
 
       system_prompt = get_system_prompt(pid)
       assert is_binary(system_prompt)

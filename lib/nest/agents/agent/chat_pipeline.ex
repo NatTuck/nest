@@ -19,7 +19,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
 
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ChatPipeline.CompactionSpawn
-  alias Nest.Agents.Agent.ChatTurnSupervisor
+  alias Nest.Agents.Agent.ChatTurnSpawner
   alias Nest.Agents.Agent.Handlers.CompactionHandler
   alias Nest.Messages.Part
   alias Nest.Messages.Streaming
@@ -83,7 +83,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   # Build the `Message.t()` struct for the pending user message
   # without appending. Returns `nil` if the field is not set.
   @spec pending_user_message_struct(Nest.Agents.Agent.t()) :: {:user, User.t()} | nil
-  defp pending_user_message_struct(state) do
+  def pending_user_message_struct(state) do
     case state.chat_state.pending_user_message do
       nil -> nil
       {content, effective_mode} -> build_user_message(state, content, effective_mode)
@@ -110,12 +110,17 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   Resume the chat after a compaction completed. Appends the
   pending user message. The compaction handler has already
   replaced the messages list with the compacted state; we
-  spawn a ChatTurn with `:user_message` info after appending
-  the held user message via `append_pending_user_message/1`.
+  spawn a ChatTurn via `ChatTurnSpawner.spawn/4` with the
+  appended user message.
+
+  If the user clicked Stop while compaction was in flight,
+  discard the pending message — the agent's chat task has
+  already exited (or is about to) and we don't want to spawn
+  a new one.
   """
   @spec resume_with_pending(Nest.Agents.Agent.t()) :: Nest.Agents.Agent.t()
   def resume_with_pending(state) do
-    {_stamped_user, state} = append_pending_user_message(state)
+    {stamped_user, state} = append_pending_user_message(state)
 
     effective_mode =
       case state.chat_state.pending_user_message do
@@ -130,7 +135,8 @@ defmodule Nest.Agents.Agent.ChatPipeline do
         state.chat_state.active_message_index
       )
 
-    spawn_chat_turn(state, %{kind: :user_message})
+    {_effective_mode, caps} = resolve_mode_and_caps(state.mode, state.vocation)
+    ChatTurnSpawner.spawn(state, state.chat_state.messages, {:user_message, stamped_user}, caps)
   end
 
   # Backward-compat alias used by older test fixtures. Routes
@@ -141,81 +147,60 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     resume_with_pending(state)
   end
 
+  # Kept for legacy callers (no production path uses this after
+  # the post-compaction dispatch consolidated through
+  # `ChatTurnSpawner.spawn/4`).
   @doc """
-  Spawn a ChatTurn child under the ChatTurnSupervisor.
-  The ChatTurn drives the iteration by calling
-  `Nest.LLM.Runner.request/2` directly. Its pid is
-  stored on `state.chat_state.chat_turn_pid` so the
-  stop handler can send it a `{:stop_chat, _}` signal.
-
-  If the supervisor is saturated (a previous ChatTurn
-  hasn't been cleaned up yet), fall back to a no-pid
-  state. The stop handler treats `nil` as a no-op, and
-  the next chat turn will retry.
+  Spawn a ChatTurn child under the ChatTurnSupervisor with
+  `messages` as `ctx.messages` and `info` as the init info.
+  Routes through `ChatTurnSpawner.spawn/4` after resolving
+  capabilities. Kept for any test fixtures that called it
+  directly during the transition.
   """
-  @spec spawn_chat_turn(Nest.Agents.Agent.t()) :: Nest.Agents.Agent.t()
+  @deprecated "Use ChatTurnSpawner.spawn/4 directly"
+  @spec spawn_chat_turn(Nest.Agents.Agent.t(), term()) :: Nest.Agents.Agent.t()
   def spawn_chat_turn(state, info \\ nil) do
     {_effective_mode, caps} = resolve_mode_and_caps(state.mode, state.vocation)
-    agent_pid = self()
-
-    ctx = %{
-      agent_pid: agent_pid,
-      agent_name: state.name,
-      client_config: state.client_config,
-      tools: state.tools,
-      tool_choice: :auto,
-      caps: caps,
-      context_limit: state.llm_metrics.context_limit,
-      messages: state.chat_state.messages,
-      tmp_path: state.tmp_path
-    }
-
-    case ChatTurnSupervisor.start_chat_turn(agent_pid, ctx, info) do
-      {:ok, chat_turn_pid} ->
-        %{state | chat_state: %{state.chat_state | chat_turn_pid: chat_turn_pid}}
-
-      _ ->
-        %{state | chat_state: %{state.chat_state | chat_turn_pid: nil}}
-    end
+    ChatTurnSpawner.spawn(state, state.chat_state.messages, info, caps)
   end
 
+  # Backward-compat alias used by older test fixtures. Routes
+  # through `ChatTurnSpawner.spawn/4` with `messages` as the
+  # active list. The legacy tuple shape `:mid_turn` is
+  # decomposed; production callers use one of the new
+  # continuation shapes directly.
   @doc """
-  Spawn a ChatTurn after a mid-turn compaction. The new ChatTurn
-  is seeded with the compacted messages and `:mid_turn` info, so
-  it executes the tool calls the LLM already emitted rather than
-  calling the LLM again. Iteration count is preserved across the
-  compaction boundary.
+  Spawn a ChatTurn after a compaction. The new ChatTurn's
+  `messages` arg becomes `ctx.messages`; the `info` arg
+  becomes the ChatTurn's continuation. Backward-compat
+  shape: `{:mid_turn, _, _}` is decomposed back into
+  `{:tool_call, _, iteration, max_iterations}` for the
+  underlying spawner.
   """
+  @deprecated "Use ChatTurnSpawner.spawn/4 with an explicit continuation"
   @spec spawn_resumed_chat_turn(
           Nest.Agents.Agent.t(),
           [Message.t()],
+          term(),
           non_neg_integer(),
           pos_integer()
         ) ::
           Nest.Agents.Agent.t()
-  def spawn_resumed_chat_turn(state, compacted_messages, iteration, max_iterations) do
+  def spawn_resumed_chat_turn(state, compacted_messages, info, iteration, max_iterations) do
     state = %{state | chat_state: %{state.chat_state | messages: compacted_messages}}
     {_effective_mode, caps} = resolve_mode_and_caps(state.mode, state.vocation)
-    agent_pid = self()
 
-    ctx = %{
-      agent_pid: agent_pid,
-      agent_name: state.name,
-      client_config: state.client_config,
-      tools: state.tools,
-      tool_choice: :auto,
-      caps: caps,
-      context_limit: state.llm_metrics.context_limit,
-      messages: compacted_messages,
-      tmp_path: state.tmp_path
-    }
+    case info do
+      {:mid_turn, _msg, _iter, _max} = continuation ->
+        ChatTurnSpawner.spawn(state, compacted_messages, continuation, caps)
 
-    case ChatTurnSupervisor.start_chat_turn_resumed(agent_pid, ctx, iteration, max_iterations) do
-      {:ok, chat_turn_pid} ->
-        %{state | chat_state: %{state.chat_state | chat_turn_pid: chat_turn_pid}}
-
-      _ ->
-        %{state | chat_state: %{state.chat_state | chat_turn_pid: nil}}
+      _other ->
+        ChatTurnSpawner.spawn(
+          state,
+          compacted_messages,
+          {:tool_call, info, iteration, max_iterations},
+          caps
+        )
     end
   end
 
@@ -304,9 +289,16 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   # The pending user message stays in `pending_user_message`
   # during compaction (so the compactor doesn't try to
   # summarize a brand-new user turn). After compaction
-  # succeeds, the `compaction_done` handler resumes by spawning
-  # a new ChatTurn with `info: :user_message` — the new
-  # ChatTurn appends the held user message itself.
+  # succeeds, `compaction_done/3` calls `ChatTurnSpawner.spawn/4`
+  # with the continuation shaped from `pending_user_message`;
+  # the carried user message lands at the post-compaction
+  # active messages tail.
+  #
+  # We build the `{:user_message, user_message_struct}`
+  # continuation here at the trigger site (where
+  # `state.chat_state.messages` is live pre-swap) so the
+  # pre-swap-tail lookup is the only place we touch the
+  # messages list to find the outstanding message.
   defp spawn_compaction_pipeline(state) do
     state = %{state | chat_state: %{state.chat_state | status: :compacting}}
     Broadcasts.status(state.name, state)
@@ -325,12 +317,14 @@ defmodule Nest.Agents.Agent.ChatPipeline do
         messages = state.chat_state.messages
         system_msg = Enum.find(messages, &match?({:system, _}, &1))
 
+        {:user, user_msg} = pending_user_message_struct(state)
+
         CompactionSpawn.spawn_compaction!(
           self(),
           state,
           messages,
           system_msg,
-          {:chat_continuation, :pending},
+          {:user_message, user_msg},
           nil
         )
 
@@ -378,7 +372,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   # the user-turn-boundary path; the ChatTurn's dispatch is the
   # same as the default flow.
   defp append_and_spawn(state, effective_mode) do
-    {{:user, _user}, state} = append_pending_user_message(state)
+    {stamped_user, state} = append_pending_user_message(state)
 
     state =
       prepare_streaming_state(
@@ -388,7 +382,8 @@ defmodule Nest.Agents.Agent.ChatPipeline do
       )
 
     Broadcasts.status(state.name, state)
-    spawn_chat_turn(state, %{kind: :user_message})
+    {_effective_mode, caps} = resolve_mode_and_caps(state.mode, state.vocation)
+    ChatTurnSpawner.spawn(state, state.chat_state.messages, {:user_message, stamped_user}, caps)
   end
 
   @doc """
@@ -424,7 +419,8 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   # Otherwise fall back to the vocation's default mode (or "chat" if
   # the vocation has no modes). This matches the LLM-visible
   # `[mode: X]` prefix: we always emit a valid mode to the LLM.
-  defp resolve_mode_and_caps(mode, %Nest.Vocations.Vocation{} = vocation) do
+  @doc false
+  def resolve_mode_and_caps(mode, %Nest.Vocations.Vocation{} = vocation) do
     modes = Vocations.list_modes(vocation)
 
     if mode in modes do
@@ -435,7 +431,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     end
   end
 
-  defp resolve_mode_and_caps(_mode, _no_vocation_or_id) do
+  def resolve_mode_and_caps(_mode, _no_vocation_or_id) do
     # No vocation struct or vocation_id available: only "chat"
     # is valid.
     {"chat", Nest.Sandbox.default_caps()}

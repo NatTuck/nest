@@ -34,12 +34,14 @@ defmodule Nest.Agents.AgentCompactionPersistenceTest do
   import Nest.Agents.AgentTestHelpers, only: [start_agent: 1]
 
   alias Nest.Agents.Agent
+  alias Nest.Agents.Agent.Config, as: AgentConfig
   alias Nest.Agents.PersistedAgent
   alias Nest.Agents.PersistedMessage
   alias Nest.LLM.MockClient
   alias Nest.Messages.Assistant
   alias Nest.Messages.Part
   alias Nest.Messages.System
+  alias Nest.Messages.Tool
   alias Nest.Messages.User
   alias Nest.Persistence
   alias Nest.Vocations
@@ -114,6 +116,85 @@ defmodule Nest.Agents.AgentCompactionPersistenceTest do
     ]
   end
 
+  # Append an `assistant+ToolUse[context.compact]` to the
+  # agent's `state.chat_state.messages` so the messages list
+  # ends with the trailing tool call (matching production
+  # where the chat turn has already emitted the tool call
+  # before the compaction fires). Returns the tool_call_id
+  # so the carried pair can reference the same call.
+  defp seed_compact_tool_call(pid) do
+    tool_call_id = "compact_call_#{Elixir.System.unique_integer([:positive])}"
+
+    :sys.replace_state(pid, fn state ->
+      %{
+        state
+        | chat_state: %{
+            state.chat_state
+            | messages:
+                (state.chat_state.messages || []) ++
+                  [
+                    {:assistant,
+                     %Assistant{
+                       index: nil,
+                       parts: [
+                         %Part.ToolUse{
+                           id: tool_call_id,
+                           name: "context",
+                           arguments: %{"action" => "compact"}
+                         }
+                       ],
+                       api_logs: []
+                     }}
+                  ]
+          }
+      }
+    end)
+
+    tool_call_id
+  end
+
+  # Build the carried `[tool_call, tool_result]` pair for the
+  # `:compact_tool` continuation. `iter` defaults to 0 and
+  # `max` defaults to the configured tool-iteration cap,
+  # matching the post-refactor `normalize_continuation/2`
+  # literal. The handler doesn't inspect
+  # `state.chat_state.messages` for the trailing tool call —
+  # the pair is carried in the continuation itself.
+  defp compact_tool_continuation(
+         tool_call_id,
+         iter \\ 0,
+         max \\ AgentConfig.configured_max_tool_iterations()
+       ) do
+    arguments = %{"action" => "compact"}
+
+    tool_call_msg =
+      {:assistant,
+       %Assistant{
+         index: nil,
+         parts: [%Part.ToolUse{id: tool_call_id, name: "context", arguments: arguments}],
+         api_logs: []
+       }}
+
+    tool_result_msg =
+      {:tool,
+       %Tool{
+         index: nil,
+         timestamp: DateTime.utc_now(),
+         parts: [
+           %Part.ToolResult{
+             tool_call_id: tool_call_id,
+             name: "context",
+             arguments: arguments,
+             content: "Compacted from N token previous context.",
+             is_error: false
+           }
+         ],
+         api_logs: []
+       }}
+
+    {:compact_tool, [tool_call_msg, tool_result_msg], iter, max}
+  end
+
   describe "post-compaction persistence" do
     # The agent's `init/1` calls
     # `Nest.Agents.Agent.Init.persist_initial_system_message/1`
@@ -130,13 +211,23 @@ defmodule Nest.Agents.AgentCompactionPersistenceTest do
         %{state | chat_state: %{state.chat_state | next_message_index: next_message_index}}
       end)
 
+      tool_call_id = seed_compact_tool_call(pid)
+
       send(
         pid,
         {:compaction_done, compactor_messages_with(summary_text),
-         {:task_compaction_continuation, self()}}
+         compact_tool_continuation(tool_call_id)}
       )
 
-      assert_receive {:task_compaction_done, _}, 200
+      # `:task_compaction_done` is gone in the new design —
+      # the handler synchronously appends the carried pair
+      # via `append_continuation_tail/2`, swaps, and spawns a
+      # fresh ChatTurn via `ChatTurnSpawner.spawn/4`. We don't
+      # care about the spawned ChatTurn's downstream work
+      # for these tests — just that the handler has run. Wait
+      # via `:sys.get_state/2` so the test's assertions see
+      # the post-swap state.
+      _ = :sys.get_state(pid, 500)
 
       Agent.terminate(pid)
     end

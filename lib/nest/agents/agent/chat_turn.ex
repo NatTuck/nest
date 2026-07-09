@@ -102,7 +102,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
   # Server Callbacks
 
   @impl true
-  def init({agent_pid, ctx, info}) do
+  def init({agent_pid, ctx, continuation}) do
     Process.flag(:trap_exit, true)
     # Mimic permissions: when a test sets `Mimic.allow/3`
     # on the Agent's pid (e.g. `Mimic.allow(MockClient,
@@ -118,13 +118,13 @@ defmodule Nest.Agents.Agent.ChatTurn do
 
     state = %State{
       ctx: ctx,
-      iteration: initial_iteration(info),
-      max_iterations: initial_max_iterations(info),
+      iteration: initial_iteration(continuation),
+      max_iterations: initial_max_iterations(continuation),
       force_finalize: false,
       active_worker: nil,
       active_worker_kind: nil,
       active_message_index: 0,
-      info: info
+      info: continuation
     }
 
     Process.send(self(), :iterate, [])
@@ -211,18 +211,30 @@ defmodule Nest.Agents.Agent.ChatTurn do
     iteration_branch(state, messages, cancelled)
   end
 
-  # The branching logic for `safe_iterate/1`'s four cases.
+  # The branching logic for `safe_iterate/1`'s three cases.
   # Extracted into its own function to keep `safe_iterate`'s
   # ABC size under credo's limit. Returns the same
   # `GenServer.reply` tuple as `safe_iterate/1` did.
+  #
+  # The continuation carries the resume payload:
+  #
+  #   * `{:tool_call, _, _, _}` → tail has `assistant+ToolUse`
+  #     (Trigger 2). First iter runs the carried tool calls.
+  #   * `{:compact_tool, _, _, _}` → tail has the synthetic
+  #     `tool` result (Trigger 3). First iter falls through to
+  #     the LLM (the resume pays no preflight tax since the
+  #     tool was already executed/baked-in by the trigger site).
+  #   * `nil` or `{:user_message, _}` → tail has the user
+  #     message (Trigger 1). First iter falls through to the
+  #     LLM via `dispatch_batch`.
+  #
+  # The messages list is correctly shaped by construction (the
+  # continuation structure carries it through the compactor's
+  # swap). No post-resume defensive checks.
   defp iteration_branch(state, messages, cancelled) do
     cond do
       cancelled ->
         Iteration.finalize_cancelled(state)
-
-      mid_turn_sanity_check_failed?(state, messages) ->
-        log_sanity_check_failure(state, messages)
-        Lifecycle.finalize_turn(state)
 
       pending_tool_calls?(messages) ->
         execute_pending_tool_calls(state, messages)
@@ -230,23 +242,6 @@ defmodule Nest.Agents.Agent.ChatTurn do
       true ->
         Iteration.dispatch_batch(state, messages)
     end
-  end
-
-  defp log_sanity_check_failure(state, messages) do
-    require Logger
-
-    Logger.error(
-      "ChatTurn resumed with mid_turn info but last message is not assistant+ToolUse. " <>
-        "agent=#{state.ctx.agent_name} iteration=#{state.iteration} last=#{inspect(List.last(messages))}"
-    )
-  end
-
-  # Sanity check for the mid-turn resume path. We expected to find
-  # an assistant message with ToolUse parts at the end of the
-  # conversation. If we don't, the compactor or some other
-  # post-compaction step dropped the message.
-  defp mid_turn_sanity_check_failed?(state, messages) do
-    match?(%{kind: :mid_turn}, state.info) and not pending_tool_calls?(messages)
   end
 
   # Detect that the LLM has already responded with tool calls and
@@ -289,13 +284,17 @@ defmodule Nest.Agents.Agent.ChatTurn do
     end
   end
 
-  # Resolve the iteration count from the info. For mid-turn resumes
-  # the iteration count is preserved across the compaction boundary
-  # so the tool-call iteration limit is enforced continuously.
-  defp initial_iteration(%{kind: :mid_turn, iteration: n}), do: n
+  # Resolve the iteration count from the continuation. Both tool
+  # continuations (`{:tool_call, _, _, _}` and
+  # `{:compact_tool, _, _, _}`) carry their iteration count +
+  # max_iterations through the compaction boundary so the
+  # tool-call iteration cap is enforced continuously across
+  # both trigger types. The `{:user_message, _}` and `nil`
+  # shapes start fresh (iteration 0, default max).
+  defp initial_iteration({_tag, _msg, n, _max}) when is_integer(n), do: n
   defp initial_iteration(_), do: 0
 
-  defp initial_max_iterations(%{kind: :mid_turn, max_iterations: m}), do: m
+  defp initial_max_iterations({_tag, _msg, _n, m}) when is_integer(m), do: m
   defp initial_max_iterations(_), do: Config.configured_max_tool_iterations()
 
   # Check if we're approaching the iteration cap. If

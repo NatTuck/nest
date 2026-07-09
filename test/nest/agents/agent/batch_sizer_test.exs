@@ -278,57 +278,15 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
   end
 
   describe "ToolLoop integration" do
-    test "ToolLoop.execute/3 routes single context.compact to compaction handler" do
-      alias Nest.Agents.Agent.ToolLoop
+    # Note: `context.compact` used to be handled inside ToolLoop
+    # (singleton → task-worker block on compaction; mixed → refuse).
+    # The chat turn's `ResponseHandler` owns that handling now;
+    # see `test/nest/agents/agent/chat_turn/response_handler_test.exs`
+    # for the modern coverage. `ToolLoop.execute/3` is now an
+    # unconditional passthrough to `BatchSizer.run/2` for non-empty
+    # batches and `[]` for empty ones.
 
-      # Spawn a tiny GenServer-like process that pretends to be the
-      # Agent: it replies to `{:task_compaction_request, ...}` with
-      # `{:task_compaction_done, []}` so the chat task can unblock.
-      test_pid = self()
-
-      {:ok, agent_pid} =
-        Task.start_link(fn ->
-          receive do
-            {:task_compaction_request, task, _focus} ->
-              send(task, {:task_compaction_done, []})
-              send(test_pid, :compaction_request_received)
-          after
-            5000 -> :ok
-          end
-        end)
-
-      c = %{ctx([], context_limit: 100_000) | agent_pid: agent_pid}
-
-      result =
-        ToolLoop.execute(
-          c,
-          %{},
-          [call("c1", "context", %{"action" => "compact", "focus" => "summary"})]
-        )
-
-      assert_receive :compaction_request_received, 1000
-      assert [%ToolResult{name: "context", is_error: false}] = result
-
-      Process.exit(agent_pid, :kill)
-    end
-
-    test "ToolLoop.execute/3 refuses batch with context.compact mixed with other tools" do
-      alias Nest.Agents.Agent.ToolLoop
-
-      c = ctx([small_tool("read_file")])
-
-      result =
-        ToolLoop.execute(c, %{}, [
-          call("c1", "context", %{"action" => "compact"}),
-          call("c2", "read_file", %{"path" => "/tmp/x"})
-        ])
-
-      assert length(result) == 2
-      assert Enum.all?(result, & &1.is_error)
-      assert hd(result).content =~ "context.compact must be the sole tool"
-    end
-
-    test "ToolLoop.execute/3 delegates batch to BatchSizer for non-context-compact batches" do
+    test "ToolLoop.execute/3 delegates non-empty batch to BatchSizer" do
       alias Nest.Agents.Agent.ToolLoop
 
       tools = [small_tool("echo"), small_tool("beta")]
@@ -337,6 +295,12 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
 
       assert [%ToolResult{name: "echo"}, %ToolResult{name: "beta"}] = results
       assert Enum.all?(results, &(not &1.is_error))
+    end
+
+    test "ToolLoop.execute/3 returns [] for empty batch" do
+      alias Nest.Agents.Agent.ToolLoop
+
+      assert [] = ToolLoop.execute(ctx([small_tool("echo")]), %{}, [])
     end
   end
 

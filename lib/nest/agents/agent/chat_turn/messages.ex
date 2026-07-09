@@ -112,8 +112,44 @@ defmodule Nest.Agents.Agent.ChatTurn.Messages do
         %ToolResult{
           tool_call_id: tc.id,
           name: tc.name,
-          content: @max_iterations_error_content,
           arguments: tc.arguments,
+          content: @max_iterations_error_content,
+          is_error: true
+        }
+      end)
+
+    tool(error_results)
+  end
+
+  @doc """
+  Refuse a batch that mixes `context.compact` with other
+  tool calls. Returns a single `{:tool, _}` message with one
+  `Part.ToolResult` per tool call, all `is_error: true` and a
+  shared reason. The LLM receives one refusal message in the
+  next iteration and is expected to retry without
+  `context.compact` mixed in. Used by `ResponseHandler` when
+  the LLM emits `context.compact` together with non-compact
+  tool calls.
+
+  `_messages_before` is accepted for symmetry with other
+  message builders (it would be used for richer refusal text
+  that referenced the pre-swap state); currently unused.
+  """
+  @spec refuse_context_compact_co_batch([Nest.Messages.ToolCall.t()], [tuple()]) ::
+          {:tool, Tool.t()}
+  def refuse_context_compact_co_batch(tool_calls, _messages_before) do
+    reason =
+      "Batch refused: context.compact must be the sole tool in a batch " <>
+        "(current batch contains other tools as well). Call context.compact " <>
+        "in its own iteration."
+
+    error_results =
+      Enum.map(tool_calls, fn tc ->
+        %ToolResult{
+          tool_call_id: tc.id,
+          name: tc.name,
+          arguments: tc.arguments,
+          content: reason,
           is_error: true
         }
       end)
