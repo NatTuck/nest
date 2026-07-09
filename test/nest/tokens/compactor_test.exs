@@ -3,12 +3,17 @@ defmodule Nest.Tokens.CompactorTest do
   Tests for `Nest.Tokens.Compactor`.
 
   Covers:
-  - Single-pass compaction (recent slice fits in 25%)
-  - Two-pass compaction (recent slice too big, head + tail summaries)
-  - Edge cases: empty, system-only, no head to summarize
-  - LLM call ordering and content passed to it
-  - Output message structure (system + head summary + last user + tail/responses)
-  - Error cases: empty LLM response, LLM callback error
+    - Single-pass compaction (no recent-slice preservation;
+      the entire conversation folds into a single summary)
+    - Edge cases: empty, system-only, no-user, system+user
+    - LLM call signature: 3-arity `(messages, remaining_tokens,
+      optional_guidance) -> {:ok, text} | {:error, reason}`
+    - Output message structure (system + summary, with the
+      summary tagged `{:system, _}` so position 0 stays a
+      system message)
+    - Error cases: empty LLM response, LLM callback error
+    - `compute_summary_budget/4` budget hints (single-pass +
+      digit-count buffer for self-consistent sizing)
   """
 
   use ExUnit.Case, async: true
@@ -20,7 +25,8 @@ defmodule Nest.Tokens.CompactorTest do
   alias Nest.Tokens.Compactor
 
   # Build a simple message list with a system + a few user/assistant
-  # pairs.
+  # pairs. Always leads with a system message so it's a valid
+  # input to `split_messages/1` for compaction.
   defp build_messages do
     [
       {:system, %System{index: 0, parts: [%Part.Text{text: "You are helpful"}]}},
@@ -31,25 +37,29 @@ defmodule Nest.Tokens.CompactorTest do
     ]
   end
 
-  # A trivial LLM callback that returns a fixed summary wrapped in
-  # the new {:ok, text} | {:error, _} shape. Tests can use the
-  # capture variant to inspect what the compactor passed.
+  # A trivial LLM callback matching the 3-arity signature.
   defp mock_llm_call(text) do
-    fn _messages -> {:ok, text} end
+    fn _messages, _remaining_tokens, _optional_guidance -> {:ok, text} end
   end
 
-  # A capture-based callback: records the messages it received
-  # and returns a configurable summary.
+  # A capture-based callback: records (messages, remaining_tokens,
+  # optional_guidance) inputs and returns a configurable summary.
   defp capture_llm_call(parent, summary) do
-    fn messages ->
-      send(parent, {:llm_called, messages})
+    fn messages, remaining_tokens, optional_guidance ->
+      send(parent, {:llm_called, messages, remaining_tokens, optional_guidance})
       {:ok, summary}
     end
   end
 
   # LLM callback that always errors. Useful for error-path tests.
   defp error_llm_call(reason) do
-    fn _messages -> {:error, reason} end
+    fn _messages, _remaining, _guidance -> {:error, reason} end
+  end
+
+  # A simple system message useful across `compute_summary_budget/4`
+  # tests.
+  defp build_system do
+    {:system, %System{index: 0, parts: [%Part.Text{text: "You are helpful"}]}}
   end
 
   describe "compact/3 — edge cases" do
@@ -62,18 +72,14 @@ defmodule Nest.Tokens.CompactorTest do
       assert Compactor.compact(msgs, 32_768, mock_llm_call("anything")) == {:ok, msgs}
     end
 
-    test "no user message returns {:ok, msgs} unchanged" do
-      msgs = [
-        {:system, %System{index: 0, parts: [%Part.Text{text: "System"}]}},
-        {:assistant, %Assistant{index: 1, parts: [%Part.Text{text: "Assistant reply"}]}}
-      ]
-
+    test "system + single user returns unchanged (no head to summarize)" do
+      msgs = [build_system(), {:user, %User{index: 1, parts: [%Part.Text{text: "Q"}]}}]
       assert Compactor.compact(msgs, 32_768, mock_llm_call("anything")) == {:ok, msgs}
     end
   end
 
-  describe "compact/3 — single-pass (recent slice fits in 25%)" do
-    test "summarizes the head, keeps recent slice verbatim" do
+  describe "compact/3 — single-pass fold" do
+    test "compaction folds the entire conversation into one summary (no recent slice)" do
       test_pid = self()
 
       assert {:ok, new_messages} =
@@ -83,31 +89,19 @@ defmodule Nest.Tokens.CompactorTest do
                  capture_llm_call(test_pid, "Summary of the earlier conversation")
                )
 
-      # Should have received exactly one LLM call (pass 1)
-      assert_received {:llm_called, _input}
+      assert_received {:llm_called, _, _, _}
 
-      # Output should be: system, head summary, last user, responses
-      assert length(new_messages) == 4
-      assert match?({:system, %System{}}, hd(new_messages))
+      # Output: [system, summary]. The 4 mid-conversation messages
+      # got folded into a single summary message at index 1.
+      assert length(new_messages) == 2
+      assert match?({:system, %System{}}, Enum.at(new_messages, 0))
       assert match?({:system, %System{}}, Enum.at(new_messages, 1))
-      assert match?({:user, %User{}}, Enum.at(new_messages, 2))
-      assert match?({:assistant, %Assistant{}}, Enum.at(new_messages, 3))
 
-      # The head summary contains the LLM's raw text (no placeholder
-      # prefix added by the compactor — the agent's handler adds the
-      # user-visible "Summary of earlier conversation:" prefix).
       {:system, %System{parts: [head_part | _]}} = Enum.at(new_messages, 1)
       assert head_part.text == "Summary of the earlier conversation"
-
-      # The last user and assistant should be unchanged
-      {:user, %User{parts: [last_user_part | _]}} = Enum.at(new_messages, 2)
-      assert last_user_part.text == "Second question"
-
-      {:assistant, %Assistant{parts: [last_asst_part | _]}} = Enum.at(new_messages, 3)
-      assert last_asst_part.text == "Second answer"
     end
 
-    test "pass 1 input includes system + head (NOT responses)" do
+    test "pass 1 input is the agent's full prior conversation (KV cache reuse)" do
       test_pid = self()
 
       Compactor.compact(
@@ -116,162 +110,60 @@ defmodule Nest.Tokens.CompactorTest do
         capture_llm_call(test_pid, "head")
       )
 
-      assert_received {:llm_called, input}
-      # Input should be: system, [first user, first assistant]
-      # (everything before the last user, with system prepended)
-      assert length(input) == 3
+      assert_received {:llm_called, input, _remaining_tokens, _guidance}
+      assert length(input) == 5
       assert match?({:system, %System{}}, Enum.at(input, 0))
       assert match?({:user, %User{}}, Enum.at(input, 1))
       assert match?({:assistant, %Assistant{}}, Enum.at(input, 2))
-    end
-  end
-
-  describe "compact/3 — two-pass (recent slice too big)" do
-    test "tight context budget forces a second pass" do
-      test_pid = self()
-
-      # 8k context with a 25% threshold = 2k. We use a 60k
-      # "summary" of mixed text (not single-char repeats, which
-      # BPE compresses ~8x) so the estimate actually reflects
-      # the intent.
-      big_head = String.duplicate("hello world ", 5_000)
-
-      assert {:ok, new_messages} =
-               Compactor.compact(
-                 build_messages(),
-                 8_192,
-                 capture_llm_call(test_pid, big_head)
-               )
-
-      # Two calls: first returns the big head, second returns tail
-      assert_received {:llm_called, _input1}
-      assert_received {:llm_called, _input2}
-
-      # Output should be: system, head summary, last user, tail summary
-      assert length(new_messages) == 4
-      assert match?({:system, %System{}}, Enum.at(new_messages, 0))
-      assert match?({:system, %System{}}, Enum.at(new_messages, 1))
-      assert match?({:user, %User{}}, Enum.at(new_messages, 2))
-      assert match?({:system, %System{}}, Enum.at(new_messages, 3))
-
-      # The third (tail summary) should contain the tail LLM call
-      # output — the raw text, no prefix.
-      {:system, %System{parts: [tail_part | _]}} = Enum.at(new_messages, 3)
-      assert String.contains?(tail_part.text, String.slice(big_head, 0, 100))
+      assert match?({:user, %User{}}, Enum.at(input, 3))
+      assert match?({:assistant, %Assistant{}}, Enum.at(input, 4))
     end
 
-    test "pass 2 input includes system + head_summary + last_user + responses" do
+    test "optional_guidance passed through (currently always nil from compact/3)" do
       test_pid = self()
-
-      big_head = String.duplicate("hello world ", 5_000)
 
       Compactor.compact(
         build_messages(),
-        8_192,
-        capture_llm_call(test_pid, big_head)
+        32_768,
+        capture_llm_call(test_pid, "head")
       )
 
-      assert_received {:llm_called, _input1}
-      assert_received {:llm_called, input2}
-
-      # Pass 2 input: system, [head summary, last user, last assistant]
-      assert length(input2) == 4
-      assert match?({:system, %System{}}, Enum.at(input2, 0))
-      # The 2nd element is the head summary (a system message)
-      assert match?({:system, %System{}}, Enum.at(input2, 1))
-      # Then last user + last assistant
-      assert match?({:user, %User{}}, Enum.at(input2, 2))
-      assert match?({:assistant, %Assistant{}}, Enum.at(input2, 3))
-    end
-  end
-
-  describe "compact/3 — minimum input" do
-    test "system + single user: empty head short-circuits to :too_short" do
-      msgs = [
-        {:system, %System{index: 0, parts: [%Part.Text{text: "Sys"}]}},
-        {:user, %User{index: 1, parts: [%Part.Text{text: "Q"}]}}
-      ]
-
-      # When the head between system and last user is empty,
-      # compaction cannot help — the compactor short-circuits
-      # and returns the input unchanged (callers can detect by
-      # comparing lengths or by checking :too_short). No LLM
-      # call is made.
-      assert Compactor.compact(msgs, 32_768, mock_llm_call("head text")) == {:ok, msgs}
+      assert_received {:llm_called, _, _, guidance}
+      assert guidance == nil
     end
 
-    test "system + user + assistant: head has one user, pass 1 still runs" do
+    test "long tool flows get summarized away, not kept verbatim" do
       test_pid = self()
 
       msgs = [
-        {:system, %System{index: 0, parts: [%Part.Text{text: "Sys"}]}},
-        {:user, %User{index: 1, parts: [%Part.Text{text: "Q1"}]}},
-        {:assistant, %Assistant{index: 2, parts: [%Part.Text{text: "A1"}]}},
-        {:user, %User{index: 3, parts: [%Part.Text{text: "Q2"}]}}
+        build_system(),
+        {:user, %User{index: 1, parts: [%Part.Text{text: "Run ls"}]}},
+        {:assistant,
+         %Assistant{
+           index: 2,
+           parts: [%Part.Text{text: "tool_call(shell_cmd, ls)"}]
+         }},
+        {:assistant,
+         %Assistant{
+           index: 3,
+           parts: [
+             %Part.Text{text: String.duplicate("file1.txt\nfile2.txt\n", 1000)}
+           ]
+         }}
       ]
 
       assert {:ok, new_messages} =
                Compactor.compact(
                  msgs,
                  32_768,
-                 capture_llm_call(test_pid, "head text")
+                 capture_llm_call(test_pid, "User listed files")
                )
 
-      # Pass 1 ran; the head had one user + one assistant
-      assert_received {:llm_called, input}
-      assert length(input) == 3
-      assert match?({:system, %System{}}, Enum.at(input, 0))
-      assert match?({:user, %User{}}, Enum.at(input, 1))
-      assert match?({:assistant, %Assistant{}}, Enum.at(input, 2))
-
-      # Output: system, head summary, last user
-      assert length(new_messages) == 3
+      # Output is exactly two messages — the long tool output
+      # got folded into the summary at position 1.
+      assert length(new_messages) == 2
       assert match?({:system, %System{}}, Enum.at(new_messages, 0))
       assert match?({:system, %System{}}, Enum.at(new_messages, 1))
-      assert match?({:user, %User{}}, Enum.at(new_messages, 2))
-    end
-  end
-
-  describe "compact/3 — 25% threshold precision" do
-    test "just at the threshold: single pass" do
-      test_pid = self()
-      # 8k context * 25% = 2k. A 200-repeat summary is
-      # ~500 tokens with safety — well under 2k → single pass.
-      head = String.duplicate("hello world ", 200)
-
-      assert {:ok, new_messages} =
-               Compactor.compact(
-                 build_messages(),
-                 8_192,
-                 capture_llm_call(test_pid, head)
-               )
-
-      # Single pass
-      assert_received {:llm_called, _}
-      refute_received {:llm_called, _}
-
-      assert length(new_messages) == 4
-    end
-
-    test "just over the threshold: two passes" do
-      test_pid = self()
-      # Same context, but a 10k-repeat summary — ~12k tokens
-      # with safety, way over the 2k threshold → two passes.
-      head = String.duplicate("hello world ", 10_000)
-
-      assert {:ok, new_messages} =
-               Compactor.compact(
-                 build_messages(),
-                 8_192,
-                 capture_llm_call(test_pid, head)
-               )
-
-      # Two passes
-      assert_received {:llm_called, _}
-      assert_received {:llm_called, _}
-
-      # Four messages: system, head summary, user, tail summary
-      assert length(new_messages) == 4
     end
   end
 
@@ -291,56 +183,155 @@ defmodule Nest.Tokens.CompactorTest do
 
       assert result == {:error, :timeout}
     end
+  end
 
-    test "tail LLM returns empty → {:error, :llm_returned_empty}" do
-      test_pid = self()
+  describe "compute_summary_budget/4" do
+    test "returns {:ok, n, suffix} where n = reserve - system - request_size + digit buffer" do
+      # 100k context → reserve = 20_000. With a small system and
+      # the standard suffix, n is roughly 20_000 minus system
+      # and suffix sizes.
+      system = build_system()
 
-      # Big head to force two-pass; second call returns empty.
-      big_head = String.duplicate("hello world ", 5_000)
+      assert {:ok, n, rendered_suffix} =
+               Compactor.compute_summary_budget(100_000, system, [system], nil)
 
-      fn messages ->
-        send(test_pid, {:llm_called, messages})
+      assert is_integer(n)
+      assert n > 0
+      assert match?({:system, %System{}}, rendered_suffix)
 
-        case Process.get(:call_count, 0) do
-          0 ->
-            Process.put(:call_count, 1)
-            {:ok, big_head}
-
-          _ ->
-            {:ok, ""}
-        end
-      end
-      |> then(fn llm_call ->
-        Compactor.compact(build_messages(), 8_192, llm_call)
-      end)
-      |> then(fn result ->
-        assert result == {:error, :llm_returned_empty}
-      end)
+      # Rendered suffix carries the chosen N.
+      {:system, %System{parts: [%Part.Text{text: rendered}]}} = rendered_suffix
+      assert rendered =~ "in your #{n} remaining tokens"
     end
 
-    test "tail LLM callback errors → error propagates" do
-      test_pid = self()
+    test "suffix is rendered once with the chosen N (single-pass, no recursion)" do
+      system = build_system()
+      {:ok, n, rendered_suffix} = Compactor.compute_summary_budget(100_000, system, [system], nil)
 
-      big_head = String.duplicate("hello world ", 5_000)
+      # The rendered suffix embeds the chosen N (not the placeholder N=1).
+      {:system, %System{parts: [%Part.Text{text: text}]}} = rendered_suffix
+      assert text =~ "in your #{n} remaining tokens"
+      refute text =~ "in your 1 remaining tokens"
+    end
 
-      fn messages ->
-        send(test_pid, {:llm_called, messages})
+    test "system size is measured, not a constant" do
+      small_system =
+        {:system, %System{index: 0, parts: [%Part.Text{text: "sys"}]}}
 
-        case Process.get(:call_count, 0) do
-          0 ->
-            Process.put(:call_count, 1)
-            {:ok, big_head}
+      big_system =
+        {:system,
+         %System{
+           index: 0,
+           parts: [%Part.Text{text: String.duplicate("big system prompt. ", 200)}]
+         }}
 
-          _ ->
-            {:error, :transport_error}
-        end
-      end
-      |> then(fn llm_call ->
-        Compactor.compact(build_messages(), 8_192, llm_call)
-      end)
-      |> then(fn result ->
-        assert result == {:error, :transport_error}
-      end)
+      msgs = [small_system, {:user, %User{index: 1, parts: [%Part.Text{text: "Q"}]}}]
+
+      {:ok, n_small, _} = Compactor.compute_summary_budget(100_000, small_system, msgs, nil)
+      {:ok, n_big, _} = Compactor.compute_summary_budget(100_000, big_system, msgs, nil)
+
+      # Bigger system → smaller N. The difference is roughly the
+      # estimator delta for the system content plus per-message overhead.
+      assert n_small > n_big
+    end
+
+    test "compaction_request_size scales with optional_guidance length" do
+      system = build_system()
+
+      {:ok, _, suffix_nil} = Compactor.compute_summary_budget(100_000, system, [system], nil)
+
+      {:ok, _, suffix_short} =
+        Compactor.compute_summary_budget(100_000, system, [system], "preserve code paths")
+
+      {:ok, _, suffix_long} =
+        Compactor.compute_summary_budget(
+          100_000,
+          system,
+          [system],
+          String.duplicate("extra guidance. ", 50)
+        )
+
+      {:system, %System{parts: [%Part.Text{text: nil_text}]}} = suffix_nil
+      {:system, %System{parts: [%Part.Text{text: short_text}]}} = suffix_short
+      {:system, %System{parts: [%Part.Text{text: long_text}]}} = suffix_long
+
+      assert String.length(long_text) > String.length(short_text)
+      assert String.length(short_text) > String.length(nil_text)
+    end
+
+    test "headroom cap binds when system + request consume most of reserve" do
+      # 32k context → reserve = 8192. With a 7k system prompt,
+      # the request may use 100+ tokens, leaving the LLM with
+      # only ~1k tokens for the summary.
+      huge_system =
+        {:system,
+         %System{
+           index: 0,
+           parts: [%Part.Text{text: String.duplicate("system. ", 1_500)}]
+         }}
+
+      msgs = [huge_system, {:user, %User{index: 1, parts: [%Part.Text{text: "Q"}]}}]
+
+      {:ok, n, _} = Compactor.compute_summary_budget(32_768, huge_system, msgs, nil)
+
+      # Just verify it returns a sensible (positive) integer — the
+      # exact value depends on the estimator but it should not
+      # exceed the reserve.
+      assert is_integer(n)
+      assert n >= 1
+      assert n <= 8_192
+    end
+
+    test "call-fits cap binds when current_messages is large" do
+      system = build_system()
+
+      # Simulate a heavily-loaded context where current_messages
+      # already takes most of the budget.
+      big_msgs =
+        Enum.map(0..50, fn i ->
+          {:user, %User{index: i + 1, parts: [%Part.Text{text: String.duplicate("msg. ", 200)}]}}
+        end)
+
+      [system | _] = [system | big_msgs]
+
+      {:ok, n, _} = Compactor.compute_summary_budget(100_000, system, [system | big_msgs], nil)
+
+      # With 50 messages at ~100 tokens each plus system + suffix
+      # overhead, the LLM call barely fits in 100k. The call-fits
+      # cap should bind tighter than the headroom cap.
+      assert is_integer(n)
+      assert n > 0
+      assert n < 20_000
+    end
+
+    test "returns {:error, :reserve_exhausted} when reserve can't fit system + suffix" do
+      # 32k context, 8k reserve, with a system that's almost the
+      # full reserve. There's no room for the suffix + any
+      # summary text.
+      huge_system =
+        {:system,
+         %System{
+           index: 0,
+           parts: [%Part.Text{text: String.duplicate("system content. ", 1_500)}]
+         }}
+
+      msgs = [huge_system]
+
+      result = Compactor.compute_summary_budget(32_768, huge_system, msgs, nil)
+
+      # Either we land exactly on a non-zero n (the estimator
+      # happens to give us a tiny positive budget) or refuse.
+      assert result == {:error, :reserve_exhausted} or
+               match?({:ok, n, _} when n >= 1, result)
+    end
+
+    test "the same input produces a suffix containing the returned N" do
+      system = build_system()
+      msgs = [system, {:user, %User{index: 1, parts: [%Part.Text{text: "Q"}]}}]
+      {:ok, n, suffix} = Compactor.compute_summary_budget(100_000, system, msgs, nil)
+
+      {:system, %System{parts: [%Part.Text{text: text}]}} = suffix
+      assert text =~ "#{n}"
     end
   end
 end

@@ -11,6 +11,7 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
   import Mimic
 
   alias Nest.LLM.MockClient
+  alias Nest.Scripts.CompactionProbeSupport
   alias Nest.Vocations
 
   setup :verify_on_exit!
@@ -99,6 +100,47 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
       assert system_prompt =~ "Chat only."
       refute system_prompt =~ "Workspace and tool working directory"
     end
+
+    test "system prompt carries the [mode: compact] compaction paragraph" do
+      valid_caps = %{
+        "net" => false,
+        "fs" => %{"read" => ["/"], "write" => []}
+      }
+
+      {:ok, vocation} =
+        Vocations.create_vocation(%{
+          name: "TestCompactPar-#{System.unique_integer([:positive])}",
+          description: "Test",
+          system_prompt: "Base.",
+          tools: [],
+          modes: %{
+            "chat" => %{
+              "description" => "Just chatting.",
+              "caps" => valid_caps
+            }
+          }
+        })
+
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: vocation.id,
+          workspace_path: "/tmp/test-compact-#{System.unique_integer([:positive])}"
+        })
+
+      system_prompt = get_system_prompt(pid)
+
+      # The [mode: compact] paragraph is the single source of truth
+      # for what the model does at compaction time. It must be
+      # present in every agent's system prompt.
+      assert system_prompt =~ "[mode: compact]"
+      assert system_prompt =~ "Include incomplete tasks"
+      assert system_prompt =~ "decisions made"
+      assert system_prompt =~ "essential file paths"
+      # And it must be the live section, not stale text.
+      assert system_prompt =~
+               CompactionProbeSupport.compaction_mode_section()
+    end
   end
 
   describe "context-limit section" do
@@ -132,7 +174,17 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
       assert system_prompt =~ "Context limit:"
       assert system_prompt =~ "tokens"
       assert system_prompt =~ "resolved from config"
-      assert system_prompt =~ ~s|"compact"|
+      # The reserve/working-budget narrative should appear in the
+      # prompt. qwen3.5-plus has a 512_000-token window; the
+      # reserve is 20% = 102_400, leaving a 409_600 working budget.
+      assert system_prompt =~ "102400"
+      assert system_prompt =~ "reserved for compaction"
+      assert system_prompt =~ "working token budget"
+      assert system_prompt =~ "409600"
+      # The prompt mentions the compaction guidance either in the
+      # context-limit suffix (compaction tooling reference) or
+      # in the [mode: compact] section.
+      assert system_prompt =~ "compact"
       refute system_prompt =~ "default"
       refute system_prompt =~ "may differ"
     end

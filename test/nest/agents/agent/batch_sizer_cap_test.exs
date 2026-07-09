@@ -11,7 +11,7 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
     * `usable = context_limit - estimate_messages(messages) - reserve`
     * `default_cap = floor(usable * 0.80)`
     * `effective_cap = min(LLM_override, default_cap)` (LLM may only lower)
-    * When exceeded: `execute_command` → path-and-head summary,
+    * When exceeded: `shell_cmd` → path-and-head summary,
       `read_file` → structured error, others → log + keep full.
   """
 
@@ -72,19 +72,19 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
     # * With override `max_result_tokens: 100`, cap = min(100, 8000) = 100.
     # * With override `max_result_tokens: 100_000`, cap = min(100_000, 8000) = 8000.
 
-    test "execute_command output exceeding 80% cap routes to summary path", %{tmp_dir: dir} do
+    test "shell_cmd output exceeding 80% cap routes to summary path", %{tmp_dir: dir} do
       # 40_000 chars ≈ 10_000 tokens → exceeds default_cap of 8_000.
       big_output = String.duplicate("z", 40_000)
 
       tools = [
-        make_tool("execute_command", fn _, _ -> {:ok, big_output} end)
+        make_tool("shell_cmd", fn _, _ -> {:ok, big_output} end)
       ]
 
       c = ctx(tools, context_limit: 20_000, tmp_path: dir)
 
       assert [result] =
                BatchSizer.run(
-                 [call("c1", "execute_command", %{"command" => "cat foo"})],
+                 [call("c1", "shell_cmd", %{"command" => "cat foo"})],
                  c
                )
 
@@ -103,7 +103,7 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
       output = String.duplicate("q", 1_000)
 
       tools = [
-        make_tool("execute_command", fn _, _ -> {:ok, output} end)
+        make_tool("shell_cmd", fn _, _ -> {:ok, output} end)
       ]
 
       c = ctx(tools, context_limit: 100_000, tmp_path: dir)
@@ -111,7 +111,7 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
       assert [result] =
                BatchSizer.run(
                  [
-                   call("c1", "execute_command", %{
+                   call("c1", "shell_cmd", %{
                      "command" => "ls",
                      "max_result_tokens" => 100
                    })
@@ -133,7 +133,7 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
       big_output = String.duplicate("r", 40_000)
 
       tools = [
-        make_tool("execute_command", fn _, _ -> {:ok, big_output} end)
+        make_tool("shell_cmd", fn _, _ -> {:ok, big_output} end)
       ]
 
       c = ctx(tools, context_limit: 20_000, tmp_path: dir)
@@ -141,7 +141,7 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
       assert [result] =
                BatchSizer.run(
                  [
-                   call("c1", "execute_command", %{
+                   call("c1", "shell_cmd", %{
                      "command" => "cat big",
                      "max_result_tokens" => 100_000
                    })
@@ -155,16 +155,16 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
     end
 
     test "output below cap stays inline (no summary)", %{tmp_dir: dir} do
-      tools = [small_tool("execute_command")]
+      tools = [small_tool("shell_cmd")]
       c = ctx(tools, context_limit: 100_000, tmp_path: dir)
 
       assert [%ToolResult{content: content, is_error: false}] =
                BatchSizer.run(
-                 [call("c1", "execute_command", %{"command" => "ls"})],
+                 [call("c1", "shell_cmd", %{"command" => "ls"})],
                  c
                )
 
-      assert content == "small output for execute_command"
+      assert content == "small output for shell_cmd"
       refute content =~ "saved to"
       assert Enum.all?(File.ls!(dir), &(not String.starts_with?(&1, "exec-")))
     end
@@ -197,14 +197,14 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
       big_output = String.duplicate("w", 40_000)
 
       tools = [
-        make_tool("execute_command", fn _, _ -> {:ok, big_output} end)
+        make_tool("shell_cmd", fn _, _ -> {:ok, big_output} end)
       ]
 
       c = ctx(tools, context_limit: nil)
 
       assert [%ToolResult{content: content, is_error: false}] =
                BatchSizer.run(
-                 [call("c1", "execute_command", %{"command" => "ls"})],
+                 [call("c1", "shell_cmd", %{"command" => "ls"})],
                  c
                )
 

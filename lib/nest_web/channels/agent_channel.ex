@@ -106,12 +106,22 @@ defmodule NestWeb.AgentChannel do
 
   # Handle a `chat:compaction` event from PubSub (broadcast
   # by `Broadcasts.compaction/3` after a successful
-  # `archive_and_compact` DB write). The payload carries
+  # `record_compaction` DB write). The payload carries
   # the marker and the full archived history; the JS side
   # uses it to render the compaction divider in the UI.
   @impl true
   def handle_info({:chat_compaction, payload}, socket) do
     push(socket, "chat:compaction", payload)
+    {:noreply, socket}
+  end
+
+  # Handle a `chat:compaction-loop` event from PubSub (broadcast
+  # by `Broadcasts.compaction_loop/3` when the loop-breaker
+  # trips). The JS side stores the text via `setCompactionLoop`
+  # so the StatusBanner renders the OK button.
+  @impl true
+  def handle_info({:chat_compaction_loop, payload}, socket) do
+    push(socket, "chat:compaction-loop", payload)
     {:noreply, socket}
   end
 
@@ -155,7 +165,12 @@ defmodule NestWeb.AgentChannel do
 
     case Agents.get_agent(agent_name) do
       {:ok, %{status: status}}
-      when status in [:compacting, :compaction_failed, :context_overflow] ->
+      when status in [
+             :compacting,
+             :compaction_failed,
+             :compaction_loop_detected,
+             :context_overflow
+           ] ->
         # Reject incoming messages while the agent is in a
         # frozen state. The frontend hides the chat input and
         # shows a banner; this is the server-side enforcement.
@@ -164,6 +179,11 @@ defmodule NestWeb.AgentChannel do
         # pair — the model is fundamentally too small for the
         # system prompt and retrying won't help. The frontend
         # banner reflects that (no Retry button).
+        #
+        # `:compaction_loop_detected` is new — distinct from
+        # `:compaction_failed`: it shows an OK button instead
+        # of Retry. Once the user clicks OK, status returns to
+        # `:idle` and incoming messages resume.
         {:reply, {:error, %{"reason" => "agent_status_#{status}"}}, socket}
 
       {:ok, _agent} ->
@@ -188,6 +208,17 @@ defmodule NestWeb.AgentChannel do
     agent_name = socket.assigns.agent_name
 
     case Agents.retry_compaction(agent_name) do
+      :ok -> {:reply, {:ok, %{}}, socket}
+      {:error, :not_found} -> {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
+      {:error, reason} -> {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
+    end
+  end
+
+  @impl true
+  def handle_in("chat:loop-detected-ok", _payload, socket) do
+    agent_name = socket.assigns.agent_name
+
+    case Agents.compaction_loop_detected_ok(agent_name) do
       :ok -> {:reply, {:ok, %{}}, socket}
       {:error, :not_found} -> {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
       {:error, reason} -> {:reply, {:error, %{"reason" => to_string(reason)}}, socket}

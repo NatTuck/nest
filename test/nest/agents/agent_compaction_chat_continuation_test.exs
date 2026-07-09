@@ -62,7 +62,17 @@ defmodule Nest.Agents.AgentCompactionChatContinuationTest do
     MockClient.start_link()
     MockClient.clear()
 
-    on_exit(fn -> Process.delete(:nest_test_agent_pid) end)
+    # Compaction writes flow through AgentPersistence
+    # (gated on `persistence_enabled?`). Enable the flag for
+    # the duration of the suite so the marker INSERT and the
+    # `last_compaction_index` column bump actually hit the DB.
+    previous = Application.get_env(:nest, :persistence, %{})
+    Application.put_env(:nest, :persistence, enabled: true)
+
+    on_exit(fn ->
+      Application.put_env(:nest, :persistence, previous)
+      Process.delete(:nest_test_agent_pid)
+    end)
 
     :ok
   end
@@ -114,11 +124,31 @@ defmodule Nest.Agents.AgentCompactionChatContinuationTest do
       # no other renumbered output, so next_message_index=3).
       vocation_id = programmer_vocation_id()
 
-      {pid, _agent_id} =
+      # Disable persistence for the agent's `init/1` so its
+      # `persist_initial_system_message/1` call (which would
+      # fail with `:agent_not_found` and emit
+      # `Logger.warning`) is a silent no-op. Then re-enable
+      # persistence AND insert the agents row BEFORE driving the
+      # compaction cycle — the marker INSERT, the regenerator
+      # output, and `ChatPipeline.resume_with_pending/1` all need
+      # the row to be visible, otherwise they emit
+      # `Logger.warning` for `:agent_not_found`. AGENTS.md
+      # forbids noisy test output.
+      Application.put_env(:nest, :persistence, enabled: false)
+
+      {pid, agent_id} =
         start_agent(%{
           model: %{name: "qwen3.5-plus"},
           vocation_id: vocation_id
         })
+
+      Application.put_env(:nest, :persistence, enabled: true)
+
+      Nest.Persistence.insert_agent(%{
+        name: agent_id,
+        model: %{name: "qwen3.5-plus"},
+        vocation_id: vocation_id
+      })
 
       # Pre-seed next_message_index so marker_index is well-defined.
       # Also pre-seed `pending_user_message` (per TODO 4 in
@@ -183,17 +213,34 @@ defmodule Nest.Agents.AgentCompactionChatContinuationTest do
       # agent's `chat_state.history` ends with a `{:compaction, _}`
       # marker whose `.index` field is the pre-swap
       # `next_message_index` (= 1 in this setup). Pre-fix the
-      # DB-side `archive_and_compact/4` tried to insert the
+      # DB-side `record_compaction/3` tried to insert the
       # marker at `last_index + 1 = 2` and collided with the
       # fresh system message that `regenerate_for_compaction/2`
       # had already persisted at index 2.
       vocation_id = programmer_vocation_id()
 
-      {pid, _agent_id} =
+      # Same persistence disable/re-enable dance as the previous
+      # test: AGENTS.md forbids noisy test output, and the
+      # agent's init-time `persist_initial_system_message/1`
+      # would otherwise emit `Logger.warning("Failed to persist
+      # message…")` for `:agent_not_found`. We also insert the
+      # agents row before driving the compaction cycle so the
+      # marker INSERT and regenerator output find it.
+      Application.put_env(:nest, :persistence, enabled: false)
+
+      {pid, agent_id} =
         start_agent(%{
           model: %{name: "qwen3.5-plus"},
           vocation_id: vocation_id
         })
+
+      Application.put_env(:nest, :persistence, enabled: true)
+
+      Nest.Persistence.insert_agent(%{
+        name: agent_id,
+        model: %{name: "qwen3.5-plus"},
+        vocation_id: vocation_id
+      })
 
       :sys.replace_state(pid, fn state ->
         %{state | chat_state: %{state.chat_state | next_message_index: 1}}
@@ -230,11 +277,21 @@ defmodule Nest.Agents.AgentCompactionChatContinuationTest do
       # — verifiable without driving a chat continuation.
       vocation_id = programmer_vocation_id()
 
-      {pid, _agent_id} =
+      Application.put_env(:nest, :persistence, enabled: false)
+
+      {pid, agent_id} =
         start_agent(%{
           model: %{name: "qwen3.5-plus"},
           vocation_id: vocation_id
         })
+
+      Application.put_env(:nest, :persistence, enabled: true)
+
+      Nest.Persistence.insert_agent(%{
+        name: agent_id,
+        model: %{name: "qwen3.5-plus"},
+        vocation_id: vocation_id
+      })
 
       :sys.replace_state(pid, fn state ->
         %{state | chat_state: %{state.chat_state | next_message_index: 5}}
@@ -269,8 +326,6 @@ defmodule Nest.Agents.AgentCompactionChatContinuationTest do
   end
 
   describe "chat:compaction broadcast (regression: optimistic/server race)" do
-    @describetag :persistence_enabled
-
     test "skips the chat:compaction PubSub broadcast when the DB write fails (Bug 3)" do
       # The original `overall-crawdad` crash: the marker
       # INSERT hit a unique-constraint violation (marker
@@ -286,13 +341,11 @@ defmodule Nest.Agents.AgentCompactionChatContinuationTest do
       # a row at the marker_index, so the marker's INSERT hits
       # the `(agent_id, message_index)` unique constraint and
       # the transaction rolls back. The wrapper's
-      # `do_archive_and_compact/4` logs the warning, returns
-      # `{:error, :rollback}`, and `persist_and_broadcast/5`
+      # `do_record_compaction/3` logs the warning, returns
+      # `{:error, reason}`, and `persist_and_broadcast/5`
       # logs the second warning and skips the broadcast.
-      previous = Application.get_env(:nest, :persistence, %{})
-      Application.put_env(:nest, :persistence, enabled: true)
-      on_exit(fn -> Application.put_env(:nest, :persistence, previous) end)
-
+      # (`persistence_enabled` is on for the whole suite via
+      # the `setup` block above.)
       vocation_id = programmer_vocation_id()
 
       # Bypass `start_agent/1` for this test: it calls
@@ -312,7 +365,7 @@ defmodule Nest.Agents.AgentCompactionChatContinuationTest do
       # Agent's `init/1` -> `persist_initial_system_message/1` ->
       # `append_message` finds the row and succeeds cleanly. The
       # row also needs to exist for the post-compaction marker
-      # INSERT (tested below via Bug 3's `archive_and_compact`
+      # INSERT (tested below via Bug 3's `record_compaction`
       # collision path).
       {:ok, _} =
         Nest.Persistence.insert_agent(%{

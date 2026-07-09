@@ -4,12 +4,14 @@
  * Covers:
  * - Renders nothing when history is empty
  * - Renders nothing when history is null/undefined
- * - Filters out compaction markers (handled by parent)
- * - Shows "No archived messages" when only compaction markers exist
- * - Renders a bubble per message with the correct role
- * - Renders tool call / tool result counts when present
- * - Roles map to the correct avatar letter and label
- * - Tolerates missing timestamps / unknown roles
+ * - Filters out EARLIER compaction markers; renders the LAST
+ *   one as a dedicated marker box at the end of the visible
+ *   list (carries archivedCount + token-stats fields).
+ * - Renders a bubble per non-compaction message with the
+ *   correct role.
+ * - Renders tool call / tool result counts when present.
+ * - Roles map to the correct avatar letter and label.
+ * - Tolerates missing timestamps / unknown roles.
  */
 
 import { describe, it, expect, afterEach } from "vitest";
@@ -44,13 +46,17 @@ describe("CollapsedHistory", () => {
       expect(container.firstChild).toBeNull();
     });
 
-    it("shows a placeholder when only compaction markers are present", () => {
+    it("renders the LAST compaction marker as a marker box when only markers are present", () => {
       const history = [
         { index: 0, role: "compaction", archivedCount: 5 },
         { index: 1, role: "compaction", archivedCount: 2 },
       ];
       render(<CollapsedHistory history={history} />);
-      expect(screen.getByText(/No archived messages/)).toBeInTheDocument();
+      // Only one marker box should render (the LAST one);
+      // earlier markers are filtered out.
+      const boxes = screen.getAllByTestId("history-compaction-marker");
+      expect(boxes).toHaveLength(1);
+      expect(boxes[0].getAttribute("data-marker-index")).toBe("1");
     });
   });
 
@@ -65,18 +71,31 @@ describe("CollapsedHistory", () => {
       expect(screen.getAllByTestId("history-message")).toHaveLength(3);
     });
 
-    it("skips compaction markers in the visible list", () => {
-      const history = buildHistory([
-        { role: "user", content: "Hello" },
-        { role: "compaction", archivedCount: 2 },
-        { role: "user", content: "After compaction" },
-      ]);
+    it("skips EARLIER compaction markers and renders the LAST one as a marker box", () => {
+      const history = [
+        ...buildHistory([
+          { role: "user", content: "Hello" },
+          { role: "compaction", archivedCount: 2 },
+          { role: "user", content: "After compaction" },
+        ]),
+      ];
       render(<CollapsedHistory history={history} />);
 
       const bubbles = screen.getAllByTestId("history-message");
       expect(bubbles).toHaveLength(2);
       expect(bubbles[0].textContent).toContain("Hello");
       expect(bubbles[1].textContent).toContain("After compaction");
+
+      const markerBoxes = screen.getAllByTestId("history-compaction-marker");
+      expect(markerBoxes).toHaveLength(1);
+      // The marker box renders AFTER the user/assistant bubbles
+      // (it's the last item in the visible list).
+      const collapsed = screen.getByTestId("collapsed-history");
+      expect(
+        collapsed.children[collapsed.children.length - 1].getAttribute(
+          "data-testid",
+        ),
+      ).toBe("history-compaction-marker");
     });
 
     it("uses the correct role label per message", () => {
@@ -153,6 +172,54 @@ describe("CollapsedHistory", () => {
       // role string itself
       expect(screen.getByText("alien")).toBeInTheDocument();
     });
+  });
+
+  describe("compaction marker box (last-entry only)", () => {
+    it("renders the marker box's archivedCount line when no token stats are provided", () => {
+      const history = [{ index: 0, role: "compaction", archivedCount: 7 }];
+      render(<CollapsedHistory history={history} />);
+      const box = screen.getByTestId("history-compaction-marker");
+      expect(box.textContent).toContain("7 earlier messages archived");
+    });
+
+    it("renders the marker box's token-stats line when tokens_compacted/tokens_compacted_to are set", () => {
+      const history = [
+        {
+          index: 0,
+          role: "compaction",
+          archivedCount: 4,
+          tokensCompacted: 18_432,
+          tokensCompactedTo: 4_096,
+        },
+      ];
+      render(<CollapsedHistory history={history} />);
+      const stats = screen.getByTestId("history-compaction-stats");
+      expect(stats.textContent).toContain("18,432");
+      expect(stats.textContent).toContain("4,096");
+    });
+
+    it("renders the saved delta when tokensCompacted > tokensCompactedTo", () => {
+      const history = [
+        {
+          index: 0,
+          role: "compaction",
+          archivedCount: 3,
+          tokensCompacted: 12_345,
+          tokensCompactedTo: 6_789,
+        },
+      ];
+      render(<CollapsedHistory history={history} />);
+      const box = screen.getByTestId("history-compaction-marker");
+      // saved = 12_345 - 6_789 = 5_556
+      expect(box.textContent).toContain("5,556");
+    });
+
+    it("uses singular wording when archivedCount is 1", () => {
+      const history = [{ index: 0, role: "compaction", archivedCount: 1 }];
+      render(<CollapsedHistory history={history} />);
+      const box = screen.getByTestId("history-compaction-marker");
+      expect(box.textContent).toContain("1 earlier message archived");
+    });
 
     it("tolerates missing timestamps", () => {
       const history = [
@@ -161,6 +228,47 @@ describe("CollapsedHistory", () => {
       render(<CollapsedHistory history={history} />);
       // No crash; the message still renders
       expect(screen.getByText("no ts")).toBeInTheDocument();
+    });
+
+    it("tolerates a malformed timestamp without crashing", () => {
+      // `formatTimestamp/1` falls back to passing through the
+      // value when `new Date(<garbage>)` throws — covered when
+      // a message carries a string that Date can't parse. The
+      // exact text isn't easily assertable (the rendered DOM
+      // splits the value across multiple elements); the only
+      // contract pinned here is "doesn't crash" + "the bubble
+      // still renders".
+      const history = [
+        {
+          index: 0,
+          role: "user",
+          content: "ts-bad",
+          timestamp: "not-a-real-date",
+          apiLogs: [],
+        },
+      ];
+      render(<CollapsedHistory history={history} />);
+      expect(screen.getByText("ts-bad")).toBeInTheDocument();
+    });
+
+    it("renders a normal visible list when history has no compaction markers", () => {
+      // Hits the `lastCompactionIdx >= 0 ? ... : null` falsy
+      // branch (no marker → `lastMarker === null`). The
+      // `!history || history.length === 0` early-return is NOT
+      // hit because history has items; the conditional `find`
+      // returns -1 and the truthy branch produces `null`.
+      const history = [
+        { index: 0, role: "user", content: "Hello", apiLogs: [] },
+        { index: 1, role: "assistant", content: "Hi", apiLogs: [] },
+      ];
+
+      render(<CollapsedHistory history={history} />);
+
+      const bubbles = screen.getAllByTestId("history-message");
+      expect(bubbles).toHaveLength(2);
+      expect(
+        screen.queryByTestId("history-compaction-marker"),
+      ).not.toBeInTheDocument();
     });
 
     it("strips the [mode: X]\\n prefix from archived user messages", () => {

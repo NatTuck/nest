@@ -2,17 +2,30 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   @moduledoc """
   Composes the agent's initial system prompt from the
   vocation's base prompt and several contextual sections
-  (mode catalog, workspace, tool-call budget, context limit,
-  AGENTS.md).
+  (mode catalog, `[mode: compact]` compaction guidance,
+  workspace, tool-call budget, context limit, AGENTS.md).
 
   Extracted from `Nest.Agents.Agent` so the GenServer
   module stays under the 500-line credo limit. The
   resulting prompt becomes the `content` of the
   `{:system, _}` message at position 0 of the agent's
   messages list.
+
+  The `[mode: compact]` paragraph is the SOLE source of
+  compaction semantics in the agent's prompt. The
+  compactor's per-call request appends a SUFFIX system
+  message of the form `[mode: compact] Summarize the
+  conversation in your <N> remaining tokens.`; the agent
+  recognizes that prefix and follows the paragraph's
+  guidance. Centralizing the guidance here means
+  per-compaction input tokens are tiny (just the suffix)
+  and we don't ship a separate "you are a summarizer"
+  prompt template.
   """
 
   alias Nest.Agents.Agent.Config
+  alias Nest.Scripts.CompactionProbeSupport
+  alias Nest.Tokens.Reserve
   alias Nest.Vocations
 
   @doc """
@@ -57,7 +70,8 @@ defmodule Nest.Agents.Agent.SystemPrompt do
     workspace_section(workspace_path) <>
       tool_call_limit_section() <>
       context_limit_section(context_limit_info) <>
-      agents_md_section(workspace_path)
+      agents_md_section(workspace_path) <>
+      compaction_mode_section()
   end
 
   defp workspace_section(nil), do: ""
@@ -81,10 +95,12 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   defp context_limit_section({nil, _}), do: ""
 
   defp context_limit_section({limit, source}) do
+    reserve = Reserve.response_budget(limit)
+    effective = max(1, limit - reserve)
+
     "\n\nContext limit: #{limit} tokens (resolved from #{source}). " <>
-      "You can check current usage via the `context` tool " <>
-      "(action: \"check\") and trigger compaction via the `context` " <>
-      "tool (action: \"compact\").\n"
+      "Of this, ~#{reserve} tokens are reserved for compaction, " <>
+      "giving a working token budget of ~#{effective} tokens.\n"
   end
 
   defp agents_md_section(nil), do: ""
@@ -98,6 +114,28 @@ defmodule Nest.Agents.Agent.SystemPrompt do
         ""
     end
   end
+
+  # The [mode: compact] paragraph is the agent's full
+  # compaction semantic guidance. The compactor's per-call
+  # request appends a SUFFIX system message:
+  #
+  #   [mode: compact] Summarize the conversation in your
+  #   <N> remaining tokens. {optional_guidance}
+  #
+  # The agent recognizes the `[mode: compact]` prefix and
+  # follows the guidance below to produce a bounded
+  # head_summary that replaces the prior conversation.
+  #
+  # Single source of truth: the same paragraph is rendered
+  # here AND centralized in `CompactionProbeSupport.compaction_mode_section/0`
+  # so the live prompt and the recovery script agree.
+  @doc """
+  The compact-mode paragraph as it's rendered into the agent's
+  initial system prompt. Exposed so tests can pin the exact
+  wording.
+  """
+  @spec compaction_mode_section() :: String.t()
+  def compaction_mode_section, do: CompactionProbeSupport.compaction_mode_section()
 
   defp get_initial_mode(nil), do: "chat"
 

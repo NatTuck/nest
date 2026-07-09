@@ -15,6 +15,7 @@ import {
   sendMessage,
   stopMessage,
   retryCompaction,
+  compactionLoopOk,
 } from "../channels";
 import { MessageContent } from "../components/MessageContent";
 import { ChatInput } from "../components/ChatInput";
@@ -228,6 +229,16 @@ export function ChatPage() {
     });
   };
 
+  // Acknowledge a `:compaction_loop_detected` banner. The
+  // server transitions the agent back to `:idle` and clears the
+  // loop-breaker counter; the user can then send a new message
+  // that may trigger fresh compaction.
+  const handleCompactionLoopOk = () => {
+    compactionLoopOk(name, (err) => {
+      setSendError(err?.reason || "Failed to clear compaction loop");
+    });
+  };
+
   // Show initial loading state while we attempt first join
   if (isUnknown) {
     return (
@@ -299,7 +310,9 @@ export function ChatPage() {
         error={cache?.error}
         onRetry={handleRetry}
         onRetryCompaction={handleRetryCompaction}
+        onCompactionLoopOk={handleCompactionLoopOk}
         compactionError={cache?.compactionError}
+        compactionLoop={cache?.compactionLoop}
       />
 
       {/* Notification banner */}
@@ -565,6 +578,7 @@ export function ChatPage() {
           frozen={
             agentState === "compacting" ||
             agentState === "compaction_failed" ||
+            agentState === "compaction_loop_detected" ||
             agentState === "context_overflow"
           }
           placeholder={

@@ -122,12 +122,22 @@ defmodule Nest.Agents.Agent do
   end
 
   @doc """
-  Re-run the compactor after a failed compaction. The handler
-  only acts when the agent is in `:compaction_failed` status.
+  Re-run the compactor after a `:compaction_failed` status.
+  Handler no-ops when the agent isn't in `:compaction_failed`.
   """
   @spec retry_compaction(pid()) :: :ok
-  def retry_compaction(pid) do
-    send(pid, :retry_compaction)
+  def retry_compaction(pid), do: send_and_ok(pid, :retry_compaction)
+
+  @doc """
+  Acknowledge a `:compaction_loop_detected` status. Handler
+  no-ops when the agent isn't in that status.
+  """
+  @spec compaction_loop_detected_ok(pid()) :: :ok
+  def compaction_loop_detected_ok(pid),
+    do: send_and_ok(pid, :compaction_loop_detected_ok)
+
+  defp send_and_ok(pid, msg) do
+    send(pid, msg)
     :ok
   end
 
@@ -202,11 +212,34 @@ defmodule Nest.Agents.Agent do
         state = Init.build_state(attrs, client_config)
 
         # If the Supervisor passed a `:preloaded_messages` list
-        # (the on-demand-load path), seed it into the chat state
-        # and bump `next_message_index` to one past the highest
-        # stamped index. The preloaded list is already
-        # `message_index`-sorted by `Persistence.load_active_messages/1`.
-        state = seed_preloaded_messages(state, Map.get(attrs, :preloaded_messages, []))
+        # (the on-demand-load path), partition it at
+        # `last_compaction_index` into `state.chat_state.messages`
+        # and `state.chat_state.history`, and bump
+        # `next_message_index` to one past the highest stamped
+        # index. The preloaded list is already `message_index`-
+        # sorted by `Persistence.load_messages/1`.
+        state =
+          Init.seed_from_db(
+            state,
+            Map.get(attrs, :preloaded_messages, []),
+            Map.get(attrs, :last_compaction_index, -1)
+          )
+
+        # Replay the request-payload build for every `:user`
+        # and `:tool` message so the agent's API log history
+        # survives a BEAM restart. The rebuilt logs match the
+        # wire format `Broadcasts.api_log/4` would have produced
+        # for the same message slice, and live requests after
+        # restore pick up at `.001` (no id collision). Idempotent
+        # with respect to messages that already carry non-empty
+        # api_logs; today the rebuild is the only writer for
+        # user/tool api_logs.
+        state =
+          Init.attach_rebuilt_api_logs(
+            state,
+            Map.get(attrs, :preloaded_messages, []),
+            Map.get(attrs, :last_compaction_index, -1)
+          )
 
         Init.persist_initial_system_message(state)
 
@@ -220,55 +253,6 @@ defmodule Nest.Agents.Agent do
         cleanup_tmp(name)
         {:stop, reason}
     end
-  end
-
-  defp seed_preloaded_messages(state, []), do: state
-
-  defp seed_preloaded_messages(state, preloaded) do
-    seed_with_system_if_needed(state, preloaded)
-  end
-
-  # When the in-memory system message is already at position 0
-  # of the preloaded list, use the list as-is.
-  defp seed_with_system_if_needed(state, preloaded) do
-    has_system? = Enum.any?(preloaded, &match?({:system, _}, &1))
-
-    if has_system? do
-      do_seed(state, preloaded)
-    else
-      prepend_system(state, preloaded)
-    end
-  end
-
-  defp do_seed(state, preloaded) do
-    highest_index =
-      preloaded
-      |> Enum.map(fn {_role, %{index: idx}} -> idx end)
-      |> Enum.max(fn -> -1 end)
-
-    %{
-      state
-      | chat_state: %{
-          state.chat_state
-          | messages: preloaded,
-            next_message_index: highest_index + 1
-        }
-    }
-  end
-
-  # Defensive prepend: pre-existing rows may have messages
-  # but no persisted system row. Shift the preloaded list
-  # up by one and seed the in-memory system message at
-  # position 0 so the system prompt survives BEAM restart.
-  defp prepend_system(state, preloaded) do
-    [system | _] = state.chat_state.messages
-
-    shifted =
-      Enum.map(preloaded, fn {role, %{index: idx} = msg} ->
-        {role, %{msg | index: idx + 1}}
-      end)
-
-    do_seed(state, [system | shifted])
   end
 
   @impl true
@@ -288,6 +272,22 @@ defmodule Nest.Agents.Agent do
   @impl true
   def handle_cast({:chat, content, mode}, state) do
     ChatPipeline.handle_chat(state, content, mode)
+  end
+
+  # Test-only helpers for asserting on the loop-breaker counter.
+  # Production callers should not need these — the counter is
+  # managed internally by `CompactionHandler.check_consecutive/1`
+  # Test-only helpers for the loop-breaker counter. Production
+  # callers should not need these — the counter is managed
+  # internally by `CompactionHandler.check_consecutive/1` and
+  # resets via the append_message path above.
+  @doc false
+  def handle_call({:set_consecutive_compaction_count, n}, _from, state) when is_integer(n) do
+    {:reply, :ok, %{state | chat_state: %{state.chat_state | consecutive_compaction_count: n}}}
+  end
+
+  def handle_call(:get_consecutive_compaction_count, _from, state) do
+    {:reply, state.chat_state.consecutive_compaction_count, state}
   end
 
   @impl true
@@ -383,8 +383,25 @@ defmodule Nest.Agents.Agent do
   # share an index).
   @impl true
   def handle_call({:append_message, message}, _from, state) do
+    # Reset the loop-breaker counter on genuine progress:
+    # appending a user message, the LLM's assistant response,
+    # or a successful tool result. `{:system, _}` (context
+    # reminders, budget warnings) and `{:compaction, _}`
+    # (markers) are bookkeeping, not progress.
+    state =
+      case message do
+        {:user, _} -> reset_consecutive(state)
+        {:assistant, _} -> reset_consecutive(state)
+        {:tool, _} -> reset_consecutive(state)
+        _ -> state
+      end
+
     {stamped, state} = __append_message__(state, message)
     {:reply, stamped, state}
+  end
+
+  defp reset_consecutive(state) do
+    %{state | chat_state: %{state.chat_state | consecutive_compaction_count: 0}}
   end
 
   @doc false
@@ -449,10 +466,14 @@ defmodule Nest.Agents.Agent do
   # compaction marker), then replace `messages` with the new
   # compacted state. The marker is a `{:compaction, _}` tuple
   # that lives in `history` only — it never reaches the LLM.
-  #
   # Implementation lives in `CompactionLifecycle`; this is a
   # thin forwarder so the GenServer module stays small.
-  defdelegate __archive_and_compact__(state, new_messages), to: CompactionLifecycle, as: :apply
+  #
+  # Side effect: bumps `state.chat_state.last_compaction_index`
+  # to the marker's index, and persists the marker (and the
+  # column bump, atomically) via
+  # `Persistence.record_compaction/3`.
+  defdelegate __compaction_completed__(state, new_messages), to: CompactionLifecycle, as: :apply
 
   @impl true
   def handle_info(msg, state) do
@@ -466,14 +487,11 @@ defmodule Nest.Agents.Agent do
   # module doesn't carry the boilerplate.
   defp cleanup_tmp(agent_id), do: TmpSpace.cleanup(agent_id)
 
+  # Public-for-Handlers: message-construction logic. The
+  # canonical impl lives in `Nest.Agents.Agent.ApiLogs` /
+  # `Nest.Agents.Agent.TmpSpace`; the `__` prefix marks these
+  # as internal. See those modules for why.
   @doc false
-  # Public-for-Handlers: the message-construction logic in
-  # `Nest.Agents.Agent.Handlers` needs to read the queued
-  # api_logs for a given message_index when assembling the
-  # assistant/tool response message. The canonical impl lives
-  # in `Nest.Agents.Agent.ApiLogs`; the `__` prefix marks it
-  # as internal. See the `ApiLogs` module for why this is
-  # extracted.
   defdelegate __pending_api_logs__(state, message_index), to: ApiLogs, as: :get
   defdelegate __clear_pending_api_logs__(state, message_index), to: ApiLogs, as: :clear
   defdelegate __create_tmp_space__(agent_id), to: TmpSpace, as: :create

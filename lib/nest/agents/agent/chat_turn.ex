@@ -74,15 +74,14 @@ defmodule Nest.Agents.Agent.ChatTurn do
   use GenServer, restart: :temporary
 
   alias Nest.Agents.Agent.BatchSizer
-  alias Nest.Agents.Agent.ChatTurn.APILog
   alias Nest.Agents.Agent.ChatTurn.BudgetReminder
   alias Nest.Agents.Agent.ChatTurn.Iteration
   alias Nest.Agents.Agent.ChatTurn.Lifecycle
   alias Nest.Agents.Agent.ChatTurn.Messages
+  alias Nest.Agents.Agent.ChatTurn.ResponseHandler
   alias Nest.Agents.Agent.ChatTurn.State
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.ToolLoop
-  alias Nest.LLM.RunResponse
   alias Nest.Messages.Part
 
   require Logger
@@ -209,34 +208,37 @@ defmodule Nest.Agents.Agent.ChatTurn do
     next_index = GenServer.call(state.ctx.agent_pid, :get_next_index)
     state = %{state | active_message_index: next_index}
 
+    iteration_branch(state, messages, cancelled)
+  end
+
+  # The branching logic for `safe_iterate/1`'s four cases.
+  # Extracted into its own function to keep `safe_iterate`'s
+  # ABC size under credo's limit. Returns the same
+  # `GenServer.reply` tuple as `safe_iterate/1` did.
+  defp iteration_branch(state, messages, cancelled) do
     cond do
       cancelled ->
         Iteration.finalize_cancelled(state)
 
       mid_turn_sanity_check_failed?(state, messages) ->
-        # Sanity-check failure: we were spawned with mid_turn info
-        # but the last message is not an assistant+ToolUse. The
-        # compactor should not have removed the assistant's tool-call
-        # message — this is a state-corruption bug. Log loudly and
-        # finalize the turn so the user can recover.
-        require Logger
-
-        Logger.error(
-          "ChatTurn resumed with mid_turn info but last message is not assistant+ToolUse. " <>
-            "agent=#{state.ctx.agent_name} iteration=#{state.iteration} last=#{inspect(List.last(messages))}"
-        )
-
+        log_sanity_check_failure(state, messages)
         Lifecycle.finalize_turn(state)
 
       pending_tool_calls?(messages) ->
-        # State B: the LLM has already responded with tool calls.
-        # Execute them rather than calling the LLM again.
         execute_pending_tool_calls(state, messages)
 
       true ->
-        # State A: standard flow — call the LLM.
         Iteration.dispatch_batch(state, messages)
     end
+  end
+
+  defp log_sanity_check_failure(state, messages) do
+    require Logger
+
+    Logger.error(
+      "ChatTurn resumed with mid_turn info but last message is not assistant+ToolUse. " <>
+        "agent=#{state.ctx.agent_name} iteration=#{state.iteration} last=#{inspect(List.last(messages))}"
+    )
   end
 
   # Sanity check for the mid-turn resume path. We expected to find
@@ -257,6 +259,30 @@ defmodule Nest.Agents.Agent.ChatTurn do
 
       _ ->
         false
+    end
+  end
+
+  # Mid-turn resume: the LLM has already responded with tool calls
+  # (the assistant message is at the end of messages). Extract the
+  # tool calls from the parts, re-preflight as defense in depth, and
+  # either execute them or signal `:needs_compaction` if the
+  # compactor's output is still too big.
+  defp execute_pending_tool_calls(state, messages) do
+    [{:assistant, %{parts: parts}} | _] = Enum.reverse(messages)
+    tool_calls = ResponseHandler.extract_tool_calls_from_parts(parts)
+
+    case BatchSizer.preflight(tool_calls, state.ctx) do
+      :fits ->
+        spawn_tool_worker(state, tool_calls)
+
+      {:refuse, _reason} ->
+        # Compactor didn't reduce enough. Trigger another compaction.
+        send(
+          state.ctx.agent_pid,
+          {:needs_compaction, self(), state.iteration, state.max_iterations}
+        )
+
+        {:stop, :normal, state}
     end
   end
 
@@ -287,149 +313,10 @@ defmodule Nest.Agents.Agent.ChatTurn do
     end
   end
 
-  # The HTTP worker returned a normalized response. Build
-  # the Assistant message, append it to the Agent, then
-  # dispatch on the response shape.
+  # Delegate response handling to `ChatTurn.ResponseHandler`
+  # to keep this module under the 500-line credo cap.
   defp handle_response(response, state) do
-    state = %{state | active_worker: nil, active_worker_kind: nil}
-
-    # Forward usage to the Agent so the running totals
-    # update and the next chat:status push carries the
-    # fresh numbers. `usage` is `nil` for clients that
-    # don't populate it; the merge helper treats nil as
-    # a no-op so the running totals are preserved.
-    send(state.ctx.agent_pid, {:llm_usage, response.usage})
-
-    # Build the Assistant message from the response. The
-    # Agent's `tool_calls_received/2` handler stamps the
-    # index and attaches the pending api_logs. We use
-    # the existing handler (rather than the bare
-    # `{:append_message, _}`) because it also sets the
-    # Agent's status to `:executing_tools` and broadcasts
-    # the status change — the same flow the old LLMRunner
-    # used for tool-call messages.
-    #
-    # The message is built with `index: nil` (the Agent
-    # stamps it). The Agent's handler uses the current
-    # `next_message_index` (which equals the `active_message_index`
-    # we queried at the start of this iteration) for the
-    # `pending_api_logs[message_index]` lookup. The request
-    # api_log was queued at `active_message_index` above, so
-    # the lookup succeeds.
-    {role, msg} = Messages.assistant(response)
-    assistant_msg = {role, msg}
-    send(state.ctx.agent_pid, {:tool_calls_received, assistant_msg})
-    assistant_index = state.active_message_index
-
-    # Broadcast the response api_log to the Agent. The
-    # Agent's api_log handler attaches it to the message
-    # at the assistant's actual stamped index.
-    _ = APILog.response(state, assistant_index, response)
-
-    dispatch_response(response, state)
-  end
-
-  # Dispatch on the response shape after the assistant message
-  # has been appended. Four branches:
-  #
-  #   1. `force_finalize` is set (max-iterations second-chance) →
-  #      finalize without doing more work.
-  #   2. Tool calls + past max iterations → synthesize error
-  #      tool results, recurse with `force_finalize: true`.
-  #   3. Tool calls within budget → post-response preflight;
-  #      either spawn the tool worker or signal `:needs_compaction`
-  #      so the Agent triggers a mid-turn compaction.
-  #   4. Final text response → finalize.
-  defp dispatch_response(response, state) do
-    cond do
-      state.force_finalize ->
-        Lifecycle.finalize_turn(state)
-
-      RunResponse.has_tool_calls?(response) and state.iteration > state.max_iterations ->
-        handle_overflow_tool_calls(response, state)
-
-      RunResponse.has_tool_calls?(response) ->
-        handle_normal_tool_calls(response, state)
-
-      true ->
-        Lifecycle.finalize_turn(state)
-    end
-  end
-
-  # Past max iterations, LLM still emitted tool calls (the
-  # `tools: nil` was supposed to prevent this but some
-  # providers ignore it). Synthesize error tool results,
-  # recurse with `force_finalize: true` so the next call
-  # always finalizes regardless of what the LLM does.
-  defp handle_overflow_tool_calls(response, state) do
-    tool_msg = Messages.synthetic_error_tool_results(response)
-    _stamped_tool = GenServer.call(state.ctx.agent_pid, {:append_message, tool_msg})
-    state = %{state | force_finalize: true}
-    Process.send(self(), :iterate, [])
-    {:noreply, state}
-  end
-
-  # Normal tool call: post-response preflight on the projected
-  # tool results. If executing them would push the conversation
-  # past `context_limit - reserve`, exit cleanly and let the
-  # Agent trigger a mid-turn compaction.
-  defp handle_normal_tool_calls(response, state) do
-    case post_response_preflight(response.tool_calls, state) do
-      :fits ->
-        spawn_tool_worker(state, response.tool_calls)
-
-      {:refuse, _reason} ->
-        send(
-          state.ctx.agent_pid,
-          {:needs_compaction, self(), state.iteration, state.max_iterations}
-        )
-
-        {:stop, :normal, state}
-    end
-  end
-
-  # Post-response preflight: would sending the projected tool results
-  # push us over `(context_limit - reserve)`? Reuses `BatchSizer.preflight/2`
-  # so the per-tool projection logic stays in one place. The fresh
-  # messages list (post-LLM-response, pre-tool-execution) is what
-  # the BatchSizer checks; the same projection the chat pipeline
-  # uses at user-turn boundaries.
-  defp post_response_preflight(tool_calls, state) do
-    {messages, _} = GenServer.call(state.ctx.agent_pid, :get_messages_with_cancelled)
-    ctx = %{state.ctx | messages: messages}
-    BatchSizer.preflight(tool_calls, ctx)
-  end
-
-  # Mid-turn resume: the LLM has already responded with tool calls
-  # (the assistant message is at the end of messages). Extract the
-  # tool calls from the parts, re-preflight as defense in depth, and
-  # either execute them or signal `:needs_compaction` if the
-  # compactor's output is still too big.
-  defp execute_pending_tool_calls(state, messages) do
-    [{:assistant, %{parts: parts}} | _] = Enum.reverse(messages)
-    tool_calls = extract_tool_calls_from_parts(parts)
-
-    case BatchSizer.preflight(tool_calls, state.ctx) do
-      :fits ->
-        spawn_tool_worker(state, tool_calls)
-
-      {:refuse, _reason} ->
-        # Compactor didn't reduce enough. Trigger another compaction.
-        send(
-          state.ctx.agent_pid,
-          {:needs_compaction, self(), state.iteration, state.max_iterations}
-        )
-
-        {:stop, :normal, state}
-    end
-  end
-
-  defp extract_tool_calls_from_parts(parts) do
-    parts
-    |> Enum.filter(&match?(%Part.ToolUse{}, &1))
-    |> Enum.map(fn %Part.ToolUse{id: id, name: name, arguments: arguments} ->
-      %Nest.Messages.ToolCall{id: id, name: name, arguments: arguments || %{}}
-    end)
+    ResponseHandler.handle(response, state, self())
   end
 
   # The tool worker returned a list of `ToolResult`
@@ -453,7 +340,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
   # `{:tool_results, results}` back to the ChatTurn.
   # The `state.ctx` map carries everything ToolLoop needs
   # (tools, caps, messages, context_limit, agent_pid).
-  defp spawn_tool_worker(state, tool_calls) do
+  def spawn_tool_worker(state, tool_calls) do
     parent = self()
 
     task =

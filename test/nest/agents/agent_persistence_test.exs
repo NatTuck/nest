@@ -21,6 +21,7 @@ defmodule Nest.Agents.Agent.PersistenceTest do
 
   alias Nest.Agents.Agent.Persistence, as: AgentPersistence
   alias Nest.Agents.PersistedAgent
+  alias Nest.Agents.PersistedMessage
   alias Nest.Messages.Part
   alias Nest.Messages.System, as: MsgSystem
   alias Nest.Persistence
@@ -118,6 +119,53 @@ defmodule Nest.Agents.Agent.PersistenceTest do
       assert [%PersistedAgent{next_message_index: 1}] =
                Nest.Repo.all(PersistedAgent)
                |> Enum.filter(&(&1.name == name))
+    end
+  end
+
+  describe "record_compaction/3,5" do
+    test "the 3-arity form uses the default-arg branch (tokens nil when not provided)" do
+      name = "rc-default-#{System.unique_integer([:positive])}"
+
+      {:ok, %PersistedAgent{id: agent_id}} =
+        Persistence.insert_agent(%{
+          name: name,
+          model: %{name: "test-model", provider: "test"},
+          vocation_id: test_vocation_id()
+        })
+
+      # Pre-insert a row at the marker index so the marker row
+      # has a sortable target.
+      _ =
+        %PersistedMessage{}
+        |> PersistedMessage.changeset(%{
+          agent_id: agent_id,
+          message_index: 0,
+          role: "user",
+          content: %{"parts" => []}
+        })
+        |> Nest.Repo.insert!()
+
+      # 3-arity call: all five clauses are exercised (3 required,
+      # 2 default). With persistence disabled, returns `:ok`
+      # immediately — this pins the default-arg branches on the
+      # public function rather than on the underlying
+      # `Persistence.record_compaction/5` path.
+      Application.put_env(:nest, :persistence, enabled: false)
+      assert :ok = AgentPersistence.record_compaction(name, 1, 1)
+    end
+
+    test "the 5-arity form passes token stats through to the underlying Persistence call" do
+      name = "rc-stats-#{System.unique_integer([:positive])}"
+
+      {:ok, %PersistedAgent{}} =
+        Persistence.insert_agent(%{
+          name: name,
+          model: %{name: "test-model", provider: "test"},
+          vocation_id: test_vocation_id()
+        })
+
+      assert :ok =
+               AgentPersistence.record_compaction(name, 5, 3, 18_432, 4_096)
     end
   end
 end

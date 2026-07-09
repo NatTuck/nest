@@ -291,6 +291,28 @@ defmodule Nest.Agents do
   end
 
   @doc """
+  Acknowledge a `:compaction_loop_detected` status by sending
+  `:compaction_loop_detected_ok` to the agent. The handler
+  transitions the agent back to `:idle` and clears the
+  consecutive-compaction counter (so the next compaction
+  cycle has a fresh budget). No-op if the agent isn't in the
+  loop state.
+  """
+  @spec compaction_loop_detected_ok(String.t()) :: :ok | {:error, atom()}
+  def compaction_loop_detected_ok(name) do
+    case Supervisor.get_agent(name) do
+      {:ok, pid} ->
+        Agent.compaction_loop_detected_ok(pid)
+
+      {:error, :not_found} ->
+        {:error, :not_found}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
   Deletes an agent by its name.
 
   ## Returns

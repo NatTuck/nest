@@ -20,9 +20,9 @@ defmodule Nest.Agents.Agent.ToolLoop do
   alias Nest.Messages.ToolCall
   alias Nest.Messages.ToolResult
   alias Nest.Tokens.Estimator
+  alias Nest.Tokens.Reserve
 
   @compaction_timeout 60_000
-  @budget_reserve 8_192
 
   @doc """
   Run a tool-call batch. Returns a list of `ToolResult`
@@ -155,7 +155,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
 
       limit when is_integer(limit) ->
         used = Estimator.estimate_messages(new_messages)
-        max(0, limit - used - @budget_reserve)
+        max(0, limit - used - Reserve.response_budget(limit))
     end
   end
 

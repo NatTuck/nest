@@ -8,7 +8,7 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       size exceeds `context_limit`.
     * Phase 2 (execute) — runs each tool and measures actual sizes
       via `Nest.Tokens.Estimator`.
-    * Phase 3 (keep-or-summarize) — for `execute_command` results,
+    * Phase 3 (keep-or-summarize) — for `shell_cmd` results,
       decides keep-full vs. summary-with-path to fit the budget.
 
   Per `notes/extract-compaction-and-resumable-chat-turn.md`:
@@ -21,8 +21,7 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
 
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.LLM.Tool
-  alias Nest.Messages.ToolCall
-  alias Nest.Messages.ToolResult
+  alias Nest.Messages.{Part, ToolCall, ToolResult}
   alias Nest.Tools
 
   # -- helpers --
@@ -152,7 +151,7 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
     end
   end
 
-  describe "Phase 3: keep-or-summarize for execute_command" do
+  describe "Phase 3: keep-or-summarize for shell_cmd" do
     setup do
       tmp_dir =
         Path.join(
@@ -165,23 +164,23 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       {:ok, tmp_dir: tmp_dir}
     end
 
-    test "single small execute_command keeps full", %{tmp_dir: dir} do
-      tools = [small_tool("execute_command")]
+    test "single small shell_cmd keeps full", %{tmp_dir: dir} do
+      tools = [small_tool("shell_cmd")]
       c = ctx(tools, context_limit: 100_000, tmp_path: dir)
 
       assert [%ToolResult{content: content, is_error: false}] =
-               BatchSizer.run([call("c1", "execute_command", %{"command" => "ls"})], c)
+               BatchSizer.run([call("c1", "shell_cmd", %{"command" => "ls"})], c)
 
-      assert content == "small output for execute_command"
+      assert content == "small output for shell_cmd"
       # No temp file should have been written (kept full).
       assert Enum.all?(File.ls!(dir), &(not String.starts_with?(&1, "exec-")))
     end
 
-    test "execute_command with larger output is summarized with path", %{tmp_dir: dir} do
+    test "shell_cmd with larger output is summarized with path", %{tmp_dir: dir} do
       big_output = String.duplicate("y", 50_000)
 
       tools = [
-        make_tool("execute_command", fn _, _ -> {:ok, big_output} end)
+        make_tool("shell_cmd", fn _, _ -> {:ok, big_output} end)
       ]
 
       # context_limit tight enough that the full 50K-byte output
@@ -191,7 +190,7 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
 
       assert [result] =
                BatchSizer.run(
-                 [call("c1", "execute_command", %{"command" => "cat foo"})],
+                 [call("c1", "shell_cmd", %{"command" => "cat foo"})],
                  c
                )
 
@@ -206,12 +205,12 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       assert File.read!(Path.join(dir, exec_file)) == big_output
     end
 
-    test "kept-full execute_command has no summary path string" do
-      tools = [small_tool("execute_command")]
+    test "kept-full shell_cmd has no summary path string" do
+      tools = [small_tool("shell_cmd")]
       c = ctx(tools, context_limit: 100_000, tmp_path: nil)
 
       [%ToolResult{content: content}] =
-        BatchSizer.run([call("c1", "execute_command")], c)
+        BatchSizer.run([call("c1", "shell_cmd")], c)
 
       refute content =~ "saved to"
       refute content =~ "Command output of"
@@ -339,5 +338,105 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       assert [%ToolResult{name: "echo"}, %ToolResult{name: "beta"}] = results
       assert Enum.all?(results, &(not &1.is_error))
     end
+  end
+
+  describe "Bug 1 regression: shell_cmd batch fits preflight with long history" do
+    test "three shell_cmd calls with a ~10k-token message history fits a 20k context" do
+      # This is the `entire-ox` failure shape: three shell_cmd
+      # calls batched against a long message history with a small
+      # context. Pre-fix (catch-all projecting ~2468 tokens of
+      # ghost budget per call), the batch was refused:
+      #   3 × 2468 + 8192 reserve + ~10354 messages
+      #   ≈ 25,950 tokens > 20,000 limit → :refuse
+      #
+      # Post-fix: the live `shell_cmd` clause projects
+      # `summary_baseline_size() * @safety_padding` ≈ ~36 tokens
+      # per call. The batch fits comfortably.
+      messages = long_history(10_354)
+      c = ctx([small_tool("shell_cmd")], context_limit: 20_000, messages: messages)
+
+      assert BatchSizer.preflight(
+               [
+                 call("c1", "shell_cmd"),
+                 call("c2", "shell_cmd"),
+                 call("c3", "shell_cmd")
+               ],
+               c
+             ) == :fits
+    end
+  end
+
+  describe "catch-all: hallucinated tools project error-size, not worst-case" do
+    test "preflight fits a batch that mixes a real tool with a hallucinated one" do
+      # The LLM sometimes hallucinates tool names (typos, drift,
+      # model collapse). When that happens, `LLMTools.execute_one`
+      # returns a small error string. The catch-all's projection
+      # reflects that: small error, not 8 KB of ghost budget.
+      tools = [small_tool("read_file"), small_tool("write_file")]
+      c = ctx(tools, context_limit: 100_000, messages: [])
+
+      assert BatchSizer.preflight(
+               [
+                 call("c1", "read_file", %{"path" => "/tmp/x"}),
+                 call("c2", "totally_made_up_tool")
+               ],
+               c
+             ) == :fits
+    end
+
+    test "run/2 returns an error result for an unknown tool name" do
+      # Even though Phase 1 :fits the batch, Phase 2 executes the
+      # tool and `LLMTools` returns `{:error, ...}`. The LLM sees
+      # a normal `is_error: true` tool result and learns the name
+      # was wrong.
+      tools = [small_tool("read_file")]
+      c = ctx(tools, context_limit: 100_000)
+
+      assert [%ToolResult{is_error: true, name: "ghost_tool"}] =
+               BatchSizer.run([call("c1", "ghost_tool")], c)
+    end
+
+    test "the catch-all projection is small, not worst-case (Bug 1 enabler)" do
+      # The catch-all used to project ~2468 tokens of ghost budget
+      # for unknown tools. With the fix, it projects the size of a
+      # representative error string (~30 tokens). This test pins
+      # that the new projection is dramatically smaller than the
+      # old one — the difference lets hallucinated tool batches
+      # fit preflight in long-running sessions where they would
+      # previously have been refused.
+      #
+      # We can't call `projected_size/2` directly (private). The
+      # observable proxy: preflight fits a 100k-context batch
+      # with 100 hallucinated tool calls.
+      # - Pre-fix:  100 × 2468 + 20000 reserve > 100k → :refuse
+      # - Post-fix: 100 × ~30 + 20000 reserve < 100k → :fits
+      tools = []
+      c = ctx(tools, context_limit: 100_000, messages: [])
+
+      hallucinated_batch = Enum.map(1..100, &call("c#{&1}", "hallucinated_#{&1}"))
+
+      assert BatchSizer.preflight(hallucinated_batch, c) == :fits
+    end
+  end
+
+  # -- helpers --
+
+  # Build a list of ~`target_tokens` tokens' worth of messages
+  # by repeating a filler string inside a single system message.
+  # Estimator sees ~4 chars/token, so 10k tokens ≈ 40_000 chars.
+  # Used by the Bug 1 regression test to set up a long-history
+  # scenario without enumerating thousands of distinct messages.
+  defp long_history(target_tokens) do
+    char_count = target_tokens * 4 + 100
+    filler = String.duplicate("prior conversation history. ", div(char_count, 28))
+    body = String.slice(filler, 0, char_count)
+
+    [
+      {:system,
+       %Nest.Messages.System{
+         index: 0,
+         parts: [%Part.Text{text: body}]
+       }}
+    ]
   end
 end

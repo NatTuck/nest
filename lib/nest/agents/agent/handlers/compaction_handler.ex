@@ -3,7 +3,9 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
   `handle_info/2` handlers for compaction-related events:
   `{:compaction_done, _, _}`, `{:compaction_failed, _, _}`,
   `{:task_compaction_request, _, _}`, `{:task_compaction_done, _, _}`,
-  `{:task_compaction_failed, _, _}`.
+  `{:task_compaction_failed, _, _}`,
+  `{:needs_compaction, _, _, _}`, `:retry_compaction`,
+  `:compaction_loop_detected_ok`.
 
   Dispatched by `Nest.Agents.Agent.Handlers` based on the
   message tag.
@@ -13,10 +15,27 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
   `notes/extract-compaction-and-resumable-chat-turn.md` for the
   design.
 
-  Also owns `regenerate_for_compaction/2` — the shared helper that
-  rebuilds the agent's `state.chat_state.messages[0]` (the system
-  prompt) from the latest DB state before every compaction. See
-  `notes/update-system-msg-on-compaction.md` for the rationale.
+  The `regenerate_for_compaction/2` helper that rebuilds the
+  agent's `state.chat_state.messages[0]` (the system prompt)
+  from the latest DB state before every compaction lives in
+  `Nest.Agents.Agent.Handlers.CompactionHandler.Regenerator`.
+  See `notes/update-system-msg-on-compaction.md` for the
+  rationale.
+
+  ## Loop breaker
+
+  `check_consecutive/1` is invoked at every compaction spawn
+  site (Trigger B from `ChatPipeline.maybe_compact_then_spawn/2`,
+  Trigger B/C from this handler's `needs_compaction/3`, Trigger C
+  from `task_compaction_request/3`). The counter increments on
+  each spawn; the agent enters `:compaction_loop_detected`
+  status (with `chat:compaction-loop` broadcast) when it
+  exceeds `@max_consecutive_compactions`. The counter resets
+  on every `:user` / `:assistant` / `:tool` append in
+  `Nest.Agents.Agent.handle_call({:append_message, _, _})`.
+  The user clears `:compaction_loop_detected` via
+  `compaction_loop_detected_ok/3`, which restores `:idle`
+  status and accepts new `chat:message` traffic.
   """
 
   require Logger
@@ -24,14 +43,15 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ChatPipeline
   alias Nest.Agents.Agent.Compaction
-  alias Nest.Agents.Agent.Init
-  alias Nest.Agents.Agent.SystemPrompt
-  alias Nest.Messages.Part
-  alias Nest.Messages.System
-  alias Nest.Messages.User
-  alias Nest.Persistence
-  alias Nest.Tools
-  alias Nest.Vocations
+  alias Nest.Agents.Agent.Handlers.CompactionHandler.Regenerator
+  alias Nest.Tokens.Compactor, as: TokensCompactor
+
+  # Consecutive compaction spawns without intervening progress
+  # before we declare a loop. Tuned for `entire-ox`-shaped
+  # failures: three same-iteration `:needs_compaction` requests
+  # in a row, with no LLM response between them, hit this
+  # threshold.
+  @max_consecutive_compactions 3
 
   @doc """
   Dispatch a compaction message. Returns the GenServer's reply
@@ -66,6 +86,10 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
     retry_compaction(state)
   end
 
+  def handle(:compaction_loop_detected_ok, state) do
+    compaction_loop_detected_ok(state)
+  end
+
   defp compaction_done(new_messages, continuation, state) do
     Logger.info(
       "Compaction complete: agent=#{state.name} from=#{length(state.chat_state.messages)} to=#{length(new_messages)}"
@@ -84,7 +108,7 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
 
     # Archive the previous messages to history with a marker,
     # then replace state.chat_state.messages with the compacted state.
-    state = archive_and_compact(state, new_messages)
+    state = compaction_completed(state, new_messages)
 
     case continuation do
       {:chat_continuation, :pending} ->
@@ -147,24 +171,76 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
     %{state | chat_state: %{state.chat_state | pending_user_message: nil}}
   end
 
-  defp task_compaction_request(task_pid, _focus, state) do
+  defp task_compaction_request(task_pid, focus, state) do
     # The chat task is mid-flow and asked for explicit
     # compaction via the `context` tool. Spawn the compactor
     # and send the result back to the task when done. The task
     # will unblock its receive and use the result.
+    #
+    # The `focus` argument from the tool call becomes the
+    # compactor's `optional_guidance`, appended to the
+    # `[mode: compact]` suffix. When nil/empty (the typical case)
+    # no extra clause is added.
     state = %{state | chat_state: %{state.chat_state | status: :compacting}}
     Broadcasts.status(state.name, state)
 
-    Compaction.spawn(
-      self(),
-      state.client_config,
-      state.llm_metrics.context_limit,
-      state.chat_state.messages || [],
-      {:task_compaction_continuation, task_pid}
-    )
+    case check_consecutive(state) do
+      :refuse ->
+        # Loop detected — `check_consecutive/1` already broadcast
+        # the loop event. Match the existing failure shape so
+        # the awaiting chat task unblocks cleanly.
+        send(task_pid, {:task_compaction_failed, :consecutive_compaction_threshold})
+        {:noreply, state}
 
-    {:noreply, state}
+      {:ok, state} ->
+        messages = state.chat_state.messages || []
+        system_msg = Enum.find(messages, &match?({:system, _}, &1))
+        optional_guidance = normalize_focus(focus)
+
+        case TokensCompactor.compute_summary_budget(
+               state.llm_metrics.context_limit,
+               system_msg,
+               messages,
+               optional_guidance
+             ) do
+          {:ok, _n, rendered_suffix} ->
+            Compaction.spawn(
+              self(),
+              state.client_config,
+              state.llm_metrics.context_limit,
+              messages,
+              {:task_compaction_continuation, task_pid},
+              rendered_suffix
+            )
+
+            {:noreply, state}
+
+          {:error, :reserve_exhausted} ->
+            # Surface as compaction failure so the chat task
+            # unblocks with the error and the existing retry
+            # path is reused.
+            send(task_pid, {:task_compaction_failed, :reserve_exhausted})
+            state = %{state | chat_state: %{state.chat_state | status: :compaction_failed}}
+            Broadcasts.status(state.name, state)
+
+            Broadcasts.compaction_error(
+              state.name,
+              "Compaction failed: #{format_reason(:reserve_exhausted)}. Click Retry to try again.",
+              "Nest.Agents.Agent.Handlers.CompactionHandler.task_compaction_request/3"
+            )
+
+            {:noreply, state}
+        end
+    end
   end
+
+  # The `:compact` tool's `focus` arg is whatever the LLM
+  # decided to pass — a free-form string. Map `nil`, `""`, and
+  # any non-binary (e.g. `:retry` from the retry-compaction
+  # code path) to `nil` so the compactor's suffix logic doesn't
+  # double-space or render an atom as a sentence.
+  defp normalize_focus(focus) when is_binary(focus) and focus != "", do: focus
+  defp normalize_focus(_other), do: nil
 
   defp task_compaction_done(task_pid, new_messages, state) do
     Logger.info(
@@ -172,7 +248,7 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
     )
 
     {state, new_messages} = regenerate_for_compaction(state, new_messages)
-    state = archive_and_compact(state, new_messages)
+    state = compaction_completed(state, new_messages)
     send(task_pid, {:task_compaction_done, new_messages})
     {:noreply, state}
   end
@@ -204,15 +280,48 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
 
     Broadcasts.status(state.name, state)
 
-    Compaction.spawn(
-      self(),
-      state.client_config,
-      state.llm_metrics.context_limit,
-      state.chat_state.messages,
-      {:mid_turn_continuation, iteration, max_iterations}
-    )
+    case check_consecutive(state) do
+      :refuse ->
+        # Loop detected. The awaiter in chat_turn.ex will exit
+        # cleanly via the `{:needs_compaction, _, _, _}` arm of
+        # the standard post-response preflight. The user gets
+        # the OK button on the banner.
+        {:noreply, state}
 
-    {:noreply, state}
+      {:ok, state} ->
+        messages = state.chat_state.messages || []
+        system_msg = Enum.find(messages, &match?({:system, _}, &1))
+
+        case TokensCompactor.compute_summary_budget(
+               state.llm_metrics.context_limit,
+               system_msg,
+               messages,
+               nil
+             ) do
+          {:ok, _n, rendered_suffix} ->
+            Compaction.spawn(
+              self(),
+              state.client_config,
+              state.llm_metrics.context_limit,
+              messages,
+              {:mid_turn_continuation, iteration, max_iterations},
+              rendered_suffix
+            )
+
+            {:noreply, state}
+
+          {:error, :reserve_exhausted} ->
+            # Mid-turn compaction can't proceed — the system +
+            # request overflow the response budget. Surface as a
+            # compaction failure via the same path as a regular
+            # `{:compaction_failed, _, _}` arrival.
+            compaction_failed(
+              :reserve_exhausted,
+              {:mid_turn_continuation, iteration, max_iterations},
+              state
+            )
+        end
+    end
   end
 
   # Trigger B or Trigger C compaction failed. Set Agent status
@@ -275,9 +384,21 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
   end
 
   # Render the compaction failure reason as a user-facing string.
-  # `:llm_returned_empty` → "LLM returned empty summary". Crash
-  # tuples get `inspect/1`'d. Anything else falls through to a
-  # generic "internal error" so users don't see raw exception text.
+  # `:reserve_exhausted` → the system prompt + compaction request
+  # consume the LLM's full response budget, so no summary can
+  # fit. Tells the user to use a smaller system prompt, a model
+  # with a larger context window, or to clear history. Other
+  # failure modes get inspected or fall through to "internal
+  # error" so users don't see raw exception text.
+  defp format_reason(:reserve_exhausted),
+    do:
+      "system prompt + compaction request consume the LLM's full response budget — " <>
+        "use a smaller system prompt or change model"
+
+  defp format_reason(:consecutive_compaction_threshold),
+    do:
+      "compaction isn't reducing the conversation — start a new session, change model, or clear history"
+
   defp format_reason(:llm_returned_empty), do: "LLM returned empty summary"
   defp format_reason(:timeout), do: "request timed out"
   defp format_reason(:transport_error), do: "transport error"
@@ -285,171 +406,86 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
   defp format_reason(reason) when is_binary(reason), do: reason
   defp format_reason(_other), do: "internal error"
 
-  # `archive_and_compact` lives in the GenServer module because
-  # it mutates chat history; we forward to it from here.
-  defp archive_and_compact(state, new_messages) do
-    Nest.Agents.Agent.__archive_and_compact__(state, new_messages)
-  end
+  ## --- Loop breaker ---
 
-  # Regenerate the system prompt + re-fetch all init-time state
-  # from the latest DB before the message swap. Also persists
-  # every new message (fresh system, encoded summary, compactor's
-  # other output) to the `messages` table so the post-compaction
-  # state survives a BEAM restart.
+  # Check whether another compaction should be allowed. Increments
+  # `consecutive_compaction_count`; when the count exceeds the
+  # threshold, transitions the agent to `:compaction_loop_detected`,
+  # broadcasts `chat:compaction-loop`, and refuses the spawn.
   #
-  # The compactor's `new_messages` is expected to start with a
-  # `{:system, _}` carrying the head/tail summary. The pattern
-  # match below is structural — if it fails, something else is
-  # broken (the compactor's contract is violated), and we want
-  # that to raise loudly rather than silently corrupt the agent.
-  @spec regenerate_for_compaction(Nest.Agents.Agent.t(), [term()]) ::
-          {Nest.Agents.Agent.t(), [term()]}
-  defp regenerate_for_compaction(state, compactor_messages) do
-    [{:system, %System{parts: [%Part.Text{text: summary_text}]}} | rest] =
-      compactor_messages
+  # Returns `:refuse` (the spawn should not happen — caller should
+  # noop or send a failure reply to any awaiter) or `{:ok, state}`
+  # with the bumped counter (caller proceeds normally).
+  #
+  # Public so `ChatPipeline.maybe_compact_then_spawn/2` (Trigger B)
+  # can run the same gate before its own spawn — keeping the
+  # three Trigger sites consistent.
+  @doc false
+  def check_consecutive(state) do
+    count = state.chat_state.consecutive_compaction_count + 1
 
-    case maybe_fresh_vocation(state) do
-      nil ->
-        {state, compactor_messages}
-
-      fresh_vocation ->
-        {state, new_messages, rows_to_persist} =
-          rebuild_for_compaction(state, fresh_vocation, summary_text, rest)
-
-        Enum.each(rows_to_persist, &persist_message(state.name, &1))
-        {state, new_messages}
+    if count > @max_consecutive_compactions do
+      _ = set_compaction_loop(state, :consecutive_compaction_threshold)
+      :refuse
+    else
+      state = %{state | chat_state: %{state.chat_state | consecutive_compaction_count: count}}
+      {:ok, state}
     end
   end
 
-  # Re-fetch the Vocation row by id. If `state.vocation` is
-  # nil (a pre-regen test fixture, or the supervisor's no-DB
-  # path), there's nothing to refresh; return nil so the caller
-  # falls through to the compactor's output as-is. If the
-  # lookup returns nil or raises (transient DB blip, row briefly
-  # missing during a transaction, etc.), log a warning and
-  # return nil. The next compaction will retry — the system is
-  # expected to come back to a consistent state quickly.
-  defp maybe_fresh_vocation(state) do
-    case state.vocation do
-      nil ->
-        nil
+  defp set_compaction_loop(state, reason) do
+    state = %{state | chat_state: %{state.chat_state | status: :compaction_loop_detected}}
+    Broadcasts.status(state.name, state)
 
-      %Vocations.Vocation{id: vocation_id} ->
-        case Vocations.get_vocation(vocation_id) do
-          %Vocations.Vocation{} = v ->
-            v
+    Broadcasts.compaction_loop(
+      state.name,
+      format_reason(reason),
+      "Nest.Agents.Agent.Handlers.CompactionHandler.set_compaction_loop/2"
+    )
 
-          nil ->
-            Logger.warning(
-              "Vocation #{vocation_id} not found during compaction regeneration; using cached state."
-            )
+    state
+  end
 
-            nil
-        end
-    end
-  rescue
-    error ->
+  # User clicked the OK button on the loop banner. Restore
+  # `:idle` so new `chat:message` traffic resumes; reset the
+  # counter to give the next compaction a fresh budget; clear any
+  # held user message (the OK is an explicit acknowledgment, not
+  # an implicit retry of the held message — the user types new).
+  defp compaction_loop_detected_ok(state) do
+    if state.chat_state.status != :compaction_loop_detected do
       Logger.warning(
-        "Vocation lookup failed during compaction regeneration: #{inspect(error)}. Using cached state."
+        "compaction_loop_detected_ok ignored: agent=#{state.name} " <>
+          "status=#{inspect(state.chat_state.status)} (expected :compaction_loop_detected)"
       )
 
-      nil
-  end
+      {:noreply, state}
+    else
+      state = %{
+        state
+        | chat_state: %{
+            state.chat_state
+            | status: :idle,
+              consecutive_compaction_count: 0,
+              pending_user_message: nil
+          }
+      }
 
-  # Build the new `state` and `new_messages` list. Also returns
-  # the list of rows to persist (in index order, with the same
-  # indices `Lifecycle.apply/2` will assign them).
-  defp rebuild_for_compaction(state, fresh_vocation, summary_text, rest) do
-    {context_limit, context_limit_source} = Init.initial_context_limit(state.model)
-
-    {fresh_prompt, _mode, _tool_names, _cached_vocation} =
-      SystemPrompt.compose_vocation_config(
-        fresh_vocation,
-        state.workspace_path,
-        {context_limit, context_limit_source}
-      )
-
-    marker_index = state.chat_state.next_message_index
-    now = DateTime.utc_now()
-
-    fresh_system =
-      {:system,
-       %System{
-         index: marker_index + 1,
-         parts: [%Part.Text{text: fresh_prompt}],
-         timestamp: now,
-         api_logs: []
-       }}
-
-    summary_user =
-      {:user,
-       %User{
-         index: marker_index + 2,
-         parts: [%Part.Text{text: "Summary of earlier conversation:\n\n" <> summary_text}],
-         timestamp: now,
-         api_logs: []
-       }}
-
-    # Renumber the compactor's other output so their indices
-    # are unique and start at `marker_index + 3` (after the
-    # fresh system and the encoded summary). The compactor's
-    # input indices are opaque to us — they may collide with
-    # the fresh indices or each other.
-    renumbered_rest = Compaction.assign_indices(rest, marker_index + 3)
-
-    new_messages = [fresh_system, summary_user | renumbered_rest]
-
-    fresh_tools =
-      Tools.get_functions(fresh_vocation.tools || [], state.workspace_path, state.tmp_path)
-
-    new_state = %{
-      state
-      | vocation: fresh_vocation,
-        tools: fresh_tools,
-        llm_metrics: %{
-          state.llm_metrics
-          | context_limit: context_limit,
-            context_limit_source: context_limit_source
-        }
-    }
-
-    rows_to_persist = new_messages
-    {new_state, new_messages, rows_to_persist}
-  end
-
-  # Persist a single post-compaction message. Failures are logged
-  # but don't fail the in-memory regeneration — the in-memory
-  # state is the source of truth for the current turn; the DB is
-  # for cross-restart recovery. Same pattern as
-  # `AgentPersistence.append_message/3`.
-  #
-  # `:agent_not_found` is the common case in tests that start
-  # an agent process via `start_supervised!/1` without
-  # inserting a corresponding `agents` row — the in-memory
-  # state is the only source of truth, and persistence is
-  # not part of those tests' contract. We log at `:debug`
-  # (silent at the default `:info` log level) so test runs
-  # aren't noisy. Any other error is a real DB failure and
-  # warrants a `:warning`.
-  defp persist_message(name, {role, _struct} = message) do
-    case Persistence.insert_message(name, message) do
-      {:ok, _} ->
-        :ok
-
-      {:error, :agent_not_found} ->
-        Logger.debug(
-          "Skipping persistence of post-compaction #{role} message for agent #{name}: " <>
-            "no agents row (in-memory only)"
-        )
-
-        :ok
-
-      {:error, reason} ->
-        Logger.warning(
-          "Failed to persist post-compaction #{role} message for agent #{name}: #{inspect(reason)}"
-        )
-
-        :ok
+      Broadcasts.status(state.name, state)
+      {:noreply, state}
     end
+  end
+
+  # `__compaction_completed__` lives in the GenServer module
+  # because it mutates chat history (and bumps
+  # `state.chat_state.last_compaction_index`); we forward to
+  # it from here.
+  defp compaction_completed(state, new_messages) do
+    Nest.Agents.Agent.__compaction_completed__(state, new_messages)
+  end
+
+  # Thin delegator to `Regenerator` so callers don't need to
+  # know which submodule owns the implementation.
+  defp regenerate_for_compaction(state, compactor_messages) do
+    Regenerator.regenerate_for_compaction(state, compactor_messages)
   end
 end

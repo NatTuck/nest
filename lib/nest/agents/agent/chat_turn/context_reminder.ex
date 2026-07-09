@@ -35,11 +35,19 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
   alias Nest.Messages.Part
   alias Nest.Messages.System
   alias Nest.Tokens.ConversationSize
+  alias Nest.Tokens.Reserve
 
   # Ordered list of thresholds. `highest_unannounced/3` takes
   # the last one whose `pct` is met, so the list MUST stay
   # ordered low-to-high. Add a `:p90` here when a 90% warning
   # becomes desirable.
+  #
+  # Thresholds are measured against the **working token budget**
+  # (`context_limit - reserve`), not the raw context_limit.
+  # The reserve is set aside so the compactor's own LLM call
+  # has headroom — see `Nest.Tokens.Reserve` for the formula.
+  # This means warnings fire earlier in absolute terms, which is
+  # correct: the LLM should plan around the working budget.
   @thresholds [
     {0.25, :p25},
     {0.50, :p50},
@@ -56,7 +64,9 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
   def highest_unannounced(_used, limit, _crossed) when limit <= 0, do: nil
 
   def highest_unannounced(used, limit, crossed) do
-    ratio = used / limit
+    reserve = Reserve.response_budget(limit)
+    effective = max(1, limit - reserve)
+    ratio = used / effective
 
     @thresholds
     |> Enum.filter(fn {pct, _atom} -> ratio >= pct end)
@@ -93,15 +103,22 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
   @doc false
   @spec format(atom(), non_neg_integer(), pos_integer()) :: String.t()
   def format(:p25, used, limit) do
-    "Context usage is now at 25% (~#{used} of #{limit} tokens)."
+    reserve = Reserve.response_budget(limit)
+    effective = max(1, limit - reserve)
+    "Context usage is now at 25% (~#{used} of ~#{effective} token budget)."
   end
 
   def format(:p50, used, limit) do
-    "Context usage is now at 50% (~#{used} of #{limit} tokens)."
+    reserve = Reserve.response_budget(limit)
+    effective = max(1, limit - reserve)
+    "Context usage is now at 50% (~#{used} of ~#{effective} token budget)."
   end
 
   def format(:p75, used, limit) do
-    "Context usage is now at 75% (~#{used} of #{limit} tokens). " <>
+    reserve = Reserve.response_budget(limit)
+    effective = max(1, limit - reserve)
+
+    "Context usage is now at 75% (~#{used} of ~#{effective} token budget). " <>
       "Consider compacting via the `context` tool " <>
       "(action: 'compact') to free up room."
   end

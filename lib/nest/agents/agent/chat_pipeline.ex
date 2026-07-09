@@ -18,16 +18,15 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   """
 
   alias Nest.Agents.Agent.Broadcasts
+  alias Nest.Agents.Agent.ChatPipeline.CompactionSpawn
   alias Nest.Agents.Agent.ChatTurnSupervisor
-  alias Nest.Agents.Agent.Compaction
+  alias Nest.Agents.Agent.Handlers.CompactionHandler
   alias Nest.Messages.Part
   alias Nest.Messages.Streaming
   alias Nest.Messages.User
-  alias Nest.Tokens.Estimator
   alias Nest.Tokens.PreFlight
+  alias Nest.Tokens.Reserve
   alias Nest.Vocations
-
-  @preflight_reserve 8_192
 
   @doc """
   Handle an incoming chat turn. Returns the updated state
@@ -285,73 +284,83 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     if streaming_active?(state.chat_state.streaming_acc) do
       append_and_spawn(state, effective_mode)
     else
-      case preflight_decision(messages_with_pending(state), state) do
-        decision when decision in [:fits, :no_limit_known] ->
-          append_and_spawn(state, effective_mode)
-
-        :needs_compaction ->
-          # The pending user message stays in `pending_user_message`
-          # during compaction (so the compactor doesn't try to
-          # summarize a brand-new user turn). After compaction
-          # succeeds, the `compaction_done` handler resumes by
-          # spawning a new ChatTurn with `info: :user_message` —
-          # the new ChatTurn appends the held user message itself.
-          state = %{state | chat_state: %{state.chat_state | status: :compacting}}
-          Broadcasts.status(state.name, state)
-
-          Compaction.spawn(
-            self(),
-            state.client_config,
-            state.llm_metrics.context_limit,
-            state.chat_state.messages,
-            {:chat_continuation, :pending}
-          )
-
-          state
-
-        :cannot_compact ->
-          # The conversation cannot fit even after compaction
-          # would run (system prompt alone exceeds the limit, or
-          # the head between system and last user is empty).
-          # Refuse the user's request: clear the pending
-          # message, set `:context_overflow` status, broadcast
-          # a `chat:error` with the actual numbers, and stay
-          # idle. The chat channel rejects `chat:message` while
-          # the agent is in `:context_overflow` status, so the
-          # user can't add more messages until they restart
-          # the agent or change the model.
-          state = clear_pending_user_message(state)
-          state = %{state | chat_state: %{state.chat_state | status: :context_overflow}}
-
-          Broadcasts.status(state.name, state)
-
-          Broadcasts.error(
-            state.name,
-            nil,
-            overflow_message(state),
-            "Nest.Agents.Agent.ChatPipeline.maybe_compact_then_spawn/2"
-          )
-
-          state
-      end
+      handle_preflight(state, effective_mode)
     end
   end
 
-  # Build the user-facing `chat:error` message for a context
-  # overflow. Includes the actual numbers so the user can see
-  # why the conversation cannot start. When no system message
-  # is present (defensive — should never happen), the estimate
-  # falls back to the full message-list size.
-  defp overflow_message(state) do
-    limit = state.llm_metrics.context_limit
+  defp handle_preflight(state, effective_mode) do
+    case preflight_decision(messages_with_pending(state), state) do
+      decision when decision in [:fits, :no_limit_known] ->
+        append_and_spawn(state, effective_mode)
 
-    sys_size =
-      case Enum.find(state.chat_state.messages, &match?({:system, _}, &1)) do
-        nil -> Estimator.estimate_messages(state.chat_state.messages)
-        sys_msg -> Estimator.estimate_message(sys_msg)
-      end
+      :needs_compaction ->
+        spawn_compaction_pipeline(state)
 
-    "Cannot start a conversation: model context limit (#{limit}) cannot fit the system prompt (~#{sys_size} tokens) + reserved response budget (#{@preflight_reserve} tokens). Use a model with a larger context window, or clear conversation history."
+      :cannot_compact ->
+        refuse_compaction(state)
+    end
+  end
+
+  # The pending user message stays in `pending_user_message`
+  # during compaction (so the compactor doesn't try to
+  # summarize a brand-new user turn). After compaction
+  # succeeds, the `compaction_done` handler resumes by spawning
+  # a new ChatTurn with `info: :user_message` — the new
+  # ChatTurn appends the held user message itself.
+  defp spawn_compaction_pipeline(state) do
+    state = %{state | chat_state: %{state.chat_state | status: :compacting}}
+    Broadcasts.status(state.name, state)
+
+    case CompactionHandler.check_consecutive(state) do
+      :refuse ->
+        # Loop detected. The CompactionHandler already
+        # broadcast the loop event and set the
+        # :compaction_loop_detected status. The pending
+        # user message stays set so the next chat:message
+        # (after OK) can re-attach; for now, leave the
+        # agent in the loop state and return.
+        state
+
+      {:ok, state} ->
+        messages = state.chat_state.messages
+        system_msg = Enum.find(messages, &match?({:system, _}, &1))
+
+        CompactionSpawn.spawn_compaction!(
+          self(),
+          state,
+          messages,
+          system_msg,
+          {:chat_continuation, :pending},
+          nil
+        )
+
+        state
+    end
+  end
+
+  # The conversation cannot fit even after compaction would
+  # run (system prompt alone exceeds the limit, or the head
+  # between system and last user is empty). Refuse the user's
+  # request: clear the pending message, set
+  # `:context_overflow` status, broadcast a `chat:error` with
+  # the actual numbers, and stay idle. The chat channel
+  # rejects `chat:message` while the agent is in
+  # `:context_overflow` status, so the user can't add more
+  # messages until they restart the agent or change the model.
+  defp refuse_compaction(state) do
+    state = clear_pending_user_message(state)
+    state = %{state | chat_state: %{state.chat_state | status: :context_overflow}}
+
+    Broadcasts.status(state.name, state)
+
+    Broadcasts.error(
+      state.name,
+      nil,
+      CompactionSpawn.overflow_message(state),
+      "Nest.Agents.Agent.ChatPipeline.handle_preflight/2"
+    )
+
+    state
   end
 
   # The message list for the pre-flight check: existing messages
@@ -391,7 +400,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     PreFlight.check_messages(
       messages_for_llm,
       state.llm_metrics.context_limit,
-      @preflight_reserve
+      Reserve.response_budget(state.llm_metrics.context_limit)
     )
   end
 

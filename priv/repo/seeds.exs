@@ -59,8 +59,13 @@ alias Nest.Vocations
     to analyze and modify files in the project.
 
     You can assume you're running on a typical Linux system and that ripgrep is installed
-    as `rg`. Prefer redirecting to a temporary file over throwing away potentially useful
-    shell command outputs by piping to head, tail, or grep.
+    as `rg`. 
+
+    The "shell_cmd" tool will automatically save long outputs to a file. Use the 
+    "max_result_tokens" parameter to control when this happens and avoid wasting context
+    on large shell command outputs. Use this mechanism instead of throwing away potentially
+    useful outputs with head, tail, grep, or similar for commands that cost significant time
+    or access remote APIs.
     """,
     tools: ["read_file", "inspect_file", "write_file", "edit", "shell_cmd", "context"],
     modes: %{

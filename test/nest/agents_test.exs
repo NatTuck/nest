@@ -149,7 +149,7 @@ defmodule Nest.AgentsTest do
       # runs `handle_info(:retry_compaction, state)` and decides
       # whether to actually re-run the compactor based on its
       # current status. Since the agent is in :idle status (not
-      # :compaction_failed), the handler logs a warning and is
+      # `:compaction_failed`), the handler logs a warning and is
       # a no-op. We capture the log and assert the warning.
       # We sync the GenServer mailbox via `:sys.get_state/2` to
       # make the test deterministic — the previous version relied
@@ -170,6 +170,29 @@ defmodule Nest.AgentsTest do
 
     test "returns error for non-existent agent" do
       assert {:error, :not_found} = Agents.retry_compaction("nonexistent")
+    end
+  end
+
+  describe "compaction_loop_detected_ok/1" do
+    test "sends :compaction_loop_detected_ok to the agent pid" do
+      {:ok, id} = Agents.create_agent(%{name: "qwen3.5-plus"})
+      {:ok, agent_pid} = Supervisor.get_agent(id)
+
+      # Agent is in :idle (not :compaction_loop_detected), so
+      # the handler logs a warning and is a no-op. Capture log.
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert :ok = Agents.compaction_loop_detected_ok(id)
+          :sys.get_state(agent_pid)
+        end)
+
+      assert log =~ "compaction_loop_detected_ok ignored"
+      assert log =~ ":idle"
+      assert log =~ ":compaction_loop_detected"
+    end
+
+    test "returns error for non-existent agent" do
+      assert {:error, :not_found} = Agents.compaction_loop_detected_ok("nonexistent")
     end
   end
 

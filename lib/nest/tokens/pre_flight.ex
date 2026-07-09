@@ -28,9 +28,14 @@ defmodule Nest.Tokens.PreFlight do
                       : :needs_compaction)
                   : :fits
 
-  The reserve is the budget we want to leave for the LLM's
-  response and any subsequent compaction. Defaults to 8,192
-  tokens.
+  The `reserve` is the LLM's response budget. It comes from
+  `Nest.Tokens.Reserve.response_budget/1` which encodes
+  `max(0.20 × context_limit, 8_192)`. When callers don't pass
+  an explicit reserve, `check/3` and `check_messages/3`
+  default to a flat 8,192 floor — matches `Reserve` at small
+  contexts and degrades gracefully when `context_limit` is
+  unknown (callers must pass the limit explicitly for the
+  scaled reserve to apply).
 
   ## Why `:cannot_compact`
 
@@ -46,8 +51,6 @@ defmodule Nest.Tokens.PreFlight do
 
   alias Nest.Tokens.ConversationSize
 
-  @default_reserve 8_192
-
   @type decision :: :fits | :needs_compaction | :cannot_compact | :no_limit_known
 
   @doc """
@@ -60,12 +63,15 @@ defmodule Nest.Tokens.PreFlight do
     * `context_limit` — the model's context window in tokens, or
       `nil` if unknown
     * `reserve` — tokens to leave free for the LLM's response
-      and any subsequent compaction (default #{@default_reserve})
+      and any subsequent compaction. Default 8,192 (matches
+      `Reserve.response_budget/1` at small contexts; pass an
+      explicit `Reserve.response_budget(context_limit)` to use
+      the scaled value).
 
   Returns one of `:fits | :needs_compaction | :cannot_compact | :no_limit_known`.
   """
   @spec check(non_neg_integer(), pos_integer() | nil, pos_integer()) :: decision()
-  def check(estimated_size, context_limit, reserve \\ @default_reserve)
+  def check(estimated_size, context_limit, reserve \\ 8_192)
 
   def check(_estimated_size, nil, _reserve), do: :no_limit_known
 
@@ -93,7 +99,7 @@ defmodule Nest.Tokens.PreFlight do
   """
   @spec check_messages([Nest.Messages.Message.t()], pos_integer() | nil, pos_integer()) ::
           decision()
-  def check_messages(messages, context_limit, reserve \\ @default_reserve) do
+  def check_messages(messages, context_limit, reserve \\ 8_192) do
     cond do
       is_nil(context_limit) ->
         :no_limit_known

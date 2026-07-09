@@ -413,6 +413,91 @@ describe("store", () => {
     });
   });
 
+  describe("setCompactionLoop", () => {
+    it("sets the compactionLoop text on an existing agent", () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        messageCount: 0,
+        status: "idle",
+      });
+
+      useStore
+        .getState()
+        .setCompactionLoop(
+          "agent-1",
+          "compaction isn't reducing the conversation",
+        );
+
+      expect(useStore.getState().agentsCache["agent-1"].compactionLoop).toBe(
+        "compaction isn't reducing the conversation",
+      );
+    });
+
+    it("no-ops on missing agent", () => {
+      expect(() =>
+        useStore.getState().setCompactionLoop("missing-agent", "msg"),
+      ).not.toThrow();
+
+      expect(useStore.getState().agentsCache["missing-agent"]).toBeUndefined();
+    });
+  });
+
+  describe("clearCompactionLoop", () => {
+    it("clears the compactionLoop text", () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        messageCount: 0,
+        status: "idle",
+      });
+      useStore.getState().setCompactionLoop("agent-1", "msg");
+
+      useStore.getState().clearCompactionLoop("agent-1");
+
+      expect(useStore.getState().agentsCache["agent-1"].compactionLoop).toBe(
+        null,
+      );
+    });
+  });
+
+  describe("setAgentState compaction-loop clearing", () => {
+    it("clears compactionLoop when agentState transitions out of compaction_loop_detected", () => {
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentState("agent-1", "compaction_loop_detected");
+      useStore.getState().setCompactionLoop("agent-1", "loop error");
+
+      // Simulate the user clicking OK: the agent transitions back
+      // to :idle and the loop-error text should clear.
+      useStore.getState().setAgentState("agent-1", "idle");
+
+      expect(
+        useStore.getState().agentsCache["agent-1"].compactionLoop,
+      ).toBeNull();
+    });
+
+    it("preserves compactionLoop when agentState stays at compaction_loop_detected", () => {
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentState("agent-1", "compaction_loop_detected");
+      useStore.getState().setCompactionLoop("agent-1", "loop error");
+
+      useStore.getState().setAgentState("agent-1", "compaction_loop_detected");
+
+      expect(useStore.getState().agentsCache["agent-1"].compactionLoop).toBe(
+        "loop error",
+      );
+    });
+
+    it("clears both compactionError AND compactionLoop on transition out of either state", () => {
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentState("agent-1", "compaction_failed");
+      useStore.getState().setCompactionError("agent-1", "first error");
+
+      // Transition to a fresh loop-detected state — old error text clears.
+      useStore.getState().setAgentState("agent-1", "compaction_loop_detected");
+
+      expect(
+        useStore.getState().agentsCache["agent-1"].compactionError,
+      ).toBeNull();
+    });
+  });
+
   describe("setNotification and clearNotification", () => {
     it("sets notification for existing agent", () => {
       useStore.getState().setAgentConnected("agent-1", {

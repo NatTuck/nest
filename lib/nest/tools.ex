@@ -285,7 +285,7 @@ defmodule Nest.Tools do
   # specific cap. The BatchSizer treats this as an inline-vs-summary
   # threshold:
   #
-  #   * `execute_command` → if exceeded, write the full output to a
+  #   * `shell_cmd` → if exceeded, write the full output to a
   #     tmp file and return a path-and-head summary inline.
   #   * `read_file` → if exceeded, return an error result with the
   #     actual vs. requested token counts.
@@ -300,7 +300,7 @@ defmodule Nest.Tools do
       "description" =>
         "Maximum tokens for the inline result. Defaults to 80% of the " <>
           "remaining usable context window. Lower this to force a " <>
-          "path-and-head summary (execute_command) or an error result " <>
+          "path-and-head summary (shell_cmd) or an error result " <>
           "(read_file); the value is clamped to the 80% default if you " <>
           "ask for more."
     }

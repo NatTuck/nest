@@ -30,6 +30,7 @@ defmodule Nest.Agents.PersistedAgent do
           model: map(),
           workspace_path: String.t() | nil,
           next_message_index: non_neg_integer(),
+          last_compaction_index: integer(),
           inserted_at: DateTime.t() | nil,
           updated_at: DateTime.t() | nil
         }
@@ -41,6 +42,15 @@ defmodule Nest.Agents.PersistedAgent do
     field :model, :map
     field :workspace_path, :string
     field :next_message_index, :integer, default: 0
+
+    # Boundary pointer for the active/history partition of an
+    # agent's messages. `state.chat_state.messages` is exactly
+    # `messages WHERE message_index > agents.last_compaction_index`.
+    # `-1` is the sentinel for "never compacted; everything,
+    # including the system prompt at index 0, is in messages".
+    # Bumped atomically by `Persistence.record_compaction/3`
+    # together with the compaction marker INSERT.
+    field :last_compaction_index, :integer, default: -1
 
     timestamps(type: :utc_datetime)
   end
@@ -62,7 +72,14 @@ defmodule Nest.Agents.PersistedAgent do
     params = atomize_keys(params)
 
     source
-    |> cast(params, [:name, :vocation_id, :model, :workspace_path, :next_message_index])
+    |> cast(params, [
+      :name,
+      :vocation_id,
+      :model,
+      :workspace_path,
+      :next_message_index,
+      :last_compaction_index
+    ])
     |> validate_required([:name, :model])
     |> validate_length(:name, min: 1)
     |> unique_constraint(:name)

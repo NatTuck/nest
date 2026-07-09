@@ -228,4 +228,103 @@ describe("CompactionMarker", () => {
       expect(screen.getByTestId("collapsed-history")).toBeInTheDocument();
     });
   });
+
+  describe("token-stats rendering branches", () => {
+    it("falls back to the legacy text when statsCompacted is missing", () => {
+      // Only `tokensCompacted` set; `tokensCompactedTo` is null →
+      // hits the falsy branch of `buildStatsLine/1` and renders
+      // the non-stats header.
+      render(
+        <CompactionMarker
+          marker={{
+            index: 5,
+            role: "compaction",
+            archivedCount: 4,
+            tokensCompacted: 18_432,
+            tokensCompactedTo: null,
+          }}
+          history={buildHistory(4)}
+        />,
+      );
+
+      // The non-stats path: "Context compacted" + count line.
+      // (Verified indirectly — the data-tokens-compacted-to attr
+      // stays empty since the saved delta isn't computed.)
+      expect(
+        screen
+          .getByTestId("compaction-marker")
+          .getAttribute("data-tokens-compacted-to"),
+      ).toBe("");
+    });
+
+    it("renders numeric tokens via formatTokens when values are integers", () => {
+      // `formatTokens/1` falls through to `.toLocaleString("en-US")`
+      // on a finite number — distinct from the null branch
+      // covered above.
+      const { container } = render(
+        <CompactionMarker
+          marker={{
+            index: 5,
+            role: "compaction",
+            archivedCount: 3,
+            tokensCompacted: 18_432,
+            tokensCompactedTo: 4_096,
+          }}
+          history={buildHistory(3)}
+        />,
+      );
+
+      expect(container.textContent).toContain("18,432");
+      expect(container.textContent).toContain("4,096");
+    });
+
+    it("uses singular 'message' wording in the saved-delta line when archivedCount is 1", () => {
+      // The ternary at `count === 1 ? "" : "s"` is hit on both
+      // branches via the legacy count line; the saved-delta line
+      // also runs the same singular-vs-plural switch, and the
+      // singular branch is tested here.
+      const { container } = render(
+        <CompactionMarker
+          marker={{
+            index: 5,
+            role: "compaction",
+            archivedCount: 1,
+            tokensCompacted: 1_500,
+            tokensCompactedTo: 500,
+          }}
+          history={buildHistory(1)}
+        />,
+      );
+
+      // Singular: "saved 1000 tokens across 1 earlier message"
+      expect(container.textContent).toContain("across 1 earlier message");
+      // Plural branch is covered by other tests.
+    });
+
+    it("uses non-numeric token values via the null branch (formatTokens bailout)", () => {
+      // Pass `tokensCompacted: "abc"` (a string, not a number).
+      // `formatTokens/1` returns `null` for non-finite inputs,
+      // and `buildStatsLine/1` then returns `null` itself,
+      // rendering the legacy "Context compacted" header.
+      render(
+        <CompactionMarker
+          marker={{
+            index: 5,
+            role: "compaction",
+            archivedCount: 3,
+            tokensCompacted: "abc",
+            tokensCompactedTo: 4_096,
+          }}
+          history={buildHistory(3)}
+        />,
+      );
+
+      // The legacy header + count line should be present,
+      // NOT the "Compaction: X tokens compacted to Y" line.
+      expect(screen.queryByText(/Compaction: /)).not.toBeInTheDocument();
+      expect(
+        screen.getByText(/3 earlier messages archived/),
+      ).toBeInTheDocument();
+    });
+  });
 });

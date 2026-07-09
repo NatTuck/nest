@@ -148,4 +148,55 @@ describe("StatusBanner", () => {
       screen.getByText(/context window cannot fit even the system prompt/i),
     ).toBeInTheDocument();
   });
+
+  it("renders a compaction_loop_detected banner with an OK button (no Retry)", () => {
+    // The loop state is distinct from compaction_failed: the user
+    // got the OK button instead of Retry because the loop-breaker
+    // tripped (consecutive compactions without progress). Clicking
+    // OK clears the loop state; the user then sends a new message.
+    const onRetryCompaction = vi.fn();
+    const onCompactionLoopOk = vi.fn();
+
+    const { container } = render(
+      <StatusBanner
+        status="compaction_loop_detected"
+        compactionLoop="compaction isn't reducing the conversation — start a new session, change model, or clear history"
+        onRetry={() => {}}
+        onRetryCompaction={onRetryCompaction}
+        onCompactionLoopOk={onCompactionLoopOk}
+      />,
+    );
+
+    expect(
+      screen.getByText("Compaction isn't reducing context"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/compaction isn't reducing the conversation/i),
+    ).toBeInTheDocument();
+
+    // OK button calls onCompactionLoopOk, not onRetryCompaction.
+    const okButton = screen.getByRole("button", { name: /^ok$/i });
+    expect(okButton).toBeInTheDocument();
+    fireEvent.click(okButton);
+    expect(onCompactionLoopOk).toHaveBeenCalledTimes(1);
+    expect(onRetryCompaction).not.toHaveBeenCalled();
+
+    // Only the OK button — no Retry / Reconnect.
+    expect(container.querySelectorAll("button")).toHaveLength(1);
+  });
+
+  it("falls back to a default message for compaction_loop_detected when compactionLoop is not provided", () => {
+    render(
+      <StatusBanner
+        status="compaction_loop_detected"
+        onRetry={() => {}}
+        onRetryCompaction={() => {}}
+        onCompactionLoopOk={() => {}}
+      />,
+    );
+
+    expect(
+      screen.getByText(/Compaction is no longer reducing the conversation/i),
+    ).toBeInTheDocument();
+  });
 });

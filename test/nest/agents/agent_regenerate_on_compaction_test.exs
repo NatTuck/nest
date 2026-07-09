@@ -78,8 +78,22 @@ defmodule Nest.Agents.AgentRegenerateOnCompactionTest do
     dir
   end
 
+  # Mimic `Nest.Tokens.Compactor.compact/3`'s output shape:
+  # `[original_system, wrap_summary(llm_text), ...rest]` where
+  # the original system sits at index 0 (with the full system
+  # prompt as a single Part.Text) and the LLM-generated head
+  # summary sits at index 1 (also wrapped as a single Part.Text
+  # system message). The regenerator reads `summary_text` from
+  # index 1, the original system at index 0 is preserved (its
+  # text is allowed to look anything).
   defp compactor_messages_with(summary_text, after_text \\ "Next") do
     [
+      {:system,
+       %System{
+         parts: [
+           %Part.Text{text: "ORIGINAL_SYSTEM_PROMPT_PLACEHOLDER"}
+         ]
+       }},
       {:system, %System{parts: [%Part.Text{text: summary_text}]}},
       {:user, %User{parts: [%Part.Text{text: after_text}], api_logs: []}}
     ]
@@ -198,6 +212,53 @@ defmodule Nest.Agents.AgentRegenerateOnCompactionTest do
       Agent.terminate(pid)
     end
 
+    test "encoded summary-as-user uses the wrap_summary text (position 1) of the real compactor output, not the original system (position 0)" do
+      # Real production shape: `Compactor.compact/3` returns
+      # `[original_system, wrap_summary(llm_text)]`. Position 0 is
+      # the original system (with the full prompt in a single
+      # Part.Text), position 1 is the wrap_summary (a system
+      # message whose single Part.Text is the LLM summary).
+      # The regenerator's destructuring MUST bind summary_text
+      # to position 1 so the encoded summary-as-user message
+      # contains the LLM summary, not the original system prompt.
+      vocation_id = programmer_vocation_id()
+
+      {pid, _agent_id} =
+        start_agent(%{model: %{name: "qwen3.5-plus"}, vocation_id: vocation_id})
+
+      # Mimic `Compactor.compact/3`'s contract:
+      # `[original_system, wrap_summary, ...rest]` — position 0
+      # is the original system (full prompt as a single
+      # Part.Text), position 1 is the wrap_summary (LLM summary
+      # text as a single Part.Text), position 2 is `rest` (a
+      # placeholder user message that should land at the tail).
+      real_compactor_output = [
+        {:system,
+         %System{
+           parts: [%Part.Text{text: "ORIGINAL SYSTEM PROMPT — must not leak into summary"}]
+         }},
+        {:system, %System{parts: [%Part.Text{text: "REAL_LLM_SUMMARY_TEXT"}]}},
+        {:user, %User{parts: [%Part.Text{text: "post-compaction remainder"}], api_logs: []}}
+      ]
+
+      send(
+        pid,
+        {:compaction_done, real_compactor_output, {:task_compaction_continuation, self()}}
+      )
+
+      assert_receive {:task_compaction_done, _}, 200
+
+      state = :sys.get_state(pid)
+
+      [_, {:user, %User{parts: [%Part.Text{text: text1}]}}, _] = state.chat_state.messages
+      # The encoded summary-as-user MUST carry the LLM summary
+      # text, NOT the original system prompt.
+      assert text1 =~ "REAL_LLM_SUMMARY_TEXT"
+      refute text1 =~ "ORIGINAL SYSTEM PROMPT"
+
+      Agent.terminate(pid)
+    end
+
     test "Vocations.get_vocation returns nil: graceful fallback (cached state, warning logged)" do
       # The DB-missing case is "expected to come back quickly"
       # (per the design in notes/update-system-msg-on-compaction.md).
@@ -235,8 +296,10 @@ defmodule Nest.Agents.AgentRegenerateOnCompactionTest do
 
       state = :sys.get_state(pid)
       # The compactor's output is used as-is; the cached
-      # vocation stays.
-      assert length(state.chat_state.messages) == 2
+      # vocation stays. The fixture mimics the compactor's
+      # `[original_system, wrap_summary, ...rest]` shape, so
+      # all three input messages survive unchanged.
+      assert length(state.chat_state.messages) == 3
       assert {:system, %System{}} = hd(state.chat_state.messages)
       assert state.vocation.id == vocation_id
 

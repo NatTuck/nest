@@ -15,6 +15,7 @@ defmodule Nest.Agents.Agent.Init do
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Persistence, as: AgentPersistence
+  alias Nest.Agents.Agent.Restore
   alias Nest.Agents.Agent.SystemPrompt
   alias Nest.Messages.Part
   alias Nest.Messages.System
@@ -59,6 +60,8 @@ defmodule Nest.Agents.Agent.Init do
 
     {initial_messages, next_index} = initial_messages_with_system(system_prompt)
 
+    initial_api_log_sequences = Map.get(attrs, :initial_api_log_sequences, %{})
+
     %Nest.Agents.Agent{
       name: name,
       model: model,
@@ -70,7 +73,7 @@ defmodule Nest.Agents.Agent.Init do
       tools: tools,
       llm_metrics: build_llm_metrics(context_limit, context_limit_source),
       mode: mode,
-      chat_state: build_chat_state(initial_messages, next_index)
+      chat_state: build_chat_state(initial_messages, next_index, initial_api_log_sequences)
     }
   end
 
@@ -95,10 +98,10 @@ defmodule Nest.Agents.Agent.Init do
   This is what makes the system prompt survive a BEAM restart;
   `Supervisor.fetch_or_start_agent/1`'s restore path reads the
   active messages and seeds them into `state.chat_state.messages`.
-  Subsequent re-renders (via `seed_preloaded_messages/2`) keep
-  the system prompt at position 0 either because the persisted
-    row already exists or because the in-memory system message
-    is prepended defensively.
+  Subsequent re-renders (via `seed_from_db/3`) keep the system
+  prompt at position 0 either because the persisted row already
+  exists or because the in-memory system message is prepended
+  defensively.
   """
   @spec persist_initial_system_message(Nest.Agents.Agent.t()) :: :ok
   def persist_initial_system_message(state) do
@@ -115,6 +118,107 @@ defmodule Nest.Agents.Agent.Init do
       _ ->
         :ok
     end
+  end
+
+  @doc """
+  Seed the agent's `chat_state` from a freshly-loaded DB
+  message sequence. The `preloaded` list is the ordered
+  sequence returned by `Persistence.load_messages/1`
+  (active + history + compaction markers). `last_compaction_index`
+  is the runtime mirror of `agents.last_compaction_index`.
+
+  Splits the sequence into `state.chat_state.history` (rows
+  with `index <= last_compaction_index`) and
+  `state.chat_state.messages` (rows strictly greater). The
+  compaction marker row at the boundary lands in `history`
+  (the `<=` rule).
+
+  Bumps `state.chat_state.next_message_index` to one past the
+  highest stamped index in the loaded list so the next
+  `__append_message__/2` doesn't stamp a colliding index.
+
+  When the persisted sequence has no system row (a legacy
+  pre-system-prompt row), defensively prepends the in-memory
+  system message at index 0 and shifts the boundary up by 1
+  to keep the partition invariant (`history ++ messages ==
+  full sequence in order`).
+  """
+  @spec seed_from_db(Nest.Agents.Agent.t(), [Nest.Messages.Message.t()], integer()) ::
+          Nest.Agents.Agent.t()
+  def seed_from_db(state, [], _last_compaction_index), do: state
+
+  def seed_from_db(state, preloaded, last_compaction_index) do
+    seed_with_system_if_needed(state, preloaded, last_compaction_index)
+  end
+
+  @doc """
+  Attach rebuilt api_logs to `:user` and `:tool` messages and
+  seed `state.chat_state.api_log_sequences` so the next live
+  request after restore picks up at `.001` (no collision with
+  the rebuilt `.000`).
+
+  Pure delegator to `Nest.Agents.Agent.Restore`. The caller is
+  `Agent.init/1`; runs immediately after `seed_from_db/3`.
+  """
+  @spec attach_rebuilt_api_logs(Nest.Agents.Agent.t(), [Nest.Messages.Message.t()], integer()) ::
+          Nest.Agents.Agent.t()
+  def attach_rebuilt_api_logs(state, preloaded, last_compaction_index) do
+    Restore.attach_rebuilt_api_logs(state, preloaded, last_compaction_index)
+  end
+
+  # When the in-memory system message is already at position 0
+  # of the preloaded list, partition it as-is into history
+  # and messages.
+  defp seed_with_system_if_needed(state, preloaded, last_compaction_index) do
+    has_system? = Enum.any?(preloaded, &match?({:system, _}, &1))
+
+    if has_system? do
+      do_seed(state, preloaded, last_compaction_index)
+    else
+      prepend_system(state, preloaded, last_compaction_index)
+    end
+  end
+
+  defp do_seed(state, preloaded, last_compaction_index) do
+    {history, messages} =
+      Enum.split_with(preloaded, fn {_role, %{index: idx}} ->
+        idx <= last_compaction_index
+      end)
+
+    highest_index =
+      preloaded
+      |> Enum.map(fn {_role, %{index: idx}} -> idx end)
+      |> Enum.max(fn -> -1 end)
+
+    %{
+      state
+      | chat_state: %{
+          state.chat_state
+          | messages: messages,
+            history: history,
+            last_compaction_index: last_compaction_index,
+            next_message_index: highest_index + 1
+        }
+    }
+  end
+
+  # Defensive prepend: pre-existing rows may have messages
+  # but no persisted system row. Shift the preloaded list
+  # up by one and seed the in-memory system message at
+  # position 0 so the system prompt survives BEAM restart.
+  defp prepend_system(state, preloaded, last_compaction_index) do
+    [system | _] = state.chat_state.messages
+
+    shifted =
+      Enum.map(preloaded, fn {role, %{index: idx} = msg} ->
+        {role, %{msg | index: idx + 1}}
+      end)
+
+    # After the prepend the system row sits at index 0, so
+    # the partition needs to shift the boundary up by one as
+    # well — the rows the caller persisted are now at their
+    # original index + 1.
+    do_seed(state, [system | shifted], last_compaction_index + 1)
   end
 
   @doc """
@@ -197,13 +301,14 @@ defmodule Nest.Agents.Agent.Init do
     }
   end
 
-  defp build_chat_state(messages, next_index) do
+  defp build_chat_state(messages, next_index, api_log_sequences) do
     %Nest.Agents.Agent.ChatState{
       messages: messages,
       next_message_index: next_index,
       streaming_acc: nil,
       status: :idle,
-      active_message_index: 0
+      active_message_index: 0,
+      api_log_sequences: api_log_sequences
     }
   end
 

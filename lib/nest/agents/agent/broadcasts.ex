@@ -87,6 +87,25 @@ defmodule Nest.Agents.Agent.Broadcasts do
     )
   end
 
+  @doc """
+  Broadcast a `:compaction_loop_detected` event. Distinct from
+  `compaction_error/3` because the loop-detection UI shows an
+  OK button (clearing the frozen state) instead of the
+  compaction-failed Retry button. The marker lets the JS
+  channel handler dispatch to the `setCompactionLoop` cache
+  action.
+  """
+  def compaction_loop(agent_id, error_msg, source) do
+    tagged = tag_source(error_msg, source)
+    log_error(agent_id, nil, error_msg, source)
+
+    Phoenix.PubSub.broadcast(
+      PubSub,
+      "agent:#{agent_id}",
+      {:chat_compaction_loop, %{content: tagged}}
+    )
+  end
+
   # Append a short, copy-pastable `[Source: Module.fn/arity]`
   # line to the user-facing error message so we can grep the
   # server log for the matching `Logger.error` entry. The
@@ -131,7 +150,7 @@ defmodule Nest.Agents.Agent.Broadcasts do
     )
   end
 
-  # Broadcasts a chat:compaction event after archive_and_compact.
+  # Broadcasts a chat:compaction event after record_compaction.
   # The frontend uses this to update the local history list (so
   # the CompactionMarker component can render) and to clear the
   # message list back to the LLM's view of the world.

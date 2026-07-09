@@ -466,6 +466,44 @@ export const useStore = create(
       },
 
       /**
+       * Set a compaction-loop error message on the agent cache.
+       * Distinct from `setCompactionError`: this is paired with the
+       * `:compaction_loop_detected` agentState, which renders an OK
+       * button (not Retry). The StatusBanner reads both fields to
+       * render the right banner.
+       */
+      setCompactionLoop: (id, error) => {
+        set((state) => {
+          const cache = state.agentsCache[id];
+          if (!cache) return state;
+          return {
+            agentsCache: {
+              ...state.agentsCache,
+              [id]: { ...cache, compactionLoop: error },
+            },
+          };
+        });
+      },
+
+      /**
+       * Clear the compaction-loop error text. Called when the user
+       * clicks OK (which transitions the agent back to `:idle`), or
+       * automatically when the agent leaves the loop state.
+       */
+      clearCompactionLoop: (id) => {
+        set((state) => {
+          const cache = state.agentsCache[id];
+          if (!cache) return state;
+          return {
+            agentsCache: {
+              ...state.agentsCache,
+              [id]: { ...cache, compactionLoop: null },
+            },
+          };
+        });
+      },
+
+      /**
        * Set agent's GenServer state (idle, streaming, executing_tools).
        * Optionally updates the resolved context-window limit and its
        * source in the same write — used by the chat:status handler
@@ -480,8 +518,19 @@ export const useStore = create(
           // (either to `:compacting` for a retry, or to `:idle` /
           // streaming after a successful compaction), clear the stale
           // error text so the banner switches to the right message.
-          const patch =
+          // Same for `:compaction_loop_detected` — when the user
+          // clicks OK, the agent transitions back to `:idle` and the
+          // loop-error text goes away.
+          const clear_compaction_error =
             agentState !== "compaction_failed" ? { compactionError: null } : {};
+          const clear_compaction_loop =
+            agentState !== "compaction_loop_detected"
+              ? { compactionLoop: null }
+              : {};
+          const patch = {
+            ...clear_compaction_error,
+            ...clear_compaction_loop,
+          };
 
           return {
             agentsCache: {

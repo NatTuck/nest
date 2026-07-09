@@ -26,6 +26,7 @@ import {
   sendMessage,
   stopMessage,
   retryCompaction,
+  compactionLoopOk,
   createAgent,
   deleteAgent,
   clearAgentChannels,
@@ -2003,6 +2004,57 @@ describe("channels", () => {
 
       assert.doesNotThrow(() => {
         retryCompaction("agent-1");
+      });
+    });
+  });
+
+  describe("compactionLoopOk", () => {
+    it("should call onError when not connected to agent", async () => {
+      let errorCalled = false;
+      compactionLoopOk("missing-agent", (_err) => {
+        errorCalled = true;
+      });
+
+      await vi.waitFor(() => {
+        assert.strictEqual(errorCalled, true);
+      });
+    });
+
+    it("should not throw when not connected and onError is omitted", () => {
+      assert.doesNotThrow(() => {
+        compactionLoopOk("missing-agent");
+      });
+    });
+
+    it("should push chat:loop-detected-ok and invoke onError on push failure", async () => {
+      setNextJoinResult("agent:agent-1", {
+        autoInit: {
+          id: "agent-1",
+          model: { name: "gpt-4", provider: "openai" },
+          messageCount: 0,
+          status: "compaction_loop_detected",
+        },
+      });
+      joinAgent("agent-1");
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      setNextPushResult("agent:agent-1", "chat:loop-detected-ok", {
+        error: { reason: "wrong_state" },
+      });
+
+      let errorCalled = false;
+      compactionLoopOk("agent-1", (_err) => {
+        errorCalled = true;
+      });
+
+      await vi.waitFor(() => {
+        assert.strictEqual(errorCalled, true);
       });
     });
   });

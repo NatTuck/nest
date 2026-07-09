@@ -3,14 +3,17 @@
  * connection states: connecting (spinner), error (with Retry),
  * disconnected (with Reconnect), or agent-level compaction
  * states: compacting (spinner, no button), compaction_failed
- * (with Retry button that calls onRetryCompaction).
+ * (with Retry button that calls onRetryCompaction),
+ * compaction_loop_detected (with OK button that calls
+ * onCompactionLoopOk).
  *
- * `context_overflow` is distinct from compaction_failed: the
- * model is fundamentally too small for the system prompt and
- * retrying will not help. The banner therefore omits the Retry
- * button and instructs the user to switch models or clear the
- * conversation. The `error` prop carries the actual numbers
- * (system prompt size, context limit) from the server.
+ * `context_overflow` is distinct from compaction_failed and
+ * compaction_loop_detected: the model is fundamentally too
+ * small for the system prompt and retrying will not help. The
+ * banner therefore omits the action button and instructs the
+ * user to switch models or clear the conversation. The `error`
+ * prop carries the actual numbers (system prompt size, context
+ * limit) from the server.
  *
  * Returns `null` for the connected/idle state — the chat input
  * is then the primary UI.
@@ -20,7 +23,9 @@ export function StatusBanner({
   error,
   onRetry,
   onRetryCompaction,
+  onCompactionLoopOk,
   compactionError,
+  compactionLoop,
 }) {
   if (status === "connecting") {
     return (
@@ -97,6 +102,35 @@ export function StatusBanner({
             className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors text-sm"
           >
             Retry compaction
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (status === "compaction_loop_detected") {
+    // Distinct from compaction_failed: this is the loop-breaker
+    // tripping (consecutive compactions without progress). The
+    // recovery is "OK" — the user acknowledges and types a fresh
+    // message; the next compaction cycle gets a clean counter.
+    return (
+      <div className="bg-yellow-100 border-l-4 border-yellow-500 p-4 mb-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-yellow-800 font-medium">
+              Compaction isn't reducing context
+            </p>
+            <p className="text-yellow-700 text-sm">
+              {compactionLoop ||
+                "Compaction is no longer reducing the conversation."}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onCompactionLoopOk}
+            className="px-4 py-2 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 transition-colors text-sm"
+          >
+            OK
           </button>
         </div>
       </div>

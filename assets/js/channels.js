@@ -149,6 +149,19 @@ export function joinAgent(agentId) {
     store.setAgentHistory(agentId, history, marker);
   });
 
+  // The backend broadcasts a chat:compaction-loop event when
+  // the loop-breaker trips (consecutive compactions without
+  // progress). The store records the message so the
+  // StatusBanner can render the OK button. Distinct from the
+  // compaction-failure path (which uses chat:error +
+  // agentState="compaction_failed" + a Retry button).
+  channel.on("chat:compaction-loop", (payload) => {
+    store.setCompactionLoop(
+      agentId,
+      payload?.content ?? "compaction isn't reducing the conversation",
+    );
+  });
+
   channel.on("chat:delta", (delta) => {
     const result = store.addChatDelta(agentId, delta);
     if (result.needsSync) {
@@ -376,6 +389,27 @@ export function retryCompaction(agentId, onError) {
   }
 
   channel.push("chat:retry-compaction", {}).receive("error", (err) => {
+    if (onError) onError(err);
+  });
+}
+
+/**
+ * Acknowledge a `:compaction_loop_detected` status by sending
+ * `chat:loop-detected-ok` to the server. The handler transitions
+ * the agent back to `:idle` and clears the loop-breaker counter.
+ *
+ * A no-op when the channel isn't connected. The optional `onError`
+ * callback fires when the server rejects the push (e.g. agent not
+ * found, or agent is not in `:compaction_loop_detected` status).
+ */
+export function compactionLoopOk(agentId, onError) {
+  const channel = agentChannels.get(agentId);
+  if (!channel) {
+    if (onError) onError(new Error("Not connected to agent"));
+    return;
+  }
+
+  channel.push("chat:loop-detected-ok", {}).receive("error", (err) => {
     if (onError) onError(err);
   });
 }

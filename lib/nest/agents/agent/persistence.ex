@@ -29,9 +29,21 @@ defmodule Nest.Agents.Agent.Persistence do
     end
   end
 
-  def archive_and_compact(agent_id, first_index, marker_index, archived_count) do
+  def record_compaction(
+        agent_id,
+        marker_index,
+        archived_count,
+        tokens_compacted \\ nil,
+        tokens_compacted_to \\ nil
+      ) do
     if persistence_enabled?() do
-      do_archive_and_compact(agent_id, first_index, marker_index, archived_count)
+      do_record_compaction(
+        agent_id,
+        marker_index,
+        archived_count,
+        tokens_compacted,
+        tokens_compacted_to
+      )
     else
       :ok
     end
@@ -47,8 +59,20 @@ defmodule Nest.Agents.Agent.Persistence do
     end
   end
 
-  defp do_archive_and_compact(agent_id, first_index, marker_index, archived_count) do
-    case Persistence.archive_and_compact(agent_id, first_index, marker_index, archived_count) do
+  defp do_record_compaction(
+         agent_id,
+         marker_index,
+         archived_count,
+         tokens_compacted,
+         tokens_compacted_to
+       ) do
+    case Persistence.record_compaction(
+           agent_id,
+           marker_index,
+           archived_count,
+           tokens_compacted,
+           tokens_compacted_to
+         ) do
       {:ok, _row} ->
         :ok
 

@@ -72,6 +72,7 @@ defmodule Nest.Agents.Agent.Handlers do
   defp route_for({:task_compaction_failed, _, _}), do: {:ok, CompactionHandler}
   defp route_for({:needs_compaction, _, _, _}), do: {:ok, CompactionHandler}
   defp route_for(:retry_compaction), do: {:ok, CompactionHandler}
+  defp route_for(:compaction_loop_detected_ok), do: {:ok, CompactionHandler}
   defp route_for({:stop_chat, _}), do: {:ok, StopHandler}
   defp route_for({:EXIT, _, _}), do: {:ok, ExitHandler}
 

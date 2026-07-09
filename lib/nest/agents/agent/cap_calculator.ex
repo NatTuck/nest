@@ -9,9 +9,10 @@ defmodule Nest.Agents.Agent.CapCalculator do
 
   ## Formula
 
-      usable       = context_limit - estimate_messages(messages) - @preflight_reserve
-      default_cap  = floor(usable * 0.80)
-      effective    = min(LLM_override, default_cap)   # LLM may only lower
+      reserve       = Nest.Tokens.Reserve.response_budget(context_limit)
+      usable        = context_limit - estimate_messages(messages) - reserve
+      default_cap   = floor(usable * 0.80)
+      effective     = min(LLM_override, default_cap)   # LLM may only lower
 
   When `context_limit` is `nil`, no cap is enforced
   (degraded-but-hopeful path).
@@ -21,8 +22,7 @@ defmodule Nest.Agents.Agent.CapCalculator do
 
   alias Nest.Messages.ToolCall
   alias Nest.Tokens.ConversationSize
-
-  @preflight_reserve 8_192
+  alias Nest.Tokens.Reserve
 
   # Inline-vs-summary threshold: 80% of the remaining usable
   # context window (computed once per batch; LLM may lower this
@@ -31,9 +31,10 @@ defmodule Nest.Agents.Agent.CapCalculator do
 
   @doc """
   Remaining usable context window in tokens, after subtracting
-  the current message list and the preflight reserve. Returns
-  `nil` when `ctx.context_limit` is `nil` (degraded-but-hopeful
-  path; no cap enforced).
+  the current message list and the LLM response budget (from
+  `Nest.Tokens.Reserve.response_budget/1`). Returns `nil` when
+  `ctx.context_limit` is `nil` (degraded-but-hopeful path; no
+  cap enforced).
 
   Uses `ConversationSize.size/1` for the current message list
   size so real-valued tokens from prior LLM responses are
@@ -45,7 +46,7 @@ defmodule Nest.Agents.Agent.CapCalculator do
   def usable_remaining(%{context_limit: limit} = ctx)
       when is_integer(limit) and limit > 0 do
     current = ConversationSize.size(ctx.messages || [])
-    remaining = limit - current - @preflight_reserve
+    remaining = limit - current - Reserve.response_budget(limit)
     if remaining > 0, do: remaining, else: 0
   end
 

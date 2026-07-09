@@ -23,6 +23,7 @@ import {
   sendMessage,
   stopMessage,
   retryCompaction,
+  compactionLoopOk,
 } from "../channels";
 vi.mock("../channels", () => ({
   joinAgent: vi.fn(),
@@ -30,6 +31,7 @@ vi.mock("../channels", () => ({
   sendMessage: vi.fn(),
   stopMessage: vi.fn(),
   retryCompaction: vi.fn(),
+  compactionLoopOk: vi.fn(),
 }));
 
 // Mock useScrollToBottom (not relevant to these tests).
@@ -1266,5 +1268,56 @@ describe("ChatPage compaction-frozen state", () => {
     });
 
     expect(screen.getByText("agent_status_compacting")).toBeInTheDocument();
+  });
+
+  describe("compaction_loop_detected", () => {
+    function setupCompactionLoop() {
+      mockAgentsCache = {
+        "test-agent": {
+          status: "connected",
+          agentState: "compaction_loop_detected",
+          compactionLoop: "compaction isn't reducing the conversation",
+          messages: [],
+          model: { name: "qwen3.5-plus" },
+        },
+      };
+      renderChat();
+    }
+
+    it("hides the chat input and shows an OK button when compaction_loop_detected", () => {
+      setupCompactionLoop();
+
+      expect(screen.queryByRole("textbox", { name: /message/i })).toBeNull();
+      expect(
+        screen.getByText("Compaction isn't reducing context"),
+      ).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /^ok$/i })).toBeInTheDocument();
+    });
+
+    it("clicking OK pushes chat:loop-detected-ok to the channel", async () => {
+      setupCompactionLoop();
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: /^ok$/i }));
+      });
+
+      expect(compactionLoopOk).toHaveBeenCalledWith(
+        "test-agent",
+        expect.any(Function),
+      );
+    });
+
+    it("surfaces the OK click's server rejection via sendError", async () => {
+      compactionLoopOk.mockImplementation((_id, onError) => {
+        onError({ reason: "wrong_state" });
+      });
+      setupCompactionLoop();
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: /^ok$/i }));
+      });
+
+      expect(screen.getByText("wrong_state")).toBeInTheDocument();
+    });
   });
 });

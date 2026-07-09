@@ -42,35 +42,18 @@ defmodule Nest.Scripts.CompactAgentHistory do
 
   alias Nest.Agents.PersistedAgent
   alias Nest.Agents.PersistedMessage
-  alias Nest.ChatModel
-  alias Nest.DotConfig
-  alias Nest.LLM.ClientConfig
-  alias Nest.LLM.RunRequest
-  alias Nest.LLM.RunResponse
-  alias Nest.LLM.StreamConsumer
   alias Nest.Messages.Part
   alias Nest.Messages.System
   alias Nest.Messages.User
   alias Nest.Persistence
   alias Nest.Repo
+  alias Nest.Scripts.CompactionProbeSupport
   alias Nest.Tokens.Compactor
   alias Nest.Vocations
 
   require Logger
 
   import Ecto.Query
-
-  @summarization_prompt """
-  You are a conversation summarizer.
-
-  Produce a concise prose summary preserving:
-    - The user's current goal
-    - Key facts established
-    - Decisions made
-    - Any unresolved TODOs
-
-  Drop redundant tool outputs and resolved sub-tasks. Be brief.
-  """
 
   def run(argv) do
     {opts, positional, _invalid} =
@@ -187,53 +170,17 @@ defmodule Nest.Scripts.CompactAgentHistory do
   # Removed `halt_clean/0` — the `with` block's `else` clause
   # handles the `:bail` sentinel and logs the exit.
 
-  defp halt_clean do
-    Logger.info("Exit: 0 (nothing to compact)")
-    :ok
-  end
-
   # Build the ClientConfig from the agent row's model + dotconfig.
+  # Delegates to `CompactionProbeSupport` so the probe script and
+  # this recovery script agree on the exact provider resolution +
+  # LLM call shape. If those diverge, a probe that says "the LLM
+  # works" is meaningless because production would still fail.
   defp build_client_config(%PersistedAgent{} = agent) do
-    normalized = normalize_model(agent.model)
-    %{"name" => model_name} = normalized
-    provider_name = Map.get(normalized, "provider") || "minimax"
-
-    case DotConfig.load() do
-      {:error, reason} ->
-        {:error, {:dotconfig_load_failed, reason}}
-
-      {:ok, dotconfig} ->
-        provider = DotConfig.get_provider(dotconfig, provider_name)
-
-        case provider do
-          nil ->
-            {:error, {:provider_not_in_dotconfig, provider_name}}
-
-          %DotConfig.Provider{} = provider ->
-            # `ChatModel.build_client_config/2` always returns
-            # `{:ok, _}`; errors are raised as exceptions.
-            {:ok, %ClientConfig{} = cc} = ChatModel.build_client_config(provider, model_name)
-
-            # The compactor's `context_limit` is used for the
-            # 25% recent-slice threshold, not as a hard
-            # limit. A 200k floor gives the compactor
-            # headroom on a 200k-context model; the
-            # compactor handles smaller models correctly
-            # because the actual recent-slice size is what
-            # triggers the tail summary.
-            context_limit = 200_000
-
-            Logger.info("Built client config: model=#{cc.model} base_url=#{cc.base_url}")
-            {:ok, cc, context_limit}
-        end
+    case CompactionProbeSupport.build_client_config(agent.model) do
+      {:ok, cc, context_limit} -> {:ok, cc, context_limit}
+      {:error, :provider_not_in_dotconfig} = err -> err
+      {:error, reason} -> {:error, {:dotconfig_load_failed, reason}}
     end
-  end
-
-  defp normalize_model(model) when is_map(model) do
-    Map.new(model, fn
-      {k, v} when is_binary(k) -> {k, v}
-      {k, v} -> {Atom.to_string(k), v}
-    end)
   end
 
   # Re-render the fresh system prompt from the agent's
@@ -257,67 +204,31 @@ defmodule Nest.Scripts.CompactAgentHistory do
 
     Logger.info("Running compactor on #{length(messages)} messages (context_limit=#{context_limit})")
 
-    llm_call = build_llm_call(client_config)
+    # Compute the summary budget (N) and pre-render the
+    # `[mode: compact]` suffix. The LLM call uses the rendered
+    # suffix directly — no re-render at call time, so the size
+    # we budgeted for matches what goes on the wire.
+    system_msg = Enum.find(messages, &match?({:system, _}, &1)) || {:system, %{parts: []}}
 
-    try do
-      result = Compactor.compact(messages, context_limit, llm_call)
-      {:ok, result}
-    catch
-      kind, reason ->
-        {:error, {:compactor_crashed, kind, reason}}
-    end
-  end
+    case Compactor.compute_summary_budget(context_limit, system_msg, messages, nil) do
+      {:ok, _n, rendered_suffix} ->
+        llm_call =
+          CompactionProbeSupport.build_summarization_llm_call(
+            client_config,
+            self(),
+            rendered_suffix
+          )
 
-  defp build_llm_call(%ClientConfig{} = client_config) do
-    fn messages ->
-      request = %RunRequest{
-        messages: prepend_summarization_system(messages),
-        tools: nil,
-        tool_choice: :none,
-        model: client_config.model,
-        stream: true,
-        metadata: %{}
-      }
+        try do
+          result = Compactor.compact(messages, context_limit, llm_call)
+          {:ok, result}
+        catch
+          kind, reason ->
+            {:error, {:compactor_crashed, kind, reason}}
+        end
 
-      opts = [
-        base_url: client_config.base_url,
-        api_key: client_config.api_key,
-        receive_timeout: client_config.receive_timeout
-      ]
-
-      case client_config.client.run(request, opts) do
-        {:ok, stream} -> consume_quietly(stream)
-        {:error, _reason} -> ""
-      end
-    end
-  end
-
-  defp prepend_summarization_system(messages) do
-    summarization_message =
-      {:system,
-       %System{
-         parts: [%Part.Text{text: @summarization_prompt}],
-         timestamp: DateTime.utc_now()
-       }}
-
-    messages
-    |> List.wrap()
-    |> Enum.reject(&match?({:system, _}, &1))
-    |> Kernel.++([summarization_message])
-  end
-
-  defp consume_quietly(stream) do
-    consumer = %StreamConsumer{
-      on_text: fn _text, sent -> sent end,
-      on_thinking: fn _text, sent -> sent end,
-      on_signature: fn _sig -> :ok end
-    }
-
-    {_acc, response, _error, _sent} = StreamConsumer.reduce(stream, consumer)
-
-    case response do
-      %RunResponse{text: text} -> text || ""
-      _ -> ""
+      {:error, :reserve_exhausted} ->
+        {:error, :reserve_exhausted}
     end
   end
 

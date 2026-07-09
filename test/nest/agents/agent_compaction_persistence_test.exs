@@ -13,15 +13,22 @@ defmodule Nest.Agents.AgentCompactionPersistenceTest do
   - a BEAM restart after compaction loads the post-compaction
     state, not the pre-compaction history (regression for the
     latent gap where the compactor's output was in-memory only)
+  - `agents.last_compaction_index` is bumped to the marker index
+    atomically with the marker row INSERT
+
+  The `messages` table is append-only. There is no
+  `archived_at` filter on the rows themselves; the
+  active/history partition is a view computed from
+  `agents.last_compaction_index`.
 
   This file is `async: false` so the agent's regeneration can
   use the test's sandboxed connection (the agent's process is
   started via `start_supervised!/1` from the test process).
   """
+
   use Nest.DataCase, async: false
 
   import Mimic
-
   import Ecto.Query
 
   import Nest.Agents.AgentTestHelpers, only: [start_agent: 1]
@@ -44,7 +51,17 @@ defmodule Nest.Agents.AgentCompactionPersistenceTest do
     MockClient.start_link()
     MockClient.clear()
 
-    on_exit(fn -> Process.delete(:nest_test_agent_pid) end)
+    # This file exercises the persistence side of compaction
+    # (writes go to the messages table + the agents row's
+    # last_compaction_index column), so enable the runtime
+    # `persistence_enabled?` flag for the duration.
+    previous = Application.get_env(:nest, :persistence, %{})
+    Application.put_env(:nest, :persistence, enabled: true)
+
+    on_exit(fn ->
+      Application.put_env(:nest, :persistence, previous)
+      Process.delete(:nest_test_agent_pid)
+    end)
 
     :ok
   end
@@ -98,146 +115,199 @@ defmodule Nest.Agents.AgentCompactionPersistenceTest do
   end
 
   describe "post-compaction persistence" do
-    test "fresh system message is in the messages table at marker_index + 1" do
-      vocation_id = test_vocation_id()
-
-      {pid, agent_id} =
-        start_agent(%{model: %{name: "qwen3.5-plus"}, vocation_id: vocation_id})
-
-      insert_agent_row(agent_id, vocation_id)
-
-      # Pre-seed the agent's chat_state so marker_index is
-      # well-defined. The fresh system message should land at
-      # next_message_index (= 1).
+    # The agent's `init/1` calls
+    # `Nest.Agents.Agent.Init.persist_initial_system_message/1`
+    # which routes through `AgentPersistence.append_message/3`.
+    # With `enabled: true` (set in `setup/`), that fires
+    # `Logger.warning("Failed to persist message for agent …")`
+    # for `:agent_not_found` if the agents row doesn't exist
+    # yet. AGENTS.md ("tests must not print to the console")
+    # forbids that warning. The fix is to pre-insert the agents
+    # row BEFORE `start_agent/1` so the agent's init-time
+    # append finds the row. Each test below does this.
+    defp run_compaction_cycle(pid, _agent_id, summary_text, next_message_index \\ 1) do
       :sys.replace_state(pid, fn state ->
-        %{state | chat_state: %{state.chat_state | next_message_index: 1}}
+        %{state | chat_state: %{state.chat_state | next_message_index: next_message_index}}
       end)
 
       send(
         pid,
-        {:compaction_done, compactor_messages_with("[Summary of earlier conversation]:\n\n..."),
+        {:compaction_done, compactor_messages_with(summary_text),
          {:task_compaction_continuation, self()}}
       )
 
       assert_receive {:task_compaction_done, _}, 200
-
-      # Use Repo.all directly to assert on the PersistedMessage
-      # rows (not the runtime Message.t() tuples that
-      # `load_active_messages/1` returns).
-      agent_id_int = Nest.Repo.one!(PersistedAgent, where: [name: agent_id]).id
-
-      rows =
-        Nest.Repo.all(
-          from(m in PersistedMessage,
-            where: m.agent_id == ^agent_id_int and is_nil(m.archived_at),
-            order_by: [asc: m.message_index]
-          )
-        )
-
-      assert length(rows) == 4
-      assert hd(rows).role == "system"
-      assert hd(rows).message_index == 2
 
       Agent.terminate(pid)
     end
 
-    test "encoded summary user message is in the messages table at marker_index + 2" do
+    test "fresh system message lands at marker_index + 1" do
       vocation_id = test_vocation_id()
 
-      {pid, agent_id} =
-        start_agent(%{model: %{name: "qwen3.5-plus"}, vocation_id: vocation_id})
+      # Disable persistence for the agent's `init/1` so its
+      # `persist_initial_system_message/1` call (which would
+      # otherwise fail with `:agent_not_found` and emit
+      # `Logger.warning`) is a silent no-op. Re-enable
+      # persistence AFTER `start_agent/1` returns, and insert
+      # the `agents` row before driving the compaction cycle.
+      Application.put_env(:nest, :persistence, enabled: false)
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}, vocation_id: vocation_id})
+      Application.put_env(:nest, :persistence, enabled: true)
 
       insert_agent_row(agent_id, vocation_id)
 
-      :sys.replace_state(pid, fn state ->
-        %{state | chat_state: %{state.chat_state | next_message_index: 1}}
-      end)
-
-      send(
+      run_compaction_cycle(
         pid,
-        {:compaction_done,
-         compactor_messages_with("[Summary of earlier conversation]:\n\nkey facts"),
-         {:task_compaction_continuation, self()}}
+        agent_id,
+        "[Summary of earlier conversation]:\n\n..."
       )
 
-      assert_receive {:task_compaction_done, _}, 200
-
-      agent_id_int = Nest.Repo.one!(PersistedAgent, where: [name: agent_id]).id
+      agent_row = Nest.Repo.one!(PersistedAgent, where: [name: agent_id])
+      assert agent_row.last_compaction_index == 1
 
       rows =
         Nest.Repo.all(
           from(m in PersistedMessage,
-            where: m.agent_id == ^agent_id_int and is_nil(m.archived_at),
+            where: m.agent_id == ^agent_row.id,
             order_by: [asc: m.message_index]
           )
         )
 
-      # 4 rows: fresh system, encoded summary (user), compactor's
-      # user, compactor's assistant.
-      assert length(rows) == 4
+      assert length(rows) == 5
+      assert Enum.map(rows, & &1.message_index) == [1, 2, 3, 4, 5]
+
+      assert Enum.map(rows, & &1.role) == [
+               "compaction",
+               "system",
+               "user",
+               "user",
+               "assistant"
+             ]
+    end
+
+    test "encoded summary user message lands at marker_index + 2" do
+      vocation_id = test_vocation_id()
+
+      Application.put_env(:nest, :persistence, enabled: false)
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}, vocation_id: vocation_id})
+      Application.put_env(:nest, :persistence, enabled: true)
+
+      insert_agent_row(agent_id, vocation_id)
+
+      run_compaction_cycle(
+        pid,
+        agent_id,
+        "[Summary of earlier conversation]:\n\nkey facts"
+      )
+
+      agent_row = Nest.Repo.one!(PersistedAgent, where: [name: agent_id])
+      assert agent_row.last_compaction_index == 1
+
+      rows =
+        Nest.Repo.all(
+          from(m in PersistedMessage,
+            where: m.agent_id == ^agent_row.id,
+            order_by: [asc: m.message_index]
+          )
+        )
+
+      assert length(rows) == 5
 
       assert [
+               %PersistedMessage{role: "compaction", message_index: 1},
                %PersistedMessage{role: "system", message_index: 2},
                %PersistedMessage{role: "user", message_index: 3},
                %PersistedMessage{role: "user", message_index: 4},
                %PersistedMessage{role: "assistant", message_index: 5}
              ] = rows
-
-      Agent.terminate(pid)
     end
 
     test "compactor's other output is in the messages table in index order" do
       vocation_id = test_vocation_id()
 
-      {pid, agent_id} =
-        start_agent(%{model: %{name: "qwen3.5-plus"}, vocation_id: vocation_id})
+      Application.put_env(:nest, :persistence, enabled: false)
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}, vocation_id: vocation_id})
+      Application.put_env(:nest, :persistence, enabled: true)
 
       insert_agent_row(agent_id, vocation_id)
 
-      :sys.replace_state(pid, fn state ->
-        %{state | chat_state: %{state.chat_state | next_message_index: 1}}
-      end)
-
-      send(
+      run_compaction_cycle(
         pid,
-        {:compaction_done,
-         compactor_messages_with("[Summary of earlier conversation]:\n\nkey facts"),
-         {:task_compaction_continuation, self()}}
+        agent_id,
+        "[Summary of earlier conversation]:\n\nkey facts"
       )
 
-      assert_receive {:task_compaction_done, _}, 200
-
-      agent_id_int = Nest.Repo.one!(PersistedAgent, where: [name: agent_id]).id
+      agent_row = Nest.Repo.one!(PersistedAgent, where: [name: agent_id])
 
       rows =
         Nest.Repo.all(
           from(m in PersistedMessage,
-            where: m.agent_id == ^agent_id_int and is_nil(m.archived_at),
+            where: m.agent_id == ^agent_row.id,
             order_by: [asc: m.message_index]
           )
         )
 
-      assert Enum.map(rows, & &1.message_index) == [2, 3, 4, 5]
-      assert Enum.map(rows, & &1.role) == ["system", "user", "user", "assistant"]
+      assert Enum.map(rows, & &1.message_index) == [1, 2, 3, 4, 5]
 
-      Agent.terminate(pid)
+      assert Enum.map(rows, & &1.role) == [
+               "compaction",
+               "system",
+               "user",
+               "user",
+               "assistant"
+             ]
     end
 
-    test "a BEAM restart after compaction loads the post-compaction state" do
-      # The latent gap: the compactor's output was in-memory
-      # only, so a BEAM restart re-loaded the pre-compaction
-      # history. The regeneration helper persists all
-      # post-compaction messages so the post-compaction state
-      # is the live state across restarts.
+    test "agents.last_compaction_index is bumped to the marker index atomically with the INSERT" do
+      # If the marker INSERT succeeds but the column update
+      # fails (or vice versa), a restore would see one
+      # without the other and produce a wrong partition.
+      # `record_compaction/3` wraps both in one
+      # Repo.transaction.
       vocation_id = test_vocation_id()
 
-      {pid, agent_id} =
-        start_agent(%{model: %{name: "qwen3.5-plus"}, vocation_id: vocation_id})
+      Application.put_env(:nest, :persistence, enabled: false)
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}, vocation_id: vocation_id})
+      Application.put_env(:nest, :persistence, enabled: true)
 
       insert_agent_row(agent_id, vocation_id)
 
-      # Pre-seed the agent's messages so there's something to
-      # archive.
+      run_compaction_cycle(
+        pid,
+        agent_id,
+        "[Summary of earlier conversation]:\n\npost-state",
+        7
+      )
+
+      agent_row = Nest.Repo.one!(PersistedAgent, where: [name: agent_id])
+      assert agent_row.last_compaction_index == 7
+
+      marker_row =
+        Nest.Repo.one!(
+          from(m in PersistedMessage,
+            where: m.agent_id == ^agent_row.id and m.role == "compaction"
+          )
+        )
+
+      assert marker_row.message_index == 7
+    end
+
+    test "a BEAM restart after compaction loads the full message sequence in order" do
+      # Both the active slice AND the marker are part of the
+      # persisted row sequence now; `load_messages/1` returns
+      # them in order, and `seed_from_db/3` partitions into
+      # history (≤ last_compaction_index) and messages
+      # (> last_compaction_index).
+      vocation_id = test_vocation_id()
+
+      Application.put_env(:nest, :persistence, enabled: false)
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}, vocation_id: vocation_id})
+      Application.put_env(:nest, :persistence, enabled: true)
+
+      insert_agent_row(agent_id, vocation_id)
+
+      # Pre-seed the agent's messages so there's something
+      # to archive.
       :sys.replace_state(pid, fn state ->
         %{
           state
@@ -251,31 +321,35 @@ defmodule Nest.Agents.AgentCompactionPersistenceTest do
         }
       end)
 
-      send(
+      run_compaction_cycle(
         pid,
-        {:compaction_done,
-         compactor_messages_with("[Summary of earlier conversation]:\n\npost-state"),
-         {:task_compaction_continuation, self()}}
+        agent_id,
+        "[Summary of earlier conversation]:\n\npost-state"
       )
 
-      assert_receive {:task_compaction_done, _}, 200
-
-      # Stop the agent (simulating a BEAM restart — the
-      # supervisor's on-demand-load path uses the same code
-      # that the restart-after-supervision path uses).
-      Agent.terminate(pid)
-
       {:ok, attrs} = Persistence.build_attrs_for_start(agent_id)
-      # 4 preloaded messages: fresh system, encoded summary,
-      # compactor's user, compactor's assistant.
-      assert length(attrs.preloaded_messages) == 4
+      assert attrs.last_compaction_index == 1
 
-      # Position 0 is the fresh system; position 1 is the
-      # encoded summary (the compactor's summary text
-      # re-encoded as a user message).
-      assert {:system, %System{}} = Enum.at(attrs.preloaded_messages, 0)
-      assert {:user, %User{parts: [%Part.Text{text: t1}]}} = Enum.at(attrs.preloaded_messages, 1)
-      assert t1 =~ "post-state"
+      # 5 messages in the table: the marker at index 1
+      # (the in-memory pre-seed at index 0 never reached
+      # the DB — `record_compaction/3` only writes the
+      # marker), and the 4 regenerated post-compaction
+      # rows at indices 2..5. The `load_messages/1`
+      # full-sequence contract returns all of them in order;
+      # `Agent.init/1`'s `seed_from_db/3` then partitions
+      # via `index <= last_compaction_index`.
+      assert length(attrs.preloaded_messages) == 5
+
+      indices = Enum.map(attrs.preloaded_messages, fn {_, %{index: i}} -> i end)
+      assert indices == [1, 2, 3, 4, 5]
+
+      assert Enum.map(attrs.preloaded_messages, fn {role, _} -> role end) == [
+               :compaction,
+               :system,
+               :user,
+               :user,
+               :assistant
+             ]
     end
   end
 end

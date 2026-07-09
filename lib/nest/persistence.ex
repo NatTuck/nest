@@ -31,9 +31,13 @@ defmodule Nest.Persistence do
   `fetch_agent_by_name/1` and `list_agent_names/0` are the
   read paths. The Agent's `__append_message__/2` calls
   `insert_message/2` immediately after appending to in-memory
-  state; on `__archive_and_compact__/2` it calls
-  `archive_and_compact/4`. `load_active_messages/1` is used by
-  the on-demand-load path in `Supervisor.fetch_or_start_agent/1`.
+  state; on `__compaction_completed__/2` it calls
+  `record_compaction/3`. `load_messages/1` returns the full
+  ordered sequence for the on-demand-load path in
+  `Supervisor.fetch_or_start_agent/1`; the caller partitions
+  into active/history using `agents.last_compaction_index`
+  (read via `last_compaction_index/1` or returned with
+  `build_attrs_for_start/1`'s preloaded attrs).
 
   Externally, callers pass `name` (a String). Internally,
   `messages.agent_id` is the bigserial `agents.id` (an
@@ -54,9 +58,11 @@ defmodule Nest.Persistence do
   require Logger
 
   alias Ecto.Changeset
+  alias Nest.Agents.Agent.Restore
   alias Nest.Agents.PersistedAgent
   alias Nest.Agents.PersistedMessage
   alias Nest.Messages.Message
+  alias Nest.Persistence.CompactionMarker
   alias Nest.Repo
   alias Nest.Vocations
 
@@ -263,68 +269,62 @@ defmodule Nest.Persistence do
   end
 
   @doc """
-  Mark the messages in `[first_index..marker_index - 1]`
-  as archived, then insert the compaction marker at
-  `marker_index`, all in one transaction.
+  Insert a `role: "compaction"` marker row at `marker_index`
+  and bump `agents.last_compaction_index` to match. Both
+  writes happen inside one `Repo.transaction` so the marker
+  row and the boundary pointer commit together — a partial
+  commit would produce a wrong partition on the next restore
+  (rows that should be `messages` would land in `history` or
+  vice versa).
 
-  The caller is `Agent.__archive_and_compact__/2`; it
-  computes `first_index` and `marker_index` from the agent's
-  in-memory `state.chat_state.messages` and the
-  pre-swap `state.chat_state.next_message_index`. The marker
-  is rendered as a `role: "compaction"` row with
-  `compaction_archived_count` and `compaction_occurred_at`
-  populated.
+  The `messages` table receives the marker INSERT only —
+  the prior `archive_and_compact/4` UPDATE on
+  `messages.archived_at` is gone, along with the
+  `messages.archived_at` column itself. The `messages` table
+  is now append-only for its own rows.
 
-  `marker_index` is supplied directly by the caller (rather
-  than being computed as `last_index + 1`) so the marker
-  cannot collide with the first row of the new compacted
-  state, which `regenerate_for_compaction/2` has already
-  persisted at `marker_index + 1` (the fresh system
-  message). The unique index on `(agent_id, message_index)`
-  would otherwise reject the marker INSERT and the whole
-  transaction would roll back, leaving the in-memory
-  compaction without a corresponding DB marker.
+  `archived_count` is recorded on the marker
+  (`compaction_archived_count`) so `CompactionLifecycle.apply/2`
+  can walk backwards through history slices for the
+  `compute_first_index/2` step.
 
-  Returns the new compaction row on success, or
-  `{:error, term()}` on failure (including
-  `{:error, :agent_not_found}` when the agent name does
-  not resolve to a row).
+  `tokens_compacted` and `tokens_compacted_to` are the
+  pre/post totals computed by the caller at compaction time
+  (via `Nest.Tokens.Estimator.estimate_messages/1`). Either
+  may be nil for legacy callers or for compactor paths that
+  don't have both numbers available — the columns are
+  nullable so the marker row still inserts.
+
+  Implementation lives in `Nest.Persistence.CompactionMarker`;
+  this is a thin delegator that resolves the agent row then
+  forwards the integer `agent_id`.
+
+  Returns the new marker row on success,
+  `{:error, :agent_not_found}` when the agent name does not
+  resolve, or `{:error, term()}` on other failures.
   """
-  @spec archive_and_compact(String.t(), non_neg_integer(), non_neg_integer(), non_neg_integer()) ::
-          {:ok, PersistedMessage.t()} | {:error, term()}
-  def archive_and_compact(agent_name, first_index, marker_index, archived_count) do
-    case fetch_agent_by_name(agent_name) do
-      {:ok, %PersistedAgent{id: agent_id}} ->
-        now = DateTime.utc_now() |> DateTime.truncate(:second)
-
-        Repo.transaction(fn ->
-          from(m in PersistedMessage,
-            where:
-              m.agent_id == ^agent_id and m.message_index >= ^first_index and
-                m.message_index < ^marker_index
-          )
-          |> Repo.update_all(set: [archived_at: now])
-
-          %PersistedMessage{}
-          |> PersistedMessage.changeset(%{
-            agent_id: agent_id,
-            message_index: marker_index,
-            role: "compaction",
-            content: %{"parts" => []},
-            inserted_at: now,
-            compaction_archived_count: archived_count,
-            compaction_occurred_at: now
-          })
-          |> Repo.insert()
-        end)
-        |> case do
-          {:ok, {:ok, row}} -> {:ok, row}
-          {:ok, {:error, reason}} -> {:error, reason}
-          {:error, reason} -> {:error, reason}
-        end
-
-      {:error, :not_found} ->
-        {:error, :agent_not_found}
+  @spec record_compaction(
+          String.t(),
+          non_neg_integer(),
+          non_neg_integer(),
+          non_neg_integer() | nil,
+          non_neg_integer() | nil
+        ) :: {:ok, PersistedMessage.t()} | {:error, term()}
+  def record_compaction(
+        agent_name,
+        marker_index,
+        archived_count,
+        tokens_compacted \\ nil,
+        tokens_compacted_to \\ nil
+      ) do
+    with {:ok, %PersistedAgent{id: agent_id}} <- fetch_agent_by_name(agent_name) do
+      CompactionMarker.record(
+        agent_id,
+        marker_index,
+        archived_count,
+        tokens_compacted,
+        tokens_compacted_to
+      )
     end
   end
 
@@ -358,32 +358,31 @@ defmodule Nest.Persistence do
   end
 
   @doc """
-  Load the active (non-archived, non-marker) messages for
-  an agent, in `message_index` order. Returns a list of
-  `Message.t()` tagged tuples (the canonical runtime
-  shape).
+  Load every message for an agent (active + history + compaction
+  markers), in `message_index` order. Returns a list of
+  `Message.t()` tagged tuples — the canonical runtime shape.
 
-  Compaction markers (`role: "compaction"`) are excluded
-  because they live in `state.chat_state.history`, not in
-  `state.chat_state.messages` — `apply/2`'s swap moves the
-  marker into history and the in-memory state has no place
-  for a `{:compaction, _}` tuple at the messages level. On
-  a fresh agent restart, including the marker would put
-  a `{:compaction, _}` row into the agent's `messages`
-  list and confuse the LLM-facing rendering.
+  This is the single consistent sequence restored by the
+  on-demand-load path in `Supervisor.fetch_or_start_agent/1`.
+  The caller partitions the list into
+  `state.chat_state.history` (rows with
+  `message_index <= agents.last_compaction_index`) and
+  `state.chat_state.messages` (rows strictly greater).
+  Compaction markers live in `state.chat_state.history` by that
+  same rule — they sit at the boundary, not in the active slice.
 
-  Used by the on-demand-load path in
-  `Supervisor.fetch_or_start_agent/1`. The caller is
-  responsible for converting the list into the agent's
-  `state.chat_state.messages` and stamping the
-  `next_message_index` from the agent row.
+  The previous `load_active_messages/1` filter
+  (`is_nil(archived_at) AND role != "compaction"`) is gone:
+  active/history is a view computed from
+  `agents.last_compaction_index`, not a filter on the rows
+  themselves.
   """
-  @spec load_active_messages(String.t()) :: [Message.t()]
-  def load_active_messages(agent_name) do
+  @spec load_messages(String.t()) :: [Message.t()]
+  def load_messages(agent_name) do
     case fetch_agent_by_name(agent_name) do
       {:ok, %PersistedAgent{id: agent_id}} ->
         from(m in PersistedMessage,
-          where: m.agent_id == ^agent_id and is_nil(m.archived_at) and m.role != "compaction",
+          where: m.agent_id == ^agent_id,
           order_by: [asc: m.message_index]
         )
         |> Repo.all()
@@ -395,41 +394,66 @@ defmodule Nest.Persistence do
   end
 
   @doc """
-  Convenience: load the agent row, the active messages, and
-  the vocation struct (if any). Returns `{:ok, attrs_map}`
-  suitable for passing to `Agent.start_link/1`, or
-  `{:error, :not_found}` when no row exists for the name.
+  Read the `last_compaction_index` boundary column from the
+  agents row. Returns `{:ok, -1}` for fresh agents (no compaction
+  has happened) and the marker's `message_index` (an integer
+  `>= 0`) after the first compaction. Returns
+  `{:error, :agent_not_found}` when the name does not resolve.
 
-  `attrs_map` mirrors `build_agent_attrs/1`'s output: it
-  carries the loaded `Vocation` struct on `:vocation`, the
-  `model` from the row, the `workspace_path` from the row,
-  the `next_message_index` from the row, and a
-  `:preloaded_messages` list of `Message.t()` tuples the
-  Agent's `init/1` should seed into
-  `state.chat_state.messages`.
+  Used by the on-demand-load path in
+  `Supervisor.fetch_or_start_agent/1` (returned via
+  `build_attrs_for_start/1`) and by callers that need the
+  boundary without doing a full message load.
+  """
+  @spec last_compaction_index(String.t()) ::
+          {:ok, integer()} | {:error, :agent_not_found}
+  def last_compaction_index(agent_name) do
+    case fetch_agent_by_name(agent_name) do
+      {:ok, %PersistedAgent{last_compaction_index: idx}} -> {:ok, idx}
+      {:error, :not_found} -> {:error, :agent_not_found}
+    end
+  end
 
-  Used by `Supervisor.fetch_or_start_agent/1`'s
-  on-demand-load path.
+  @doc """
+  Convenience: load the agent row, the full message sequence,
+  the boundary pointer, and the vocation struct. Returns
+  `{:ok, attrs_map}` suitable for passing to
+  `Agent.start_link/1`, or `{:error, :not_found}` when no row
+  exists for the name.
+
+  `attrs_map` carries the loaded `Vocation` struct on
+  `:vocation`, the `model` from the row, the `workspace_path`
+  from the row, the `next_message_index` from the row, the
+  `:last_compaction_index` boundary, the
+  `:initial_api_log_sequences` map to seed
+  `state.chat_state.api_log_sequences` (computed via
+  `Restore.initial_sequences_for/1`), and a `:preloaded_messages`
+  list of every `Message.t()` the Agent's `init/1` should split
+  into `state.chat_state.messages` and `state.chat_state.history`.
+
+  Used by `Supervisor.fetch_or_start_agent/1`'s on-demand-load
+  path.
   """
   @spec build_attrs_for_start(String.t()) ::
           {:ok, map()} | {:error, :not_found}
   def build_attrs_for_start(agent_name) do
-    case fetch_agent_by_name(agent_name) do
-      {:error, :not_found} ->
-        {:error, :not_found}
+    with {:ok, row} <- fetch_agent_by_name(agent_name),
+         {:ok, boundary} <- last_compaction_index(agent_name) do
+      preloaded = load_messages(agent_name)
 
-      {:ok, %PersistedAgent{} = row} ->
-        attrs = %{
-          name: row.name,
-          model: row.model,
-          vocation_id: row.vocation_id,
-          workspace_path: row.workspace_path,
-          next_message_index: row.next_message_index,
-          preloaded_messages: load_active_messages(agent_name),
-          vocation: load_vocation(row.vocation_id)
-        }
+      attrs = %{
+        name: row.name,
+        model: row.model,
+        vocation_id: row.vocation_id,
+        workspace_path: row.workspace_path,
+        next_message_index: row.next_message_index,
+        last_compaction_index: boundary,
+        initial_api_log_sequences: Restore.initial_sequences_for(preloaded),
+        preloaded_messages: preloaded,
+        vocation: load_vocation(row.vocation_id)
+      }
 
-        {:ok, attrs}
+      {:ok, attrs}
     end
   end
 end
