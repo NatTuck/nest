@@ -337,9 +337,9 @@ defmodule Nest.VocationsTest do
       }
 
       catalog = Vocations.mode_catalog(vocation)
-      # Heading is preceded by a blank line for readability
+
       assert catalog =~ "\n\n[Available modes]\n"
-      # Each mode line: caps-derived sentences, then the description
+
       assert catalog =~
                ~s(- build: Read only "/". Read and write workspace and /tmp. Network disabled. You're clear to edit the project in the workspace.)
 
@@ -348,9 +348,6 @@ defmodule Nest.VocationsTest do
     end
 
     test "plan mode without :workspace does NOT say workspace is writable" do
-      # This is the key behavior change: plan mode's caps say
-      # write: ["/tmp"], so the catalog must reflect that the
-      # workspace is read-only.
       vocation = %Vocation{
         name: "Programmer",
         modes: %{
@@ -450,40 +447,49 @@ defmodule Nest.VocationsTest do
     end
 
     test "empty write list produces no Read and write sentence" do
-      caps_no_writes = %{
-        "net" => false,
-        "fs" => %{"read" => ["/"], "write" => []}
-      }
-
-      vocation = %Vocation{
-        modes: %{"locked" => %{"caps" => caps_no_writes}}
-      }
+      caps_no_writes = %{"net" => false, "fs" => %{"read" => ["/"], "write" => []}}
+      vocation = %Vocation{modes: %{"locked" => %{"caps" => caps_no_writes}}}
 
       catalog = Vocations.mode_catalog(vocation)
       refute catalog =~ "Read and write"
     end
 
     test "falls back to a generic label for malformed caps" do
-      vocation = %Vocation{
-        modes: %{"weird" => %{"caps" => "not a map"}}
-      }
-
+      vocation = %Vocation{modes: %{"weird" => %{"caps" => "not a map"}}}
       catalog = Vocations.mode_catalog(vocation)
       assert catalog =~ "- weird: custom profile"
     end
 
-    test "returns empty string for nil vocation" do
+    test "returns empty string for nil/empty-modes vocations" do
       assert Vocations.mode_catalog(nil) == ""
+      assert Vocations.mode_catalog(%Vocation{modes: nil}) == ""
+      assert Vocations.mode_catalog(%Vocation{modes: %{}}) == ""
     end
 
-    test "returns empty string for vocation with nil modes" do
-      vocation = %Vocation{modes: nil}
-      assert Vocations.mode_catalog(vocation) == ""
+    test "compact is always rendered into the catalog alongside user-configured modes" do
+      # Not declared in `vocation.modes`; injected here so the LLM
+      # sees it as a first-class entry. UI mode list unaffected.
+      vocation = %Vocation{
+        modes: %{
+          "build" => %{"description" => "Edit the project.", "caps" => @valid_caps},
+          "chat" => %{"description" => "General chat.", "caps" => @valid_caps}
+        }
+      }
+
+      catalog = Vocations.mode_catalog(vocation)
+      assert catalog =~ ~r/^- compact: We are out of context.*summary alone\.\.$/m
+
+      # Alphabetical: build, chat, compact.
+      [build_pos, chat_pos, compact_pos] =
+        for prefix <- ["- build", "- chat", "- compact"] do
+          Enum.find(String.split(catalog, "\n"), &String.starts_with?(&1, prefix))
+          |> byte_offset(catalog)
+        end
+
+      assert build_pos < chat_pos
+      assert chat_pos < compact_pos
     end
 
-    test "returns empty string for vocation with empty modes" do
-      vocation = %Vocation{modes: %{}}
-      assert Vocations.mode_catalog(vocation) == ""
-    end
+    defp byte_offset(line, haystack), do: :binary.match(haystack, line) |> elem(0)
   end
 end

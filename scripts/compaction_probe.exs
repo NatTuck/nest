@@ -37,10 +37,9 @@
 # This is a self-contained debug script. It deliberately does
 # not share code with `compact_agent_history.exs`; the prompt
 # text is the one exception (single-source via
-# `Nest.Scripts.CompactionProbeSupport.compaction_mode_section/0`
-# for the system's `[mode: compact]` paragraph and
-# `compaction_suffix/2` for the per-call suffix string, so the
-# probe and the live compactor stay in lockstep).
+# `Nest.Scripts.CompactionProbeSupport.compaction_suffix/2` for
+# the per-call suffix string, so the probe and the live
+# compactor stay in lockstep).
 
 defmodule Nest.Scripts.CompactionProbe do
   @moduledoc false

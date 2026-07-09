@@ -56,6 +56,36 @@ defmodule Nest.Agents.Agent.ToolLoop do
 
   defp context_compact_solo?(_), do: false
 
+  @doc """
+  Returns true if `tool_call` is a `context.compact` invocation
+  (the form `ToolLoop.execute/3` handles via the GenServer
+  round-trip rather than BatchSizer). Exposed so the chat turn
+  can filter these calls out of `BatchSizer.preflight/2` —
+  preflight never sees `context.compact` because BatchSizer's
+  projection assumes regular per-tool results, while
+  `context.compact`'s result shape is the post-compaction
+  status string.
+  """
+  @spec context_compact?(ToolCall.t()) :: boolean()
+  def context_compact?(%ToolCall{name: "context", arguments: %{"action" => "compact"}}),
+    do: true
+
+  def context_compact?(_), do: false
+
+  @doc """
+  Strip `context.compact` calls out of a tool-call list. The
+  chat turn's mid-turn preflight and post-response preflight
+  hand tool calls to `BatchSizer.preflight/2` BEFORE
+  `ToolLoop.execute/3` routes them; those preflight passes
+  must skip `context.compact` because BatchSizer has no
+  projection for it (it's handled by the GenServer, not the
+  tool worker).
+  """
+  @spec strip_context_compact([ToolCall.t()]) :: [ToolCall.t()]
+  def strip_context_compact(tool_calls) do
+    Enum.reject(tool_calls, &context_compact?/1)
+  end
+
   defp contains_context_compact?(tool_calls) do
     Enum.any?(tool_calls, fn
       %ToolCall{name: "context", arguments: %{"action" => "compact"}} -> true

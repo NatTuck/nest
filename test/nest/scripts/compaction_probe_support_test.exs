@@ -15,28 +15,6 @@ defmodule Nest.Scripts.CompactionProbeSupportTest do
   alias Nest.Scripts.CompactionProbeSupport
   alias Nest.Support.CaptureLLMClient
 
-  describe "compaction_mode_section/0" do
-    test "starts with the [mode: compact] marker" do
-      section = CompactionProbeSupport.compaction_mode_section()
-      assert String.starts_with?(section, "[mode: compact]")
-    end
-
-    test "is a non-empty multi-line paragraph" do
-      section = CompactionProbeSupport.compaction_mode_section()
-
-      assert is_binary(section)
-      assert byte_size(section) > 200
-      assert String.contains?(section, "Include incomplete tasks")
-      assert String.contains?(section, "decisions made")
-      assert String.contains?(section, "essential file paths")
-    end
-
-    test "is stable across calls (prompt drift would invalidate probes)" do
-      assert CompactionProbeSupport.compaction_mode_section() ==
-               CompactionProbeSupport.compaction_mode_section()
-    end
-  end
-
   describe "compaction_suffix/2" do
     test "formats the suffix with the budget hint" do
       suffix = CompactionProbeSupport.compaction_suffix(1500, nil)

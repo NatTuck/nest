@@ -24,7 +24,6 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   """
 
   alias Nest.Agents.Agent.Config
-  alias Nest.Scripts.CompactionProbeSupport
   alias Nest.Tokens.Reserve
   alias Nest.Vocations
 
@@ -70,8 +69,7 @@ defmodule Nest.Agents.Agent.SystemPrompt do
     workspace_section(workspace_path) <>
       tool_call_limit_section() <>
       context_limit_section(context_limit_info) <>
-      agents_md_section(workspace_path) <>
-      compaction_mode_section()
+      agents_md_section(workspace_path)
   end
 
   defp workspace_section(nil), do: ""
@@ -114,28 +112,6 @@ defmodule Nest.Agents.Agent.SystemPrompt do
         ""
     end
   end
-
-  # The [mode: compact] paragraph is the agent's full
-  # compaction semantic guidance. The compactor's per-call
-  # request appends a SUFFIX system message:
-  #
-  #   [mode: compact] Summarize the conversation in your
-  #   <N> remaining tokens. {optional_guidance}
-  #
-  # The agent recognizes the `[mode: compact]` prefix and
-  # follows the guidance below to produce a bounded
-  # head_summary that replaces the prior conversation.
-  #
-  # Single source of truth: the same paragraph is rendered
-  # here AND centralized in `CompactionProbeSupport.compaction_mode_section/0`
-  # so the live prompt and the recovery script agree.
-  @doc """
-  The compact-mode paragraph as it's rendered into the agent's
-  initial system prompt. Exposed so tests can pin the exact
-  wording.
-  """
-  @spec compaction_mode_section() :: String.t()
-  def compaction_mode_section, do: CompactionProbeSupport.compaction_mode_section()
 
   defp get_initial_mode(nil), do: "chat"
 

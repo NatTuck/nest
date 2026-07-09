@@ -182,14 +182,6 @@ defmodule Nest.Agents.Agent.BatchSizer do
     )
   end
 
-  defp projected_size(%ToolCall{name: "context", arguments: %{"action" => "compact"}}, _ctx) do
-    Logger.warning("context.compact reached BatchSizer preflight; should be intercepted upstream")
-
-    estimator_overhead(
-      "Compacted N messages into a summary. You now have ~N tokens of working space."
-    )
-  end
-
   defp projected_size(%ToolCall{name: "context"}, _ctx) do
     estimator_overhead("Context: N messages, ~X / Y tokens (Z%)")
   end

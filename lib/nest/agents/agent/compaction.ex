@@ -28,20 +28,19 @@ defmodule Nest.Agents.Agent.Compaction do
 
   ## [mode: compact] convention
 
-  The agent's initial system prompt carries a `[mode: compact]`
-  paragraph (`Nest.Scripts.CompactionProbeSupport.compaction_mode_section/0`)
-  that explains the summarization contract. The compactor's
-  request APPENDS a per-call suffix system message:
+  The agent's initial system prompt lists `compact` in its
+  `[Available modes]` section (`Nest.Vocations.compact_description/0`).
+  That entry is the single source of the summarization contract;
+  no trailing `[mode: compact]` paragraph is appended to the
+  prompt. The compactor's request APPENDS a per-call suffix system
+  message:
 
       [mode: compact] Summarize the conversation in your
       <N> remaining tokens. <optional_guidance?>
 
-  The agent sees both its system prompt (with the [mode: compact]
-  guidance) and the suffix (with the dynamic budget hint) and
-  produces a bounded `head_summary`. No separate "you are a
-  summarizer" prompt template ships with the agent — the
-  compaction semantics live once in the system prompt and the
-  per-call input is tiny.
+  The agent sees its system prompt (with the canonical guidance
+  in the mode list) and the per-call suffix (with the dynamic
+  budget hint) and produces a bounded `head_summary`.
 
   KV cache reuse is automatic on providers that support prefix
   caching (Anthropic prompt caching; OpenAI's prefix-matching

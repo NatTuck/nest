@@ -11,7 +11,6 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
   import Mimic
 
   alias Nest.LLM.MockClient
-  alias Nest.Scripts.CompactionProbeSupport
   alias Nest.Vocations
 
   setup :verify_on_exit!
@@ -67,6 +66,11 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
       assert system_prompt =~ "Network disabled"
       assert system_prompt =~ "You're clear to edit the project in the workspace."
       assert system_prompt =~ "\n\nWorkspace and tool working directory: /tmp/test-workspace-"
+      # `compact` is rendered into the catalog alongside the
+      # user-configured modes, with `Vocations.compact_description/0`
+      # as the body. The `[mode: compact]` prefix lives only in
+      # the per-call suffix at runtime, not in the initial prompt.
+      assert system_prompt =~ ~r/^- compact: We are out of context.*summary alone\.\.$/m
     end
 
     test "no workspace line when workspace_path is nil" do
@@ -101,7 +105,7 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
       refute system_prompt =~ "Workspace and tool working directory"
     end
 
-    test "system prompt carries the [mode: compact] compaction paragraph" do
+    test "compact-mode body lives once in the [Available modes] list" do
       valid_caps = %{
         "net" => false,
         "fs" => %{"read" => ["/"], "write" => []}
@@ -130,16 +134,18 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
 
       system_prompt = get_system_prompt(pid)
 
-      # The [mode: compact] paragraph is the single source of truth
-      # for what the model does at compaction time. It must be
-      # present in every agent's system prompt.
-      assert system_prompt =~ "[mode: compact]"
+      # The compaction contract lives in the [Available modes] line
+      # for `compact`, not as a standalone trailing paragraph. The
+      # canonical wording is held by Vocations.compact_description/0.
+      assert system_prompt =~ Vocations.compact_description()
       assert system_prompt =~ "Include incomplete tasks"
       assert system_prompt =~ "decisions made"
       assert system_prompt =~ "essential file paths"
-      # And it must be the live section, not stale text.
-      assert system_prompt =~
-               CompactionProbeSupport.compaction_mode_section()
+
+      # The `[mode: compact]` prefix itself must NOT appear in the
+      # initial system prompt — it lives only in the per-call suffix
+      # the compactor appends at runtime.
+      refute system_prompt =~ "[mode: compact]"
     end
   end
 

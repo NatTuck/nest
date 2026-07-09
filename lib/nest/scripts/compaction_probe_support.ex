@@ -14,9 +14,10 @@ defmodule Nest.Scripts.CompactionProbeSupport do
        and build a `Nest.LLM.ClientConfig`.
     2. Build a `Nest.LLM.RunRequest` whose `messages` ends with a
        `[mode: compact] Summarize in your <N> remaining tokens.`
-       suffix (the agent recognizes the prefix and follows the
-       `[mode: compact]` paragraph already in its initial system
-       prompt).
+       suffix (the agent recognizes the prefix; the
+       summarization contract itself lives in the `[Available modes]`
+       list under the `compact` entry — see
+       `Nest.Vocations.compact_description/0`).
     3. Run the request through `ClientConfig.client.run/2` and
        consume the resulting stream quietly (no PubSub, no
        broadcasts).
@@ -25,20 +26,6 @@ defmodule Nest.Scripts.CompactionProbeSupport do
   exact same code path the live compactor uses. If the probe
   reports the LLM returning an empty summary, the production
   compactor will see the same empty string.
-
-  ## [mode: compact] convention
-
-  The agent's initial system prompt carries a `[mode: compact]`
-  paragraph (`compaction_mode_section/0`) that explains the
-  summarization contract: what to include (decisions, file paths,
-  tasks), what to drop (redundant tool outputs), and how brief
-  to be.
-
-  The compactor's request then APPENDS a small system message
-  (`compaction_suffix/2`) with the dynamic budget hint. The
-  agent's LLM sees both its own system prompt (with the
-  guidance) and the per-call suffix (with the budget) and
-  produces a head_summary of bounded size.
   """
 
   alias Nest.ChatModel
@@ -51,33 +38,6 @@ defmodule Nest.Scripts.CompactionProbeSupport do
   alias Nest.Messages.System
 
   require Logger
-
-  @doc """
-  The `[mode: compact]` paragraph as it appears in the agent's
-  initial system prompt. Kept here so the live prompt render and
-  the recovery/probe scripts agree on the exact wording. Drift
-  between them would invalidate compaction debugging (the probe
-  would teach the model a different summarization rule than the
-  live prompt declares).
-
-  The agent treats `[mode: compact]` as a prefix marker on a system
-  message. When the compactor's request lands with such a system
-  message at the tail, the agent recognizes it and produces a
-  bounded head_summary that replaces the prior conversation.
-  """
-  @spec compaction_mode_section() :: String.t()
-  def compaction_mode_section do
-    "[mode: compact]\n" <>
-      "Compaction. We are out of context and it's time to " <>
-      "generate a concise summary that fits in the remaining " <>
-      "context that we can use to replace the existing " <>
-      "conversation moving forward. Include incomplete tasks, " <>
-      "decisions made, essential file paths, the user's current " <>
-      "goal, key facts established, and any unresolved TODOs. " <>
-      "Drop redundant tool outputs and resolved sub-tasks. Be " <>
-      "brief but comprehensive enough that the conversation can " <>
-      "continue from the summary alone.\n"
-  end
 
   @doc """
   The per-call compactor suffix text: a one-liner that tells

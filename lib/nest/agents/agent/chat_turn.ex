@@ -267,11 +267,14 @@ defmodule Nest.Agents.Agent.ChatTurn do
   # tool calls from the parts, re-preflight as defense in depth, and
   # either execute them or signal `:needs_compaction` if the
   # compactor's output is still too big.
+  #
+  # `context.compact` is filtered out because it doesn't go through
+  # BatchSizer — ToolLoop handles it via the GenServer round-trip.
   defp execute_pending_tool_calls(state, messages) do
     [{:assistant, %{parts: parts}} | _] = Enum.reverse(messages)
     tool_calls = ResponseHandler.extract_tool_calls_from_parts(parts)
 
-    case BatchSizer.preflight(tool_calls, state.ctx) do
+    case BatchSizer.preflight(ToolLoop.strip_context_compact(tool_calls), state.ctx) do
       :fits ->
         spawn_tool_worker(state, tool_calls)
 

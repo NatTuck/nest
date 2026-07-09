@@ -146,9 +146,14 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
   # messages list (post-LLM-response, pre-tool-execution) is what
   # the BatchSizer checks; the same projection the chat pipeline
   # uses at user-turn boundaries.
+  #
+  # `context.compact` is filtered out because it doesn't go through
+  # BatchSizer at all — `ToolLoop.execute/3` handles it via the
+  # GenServer round-trip. Including it here would force BatchSizer
+  # to project a per-tool size it has no business computing.
   defp post_response_preflight(tool_calls, state) do
     {messages, _} = GenServer.call(state.ctx.agent_pid, :get_messages_with_cancelled)
     ctx = %{state.ctx | messages: messages}
-    BatchSizer.preflight(tool_calls, ctx)
+    BatchSizer.preflight(Agent.ToolLoop.strip_context_compact(tool_calls), ctx)
   end
 end

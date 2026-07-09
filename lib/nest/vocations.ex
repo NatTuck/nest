@@ -260,30 +260,72 @@ defmodule Nest.Vocations do
   def mode_catalog(%Vocation{modes: modes}) when map_size(modes) == 0, do: ""
 
   def mode_catalog(%Vocation{modes: modes}) do
+    # `compact` is always rendered into the catalog alongside the
+    # vocation's user-configured modes. It's the only place in the
+    # agent's initial system prompt that explains the summarization
+    # contract (per-call `[mode: compact]` suffixes at runtime carry
+    # only the budget hint, not the prose guidance). Single source
+    # of truth: `compact_description/0` below.
+    #
+    # `compact` is NOT user-selectable in the UI — that channel
+    # flows through `list_modes/1` which still reads `vocation.modes`
+    # unchanged. We only inject here for the catalog render.
+    all_modes = Map.put(modes, "compact", %{"description" => compact_description()})
+
     catalog =
-      modes
+      all_modes
       |> Enum.sort_by(fn {name, _} -> name end)
-      |> Enum.map_join("\n", fn {name, mode_def} ->
-        description = Map.get(mode_def, "description", "")
-        caps = Map.get(mode_def, "caps", %{})
-
-        caps_text = caps_sentences(caps)
-        description_text = if(description == "", do: "", else: description)
-
-        line =
-          if description_text == "" do
-            "- #{name}: #{caps_text}."
-          else
-            "- #{name}: #{caps_text}. #{description_text}"
-          end
-
-        line
-      end)
+      |> Enum.map_join("\n", &format_mode_line/1)
 
     "\n\n[Available modes]\n\n" <>
       "The user picks a mode per message via the UI. " <>
       "Each mode changes the sandbox profile (filesystem permissions, network access).\n\n" <>
       "#{catalog}\n"
+  end
+
+  @doc """
+  Canonical description text for the `compact` mode as it appears
+  in the agent's `[Available modes]` list. Single source of truth
+  — the mode-catalog render reads from this function. The
+  per-call `[mode: compact]` suffix (rendered by
+  `Nest.Scripts.CompactionProbeSupport.compaction_suffix/2`) is
+  intentionally a different shape: it's a protocol marker
+  carrying the dynamic token-budget hint, not the prose guidance.
+  """
+  @spec compact_description() :: String.t()
+  def compact_description do
+    "We are out of context and it's time to generate a concise summary " <>
+      "that fits in the remaining context that we can use to replace the " <>
+      "existing conversation moving forward. Include incomplete tasks, " <>
+      "decisions made, essential file paths, the user's current goal, " <>
+      "key facts established, and any unresolved TODOs. Drop redundant " <>
+      "tool outputs and resolved sub-tasks. Be brief but comprehensive " <>
+      "enough that the conversation can continue from the summary alone."
+  end
+
+  # Render one mode as a single catalog line. Three shapes:
+  #   * mode has a "caps" key + description → `- name: <caps sentences>. <description>`
+  #   * mode has a "caps" key, no description → `- name: <caps sentences>.`
+  #   * mode has NO "caps" key (e.g. `compact`) + description → `- name: <description>.`
+  #   * mode has NO "caps" key, no description → `- name.`
+  defp format_mode_line({name, mode_def}) do
+    description = Map.get(mode_def, "description", "")
+
+    if Map.has_key?(mode_def, "caps") do
+      caps_text = caps_sentences(Map.get(mode_def, "caps"))
+
+      if description == "" do
+        "- #{name}: #{caps_text}."
+      else
+        "- #{name}: #{caps_text}. #{description}"
+      end
+    else
+      if description == "" do
+        "- #{name}."
+      else
+        "- #{name}: #{description}."
+      end
+    end
   end
 
   # Builds the per-mode capabilities text from a caps map, as a
