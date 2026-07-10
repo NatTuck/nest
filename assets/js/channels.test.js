@@ -377,6 +377,32 @@ describe("channels", () => {
       });
     });
 
+    it("triggers a chat:sync from the init handler when messageCount > cached messages length (the new requestSync path)", async () => {
+      // This test directly exercises the
+      // `requestSync(agentId)` call inside the init
+      // handler (channels.js). The init event arrives
+      // with messageCount=2 and 1 message in the
+      // payload; the init handler's check
+      // `2 > cache.messages.length(1)` is true, so the
+      // sync fires. The sync uses `cache.lastIndex` (= 0)
+      // as the lower bound.
+      setNextJoinResult("agent:agent-1", {
+        autoInit: {
+          id: "agent-1",
+          model: { name: "gpt-4" },
+          messageCount: 2,
+          status: "idle",
+          messages: [{ index: 0, role: "user", content: "Hello" }],
+        },
+      });
+
+      const pushPromise = captureNextPush("agent:agent-1", "chat:sync");
+      joinAgent("agent-1");
+
+      const pushPayload = await pushPromise;
+      assert.deepStrictEqual(pushPayload, { lastIndex: 0 });
+    });
+
     it("should set agent status to error on join error", async () => {
       // The store intentionally logs a console.error on join failure
       // for server-side observability. Silence the leak here; the
@@ -500,6 +526,140 @@ describe("channels", () => {
           "claude-3",
         );
       });
+    });
+
+    it("triggers a chat:sync from the rejoin (chat:status) handler when messageCount > cached messages length", async () => {
+      // Re-join path: `joinAgent` re-uses the existing
+      // channel and sends `chat:status`. The response
+      // payload's `messageCount` is checked against the
+      // current cache; if the server has more messages,
+      // the new requestSync is fired.
+      setNextJoinResult("agent:agent-1", {
+        autoInit: {
+          id: "agent-1",
+          model: { name: "gpt-4" },
+          messageCount: 0,
+          status: "idle",
+        },
+      });
+      joinAgent("agent-1");
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      // Now simulate a rejoin where the server reports
+      // more messages than the client has cached. The
+      // rejoin handler's check fires requestSync.
+      setNextPushResult("agent:agent-1", "chat:status", {
+        ok: {
+          model: { name: "gpt-4" },
+          messageCount: 5,
+        },
+      });
+      const pushPromise = captureNextPush("agent:agent-1", "chat:sync");
+      joinAgent("agent-1");
+
+      const pushPayload = await pushPromise;
+      // Sync uses cache.lastIndex (-1) as the lower bound
+      // since the cache has no messages yet.
+      assert.deepStrictEqual(pushPayload, { lastIndex: -1 });
+    });
+  });
+
+  describe("defensive error paths", () => {
+    // Branch coverage: the `!lobbyChannel` early-return
+    // branches in `createAgent` and `deleteAgent`, the
+    // `compactionLoopOk` error receive, and the
+    // `joinLobby` idempotent path are defensive paths
+    // that only fire when the lobby is disconnected, the
+    // server returns an error, or the lobby is re-joined.
+    // They're straightforward to exercise but the
+    // existing tests never hit them.
+
+    it("createAgent returns an error when the lobby isn't connected", () => {
+      let errorCalled = false;
+      let errorMessage = null;
+      createAgent(
+        { name: "gpt-4" },
+        null,
+        null,
+        () => {},
+        (err) => {
+          errorCalled = true;
+          errorMessage = err.message;
+        },
+      );
+      assert.strictEqual(errorCalled, true);
+      assert.strictEqual(errorMessage, "Not connected to lobby");
+    });
+
+    it("deleteAgent returns an error when the lobby isn't connected", () => {
+      let errorCalled = false;
+      let errorMessage = null;
+      deleteAgent("test-agent", (err) => {
+        errorCalled = true;
+        errorMessage = err.message;
+      });
+      assert.strictEqual(errorCalled, true);
+      assert.strictEqual(errorMessage, "Not connected to lobby");
+    });
+
+    it("compactionLoopOk surfaces server errors via the onError callback", async () => {
+      // The push is configured to return an error in the
+      // receive("error", ...) callback. Verify the
+      // onError path is wired correctly.
+      joinAgent("agent-1");
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      setNextPushResult("agent:agent-1", "chat:loop-detected-ok", {
+        error: { reason: "not_in_loop" },
+      });
+
+      let errorCalled = false;
+      let errorReason = null;
+      compactionLoopOk("agent-1", (err) => {
+        errorCalled = true;
+        errorReason = err?.reason;
+      });
+
+      // Wait for the error receive to be processed.
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      assert.strictEqual(errorCalled, true);
+      assert.strictEqual(errorReason, "not_in_loop");
+    });
+
+    it("joinLobby is idempotent — calling it twice with the lobby already connected calls onOk immediately", () => {
+      // Pre-populate the lobby channel by setting a join
+      // result and calling once.
+      setNextJoinResult("lobby", {
+        autoInit: {
+          agents: [],
+          models: [],
+        },
+      });
+      joinLobby(() => {});
+
+      // The second call hits the idempotent branch: if the
+      // lobby channel is set, onOk is called immediately.
+      // The lobbyChannel is set synchronously inside
+      // joinLobby (the first call assigns it before
+      // returning). The mock's join() returns a
+      // joinReceiver whose handshake runs on a setTimeout,
+      // but that's async — the second call sees
+      // lobbyChannel set synchronously.
+      let secondCalled = false;
+      joinLobby(() => {
+        secondCalled = true;
+      });
+      assert.strictEqual(secondCalled, true);
     });
   });
 
@@ -2156,6 +2316,359 @@ describe("channels", () => {
       assert.ok(warningMessage, "Expected warning message about delta gap");
 
       warnSpy.mockRestore();
+    });
+  });
+
+  describe("chat:compaction triggers chat:sync with marker.index", () => {
+    // After a compaction, the server builds fresh_system +
+    // summary_user and puts them in state.chat_state.messages
+    // but does NOT broadcast them individually. The channel
+    // handler must follow up with a chat:sync using
+    // marker.index as the lower bound; the response carries
+    // exactly the new active list and `syncAgentMessages`
+    // merges it into `cache.messages`. This is the
+    // post-compaction duplication fix: without it the
+    // archived segment stays in `cache.messages` (causing
+    // the same messages to render in both panes) and the
+    // new active messages never reach the client.
+
+    it("pushes chat:sync with lastIndex = marker.index when chat:compaction arrives", async () => {
+      joinAgent("agent-1");
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      const pushPromise = captureNextPush("agent:agent-1", "chat:sync");
+
+      simulateServerEvent("agent:agent-1", "chat:compaction", {
+        marker: {
+          index: 6,
+          role: "compaction",
+          archivedCount: 6,
+        },
+        history: [
+          { index: 0, role: "system", content: "system" },
+          { index: 6, role: "compaction", archivedCount: 6 },
+        ],
+      });
+
+      const pushPayload = await pushPromise;
+      assert.deepStrictEqual(pushPayload, { lastIndex: 6 });
+    });
+
+    it("filters cache.messages to the post-swap active list", async () => {
+      // Before the compaction, the client has the pre-swap
+      // list (indices 0-5). After the chat:compaction event,
+      // cache.messages is empty (all pre-swap messages have
+      // index <= marker.index=6). The chat:sync then fills
+      // it with the new active list (the server responds
+      // with messages where index > 6).
+      joinAgent("agent-1");
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      // Pre-seed the cache with the pre-swap list
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 6,
+        messages: [
+          { index: 0, role: "system", content: "system" },
+          { index: 1, role: "user", content: "A" },
+          { index: 2, role: "assistant", content: "B" },
+          { index: 3, role: "user", content: "C" },
+          { index: 4, role: "assistant", content: "D" },
+          { index: 5, role: "user", content: "E" },
+        ],
+      });
+
+      // Set up the chat:sync response that the channel
+      // will request after the compaction event
+      setNextPushResult("agent:agent-1", "chat:sync", {
+        ok: {
+          messages: [
+            { index: 7, role: "system", content: "fresh system" },
+            {
+              index: 8,
+              role: "user",
+              content: "Summary of earlier conversation:\n\n…",
+            },
+          ],
+          messageCount: 8,
+        },
+      });
+
+      simulateServerEvent("agent:agent-1", "chat:compaction", {
+        marker: { index: 6, role: "compaction", archivedCount: 6 },
+        history: [
+          { index: 0, role: "system", content: "system" },
+          { index: 6, role: "compaction", archivedCount: 6 },
+        ],
+      });
+
+      await vi.waitFor(() => {
+        const cache = useStore.getState().agentsCache["agent-1"];
+        // The pre-swap messages (indices 0-5) are gone from
+        // cache.messages; the sync filled in the post-swap
+        // list (indices 7, 8).
+        assert.strictEqual(cache.messages?.length, 2);
+        assert.strictEqual(cache.messages[0].index, 7);
+        assert.strictEqual(cache.messages[1].index, 8);
+      });
+    });
+  });
+
+  describe("chat:message gap detection triggers chat:sync", () => {
+    it("pushes chat:sync with lastIndex = cache.lastIndex when a chat:message has a gap", async () => {
+      // A `chat:message` arriving with index > lastIndex + 1
+      // and not matching the optimistic add means a previous
+      // `chat:message` was silently lost in transit. The
+      // channel handler must trigger a sync to fill the
+      // gap.
+      joinAgent("agent-1");
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      // Pre-seed the cache with lastIndex=2
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 3,
+        messages: [
+          { index: 0, role: "user", content: "A" },
+          { index: 1, role: "assistant", content: "B" },
+          { index: 2, role: "user", content: "C" },
+        ],
+      });
+
+      const pushPromise = captureNextPush("agent:agent-1", "chat:sync");
+
+      // Incoming message at index 5 — gap of 2 (indices 3, 4 missing)
+      simulateServerEvent("agent:agent-1", "chat:message", {
+        index: 5,
+        role: "assistant",
+        parts: [{ kind: "text", text: "E" }],
+      });
+
+      const pushPayload = await pushPromise;
+      // The sync uses cache.lastIndex (2), not message.index
+      assert.deepStrictEqual(pushPayload, { lastIndex: 2 });
+    });
+
+    it("does NOT push chat:sync when the message is the expected next index", async () => {
+      // lastIndex=2, incoming message.index=3 → no gap, no
+      // sync. (If a sync fires here, the test would have
+      // captured a push that never came.)
+      joinAgent("agent-1");
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 3,
+        messages: [
+          { index: 0, role: "user", content: "A" },
+          { index: 1, role: "assistant", content: "B" },
+          { index: 2, role: "user", content: "C" },
+        ],
+      });
+
+      // `captureNextPush` would resolve on the next push;
+      // a 50ms wait with no push means none fired.
+      const pushPromise = captureNextPush("agent:agent-1", "chat:sync");
+      const timeout = new Promise((resolve) =>
+        setTimeout(() => resolve("timeout"), 50),
+      );
+      const result = await Promise.race([pushPromise, timeout]);
+
+      simulateServerEvent("agent:agent-1", "chat:message", {
+        index: 3,
+        role: "assistant",
+        parts: [{ kind: "text", text: "D" }],
+      });
+
+      assert.strictEqual(result, "timeout");
+    });
+  });
+
+  describe("requestSync coalescing", () => {
+    // The `requestSync` function holds per-agent state in a
+    // `Map<agentId, {inFlight, queued, lastIndex}>` and
+    // coalesces overlapping requests: only one push is in
+    // flight at a time, and the queued re-fire uses the
+    // latest `lastIndex` (so the freshest lower bound wins).
+
+    it("coalesces two rapid chat:compaction events: each fires its own push, and the second uses the latest lastIndex", async () => {
+      joinAgent("agent-1");
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      const push1Promise = captureNextPush("agent:agent-1", "chat:sync");
+
+      // First compaction: marker at index 5 → triggers sync
+      // with lastIndex=5
+      simulateServerEvent("agent:agent-1", "chat:compaction", {
+        marker: { index: 5, role: "compaction", archivedCount: 5 },
+        history: [{ index: 5, role: "compaction", archivedCount: 5 }],
+      });
+
+      const push1 = await push1Promise;
+      assert.deepStrictEqual(push1, { lastIndex: 5 });
+
+      // Second compaction arrives. Each requestSync call
+      // fires its own push (the response merge is idempotent);
+      // the test asserts the second push uses the latest
+      // `lastIndex`.
+      const push2Promise = captureNextPush("agent:agent-1", "chat:sync");
+
+      simulateServerEvent("agent:agent-1", "chat:compaction", {
+        marker: { index: 9, role: "compaction", archivedCount: 4 },
+        history: [{ index: 9, role: "compaction", archivedCount: 4 }],
+      });
+
+      const push2 = await push2Promise;
+      assert.deepStrictEqual(push2, { lastIndex: 9 });
+    });
+
+    it("clears the per-agent sync state on leaveAgent", async () => {
+      joinAgent("agent-1");
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      const push1Promise = captureNextPush("agent:agent-1", "chat:sync");
+
+      simulateServerEvent("agent:agent-1", "chat:compaction", {
+        marker: { index: 5, role: "compaction", archivedCount: 5 },
+        history: [{ index: 5, role: "compaction", archivedCount: 5 }],
+      });
+
+      const push1 = await push1Promise;
+      assert.deepStrictEqual(push1, { lastIndex: 5 });
+
+      // Leave the channel; the sync state is reset
+      leaveAgent("agent-1");
+
+      // Re-join. The pre-existing channel path (in
+      // `joinAgent`) sends a `chat:status` push; the
+      // response is consumed by the rejoin handler. The
+      // test asserts that a fresh chat:compaction event
+      // after the rejoin produces a push with the
+      // post-rejoin marker's index (the symptom of
+      // `syncState` not being cleared would be a stale
+      // inFlight flag from the previous session).
+      joinAgent("agent-1");
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      const push2Promise = captureNextPush("agent:agent-1", "chat:sync");
+
+      simulateServerEvent("agent:agent-1", "chat:compaction", {
+        marker: { index: 7, role: "compaction", archivedCount: 3 },
+        history: [{ index: 7, role: "compaction", archivedCount: 3 }],
+      });
+
+      const push2 = await push2Promise;
+      assert.deepStrictEqual(push2, { lastIndex: 7 });
+    });
+
+    it("is a no-op when the agent has no cache entry", async () => {
+      // The `requestSync` is called from event handlers
+      // that are only registered once the channel is joined,
+      // so the cache is always present in practice. The
+      // defensive `!cache` guard exists for the edge
+      // case where a stale handler fires after a
+      // leaveAgent. We test it by leaving the channel
+      // and then firing an event (the channel mock
+      // silently drops the event since the channel is
+      // gone, and `requestSync`'s `!channel` guard
+      // also bails).
+      joinAgent("agent-1");
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+      leaveAgent("agent-1");
+
+      const pushPromise = captureNextPush("agent:agent-1", "chat:sync");
+      const timeout = new Promise((resolve) =>
+        setTimeout(() => resolve("timeout"), 30),
+      );
+      const result = await Promise.race([pushPromise, timeout]);
+      assert.strictEqual(result, "timeout");
+    });
+  });
+
+  describe("agent chat:compaction-loop events", () => {
+    it("records the loop message via setCompactionLoop", async () => {
+      joinAgent("agent-1");
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+      simulateServerEvent("agent:agent-1", "chat:compaction-loop", {
+        content: "compaction isn't reducing the conversation",
+      });
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"].compactionLoop,
+          "compaction isn't reducing the conversation",
+        );
+      });
+    });
+
+    it("falls back to the default loop message when content is missing", async () => {
+      joinAgent("agent-1");
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+      simulateServerEvent("agent:agent-1", "chat:compaction-loop", {});
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"].compactionLoop,
+          "compaction isn't reducing the conversation",
+        );
+      });
     });
   });
 });

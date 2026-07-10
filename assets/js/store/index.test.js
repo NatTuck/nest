@@ -3117,5 +3117,451 @@ describe("store", () => {
       useStore.getState().setAgentHistory("missing", [], null);
       expect(useStore.getState().agentsCache).toBe(before);
     });
+
+    it("filters cache.messages to drop messages with index <= marker.index (post-compaction boundary)", () => {
+      // Before the fix, cache.messages kept the pre-swap list
+      // after a compaction, so the same messages appeared in
+      // both the history pane and the active area. The fix
+      // filters cache.messages down to the post-swap list
+      // (everything strictly greater than marker.index).
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 6,
+        history: [],
+        messages: [
+          { index: 0, role: "system", content: "system" },
+          { index: 1, role: "user", content: "A" },
+          { index: 2, role: "assistant", content: "B" },
+          { index: 3, role: "user", content: "C" },
+          { index: 4, role: "assistant", content: "D" },
+          { index: 5, role: "user", content: "E" },
+        ],
+      });
+
+      // Compaction: marker at index 6, archives indices 0-6
+      // (system + 5 user/assistant turns). After the swap,
+      // the active list starts at 7.
+      useStore.getState().setAgentHistory(
+        "agent-1",
+        [
+          { index: 0, role: "system", content: "system" },
+          { index: 1, role: "user", content: "A" },
+          { index: 2, role: "assistant", content: "B" },
+          { index: 3, role: "user", content: "C" },
+          { index: 4, role: "assistant", content: "D" },
+          { index: 5, role: "user", content: "E" },
+          { index: 6, role: "compaction", archivedCount: 6 },
+        ],
+        { index: 6, role: "compaction", archivedCount: 6 },
+      );
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+
+      // All pre-swap messages (indices 0-6) are gone from
+      // cache.messages — they live in cache.history now.
+      expect(cache.messages).toEqual([]);
+      // The history has all 7 archived rows in order.
+      expect(cache.history).toHaveLength(7);
+    });
+
+    it("preserves cache.messages with index > marker.index (post-swap segment)", () => {
+      // The boundary is `index <= marker.index` — the
+      // post-swap active list (indices > marker.index) is
+      // preserved, since the sync that follows the compaction
+      // is what fills those slots with the new active list.
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 10,
+        messages: [
+          { index: 0, role: "system", content: "system" },
+          { index: 1, role: "user", content: "A" },
+          { index: 5, role: "user", content: "B" },
+          { index: 7, role: "user", content: "C" },
+          { index: 8, role: "user", content: "D" },
+        ],
+      });
+
+      // Marker at index 6 archives indices 0-6. The active
+      // list should keep indices 7 and 8.
+      useStore.getState().setAgentHistory(
+        "agent-1",
+        [
+          { index: 0, role: "system", content: "system" },
+          { index: 1, role: "user", content: "A" },
+          { index: 5, role: "user", content: "B" },
+          { index: 6, role: "compaction", archivedCount: 3 },
+        ],
+        { index: 6, role: "compaction", archivedCount: 3 },
+      );
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.messages).toHaveLength(2);
+      expect(cache.messages[0].index).toBe(7);
+      expect(cache.messages[1].index).toBe(8);
+    });
+
+    it("does not filter cache.messages when the marker has no index", () => {
+      // Defensive: if the marker is malformed (no `index`),
+      // don't drop the active list — the channel will still
+      // try to sync and the user gets a sensible UI.
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 1,
+        messages: [{ index: 0, role: "user", content: "kept" }],
+      });
+
+      useStore.getState().setAgentHistory(
+        "agent-1",
+        [{ index: 0, role: "user", content: "old" }],
+        // marker without an `index` field
+        { role: "compaction", archivedCount: 1 },
+      );
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.messages).toHaveLength(1);
+      expect(cache.messages[0].index).toBe(0);
+    });
+  });
+
+  describe("addChatMessage gap detection (returns {applied, needsSync, snapshotLastIndex})", () => {
+    it("returns {applied: false, needsSync: false} for an unknown agent", () => {
+      const result = useStore.getState().addChatMessage("non-existent", {
+        index: 5,
+        role: "user",
+        content: "test",
+      });
+      expect(result).toEqual({ applied: false, needsSync: false });
+    });
+
+    it("returns {applied: true, needsSync: false} on the first message (lastIndex === -1)", () => {
+      // The `lastIndex >= 0` guard: on the very first message
+      // the gap from -1 is expected (the client just joined),
+      // not a real loss. No sync is needed.
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+        messages: [],
+      });
+
+      const result = useStore.getState().addChatMessage("agent-1", {
+        index: 0,
+        role: "user",
+        parts: [{ kind: "text", text: "Hello" }],
+      });
+
+      expect(result).toMatchObject({ applied: true, needsSync: false });
+    });
+
+    it("returns {applied: true, needsSync: false} when the message is the expected next index", () => {
+      // lastIndex=2, incoming message.index=3 → the expected
+      // next index, no gap.
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 3,
+        messages: [
+          { index: 0, role: "user", content: "A" },
+          { index: 1, role: "assistant", content: "B" },
+          { index: 2, role: "user", content: "C" },
+        ],
+      });
+
+      const result = useStore.getState().addChatMessage("agent-1", {
+        index: 3,
+        role: "assistant",
+        parts: [{ kind: "text", text: "D" }],
+      });
+
+      expect(result).toMatchObject({ applied: true, needsSync: false });
+    });
+
+    it("returns {applied: true, needsSync: true, snapshotLastIndex: 2} when the message is a genuine gap", () => {
+      // lastIndex=2, incoming message.index=5 → gap of 2
+      // (messages 3 and 4 are missing). The channel handler
+      // reads `needsSync: true` and `snapshotLastIndex: 2`
+      // and calls `requestSync` to fill the gap from index 2
+      // (not from index 5, which would skip the missing
+      // messages).
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 3,
+        messages: [
+          { index: 0, role: "user", content: "A" },
+          { index: 1, role: "assistant", content: "B" },
+          { index: 2, role: "user", content: "C" },
+        ],
+      });
+
+      const result = useStore.getState().addChatMessage("agent-1", {
+        index: 5,
+        role: "assistant",
+        parts: [{ kind: "text", text: "E" }],
+      });
+
+      expect(result).toEqual({
+        applied: true,
+        needsSync: true,
+        snapshotLastIndex: 2,
+      });
+    });
+
+    it("returns {applied: true, needsSync: false} when the message matches an existing index (re-broadcast)", () => {
+      // The server can re-broadcast a message that the
+      // client already has (e.g. via api_log updates). The
+      // matchedIndex path merges; no gap.
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 3,
+        messages: [
+          { index: 0, role: "user", content: "A" },
+          { index: 1, role: "assistant", content: "B" },
+          { index: 2, role: "user", content: "C" },
+        ],
+      });
+
+      const result = useStore.getState().addChatMessage("agent-1", {
+        index: 1,
+        role: "assistant",
+        parts: [{ kind: "text", text: "B (re-broadcast)" }],
+      });
+
+      expect(result).toMatchObject({ applied: true, needsSync: false });
+    });
+
+    it("returns {applied: true, needsSync: false} when the message reconciles an optimistic add", () => {
+      // The optimistic-reconcile path matches by content +
+      // recency when the index differs. matchedIndex !== -1
+      // even though the indices diverge, so no gap signal.
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        useStore.getState().setAgentConnecting("agent-1");
+        useStore.getState().setAgentConnected("agent-1", {
+          model: { name: "gpt-4" },
+          messageCount: 1,
+        });
+        // Optimistic add uses `lastIndex + 1` = 0
+        useStore.getState().addUserMessage("agent-1", "Hello");
+
+        // Server echoes with the authoritative index 1
+        const result = useStore.getState().addChatMessage("agent-1", {
+          index: 1,
+          role: "user",
+          parts: [{ kind: "text", text: "Hello" }],
+          mode: "chat",
+        });
+
+        expect(result).toMatchObject({ applied: true, needsSync: false });
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it("returns snapshotLastIndex: -1 on the first message (so the channel handler can fall back to cache.lastIndex)", () => {
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+        messages: [],
+      });
+
+      const result = useStore.getState().addChatMessage("agent-1", {
+        index: 0,
+        role: "user",
+        parts: [{ kind: "text", text: "Hello" }],
+      });
+
+      expect(result).toMatchObject({ snapshotLastIndex: -1 });
+    });
+
+    it("handles thinking parts with empty/missing `thinking` text (the `p.thinking || ''` fallback)", () => {
+      // A `Part.Thinking` may have a `thinking` field that's
+      // null or empty (rare, but possible). The `fromParts`
+      // helper concatenates with `p.thinking || ""` so the
+      // resulting string is empty rather than "null".
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 1,
+        messages: [{ index: 0, role: "user", content: "Q" }],
+      });
+
+      // The message has a thinking part with no text. The
+      // function should not throw; thinking should be null
+      // (empty string converted to null).
+      const result = useStore.getState().addChatMessage("agent-1", {
+        index: 1,
+        role: "assistant",
+        parts: [
+          { kind: "thinking", thinking: null },
+          { kind: "text", text: "A" },
+        ],
+      });
+
+      expect(result).toMatchObject({ applied: true });
+      const cache = useStore.getState().agentsCache["agent-1"];
+      const added = cache.messages.find((m) => m.index === 1);
+      expect(added.thinking).toBe(null);
+    });
+
+    it("handles refusal deltas via the streaming accumulator (covers the refusal branch in appendPart)", () => {
+      // The streaming accumulator's `appendPart` has a
+      // refusal branch (line 157) hit when a refusal delta
+      // extends a refusal part. The default `newPart` branch
+      // (line 149, returning `{kind:"text", text}`) is hit
+      // when the part kind is unknown.
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+        messages: [],
+      });
+
+      // Stream a refusal delta
+      useStore.getState().addChatDelta("agent-1", {
+        messageIndex: 0,
+        deltaIndex: 0,
+        content: "I cannot",
+        partType: "refusal",
+      });
+
+      // Extend it with another refusal delta
+      useStore.getState().addChatDelta("agent-1", {
+        messageIndex: 0,
+        deltaIndex: 1,
+        content: " do that",
+        partType: "refusal",
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      const refusalPart = cache.streaming.parts.find(
+        (p) => p.kind === "refusal",
+      );
+      expect(refusalPart.refusal).toBe("I cannot do that");
+    });
+  });
+
+  describe("addChatDelta with unknown part kind (default newPart branch)", () => {
+    it("falls back to a text part when the part kind is unknown", () => {
+      // The streaming accumulator's `newPart` has a default
+      // branch (line 149) hit when `kind` is anything other
+      // than the known kinds. The default returns
+      // `{kind: "text", text: content}` so the unknown kind
+      // is rendered as text. This is a defensive fallback
+      // for forward-compatibility with new part kinds the
+      // LLM might emit before the UI is updated.
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+        messages: [],
+      });
+
+      useStore.getState().addChatDelta("agent-1", {
+        messageIndex: 0,
+        deltaIndex: 0,
+        content: "future kind",
+        partType: "future_kind",
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      // Unknown kind falls back to a text part.
+      const textPart = cache.streaming.parts.find((p) => p.kind === "text");
+      expect(textPart.text).toBe("future kind");
+    });
+
+    it("creates a tool_use part when the streaming delta's partType is 'tool_use'", () => {
+      // The `newPart` factory has a tool_use branch (line
+      // 123) that returns the part shape with `id`, `name`,
+      // and `arguments` keys (instead of the text default).
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+        messages: [],
+      });
+
+      useStore.getState().addChatDelta("agent-1", {
+        messageIndex: 0,
+        deltaIndex: 0,
+        content: "shell_cmd",
+        partType: "tool_use",
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      const toolUsePart = cache.streaming.parts.find(
+        (p) => p.kind === "tool_use",
+      );
+      // The streaming accumulator seeds the tool_use part
+      // with `name: null` (the actual name arrives via a
+      // later streaming event with `toolCallName`); the
+      // `text` field carries the streaming content.
+      expect(toolUsePart).toBeDefined();
+      expect(toolUsePart.kind).toBe("tool_use");
+    });
+
+    it("creates a tool_result part when the streaming delta's partType is 'tool_result'", () => {
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+        messages: [],
+      });
+
+      useStore.getState().addChatDelta("agent-1", {
+        messageIndex: 0,
+        deltaIndex: 0,
+        content: "file1.txt\nfile2.txt",
+        partType: "tool_result",
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      const toolResultPart = cache.streaming.parts.find(
+        (p) => p.kind === "tool_result",
+      );
+      expect(toolResultPart.content).toBe("file1.txt\nfile2.txt");
+    });
+  });
+
+  describe("syncAgentMessages with the new streaming wire format", () => {
+    it("normalizes payload.streaming (the new format) into the canonical cache shape", () => {
+      // The new wire format uses `payload.streaming`
+      // (with `lastDeltaIndex`) instead of the legacy
+      // `payload.partial` (with `charsEnd`). The
+      // `syncAgentMessages` action normalizes the new
+      // shape into the cache's `streaming` field with
+      // `nextDeltaIndex: lastDeltaIndex + 1`.
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+        messages: [],
+      });
+
+      useStore.getState().syncAgentMessages("agent-1", {
+        messages: [
+          { index: 0, role: "user", parts: [{ kind: "text", text: "Hi" }] },
+        ],
+        streaming: {
+          lastDeltaIndex: 3,
+          messageIndex: 1,
+          role: "assistant",
+          parts: [{ kind: "text", text: "Streaming..." }],
+        },
+        messageCount: 1,
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.streaming).toMatchObject({
+        messageIndex: 1,
+        nextDeltaIndex: 4,
+        role: "assistant",
+      });
+    });
   });
 });

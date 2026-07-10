@@ -194,17 +194,18 @@ function createMockChannel(topic) {
 
       mockState.pushBehaviors.delete(key);
 
-      // If a capture is registered, resolve it with the payload and skip
-      // the regular receive flow (consumed by captureNextPush).
+      // If a capture is registered, resolve it with the
+      // payload so the test can assert on the push args. The
+      // regular receive flow also runs (when the channel
+      // calls `.receive("ok", cb)` on the returned receiver)
+      // so configured responses from `setNextPushResult` are
+      // still applied — without this, `inFlight` flags in
+      // module-level sync state would never clear and
+      // subsequent tests would see "stuck" sync state.
       const capture = mockState.pushCaptures.get(key);
       if (capture) {
         mockState.pushCaptures.delete(key);
         setTimeout(() => capture.resolve(payload), 1);
-        return {
-          receive: () => ({
-            receive: () => ({}),
-          }),
-        };
       }
 
       const pushReceiver = {

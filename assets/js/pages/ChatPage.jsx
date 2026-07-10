@@ -27,6 +27,7 @@ import { ApiLogsBlock } from "../components/ApiLogsBlock";
 import { StatusBanner } from "../components/StatusBanner";
 import { NotificationBanner } from "../components/NotificationBanner";
 import { CompactionMarker } from "../components/CompactionMarker";
+import { SystemMessageContent } from "../components/SystemMessageContent";
 import { CopyButton } from "../components/CopyButton";
 import { useScrollToBottom } from "../hooks/useScrollToBottom";
 import { stripModePrefix } from "../utils/stripModePrefix.js";
@@ -333,11 +334,16 @@ export function ChatPage() {
         ref={setScrollContainerEl}
         className="flex-1 overflow-y-auto space-y-4 mb-4 pr-2"
       >
-        {/* Compaction marker — only render when there are archived
-            messages (history) AND active messages to display. The
-            marker sits above the active messages, indicating the
-            boundary between the archived (history) and visible
-            (messages) conversation. */}
+        {/* Compaction marker — the entry point to the agent's
+            archived history. Renders collapsed as a "History"
+            header with a "Last compaction: …" sub-line and a
+            Show/Hide toggle (the toggle's count is the TOTAL
+            archived-message length, not the most recent
+            marker's `archivedCount`); when expanded, the full
+            sequence renders in original index order. Only
+            shown when there are archived messages (history)
+            AND active messages to display — both must exist
+            for the boundary to be meaningful. */}
         {displayMessages.length > 0 && cache?.history?.length > 0 && (
           <CompactionMarker
             marker={
@@ -348,6 +354,7 @@ export function ChatPage() {
                     .find((m) => m.role === "compaction")
             }
             history={cache.history}
+            historyCount={cache.history.length}
           />
         )}
 
@@ -628,73 +635,4 @@ function thinkingFor(message) {
 // first, with a `content` fallback for legacy shapes).
 function hasVisibleContent(message) {
   return messageText(message).trim().length > 0;
-}
-
-const SYSTEM_MESSAGE_MAX_LINES = 20;
-
-// Renders system message content with line-count truncation. If the
-// content exceeds SYSTEM_MESSAGE_MAX_LINES, only the first N lines
-// are shown with an expand link.
-//
-// An empty system message (no system prompt was configured for
-// this agent) is still rendered — as a dimmed placeholder — so the
-// user can see that a system message was sent to the LLM (the
-// `AGENTS.md` transparency rule: the UI always includes everything
-// that happened). Without this, an agent with no system prompt
-// would have no visible representation of position 0 in the
-// messages list, and the conversation history would be confusing.
-function SystemMessageContent({ parts, isPartial }) {
-  const [expanded, setExpanded] = useState(false);
-
-  const text = Array.isArray(parts)
-    ? parts
-        .filter((p) => p && p.kind === "text")
-        .map((p) => p.text || "")
-        .join("")
-    : "";
-
-  if (!text) {
-    return (
-      <div className="text-sm italic text-gray-400 border-l-2 border-gray-200 pl-2">
-        (empty system message — no system prompt was configured for this agent)
-      </div>
-    );
-  }
-
-  if (isPartial) {
-    return (
-      <MessageContent
-        parts={[{ kind: "text", text }]}
-        isPartial
-        className="text-gray-800"
-      />
-    );
-  }
-
-  const lines = text.split("\n");
-  const showExpand = lines.length > SYSTEM_MESSAGE_MAX_LINES;
-  const visibleLines = expanded
-    ? lines
-    : lines.slice(0, SYSTEM_MESSAGE_MAX_LINES);
-  const hiddenCount = lines.length - SYSTEM_MESSAGE_MAX_LINES;
-
-  return (
-    <div>
-      <MessageContent
-        parts={[{ kind: "text", text: visibleLines.join("\n") }]}
-        className="text-gray-800"
-      />
-      {showExpand && (
-        <button
-          type="button"
-          onClick={() => setExpanded(!expanded)}
-          className="mt-2 text-sm text-blue-600 hover:text-blue-800 underline"
-        >
-          {expanded
-            ? "Show less"
-            : `Expand ${hiddenCount} more line${hiddenCount !== 1 ? "s" : ""}`}
-        </button>
-      )}
-    </div>
-  );
 }

@@ -611,10 +611,27 @@ export const useStore = create(
               ? [...history, marker]
               : history;
 
+          // The marker's `index` is the new partition boundary:
+          // everything in the previous `state.chat_state.messages`
+          // (with `index <= marker.index`) just moved to
+          // `state.chat_state.history`. Drop those rows from
+          // `cache.messages` so the same messages don't appear
+          // in both the history pane and the active area. The
+          // new active messages the server built (fresh_system,
+          // summary_user, continuation_tail) are not broadcast
+          // individually — the channel's `requestSync` is
+          // triggered right after this returns, using
+          // `marker.index` as the lower bound, to fetch them.
+          const boundary = marker?.index;
+          const nextMessages =
+            typeof boundary === "number"
+              ? cache.messages.filter((m) => m.index > boundary)
+              : cache.messages;
+
           return {
             agentsCache: {
               ...state.agentsCache,
-              [id]: { ...cache, history: nextHistory },
+              [id]: { ...cache, history: nextHistory, messages: nextMessages },
             },
           };
         });
@@ -869,6 +886,18 @@ export const useStore = create(
        * Add complete chat message
        */
       addChatMessage: (id, message) => {
+        // Read the cache via get() up-front so the matchedIndex
+        // and lastIndex are visible outside the set callback —
+        // needed for the gap-detection return value the
+        // channels.js handler reads to decide whether to
+        // request a sync.
+        const cache = get().agentsCache[id];
+        if (!cache) return { applied: false, needsSync: false };
+
+        // Hoisted out of the set callback so the gap-detection
+        // return value below can read it.
+        let matchedIndex = -1;
+
         set((state) => {
           const cache = state.agentsCache[id];
           if (!cache) return state;
@@ -963,7 +992,7 @@ export const useStore = create(
           // the correct index. The index-based de-dup misses, so the
           // server's echo is appended as a new message, leaving the
           // user with two copies of their own message.
-          let matchedIndex = cache.messages.findIndex(
+          matchedIndex = cache.messages.findIndex(
             (m) => m.index === message.index,
           );
 
@@ -1168,6 +1197,35 @@ export const useStore = create(
             },
           };
         });
+
+        // Gap detection: when a `chat:message` arrives from the
+        // server with an index higher than the client's
+        // `lastIndex + 1` and the message wasn't matched (either
+        // by index or by the optimistic-reconcile path), there's
+        // a gap in the index sequence — typically because a
+        // `chat:message` was silently lost in transit (network
+        // blip, server crash before broadcast, PubSub reordering
+        // with one event dropped). The `lastIndex >= 0` guard
+        // prevents a spurious sync on the very first message
+        // (where a gap from -1 is expected, not a real loss).
+        // The channels.js handler reads this signal and calls
+        // `requestSync` to fill the gap.
+        //
+        // We also return `snapshotLastIndex` — the pre-update
+        // `cache.lastIndex` value — so the channel handler can
+        // pass it as the sync's lower bound. The set callback
+        // bumps `cache.lastIndex` to `message.index`, but that's
+        // the wrong lower bound for filling a gap: it would
+        // skip the missing messages. The snapshot value is the
+        // highest *complete* index we have, so the sync
+        // response carries everything from there onwards.
+        const snapshotLastIndex = cache.lastIndex ?? -1;
+        const needsSync =
+          matchedIndex === -1 &&
+          message.index > snapshotLastIndex + 1 &&
+          snapshotLastIndex >= 0;
+
+        return { applied: true, needsSync, snapshotLastIndex };
       },
 
       /**

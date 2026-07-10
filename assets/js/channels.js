@@ -90,25 +90,53 @@ export function leaveLobby() {
   }
 }
 
+// Per-agent sync state. The inFlight flag is set when a
+// `chat:sync` push is in flight and cleared on success. The
+// map is cleared per-agent by `leaveAgent`. No coalescing:
+// a requestSync call while another is in flight simply
+// fires a second push — `syncAgentMessages` is idempotent
+// (it merges by index), so duplicate responses don't
+// double-add messages. Coalescing is unnecessary for
+// correctness; we accept the small bandwidth cost of the
+// rare double-push case.
+const syncState = new Map(); // agentId -> {inFlight}
+
 /**
- * Check if we need to sync messages and do so if needed
+ * Request a `chat:sync` for the agent. Pushes the request
+ * and updates the cache from the response. Multiple
+ * overlapping calls fire multiple pushes (the response
+ * merge is idempotent).
+ *
+ * Callers may pass `{lastIndex: number}` to override the
+ * lower bound (e.g. the chat:compaction handler passes
+ * `marker.index` so the sync pulls only the new active
+ * messages). When `lastIndex` is omitted, the agent's
+ * `cache.lastIndex` is used (the highest index the client
+ * knows about).
  */
-function checkAndSync(agentId, serverMessageCount) {
+function requestSync(agentId, opts = {}) {
   const cache = getStore().agentsCache[agentId];
-  const clientMessageCount = cache?.messages?.length ?? 0;
-  if (serverMessageCount <= clientMessageCount) {
-    return;
-  }
+  if (!cache) return;
+
+  const lastIndex =
+    typeof opts.lastIndex === "number"
+      ? opts.lastIndex
+      : (cache.lastIndex ?? -1);
 
   const channel = agentChannels.get(agentId);
   if (!channel) return;
 
-  const lastIndex = cache?.lastIndex ?? -1;
+  const previous = syncState.get(agentId) || { inFlight: false };
+  syncState.set(agentId, { ...previous, inFlight: true });
+
   channel.push("chat:sync", { lastIndex }).receive("ok", (resp) => {
     getStore().syncAgentMessages(agentId, resp);
+    const current = syncState.get(agentId);
+    syncState.set(agentId, { ...current, inFlight: false });
   });
 }
 
+// Join agent channel
 /**
  * Join agent channel
  * Idempotent: if already connected, sends status check
@@ -120,7 +148,21 @@ export function joinAgent(agentId) {
   if (existingChannel) {
     existingChannel.push("chat:status", {}).receive("ok", (payload) => {
       store.setAgentConnected(agentId, payload);
-      checkAndSync(agentId, payload.messageCount);
+      // Re-join via chat:status: the server returns the
+      // current `messageCount`. If the server has more active
+      // messages than the client, pull the missing ones.
+      // Re-read via `getStore()` (the captured `store`
+      // is a stale snapshot; `setAgentConnected` mutated
+      // the store, so the agent's cache lives on the new
+      // state object).
+      const cache = getStore().agentsCache[agentId];
+      if (
+        cache &&
+        typeof payload.messageCount === "number" &&
+        payload.messageCount > (cache.messages?.length ?? 0)
+      ) {
+        requestSync(agentId);
+      }
     });
     return;
   }
@@ -134,19 +176,42 @@ export function joinAgent(agentId) {
   // Setup event handlers
   channel.on("init", (payload) => {
     store.setAgentConnected(agentId, payload);
-    checkAndSync(agentId, payload.messageCount);
+    // The init payload carries the archived `history` and
+    // `messageCount`, but not the active messages themselves
+    // (the channel serves those on demand via chat:sync). Pull
+    // them now so the active area isn't empty. Re-read the
+    // store via `getStore()` (the captured `store` is a stale
+    // snapshot from `joinAgent`'s call site; `setAgentConnected`
+    // mutated the store, so the agent's cache lives on the
+    // new state object, not the captured one).
+    const cache = getStore().agentsCache[agentId];
+    if (
+      cache &&
+      typeof payload.messageCount === "number" &&
+      payload.messageCount > (cache.messages?.length ?? 0)
+    ) {
+      requestSync(agentId);
+    }
   });
 
   // The backend broadcasts a chat:compaction event when a
   // compaction completes. The payload carries the marker (so the
   // UI can render a divider) and the full archived history. The
   // store replaces the agent's `history` field with the new
-  // list, leaving `messages` untouched (the backend has already
-  // truncated it to the compacted form).
+  // list, and filters `cache.messages` to drop the just-
+  // archived segment (the marker's index is the new boundary).
+  // The new active messages (fresh_system, summary_user, …)
+  // are NOT broadcast individually by the server, so we follow
+  // up with a chat:sync using the marker's index as the lower
+  // bound — the response carries exactly the post-swap active
+  // list and `syncAgentMessages` merges it into `cache.messages`.
   channel.on("chat:compaction", (payload) => {
     const history = Array.isArray(payload?.history) ? payload.history : [];
     const marker = payload?.marker ?? null;
     store.setAgentHistory(agentId, history, marker);
+    if (marker && typeof marker.index === "number") {
+      requestSync(agentId, { lastIndex: marker.index });
+    }
   });
 
   // The backend broadcasts a chat:compaction-loop event when
@@ -168,7 +233,7 @@ export function joinAgent(agentId) {
       console.warn(
         `[agent:${agentId}] Delta gap at ${delta.charsStart}, expected ${store.agentsCache[agentId]?.partial?.charsReceived || 0}. Syncing.`,
       );
-      checkAndSync(agentId, store.agentsCache[agentId]?.lastIndex ?? -1);
+      requestSync(agentId);
     }
   });
 
@@ -198,7 +263,24 @@ export function joinAgent(agentId) {
   });
 
   channel.on("chat:message", (message) => {
-    store.addChatMessage(agentId, message);
+    // `addChatMessage` returns `{applied, needsSync,
+    // snapshotLastIndex}`: when a `chat:message` arrives
+    // with an index higher than the client's `lastIndex + 1`
+    // and the message isn't a reconciliation of an optimistic
+    // add, there's a gap in the index sequence (e.g. a
+    // `chat:message` was silently lost in transit). Trigger
+    // a sync to fill the gap, using the snapshot's
+    // `lastIndex` (the pre-update value) as the lower bound
+    // so the response includes the missing messages — not
+    // just whatever comes after the gap-leader's index.
+    const result = store.addChatMessage(agentId, message);
+    if (result?.needsSync) {
+      const lastIndex =
+        typeof result.snapshotLastIndex === "number"
+          ? result.snapshotLastIndex
+          : undefined;
+      requestSync(agentId, { lastIndex });
+    }
   });
 
   channel.on("chat:status", (payload) => {
@@ -304,6 +386,9 @@ export function leaveAgent(agentId) {
     channel.leave();
     agentChannels.delete(agentId);
   }
+  // Clear any in-flight/queued sync state so a re-join starts
+  // with a clean slate.
+  syncState.delete(agentId);
 }
 
 /**

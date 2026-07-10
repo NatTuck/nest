@@ -2,16 +2,24 @@
  * CollapsedHistory Component Tests
  *
  * Covers:
- * - Renders nothing when history is empty
- * - Renders nothing when history is null/undefined
- * - Filters out EARLIER compaction markers; renders the LAST
- *   one as a dedicated marker box at the end of the visible
- *   list (carries archivedCount + token-stats fields).
- * - Renders a bubble per non-compaction message with the
- *   correct role.
- * - Renders tool call / tool result counts when present.
- * - Roles map to the correct avatar letter and label.
- * - Tolerates missing timestamps / unknown roles.
+ * - Renders nothing when history is empty / null / undefined
+ * - Renders EVERY compaction marker inline, in order (not just
+ *   the last one — that filter was removed when the renderer
+ *   was rewritten to show the full sequence)
+ * - Renders a bubble per non-marker message with the correct
+ *   role label and avatar letter
+ * - System messages render via SystemMessageContent (20-line
+ *   truncation + "Expand N more lines" toggle), NOT as the
+ *   untruncated raw text the previous version showed
+ * - User messages read from `parts` (the wire format), not
+ *   from a flat `content` field, and strip the `[mode: X]\n`
+ *   prefix
+ * - Assistant messages extract thinking from `parts` and
+ *   render a ThinkingBlock; tool_use parts render via
+ *   ToolCalls; apiLogs render via ApiLogsBlock
+ * - Tool messages render via ToolResults with full content
+ * - Tolerates missing timestamps / unknown roles
+ * - Interleaved messages + markers render in original order
  */
 
 import { describe, it, expect, afterEach } from "vitest";
@@ -45,65 +53,28 @@ describe("CollapsedHistory", () => {
       const { container } = render(<CollapsedHistory history={[]} />);
       expect(container.firstChild).toBeNull();
     });
-
-    it("renders the LAST compaction marker as a marker box when only markers are present", () => {
-      const history = [
-        { index: 0, role: "compaction", archivedCount: 5 },
-        { index: 1, role: "compaction", archivedCount: 2 },
-      ];
-      render(<CollapsedHistory history={history} />);
-      // Only one marker box should render (the LAST one);
-      // earlier markers are filtered out.
-      const boxes = screen.getAllByTestId("history-compaction-marker");
-      expect(boxes).toHaveLength(1);
-      expect(boxes[0].getAttribute("data-marker-index")).toBe("1");
-    });
   });
 
   describe("rendering messages", () => {
-    it("renders a bubble for each non-compaction message", () => {
+    it("renders a bubble for each non-marker message", () => {
       const history = buildHistory([
-        { role: "user", content: "Hello" },
-        { role: "assistant", content: "Hi" },
-        { role: "user", content: "How are you?" },
+        { role: "user", parts: [{ kind: "text", text: "Hello" }] },
+        { role: "assistant", parts: [{ kind: "text", text: "Hi" }] },
+        { role: "user", parts: [{ kind: "text", text: "How are you?" }] },
       ]);
       render(<CollapsedHistory history={history} />);
       expect(screen.getAllByTestId("history-message")).toHaveLength(3);
     });
 
-    it("skips EARLIER compaction markers and renders the LAST one as a marker box", () => {
-      const history = [
-        ...buildHistory([
-          { role: "user", content: "Hello" },
-          { role: "compaction", archivedCount: 2 },
-          { role: "user", content: "After compaction" },
-        ]),
-      ];
-      render(<CollapsedHistory history={history} />);
-
-      const bubbles = screen.getAllByTestId("history-message");
-      expect(bubbles).toHaveLength(2);
-      expect(bubbles[0].textContent).toContain("Hello");
-      expect(bubbles[1].textContent).toContain("After compaction");
-
-      const markerBoxes = screen.getAllByTestId("history-compaction-marker");
-      expect(markerBoxes).toHaveLength(1);
-      // The marker box renders AFTER the user/assistant bubbles
-      // (it's the last item in the visible list).
-      const collapsed = screen.getByTestId("collapsed-history");
-      expect(
-        collapsed.children[collapsed.children.length - 1].getAttribute(
-          "data-testid",
-        ),
-      ).toBe("history-compaction-marker");
-    });
-
     it("uses the correct role label per message", () => {
       const history = buildHistory([
-        { role: "user", content: "u" },
-        { role: "assistant", content: "a" },
-        { role: "system", content: "s" },
-        { role: "tool", content: "t" },
+        { role: "user", parts: [{ kind: "text", text: "u" }] },
+        { role: "assistant", parts: [{ kind: "text", text: "a" }] },
+        { role: "system", parts: [{ kind: "text", text: "s" }] },
+        {
+          role: "tool",
+          parts: [{ kind: "tool_result", toolCallId: "1", content: "t" }],
+        },
       ]);
       render(<CollapsedHistory history={history} />);
 
@@ -115,8 +86,11 @@ describe("CollapsedHistory", () => {
 
     it("sets data-role on each bubble", () => {
       const history = buildHistory([
-        { role: "user", content: "u" },
-        { role: "tool", content: "t" },
+        { role: "user", parts: [{ kind: "text", text: "u" }] },
+        {
+          role: "tool",
+          parts: [{ kind: "tool_result", toolCallId: "1", content: "t" }],
+        },
       ]);
       render(<CollapsedHistory history={history} />);
 
@@ -124,65 +98,273 @@ describe("CollapsedHistory", () => {
       expect(bubbles[0].getAttribute("data-role")).toBe("user");
       expect(bubbles[1].getAttribute("data-role")).toBe("tool");
     });
+
+    it("renders every compaction marker inline, in order, when interleaved with messages", () => {
+      // Three compactions, three messages between them. Every
+      // marker renders inline in the order it appears in the
+      // history array.
+      const history = [
+        { index: 0, role: "user", parts: [{ kind: "text", text: "Hello" }] },
+        {
+          index: 1,
+          role: "compaction",
+          archivedCount: 1,
+          tokensCompacted: 1000,
+          tokensCompactedTo: 500,
+        },
+        {
+          index: 2,
+          role: "user",
+          parts: [{ kind: "text", text: "After first compaction" }],
+        },
+        {
+          index: 3,
+          role: "compaction",
+          archivedCount: 2,
+          tokensCompacted: 2000,
+          tokensCompactedTo: 800,
+        },
+        {
+          index: 4,
+          role: "user",
+          parts: [{ kind: "text", text: "After second compaction" }],
+        },
+        {
+          index: 5,
+          role: "compaction",
+          archivedCount: 1,
+          tokensCompacted: 500,
+          tokensCompactedTo: 250,
+        },
+      ];
+      render(<CollapsedHistory history={history} />);
+
+      // Three bubbles (one per non-marker message)
+      const bubbles = screen.getAllByTestId("history-message");
+      expect(bubbles).toHaveLength(3);
+      expect(bubbles[0].textContent).toContain("Hello");
+      expect(bubbles[1].textContent).toContain("After first compaction");
+      expect(bubbles[2].textContent).toContain("After second compaction");
+
+      // Three marker boxes (every marker, not just the last)
+      const markerBoxes = screen.getAllByTestId("history-compaction-marker");
+      expect(markerBoxes).toHaveLength(3);
+      expect(markerBoxes[0].getAttribute("data-marker-index")).toBe("1");
+      expect(markerBoxes[1].getAttribute("data-marker-index")).toBe("3");
+      expect(markerBoxes[2].getAttribute("data-marker-index")).toBe("5");
+    });
   });
 
-  describe("tool call / tool result counts", () => {
-    it("shows tool call count when present", () => {
+  describe("user message content", () => {
+    it("reads user content from parts (the wire format), not from a flat content field", () => {
+      // The wire format has no flat `content` field; the user
+      // text lives in `parts: [{kind: "text", text: "..."}]`.
+      // The history bubble reads from parts, not content, so
+      // the message renders with its text.
       const history = buildHistory([
         {
-          role: "assistant",
-          content: "running tools",
-          toolCalls: [{ id: "1" }, { id: "2" }, { id: "3" }],
+          role: "user",
+          parts: [{ kind: "text", text: "Hello there" }],
+          mode: "chat",
         },
       ]);
       render(<CollapsedHistory history={history} />);
-      expect(screen.getByText(/3 tool calls/)).toBeInTheDocument();
+      const bubble = screen.getByTestId("history-message");
+      expect(bubble.textContent).toContain("Hello there");
     });
 
-    it("uses singular wording for one tool call", () => {
+    it("strips the [mode: X]\\n prefix from archived user messages", () => {
+      // Server-side ChatPipeline.build_user_messages/3
+      // intentionally prefixes every persisted user message
+      // with `[mode: <name>]\n`. Archived (post-compaction)
+      // user messages carry the same wire form, so the
+      // history view strips the prefix on render.
       const history = buildHistory([
         {
-          role: "assistant",
-          content: "running one tool",
-          toolCalls: [{ id: "1" }],
+          role: "user",
+          parts: [{ kind: "text", text: "[mode: build]\nHello there" }],
+          mode: "build",
         },
       ]);
       render(<CollapsedHistory history={history} />);
-      expect(screen.getByText(/1 tool call\b/)).toBeInTheDocument();
+      const bubble = screen.getByTestId("history-message");
+      expect(bubble.textContent).toContain("Hello there");
+      expect(bubble.textContent).not.toContain("[mode: build]");
+    });
+  });
+
+  describe("system message rendering", () => {
+    it("renders system message text via SystemMessageContent", () => {
+      // SystemMessageContent truncates at 20 lines + adds an
+      // "Expand N more lines" toggle. Short system messages
+      // render as plain markdown.
+      const history = buildHistory([
+        {
+          role: "system",
+          parts: [{ kind: "text", text: "You are a helpful assistant." }],
+        },
+      ]);
+      render(<CollapsedHistory history={history} />);
+      const bubble = screen.getByTestId("history-message");
+      expect(bubble.textContent).toContain("You are a helpful assistant.");
     });
 
-    it("shows tool result count when present", () => {
+    it("truncates long system messages and renders the Expand button", () => {
+      // Build a 25-line system message; SystemMessageContent
+      // shows the first 20 lines and a "Expand 5 more lines"
+      // button.
+      const longText = Array.from(
+        { length: 25 },
+        (_, i) => `line ${i + 1}`,
+      ).join("\n");
+      const history = buildHistory([
+        { role: "system", parts: [{ kind: "text", text: longText }] },
+      ]);
+      render(<CollapsedHistory history={history} />);
+      const bubble = screen.getByTestId("history-message");
+      // First 20 lines visible
+      expect(bubble.textContent).toContain("line 1");
+      expect(bubble.textContent).toContain("line 20");
+      // Last 5 lines hidden
+      expect(bubble.textContent).not.toContain("line 25");
+      // Expand button is present with the right count
+      expect(bubble.textContent).toContain("Expand 5 more lines");
+    });
+  });
+
+  describe("assistant message rendering", () => {
+    it("extracts thinking from parts and renders ThinkingBlock", () => {
+      // The wire format puts thinking in `parts`; the
+      // history bubble extracts it and renders a ThinkingBlock.
+      const history = buildHistory([
+        {
+          role: "assistant",
+          parts: [
+            { kind: "thinking", thinking: "Let me think about this." },
+            { kind: "text", text: "Here is the answer." },
+          ],
+        },
+      ]);
+      render(<CollapsedHistory history={history} />);
+      const bubble = screen.getByTestId("history-message");
+      expect(bubble.textContent).toContain("Let me think about this.");
+      expect(bubble.textContent).toContain("Here is the answer.");
+    });
+
+    it("renders tool_use parts via ToolCalls", () => {
+      const history = buildHistory([
+        {
+          role: "assistant",
+          parts: [
+            { kind: "text", text: "Running a tool" },
+            {
+              kind: "tool_use",
+              id: "call_1",
+              name: "shell_cmd",
+              arguments: { command: "ls" },
+            },
+          ],
+        },
+      ]);
+      render(<CollapsedHistory history={history} />);
+      // ToolCalls renders the tool name + a JSON preview of
+      // the arguments
+      expect(screen.getByText(/Using tool: shell_cmd/)).toBeInTheDocument();
+      expect(screen.getByText(/"command"/)).toBeInTheDocument();
+    });
+  });
+
+  describe("tool message rendering", () => {
+    it("renders tool_result parts via ToolResults (full content, not just a count)", () => {
+      // The previous version only showed a "1 tool result"
+      // count; the new version renders the full content via
+      // ToolResults.
       const history = buildHistory([
         {
           role: "tool",
-          content: "results",
-          toolResults: [{ tool_call_id: "1" }, { tool_call_id: "2" }],
+          parts: [
+            {
+              kind: "tool_result",
+              toolCallId: "call_1",
+              name: "shell_cmd",
+              content: "file1.txt\nfile2.txt",
+              isError: false,
+            },
+          ],
         },
       ]);
       render(<CollapsedHistory history={history} />);
-      expect(screen.getByText(/2 tool results/)).toBeInTheDocument();
+      const bubble = screen.getByTestId("history-message");
+      expect(bubble.textContent).toContain("Success: shell_cmd");
+      expect(bubble.textContent).toContain("file1.txt");
+      expect(bubble.textContent).toContain("file2.txt");
+    });
+  });
+
+  describe("api logs", () => {
+    it("renders apiLogs via ApiLogsBlock when present", () => {
+      const apiLogs = [
+        {
+          id: "0.000",
+          timestamp: "2024-01-01T00:00:00Z",
+          type: "request",
+          payload: { model: "gpt-4" },
+        },
+      ];
+      const history = buildHistory([
+        { role: "assistant", parts: [{ kind: "text", text: "Hi" }], apiLogs },
+      ]);
+      render(<CollapsedHistory history={history} />);
+      expect(screen.getByText(/API Logs \(1\)/)).toBeInTheDocument();
     });
   });
 
   describe("edge cases", () => {
     it("tolerates unknown roles by using a fallback label", () => {
-      const history = buildHistory([{ role: "alien", content: "👽" }]);
+      const history = buildHistory([{ role: "alien", parts: [] }]);
       render(<CollapsedHistory history={history} />);
-      // The bubble should still render; the role label falls back to the
-      // role string itself
+      // The bubble still renders; the role label falls back to
+      // the role string itself.
       expect(screen.getByText("alien")).toBeInTheDocument();
+    });
+
+    it("tolerates missing timestamps", () => {
+      const history = [
+        { index: 0, role: "user", parts: [{ kind: "text", text: "no ts" }] },
+      ];
+      render(<CollapsedHistory history={history} />);
+      // No crash; the message still renders
+      expect(screen.getByText("no ts")).toBeInTheDocument();
     });
   });
 
-  describe("compaction marker box (last-entry only)", () => {
-    it("renders the marker box's archivedCount line when no token stats are provided", () => {
-      const history = [{ index: 0, role: "compaction", archivedCount: 7 }];
+  describe("compaction marker box", () => {
+    it("renders a marker box for every role:compaction entry in order", () => {
+      const history = [
+        {
+          index: 0,
+          role: "compaction",
+          archivedCount: 5,
+          tokensCompacted: 18_432,
+          tokensCompactedTo: 4_096,
+        },
+        {
+          index: 1,
+          role: "compaction",
+          archivedCount: 3,
+          tokensCompacted: 12_345,
+          tokensCompactedTo: 6_789,
+        },
+      ];
       render(<CollapsedHistory history={history} />);
-      const box = screen.getByTestId("history-compaction-marker");
-      expect(box.textContent).toContain("7 earlier messages archived");
+      // Both markers render (not just the last).
+      const boxes = screen.getAllByTestId("history-compaction-marker");
+      expect(boxes).toHaveLength(2);
+      expect(boxes[0].getAttribute("data-marker-index")).toBe("0");
+      expect(boxes[1].getAttribute("data-marker-index")).toBe("1");
     });
 
-    it("renders the marker box's token-stats line when tokens_compacted/tokens_compacted_to are set", () => {
+    it("renders the marker box's token-stats line when set", () => {
       const history = [
         {
           index: 0,
@@ -212,83 +394,6 @@ describe("CollapsedHistory", () => {
       const box = screen.getByTestId("history-compaction-marker");
       // saved = 12_345 - 6_789 = 5_556
       expect(box.textContent).toContain("5,556");
-    });
-
-    it("uses singular wording when archivedCount is 1", () => {
-      const history = [{ index: 0, role: "compaction", archivedCount: 1 }];
-      render(<CollapsedHistory history={history} />);
-      const box = screen.getByTestId("history-compaction-marker");
-      expect(box.textContent).toContain("1 earlier message archived");
-    });
-
-    it("tolerates missing timestamps", () => {
-      const history = [
-        { index: 0, role: "user", content: "no ts", apiLogs: [] },
-      ];
-      render(<CollapsedHistory history={history} />);
-      // No crash; the message still renders
-      expect(screen.getByText("no ts")).toBeInTheDocument();
-    });
-
-    it("tolerates a malformed timestamp without crashing", () => {
-      // `formatTimestamp/1` falls back to passing through the
-      // value when `new Date(<garbage>)` throws — covered when
-      // a message carries a string that Date can't parse. The
-      // exact text isn't easily assertable (the rendered DOM
-      // splits the value across multiple elements); the only
-      // contract pinned here is "doesn't crash" + "the bubble
-      // still renders".
-      const history = [
-        {
-          index: 0,
-          role: "user",
-          content: "ts-bad",
-          timestamp: "not-a-real-date",
-          apiLogs: [],
-        },
-      ];
-      render(<CollapsedHistory history={history} />);
-      expect(screen.getByText("ts-bad")).toBeInTheDocument();
-    });
-
-    it("renders a normal visible list when history has no compaction markers", () => {
-      // Hits the `lastCompactionIdx >= 0 ? ... : null` falsy
-      // branch (no marker → `lastMarker === null`). The
-      // `!history || history.length === 0` early-return is NOT
-      // hit because history has items; the conditional `find`
-      // returns -1 and the truthy branch produces `null`.
-      const history = [
-        { index: 0, role: "user", content: "Hello", apiLogs: [] },
-        { index: 1, role: "assistant", content: "Hi", apiLogs: [] },
-      ];
-
-      render(<CollapsedHistory history={history} />);
-
-      const bubbles = screen.getAllByTestId("history-message");
-      expect(bubbles).toHaveLength(2);
-      expect(
-        screen.queryByTestId("history-compaction-marker"),
-      ).not.toBeInTheDocument();
-    });
-
-    it("strips the [mode: X]\\n prefix from archived user messages", () => {
-      // Server-side ChatPipeline.build_user_messages/3 intentionally
-      // prefixes every persisted user message with `[mode: <name>]\n`.
-      // Archived (post-compaction) user messages carry the same wire
-      // form, so the history view strips the prefix on render.
-      const history = [
-        {
-          index: 0,
-          role: "user",
-          content: "[mode: build]\nHello there",
-          mode: "build",
-          apiLogs: [],
-        },
-      ];
-      render(<CollapsedHistory history={history} />);
-      const bubble = screen.getByTestId("history-message");
-      expect(bubble.textContent).toContain("Hello there");
-      expect(bubble.textContent).not.toContain("[mode: build]");
     });
   });
 });
