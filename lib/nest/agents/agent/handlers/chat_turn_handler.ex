@@ -125,23 +125,52 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
 
     error_msg = format_chat_task_error(exception, stacktrace)
 
-    Logger.error(fn ->
-      "[agent:#{state.name}] chat_crashed msg_index=#{state.chat_state.next_message_index} ::\n" <>
-        Exception.format(:error, exception, stacktrace)
-    end)
+    if benign_chat_crash?(exception) do
+      # The HTTP worker caught a `GenServer.call` exit because
+      # the target process stopped (test cleanup, supervisor
+      # teardown). There is no real error to surface to the
+      # user — the partial is already finalized above. Move
+      # silently back to `:idle` without a `chat:error`
+      # broadcast.
+      state = %{state | chat_state: %{state.chat_state | status: :idle, chat_turn_pid: nil}}
+      Broadcasts.status(state.name, state)
+      {:noreply, state}
+    else
+      Logger.error(fn ->
+        "[agent:#{state.name}] chat_crashed msg_index=#{state.chat_state.next_message_index} ::\n" <>
+          Exception.format(:error, exception, stacktrace)
+      end)
 
-    Broadcasts.error(
-      state.name,
-      state.chat_state.next_message_index,
-      error_msg,
-      "ChatTurn.run_chat_task/1"
-    )
+      Broadcasts.error(
+        state.name,
+        state.chat_state.next_message_index,
+        error_msg,
+        "ChatTurn.run_chat_task/1"
+      )
 
-    state = %{state | chat_state: %{state.chat_state | status: :idle, chat_turn_pid: nil}}
-    Broadcasts.status(state.name, state)
+      state = %{state | chat_state: %{state.chat_state | status: :idle, chat_turn_pid: nil}}
+      Broadcasts.status(state.name, state)
 
-    {:noreply, state}
+      {:noreply, state}
+    end
   end
+
+  # The HTTP worker's `forward_crash` wraps the target
+  # process's exit reason in a `%RuntimeError{message:
+  # inspect(other)}` when the reason isn't already an
+  # exception struct. Detect the wrapped `GenServer.call`
+  # shutdowns (`{:normal, _}`, `{:noproc, _}`, `{:shutdown,
+  # _}` nested under `{GenServer, :call, _}`) and treat
+  # them as benign cleanups. Mirrors
+  # `HTTPWorker.benign_exit?/2`.
+  defp benign_chat_crash?(%RuntimeError{message: message}) do
+    String.contains?(message, "{GenServer, :call,") and
+      (String.contains?(message, ":normal,") or
+         String.contains?(message, ":noproc,") or
+         String.contains?(message, ":shutdown,"))
+  end
+
+  defp benign_chat_crash?(_), do: false
 
   # Finalize the streaming_acc accumulator (Agent-side)
   # into a normal assistant message and append it via the

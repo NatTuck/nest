@@ -30,6 +30,7 @@ import { SystemMessageContent } from "./SystemMessageContent.jsx";
 import { CompactionMarkerBox } from "./CompactionMarker.jsx";
 import { stripModePrefix } from "../utils/stripModePrefix.js";
 import { textFromParts } from "../utils/messageText.js";
+import { splitThinkFromParts } from "../utils/thinkTags.js";
 
 const ROLE_LABELS = {
   user: "You",
@@ -64,16 +65,22 @@ function formatTimestamp(ts) {
   return new Date(ts).toLocaleString();
 }
 
-// Concatenate thinking parts out of a `parts` array. Mirrors
-// the live-area `thinkingFor` helper in ChatPage.jsx so the
-// history pane renders an identical ThinkingBlock.
-function thinkingFromParts(parts) {
-  if (!Array.isArray(parts)) return null;
-  const t = parts
-    .filter((p) => p && p.kind === "thinking")
-    .map((p) => p.thinking || "")
-    .join("");
-  return t || null;
+// Concatenate the thinking content for an assistant message:
+// both `Part.Thinking` entries AND any `<think>...</think>`
+// blocks buried in `Part.Text` text. Mirrors the live-area
+// `thinkingFor` helper in ChatPage.jsx so the history pane
+// renders an identical ThinkingBlock.
+function thinkingFor(message) {
+  return splitThinkFromParts(message?.parts).thinking;
+}
+
+// Extract the text parts for an assistant message, with any
+// `<think>...</think>` blocks removed (their content was
+// routed into the ThinkingBlock above). Mirrors the
+// live-area derivation in `addChatMessage` so a re-broadcast
+// assistant message renders the same in the history pane.
+function textPartsFor(message) {
+  return splitThinkFromParts(message?.parts).textParts;
 }
 
 // Derive the legacy `toolCalls` shape from a message's `parts`
@@ -150,14 +157,9 @@ function MessageBubble({ message }) {
           />
         ) : (
           <>
-            <ThinkingBlock
-              thinking={thinkingFromParts(message.parts)}
-              isPartial={false}
-            />
+            <ThinkingBlock thinking={thinkingFor(message)} isPartial={false} />
             <MessageContent
-              parts={(message.parts || []).filter(
-                (p) => p && p.kind === "text",
-              )}
+              parts={textPartsFor(message)}
               isPartial={false}
               className="text-xs text-gray-700"
             />

@@ -11,7 +11,6 @@ defmodule Nest.Agents.AgentAgentsMdTest do
   alias Nest.Messages.Assistant
   alias Nest.Messages.Part
   alias Nest.Messages.Tool
-  alias Nest.Messages.User
   alias Nest.Vocations
 
   setup :verify_on_exit!
@@ -131,14 +130,7 @@ defmodule Nest.Agents.AgentAgentsMdTest do
       # Mutate AGENTS.md after init.
       File.write!(Path.join(workspace, "AGENTS.md"), "SECOND version")
 
-      compactor_messages = [
-        {:system,
-         %Nest.Messages.System{
-           index: 1,
-           parts: [%Part.Text{text: "[Summary of earlier conversation]:\n\n..."}]
-         }},
-        {:user, %User{index: 2, parts: [%Part.Text{text: "Next"}], api_logs: []}}
-      ]
+      summary_text = "..."
 
       iter = 0
       max = AgentConfig.configured_max_tool_iterations()
@@ -191,7 +183,7 @@ defmodule Nest.Agents.AgentAgentsMdTest do
 
       send(
         pid,
-        {:compaction_done, compactor_messages,
+        {:compaction_done, summary_text,
          {:compact_tool, [tool_call_msg, tool_result_msg], iter, max}}
       )
 

@@ -138,13 +138,23 @@ defmodule Nest.Agents.Agent.ChatTurnStructureTest do
     test "Agent.exposes the Agent contract for ChatTurn" do
       # The ChatTurn queries the Agent for messages and
       # next_message_index. The Agent must expose these.
+      # The introspection `:get_*` handle_calls live in
+      # `IntrospectionHandler` (extracted from `agent.ex` to
+      # keep that module under the credo 500-line cap); the
+      # agent module dispatches to it via a catch-all clause.
       agent_content = File.read!("lib/nest/agents/agent.ex")
 
-      assert agent_content =~ "def handle_call(:get_messages,",
-             "Agent must expose :get_messages for ChatTurn iteration"
+      introspection_content =
+        File.read!("lib/nest/agents/agent/introspection_handler.ex")
 
-      assert agent_content =~ "def handle_call(:get_next_index,",
-             "Agent must expose :get_next_index for api_log keying"
+      assert agent_content =~ "IntrospectionHandler.handle",
+             "Agent must dispatch to IntrospectionHandler for :get_* calls"
+
+      assert introspection_content =~ "def handle(:get_messages,",
+             "IntrospectionHandler must expose :get_messages for ChatTurn iteration"
+
+      assert introspection_content =~ "def handle(:get_next_index,",
+             "IntrospectionHandler must expose :get_next_index for api_log keying"
     end
   end
 

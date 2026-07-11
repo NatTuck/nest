@@ -156,6 +156,19 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
         # the compactor. The status broadcast is the
         # observable signal.
         assert_receive {:chat_status, %{status: "compacting"}}, 500
+
+        # With no pre-seeded conversation beyond the init
+        # system message, the compactor's `:too_short` branch
+        # fires (`{:compaction_done, :passthrough, _}`). The
+        # handler must return the agent to `:idle` cleanly
+        # (no GenServer crash, no orphan continuation) — this
+        # pins the `handle_passthrough/2` wrap that prevents
+        # the "bad return value" crash.
+        assert_receive {:chat_status, %{status: "idle"}}, 1_000
+
+        # No `chat:error` broadcast — the skip is a clean
+        # recovery, not a failure.
+        refute_receive {:chat_error, _}, 200
       end)
 
       Agent.terminate(pid)
@@ -187,18 +200,9 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
         # test is that the new ChatTurn spawns and runs,
         # producing a chat:status broadcast the test can
         # observe.
-        new_messages = [
-          {:system,
-           %Nest.Messages.System{
-             index: 0,
-             parts: [%Part.Text{text: "Summary"}],
-             api_logs: []
-           }}
-        ]
-
         send(
           pid,
-          {:compaction_done, new_messages, {:tool_call, synthetic_tool_call_msg(), 25, 30}}
+          {:compaction_done, "Summary", {:tool_call, synthetic_tool_call_msg(), 25, 30}}
         )
 
         # The new ChatTurn spawns and runs. With the carried
@@ -239,19 +243,9 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
       end)
 
       capture_log(fn ->
-        new_messages = [
-          {:system,
-           %Nest.Messages.System{
-             index: 0,
-             parts: [%Part.Text{text: "Summary"}],
-             api_logs: []
-           }},
-          {:user, %User{index: 1, parts: [%Part.Text{text: "Next"}], api_logs: []}}
-        ]
-
         send(
           pid,
-          {:compaction_done, new_messages, {:tool_call, synthetic_tool_call_msg(), 7, 30}}
+          {:compaction_done, "Summary", {:tool_call, synthetic_tool_call_msg(), 7, 30}}
         )
 
         # Wait for the compactor to finish and the new
@@ -383,26 +377,7 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
         }
       end)
 
-      new_messages = [
-        # Production compactor shape: [original_system_multi_part,
-        # wrap_summary_single_part, ...rest]. The regenerator reads
-        # `summary_text` from position 1 (the wrap_summary).
-        {:system,
-         %Nest.Messages.System{
-           index: 0,
-           parts: [
-             %Part.Text{text: "Original system prompt (multi-part ok)."},
-             %Part.Text{text: "More prose the LLM already saw."}
-           ],
-           api_logs: []
-         }},
-        {:system,
-         %Nest.Messages.System{
-           index: 1,
-           parts: [%Part.Text{text: "Head summary from the LLM."}],
-           api_logs: []
-         }}
-      ]
+      summary_text = "Head summary from the LLM."
 
       log =
         capture_log(fn ->
@@ -412,7 +387,7 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
           # is hermetic against any change in that dispatch table.
           send(
             pid,
-            {:compaction_done, new_messages, {:tool_call, assistant_with_tool_use, 3, 30}}
+            {:compaction_done, summary_text, {:tool_call, assistant_with_tool_use, 3, 30}}
           )
 
           # Drain the agent's mailbox before inspecting state. The

@@ -251,6 +251,58 @@ describe("CollapsedHistory", () => {
       expect(bubble.textContent).toContain("Here is the answer.");
     });
 
+    it("splits <think>...</think> blocks buried in Part.Text into ThinkingBlock", () => {
+      // Some models emit the reasoning inline as
+      // `<think>...</think>` text inside a `Part.Text` rather
+      // than as a separate `Part.Thinking` entry. The history
+      // bubble splits the text, routes the inner content to
+      // ThinkingBlock, and renders only the surrounding
+      // text via MessageContent.
+      const history = buildHistory([
+        {
+          role: "assistant",
+          parts: [
+            {
+              kind: "text",
+              text: "before<think>reasoning here</think>after",
+            },
+          ],
+        },
+      ]);
+      render(<CollapsedHistory history={history} />);
+      const bubble = screen.getByTestId("history-message");
+      // Thinking content is rendered
+      expect(bubble.textContent).toContain("reasoning here");
+      // The visible text is split around the think block
+      expect(bubble.textContent).toContain("before");
+      expect(bubble.textContent).toContain("after");
+      // No raw <think> markers in the rendered text
+      expect(bubble.textContent).not.toContain("<think>");
+      expect(bubble.textContent).not.toContain("</think>");
+    });
+
+    it("routes stray </think>\n\n text in Part.Text to the ThinkingBlock (orphan closing)", () => {
+      // Regression: the OpenAI-style model occasionally
+      // emits `</think>\n\n` as part of the response (a
+      // closing tag without a matching opener). The history
+      // bubble routes the orphan's tail to the thinking
+      // channel so the user doesn't see raw `</think>`
+      // characters in the visible reply.
+      const history = buildHistory([
+        {
+          role: "assistant",
+          parts: [{ kind: "text", text: "hello</think>\n\nworld" }],
+        },
+      ]);
+      render(<CollapsedHistory history={history} />);
+      const bubble = screen.getByTestId("history-message");
+      // The orphan + tail went to thinking (rendered as
+      // collapsed reasoning), not the visible text
+      expect(bubble.textContent).not.toContain("</think>");
+      // The visible text retains the prefix
+      expect(bubble.textContent).toContain("hello");
+    });
+
     it("renders tool_use parts via ToolCalls", () => {
       const history = buildHistory([
         {

@@ -9,22 +9,30 @@ defmodule Nest.Agents.Agent.Compaction do
 
   ## Output contract
 
-  The `new_messages` sent back to the agent pid **always starts
-  with a `{:system, _}` message**. The agent's compaction handler
-  pattern-matches this invariant: it extracts the compactor's
-  summary text from position 0 and re-encodes it as a `{:user, _}`
-  "Summary of earlier conversation" message at position 1 of the
-  regenerated list, with a freshly-rendered base system prompt
-  at position 0.
+  The agent receives one of three outcomes via
+  `send/2`:
 
-  The contract is structurally guaranteed by `Nest.Tokens.Compactor`:
-  the `:too_short` branch returns the input unchanged (the agent's
-  state always starts with a system message), and the other
-  branches explicitly prepend the original system message. If this
-  module ever stops producing a leading `{:system, _}`, the
-  handler's pattern match will raise — that is intentional, as a
-  malformed compactor output would silently corrupt the agent's
-  state.
+    * `{:compaction_done, summary_text, continuation}` — the LLM
+      returned a summary. The compactor task has already appended
+      the `[mode: compact]` suffix (system) and the LLM's
+      response (assistant) to `state.chat_state.messages` via
+      the canonical append path. `summary_text` is the raw LLM
+      text (the regenerator strips `<think>` blocks when
+      building the post-compaction user message).
+    * `{:compaction_done, :passthrough, continuation}` — the
+      conversation was too short to compact. No LLM call, no
+      appends, no swap. The handler logs a warning and spawns
+      the next chat turn.
+    * `{:compaction_failed, reason, continuation}` — the LLM
+      call failed or returned empty. The agent enters
+      `:compaction_failed` and surfaces a retry.
+
+  The LLM call returns `{:ok, %Nest.LLM.RunResponse{}}` so the
+  assistant message recorded on the message list carries
+  `usage` / `finish_reason` / `model` exactly as the LLM
+  delivered them. Any `<think>` markers in the visible text are
+  preserved on the assistant row; the JS history pane renders
+  them as collapsed thinking blocks via `splitThinkFromParts`.
 
   ## [mode: compact] convention
 
@@ -58,14 +66,12 @@ defmodule Nest.Agents.Agent.Compaction do
       boundary); the user message is appended to the
       post-compaction active list and the new ChatTurn's
       first iter calls the LLM.
-
     * `{:tool_call, Assistant.t(), non_neg_integer(),
       pos_integer()}` — Trigger 2 (mid-turn preflight failure
       after the LLM emitted tool calls); the carried
       assistant+ToolUse is preserved on the post-compaction
       active list and the new ChatTurn's first iter runs the
       tool calls (iteration count preserved).
-
     * `{:compact_tool, [Assistant.t(), Tool.t()],
       non_neg_integer(), pos_integer()}` — Trigger 3 (LLM
       called `context.compact`); the carried pair [tool_call,
@@ -81,6 +87,8 @@ defmodule Nest.Agents.Agent.Compaction do
   alias Nest.LLM.ClientConfig
   alias Nest.LLM.RunResponse
   alias Nest.LLM.StreamConsumer
+  alias Nest.Messages.Assistant
+  alias Nest.Messages.Part
   alias Nest.Tokens.Compactor
 
   require Logger
@@ -91,9 +99,18 @@ defmodule Nest.Agents.Agent.Compaction do
 
   @doc """
   Spawns a Task that runs the Compactor on `messages_to_compact`,
-  then sends `{:compaction_done, new_messages, continuation}` back
-  to `agent_pid`. The continuation is whatever was queued to
+  then sends `{:compaction_done, _, continuation}` (or
+  `{:compaction_failed, _, continuation}` on error) back to
+  `agent_pid`. The continuation is whatever was queued to
   happen after compaction (e.g. the next chat turn).
+
+  On success the compactor task also appends the `[mode: compact]`
+  suffix and the LLM's response (as a fresh assistant message) to
+  `state.chat_state.messages` via the canonical append path BEFORE
+  the regenerator runs. The post-swap `last_compaction_index`
+  will be set to the bumped `next_message_index`, so the suffix
+  and the assistant response land in `history` from the client's
+  perspective.
 
   `rendered_suffix` is the `{:system, _}` system message the
   caller pre-computed via `Nest.Tokens.Compactor.
@@ -124,9 +141,22 @@ defmodule Nest.Agents.Agent.Compaction do
         rendered_suffix
       ) do
     Task.Supervisor.start_child(Nest.Agents.TaskSupervisor, fn ->
+      # The compactor task runs in a different process from
+      # the caller. For tests that use `Nest.LLM.MockClient`,
+      # the MockClient looks up its queue via
+      # `Process.get(:nest_test_agent_pid, self())`. The
+      # `start_agent/1` test helper sets the agent's pid as
+      # `:nest_test_agent_pid` on the test process, then
+      # transfers the test's MockClient queue onto the agent's
+      # pid. Threading the agent's pid here lets the
+      # compactor task find the same queue the chat turn's
+      # HTTP worker does (no per-task `Mimic.stub` needed).
+      Process.put(:nest_test_agent_pid, agent_pid)
+
       result =
         try do
-          llm_call = build_summarization_llm_call(client_config, rendered_suffix)
+          llm_call =
+            build_summarization_llm_call(client_config, rendered_suffix)
 
           Compactor.compact(messages_to_compact, context_limit, llm_call)
         catch
@@ -137,13 +167,58 @@ defmodule Nest.Agents.Agent.Compaction do
         end
 
       case result do
-        {:ok, new_messages} ->
-          send(agent_pid, {:compaction_done, new_messages, continuation})
+        {:ok, summary_text, %RunResponse{} = response} ->
+          # Append the suffix and the LLM response as a real
+          # assistant message. Both go through the canonical
+          # `__append_message__/2` path (so each is stamped,
+          # broadcast, and persisted). The agent's state
+          # doesn't change here — the append is async via a
+          # `GenServer.call`, but the compactor task waits
+          # for it before sending `compaction_done`.
+          append_compaction_messages(agent_pid, [
+            rendered_suffix,
+            build_assistant_message(response)
+          ])
+
+          send(agent_pid, {:compaction_done, summary_text, continuation})
+
+        {:ok, :passthrough} ->
+          # Conversation was too short to compact — no LLM
+          # call, no messages to record, no swap. The handler
+          # logs a warning and spawns the next chat turn.
+          send(agent_pid, {:compaction_done, :passthrough, continuation})
 
         {:error, reason} ->
           send_failure(agent_pid, reason, continuation)
       end
     end)
+  end
+
+  # Best-effort: append the suffix + assistant response to the
+  # agent's message list. A GenServer.call failure here would
+  # otherwise orphan the messages (the compactor task would still
+  # report success, but the agent's state would be missing the
+  # new entries). We log loudly and surface a `:compaction_failed`
+  # so the agent enters the standard retry path.
+  defp append_compaction_messages(agent_pid, messages) do
+    case GenServer.call(agent_pid, {:append_compaction_messages, messages}, 5_000) do
+      stamped when is_list(stamped) ->
+        :ok
+
+      other ->
+        Logger.warning(
+          "Compaction got unexpected reply appending suffix+assistant: agent=#{inspect(agent_pid)} reply=#{inspect(other)}"
+        )
+
+        {:error, :unexpected_reply}
+    end
+  catch
+    :exit, reason ->
+      Logger.warning(
+        "Compaction failed to append suffix+assistant: agent=#{inspect(agent_pid)} exit=#{inspect(reason)}"
+      )
+
+      {:error, {:append_failed, reason}}
   end
 
   @doc """
@@ -159,6 +234,31 @@ defmodule Nest.Agents.Agent.Compaction do
       end)
 
     messages
+  end
+
+  # Build an assistant message from the compactor LLM's
+  # `RunResponse`. Same shape as a regular chat-turn assistant
+  # response for a text-only call (the compactor's LLM request
+  # uses `tools: nil, tool_choice: :none`, so the response has
+  # no tool calls). The visible text is stored as-is — including
+  # any `<think>` markers — because the assistant row is the
+  # recorded artifact of the LLM's reply. Stripping happens once,
+  # downstream, when the regenerator builds the post-compaction
+  # "Summary of earlier conversation:" user message.
+  @spec build_assistant_message(RunResponse.t()) :: {:assistant, Assistant.t()}
+  def build_assistant_message(%RunResponse{} = response) do
+    {:assistant,
+     %Assistant{
+       index: 0,
+       parts: [%Part.Text{text: response.text || ""}],
+       usage: response.usage,
+       finish_reason: response.stop_reason,
+       model: response.model,
+       timestamp: DateTime.utc_now(),
+       metadata: nil,
+       api_logs: [],
+       tokens: nil
+     }}
   end
 
   # Private
@@ -192,18 +292,22 @@ defmodule Nest.Agents.Agent.Compaction do
   # summarization — it just needs the model to emit the bounded
   # summary text.
   #
-  # Returns `{:ok, text}` on success or `{:error, reason}` on
-  # transport-level failure. An empty `text` is returned as
-  # `{:ok, ""}` — the compactor's `require_summary/1` then converts
-  # that to `{:error, :llm_returned_empty}` so the failure surfaces
-  # to the Agent's compaction handler.
+  # Returns `{:ok, %RunResponse{}}` on success or `{:error, reason}`
+  # on transport-level failure. An empty response text surfaces as
+  # `:llm_returned_empty` upstream in `Compactor.compact/3`'s
+  # `require_summary/1` guard.
   @spec build_summarization_llm_call(ClientConfig.t(), Message.t()) ::
-          (... -> {:ok, String.t()} | {:error, term()})
+          (... -> {:ok, RunResponse.t()} | {:error, term()})
   def build_summarization_llm_call(client_config, rendered_suffix) do
     fn messages, _remaining_tokens, _optional_guidance ->
-      # The wire payload is constant across calls — the compactor
-      # contract accepts the trailing args for symmetry, but the
-      # `rendered_suffix` is already baked in.
+      # Send the agent's prior conversation + the suffix
+      # unchanged. There is no special input stripping here —
+      # the compactor's LLM sees exactly the same conversation
+      # a regular chat turn would see. Any `<think>` markers in
+      # the agent's prior assistant responses are sent through;
+      # the compactor is told (via its system prompt and the
+      # `[mode: compact]` suffix) to summarize, and it handles
+      # its own thinking the same way the chat turn does.
       request = %Nest.LLM.RunRequest{
         messages: messages ++ [rendered_suffix],
         tools: nil,
@@ -227,10 +331,8 @@ defmodule Nest.Agents.Agent.Compaction do
   end
 
   # Consume a streaming response without broadcasting. Returns
-  # `{:ok, text}` with the streamed response text, or
+  # `{:ok, %RunResponse{}}` with the streamed response, or
   # `{:error, reason}` if the stream errored out mid-flight.
-  # An empty string is returned as `{:ok, ""}` — the compactor
-  # detects the empty summary and surfaces the failure.
   defp consume_quietly(stream, compaction_pid) do
     consumer = %StreamConsumer{
       on_text: &forward_text_delta(&1, &2, compaction_pid),
@@ -238,39 +340,14 @@ defmodule Nest.Agents.Agent.Compaction do
       on_signature: fn _sig -> :ok end
     }
 
-    {acc, response, error, _sent} = StreamConsumer.reduce(stream, consumer)
+    {_acc, response, error, _sent} = StreamConsumer.reduce(stream, consumer)
 
     cond do
       not is_nil(error) -> {:error, error}
-      match?(%RunResponse{}, response) -> {:ok, streamed_text(response, acc)}
+      match?(%RunResponse{}, response) -> {:ok, response}
       true -> {:error, :no_response}
     end
   end
-
-  # Read the response text preferring the wire-level
-  # `RunResponse.text` (populated by clients that build a
-  # complete response on `:done`) and falling back to the
-  # accumulator's streamed text IO-list (the canonical source
-  # for OpenAI-style streams where the wire `RunResponse.text`
-  # is `nil` because the client expects the caller to merge via
-  # `Runner.normalize_response/2`).
-  #
-  # Exposed as `@doc false` for regression testing the production
-  # `:llm_returned_empty` misdiagnosis — without the accumulator
-  # fallback, every successful summary (one where the LLM
-  # streamed thousands of `text_chars` but the wire `:done`
-  # response had `text: nil`) used to surface as `:llm_returned_empty`.
-  @doc false
-  @spec streamed_text(RunResponse.t() | nil, Client.accumulator()) :: String.t()
-  def streamed_text(%RunResponse{text: text}, _acc) when is_binary(text), do: text
-  def streamed_text(%RunResponse{}, acc), do: io_list_to_binary(acc.text)
-  def streamed_text(nil, acc), do: io_list_to_binary(acc.text)
-
-  # `Client.accumulate/2` prepends to `acc.text` (a reverse-order
-  # IO list). `IO.iodata_to_binary/1` walks it but expects
-  # forward order, so reverse first.
-  defp io_list_to_binary([]), do: ""
-  defp io_list_to_binary(iolist), do: iolist |> Enum.reverse() |> IO.iodata_to_binary()
 
   defp forward_text_delta(text, sent, compaction_pid) do
     send(compaction_pid, {:delta_received, text, :text})

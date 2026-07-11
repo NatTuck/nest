@@ -46,18 +46,37 @@ defmodule Nest.Agents.Agent.ChatTurn.HTTPWorker do
   defp dispatch_result({:ok, nil}, _chat_turn_pid), do: :ok
   defp dispatch_result({:error, _reason}, _chat_turn_pid), do: :ok
 
-  # The HTTP worker raised an unhandled exception. Log
-  # it and forward the exception + stacktrace to the
-  # ChatTurn as a `worker_crashed` message. The
-  # ChatTurn forwards it to the Agent as `chat_crashed`
-  # so the Agent's `chat_crashed/3` handler can
-  # finalize the partial, broadcast `chat:error`, and
-  # transition to `:idle`.
+  # The HTTP worker raised an unhandled exception. Forward
+  # the exception + stacktrace to the ChatTurn as a
+  # `worker_crashed` message. The ChatTurn forwards it to
+  # the Agent as `chat_crashed` so the Agent's
+  # `chat_crashed/3` handler can finalize the partial,
+  # broadcast `chat:error`, and transition to `:idle`.
+  #
+  # For `GenServer.call` exits whose target process stopped
+  # normally (`{:normal, _}`, `{:noproc, _}`, `{:shutdown, _}`
+  # nested under `{GenServer, :call, _}`), skip the
+  # `Logger.error` — those are not crashes, they're the
+  # worker's pending call exiting because the target (the
+  # MockClient queue in tests; the Agent during a stop in
+  # production) was deliberately shut down. Production LLM
+  # clients (`OpenAIClient`, `AnthropicClient`) use `Req` and
+  # never raise these patterns — real LLM errors arrive as
+  # `{:error, _}` stream events handled by `dispatch_result/2`.
+  # Bare `:normal` / `:noproc` reasons (without the
+  # `GenServer.call` wrapper) are still logged: a future
+  # `raise`/exit that happens to be `:normal` should surface.
+  # The Agent's `chat_crashed/3` handler re-checks the
+  # pattern (via `benign_chat_crash?/1`) and skips both the
+  # log and the `chat:error` broadcast for the same
+  # pattern, so the user-visible path stays silent too.
   defp forward_crash(kind, reason, stacktrace, agent_id, chat_turn_pid) do
-    Logger.error(fn ->
-      "[agent_chat_turn] HTTP worker CRASHED: agent_id=#{agent_id} kind=#{kind} reason=#{inspect(reason)}\n" <>
-        Exception.format(kind, reason, stacktrace)
-    end)
+    if not benign_exit?(kind, reason) do
+      Logger.error(fn ->
+        "[agent_chat_turn] HTTP worker CRASHED: agent_id=#{agent_id} kind=#{kind} reason=#{inspect(reason)}\n" <>
+          Exception.format(kind, reason, stacktrace)
+      end)
+    end
 
     exception =
       case reason do
@@ -68,6 +87,20 @@ defmodule Nest.Agents.Agent.ChatTurn.HTTPWorker do
     send(chat_turn_pid, {:worker_crashed, exception, stacktrace})
     :ok
   end
+
+  # A `GenServer.call/3` exits with the `{kind, {GenServer, :call, _}}`
+  # shape when its target process terminates. If the target
+  # stopped cleanly (`:normal`), was already gone (`:noproc`),
+  # or was told to shut down (`:shutdown`), the call's
+  # failure is a consequence of that — not a bug in this
+  # worker. Bare `:normal` / `:noproc` / `:shutdown` reasons
+  # without the `GenServer.call` wrapper fall through (logged
+  # as a real crash) so a future exit that happens to be
+  # `:normal` still surfaces.
+  defp benign_exit?(:exit, {:normal, {GenServer, :call, _}}), do: true
+  defp benign_exit?(:exit, {:noproc, {GenServer, :call, _}}), do: true
+  defp benign_exit?(:exit, {:shutdown, {GenServer, :call, _}}), do: true
+  defp benign_exit?(_kind, _reason), do: false
 
   # Build the streaming callbacks for `LLM.Runner.request/2`.
   # Each callback forwards a tagged message to the Agent's

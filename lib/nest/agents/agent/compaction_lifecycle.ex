@@ -125,7 +125,7 @@ defmodule Nest.Agents.Agent.Compaction.Lifecycle do
          marker_index,
          marker
        ) do
-    case AgentPersistence.record_compaction(
+    case safe_record_compaction(
            state.name,
            marker_index,
            archived_count,
@@ -148,5 +148,33 @@ defmodule Nest.Agents.Agent.Compaction.Lifecycle do
             "skipping chat:compaction broadcast: #{inspect(reason)}"
         )
     end
+  end
+
+  # Run `record_compaction/5` and convert any exception
+  # (typically a `DBConnection.OwnershipError` when this
+  # runs inside `handle_info` — `$callers` is unset there,
+  # so the Ecto Sandbox proxy can't resolve an owner) into
+  # the same `{:error, reason}` shape a regular failure
+  # would produce. The in-memory state has already been
+  # swapped; we just need to keep the GenServer alive and
+  # skip the broadcast so the client's `history` doesn't
+  # diverge from the server's.
+  defp safe_record_compaction(
+         agent_name,
+         marker_index,
+         archived_count,
+         tokens_compacted,
+         tokens_compacted_to
+       ) do
+    AgentPersistence.record_compaction(
+      agent_name,
+      marker_index,
+      archived_count,
+      tokens_compacted,
+      tokens_compacted_to
+    )
+  rescue
+    exception ->
+      {:error, {:persistence_exception, exception}}
   end
 end

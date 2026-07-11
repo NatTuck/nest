@@ -7,10 +7,10 @@ defmodule Nest.Tokens.CompactorTest do
       the entire conversation folds into a single summary)
     - Edge cases: empty, system-only, no-user, system+user
     - LLM call signature: 3-arity `(messages, remaining_tokens,
-      optional_guidance) -> {:ok, text} | {:error, reason}`
-    - Output message structure (system + summary, with the
-      summary tagged `{:system, _}` so position 0 stays a
-      system message)
+      optional_guidance) -> {:ok, run_response} | {:error, reason}`
+    - Output shape: `{:ok, summary_text, run_response}` on success,
+      `{:ok, :passthrough}` for too-short input, `{:error, _}` on
+      failure
     - Error cases: empty LLM response, LLM callback error
     - `compute_summary_budget/4` budget hints (single-pass +
       digit-count buffer for self-consistent sizing)
@@ -18,6 +18,7 @@ defmodule Nest.Tokens.CompactorTest do
 
   use ExUnit.Case, async: true
 
+  alias Nest.LLM.RunResponse
   alias Nest.Messages.Assistant
   alias Nest.Messages.Part
   alias Nest.Messages.System
@@ -37,9 +38,13 @@ defmodule Nest.Tokens.CompactorTest do
     ]
   end
 
-  # A trivial LLM callback matching the 3-arity signature.
+  # A trivial LLM callback matching the 3-arity signature. The
+  # callback's return is `{:ok, %RunResponse{text: text}}` —
+  # the compactor extracts `.text` for the empty-summary guard.
   defp mock_llm_call(text) do
-    fn _messages, _remaining_tokens, _optional_guidance -> {:ok, text} end
+    fn _messages, _remaining_tokens, _optional_guidance ->
+      {:ok, %RunResponse{text: text, stop_reason: "stop"}}
+    end
   end
 
   # A capture-based callback: records (messages, remaining_tokens,
@@ -47,7 +52,7 @@ defmodule Nest.Tokens.CompactorTest do
   defp capture_llm_call(parent, summary) do
     fn messages, remaining_tokens, optional_guidance ->
       send(parent, {:llm_called, messages, remaining_tokens, optional_guidance})
-      {:ok, summary}
+      {:ok, %RunResponse{text: summary, stop_reason: "stop"}}
     end
   end
 
@@ -63,52 +68,47 @@ defmodule Nest.Tokens.CompactorTest do
   end
 
   describe "compact/3 — edge cases" do
-    test "empty messages returns {:ok, []}" do
-      assert Compactor.compact([], 32_768, mock_llm_call("anything")) == {:ok, []}
+    test "empty messages returns {:ok, :passthrough} (no LLM call, no compaction needed)" do
+      assert Compactor.compact([], 32_768, mock_llm_call("anything")) == {:ok, :passthrough}
     end
 
-    test "single system message returns {:ok, msgs} unchanged (no compaction needed)" do
+    test "single system message returns {:ok, :passthrough} (no LLM call)" do
       msgs = [{:system, %System{index: 0, parts: [%Part.Text{text: "Only system"}]}}]
-      assert Compactor.compact(msgs, 32_768, mock_llm_call("anything")) == {:ok, msgs}
+      assert Compactor.compact(msgs, 32_768, mock_llm_call("anything")) == {:ok, :passthrough}
     end
 
-    test "system + single user returns unchanged (no head to summarize)" do
+    test "system + single user returns {:ok, :passthrough} (no head to summarize)" do
       msgs = [build_system(), {:user, %User{index: 1, parts: [%Part.Text{text: "Q"}]}}]
-      assert Compactor.compact(msgs, 32_768, mock_llm_call("anything")) == {:ok, msgs}
+      assert Compactor.compact(msgs, 32_768, mock_llm_call("anything")) == {:ok, :passthrough}
     end
   end
 
   describe "compact/3 — single-pass fold" do
-    test "compaction folds the entire conversation into one summary (no recent slice)" do
+    test "compactor returns the LLM summary text + RunResponse; caller decides what to do with them" do
       test_pid = self()
 
-      assert {:ok, new_messages} =
+      assert {:ok, summary_text, %RunResponse{text: response_text}} =
                Compactor.compact(
                  build_messages(),
                  32_768,
                  capture_llm_call(test_pid, "Summary of the earlier conversation")
                )
 
+      assert summary_text == "Summary of the earlier conversation"
+      assert summary_text == response_text
+
       assert_received {:llm_called, _, _, _}
-
-      # Output: [system, summary]. The 4 mid-conversation messages
-      # got folded into a single summary message at index 1.
-      assert length(new_messages) == 2
-      assert match?({:system, %System{}}, Enum.at(new_messages, 0))
-      assert match?({:system, %System{}}, Enum.at(new_messages, 1))
-
-      {:system, %System{parts: [head_part | _]}} = Enum.at(new_messages, 1)
-      assert head_part.text == "Summary of the earlier conversation"
     end
 
     test "pass 1 input is the agent's full prior conversation (KV cache reuse)" do
       test_pid = self()
 
-      Compactor.compact(
-        build_messages(),
-        32_768,
-        capture_llm_call(test_pid, "head")
-      )
+      {:ok, _text, _response} =
+        Compactor.compact(
+          build_messages(),
+          32_768,
+          capture_llm_call(test_pid, "head")
+        )
 
       assert_received {:llm_called, input, _remaining_tokens, _guidance}
       assert length(input) == 5
@@ -122,11 +122,12 @@ defmodule Nest.Tokens.CompactorTest do
     test "optional_guidance passed through (currently always nil from compact/3)" do
       test_pid = self()
 
-      Compactor.compact(
-        build_messages(),
-        32_768,
-        capture_llm_call(test_pid, "head")
-      )
+      {:ok, _text, _response} =
+        Compactor.compact(
+          build_messages(),
+          32_768,
+          capture_llm_call(test_pid, "head")
+        )
 
       assert_received {:llm_called, _, _, guidance}
       assert guidance == nil
@@ -152,23 +153,23 @@ defmodule Nest.Tokens.CompactorTest do
          }}
       ]
 
-      assert {:ok, new_messages} =
+      assert {:ok, "User listed files", _response} =
                Compactor.compact(
                  msgs,
                  32_768,
                  capture_llm_call(test_pid, "User listed files")
                )
 
-      # Output is exactly two messages — the long tool output
-      # got folded into the summary at position 1.
-      assert length(new_messages) == 2
-      assert match?({:system, %System{}}, Enum.at(new_messages, 0))
-      assert match?({:system, %System{}}, Enum.at(new_messages, 1))
+      # The compactor's only job is to summarize and return the
+      # text — it does NOT package the result into a message
+      # list anymore. The caller (Nest.Agents.Agent.Compaction)
+      # records the LLM response as an assistant message and
+      # builds the post-compaction user message from the text.
     end
   end
 
   describe "compact/3 — error cases" do
-    test "head LLM returns empty → {:error, :llm_returned_empty}" do
+    test "head LLM returns empty text → {:error, :llm_returned_empty}" do
       result = Compactor.compact(build_messages(), 32_768, mock_llm_call(""))
       assert result == {:error, :llm_returned_empty}
     end
@@ -270,7 +271,7 @@ defmodule Nest.Tokens.CompactorTest do
            parts: [%Part.Text{text: String.duplicate("system. ", 1_500)}]
          }}
 
-      msgs = [huge_system, {:user, %User{index: 1, parts: [%Part.Text{text: "Q"}]}}]
+      msgs = [huge_system]
 
       {:ok, n, _} = Compactor.compute_summary_budget(32_768, huge_system, msgs, nil)
 

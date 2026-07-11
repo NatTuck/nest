@@ -8,6 +8,12 @@ defmodule Nest.Agents.AgentRegenerateOnCompactionTest do
   re-resolves the context limit, and persists all new
   messages. See `notes/update-system-msg-on-compaction.md`.
 
+  The `regenerate_for_compaction/2` helper now takes the raw
+  compactor LLM response text directly (not a `[system,
+  wrap_summary]` tuple). Stripping of `<think>` blocks happens
+  inside the regenerator when building the post-compaction
+  "Summary of earlier conversation:" user message.
+
   This file is `async: false` so the agent's regeneration
   can use the test's sandboxed connection via the
   `Ecto.Adapters.SQL.Sandbox` ownership chain. Async tests
@@ -79,27 +85,6 @@ defmodule Nest.Agents.AgentRegenerateOnCompactionTest do
 
     File.mkdir_p!(dir)
     dir
-  end
-
-  # Mimic `Nest.Tokens.Compactor.compact/3`'s output shape:
-  # `[original_system, wrap_summary(llm_text), ...rest]` where
-  # the original system sits at index 0 (with the full system
-  # prompt as a single Part.Text) and the LLM-generated head
-  # summary sits at index 1 (also wrapped as a single Part.Text
-  # system message). The regenerator reads `summary_text` from
-  # index 1, the original system at index 0 is preserved (its
-  # text is allowed to look anything).
-  defp compactor_messages_with(summary_text, after_text \\ "Next") do
-    [
-      {:system,
-       %System{
-         parts: [
-           %Part.Text{text: "ORIGINAL_SYSTEM_PROMPT_PLACEHOLDER"}
-         ]
-       }},
-      {:system, %System{parts: [%Part.Text{text: summary_text}]}},
-      {:user, %User{parts: [%Part.Text{text: after_text}], api_logs: []}}
-    ]
   end
 
   # Append an `assistant+ToolUse[context.compact]` to the
@@ -202,11 +187,9 @@ defmodule Nest.Agents.AgentRegenerateOnCompactionTest do
 
       send(
         pid,
-        {:compaction_done, compactor_messages_with("[Summary of earlier conversation]:\n\n..."),
-         compact_tool_continuation(tool_call_id)}
+        {:compaction_done, "the LLM summary text", compact_tool_continuation(tool_call_id)}
       )
 
-      # `:task_compaction_done` is gone in the new design.
       # `:sys.get_state/2` queues behind the compaction handler
       # and returns only after the handler has run.
       _ = :sys.get_state(pid, 500)
@@ -238,11 +221,9 @@ defmodule Nest.Agents.AgentRegenerateOnCompactionTest do
 
       send(
         pid,
-        {:compaction_done, compactor_messages_with("[Summary of earlier conversation]:\n\n..."),
-         compact_tool_continuation(tool_call_id)}
+        {:compaction_done, "the LLM summary text", compact_tool_continuation(tool_call_id)}
       )
 
-      # `:task_compaction_done` is gone in the new design.
       # `:sys.get_state/2` queues behind the compaction handler
       # and returns only after the handler has run.
       _ = :sys.get_state(pid, 500)
@@ -269,11 +250,9 @@ defmodule Nest.Agents.AgentRegenerateOnCompactionTest do
 
       send(
         pid,
-        {:compaction_done, compactor_messages_with("[Summary of earlier conversation]:\n\n..."),
-         compact_tool_continuation(tool_call_id)}
+        {:compaction_done, "the LLM summary text", compact_tool_continuation(tool_call_id)}
       )
 
-      # `:task_compaction_done` is gone in the new design.
       # `:sys.get_state/2` queues behind the compaction handler
       # and returns only after the handler has run.
       _ = :sys.get_state(pid, 500)
@@ -284,7 +263,7 @@ defmodule Nest.Agents.AgentRegenerateOnCompactionTest do
       Agent.terminate(pid)
     end
 
-    test "encoded summary-as-user is at position 1 when compactor's output starts with a system message" do
+    test "encoded summary-as-user carries the compactor LLM's response text with the prefix" do
       vocation_id = programmer_vocation_id()
 
       {pid, _agent_id} =
@@ -294,78 +273,51 @@ defmodule Nest.Agents.AgentRegenerateOnCompactionTest do
 
       send(
         pid,
-        {:compaction_done,
-         compactor_messages_with("[Summary of earlier conversation]:\n\nkey facts"),
-         compact_tool_continuation(tool_call_id)}
+        {:compaction_done, "key facts", compact_tool_continuation(tool_call_id)}
       )
 
-      # `:task_compaction_done` is gone in the new design.
       # `:sys.get_state/2` queues behind the compaction handler
       # and returns only after the handler has run.
       _ = :sys.get_state(pid, 500)
 
       state = :sys.get_state(pid)
-      # 3-message compactor input + the carried pair
-      # [tool_call, tool_result] appended via
-      # `append_continuation_tail/2` = 5 total in-memory
-      # messages after the swap.
-      assert length(state.chat_state.messages) == 5
+      # 2-message regenerator output (fresh_system + summary_user)
+      # + the carried pair [tool_call, tool_result] appended via
+      # `append_continuation_tail/2` = 4 total in-memory messages
+      # after the swap.
+      assert length(state.chat_state.messages) == 4
 
-      [_, {:user, %User{parts: [%Part.Text{text: text1}]}}, _, _, _] = state.chat_state.messages
+      [_, {:user, %User{parts: [%Part.Text{text: text1}]}}, _, _] = state.chat_state.messages
       assert text1 =~ "Summary of earlier conversation"
       assert text1 =~ "key facts"
 
       Agent.terminate(pid)
     end
 
-    test "encoded summary-as-user uses the wrap_summary text (position 1) of the real compactor output, not the original system (position 0)" do
-      # Real production shape: `Compactor.compact/3` returns
-      # `[original_system, wrap_summary(llm_text)]`. Position 0 is
-      # the original system (with the full prompt in a single
-      # Part.Text), position 1 is the wrap_summary (a system
-      # message whose single Part.Text is the LLM summary).
-      # The regenerator's destructuring MUST bind summary_text
-      # to position 1 so the encoded summary-as-user message
-      # contains the LLM summary, not the original system prompt.
+    test "summary_user has <think> blocks stripped from the LLM response text" do
       vocation_id = programmer_vocation_id()
 
       {pid, _agent_id} =
         start_agent(%{model: %{name: "qwen3.5-plus"}, vocation_id: vocation_id})
 
-      # Mimic `Compactor.compact/3`'s contract:
-      # `[original_system, wrap_summary, ...rest]` — position 0
-      # is the original system (full prompt as a single
-      # Part.Text), position 1 is the wrap_summary (LLM summary
-      # text as a single Part.Text), position 2 is `rest` (a
-      # placeholder user message that should land at the tail).
-      real_compactor_output = [
-        {:system,
-         %System{
-           parts: [%Part.Text{text: "ORIGINAL SYSTEM PROMPT — must not leak into summary"}]
-         }},
-        {:system, %System{parts: [%Part.Text{text: "REAL_LLM_SUMMARY_TEXT"}]}},
-        {:user, %User{parts: [%Part.Text{text: "post-compaction remainder"}], api_logs: []}}
-      ]
-
       tool_call_id = seed_compact_tool_call(pid)
 
       send(
         pid,
-        {:compaction_done, real_compactor_output, compact_tool_continuation(tool_call_id)}
+        {:compaction_done, "<think>hidden reasoning</think>visible summary",
+         compact_tool_continuation(tool_call_id)}
       )
 
-      # `:task_compaction_done` is gone in the new design.
-      # `:sys.get_state/2` queues behind the compaction handler
-      # and returns only after the handler has run.
       _ = :sys.get_state(pid, 500)
 
       state = :sys.get_state(pid)
 
-      [_, {:user, %User{parts: [%Part.Text{text: text1}]}}, _, _, _] = state.chat_state.messages
-      # The encoded summary-as-user MUST carry the LLM summary
-      # text, NOT the original system prompt.
-      assert text1 =~ "REAL_LLM_SUMMARY_TEXT"
-      refute text1 =~ "ORIGINAL SYSTEM PROMPT"
+      [_, {:user, %User{parts: [%Part.Text{text: text1}]}}, _, _] = state.chat_state.messages
+      # Visible text present, thinking markers + content gone.
+      assert text1 =~ "visible summary"
+      refute text1 =~ "hidden reasoning"
+      refute text1 =~ "<think>"
+      refute text1 =~ "</think>"
 
       Agent.terminate(pid)
     end
@@ -394,12 +346,9 @@ defmodule Nest.Agents.AgentRegenerateOnCompactionTest do
         capture_log(fn ->
           send(
             pid,
-            {:compaction_done,
-             compactor_messages_with("[Summary of earlier conversation]:\n\n..."),
-             compact_tool_continuation(tool_call_id)}
+            {:compaction_done, "the LLM summary text", compact_tool_continuation(tool_call_id)}
           )
 
-          # `:task_compaction_done` is gone in the new design.
           # `:sys.get_state/2` queues behind the compaction
           # handler and returns only after the handler has run.
           _ = :sys.get_state(pid, 500)
@@ -411,21 +360,22 @@ defmodule Nest.Agents.AgentRegenerateOnCompactionTest do
       assert log =~ "using cached state"
 
       state = :sys.get_state(pid)
-      # The compactor's output is used as-is; the cached
-      # vocation stays. The fixture mimics the compactor's
-      # `[original_system, wrap_summary, ...rest]` shape (3
-      # input messages), plus the carried pair [tool_call,
-      # tool_result] appended via `append_continuation_tail/2`
-      # = 5 messages in the post-swap list. The fresh ChatTurn
-      # spawned by the `:compact_tool` continuation also iterates
-      # and (in the typical case) appends a final assistant
-      # message from the (random) MockClient response — but its
-      # iter is async, so the 6th message may or may not be in
+      # The fallback returns the existing messages unchanged
+      # (no swap, no fresh system). The post-swap list reflects
+      # the carried pair [tool_call, tool_result] appended via
+      # `append_continuation_tail/2`. The fresh ChatTurn spawned
+      # by the `:compact_tool` continuation also iterates and
+      # (in the typical case) appends a final assistant message
+      # from the (random) MockClient response — but its iter is
+      # async, so that message may or may not be in
       # `state.chat_state.messages` by the time this assertion
-      # runs. Assert the 5 messages we care about rather than
-      # the exact total.
-      assert length(state.chat_state.messages) >= 5
+      # runs. Assert the messages we care about rather than
+      # the exact total. The head should be the pre-seeded
+      # system message; the carried tool_call/tool_result
+      # pair sits at the tail.
+      assert length(state.chat_state.messages) >= 4
       assert {:system, %System{}} = hd(state.chat_state.messages)
+      assert {:tool, %Tool{}} = List.last(state.chat_state.messages)
       assert state.vocation.id == vocation_id
 
       Agent.terminate(pid)

@@ -21,12 +21,20 @@ defmodule Nest.Tokens.Compactor do
   ## Algorithm
 
       system = messages[0]
-      summary = llm_call(messages, remaining_tokens, optional_guidance)
-      new_messages = [system, wrap_summary(summary)]
+      {summary, response} = llm_call(messages, remaining_tokens, optional_guidance)
 
-  The LLM call is set up by the caller (`Nest.Agents.Agent.Compaction`).
-  It sends a request whose messages END with a `[mode: compact]`
-  system suffix carrying the dynamic budget hint:
+  The compactor returns the LLM's summary text and its raw
+  `RunResponse`. The caller (`Nest.Agents.Agent.Compaction`)
+  records the response as an assistant message on the agent's
+  message list (via the canonical append path, same as a regular
+  chat-turn assistant response) and uses the summary text to
+  derive a "Summary of earlier conversation" user message after
+  the swap. The compactor does not wrap, rename, or otherwise
+  reshape the response.
+
+  The LLM call is set up by the caller. It sends a request whose
+  messages END with a `[mode: compact]` system suffix carrying
+  the dynamic budget hint:
 
       [mode: compact] Summarize the conversation in your
       <N> remaining tokens. <optional_guidance?>
@@ -58,6 +66,7 @@ defmodule Nest.Tokens.Compactor do
   the compactor call and the next agent call.
   """
 
+  alias Nest.LLM.RunResponse
   alias Nest.Messages.Message
   alias Nest.Messages.Part
   alias Nest.Messages.System, as: MsgSystem
@@ -74,9 +83,12 @@ defmodule Nest.Tokens.Compactor do
   @digit_count_buffer 10
 
   @type llm_call :: ([Message.t()], non_neg_integer(), String.t() | nil ->
-                       {:ok, String.t()} | {:error, term()})
+                       {:ok, RunResponse.t()} | {:error, term()})
 
-  @type compact_result :: {:ok, [Message.t()]} | {:error, term()}
+  @type compact_result ::
+          {:ok, String.t(), RunResponse.t()}
+          | {:ok, :passthrough}
+          | {:error, term()}
 
   @type summary_budget ::
           {:ok, non_neg_integer(), Message.t()}
@@ -156,44 +168,38 @@ defmodule Nest.Tokens.Compactor do
   end
 
   @doc """
-  Compact the given `messages` list.
+  Compact the given `messages` list by asking the LLM to
+  summarize. See the moduledoc for the full algorithm and KV-cache
+  rationale.
 
   ## Parameters
 
     * `messages` — the current message history (tagged tuples).
     * `context_limit` — the model's context window in tokens.
     * `llm_call` — callback `(messages, remaining_tokens,
-      optional_guidance) -> {:ok, summary_text} | {:error, reason}`.
+      optional_guidance) -> {:ok, run_response} | {:error, reason}`.
       The caller builds the actual LLM request, appending the
       `[mode: compact]` suffix to the agent's prior conversation.
-      The caller passes the dynamic budget hint so the agent's
-      response can be sized appropriately.
+      The callback returns the wire-level `RunResponse`; the
+      compactor extracts `.text` for the empty-summary guard and
+      forwards both to the caller.
 
   ## Return values
 
-    * `{:ok, messages}` — success. The `:too_short` branch
-      (empty / system-only / no-user / no head) returns the
-      input unchanged under the same `{:ok, messages}` shape;
-      callers that care can detect it by comparing lengths.
+    * `{:ok, summary_text, run_response}` — success. The compactor
+      returns the response's visible text and the full
+      `RunResponse` so the caller can record the assistant
+      message as-received and build the post-compaction summary
+      user message from the same text.
+    * `{:ok, :passthrough}` — the input was too short to compact
+      (`:too_short`: empty / system-only / system + single user /
+      no head to summarize). No LLM call was made; the caller
+      skips the swap and just spawns the next chat turn.
     * `{:error, :llm_returned_empty}` — the LLM call returned
-      an empty string for the summary. The compactor does
-      not synthesize a placeholder summary; it surfaces the
-      failure.
-
-  ## Output contract
-
-  The returned list **always starts with a `{:system, _}`
-  message** on the `{:ok, _}` branch. This invariant is
-  structurally guaranteed: the `:too_short` branch returns
-  the input unchanged (the caller's state always starts with
-  a system message), and the other branch explicitly prepends
-  the original system message.
-
-  Summary messages (the head summary produced here) are tagged
-  as `{:system, _}` via `wrap_summary/1`. The agent's
-  compaction handler relies on this: position 0 of the
-  compactor's output is always a system message, and the
-  handler pattern-matches it.
+      an empty string for the summary. The compactor does not
+      synthesize a placeholder summary; it surfaces the failure.
+    * `{:error, reason}` — any other LLM-call transport or runtime
+      error.
   """
   @spec compact([Message.t()], pos_integer(), llm_call()) :: compact_result()
   def compact(messages, context_limit, llm_call_fn)
@@ -201,12 +207,13 @@ defmodule Nest.Tokens.Compactor do
              context_limit > 0 and is_function(llm_call_fn, 3) do
     case split_messages(messages) do
       :too_short ->
-        {:ok, messages}
+        {:ok, :passthrough}
 
-      {:ok, system} ->
-        with {:ok, head_summary} <- llm_call_fn.(messages, 0, nil),
-             :ok <- require_summary(head_summary) do
-          {:ok, [system, wrap_summary(head_summary)]}
+      {:ok, _system} ->
+        with {:ok, response} <- llm_call_fn.(messages, 0, nil),
+             %RunResponse{text: text} = response,
+             :ok <- require_summary(text) do
+          {:ok, text || "", response}
         end
     end
   end
@@ -215,7 +222,8 @@ defmodule Nest.Tokens.Compactor do
   # list, only a system message, system + a single user (no head
   # to summarize), or any shape that doesn't lead with a system
   # message. Asking the LLM to summarize the bare system prompt
-  # produces a meaningless call, so return the input unchanged.
+  # produces a meaningless call, so signal :passthrough and let
+  # the caller skip the swap.
   defp split_messages([]), do: :too_short
   defp split_messages([_only]), do: :too_short
   defp split_messages([{:system, _}, {:user, _}]), do: :too_short
@@ -228,21 +236,6 @@ defmodule Nest.Tokens.Compactor do
 
   defp require_summary(""), do: {:error, :llm_returned_empty}
   defp require_summary(_text), do: :ok
-
-  # Wraps the raw LLM summary text as a `{:system, _}` message.
-  # The agent's compaction handler extracts the summary text from
-  # position 1 of the compactor's output (position 0 is the
-  # original system message) and re-encodes it as a user message
-  # ("Summary of earlier conversation:\n\n<text>").
-  defp wrap_summary(text) do
-    {:system,
-     %MsgSystem{
-       index: 0,
-       parts: [%Part.Text{text: text}],
-       timestamp: DateTime.utc_now(),
-       api_logs: []
-     }}
-  end
 
   # Render the compaction request as a `{:system, _}` tuple the
   # compactor's LLM call appends to its request. Wraps

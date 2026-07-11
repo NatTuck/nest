@@ -793,6 +793,78 @@ describe("ChatPage thinking-before-content order", () => {
       ),
     ).toBeInTheDocument();
   });
+
+  it("splits <think>...</think> blocks buried in Part.Text into the Thinking box", () => {
+    // Some models emit the reasoning inline as
+    // `<think>...</think>` text inside a `Part.Text` rather
+    // than as a separate `Part.Thinking` entry. The active
+    // message list splits the text, routes the inner content
+    // to the Thinking box, and renders only the surrounding
+    // text via MessageContent.
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "idle",
+        messages: [
+          { index: 0, role: "user", parts: [{ kind: "text", text: "Hi" }] },
+          {
+            index: 1,
+            role: "assistant",
+            parts: [
+              {
+                kind: "text",
+                text: "before<think>reasoning here</think>after",
+              },
+            ],
+          },
+        ],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+
+    renderChat();
+
+    // Thinking content is rendered in the Thinking box
+    expect(screen.getByText("reasoning here")).toBeInTheDocument();
+    // The visible text is split around the think block
+    expect(screen.getByText(/before/)).toBeInTheDocument();
+    expect(screen.getByText(/after/)).toBeInTheDocument();
+    // No raw <think> markers in the visible text
+    expect(screen.queryByText("<think>")).not.toBeInTheDocument();
+    expect(screen.queryByText("</think>")).not.toBeInTheDocument();
+  });
+
+  it("routes stray </think>\\n\\n text in Part.Text to the Thinking box (orphan closing)", () => {
+    // Regression: OpenAI-style models occasionally emit
+    // `</think>\n\n` as part of the response (a closing tag
+    // without a matching opener). The active message list
+    // routes the orphan's tail to the thinking channel so
+    // the user doesn't see raw `</think>` characters in the
+    // visible reply.
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "idle",
+        messages: [
+          { index: 0, role: "user", parts: [{ kind: "text", text: "Hi" }] },
+          {
+            index: 1,
+            role: "assistant",
+            parts: [{ kind: "text", text: "hello</think>\n\nworld" }],
+          },
+        ],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+
+    renderChat();
+
+    // The orphan + tail went to thinking; the visible text
+    // retains the prefix.
+    expect(screen.getByText("hello")).toBeInTheDocument();
+    // The raw `</think>` does not appear anywhere in the DOM
+    expect(screen.queryByText("</think>")).not.toBeInTheDocument();
+  });
 });
 
 describe("ChatPage error display", () => {

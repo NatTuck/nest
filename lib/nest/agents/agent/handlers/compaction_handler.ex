@@ -38,6 +38,17 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
   No `state.chat_state.messages` inspection happens after
   compaction; the continuation payload is the contract.
 
+  ## `:passthrough` short-circuit
+
+  When the compactor's `:too_short` branch fires
+  (`{:compaction_done, :passthrough, continuation}`), there is
+  no LLM response to record, no swap to perform, and no
+  summary to build. The handler logs a warning, clears the
+  mid-turn bookkeeping, and dispatches straight to spawning
+  the next chat turn (or `:idle` if there is no continuation).
+  `state.chat_state.messages`, `history`, and
+  `last_compaction_index` are unchanged.
+
   ## Loop breaker
 
   `check_consecutive/1` is invoked at every compaction spawn
@@ -61,6 +72,7 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
   alias Nest.Agents.Agent.ChatTurnSpawner
   alias Nest.Agents.Agent.Compaction
   alias Nest.Agents.Agent.Handlers.CompactionHandler.Regenerator
+  alias Nest.Agents.Agent.Handlers.CompactionHandler.Retry
   alias Nest.Tokens.Compactor, as: TokensCompactor
 
   # Consecutive compaction spawns without intervening progress
@@ -75,8 +87,8 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
   tuple.
   """
   @spec handle(term(), Nest.Agents.Agent.t()) :: GenServer.reply()
-  def handle({:compaction_done, new_messages, continuation}, state) do
-    compaction_done(new_messages, continuation, state)
+  def handle({:compaction_done, summary_text, continuation}, state) do
+    compaction_done(summary_text, continuation, state)
   end
 
   def handle({:compaction_failed, reason, continuation}, state) do
@@ -88,7 +100,7 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
   end
 
   def handle(:retry_compaction, state) do
-    retry_compaction(state)
+    Retry.retry_compaction(state)
   end
 
   def handle(:compaction_loop_detected_ok, state) do
@@ -96,18 +108,32 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
   end
 
   @doc """
-  The compactor returned successfully. Common path for all
-  three trigger types — the continuation payload is the
-  `Nest.Agents.Agent.ChatTurn.State.continuation/0` shape
-  (`:user_message`, `:tool_call`, `:compact_tool`) that
-  `ChatTurnSpawner.spawn/4` consumes directly. No legacy
-  tuples, no defensive case dispatch — the spawn helper is
-  the only thing that knows how to start a ChatTurn.
+  The compactor returned. Three branches:
+
+    * `:passthrough` — the conversation was too short to compact.
+      Log a warning, clear mid-turn bookkeeping, dispatch to
+      the next chat turn (or `:idle` if no continuation). No
+      swap, no archive, no marker.
+    * `String.t()` — the LLM summary text. Regenerate the
+      system prompt, build the post-compaction
+      "Summary of earlier conversation:" user message (with
+      `<think>` blocks stripped), append the continuation tail,
+      swap, and spawn the next chat turn.
+
+  Common path for all three trigger types — the continuation
+  payload is the `Nest.Agents.Agent.ChatTurn.State.continuation/0`
+  shape (`:user_message`, `:tool_call`, `:compact_tool`) that
+  `ChatTurnSpawner.spawn/4` consumes directly.
   """
-  def compaction_done(new_messages, continuation, state) do
+  def compaction_done(:passthrough, continuation, state) do
+    handle_passthrough(continuation, state)
+  end
+
+  def compaction_done(summary_text, continuation, state) when is_binary(summary_text) do
     Logger.info(
       "Compaction complete: agent=#{state.name} from=#{length(state.chat_state.messages)} " <>
-        "to=#{length(new_messages)} continuation=#{continuation_tag(continuation)}"
+        "summary_chars=#{String.length(summary_text)} " <>
+        "continuation=#{continuation_tag(continuation)}"
     )
 
     # Clear the mid-turn bookkeeping so a future retry doesn't
@@ -116,10 +142,11 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
     # accidentally fire the wrong continuation on retry).
     state = %{state | chat_state: %{state.chat_state | mid_turn_compaction: nil}}
 
-    # Regenerate the system prompt and persist the new messages
-    # before swapping. See `regenerate_for_compaction/2` for the
-    # full rationale.
-    {state, new_messages} = regenerate_for_compaction(state, new_messages)
+    # Regenerate the system prompt + build the
+    # "Summary of earlier conversation:" user message from
+    # `summary_text`. The strip is applied inside the
+    # regenerator.
+    {state, new_messages} = regenerate_for_compaction(state, summary_text)
 
     new_messages = append_continuation_tail(new_messages, continuation)
 
@@ -187,7 +214,11 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
   # `check_consecutive/1`, run the compactor, and on success
   # `compaction_done/3` respawns a fresh ChatTurn via
   # `ChatTurnSpawner.spawn/4` (reading the continuation).
-  defp needs_compaction(continuation, state) do
+  # Public so `Retry.retry_compaction/1` (mid-turn retry branch)
+  # can re-spawn the compactor with the preserved continuation
+  # payload. `check_consecutive/1` is run again — counter was
+  # not reset between the failed spawn and the retry.
+  def needs_compaction(continuation, state) do
     state = %{
       state
       | chat_state: %{
@@ -282,83 +313,10 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
     {:noreply, state}
   end
 
-  # Re-spawn the compactor from `:compaction_failed` state.
-  # Branches on whether the failed compaction was Trigger B
-  # (user-turn boundary, `pending_user_message` is set) or
-  # mid-turn (`mid_turn_compaction.continuation` is set). Both
-  # paths route through the compactor and re-use the same
-  # continuation shape as the original; the resulting chat
-  # turn is what differs.
-  #
-  # Guard: only valid when the agent is in `:compaction_failed`
-  # status. If the agent is in any other state (idle, streaming,
-  # compacting), this is a no-op — the retry is meaningless
-  # outside of a failed-compaction context.
-  def retry_compaction(state) do
-    cond do
-      state.chat_state.status != :compaction_failed ->
-        Logger.warning(
-          "retry_compaction ignored: agent=#{state.name} status=#{inspect(state.chat_state.status)} (expected :compaction_failed)"
-        )
-
-        {:noreply, state}
-
-      mid_turn_info = state.chat_state.mid_turn_compaction ->
-        # Mid-turn retry: re-spawn the compactor with the
-        # preserved continuation payload. `needs_compaction/2`
-        # checks `check_consecutive/1` again and broadcasts
-        # accordingly.
-        needs_compaction(mid_turn_info.continuation, %{
-          state
-          | chat_state: %{state.chat_state | mid_turn_compaction: nil}
-        })
-
-      true ->
-        # Trigger B retry: user message is held in
-        # pending_user_message; on success, the compactor's
-        # `:user_message` continuation appends it via
-        # `append_continuation_tail/2`.
-        pending = state.chat_state.pending_user_message
-
-        case pending do
-          nil ->
-            Logger.warning("retry_compaction: no pending user message; agent=#{state.name}")
-
-            {:noreply, state}
-
-          {content, effective_mode} ->
-            user_msg = {:user_message, build_stamped_user_message(state, content, effective_mode)}
-
-            state = %{
-              state
-              | chat_state: %{
-                  state.chat_state
-                  | mid_turn_compaction: %{continuation: user_msg}
-                }
-            }
-
-            needs_compaction(user_msg, state)
-        end
-    end
-  end
-
-  # Build the user message struct for retry. Mirrors
-  # `ChatPipeline.build_user_message/3` but operates on already-
-  # settled `pending_user_message` (the retry path runs after
-  # the field is set by `handle_chat/3`). The Agent stamps the
-  # index via `__append_message__/2`; we leave `index: nil`.
-  defp build_stamped_user_message(_state, content, effective_mode) do
-    alias Nest.Messages.Part
-    alias Nest.Messages.User
-
-    %User{
-      index: nil,
-      timestamp: DateTime.utc_now(),
-      parts: [%Part.Text{text: "[mode: #{effective_mode}]\n#{content}"}],
-      metadata: %{"mode" => effective_mode},
-      api_logs: []
-    }
-  end
+  # Re-spawn the compactor from `:compaction_failed` state —
+  # extracted to `Nest.Agents.Agent.Handlers.CompactionHandler.Retry`
+  # so this module stays under credo's 500-line cap. The handler
+  # dispatches via `handle(:retry_compaction, _)` above.
 
   # Render the compaction failure reason as a user-facing string.
   # `:reserve_exhausted` → the system prompt + compaction request
@@ -462,7 +420,51 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandler do
 
   # Thin delegator to `Regenerator` so callers don't need to
   # know which submodule owns the implementation.
-  defp regenerate_for_compaction(state, compactor_messages) do
-    Regenerator.regenerate_for_compaction(state, compactor_messages)
+  defp regenerate_for_compaction(state, summary_text) do
+    Regenerator.regenerate_for_compaction(state, summary_text)
+  end
+
+  # `:too_short` branch: compactor returned `{:ok, :passthrough}`
+  # because the input was too small to compact. There is no LLM
+  # response to record, no swap to perform, and no summary to
+  # build. Clear mid-turn bookkeeping, return to `:idle`, and
+  # either dispatch the next chat turn (if a continuation is
+  # pending) or just `:noreply` with the cleaned-up state.
+  defp handle_passthrough(continuation, state) do
+    # The conversation was too short to compact (`:too_short`
+    # branch in `Nest.Tokens.Compactor.compact/3`). There's no
+    # LLM response to record, no swap to perform, and no
+    # summary to build — just resume with the carry-over.
+    # Log at `:debug` (silent at the default `:warning` level
+    # in test and production) so operators can surface it
+    # during diagnostics without test noise. Matches how
+    # `Regenerator.maybe_fresh_vocation/1` handles its
+    # `:not_found` lookup.
+    Logger.debug(fn ->
+      "Compaction skipped: agent=#{state.name} (conversation too short to compact)"
+    end)
+
+    state = %{
+      state
+      | chat_state: %{state.chat_state | mid_turn_compaction: nil, status: :idle}
+    }
+
+    Broadcasts.status(state.name, state)
+
+    case continuation do
+      nil ->
+        {:noreply, state}
+
+      # `spawn_chat_turn_for_continuation/3` returns the bare
+      # `state` struct (see `ChatTurnSpawner.spawn/4`'s
+      # `@spec`). Wrap in `{:noreply, state}` so the GenServer
+      # callback returns a valid reply tuple — returning the
+      # struct directly is a "bad return value" that crashes
+      # the GenServer (the failure surfaced in
+      # `agent_chat_turn_iteration_test.exs:144`).
+      _ ->
+        {:noreply,
+         spawn_chat_turn_for_continuation(state, state.chat_state.messages, continuation)}
+    end
   end
 end

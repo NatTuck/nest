@@ -20,6 +20,7 @@ defmodule Nest.Agents.Agent do
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Handlers
   alias Nest.Agents.Agent.Init
+  alias Nest.Agents.Agent.IntrospectionHandler
   alias Nest.Agents.Agent.Persistence, as: AgentPersistence
   alias Nest.Agents.Agent.TmpSpace
   alias Nest.Agents.Registry
@@ -29,8 +30,6 @@ defmodule Nest.Agents.Agent do
   alias Nest.Messages.System
   alias Nest.Messages.Tool
   alias Nest.Messages.User
-  alias Nest.Tokens.ConversationSize
-  alias Nest.Vocations
 
   defstruct [
     :name,
@@ -277,100 +276,13 @@ defmodule Nest.Agents.Agent do
   # Test-only helpers for asserting on the loop-breaker counter.
   # Production callers should not need these — the counter is
   # managed internally by `CompactionHandler.check_consecutive/1`
-  # Test-only helpers for the loop-breaker counter. Production
-  # callers should not need these — the counter is managed
-  # internally by `CompactionHandler.check_consecutive/1` and
-  # resets via the append_message path above.
-  @doc false
-  def handle_call({:set_consecutive_compaction_count, n}, _from, state) when is_integer(n) do
-    {:reply, :ok, %{state | chat_state: %{state.chat_state | consecutive_compaction_count: n}}}
-  end
-
-  def handle_call(:get_consecutive_compaction_count, _from, state) do
-    {:reply, state.chat_state.consecutive_compaction_count, state}
-  end
-
-  @impl true
-  def handle_call(:get_public_info, _from, state) do
-    # Use the cached Vocation struct from state — no DB work in
-    # the handler. The struct was loaded by the calling process
-    # (test helper or production wrapper) and passed into init/1
-    # via `:vocation` in attrs.
-    vocation = state.vocation
-
-    public_info = %{
-      name: state.name,
-      model: state.model,
-      message_count: length(state.chat_state.messages),
-      status: state.chat_state.status,
-      vocation_id: state.vocation_id,
-      tmp_path: state.tmp_path,
-      partial: state.chat_state.streaming_acc,
-      modes: Vocations.list_modes(vocation),
-      default_mode: Vocations.default_mode(vocation),
-      current_mode: state.mode,
-      context_limit: state.llm_metrics.context_limit,
-      context_limit_source: state.llm_metrics.context_limit_source,
-      # `context_input_tokens` is computed from the messages list
-      # (real-valued `tokens` from prior LLM responses as a floor,
-      # estimator for the suffix) rather than from the raw
-      # usage_totals map. This is what the chip renders as the
-      # numerator — without this fix, a fresh or loaded agent
-      # ships `context_input_tokens: 0` and the chip shows
-      # "0 / N tokens" until the first LLM call completes. See
-      # `Nest.Tokens.ConversationSize` for the algorithm.
-      usage:
-        Map.put(
-          state.llm_metrics.usage_totals,
-          :context_input_tokens,
-          ConversationSize.size(state.chat_state.messages)
-        )
-    }
-
-    {:reply, public_info, state}
-  end
-
-  @impl true
-  def handle_call(:get_messages, _from, state) do
-    {:reply, state.chat_state.messages, state}
-  end
-
-  @impl true
-  # Internal: returns `{messages, cancelled}` so the ChatTurn
-  # can short-circuit on user-initiated stops without waiting
-  # for the next `:stop_chat` message to be processed. The
-  # chat turn checks `cancelled` after every iteration; when
-  # true, it finalizes the partial assistant message (via
-  # the agent's `chat_stopped` handler) and stops.
-  def handle_call(:get_messages_with_cancelled, _from, state) do
-    {:reply, {state.chat_state.messages, state.chat_state.cancelled}, state}
-  end
-
-  @impl true
-  def handle_call(:get_next_index, _from, state) do
-    {:reply, state.chat_state.next_message_index, state}
-  end
-
-  @impl true
-  def handle_call(:get_history, _from, state) do
-    {:reply, state.chat_state.history || [], state}
-  end
-
-  # Test-only introspection: returns the assembled system prompt
-  # (the content of the `{:system, _}` message at position 0 of
-  # `state.chat_state.messages`). Not part of the public API; used
-  # by the system-prompt composition tests in
-  # `agent_system_prompt_composition_test.exs` and
-  # `agent_agents_md_test.exs`.
-  @impl true
-  def handle_call(:get_system_prompt, _from, state) do
-    {:reply, system_prompt_from_messages(state.chat_state.messages), state}
-  end
-
-  @impl true
-  def handle_call(:get_chat_turn_pid, _from, state) do
-    {:reply, state.chat_state.chat_turn_pid, state}
-  end
+  # Introspection handle_calls (`:get_*` etc.) live in
+  # Introspection handle_calls (`:get_*` etc.) live in
+  # `IntrospectionHandler`. The clauses below are the
+  # message-mutation path (`:append_message`,
+  # `:append_compaction_messages`); the catch-all at the
+  # bottom dispatches every other tag to
+  # `IntrospectionHandler.handle/3`.
 
   # The canonical message-append path. The Agent is the single
   # writer of `index`: every message — user, assistant, tool
@@ -398,6 +310,29 @@ defmodule Nest.Agents.Agent do
 
     {stamped, state} = __append_message__(state, message)
     {:reply, stamped, state}
+  end
+
+  # Bulk-append the compactor's LLM-call artifacts (the
+  # `[mode: compact]` suffix + the LLM's `wrap_summary`). Each
+  # message is stamped with the next sequential index via the
+  # canonical `__append_message__/2` path (so persistence and
+  # `chat:message` broadcast fire for each one). See
+  # `notes/properly-handle-summary-messages-and-openai-think.md`.
+  @impl true
+  def handle_call({:append_compaction_messages, messages}, _from, state) do
+    {stamped, state} =
+      Enum.map_reduce(messages, state, fn msg, st ->
+        {stamped_msg, new_st} = __append_message__(st, msg)
+        {stamped_msg, new_st}
+      end)
+
+    {:reply, stamped, state}
+  end
+
+  # Catch-all dispatcher for introspection calls.
+  @impl true
+  def handle_call(msg, from, state) do
+    IntrospectionHandler.handle(msg, from, state)
   end
 
   defp reset_consecutive(state) do
@@ -453,14 +388,6 @@ defmodule Nest.Agents.Agent do
   defp put_message_index({role, %{index: _} = msg}, index) do
     {role, %{msg | index: index}}
   end
-
-  defp system_prompt_from_messages([{:system, %{parts: parts}} | _]) when is_list(parts) do
-    parts
-    |> Enum.filter(&match?(%Nest.Messages.Part.Text{}, &1))
-    |> Enum.map_join("", & &1.text)
-  end
-
-  defp system_prompt_from_messages(_), do: nil
 
   # Move the agent's current `messages` to `history` (with a
   # compaction marker), then replace `messages` with the new

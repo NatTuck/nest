@@ -54,7 +54,6 @@ defmodule Nest.Agents.AgentCompactionChatContinuationTest do
   alias Nest.LLM.MockClient
   alias Nest.Messages.Assistant
   alias Nest.Messages.Part
-  alias Nest.Messages.System
   alias Nest.Messages.Tool
   alias Nest.Messages.User
   alias Nest.Vocations
@@ -143,21 +142,13 @@ defmodule Nest.Agents.AgentCompactionChatContinuationTest do
     {pid, agent_id}
   end
 
-  # Two compactor messages: leading system with the encoded
-  # summary, then a user message. The handler extracts the
-  # summary from the leading system, re-renders it as a
-  # user message at position 1, and re-numbers the rest from
-  # position 3.
-  defp compactor_output do
-    [
-      {:system,
-       %System{
-         index: 1,
-         parts: [%Part.Text{text: "[Summary of earlier conversation]:\n\nkey facts"}]
-       }},
-      {:user, %User{index: 2, parts: [%Part.Text{text: "Next"}], api_logs: []}}
-    ]
-  end
+  # The compactor LLM's response text. Under the new design
+  # the regenerator receives the raw text directly — there is
+  # no `[system, wrap_summary]` tuple shape anymore. The
+  # compactor task records the LLM response as a regular
+  # assistant message on the agent's message list before
+  # sending `compaction_done`.
+  defp compactor_summary_text, do: "key facts"
 
   # The carried pair for a `:compact_tool` continuation:
   # `[{:assistant, +ToolUse}, {:tool, +ToolResult}]`.
@@ -204,9 +195,9 @@ defmodule Nest.Agents.AgentCompactionChatContinuationTest do
       # Pre-fix, `build_user_message/3` returned a 2-tuple, and
       # `next_message_index` was the pre-swap value. Both crashed
       # here. Post-fix, the carried user message lands at the
-      # post-swap `next_message_index` (= 5 in this setup:
+      # post-swap `next_message_index` (= 4 in this setup:
       # marker_index=1, fresh_system=2, summary_user=3,
-      # compactor_user=4, carried_user=5).
+      # carried_user=4).
       #
       # The pre-refactor test pre-seeded
       # `state.chat_state.pending_user_message` and used the
@@ -229,7 +220,7 @@ defmodule Nest.Agents.AgentCompactionChatContinuationTest do
         api_logs: []
       }
 
-      send(pid, {:compaction_done, compactor_output(), {:user_message, user_msg}})
+      send(pid, {:compaction_done, compactor_summary_text(), {:user_message, user_msg}})
 
       # The handler runs `regenerate_for_compaction/2`,
       # `append_continuation_tail/2`, then
@@ -252,18 +243,21 @@ defmodule Nest.Agents.AgentCompactionChatContinuationTest do
 
       {_, %User{index: user_index}} = last_user
 
-      # compactor has 2 messages → `regenerate_for_compaction/2`
-      # produces 3 (fresh_system@2, summary_user@3,
-      # compactor_user@4). Plus the carried user message at @5.
+      # compactor has 2 messages (system@0, user@1). Under the
+      # new design the regenerator only emits fresh_system and
+      # summary_user from the compactor's output — the trailing
+      # user from the compactor fixture is dropped (no longer in
+      # `rest`). So new_messages is 2 (fresh_system@2,
+      # summary_user@3). Plus the carried user message at @4.
       # Post-swap `next_message_index = marker_index + length +
-      # 1 = 1 + 4 + 1 = 6`. The carried user message lands at
-      # index 5 (Bug 4 — without the bump the carried user
+      # 1 = 1 + 3 + 1 = 5`. The carried user message lands at
+      # index 4 (Bug 4 — without the bump the carried user
       # message would stamp at 1, colliding with / sat below
       # the fresh system at 2).
-      assert user_index == 5,
-             "expected user message at index 5, got #{user_index}"
+      assert user_index == 4,
+             "expected user message at index 4, got #{user_index}"
 
-      assert state_after.chat_state.next_message_index == 6
+      assert state_after.chat_state.next_message_index == 5
 
       Agent.terminate(pid)
     end
@@ -288,7 +282,7 @@ defmodule Nest.Agents.AgentCompactionChatContinuationTest do
       # tool call.
       {pid, _agent_id} = start_agent_with_row(1)
 
-      send(pid, {:compaction_done, compactor_output(), compact_tool_continuation()})
+      send(pid, {:compaction_done, compactor_summary_text(), compact_tool_continuation()})
 
       # `:task_compaction_done` is gone in the new design —
       # the handler synchronously appends the carried pair
@@ -331,37 +325,29 @@ defmodule Nest.Agents.AgentCompactionChatContinuationTest do
       # 4-row boundary.
       {pid, _agent_id} = start_agent_with_row(5)
 
-      # Three-message compactor output: leading system with
-      # the summary, then user, then assistant. After
-      # rebuild: fresh_system at 6, summary_user at 7,
-      # user at 8, assistant at 9. Plus the `:compact_tool`
-      # carried pair (tool_call, tool_result) appended via
-      # `append_continuation_tail/2`, stamped at 10 and 11.
-      # Post-swap next_message_index = 5 + 6 + 1 = 12.
-      compactor_messages = [
-        {:system, %System{index: 0, parts: [%Part.Text{text: "[Summary]"}]}},
-        {:user, %User{index: 1, parts: [%Part.Text{text: "u"}], api_logs: []}},
-        {:assistant, %Assistant{index: 2, parts: [%Part.Text{text: "a"}], api_logs: []}}
-      ]
-
+      # Compactions now take raw LLM text directly. After
+      # rebuild: fresh_system at 6, summary_user at 7. Plus
+      # the `:compact_tool` carried pair (tool_call, tool_result)
+      # appended via `append_continuation_tail/2`, stamped at
+      # 8 and 9. Post-swap next_message_index = 5 + 4 + 1 = 10.
       send(
         pid,
-        {:compaction_done, compactor_messages, compact_tool_continuation()}
+        {:compaction_done, "summary text", compact_tool_continuation()}
       )
 
       _ = :sys.get_state(pid, 500)
 
       state_after = :sys.get_state(pid)
 
-      # 6 messages: fresh_system, summary_user, user,
-      # assistant, tool_call, tool_result. The bump from 4
-      # to 6 reflects the carried pair appended by
+      # 4 messages: fresh_system, summary_user, tool_call,
+      # tool_result. The bump from 2 to 4 reflects the
+      # carried pair appended by
       # `append_continuation_tail/2`.
-      assert length(state_after.chat_state.messages) == 6,
-             "expected 6 messages, got #{length(state_after.chat_state.messages)}"
+      assert length(state_after.chat_state.messages) == 4,
+             "expected 4 messages, got #{length(state_after.chat_state.messages)}"
 
-      assert state_after.chat_state.next_message_index == 12,
-             "expected next_message_index == 12, got #{state_after.chat_state.next_message_index}"
+      assert state_after.chat_state.next_message_index == 10,
+             "expected next_message_index == 10, got #{state_after.chat_state.next_message_index}"
 
       Agent.terminate(pid)
     end
@@ -426,7 +412,7 @@ defmodule Nest.Agents.AgentCompactionChatContinuationTest do
 
       log =
         capture_log(fn ->
-          send(pid, {:compaction_done, compactor_output(), compact_tool_continuation()})
+          send(pid, {:compaction_done, compactor_summary_text(), compact_tool_continuation()})
 
           # `:task_compaction_done` is gone in the new
           # design. `:sys.get_state/2` queues behind the
@@ -445,4 +431,8 @@ defmodule Nest.Agents.AgentCompactionChatContinuationTest do
       Agent.terminate(pid)
     end
   end
+
+  # `:passthrough` short-circuit regression tests live in
+  # `agent_compaction_passthrough_test.exs` (extracted to keep
+  # this file under the credo 500-line cap).
 end

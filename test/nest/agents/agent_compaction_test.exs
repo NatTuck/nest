@@ -184,14 +184,9 @@ defmodule Nest.Agents.AgentCompactionTest do
         {:assistant, %Assistant{index: 3, parts: [%Part.Text{text: "A2"}], api_logs: []}}
       ]
 
-      new_messages = [
-        {:system,
-         %Nest.Messages.System{
-           index: 4,
-           parts: [%Part.Text{text: "[Summary of earlier conversation]:\n\n..."}]
-         }},
-        {:user, %User{index: 5, parts: [%Part.Text{text: "Third"}], api_logs: []}}
-      ]
+      # The compactor LLM's response text. The regenerator wraps
+      # it as "Summary of earlier conversation:\n\n…".
+      summary_text = "..."
 
       # `:tool_call` continuation; spawn ChatTurn sits idle waiting
       # for `:tool_results` — we only care about the broadcast.
@@ -201,7 +196,7 @@ defmodule Nest.Agents.AgentCompactionTest do
         %{s | chat_state: %{s.chat_state | messages: old_messages}}
       end)
 
-      send(pid, {:compaction_done, new_messages, {:tool_call, tool_call_msg, 3, 30}})
+      send(pid, {:compaction_done, summary_text, {:tool_call, tool_call_msg, 3, 30}})
 
       # `:sys.get_state/1` queues behind `:compaction_done` and
       # returns only after the broadcast has fired (broadcast is
@@ -463,14 +458,7 @@ defmodule Nest.Agents.AgentCompactionTest do
         {:assistant, %Assistant{index: 1, parts: [%Part.Text{text: "A1"}], api_logs: []}}
       ]
 
-      new_messages = [
-        {:system,
-         %Nest.Messages.System{
-           index: 2,
-           parts: [%Part.Text{text: "[Summary of earlier conversation]:\n\n..."}]
-         }},
-        {:user, %User{index: 3, parts: [%Part.Text{text: "Next"}], api_logs: []}}
-      ]
+      summary_text = "..."
 
       # `:tool_call` continuation with a carried tool_use at the tail.
       tool_call_msg = compact_tool_call_msg(1)
@@ -479,7 +467,7 @@ defmodule Nest.Agents.AgentCompactionTest do
         %{s | chat_state: %{s.chat_state | messages: old_messages, next_message_index: 2}}
       end)
 
-      send(pid, {:compaction_done, new_messages, {:tool_call, tool_call_msg, 3, 30}})
+      send(pid, {:compaction_done, summary_text, {:tool_call, tool_call_msg, 3, 30}})
 
       _ = :sys.get_state(pid)
 

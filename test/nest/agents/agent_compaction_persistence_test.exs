@@ -40,7 +40,6 @@ defmodule Nest.Agents.AgentCompactionPersistenceTest do
   alias Nest.LLM.MockClient
   alias Nest.Messages.Assistant
   alias Nest.Messages.Part
-  alias Nest.Messages.System
   alias Nest.Messages.Tool
   alias Nest.Messages.User
   alias Nest.Persistence
@@ -105,15 +104,6 @@ defmodule Nest.Agents.AgentCompactionPersistenceTest do
       })
 
     row
-  end
-
-  defp compactor_messages_with(summary_text) do
-    [
-      {:system, %System{index: 1, parts: [%Part.Text{text: summary_text}]}},
-      {:user, %User{index: 2, parts: [%Part.Text{text: "Next"}], api_logs: []}},
-      {:assistant,
-       %Assistant{index: 3, parts: [%Part.Text{text: "Assistant next"}], api_logs: []}}
-    ]
   end
 
   # Append an `assistant+ToolUse[context.compact]` to the
@@ -215,8 +205,7 @@ defmodule Nest.Agents.AgentCompactionPersistenceTest do
 
       send(
         pid,
-        {:compaction_done, compactor_messages_with(summary_text),
-         compact_tool_continuation(tool_call_id)}
+        {:compaction_done, summary_text, compact_tool_continuation(tool_call_id)}
       )
 
       # `:task_compaction_done` is gone in the new design —
@@ -264,15 +253,13 @@ defmodule Nest.Agents.AgentCompactionPersistenceTest do
           )
         )
 
-      assert length(rows) == 5
-      assert Enum.map(rows, & &1.message_index) == [1, 2, 3, 4, 5]
+      assert length(rows) == 3
+      assert Enum.map(rows, & &1.message_index) == [1, 2, 3]
 
       assert Enum.map(rows, & &1.role) == [
                "compaction",
                "system",
-               "user",
-               "user",
-               "assistant"
+               "user"
              ]
     end
 
@@ -302,18 +289,27 @@ defmodule Nest.Agents.AgentCompactionPersistenceTest do
           )
         )
 
-      assert length(rows) == 5
+      assert length(rows) == 3
 
       assert [
                %PersistedMessage{role: "compaction", message_index: 1},
                %PersistedMessage{role: "system", message_index: 2},
-               %PersistedMessage{role: "user", message_index: 3},
-               %PersistedMessage{role: "user", message_index: 4},
-               %PersistedMessage{role: "assistant", message_index: 5}
+               %PersistedMessage{role: "user", message_index: 3}
              ] = rows
     end
 
-    test "compactor's other output is in the messages table in index order" do
+    test "the carried pair lands at marker_index + 3 and marker_index + 4 in the active list" do
+      # The `:compact_tool` continuation's carried
+      # `[tool_call, tool_result]` pair is appended to the
+      # new compacted state via `append_continuation_tail/2`
+      # — they live in `state.chat_state.messages` (the
+      # active list) but are NOT yet in the `messages`
+      # table. Persistence for the pair happens when the
+      # next ChatTurn runs and stamps each message via
+      # `__append_message__/2`. This test pins the in-memory
+      # contract: the carried pair sits at the post-swap
+      # tail in the right order, ready for the next
+      # iteration to consume.
       vocation_id = test_vocation_id()
 
       Application.put_env(:nest, :persistence, enabled: false)
@@ -322,31 +318,36 @@ defmodule Nest.Agents.AgentCompactionPersistenceTest do
 
       insert_agent_row(agent_id, vocation_id)
 
-      run_compaction_cycle(
+      :sys.replace_state(pid, fn state ->
+        %{state | chat_state: %{state.chat_state | next_message_index: 1}}
+      end)
+
+      tool_call_id = seed_compact_tool_call(pid)
+
+      send(
         pid,
-        agent_id,
-        "[Summary of earlier conversation]:\n\nkey facts"
+        {:compaction_done, "[Summary of earlier conversation]:\n\nkey facts",
+         compact_tool_continuation(tool_call_id)}
       )
 
-      agent_row = Nest.Repo.one!(PersistedAgent, where: [name: agent_id])
+      _ = :sys.get_state(pid, 500)
 
-      rows =
-        Nest.Repo.all(
-          from(m in PersistedMessage,
-            where: m.agent_id == ^agent_row.id,
-            order_by: [asc: m.message_index]
-          )
-        )
+      state_after = :sys.get_state(pid)
+      # marker_index = 1; fresh_system@2, summary_user@3,
+      # tool_call@4, tool_result@5 — 4 messages in the
+      # post-swap active list.
+      assert length(state_after.chat_state.messages) == 4
 
-      assert Enum.map(rows, & &1.message_index) == [1, 2, 3, 4, 5]
+      [fresh, summary, call, result] = state_after.chat_state.messages
 
-      assert Enum.map(rows, & &1.role) == [
-               "compaction",
-               "system",
-               "user",
-               "user",
-               "assistant"
-             ]
+      assert {:system, %{index: 2}} = fresh
+      assert {:user, %{index: 3}} = summary
+      assert {:assistant, %{index: 4}} = call
+      assert {:tool, %{index: 5}} = result
+
+      assert state_after.chat_state.next_message_index == 6
+
+      Agent.terminate(pid)
     end
 
     test "agents.last_compaction_index is bumped to the marker index atomically with the INSERT" do
@@ -421,25 +422,26 @@ defmodule Nest.Agents.AgentCompactionPersistenceTest do
       {:ok, attrs} = Persistence.build_attrs_for_start(agent_id)
       assert attrs.last_compaction_index == 1
 
-      # 5 messages in the table: the marker at index 1
+      # 3 messages in the table: the marker at index 1
       # (the in-memory pre-seed at index 0 never reached
       # the DB — `record_compaction/3` only writes the
-      # marker), and the 4 regenerated post-compaction
-      # rows at indices 2..5. The `load_messages/1`
-      # full-sequence contract returns all of them in order;
+      # marker), and the 2 regenerated post-compaction
+      # rows at indices 2..3. The carried pair
+      # (tool_call, tool_result) is in the in-memory
+      # active list but not in the `messages` table yet.
+      # The `load_messages/1` full-sequence contract
+      # returns the 3 rows in order;
       # `Agent.init/1`'s `seed_from_db/3` then partitions
       # via `index <= last_compaction_index`.
-      assert length(attrs.preloaded_messages) == 5
+      assert length(attrs.preloaded_messages) == 3
 
       indices = Enum.map(attrs.preloaded_messages, fn {_, %{index: i}} -> i end)
-      assert indices == [1, 2, 3, 4, 5]
+      assert indices == [1, 2, 3]
 
       assert Enum.map(attrs.preloaded_messages, fn {role, _} -> role end) == [
                :compaction,
                :system,
-               :user,
-               :user,
-               :assistant
+               :user
              ]
     end
   end
