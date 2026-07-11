@@ -26,6 +26,7 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandlerTest do
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ChatState
+  alias Nest.Agents.Agent.Compaction.ResultHandler
   alias Nest.Agents.Agent.Handlers.CompactionHandler
   alias Nest.Agents.Agent.LlmMetrics
 
@@ -48,13 +49,13 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandlerTest do
     test "increments the counter on each call below the threshold" do
       state = build_state()
 
-      assert {:ok, state1} = CompactionHandler.check_consecutive(state)
+      assert {:ok, state1} = ResultHandler.check_consecutive(state)
       assert state1.chat_state.consecutive_compaction_count == 1
 
-      assert {:ok, state2} = CompactionHandler.check_consecutive(state1)
+      assert {:ok, state2} = ResultHandler.check_consecutive(state1)
       assert state2.chat_state.consecutive_compaction_count == 2
 
-      assert {:ok, state3} = CompactionHandler.check_consecutive(state2)
+      assert {:ok, state3} = ResultHandler.check_consecutive(state2)
       assert state3.chat_state.consecutive_compaction_count == 3
     end
 
@@ -70,7 +71,7 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandlerTest do
         capture_log(fn ->
           final =
             Enum.reduce(1..4, state, fn _, acc ->
-              case CompactionHandler.check_consecutive(acc) do
+              case ResultHandler.check_consecutive(acc) do
                 {:ok, next} -> next
                 :refuse -> :refused
               end
@@ -89,13 +90,13 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandlerTest do
       # capture-and-assert as the previous test.
       log =
         capture_log(fn ->
-          state1 = elem(CompactionHandler.check_consecutive(state), 1)
-          state2 = elem(CompactionHandler.check_consecutive(state1), 1)
-          state3 = elem(CompactionHandler.check_consecutive(state2), 1)
+          state1 = elem(ResultHandler.check_consecutive(state), 1)
+          state2 = elem(ResultHandler.check_consecutive(state1), 1)
+          state3 = elem(ResultHandler.check_consecutive(state2), 1)
           assert state3.chat_state.status != :compaction_loop_detected
 
           # 4th bumps to 4, exceeds threshold, refuses.
-          :refuse = CompactionHandler.check_consecutive(state3)
+          :refuse = ResultHandler.check_consecutive(state3)
         end)
 
       assert log =~ "compaction isn't reducing the conversation"

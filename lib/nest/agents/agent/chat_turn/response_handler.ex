@@ -87,9 +87,15 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
   end
 
   # Dispatch on the response shape after the assistant message
-  # has been appended.
+  # has been appended. For the compactor's own chat turn, the
+  # finalization path sends `{:compaction_done, ...}` instead
+  # of `{:chat_idle, _}` (the Agent's `Compaction.ResultHandler`
+  # is the next stage).
   defp dispatch_response(response, state, chat_turn_pid) do
     cond do
+      compactor_entry?(state) ->
+        Lifecycle.finalize_compaction(state, response)
+
       state.force_finalize ->
         Lifecycle.finalize_turn(state)
 
@@ -103,6 +109,12 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
         Lifecycle.finalize_turn(state)
     end
   end
+
+  # True when this ChatTurn is the compactor's own chat turn
+  # (the entry was `{:compaction, _, _}`). The finalization
+  # path uses `finalize_compaction/2` instead of `finalize_turn/1`.
+  defp compactor_entry?(%State{entry: {:compaction, _, _}}), do: true
+  defp compactor_entry?(_), do: false
 
   # Past max iterations, LLM still emitted tool calls (the
   # `tools: nil` was supposed to prevent this but some

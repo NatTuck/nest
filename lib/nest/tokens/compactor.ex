@@ -70,6 +70,7 @@ defmodule Nest.Tokens.Compactor do
   alias Nest.Messages.Message
   alias Nest.Messages.Part
   alias Nest.Messages.System, as: MsgSystem
+  alias Nest.Messages.ThinkTags
   alias Nest.Scripts.CompactionProbeSupport
   alias Nest.Tokens.Estimator
   alias Nest.Tokens.Reserve
@@ -212,7 +213,8 @@ defmodule Nest.Tokens.Compactor do
       {:ok, _system} ->
         with {:ok, response} <- llm_call_fn.(messages, 0, nil),
              %RunResponse{text: text} = response,
-             :ok <- require_summary(text) do
+             :ok <- require_summary(text),
+             :ok <- require_non_empty_summary(text) do
           {:ok, text || "", response}
         end
     end
@@ -236,6 +238,28 @@ defmodule Nest.Tokens.Compactor do
 
   defp require_summary(""), do: {:error, :llm_returned_empty}
   defp require_summary(_text), do: :ok
+
+  # Stripped-and-trimmed guard: rejects LLM responses whose
+  # visible content is empty or whitespace-only. Covers:
+  #   * LLM emitted only `<think>...</think>` blocks (no
+  #     visible summary) — common when the model's response
+  #     gets truncated mid-thinking by token budget.
+  #   * Whitespace-only responses (`"   "`, `"\n\n"`).
+  #
+  # Without this, `ThinkTags.strip/1` (applied later by the
+  # regenerator when building the summary_user) collapses
+  # those responses to `""` and the user sees the
+  # `Summary of earlier conversation:` header followed by
+  # nothing. Failing here lets the agent surface a retryable
+  # `:llm_returned_empty` (same shape as the bare-empty case
+  # — both mean "the LLM produced no visible summary").
+  defp require_non_empty_summary(text) do
+    if String.trim(ThinkTags.strip(text)) == "" do
+      {:error, :llm_returned_empty}
+    else
+      :ok
+    end
+  end
 
   # Render the compaction request as a `{:system, _}` tuple the
   # compactor's LLM call appends to its request. Wraps

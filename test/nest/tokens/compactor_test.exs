@@ -186,6 +186,56 @@ defmodule Nest.Tokens.CompactorTest do
     end
   end
 
+  describe "compact/3 — empty-after-strip guard" do
+    # The LLM call returns the raw text (any `<think>` markers
+    # intact). The compactor's `require_non_empty_summary/1`
+    # strips the thinking blocks and rejects responses whose
+    # visible content is empty or whitespace-only. Without
+    # this, the regenerator's `ThinkTags.strip/1` collapses
+    # those responses to `""` and the user sees
+    # `Summary of earlier conversation:` followed by nothing.
+
+    test "response with only a `<think>` block → {:error, :llm_returned_empty}" do
+      result =
+        Compactor.compact(
+          build_messages(),
+          32_768,
+          mock_llm_call("<think>I'll summarize</think>")
+        )
+
+      assert result == {:error, :llm_returned_empty}
+    end
+
+    test "response with only an unclosed `<think>` → {:error, :llm_returned_empty}" do
+      result =
+        Compactor.compact(
+          build_messages(),
+          32_768,
+          mock_llm_call("<think>just thinking, no closing tag")
+        )
+
+      assert result == {:error, :llm_returned_empty}
+    end
+
+    test "whitespace-only response → {:error, :llm_returned_empty}" do
+      result =
+        Compactor.compact(build_messages(), 32_768, mock_llm_call("   \n\n   "))
+
+      assert result == {:error, :llm_returned_empty}
+    end
+
+    test "response with `<think>` block followed by visible text → success" do
+      result =
+        Compactor.compact(
+          build_messages(),
+          32_768,
+          mock_llm_call("<think>thinking</think>The conversation is about X.")
+        )
+
+      assert {:ok, "<think>thinking</think>The conversation is about X.", _response} = result
+    end
+  end
+
   describe "compute_summary_budget/4" do
     test "returns {:ok, n, suffix} where n = reserve - system - request_size + digit buffer" do
       # 100k context → reserve = 20_000. With a small system and

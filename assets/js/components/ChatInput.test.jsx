@@ -279,7 +279,7 @@ describe("ChatInput", () => {
   });
 
   describe("frozen state", () => {
-    it("renders nothing when frozen (compacting/compaction_failed)", () => {
+    it("renders nothing when frozen (compaction_failed/compaction_loop_detected/context_overflow)", () => {
       const { container, textarea } = setup({ frozen: true });
       expect(container.firstChild).toBeNull();
       expect(textarea).toBeNull();

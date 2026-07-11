@@ -1,10 +1,10 @@
 defmodule Nest.Agents.Agent.ChatTurnSpawner do
   @moduledoc """
-  Single entry point for spawning a `ChatTurn`. The continuation
+  Single entry point for spawning a `ChatTurn`. The entry
   tag is the contract — it determines what the new ChatTurn's
   first iteration does.
 
-  Continuation shapes (see `Nest.Agents.Agent.ChatTurn.State`):
+  Entry shapes (see `Nest.Agents.Agent.ChatTurn.State`):
 
     * `{:user_message, User.t()}` — Trigger 1 (or the user's
       pipeline input at idle). The user message has already
@@ -25,10 +25,21 @@ defmodule Nest.Agents.Agent.ChatTurnSpawner do
       iter falls through to the LLM (last message is the tool
       result, not a tool_call).
 
-  All three production continuations are explicit. A future
-  `/tool` slash command at idle could pass `{:tool_call, _, _, _}`
-  to force the LLM out of chat-only mode into tool mode — no
-  shape changes needed here.
+    * `{:compaction, System.t(), entry() | nil}` — the
+      compactor's own chat turn. The system message (the
+      `[mode: compact]` suffix) is already in
+      `state.chat_state.messages`; the new ChatTurn's first
+      iter calls the LLM with `tools: nil, tool_choice: :none`,
+      then sends `{:compaction_done, summary_text,
+      carried_entry}` to the Agent when finished. The third
+      element is `nil` for Trigger A (post-turn) and the
+      carried `{:tool_call, _, _, _}` /
+      `{:compact_tool, _, _, _}` for Trigger B (mid-turn).
+
+  All four production entries are explicit. No `nil` case
+  (removed in the continuation → entry rename — every chat
+  turn has a meaningful entry, even the default user message
+  case which is `{:user_message, %User{parts: []}}`).
   """
 
   alias Nest.Agents.Agent.ChatTurnSupervisor
@@ -37,7 +48,7 @@ defmodule Nest.Agents.Agent.ChatTurnSpawner do
 
   @doc """
   Spawn a fresh `ChatTurn` under `ChatTurnSupervisor`, seeded
-  with `messages` as `ctx.messages` and `continuation` as the
+  with `messages` as `ctx.messages` and `entry` as the
   init info. `caps` is the resolved capability map for the
   effective mode (caller-resolved; this module doesn't
   depend on `Vocations`).
@@ -45,13 +56,12 @@ defmodule Nest.Agents.Agent.ChatTurnSpawner do
   Returns the new state with `chat_turn_pid` set (or `nil` if
   the supervisor is saturated). The four production call
   sites — Trigger 1 preflight `:fits`, Trigger 1 post-compaction,
-  Trigger 2 post-compaction, Trigger 3 post-compaction — all
-  funnel through this function; the compaction handler's
-  case-contination arms at the compactor's output drop to a
-  single call here.
+  Trigger 2 post-compaction, Trigger 3 post-compaction,
+  compactor's own chat turn — all funnel through this function.
   """
-  @spec spawn(Nest.Agents.Agent.t(), list(), term(), map()) :: Nest.Agents.Agent.t()
-  def spawn(state, messages, continuation, caps) do
+  @spec spawn(Nest.Agents.Agent.t(), list(), Nest.Agents.Agent.ChatTurn.State.entry(), map()) ::
+          Nest.Agents.Agent.t()
+  def spawn(state, messages, entry, caps) do
     agent_pid = self()
 
     ctx = %{
@@ -66,7 +76,7 @@ defmodule Nest.Agents.Agent.ChatTurnSpawner do
       tmp_path: state.tmp_path
     }
 
-    case ChatTurnSupervisor.start_chat_turn(agent_pid, ctx, continuation) do
+    case ChatTurnSupervisor.start_chat_turn(agent_pid, ctx, entry) do
       {:ok, chat_turn_pid} ->
         %{state | chat_state: %{state.chat_state | chat_turn_pid: chat_turn_pid}}
 

@@ -16,7 +16,6 @@ defmodule Nest.Agents.Agent do
   alias Nest.Agents.Agent.ApiLogs
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ChatPipeline
-  alias Nest.Agents.Agent.Compaction.Lifecycle, as: CompactionLifecycle
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Handlers
   alias Nest.Agents.Agent.Init
@@ -312,22 +311,13 @@ defmodule Nest.Agents.Agent do
     {:reply, stamped, state}
   end
 
-  # Bulk-append the compactor's LLM-call artifacts (the
-  # `[mode: compact]` suffix + the LLM's `wrap_summary`). Each
-  # message is stamped with the next sequential index via the
-  # canonical `__append_message__/2` path (so persistence and
-  # `chat:message` broadcast fire for each one). See
-  # `notes/properly-handle-summary-messages-and-openai-think.md`.
-  @impl true
-  def handle_call({:append_compaction_messages, messages}, _from, state) do
-    {stamped, state} =
-      Enum.map_reduce(messages, state, fn msg, st ->
-        {stamped_msg, new_st} = __append_message__(st, msg)
-        {stamped_msg, new_st}
-      end)
-
-    {:reply, stamped, state}
-  end
+  # Compactor's suffix is now appended by the trigger
+  # via `__append_message__/2` before the compactor's
+  # chat turn spawns. The LLM's response (the summary)
+  # is appended by the LLM stream handler's
+  # `tool_calls_received/2` (same path as a regular chat
+  # turn). The previous `{:append_compaction_messages, _}`
+  # bulk-append is no longer needed.
 
   # Catch-all dispatcher for introspection calls.
   @impl true
@@ -389,18 +379,15 @@ defmodule Nest.Agents.Agent do
     {role, %{msg | index: index}}
   end
 
-  # Move the agent's current `messages` to `history` (with a
-  # compaction marker), then replace `messages` with the new
-  # compacted state. The marker is a `{:compaction, _}` tuple
-  # that lives in `history` only — it never reaches the LLM.
-  # Implementation lives in `CompactionLifecycle`; this is a
-  # thin forwarder so the GenServer module stays small.
-  #
-  # Side effect: bumps `state.chat_state.last_compaction_index`
-  # to the marker's index, and persists the marker (and the
-  # column bump, atomically) via
-  # `Persistence.record_compaction/3`.
-  defdelegate __compaction_completed__(state, new_messages), to: CompactionLifecycle, as: :apply
+  # Compaction completion is now handled in-process by
+  # `Nest.Agents.Agent.Compaction.ResultHandler.handle_success/3`
+  # (called from `Handlers.CompactionHandler.handle/2` on
+  # `{:compaction_done, ...}` arrival). The previous
+  # `__compaction_completed__/2` defdelegate (which
+  # forwarded to `Compaction.Lifecycle.apply/2`) is
+  # removed — the result handler owns the full flow
+  # (strip → summary_user → archive → persist →
+  # broadcast → spawn next).
 
   @impl true
   def handle_info(msg, state) do

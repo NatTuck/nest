@@ -18,9 +18,9 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   """
 
   alias Nest.Agents.Agent.Broadcasts
-  alias Nest.Agents.Agent.ChatPipeline.CompactionSpawn
   alias Nest.Agents.Agent.ChatTurnSpawner
-  alias Nest.Agents.Agent.Handlers.CompactionHandler
+  alias Nest.Agents.Agent.Compaction.Overflow
+  alias Nest.Agents.Agent.Compaction.Trigger
   alias Nest.Messages.Part
   alias Nest.Messages.Streaming
   alias Nest.Messages.User
@@ -150,59 +150,6 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   # Kept for legacy callers (no production path uses this after
   # the post-compaction dispatch consolidated through
   # `ChatTurnSpawner.spawn/4`).
-  @doc """
-  Spawn a ChatTurn child under the ChatTurnSupervisor with
-  `messages` as `ctx.messages` and `info` as the init info.
-  Routes through `ChatTurnSpawner.spawn/4` after resolving
-  capabilities. Kept for any test fixtures that called it
-  directly during the transition.
-  """
-  @deprecated "Use ChatTurnSpawner.spawn/4 directly"
-  @spec spawn_chat_turn(Nest.Agents.Agent.t(), term()) :: Nest.Agents.Agent.t()
-  def spawn_chat_turn(state, info \\ nil) do
-    {_effective_mode, caps} = resolve_mode_and_caps(state.mode, state.vocation)
-    ChatTurnSpawner.spawn(state, state.chat_state.messages, info, caps)
-  end
-
-  # Backward-compat alias used by older test fixtures. Routes
-  # through `ChatTurnSpawner.spawn/4` with `messages` as the
-  # active list. The legacy tuple shape `:mid_turn` is
-  # decomposed; production callers use one of the new
-  # continuation shapes directly.
-  @doc """
-  Spawn a ChatTurn after a compaction. The new ChatTurn's
-  `messages` arg becomes `ctx.messages`; the `info` arg
-  becomes the ChatTurn's continuation. Backward-compat
-  shape: `{:mid_turn, _, _}` is decomposed back into
-  `{:tool_call, _, iteration, max_iterations}` for the
-  underlying spawner.
-  """
-  @deprecated "Use ChatTurnSpawner.spawn/4 with an explicit continuation"
-  @spec spawn_resumed_chat_turn(
-          Nest.Agents.Agent.t(),
-          [Message.t()],
-          term(),
-          non_neg_integer(),
-          pos_integer()
-        ) ::
-          Nest.Agents.Agent.t()
-  def spawn_resumed_chat_turn(state, compacted_messages, info, iteration, max_iterations) do
-    state = %{state | chat_state: %{state.chat_state | messages: compacted_messages}}
-    {_effective_mode, caps} = resolve_mode_and_caps(state.mode, state.vocation)
-
-    case info do
-      {:mid_turn, _msg, _iter, _max} = continuation ->
-        ChatTurnSpawner.spawn(state, compacted_messages, continuation, caps)
-
-      _other ->
-        ChatTurnSpawner.spawn(
-          state,
-          compacted_messages,
-          {:tool_call, info, iteration, max_iterations},
-          caps
-        )
-    end
-  end
 
   # Transition the chat_state to `:streaming` after a user message
   # has been appended via `__append_message__/2`. Sets the
@@ -289,47 +236,11 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   # The pending user message stays in `pending_user_message`
   # during compaction (so the compactor doesn't try to
   # summarize a brand-new user turn). After compaction
-  # succeeds, `compaction_done/3` calls `ChatTurnSpawner.spawn/4`
-  # with the continuation shaped from `pending_user_message`;
-  # the carried user message lands at the post-compaction
-  # active messages tail.
-  #
-  # We build the `{:user_message, user_message_struct}`
-  # continuation here at the trigger site (where
-  # `state.chat_state.messages` is live pre-swap) so the
-  # pre-swap-tail lookup is the only place we touch the
-  # messages list to find the outstanding message.
+  # succeeds, the compactor's chat turn finishes and
+  # `ResultHandler.handle_success/3` resumes via
+  # `resume_with_pending/1` with the held user message.
   defp spawn_compaction_pipeline(state) do
-    state = %{state | chat_state: %{state.chat_state | status: :compacting}}
-    Broadcasts.status(state.name, state)
-
-    case CompactionHandler.check_consecutive(state) do
-      :refuse ->
-        # Loop detected. The CompactionHandler already
-        # broadcast the loop event and set the
-        # :compaction_loop_detected status. The pending
-        # user message stays set so the next chat:message
-        # (after OK) can re-attach; for now, leave the
-        # agent in the loop state and return.
-        state
-
-      {:ok, state} ->
-        messages = state.chat_state.messages
-        system_msg = Enum.find(messages, &match?({:system, _}, &1))
-
-        {:user, user_msg} = pending_user_message_struct(state)
-
-        CompactionSpawn.spawn_compaction!(
-          self(),
-          state,
-          messages,
-          system_msg,
-          {:user_message, user_msg},
-          nil
-        )
-
-        state
-    end
+    Trigger.post_turn(state)
   end
 
   # The conversation cannot fit even after compaction would
@@ -347,11 +258,10 @@ defmodule Nest.Agents.Agent.ChatPipeline do
 
     Broadcasts.status(state.name, state)
 
-    Broadcasts.error(
-      state.name,
-      nil,
-      CompactionSpawn.overflow_message(state),
-      "Nest.Agents.Agent.ChatPipeline.handle_preflight/2"
+    Overflow.broadcast(
+      state,
+      "Nest.Agents.Agent.ChatPipeline.handle_preflight/2",
+      "start a conversation"
     )
 
     state

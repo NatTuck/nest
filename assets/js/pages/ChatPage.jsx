@@ -579,12 +579,15 @@ export function ChatPage() {
           disabled={isInputDisabled}
           // Hide the input entirely while the agent is in a
           // frozen state. The StatusBanner shows the relevant
-          // banner: a spinner for `:compacting`, a Retry button
-          // for `:compaction_failed`, or the context-too-small
-          // message for `:context_overflow` (no Retry — switching
-          // to a larger model is the only way forward).
+          // banner: a Retry button for `:compaction_failed`, an
+          // OK button for `:compaction_loop_detected`, or the
+          // context-too-small message for `:context_overflow`
+          // (no Retry — switching to a larger model is the only
+          // way forward). `:compacting` is intentionally NOT
+          // frozen — the compactor records the suffix + a
+          // synthetic assistant message in the message list, and
+          // the user can watch the chat pane while it runs.
           frozen={
-            agentState === "compacting" ||
             agentState === "compaction_failed" ||
             agentState === "compaction_loop_detected" ||
             agentState === "context_overflow"

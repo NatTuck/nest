@@ -35,21 +35,20 @@ defmodule Nest.Agents.Agent.ChatTurnSupervisor do
   supervisor is saturated.
 
   Used by `ChatTurnSpawner.spawn/4` after the carried messages
-  are in place and the continuation (one of the three shapes
-  in `Nest.Agents.Agent.ChatTurn.State.continuation/0`) is
-  chosen. The ChatTurn drives the iteration by querying the
-  Agent for messages, calling the LLM via
-  `Nest.LLM.Runner.request/2`, and dispatching tool calls.
-  The Agent is the single source of truth for the messages
-  list — the ChatTurn never mutates it directly, only via
-  `GenServer.call({:append_message, _})`.
+  are in place and the entry (one of the four shapes in
+  `Nest.Agents.Agent.ChatTurn.State.entry/0`) is chosen. The
+  ChatTurn drives the iteration by querying the Agent for
+  messages, calling the LLM via `Nest.LLM.Runner.request/2`,
+  and dispatching tool calls. The Agent is the single source
+  of truth for the messages list — the ChatTurn never mutates
+  it directly, only via `GenServer.call({:append_message, _})`.
   """
-  @spec start_chat_turn(pid(), map(), Nest.Agents.Agent.ChatTurn.State.info()) ::
+  @spec start_chat_turn(pid(), map(), Nest.Agents.Agent.ChatTurn.State.entry()) ::
           DynamicSupervisor.on_start_child()
-  def start_chat_turn(agent_pid, ctx, info \\ nil) do
+  def start_chat_turn(agent_pid, ctx, entry) do
     spec = %{
       id: {__MODULE__, agent_pid, System.unique_integer([:positive])},
-      start: {Nest.Agents.Agent.ChatTurn, :start_link, [{agent_pid, ctx, info}]},
+      start: {Nest.Agents.Agent.ChatTurn, :start_link, [{agent_pid, ctx, entry}]},
       restart: :temporary,
       type: :worker
     }

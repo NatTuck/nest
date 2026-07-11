@@ -49,6 +49,7 @@ defmodule Nest.Agents.Agent.ChatTurn.Iteration do
   alias Nest.Agents.Agent.ChatTurn.ContextReminder
   alias Nest.Agents.Agent.ChatTurn.HTTPWorker
   alias Nest.Agents.Agent.ChatTurn.State
+  alias Nest.Messages.Part
 
   @doc """
   Broadcast a `chat_notification` so the UI can show a
@@ -96,6 +97,102 @@ defmodule Nest.Agents.Agent.ChatTurn.Iteration do
   def dispatch_batch(state, messages) do
     state = inject_context_warning(state, messages)
     spawn_http_worker(state, messages)
+  end
+
+  @doc """
+  Compactor's own chat turn: dispatch the LLM call with
+  `tools: nil, tool_choice: :none` (no tool calls in a
+  summarization request). No context-warning injection
+  (this is a one-shot call, not a long conversation),
+  no budget reminder (iteration cap is irrelevant). The
+  HTTP worker streams the response, the ChatTurn routes
+  deltas to the Agent (via `:delta_received`), and the
+  `ResponseHandler.handle/3` path appends the assistant
+  message via the canonical `__append_message__/2` path.
+  On `chat_idle`, `finalize_compaction/1` sends
+  `{:compaction_done, summary_text, carried_entry}` to
+  the Agent instead of the normal `{:chat_idle, _}`.
+
+  The request log is queued at the suffix's index (the
+  message that triggered this LLM call). The Agent's
+  `api_log_handler` re-broadcasts the suffix with the
+  request log attached (it already exists in the
+  messages list).
+
+  Two exceptions to "messages don't change" apply
+  here (same as the previous compactor's private LLM
+  call):
+
+    1. Strip everything from the first `[mode: compact]`
+       system message forward (on retry, exclude prior
+       failed attempts from the LLM call's input — they
+       stay in `state.chat_state.messages` for the user
+       to inspect in the chat UI).
+    2. Drop trailing unsatisfied tool calls (orphan
+       `Part.ToolUse` — Anthropic rejects unpaired
+       `tool_use` with `(2013) tool call result does not
+       follow tool call`). The orphan stays in
+       `state.chat_state.messages`; the next chat turn
+       re-sends it with the eventual `tool_result`.
+  """
+  @spec dispatch_compaction(State.t(), list()) ::
+          {:noreply, State.t()} | {:stop, :normal, State.t()}
+  def dispatch_compaction(state, messages) do
+    # Compactor's chat turn: tools disabled, no context
+    # warning, no budget reminder. The LLM is asked to
+    # summarize, not chat.
+    state = %{state | ctx: %{state.ctx | tools: nil, tool_choice: :none}}
+
+    messages =
+      messages
+      |> strip_prior_compaction_attempts()
+      |> drop_trailing_unsatisfied_tool_call()
+
+    spawn_http_worker(state, messages)
+  end
+
+  # Strip everything from the first `[mode: compact]`
+  # system message forward. On retry, excludes prior
+  # failed compaction attempts from the LLM call input.
+  # The attempts STAY in `state.chat_state.messages` so
+  # the user can inspect them in the chat UI.
+  defp strip_prior_compaction_attempts(messages) do
+    case first_compaction_suffix_index(messages) do
+      nil -> messages
+      idx -> Enum.take(messages, idx)
+    end
+  end
+
+  defp first_compaction_suffix_index(messages) do
+    Enum.find_index(messages, fn
+      {:system, %Nest.Messages.System{parts: parts}} -> compaction_suffix?(parts)
+      _ -> false
+    end)
+  end
+
+  defp compaction_suffix?(parts) do
+    Enum.any?(parts, fn
+      %Part.Text{text: text} -> String.starts_with?(text, "[mode: compact]")
+      _ -> false
+    end)
+  end
+
+  # Drop the trailing message if it's an assistant message
+  # whose parts include a `Part.ToolUse` (an unsatisfied
+  # tool call — Anthropic's `(2013)` validation rejects
+  # unpaired `tool_use`).
+  defp drop_trailing_unsatisfied_tool_call(messages) do
+    case List.last(messages) do
+      {:assistant, %Nest.Messages.Assistant{parts: parts}} ->
+        if Enum.any?(parts, &match?(%Part.ToolUse{}, &1)) do
+          Enum.drop(messages, -1)
+        else
+          messages
+        end
+
+      _ ->
+        messages
+    end
   end
 
   # If the current messages cross a context-usage

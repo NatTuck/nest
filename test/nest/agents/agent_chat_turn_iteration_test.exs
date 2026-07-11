@@ -219,13 +219,13 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
     end
   end
 
-  describe "mid_turn_compaction field lifecycle" do
-    test "mid_turn_compaction is cleared on successful compaction_done" do
+  describe "mid_turn_entry field lifecycle" do
+    test "mid_turn_entry is cleared on successful compaction_done" do
       pid = start_test_agent()
       state = :sys.get_state(pid)
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.name}")
 
-      # Pre-seed mid_turn_compaction as if a mid-turn
+      # Pre-seed mid_turn_entry as if a mid-turn
       # compaction is in progress. The new field shape
       # carries the full continuation payload (not just
       # the iteration counters) so a future retry can
@@ -235,8 +235,8 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
           state
           | chat_state: %{
               state.chat_state
-              | mid_turn_compaction: %{
-                  continuation: {:tool_call, synthetic_tool_call_msg(), 7, 30}
+              | mid_turn_entry: %{
+                  entry: {:tool_call, synthetic_tool_call_msg(), 7, 30}
                 }
             }
         }
@@ -260,14 +260,14 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
       end)
 
       state_after = :sys.get_state(pid)
-      assert state_after.chat_state.mid_turn_compaction == nil
+      assert state_after.chat_state.mid_turn_entry == nil
 
       Agent.terminate(pid)
     end
   end
 
-  describe "retry_compaction branches on mid_turn_compaction" do
-    test "retry uses mid-turn continuation when mid_turn_compaction is set" do
+  describe "retry_compaction branches on mid_turn_entry" do
+    test "retry uses mid-turn continuation when mid_turn_entry is set" do
       pid = start_test_agent()
       state = :sys.get_state(pid)
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.name}")
@@ -278,8 +278,8 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
           | chat_state: %{
               state.chat_state
               | status: :compaction_failed,
-                mid_turn_compaction: %{
-                  continuation: {:tool_call, synthetic_tool_call_msg(), 12, 30}
+                mid_turn_entry: %{
+                  entry: {:tool_call, synthetic_tool_call_msg(), 12, 30}
                 }
             }
         }
@@ -294,7 +294,7 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
       Agent.terminate(pid)
     end
 
-    test "retry uses Trigger B path when mid_turn_compaction is nil" do
+    test "retry uses Trigger B path when mid_turn_entry is nil" do
       pid = start_test_agent()
       state = :sys.get_state(pid)
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.name}")
@@ -306,7 +306,7 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
               state.chat_state
               | status: :compaction_failed,
                 pending_user_message: {"Hello", "build"},
-                mid_turn_compaction: nil
+                mid_turn_entry: nil
             }
         }
       end)
@@ -321,7 +321,7 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
     end
   end
 
-  describe "mid_turn_compaction carries the trailing assistant+ToolUse forward" do
+  describe "mid_turn_entry carries the trailing assistant+ToolUse forward" do
     # Regression for the field bug: when mid-turn compaction fires, the
     # LLM's emitted tool calls used to be archived into history along
     # with the rest of the pre-compaction messages, leaving the new
@@ -413,14 +413,15 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
       chat_turn_state = :sys.get_state(chat_turn_pid)
 
       # The agent's chat_state.messages now ends with the carried-forward
-      # assistant+ToolUse, ahead of which sits the fresh system + summary.
+      # assistant+ToolUse, preceded by summary_user. (The system
+      # message is in history after the swap — the new design
+      # doesn't regenerate it.)
       final_messages = :sys.get_state(pid).chat_state.messages
 
-      assert length(final_messages) == 3,
-             "expected [fresh_system, summary_user, assistant+ToolUse]; got #{inspect(final_messages)}"
+      assert length(final_messages) == 2,
+             "expected [summary_user, assistant+ToolUse]; got #{inspect(final_messages)}"
 
-      assert elem(Enum.at(final_messages, 0), 0) == :system
-      assert match?({:user, _}, Enum.at(final_messages, 1))
+      assert match?({:user, _}, Enum.at(final_messages, 0))
 
       # The carried-forward trailing assistant message must carry the
       # original ToolUse parts (the renumbering pass in
@@ -435,10 +436,10 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
                &match?(%Part.ToolUse{id: "call_1", name: "read_file"}, &1)
              )
 
-      # The ChatTurn's `info` is the carried continuation itself —
-      # the `ChatTurn.State.continuation/0` shape — not the legacy
+      # The ChatTurn's `entry` is the carried entry itself —
+      # the `ChatTurn.State.entry/0` shape — not the legacy
       # `%{kind: :mid_turn, iteration, max_iterations}` map.
-      assert chat_turn_state.info == {:tool_call, assistant_with_tool_use, 3, 30}
+      assert chat_turn_state.entry == {:tool_call, assistant_with_tool_use, 3, 30}
       {ctx_tail_role, ctx_tail_struct} = List.last(chat_turn_state.ctx.messages)
       assert ctx_tail_role == :assistant
       assert Enum.any?(ctx_tail_struct.parts, &match?(%Part.ToolUse{id: "call_1"}, &1))

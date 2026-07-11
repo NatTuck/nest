@@ -1270,18 +1270,6 @@ describe("ChatPage compaction-frozen state", () => {
     vi.clearAllMocks();
   });
 
-  function setupCompacting() {
-    mockAgentsCache = {
-      "test-agent": {
-        status: "connected",
-        agentState: "compacting",
-        messages: [],
-        model: { name: "qwen3.5-plus" },
-      },
-    };
-    renderChat();
-  }
-
   function setupCompactionFailed() {
     mockAgentsCache = {
       "test-agent": {
@@ -1295,11 +1283,26 @@ describe("ChatPage compaction-frozen state", () => {
     renderChat();
   }
 
-  it("hides the chat input when the agent is compacting", () => {
-    setupCompacting();
+  it("does NOT freeze the input or show a banner while the agent is compacting", () => {
+    // The compactor records the suffix + a synthetic assistant
+    // message in the message list, and the user watches the
+    // chat pane while the LLM call runs. The StatusBanner
+    // intentionally does not render for `:compacting` (no
+    // spinner) and the chat input stays usable.
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "compacting",
+        messages: [],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+    renderChat();
 
-    expect(screen.queryByRole("textbox", { name: /message/i })).toBeNull();
-    expect(screen.getByText("Compacting conversation...")).toBeInTheDocument();
+    // Input is visible and usable.
+    expect(screen.queryByRole("textbox", { name: /message/i })).not.toBeNull();
+    // No compacting spinner banner.
+    expect(screen.queryByText("Compacting conversation...")).toBeNull();
   });
 
   it("hides the chat input and shows a Retry-compaction button when compaction_failed", () => {

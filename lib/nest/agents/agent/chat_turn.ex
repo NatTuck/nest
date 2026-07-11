@@ -54,6 +54,9 @@ defmodule Nest.Agents.Agent.ChatTurn do
     * `{:chat_stopped, self()}` — user-initiated stop
     * `{:chat_crashed, exception, stacktrace}` —
       unexpected crash
+    * `{:compaction_done, summary_text, carried_entry}` —
+      compactor's own chat turn finished; the Agent's
+      `Compaction.ResultHandler` takes over from here
 
   ## Agent contract (Agent → ChatTurn, `send/2`)
 
@@ -90,19 +93,19 @@ defmodule Nest.Agents.Agent.ChatTurn do
 
   @doc """
   Start a ChatTurn child under the ChatTurnSupervisor.
-  The args are `{agent_pid, ctx}` — the ctx map carries
-  everything the ChatTurn needs (client_config, tools,
-  caps, context_limit, agent_id, agent_pid).
+  The args are `{agent_pid, ctx, entry}` — the ctx map
+  carries everything the ChatTurn needs (client_config,
+  tools, caps, context_limit, agent_id, agent_pid).
   """
-  @spec start_link({pid(), map(), State.info()}) :: GenServer.on_start()
-  def start_link({_agent_pid, _ctx, _info} = args) do
+  @spec start_link({pid(), map(), State.entry()}) :: GenServer.on_start()
+  def start_link({_agent_pid, _ctx, _entry} = args) do
     GenServer.start_link(__MODULE__, args)
   end
 
   # Server Callbacks
 
   @impl true
-  def init({agent_pid, ctx, continuation}) do
+  def init({agent_pid, ctx, entry}) do
     Process.flag(:trap_exit, true)
     # Mimic permissions: when a test sets `Mimic.allow/3`
     # on the Agent's pid (e.g. `Mimic.allow(MockClient,
@@ -118,13 +121,13 @@ defmodule Nest.Agents.Agent.ChatTurn do
 
     state = %State{
       ctx: ctx,
-      iteration: initial_iteration(continuation),
-      max_iterations: initial_max_iterations(continuation),
+      iteration: initial_iteration(entry),
+      max_iterations: initial_max_iterations(entry),
       force_finalize: false,
       active_worker: nil,
       active_worker_kind: nil,
       active_message_index: 0,
-      info: continuation
+      entry: entry
     }
 
     Process.send(self(), :iterate, [])
@@ -216,7 +219,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
   # ABC size under credo's limit. Returns the same
   # `GenServer.reply` tuple as `safe_iterate/1` did.
   #
-  # The continuation carries the resume payload:
+  # The entry carries the resume payload:
   #
   #   * `{:tool_call, _, _, _}` → tail has `assistant+ToolUse`
   #     (Trigger 2). First iter runs the carried tool calls.
@@ -224,12 +227,16 @@ defmodule Nest.Agents.Agent.ChatTurn do
   #     `tool` result (Trigger 3). First iter falls through to
   #     the LLM (the resume pays no preflight tax since the
   #     tool was already executed/baked-in by the trigger site).
-  #   * `nil` or `{:user_message, _}` → tail has the user
+  #   * `{:user_message, _}` → tail has the user
   #     message (Trigger 1). First iter falls through to the
   #     LLM via `dispatch_batch`.
+  #   * `{:compaction, _, _}` → compactor's own chat turn.
+  #     First iter dispatches with `tools: nil, tool_choice: :none`
+  #     (no budget reminder, no context warning — this is a
+  #     one-shot summarization call).
   #
   # The messages list is correctly shaped by construction (the
-  # continuation structure carries it through the compactor's
+  # entry structure carries it through the compactor's
   # swap). No post-resume defensive checks.
   defp iteration_branch(state, messages, cancelled) do
     cond do
@@ -239,10 +246,21 @@ defmodule Nest.Agents.Agent.ChatTurn do
       pending_tool_calls?(messages) ->
         execute_pending_tool_calls(state, messages)
 
+      compactor_entry?(state) ->
+        Iteration.dispatch_compaction(state, messages)
+
       true ->
         Iteration.dispatch_batch(state, messages)
     end
   end
+
+  # True when this ChatTurn is the compactor's own chat turn.
+  # The entry shape `{:compaction, _, _}` tells us to dispatch
+  # with `tools: nil, tool_choice: :none` (no tool calls in a
+  # summarization request) and the iteration cap is irrelevant
+  # (a single LLM call is the whole job).
+  defp compactor_entry?(%State{entry: {:compaction, _, _}}), do: true
+  defp compactor_entry?(_), do: false
 
   # Detect that the LLM has already responded with tool calls and
   # we're waiting to execute them. The last message must be an
@@ -284,13 +302,14 @@ defmodule Nest.Agents.Agent.ChatTurn do
     end
   end
 
-  # Resolve the iteration count from the continuation. Both tool
-  # continuations (`{:tool_call, _, _, _}` and
+  # Resolve the iteration count from the entry. Both tool
+  # entries (`{:tool_call, _, _, _}` and
   # `{:compact_tool, _, _, _}`) carry their iteration count +
   # max_iterations through the compaction boundary so the
   # tool-call iteration cap is enforced continuously across
-  # both trigger types. The `{:user_message, _}` and `nil`
-  # shapes start fresh (iteration 0, default max).
+  # both trigger types. The `{:user_message, _}` and
+  # `{:compaction, _, _}` shapes start fresh (iteration 0,
+  # default max).
   defp initial_iteration({_tag, _msg, n, _max}) when is_integer(n), do: n
   defp initial_iteration(_), do: 0
 

@@ -1,19 +1,18 @@
 /**
  * StatusBanner component — shows a top-of-page banner for
- * connection states: connecting (spinner), error (with Retry),
- * disconnected (with Reconnect), or agent-level compaction
- * states: compacting (spinner, no button), compaction_failed
- * (with Retry button that calls onRetryCompaction),
- * compaction_loop_detected (with OK button that calls
- * onCompactionLoopOk).
+ * connection states (connecting, error, disconnected) and for
+ * the compaction failure/loop states (compaction_failed with
+ * a Retry button, compaction_loop_detected with an OK button,
+ * context_overflow with no action button).
  *
- * `context_overflow` is distinct from compaction_failed and
- * compaction_loop_detected: the model is fundamentally too
- * small for the system prompt and retrying will not help. The
- * banner therefore omits the action button and instructs the
- * user to switch models or clear the conversation. The `error`
- * prop carries the actual numbers (system prompt size, context
- * limit) from the server.
+ * The in-progress `:compacting` state does NOT render a banner
+ * here — the compactor's `compaction.ex` records the suffix +
+ * a synthetic assistant message into the agent's message list
+ * even on failure, so the user can see the compaction attempt
+ * (and the failure) in the chat pane itself, no special
+ * in-progress state required. Only the error/loop states
+ * (which need an explicit user action — Retry or OK) warrant a
+ * banner.
  *
  * Returns `null` for the connected/idle state — the chat input
  * is then the primary UI.
@@ -70,17 +69,6 @@ export function StatusBanner({
           >
             Reconnect
           </button>
-        </div>
-      </div>
-    );
-  }
-
-  if (status === "compacting") {
-    return (
-      <div className="bg-blue-100 border-l-4 border-blue-500 p-4 mb-4">
-        <div className="flex items-center">
-          <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600 mr-3" />
-          <p className="text-blue-700">Compacting conversation...</p>
         </div>
       </div>
     );

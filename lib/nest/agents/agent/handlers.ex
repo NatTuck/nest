@@ -11,10 +11,17 @@ defmodule Nest.Agents.Agent.Handlers do
       errors, usage).
     * `Nest.Agents.Agent.Handlers.ApiLogHandler` — API log
       events.
+    * `Nest.Agents.Agent.Handlers.ChatTurnHandler` — chat
+      turn lifecycle events.
     * `Nest.Agents.Agent.Handlers.CompactionHandler` —
-      compaction and pre-flight events.
+      compaction completion + retry events (the
+      trigger-side lives in
+      `Nest.Agents.Agent.Compaction.Trigger` /
+      `ResultHandler`).
     * `Nest.Agents.Agent.Handlers.ExitHandler` — process
       exit signals.
+    * `Nest.Agents.Agent.Handlers.StopHandler` — stop
+      signals.
 
   Context-limit resolution happens once at startup in
   `Nest.Agents.Agent.Init.initial_context_limit/1` (synchronous,
@@ -30,8 +37,8 @@ defmodule Nest.Agents.Agent.Handlers do
   alias Nest.Agents.Agent.Handlers.StopHandler
 
   @doc """
-  Dispatch an arbitrary `handle_info/2` message. Returns the
-  GenServer's reply tuple (`{:noreply, state}` or
+  Dispatch an arbitrary `handle_info/2` message. Returns
+  the GenServer's reply tuple (`{:noreply, state}` or
   `{:stop, reason, state}`).
 
   The message tag is extracted to look up a sub-handler

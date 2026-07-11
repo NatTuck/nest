@@ -60,7 +60,7 @@ describe("StatusBanner", () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it("renders a compacting spinner with no Retry button", () => {
+  it("renders nothing for :compacting (compaction attempt is visible in the chat pane itself)", () => {
     const onRetryCompaction = vi.fn();
 
     const { container } = render(
@@ -71,9 +71,11 @@ describe("StatusBanner", () => {
       />,
     );
 
-    expect(screen.getByText("Compacting conversation...")).toBeInTheDocument();
-    // The compacting banner is informational — no button.
-    expect(container.querySelector("button")).toBeNull();
+    // No banner during compaction. The agent records the
+    // suffix + a synthetic assistant message in the message
+    // list, and the user can watch the chat pane while the
+    // LLM call runs.
+    expect(container.firstChild).toBeNull();
   });
 
   it("renders a compaction_failed banner with a Retry-compaction button", () => {

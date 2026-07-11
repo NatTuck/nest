@@ -29,7 +29,7 @@ defmodule Nest.Agents.Agent.ChatTurnStructureTest do
         :active_worker_kind,
         :active_message_index,
         :crossed_thresholds,
-        :info
+        :entry
       ]
 
       actual_fields = State.__struct__() |> Map.from_struct() |> Map.keys() |> Enum.sort()

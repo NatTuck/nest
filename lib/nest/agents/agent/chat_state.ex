@@ -54,14 +54,14 @@ defmodule Nest.Agents.Agent.ChatState do
   field stays set so `chat:retry-compaction` can re-attach it
   to the next compaction attempt.
 
-  The `mid_turn_compaction` field is set when a mid-turn
+  The `mid_turn_entry` field is set when a mid-turn
   compaction is in flight or has failed. Its presence tells
-  `retry_compaction/1` to resume with `:mid_turn_continuation`
+  `retry_compaction/1` to resume with `:mid_turn_entry`
   (spawn a fresh ChatTurn to execute the LLM's pending tool
   calls) instead of the Trigger B path (append a held user
-  message). It carries the iteration count and max-iterations
-  so the tool-call iteration cap is enforced across the
-  compaction boundary.
+  message). It carries the entry (the resume payload for
+  the next ChatTurn) so the tool-call iteration cap is
+  enforced across the compaction boundary.
 
   The `last_compaction_index` field is the runtime mirror of
   the persisted `agents.last_compaction_index` column. It is
@@ -91,19 +91,18 @@ defmodule Nest.Agents.Agent.ChatState do
             cancelled: false,
             pending_children: %{},
             pending_user_message: nil,
-            mid_turn_compaction: nil,
+            mid_turn_entry: nil,
             # Loop-breaker counter. Incremented every time a
             # compaction is spawned (Trigger B/C or `:compact`
             # tool). Reset to 0 when a user/assistant/tool message
             # is appended (genuine progress). When the count
             # exceeds `@max_consecutive_compactions` in
-            # `CompactionHandler`, the agent enters
+            # `Compaction.ResultHandler`, the agent enters
             # `:compaction_loop_detected` and broadcasts
             # `chat:compaction-loop`. The user clicks an OK
             # button on the banner to clear the state and
             # resume accepting new `chat:message` traffic.
             consecutive_compaction_count: 0
 
-  @type mid_turn_compaction ::
-          %{iteration: non_neg_integer(), max_iterations: pos_integer()}
+  @type mid_turn_entry :: %{entry: Nest.Agents.Agent.ChatTurn.State.entry() | nil}
 end

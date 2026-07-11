@@ -93,4 +93,39 @@ defmodule Nest.Agents.Agent.ChatTurn.Lifecycle do
     send(state.ctx.agent_pid, {:api_log_sequences_updated, APILog.read_sequences()})
     {:stop, :normal, state}
   end
+
+  @doc """
+  End of the compactor's own chat turn. Send
+  `{:compaction_done, summary_text, carried_entry}` to
+  the Agent, then stop. The Agent's
+  `Compaction.ResultHandler` takes over from here — it
+  strips thinking, builds summary_user, archives old
+  messages, and broadcasts the new active message list.
+
+  `carried_entry` is the third element of the
+  `{:compaction, _, carried_entry}` entry — `nil` for
+  Trigger A (post-turn) or the carried
+  `{:tool_call, _, _, _}` / `{:compact_tool, _, _, _}` for
+  Trigger B (mid-turn). The carried entry is what
+  `Compaction.ResultHandler` uses to spawn the next
+  ChatTurn (the tool call sequence resumes).
+
+  Returns `{:stop, :normal, state}`.
+  """
+  @spec finalize_compaction(State.t(), Nest.LLM.RunResponse.t()) :: {:stop, :normal, State.t()}
+  def finalize_compaction(state, response) do
+    # The entry is `{:compaction, _system_msg, carried_entry}`.
+    # The system message was for the LLM (the suffix); the
+    # third element is the carried entry to thread into
+    # the post-compaction ChatTurn spawn.
+    {_, _system_msg, carried_entry} = state.entry
+
+    send(
+      state.ctx.agent_pid,
+      {:compaction_done, response.text || "", carried_entry}
+    )
+
+    send(state.ctx.agent_pid, {:api_log_sequences_updated, APILog.read_sequences()})
+    {:stop, :normal, state}
+  end
 end
