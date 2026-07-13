@@ -295,4 +295,90 @@ defmodule Nest.DotConfigTest do
       end
     end
   end
+
+  describe "rewrite-late-system-messages" do
+    test "defaults to false when absent from the TOML" do
+      toml = """
+      [providers.foo]
+      base-url = "http://example.com/v1"
+      api-key = "x"
+      """
+
+      tmp_path =
+        Path.join(
+          System.tmp_dir!(),
+          "no_rewrite_#{System.unique_integer([:positive])}.toml"
+        )
+
+      File.write!(tmp_path, toml)
+      on_exit(fn -> File.rm(tmp_path) end)
+
+      assert {:ok, config} = DotConfig.load(tmp_path)
+      assert config.providers["foo"].rewrite_late_system_messages == false
+    end
+
+    test "parses `true` when explicitly set" do
+      toml = """
+      [providers.foo]
+      base-url = "http://example.com/v1"
+      api-key = "x"
+      rewrite-late-system-messages = true
+      """
+
+      tmp_path =
+        Path.join(
+          System.tmp_dir!(),
+          "rewrite_true_#{System.unique_integer([:positive])}.toml"
+        )
+
+      File.write!(tmp_path, toml)
+      on_exit(fn -> File.rm(tmp_path) end)
+
+      assert {:ok, config} = DotConfig.load(tmp_path)
+      assert config.providers["foo"].rewrite_late_system_messages == true
+    end
+
+    test "parses `false` when explicitly set" do
+      toml = """
+      [providers.foo]
+      base-url = "http://example.com/v1"
+      api-key = "x"
+      rewrite-late-system-messages = false
+      """
+
+      tmp_path =
+        Path.join(
+          System.tmp_dir!(),
+          "rewrite_false_#{System.unique_integer([:positive])}.toml"
+        )
+
+      File.write!(tmp_path, toml)
+      on_exit(fn -> File.rm(tmp_path) end)
+
+      assert {:ok, config} = DotConfig.load(tmp_path)
+      assert config.providers["foo"].rewrite_late_system_messages == false
+    end
+
+    test "raises on non-boolean value" do
+      toml = """
+      [providers.foo]
+      base-url = "http://example.com/v1"
+      api-key = "x"
+      rewrite-late-system-messages = "true"
+      """
+
+      tmp_path =
+        Path.join(
+          System.tmp_dir!(),
+          "rewrite_bad_#{System.unique_integer([:positive])}.toml"
+        )
+
+      File.write!(tmp_path, toml)
+      on_exit(fn -> File.rm(tmp_path) end)
+
+      assert_raise RuntimeError, ~r/invalid rewrite-late-system-messages/, fn ->
+        DotConfig.load(tmp_path)
+      end
+    end
+  end
 end

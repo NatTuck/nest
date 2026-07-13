@@ -10,11 +10,35 @@ import { render, screen, fireEvent, act } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 
 // Mock zustand store — set the cache directly per test.
+// Provides both `useStore(selector)` (called as a React hook by
+// components) and `useStore.getState()` (called from event handlers
+// like `handleDismissError`). `getState` returns a small actions
+// object that mutates `mockAgentsCache` so the dismissed-error
+// scenario flows end-to-end.
 let mockAgentsCache = {};
-vi.mock("../store", () => ({
-  useStore: (selector) =>
-    selector({ agentsCache: mockAgentsCache, _reset: () => {} }),
-}));
+vi.mock("../store", () => {
+  const actions = {
+    clearAgentError: (id) => {
+      const cache = mockAgentsCache[id];
+      if (!cache) return;
+      const agentAlive = cache.agentState === "idle";
+      mockAgentsCache = {
+        ...mockAgentsCache,
+        [id]: {
+          ...cache,
+          status:
+            agentAlive && cache.status === "error" ? "connected" : cache.status,
+          error: null,
+        },
+      };
+    },
+  };
+
+  const useStore = (selector) => selector({ agentsCache: mockAgentsCache });
+  useStore.getState = () => ({ ...actions, agentsCache: mockAgentsCache });
+
+  return { useStore };
+});
 
 // Mock channels — ChatPage calls joinAgent/leaveAgent on mount.
 import {
@@ -918,6 +942,94 @@ describe("ChatPage error display", () => {
     act(() => errorCallback({}));
 
     expect(screen.getByText("Failed to send message")).toBeInTheDocument();
+  });
+
+  it("keeps the error banner visible across the companion chat:status: idle", () => {
+    // Reproduction of the user's stuck-in-error report. Before
+    // the fix, `agentState === "idle"` after the companion
+    // `chat:status: idle` made `StatusBanner.status` resolve to
+    // `"idle"`, hiding the banner even though `cache.error`
+    // was still set. The fix promotes the banner's `status` prop
+    // to `"error"` whenever `cache.status === "error" && cache.error`,
+    // so the Retry + Dismiss banner stays visible.
+    mockAgentsCache = {
+      "test-agent": {
+        status: "error",
+        agentState: "idle",
+        error: "Model unavailable",
+        messages: [],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+
+    renderChat();
+
+    expect(screen.getByText("Connection failed")).toBeInTheDocument();
+    expect(screen.getByText("Model unavailable")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /dismiss/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("clicking Dismiss clears the error when the channel is alive", () => {
+    // The Dismiss button's contract: when the companion
+    // `chat:status: idle` has landed (agentState === "idle", the
+    // channel is alive), the user can recover locally without
+    // re-joining or reloading. After dismissal, `cache.error` is
+    // null and `cache.status` is restored to "connected", so the
+    // textarea becomes editable.
+    mockAgentsCache = {
+      "test-agent": {
+        status: "error",
+        agentState: "idle",
+        error: "Model unavailable",
+        messages: [],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+
+    renderChat();
+
+    expect(
+      screen.getByRole("button", { name: /dismiss/i }),
+    ).toBeInTheDocument();
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
+    });
+
+    expect(mockAgentsCache["test-agent"].status).toBe("connected");
+    expect(mockAgentsCache["test-agent"].error).toBeNull();
+    expect(mockAgentsCache["test-agent"].agentState).toBe("idle");
+  });
+
+  it("leaves the error banner in place during compaction_failed (preserves the recovery banner)", () => {
+    // Regression check: the prop fix is gated on
+    // `cache?.status === "error" && cache?.error`. The
+    // `compaction_failed` state uses `cache.status === "connected"`
+    // with `cache.compactionError` set, so the StatusBanner
+    // continues to pick the `agentState === "compaction_failed"`
+    // branch and render the Retry-compaction banner. The fix
+    // doesn't regress this path.
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "compaction_failed",
+        error: null,
+        compactionError: "LLM returned empty summary",
+        messages: [],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+
+    renderChat();
+
+    expect(screen.getByText("Compaction failed")).toBeInTheDocument();
+    expect(screen.getByText("LLM returned empty summary")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /retry compaction/i }),
+    ).toBeInTheDocument();
   });
 });
 

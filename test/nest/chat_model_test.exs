@@ -438,4 +438,62 @@ defmodule Nest.ChatModelTest do
       assert error.message =~ "missing-tag-name"
     end
   end
+
+  describe "rewrite_late_system_messages plumbing" do
+    test "defaults to false when the provider doesn't set it" do
+      # pegasus (in test/data/config.toml) doesn't set
+      # rewrite-late-system-messages, so the resulting ClientConfig
+      # reflects the default-off behavior.
+      {:ok, config} = ChatModel.from_provider("pegasus", "some-model")
+      assert config.rewrite_late_system_messages == false
+    end
+
+    test "threads the provider's rewrite-late-system-messages value into ClientConfig" do
+      toml = """
+      [providers.rewrite-on]
+      base-url = "http://example.com/v1"
+      api-key = "x"
+      rewrite-late-system-messages = true
+      """
+
+      tmp_path =
+        Path.join(
+          System.tmp_dir!(),
+          "rewrite_on_provider_#{System.unique_integer([:positive])}.toml"
+        )
+
+      File.write!(tmp_path, toml)
+      on_exit(fn -> File.rm(tmp_path) end)
+
+      {:ok, raw} = DotConfig.load(tmp_path)
+      provider = raw.providers["rewrite-on"]
+      {:ok, config} = ChatModel.build_client_config(provider, "any-model")
+      assert config.rewrite_late_system_messages == true
+    end
+
+    test "Anthropic protocol also threads rewrite_late_system_messages" do
+      toml = """
+      [providers.rewrite-anthropic]
+      base-url = "https://example.com/v1"
+      api-key = "x"
+      protocol = "anthropic"
+      rewrite-late-system-messages = true
+      """
+
+      tmp_path =
+        Path.join(
+          System.tmp_dir!(),
+          "rewrite_anthropic_#{System.unique_integer([:positive])}.toml"
+        )
+
+      File.write!(tmp_path, toml)
+      on_exit(fn -> File.rm(tmp_path) end)
+
+      {:ok, raw} = DotConfig.load(tmp_path)
+      provider = raw.providers["rewrite-anthropic"]
+      {:ok, config} = ChatModel.build_client_config(provider, "any-model")
+      assert config.client == Nest.LLM.AnthropicClient
+      assert config.rewrite_late_system_messages == true
+    end
+  end
 end

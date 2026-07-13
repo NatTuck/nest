@@ -217,7 +217,7 @@ defmodule Nest.LLM.OpenAIClientTest do
       assert {:error, {"http_error", 429, "rate limited"}} in events
     end
 
-    test "parses synthetic request_failed chunk into {:error, _} event" do
+    test "parses synthetic request_failed chunk into {:error, {type, :transport, body}} event" do
       error_chunk =
         "data: " <>
           Jason.encode!(%{error: "request_failed", status: nil, body: "connection refused"}) <>
@@ -225,7 +225,7 @@ defmodule Nest.LLM.OpenAIClientTest do
 
       events = run_with_chunk(error_chunk)
 
-      assert {:error, "request_failed"} in events
+      assert {:error, {"request_failed", :transport, "connection refused"}} in events
     end
   end
 

@@ -27,7 +27,9 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminderTest do
   use ExUnit.Case, async: true
 
   alias Nest.Agents.Agent.ChatTurn.ContextReminder
+  alias Nest.LLM.ClientConfig
   alias Nest.Messages.System
+  alias Nest.Messages.User
 
   # A 200k-limit model with the standard 40k reserve has a
   # 160k working budget, so the threshold numbers below all
@@ -133,6 +135,57 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminderTest do
       assert content =~ "50%"
       assert content =~ "80000"
       assert content =~ "#{@working_budget}"
+    end
+  end
+
+  describe "build_message/4 with rewrite off" do
+    test "returns a {:system, %System{}} tuple (default path unchanged)" do
+      config = %ClientConfig{rewrite_late_system_messages: false}
+
+      assert {:system,
+              %System{parts: [%Nest.Messages.Part.Text{text: content}], timestamp: %DateTime{}}} =
+               ContextReminder.build_message(:p50, 80_000, @limit, config)
+
+      assert content =~ "50%"
+      assert content =~ "80000"
+    end
+
+    test "accepts nil config (treats as default off)" do
+      assert {:system,
+              %System{parts: [%Nest.Messages.Part.Text{text: content}], timestamp: %DateTime{}}} =
+               ContextReminder.build_message(:p75, 120_000, @limit, nil)
+
+      assert content =~ "75%"
+      assert content =~ "120000"
+      assert content =~ "context"
+    end
+  end
+
+  describe "build_message/4 with rewrite on" do
+    test "returns a {:user, %User{}} tuple with [System notice: …] wrap" do
+      config = %ClientConfig{rewrite_late_system_messages: true}
+
+      assert {:user,
+              %User{parts: [%Nest.Messages.Part.Text{text: content}], timestamp: %DateTime{}}} =
+               ContextReminder.build_message(:p50, 80_000, @limit, config)
+
+      assert content =~ "[System notice: "
+      assert content =~ "]"
+      assert content =~ "50%"
+      assert content =~ "80000"
+      assert content =~ "#{@working_budget}"
+    end
+
+    test "the bracket wraps the full threshold text including the 75% compact recommendation" do
+      config = %ClientConfig{rewrite_late_system_messages: true}
+
+      assert {:user,
+              %User{parts: [%Nest.Messages.Part.Text{text: content}], timestamp: %DateTime{}}} =
+               ContextReminder.build_message(:p75, 120_000, @limit, config)
+
+      assert content =~ "[System notice: Context usage is now at 75%"
+      assert content =~ "context"
+      assert content =~ "compact"
     end
   end
 end

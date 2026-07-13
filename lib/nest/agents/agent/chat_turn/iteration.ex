@@ -208,7 +208,7 @@ defmodule Nest.Agents.Agent.ChatTurn.Iteration do
          used = ContextReminder.estimate_messages(messages),
          atom when not is_nil(atom) <-
            ContextReminder.highest_unannounced(used, limit, state.crossed_thresholds) do
-      msg = ContextReminder.build_message(atom, used, limit)
+      msg = ContextReminder.build_message(atom, used, limit, state.ctx.client_config)
       _stamped = GenServer.call(state.ctx.agent_pid, {:append_message, msg})
       %{state | crossed_thresholds: MapSet.put(state.crossed_thresholds, atom)}
     else

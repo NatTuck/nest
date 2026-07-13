@@ -21,6 +21,7 @@ export function StatusBanner({
   status,
   error,
   onRetry,
+  onDismiss,
   onRetryCompaction,
   onCompactionLoopOk,
   compactionError,
@@ -45,13 +46,24 @@ export function StatusBanner({
             <p className="text-red-700 font-medium">Connection failed</p>
             <p className="text-red-600 text-sm">{error || "Unknown error"}</p>
           </div>
-          <button
-            type="button"
-            onClick={onRetry}
-            className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors text-sm"
-          >
-            Retry
-          </button>
+          <div className="flex gap-2">
+            {onDismiss && (
+              <button
+                type="button"
+                onClick={onDismiss}
+                className="px-4 py-2 bg-white text-red-700 border border-red-300 rounded-lg hover:bg-red-50 transition-colors text-sm"
+              >
+                Dismiss
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onRetry}
+              className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors text-sm"
+            >
+              Retry
+            </button>
+          </div>
         </div>
       </div>
     );

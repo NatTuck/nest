@@ -342,6 +342,68 @@ describe("store", () => {
     });
   });
 
+  describe("clearAgentError", () => {
+    it("clears the chat-task error and promotes status to connected when agentState is idle", () => {
+      // Recovery scenario from the user's report: the LLM call
+      // crashed (`chat:error`) AND the agent's GenServer already
+      // landed on `:idle` (companion `chat:status: idle`). The
+      // channel is alive; dismissing the error locally should
+      // restore the textarea without forcing a full page reload.
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", { status: "idle" });
+      useStore.getState().setAgentError("agent-1", "Model unavailable");
+
+      let cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.status).toBe("error");
+      expect(cache.error).toBe("Model unavailable");
+      expect(cache.agentState).toBe("idle");
+
+      useStore.getState().clearAgentError("agent-1");
+
+      cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.error).toBeNull();
+      expect(cache.status).toBe("connected");
+      expect(cache.agentState).toBe("idle");
+    });
+
+    it("leaves status alone when agentState is null (channel-join failure path)", () => {
+      // For genuine channel-join failures, agentState was never
+      // set to "idle" — the channel itself is the problem. The
+      // user must Retry (which re-joins). Dismiss clears the
+      // error message but keeps status at "error".
+      useStore.getState().setAgentError("new-agent", "Failed to connect");
+
+      useStore.getState().clearAgentError("new-agent");
+
+      const cache = useStore.getState().agentsCache["new-agent"];
+      expect(cache.error).toBeNull();
+      expect(cache.status).toBe("error");
+    });
+
+    it("does not touch status when status is not error (defensive)", () => {
+      // If `cache.status` is "connected" already (e.g. the
+      // error/event sequence arrived out of order), clearAgentError
+      // must not flip status — it just clears the error field.
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", { status: "idle" });
+      useStore.getState().agentsCache["agent-1"].error = "stale";
+
+      useStore.getState().clearAgentError("agent-1");
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.error).toBeNull();
+      expect(cache.status).toBe("connected");
+    });
+
+    it("is a no-op when the agent cache does not exist", () => {
+      // Calling clearAgentError on an unknown agent returns the
+      // existing state unchanged (no throw, no creation).
+      const before = useStore.getState().agentsCache;
+      useStore.getState().clearAgentError("missing-agent");
+      expect(useStore.getState().agentsCache).toBe(before);
+    });
+  });
+
   describe("setCompactionError", () => {
     it("sets compactionError on existing cache", () => {
       useStore.getState().setAgentConnecting("agent-1");

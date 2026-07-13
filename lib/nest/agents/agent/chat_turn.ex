@@ -324,7 +324,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
   defp maybe_inject_budget_reminder(state) do
     remaining = state.max_iterations - state.iteration
 
-    case BudgetReminder.build(remaining) do
+    case BudgetReminder.build(remaining, state.ctx.client_config) do
       nil ->
         state
 

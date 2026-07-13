@@ -33,6 +33,44 @@ describe("StatusBanner", () => {
     expect(onRetry).toHaveBeenCalledTimes(1);
   });
 
+  it("renders a Dismiss button when onDismiss is provided and calls it on click", () => {
+    // When the user dismisses a chat-task error locally without
+    // re-joining the channel, `onDismiss` clears the cache-side
+    // error and re-enables the textarea (the agent's GenServer
+    // already landed on `:idle` via the companion `chat:status`
+    // event, so the channel is alive). The Dismiss button must
+    // therefore appear alongside Retry, with a distinct visual
+    // style, and click handler must fire.
+    const onRetry = vi.fn();
+    const onDismiss = vi.fn();
+
+    render(
+      <StatusBanner
+        status="error"
+        error="LLM call failed"
+        onRetry={onRetry}
+        onDismiss={onDismiss}
+      />,
+    );
+
+    const dismiss = screen.getByRole("button", { name: /dismiss/i });
+    expect(dismiss).toBeInTheDocument();
+
+    fireEvent.click(dismiss);
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+    expect(onRetry).not.toHaveBeenCalled();
+  });
+
+  it("does not render a Dismiss button when onDismiss is not provided", () => {
+    // Backwards compat: callers that don't supply onDismiss
+    // (e.g. test fixtures or older chat pages) get only the
+    // Retry button as before.
+    render(<StatusBanner status="error" onRetry={() => {}} />);
+
+    expect(screen.queryByRole("button", { name: /dismiss/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+  });
+
   it("falls back to 'Unknown error' when error is not provided", () => {
     render(<StatusBanner status="error" onRetry={() => {}} />);
 

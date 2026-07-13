@@ -38,6 +38,7 @@ defmodule Nest.Agents.Agent.Compaction.Trigger do
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ChatPipeline
+  alias Nest.Agents.Agent.ChatTurn.LateMessage
   alias Nest.Agents.Agent.ChatTurnSpawner
   alias Nest.Agents.Agent.Compaction.Overflow
   alias Nest.Agents.Agent.Compaction.ResultHandler
@@ -117,7 +118,16 @@ defmodule Nest.Agents.Agent.Compaction.Trigger do
                nil
              ) do
           {:ok, _n, rendered_suffix} ->
-            spawn_compaction_chat_turn(state, sys, carried_entry, rendered_suffix)
+            # Re-wrap the suffix per the provider's
+            # `rewrite-late-system-messages` flag. The
+            # compactor renders the suffix as a System
+            # tuple by default; some providers (Qwen3.5
+            # on vLLM) reject mid-conversation system
+            # messages, so we route through `LateMessage`
+            # to swap to a `[System notice: …]` User
+            # message when the flag is on.
+            wrapped_suffix = LateMessage.rewrap(state.client_config, rendered_suffix)
+            spawn_compaction_chat_turn(state, sys, carried_entry, wrapped_suffix)
 
           {:error, :reserve_exhausted} ->
             broadcast_reserve_exhausted(state)
@@ -130,12 +140,12 @@ defmodule Nest.Agents.Agent.Compaction.Trigger do
   # the compactor's chat turn. Extracted to avoid a
   # type-inference problem with `__append_message__/2`'s
   # return tuple.
-  defp spawn_compaction_chat_turn(state, system_msg, carried_entry, rendered_suffix) do
+  defp spawn_compaction_chat_turn(state, system_msg, carried_entry, suffix_message) do
     # `__append_message__/2` returns `{stamped, new_state}`.
     # `stamped` is a `{role, struct}` tuple; the struct's
     # `:index` field was stamped with the agent's
     # `next_message_index`.
-    {stamped, next_state} = Agent.__append_message__(state, rendered_suffix)
+    {stamped, next_state} = Agent.__append_message__(state, suffix_message)
     {_role, stamped_struct} = stamped
     stamped_index = Map.get(stamped_struct, :index, 0)
 

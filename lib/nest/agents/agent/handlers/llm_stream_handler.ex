@@ -136,7 +136,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   # tag so the user can grep the server log for the matching
   # entry.
   defp llm_error(error_msg, state) do
-    error_index = state.chat_state.streaming_acc && state.chat_state.streaming_acc.index
+    _ = state.chat_state.streaming_acc && state.chat_state.streaming_acc.index
 
     error_message =
       {:assistant,
@@ -144,7 +144,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
          index: nil,
          timestamp: DateTime.utc_now(),
          parts: [%Part.Text{text: error_msg}],
-         api_logs: if(error_index, do: pending_api_logs(state, error_index), else: [])
+         api_logs: triggering_message_api_logs(state)
        }}
 
     {stamped, state} = Nest.Agents.Agent.__append_message__(state, error_message)
@@ -323,5 +323,24 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
 
   defp clear_api_logs(state, message_index) do
     Nest.Agents.Agent.__clear_pending_api_logs__(state, message_index)
+  end
+
+  # The api_log handler broadcasts the request log at the index
+  # of the message that triggered this LLM call (the user
+  # message on a fresh turn, the tool message on a
+  # continuation). When the stream completes that message
+  # already exists and the api_log gets attached directly via
+  # `append_to_existing_message/3` — so it doesn't sit in
+  # `pending_api_logs` keyed at the new assistant index. The
+  # error path can't read it there.
+  # Read any `api_logs` already attached to that message (the
+  # trailing user/tool message) and carry them over onto the
+  # error assistant message so the API Logs panel surfaces
+  # the request payload alongside the error.
+  defp triggering_message_api_logs(state) do
+    case List.last(state.chat_state.messages) do
+      {_, %{api_logs: logs}} when is_list(logs) -> logs
+      _ -> []
+    end
   end
 end

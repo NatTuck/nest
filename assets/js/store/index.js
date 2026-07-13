@@ -429,6 +429,38 @@ export const useStore = create(
       },
 
       /**
+       * Clear a chat-task error without re-joining the channel.
+       *
+       * Called from the StatusBanner's Dismiss button so the user
+       * can recover from a chat-task error without a full page
+       * reload. Promotes `status` from "error" back to "connected"
+       * only when we know the channel is alive (`agentState ===
+       * "idle"`, which is the case for chat-task errors on a
+       * previously-connected channel). For genuine channel-join
+       * failures where `agentState` is null, the user must Retry
+       * (which re-joins via `handleRetry -> joinAgent`).
+       */
+      clearAgentError: (id) => {
+        set((state) => {
+          const existing = state.agentsCache[id];
+          if (!existing) return state;
+          return {
+            agentsCache: {
+              ...state.agentsCache,
+              [id]: {
+                ...existing,
+                status:
+                  existing.agentState === "idle" && existing.status === "error"
+                    ? "connected"
+                    : existing.status,
+                error: null,
+              },
+            },
+          };
+        });
+      },
+
+      /**
        * Set a compaction-failure error message on the agent cache.
        * The `chat:status` event with `status: "compaction_failed"` sets
        * `agentState`; this stores the user-facing error text so the

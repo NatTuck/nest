@@ -299,6 +299,18 @@ defmodule Nest.LLM.OpenAIClient do
     [{:error, {error_type, status, body}}]
   end
 
+  # Transport-level failures emit an error chunk with `status: nil`
+  # and the inspected `Req` reason in `body` (e.g.
+  # `%Finch.TransportError{reason: :econnrefused}`). The previous
+  # implementation dropped the body here, leaving the
+  # `Runner.format_error/1` output stuck at the bare literal
+  # `"request_failed"` with no hint of the actual cause. Match the
+  # shape alongside the integer-status clause so the canonical
+  # error event carries the reason all the way to the UI.
+  defp error_event_from_map(%{"error" => error_type, "status" => nil, "body" => body}) do
+    [{:error, {error_type, :transport, body}}]
+  end
+
   defp error_event_from_map(%{"error" => error}) do
     [{:error, error}]
   end
@@ -368,6 +380,21 @@ defmodule Nest.LLM.OpenAIClient do
       {:tool_call_start, %{id: id, name: name, index: idx}},
       {:tool_call_delta, %{id: id, index: idx, arguments_delta: args}}
     ]
+  end
+
+  # vLLM emits the seed frame without an `arguments` field on
+  # `function` — only `name` (and a top-level `id`/`index`).
+  # Without this clause the seed matches no pattern above and the
+  # whole tool call is silently dropped (the follow-up deltas
+  # carry `id: :by_index` and have nowhere to land in the
+  # accumulator's lazy `tool_index_map`).
+  defp tool_call_delta_events(%{
+         "index" => idx,
+         "id" => id,
+         "function" => %{"name" => name}
+       })
+       when is_binary(id) and is_binary(name) do
+    [{:tool_call_start, %{id: id, name: name, index: idx}}]
   end
 
   defp tool_call_delta_events(%{"index" => idx, "function" => %{"arguments" => args}})

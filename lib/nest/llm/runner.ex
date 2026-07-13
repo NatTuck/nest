@@ -212,10 +212,28 @@ defmodule Nest.LLM.Runner do
   sites.
   """
   @spec format_error(term()) :: String.t()
-  def format_error({type, status, ""}), do: "Error: HTTP #{status}: #{type}"
+  def format_error({type, status, ""}) when is_integer(status),
+    do: "Error: HTTP #{status}: #{type}"
 
-  def format_error({type, status, body}),
+  def format_error({type, status, body}) when is_integer(status),
     do: "Error: HTTP #{status}: #{type}\n#{truncate_body(body)}"
+
+  # Transport-level failure (connection refused, socket reset,
+  # Finch timeout, etc.). `OpenAIClient.error_event_from_map/1`
+  # tags transport failures with `status: :transport` and puts
+  # the inspected `Req` reason in `body`. Render it on its own
+  # line so the user sees the actual cause instead of the bare
+  # `"request_failed"` literal the SSE chunk is tagged with.
+  def format_error({type, :transport, body}) do
+    formatted_body =
+      case body do
+        "" -> ""
+        nil -> ""
+        binary -> "\n#{truncate_body(binary)}"
+      end
+
+    "Error: #{type}#{formatted_body}"
+  end
 
   def format_error(error), do: "Error: #{inspect(error)}"
 

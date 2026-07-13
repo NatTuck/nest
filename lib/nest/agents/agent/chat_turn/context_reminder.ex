@@ -32,8 +32,10 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
   module under the 500-line Credo cap.
   """
 
-  alias Nest.Messages.Part
+  alias Nest.Agents.Agent.ChatTurn.LateMessage
+  alias Nest.LLM.ClientConfig
   alias Nest.Messages.System
+  alias Nest.Messages.User
   alias Nest.Tokens.ConversationSize
   alias Nest.Tokens.Reserve
 
@@ -78,24 +80,29 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
   end
 
   @doc """
-  Build the `{:system, _}` message for the given threshold
-  atom with the live usage numbers interpolated.
+  Build the reminder message for the given threshold atom with
+  the live usage numbers interpolated, routed through the
+  provider's `rewrite_late_system_messages` config.
 
-  The 75% variant includes a recommendation to call the
-  `context` tool's compact action. Earlier thresholds are
-  terse; the LLM is meant to act on them by being more
-  careful with future reads, not by immediately
-  compacting.
+  Returns `{:system, %System{…}}` by default; returns
+  `{:user, %User{parts: [%Part.Text{text: "[System notice:
+  …]"}]}}` when the provider flag is on. See
+  `Nest.Agents.Agent.ChatTurn.LateMessage.build/2` for the
+  flag's purpose.
+
+  The arity-3 form is kept for tests and any callers without a
+  fully-built `ClientConfig` — it delegates with an off-config.
   """
-  @spec build_message(atom(), non_neg_integer(), pos_integer()) ::
-          {:system, System.t()}
-  def build_message(atom, used, limit) do
-    {:system,
-     %System{
-       parts: [%Part.Text{text: format(atom, used, limit)}],
-       timestamp: DateTime.utc_now()
-     }}
+  @spec build_message(atom(), non_neg_integer(), pos_integer(), ClientConfig.t() | nil) ::
+          {:system, System.t()} | {:user, User.t()}
+  def build_message(atom, used, limit, client_config) do
+    LateMessage.build(client_config, format(atom, used, limit))
   end
+
+  @spec build_message(atom(), non_neg_integer(), pos_integer()) ::
+          {:system, System.t()} | {:user, User.t()}
+  def build_message(atom, used, limit),
+    do: build_message(atom, used, limit, %ClientConfig{rewrite_late_system_messages: false})
 
   # Public for testability. Internal callers go through
   # `build_message/3`; tests assert the threshold-specific

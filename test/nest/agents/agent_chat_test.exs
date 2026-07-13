@@ -99,6 +99,34 @@ defmodule Nest.Agents.AgentChatTest do
       refute log =~ "no match of right hand side value"
     end
 
+    test "LLM error assistant message carries the request api_log from the triggering user message" do
+      # Regression for the typhon "request failed, no API log" path.
+      # The request log is broadcast at the user message's index
+      # and (via `append_to_existing_message`) attached directly to
+      # the user message. The new `llm_error` handler copies those
+      # api_logs onto the failed assistant message so the UI's API
+      # Logs panel shows the request payload alongside the error,
+      # instead of an orphaned assistant error with no api_logs.
+      MockClient.set_error("Connection failed")
+
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      :ok = Agent.chat(pid, "Hello")
+      assert_receive {:chat_status, %{status: "idle"}}, 500
+
+      # The user message is broadcast twice — once on append with
+      # empty api_logs, then again after the api_log handler
+      # attaches the request log. Match the second (non-empty)
+      # broadcast to capture the externally visible state.
+      assert_receive {:chat_message, {:user, %{api_logs: [_ | _] = user_api_logs}}}, 500
+
+      assert_receive {:chat_message, {:assistant, %{api_logs: error_assistant_api_logs}}}, 500
+
+      assert error_assistant_api_logs == user_api_logs,
+             "failed assistant message should carry the same api_logs as the triggering user message"
+    end
+
     test "accumulates delta content from streaming LLM response" do
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")

@@ -221,6 +221,19 @@ export function ChatPage() {
     joinAgent(name);
   };
 
+  // Dismiss a chat-task error without re-joining the channel.
+  // Useful when the LLM call crashed but the WS channel is
+  // still alive (the companion `chat:status: idle` already
+  // arrived, so `agentState === "idle"`). Calling
+  // `clearAgentError` re-enables the textarea locally; the
+  // user can then send a fresh message without a page reload.
+  // For genuine channel-join failures (where `agentState` is
+  // null), this is a no-op on `status` and the user must Retry.
+  const handleDismissError = () => {
+    setSendError(null);
+    useStore.getState().clearAgentError(name);
+  };
+
   // Re-run the compactor after a `:compaction_failed` banner.
   // The server validates the agent is in `:compaction_failed`
   // status; otherwise the push is rejected with an error reason
@@ -306,11 +319,25 @@ export function ChatPage() {
       {/* Status banner — `agentState` carries the agent's GenServer
           state (including `:compacting` / `:compaction_failed`),
           distinct from the connection-level `status`. The banner
-          handles both axes. */}
+          handles both axes.
+
+          After a chat-task error the companion `chat:status: idle`
+          lands AFTER `chat:error`, so `agentState === "idle"` while
+          `cache.status === "error"` is the recoverable case.
+          Promote the banner's `status` prop to `"error"` whenever
+          `cache.error` is set, so the Retry/Dismiss banner stays
+          visible during the idle window instead of silently
+          disappearing (a regression that previously required a
+          full page reload to recover from). */}
       <StatusBanner
-        status={agentState ?? status}
+        status={
+          cache?.status === "error" && cache?.error
+            ? "error"
+            : (agentState ?? status)
+        }
         error={cache?.error}
         onRetry={handleRetry}
+        onDismiss={handleDismissError}
         onRetryCompaction={handleRetryCompaction}
         onCompactionLoopOk={handleCompactionLoopOk}
         compactionError={cache?.compactionError}

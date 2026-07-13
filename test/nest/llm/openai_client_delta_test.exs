@@ -368,6 +368,52 @@ defmodule Nest.LLM.OpenAIClient.DeltaTest do
     end
   end
 
+  describe "vLLM tool_call seed shape (typhon provider)" do
+    # vLLM (the typhon provider's backend) emits the tool_call
+    # seed frame *without* a `function.arguments` field — only
+    # `{id, type, index, function.name}`. Without a dedicated
+    # seed clause, the seed fell through to the catch-all `[]`
+    # in `tool_call_delta_events/1`, the lazy `tool_index_map`
+    # was never seeded, and every subsequent by_index delta was
+    # silently dropped — leaving `Client.finalize/2` with
+    # `tool_calls: []` despite the provider returning
+    # `finish_reason: "tool_calls"`.
+
+    test "seed frame with no `arguments` field emits :tool_call_start with id and name" do
+      delta_frame = %{
+        "choices" => [
+          %{
+            "index" => 0,
+            "delta" => %{
+              "tool_calls" => [
+                %{
+                  "id" => "chatcmpl-tool-be1743ced731ac03",
+                  "type" => "function",
+                  "index" => 0,
+                  "function" => %{"name" => "get_weather"}
+                }
+              ]
+            }
+          }
+        ]
+      }
+
+      chunk = "data: " <> Jason.encode!(delta_frame) <> "\n\n"
+      events = run_with_chunk(chunk)
+
+      assert Enum.any?(events, fn
+               {:tool_call_start, %{id: "chatcmpl-tool-be1743ced731ac03", name: "get_weather"}} ->
+                 true
+
+               _ ->
+                 false
+             end),
+             "expected a :tool_call_start with the typhon tool call id and `get_weather` name"
+
+      refute Enum.any?(events, &match?({:tool_call_delta, _}, &1))
+    end
+  end
+
   defp run_with_chunk(chunk) do
     parent = self()
 
