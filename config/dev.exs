@@ -1,5 +1,15 @@
 import Config
 
+# Pick a port + dev-database based on which checkout we're running in.
+# The primary checkout is /home/nat/Code/nest (port 4000, db nest_dev).
+# Any other checkout (e.g. nest-edit) lands on 4002 + nest_dev2 so two
+# instances can run side-by-side without colliding.
+dev_inst =
+  case File.cwd!() |> Path.basename() do
+    "nest" -> %{port: 4000, database: "nest_dev"}
+    _ -> %{port: 4002, database: "nest_dev2"}
+  end
+
 # Configure Phoenix.Copy for static assets
 config :phoenix_copy,
   default: [
@@ -12,7 +22,7 @@ config :phoenix_copy,
 config :nest, Nest.Repo,
   username: System.fetch_env!("USER"),
   socket_dir: "/var/run/postgresql",
-  database: "nest_dev",
+  database: dev_inst.database,
   pool_size: 5,
   stacktrace: true,
   show_sensitive_data_on_connection_error: true
@@ -26,7 +36,7 @@ config :nest, Nest.Repo,
 config :nest, NestWeb.Endpoint,
   # Binding to loopback ipv4 address prevents access from other machines.
   # Change to `ip: {0, 0, 0, 0}` to allow access from other machines.
-  http: [ip: {127, 0, 0, 1}],
+  http: [ip: {127, 0, 0, 1}, port: dev_inst.port],
   check_origin: false,
   code_reloader: true,
   debug_errors: true,

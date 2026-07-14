@@ -20,7 +20,18 @@ if System.get_env("PHX_SERVER") do
   config :nest, NestWeb.Endpoint, server: true
 end
 
-config :nest, NestWeb.Endpoint, http: [port: String.to_integer(System.get_env("PORT", "4000"))]
+# Default the listen port to whatever `config/dev.exs` derived for the
+# current checkout (4000 for the primary `nest` checkout, 4002 for any
+# other checkout like `nest-edit`). Falls back to 4000 in production,
+# where `config/dev.exs` is not loaded.
+default_port =
+  case Application.get_env(:nest, NestWeb.Endpoint) |> get_in([:http, :port]) do
+    nil -> "4000"
+    p -> Integer.to_string(p)
+  end
+
+config :nest, NestWeb.Endpoint,
+  http: [port: String.to_integer(System.get_env("PORT", default_port))]
 
 if config_env() == :prod do
   database_url =
