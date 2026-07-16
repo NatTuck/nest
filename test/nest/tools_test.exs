@@ -63,8 +63,16 @@ defmodule Nest.ToolsTest do
 
   describe "read_file tool" do
     setup do
-      # Use a directory outside of /tmp for workspaces to avoid conflicts with tmp bind mounts
-      test_workspace = "/var/tmp/nest_tools_test_#{System.unique_integer([:positive])}"
+      # Project-relative tmp dir under _build/ — gitignored, cleaned by
+      # `mix clean`, always writable regardless of outer sandbox permissions.
+      test_workspace =
+        Path.join([
+          File.cwd!(),
+          "_build",
+          "tmp",
+          "nest_tools_test_#{System.unique_integer([:positive])}"
+        ])
+
       File.mkdir_p!(test_workspace)
 
       on_exit(fn ->
@@ -102,8 +110,16 @@ defmodule Nest.ToolsTest do
 
   describe "write_file tool" do
     setup do
-      # Use a directory outside of /tmp for workspaces to avoid conflicts with tmp bind mounts
-      test_workspace = "/var/tmp/nest_tools_test_#{System.unique_integer([:positive])}"
+      # Project-relative tmp dir under _build/ — gitignored, cleaned by
+      # `mix clean`, always writable regardless of outer sandbox permissions.
+      test_workspace =
+        Path.join([
+          File.cwd!(),
+          "_build",
+          "tmp",
+          "nest_tools_test_#{System.unique_integer([:positive])}"
+        ])
+
       File.mkdir_p!(test_workspace)
 
       on_exit(fn ->
@@ -168,8 +184,16 @@ defmodule Nest.ToolsTest do
 
   describe "shell_cmd tool" do
     setup do
-      # Use a directory outside of /tmp for workspaces to avoid conflicts with tmp bind mounts
-      test_workspace = "/var/tmp/nest_tools_test_#{System.unique_integer([:positive])}"
+      # Project-relative tmp dir under _build/ — gitignored, cleaned by
+      # `mix clean`, always writable regardless of outer sandbox permissions.
+      test_workspace =
+        Path.join([
+          File.cwd!(),
+          "_build",
+          "tmp",
+          "nest_tools_test_#{System.unique_integer([:positive])}"
+        ])
+
       File.mkdir_p!(test_workspace)
 
       on_exit(fn ->
@@ -325,7 +349,16 @@ defmodule Nest.ToolsTest do
 
   describe "caps threading through context" do
     setup do
-      test_workspace = "/var/tmp/nest_caps_test_#{System.unique_integer([:positive])}"
+      # Project-relative tmp dir under _build/ — gitignored, cleaned by
+      # `mix clean`, always writable regardless of outer sandbox permissions.
+      test_workspace =
+        Path.join([
+          File.cwd!(),
+          "_build",
+          "tmp",
+          "nest_caps_test_#{System.unique_integer([:positive])}"
+        ])
+
       File.mkdir_p!(test_workspace)
       on_exit(fn -> File.rm_rf!(test_workspace) end)
       {:ok, workspace: test_workspace}
