@@ -223,20 +223,76 @@ defmodule Nest.Agents.Agent.Broadcasts do
   # numerator reflects the current message list even when no LLM
   # call has happened yet (the suffix is fully estimated) and
   # transitions to API-reported values as the LLM responds.
+  #
+  # The payload also carries sub-agent identity and usage:
+  #
+  #   * `parentId` / `depth` — the agent's tree position. Roots
+  #     have `parentId: nil, depth: 0`. Children carry the
+  #     integer `agents.id` of their parent and a depth of
+  #     `parent.depth + 1`. The JS-side lobby uses these to
+  #     render the agent tree (roots at the top, children
+  #     indented under their parent).
+  #
+  #   * `usage` — direct usage (this agent's own LLM calls).
+  #     Identical to the previous shape.
+  #
+  #   * `descendantUsage` — cumulative usage from all
+  #     descendants (children, grandchildren, etc.). Same
+  #     shape as `usage` but tracked separately so the JS
+  #     chip can show the breakdown: direct + descendant =
+  #     total.
+  #
+  #   * `totalUsage` — `usage + descendantUsage`, computed
+  #     field-by-field at broadcast time. The chip's "total"
+  #     display reads from this; the JS never needs to add
+  #     them itself (drift-free).
   defp status_payload(%Nest.Agents.Agent{} = state) do
+    direct = state.llm_metrics.usage_totals
+    descendant = state.llm_metrics.descendant_usage
+
     %{
       status: to_string(state.chat_state.status),
       currentMode: state.mode,
       contextLimit: state.llm_metrics.context_limit,
       contextLimitSource: state.llm_metrics.context_limit_source,
+      parentId: state.parent_id,
+      depth: state.depth,
       usage:
         Map.put(
-          state.llm_metrics.usage_totals,
+          direct,
           :context_input_tokens,
           ConversationSize.size(state.chat_state.messages)
-        )
+        ),
+      descendantUsage: descendant,
+      totalUsage: total_usage(direct, descendant)
     }
   end
+
+  @doc """
+  Compute `direct + descendant` field-by-field, returning a
+  fresh totals map. Both arguments are expected to have the
+  shape of `empty_usage_totals/0`; a `nil` side is treated as
+  all-zero. The result is what `status_payload/1`'s `totalUsage`
+  field carries — drift-free because the JS side never has to
+  add the two halves itself.
+  """
+  @spec total_usage(map() | nil, map() | nil) :: map()
+  def total_usage(nil, nil), do: empty_usage_totals()
+  def total_usage(direct, nil), do: direct || empty_usage_totals()
+  def total_usage(nil, descendant), do: descendant || empty_usage_totals()
+
+  def total_usage(direct, descendant) when is_map(direct) and is_map(descendant) do
+    Map.merge(direct || %{}, descendant || %{}, fn _key, a, b -> sum_fields(a, b) end)
+  end
+
+  # Field-by-field sum. Both sides are expected to be maps with
+  # the canonical shape (`empty_usage_totals/0`); we fall back
+  # to 0 for missing or non-integer values so a stale schema on
+  # either side can't poison the total.
+  defp sum_fields(a, b) when is_integer(a) and is_integer(b), do: a + b
+  defp sum_fields(a, _b) when is_integer(a), do: a
+  defp sum_fields(_a, b) when is_integer(b), do: b
+  defp sum_fields(_, _), do: 0
 
   # Initial / reset state for `usage_totals`. Distinct from the
   # `nil` value the accumulator produces: the agent always has a

@@ -70,6 +70,7 @@ defmodule Nest.Agents.Agent.Handlers do
   defp route_for({:chat_idle, _}), do: {:ok, ChatTurnHandler}
   defp route_for({:chat_stopped, _}), do: {:ok, ChatTurnHandler}
   defp route_for({:chat_crashed, _, _}), do: {:ok, ChatTurnHandler}
+  defp route_for({:set_crossed_thresholds, _}), do: {:ok, ChatTurnHandler}
   defp route_for({:api_log, _, _}), do: {:ok, ApiLogHandler}
   defp route_for({:api_log_sequences_updated, _}), do: {:ok, ApiLogHandler}
   defp route_for({:compaction_done, _, _}), do: {:ok, CompactionHandler}

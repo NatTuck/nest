@@ -72,6 +72,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
 
     state = clear_mid_turn_entry(state)
     state = put_status(state, :idle)
+    state = reset_crossed_thresholds(state)
 
     # 1. Strip `<think>...</think>` content from the
     #    summary text. Stripped once here (when building
@@ -426,4 +427,13 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   defp carried_entry_tag({:user_message, _}), do: :user_message
   defp carried_entry_tag({:tool_call, _, _, _}), do: :tool_call
   defp carried_entry_tag({:compact_tool, _, _, _}), do: :compact_tool
+
+  # Reset the "already announced" threshold set so the next
+  # ChatTurn re-fires warnings if usage rises again after the
+  # history was summarized. The set lives on
+  # `state.chat_state.crossed_thresholds` (per-conversation, not
+  # per-ChatTurn — see the field's moduledoc).
+  defp reset_crossed_thresholds(state) do
+    %{state | chat_state: %{state.chat_state | crossed_thresholds: %MapSet{}}}
+  end
 end

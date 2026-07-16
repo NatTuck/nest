@@ -181,8 +181,6 @@ defmodule Nest.Sandbox do
       "--unshare-all",
       "--die-with-parent",
       "--new-session",
-      "--proc",
-      "/proc",
       # Read-only bind of the host root. Must come BEFORE --dev /dev
       # so the devtmpfs overlays it (not the other way around).
       # This also means paths NOT in caps.fs.write (including the
@@ -194,7 +192,15 @@ defmodule Nest.Sandbox do
       # Fresh devtmpfs over the read-only bind. Makes /dev/null,
       # /dev/zero, etc. writable for shell redirects.
       "--dev",
-      "/dev"
+      "/dev",
+      # Mount the host's procfs after the read-only root bind so that
+      # /proc/self/<pid>/... files (e.g. oom_score_adj, comm) stay
+      # writable inside the sandbox. Placing --proc before --ro-bind /
+      # causes the freshly-mounted /proc to inherit the parent's
+      # read-only flag, which surfaces as "Read-only file system" on
+      # anything that writes to /proc/self from inside the sandbox.
+      "--proc",
+      "/proc"
     ]
   end
 

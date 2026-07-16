@@ -201,16 +201,29 @@ defmodule Nest.Agents.Agent.ChatTurn.Iteration do
   # `Nest.Agents.Agent.ChatTurn.ContextReminder` for the
   # firing rules. Skipped when `ctx.context_limit` is nil
   # (probe hasn't completed).
+  #
+  # The "already fired" set lives on the Agent
+  # (`state.chat_state.crossed_thresholds`), not on the
+  # ChatTurn. A ChatTurn is short-lived (one per user
+  # message); tracking on its own State would reset every
+  # turn and re-fire the same warning. The Agent reads the
+  # current set into `ctx` at spawn time; we send the
+  # updated set back as `{:set_crossed_thresholds, set}`
+  # so it survives across ChatTurn boundaries and gets
+  # cleared on the next successful compaction.
   defp inject_context_warning(state, messages) do
     limit = state.ctx.context_limit
 
     with limit when is_integer(limit) and limit > 0 <- limit,
          used = ContextReminder.estimate_messages(messages),
+         crossed = state.ctx.crossed_thresholds,
          atom when not is_nil(atom) <-
-           ContextReminder.highest_unannounced(used, limit, state.crossed_thresholds) do
+           ContextReminder.highest_unannounced(used, limit, crossed) do
       msg = ContextReminder.build_message(atom, used, limit, state.ctx.client_config)
       _stamped = GenServer.call(state.ctx.agent_pid, {:append_message, msg})
-      %{state | crossed_thresholds: MapSet.put(state.crossed_thresholds, atom)}
+      new_set = MapSet.put(crossed, atom)
+      send(state.ctx.agent_pid, {:set_crossed_thresholds, new_set})
+      state
     else
       _ -> state
     end

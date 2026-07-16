@@ -4,10 +4,12 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminderTest do
 
   These are unit tests of `ContextReminder.highest_unannounced/3`,
   `ContextReminder.format/3`, and `ContextReminder.build_message/3`.
-  The ChatTurn wiring (call to `maybe_inject_context_warning/2`
-  in `iterate/1`, reset on compaction) follows the same pattern
-  as the existing tool-iteration budget reminder and is covered
-  by the integration tests in `agent_system_messages_test.exs`.
+  The ChatTurn wiring (call to `inject_context_warning/2`
+  in `iterate/1`, set persisted to the Agent via
+  `{:set_crossed_thresholds, set}`, set cleared on successful
+  compaction in `Compaction.ResultHandler.handle_success/3`)
+  is covered by the regression tests in
+  `agent_chat_turn_iteration_test.exs`.
 
   ## Reserve-aware math
 

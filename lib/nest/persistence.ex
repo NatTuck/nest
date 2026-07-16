@@ -174,6 +174,16 @@ defmodule Nest.Persistence do
         vocation_id: Map.get(attrs, :vocation_id),
         workspace_path: Map.get(attrs, :workspace_path),
         next_message_index: Map.get(attrs, :next_message_index, 0),
+        # Sub-agent tree position. `parent_id` is the integer
+        # `agents.id` of the spawning parent (nil for roots).
+        # `depth` is the agent's tree depth (0 for roots;
+        # `parent.depth + 1` for children). The supervisor
+        # passes these via attrs when spawning a child via
+        # `clone_agent`. Default to `nil` / `0` for the
+        # common root-agent path so existing call sites
+        # don't have to change.
+        parent_id: Map.get(attrs, :parent_id),
+        depth: Map.get(attrs, :depth, 0),
         inserted_at: now,
         updated_at: now
       }
@@ -448,6 +458,15 @@ defmodule Nest.Persistence do
         workspace_path: row.workspace_path,
         next_message_index: row.next_message_index,
         last_compaction_index: boundary,
+        # Sub-agent tree position. Survives a BEAM restart so
+        # the restored agent knows its place in the tree. The
+        # `:parent_id` is the integer `agents.id` of the parent
+        # (nil for roots); the supervisor uses it to rebuild
+        # its `parent_to_children` map on the first
+        # `clone_agent` after restart. `depth` drives the
+        # system prompt's `[Delegation]` section.
+        parent_id: row.parent_id,
+        depth: row.depth || 0,
         initial_api_log_sequences: Restore.initial_sequences_for(preloaded),
         preloaded_messages: preloaded,
         vocation: load_vocation(row.vocation_id)

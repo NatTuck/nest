@@ -73,7 +73,8 @@ defmodule Nest.Agents.Agent.ChatTurnSpawner do
       caps: caps,
       context_limit: state.llm_metrics.context_limit,
       messages: messages,
-      tmp_path: state.tmp_path
+      tmp_path: state.tmp_path,
+      crossed_thresholds: state.chat_state.crossed_thresholds
     }
 
     case ChatTurnSupervisor.start_chat_turn(agent_pid, ctx, entry) do

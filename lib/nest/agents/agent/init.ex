@@ -40,6 +40,8 @@ defmodule Nest.Agents.Agent.Init do
     vocation_id = Map.fetch!(attrs, :vocation_id)
     workspace_path = Map.get(attrs, :workspace_path)
     vocation = Map.get(attrs, :vocation)
+    parent_id = Map.get(attrs, :parent_id)
+    depth = Map.get(attrs, :depth, 0)
 
     # Resolve the context limit before building the system prompt
     # so the prompt can include the limit as a static piece of
@@ -52,7 +54,8 @@ defmodule Nest.Agents.Agent.Init do
       SystemPrompt.compose_vocation_config(
         vocation,
         workspace_path,
-        {context_limit, context_limit_source}
+        {context_limit, context_limit_source},
+        depth
       )
 
     tmp_path = create_tmp_space(name)
@@ -72,6 +75,8 @@ defmodule Nest.Agents.Agent.Init do
       tmp_path: tmp_path,
       tools: tools,
       llm_metrics: build_llm_metrics(context_limit, context_limit_source),
+      parent_id: parent_id,
+      depth: depth,
       mode: mode,
       chat_state: build_chat_state(initial_messages, next_index, initial_api_log_sequences)
     }
@@ -297,7 +302,13 @@ defmodule Nest.Agents.Agent.Init do
     %Nest.Agents.Agent.LlmMetrics{
       context_limit: context_limit,
       context_limit_source: source,
-      usage_totals: Broadcasts.empty_usage_totals()
+      usage_totals: Broadcasts.empty_usage_totals(),
+      # `descendant_usage` is initialized to a fresh totals map
+      # (not `nil`) so the merge helpers don't need a nil
+      # branch. Children merge into this field on completion;
+      # the agent's `total_usage` is computed as
+      # `usage_totals + descendant_usage`.
+      descendant_usage: Broadcasts.empty_usage_totals()
     }
   end
 

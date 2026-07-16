@@ -77,6 +77,16 @@ defmodule Nest.Agents.Agent.ChatState do
   `:messages`". After the first compaction the value is the
   marker's `message_index`; the marker itself sits in `:history`
   because of the `<=` rule.
+
+  The `crossed_thresholds` field is the `MapSet` of context-usage
+  threshold atoms (`:p25`, `:p50`, `:p75`) that the
+  `Nest.Agents.Agent.ChatTurn.ContextReminder` has already
+  announced for the current conversation segment. The ChatTurn
+  fetches it via `ctx` on spawn and sends `{:set_crossed_thresholds,
+  set}` back to the Agent when it fires a new threshold. Cleared
+  to `%MapSet{}` on successful compaction in
+  `Compaction.ResultHandler.handle_success/3`, so warnings
+  re-fire if usage rises again after the history was summarized.
   """
   defstruct messages: [],
             history: [],
@@ -92,6 +102,7 @@ defmodule Nest.Agents.Agent.ChatState do
             pending_children: %{},
             pending_user_message: nil,
             mid_turn_entry: nil,
+            crossed_thresholds: %MapSet{},
             # Loop-breaker counter. Incremented every time a
             # compaction is spawned (Trigger B/C or `:compact`
             # tool). Reset to 0 when a user/assistant/tool message

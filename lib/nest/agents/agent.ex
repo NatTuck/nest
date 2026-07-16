@@ -40,7 +40,23 @@ defmodule Nest.Agents.Agent do
     :tmp_path,
     :tools,
     :llm_metrics,
+    # `parent_id` is the integer `agents.id` of the agent that
+    # spawned this one via the `clone_agent` tool. `nil` for
+    # root agents. The corresponding Pubsub topic identity is
+    # the parent's `name` (a String); we keep the integer FK
+    # here so the persisted row carries the relationship and
+    # we can rebuild the tree after a BEAM restart.
+    :parent_id,
     mode: "chat",
+    # `depth` is the agent's distance from its tree root.
+    # 0 = root (no parent). Children of a depth-D parent are
+    # depth D+1. The `clone_agent` tool is only available when
+    # `depth < configured_max_depth()`, so a depth-D agent
+    # can spawn children of depth D+1 (provided D+1 < max).
+    # Persisted via `agents.depth` so the value survives a
+    # BEAM restart and the system-prompt composition can
+    # honor it from `init/1`.
+    depth: 0,
     chat_state: %__MODULE__.ChatState{}
   ]
 
@@ -64,6 +80,8 @@ defmodule Nest.Agents.Agent do
           tmp_path: String.t() | nil,
           tools: [Nest.LLM.Tool.t()],
           llm_metrics: __MODULE__.LlmMetrics.t(),
+          parent_id: integer() | nil,
+          depth: non_neg_integer(),
           mode: String.t(),
           chat_state: __MODULE__.ChatState.t()
         }
@@ -160,7 +178,8 @@ defmodule Nest.Agents.Agent do
   @doc """
   Returns public information about the agent for the WebSocket protocol.
 
-  Returns a map with :id, :model, :message_count, :status, :vocation_id, and :partial.
+  Returns a map with :id, :model, :message_count, :status, :vocation_id,
+  :partial, :parent_id, :depth, :descendant_usage, and :total_usage.
   """
   @spec get_public_info(pid()) :: %{
           id: String.t(),
@@ -169,10 +188,30 @@ defmodule Nest.Agents.Agent do
           status: atom(),
           vocation_id: integer() | nil,
           tmp_path: String.t() | nil,
-          partial: map() | nil
+          partial: map() | nil,
+          parent_id: integer() | nil,
+          depth: non_neg_integer(),
+          descendant_usage: map() | nil,
+          total_usage: map() | nil
         }
   def get_public_info(pid) do
     GenServer.call(pid, :get_public_info)
+  end
+
+  @doc """
+  Returns the combined usage map for the agent: `usage_totals +
+  descendant_usage`, computed field-by-field. Returns `nil` when
+  either side is `nil` (an uninitialized state).
+
+  Mirrors the JS-side chip rendering for "total tokens used"
+  (the cumulative spend across this agent and its descendants).
+  The split between direct and total is what the UI's token
+  chip displays — direct is `usage_totals`, total is this
+  function.
+  """
+  @spec get_total_usage(pid()) :: map() | nil
+  def get_total_usage(pid) do
+    GenServer.call(pid, :get_total_usage)
   end
 
   @doc """
@@ -242,7 +281,7 @@ defmodule Nest.Agents.Agent do
         Init.persist_initial_system_message(state)
 
         Logger.info(
-          "Agent started: #{state.name} with vocation_id: #{inspect(state.vocation_id)}, mode: #{state.mode}, tools: #{length(state.tools)}, client: #{inspect(state.client_config.client)}, context_limit: #{inspect(state.llm_metrics.context_limit)} (#{state.llm_metrics.context_limit_source})"
+          "Agent started: #{state.name} with vocation_id: #{inspect(state.vocation_id)}, mode: #{state.mode}, tools: #{length(state.tools)}, client: #{inspect(state.client_config.client)}, context_limit: #{inspect(state.llm_metrics.context_limit)} (#{state.llm_metrics.context_limit_source}), parent_id: #{inspect(state.parent_id)}, depth: #{state.depth}"
         )
 
         {:ok, state}

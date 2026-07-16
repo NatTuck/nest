@@ -23,6 +23,7 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
   """
 
   alias Nest.Agents.Agent
+  alias Nest.Agents.Agent.Broadcasts
   alias Nest.Tokens.ConversationSize
   alias Nest.Vocations
 
@@ -73,6 +74,12 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
     {:reply, state.chat_state.chat_turn_pid, state}
   end
 
+  def handle(:get_total_usage, _from, state) do
+    {:reply,
+     Broadcasts.total_usage(state.llm_metrics.usage_totals, state.llm_metrics.descendant_usage),
+     state}
+  end
+
   # Use the cached Vocation struct from state — no DB work
   # in the handler. The struct was loaded by the calling
   # process and passed into init/1 via `:vocation` in attrs.
@@ -92,11 +99,25 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
       current_mode: state.mode,
       context_limit: state.llm_metrics.context_limit,
       context_limit_source: state.llm_metrics.context_limit_source,
+      # Sub-agent identity: the integer `agents.id` of the
+      # agent that spawned this one (nil for roots), plus
+      # the depth (0 for roots).
+      parent_id: state.parent_id,
+      depth: state.depth,
+      # Direct usage (this agent's own LLM calls).
       usage:
         Map.put(
           state.llm_metrics.usage_totals,
           :context_input_tokens,
           ConversationSize.size(state.chat_state.messages)
+        ),
+      # Cumulative usage from all descendants.
+      descendant_usage: state.llm_metrics.descendant_usage,
+      # `direct + descendant`, computed field-by-field.
+      total_usage:
+        Broadcasts.total_usage(
+          state.llm_metrics.usage_totals,
+          state.llm_metrics.descendant_usage
         )
     }
 

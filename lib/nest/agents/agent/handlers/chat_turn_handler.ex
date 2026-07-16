@@ -25,6 +25,15 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
       `[Source: ...]` tag for log correlation), log the
       full stacktrace server-side, and transition to
       `:idle`.
+    * `{:set_crossed_thresholds, set}` — the ChatTurn
+      appended a context-usage reminder to the messages
+      list and wants the Agent to remember which threshold
+      atoms (`:p25` / `:p50` / `:p75`) have already been
+      announced so the next ChatTurn doesn't re-fire them.
+      The set is cleared on successful compaction in
+      `Compaction.ResultHandler.handle_success/3`, so
+      warnings re-fire if usage rises again after a
+      compaction.
 
   Dispatched by `Nest.Agents.Agent.Handlers` based on the
   message tag.
@@ -51,6 +60,10 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
 
   def handle({:chat_crashed, exception, stacktrace}, state) do
     chat_crashed(exception, stacktrace, state)
+  end
+
+  def handle({:set_crossed_thresholds, set}, state) do
+    set_crossed_thresholds(set, state)
   end
 
   # The ChatTurn finished its iteration normally. Clear
@@ -171,6 +184,17 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
   end
 
   defp benign_chat_crash?(_), do: false
+
+  # Persist the threshold set the ChatTurn just expanded.
+  # Defensive: only accept `MapSet`s — the ChatTurn should
+  # always send one, but a future bug that sends a list
+  # shouldn't silently corrupt the field.
+  defp set_crossed_thresholds(%MapSet{} = set, state) do
+    state = %{state | chat_state: %{state.chat_state | crossed_thresholds: set}}
+    {:noreply, state}
+  end
+
+  defp set_crossed_thresholds(_other, state), do: {:noreply, state}
 
   # Finalize the streaming_acc accumulator (Agent-side)
   # into a normal assistant message and append it via the

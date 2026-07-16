@@ -167,14 +167,26 @@ defmodule Nest.SandboxTest do
   end
 
   describe "arg ordering (regression)" do
-    test "--dev /dev appears AFTER --ro-bind / /" do
+    test "--dev /dev and --proc /proc appear AFTER --ro-bind / /" do
+      # The / ro-bind must come before --dev so the devtmpfs overlays
+      # the read-only bind (not the other way around), and before --proc
+      # so the freshly-mounted /proc does NOT inherit the parent's
+      # read-only flag. The latter bit is the bwrap flag-order bug that
+      # made /proc/self/<pid>/oom_score_adj (and friends) read-only
+      # inside the sandbox. See scripts/probe-bwrap-flags.sh for the
+      # probe that exposed it.
       caps = build_caps(write: [":workspace"])
       {:ok, args} = Sandbox.build(caps, "/workspace", nil)
       ro_bind_idx = Enum.find_index(args, &(&1 == "--ro-bind"))
       dev_idx = Enum.find_index(args, &(&1 == "--dev"))
+      proc_idx = Enum.find_index(args, &(&1 == "--proc"))
 
       assert ro_bind_idx < dev_idx,
              "expected --ro-bind before --dev (bwrap arg order regression)"
+
+      assert ro_bind_idx < proc_idx,
+             "expected --ro-bind before --proc (bwrap arg order regression: " <>
+               "--proc before --ro-bind makes /proc/self read-only inside the sandbox)"
     end
   end
 

@@ -102,4 +102,29 @@ defmodule Nest.Agents.Agent.Config do
         DotConfig.default_max_tool_iterations()
     end
   end
+
+  @doc """
+  Resolve the per-tree delegation depth cap. Reads the
+  optional top-level `max-depth` value from DotConfig;
+  falls back to `DotConfig.default_max_depth/0` (3) when
+  unset.
+
+  Used by `SystemPrompt.compose_vocation_config/4` to
+  filter the `clone_agent` tool out of an agent's tool
+  list when the agent is at the maximum depth (cannot
+  spawn further children).
+  """
+  @spec configured_max_depth() :: pos_integer()
+  def configured_max_depth do
+    case DotConfig.load() do
+      {:ok, config} ->
+        case DotConfig.max_depth(config) do
+          nil -> DotConfig.default_max_depth()
+          n -> n
+        end
+
+      _ ->
+        DotConfig.default_max_depth()
+    end
+  end
 end

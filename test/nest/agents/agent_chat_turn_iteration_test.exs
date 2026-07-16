@@ -451,4 +451,8 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
       Agent.terminate(pid)
     end
   end
+
+  # Regression coverage for the "25% context warning fires on every
+  # user message past 25%" bug lives in
+  # `Nest.Agents.AgentContextWarningTest`.
 end

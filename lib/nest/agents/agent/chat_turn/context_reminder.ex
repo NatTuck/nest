@@ -11,13 +11,17 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
   compact, or stop adding new tool results).
 
   Firing rules:
-    * Each threshold fires at most once per ChatTurn lifetime.
+    * Each threshold fires at most once between compactions.
+      The "already announced" set lives on
+      `Nest.Agents.Agent.ChatState.crossed_thresholds` (per
+      conversation, not per ChatTurn — the ChatTurn is one
+      per user message and would reset the set every turn).
     * Only the highest currently-crossed threshold is announced
       (so a fresh turn starting at 60% fires 50%, not 25+50).
-    * When compaction succeeds, the "already announced" set
-      is cleared so the thresholds re-fire if usage rises
-      again. The clear happens in `iterate/1`'s
-      `{:compacted, _}` branch (the ChatTurn owns the set).
+    * When compaction succeeds, the set is cleared in
+      `Compaction.ResultHandler.handle_success/3` so the
+      thresholds re-fire if usage rises again after the
+      history was summarized.
     * If `context_limit` is unknown (nil), no warning is
       injected.
 
