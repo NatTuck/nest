@@ -239,10 +239,13 @@ describe("TokenUsageChip", () => {
       expect(details.textContent).toContain("Last:");
       expect(details.textContent).toContain("4,821 new");
       expect(details.textContent).toContain("3,200 cached");
-      // Session line: cumulative in/out.
-      expect(details.textContent).toContain("Session:");
+      // Direct line: this agent's own session in/out.
+      expect(details.textContent).toContain("Direct:");
       expect(details.textContent).toContain("25,000 in");
       expect(details.textContent).toContain("8,000 out");
+      // No descendants in the test fixture, so the
+      // Children/Total rows are absent.
+      expect(details.textContent).not.toContain("Children:");
       // Cost line: present and formatted as USD.
       expect(details.textContent).toContain("Est. $");
     });

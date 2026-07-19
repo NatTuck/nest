@@ -29,6 +29,7 @@ defmodule Nest.LLM.MockClient do
 
   @behaviour Nest.LLM.Client
 
+  alias Nest.LLM.Preflight
   alias Nest.LLM.RunRequest
   alias Nest.LLM.RunResponse
 
@@ -146,22 +147,48 @@ defmodule Nest.LLM.MockClient do
 
   @impl Nest.LLM.Client
   def run(%RunRequest{} = request, opts \\ []) do
-    case take_script(opts, request.tools) do
-      nil ->
-        {:ok, build_stream({:text, random_response()})}
+    case Preflight.validate_tool_call_pairing(request.messages) do
+      :ok ->
+        case take_script(opts, request.tools) do
+          nil ->
+            {:ok, build_stream({:text, random_response()})}
 
-      {:error, reason} ->
-        # `Client.run/2` always returns `{:ok, stream}` per the
-        # behaviour; errors are surfaced as `{:error, _}` events
-        # inside the stream. Use the canned `{:error, reason}` to
-        # build a stream that yields that error followed by `:done`
-        # so consumers can detect it via the accumulator's error
-        # field.
-        {:ok, build_stream({:error, reason})}
+          {:error, reason} ->
+            # `Client.run/2` always returns `{:ok, stream}` per the
+            # behaviour; errors are surfaced as `{:error, _}` events
+            # inside the stream. Use the canned `{:error, reason}` to
+            # build a stream that yields that error followed by `:done`
+            # so consumers can detect it via the accumulator's error
+            # field.
+            {:ok, build_stream({:error, reason})}
 
-      script ->
-        {:ok, build_stream(script)}
+          script ->
+            {:ok, build_stream(script)}
+        end
+
+      {:error, {:preflight_unpaired_tool_call, _details} = err} ->
+        {:ok, build_stream({:error, anthropic_parody_400(err)})}
     end
+  end
+
+  # Build an Anthropic-shaped 400 error so downstream log
+  # formatters (and any code that pattern-matches on the
+  # real client's error shape) work the same against this
+  # preflight failure. We don't send an HTTP request — this
+  # matches the `{kind, status, body}` shape that
+  # `AnthropicClient.format_error_chunk/3` produces for a
+  # real 400.
+  defp anthropic_parody_400({:preflight_unpaired_tool_call, details}) do
+    {"request_failed", 400,
+     %{
+       "type" => "error",
+       "error" => %{
+         "type" => "bad_request_error",
+         "message" => "invalid params, tool call result does not follow tool call (2013)",
+         "details" => details
+       },
+       "request_id" => "preflight-#{System.unique_integer([:positive])}"
+     }}
   end
 
   @impl Nest.LLM.Client

@@ -226,9 +226,12 @@ defmodule Nest.Agents.Agent.Broadcasts do
   #
   # The payload also carries sub-agent identity and usage:
   #
-  #   * `parentId` / `depth` — the agent's tree position. Roots
-  #     have `parentId: nil, depth: 0`. Children carry the
-  #     integer `agents.id` of their parent and a depth of
+  #   * `parentId` / `parentName` / `depth` — the agent's
+  #     tree position. Roots have `parentId: nil,
+  #     parentName: nil, depth: 0`. Children carry the
+  #     integer `agents.id` of their parent, the parent's
+  #     readable name (so the UI's "back to parent" link can
+  #     navigate without an extra lookup), and a depth of
   #     `parent.depth + 1`. The JS-side lobby uses these to
   #     render the agent tree (roots at the top, children
   #     indented under their parent).
@@ -256,6 +259,7 @@ defmodule Nest.Agents.Agent.Broadcasts do
       contextLimit: state.llm_metrics.context_limit,
       contextLimitSource: state.llm_metrics.context_limit_source,
       parentId: state.parent_id,
+      parentName: state.parent_name,
       depth: state.depth,
       usage:
         Map.put(

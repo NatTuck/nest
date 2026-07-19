@@ -242,7 +242,12 @@ export const useStore = create(
        * Set agents list from lobby init
        */
       setAgents: (agents) => {
-        set({ agents });
+        // We rely on the wire payload carrying the
+        // sub-agent fields (`parentId`, `parentName`,
+        // `depth`) when they're set. We deliberately do
+        // NOT add defaults here so existing tests that
+        // assert a minimal agent shape stay accurate.
+        set({ agents: agents || [] });
       },
 
       /**
@@ -266,7 +271,17 @@ export const useStore = create(
         set((state) => ({
           agents: [
             ...state.agents,
-            { name: agent.name, model: agent.model, status: "idle" },
+            {
+              name: agent.name,
+              model: agent.model,
+              status: agent.status || "idle",
+              // Sub-agent identity — used to render the agent
+              // tree in the Sidebar. Defaults to no parent
+              // (root agent).
+              parentId: agent.parentId ?? null,
+              parentName: agent.parentName ?? null,
+              depth: agent.depth ?? 0,
+            },
           ],
         }));
       },
@@ -377,6 +392,20 @@ export const useStore = create(
                 // (overwritten per LLM call) drives the chip numerator;
                 // the rest are session-wide sums.
                 usage: payload.usage ?? existing?.usage ?? null,
+                // Sub-agent identity (used by the Sidebar tree + the
+                // "back to parent" link on a child's last message).
+                // `null` for roots; the integer `agents.id` and the
+                // readable name are both carried so the UI can render
+                // a tree without an extra round-trip.
+                parentId: payload.parentId ?? existing?.parentId ?? null,
+                parentName: payload.parentName ?? existing?.parentName ?? null,
+                depth: payload.depth ?? existing?.depth ?? 0,
+                // Cumulative usage from all descendants (children,
+                // grandchildren, etc.). The chip's three-way
+                // display reads these alongside `usage` (direct).
+                descendantUsage:
+                  payload.descendantUsage ?? existing?.descendantUsage ?? null,
+                totalUsage: payload.totalUsage ?? existing?.totalUsage ?? null,
                 waitingForResponse: false,
               },
             },

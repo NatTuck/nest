@@ -5,6 +5,9 @@ defmodule Nest.Application do
 
   use Application
 
+  alias Nest.Agents.Agent.ChatTurnSupervisor
+  alias Nest.Agents.ChildRegistry
+
   @impl true
   def start(_type, _args) do
     # Check system dependencies first
@@ -19,8 +22,9 @@ defmodule Nest.Application do
       {Phoenix.PubSub, name: Nest.PubSub},
       # Start agent supervision tree
       Nest.Agents.Registry.child_spec(),
+      ChildRegistry.child_spec(),
       Nest.Agents.Supervisor.child_spec(),
-      Nest.Agents.Agent.ChatTurnSupervisor,
+      ChatTurnSupervisor,
       {Task.Supervisor, name: Nest.Agents.TaskSupervisor},
       # Start model manager (queries auto-providers)
       Nest.Models

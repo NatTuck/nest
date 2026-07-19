@@ -314,6 +314,26 @@ export function joinAgent(agentId) {
       extra.usage = payload.usage;
     }
 
+    if (payload.parentId !== undefined) {
+      extra.parentId = payload.parentId;
+    }
+
+    if (payload.parentName !== undefined) {
+      extra.parentName = payload.parentName;
+    }
+
+    if (payload.depth !== undefined) {
+      extra.depth = payload.depth;
+    }
+
+    if (payload.descendantUsage !== undefined) {
+      extra.descendantUsage = payload.descendantUsage;
+    }
+
+    if (payload.totalUsage !== undefined) {
+      extra.totalUsage = payload.totalUsage;
+    }
+
     store.setAgentState(agentId, payload.status, extra);
 
     // When the LLM response completes normally, the agent

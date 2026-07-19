@@ -1,6 +1,6 @@
 defmodule Nest.Tools do
   @moduledoc """
-  Tool definitions for agent capabilities.
+  Tool dispatch for agent capabilities.
 
   Each tool is defined as a `Nest.LLM.Tool` that can be executed
   by the agent. Tools are sandboxed to the agent's workspace_path.
@@ -14,12 +14,7 @@ defmodule Nest.Tools do
   require Logger
 
   alias Nest.LLM.Tool
-  alias Nest.Tools.InspectFile
-  alias Nest.Tools.ShellCmd
-
-  # Stat-then-cap mirrors `InspectFile`'s 100 MB cap so the
-  # BatchSizer's preflight can refuse before doing the read work.
-  @max_read_file_bytes 100 * 1_000_000
+  alias Nest.Tools.{FileTools, InspectFile, ShellCmd}
 
   @doc """
   Returns a list of `Nest.LLM.Tool` structs for the given tool names.
@@ -37,190 +32,52 @@ defmodule Nest.Tools do
   @spec get_function(String.t(), String.t() | nil, String.t() | nil) :: Tool.t() | nil
   def get_function(name, workspace_path, tmp_path \\ nil) do
     case name do
-      "read_file" -> read_file_function(workspace_path, tmp_path)
-      "write_file" -> write_file_function(workspace_path, tmp_path)
-      "edit" -> edit_function(workspace_path, tmp_path)
-      "inspect_file" -> inspect_file_function(workspace_path, tmp_path)
+      "read_file" -> FileTools.read_file_function(workspace_path, tmp_path)
+      "write_file" -> FileTools.write_file_function(workspace_path, tmp_path)
+      "edit" -> FileTools.edit_function(workspace_path, tmp_path)
+      "inspect_file" -> InspectFile.build(workspace_path, tmp_path)
       "shell_cmd" -> shell_cmd_function(workspace_path, tmp_path)
       "context" -> context_function()
+      # `clone_agent` is intercepted by the ChatTurn /
+      # ToolLoop machinery — the registered tool is just a
+      # stub that surfaces in the LLM's tool list with the
+      # right schema. The real execution path is
+      # `Nest.Agents.Agent.ToolLoop.run_clone_agent/2`,
+      # which sends a `clone_agent_request` to the parent
+      # GenServer and blocks awaiting the result before
+      # returning a synthetic `ToolResult`.
+      "clone_agent" -> clone_agent_function()
       _ -> nil
     end
   end
 
-  defp read_file_function(workspace_path, tmp_path) do
-    %Tool{
-      name: "read_file",
-      description: "Read the contents of a file from the workspace",
-      parameters_schema: %{
-        "type" => "object",
-        "properties" => %{
-          "path" => %{
-            "type" => "string",
-            "description" => "Relative path to the file from the workspace root"
-          },
-          "max_result_tokens" => max_result_tokens_schema()
-        },
-        "required" => ["path"]
-      },
-      function: fn %{"path" => path}, context ->
-        read_file(path, workspace_path, tmp_path, context)
-      end
+  @doc """
+  JSON schema fragment for the `max_result_tokens` call arg.
+  The LLM sees this on every tool and learns it can request a
+  specific cap. The BatchSizer treats this as an inline-vs-summary
+  threshold:
+
+    * `shell_cmd` → if exceeded, write the full output to a
+      tmp file and return a path-and-head summary inline.
+    * `read_file` → if exceeded, return an error result with
+      the actual vs. requested token counts.
+    * Other tools → bounded output by construction (cap unreachable).
+
+  The default is 80% of the remaining usable context window.
+  The LLM may only lower the cap (e.g. to force a summary/error
+  path even when full content fits inline).
+  """
+  @spec max_result_tokens_schema() :: map()
+  def max_result_tokens_schema do
+    %{
+      "type" => "integer",
+      "description" =>
+        "Maximum tokens for the inline result. Defaults to 80% of the " <>
+          "remaining usable context window. Lower this to force a " <>
+          "path-and-head summary (shell_cmd) or an error result " <>
+          "(read_file); the value is clamped to the 80% default if you " <>
+          "ask for more."
     }
-  end
-
-  # Read the file directly via `File.read/1` (not via `ShellCmd`).
-  # Stat-then-cap mirrors `InspectFile`'s 100 MB cap so the
-  # BatchSizer's preflight can refuse before doing the read work.
-  # Failed reads return bounded error strings whose sizes are
-  # tracked accurately via `Estimator`.
-  defp read_file(path, workspace_path, _tmp_path, _context) do
-    case resolve_read_path(path, workspace_path) do
-      {:ok, full_path} -> read_after_stat(full_path, path)
-      {:error, _} = err -> err
-    end
-  end
-
-  defp resolve_read_path(path, workspace_path) do
-    cond do
-      Path.type(path) == :absolute -> {:ok, path}
-      is_nil(workspace_path) -> {:error, "No workspace configured for this agent"}
-      true -> {:ok, Path.join(workspace_path, path)}
-    end
-  end
-
-  defp read_after_stat(full_path, original_path) do
-    case File.stat(full_path) do
-      {:ok, %{size: size}} when size > @max_read_file_bytes ->
-        mb = div(size, 1_000_000)
-
-        {:error,
-         "File is #{mb} MB; read_file is capped at 100 MB. " <>
-           "Use inspect_file or shell_cmd with head/tail/sed for partial reads."}
-
-      {:ok, _} ->
-        read_file_content(full_path)
-
-      {:error, :enoent} ->
-        {:error, "File not found: #{original_path}"}
-
-      {:error, reason} ->
-        {:error, "Cannot stat file: #{inspect(reason)}"}
-    end
-  end
-
-  defp read_file_content(full_path) do
-    case File.read(full_path) do
-      {:ok, content} ->
-        validate_utf8(content)
-
-      {:error, reason} ->
-        {:error, "Read failed: #{inspect(reason)}"}
-    end
-  end
-
-  defp validate_utf8(content) do
-    if String.valid?(content) do
-      {:ok, content}
-    else
-      {:error,
-       "File is not valid UTF-8; use shell_cmd with hexdump or xxd for binary inspection."}
-    end
-  end
-
-  defp write_file_function(workspace_path, tmp_path) do
-    %Tool{
-      name: "write_file",
-      description: "Write content to a file in the workspace",
-      parameters_schema: %{
-        "type" => "object",
-        "properties" => %{
-          "path" => %{
-            "type" => "string",
-            "description" => "Relative path to the file from the workspace root"
-          },
-          "content" => %{
-            "type" => "string",
-            "description" => "Content to write to the file"
-          },
-          "max_result_tokens" => max_result_tokens_schema()
-        },
-        "required" => ["path", "content"]
-      },
-      function: fn %{"path" => path, "content" => content}, context ->
-        write_file(path, content, workspace_path, tmp_path, context)
-      end
-    }
-  end
-
-  # The `edit` tool performs an exact string replacement in a file
-  # (Claude Code's Edit semantics). `old_text` must match uniquely
-  # unless `replace_all` is true. On mismatch, the tool returns a
-  # structured error and the file is left unchanged. The LLM is
-  # expected to retry with a more specific `old_text` (or with
-  # `replace_all: true` if it really wanted to change every match).
-  defp edit_function(workspace_path, tmp_path) do
-    %Tool{
-      name: "edit",
-      description:
-        "Perform an exact string replacement in a file. Reads the file, " <>
-          "replaces the first (or all) occurrence(s) of `old_text` with " <>
-          "`new_text`, and writes it back. With `replace_all: false` " <>
-          "(the default), `old_text` must match exactly once or the call fails.",
-      parameters_schema: %{
-        "type" => "object",
-        "properties" => %{
-          "path" => %{
-            "type" => "string",
-            "description" => "Relative path to the file from the workspace root"
-          },
-          "old_text" => %{
-            "type" => "string",
-            "description" =>
-              "The exact text to find. Must match the file content exactly, " <>
-                "including whitespace and indentation."
-          },
-          "new_text" => %{
-            "type" => "string",
-            "description" => "The text to replace `old_text` with."
-          },
-          "replace_all" => %{
-            "type" => "boolean",
-            "description" =>
-              "Replace every occurrence of `old_text` instead of just the first. " <>
-                "Default: false. When false, the call errors if `old_text` matches " <>
-                "more than one location.",
-            "default" => false
-          },
-          "max_result_tokens" => max_result_tokens_schema()
-        },
-        "required" => ["path", "old_text", "new_text"]
-      },
-      function: fn args, context ->
-        edit(args, workspace_path, tmp_path, context)
-      end
-    }
-  end
-
-  # The `inspect_file` tool returns file metadata (type, size, line
-  # count, char count, estimated tokens) for the LLM to plan its
-  # context usage. It's strictly read-only: never returns file
-  # content, never modifies the file.
-  #
-  # Workflow it supports: the LLM sees a filename referenced in a
-  # task and needs to decide whether to call `read_file` (full
-  # content) or use `shell_cmd` with `head`/`tail`/`sed -n` for a
-  # partial read. Calling `inspect_file` first gives the size /
-  # token estimate so the LLM can pick.
-  #
-  # Text vs. binary: we trust the `file` command's classification
-  # when it says "ASCII text" or starts with "UTF-8", then validate
-  # with `String.valid?/1` (since ASCII is a strict subset of
-  # UTF-8, valid ASCII is automatically valid UTF-8). Anything
-  # else — UTF-16, ISO-8859, PNG, ELF, etc. — is reported as
-  # binary with a clear "do not use read_file" hint. We don't try
-  # to transcode; the LLM is told to use shell tools for those.
-  defp inspect_file_function(workspace_path, tmp_path) do
-    InspectFile.build(workspace_path, tmp_path)
   end
 
   defp shell_cmd_function(workspace_path, tmp_path) do
@@ -242,6 +99,16 @@ defmodule Nest.Tools do
         shell_cmd(command, workspace_path, tmp_path, context)
       end
     }
+  end
+
+  defp shell_cmd(command, workspace_path, tmp_path, context) do
+    caps = caps_from_context(context)
+
+    Logger.info(
+      "Tool shell_cmd: #{command} (workspace: #{workspace_path || "none"}, tmp: #{tmp_path || "none"})"
+    )
+
+    ShellCmd.execute(command, workspace_path, tmp_path, caps)
   end
 
   # The `context` tool provides visibility into context usage and
@@ -280,181 +147,44 @@ defmodule Nest.Tools do
     }
   end
 
-  # JSON schema fragment for the `max_result_tokens` call arg.
-  # The LLM sees this on every tool and learns it can request a
-  # specific cap. The BatchSizer treats this as an inline-vs-summary
-  # threshold:
+  # The `clone_agent` tool: spawn a child agent with the
+  # full conversation context plus the supplied `instruction`
+  # as a new user message; block until the child goes idle;
+  # return the child's last assistant message content as the
+  # tool result.
   #
-  #   * `shell_cmd` → if exceeded, write the full output to a
-  #     tmp file and return a path-and-head summary inline.
-  #   * `read_file` → if exceeded, return an error result with the
-  #     actual vs. requested token counts.
-  #   * Other tools → bounded output by construction (cap unreachable).
-  #
-  # The default is 80% of the remaining usable context window.
-  # The LLM may only lower the cap (e.g. to force a summary/error
-  # path even when full content fits inline).
-  defp max_result_tokens_schema do
-    %{
-      "type" => "integer",
-      "description" =>
-        "Maximum tokens for the inline result. Defaults to 80% of the " <>
-          "remaining usable context window. Lower this to force a " <>
-          "path-and-head summary (shell_cmd) or an error result " <>
-          "(read_file); the value is clamped to the 80% default if you " <>
-          "ask for more."
+  # The `function` here is a stub. The real execution flow
+  # lives in `Nest.Agents.Agent.ToolLoop.run_clone_agent/2`
+  # (intercepts the tool-call batch and dispatches via
+  # `GenServer.call` to the parent Agent GenServer, then
+  # `receive`s the forwarded `:clone_agent_result` from the
+  # blocking tool worker).
+  defp clone_agent_function do
+    %Tool{
+      name: "clone_agent",
+      description:
+        "Spawn a child agent with a copy of this conversation. The child " <>
+          "runs to completion (it may use other tools, call `clone_agent` itself, " <>
+          "or return text) and returns its final assistant message as the tool result. " <>
+          "Use this when a task can be delegated without holding the current context.",
+      parameters_schema: %{
+        "type" => "object",
+        "properties" => %{
+          "instruction" => %{
+            "type" => "string",
+            "description" =>
+              "The task for the child agent to perform. Treated as a new " <>
+                "user message after the child's copied message history."
+          }
+        },
+        "required" => ["instruction"]
+      },
+      function: fn _args, _context ->
+        {:ok, "Clone agent request received."}
+      end
     }
-  end
-
-  # Tool implementations
-
-  defp write_file(path, content, workspace_path, tmp_path, context) do
-    caps = caps_from_context(context)
-    Logger.info("Tool write_file: #{path} (workspace: #{workspace_path || "none"})")
-
-    # Build the full path - if absolute, use as-is (sandbox will enforce)
-    # if relative, join with workspace (requires workspace_path)
-    full_path_result =
-      if Path.type(path) == :absolute do
-        {:ok, path}
-      else
-        if is_nil(workspace_path) do
-          {:error, "No workspace configured for this agent"}
-        else
-          {:ok, Path.join(workspace_path, path)}
-        end
-      end
-
-    with {:ok, full_path} <- full_path_result do
-      # Use cat via sandboxed shell command to write file
-      # cat reads from stdin and writes to the specified file
-      case ShellCmd.execute(
-             "cat > #{shell_escape(full_path)}",
-             workspace_path,
-             tmp_path,
-             caps,
-             stdin: content
-           ) do
-        {:ok, _} ->
-          {:ok, "Successfully wrote #{String.length(content)} bytes to #{path}"}
-
-        {:error, reason} ->
-          {:error, "Failed to write file: #{reason}"}
-      end
-    end
-  end
-
-  # Edit implementation: read the file (via the same sandboxed cat
-  # path as read_file), apply String.replace in Elixir, then write
-  # back via the same sandboxed cat path as write_file. Splitting
-  # on `old_text` is how we cheaply detect "not found" (parts == 1)
-  # and "ambiguous" (parts > 2 with `replace_all: false`).
-  defp edit(args, workspace_path, tmp_path, context) do
-    path = args["path"]
-    old_text = args["old_text"]
-    new_text = args["new_text"]
-    replace_all = Map.get(args, "replace_all", false)
-
-    caps = caps_from_context(context)
-    Logger.info("Tool edit: #{path} (replace_all: #{replace_all})")
-
-    with {:ok, full_path} <- resolve_full_path(path, workspace_path),
-         {:ok, current} <- read_file_via_shell(full_path, workspace_path, tmp_path, caps),
-         {:ok, replacement_count, updated} <-
-           compute_replacement(current, old_text, new_text, replace_all) do
-      case ShellCmd.execute(
-             "cat > #{shell_escape(full_path)}",
-             workspace_path,
-             tmp_path,
-             caps,
-             stdin: updated
-           ) do
-        {:ok, _} ->
-          {:ok, "Replaced #{replacement_count} occurrence(s) in #{path}"}
-
-        {:error, reason} ->
-          {:error, "Failed to write file: #{reason}"}
-      end
-    end
-  end
-
-  defp resolve_full_path(path, workspace_path) do
-    if Path.type(path) == :absolute do
-      {:ok, path}
-    else
-      if is_nil(workspace_path) do
-        {:error, "No workspace configured for this agent"}
-      else
-        {:ok, Path.join(workspace_path, path)}
-      end
-    end
-  end
-
-  defp read_file_via_shell(full_path, workspace_path, tmp_path, caps) do
-    ShellCmd.execute("cat -- #{shell_escape(full_path)}", workspace_path, tmp_path, caps)
-  end
-
-  # Returns {:ok, count, new_content} on success, {:error, reason}
-  # when old_text is missing or ambiguous (and replace_all is false).
-  defp compute_replacement(_current, "", _new_text, _replace_all) do
-    {:error, "old_text must be a non-empty string"}
-  end
-
-  defp compute_replacement(current, old_text, new_text, true) do
-    case count_matches(current, old_text) do
-      0 ->
-        {:error, "old_text not found in file"}
-
-      count ->
-        {:ok, count, String.replace(current, old_text, new_text)}
-    end
-  end
-
-  defp compute_replacement(current, old_text, new_text, false) do
-    parts = String.split(current, old_text)
-
-    case parts do
-      [single] when single == current ->
-        {:error, "old_text not found in file"}
-
-      [_before, _after] ->
-        {:ok, 1, String.replace(current, old_text, new_text, global: false)}
-
-      parts when length(parts) > 2 ->
-        {:error,
-         "old_text matches #{length(parts) - 1} locations; " <>
-           "pass replace_all: true to replace all, or make old_text more specific"}
-
-      _ ->
-        # Unreachable given the non-empty `old_text` guard and the
-        # cases above; defensive catch-all in case String.split
-        # returns an unexpected shape.
-        {:error, "old_text not found in file"}
-    end
-  end
-
-  defp count_matches(content, pattern) do
-    case String.split(content, pattern) do
-      parts -> max(0, length(parts) - 1)
-    end
-  end
-
-  defp shell_cmd(command, workspace_path, tmp_path, context) do
-    caps = caps_from_context(context)
-
-    Logger.info(
-      "Tool shell_cmd: #{command} (workspace: #{workspace_path || "none"}, tmp: #{tmp_path || "none"})"
-    )
-
-    # Execute in sandboxed environment via bwrap + erlexec
-    ShellCmd.execute(command, workspace_path, tmp_path, caps)
   end
 
   defp caps_from_context(%{caps: caps}) when is_map(caps), do: caps
   defp caps_from_context(_), do: nil
-
-  defp shell_escape(path) do
-    # Escape single quotes by ending the quote, adding escaped quote, resuming quote
-    "'" <> String.replace(path, "'", "'\\''") <> "'"
-  end
 end

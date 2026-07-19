@@ -40,6 +40,7 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
   """
 
   alias Nest.Agents.Agent.Broadcasts
+  alias Nest.Agents.Registry, as: AgentsRegistry
   alias Nest.Messages.Assistant
   alias Nest.Messages.Streaming
 
@@ -71,6 +72,12 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
   # the cancelled flag, the streaming_acc accumulator
   # (the message is in the list, the live partial is no
   # longer valid), and transition to :idle.
+  #
+  # If this agent has a parent (`clone_agent` spawned
+  # it), forward a `:child_completed` cast so the parent
+  # can merge our total usage into its `descendant_usage`,
+  # forward `:clone_agent_result` to the blocked tool
+  # worker, and broadcast its updated status.
   defp chat_idle(state) do
     state = %{
       state
@@ -84,7 +91,60 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
     }
 
     Broadcasts.status(state.name, state)
+
+    case state.parent_name do
+      nil ->
+        {:noreply, state}
+
+      parent_name ->
+        notify_parent_on_idle(parent_name, state)
+    end
+  end
+
+  # Cast our last assistant content + our total usage
+  # (already inclusive of any grandchildren — see
+  # `Broadcasts.total_usage/2`) up the tree. The parent's
+  # `handle_cast({:child_completed, ...}, _)` merges the
+  # usage and forwards `:clone_agent_result` to the tool
+  # worker that's been blocked on our completion.
+  #
+  # We compute `total_usage` directly from the LLM metrics
+  # in memory (`state.llm_metrics`) rather than
+  # `GenServer.call(self(), :get_total_usage)` — the public
+  # `get_total_usage/1` client API sends the request back
+  # through the agent's mailbox, which would deadlock from
+  # inside our own handler.
+  defp notify_parent_on_idle(parent_name, state) do
+    total_usage =
+      Broadcasts.total_usage(
+        state.llm_metrics.usage_totals,
+        state.llm_metrics.descendant_usage
+      )
+
+    response = last_assistant_text(state)
+
+    GenServer.cast(
+      AgentsRegistry.via_tuple(parent_name),
+      {:child_completed, state.name, response, total_usage}
+    )
+
     {:noreply, state}
+  end
+
+  # Concatenate the text parts of the last assistant
+  # message in `state.chat_state.messages`. Falls back to
+  # an empty string for a child whose final turn produced
+  # no text (e.g. only tool calls then a stopped-by-user).
+  defp last_assistant_text(state) do
+    case Enum.reverse(state.chat_state.messages) do
+      [{:assistant, %{parts: parts}} | _] when is_list(parts) ->
+        parts
+        |> Enum.filter(&match?(%Nest.Messages.Part.Text{}, &1))
+        |> Enum.map_join("", & &1.text)
+
+      _ ->
+        ""
+    end
   end
 
   # The user clicked Stop. The ChatTurn killed the active

@@ -24,6 +24,15 @@ config :nest, Nest.Repo,
 # setup that doesn't depend on the agent's lifecycle.
 config :nest, persistence: [enabled: false]
 
+# Subagent tests need freshly-spawned children to land on
+# `MockClient` rather than the real HTTP client. The default-
+# on lets tests stay free of `Application.put_env` mutations,
+# which would otherwise race with the existing
+# `clone_agent_registration_test.exs`'s `delete_env` on_exit
+# and break async test ordering. Production reads `false`
+# (the third arg of `Application.get_env/3`) by default.
+config :nest, force_subagent_mock: true
+
 # We don't run a server during test. If one is required,
 # you can enable the server option below.
 config :nest, NestWeb.Endpoint,

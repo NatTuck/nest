@@ -56,6 +56,8 @@ the task.
 the test.
 - **NEVER** look at the git history of code you haven't read as a debugging or
 explanation tool.
+- FIX THE LINT ISSUES. ALWAYS. NO EXCUSES. IT DOES NOT MATTER IF IT WAS
+ALREADY THERE.
 
 ### More Testing Rules
 
@@ -118,6 +120,14 @@ explicit `cd assets && ...`.
 
 - Use modern react and hooks.
 - Use a single zustand store for transient in-browser state.
+
+### Remember how to use OTP
+
+- If we have a registry, we should use it. Avoid raw BEAM pids in favor of
+via_registry(name) type patterns.
+- If we're communicating with a GenServer, typically it's better to do a call or
+cast than just sending a raw message. There's no need for handle_info when we
+control both ends of the communication.
 
 ### Basics for Elixir / Phoenix
 

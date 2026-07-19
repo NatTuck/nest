@@ -41,6 +41,7 @@ defmodule Nest.Agents.Agent.Init do
     workspace_path = Map.get(attrs, :workspace_path)
     vocation = Map.get(attrs, :vocation)
     parent_id = Map.get(attrs, :parent_id)
+    parent_name = Map.get(attrs, :parent_name)
     depth = Map.get(attrs, :depth, 0)
 
     # Resolve the context limit before building the system prompt
@@ -76,6 +77,7 @@ defmodule Nest.Agents.Agent.Init do
       tools: tools,
       llm_metrics: build_llm_metrics(context_limit, context_limit_source),
       parent_id: parent_id,
+      parent_name: parent_name,
       depth: depth,
       mode: mode,
       chat_state: build_chat_state(initial_messages, next_index, initial_api_log_sequences)

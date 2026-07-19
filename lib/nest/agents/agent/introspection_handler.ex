@@ -74,6 +74,14 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
     {:reply, state.chat_state.chat_turn_pid, state}
   end
 
+  # Test-friendly: returns the `pending_children` map so
+  # a test can assert which workers are currently parked
+  # on a `clone_agent` tool call. Production code should
+  # use `:get_total_usage` / `get_public_info` instead.
+  def handle(:get_pending_children, _from, state) do
+    {:reply, state.chat_state.pending_children, state}
+  end
+
   def handle(:get_total_usage, _from, state) do
     {:reply,
      Broadcasts.total_usage(state.llm_metrics.usage_totals, state.llm_metrics.descendant_usage),
@@ -101,8 +109,11 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
       context_limit_source: state.llm_metrics.context_limit_source,
       # Sub-agent identity: the integer `agents.id` of the
       # agent that spawned this one (nil for roots), plus
-      # the depth (0 for roots).
+      # the parent's readable name (so the UI's "back to
+      # parent" link can navigate without an extra lookup),
+      # plus the depth (0 for roots).
       parent_id: state.parent_id,
+      parent_name: state.parent_name,
       depth: state.depth,
       # Direct usage (this agent's own LLM calls).
       usage:

@@ -41,7 +41,7 @@ defmodule Config.GitRemote do
       String.starts_with?(url, "git@") ->
         parse_ssh_url(url)
 
-      String.match?(url, ~r/^[^\/]+:[^\/].*/) ->
+      String.match?(url, ~r|^[^/]+:[^/].*/|) ->
         parse_ssh_url("git@" <> url)
 
       true ->
@@ -52,7 +52,7 @@ defmodule Config.GitRemote do
   def to_https_url(_), do: nil
 
   defp parse_ssh_url(url) do
-    case Regex.run(~r/^git@([^:]+):(.+?)(?:\.git)?$/, url) do
+    case Regex.run(~r|^git@([^:]+):(.+?)(?:\.git)?$|, url) do
       [_, host, path] -> "https://#{host}/#{path}"
       _ -> nil
     end

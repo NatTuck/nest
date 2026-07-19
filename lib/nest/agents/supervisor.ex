@@ -45,7 +45,8 @@ defmodule Nest.Agents.Supervisor do
 
   require Logger
 
-  alias Nest.Agents.{Agent, NameGenerator, Registry}
+  alias Nest.Agents.{Agent, ChildRegistry, NameGenerator, Registry}
+  alias Nest.Agents.PersistedAgent
   alias Nest.Persistence
 
   @supervisor_name __MODULE__
@@ -219,15 +220,116 @@ defmodule Nest.Agents.Supervisor do
     end
   end
 
+  @doc """
+  Test-only: start a single agent under the supervisor
+  by raw attrs and return its pid. Used by tests that
+  want the agent as a child of the application's
+  `DynamicSupervisor` (so `Supervisor.stop_agent/1`'s
+  cascade walk can terminate it via
+  `DynamicSupervisor.terminate_child/2`).
+
+  Production code uses `fetch_or_start_agent/1` or
+  `start_agent_with_parent/2`; this helper exists for
+  test setup only.
+  """
+  @spec start_under_test(map()) :: {:ok, pid()} | {:error, term()}
+  def start_under_test(attrs) do
+    _name = Map.fetch!(attrs, :name)
+
+    case DynamicSupervisor.start_child(@supervisor_name, {Agent, attrs}) do
+      {:ok, pid} -> {:ok, pid}
+      {:error, {:already_started, pid}} -> {:ok, pid}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   defp persistence_enabled? do
     Application.get_env(:nest, :persistence, %{})[:enabled] != false
   end
 
   @doc """
-  Stops an agent by its `name`.
+  Spawn a child agent as a descendant of `parent_state`. The
+  child gets a fresh `agents` row with `parent_id =
+  parent_state.parent_id` (the parent's integer `agents.id`,
+  resolved via `Persistence.fetch_agent_by_name/1` against
+  the parent's `name`) and `depth = parent_state.depth + 1`.
 
-  Returns `:ok` on success, or `{:error, :not_found}` if the
-  agent doesn't exist.
+  The child's runtime carries `parent_name = parent_state.name`
+  so the child can dispatch messages back to the parent via
+  `Nest.Agents.Registry.via_tuple/1` without an additional
+  integer→name lookup at completion time.
+
+  Messages: a copy of `parent_state.chat_state.messages` is
+  passed via `:preloaded_messages`. The child's
+  `Init.persist_initial_system_message/1` re-inserts the
+  system row idempotently under the `(agent_id,
+  message_index)` unique constraint, and the rest of the
+  preloaded sequence round-trips into the child's
+  `state.chat_state.messages`. Each child has its own
+  integer `agents.id`, so the rows are independent —
+  `agents.parent_id` is the only cross-agent relationship
+  in the `messages` table.
+
+  Returns `{:ok, child_name}` on success. The caller is
+  responsible for kicking off the child's chat turn via
+  `Agents.chat(child_name, instruction)` (the supervisor
+  does not start the turn itself — that would couple spawn
+  to message delivery and break unit tests that want a
+  spawned-but-idle child).
+  """
+  @spec start_agent_with_parent(Nest.Agents.Agent.t(), String.t()) ::
+          {:ok, String.t()} | {:error, term()}
+  def start_agent_with_parent(parent_state, instruction)
+      when is_map(parent_state) and is_binary(instruction) do
+    parent_name = parent_state.name
+
+    with {:ok, %PersistedAgent{id: parent_id}} <- Persistence.fetch_agent_by_name(parent_name),
+         child_name <- generate_unique_name(),
+         attrs <-
+           build_child_attrs(parent_name, parent_id, parent_state, child_name, instruction),
+         {:ok, _row} <- Persistence.insert_agent(attrs),
+         {:ok, _pid} <- start_under_supervisor(attrs, child_name),
+         :ok <- ChildRegistry.register(parent_name, child_name) do
+      {:ok, child_name}
+    end
+  end
+
+  defp build_child_attrs(parent_name, parent_id, parent_state, child_name, _instruction) do
+    %{
+      name: child_name,
+      model: parent_state.model,
+      # Children inherit the parent's vocation (so they get
+      # the same prompt, tools, modes). The
+      # `SystemPrompt.compose_vocation_config/4` depth filter
+      # strips `clone_agent` from the tool list when at max
+      # depth; the parent's `parent_id`/`depth` columns
+      # produce the same effect for the child's prompt.
+      vocation_id: parent_state.vocation_id,
+      vocation: parent_state.vocation,
+      workspace_path: parent_state.workspace_path,
+      parent_id: parent_id,
+      parent_name: parent_name,
+      depth: parent_state.depth + 1,
+      preloaded_messages: parent_state.chat_state.messages,
+      last_compaction_index: Map.get(parent_state.chat_state, :last_compaction_index, -1),
+      next_message_index: parent_state.chat_state.next_message_index,
+      initial_api_log_sequences: %{}
+    }
+  end
+
+  @doc """
+  Stops an agent by its `name`. Cascade-walks the
+  `ChildRegistry`: any registered children (and their
+  grandchildren, recursively) are stopped first, then the
+  named agent. This keeps the runtime tree consistent when
+  a parent is removed via the lobby's `delete_agent`
+  handle_in.
+
+  Returns `:ok` on success (children cleaned up; parent
+  terminated when present). Returns `{:error,
+  :not_found}` when the named agent isn't running and
+  has no registered children — i.e., the call had
+  nothing to do.
 
   ## Examples
 
@@ -236,6 +338,20 @@ defmodule Nest.Agents.Supervisor do
   """
   @spec stop_agent(String.t()) :: :ok | {:error, :not_found}
   def stop_agent(name) do
+    # Cascade first, by name only. The `ChildRegistry`
+    # self-cleans via DOWN monitors; we don't rely on its
+    # entries being consistent during the walk.
+    children = ChildRegistry.children_of(name)
+
+    if children == [] do
+      stop_one(name)
+    else
+      for child_name <- children, do: _ = stop_agent(child_name)
+      stop_one(name)
+    end
+  end
+
+  defp stop_one(name) do
     case Registry.lookup(name) do
       {:ok, pid} ->
         DynamicSupervisor.terminate_child(@supervisor_name, pid)
@@ -244,6 +360,29 @@ defmodule Nest.Agents.Supervisor do
       {:error, :not_found} ->
         {:error, :not_found}
     end
+  end
+
+  @doc """
+  Cascade-walk `name`'s registered children and terminate
+  each subtree, WITHOUT terminating `name` itself. The
+  agent's own `terminate/2` calls this so the runtime
+  tree is consistent when a parent is torn down via the
+  supervisor (we don't double-terminate).
+
+  Best-effort: each child's `terminate/2` cascades its
+  own subtree through this same helper. A child's monitor
+  clearing happens via `ChildRegistry`'s `:DOWN` handler
+  so the parent's bookkeeping stays accurate.
+  """
+  @spec cascade_children_only(String.t()) :: :ok
+  def cascade_children_only(name) do
+    children = ChildRegistry.children_of(name)
+
+    for child_name <- children do
+      _ = stop_agent(child_name)
+    end
+
+    :ok
   end
 
   @doc """

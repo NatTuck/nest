@@ -82,17 +82,34 @@ config :nest, NestWeb.Endpoint,
 # different ports.
 
 # Reload browser tabs when matching files change.
+# The `live_reload.patterns` list used to be written with sigils
+# carrying the PCRE "extended" flag inline — `~r"...E"`. That
+# form silently worked in older Elixir/Erlang combinations
+# but Erlang/OTP 27 + Elixir 1.18 reject the `E` flag outright
+# (`invalid_option at position E`); `Regex.compile!/2` accepts
+# only the canonical PCRE flag characters (`x`, `i`, `s`, …)
+# in its second argument, so we now build each pattern through
+# that path with the equivalent `"x"` flag.
 config :nest, NestWeb.Endpoint,
   live_reload: [
     web_console_logger: true,
     patterns: [
-      # Static assets, except user uploads
-      ~r"priv/static/(?!uploads/).*\.(js|css|png|jpeg|jpg|gif|svg)$"E,
+      # Static assets, except user uploads. The `(?!)` negative
+      # lookahead excludes the `uploads/` prefix; we keep it in
+      # a single-line pattern (extended-mode whitespace is not
+      # needed for a list of file-extension literals).
+      Regex.compile!(
+        "priv/static/(?!uploads/).*\\.(js|css|png|jpeg|jpg|gif|svg)$",
+        "x"
+      ),
       # Gettext translations
-      ~r"priv/gettext/.*\.po$"E,
+      Regex.compile!("priv/gettext/.*\\.po$", "x"),
       # Router, Controllers, LiveViews and LiveComponents
-      ~r"lib/nest_web/router\.ex$"E,
-      ~r"lib/nest_web/(controllers|live|components)/.*\.(ex|heex)$"E
+      Regex.compile!("lib/nest_web/router\\.ex$", "x"),
+      Regex.compile!(
+        "lib/nest_web/(controllers|live|components)/.*\\.(ex|heex)$",
+        "x"
+      )
     ]
   ]
 

@@ -27,7 +27,7 @@ alias Nest.Vocations
     name: "Default",
     description: "A minimal default vocation for agents without a specific role",
     system_prompt: "You are a helpful assistant.",
-    tools: ["context"],
+    tools: ["context", "clone_agent"],
     modes: %{
       "chat" => %{
         "description" => "General conversation.",
@@ -67,7 +67,15 @@ alias Nest.Vocations
     useful outputs with head, tail, grep, or similar for commands that cost significant time
     or access remote APIs.
     """,
-    tools: ["read_file", "inspect_file", "write_file", "edit", "shell_cmd", "context"],
+    tools: [
+      "read_file",
+      "inspect_file",
+      "write_file",
+      "edit",
+      "shell_cmd",
+      "context",
+      "clone_agent"
+    ],
     modes: %{
       "build" => %{
         "description" => "You're clear to edit the project in the workspace.",

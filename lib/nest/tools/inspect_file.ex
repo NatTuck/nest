@@ -33,6 +33,7 @@ defmodule Nest.Tools.InspectFile do
   alias Nest.LLM.Tool
   alias Nest.Tokens.Estimator
   alias Nest.Tools.ShellCmd
+  alias Nest.Tools.ShellEscape
 
   @max_bytes 100 * 1_000_000
 
@@ -265,7 +266,5 @@ defmodule Nest.Tools.InspectFile do
   defp caps_from_context(%{caps: caps}) when is_map(caps), do: caps
   defp caps_from_context(_), do: nil
 
-  defp shell_escape(path) do
-    "'" <> String.replace(path, "'", "'\\''") <> "'"
-  end
+  defp shell_escape(path), do: ShellEscape.escape(path)
 end

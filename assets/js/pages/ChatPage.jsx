@@ -7,7 +7,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { useStore } from "../store";
 import {
   joinAgent,
@@ -29,6 +29,7 @@ import { NotificationBanner } from "../components/NotificationBanner";
 import { CompactionMarker } from "../components/CompactionMarker";
 import { SystemMessageContent } from "../components/SystemMessageContent";
 import { CopyButton } from "../components/CopyButton";
+import { DelegatedTasks } from "../components/DelegatedTaskBlock";
 import { useScrollToBottom } from "../hooks/useScrollToBottom";
 import { stripModePrefix } from "../utils/stripModePrefix.js";
 import { splitThinkFromParts } from "../utils/thinkTags.js";
@@ -86,6 +87,16 @@ export function ChatPage() {
   // session cost estimate. See `TokenUsageChip.jsx` for the
   // full field-by-field layout.
   const usage = cache?.usage ?? null;
+  const descendantUsage = cache?.descendantUsage ?? null;
+  const totalUsage = cache?.totalUsage ?? null;
+  // Sub-agent identity. `parentName` is the readable id of
+  // the agent that spawned this one via `clone_agent`, or
+  // `null` for root agents. Surfaced as a "back to parent"
+  // link in the agent header (a child can navigate back to
+  // its parent's chat without an extra round-trip).
+  const parentName = cache?.parentName ?? null;
+  const _parentId = cache?.parentId ?? null;
+  const depth = cache?.depth ?? 0;
 
   // History navigation list for ChatInput's Ctrl/Cmd+Up / Down support.
   // Pulls user messages from both the active session and the archived
@@ -299,9 +310,28 @@ export function ChatPage() {
                 return provider ? `${provider}: ${name}` : name;
               })()}
             </p>
+            {parentName && (
+              <p className="text-xs text-gray-500 mt-1">
+                ↑{" "}
+                <Link
+                  to={`/agent/${encodeURIComponent(parentName)}`}
+                  className="text-blue-600 hover:underline"
+                >
+                  back to {parentName}
+                </Link>
+                {depth > 0 && (
+                  <span className="text-gray-400 ml-2">(depth {depth})</span>
+                )}
+              </p>
+            )}
           </div>
           <div className="flex flex-col items-end gap-2">
-            <TokenUsageChip usage={usage} contextLimit={contextLimit} />
+            <TokenUsageChip
+              usage={usage}
+              descendantUsage={descendantUsage}
+              totalUsage={totalUsage}
+              contextLimit={contextLimit}
+            />
             <div className="flex items-center gap-2">
               <div
                 className={`
@@ -514,6 +544,12 @@ export function ChatPage() {
                 )}
                 <ToolCalls toolCalls={message.toolCalls} />
                 <ToolResults toolResults={message.toolResults} />
+                {/* Sub-agent: surface `clone_agent` calls as a
+                    first-class Delegated Task card alongside the
+                    raw tool result. Looks across all messages
+                    (and the partial) so the card stays in sync
+                    as soon as the parent emits the call. */}
+                <DelegatedTasks messages={messages} partial={partial} />
                 <ApiLogsBlock apiLogs={message.apiLogs} />
                 {message.isPartial && (
                   <div className="flex items-center gap-1 mt-2">

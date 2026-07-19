@@ -21,6 +21,7 @@ defmodule Nest.Agents.Agent do
   alias Nest.Agents.Agent.Init
   alias Nest.Agents.Agent.IntrospectionHandler
   alias Nest.Agents.Agent.Persistence, as: AgentPersistence
+  alias Nest.Agents.Agent.SubAgent
   alias Nest.Agents.Agent.TmpSpace
   alias Nest.Agents.Registry
   alias Nest.LLM.ClientConfig
@@ -47,6 +48,13 @@ defmodule Nest.Agents.Agent do
     # here so the persisted row carries the relationship and
     # we can rebuild the tree after a BEAM restart.
     :parent_id,
+    # `parent_name` is the parent's readable identifier
+    # (`String.t()`). Held as runtime state only (not
+    # persisted) so the child can dispatch messages to the
+    # parent's GenServer through `Agents.Registry.via_tuple/1`
+    # without an integer→name lookup at completion time. The
+    # integer FK above is the durable identifier.
+    :parent_name,
     mode: "chat",
     # `depth` is the agent's distance from its tree root.
     # 0 = root (no parent). Children of a depth-D parent are
@@ -81,6 +89,7 @@ defmodule Nest.Agents.Agent do
           tools: [Nest.LLM.Tool.t()],
           llm_metrics: __MODULE__.LlmMetrics.t(),
           parent_id: integer() | nil,
+          parent_name: String.t() | nil,
           depth: non_neg_integer(),
           mode: String.t(),
           chat_state: __MODULE__.ChatState.t()
@@ -179,7 +188,8 @@ defmodule Nest.Agents.Agent do
   Returns public information about the agent for the WebSocket protocol.
 
   Returns a map with :id, :model, :message_count, :status, :vocation_id,
-  :partial, :parent_id, :depth, :descendant_usage, and :total_usage.
+  :partial, :parent_id, :parent_name, :depth, :descendant_usage, and
+  :total_usage.
   """
   @spec get_public_info(pid()) :: %{
           id: String.t(),
@@ -190,6 +200,7 @@ defmodule Nest.Agents.Agent do
           tmp_path: String.t() | nil,
           partial: map() | nil,
           parent_id: integer() | nil,
+          parent_name: String.t() | nil,
           depth: non_neg_integer(),
           descendant_usage: map() | nil,
           total_usage: map() | nil
@@ -281,7 +292,7 @@ defmodule Nest.Agents.Agent do
         Init.persist_initial_system_message(state)
 
         Logger.info(
-          "Agent started: #{state.name} with vocation_id: #{inspect(state.vocation_id)}, mode: #{state.mode}, tools: #{length(state.tools)}, client: #{inspect(state.client_config.client)}, context_limit: #{inspect(state.llm_metrics.context_limit)} (#{state.llm_metrics.context_limit_source}), parent_id: #{inspect(state.parent_id)}, depth: #{state.depth}"
+          "Agent started: #{state.name} with vocation_id: #{inspect(state.vocation_id)}, mode: #{state.mode}, tools: #{length(state.tools)}, client: #{inspect(state.client_config.client)}, context_limit: #{inspect(state.llm_metrics.context_limit)} (#{state.llm_metrics.context_limit_source}), parent_id: #{inspect(state.parent_id)}, parent_name: #{inspect(state.parent_name)}, depth: #{state.depth}"
         )
 
         {:ok, state}
@@ -294,6 +305,14 @@ defmodule Nest.Agents.Agent do
 
   @impl true
   def terminate(_reason, state) do
+    # Cascade-stop any registered children. The
+    # `ChildRegistry` walks by name (no pid work); the
+    # `Supervisor` then tears down each child via its own
+    # `terminate/2`. Defensive against the case where the
+    # supervisor gave up because we crashed: we still
+    # want children cleaned up.
+    SubAgent.cascade_terminate(state)
+
     # Cleanup /tmp per design specification
     cleanup_tmp(state.name)
 
@@ -309,6 +328,21 @@ defmodule Nest.Agents.Agent do
   @impl true
   def handle_cast({:chat, content, mode}, state) do
     ChatPipeline.handle_chat(state, content, mode)
+  end
+
+  # Sub-agent: a child has finished its turn. Its
+  # GenServer (see `chat_idle` handler) cast this message
+  # up the tree carrying the child's last assistant content
+  # and the child's total usage (already inclusive of any
+  # grandchildren). We merge the usage into our
+  # `descendant_usage`, drop the pending-child entry, send
+  # the `:clone_agent_result` to the worker that's been
+  # blocked on the parent side of the call, and broadcast
+  # the updated status (so the UI's token chip picks up the
+  # new total).
+  @impl true
+  def handle_cast({:child_completed, child_name, response, child_total_usage}, state) do
+    SubAgent.handle_child_completed(state, child_name, response, child_total_usage)
   end
 
   # Test-only helpers for asserting on the loop-breaker counter.
@@ -357,6 +391,19 @@ defmodule Nest.Agents.Agent do
   # `tool_calls_received/2` (same path as a regular chat
   # turn). The previous `{:append_compaction_messages, _}`
   # bulk-append is no longer needed.
+
+  # Sub-agent: a tool worker (running in the chat turn) is
+  # blocked on the tool dispatch and has hit a `clone_agent`
+  # tool call. Spawn a child agent, kick off its chat
+  # turn with the supplied instruction, remember the
+  # worker's pid so we can forward the eventual
+  # `:clone_agent_result`, and reply synchronously with the
+  # child's name so the worker can match its `receive` on
+  # child identity.
+  @impl true
+  def handle_call({:clone_agent_request, task_pid, instruction}, _from, state) do
+    SubAgent.handle_clone_request(state, task_pid, instruction)
+  end
 
   # Catch-all dispatcher for introspection calls.
   @impl true
