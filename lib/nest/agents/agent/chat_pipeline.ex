@@ -18,9 +18,12 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   """
 
   alias Nest.Agents.Agent.Broadcasts
+  alias Nest.Agents.Agent.ChatTurn.ContextReminder
   alias Nest.Agents.Agent.ChatTurnSpawner
   alias Nest.Agents.Agent.Compaction.Overflow
   alias Nest.Agents.Agent.Compaction.Trigger
+  alias Nest.Messages.Assistant
+  alias Nest.Messages.MessageList
   alias Nest.Messages.Part
   alias Nest.Messages.Streaming
   alias Nest.Messages.User
@@ -67,6 +70,79 @@ defmodule Nest.Agents.Agent.ChatPipeline do
 
   defp clear_cancelled(state) do
     %{state | chat_state: %{state.chat_state | cancelled: false}}
+  end
+
+  # Before appending the user message, check if its projected
+  # size (plus current messages) crosses a context-usage threshold.
+  # If so, inject a synthetic exchange to maintain wire alternation:
+  #
+  #   If last wire role is assistant: inject [notice_user, ack_assistant]
+  #     → assistant(wire) → user(notice) → assistant(ack) → user(real)  ✓
+  #   If last wire role is user: inject a single assistant with the notice
+  #     → user(wire) → assistant(notice+ack) → user(real)  ✓
+  defp maybe_inject_context_pair(state) do
+    limit = state.llm_metrics.context_limit
+    if not is_integer(limit) or limit <= 0, do: state, else: do_check(state, limit)
+  end
+
+  defp do_check(state, limit) do
+    pending = pending_user_message_struct(state)
+
+    if is_nil(pending) do
+      state
+    else
+      projected = state.chat_state.messages ++ [pending]
+      used = ContextReminder.estimate_messages(projected)
+      crossed = state.chat_state.crossed_thresholds
+
+      case ContextReminder.highest_unannounced(used, limit, crossed) do
+        nil ->
+          state
+
+        atom ->
+          state = inject_notice(state, atom, crossed)
+
+          %{
+            state
+            | chat_state: %{state.chat_state | crossed_thresholds: MapSet.put(crossed, atom)}
+          }
+      end
+    end
+  end
+
+  defp inject_notice(state, atom, _crossed) do
+    notice = ContextReminder.notice_text(atom)
+    ack = ContextReminder.ack_text_for(atom)
+    last_role = MessageList.last_wire_role(state.chat_state.messages)
+
+    if last_role == :user do
+      text = notice <> " " <> ack
+
+      {_stamped, state} =
+        Nest.Agents.Agent.__append_message__(state, build_ack_assistant(text))
+
+      state
+    else
+      {_stamped, state} =
+        Nest.Agents.Agent.__append_message__(
+          state,
+          ContextReminder.build_user_notice(notice, state.client_config)
+        )
+
+      {_stamped, state} =
+        Nest.Agents.Agent.__append_message__(state, build_ack_assistant(ack))
+
+      state
+    end
+  end
+
+  defp build_ack_assistant(text) do
+    {:assistant,
+     %Assistant{
+       parts: [%Part.Text{text: text}],
+       timestamp: DateTime.utc_now(),
+       api_logs: []
+     }}
   end
 
   # Store `{content, mode}` in `state.chat_state.pending_user_message`.
@@ -120,6 +196,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   """
   @spec resume_with_pending(Nest.Agents.Agent.t()) :: Nest.Agents.Agent.t()
   def resume_with_pending(state) do
+    state = maybe_inject_context_pair(state)
     {stamped_user, state} = append_pending_user_message(state)
 
     effective_mode =
@@ -282,6 +359,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   # the user-turn-boundary path; the ChatTurn's dispatch is the
   # same as the default flow.
   defp append_and_spawn(state, effective_mode) do
+    state = maybe_inject_context_pair(state)
     {stamped_user, state} = append_pending_user_message(state)
 
     state =

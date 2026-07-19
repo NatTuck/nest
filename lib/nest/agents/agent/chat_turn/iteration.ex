@@ -46,9 +46,10 @@ defmodule Nest.Agents.Agent.ChatTurn.Iteration do
 
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ChatTurn.APILog
-  alias Nest.Agents.Agent.ChatTurn.ContextReminder
   alias Nest.Agents.Agent.ChatTurn.HTTPWorker
   alias Nest.Agents.Agent.ChatTurn.State
+  alias Nest.Messages.Assistant
+  alias Nest.Messages.MessageList
   alias Nest.Messages.Part
 
   @doc """
@@ -82,20 +83,13 @@ defmodule Nest.Agents.Agent.ChatTurn.Iteration do
 
   @doc """
   Spawn the HTTP worker with the current `messages` list.
-  Injects a context warning if a new threshold was crossed
-  before doing so.
-
-  No preflight or compaction is triggered from this step.
-  Compaction can only fire at user-turn boundaries or via
-  the `context.compact` tool action; both are owned by the
-  Agent, not the chat task's iteration loop.
-
-  Returns the GenServer reply tuple.
+  Context warnings are checked at message-construction
+  boundaries (ChatPipeline for user messages,
+  handle_tool_results for tool responses), not here.
   """
   @spec dispatch_batch(State.t(), list()) ::
           {:noreply, State.t()} | {:stop, :normal, State.t()}
   def dispatch_batch(state, messages) do
-    state = inject_context_warning(state, messages)
     spawn_http_worker(state, messages)
   end
 
@@ -138,37 +132,67 @@ defmodule Nest.Agents.Agent.ChatTurn.Iteration do
   @spec dispatch_compaction(State.t(), list()) ::
           {:noreply, State.t()} | {:stop, :normal, State.t()}
   def dispatch_compaction(state, messages) do
-    # Compactor's chat turn: tools disabled, no context
-    # warning, no budget reminder. The LLM is asked to
-    # summarize, not chat.
     state = %{state | ctx: %{state.ctx | tools: nil, tool_choice: :none}}
 
+    {suffix, messages_without_suffix} = pop_compaction_suffix_from_end(messages)
+
     messages =
-      messages
+      messages_without_suffix
       |> strip_prior_compaction_attempts()
-      |> drop_trailing_unsatisfied_tool_call()
+      |> MessageList.drop_trailing_unpaired_tool_call()
+      |> build_compaction_request(suffix)
 
     spawn_http_worker(state, messages)
   end
 
-  # Strip everything from the first `[mode: compact]`
-  # system message forward. On retry, excludes prior
-  # failed compaction attempts from the LLM call input.
-  # The attempts STAY in `state.chat_state.messages` so
-  # the user can inspect them in the chat UI.
-  defp strip_prior_compaction_attempts(messages) do
-    case first_compaction_suffix_index(messages) do
-      nil -> messages
-      idx -> Enum.take(messages, idx)
+  # Build the compactor's LLM request. If the last wire role
+  # before the suffix is `:user`, prepend a synthetic assistant
+  # bridge so the suffix (a `{:user, _}`) maintains valid
+  # `assistant → user` alternation. The bridge is request-only
+  # (visible in the compactor's API log, not the Agent's messages).
+  defp build_compaction_request(messages, suffix) do
+    messages =
+      if MessageList.last_wire_role(messages) == :user do
+        messages ++ [synthetic_assistant_bridge()]
+      else
+        messages
+      end
+
+    if suffix, do: messages ++ [suffix], else: messages
+  end
+
+  defp synthetic_assistant_bridge do
+    {:assistant,
+     %Assistant{
+       parts: [%Part.Text{text: "Let me pause to summarize."}],
+       timestamp: DateTime.utc_now(),
+       api_logs: []
+     }}
+  end
+
+  # Pop the compaction suffix (a message whose text starts with
+  # `[mode: compact]`) from the end of the messages list. Returns
+  # `{suffix, rest}` or `{nil, messages}` if not found.
+  defp pop_compaction_suffix_from_end(messages) do
+    rev = Enum.reverse(messages)
+
+    case Enum.find_index(rev, &compaction_suffix_message?/1) do
+      nil ->
+        {nil, messages}
+
+      idx_from_end ->
+        remove_idx = length(messages) - 1 - idx_from_end
+        {Enum.at(messages, remove_idx), List.delete_at(messages, remove_idx)}
     end
   end
 
-  defp first_compaction_suffix_index(messages) do
-    Enum.find_index(messages, fn
-      {:system, %Nest.Messages.System{parts: parts}} -> compaction_suffix?(parts)
-      _ -> false
-    end)
-  end
+  defp compaction_suffix_message?({:system, %Nest.Messages.System{parts: parts}}),
+    do: compaction_suffix?(parts)
+
+  defp compaction_suffix_message?({:user, %Nest.Messages.User{parts: parts}}),
+    do: compaction_suffix?(parts)
+
+  defp compaction_suffix_message?(_), do: false
 
   defp compaction_suffix?(parts) do
     Enum.any?(parts, fn
@@ -177,55 +201,21 @@ defmodule Nest.Agents.Agent.ChatTurn.Iteration do
     end)
   end
 
-  # Drop the trailing message if it's an assistant message
-  # whose parts include a `Part.ToolUse` (an unsatisfied
-  # tool call — Anthropic's `(2013)` validation rejects
-  # unpaired `tool_use`).
-  defp drop_trailing_unsatisfied_tool_call(messages) do
-    case List.last(messages) do
-      {:assistant, %Nest.Messages.Assistant{parts: parts}} ->
-        if Enum.any?(parts, &match?(%Part.ToolUse{}, &1)) do
-          Enum.drop(messages, -1)
-        else
-          messages
-        end
-
-      _ ->
-        messages
-    end
+  defp first_compaction_suffix_index(messages) do
+    Enum.find_index(messages, fn
+      {:system, %Nest.Messages.System{parts: parts}} -> compaction_suffix?(parts)
+      {:user, %Nest.Messages.User{parts: parts}} -> compaction_suffix?(parts)
+      _ -> false
+    end)
   end
 
-  # If the current messages cross a context-usage
-  # threshold that hasn't been announced yet, append a
-  # `{:system, _}` reminder. See
-  # `Nest.Agents.Agent.ChatTurn.ContextReminder` for the
-  # firing rules. Skipped when `ctx.context_limit` is nil
-  # (probe hasn't completed).
-  #
-  # The "already fired" set lives on the Agent
-  # (`state.chat_state.crossed_thresholds`), not on the
-  # ChatTurn. A ChatTurn is short-lived (one per user
-  # message); tracking on its own State would reset every
-  # turn and re-fire the same warning. The Agent reads the
-  # current set into `ctx` at spawn time; we send the
-  # updated set back as `{:set_crossed_thresholds, set}`
-  # so it survives across ChatTurn boundaries and gets
-  # cleared on the next successful compaction.
-  defp inject_context_warning(state, messages) do
-    limit = state.ctx.context_limit
-
-    with limit when is_integer(limit) and limit > 0 <- limit,
-         used = ContextReminder.estimate_messages(messages),
-         crossed = state.ctx.crossed_thresholds,
-         atom when not is_nil(atom) <-
-           ContextReminder.highest_unannounced(used, limit, crossed) do
-      msg = ContextReminder.build_message(atom, used, limit, state.ctx.client_config)
-      _stamped = GenServer.call(state.ctx.agent_pid, {:append_message, msg})
-      new_set = MapSet.put(crossed, atom)
-      send(state.ctx.agent_pid, {:set_crossed_thresholds, new_set})
-      state
-    else
-      _ -> state
+  # Strip everything from the first `[mode: compact]`
+  # message forward. On retry, exclude prior failed
+  # compaction attempts from the LLM call's input.
+  defp strip_prior_compaction_attempts(messages) do
+    case first_compaction_suffix_index(messages) do
+      nil -> messages
+      idx -> Enum.take(messages, idx)
     end
   end
 

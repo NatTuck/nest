@@ -35,7 +35,6 @@ defmodule Nest.Scripts.CompactionProbeSupport do
   alias Nest.LLM.RunResponse
   alias Nest.LLM.StreamConsumer
   alias Nest.Messages.Part
-  alias Nest.Messages.System
 
   require Logger
 
@@ -64,13 +63,14 @@ defmodule Nest.Scripts.CompactionProbeSupport do
   end
 
   @doc """
-  Build the `{:system, _}` tuple the compactor appends to its
+  Build the `{:user, _}` tuple the compactor appends to its
   request's messages. Wraps `compaction_suffix/2`.
   """
-  @spec suffix_system_message(non_neg_integer(), String.t() | nil) :: {:system, System.t()}
+  @spec suffix_system_message(non_neg_integer(), String.t() | nil) ::
+          {:user, Nest.Messages.User.t()}
   def suffix_system_message(remaining_tokens, optional_guidance) do
-    {:system,
-     %System{
+    {:user,
+     %Nest.Messages.User{
        parts: [%Part.Text{text: compaction_suffix(remaining_tokens, optional_guidance)}],
        timestamp: DateTime.utc_now(),
        api_logs: []
@@ -139,7 +139,7 @@ defmodule Nest.Scripts.CompactionProbeSupport do
   the production compactor passes the Task's pid.
 
   The `rendered_suffix` argument is the
-  `{:system, %System{}}` tuple returned by
+  `{:user, %User{}}` tuple returned by
   `compute_summary_budget/4` — already sized so its token
   cost matches the budget the compactor's N was computed
   against.
@@ -147,7 +147,7 @@ defmodule Nest.Scripts.CompactionProbeSupport do
   @spec build_summarization_llm_call(
           ClientConfig.t(),
           pid(),
-          {:system, Nest.Messages.System.t()}
+          {:user, Nest.Messages.User.t()}
         ) :: (... -> {:ok, String.t()} | {:error, term()})
   def build_summarization_llm_call(
         %ClientConfig{} = client_config,

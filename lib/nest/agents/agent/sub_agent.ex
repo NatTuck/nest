@@ -39,6 +39,7 @@ defmodule Nest.Agents.Agent.SubAgent do
   alias Nest.Agents.Registry, as: AgentsRegistry
   alias Nest.Agents.Supervisor
   alias Nest.LLM.MockClient
+  alias Nest.Persistence
 
   @doc """
   Spawn a child of `state` for the supplied `instruction`
@@ -49,16 +50,20 @@ defmodule Nest.Agents.Agent.SubAgent do
   def handle_clone_request(state, task_pid, instruction) do
     case Supervisor.start_agent_with_parent(state, instruction) do
       {:ok, child_name} ->
-        maybe_test_swap_to_mock(child_name)
-
-        agents_chat(child_name, instruction)
-
         chat_state = %{
           state.chat_state
           | pending_children: Map.put(state.chat_state.pending_children, child_name, task_pid)
         }
 
-        {:reply, {:ok, child_name}, %{state | chat_state: chat_state}}
+        state = %{state | chat_state: chat_state}
+
+        broadcast_subagent_creation(state, child_name)
+
+        maybe_test_swap_to_mock(child_name)
+
+        agents_chat(child_name, instruction)
+
+        {:reply, {:ok, child_name}, state}
 
       {:error, _reason} = err ->
         {:reply, err, state}
@@ -151,6 +156,30 @@ defmodule Nest.Agents.Agent.SubAgent do
         Broadcasts.status(state.name, new_state)
         {:noreply, new_state}
     end
+  end
+
+  # Notify all connected lobby clients that a subagent has
+  # been spawned so the sidebar tree updates live without a
+  # page refresh. The parent's `agents.id` is resolved via
+  # `Persistence.fetch_agent_by_name/1` (a lightweight DB
+  # read — the row was just inserted by `start_agent_with_parent`).
+  defp broadcast_subagent_creation(state, child_name) do
+    parent_db_id =
+      case Persistence.fetch_agent_by_name(state.name) do
+        {:ok, row} -> row.id
+        _ -> nil
+      end
+
+    payload = %{
+      "name" => child_name,
+      "model" => state.model,
+      "status" => "idle",
+      "parentId" => parent_db_id,
+      "parentName" => state.name,
+      "depth" => state.depth + 1
+    }
+
+    Phoenix.PubSub.broadcast(Nest.PubSub, "lobby", {:subagent_created, payload})
   end
 
   @doc """

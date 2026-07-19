@@ -348,6 +348,9 @@ defmodule Nest.Agents.AgentCompactionTest do
                {:system, %{parts: [%Part.Text{text: t}]}} when is_binary(t) ->
                  String.starts_with?(t, "[mode: compact]")
 
+               {:user, %{parts: [%Part.Text{text: t}]}} when is_binary(t) ->
+                 String.starts_with?(t, "[mode: compact]")
+
                _ ->
                  false
              end),

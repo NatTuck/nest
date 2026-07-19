@@ -140,13 +140,15 @@ defmodule Nest.LLM.PreflightTest do
       assert extra.orphan_ids == ["b"]
     end
 
-    test "error: assistant [a] followed by another assistant (unclosed)" do
+    test "error: assistant [a] followed by another assistant (unclosed+alternation)" do
       messages = [assistant_tool_use("a"), assistant_text("hi")]
 
       assert {:error, error} = Preflight.validate_tool_call_pairing(messages)
       details = error_details(error)
 
-      assert [%{kind: :unclosed_tool_responses, expected_ids: ["a"]}] = details
+      kinds = Enum.map(details, & &1.kind)
+      assert :unclosed_tool_responses in kinds
+      assert :alternation_violation in kinds
     end
 
     test "error: strict system — system reminder between tool_use and tool response" do
@@ -155,10 +157,22 @@ defmodule Nest.LLM.PreflightTest do
       assert {:error, error} = Preflight.validate_tool_call_pairing(messages)
       details = error_details(error)
 
-      assert [
-               %{kind: :orphan_tool_result, position: 2, orphan_ids: ["a"]},
-               %{kind: :unclosed_tool_responses, position: 1, expected_ids: ["a"]}
-             ] = details
+      assert details == [
+               %{
+                 kind: :orphan_tool_result,
+                 position: 2,
+                 orphan_ids: ["a"],
+                 missing_ids: [],
+                 expected_ids: []
+               },
+               %{
+                 kind: :unclosed_tool_responses,
+                 position: 1,
+                 expected_ids: ["a"],
+                 orphan_ids: [],
+                 missing_ids: []
+               }
+             ]
     end
   end
 end

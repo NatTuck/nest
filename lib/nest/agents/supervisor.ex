@@ -47,6 +47,7 @@ defmodule Nest.Agents.Supervisor do
 
   alias Nest.Agents.{Agent, ChildRegistry, NameGenerator, Registry}
   alias Nest.Agents.PersistedAgent
+  alias Nest.Messages.MessageList
   alias Nest.Persistence
 
   @supervisor_name __MODULE__
@@ -295,22 +296,22 @@ defmodule Nest.Agents.Supervisor do
   end
 
   defp build_child_attrs(parent_name, parent_id, parent_state, child_name, _instruction) do
+    # Strip trailing unpaired tool_use before handing off —
+    # the `clone_agent` tool_use at the tail has no result yet.
+    preloaded =
+      parent_state.chat_state.messages
+      |> MessageList.drop_trailing_unpaired_tool_call()
+
     %{
       name: child_name,
       model: parent_state.model,
-      # Children inherit the parent's vocation (so they get
-      # the same prompt, tools, modes). The
-      # `SystemPrompt.compose_vocation_config/4` depth filter
-      # strips `clone_agent` from the tool list when at max
-      # depth; the parent's `parent_id`/`depth` columns
-      # produce the same effect for the child's prompt.
       vocation_id: parent_state.vocation_id,
       vocation: parent_state.vocation,
       workspace_path: parent_state.workspace_path,
       parent_id: parent_id,
       parent_name: parent_name,
       depth: parent_state.depth + 1,
-      preloaded_messages: parent_state.chat_state.messages,
+      preloaded_messages: preloaded,
       last_compaction_index: Map.get(parent_state.chat_state, :last_compaction_index, -1),
       next_message_index: parent_state.chat_state.next_message_index,
       initial_api_log_sequences: %{}

@@ -1,8 +1,10 @@
 defmodule Nest.Messages.Tool do
   @moduledoc """
-  Tool result message. Carries a list of `Part.ToolResult`
-  structs in `parts` (one per tool call that completed in the
-  LLM's batch).
+  Tool response message. Carries `Part.ToolResult` structs
+  (one per tool call that completed in the LLM's batch) and
+  optionally `Part.Text` structs for injected notices (context
+  usage warnings, budget reminders) that attach to the tool
+  response instead of being separate messages.
   """
 
   alias Nest.Messages.Message
@@ -12,11 +14,10 @@ defmodule Nest.Messages.Tool do
 
   @type t :: %__MODULE__{
           index: non_neg_integer(),
-          parts: [Part.ToolResult.t()],
+          parts: [Part.Text.t() | Part.ToolResult.t()],
           timestamp: DateTime.t() | nil,
           metadata: map() | nil,
           api_logs: [map()] | nil,
-          # See `Nest.Messages.System.t()` for the full contract.
           tokens: non_neg_integer() | nil
         }
 

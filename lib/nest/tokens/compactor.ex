@@ -69,7 +69,6 @@ defmodule Nest.Tokens.Compactor do
   alias Nest.LLM.RunResponse
   alias Nest.Messages.Message
   alias Nest.Messages.Part
-  alias Nest.Messages.System, as: MsgSystem
   alias Nest.Messages.ThinkTags
   alias Nest.Scripts.CompactionProbeSupport
   alias Nest.Tokens.Estimator
@@ -120,7 +119,7 @@ defmodule Nest.Tokens.Compactor do
 
     * `{:ok, n, rendered_suffix}` — n is the LLM's budget for
       the summary text (a positive integer). The rendered
-      suffix is a `{:system, _}` message that the caller's
+      suffix is a `{:user, _}` message that the caller's
       LLM-call builder uses directly.
     * `{:error, :reserve_exhausted}` — `reserve` is too small
       to hold the system + suffix (e.g., a 32k-context model
@@ -261,9 +260,9 @@ defmodule Nest.Tokens.Compactor do
     end
   end
 
-  # Render the compaction request as a `{:system, _}` tuple the
+  # Render the compaction request as a `{:user, _}` tuple the
   # compactor's LLM call appends to its request. Wraps
-  # `CompactionProbeSupport.compaction_suffix/2` in a System
+  # `CompactionProbeSupport.compaction_suffix/2` in a User
   # struct. The `index` field is `nil` — the suffix is an LLM-call
   # input element, not a persisted message. Receivers that need a
   # real index (e.g., for sequence IDs) reassign later.
@@ -279,8 +278,8 @@ defmodule Nest.Tokens.Compactor do
   end
 
   defp wrap_request_suffix(text) do
-    {:system,
-     %MsgSystem{
+    {:user,
+     %Nest.Messages.User{
        index: nil,
        parts: [%Part.Text{text: text}],
        timestamp: DateTime.utc_now(),

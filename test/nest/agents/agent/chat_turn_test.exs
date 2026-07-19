@@ -45,6 +45,16 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
 
   import Nest.Agents.AgentTestHelpers
 
+  defp has_text?(parts) do
+    texts =
+      parts
+      |> Enum.filter(&match?(%Nest.Messages.Part.Text{}, &1))
+      |> Enum.map_join("", & &1.text)
+
+    String.contains?(texts, "tool call rounds remaining") or
+      String.contains?(texts, "last tool call round")
+  end
+
   defp message_indices(state) do
     state.chat_state.messages
     |> Enum.flat_map(fn
@@ -141,13 +151,10 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
       reminders =
         Enum.filter(state.chat_state.messages, fn
           {:system, %SystemMsg{parts: parts}} when is_list(parts) ->
-            text =
-              parts
-              |> Enum.filter(&match?(%Nest.Messages.Part.Text{}, &1))
-              |> Enum.map_join("", & &1.text)
+            has_text?(parts)
 
-            String.contains?(text, "tool call rounds remaining") or
-              String.contains?(text, "last tool call round")
+          {:tool, %Nest.Messages.Tool{parts: parts}} when is_list(parts) ->
+            has_text?(parts)
 
           _ ->
             false
@@ -204,7 +211,7 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
 
       capture_log(fn ->
         :ok = Agent.chat(pid, "Keep looping")
-        assert_receive {:chat_status, %{status: "idle"}}, 2000
+        assert_receive {:chat_status, %{status: "idle"}}, 500
       end)
 
       state = :sys.get_state(pid)

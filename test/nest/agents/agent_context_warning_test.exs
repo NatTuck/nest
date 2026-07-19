@@ -62,16 +62,29 @@ defmodule Nest.Agents.AgentContextWarningTest do
     end)
   end
 
-  defp count_reminders(state, percent_label) do
+  defp count_reminders(state, text_pattern) do
     Enum.count(state.chat_state.messages, fn
       {:system, %{parts: parts}} ->
-        Enum.any?(parts, fn
-          %Part.Text{text: text} -> String.contains?(text, percent_label)
-          _ -> false
-        end)
+        has_text?(parts, text_pattern)
+
+      {:user, %{parts: parts}} ->
+        has_text?(parts, text_pattern)
+
+      {:assistant, %{parts: parts}} ->
+        has_text?(parts, text_pattern)
+
+      {:tool, %Nest.Messages.Tool{parts: parts}} ->
+        has_text?(parts, text_pattern)
 
       _ ->
         false
+    end)
+  end
+
+  defp has_text?(parts, text_pattern) do
+    Enum.any?(parts, fn
+      %Part.Text{text: text} -> String.contains?(text, text_pattern)
+      _ -> false
     end)
   end
 
@@ -93,9 +106,9 @@ defmodule Nest.Agents.AgentContextWarningTest do
 
     state = :sys.get_state(pid)
 
-    assert count_reminders(state, "Context usage is now at 25%") == 1,
+    assert count_reminders(state, "Context at 25%") == 1,
            "expected exactly one :p25 reminder across three user messages, " <>
-             "got #{count_reminders(state, "Context usage is now at 25%")}"
+             "got #{count_reminders(state, "Context at 25%")}"
   end
 
   @tag timeout: 30_000

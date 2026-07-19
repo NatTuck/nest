@@ -51,8 +51,7 @@ defmodule Nest.DotConfig do
       :tags,
       :models,
       :timeout_seconds,
-      :default_context_limit,
-      :rewrite_late_system_messages
+      :default_context_limit
     ]
   end
 
@@ -320,12 +319,7 @@ defmodule Nest.DotConfig do
       models: models,
       timeout_seconds: parse_timeout(Map.get(data, "timeout"), name),
       default_context_limit:
-        parse_default_context_limit(Map.get(data, "default-context-limit"), name),
-      rewrite_late_system_messages:
-        parse_rewrite_late_system_messages(
-          Map.get(data, "rewrite-late-system-messages"),
-          name
-        )
+        parse_default_context_limit(Map.get(data, "default-context-limit"), name)
     }
   end
 
@@ -355,19 +349,6 @@ defmodule Nest.DotConfig do
 
   defp parse_default_context_limit(limit, provider_name) do
     raise "Provider #{provider_name}: invalid default-context-limit #{inspect(limit)}: must be a positive integer"
-  end
-
-  # Parses and validates the optional `rewrite-late-system-messages`
-  # boolean for a provider. Defaults to `false` when absent. Raises on
-  # non-boolean values so config errors surface at startup, not on the
-  # first chat turn. See
-  # `Nest.Agents.Agent.ChatTurn.LateMessage.build/2`.
-  defp parse_rewrite_late_system_messages(nil, _provider_name), do: false
-
-  defp parse_rewrite_late_system_messages(value, _provider_name) when is_boolean(value), do: value
-
-  defp parse_rewrite_late_system_messages(value, provider_name) do
-    raise "Provider #{provider_name}: invalid rewrite-late-system-messages #{inspect(value)}: must be a boolean"
   end
 
   defp parse_model(model_data) do

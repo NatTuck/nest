@@ -30,7 +30,6 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminderTest do
 
   alias Nest.Agents.Agent.ChatTurn.ContextReminder
   alias Nest.LLM.ClientConfig
-  alias Nest.Messages.System
   alias Nest.Messages.User
 
   # A 200k-limit model with the standard 40k reserve has a
@@ -129,9 +128,9 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminderTest do
   end
 
   describe "build_message/3" do
-    test "returns a {:system, %System{}} tuple with the formatted content" do
-      assert {:system,
-              %System{parts: [%Nest.Messages.Part.Text{text: content}], timestamp: %DateTime{}}} =
+    test "returns a {:user, %User{}} tuple with the formatted content" do
+      assert {:user,
+              %User{parts: [%Nest.Messages.Part.Text{text: content}], timestamp: %DateTime{}}} =
                ContextReminder.build_message(:p50, 80_000, @limit)
 
       assert content =~ "50%"
@@ -140,21 +139,21 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminderTest do
     end
   end
 
-  describe "build_message/4 with rewrite off" do
-    test "returns a {:system, %System{}} tuple (default path unchanged)" do
-      config = %ClientConfig{rewrite_late_system_messages: false}
+  describe "build_message/4" do
+    test "returns a {:user, %User{}} tuple with the formatted content" do
+      config = %ClientConfig{}
 
-      assert {:system,
-              %System{parts: [%Nest.Messages.Part.Text{text: content}], timestamp: %DateTime{}}} =
+      assert {:user,
+              %User{parts: [%Nest.Messages.Part.Text{text: content}], timestamp: %DateTime{}}} =
                ContextReminder.build_message(:p50, 80_000, @limit, config)
 
       assert content =~ "50%"
       assert content =~ "80000"
     end
 
-    test "accepts nil config (treats as default off)" do
-      assert {:system,
-              %System{parts: [%Nest.Messages.Part.Text{text: content}], timestamp: %DateTime{}}} =
+    test "accepts nil config" do
+      assert {:user,
+              %User{parts: [%Nest.Messages.Part.Text{text: content}], timestamp: %DateTime{}}} =
                ContextReminder.build_message(:p75, 120_000, @limit, nil)
 
       assert content =~ "75%"
@@ -163,31 +162,38 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminderTest do
     end
   end
 
-  describe "build_message/4 with rewrite on" do
-    test "returns a {:user, %User{}} tuple with [System notice: …] wrap" do
-      config = %ClientConfig{rewrite_late_system_messages: true}
-
-      assert {:user,
-              %User{parts: [%Nest.Messages.Part.Text{text: content}], timestamp: %DateTime{}}} =
-               ContextReminder.build_message(:p50, 80_000, @limit, config)
-
-      assert content =~ "[System notice: "
-      assert content =~ "]"
-      assert content =~ "50%"
-      assert content =~ "80000"
-      assert content =~ "#{@working_budget}"
+  describe "notice_text/1" do
+    test "returns short notice for :p25" do
+      assert ContextReminder.notice_text(:p25) == "Context at 25%."
     end
 
-    test "the bracket wraps the full threshold text including the 75% compact recommendation" do
-      config = %ClientConfig{rewrite_late_system_messages: true}
+    test "returns short notice for :p50" do
+      assert ContextReminder.notice_text(:p50) == "Context at 50%."
+    end
 
-      assert {:user,
-              %User{parts: [%Nest.Messages.Part.Text{text: content}], timestamp: %DateTime{}}} =
-               ContextReminder.build_message(:p75, 120_000, @limit, config)
+    test "returns short notice for :p75 with compact recommendation" do
+      assert ContextReminder.notice_text(:p75) =~ "compact"
+    end
+  end
 
-      assert content =~ "[System notice: Context usage is now at 75%"
-      assert content =~ "context"
-      assert content =~ "compact"
+  describe "ack_text_for/1" do
+    test "returns ack for :p25" do
+      assert ContextReminder.ack_text_for(:p25) == "Okay, that's plenty of space."
+    end
+
+    test "returns ack for :p50" do
+      assert ContextReminder.ack_text_for(:p50) == "Okay, I should consider conserving tokens."
+    end
+
+    test "returns ack for :p75 with compact recommendation" do
+      assert ContextReminder.ack_text_for(:p75) =~ "compact"
+    end
+  end
+
+  describe "build_user_notice/2" do
+    test "returns a {:user, %User{}} with the given text" do
+      {:user, %User{parts: [%Nest.Messages.Part.Text{text: "hello"}]}} =
+        ContextReminder.build_user_notice("hello", %ClientConfig{})
     end
   end
 end

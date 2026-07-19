@@ -115,8 +115,7 @@ defmodule Nest.ChatModel do
       base_url: provider.base_url,
       api_key: api_key,
       model: actual,
-      receive_timeout: receive_timeout_ms(provider),
-      rewrite_late_system_messages: provider.rewrite_late_system_messages
+      receive_timeout: receive_timeout_ms(provider)
     }
     |> wrap_ok()
   end
@@ -130,8 +129,7 @@ defmodule Nest.ChatModel do
       base_url: provider.base_url,
       api_key: api_key,
       model: actual,
-      receive_timeout: receive_timeout_ms(provider),
-      rewrite_late_system_messages: provider.rewrite_late_system_messages
+      receive_timeout: receive_timeout_ms(provider)
     }
     |> wrap_ok()
   end

@@ -225,12 +225,17 @@ defmodule Nest.Agents.Agent.RestoreTest do
       # context MINUS the compaction marker.
       assert Enum.any?(wire_messages, &(&1["role"] == "user"))
       assert Enum.any?(wire_messages, &(&1["role"] == "assistant"))
-      assert Enum.any?(wire_messages, &(&1["role"] == "tool"))
 
       # Compactness: 8 preloaded elements minus the compaction
-      # marker = 7 wire messages (1 system + 3 user + 2 assistant
-      # + 1 tool, in order).
+      # marker = 7 wire messages (1 system + 4 user + 2 assistant,
+      # in order — the {:tool, _} maps to role "user" in the
+      # Anthropic/Mock wire format).
       assert Enum.count(wire_messages) == 7
+
+      # 3 user messages (u1, u2, u3) + 1 tool-result user = 4 user
+      assert Enum.count(wire_messages, &(&1["role"] == "user")) == 4
+      assert Enum.count(wire_messages, &(&1["role"] == "assistant")) == 2
+      assert Enum.count(wire_messages, &(&1["role"] == "system")) == 1
     end
 
     test "rebuild works for an index BEFORE a compaction marker (negative case)" do

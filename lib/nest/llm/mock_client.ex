@@ -32,6 +32,7 @@ defmodule Nest.LLM.MockClient do
   alias Nest.LLM.Preflight
   alias Nest.LLM.RunRequest
   alias Nest.LLM.RunResponse
+  alias Nest.Messages.Part
 
   # Per-agent state. Each test starts a unique MockClient Agent
   # named after the agent pid. The chat task (spawned by the agent)
@@ -306,8 +307,8 @@ defmodule Nest.LLM.MockClient do
     base = %{"role" => "assistant", "content" => text_from_parts(parts)}
 
     case tool_calls_from_parts(parts) do
-      [] -> [base]
-      calls -> [Map.put(base, "tool_calls", Enum.map(calls, &tool_call_to_wire/1))]
+      [] -> base
+      calls -> Map.put(base, "tool_calls", Enum.map(calls, &tool_call_to_wire/1))
     end
   end
 
@@ -320,13 +321,21 @@ defmodule Nest.LLM.MockClient do
   end
 
   defp message_to_wire({:tool, %{parts: parts}}) do
-    Enum.map(parts || [], fn part ->
-      %{
-        "role" => "tool",
-        "tool_call_id" => part.tool_call_id,
-        "content" => part.content || ""
-      }
-    end)
+    content =
+      Enum.map(parts || [], fn
+        %Part.Text{text: text} ->
+          %{"type" => "text", "text" => text}
+
+        tr ->
+          %{
+            "type" => "tool_result",
+            "tool_use_id" => tr.tool_call_id,
+            "content" => tr.content || "",
+            "is_error" => Map.get(tr, :is_error) || false
+          }
+      end)
+
+    %{"role" => "user", "content" => content}
   end
 
   defp text_from_parts(nil), do: ""

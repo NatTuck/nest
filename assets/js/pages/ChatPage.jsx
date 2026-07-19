@@ -544,12 +544,6 @@ export function ChatPage() {
                 )}
                 <ToolCalls toolCalls={message.toolCalls} />
                 <ToolResults toolResults={message.toolResults} />
-                {/* Sub-agent: surface `clone_agent` calls as a
-                    first-class Delegated Task card alongside the
-                    raw tool result. Looks across all messages
-                    (and the partial) so the card stays in sync
-                    as soon as the parent emits the call. */}
-                <DelegatedTasks messages={messages} partial={partial} />
                 <ApiLogsBlock apiLogs={message.apiLogs} />
                 {message.isPartial && (
                   <div className="flex items-center gap-1 mt-2">
@@ -571,6 +565,12 @@ export function ChatPage() {
             </div>
           ))
         )}
+
+        {/* Sub-agent: surface `clone_agent` calls as a
+            first-class Delegated Task card. Rendered once
+            per conversation (NOT per message) so each
+            clone_agent tool call appears exactly once. */}
+        <DelegatedTasks messages={messages} partial={partial} />
 
         <div ref={setMessagesEndEl} />
       </div>

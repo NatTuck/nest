@@ -78,6 +78,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
 
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.Agents.Agent.ChatTurn.BudgetReminder
+  alias Nest.Agents.Agent.ChatTurn.ContextReminder
   alias Nest.Agents.Agent.ChatTurn.Iteration
   alias Nest.Agents.Agent.ChatTurn.Lifecycle
   alias Nest.Agents.Agent.ChatTurn.Messages
@@ -86,6 +87,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.ToolLoop
   alias Nest.Messages.Part
+  alias Nest.Messages.Tool
 
   require Logger
 
@@ -317,20 +319,18 @@ defmodule Nest.Agents.Agent.ChatTurn do
   defp initial_max_iterations(_), do: Config.configured_max_tool_iterations()
 
   # Check if we're approaching the iteration cap. If
-  # so, build a system reminder and append it via the
-  # Agent. The Agent stamps the index; the next
-  # response will be stamped at `next_message_index`,
-  # so no collision.
+  # so, set `pending_notice` on the ChatTurn state so
+  # the notice attaches to the next tool response or
+  # synthetic pair.
   defp maybe_inject_budget_reminder(state) do
     remaining = state.max_iterations - state.iteration
 
-    case BudgetReminder.build(remaining, state.ctx.client_config) do
+    case BudgetReminder.notice_text(remaining) do
       nil ->
         state
 
-      reminder ->
-        _stamped = GenServer.call(state.ctx.agent_pid, {:append_message, reminder})
-        state
+      notice ->
+        %{state | pending_notice: state.pending_notice || notice}
     end
   end
 
@@ -342,18 +342,55 @@ defmodule Nest.Agents.Agent.ChatTurn do
 
   # The tool worker returned a list of `ToolResult`
   # structs. Append them to the Agent as a single
-  # `{:tool, _}` message, then start the next
-  # iteration. We use the existing
-  # `tool_results_received/2` handler (rather than bare
-  # `{:append_message, _}`) because it also transitions
-  # the Agent to `:streaming` and seeds a fresh
-  # streaming_acc for the next iteration's response.
+  # `{:tool, _}` message (with any pending notice attached
+  # as a `Part.Text`), then start the next iteration.
   defp handle_tool_results(results, state) do
     state = %{state | active_worker: nil, active_worker_kind: nil}
-    tool_msg = Messages.tool(results)
+
+    messages =
+      try do
+        {msgs, _cancelled} =
+          GenServer.call(state.ctx.agent_pid, :get_messages_with_cancelled, 500)
+
+        msgs
+      catch
+        :exit, _ -> []
+      end
+
+    tool_msg = Messages.tool(results, state.pending_notice)
+    tool_msg = maybe_prepend_context_notice(tool_msg, messages, state)
+
     send(state.ctx.agent_pid, {:tool_results_received, tool_msg})
+    state = %{state | pending_notice: nil}
     Process.send(self(), :iterate, [])
     {:noreply, state}
+  end
+
+  defp maybe_prepend_context_notice(tool_msg, messages, state) do
+    limit = state.ctx.context_limit
+
+    if not is_integer(limit) or limit <= 0,
+      do: tool_msg,
+      else: do_check_tool(tool_msg, messages, limit, state)
+  end
+
+  defp do_check_tool(tool_msg, messages, limit, state) do
+    projected = messages ++ [tool_msg]
+    used = ContextReminder.estimate_messages(projected)
+    crossed = state.ctx.crossed_thresholds
+
+    case ContextReminder.highest_unannounced(used, limit, crossed) do
+      nil ->
+        tool_msg
+
+      atom ->
+        notice = ContextReminder.notice_text(atom)
+        new_set = MapSet.put(crossed, atom)
+        send(state.ctx.agent_pid, {:set_crossed_thresholds, new_set})
+
+        {:tool, %Tool{parts: parts} = struct} = tool_msg
+        {:tool, %{struct | parts: [%Part.Text{text: notice} | parts]}}
+    end
   end
 
   # Spawn the tool worker as a Task. The worker calls

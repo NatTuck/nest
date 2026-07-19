@@ -248,10 +248,10 @@ defmodule Nest.Tokens.CompactorTest do
 
       assert is_integer(n)
       assert n > 0
-      assert match?({:system, %System{}}, rendered_suffix)
+      assert match?({:user, %User{}}, rendered_suffix)
 
       # Rendered suffix carries the chosen N.
-      {:system, %System{parts: [%Part.Text{text: rendered}]}} = rendered_suffix
+      {:user, %User{parts: [%Part.Text{text: rendered}]}} = rendered_suffix
       assert rendered =~ "in your #{n} remaining tokens"
     end
 
@@ -260,7 +260,7 @@ defmodule Nest.Tokens.CompactorTest do
       {:ok, n, rendered_suffix} = Compactor.compute_summary_budget(100_000, system, [system], nil)
 
       # The rendered suffix embeds the chosen N (not the placeholder N=1).
-      {:system, %System{parts: [%Part.Text{text: text}]}} = rendered_suffix
+      {:user, %User{parts: [%Part.Text{text: text}]}} = rendered_suffix
       assert text =~ "in your #{n} remaining tokens"
       refute text =~ "in your 1 remaining tokens"
     end
@@ -302,9 +302,9 @@ defmodule Nest.Tokens.CompactorTest do
           String.duplicate("extra guidance. ", 50)
         )
 
-      {:system, %System{parts: [%Part.Text{text: nil_text}]}} = suffix_nil
-      {:system, %System{parts: [%Part.Text{text: short_text}]}} = suffix_short
-      {:system, %System{parts: [%Part.Text{text: long_text}]}} = suffix_long
+      {:user, %User{parts: [%Part.Text{text: nil_text}]}} = suffix_nil
+      {:user, %User{parts: [%Part.Text{text: short_text}]}} = suffix_short
+      {:user, %User{parts: [%Part.Text{text: long_text}]}} = suffix_long
 
       assert String.length(long_text) > String.length(short_text)
       assert String.length(short_text) > String.length(nil_text)
@@ -381,7 +381,7 @@ defmodule Nest.Tokens.CompactorTest do
       msgs = [system, {:user, %User{index: 1, parts: [%Part.Text{text: "Q"}]}}]
       {:ok, n, suffix} = Compactor.compute_summary_budget(100_000, system, msgs, nil)
 
-      {:system, %System{parts: [%Part.Text{text: text}]}} = suffix
+      {:user, %User{parts: [%Part.Text{text: text}]}} = suffix
       assert text =~ "#{n}"
     end
   end

@@ -38,7 +38,6 @@ defmodule Nest.Agents.Agent.Compaction.Trigger do
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ChatPipeline
-  alias Nest.Agents.Agent.ChatTurn.LateMessage
   alias Nest.Agents.Agent.ChatTurnSpawner
   alias Nest.Agents.Agent.Compaction.Overflow
   alias Nest.Agents.Agent.Compaction.ResultHandler
@@ -118,16 +117,7 @@ defmodule Nest.Agents.Agent.Compaction.Trigger do
                nil
              ) do
           {:ok, _n, rendered_suffix} ->
-            # Re-wrap the suffix per the provider's
-            # `rewrite-late-system-messages` flag. The
-            # compactor renders the suffix as a System
-            # tuple by default; some providers (Qwen3.5
-            # on vLLM) reject mid-conversation system
-            # messages, so we route through `LateMessage`
-            # to swap to a `[System notice: …]` User
-            # message when the flag is on.
-            wrapped_suffix = LateMessage.rewrap(state.client_config, rendered_suffix)
-            spawn_compaction_chat_turn(state, sys, carried_entry, wrapped_suffix)
+            spawn_compaction_chat_turn(state, sys, carried_entry, rendered_suffix)
 
           {:error, :reserve_exhausted} ->
             broadcast_reserve_exhausted(state)

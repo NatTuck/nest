@@ -50,17 +50,17 @@ defmodule Nest.Scripts.CompactionProbeSupportTest do
   end
 
   describe "suffix_system_message/2" do
-    test "wraps the suffix as a {:system, _} tuple" do
+    test "wraps the suffix as a {:user, _} tuple" do
       msg = CompactionProbeSupport.suffix_system_message(2000, nil)
 
-      assert match?({:system, %System{}}, msg)
-      {:system, %System{parts: [%Part.Text{text: text}]}} = msg
+      assert match?({:user, %Nest.Messages.User{}}, msg)
+      {:user, %Nest.Messages.User{parts: [%Part.Text{text: text}]}} = msg
       assert text =~ "[mode: compact]"
       assert text =~ "2000 remaining tokens"
     end
 
-    test "the system message has empty api_logs (empty list)" do
-      {:system, %System{api_logs: api_logs}} =
+    test "the message has empty api_logs (empty list)" do
+      {:user, %Nest.Messages.User{api_logs: api_logs}} =
         CompactionProbeSupport.suffix_system_message(2000, nil)
 
       assert api_logs == []

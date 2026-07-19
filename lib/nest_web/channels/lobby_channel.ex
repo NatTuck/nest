@@ -20,7 +20,7 @@ defmodule NestWeb.LobbyChannel do
 
   @impl true
   def join("lobby", _payload, socket) do
-    # Schedule sending initial state after join completes
+    Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
     send(self(), :after_join)
     {:ok, socket}
   end
@@ -32,6 +32,12 @@ defmodule NestWeb.LobbyChannel do
     vocations = Vocations.list_vocations()
 
     push(socket, "init", %{agents: agents, models: models, vocations: vocations})
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_info({:subagent_created, payload}, socket) do
+    broadcast(socket, "agent:created", payload)
     {:noreply, socket}
   end
 

@@ -1,36 +1,17 @@
 defmodule Nest.LLM.Preflight do
   @moduledoc """
   Validates a `RunRequest.messages` list for sequencing rules that
-  Anthropic and OpenAI enforce on the wire. Currently checks one
-  rule: each assistant `tool_use.id` must be matched by a tool
-  result with the same id in the **immediately-following**
-  `{:tool, _}` message, before any other role can appear.
+  Anthropic enforces on the wire. Checks two rules:
 
-  Used by `Nest.LLM.MockClient` only at the moment. The real
-  clients (`OpenAIClient`, `AnthropicClient`) still let the API
-  surface these errors and report them via the canonical
-  `{:error, _}` event pipeline. Putting the check in the mock
-  turns fixtures that violate the rule into test failures instead
-  of mysterious downstream symptoms.
+    1. **Tool call pairing** — each assistant `tool_use.id` must
+       be matched by a tool result in the immediately-following
+       `{:tool, _}` message.
+    2. **Alternation** — no two consecutive `user` or `assistant`
+       messages on the Anthropic wire. `{:tool, _}` has wire role
+       `user`. `{:system, _}` is ignored for alternation.
 
-  ## Pairing rules
-
-    * An assistant message with N `tool_use` parts (ids `[a, b]`)
-      MUST be followed by exactly one `{:tool, _}` message whose
-      `parts` contain a matching `ToolResult` for every id.
-    * Sets are compared — order within a single `Tool` message
-      doesn't matter (mirrors the wire protocol).
-    * A `{:tool, _}` message with no preceding assistant
-      `tool_use` parts is **orphan_tool_result**.
-    * A `{:system, _}`, `{:user, _}`, or `{:assistant, _}` that
-      appears between an assistant `tool_use` and its tool
-      response is **unclosed_tool_responses** (strict — a system
-      reminder mid-pairing rejects the request).
-    * End-of-messages while still expecting tool responses is
-      **unclosed_tool_responses**.
-
-  `{:compaction, _}` markers are filtered out before walking —
-  they live in `state.history`, not in the wire `RunRequest`.
+  Used by `Nest.LLM.MockClient` only. The real clients let the API
+  surface errors via the canonical `{:error, _}` event pipeline.
   """
 
   alias Nest.Messages.Assistant
@@ -42,6 +23,7 @@ defmodule Nest.LLM.Preflight do
           :orphan_tool_result
           | :missing_tool_responses
           | :unclosed_tool_responses
+          | :alternation_violation
 
   @type error :: %{
           kind: error_kind(),
@@ -56,7 +38,7 @@ defmodule Nest.LLM.Preflight do
   def validate_tool_call_pairing(messages) do
     visible = Enum.reject(messages, fn {role, _} -> role == :compaction end)
 
-    case walk(visible, :free, [], 0) do
+    case walk(visible, {:free, nil}, [], 0) do
       {[], _final_state} ->
         :ok
 
@@ -65,126 +47,96 @@ defmodule Nest.LLM.Preflight do
     end
   end
 
-  # Walks `messages` and returns `{errors, final_state}`. The
-  # state is one of:
-  #
-  #   * `:free` — last fully-paired turn or no turn in progress.
-  #   * `{:need, MapSet.t(String.t())}` — last assistant turn
-  #     declared `tool_use` ids we still need to consume.
-  #
-  # `idx` is the position of the *next* message in `messages`,
-  # i.e. `idx` at end-of-list equals the length of `messages`.
+  # State: {pairing_state, last_wire_role}
+  # pairing_state: :free | {:need, MapSet.t()}
+  # last_wire_role: :user | :assistant | nil
+
   defp walk([], state, errors, idx) do
-    final_errors =
-      case state do
-        {:need, expected} ->
-          errors ++
-            [
-              %{
-                kind: :unclosed_tool_responses,
-                position: idx,
-                orphan_ids: [],
-                missing_ids: [],
-                expected_ids: MapSet.to_list(expected)
-              }
-            ]
-
-        _ ->
-          errors
-      end
-
+    {final_errors, _} = finalize_errors(state, errors, idx)
     {final_errors, :free}
   end
 
-  defp walk([{role, msg} | rest], state, errors, idx) do
-    case state do
-      :free ->
-        walk_free(rest, role, msg, errors, idx)
-
-      {:need, expected} ->
-        walk_need(rest, expected, role, msg, errors, idx)
-    end
+  defp walk([{role, msg} | rest], {pairing, last_role}, errors, idx) do
+    wire_role = wire_role_for(role, msg)
+    alt_errors = check_alternation(last_role, wire_role, idx, errors)
+    {next_errors, next_state} = dispatch(pairing, role, msg, alt_errors, idx, wire_role)
+    walk(rest, next_state, next_errors, idx + 1)
   end
 
-  # When we're free, system/user/text-only-assistant are no-ops;
-  # an assistant with tool_use ids transitions us into `{:need,
-  # _}`; a tool message with no preceding tool_use is an
-  # orphan_tool_result.
-  defp walk_free(rest, :system, _msg, errors, idx) do
-    walk(rest, :free, errors, idx + 1)
-  end
-
-  defp walk_free(rest, :user, _msg, errors, idx) do
-    walk(rest, :free, errors, idx + 1)
-  end
-
-  defp walk_free(rest, :assistant, msg, errors, idx) do
-    case tool_use_ids(msg) do
-      [] ->
-        walk(rest, :free, errors, idx + 1)
-
-      ids ->
-        walk(rest, {:need, MapSet.new(ids)}, errors, idx + 1)
-    end
-  end
-
-  defp walk_free(rest, :tool, msg, errors, idx) do
-    orphan = tool_result_ids(msg)
-
-    walk(
-      rest,
-      :free,
-      errors ++
-        [
-          %{
-            kind: :orphan_tool_result,
-            position: idx,
-            orphan_ids: orphan,
-            missing_ids: [],
-            expected_ids: []
-          }
-        ],
-      idx + 1
-    )
-  end
-
-  # When we're waiting on tool responses, the *next* message
-  # must be a tool message with matching ids. Anything else
-  # (system, user, assistant) closes the previous batch as
-  # `unclosed_tool_responses` and reprocesses the current
-  # message in the new state.
-  defp walk_need(rest, expected, :system, _msg, errors, idx) do
-    walk(rest, :free, errors ++ [unclosed(idx, expected)], idx + 1)
-  end
-
-  defp walk_need(rest, expected, :user, _msg, errors, idx) do
-    walk(rest, :free, errors ++ [unclosed(idx, expected)], idx + 1)
-  end
-
-  defp walk_need(rest, expected, :assistant, msg, errors, idx) do
-    new_state =
-      case tool_use_ids(msg) do
-        [] -> :free
-        ids -> {:need, MapSet.new(ids)}
-      end
-
-    walk(
-      rest,
-      new_state,
-      errors ++ [unclosed(idx, expected)],
-      idx + 1
-    )
-  end
-
-  defp walk_need(rest, expected, :tool, msg, errors, idx) do
+  defp dispatch({:need, expected}, :tool, msg, errors, idx, _wire_role) do
     result_ids = tool_result_ids(msg)
     result_set = MapSet.new(result_ids)
-
     missing = MapSet.difference(expected, result_set)
     extra = MapSet.difference(result_set, expected)
+    {errors ++ tool_response_errors(idx, expected, missing, extra), {:free, :user}}
+  end
 
-    tool_errors = tool_response_errors(idx, expected, missing, extra)
-    walk(rest, :free, errors ++ tool_errors, idx + 1)
+  defp dispatch({:need, expected}, _role, _msg, errors, idx, wire_role) do
+    {errors ++ [unclosed(idx, expected)], {:free, wire_role}}
+  end
+
+  defp dispatch(:free, :tool, msg, errors, idx, wire_role) do
+    orphan = tool_result_ids(msg)
+    {errors ++ [orphan_error(idx, orphan)], {:free, wire_role}}
+  end
+
+  defp dispatch(:free, :assistant, msg, errors, _idx, wire_role) do
+    case tool_use_ids(msg) do
+      [] -> {errors, {:free, wire_role}}
+      ids -> {errors, {{:need, MapSet.new(ids)}, wire_role}}
+    end
+  end
+
+  defp dispatch(pairing, _role, _msg, errors, _idx, wire_role) do
+    {errors, {pairing, wire_role}}
+  end
+
+  defp finalize_errors({{:need, expected}, _last_role}, errors, idx) do
+    {errors ++ [unclosed(idx, expected)], :free}
+  end
+
+  defp finalize_errors(_, errors, _idx), do: {errors, :free}
+
+  defp check_alternation(nil, _new_role, _idx, errors), do: errors
+
+  defp check_alternation(same, same, idx, errors) when same in [:user, :assistant] do
+    errors ++ [alternation_error(idx, same)]
+  end
+
+  defp check_alternation(_last, _new, _idx, errors), do: errors
+
+  defp wire_role_for(:system, _msg), do: nil
+  defp wire_role_for(:user, _msg), do: :user
+  defp wire_role_for(:tool, _msg), do: :user
+
+  defp wire_role_for(:assistant, %Assistant{parts: parts}) do
+    if has_tool_use?(parts), do: :assistant, else: :assistant
+  end
+
+  defp wire_role_for(:assistant, _msg), do: :assistant
+
+  defp has_tool_use?(parts) do
+    Enum.any?(parts || [], &match?(%Part.ToolUse{}, &1))
+  end
+
+  defp alternation_error(idx, role) do
+    %{
+      kind: :alternation_violation,
+      position: idx,
+      orphan_ids: [],
+      missing_ids: [],
+      expected_ids: [role]
+    }
+  end
+
+  defp orphan_error(idx, orphan) do
+    %{
+      kind: :orphan_tool_result,
+      position: idx,
+      orphan_ids: orphan,
+      missing_ids: [],
+      expected_ids: []
+    }
   end
 
   defp unclosed(idx, expected) do
@@ -199,30 +151,24 @@ defmodule Nest.LLM.Preflight do
 
   defp tool_response_errors(idx, expected, missing, extra) do
     []
-    |> append_error(
-      missing,
-      fn ids ->
-        %{
-          kind: :missing_tool_responses,
-          position: idx,
-          orphan_ids: [],
-          missing_ids: MapSet.to_list(ids),
-          expected_ids: MapSet.to_list(expected)
-        }
-      end
-    )
-    |> append_error(
-      extra,
-      fn ids ->
-        %{
-          kind: :orphan_tool_result,
-          position: idx,
-          orphan_ids: MapSet.to_list(ids),
-          missing_ids: [],
-          expected_ids: MapSet.to_list(expected)
-        }
-      end
-    )
+    |> append_error(missing, fn ids ->
+      %{
+        kind: :missing_tool_responses,
+        position: idx,
+        orphan_ids: [],
+        missing_ids: MapSet.to_list(ids),
+        expected_ids: MapSet.to_list(expected)
+      }
+    end)
+    |> append_error(extra, fn ids ->
+      %{
+        kind: :orphan_tool_result,
+        position: idx,
+        orphan_ids: MapSet.to_list(ids),
+        missing_ids: [],
+        expected_ids: MapSet.to_list(expected)
+      }
+    end)
   end
 
   defp append_error(errors, set, build) do

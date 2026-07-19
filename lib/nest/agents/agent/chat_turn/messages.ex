@@ -76,14 +76,20 @@ defmodule Nest.Agents.Agent.ChatTurn.Messages do
   @doc """
   Build a `{:tool, _}` message wrapping a list of
   `ToolResult` structs as `Part.ToolResult` parts.
+  When `notice_text` is non-nil, it is prepended as a
+  `Part.Text` for context/budget warnings that attach
+  to the tool response.
   """
-  @spec tool([ToolResult.t()]) :: {:tool, Tool.t()}
-  def tool(results) do
+  @spec tool([ToolResult.t()], String.t() | nil) :: {:tool, Tool.t()}
+  def tool(results, notice_text \\ nil) do
+    text_parts = if notice_text, do: [%Part.Text{text: notice_text}], else: []
+    result_parts = Enum.map(results, &tool_result_to_part/1)
+
     {:tool,
      %Tool{
        index: nil,
        timestamp: DateTime.utc_now(),
-       parts: Enum.map(results, &tool_result_to_part/1),
+       parts: text_parts ++ result_parts,
        api_logs: []
      }}
   end

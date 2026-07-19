@@ -112,13 +112,14 @@ defmodule Nest.Agents.AgentChatTest do
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
-      :ok = Agent.chat(pid, "Hello")
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      capture_log(fn ->
+        :ok = Agent.chat(pid, "Hello")
+        assert_receive {:chat_status, %{status: "idle"}}, 500
+      end)
 
-      # The user message is broadcast twice — once on append with
-      # empty api_logs, then again after the api_log handler
-      # attaches the request log. Match the second (non-empty)
-      # broadcast to capture the externally visible state.
+      # The user message is broadcast after the error handler stamps
+      # the error assistant and attaches api_logs. Wait for the
+      # second broadcast (with api_logs attached).
       assert_receive {:chat_message, {:user, %{api_logs: [_ | _] = user_api_logs}}}, 500
 
       assert_receive {:chat_message, {:assistant, %{api_logs: error_assistant_api_logs}}}, 500

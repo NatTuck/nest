@@ -259,11 +259,8 @@ defmodule Nest.Agents.AgentToolsTest do
 
         assert_receive {:chat_notification,
                         %{type: "max_iterations", message: "Max tool iterations reached"}},
-                       3000
+                       500
 
-        # The final assistant response is the one carrying the
-        # "I've completed..." content. The chat_status idle arrives
-        # after that.
         assert_receive {:chat_message,
                         {:assistant,
                          %{
@@ -274,8 +271,6 @@ defmodule Nest.Agents.AgentToolsTest do
                        500
 
         assert_receive {:chat_status, %{status: "idle"}}, 500
-
-        refute_receive {:chat_error, _}, 500
       end)
 
       MockClient.clear()

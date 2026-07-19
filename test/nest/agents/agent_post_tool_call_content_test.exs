@@ -232,18 +232,14 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
 
       :ok = Agent.chat(pid, "How many?")
 
-      # The final assistant message has no text part (no
-      # visible text was streamed) and a thinking part with
-      # the reasoning.
-      assert_receive {:chat_message,
-                      {:assistant,
-                       %{
-                         index: 4,
-                         parts: [%Part.Thinking{thinking: "The user wants a count." <> _}]
-                       }}},
-                     500
-
       assert_receive {:chat_status, %{status: "idle"}}, 500
+
+      assert_received {:chat_message,
+                       {:assistant,
+                        %{
+                          index: 4,
+                          parts: [%Part.Thinking{thinking: "The user wants a count." <> _}]
+                        }}}
 
       MockClient.clear()
     end

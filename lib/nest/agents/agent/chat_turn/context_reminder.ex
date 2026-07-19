@@ -5,60 +5,47 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
   Whenever the chat task is about to make an LLM call, the
   ChatTurn's `iterate/1` checks the current context usage
   against a list of thresholds (25%, 50%, 75%). When a new
-  threshold is crossed, a `{:system, _}` message is appended
-  to the conversation so the LLM can plan ahead (e.g. switch
-  to `head`/`tail` reads, call the `context` tool to
-  compact, or stop adding new tool results).
+  threshold is crossed, the notice is deferred and attaches to
+  the next tool response as a `Part.Text`, or is injected as a
+  `[notice_user, ack_assistant]` pair when there are no pending
+  tool results.
+
+  Both sides of the pair carry information — the assistant ack
+  primes the model's awareness for the next real response.
 
   Firing rules:
     * Each threshold fires at most once between compactions.
       The "already announced" set lives on
       `Nest.Agents.Agent.ChatState.crossed_thresholds` (per
-      conversation, not per ChatTurn — the ChatTurn is one
-      per user message and would reset the set every turn).
-    * Only the highest currently-crossed threshold is announced
-      (so a fresh turn starting at 60% fires 50%, not 25+50).
-    * When compaction succeeds, the set is cleared in
-      `Compaction.ResultHandler.handle_success/3` so the
-      thresholds re-fire if usage rises again after the
-      history was summarized.
-    * If `context_limit` is unknown (nil), no warning is
-      injected.
-
-  Threshold text is fixed at the threshold value (25/50/75%);
-  the dynamic numbers (`{used}`, `{limit}`) are the live
-  estimate and configured/probed limit. The percentages use
-  the threshold label, not the live ratio — the live ratio
-  might be 27% or 53% but the message says "25%" / "50%".
-  Close enough for the LLM's planning purposes.
-
-  Extracted from `Nest.Agents.Agent.ChatTurn` to keep that
-  module under the 500-line Credo cap.
+      conversation, not per ChatTurn).
+    * Only the highest currently-crossed threshold is announced.
+    * When compaction succeeds, the set is cleared.
+    * If `context_limit` is unknown (nil), no warning is injected.
   """
 
-  alias Nest.Agents.Agent.ChatTurn.LateMessage
   alias Nest.LLM.ClientConfig
-  alias Nest.Messages.System
+  alias Nest.Messages.Part
   alias Nest.Messages.User
   alias Nest.Tokens.ConversationSize
   alias Nest.Tokens.Reserve
 
-  # Ordered list of thresholds. `highest_unannounced/3` takes
-  # the last one whose `pct` is met, so the list MUST stay
-  # ordered low-to-high. Add a `:p90` here when a 90% warning
-  # becomes desirable.
-  #
-  # Thresholds are measured against the **working token budget**
-  # (`context_limit - reserve`), not the raw context_limit.
-  # The reserve is set aside so the compactor's own LLM call
-  # has headroom — see `Nest.Tokens.Reserve` for the formula.
-  # This means warnings fire earlier in absolute terms, which is
-  # correct: the LLM should plan around the working budget.
   @thresholds [
     {0.25, :p25},
     {0.50, :p50},
     {0.75, :p75}
   ]
+
+  @ack_texts %{
+    p25: "Okay, that's plenty of space.",
+    p50: "Okay, I should consider conserving tokens.",
+    p75: "Okay, no more expensive tool calls and I should consider explicitly compacting."
+  }
+
+  @notice_texts %{
+    p25: "Context at 25%.",
+    p50: "Context at 50%.",
+    p75: "Context at 75%. Consider compacting via the context tool."
+  }
 
   @doc """
   Returns the highest threshold atom that is currently
@@ -84,33 +71,54 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
   end
 
   @doc """
-  Build the reminder message for the given threshold atom with
-  the live usage numbers interpolated, routed through the
-  provider's `rewrite_late_system_messages` config.
+  Notice text for a threshold atom. Returns a short
+  sentence the callers can attach to a tool response or
+  use as the user side of a synthetic pair.
+  """
+  @spec notice_text(atom()) :: String.t()
+  def notice_text(atom) do
+    Map.fetch!(@notice_texts, atom)
+  end
 
-  Returns `{:system, %System{…}}` by default; returns
-  `{:user, %User{parts: [%Part.Text{text: "[System notice:
-  …]"}]}}` when the provider flag is on. See
-  `Nest.Agents.Agent.ChatTurn.LateMessage.build/2` for the
-  flag's purpose.
+  @doc """
+  Assistant ack text that pairs with a given notice.
+  Primes the model's awareness for the next response.
+  """
+  @spec ack_text_for(atom()) :: String.t()
+  def ack_text_for(atom) do
+    Map.fetch!(@ack_texts, atom)
+  end
 
-  The arity-3 form is kept for tests and any callers without a
-  fully-built `ClientConfig` — it delegates with an off-config.
+  @doc """
+  Build a `{:user, _}` message from the given notice text.
+  """
+  @spec build_user_notice(String.t(), ClientConfig.t() | nil) :: {:user, User.t()}
+  def build_user_notice(text, _client_config) do
+    {:user,
+     %User{
+       parts: [%Part.Text{text: text}],
+       timestamp: DateTime.utc_now(),
+       api_logs: []
+     }}
+  end
+
+  @doc """
+  Build the reminder message for the given threshold atom.
+  Kept for test compatibility and callers that need the
+  legacy `{:system, _}` format. Prefer `notice_text/1`
+  for new call sites.
   """
   @spec build_message(atom(), non_neg_integer(), pos_integer(), ClientConfig.t() | nil) ::
-          {:system, System.t()} | {:user, User.t()}
+          {:system, Nest.Messages.System.t()} | {:user, User.t()}
   def build_message(atom, used, limit, client_config) do
-    LateMessage.build(client_config, format(atom, used, limit))
+    build_user_notice(format(atom, used, limit), client_config)
   end
 
   @spec build_message(atom(), non_neg_integer(), pos_integer()) ::
-          {:system, System.t()} | {:user, User.t()}
+          {:system, Nest.Messages.System.t()} | {:user, User.t()}
   def build_message(atom, used, limit),
-    do: build_message(atom, used, limit, %ClientConfig{rewrite_late_system_messages: false})
+    do: build_message(atom, used, limit, %ClientConfig{})
 
-  # Public for testability. Internal callers go through
-  # `build_message/3`; tests assert the threshold-specific
-  # text directly.
   @doc false
   @spec format(atom(), non_neg_integer(), pos_integer()) :: String.t()
   def format(:p25, used, limit) do
@@ -136,16 +144,6 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
 
   @doc """
   Estimate the token count for the given messages list.
-  Exposed so the ChatTurn can call it once per iterate and
-  pass the result into `highest_unannounced/3` and
-  `build_message/3` without re-computing.
-
-  Thin wrapper over `Nest.Tokens.ConversationSize.size/1`
-  — kept here so the chat-turn call site only depends on
-  this module, not the size/estimator directly. Makes
-  future refinements (e.g. provider-specific tokenizers) a
-  one-file change. The name is preserved for backward
-  compatibility with existing call sites.
   """
   @spec estimate_messages([term()]) :: non_neg_integer()
   def estimate_messages(messages) do
