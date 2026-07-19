@@ -8,6 +8,7 @@ defmodule Nest.Messages.MessageList do
 
   alias Nest.Messages.Assistant
   alias Nest.Messages.Part
+  alias Nest.Messages.Tool
 
   @doc """
   Drop the trailing message if it's an assistant message
@@ -28,6 +29,92 @@ defmodule Nest.Messages.MessageList do
       _ ->
         messages
     end
+  end
+
+  @doc """
+  If the trailing message is an assistant carrying a
+  `clone_agent` `Part.ToolUse`, drop it and return the
+  cloned instruction text. Otherwise return `{messages, nil}`.
+
+  Used by the subagent spawn path so a synthetic fork
+  can replace the stripped real `clone_agent` with
+  properly-paired messages that maintain wire alternation.
+  """
+  @spec extract_clone_instruction([term()]) :: {[term()], String.t() | nil}
+  def extract_clone_instruction(messages) do
+    case List.last(messages) do
+      {:assistant, %Assistant{parts: parts}} ->
+        clone =
+          Enum.find(parts, fn
+            %Part.ToolUse{name: "clone_agent"} -> true
+            _ -> false
+          end)
+
+        if clone do
+          {Enum.drop(messages, -1), Map.get(clone.arguments, "instruction", "")}
+        else
+          {messages, nil}
+        end
+
+      _ ->
+        {messages, nil}
+    end
+  end
+
+  @doc """
+  Append a synthetic `clone_agent` fork to the message list
+  so the subagent sees a coherent origin story with proper
+  wire alternation:
+
+    * assistant with a `clone_agent` `Part.ToolUse` (empty arguments)
+    * tool with a `Part.ToolResult` pairing the synthetic id
+    * assistant acknowledging the fork
+
+  Returns `{messages_with_fork, next_index}`.
+  """
+  @spec build_clone_fork([term()], non_neg_integer()) :: {[term()], non_neg_integer()}
+  def build_clone_fork(messages, next_index) do
+    clone_id = "subagent-clone-#{next_index}"
+
+    assistant_clone =
+      {:assistant,
+       %Assistant{
+         index: next_index,
+         parts: [%Part.ToolUse{id: clone_id, name: "clone_agent", arguments: %{}}],
+         timestamp: DateTime.utc_now(),
+         api_logs: []
+       }}
+
+    tool_result =
+      {:tool,
+       %Tool{
+         index: next_index + 1,
+         parts: [
+           %Part.ToolResult{
+             tool_call_id: clone_id,
+             name: "clone_agent",
+             content: "Subagent spawned successfully. You are now the delegated clone.",
+             arguments: %{},
+             is_error: false
+           }
+         ],
+         timestamp: DateTime.utc_now(),
+         api_logs: []
+       }}
+
+    assistant_ack =
+      {:assistant,
+       %Assistant{
+         index: next_index + 2,
+         parts: [%Part.Text{text: "Understood. I am the clone. What is my task?"}],
+         timestamp: DateTime.utc_now(),
+         api_logs: []
+       }}
+
+    {
+      messages ++ [assistant_clone, tool_result, assistant_ack],
+      next_index + 3
+    }
   end
 
   @doc """

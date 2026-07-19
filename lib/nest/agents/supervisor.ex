@@ -296,11 +296,12 @@ defmodule Nest.Agents.Supervisor do
   end
 
   defp build_child_attrs(parent_name, parent_id, parent_state, child_name, _instruction) do
-    # Strip trailing unpaired tool_use before handing off —
-    # the `clone_agent` tool_use at the tail has no result yet.
-    preloaded =
+    {stripped, _clone_instruction} =
       parent_state.chat_state.messages
-      |> MessageList.drop_trailing_unpaired_tool_call()
+      |> MessageList.extract_clone_instruction()
+
+    {preloaded, next_index} =
+      MessageList.build_clone_fork(stripped, parent_state.chat_state.next_message_index)
 
     %{
       name: child_name,
@@ -313,7 +314,7 @@ defmodule Nest.Agents.Supervisor do
       depth: parent_state.depth + 1,
       preloaded_messages: preloaded,
       last_compaction_index: Map.get(parent_state.chat_state, :last_compaction_index, -1),
-      next_message_index: parent_state.chat_state.next_message_index,
+      next_message_index: next_index,
       initial_api_log_sequences: %{}
     }
   end
