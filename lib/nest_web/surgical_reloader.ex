@@ -43,10 +43,23 @@ defmodule NestWeb.SurgicalReloader do
       compiling: false,
       pending_changes: MapSet.new(),
       debounce_timer: nil,
-      module_map: build_module_map()
+      module_map: nil
     }
 
-    {:ok, state}
+    # `init/1` runs while the parent supervisor is still in the
+    # middle of `start_child` for us. Calling
+    # `Supervisor.which_children(Nest.Supervisor)` from here would
+    # deadlock: it sends a `:system` message that the parent can't
+    # service until it finishes starting children, but it can't
+    # finish starting children until we return. Defer the walk to
+    # `handle_continue/2`, which runs after `init` has returned and
+    # the parent has resumed its message loop.
+    {:ok, state, {:continue, :build_module_map}}
+  end
+
+  @impl true
+  def handle_continue(:build_module_map, state) do
+    {:noreply, %{state | module_map: build_module_map()}}
   end
 
   @impl true
@@ -242,8 +255,27 @@ defmodule NestWeb.SurgicalReloader do
   end
 
   defp walk_tree(supervisor, acc) do
-    children = Supervisor.which_children(supervisor)
+    supervisor
+    |> resolve_supervisor()
+    |> Supervisor.which_children()
+    |> reduce_children(acc, supervisor)
+  rescue
+    _ -> acc
+  end
 
+  # Resolve a supervisor argument that may be either a registered
+  # atom (e.g. `Nest.Supervisor`) or an already-resolved pid into
+  # a pid suitable for `Supervisor.which_children/1`. Falls back
+  # to the original argument if the name isn't registered yet
+  # (e.g. during early startup when a child supervisor hasn't
+  # finished registering itself).
+  defp resolve_supervisor(pid) when is_pid(pid), do: pid
+
+  defp resolve_supervisor(name) when is_atom(name) do
+    Process.whereis(name) || name
+  end
+
+  defp reduce_children(children, acc, supervisor) do
     Enum.reduce(children, acc, fn
       {child_id, pid, :worker, [module]}, acc when is_pid(pid) ->
         # Worker process
@@ -258,9 +290,6 @@ defmodule NestWeb.SurgicalReloader do
       _, acc ->
         acc
     end)
-  rescue
-    # Supervisor might be dead during traversal
-    _ -> acc
   end
 
   # === IMMUNE CHECKS ===
