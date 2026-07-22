@@ -25,31 +25,13 @@
  */
 
 import { useState } from "react";
+import { ChevronDown } from "./ChevronDown";
 
 const ELLIPSIS = "…";
 
 function countLines(content) {
   if (!content) return 0;
   return content.split("\n").length;
-}
-
-function ChevronDown({ rotated = false }) {
-  return (
-    <svg
-      className={`w-3 h-3 transition-transform ${rotated ? "rotate-180" : ""}`}
-      fill="none"
-      stroke="currentColor"
-      viewBox="0 0 24 24"
-      aria-hidden="true"
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={2}
-        d="M19 9l-7 7-7-7"
-      />
-    </svg>
-  );
 }
 
 export function TruncatedResult({

@@ -10,6 +10,7 @@ defmodule Nest.Agents.AgentTmpPathTest do
   import ExUnit.CaptureLog
   import Mimic
 
+  alias Nest.Agents
   alias Nest.Agents.Agent
   alias Nest.Agents.AgentTestHelpers
   alias Nest.LLM.MockClient
@@ -86,7 +87,7 @@ defmodule Nest.Agents.AgentTmpPathTest do
       assert info1.tmp_path =~ ~r|/tmp/nest-#{System.pid()}/agent-#{agent_name1}|
     end
 
-    test "cleans up tmp directory when stopped via Supervisor.stop_agent/1" do
+    test "cleans up tmp directory when stopped via Agents.delete_agent/1" do
       alias Nest.Agents.Supervisor
 
       {:ok, agent_id} =
@@ -104,11 +105,11 @@ defmodule Nest.Agents.AgentTmpPathTest do
       {:ok, pid} = Supervisor.get_agent(agent_id)
       ref = Process.monitor(pid)
 
-      :ok = Supervisor.stop_agent(agent_id)
+      :ok = Agents.delete_agent(agent_id)
       assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 100
 
       refute File.exists?(expected_tmp_path),
-             "Expected tmp directory to be removed after Supervisor.stop_agent: #{expected_tmp_path}"
+             "Expected tmp directory to be removed after Agents.delete_agent: #{expected_tmp_path}"
     end
 
     test "cleans up tmp directory when agent crashes" do
@@ -180,13 +181,13 @@ defmodule Nest.Agents.AgentTmpPathTest do
       ref1 = Process.monitor(pid1)
       ref2 = Process.monitor(pid2)
 
-      :ok = Supervisor.stop_agent(agent_id1)
+      :ok = Agents.delete_agent(agent_id1)
       assert_receive {:DOWN, ^ref1, :process, ^pid1, _reason}, 100
 
       refute File.exists?(path1)
       assert File.exists?(path2)
 
-      :ok = Supervisor.stop_agent(agent_id2)
+      :ok = Agents.delete_agent(agent_id2)
       assert_receive {:DOWN, ^ref2, :process, ^pid2, _reason}, 100
 
       refute File.exists?(path2)

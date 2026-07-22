@@ -29,6 +29,7 @@ defmodule Nest.LLM.MockClient do
 
   @behaviour Nest.LLM.Client
 
+  alias Nest.LLM.Client
   alias Nest.LLM.Preflight
   alias Nest.LLM.RunRequest
   alias Nest.LLM.RunResponse
@@ -202,8 +203,8 @@ defmodule Nest.LLM.MockClient do
       "max_tokens" => req.max_tokens,
       "top_p" => req.top_p
     }
-    |> maybe_put("tools", tools_to_wire(req.tools))
-    |> maybe_put("tool_choice", req.tool_choice)
+    |> Client.maybe_put("tools", tools_to_wire(req.tools))
+    |> Client.maybe_put("tool_choice", req.tool_choice)
   end
 
   # The agent pid used to scope `set_*` and `run/2` calls. Pulled
@@ -304,20 +305,20 @@ defmodule Nest.LLM.MockClient do
   end
 
   defp message_to_wire({:assistant, %{parts: parts}}) do
-    base = %{"role" => "assistant", "content" => text_from_parts(parts)}
+    base = %{"role" => "assistant", "content" => Client.text_from_parts(parts)}
 
-    case tool_calls_from_parts(parts) do
+    case Client.tool_calls_from_parts(parts) do
       [] -> base
       calls -> Map.put(base, "tool_calls", Enum.map(calls, &tool_call_to_wire/1))
     end
   end
 
   defp message_to_wire({:user, %{parts: parts}}) do
-    %{"role" => "user", "content" => text_from_parts(parts)}
+    %{"role" => "user", "content" => Client.text_from_parts(parts)}
   end
 
   defp message_to_wire({:system, %{parts: parts}}) do
-    %{"role" => "system", "content" => text_from_parts(parts)}
+    %{"role" => "system", "content" => Client.text_from_parts(parts)}
   end
 
   defp message_to_wire({:tool, %{parts: parts}}) do
@@ -336,20 +337,6 @@ defmodule Nest.LLM.MockClient do
       end)
 
     %{"role" => "user", "content" => content}
-  end
-
-  defp text_from_parts(nil), do: ""
-
-  defp text_from_parts(parts) do
-    parts
-    |> Enum.filter(&match?(%Nest.Messages.Part.Text{}, &1))
-    |> Enum.map_join("", & &1.text)
-  end
-
-  defp tool_calls_from_parts(nil), do: []
-
-  defp tool_calls_from_parts(parts) do
-    Enum.filter(parts, &match?(%Nest.Messages.Part.ToolUse{}, &1))
   end
 
   defp tool_call_to_wire(%{id: id, name: name, arguments: args}) do
@@ -378,9 +365,6 @@ defmodule Nest.LLM.MockClient do
       }
     end)
   end
-
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp normalize_tool_calls(calls) do
     Enum.map(calls, fn

@@ -37,11 +37,11 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
   import Mimic
 
   alias Nest.Agents.Agent
-  alias Nest.Agents.Agent.Init
   alias Nest.LLM.MockClient
   alias Nest.Messages.Assistant
   alias Nest.Messages.Part
   alias Nest.Messages.User
+  alias Nest.Persistence
   alias Nest.Vocations
 
   setup :verify_on_exit!
@@ -92,7 +92,7 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
       name: agent_name,
       model: %{name: "qwen3.5-plus", provider: "model-studio"},
       vocation_id: vocation_id,
-      vocation: Init.load_vocation(vocation_id)
+      vocation: Persistence.load_vocation(vocation_id)
     }
 
     pid = start_supervised!({Agent, attrs})

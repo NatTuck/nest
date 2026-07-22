@@ -242,27 +242,22 @@ defmodule NestWeb.SurgicalReloader do
   end
 
   defp walk_tree(supervisor, acc) do
-    # Check if supervisor is still alive
-    if Process.alive?(supervisor) do
-      children = Supervisor.which_children(supervisor)
+    children = Supervisor.which_children(supervisor)
 
-      Enum.reduce(children, acc, fn
-        {child_id, pid, :worker, [module]}, acc when is_pid(pid) ->
-          # Worker process
-          Map.put(acc, module, {supervisor, child_id})
+    Enum.reduce(children, acc, fn
+      {child_id, pid, :worker, [module]}, acc when is_pid(pid) ->
+        # Worker process
+        Map.put(acc, module, {supervisor, child_id})
 
-        {child_id, pid, :supervisor, [module]}, acc when is_pid(pid) ->
-          # Child supervisor - add to map and recurse
-          acc = Map.put(acc, module, {supervisor, child_id})
-          walk_tree(pid, acc)
+      {child_id, pid, :supervisor, [module]}, acc when is_pid(pid) ->
+        # Child supervisor - add to map and recurse
+        acc = Map.put(acc, module, {supervisor, child_id})
+        walk_tree(pid, acc)
 
-        # Handle other cases (like :undefined pids during shutdown)
-        _, acc ->
-          acc
-      end)
-    else
-      acc
-    end
+      # Handle other cases (like :undefined pids during shutdown)
+      _, acc ->
+        acc
+    end)
   rescue
     # Supervisor might be dead during traversal
     _ -> acc

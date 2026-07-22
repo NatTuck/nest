@@ -103,20 +103,9 @@ defmodule Nest.Vocations do
 
   """
   def delete_vocation(%Vocation{} = vocation) do
-    if agents_using_vocation?(vocation.id) do
-      {:error, :agents_using_vocation}
-    else
-      try do
-        Repo.delete(vocation)
-      rescue
-        Ecto.ConstraintError -> {:error, :agents_using_vocation}
-      end
-    end
-  end
-
-  defp agents_using_vocation?(vocation_id) do
-    from(a in Nest.Agents.PersistedAgent, where: a.vocation_id == ^vocation_id)
-    |> Repo.exists?()
+    Repo.delete(vocation)
+  rescue
+    Ecto.ConstraintError -> {:error, :agents_using_vocation}
   end
 
   @doc """

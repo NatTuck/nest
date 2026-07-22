@@ -18,6 +18,7 @@ defmodule Nest.LLM.AnthropicClient do
 
   @behaviour Nest.LLM.Client
 
+  alias Nest.LLM.Client
   alias Nest.LLM.HttpWorker
   alias Nest.LLM.RunRequest
   alias Nest.LLM.RunResponse
@@ -150,11 +151,11 @@ defmodule Nest.LLM.AnthropicClient do
 
     request
     |> build_base_payload(conversation_messages)
-    |> maybe_put("system", initial_system)
-    |> maybe_put("tools", build_wire_tools(request.tools))
-    |> maybe_put("tool_choice", normalize_tool_choice(request.tool_choice))
-    |> maybe_put("temperature", request.temperature)
-    |> maybe_put("top_p", request.top_p)
+    |> Client.maybe_put("system", initial_system)
+    |> Client.maybe_put("tools", build_wire_tools(request.tools))
+    |> Client.maybe_put("tool_choice", normalize_tool_choice(request.tool_choice))
+    |> Client.maybe_put("temperature", request.temperature)
+    |> Client.maybe_put("top_p", request.top_p)
   end
 
   # The first `{:system, _}` message in `request.messages` is the
@@ -176,9 +177,7 @@ defmodule Nest.LLM.AnthropicClient do
   end
 
   defp system_text_from_parts(parts) do
-    parts
-    |> Enum.filter(&match?(%Part.Text{}, &1))
-    |> Enum.map_join("", & &1.text)
+    Client.text_from_parts(parts)
   end
 
   defp build_base_payload(request, conversation_messages) do
@@ -454,18 +453,12 @@ defmodule Nest.LLM.AnthropicClient do
 
   defp put_field(state, key, value), do: Map.put(state, key, value)
 
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
-
   @doc false
   def normalize_endpoint(base_url, endpoint) do
     base_url
     |> String.trim_trailing("/")
-    |> strip_api_version_if_needed(endpoint)
+    |> Client.strip_api_version_if_needed(endpoint)
     |> String.trim_trailing(endpoint)
     |> then(&(&1 <> endpoint))
   end
-
-  defp strip_api_version_if_needed(url, "/v1" <> _rest), do: String.trim_trailing(url, "/v1")
-  defp strip_api_version_if_needed(url, _endpoint), do: url
 end

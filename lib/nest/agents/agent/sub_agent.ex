@@ -61,7 +61,7 @@ defmodule Nest.Agents.Agent.SubAgent do
 
         maybe_test_swap_to_mock(child_name)
 
-        agents_chat(child_name, instruction)
+        Nest.Agents.chat(child_name, instruction)
 
         {:reply, {:ok, child_name}, state}
 
@@ -112,12 +112,6 @@ defmodule Nest.Agents.Agent.SubAgent do
         :ok
     end
   end
-
-  # Helper — `Nest.Agents.chat/3` keeps its public API at
-  # `Nest.Agents.chat/3`; we route the call through the named
-  # registry so this module never holds a child pid.
-  defp agents_chat(name, content),
-    do: Nest.Agents.chat(name, content)
 
   @doc """
   Merge `child_total_usage` into `state.llm_metrics.descendant_usage`,

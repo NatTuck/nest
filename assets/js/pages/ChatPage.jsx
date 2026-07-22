@@ -28,13 +28,14 @@ import { StatusBanner } from "../components/StatusBanner";
 import { NotificationBanner } from "../components/NotificationBanner";
 import { CompactionMarker } from "../components/CompactionMarker";
 import { SystemMessageContent } from "../components/SystemMessageContent";
+import { StreamingDots } from "../components/StreamingDots";
 import { CopyButton } from "../components/CopyButton";
 import { DelegatedTasks } from "../components/DelegatedTaskBlock";
 import { useScrollToBottom } from "../hooks/useScrollToBottom";
 import { stripModePrefix } from "../utils/stripModePrefix.js";
-import { splitThinkFromParts } from "../utils/thinkTags.js";
 import { messageToMarkdown } from "../utils/formatMessage.js";
 import { messageText, streamingText } from "../utils/messageText.js";
+import { thinkingFor, textPartsFor } from "../utils/messageParts.js";
 
 /**
  * Chat Page component
@@ -546,18 +547,11 @@ export function ChatPage() {
                 <ToolResults toolResults={message.toolResults} />
                 <ApiLogsBlock apiLogs={message.apiLogs} />
                 {message.isPartial && (
-                  <div className="flex items-center gap-1 mt-2">
-                    <span
-                      className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"
-                      style={{ animationDelay: "0ms" }}
-                    />
-                    <span
-                      className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"
-                      style={{ animationDelay: "150ms" }}
-                    />
-                    <span
-                      className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"
-                      style={{ animationDelay: "300ms" }}
+                  <div className="mt-2">
+                    <StreamingDots
+                      size="lg"
+                      colorClass="bg-gray-400"
+                      ariaLabel="Streaming message"
                     />
                   </div>
                 )}
@@ -586,18 +580,7 @@ export function ChatPage() {
                 : "Waiting for response"}
           </span>
           <div className="flex items-center gap-1">
-            <span
-              className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce"
-              style={{ animationDelay: "0ms" }}
-            />
-            <span
-              className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce"
-              style={{ animationDelay: "150ms" }}
-            />
-            <span
-              className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce"
-              style={{ animationDelay: "300ms" }}
-            />
+            <StreamingDots colorClass="bg-blue-500" ariaLabel="Working" />
           </div>
         </div>
       )}
@@ -670,34 +653,9 @@ export function ChatPage() {
   );
 }
 
-// Extract the thinking/reasoning text for any message shape.
-// The streaming accumulator carries `parts` (the canonical
-// `[{kind: "thinking"|"text", text|thinking}]` list). The
-// finalized message also carries `parts`. Anthropic-style
-// reasoning models emit a single contiguous thinking block
-// before the visible text, so the parts list is typically
-// `[{thinking}, {text}]` — we concatenate any thinking parts
-// AND any `<think>...</think>` blocks buried in `Part.Text`
-// so the unified `<ThinkingBlock>` has one string to render.
-// The legacy `message.thinking` field is consulted last (only
-// seen on wire-format messages that pre-date the parts cleanup).
-function thinkingFor(message) {
-  if (!message) return null;
-
-  const fromParts = splitThinkFromParts(message.parts).thinking;
-  if (fromParts) return fromParts;
-
-  return message.thinking || null;
-}
-
-// Extract the text parts for an assistant message, with any
-// `<think>...</think>` blocks removed (their content was
-// routed into the ThinkingBlock above). For user messages,
-// the caller wraps the text in a single Part.Text (with the
-// mode prefix stripped), so this is only used for assistants.
-function textPartsFor(message) {
-  return splitThinkFromParts(message?.parts).textParts;
-}
+// `thinkingFor` and `textPartsFor` come from
+// `utils/messageParts.js` so the same logic is shared with
+// the archived-history pane.
 
 // True when the message has visible text below the ThinkingBox.
 // Uses the shared `messageText` helper (which reads `parts`

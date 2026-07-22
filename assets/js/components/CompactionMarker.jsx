@@ -43,25 +43,8 @@
 
 import { useState } from "react";
 import { CollapsedHistory } from "./CollapsedHistory.jsx";
-
-function ChevronDown({ rotated = false }) {
-  return (
-    <svg
-      className={`w-3 h-3 transition-transform ${rotated ? "rotate-180" : ""}`}
-      fill="none"
-      stroke="currentColor"
-      viewBox="0 0 24 24"
-      aria-hidden="true"
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={2}
-        d="M19 9l-7 7-7-7"
-      />
-    </svg>
-  );
-}
+import { ChevronDown } from "./ChevronDown";
+import { formatTimestamp } from "../utils/formatTimestamp";
 
 function ArchiveIcon() {
   return (
@@ -160,11 +143,6 @@ export function CompactionMarkerBox({ marker }) {
       </div>
     </div>
   );
-}
-
-function formatTimestamp(ts) {
-  if (!ts) return null;
-  return new Date(ts).toLocaleString();
 }
 
 export function CompactionMarker({ marker, history, historyCount }) {

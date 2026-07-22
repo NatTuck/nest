@@ -24,6 +24,7 @@ defmodule Nest.Agents.SupervisorTest do
 
   import Eventually
 
+  alias Nest.Agents
   alias Nest.Agents.{Registry, Supervisor}
 
   setup do
@@ -64,7 +65,7 @@ defmodule Nest.Agents.SupervisorTest do
       assert {:ok, pid} = Registry.lookup(name)
       assert Process.alive?(pid)
 
-      :ok = Supervisor.stop_agent(name)
+      :ok = Agents.delete_agent(name)
 
       # The registry's auto-cleanup happens asynchronously after the
       # process exits, so poll until the lookup reflects the removal.
@@ -74,7 +75,7 @@ defmodule Nest.Agents.SupervisorTest do
     end
 
     test "returns error for non-existent agent" do
-      assert {:error, :not_found} = Supervisor.stop_agent("nonexistent")
+      assert {:error, :not_found} = Agents.delete_agent("nonexistent")
     end
   end
 
@@ -87,7 +88,7 @@ defmodule Nest.Agents.SupervisorTest do
       # concurrently. Assert on this test's own names (definitely
       # present) and an inclusive lower bound on the total — not
       # an exact count.
-      agents = Supervisor.list_agents()
+      agents = Agents.list_agents()
       assert name1 in agents
       assert name2 in agents
       assert length(agents) >= 2

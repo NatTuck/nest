@@ -21,6 +21,7 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
   import Mimic
   import Eventually
 
+  alias Nest.Agents
   alias Nest.Agents.ChildRegistry
   alias Nest.Agents.Registry, as: AgentsRegistry
   alias Nest.Agents.Supervisor
@@ -107,7 +108,7 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
         5_000
       )
 
-    :ok = Supervisor.stop_agent(parent_name)
+    :ok = Agents.delete_agent(parent_name)
 
     assert_registry_misses(parent_name)
     assert_registry_misses(child_name)
@@ -171,12 +172,12 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
     # Best-effort cleanup; if either is already gone, the
     # matching supervisor / registry stops are no-ops.
     case AgentsRegistry.lookup(parent_name) do
-      {:ok, _pid} -> :ok = Supervisor.stop_agent(parent_name)
+      {:ok, _pid} -> :ok = Agents.delete_agent(parent_name)
       _ -> :ok
     end
 
     case AgentsRegistry.lookup(child_name) do
-      {:ok, _pid} -> :ok = Supervisor.stop_agent(child_name)
+      {:ok, _pid} -> :ok = Agents.delete_agent(child_name)
       _ -> :ok
     end
   end

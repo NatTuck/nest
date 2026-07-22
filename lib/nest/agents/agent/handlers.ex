@@ -13,11 +13,10 @@ defmodule Nest.Agents.Agent.Handlers do
       events.
     * `Nest.Agents.Agent.Handlers.ChatTurnHandler` — chat
       turn lifecycle events.
-    * `Nest.Agents.Agent.Handlers.CompactionHandler` —
+    * `Nest.Agents.Agent.Compaction.ResultHandler` —
       compaction completion + retry events (the
       trigger-side lives in
-      `Nest.Agents.Agent.Compaction.Trigger` /
-      `ResultHandler`).
+      `Nest.Agents.Agent.Compaction.Trigger`).
     * `Nest.Agents.Agent.Handlers.ExitHandler` — process
       exit signals.
     * `Nest.Agents.Agent.Handlers.StopHandler` — stop
@@ -29,9 +28,9 @@ defmodule Nest.Agents.Agent.Handlers do
   mid-flight discovery event to handle here.
   """
 
+  alias Nest.Agents.Agent.Compaction.ResultHandler
   alias Nest.Agents.Agent.Handlers.ApiLogHandler
   alias Nest.Agents.Agent.Handlers.ChatTurnHandler
-  alias Nest.Agents.Agent.Handlers.CompactionHandler
   alias Nest.Agents.Agent.Handlers.ExitHandler
   alias Nest.Agents.Agent.Handlers.LLMStreamHandler
   alias Nest.Agents.Agent.Handlers.StopHandler
@@ -52,7 +51,7 @@ defmodule Nest.Agents.Agent.Handlers do
       {:ok, LLMStreamHandler} -> LLMStreamHandler.handle(msg, state)
       {:ok, ChatTurnHandler} -> ChatTurnHandler.handle(msg, state)
       {:ok, ApiLogHandler} -> ApiLogHandler.handle(msg, state)
-      {:ok, CompactionHandler} -> CompactionHandler.handle(msg, state)
+      {:ok, ResultHandler} -> ResultHandler.handle(msg, state)
       {:ok, ExitHandler} -> ExitHandler.handle(msg, state)
       {:ok, StopHandler} -> StopHandler.handle(msg, state)
       :no_match -> unknown(state)
@@ -73,11 +72,11 @@ defmodule Nest.Agents.Agent.Handlers do
   defp route_for({:set_crossed_thresholds, _}), do: {:ok, ChatTurnHandler}
   defp route_for({:api_log, _, _}), do: {:ok, ApiLogHandler}
   defp route_for({:api_log_sequences_updated, _}), do: {:ok, ApiLogHandler}
-  defp route_for({:compaction_done, _, _}), do: {:ok, CompactionHandler}
-  defp route_for({:compaction_failed, _, _}), do: {:ok, CompactionHandler}
-  defp route_for({:needs_compaction, _, _}), do: {:ok, CompactionHandler}
-  defp route_for(:retry_compaction), do: {:ok, CompactionHandler}
-  defp route_for(:compaction_loop_detected_ok), do: {:ok, CompactionHandler}
+  defp route_for({:compaction_done, _, _}), do: {:ok, ResultHandler}
+  defp route_for({:compaction_failed, _, _}), do: {:ok, ResultHandler}
+  defp route_for({:needs_compaction, _, _}), do: {:ok, ResultHandler}
+  defp route_for(:retry_compaction), do: {:ok, ResultHandler}
+  defp route_for(:compaction_loop_detected_ok), do: {:ok, ResultHandler}
   defp route_for({:stop_chat, _}), do: {:ok, StopHandler}
   defp route_for({:EXIT, _, _}), do: {:ok, ExitHandler}
 

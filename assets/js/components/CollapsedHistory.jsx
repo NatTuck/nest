@@ -30,7 +30,13 @@ import { SystemMessageContent } from "./SystemMessageContent.jsx";
 import { CompactionMarkerBox } from "./CompactionMarker.jsx";
 import { stripModePrefix } from "../utils/stripModePrefix.js";
 import { textFromParts } from "../utils/messageText.js";
-import { splitThinkFromParts } from "../utils/thinkTags.js";
+import {
+  thinkingFor,
+  textPartsFor,
+  toolCallsFromParts,
+  toolResultsFromParts,
+} from "../utils/messageParts.js";
+import { formatTimestamp } from "../utils/formatTimestamp";
 
 const ROLE_LABELS = {
   user: "You",
@@ -60,57 +66,12 @@ const AVATAR_LETTER = {
   tool: "T",
 };
 
-function formatTimestamp(ts) {
-  if (!ts) return null;
-  return new Date(ts).toLocaleString();
-}
-
-// Concatenate the thinking content for an assistant message:
-// both `Part.Thinking` entries AND any `<think>...</think>`
-// blocks buried in `Part.Text` text. Mirrors the live-area
-// `thinkingFor` helper in ChatPage.jsx so the history pane
-// renders an identical ThinkingBlock.
-function thinkingFor(message) {
-  return splitThinkFromParts(message?.parts).thinking;
-}
-
-// Extract the text parts for an assistant message, with any
-// `<think>...</think>` blocks removed (their content was
-// routed into the ThinkingBlock above). Mirrors the
-// live-area derivation in `addChatMessage` so a re-broadcast
-// assistant message renders the same in the history pane.
-function textPartsFor(message) {
-  return splitThinkFromParts(message?.parts).textParts;
-}
-
-// Derive the legacy `toolCalls` shape from a message's `parts`
-// (the wire format). Returns `null` when no `tool_use` parts
-// are present, mirroring the live-area derivation in
-// `addChatMessage` so a re-broadcast tool-call message renders
-// the same in the history pane.
-function toolCallsFromParts(parts) {
-  if (!Array.isArray(parts)) return null;
-  const tcs = parts.filter((p) => p && p.kind === "tool_use");
-  if (tcs.length === 0) return null;
-  return tcs.map((p) => ({
-    id: p.id,
-    name: p.name,
-    arguments: p.arguments || {},
-  }));
-}
-
-// Derive the legacy `toolResults` shape from a message's `parts`.
-function toolResultsFromParts(parts) {
-  if (!Array.isArray(parts)) return null;
-  const trs = parts.filter((p) => p && p.kind === "tool_result");
-  if (trs.length === 0) return null;
-  return trs.map((p) => ({
-    tool_call_id: p.toolCallId,
-    name: p.name,
-    content: p.content || "",
-    is_error: !!p.isError,
-  }));
-}
+// Concatenate the thinking content for an assistant message,
+// extract the visible text parts (with <think> blocks removed),
+// and derive legacy tool_call/tool_result shapes. All four
+// helpers come from `utils/messageParts.js` and are shared with
+// the live-area ChatPage render so a re-broadcast message
+// renders identically in both contexts.
 
 function MessageBubble({ message }) {
   const role = message.role;

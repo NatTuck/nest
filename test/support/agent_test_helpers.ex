@@ -9,11 +9,11 @@ defmodule Nest.Agents.AgentTestHelpers do
   import ExUnit.Assertions
 
   alias Nest.Agents.Agent
-  alias Nest.Agents.Agent.Init
   alias Nest.DotConfig
   alias Nest.LLM.MockClient
   alias Nest.LLM.OpenAIClient
   alias Nest.Messages.Part
+  alias Nest.Persistence
   alias Nest.Vocations
 
   def start_agent(attrs) do
@@ -97,7 +97,7 @@ defmodule Nest.Agents.AgentTestHelpers do
       merged
     else
       vocation_id = Map.fetch!(merged, :vocation_id)
-      Map.put(merged, :vocation, Init.load_vocation(vocation_id))
+      Map.put(merged, :vocation, Persistence.load_vocation(vocation_id))
     end
   end
 

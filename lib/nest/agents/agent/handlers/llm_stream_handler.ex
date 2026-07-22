@@ -156,7 +156,8 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
           state.chat_state
           | streaming_acc: nil,
             active_message_index: stamped_index,
-            pending_api_logs: clear_api_logs(state, stamped_index).chat_state.pending_api_logs,
+            pending_api_logs:
+              Nest.Agents.Agent.__clear_pending_api_logs__(state, stamped_index).chat_state.pending_api_logs,
             status: :idle
         }
     }
@@ -185,7 +186,8 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   # same number, but the lookup happens BEFORE the stamp
   # — so we use `next_message_index` (the pre-stamp value).
   defp tool_calls_received(tool_call_message, state) do
-    pending_logs = pending_api_logs(state, state.chat_state.next_message_index)
+    pending_logs =
+      Nest.Agents.Agent.__pending_api_logs__(state, state.chat_state.next_message_index)
 
     tool_call_message =
       if pending_logs != [] do
@@ -206,7 +208,8 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
       state
       | chat_state: %{
           state.chat_state
-          | pending_api_logs: clear_api_logs(state, stamped_index).chat_state.pending_api_logs,
+          | pending_api_logs:
+              Nest.Agents.Agent.__clear_pending_api_logs__(state, stamped_index).chat_state.pending_api_logs,
             status: :executing_tools
         }
     }
@@ -216,7 +219,8 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   end
 
   defp tool_results_received(tool_result_message, state) do
-    pending_logs = pending_api_logs(state, state.chat_state.next_message_index)
+    pending_logs =
+      Nest.Agents.Agent.__pending_api_logs__(state, state.chat_state.next_message_index)
 
     tool_result_message =
       if pending_logs != [] do
@@ -237,7 +241,8 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
       state
       | chat_state: %{
           state.chat_state
-          | pending_api_logs: clear_api_logs(state, stamped_index).chat_state.pending_api_logs,
+          | pending_api_logs:
+              Nest.Agents.Agent.__clear_pending_api_logs__(state, stamped_index).chat_state.pending_api_logs,
             status: :streaming,
             streaming_acc: Streaming.new(stamped_index + 1)
         }
@@ -314,16 +319,6 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   # `{:chat_stopped, _}`, `{:chat_crashed, _, _}`) are
   # routed to `ChatTurnHandler` by the top-level
   # `Handlers` dispatcher.
-
-  # Forwarded to the GenServer module which owns the canonical
-  # implementation. The `__` prefix marks them as internal.
-  defp pending_api_logs(state, message_index) do
-    Nest.Agents.Agent.__pending_api_logs__(state, message_index)
-  end
-
-  defp clear_api_logs(state, message_index) do
-    Nest.Agents.Agent.__clear_pending_api_logs__(state, message_index)
-  end
 
   # The api_log handler broadcasts the request log at the index
   # of the message that triggered this LLM call (the user

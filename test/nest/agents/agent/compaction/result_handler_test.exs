@@ -1,4 +1,4 @@
-defmodule Nest.Agents.Agent.Handlers.CompactionHandlerTest do
+defmodule Nest.Agents.Agent.Compaction.ResultHandlerTest do
   @moduledoc """
   Tests for the compaction-loop breaker.
 
@@ -27,7 +27,6 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandlerTest do
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ChatState
   alias Nest.Agents.Agent.Compaction.ResultHandler
-  alias Nest.Agents.Agent.Handlers.CompactionHandler
   alias Nest.Agents.Agent.LlmMetrics
 
   defp build_state do
@@ -119,7 +118,7 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandlerTest do
         }
       }
 
-      assert {:noreply, new_state} = CompactionHandler.handle(:compaction_loop_detected_ok, state)
+      assert {:noreply, new_state} = ResultHandler.handle(:compaction_loop_detected_ok, state)
 
       assert new_state.chat_state.status == :idle
       assert new_state.chat_state.consecutive_compaction_count == 0
@@ -145,7 +144,7 @@ defmodule Nest.Agents.Agent.Handlers.CompactionHandlerTest do
             }
 
             assert {:noreply, returned_state} =
-                     CompactionHandler.handle(:compaction_loop_detected_ok, state)
+                     ResultHandler.handle(:compaction_loop_detected_ok, state)
 
             # No state change when status is wrong.
             assert returned_state.chat_state.status == status

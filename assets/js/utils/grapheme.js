@@ -48,18 +48,3 @@ export function graphemeLast(str, n) {
     .map((s) => s.segment)
     .join("");
 }
-
-/**
- * Get the first n grapheme clusters from a string.
- * @param {string} str - The input string
- * @param {number} n - Number of graphemes to extract from the start
- * @returns {string} The first n graphemes
- */
-export function graphemeFirst(str, n) {
-  if (!str || n <= 0) return "";
-  const segments = Array.from(segmenter.segment(str));
-  return segments
-    .slice(0, n)
-    .map((s) => s.segment)
-    .join("");
-}

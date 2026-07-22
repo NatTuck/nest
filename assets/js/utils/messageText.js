@@ -27,6 +27,14 @@ export function textFromParts(parts) {
     .join("");
 }
 
+export function thinkingFromParts(parts) {
+  if (!Array.isArray(parts)) return "";
+  return parts
+    .filter((p) => p && p.kind === "thinking")
+    .map((p) => p.thinking || "")
+    .join("");
+}
+
 export function messageText(message) {
   if (!message) return "";
   if (Array.isArray(message.parts)) {

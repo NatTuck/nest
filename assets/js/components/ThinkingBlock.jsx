@@ -19,6 +19,7 @@
  * expanded/collapsed state.
  */
 import { useState } from "react";
+import { StreamingDots } from "./StreamingDots";
 
 export function ThinkingBlock({ thinking, isPartial = false }) {
   // The box always starts expanded. The user can collapse it
@@ -58,25 +59,10 @@ export function ThinkingBlock({ thinking, isPartial = false }) {
           </svg>
           <span className="font-medium">Thinking</span>
           {isPartial && (
-            <span
-              className="inline-flex gap-1 ml-1"
-              role="status"
-              aria-label="Streaming thinking"
-            >
-              <span
-                className="w-1.5 h-1.5 bg-amber-500 rounded-full animate-bounce"
-                style={{ animationDelay: "0ms" }}
-                aria-hidden="true"
-              />
-              <span
-                className="w-1.5 h-1.5 bg-amber-500 rounded-full animate-bounce"
-                style={{ animationDelay: "150ms" }}
-                aria-hidden="true"
-              />
-              <span
-                className="w-1.5 h-1.5 bg-amber-500 rounded-full animate-bounce"
-                style={{ animationDelay: "300ms" }}
-                aria-hidden="true"
+            <span className="ml-1">
+              <StreamingDots
+                colorClass="bg-amber-500"
+                ariaLabel="Streaming thinking"
               />
             </span>
           )}

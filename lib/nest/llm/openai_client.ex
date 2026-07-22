@@ -12,6 +12,7 @@ defmodule Nest.LLM.OpenAIClient do
 
   @behaviour Nest.LLM.Client
 
+  alias Nest.LLM.Client
   alias Nest.LLM.HttpWorker
   alias Nest.LLM.RunRequest
   alias Nest.LLM.RunResponse
@@ -72,11 +73,11 @@ defmodule Nest.LLM.OpenAIClient do
     }
 
     payload
-    |> maybe_put("temperature", request.temperature)
-    |> maybe_put("max_tokens", request.max_tokens)
-    |> maybe_put("top_p", request.top_p)
-    |> maybe_put("tools", build_wire_tools(request.tools))
-    |> maybe_put("tool_choice", normalize_tool_choice(request.tool_choice))
+    |> Client.maybe_put("temperature", request.temperature)
+    |> Client.maybe_put("max_tokens", request.max_tokens)
+    |> Client.maybe_put("top_p", request.top_p)
+    |> Client.maybe_put("tools", build_wire_tools(request.tools))
+    |> Client.maybe_put("tool_choice", normalize_tool_choice(request.tool_choice))
   end
 
   defp build_payload(request, opts) do
@@ -92,17 +93,17 @@ defmodule Nest.LLM.OpenAIClient do
   end
 
   defp message_to_wire({:system, %System{parts: parts}}) do
-    [%{"role" => "system", "content" => text_from_parts(parts)}]
+    [%{"role" => "system", "content" => Client.text_from_parts(parts)}]
   end
 
   defp message_to_wire({:user, %User{parts: parts}}) do
-    [%{"role" => "user", "content" => text_from_parts(parts)}]
+    [%{"role" => "user", "content" => Client.text_from_parts(parts)}]
   end
 
   defp message_to_wire({:assistant, %Assistant{parts: parts}}) do
-    base = %{"role" => "assistant", "content" => text_from_parts(parts)}
+    base = %{"role" => "assistant", "content" => Client.text_from_parts(parts)}
 
-    case tool_calls_from_parts(parts) do
+    case Client.tool_calls_from_parts(parts) do
       [] -> [base]
       calls -> [Map.put(base, "tool_calls", Enum.map(calls, &tool_call_to_wire/1))]
     end
@@ -126,20 +127,6 @@ defmodule Nest.LLM.OpenAIClient do
       end)
 
     text_msgs ++ result_msgs
-  end
-
-  defp text_from_parts(nil), do: ""
-
-  defp text_from_parts(parts) do
-    parts
-    |> Enum.filter(&match?(%Part.Text{}, &1))
-    |> Enum.map_join("", & &1.text)
-  end
-
-  defp tool_calls_from_parts(nil), do: []
-
-  defp tool_calls_from_parts(parts) do
-    Enum.filter(parts, &match?(%Part.ToolUse{}, &1))
   end
 
   defp tool_call_to_wire(%Part.ToolUse{id: id, name: name, arguments: args}) do
@@ -462,9 +449,6 @@ defmodule Nest.LLM.OpenAIClient do
     }
   end
 
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
-
   # Normalizes a base URL by stripping trailing slashes and any
   # suffix that already matches the target endpoint, then appends
   # the correct endpoint path. Prevents doubled segments like
@@ -473,13 +457,8 @@ defmodule Nest.LLM.OpenAIClient do
   def normalize_endpoint(base_url, endpoint) do
     base_url
     |> String.trim_trailing("/")
-    |> strip_api_version_if_needed(endpoint)
+    |> Client.strip_api_version_if_needed(endpoint)
     |> String.trim_trailing(endpoint)
     |> then(&(&1 <> endpoint))
   end
-
-  # Only strip /v1 if the endpoint already includes it (e.g. /v1/messages).
-  # For endpoints like /chat/completions, the /v1 in the base URL is kept.
-  defp strip_api_version_if_needed(url, "/v1" <> _rest), do: String.trim_trailing(url, "/v1")
-  defp strip_api_version_if_needed(url, _endpoint), do: url
 end

@@ -343,14 +343,8 @@ defmodule Nest.Agents.Supervisor do
     # Cascade first, by name only. The `ChildRegistry`
     # self-cleans via DOWN monitors; we don't rely on its
     # entries being consistent during the walk.
-    children = ChildRegistry.children_of(name)
-
-    if children == [] do
-      stop_one(name)
-    else
-      for child_name <- children, do: _ = stop_agent(child_name)
-      stop_one(name)
-    end
+    for child_name <- ChildRegistry.children_of(name), do: _ = stop_agent(child_name)
+    stop_one(name)
   end
 
   defp stop_one(name) do
@@ -385,18 +379,6 @@ defmodule Nest.Agents.Supervisor do
     end
 
     :ok
-  end
-
-  @doc """
-  Returns a list of all running agent `name`s.
-
-  ## Examples
-
-      ["clever-raven", "swift-fox"]
-  """
-  @spec list_agents() :: list(String.t())
-  def list_agents do
-    Registry.list()
   end
 
   @doc """

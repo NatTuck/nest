@@ -146,7 +146,7 @@ defmodule Nest.Persistence do
           {:ok, PersistedAgent.t()}
           | {:error, :duplicate_name | :missing_required_field | Changeset.t(PersistedAgent.t())}
   def insert_agent(attrs) do
-    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    now = now()
 
     case build_insert_base(attrs, now) do
       {:error, _} = err ->
@@ -356,7 +356,7 @@ defmodule Nest.Persistence do
         |> Repo.update_all(
           set: [
             next_message_index: new_index,
-            updated_at: DateTime.utc_now() |> DateTime.truncate(:second)
+            updated_at: now()
           ]
         )
 
@@ -475,4 +475,16 @@ defmodule Nest.Persistence do
       {:ok, attrs}
     end
   end
+
+  @doc """
+  Current UTC timestamp truncated to second precision.
+
+  Shared by every `INSERT`/`UPDATE` that records an `archived_at`,
+  `updated_at`, or similar wall-clock column. Truncating to `:second`
+  matches Postgres' default `timestamp(0)` semantics so a value
+  written by `now/0` and one written by an SQL `DEFAULT now()`
+  compare equal.
+  """
+  @spec now() :: DateTime.t()
+  def now, do: DateTime.utc_now() |> DateTime.truncate(:second)
 end

@@ -2,6 +2,13 @@ import { Markdown } from "@llamaindex/chat-ui/widgets";
 
 import { textFromParts } from "../utils/messageText.js";
 
+// Tailwind classes that tame the @llamaindex/chat-ui `<Markdown>`
+// component's HTML output: code blocks wrap rather than overflow,
+// prose paragraphs/lists break on any character, and the
+// typography plugin's 65ch max-width is removed.
+const MARKDOWN_CONTAINER_CLASS =
+  "space-y-2 [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_pre]:overflow-x-hidden [&_p]:[overflow-wrap:anywhere] [&_li]:[overflow-wrap:anywhere] [&_.prose]:max-w-none";
+
 export function parseBlocks(content) {
   if (!content) return { completed: [], incomplete: "" };
 
@@ -96,9 +103,7 @@ export function MessageContent({ parts, isPartial, className = "" }) {
     }
 
     return (
-      <div
-        className={`space-y-2 [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_pre]:overflow-x-hidden [&_p]:[overflow-wrap:anywhere] [&_li]:[overflow-wrap:anywhere] [&_.prose]:max-w-none ${className}`}
-      >
+      <div className={`${MARKDOWN_CONTAINER_CLASS} ${className}`}>
         {completed.map((block) => (
           <Markdown key={block.slice(0, 50)} content={block} />
         ))}
@@ -108,7 +113,7 @@ export function MessageContent({ parts, isPartial, className = "" }) {
   }
 
   return (
-    <div className="space-y-2 [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_pre]:overflow-x-hidden [&_p]:[overflow-wrap:anywhere] [&_li]:[overflow-wrap:anywhere] [&_.prose]:max-w-none">
+    <div className={MARKDOWN_CONTAINER_CLASS}>
       <Markdown content={text} className={className} />
     </div>
   );

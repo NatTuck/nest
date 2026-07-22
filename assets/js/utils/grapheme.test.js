@@ -3,12 +3,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import {
-  graphemeCount,
-  graphemeSlice,
-  graphemeLast,
-  graphemeFirst,
-} from "./grapheme.js";
+import { graphemeCount, graphemeSlice, graphemeLast } from "./grapheme.js";
 
 describe("grapheme utilities", () => {
   describe("graphemeCount", () => {
@@ -104,36 +99,6 @@ describe("grapheme utilities", () => {
     it("handles null and undefined gracefully", () => {
       expect(graphemeLast(null, 5)).toBe("");
       expect(graphemeLast(undefined, 5)).toBe("");
-    });
-  });
-
-  describe("graphemeFirst", () => {
-    it("gets first n ASCII characters", () => {
-      expect(graphemeFirst("Hello World", 5)).toBe("Hello");
-      expect(graphemeFirst("Hello", 3)).toBe("Hel");
-      expect(graphemeFirst("Hello", 1)).toBe("H");
-    });
-
-    it("gets first n characters including emojis", () => {
-      expect(graphemeFirst("💡 Hello", 2)).toBe("💡 ");
-      expect(graphemeFirst("💡🎉✨", 2)).toBe("💡🎉");
-    });
-
-    it("handles n greater than string length", () => {
-      expect(graphemeFirst("Hi", 10)).toBe("Hi");
-    });
-
-    it("handles n of 0", () => {
-      expect(graphemeFirst("Hello", 0)).toBe("");
-    });
-
-    it("handles negative n", () => {
-      expect(graphemeFirst("Hello", -1)).toBe("");
-    });
-
-    it("handles null and undefined gracefully", () => {
-      expect(graphemeFirst(null, 5)).toBe("");
-      expect(graphemeFirst(undefined, 5)).toBe("");
     });
   });
 

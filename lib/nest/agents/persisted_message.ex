@@ -71,6 +71,7 @@ defmodule Nest.Agents.PersistedMessage do
 
   import Ecto.Changeset
 
+  alias Nest.LLM.Client
   alias Nest.Messages.Assistant
   alias Nest.Messages.Compaction
   alias Nest.Messages.Message
@@ -218,16 +219,13 @@ defmodule Nest.Agents.PersistedMessage do
 
   defp serialize_content(:assistant, %Assistant{} = struct) do
     %{"parts" => Enum.map(struct.parts || [], &Part.to_json/1)}
-    |> maybe_put("usage", struct.usage)
-    |> maybe_put("finishReason", struct.finish_reason)
-    |> maybe_put("model", struct.model)
+    |> Client.maybe_put("usage", struct.usage)
+    |> Client.maybe_put("finishReason", struct.finish_reason)
+    |> Client.maybe_put("model", struct.model)
     |> Map.put("apiLogs", Message.format_api_logs(struct.api_logs))
-    |> maybe_put("metadata", stringify_keys(struct.metadata))
+    |> Client.maybe_put("metadata", stringify_keys(struct.metadata))
     |> maybe_put_tokens(struct.tokens)
   end
-
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp maybe_put_tokens(map, nil), do: map
 

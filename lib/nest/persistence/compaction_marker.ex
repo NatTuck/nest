@@ -21,6 +21,7 @@ defmodule Nest.Persistence.CompactionMarker do
 
   alias Nest.Agents.PersistedAgent
   alias Nest.Agents.PersistedMessage
+  alias Nest.Persistence
   alias Nest.Repo
 
   @doc """
@@ -52,7 +53,7 @@ defmodule Nest.Persistence.CompactionMarker do
           {:ok, PersistedMessage.t()} | {:error, term()}
         when agent_id: integer()
   def record(agent_id, marker_index, archived_count, tokens_compacted, tokens_compacted_to) do
-    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    now = Persistence.now()
 
     Repo.transaction(fn ->
       insert_marker(

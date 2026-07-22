@@ -21,6 +21,7 @@ defmodule Nest.Agents.Agent do
   alias Nest.Agents.Agent.Init
   alias Nest.Agents.Agent.IntrospectionHandler
   alias Nest.Agents.Agent.Persistence, as: AgentPersistence
+  alias Nest.Agents.Agent.Restore
   alias Nest.Agents.Agent.SubAgent
   alias Nest.Agents.Agent.TmpSpace
   alias Nest.Agents.Registry
@@ -283,7 +284,7 @@ defmodule Nest.Agents.Agent do
         # api_logs; today the rebuild is the only writer for
         # user/tool api_logs.
         state =
-          Init.attach_rebuilt_api_logs(
+          Restore.attach_rebuilt_api_logs(
             state,
             Map.get(attrs, :preloaded_messages, []),
             Map.get(attrs, :last_compaction_index, -1)

@@ -15,12 +15,10 @@ defmodule Nest.Agents.Agent.Init do
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Persistence, as: AgentPersistence
-  alias Nest.Agents.Agent.Restore
   alias Nest.Agents.Agent.SystemPrompt
   alias Nest.Messages.Part
   alias Nest.Messages.System
   alias Nest.Tools
-  alias Nest.Vocations
 
   @doc """
   Build the initial state struct. Pure: no DB writes, no
@@ -85,19 +83,6 @@ defmodule Nest.Agents.Agent.Init do
   end
 
   @doc """
-  Resolve a `vocation_id` (or `nil`) into a loaded Vocation struct
-  (or `nil`). Pure Repo read; callers in async tests should run
-  this in the test process and pass the result into attrs via
-  `:vocation`, not call it from inside a child process.
-
-  Production callers can use this directly from a request handler
-  before starting the agent. See `Persistence.load_vocation/1`.
-  """
-  @spec load_vocation(integer() | nil) :: Vocations.Vocation.t() | nil
-  def load_vocation(nil), do: nil
-  def load_vocation(vocation_id), do: Vocations.get_vocation(vocation_id)
-
-  @doc """
   Persist the initial system message built by `build_state/2`
   into the `messages` table. No-op when persistence is disabled
   or when the agent's `chat_state.messages` list is empty.
@@ -156,21 +141,6 @@ defmodule Nest.Agents.Agent.Init do
 
   def seed_from_db(state, preloaded, last_compaction_index) do
     seed_with_system_if_needed(state, preloaded, last_compaction_index)
-  end
-
-  @doc """
-  Attach rebuilt api_logs to `:user` and `:tool` messages and
-  seed `state.chat_state.api_log_sequences` so the next live
-  request after restore picks up at `.001` (no collision with
-  the rebuilt `.000`).
-
-  Pure delegator to `Nest.Agents.Agent.Restore`. The caller is
-  `Agent.init/1`; runs immediately after `seed_from_db/3`.
-  """
-  @spec attach_rebuilt_api_logs(Nest.Agents.Agent.t(), [Nest.Messages.Message.t()], integer()) ::
-          Nest.Agents.Agent.t()
-  def attach_rebuilt_api_logs(state, preloaded, last_compaction_index) do
-    Restore.attach_rebuilt_api_logs(state, preloaded, last_compaction_index)
   end
 
   # When the in-memory system message is already at position 0

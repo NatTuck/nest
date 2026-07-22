@@ -6,10 +6,15 @@ defmodule Nest.LLM.Client do
   a test mock) and presents a single canonical event stream to the
   agent. The agent never sees SSE framing, `delta.tool_calls[].index`,
   `content_block_delta` types, or any other provider-specific detail.
+
+  Also exposes a small set of wire-shaping helpers shared by multiple
+  clients (text extraction from a parts list, tool-call extraction,
+  and endpoint URL normalization).
   """
 
   alias Nest.LLM.RunRequest
   alias Nest.LLM.RunResponse
+  alias Nest.Messages.Part
 
   @typedoc """
   Canonical events yielded by the streaming Enumerable.
@@ -208,6 +213,51 @@ defmodule Nest.LLM.Client do
   """
   @spec new_accumulator() :: accumulator()
   def new_accumulator, do: @empty_acc
+
+  @doc """
+  Put `key` → `value` into `map`, but only when `value` is not `nil`.
+  Avoids emitting `"foo": null` JSON fields when serializing maps
+  with optional entries.
+  """
+  @spec maybe_put(map(), atom() | String.t(), any()) :: map()
+  def maybe_put(map, _key, nil), do: map
+  def maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  @doc """
+  Concatenate the text content of every `Part.Text` entry in a
+  message's parts list. Returns `""` for `nil` or an empty list.
+  Used by the OpenAI and mock clients to flatten the parts model
+  into a single string for the wire `content` field.
+  """
+  @spec text_from_parts([Part.t()] | nil) :: String.t()
+  def text_from_parts(nil), do: ""
+
+  def text_from_parts(parts) do
+    parts
+    |> Enum.filter(&match?(%Part.Text{}, &1))
+    |> Enum.map_join("", & &1.text)
+  end
+
+  @doc """
+  Filter a parts list to the `Part.ToolUse` entries. Returns `[]`
+  for `nil` or an empty list. Used by the OpenAI and mock clients
+  to surface tool calls alongside the assistant message's text.
+  """
+  @spec tool_calls_from_parts([Part.t()] | nil) :: [Part.ToolUse.t()]
+  def tool_calls_from_parts(nil), do: []
+
+  def tool_calls_from_parts(parts) do
+    Enum.filter(parts, &match?(%Part.ToolUse{}, &1))
+  end
+
+  @doc """
+  Strip a trailing `/v1` from a base URL only when the endpoint
+  already includes it (e.g. `/v1/messages`). For endpoints like
+  `/chat/completions`, the `/v1` in the base URL is preserved.
+  """
+  @spec strip_api_version_if_needed(String.t(), String.t()) :: String.t()
+  def strip_api_version_if_needed(url, "/v1" <> _rest), do: String.trim_trailing(url, "/v1")
+  def strip_api_version_if_needed(url, _endpoint), do: url
 
   # Empty IO list → nil; non-empty → binary. The list is in
   # reverse insertion order (we prepend for O(1) appends), so

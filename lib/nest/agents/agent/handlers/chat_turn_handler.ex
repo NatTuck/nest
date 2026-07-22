@@ -41,6 +41,7 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
 
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Registry, as: AgentsRegistry
+  alias Nest.LLM.Client
   alias Nest.Messages.Assistant
   alias Nest.Messages.Streaming
 
@@ -138,9 +139,7 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
   defp last_assistant_text(state) do
     case Enum.reverse(state.chat_state.messages) do
       [{:assistant, %{parts: parts}} | _] when is_list(parts) ->
-        parts
-        |> Enum.filter(&match?(%Nest.Messages.Part.Text{}, &1))
-        |> Enum.map_join("", & &1.text)
+        Client.text_from_parts(parts)
 
       _ ->
         ""
@@ -289,7 +288,7 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
            | index: nil,
              timestamp: DateTime.utc_now(),
              parts: assemble_partial_parts(acc, text_part, thinking_part),
-             api_logs: pending_api_logs(state, acc.index),
+             api_logs: Nest.Agents.Agent.__pending_api_logs__(state, acc.index),
              metadata: %{"stopped_by_user" => true}
          }}
 
@@ -304,7 +303,7 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
            index: nil,
            timestamp: DateTime.utc_now(),
            parts: [],
-           api_logs: pending_api_logs(state, index),
+           api_logs: Nest.Agents.Agent.__pending_api_logs__(state, index),
            metadata: %{"stopped_by_user" => true}
          }}
     end
@@ -363,12 +362,5 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
 
   defp truncate_string(s, max) do
     binary_part(s, 0, max) <> "\n...(truncated)"
-  end
-
-  # Forwarded to the GenServer module which owns the
-  # canonical implementation. The `__` prefix marks them
-  # as internal.
-  defp pending_api_logs(state, message_index) do
-    Nest.Agents.Agent.__pending_api_logs__(state, message_index)
   end
 end

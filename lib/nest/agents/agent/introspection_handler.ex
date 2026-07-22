@@ -24,6 +24,7 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
 
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Broadcasts
+  alias Nest.LLM.Client
   alias Nest.Tokens.ConversationSize
   alias Nest.Vocations
 
@@ -136,9 +137,7 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
   end
 
   defp system_prompt_from_messages([{:system, %{parts: parts}} | _]) when is_list(parts) do
-    parts
-    |> Enum.filter(&match?(%Nest.Messages.Part.Text{}, &1))
-    |> Enum.map_join("", & &1.text)
+    Client.text_from_parts(parts)
   end
 
   defp system_prompt_from_messages(_), do: nil

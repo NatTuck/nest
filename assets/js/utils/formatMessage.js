@@ -16,6 +16,7 @@
  */
 
 import { stripModePrefix } from "./stripModePrefix.js";
+import { textFromParts, thinkingFromParts } from "./messageText.js";
 
 /**
  * Returns the plain-text body of a chat message in markdown form. The
@@ -44,18 +45,12 @@ export function messageToMarkdown(message) {
   // canonical wire format). Falls back to legacy `content` /
   // `thinking` fields for compatibility.
   const text = Array.isArray(message.parts)
-    ? message.parts
-        .filter((p) => p && p.kind === "text")
-        .map((p) => p.text || "")
-        .join("")
+    ? textFromParts(message.parts)
     : typeof message.content === "string"
       ? message.content
       : "";
   const thinking = Array.isArray(message.parts)
-    ? message.parts
-        .filter((p) => p && p.kind === "thinking")
-        .map((p) => p.thinking || "")
-        .join("")
+    ? thinkingFromParts(message.parts)
     : typeof message.thinking === "string"
       ? message.thinking
       : "";

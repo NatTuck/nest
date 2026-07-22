@@ -7,7 +7,7 @@ defmodule Nest.Agents do
   supervision tree.
   """
 
-  alias Nest.Agents.{Agent, Supervisor}
+  alias Nest.Agents.{Agent, Registry, Supervisor}
   alias Nest.DotConfig
   alias Nest.Vocations
 
@@ -77,15 +77,8 @@ defmodule Nest.Agents do
   @spec get_info(String.t()) :: {:ok, map()} | {:error, :not_found}
   def get_info(name) do
     case Supervisor.get_agent(name) do
-      {:ok, pid} ->
-        if Process.alive?(pid) do
-          {:ok, Agent.get_public_info(pid)}
-        else
-          {:error, :not_found}
-        end
-
-      {:error, _} = err ->
-        err
+      {:ok, pid} -> {:ok, Agent.get_public_info(pid)}
+      {:error, _} = err -> err
     end
   end
 
@@ -150,7 +143,7 @@ defmodule Nest.Agents do
   """
   @spec list_agents() :: list(String.t())
   def list_agents do
-    Supervisor.list_agents()
+    Registry.list()
   end
 
   @doc """
@@ -185,18 +178,8 @@ defmodule Nest.Agents do
   @spec get_messages(String.t()) :: {:ok, [map()]} | {:error, :not_found}
   def get_messages(name) do
     case Supervisor.get_agent(name) do
-      {:ok, pid} ->
-        if Process.alive?(pid) do
-          {:ok, Agent.get_messages(pid)}
-        else
-          {:error, :not_found}
-        end
-
-      {:error, :not_found} ->
-        {:error, :not_found}
-
-      {:error, reason} ->
-        {:error, reason}
+      {:ok, pid} -> {:ok, Agent.get_messages(pid)}
+      {:error, _} = err -> err
     end
   end
 

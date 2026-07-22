@@ -49,6 +49,33 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   @max_consecutive_compactions 3
 
   @doc """
+  Dispatch entry for `Handlers.handle/2`. Wraps each
+  state-returning function in the `{:noreply, state}` tuple
+  the GenServer callback expects, then delegates to the
+  focused state mutator below.
+  """
+  @spec handle(term(), Agent.t()) :: GenServer.reply()
+  def handle({:compaction_done, summary_text, carried_entry}, state) do
+    {:noreply, handle_success(state, summary_text, carried_entry)}
+  end
+
+  def handle({:compaction_failed, reason, carried_entry}, state) do
+    {:noreply, handle_error(state, reason, carried_entry)}
+  end
+
+  def handle({:needs_compaction, _chat_turn_pid, carried_entry}, state) do
+    {:noreply, needs_entry(state, carried_entry)}
+  end
+
+  def handle(:retry_compaction, state) do
+    {:noreply, retry_compaction(state)}
+  end
+
+  def handle(:compaction_loop_detected_ok, state) do
+    {:noreply, loop_detected_ok(state)}
+  end
+
+  @doc """
   The compactor's chat turn finished. Run the success path:
   strip → summary_user → append → archive → persist →
   broadcast → spawn next.

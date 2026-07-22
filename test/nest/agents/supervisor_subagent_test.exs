@@ -20,7 +20,7 @@ defmodule Nest.Agents.SupervisorSubagentTest do
       matching the parent's `name` (so the child can
       dispatch `:child_completed` to the right parent
       without a pid lookup).
-    * `Supervisor.stop_agent/1` cascade-walks children
+    * `Agents.delete_agent/1` cascade-walks children
       before terminating the parent.
     * A grandchild (clone_agent of clone_agent) is also
       cleaned up when the root parent dies.
@@ -31,6 +31,7 @@ defmodule Nest.Agents.SupervisorSubagentTest do
 
   import Eventually
 
+  alias Nest.Agents
   alias Nest.Agents.ChildRegistry
   alias Nest.Agents.Registry, as: AgentsRegistry
   alias Nest.Agents.Supervisor
@@ -93,7 +94,7 @@ defmodule Nest.Agents.SupervisorSubagentTest do
       {:ok, child_a} = Supervisor.start_agent_with_parent(parent_state, "a")
       {:ok, child_b} = Supervisor.start_agent_with_parent(parent_state, "b")
 
-      :ok = Supervisor.stop_agent(parent_name)
+      :ok = Agents.delete_agent(parent_name)
 
       assert_registry_misses(parent_name)
       assert_registry_misses(child_a)
@@ -111,7 +112,7 @@ defmodule Nest.Agents.SupervisorSubagentTest do
 
       {:ok, grandchild_name} = Supervisor.start_agent_with_parent(child_state, "grandchild")
 
-      :ok = Supervisor.stop_agent(parent_name)
+      :ok = Agents.delete_agent(parent_name)
 
       assert_registry_misses(parent_name)
       assert_registry_misses(child_name)
@@ -168,7 +169,7 @@ defmodule Nest.Agents.SupervisorSubagentTest do
       })
 
     # Start the agent under the application's supervisor
-    # so `Supervisor.stop_agent/1`'s cascade walk can
+    # so `Agents.delete_agent/1`'s cascade walk can
     # terminate it via the same DynamicSupervisor.
     attrs = %{
       name: name,
@@ -252,7 +253,7 @@ defmodule Nest.Agents.SupervisorSubagentTest do
 
   defp safe_stop(name) do
     case AgentsRegistry.lookup(name) do
-      {:ok, _pid} -> :ok = Supervisor.stop_agent(name)
+      {:ok, _pid} -> :ok = Agents.delete_agent(name)
       _ -> :ok
     end
   end

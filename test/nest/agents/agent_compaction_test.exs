@@ -257,12 +257,12 @@ defmodule Nest.Agents.AgentCompactionTest do
       # waits for the assistant message to be finalized before
       # running — but no preflight handler reads it.
       #
-      # Structural assertion: the CompactionHandler has no path
-      # that consults `streaming_acc`.
-      handler = File.read!("lib/nest/agents/agent/handlers/compaction_handler.ex")
+      # Structural assertion: the Compaction.ResultHandler has no
+      # path that consults `streaming_acc`.
+      handler = File.read!("lib/nest/agents/agent/compaction/result_handler.ex")
 
       refute handler =~ "streaming_acc",
-             "CompactionHandler must not consult streaming_acc " <>
+             "Compaction.ResultHandler must not consult streaming_acc " <>
                "(forbidden under the never-overflow constraint)"
     end
   end
