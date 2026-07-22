@@ -160,9 +160,9 @@ defmodule Nest.Agents.Agent.SubAgent do
 
   # Notify all connected lobby clients that a subagent has
   # been spawned so the sidebar tree updates live without a
-  # page refresh. The parent's `agents.id` is resolved via
-  # `Persistence.fetch_agent_by_name/1` (a lightweight DB
-  # read — the row was just inserted by `start_agent_with_parent`).
+  # page refresh. Uses the Phoenix Endpoint broadcast channel
+  # so the message arrives through the standard channel
+  # pipeline (no raw PubSub bypass needed by the lobby).
   defp broadcast_subagent_creation(state, child_name) do
     parent_db_id =
       case Persistence.fetch_agent_by_name(state.name) do
@@ -170,16 +170,14 @@ defmodule Nest.Agents.Agent.SubAgent do
         _ -> nil
       end
 
-    payload = %{
+    NestWeb.Endpoint.broadcast("lobby", "agent:created", %{
       "name" => child_name,
       "model" => state.model,
       "status" => "idle",
       "parentId" => parent_db_id,
       "parentName" => state.name,
       "depth" => state.depth + 1
-    }
-
-    Phoenix.PubSub.broadcast(Nest.PubSub, "lobby", {:subagent_created, payload})
+    })
   end
 
   @doc """

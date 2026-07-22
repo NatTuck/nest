@@ -44,4 +44,4 @@ npm-debug.log
 
 # JS test coverage output
 /assets/coverage/
-
+*.coverdata
