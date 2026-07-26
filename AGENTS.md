@@ -42,7 +42,8 @@ just in the API log, but the UI always includes everything that happened).
 ### During Development
 
 - Never run any dev servers, neither `mix phx.server` nor `npx vite`. The user will manage that manually.
-- Code must pass lints (credo, biome). Do not modify lint configs or bypass the lints. FIX THE LINT ISSUES. ALWAYS. NO EXCUSES. IT DOES NOT MATTER IF IT WAS ALREADY THERE.
+- Code must pass lints (credo, biome). Do not modify lint configs or bypass the lints. 
+FIX THE LINT ISSUES. ALWAYS. NO EXCUSES. IT DOES NOT MATTER IF IT WAS ALREADY THERE.
 - Limit length and complexity of both functions and files. When complexity gets
   too great, first factor out potentially reusable components then factor out
   single-use helper functions if there isn't enough reusable logic to get the
@@ -61,15 +62,15 @@ explanation tool.
 
 - NO development work is done until `mix precommit` runs perfectly with no
 errors or warnings. NO EXCEPTIONS, NO EXCUSES.
-- **NEVER** run tests and throw away the output by piping to tail, head,
-grep or similar. If you expect long output, redirect to a temporary file
-(e.g. notes/test-runs/test-run.log).
+- **NEVER** run tests and throw away the output by piping to tail, head, grep or
+similar. If you expect long output, redirect to a temporary file (e.g.
+notes/test-runs/test-run.log).
 - **ALL** test run output should go under notes/test-runs
-- The Elixir test suite must take less than 10 seconds to run. If it ever takes
+- The Elixir test suite must take less than 5 seconds to run. If it ever takes
 longer, that's a major issue that needs to be addressed immediately.
 - Tests must not print to the console except during debugging. If they print
-logs correctly, capture and test those logs. If the log outputs unexpected, fix
-them.
+logs correctly, capture and test those logs. If the log outputs are unexpected,
+fix them.
 - It doesn't matter if the test failures or test prints were there before you
 started working. If you see them, fix them.
 - *NEVER* sleep directly in tests; use vi.waitFor for async conditions or one of
