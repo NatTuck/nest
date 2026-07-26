@@ -10,7 +10,7 @@ Our JavaScript/browser code lives exclusively in `./assets/`.
 - Our package manager is pnpm. Don't use npm or others.
 - **NEVER** run `pnpm` commands in the project root
 - **ALWAYS** `cd assets` first before running any JS package commands
-- If you see `package.json`, `node_modules`, or other similar JS artifacts in the project 
+- If you see `package.json`, `node_modules`, or other similar JS artifacts in the project
 root, something is wrong - delete them immediately
 
 ## Project Design
@@ -29,7 +29,7 @@ project root (and thus an AGENTS.md if present).
 be a new session, although it could be built (like a compaction) from a previous
 session if that made sense.
 - User messages are tagged with a `[mode: $MODE]\n` prefix.
-- We are *very* careful with any sort of transient message. 
+- We are *very* careful with any sort of transient message.
 
 ### UI Transparency
 
@@ -41,8 +41,8 @@ just in the API log, but the UI always includes everything that happened).
 
 ### During Development
 
-- Never run the any dev servers, neither `mix phx.server` nor `npx vite`. The user will manage that manually.
-- Code must pass lints (e.g. credo, biome). Do not modify lint configs or bypass the lints.
+- Never run any dev servers, neither `mix phx.server` nor `npx vite`. The user will manage that manually.
+- Code must pass lints (credo, biome). Do not modify lint configs or bypass the lints. FIX THE LINT ISSUES. ALWAYS. NO EXCUSES. IT DOES NOT MATTER IF IT WAS ALREADY THERE.
 - Limit length and complexity of both functions and files. When complexity gets
   too great, first factor out potentially reusable components then factor out
   single-use helper functions if there isn't enough reusable logic to get the
@@ -56,16 +56,22 @@ the task.
 the test.
 - **NEVER** look at the git history of code you haven't read as a debugging or
 explanation tool.
-- FIX THE LINT ISSUES. ALWAYS. NO EXCUSES. IT DOES NOT MATTER IF IT WAS
-ALREADY THERE.
 
-### More Testing Rules
+### Testing Rules
 
 - NO development work is done until `mix precommit` runs perfectly with no
-errors or warnings, `mix test` runs in under 5 seconds with no stray prints. NO
-EXCEPTIONS, NO EXCUSES.
-- NEVER run the test suite and throw away the output by piping to tail, head,
-grep or similar. If you run tests, look at the whole output every time.
+errors or warnings. NO EXCEPTIONS, NO EXCUSES.
+- **NEVER** run tests and throw away the output by piping to tail, head,
+grep or similar. If you expect long output, redirect to a temporary file
+(e.g. notes/test-runs/test-run.log).
+- **ALL** test run output should go under notes/test-runs
+- The Elixir test suite must take less than 10 seconds to run. If it ever takes
+longer, that's a major issue that needs to be addressed immediately.
+- Tests must not print to the console except during debugging. If they print
+logs correctly, capture and test those logs. If the log outputs unexpected, fix
+them.
+- It doesn't matter if the test failures or test prints were there before you
+started working. If you see them, fix them.
 - *NEVER* sleep directly in tests; use vi.waitFor for async conditions or one of
 the Elixir helpers (e.g. eventually).
 - Clean patterns without accessing mock internals
@@ -74,25 +80,15 @@ the Elixir helpers (e.g. eventually).
 differ only in that they each do a different single assertion.
 - Tests that have only one assertion in them are extremely suspect as likely
 violating the previous rule.
-- The tests must not print to the console except during debugging. If they print
-logs correctly, capture and test those logs. If the log outputs unexpected, fix
-them.
-- It doesn't matter if the test failures or test prints were there before you
-started working. If you see them, fix them.
 - A test that sometimes fails is *MUCH WORSE* than a test that always fails.
 Make it always fail, and make it log "FIXME: HIGH PRIORITY FLAKY TEST".
-- The Elixir test suite must take less than 10 seconds to run. If it ever takes
-longer, that's a major issue that needs to be addressed immediately.
 - **NO** test may be async: false without a clear comment as to why that's
 actually required.
 - **NEVER EVER** increase an existing timeout to try to get a test to pass
 unless you have a concrete reason to believe that there's some external reason
 why we expect things to take a specific amount of time. A test unexpectedly
-hitting a timeout, even occasionally, means the test is critically broken and 
+hitting a timeout, even occasionally, means the test is critically broken and
 needs to be fixed so it's not timing-dependent.
-- **NEVER** run tests and throw away the output. If you expect long output,
-redirect to a temporary file (e.g. notes/test-runs/test-run.log).
-- **ALL** test run output should go under notes/test-runs
 
 ### Test Coverage
 
@@ -115,6 +111,8 @@ immediately stop and fix it.
 - Use `mix assets.test` to run the JS tests.
 - When running any `pnpm`, `pnpx` or other JS command **always** start with an
 explicit `cd assets && ...`.
+- Use `mix precommit` alias when you are done with all changes and fix any
+pending issues.
 
 ### React
 
@@ -129,35 +127,25 @@ via_registry(name) type patterns.
 cast than just sending a raw message. There's no need for handle_info when we
 control both ends of the communication.
 
-### Basics for Elixir / Phoenix
+### HTTP Client
 
-- Use `mix precommit` alias when you are done with all changes and fix any
-pending issues.
-- Tests shouldn't print anything except temporarily during debugging.
-- Lint warnings (e.g. from credo) aren't optional, they need to be fixed.
-- The tests must not print to the console except during debugging. If they print
-logs correctly, capture and test those logs. If the log outputs unexpected, fix
-them.
 - Use the already included and available `:req` (`Req`) library for HTTP
 requests, **avoid** `:httpoison`, `:tesla`, and `:httpc`. Req is included by
-default and is the preferred HTTP client for Phoenix apps
+default and is the preferred HTTP client for Phoenix apps.
 
-### Phoenix v1.8 guidelines for Nest
+### Phoenix / HEEx
 
 - Avoid LiveView for web pages in favor of React.
-- Anytime you run into errors with no `current_scope` assign:
-  - You failed to follow the Authenticated Routes guidelines, or you failed to pass `current_scope` to `<Layouts.app>`
-  - **Always** fix the `current_scope` error by moving your routes to the proper `live_session` and ensure you pass `current_scope` as needed
-- Phoenix v1.8 moved the `<.flash_group>` component to the `Layouts` module. You are **forbidden** from calling `<.flash_group>` outside of the `layouts.ex` module
-
-### If we are using LiveView
-
-- **Always** begin your LiveView templates with `<Layouts.app flash={@flash} ...>` which wraps all inner content
-- The `MyAppWeb.Layouts` module is aliased in the `my_app_web.ex` file, so you can use it without needing to alias it again
-- Out of the box, `core_components.ex` imports an `<.icon name="hero-x-mark" class="w-5 h-5"/>` component for hero icons. **Always** use the `<.icon>` component for icons, **never** use `Heroicons` modules or similar
-- **Always** use the imported `<.input>` component for form inputs from `core_components.ex` when available. `<.input>` is imported and using it will save steps and prevent errors
-- If you override the default input classes (`<.input class="myclass px-2 py-1 rounded-lg">)`) class with your own values, no default classes are inherited, so your
-custom classes must fully style the input
+- `<.flash_group>` must live in `NestWeb.Layouts` (the `layouts.ex` module)
+only. You are **forbidden** from calling it elsewhere.
+- HEEx class attrs support lists. When using multiple classes, **always** use
+list `[...]` syntax:
+  ```
+  class={["px-2 text-white", @flag && "py-5"]}
+  ```
+- `<%= %>` works in tag bodies; use `{...}` for interpolation within tag
+attributes and for simple value interpolation in tag bodies. Use `<%= %>` for
+block constructs (`if`, `cond`, `case`, `for`) within tag bodies.
 
 ### JS and CSS guidelines
 
@@ -167,7 +155,7 @@ custom classes must fully style the input
       @import "tailwindcss" source(none);
       @source "../css";
       @source "../js";
-      @source "../../lib/my_app_web";
+      @source "../../lib/nest_web";
 
 - **Always use and maintain this import syntax** in the app.css file for projects generated with `phx.new`
 - **Never** use `@apply` when writing raw css
@@ -175,7 +163,7 @@ custom classes must fully style the input
   - You cannot reference an external vendor'd script `src` or link `href` in the layouts
   - You must import the vendor deps into app.js and app.css to use them
   - **Never write inline <script>custom js</script> tags within templates**
-- We're using Tailwind, shadcn/ui, and @llamaindex/chat-ui
+- We're using Tailwind and @llamaindex/chat-ui
 
 ### UI/UX & design guidelines
 
@@ -272,84 +260,4 @@ custom classes must fully style the input
 - Fields which are set programmatically, such as `user_id`, must not be listed in `cast` calls or similar for security purposes. Instead they must be explicitly set when creating the struct
 - **Always** invoke `mix ecto.gen.migration migration_name_using_underscores` when generating migration files, so the correct timestamp and conventions are applied
 <!-- phoenix:ecto-end -->
-
-<!-- phoenix:html-start -->
-## Phoenix HTML guidelines
-
-- Phoenix templates **always** use `~H` or .html.heex files (known as HEEx), **never** use `~E`
-- **Always** use the imported `Phoenix.Component.form/1` and `Phoenix.Component.inputs_for/1` function to build forms. **Never** use `Phoenix.HTML.form_for` or `Phoenix.HTML.inputs_for` as they are outdated
-- When building forms **always** use the already imported `Phoenix.Component.to_form/2` (`assign(socket, form: to_form(...))` and `<.form for={@form} id="msg-form">`), then access those forms in the template via `@form[:field]`
-- **Always** add unique DOM IDs to key elements (like forms, buttons, etc) when writing templates, these IDs can later be used in tests (`<.form for={@form} id="product-form">`)
-- For "app wide" template imports, you can import/alias into the `my_app_web.ex`'s `html_helpers` block, so they will be available to all LiveViews, LiveComponent's, and all modules that do `use MyAppWeb, :html` (replace "my_app" by the actual app name)
-
-- Elixir supports `if/else` but **does NOT support `if/else if` or `if/elsif`**. **Never use `else if` or `elseif` in Elixir**, **always** use `cond` or `case` for multiple conditionals.
-
-  **Never do this (invalid)**:
-
-      <%= if condition do %>
-        ...
-      <% else if other_condition %>
-        ...
-      <% end %>
-
-  Instead **always** do this:
-
-      <%= cond do %>
-        <% condition -> %>
-          ...
-        <% condition2 -> %>
-          ...
-        <% true -> %>
-          ...
-      <% end %>
-
-- HEEx require special tag annotation if you want to insert literal curly's like `{` or `}`. If you want to show a textual code snippet on the page in a `<pre>` or `<code>` block you *must* annotate the parent tag with `phx-no-curly-interpolation`:
-
-      <code phx-no-curly-interpolation>
-        let obj = {key: "val"}
-      </code>
-
-  Within `phx-no-curly-interpolation` annotated tags, you can use `{` and `}` without escaping them, and dynamic Elixir expressions can still be used with `<%= ... %>` syntax
-
-- HEEx class attrs support lists, but you must **always** use list `[...]` syntax. You can use the class list syntax to conditionally add classes, **always do this for multiple class values**:
-
-      <a class={[
-        "px-2 text-white",
-        @some_flag && "py-5",
-        if(@other_condition, do: "border-red-500", else: "border-blue-100"),
-        ...
-      ]}>Text</a>
-
-  and **always** wrap `if`'s inside `{...}` expressions with parens, like done above (`if(@other_condition, do: "...", else: "...")`)
-
-  and **never** do this, since it's invalid (note the missing `[` and `]`):
-
-      <a class={
-        "px-2 text-white",
-        @some_flag && "py-5"
-      }> ...
-      => Raises compile syntax error on invalid HEEx attr syntax
-
-- **Never** use `<% Enum.each %>` or non-for comprehensions for generating template content, instead **always** use `<%= for item <- @collection do %>`
-- HEEx HTML comments use `<%!-- comment --%>`. **Always** use the HEEx HTML comment syntax for template comments (`<%!-- comment --%>`)
-- HEEx allows interpolation via `{...}` and `<%= ... %>`, but the `<%= %>` **only** works within tag bodies. **Always** use the `{...}` syntax for interpolation within tag attributes, and for interpolation of values within tag bodies. **Always** interpolate block constructs (if, cond, case, for) within tag bodies using `<%= ... %>`.
-
-  **Always** do this:
-
-      <div id={@id}>
-        {@my_assign}
-        <%= if @some_block_condition do %>
-          {@another_assign}
-        <% end %>
-      </div>
-
-  and **Never** do this – the program will terminate with a syntax error:
-
-      <%!-- THIS IS INVALID NEVER EVER DO THIS --%>
-      <div id="<%= @invalid_interpolation %>">
-        {if @invalid_block_construct do}
-        {end}
-      </div>
-<!-- phoenix:html-end -->
-
 <!-- usage-rules-end -->
