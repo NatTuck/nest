@@ -107,27 +107,147 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
       assert_receive {:chat_status, %{status: "idle"}}, 500
 
       # Wait for the first turn's tool-call assistant message.
-      assert_received {:chat_message, {:assistant, %{index: 2, parts: parts_with_tool}}}
+      # The synthetic context-notice pair (assistant("Context?")
+      # + user(notice)) may precede it when a threshold crosses.
+      msg1 = wait_for_assistant_with_tool_use(5_000)
+      assert msg1 != nil
 
-      assert Enum.any?(parts_with_tool, &match?(%Part.ToolUse{}, &1))
+      assert Enum.any?(msg1.parts, &match?(%Part.ToolUse{}, &1)),
+             "expected first turn assistant to have a Part.ToolUse"
 
       # Wait for the second turn's assistant message. Its
-      # parts must include the visible text and the thinking
-      # (order depends on the build path; here we match the
-      # parts by content rather than position).
-      assert_received {:chat_message,
-                       {:assistant,
-                        %{
-                          index: 4,
-                          parts: parts
-                        }}}
+      # parts must include the visible text and the thinking.
+      msg2 = wait_for_assistant_with_text_and_thinking(5_000)
+      assert msg2 != nil
 
-      text = only_text(parts)
-      thinking = only_thinking(parts)
+      text = only_text(msg2.parts)
+      thinking = only_thinking(msg2.parts)
       assert text == "There are 3 files in the directory."
       assert thinking == "The directory has a few files. Let me summarize them for the user."
 
       MockClient.clear()
+    end
+
+    defp wait_for_assistant_with_thinking(wanted_prefix, timeout) do
+      deadline = System.monotonic_time(:millisecond) + timeout
+
+      do_wait_for_assistant_with_thinking(wanted_prefix, deadline)
+    end
+
+    defp do_wait_for_assistant_with_thinking(_prefix, deadline) do
+      if System.monotonic_time(:millisecond) >= deadline do
+        nil
+      else
+        receive do
+          {:chat_message, {:assistant, msg}} ->
+            has_thinking =
+              Enum.any?(msg.parts, fn
+                %Part.Thinking{thinking: text} ->
+                  String.starts_with?(text, "The user wants a count.")
+
+                _ ->
+                  false
+              end)
+
+            if has_thinking do
+              msg
+            else
+              do_wait_for_assistant_with_thinking("The user wants a count.", deadline)
+            end
+        after
+          100 -> do_wait_for_assistant_with_thinking("The user wants a count.", deadline)
+        end
+      end
+    end
+
+    defp wait_for_assistant_with_tool_use(timeout) do
+      deadline = System.monotonic_time(:millisecond) + timeout
+
+      do_wait_for_assistant_with_tool_use(deadline)
+    end
+
+    defp do_wait_for_assistant_with_tool_use(deadline) do
+      if System.monotonic_time(:millisecond) >= deadline do
+        nil
+      else
+        receive do
+          {:chat_message, {:assistant, msg}} ->
+            if Enum.any?(msg.parts, &match?(%Part.ToolUse{}, &1)) do
+              msg
+            else
+              do_wait_for_assistant_with_tool_use(deadline)
+            end
+        after
+          100 -> do_wait_for_assistant_with_tool_use(deadline)
+        end
+      end
+    end
+
+    defp wait_for_assistant_with_text_and_thinking(timeout) do
+      deadline = System.monotonic_time(:millisecond) + timeout
+
+      do_wait_for_assistant_with_text_and_thinking(deadline)
+    end
+
+    defp do_wait_for_assistant_with_text_and_thinking(deadline) do
+      if System.monotonic_time(:millisecond) >= deadline do
+        nil
+      else
+        receive do
+          {:chat_message, {:assistant, msg}} ->
+            if matches_text_and_thinking?(msg) do
+              msg
+            else
+              do_wait_for_assistant_with_text_and_thinking(deadline)
+            end
+        after
+          100 -> do_wait_for_assistant_with_text_and_thinking(deadline)
+        end
+      end
+    end
+
+    defp matches_text_and_thinking?(msg) do
+      has_text =
+        Enum.any?(msg.parts, fn
+          %Part.Text{text: text} -> text == "There are 3 files in the directory."
+          _ -> false
+        end)
+
+      has_thinking = Enum.any?(msg.parts, &match?(%Part.Thinking{}, &1))
+      has_tool_use = Enum.any?(msg.parts, &match?(%Part.ToolUse{}, &1))
+
+      has_text and has_thinking and not has_tool_use
+    end
+
+    defp wait_for_final_assistant_api_logs(timeout) do
+      deadline = System.monotonic_time(:millisecond) + timeout
+
+      do_wait_for_final_assistant_api_logs(deadline)
+    end
+
+    defp do_wait_for_final_assistant_api_logs(deadline) do
+      if System.monotonic_time(:millisecond) >= deadline do
+        nil
+      else
+        receive do
+          {:chat_message, {:assistant, msg}} ->
+            has_tool_use = Enum.any?(msg.parts, &match?(%Part.ToolUse{}, &1))
+            has_api_logs = msg.api_logs != nil and msg.api_logs != []
+
+            cond do
+              has_tool_use ->
+                do_wait_for_final_assistant_api_logs(deadline)
+
+              not has_api_logs ->
+                do_wait_for_final_assistant_api_logs(deadline)
+
+              true ->
+                msg.api_logs
+            end
+        after
+          100 -> do_wait_for_final_assistant_api_logs(deadline)
+        end
+      end
     end
 
     test "the post-tool api_log response payload's content matches the visible text" do
@@ -171,9 +291,11 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
       :ok = Agent.chat(pid, "Run it")
 
       # The final assistant message carries its api_logs
-      # (re-broadcast after the response log lands). Match the
-      # version with a non-empty api_logs list.
-      assert_receive {:chat_message, {:assistant, %{index: 4, api_logs: [_ | _] = logs}}}, 500
+      # (re-broadcast after the response log lands). Drain to
+      # the SECOND assistant (the first carries the tool call;
+      # a context-notice synthetic pair may also be present).
+      logs = wait_for_final_assistant_api_logs(5_000)
+      assert logs != nil and logs != []
 
       # The response log's `content` field is the visible text,
       # not the thinking. (Before the fix, this assertion
@@ -234,12 +356,12 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
 
       assert_receive {:chat_status, %{status: "idle"}}, 500
 
-      assert_received {:chat_message,
-                       {:assistant,
-                        %{
-                          index: 4,
-                          parts: [%Part.Thinking{thinking: "The user wants a count." <> _}]
-                        }}}
+      # Drain to find the assistant with the expected thinking
+      # content. The context-notice synthetic pair may shift the
+      # exact index, so match by content.
+      thinking_msg = wait_for_assistant_with_thinking("The user wants a count.", 5_000)
+      assert thinking_msg != nil
+      assert Enum.any?(thinking_msg.parts, &match?(%Part.Thinking{}, &1))
 
       MockClient.clear()
     end
@@ -295,9 +417,12 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
       :ok = Agent.chat(pid, "List the files")
 
       # The tool-call assistant message carries the thinking
-      # part — that's the regression guard.
-      assert_receive {:chat_message, {:assistant, %{index: 2, parts: parts}}},
-                     500
+      # part — that's the regression guard. A context-notice
+      # synthetic pair may precede this message, so drain to
+      # find the one with the tool call.
+      tool_assistant = wait_for_assistant_with_tool_use(5_000)
+      assert tool_assistant != nil
+      parts = tool_assistant.parts
 
       assert only_text(parts) == "Running ls"
 

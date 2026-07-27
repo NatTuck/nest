@@ -321,30 +321,24 @@ defmodule Nest.Agents.Agent do
     :ok
   end
 
-  @impl true
-  def handle_cast({:chat, content}, state) do
-    ChatPipeline.handle_chat(state, content, nil)
-  end
-
-  @impl true
-  def handle_cast({:chat, content, mode}, state) do
-    ChatPipeline.handle_chat(state, content, mode)
-  end
-
-  # Sub-agent: a child has finished its turn. Its
-  # GenServer (see `chat_idle` handler) cast this message
-  # up the tree carrying the child's last assistant content
-  # and the child's total usage (already inclusive of any
-  # grandchildren). We merge the usage into our
-  # `descendant_usage`, drop the pending-child entry, send
-  # the `:clone_agent_result` to the worker that's been
-  # blocked on the parent side of the call, and broadcast
-  # the updated status (so the UI's token chip picks up the
-  # new total).
+  # Sub-agent: child finished its turn. Merge usage, drop the
+  # pending-child entry, forward the result, broadcast status.
   @impl true
   def handle_cast({:child_completed, child_name, response, child_total_usage}, state) do
     SubAgent.handle_child_completed(state, child_name, response, child_total_usage)
   end
+
+  # Defense-in-depth: drop messages while busy. See channel layer.
+  @impl true
+  def handle_cast({:chat, content}, state), do: chat_or_drop(state, content, nil)
+  @impl true
+  def handle_cast({:chat, content, mode}, state), do: chat_or_drop(state, content, mode)
+
+  defp chat_or_drop(state, _content, _mode)
+       when state.chat_state.status in [:streaming, :executing_tools],
+       do: {:noreply, state}
+
+  defp chat_or_drop(state, content, mode), do: ChatPipeline.handle_chat(state, content, mode)
 
   # Test-only helpers for asserting on the loop-breaker counter.
   # Production callers should not need these — the counter is

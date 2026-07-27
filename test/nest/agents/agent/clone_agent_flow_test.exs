@@ -169,29 +169,43 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
 
     # Full chain: parent-turn-1 (clone_agent dispatch) +
     # synthesized child completion + parent-turn-2
-    # (final text). Capped at the user's 500ms requirement.
+    # (final text). The context-notice synthetic pair
+    # (assistant("Context?") + user(notice)) may add 2
+    # more messages at any LLM-response boundary that
+    # crosses a threshold. Use content-based lookups
+    # instead of hardcoded indices.
     assert_receive {:chat_status, %{status: "idle"}}, 500
 
     parent_state = :sys.get_state(parent_pid)
     AgentTestHelpers.assert_unique_message_indices(parent_state)
 
-    indices =
-      parent_state.chat_state.messages
-      |> Enum.flat_map(fn {_, %{index: idx}} -> [idx] end)
+    # Find the assistant message that carries the clone_agent
+    # tool call (the wire pairing test below depends on this).
+    {:assistant, clone_assistant} =
+      Enum.find(parent_state.chat_state.messages, fn
+        {:assistant, %{parts: parts}} ->
+          Enum.any?(parts, fn
+            %Part.ToolUse{name: "clone_agent"} -> true
+            _ -> false
+          end)
 
-    assert Enum.sort(indices) == [0, 1, 2, 3, 4]
-
-    [_system, _user, {:assistant, %{parts: parts_at_2}}, _tool, _final] =
-      Enum.take(parent_state.chat_state.messages, 5)
+        _ ->
+          false
+      end)
 
     tool_uses =
-      for part <- parts_at_2,
+      for part <- clone_assistant.parts,
           match?(%Part.ToolUse{}, part),
           do: part
 
     assert [%Part.ToolUse{id: "call_clone_1", name: "clone_agent"}] = tool_uses
 
-    {:tool, tool_msg} = Enum.at(parent_state.chat_state.messages, 3)
+    # Find the tool message with the clone_agent result.
+    {:tool, tool_msg} =
+      Enum.find(parent_state.chat_state.messages, fn
+        {:tool, %{parts: [%Part.ToolResult{name: "clone_agent"}]}} -> true
+        _ -> false
+      end)
 
     assert [
              %Part.ToolResult{
@@ -205,8 +219,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
 
     assert content == "the answer is 4"
 
-    last_msg = Enum.at(parent_state.chat_state.messages, 4)
-    {_, %{parts: final_parts}} = last_msg
+    {_, %{parts: final_parts}} = List.last(parent_state.chat_state.messages)
     assert [%Part.Text{text: "parent final"}] = final_parts
 
     # Stubbed `Agents.chat/2` ensured the child's Agent

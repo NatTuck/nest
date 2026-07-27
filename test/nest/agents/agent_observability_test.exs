@@ -11,6 +11,7 @@ defmodule Nest.Agents.AgentObservabilityTest do
   alias Nest.Agents.AgentTestHelpers
   alias Nest.LLM.MockClient
   alias Nest.LLM.RunResponse
+  alias Nest.Messages.Part
   alias Nest.Messages.ToolCall
 
   setup :verify_on_exit!
@@ -42,8 +43,7 @@ defmodule Nest.Agents.AgentObservabilityTest do
       assert_receive {:chat_status, %{status: "streaming"}}, 500
       assert_receive {:chat_delta, _}, 500
 
-      assert_receive {:chat_message,
-                      {:assistant, %{index: 2, api_logs: [_ | _]} = assistant_msg}},
+      assert_receive {:chat_message, {:assistant, %{api_logs: [_ | _]} = assistant_msg}},
                      500
 
       assert_receive {:chat_status, %{status: "idle"}}, 500
@@ -74,13 +74,15 @@ defmodule Nest.Agents.AgentObservabilityTest do
       assert_receive {:chat_status, %{status: "streaming"}}, 500
       assert_receive {:chat_delta, _}, 500
 
-      assert_receive {:chat_message, {:assistant, %{index: 2, api_logs: [_ | _]} = assistant1}},
+      # Indices may shift due to context-notice synthetic pairs;
+      # match by content (presence of api_logs).
+      assert_receive {:chat_message, {:assistant, %{api_logs: [_ | _]} = assistant1}},
                      500
 
-      assert_receive {:chat_message, {:tool, %{index: 3, api_logs: [_ | _]} = tool_msg}}, 500
+      assert_receive {:chat_message, {:tool, %{api_logs: [_ | _]} = tool_msg}}, 500
       assert_receive {:chat_delta, _}, 500
 
-      assert_receive {:chat_message, {:assistant, %{index: 4, api_logs: [_ | _]} = assistant2}},
+      assert_receive {:chat_message, {:assistant, %{api_logs: [_ | _]} = assistant2}},
                      500
 
       assert_receive {:chat_status, %{status: "idle"}}, 500
@@ -117,25 +119,43 @@ defmodule Nest.Agents.AgentObservabilityTest do
 
       :ok = Agent.chat(pid, "List files")
 
-      assert_receive {:chat_message, {:user, %{index: 1, api_logs: [user_log]}}}, 500
+      assert_receive {:chat_message, {:user, %{api_logs: [user_log]}}}, 500
       assert_receive {:chat_status, %{status: "streaming"}}, 500
       assert_receive {:chat_delta, _}, 500
-      assert_receive {:chat_message, {:assistant, %{index: 2, api_logs: [asst1_log]}}}, 500
-      assert_receive {:chat_message, {:tool, %{index: 3, api_logs: [tool_log]}}}, 500
-      assert_receive {:chat_delta, _}, 500
-      assert_receive {:chat_message, {:assistant, %{index: 4, api_logs: [asst2_log]}}}, 500
+
+      # Drain to the first assistant (tool-call). Match by
+      # content; the synthetic "Context?" assistant may
+      # precede the tool-call assistant.
+      asst1 = wait_for_assistant_with_tool(5_000)
+      assert asst1 != nil
+      [asst1_log] = asst1.api_logs
+
+      tool_msg = wait_for_tool_with_api_logs(5_000)
+      assert tool_msg != nil
+      [tool_log] = tool_msg.api_logs
+
+      asst2 = wait_for_final_assistant_api_logs(5_000)
+      assert asst2 != nil
+      [asst2_log] = asst2
+
       assert_receive {:chat_status, %{status: "idle"}}, 500
 
       assert user_log.id == "001.000"
       assert user_log.type == :request
 
-      assert asst1_log.id == "002.000"
+      # The api_log id is `<message_index>.<sequence>`. With
+      # the context-notice synthetic pair, the tool-call
+      # assistant is at index 4 instead of 2.
+      assert asst1_log.id == "004.000"
       assert asst1_log.type == :response
 
-      assert tool_log.id == "003.000"
+      # The tool message is at index 5 (one extra for the
+      # synthetic pair).
+      assert tool_log.id == "005.000"
       assert tool_log.type == :request
 
-      assert asst2_log.id == "004.000"
+      # The final assistant is at index 6.
+      assert asst2_log.id == "006.000"
       assert asst2_log.type == :response
 
       MockClient.clear()
@@ -333,6 +353,88 @@ defmodule Nest.Agents.AgentObservabilityTest do
       assert info2.usage.last_output == 25
 
       Agent.terminate(pid)
+    end
+  end
+
+  # Drain assistant messages until one carries a `Part.ToolUse`
+  # AND has api_logs populated.
+  defp wait_for_assistant_with_tool(timeout) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    do_wait_for_assistant_with_tool(deadline)
+  end
+
+  defp do_wait_for_assistant_with_tool(deadline) do
+    if System.monotonic_time(:millisecond) >= deadline do
+      nil
+    else
+      receive do
+        {:chat_message, {:assistant, msg}} ->
+          has_tool_use = Enum.any?(msg.parts, &match?(%Part.ToolUse{}, &1))
+          has_api_logs = msg.api_logs != nil and msg.api_logs != []
+
+          if has_tool_use and has_api_logs do
+            msg
+          else
+            do_wait_for_assistant_with_tool(deadline)
+          end
+      after
+        100 -> do_wait_for_assistant_with_tool(deadline)
+      end
+    end
+  end
+
+  # Drain tool messages until one has api_logs populated.
+  defp wait_for_tool_with_api_logs(timeout) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    do_wait_for_tool_with_api_logs(deadline)
+  end
+
+  defp do_wait_for_tool_with_api_logs(deadline) do
+    if System.monotonic_time(:millisecond) >= deadline do
+      nil
+    else
+      receive do
+        {:chat_message, {:tool, msg}} ->
+          if msg.api_logs != nil and msg.api_logs != [] do
+            msg
+          else
+            do_wait_for_tool_with_api_logs(deadline)
+          end
+      after
+        100 -> do_wait_for_tool_with_api_logs(deadline)
+      end
+    end
+  end
+
+  # Drain assistant messages until we find the final one
+  # (no tool_use, with api_logs populated). Returns the api_logs.
+  defp wait_for_final_assistant_api_logs(timeout) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    do_wait_for_final_assistant_api_logs(deadline)
+  end
+
+  defp do_wait_for_final_assistant_api_logs(deadline) do
+    if System.monotonic_time(:millisecond) >= deadline do
+      nil
+    else
+      receive do
+        {:chat_message, {:assistant, msg}} ->
+          has_tool_use = Enum.any?(msg.parts, &match?(%Part.ToolUse{}, &1))
+          has_api_logs = msg.api_logs != nil and msg.api_logs != []
+
+          cond do
+            has_tool_use ->
+              do_wait_for_final_assistant_api_logs(deadline)
+
+            not has_api_logs ->
+              do_wait_for_final_assistant_api_logs(deadline)
+
+            true ->
+              msg.api_logs
+          end
+      after
+        100 -> do_wait_for_final_assistant_api_logs(deadline)
+      end
     end
   end
 end

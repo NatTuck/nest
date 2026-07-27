@@ -5,23 +5,57 @@
  * behaviour introduced by sub-agent delegation.
  */
 
-import { describe, it, expect } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  act,
+} from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
 import { Sidebar } from "./Sidebar";
 import { useStore } from "../store";
+import { joinLobby } from "../channels";
+import {
+  resetMockSocket,
+  setNextJoinResult,
+  setNextPushResult,
+  captureNextPush,
+  connectSocket,
+} from "../__mocks__/phoenix";
 
 function withStore(agents) {
   useStore.setState({ agents });
 }
 
+beforeEach(() => {
+  resetMockSocket();
+  // Connect socket and join lobby so the click reaches the
+  // push path. The vite alias resolves "phoenix" to the
+  // mock in test mode, so joinLobby() uses the mock channel
+  // layer. The mock channel is set up with no autoInit so
+  // joinLobby() doesn't trigger a store update — the agents
+  // list is set explicitly by each test's withStore() call.
+  connectSocket();
+  setNextJoinResult("lobby", {});
+  joinLobby();
+  setNextPushResult("lobby", "delete_agent", { ok: {} });
+});
+
+afterEach(() => {
+  resetMockSocket();
+});
+
 describe("Sidebar tree", () => {
   it("renders a flat agents list as roots", () => {
-    withStore([
-      { name: "alpha", parentId: null, parentName: null, depth: 0 },
-      { name: "bravo", parentId: null, parentName: null, depth: 0 },
-    ]);
+    act(() => {
+      withStore([
+        { name: "alpha", parentId: null, parentName: null, depth: 0 },
+        { name: "bravo", parentId: null, parentName: null, depth: 0 },
+      ]);
+    });
 
     render(
       <MemoryRouter>
@@ -34,15 +68,17 @@ describe("Sidebar tree", () => {
   });
 
   it("nests a child under its parent", () => {
-    withStore([
-      { name: "parent", parentId: null, parentName: null, depth: 0 },
-      {
-        name: "child-of-parent",
-        parentId: 1,
-        parentName: "parent",
-        depth: 1,
-      },
-    ]);
+    act(() => {
+      withStore([
+        { name: "parent", parentId: null, parentName: null, depth: 0 },
+        {
+          name: "child-of-parent",
+          parentId: 1,
+          parentName: "parent",
+          depth: 1,
+        },
+      ]);
+    });
 
     render(
       <MemoryRouter>
@@ -55,11 +91,13 @@ describe("Sidebar tree", () => {
   });
 
   it("shows the child count next to a parent with children", () => {
-    withStore([
-      { name: "root", parentId: null, parentName: null, depth: 0 },
-      { name: "a", parentId: 1, parentName: "root", depth: 1 },
-      { name: "b", parentId: 1, parentName: "root", depth: 1 },
-    ]);
+    act(() => {
+      withStore([
+        { name: "root", parentId: null, parentName: null, depth: 0 },
+        { name: "a", parentId: 1, parentName: "root", depth: 1 },
+        { name: "b", parentId: 1, parentName: "root", depth: 1 },
+      ]);
+    });
 
     render(
       <MemoryRouter>
@@ -74,15 +112,17 @@ describe("Sidebar tree", () => {
     // An orphan agent whose parent row is gone but the
     // listing still has them. We want them visible at top
     // level rather than dropped silently.
-    withStore([
-      { name: "alive", parentId: null, parentName: null, depth: 0 },
-      {
-        name: "orphan",
-        parentId: 99,
-        parentName: "missing-parent",
-        depth: 1,
-      },
-    ]);
+    act(() => {
+      withStore([
+        { name: "alive", parentId: null, parentName: null, depth: 0 },
+        {
+          name: "orphan",
+          parentId: 99,
+          parentName: "missing-parent",
+          depth: 1,
+        },
+      ]);
+    });
 
     render(
       <MemoryRouter>
@@ -97,7 +137,9 @@ describe("Sidebar tree", () => {
   it("renders without crashing when a child has no children (a deep root)", () => {
     // Covers the `children.length > 0` branch (false) and
     // the (!isLeaf) early-out in the tree-row link rendering.
-    withStore([{ name: "solo", parentId: null, parentName: null, depth: 0 }]);
+    act(() => {
+      withStore([{ name: "solo", parentId: null, parentName: null, depth: 0 }]);
+    });
 
     render(
       <MemoryRouter>
@@ -109,10 +151,12 @@ describe("Sidebar tree", () => {
   });
 
   it("renders the active route's agent with the highlighted styling", () => {
-    withStore([
-      { name: "alpha", parentId: null, parentName: null, depth: 0 },
-      { name: "bravo", parentId: null, parentName: null, depth: 0 },
-    ]);
+    act(() => {
+      withStore([
+        { name: "alpha", parentId: null, parentName: null, depth: 0 },
+        { name: "bravo", parentId: null, parentName: null, depth: 0 },
+      ]);
+    });
 
     render(
       <MemoryRouter initialEntries={["/agent/bravo"]}>
@@ -128,10 +172,14 @@ describe("Sidebar tree", () => {
     expect(screen.getByText("alpha")).toBeInTheDocument();
   });
 
-  it("deletes the agent when the trash icon is clicked", () => {
-    withStore([
-      { name: "trash-me", parentId: null, parentName: null, depth: 0 },
-    ]);
+  it("deletes the agent when the trash icon is clicked", async () => {
+    act(() => {
+      withStore([
+        { name: "trash-me", parentId: null, parentName: null, depth: 0 },
+      ]);
+    });
+
+    const pushPromise = captureNextPush("lobby", "delete_agent");
 
     render(
       <MemoryRouter>
@@ -142,19 +190,21 @@ describe("Sidebar tree", () => {
     const button = screen.getByRole("button", { name: /delete trash-me/i });
     fireEvent.click(button);
 
-    // We don't assert on the underlying `deleteAgent`
-    // call (the Sidebar wraps `deleteAgent(name, cb)`
-    // from `channels.js`, which is a stub here). What we
-    // cover is the click → handler path that fires the
-    // navigation guard. The test passes when no error is
-    // thrown.
-    expect(button).toBeInTheDocument();
+    // The mock channel receives the push with the agent
+    // name. The push config (ok: {}) was set in beforeEach
+    // so the handler completes without error.
+    const payload = await pushPromise;
+    expect(payload).toEqual({ name: "trash-me" });
   });
 
-  it("navigates home when the deleted agent is the current route", () => {
-    withStore([
-      { name: "current-one", parentId: null, parentName: null, depth: 0 },
-    ]);
+  it("navigates home when the deleted agent is the current route", async () => {
+    act(() => {
+      withStore([
+        { name: "current-one", parentId: null, parentName: null, depth: 0 },
+      ]);
+    });
+
+    const pushPromise = captureNextPush("lobby", "delete_agent");
 
     render(
       <MemoryRouter initialEntries={["/agent/current-one"]}>
@@ -167,22 +217,33 @@ describe("Sidebar tree", () => {
     });
     fireEvent.click(button);
 
-    // After clicking, the navigate("/") branch should
-    // fire — we can't observe `navigate` directly with
-    // MemoryRouter, so just confirm no throw.
-    expect(button).toBeInTheDocument();
+    // The push goes through and the navigation guard fires.
+    // With MemoryRouter we can't observe the navigate call
+    // directly; the assertion on the push payload is enough
+    // to confirm the handler reached deleteAgent.
+    const payload = await pushPromise;
+    expect(payload).toEqual({ name: "current-one" });
+
+    // Wait for any pending navigation to settle (the test
+    // doesn't assert on it but the await prevents teardown
+    // from racing).
+    await waitFor(() => {
+      expect(button).toBeInTheDocument();
+    });
   });
 
   it("renders a streaming status dot (green pulse) for streaming agents", () => {
-    withStore([
-      {
-        name: "live",
-        parentId: null,
-        parentName: null,
-        depth: 0,
-        status: "streaming",
-      },
-    ]);
+    act(() => {
+      withStore([
+        {
+          name: "live",
+          parentId: null,
+          parentName: null,
+          depth: 0,
+          status: "streaming",
+        },
+      ]);
+    });
 
     render(
       <MemoryRouter initialEntries={["/"]}>
@@ -199,15 +260,17 @@ describe("Sidebar tree", () => {
   });
 
   it("renders an executing_tools amber pulse dot", () => {
-    withStore([
-      {
-        name: "tools",
-        parentId: null,
-        parentName: null,
-        depth: 0,
-        status: "executing_tools",
-      },
-    ]);
+    act(() => {
+      withStore([
+        {
+          name: "tools",
+          parentId: null,
+          parentName: null,
+          depth: 0,
+          status: "executing_tools",
+        },
+      ]);
+    });
 
     render(
       <MemoryRouter initialEntries={["/"]}>
@@ -220,7 +283,9 @@ describe("Sidebar tree", () => {
   });
 
   it("highlights the '/about' link when the route starts with /about", () => {
-    withStore([]);
+    act(() => {
+      withStore([]);
+    });
 
     render(
       <MemoryRouter initialEntries={["/about/details"]}>

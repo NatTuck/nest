@@ -36,4 +36,45 @@ defmodule Nest.Agents.Agent.ChatTurn.BudgetReminderTest do
                "Last tool call round. Provide your final response after this tool."
     end
   end
+
+  describe "spec/1" do
+    test "returns nil above the warning band" do
+      assert BudgetReminder.spec(5) == nil
+    end
+
+    test "returns nil at the cap" do
+      assert BudgetReminder.spec(0) == nil
+      assert BudgetReminder.spec(-1) == nil
+    end
+
+    test "returns nil with non-integer remaining" do
+      assert BudgetReminder.spec(nil) == nil
+      assert BudgetReminder.spec("2") == nil
+    end
+
+    test "returns a :budget spec with 'Tool limit?' attention and 2-remaining notice" do
+      spec = BudgetReminder.spec(2)
+      assert spec.kind == :budget
+      assert spec.attention == "Tool limit?"
+      assert spec.notice =~ "2 tool call rounds remaining"
+      assert spec.notice =~ "Plan your remaining tool use carefully"
+    end
+
+    test "returns a :budget spec with 'Tool limit?' attention and last-round notice" do
+      spec = BudgetReminder.spec(1)
+      assert spec.kind == :budget
+      assert spec.attention == "Tool limit?"
+      assert spec.notice =~ "Last tool call round"
+      assert spec.notice =~ "final response"
+    end
+  end
+
+  describe "spec_from_pending/1" do
+    test "wraps the pre-computed notice in a :budget spec with 'Tool limit?' attention" do
+      spec = BudgetReminder.spec_from_pending("2 tool call rounds remaining. Foo.")
+      assert spec.kind == :budget
+      assert spec.attention == "Tool limit?"
+      assert spec.notice == "2 tool call rounds remaining. Foo."
+    end
+  end
 end

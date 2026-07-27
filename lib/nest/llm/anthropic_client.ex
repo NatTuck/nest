@@ -236,8 +236,6 @@ defmodule Nest.LLM.AnthropicClient do
 
   # Tool results: Anthropic expects them in a user-role message with
   # `tool_result` content blocks (not a dedicated tool role).
-  # `Part.Text` parts appear alongside `Part.ToolResult` as text
-  # content blocks — they carry injected notices.
   defp message_to_wire({:tool, %Tool{parts: parts}}) do
     %{"role" => "user", "content" => Enum.map(parts || [], &tool_part_to_wire/1)}
   end
@@ -266,10 +264,6 @@ defmodule Nest.LLM.AnthropicClient do
   end
 
   defp assistant_part_to_wire(%Part.Refusal{refusal: text}) do
-    %{"type" => "text", "text" => text}
-  end
-
-  defp tool_part_to_wire(%Part.Text{text: text}) do
     %{"type" => "text", "text" => text}
   end
 

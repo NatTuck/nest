@@ -80,6 +80,15 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   #     → assistant(wire) → user(notice) → assistant(ack) → user(real)  ✓
   #   If last wire role is user: inject a single assistant with the notice
   #     → user(wire) → assistant(notice+ack) → user(real)  ✓
+  #
+  # When the trailing assistant carries an unpaired `Part.ToolUse{}`
+  # (an in-flight tool call waiting for its `tool_result`), the
+  # `else` branch would inject between the `tool_use` and the
+  # upcoming `tool_result`, breaking Anthropic's tool_use/tool_result
+  # pairing invariant. In that case the threshold is marked crossed
+  # but the pair is NOT injected here; the ChatTurn's response-
+  # construction path (Case 2) handles the notice when the LLM's
+  # response is assembled, which is always at a wire-safe boundary.
   defp maybe_inject_context_pair(state) do
     limit = state.llm_metrics.context_limit
     if not is_integer(limit) or limit <= 0, do: state, else: do_check(state, limit)
@@ -115,24 +124,43 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     ack = ContextReminder.ack_text_for(atom)
     last_role = MessageList.last_wire_role(state.chat_state.messages)
 
-    if last_role == :user do
-      text = notice <> " " <> ack
+    cond do
+      # Trailing assistant carries an unpaired tool_use (in-flight
+      # tool call). Defer the notice to the ChatTurn's response-
+      # construction path so the synthetic pair never lands between
+      # the tool_use and its upcoming tool_result.
+      last_role == :assistant and trailing_has_tool_use?(state) ->
+        state
 
-      {_stamped, state} =
-        Nest.Agents.Agent.__append_message__(state, build_ack_assistant(text))
+      last_role == :user ->
+        text = notice <> " " <> ack
 
-      state
-    else
-      {_stamped, state} =
-        Nest.Agents.Agent.__append_message__(
-          state,
-          ContextReminder.build_user_notice(notice, state.client_config)
-        )
+        {_stamped, state} =
+          Nest.Agents.Agent.__append_message__(state, build_ack_assistant(text))
 
-      {_stamped, state} =
-        Nest.Agents.Agent.__append_message__(state, build_ack_assistant(ack))
+        state
 
-      state
+      true ->
+        {_stamped, state} =
+          Nest.Agents.Agent.__append_message__(
+            state,
+            ContextReminder.build_user_notice(notice, state.client_config)
+          )
+
+        {_stamped, state} =
+          Nest.Agents.Agent.__append_message__(state, build_ack_assistant(ack))
+
+        state
+    end
+  end
+
+  defp trailing_has_tool_use?(state) do
+    case List.last(state.chat_state.messages) do
+      {:assistant, %Assistant{parts: parts}} ->
+        Enum.any?(parts || [], &match?(%Part.ToolUse{}, &1))
+
+      _ ->
+        false
     end
   end
 

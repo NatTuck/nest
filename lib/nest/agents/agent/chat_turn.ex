@@ -78,7 +78,6 @@ defmodule Nest.Agents.Agent.ChatTurn do
 
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.Agents.Agent.ChatTurn.BudgetReminder
-  alias Nest.Agents.Agent.ChatTurn.ContextReminder
   alias Nest.Agents.Agent.ChatTurn.Iteration
   alias Nest.Agents.Agent.ChatTurn.Lifecycle
   alias Nest.Agents.Agent.ChatTurn.Messages
@@ -87,7 +86,6 @@ defmodule Nest.Agents.Agent.ChatTurn do
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.ToolLoop
   alias Nest.Messages.Part
-  alias Nest.Messages.Tool
 
   require Logger
 
@@ -342,55 +340,23 @@ defmodule Nest.Agents.Agent.ChatTurn do
 
   # The tool worker returned a list of `ToolResult`
   # structs. Append them to the Agent as a single
-  # `{:tool, _}` message (with any pending notice attached
-  # as a `Part.Text`), then start the next iteration.
+  # `{:tool, _}` message, then start the next iteration.
+  # Threshold announcements are handled by the ChatTurn's
+  # response-construction path (ResponseHandler) before the
+  # next LLM call, not here — attaching a `Part.Text` to a
+  # `{:tool, _}` message breaks the OpenAI wire format
+  # (the formatter destructures mixed parts into separate
+  # wire messages, separating the tool_result from its
+  # tool_use).
   defp handle_tool_results(results, state) do
     state = %{state | active_worker: nil, active_worker_kind: nil}
 
-    messages =
-      try do
-        {msgs, _cancelled} =
-          GenServer.call(state.ctx.agent_pid, :get_messages_with_cancelled, 500)
-
-        msgs
-      catch
-        :exit, _ -> []
-      end
-
-    tool_msg = Messages.tool(results, state.pending_notice)
-    tool_msg = maybe_prepend_context_notice(tool_msg, messages, state)
+    tool_msg = Messages.tool(results)
 
     send(state.ctx.agent_pid, {:tool_results_received, tool_msg})
     state = %{state | pending_notice: nil}
     Process.send(self(), :iterate, [])
     {:noreply, state}
-  end
-
-  defp maybe_prepend_context_notice(tool_msg, messages, state) do
-    limit = state.ctx.context_limit
-
-    if not is_integer(limit) or limit <= 0,
-      do: tool_msg,
-      else: do_check_tool(tool_msg, messages, limit, state)
-  end
-
-  defp do_check_tool(tool_msg, messages, limit, state) do
-    projected = messages ++ [tool_msg]
-    used = ContextReminder.estimate_messages(projected)
-    crossed = state.ctx.crossed_thresholds
-
-    case ContextReminder.highest_unannounced(used, limit, crossed) do
-      nil ->
-        tool_msg
-
-      atom ->
-        notice = ContextReminder.notice_text(atom)
-        new_set = MapSet.put(crossed, atom)
-        send(state.ctx.agent_pid, {:set_crossed_thresholds, new_set})
-
-        {:tool, %Tool{parts: parts} = struct} = tool_msg
-        {:tool, %{struct | parts: [%Part.Text{text: notice} | parts]}}
-    end
   end
 
   # Spawn the tool worker as a Task. The worker calls

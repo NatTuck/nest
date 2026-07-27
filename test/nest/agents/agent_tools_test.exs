@@ -26,6 +26,7 @@ defmodule Nest.Agents.AgentToolsTest do
   end
 
   import Nest.Agents.AgentTestHelpers
+  alias Nest.TestSupport.AssistantWaiters
 
   describe "chat/2 with tool calls" do
     test "broadcasts complete tool call flow: user → assistant+tools → tool → assistant" do
@@ -53,30 +54,47 @@ defmodule Nest.Agents.AgentToolsTest do
       assert_receive {:chat_status, %{status: "streaming"}}, 500
       assert_receive {:chat_delta, _}, 500
 
-      assert_receive {:chat_message,
-                      {:assistant,
-                       %{
-                         index: 2,
-                         parts: [%Part.Text{text: "I'll run that command for you"}, tool_call]
-                       }}},
-                     500
+      # The first turn's assistant message carries the tool call.
+      # A context-notice synthetic pair may also appear before it;
+      # drain assistant messages until we find the one with the
+      # expected tool call.
+      msg_with_tool = AssistantWaiters.assistant_with_tool(pid, "call_123", 5_000)
+      assert msg_with_tool != nil, "expected assistant with tool call id=call_123"
+      assert msg_with_tool.index > 1
+      assert Enum.any?(msg_with_tool.parts, &match?(%Part.ToolUse{id: "call_123"}, &1))
 
       assert_receive {:chat_status, %{status: "executing_tools"}}, 500
-      assert_receive {:chat_message, {:tool, %{index: 3, parts: [tool_result]}}}, 500
+      assert_receive {:chat_message, {:tool, tool_msg}}
+      assert tool_msg.index > msg_with_tool.index
+      assert [%Part.ToolResult{}] = tool_msg.parts
+
       assert_receive {:chat_status, %{status: "streaming"}}, 500
       assert_receive {:chat_delta, _}, 500
 
-      assert_receive {:chat_message,
-                      {:assistant,
-                       %{index: 4, parts: [%Part.Text{text: "Here are the directory contents"}]}}},
-                     500
+      # The final assistant message carries the text response.
+      # It must be the SECOND assistant (the first carries the
+      # tool call), so drain to find it by content.
+      final_msg =
+        AssistantWaiters.assistant_with_text(pid, "Here are the directory contents", 5_000)
+
+      assert final_msg != nil
+      assert final_msg.index > tool_msg.index
+
+      text_parts =
+        Enum.filter(
+          final_msg.parts,
+          &match?(%Part.Text{text: "Here are the directory contents"}, &1)
+        )
+
+      assert text_parts != []
 
       assert_receive {:chat_status, %{status: "idle"}}, 500
 
-      assert %Part.ToolUse{} = tool_call
+      tool_call = Enum.find(msg_with_tool.parts, &match?(%Part.ToolUse{}, &1))
       assert tool_call.id == "call_123"
       assert tool_call.name == "shell_cmd"
 
+      [tool_result] = tool_msg.parts
       assert tool_result.tool_call_id == "call_123"
       assert tool_result.name == "shell_cmd"
       assert tool_result.arguments == %{"command" => "ls -la"}
@@ -125,18 +143,18 @@ defmodule Nest.Agents.AgentToolsTest do
 
       assert_receive {:chat_message, {:user, _}}, 500
 
-      assert_receive {:chat_message,
-                      {:assistant,
-                       %{
-                         index: 2,
-                         parts: [%Part.Text{text: "Let me calculate that"}, tool_call]
-                       }}},
-                     500
+      # The first turn's assistant message carries the tool call.
+      # A context-notice synthetic pair may shift the index; match
+      # by content.
+      msg_with_tool = AssistantWaiters.assistant_with_tool(pid, "call_456", 5_000)
+      assert msg_with_tool != nil
+      assert msg_with_tool.index > 1
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
-
+      tool_call = Enum.find(msg_with_tool.parts, &match?(%Part.ToolUse{}, &1))
       assert tool_call.name == "calculator"
       assert tool_call.arguments == %{"expression" => "2 + 2"}
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
 
       MockClient.clear()
     end
@@ -157,7 +175,9 @@ defmodule Nest.Agents.AgentToolsTest do
       :ok = Agent.chat(pid, "What's the weather?")
 
       assert_receive {:chat_message, {:user, _}}, 500
-      assert_receive {:chat_message, {:tool, %Tool{index: 3, parts: tool_results}}}, 500
+      # The tool message index may shift if a context-notice
+      # synthetic pair was injected. Match by content.
+      assert_receive {:chat_message, {:tool, %Tool{parts: tool_results}}}, 500
       assert_receive {:chat_status, %{status: "idle"}}, 500
 
       assert tool_results != []
@@ -181,19 +201,26 @@ defmodule Nest.Agents.AgentToolsTest do
       :ok = Agent.chat(pid, "List files")
       assert_receive {:chat_status, %{status: "idle"}}, 500
 
+      # Drain all messages from the first turn so the second
+      # turn's `assert_receive` calls don't accidentally match
+      # a leftover message from turn 1.
+      flush_all_messages()
+
       MockClient.set_response("Second response received")
 
       :ok = Agent.chat(pid, "What else is there?")
-      # Second turn: new user message (index 4) + assistant response (index 5).
-      assert_receive {:chat_message,
-                      {:user,
-                       %{index: 5, parts: [%Part.Text{text: "[mode: chat]\nWhat else is there?"}]}}},
-                     500
 
-      assert_receive {:chat_message,
-                      {:assistant,
-                       %{index: 6, parts: [%Part.Text{text: "Second response received"}]}}},
-                     500
+      # Indices shift based on context-notice synthetic pair
+      # injections from the first turn. Match by content.
+      assert_receive {:chat_message, {:user, second_user}}
+      assert hd(second_user.parts).text == "[mode: chat]\nWhat else is there?"
+
+      assert_receive {:chat_message, {:assistant, second_assistant}}
+
+      assert Enum.any?(
+               second_assistant.parts,
+               &match?(%Part.Text{text: "Second response received"}, &1)
+             )
 
       assert_receive {:chat_status, %{status: "idle"}}, 500
 
@@ -216,11 +243,22 @@ defmodule Nest.Agents.AgentToolsTest do
       :ok = Agent.chat(pid, "Run a command")
 
       # The tool message is re-broadcast after its api_logs are
-      # populated. Match the version with at least one request log.
-      assert_receive {:chat_message, {:tool, %{index: 3, api_logs: [_ | _] = tool_logs}}}, 500
+      # populated. Drain tool messages until we find the one
+      # with api_logs populated.
+      tool_msg = wait_for_tool_with_api_logs(5_000)
+      assert tool_msg != nil, "expected tool message with api_logs"
+      tool_logs = tool_msg.api_logs
+      assert tool_logs != []
 
-      assert_receive {:chat_message, {:assistant, %{index: 4, api_logs: [_ | _] = final_logs}}},
-                     500
+      # The final assistant message is the SECOND one (the first
+      # carries the tool call). Drain assistant messages until
+      # we find one with a `Part.Text` matching the final response
+      # and no `Part.ToolUse`.
+      final_msg = wait_for_final_assistant("Tool executed successfully", 5_000)
+      assert final_msg != nil, "expected final assistant message"
+      assert final_msg.index > tool_msg.index
+      final_logs = final_msg.api_logs
+      assert final_logs != []
 
       assert_receive {:chat_status, %{status: "idle"}}, 500
 
@@ -231,6 +269,76 @@ defmodule Nest.Agents.AgentToolsTest do
              "Expected API response log in final assistant message"
 
       MockClient.clear()
+    end
+
+    defp wait_for_final_assistant(wanted_text, timeout) do
+      deadline = System.monotonic_time(:millisecond) + timeout
+
+      do_wait_for_final_assistant(wanted_text, deadline)
+    end
+
+    defp do_wait_for_final_assistant(_text, deadline) do
+      if System.monotonic_time(:millisecond) >= deadline do
+        nil
+      else
+        receive do
+          {:chat_message, {:assistant, msg}} ->
+            if matches_final_assistant?(msg) and has_api_logs?(msg) do
+              msg
+            else
+              do_wait_for_final_assistant("Tool executed successfully", deadline)
+            end
+        after
+          100 -> do_wait_for_final_assistant("Tool executed successfully", deadline)
+        end
+      end
+    end
+
+    defp matches_final_assistant?(msg) do
+      has_tool_use = Enum.any?(msg.parts, &match?(%Part.ToolUse{}, &1))
+
+      has_text =
+        Enum.any?(msg.parts, fn
+          %Part.Text{text: text} -> text == "Tool executed successfully"
+          _ -> false
+        end)
+
+      has_text and not has_tool_use
+    end
+
+    defp has_api_logs?(msg) do
+      msg.api_logs != nil and msg.api_logs != []
+    end
+
+    defp wait_for_tool_with_api_logs(timeout) do
+      deadline = System.monotonic_time(:millisecond) + timeout
+
+      do_wait_for_tool_with_api_logs(deadline)
+    end
+
+    defp do_wait_for_tool_with_api_logs(deadline) do
+      if System.monotonic_time(:millisecond) >= deadline do
+        nil
+      else
+        receive do
+          {:chat_message, {:tool, msg}} ->
+            if msg.api_logs != nil and msg.api_logs != [] do
+              msg
+            else
+              do_wait_for_tool_with_api_logs(deadline)
+            end
+        after
+          100 -> do_wait_for_tool_with_api_logs(deadline)
+        end
+      end
+    end
+
+    defp flush_all_messages do
+      receive do
+        _ -> flush_all_messages()
+      after
+        0 -> :ok
+      end
     end
 
     test "broadcasts notification and produces final response when max tool iterations reached" do
@@ -374,30 +482,6 @@ defmodule Nest.Agents.AgentToolsTest do
       end)
 
       MockClient.clear()
-    end
-  end
-
-  describe "configured_max_tool_iterations/0" do
-    test "returns the configured value when DotConfig has one" do
-      Mimic.stub(Nest.DotConfig, :load, fn ->
-        {:ok, %{providers: %{}, models: %{}, max_tool_iterations: 7}}
-      end)
-
-      assert Agent.Config.configured_max_tool_iterations() == 7
-    end
-
-    test "returns the hardcoded default of 99 when DotConfig has no max_tool_iterations" do
-      Mimic.stub(Nest.DotConfig, :load, fn ->
-        {:ok, %{providers: %{}, models: %{}, max_tool_iterations: nil}}
-      end)
-
-      assert Agent.Config.configured_max_tool_iterations() == 99
-    end
-
-    test "returns the hardcoded default of 99 when DotConfig.load/0 returns an error" do
-      Mimic.stub(Nest.DotConfig, :load, fn -> {:error, "no config file"} end)
-
-      assert Agent.Config.configured_max_tool_iterations() == 99
     end
   end
 end

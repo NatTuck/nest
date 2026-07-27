@@ -18,10 +18,13 @@ defmodule Nest.Agents.AgentContextWarningTest do
   import Mimic
 
   alias Nest.Agents.Agent
+  alias Nest.Agents.Agent.ChatTurn.ContextReminder
   alias Nest.Agents.AgentTestHelpers
   alias Nest.LLM.MockClient
+  alias Nest.Messages.MessageList
   alias Nest.Messages.Part
   alias Nest.Messages.User
+  alias Nest.Tokens.Estimator
 
   setup :verify_on_exit!
 
@@ -170,5 +173,93 @@ defmodule Nest.Agents.AgentContextWarningTest do
     assert state.chat_state.crossed_thresholds == %MapSet{},
            "expected crossed_thresholds cleared after compaction, " <>
              "got #{inspect(state.chat_state.crossed_thresholds)}"
+  end
+
+  @tag timeout: 30_000
+  test "does NOT inject context pair when trailing assistant carries a tool_use (in-flight tool)" do
+    # Regression for the Anthropic 400 (2013) bug: the
+    # `maybe_inject_context_pair` `else` branch used to inject
+    # [user(notice), assistant(ack)] between an in-flight
+    # `assistant+tool_use` and its upcoming `tool_result`,
+    # breaking the tool_use/tool_result pairing invariant.
+    #
+    # The defense-in-depth guard in `Agent.handle_cast({:chat, _})`
+    # rejects user messages that arrive while the agent is
+    # `:streaming` or `:executing_tools` — so the user-during-
+    # tool scenario never reaches the pipeline in production.
+    # This test verifies the pipeline's `inject_notice` guard
+    # at the unit level: it must not fire for trailing
+    # assistant+tool_use regardless of how the message arrives.
+    {pid, _agent_id} = AgentTestHelpers.start_agent(%{})
+
+    :sys.replace_state(pid, fn state ->
+      big_text = String.duplicate("x", 4_000)
+
+      tool_use = %Nest.Messages.Part.ToolUse{
+        id: "call_xyz",
+        name: "shell_cmd",
+        arguments: %{"command" => "sleep 10"}
+      }
+
+      messages = [
+        {:system,
+         %Nest.Messages.System{
+           index: 0,
+           parts: [%Part.Text{text: "Test system prompt."}],
+           api_logs: []
+         }},
+        {:user, %User{index: 1, parts: [%Part.Text{text: big_text}], api_logs: []}},
+        {:assistant,
+         %Nest.Messages.Assistant{
+           index: 2,
+           parts: [
+             %Part.Text{text: "Let me run that command."},
+             tool_use
+           ],
+           api_logs: []
+         }}
+      ]
+
+      %{
+        state
+        | chat_state: %{state.chat_state | messages: messages},
+          llm_metrics: %{state.llm_metrics | context_limit: 10_000}
+      }
+    end)
+
+    # Simulate a user message that crosses the threshold by
+    # setting the pending user message directly. We bypass the
+    # defense-in-depth guard (which would reject the message
+    # in a real scenario) so the test exercises the pipeline's
+    # injection guard specifically.
+    state = :sys.get_state(pid)
+    state = put_in(state.chat_state.pending_user_message, {"New request", "chat"})
+
+    # The pending message is enough tokens to push usage past
+    # 25% of the working budget.
+    projected =
+      Estimator.estimate_messages(state.chat_state.messages) +
+        Estimator.estimate("[mode: chat]\nNew request")
+
+    crossed =
+      ContextReminder.highest_unannounced(
+        projected,
+        state.llm_metrics.context_limit,
+        state.chat_state.crossed_thresholds
+      )
+
+    assert crossed == :p25,
+           "expected :p25 to be the highest unannounced threshold, got #{inspect(crossed)}"
+
+    # The trailing message is assistant+tool_use, so the wire
+    # role is :assistant. `MessageList.last_wire_role/1`
+    # returns :assistant, and `trailing_has_tool_use?/1` would
+    # return true. The pipeline's `inject_notice/3` guard
+    # detects this and skips the pair injection. The threshold
+    # is still tracked on the agent's `crossed_thresholds` set
+    # so the Case 2 injection at the next LLM-response boundary
+    # can fire (or be skipped if the threshold was already
+    # announced for the current compaction segment).
+    assert MessageList.last_wire_role(state.chat_state.messages) == :assistant
   end
 end

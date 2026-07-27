@@ -196,4 +196,59 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminderTest do
         ContextReminder.build_user_notice("hello", %ClientConfig{})
     end
   end
+
+  describe "spec/3" do
+    test "returns nil when usage is well under 25% of the working budget" do
+      assert ContextReminder.spec(1_000, @limit, MapSet.new()) == nil
+    end
+
+    test "returns a :context spec with 'Context?' attention and full format text for :p25" do
+      spec = ContextReminder.spec(40_001, @limit, MapSet.new())
+      assert spec.kind == :context
+      assert spec.attention == "Context?"
+      assert spec.notice =~ "25%"
+      assert spec.notice =~ "40001"
+    end
+
+    test "returns a :context spec for :p50" do
+      spec = ContextReminder.spec(80_001, @limit, MapSet.new())
+      assert spec.kind == :context
+      assert spec.attention == "Context?"
+      assert spec.notice =~ "50%"
+    end
+
+    test "returns a :context spec for :p75 with compact recommendation" do
+      spec = ContextReminder.spec(120_001, @limit, MapSet.new())
+      assert spec.kind == :context
+      assert spec.attention == "Context?"
+      assert spec.notice =~ "75%"
+      assert spec.notice =~ "compact"
+    end
+
+    test "returns nil when the only crossed threshold was already announced (no higher threshold crossed)" do
+      # Usage is past 25% but not 50% or 75%. With :p25 in
+      # the crossed set, no new threshold fires.
+      crossed = MapSet.new([:p25])
+      assert ContextReminder.spec(50_000, @limit, crossed) == nil
+    end
+
+    test "still returns a spec when a higher unannounced threshold is crossed" do
+      # Usage is past 75%. :p25 is announced, but :p75 is not.
+      # The spec fires for :p75.
+      crossed = MapSet.new([:p25])
+      spec = ContextReminder.spec(120_001, @limit, crossed)
+      assert spec.kind == :context
+      assert spec.notice =~ "75%"
+    end
+
+    test "returns nil when all thresholds already announced" do
+      crossed = MapSet.new([:p25, :p50, :p75])
+      assert ContextReminder.spec(160_000, @limit, crossed) == nil
+    end
+
+    test "returns nil when limit is zero or negative (defensive)" do
+      assert ContextReminder.spec(100, 0, MapSet.new()) == nil
+      assert ContextReminder.spec(100, -1, MapSet.new()) == nil
+    end
+  end
 end

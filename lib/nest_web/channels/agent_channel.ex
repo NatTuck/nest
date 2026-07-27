@@ -186,6 +186,19 @@ defmodule NestWeb.AgentChannel do
         # `:idle` and incoming messages resume.
         {:reply, {:error, %{"reason" => "agent_status_#{status}"}}, socket}
 
+      {:ok, %{status: status}}
+      when status in [:streaming, :executing_tools] ->
+        # Reject messages that arrive while the agent is
+        # actively working. The frontend disables the input
+        # when `isAgentBusy` is true (see `ChatPage.jsx`),
+        # so this branch only fires for programmatic API
+        # calls, multi-client races, or stale UI state.
+        # Accepting these would interleave the user message
+        # with an in-flight tool chain and break wire
+        # alternation / tool_use-tool_result pairing
+        # invariants.
+        {:reply, {:error, %{"reason" => "agent_busy"}}, socket}
+
       {:ok, _agent} ->
         case Agents.chat(agent_name, content, mode) do
           :ok ->

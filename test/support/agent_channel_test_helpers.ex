@@ -11,6 +11,7 @@ defmodule NestWeb.AgentChannelTestHelpers do
       import NestWeb.AgentChannelTestHelpers
 
       alias Nest.Agents
+      alias Nest.Agents.Agent
       alias Nest.Agents.Supervisor
       alias Nest.LLM.MockClient
       alias NestWeb.AgentChannel
@@ -33,6 +34,15 @@ defmodule NestWeb.AgentChannelTestHelpers do
         MockClient.clear()
 
         on_exit(fn ->
+          # Stop the agent GenServer last so any chat task still
+          # in flight when the test asserts gets torn down with
+          # it instead of outliving the test as a stray process.
+          # Without this, leftover chat tasks keep calling
+          # MockClient.run/2 in the background; once their message
+          # accumulation trips Preflight's alternation check the
+          # llm_error path broadcasts a chat:error whose log
+          # entry leaks into the next test's stderr.
+          if Process.alive?(agent_pid), do: Agent.terminate(agent_pid)
           MockClient.stop(agent_pid)
           Process.delete(:nest_test_agent_pid)
         end)

@@ -132,10 +132,11 @@ defmodule Nest.Agents.AgentStopTest do
       # The tool call message is broadcast; the chat task
       # is now in `request_compaction_from_task` blocking on
       # `{:task_compaction_done|_failed, _}` or `{:stop_chat, _}`.
-      assert_receive {:chat_message, {:assistant, %{parts: parts}}},
-                     500
-
-      assert Enum.any?(parts, &match?(%Part.ToolUse{}, &1))
+      # Drain to find the assistant carrying the tool call
+      # (a context-notice synthetic pair may precede it).
+      tool_assistant = wait_for_assistant_with_tool_use(2_000)
+      assert tool_assistant != nil
+      assert Enum.any?(tool_assistant.parts, &match?(%Part.ToolUse{}, &1))
       assert_receive {:chat_status, %{status: "executing_tools"}}, 500
 
       # The chat task is now in the blocking receive inside
@@ -283,6 +284,32 @@ defmodule Nest.Agents.AgentStopTest do
       # The Agent GenServer must still be alive (the
       # original bug crashed it with FunctionClauseError).
       assert Process.alive?(pid)
+    end
+  end
+
+  # Drain assistant messages until one carries a `Part.ToolUse`.
+  # A context-notice synthetic pair (an assistant message with
+  # `text: "Context?"`) may precede the real tool-call assistant
+  # when the context threshold is crossed.
+  defp wait_for_assistant_with_tool_use(timeout) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    do_wait_for_assistant_with_tool_use(deadline)
+  end
+
+  defp do_wait_for_assistant_with_tool_use(deadline) do
+    if System.monotonic_time(:millisecond) >= deadline do
+      nil
+    else
+      receive do
+        {:chat_message, {:assistant, msg}} ->
+          if Enum.any?(msg.parts, &match?(%Part.ToolUse{}, &1)) do
+            msg
+          else
+            do_wait_for_assistant_with_tool_use(deadline)
+          end
+      after
+        100 -> do_wait_for_assistant_with_tool_use(deadline)
+      end
     end
   end
 end

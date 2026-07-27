@@ -173,14 +173,24 @@ defmodule NestWeb.AgentChannelAdvancedTest do
 
       # The tool message is re-broadcast after its api_logs are
       # populated. Match the version with non-empty apiLogs.
-      assert_push "chat:message", %{"index" => 3, "role" => "tool", "apiLogs" => [tool_req]}, 500
+      # The context-notice synthetic pair (assistant("Context?")
+      # + user(notice)) is injected between the tool result and
+      # the final assistant, shifting the tool message's index
+      # from 3 to 5. Use content-based matching: find the tool
+      # message by `role: "tool"` and the final assistant by
+      # text content.
+      assert_push "chat:message",
+                  %{"role" => "tool", "apiLogs" => [tool_req]},
+                  500
 
       assert_push "chat:message",
-                  %{"index" => 4, "role" => "assistant", "apiLogs" => [_asst_resp]},
+                  %{"role" => "assistant", "parts" => [%{"kind" => "text", "text" => "Done"}]},
                   500
 
       assert tool_req["type"] == "request"
-      assert tool_req["id"] == "003.000"
+      # The api_log id is `<message_index>.<sequence>`. With the
+      # synthetic pair, the tool message index is 5 instead of 3.
+      assert tool_req["id"] == "005.000"
       assert is_map(tool_req["payload"])
       assert tool_req["timestamp"] != nil
 

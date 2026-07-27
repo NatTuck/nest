@@ -34,6 +34,7 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
   alias Nest.Agents.Agent.ChatTurn.APILog
   alias Nest.Agents.Agent.ChatTurn.Lifecycle
   alias Nest.Agents.Agent.ChatTurn.Messages
+  alias Nest.Agents.Agent.ChatTurn.NoticeInjector
   alias Nest.Agents.Agent.ChatTurn.State
   alias Nest.LLM.RunResponse
   alias Nest.Messages.Part
@@ -65,6 +66,34 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
     # attaches any pending api_logs.
     {role, msg} = Messages.assistant(response)
     assistant_msg = {role, msg}
+
+    # Case 2 injection. Collect notice specs from all trigger
+    # sources (context-usage threshold, budget reminder) and
+    # inject each as a synthetic [assistant(attention), user(notice)]
+    # pair immediately before the assistant message. When both
+    # fire on the same iteration, both pairs are injected — the
+    # LLM sees all the information and the UI shows what was
+    # sent (4 extra messages, no deferral trick).
+    #
+    # Each spec carries its own attention text ("Context?" for
+    # context, "Tool limit?" for budget) so the LLM can
+    # distinguish notice types.
+    #
+    # The pair is always wire-safe: prior is wire :user (last
+    # user/tool message), then assistant, then user, then this
+    # assistant message — strict alternation.
+    #
+    # The implementation lives in `NoticeInjector` to keep this
+    # module under the 500-line credo cap.
+    {injected, state} = NoticeInjector.inject_all(response, state)
+
+    # The synthetic pair (when injected) shifts the assistant
+    # message's index by 2. `active_message_index` was set to
+    # the pre-injection expected index; advance it to the
+    # actual index so the api_log below keys to the right
+    # message.
+    state = %{state | active_message_index: state.active_message_index + 2 * injected}
+
     send(state.ctx.agent_pid, {:tool_calls_received, assistant_msg})
 
     _ = APILog.response(state, state.active_message_index, response)

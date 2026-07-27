@@ -21,6 +21,15 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
     * Only the highest currently-crossed threshold is announced.
     * When compaction succeeds, the set is cleared.
     * If `context_limit` is unknown (nil), no warning is injected.
+
+  Notice specs (the generic mechanism for Case 2 injection):
+
+  `spec/3` returns a `%{kind, attention, notice}` map when a
+  new threshold crosses, or `nil` otherwise. The attention text
+  is the short string the LLM sees as a synthetic assistant
+  message just before the notice; the notice text is the full
+  format with token numbers. See `ResponseHandler.collect_case2_specs/2`
+  for how specs are collected and injected.
   """
 
   alias Nest.LLM.ClientConfig
@@ -46,6 +55,8 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
     p50: "Context at 50%.",
     p75: "Context at 75%. Consider compacting via the context tool."
   }
+
+  @type spec :: %{kind: atom(), attention: String.t(), notice: String.t()}
 
   @doc """
   Returns the highest threshold atom that is currently
@@ -87,6 +98,29 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
   @spec ack_text_for(atom()) :: String.t()
   def ack_text_for(atom) do
     Map.fetch!(@ack_texts, atom)
+  end
+
+  @doc """
+  Build a complete notice spec for a context-usage threshold
+  crossing. Returns the spec map (attention + notice) when a
+  new threshold crosses, or `nil` otherwise. The attention
+  text "Context?" signals to the LLM that the next user
+  message is a context-usage reminder, distinguishing it
+  from other notice types (e.g. tool-call budget).
+  """
+  @spec spec(non_neg_integer(), pos_integer(), MapSet.t(atom())) :: spec() | nil
+  def spec(used, limit, crossed) do
+    case highest_unannounced(used, limit, crossed) do
+      nil ->
+        nil
+
+      atom ->
+        %{
+          kind: :context,
+          attention: "Context?",
+          notice: format(atom, used, limit)
+        }
+    end
   end
 
   @doc """

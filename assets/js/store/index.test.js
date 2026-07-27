@@ -886,6 +886,8 @@ describe("store", () => {
     });
 
     it("detects duplicate delta and rejects without sync", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
       // Apply first delta
       useStore.getState().addChatDelta("agent-1", {
         index: 5,
@@ -907,6 +909,19 @@ describe("store", () => {
         needsSync: false,
         outOfOrder: false,
       });
+
+      // Duplicate detection warns with the per-agent prefix and the
+      // index mismatch payload (expectedDeltaIndex=1 from the first
+      // accepted delta, receivedDeltaIndex=0 for the duplicate).
+      expect(warnSpy).toHaveBeenCalledWith(
+        "[agent:agent-1] Delta duplicate:",
+        expect.objectContaining({
+          messageIndex: 5,
+          expectedDeltaIndex: 1,
+          receivedDeltaIndex: 0,
+        }),
+      );
+
       // Content should not change
       expect(
         useStore
@@ -917,9 +932,13 @@ describe("store", () => {
           .map((p) => p.text || "")
           .join(""),
       ).toBe("Hello");
+
+      warnSpy.mockRestore();
     });
 
     it("detects out-of-order delta and requests sync", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
       // Apply first delta
       useStore.getState().addChatDelta("agent-1", {
         index: 5,
@@ -941,6 +960,17 @@ describe("store", () => {
         needsSync: true,
         outOfOrder: true,
       });
+
+      // Out-of-order detection warns with the corresponding payload.
+      expect(warnSpy).toHaveBeenCalledWith(
+        "[agent:agent-1] Delta out of order:",
+        expect.objectContaining({
+          messageIndex: 5,
+          expectedDeltaIndex: 1,
+          receivedDeltaIndex: 2,
+        }),
+      );
+
       // Content should not change
       expect(
         useStore
@@ -951,6 +981,8 @@ describe("store", () => {
           .map((p) => p.text || "")
           .join(""),
       ).toBe("First");
+
+      warnSpy.mockRestore();
     });
 
     it("resets streaming state when message index changes", () => {

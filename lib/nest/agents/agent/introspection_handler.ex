@@ -56,6 +56,10 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
     {:reply, {state.chat_state.messages, state.chat_state.cancelled}, state}
   end
 
+  def handle(:get_crossed_thresholds, _from, state) do
+    {:reply, state.chat_state.crossed_thresholds, state}
+  end
+
   def handle(:get_next_index, _from, state) do
     {:reply, state.chat_state.next_message_index, state}
   end

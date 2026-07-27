@@ -110,23 +110,9 @@ defmodule Nest.LLM.OpenAIClient do
   end
 
   defp message_to_wire({:tool, %Tool{parts: parts}}) do
-    {text_parts, result_parts} =
-      Enum.split_with(parts || [], fn
-        %Part.Text{} -> true
-        _ -> false
-      end)
-
-    text_msgs =
-      Enum.map(text_parts, fn %Part.Text{text: text} ->
-        %{"role" => "user", "content" => text}
-      end)
-
-    result_msgs =
-      Enum.map(result_parts, fn %Part.ToolResult{tool_call_id: id, content: content} ->
-        %{"role" => "tool", "tool_call_id" => id, "content" => content || ""}
-      end)
-
-    text_msgs ++ result_msgs
+    Enum.map(parts || [], fn %Part.ToolResult{tool_call_id: id, content: content} ->
+      %{"role" => "tool", "tool_call_id" => id, "content" => content || ""}
+    end)
   end
 
   defp tool_call_to_wire(%Part.ToolUse{id: id, name: name, arguments: args}) do
