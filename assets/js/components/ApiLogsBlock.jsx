@@ -57,7 +57,10 @@ export function ApiLogsBlock({ apiLogs }) {
             />
           </svg>
         </button>
-        <CopyButton text={formatApiLogsAsJson(apiLogs)} label="Copy API logs" />
+        <CopyButton
+          getText={() => formatApiLogsAsJson(apiLogs)}
+          label="Copy API logs"
+        />
       </div>
       {isExpanded && (
         <div className="bg-white p-3 space-y-3 max-h-96 overflow-y-auto">

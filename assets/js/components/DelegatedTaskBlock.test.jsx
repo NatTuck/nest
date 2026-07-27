@@ -7,13 +7,47 @@
  *      (`tool_call_id`) keys from `toolResults`/`toolCalls`,
  *      which both shapes exist in the cache depending on
  *      which message batch populated it.
+ *
+ * `DelegatedTasks` self-subscribes to `cache.messages` and
+ * `cache.partial` via `useStore`. The tests below seed the
+ * store with a synthetic `agentsCache` for a fixed agent
+ * name and verify the rendered output; the cache is reset
+ * between tests so they don't leak state.
  */
 
-import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, it, expect } from "vitest";
+import { render, screen, act } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
+import { useStore } from "../store";
 import { DelegatedTaskBlock, DelegatedTasks } from "./DelegatedTaskBlock";
+
+const AGENT_NAME = "test-agent";
+
+function seedCache({ messages = [], partial = null } = {}) {
+  act(() => {
+    useStore.setState((state) => ({
+      agentsCache: {
+        ...state.agentsCache,
+        [AGENT_NAME]: {
+          ...(state.agentsCache[AGENT_NAME] ?? {}),
+          messages,
+          partial,
+        },
+      },
+    }));
+  });
+}
+
+function clearCache() {
+  act(() => {
+    useStore.setState((state) => {
+      const next = { ...state.agentsCache };
+      delete next[AGENT_NAME];
+      return { agentsCache: next };
+    });
+  });
+}
 
 describe("DelegatedTaskBlock", () => {
   it("renders instruction and status while the worker is still blocked", () => {
@@ -75,20 +109,30 @@ describe("DelegatedTaskBlock", () => {
 });
 
 describe("DelegatedTasks", () => {
+  beforeEach(() => {
+    clearCache();
+  });
+
+  afterEach(() => {
+    clearCache();
+  });
+
   it("renders nothing when no clone_agent calls are present", () => {
-    const messages = [
-      {
-        index: 1,
-        role: "assistant",
-        toolCalls: [
-          { id: "x", name: "shell_cmd", arguments: { command: "ls" } },
-        ],
-      },
-    ];
+    seedCache({
+      messages: [
+        {
+          index: 1,
+          role: "assistant",
+          toolCalls: [
+            { id: "x", name: "shell_cmd", arguments: { command: "ls" } },
+          ],
+        },
+      ],
+    });
 
     const { container } = render(
       <MemoryRouter>
-        <DelegatedTasks messages={messages} partial={null} />
+        <DelegatedTasks agentName={AGENT_NAME} />
       </MemoryRouter>,
     );
 
@@ -96,35 +140,37 @@ describe("DelegatedTasks", () => {
   });
 
   it("renders a card per clone_agent call paired with its result", () => {
-    const messages = [
-      {
-        index: 1,
-        role: "assistant",
-        toolCalls: [
-          {
-            id: "call-1",
-            name: "clone_agent",
-            arguments: { instruction: "do X" },
-          },
-        ],
-      },
-      {
-        index: 2,
-        role: "tool",
-        toolResults: [
-          {
-            tool_call_id: "call-1",
-            name: "clone_agent",
-            content: "child says X is done",
-            is_error: false,
-          },
-        ],
-      },
-    ];
+    seedCache({
+      messages: [
+        {
+          index: 1,
+          role: "assistant",
+          toolCalls: [
+            {
+              id: "call-1",
+              name: "clone_agent",
+              arguments: { instruction: "do X" },
+            },
+          ],
+        },
+        {
+          index: 2,
+          role: "tool",
+          toolResults: [
+            {
+              tool_call_id: "call-1",
+              name: "clone_agent",
+              content: "child says X is done",
+              is_error: false,
+            },
+          ],
+        },
+      ],
+    });
 
     render(
       <MemoryRouter>
-        <DelegatedTasks messages={messages} partial={null} />
+        <DelegatedTasks agentName={AGENT_NAME} />
       </MemoryRouter>,
     );
 
@@ -136,35 +182,37 @@ describe("DelegatedTasks", () => {
   });
 
   it("accepts both `toolCalls`/`toolResults` and the camelCase aliases", () => {
-    const messages = [
-      {
-        index: 1,
-        role: "assistant",
-        tool_calls: [
-          {
-            id: "call-2",
-            name: "clone_agent",
-            arguments: { instruction: "do Y" },
-          },
-        ],
-      },
-      {
-        index: 2,
-        role: "tool",
-        tool_results: [
-          {
-            toolCallId: "call-2",
-            name: "clone_agent",
-            content: "child says Y is done",
-            isError: false,
-          },
-        ],
-      },
-    ];
+    seedCache({
+      messages: [
+        {
+          index: 1,
+          role: "assistant",
+          tool_calls: [
+            {
+              id: "call-2",
+              name: "clone_agent",
+              arguments: { instruction: "do Y" },
+            },
+          ],
+        },
+        {
+          index: 2,
+          role: "tool",
+          tool_results: [
+            {
+              toolCallId: "call-2",
+              name: "clone_agent",
+              content: "child says Y is done",
+              isError: false,
+            },
+          ],
+        },
+      ],
+    });
 
     render(
       <MemoryRouter>
-        <DelegatedTasks messages={messages} partial={null} />
+        <DelegatedTasks agentName={AGENT_NAME} />
       </MemoryRouter>,
     );
 
@@ -180,22 +228,24 @@ describe("DelegatedTasks", () => {
     // block to render with "Running" status immediately —
     // before the tool-result message lands — so users see
     // the in-flight delegation.
-    const messages = [];
-    const partial = {
-      index: 4,
-      role: "assistant",
-      toolCalls: [
-        {
-          id: "call-3",
-          name: "clone_agent",
-          arguments: { instruction: "do Z" },
-        },
-      ],
-    };
+    seedCache({
+      messages: [],
+      partial: {
+        index: 4,
+        role: "assistant",
+        toolCalls: [
+          {
+            id: "call-3",
+            name: "clone_agent",
+            arguments: { instruction: "do Z" },
+          },
+        ],
+      },
+    });
 
     render(
       <MemoryRouter>
-        <DelegatedTasks messages={messages} partial={partial} />
+        <DelegatedTasks agentName={AGENT_NAME} />
       </MemoryRouter>,
     );
 

@@ -24,6 +24,9 @@
  */
 
 import { Link } from "react-router-dom";
+import { useStore } from "../store";
+
+const EMPTY_MESSAGES = [];
 
 /**
  * Look across the agent's message list for `clone_agent`
@@ -32,12 +35,28 @@ import { Link } from "react-router-dom";
  * DelegatedTaskBlock for each pair. Pairs are matched by
  * `tool_call_id`; an unmatched call renders as "running".
  *
+ * Subscribes to `cache.messages` and `cache.partial` via
+ * granular selectors. The component re-renders when either
+ * slice changes, but during streaming only `partial` changes
+ * — `messages` is preserved across deltas, so the body
+ * falls through the same `cloneCalls` rebuild path on
+ * every delta. The work is O(N) over messages (where N is
+ * the count of `clone_agent` calls) which is small in
+ * practice.
+ *
  * Mounted alongside the existing `ToolCalls` / `ToolResults`
  * blocks in the chat page; the user sees the same response
  * through two lenses — the raw tool use AND the sub-agent
  * tree view.
  */
-export function DelegatedTasks({ messages, partial }) {
+export function DelegatedTasks({ agentName }) {
+  const messages = useStore(
+    (state) => state.agentsCache[agentName]?.messages ?? EMPTY_MESSAGES,
+  );
+  const partial = useStore(
+    (state) => state.agentsCache[agentName]?.partial ?? null,
+  );
+
   const cloneCalls = [];
   for (const m of messages) {
     const calls = m.toolCalls || m.tool_calls || [];

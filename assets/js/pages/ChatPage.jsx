@@ -8,6 +8,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
+import { useShallow } from "zustand/shallow";
 import { useStore } from "../store";
 import {
   joinAgent,
@@ -17,25 +18,25 @@ import {
   retryCompaction,
   compactionLoopOk,
 } from "../channels";
-import { MessageContent } from "../components/MessageContent";
 import { ChatInput } from "../components/ChatInput";
 import { TokenUsageChip } from "../components/TokenUsageChip";
-import { ToolCalls } from "../components/ToolCalls";
-import { ToolResults } from "../components/ToolResults";
-import { ThinkingBlock } from "../components/ThinkingBlock";
-import { ApiLogsBlock } from "../components/ApiLogsBlock";
 import { StatusBanner } from "../components/StatusBanner";
 import { NotificationBanner } from "../components/NotificationBanner";
 import { CompactionMarker } from "../components/CompactionMarker";
-import { SystemMessageContent } from "../components/SystemMessageContent";
 import { StreamingDots } from "../components/StreamingDots";
-import { CopyButton } from "../components/CopyButton";
+import { MessagesList } from "../components/MessagesList";
+import { StreamingMessage } from "../components/StreamingMessage";
 import { DelegatedTasks } from "../components/DelegatedTaskBlock";
 import { useScrollToBottom } from "../hooks/useScrollToBottom";
 import { stripModePrefix } from "../utils/stripModePrefix.js";
-import { messageToMarkdown } from "../utils/formatMessage.js";
-import { messageText, streamingText } from "../utils/messageText.js";
-import { thinkingFor, textPartsFor } from "../utils/messageParts.js";
+
+// Stable empty fallbacks so selector return values are
+// reference-stable across renders when the underlying slice
+// is missing. Otherwise `?? []` would yield a fresh `[]`
+// literal each call and trip zustand's `Object.is` check.
+const EMPTY_MESSAGES = [];
+const EMPTY_HISTORY = [];
+const EMPTY_MODES = ["chat"];
 
 /**
  * Chat Page component
@@ -55,19 +56,70 @@ export function ChatPage() {
   // reverts to Send before the stop takes effect.
   const [stopping, setStopping] = useState(false);
 
-  // Get agent cache from store
-  const agentsCache = useStore((state) => state.agentsCache);
-  const cache = agentsCache[name];
+  // Get agent cache from store. The bundle below contains
+  // the "header/footer" fields ChatPage renders directly
+  // (status, agentState, usage, etc.). These change rarely
+  // — only on init, status transitions, token-usage updates,
+  // and notifications. Streaming deltas update `partial`,
+  // `streaming`, and `waitingForResponse` (NOT in this
+  // bundle), so they don't re-trigger ChatPage.
+  //
+  // `useShallow` does a shallow `Object.is` on each field
+  // of the returned object. When the agent's `cache` is
+  // replaced (every store update), the selector runs again
+  // and returns a new object literal — but every field is
+  // either a stable primitive (string, number, boolean) or
+  // a reference-stable object (the usage object is replaced
+  // only when the server broadcasts a new one), so the
+  // shallow comparison short-circuits.
+  const {
+    status,
+    agentState,
+    availableModes,
+    defaultMode,
+    contextLimit,
+    usage,
+    descendantUsage,
+    totalUsage,
+    parentName,
+    depth,
+    model,
+    vocation,
+    currentMode: currentModeFromCache,
+    waitingForResponse,
+    error,
+    compactionError,
+    compactionLoop,
+    notification,
+  } = useStore(
+    useShallow((state) => {
+      const cache = state.agentsCache[name];
+      return {
+        status: cache?.status ?? "disconnected",
+        agentState: cache?.agentState ?? "idle",
+        availableModes: cache?.modes ?? EMPTY_MODES,
+        defaultMode: cache?.defaultMode ?? "chat",
+        contextLimit: cache?.contextLimit ?? null,
+        usage: cache?.usage ?? null,
+        descendantUsage: cache?.descendantUsage ?? null,
+        totalUsage: cache?.totalUsage ?? null,
+        parentName: cache?.parentName ?? null,
+        depth: cache?.depth ?? 0,
+        model: cache?.model ?? null,
+        vocation: cache?.vocation ?? null,
+        currentMode: cache?.currentMode ?? null,
+        waitingForResponse: cache?.waitingForResponse ?? false,
+        error: cache?.error ?? null,
+        compactionError: cache?.compactionError ?? null,
+        compactionLoop: cache?.compactionLoop ?? null,
+        notification: cache?.notification ?? null,
+      };
+    }),
+  );
+  const isUnknown = useStore((state) => !state.agentsCache[name]);
 
-  // Is this an unknown agent (never attempted to join)?
-  const isUnknown = !cache;
-
-  // Get status, messages, and partial
-  const status = cache?.status ?? "disconnected";
-  const messages = cache?.messages ?? [];
-  const partial = cache?.partial ?? null;
-  const waitingForResponse = cache?.waitingForResponse ?? false;
-  const agentState = cache?.agentState ?? "idle";
+  // Streaming + busy state. `agentState` is from the shallow
+  // bundle above; the derived booleans are just string equality.
   const streaming = agentState === "streaming";
   const executingTools = agentState === "executing_tools";
   // `isAgentBusy` is true whenever the agent is doing work that
@@ -79,25 +131,38 @@ export function ChatPage() {
   // before the first `chat:status` arrives; showing Stop during
   // that window would flicker the button.
   const isAgentBusy = streaming || executingTools;
-  const availableModes = cache?.modes ?? ["chat"];
-  const defaultMode = cache?.defaultMode ?? "chat";
-  const contextLimit = cache?.contextLimit ?? null;
-  // Pass the full `usage` object to the chip — the chip reads
-  // `context_input_tokens` (server-derived) for the current
-  // context fill, and the cumulative `total_*` fields for the
-  // session cost estimate. See `TokenUsageChip.jsx` for the
-  // full field-by-field layout.
-  const usage = cache?.usage ?? null;
-  const descendantUsage = cache?.descendantUsage ?? null;
-  const totalUsage = cache?.totalUsage ?? null;
+
   // Sub-agent identity. `parentName` is the readable id of
   // the agent that spawned this one via `clone_agent`, or
   // `null` for root agents. Surfaced as a "back to parent"
   // link in the agent header (a child can navigate back to
   // its parent's chat without an extra round-trip).
-  const parentName = cache?.parentName ?? null;
-  const _parentId = cache?.parentId ?? null;
-  const depth = cache?.depth ?? 0;
+  // `_parentId` is intentionally not used in the render but
+  // is kept here so future code that wants the numeric id has
+  // it available without re-subscribing.
+  const _parentId = useStore(
+    (state) => state.agentsCache[name]?.parentId ?? null,
+  );
+
+  // Subscriptions for the message list and the in-flight
+  // partial. These are reference-stable across deltas
+  // (`messages` is replaced only on a `chat:message` append;
+  // `partial` is replaced only on `chat:delta` updates), so
+  // the granular selectors below do not re-render ChatPage
+  // when the other slice changes. The `MessagesList` and
+  // `StreamingMessage` components each subscribe to one of
+  // these slices directly.
+  const messages = useStore(
+    (state) => state.agentsCache[name]?.messages ?? EMPTY_MESSAGES,
+  );
+  const partial = useStore((state) => state.agentsCache[name]?.partial ?? null);
+  // `archivedHistory` is the raw cache slice — used by the
+  // `CompactionMarker` to render the boundary. Distinct
+  // from the `history` variable below, which is the user-
+  // facing memoized list of past prompts.
+  const archivedHistory = useStore(
+    (state) => state.agentsCache[name]?.history ?? EMPTY_HISTORY,
+  );
 
   // History navigation list for ChatInput's Ctrl/Cmd+Up / Down support.
   // Pulls user messages from both the active session and the archived
@@ -110,13 +175,13 @@ export function ChatPage() {
   // recovered prompt is the user-visible text, not the LLM-facing wire
   // form.
   const history = useMemo(() => {
-    const archived = (cache?.history ?? [])
+    const archived = archivedHistory
       .filter((m) => m.role === "user" && typeof m.content === "string")
       .map((m) => ({
         content: stripModePrefix(m.content, m.mode ?? ""),
         mode: m.mode ?? null,
       }));
-    const active = (cache?.messages ?? [])
+    const active = messages
       .filter((m) => m.role === "user" && typeof m.content === "string")
       .map((m) => ({
         content: stripModePrefix(m.content, m.mode ?? ""),
@@ -129,7 +194,7 @@ export function ChatPage() {
       if (!last || last.content !== entry.content) deduped.push(entry);
     }
     return deduped.reverse();
-  }, [cache?.messages, cache?.history]);
+  }, [messages, archivedHistory]);
 
   // Keep the dropdown in sync with the agent's current mode.
   //
@@ -142,13 +207,13 @@ export function ChatPage() {
   // dropdown reflects what the server actually has.
   //
   // On first mount (before any chat:status has arrived),
-  // `cache.currentMode` is null and we fall back to `defaultMode`.
+  // `currentModeFromCache` is null and we fall back to `defaultMode`.
   useEffect(() => {
-    const next = cache?.currentMode ?? defaultMode;
+    const next = currentModeFromCache ?? defaultMode;
     if (next) {
       setCurrentMode(next);
     }
-  }, [cache?.currentMode, defaultMode]);
+  }, [currentModeFromCache, defaultMode]);
 
   // When the agent transitions out of "busy" (the server's
   // `chat:status: idle` push has arrived), clear the optimistic
@@ -172,11 +237,22 @@ export function ChatPage() {
     return "Ready";
   };
 
+  // The hook only uses the `trigger` value as a dependency
+  // for its `useEffect` (it doesn't render the text), so we
+  // pass the raw refs (`partial` or `messages`) instead of
+  // reconstituting the streaming text on every render. The
+  // previous form called `streamingText(partial)` here, which
+  // allocated a string of up to ~100KB of the full stream
+  // contents on every ChatPage render — multiplied by the
+  // delta rate during streaming, that's hundreds of MB/sec of
+  // garbage. The reference identity of `partial` is enough:
+  // when the store replaces `partial` on `chat:delta`, the
+  // hook's `useEffect` re-runs and scrolls if appropriate.
   const { isAtBottom, hasNewContent, jumpToBottom } = useScrollToBottom(
     scrollContainerEl,
     messagesEndEl,
     name,
-    partial ? streamingText(partial) : messages,
+    partial ?? messages,
   );
 
   // Join agent channel on mount/name change
@@ -278,12 +354,6 @@ export function ChatPage() {
     );
   }
 
-  // Combine messages with partial for display
-  const displayMessages = [...messages];
-  if (partial) {
-    displayMessages.push({ ...partial, isPartial: true });
-  }
-
   // Input is disabled when not connected or when the agent is
   // busy (the user shouldn't be able to type into the textarea
   // while the model is responding or tools are running).
@@ -297,18 +367,18 @@ export function ChatPage() {
           <div className="min-w-0">
             <h1 className="text-2xl font-bold text-gray-900">
               {name}
-              {cache?.vocation?.name && (
+              {vocation?.name && (
                 <span className="text-gray-500 font-normal">
-                  ({cache.vocation.name})
+                  ({vocation.name})
                 </span>
               )}
             </h1>
             <p className="text-sm text-gray-500 break-all">
               {(() => {
-                const name = cache?.model?.name;
-                const provider = cache?.model?.provider;
-                if (!name) return "[missing]";
-                return provider ? `${provider}: ${name}` : name;
+                const modelName = model?.name;
+                const provider = model?.provider;
+                if (!modelName) return "[missing]";
+                return provider ? `${provider}: ${modelName}` : modelName;
               })()}
             </p>
             {parentName && (
@@ -361,23 +431,19 @@ export function ChatPage() {
           disappearing (a regression that previously required a
           full page reload to recover from). */}
       <StatusBanner
-        status={
-          cache?.status === "error" && cache?.error
-            ? "error"
-            : (agentState ?? status)
-        }
-        error={cache?.error}
+        status={status === "error" && error ? "error" : (agentState ?? status)}
+        error={error}
         onRetry={handleRetry}
         onDismiss={handleDismissError}
         onRetryCompaction={handleRetryCompaction}
         onCompactionLoopOk={handleCompactionLoopOk}
-        compactionError={cache?.compactionError}
-        compactionLoop={cache?.compactionLoop}
+        compactionError={compactionError}
+        compactionLoop={compactionLoop}
       />
 
       {/* Notification banner */}
       <NotificationBanner
-        notification={cache?.notification}
+        notification={notification}
         onClose={() => useStore.getState().clearNotification(name)}
       />
 
@@ -403,21 +469,21 @@ export function ChatPage() {
             shown when there are archived messages (history)
             AND active messages to display — both must exist
             for the boundary to be meaningful. */}
-        {displayMessages.length > 0 && cache?.history?.length > 0 && (
+        {(messages.length > 0 || partial) && archivedHistory.length > 0 && (
           <CompactionMarker
             marker={
-              cache.history.findLast
-                ? cache.history.findLast((m) => m.role === "compaction")
-                : [...cache.history]
+              archivedHistory.findLast
+                ? archivedHistory.findLast((m) => m.role === "compaction")
+                : [...archivedHistory]
                     .reverse()
                     .find((m) => m.role === "compaction")
             }
-            history={cache.history}
-            historyCount={cache.history.length}
+            history={archivedHistory}
+            historyCount={archivedHistory.length}
           />
         )}
 
-        {displayMessages.length === 0 ? (
+        {messages.length === 0 && !partial ? (
           <div className="text-center py-12 text-gray-400">
             <svg
               className="w-16 h-16 mx-auto mb-4 opacity-50"
@@ -437,134 +503,19 @@ export function ChatPage() {
             <p className="text-sm mt-1">Send a message to begin chatting</p>
           </div>
         ) : (
-          displayMessages.map((message) => (
-            <div
-              key={message.index}
-              className={`
-                flex gap-4 p-4 rounded-xl
-                ${
-                  message.role === "user"
-                    ? "bg-blue-50 ml-12"
-                    : message.role === "system"
-                      ? "bg-amber-50 border border-amber-200 mx-8"
-                      : message.role === "tool"
-                        ? "bg-green-50 border border-green-200 mx-8"
-                        : "bg-gray-50 mr-12"
-                }
-              `}
-            >
-              {/* Avatar */}
-              <div
-                className={`
-                  w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0
-                  ${
-                    message.role === "user"
-                      ? "bg-blue-600 text-white"
-                      : message.role === "system"
-                        ? "bg-amber-500 text-white"
-                        : message.role === "tool"
-                          ? "bg-green-500 text-white"
-                          : "bg-gray-600 text-white"
-                  }
-                `}
-              >
-                {message.role === "user"
-                  ? "U"
-                  : message.role === "system"
-                    ? "S"
-                    : message.role === "tool"
-                      ? "T"
-                      : "AI"}
-              </div>
-
-              {/* Message content */}
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="font-semibold text-sm text-gray-700">
-                    {message.role === "user"
-                      ? "You"
-                      : message.role === "system"
-                        ? "System"
-                        : message.role === "tool"
-                          ? "Tool Result"
-                          : name}
-                  </span>
-                  {message.role === "user" && message.mode && (
-                    <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">
-                      mode: {message.mode}
-                    </span>
-                  )}
-                  {message.isPartial && (
-                    <span className="text-xs text-gray-400">(typing...)</span>
-                  )}
-                  <span className="ml-auto">
-                    <CopyButton
-                      text={messageToMarkdown(message)}
-                      label="Copy message"
-                    />
-                  </span>
-                </div>
-                {/* Thinking is rendered BEFORE the reply and
-                    stays in place across the partial → final
-                    transition. The box always starts expanded
-                    (the user wanted the reasoning to remain
-                    visible after the turn completes) and the
-                    user can collapse it manually — no `key`
-                    re-mount is needed since the box's state
-                    doesn't need to change on finalization. See
-                    `assets/js/components/ThinkingBlock.jsx`
-                    for the full rationale. */}
-                <ThinkingBlock
-                  thinking={thinkingFor(message)}
-                  isPartial={message.isPartial ?? false}
-                  hasVisibleContent={hasVisibleContent(message)}
-                />
-                {message.role === "system" ? (
-                  <SystemMessageContent
-                    parts={message.parts}
-                    isPartial={message.isPartial ?? false}
-                  />
-                ) : (
-                  <MessageContent
-                    parts={
-                      message.role === "user"
-                        ? [
-                            {
-                              kind: "text",
-                              text: stripModePrefix(
-                                messageText(message),
-                                message.mode,
-                              ),
-                            },
-                          ]
-                        : textPartsFor(message)
-                    }
-                    isPartial={message.isPartial ?? false}
-                    className="text-gray-800"
-                  />
-                )}
-                <ToolCalls toolCalls={message.toolCalls} />
-                <ToolResults toolResults={message.toolResults} />
-                <ApiLogsBlock apiLogs={message.apiLogs} />
-                {message.isPartial && (
-                  <div className="mt-2">
-                    <StreamingDots
-                      size="lg"
-                      colorClass="bg-gray-400"
-                      ariaLabel="Streaming message"
-                    />
-                  </div>
-                )}
-              </div>
-            </div>
-          ))
+          <>
+            <MessagesList agentName={name} />
+            <StreamingMessage agentName={name} />
+          </>
         )}
 
         {/* Sub-agent: surface `clone_agent` calls as a
             first-class Delegated Task card. Rendered once
             per conversation (NOT per message) so each
-            clone_agent tool call appears exactly once. */}
-        <DelegatedTasks messages={messages} partial={partial} />
+            clone_agent tool call appears exactly once.
+            `DelegatedTasks` self-subscribes to the slices
+            it needs; ChatPage doesn't pass anything. */}
+        <DelegatedTasks agentName={name} />
 
         <div ref={setMessagesEndEl} />
       </div>
@@ -653,13 +604,6 @@ export function ChatPage() {
   );
 }
 
-// `thinkingFor` and `textPartsFor` come from
-// `utils/messageParts.js` so the same logic is shared with
-// the archived-history pane.
-
-// True when the message has visible text below the ThinkingBox.
-// Uses the shared `messageText` helper (which reads `parts`
-// first, with a `content` fallback for legacy shapes).
-function hasVisibleContent(message) {
-  return messageText(message).trim().length > 0;
-}
+// `thinkingFor` and `textPartsFor` (used by the per-message
+// `MessageBubble` component) come from `utils/messageParts.js`
+// so the same logic is shared with the archived-history pane.
