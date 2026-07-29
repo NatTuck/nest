@@ -1793,13 +1793,118 @@ describe("store", () => {
       expect(consoleErrorSpy).toHaveBeenCalled();
       const firstCallArgs = consoleErrorSpy.mock.calls[0];
       expect(firstCallArgs[0]).toContain("[NEST REGRESSION]");
-      expect(firstCallArgs[0]).toContain("build_tool_pair/3");
+      expect(firstCallArgs[0]).toContain(
+        "Broadcast thinking shorter than streaming partial",
+      );
 
       // Streaming is cleared.
       expect(useStore.getState().agentsCache["agent-1"].streaming).toBeNull();
 
       consoleErrorSpy.mockRestore();
       warnSpy.mockRestore();
+    });
+
+    it("prefers the streaming partial when broadcast thinking is strictly shorter (non-empty)", () => {
+      // Defensive: if the broadcast message has thinking but
+      // it's strictly shorter than what streamed in (a BEAM-
+      // side abbreviation path we couldn't reproduce, but may
+      // exist), the JS should prefer the longer streaming
+      // value and log a `[NEST REGRESSION]` so the divergence
+      // is visible.
+      const consoleErrorSpy = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      useStore.setState((state) => ({
+        agentsCache: {
+          ...state.agentsCache,
+          "agent-1": {
+            ...state.agentsCache["agent-1"],
+            streaming: {
+              messageIndex: 1,
+              parts: [
+                {
+                  kind: "thinking",
+                  thinking: "Full reasoning that streamed in chunk by chunk.",
+                },
+              ],
+            },
+          },
+        },
+      }));
+
+      useStore.getState().addChatMessage("agent-1", {
+        index: 1,
+        role: "assistant",
+        parts: [
+          { kind: "text", text: "OK" },
+          {
+            kind: "thinking",
+            thinking: "Short",
+          },
+          { kind: "tool_use", id: "call_1", name: "shell_cmd", arguments: {} },
+        ],
+      });
+
+      const messages = useStore.getState().agentsCache["agent-1"].messages;
+      // The streaming value is preserved (longer than the
+      // broadcast).
+      expect(messages[0].thinking).toBe(
+        "Full reasoning that streamed in chunk by chunk.",
+      );
+
+      expect(consoleErrorSpy).toHaveBeenCalled();
+      const firstCallArgs = consoleErrorSpy.mock.calls[0];
+      expect(firstCallArgs[0]).toContain("[NEST REGRESSION]");
+      expect(firstCallArgs[0]).toContain(
+        "Broadcast thinking shorter than streaming partial",
+      );
+
+      consoleErrorSpy.mockRestore();
+      warnSpy.mockRestore();
+    });
+
+    it("trusts the broadcast when it's the same length as the streaming partial", () => {
+      // Equal-length but byte-for-byte equal: the broadcast is
+      // authoritative (no regression to log).
+      const consoleErrorSpy = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+
+      const thinking = "Same content streamed in.";
+
+      useStore.setState((state) => ({
+        agentsCache: {
+          ...state.agentsCache,
+          "agent-1": {
+            ...state.agentsCache["agent-1"],
+            streaming: {
+              messageIndex: 1,
+              parts: [{ kind: "thinking", thinking }],
+            },
+          },
+        },
+      }));
+
+      useStore.getState().addChatMessage("agent-1", {
+        index: 1,
+        role: "assistant",
+        parts: [{ kind: "thinking", thinking }],
+      });
+
+      const messages = useStore.getState().agentsCache["agent-1"].messages;
+      expect(messages[0].thinking).toBe(thinking);
+
+      // No regression log when lengths match (the broadcast
+      // could be a faithful re-emission of the streaming
+      // value).
+      const regressionLogs = consoleErrorSpy.mock.calls.filter((call) =>
+        call[0]?.includes?.("[NEST REGRESSION]"),
+      );
+      expect(regressionLogs).toHaveLength(0);
+
+      consoleErrorSpy.mockRestore();
     });
 
     it("does NOT override broadcast thinking with partial segments thinking", () => {
@@ -3619,6 +3724,151 @@ describe("store", () => {
         (p) => p.kind === "tool_result",
       );
       expect(toolResultPart.content).toBe("file1.txt\nfile2.txt");
+    });
+  });
+
+  describe("addChatDelta tool_use_start / tool_use_delta (live tool-call streaming)", () => {
+    // The BEAM broadcasts tool-use events as `chat:delta` with
+    // `partType: "tool_use_start"` (carrying the call's `id`
+    // and `name`) and `partType: "tool_use_delta"` (carrying
+    // an `arguments_delta` fragment). The store maps these to
+    // a single `tool_use` part with id+name+arguments so the
+    // streaming partial can render the in-flight tool call.
+    beforeEach(() => {
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+        messages: [],
+      });
+    });
+
+    it("creates a tool_use part with id+name from tool_use_start", () => {
+      useStore.getState().addChatDelta("agent-1", {
+        messageIndex: 1,
+        deltaIndex: 0,
+        content: "",
+        partType: "tool_use_start",
+        toolCallId: "call_abc",
+        toolCallName: "shell_cmd",
+        toolCallBlockIndex: 0,
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      const toolUsePart = cache.streaming.parts.find(
+        (p) => p.kind === "tool_use",
+      );
+      expect(toolUsePart).toBeDefined();
+      expect(toolUsePart.id).toBe("call_abc");
+      expect(toolUsePart.name).toBe("shell_cmd");
+      // Arguments start empty — appended by subsequent deltas.
+      expect(toolUsePart.arguments).toBe("");
+      expect(cache.streaming.currentKind).toBe("tool_use");
+    });
+
+    it("appends arguments_delta fragments to the matching tool_use part", () => {
+      useStore.getState().addChatDelta("agent-1", {
+        messageIndex: 1,
+        deltaIndex: 0,
+        partType: "tool_use_start",
+        toolCallId: "call_abc",
+        toolCallName: "shell_cmd",
+      });
+      useStore.getState().addChatDelta("agent-1", {
+        messageIndex: 1,
+        deltaIndex: 1,
+        content: '{"command":',
+        partType: "tool_use_delta",
+        toolCallId: "call_abc",
+      });
+      useStore.getState().addChatDelta("agent-1", {
+        messageIndex: 1,
+        deltaIndex: 2,
+        content: ' "ls"}',
+        partType: "tool_use_delta",
+        toolCallId: "call_abc",
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      const toolUsePart = cache.streaming.parts.find(
+        (p) => p.kind === "tool_use",
+      );
+      expect(toolUsePart.arguments).toBe('{"command": "ls"}');
+    });
+
+    it("treats a duplicate tool_use_start as a no-op (preserves existing arguments)", () => {
+      useStore.getState().addChatDelta("agent-1", {
+        messageIndex: 1,
+        deltaIndex: 0,
+        partType: "tool_use_start",
+        toolCallId: "call_abc",
+        toolCallName: "shell_cmd",
+      });
+      useStore.getState().addChatDelta("agent-1", {
+        messageIndex: 1,
+        deltaIndex: 1,
+        content: '{"command":"ls"}',
+        partType: "tool_use_delta",
+        toolCallId: "call_abc",
+      });
+      // A retransmitted start (same id) must NOT clobber the
+      // accumulated arguments.
+      useStore.getState().addChatDelta("agent-1", {
+        messageIndex: 1,
+        deltaIndex: 2,
+        partType: "tool_use_start",
+        toolCallId: "call_abc",
+        toolCallName: "shell_cmd",
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      const toolUseParts = cache.streaming.parts.filter(
+        (p) => p.kind === "tool_use" && p.id === "call_abc",
+      );
+      expect(toolUseParts).toHaveLength(1);
+      expect(toolUseParts[0].arguments).toBe('{"command":"ls"}');
+    });
+
+    it("drops a tool_use_delta that arrives before any matching start (no part to append to)", () => {
+      useStore.getState().addChatDelta("agent-1", {
+        messageIndex: 1,
+        deltaIndex: 0,
+        content: '{"command":"ls"}',
+        partType: "tool_use_delta",
+        toolCallId: "call_orphan",
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      // No tool_use part was created; the delta was a no-op.
+      expect(
+        cache.streaming.parts.find((p) => p.kind === "tool_use"),
+      ).toBeUndefined();
+    });
+
+    it("preserves thinking parts that streamed in before a tool_use_start arrived", () => {
+      useStore.getState().addChatDelta("agent-1", {
+        messageIndex: 1,
+        deltaIndex: 0,
+        content: "Let me check the directory. ",
+        partType: "thinking",
+      });
+      useStore.getState().addChatDelta("agent-1", {
+        messageIndex: 1,
+        deltaIndex: 1,
+        partType: "tool_use_start",
+        toolCallId: "call_abc",
+        toolCallName: "shell_cmd",
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      const thinkingPart = cache.streaming.parts.find(
+        (p) => p.kind === "thinking",
+      );
+      const toolUsePart = cache.streaming.parts.find(
+        (p) => p.kind === "tool_use",
+      );
+      expect(thinkingPart.thinking).toBe("Let me check the directory. ");
+      expect(toolUsePart.id).toBe("call_abc");
     });
   });
 

@@ -274,7 +274,8 @@ defmodule Nest.Agents.Agent.ChatPipeline do
             active_message_index: stamped_index,
             pending_api_logs:
               clear_pending_api_logs(state, stamped_index).chat_state.pending_api_logs,
-            streaming_acc: Streaming.new(stamped_index + 1)
+            streaming_acc: Streaming.new(stamped_index + 1),
+            tool_index_map: %{}
         }
     }
   end

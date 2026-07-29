@@ -32,13 +32,18 @@ import { ThinkingBlock } from "./ThinkingBlock";
 import { MessageContent } from "./MessageContent";
 import { ToolCalls } from "./ToolCalls";
 import { ToolResults } from "./ToolResults";
+import { DelegatedTask } from "./DelegatedTaskBlock";
 import { ApiLogsBlock } from "./ApiLogsBlock";
 import { SystemMessageContent } from "./SystemMessageContent";
 import { StreamingDots } from "./StreamingDots";
 
 import { messageToMarkdown } from "../utils/formatMessage.js";
 import { messageText } from "../utils/messageText.js";
-import { thinkingFor, textPartsFor } from "../utils/messageParts.js";
+import {
+  thinkingFor,
+  textPartsFor,
+  toolCallsFromParts,
+} from "../utils/messageParts.js";
 import { stripModePrefix } from "../utils/stripModePrefix.js";
 
 function Message({ message, agentName }) {
@@ -46,6 +51,15 @@ function Message({ message, agentName }) {
   const isSystem = message.role === "system";
   const isTool = message.role === "tool";
   const isPartial = message.isPartial ?? false;
+
+  // Derive tool calls from the canonical `parts` shape so
+  // streaming partials (whose `message.toolCalls` is never
+  // populated — only the finalized message sets that field)
+  // render in-flight tool calls as soon as the BEAM broadcasts
+  // them. For finalized messages the derived value matches
+  // `message.toolCalls`, so this is just a more robust read.
+  const toolCalls =
+    toolCallsFromParts(message.parts) ?? message.toolCalls ?? [];
 
   const bubbleClass = isUser
     ? "bg-blue-50 ml-12"
@@ -135,7 +149,8 @@ function Message({ message, agentName }) {
             className="text-gray-800"
           />
         )}
-        <ToolCalls toolCalls={message.toolCalls} />
+        <ToolCalls toolCalls={toolCalls} />
+        <DelegatedTask message={message} agentName={agentName} />
         <ToolResults toolResults={message.toolResults} />
         <ApiLogsBlock apiLogs={message.apiLogs} />
         {isPartial && (

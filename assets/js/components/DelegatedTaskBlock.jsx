@@ -16,11 +16,13 @@
  *     reasonable preview; the full text is in the
  *     `:tool` message right next to the tool call).
  *
- * The block is rendered between an assistant message's
- * `ToolCalls` block and the matching `ToolResults` block
- * (in the next assistant or tool message). `DelegatedTasks`
- * collects `clone_agent` calls from the messages list and
- * pairs them with their results.
+ * The block is rendered inside the assistant message's
+ * `MessageBubble`, after its `ToolCalls` block. This puts
+ * the card visually between the assistant message and the
+ * matching `ToolResults` block (which lives in a separate
+ * `:tool` message). `DelegatedTask` reads `clone_agent`
+ * tool calls from a single assistant message and pairs them
+ * with their results by `tool_call_id`.
  */
 
 import { Link } from "react-router-dom";
@@ -29,63 +31,50 @@ import { useStore } from "../store";
 const EMPTY_MESSAGES = [];
 
 /**
- * Look across the agent's message list for `clone_agent`
- * tool calls (in `assistant` messages) and their matching
- * tool results (in `tool` messages), then render a
- * DelegatedTaskBlock for each pair. Pairs are matched by
- * `tool_call_id`; an unmatched call renders as "running".
+ * Render one `DelegatedTaskBlock` per `clone_agent` tool
+ * call in a single assistant message. Mounted inside
+ * `MessageBubble`, between `<ToolCalls />` and
+ * `<ToolResults />`, so the card sits inline with the
+ * conversation flow rather than stacking at the bottom of
+ * the chat log.
  *
- * Subscribes to `cache.messages` and `cache.partial` via
- * granular selectors. The component re-renders when either
- * slice changes, but during streaming only `partial` changes
- * — `messages` is preserved across deltas, so the body
- * falls through the same `cloneCalls` rebuild path on
- * every delta. The work is O(N) over messages (where N is
- * the count of `clone_agent` calls) which is small in
- * practice.
+ * Pairs each call with its matching `:tool_result` from the
+ * agent's committed messages via `tool_call_id`; an
+ * unmatched call renders as "Running". Subscribes to
+ * `cache.messages` only — the streaming partial is rendered
+ * through the same `MessageBubble` path, so a single
+ * component covers both committed and in-flight messages.
+ * Returns null when the message has no `clone_agent` calls,
+ * so there's no rendering cost for the common case.
  *
- * Mounted alongside the existing `ToolCalls` / `ToolResults`
- * blocks in the chat page; the user sees the same response
- * through two lenses — the raw tool use AND the sub-agent
- * tree view.
+ * Tolerates either snake_case (`tool_calls`,
+ * `tool_results`, `tool_call_id`, `is_error`) or camelCase
+ * (`toolCalls`, `toolResults`, `toolCallId`, `isError`) keys
+ * — both shapes exist in the cache depending on which
+ * message batch populated it.
  */
-export function DelegatedTasks({ agentName }) {
+export function DelegatedTask({ message, agentName }) {
   const messages = useStore(
     (state) => state.agentsCache[agentName]?.messages ?? EMPTY_MESSAGES,
   );
-  const partial = useStore(
-    (state) => state.agentsCache[agentName]?.partial ?? null,
-  );
 
+  const calls = message.toolCalls || message.tool_calls || [];
   const cloneCalls = [];
-  for (const m of messages) {
-    const calls = m.toolCalls || m.tool_calls || [];
-    for (const c of calls || []) {
-      if (c.name === "clone_agent") {
-        cloneCalls.push({ call: c, ownerIndex: m.index });
-      }
-    }
-  }
-  if (partial && partial.role === "assistant") {
-    const calls = partial.toolCalls || partial.tool_calls || [];
-    for (const c of calls || []) {
-      if (c.name === "clone_agent") {
-        cloneCalls.push({ call: c, ownerIndex: partial.index });
-      }
+  for (const c of calls) {
+    if (c && c.name === "clone_agent") {
+      cloneCalls.push(c);
     }
   }
   if (cloneCalls.length === 0) return null;
 
   // Build a map of tool_call_id → result. Results live in
-  // tool messages that follow the calling assistant message,
-  // but we don't strictly require ordering — index match is
-  // enough for the tool-call pairing wire format. Tolerate
-  // either snake_case (older wire / DB-restored shapes) or
-  // camelCase (in-memory cache shape) keys.
+  // tool messages that follow the calling assistant message;
+  // we don't strictly require ordering — index match is
+  // enough for the tool-call pairing wire format.
   const resultById = new Map();
   for (const m of messages) {
     const results = m.toolResults || m.tool_results || [];
-    for (const r of results || []) {
+    for (const r of results) {
       const id = r.tool_call_id ?? r.toolCallId;
       if (id) resultById.set(id, r);
     }
@@ -93,7 +82,7 @@ export function DelegatedTasks({ agentName }) {
 
   return (
     <div className="mt-2 space-y-2">
-      {cloneCalls.map(({ call }) => {
+      {cloneCalls.map((call) => {
         const result = resultById.get(call.id);
         const resultContent = result?.content ?? null;
         // For now we surface the response content; the
@@ -107,7 +96,7 @@ export function DelegatedTasks({ agentName }) {
             key={call.id}
             toolCallId={call.id}
             instruction={
-              call.arguments?.instruction ?? call.arguments?.instruction ?? ""
+              call.arguments?.instruction ?? call.input?.instruction ?? ""
             }
             response={result ? resultContent : null}
             isError={

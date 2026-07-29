@@ -111,4 +111,48 @@ defmodule Nest.Agents.Agent.BroadcastsTest do
       assert log =~ "Server-side issue"
     end
   end
+
+  describe "delta_tool_use_start / delta_tool_use_delta (live tool-call streaming)" do
+    # These broadcasts surface Anthropic / OpenAI tool-use events
+    # as `chat:delta` events so the JS streaming partial can
+    # render an in-flight `clone_agent` (or any other) tool call
+    # before the assistant message finalizes. Without this, the
+    # user sees only the thinking block until the message lands
+    # and the bubble "pops" with a tool call at the end.
+
+    test "delta_tool_use_start carries id, name, and the block index", %{agent_id: agent_id} do
+      Broadcasts.delta_tool_use_start(agent_id, 7, "call_abc", "clone_agent", 0)
+
+      assert_receive {:chat_delta,
+                      %{
+                        index: 7,
+                        part_type: :tool_use_start,
+                        tool_call_id: "call_abc",
+                        tool_call_name: "clone_agent",
+                        tool_call_block_index: 0,
+                        content: "",
+                        chars_start: 0,
+                        chars_end: 0
+                      }},
+                     500
+    end
+
+    test "delta_tool_use_delta carries the resolved id and the argument fragment", %{
+      agent_id: agent_id
+    } do
+      Broadcasts.delta_tool_use_delta(agent_id, 7, "call_abc", 0, ~s({"instru))
+
+      assert_receive {:chat_delta,
+                      %{
+                        index: 7,
+                        part_type: :tool_use_delta,
+                        tool_call_id: "call_abc",
+                        tool_call_block_index: 0,
+                        content: ~s({"instru),
+                        chars_start: 0,
+                        chars_end: 0
+                      }},
+                     500
+    end
+  end
 end

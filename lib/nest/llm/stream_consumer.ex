@@ -25,6 +25,14 @@ defmodule Nest.LLM.StreamConsumer do
           on_text: (String.t(), sent() -> sent()),
           on_thinking: (String.t(), sent() -> sent()),
           on_signature: (term() -> any()),
+          # Optional hooks invoked on tool-call events. Both default
+          # to `nil` (no-op). The HTTP worker sets them to forward
+          # the event to the Agent's mailbox as a `:delta_received`
+          # tag so the JS streaming partial can render in-flight
+          # tool calls. The compactor leaves them `nil` — its LLM
+          # call doesn't emit tool calls.
+          on_tool_call_start: (map(), sent() -> sent()),
+          on_tool_call_delta: (map(), sent() -> sent()),
           # Optional cooperative-stop callback. Invoked at the
           # start of every event in the stream; return `true`
           # to halt the stream with a `nil` response (so the
@@ -42,6 +50,8 @@ defmodule Nest.LLM.StreamConsumer do
   defstruct on_text: nil,
             on_thinking: nil,
             on_signature: nil,
+            on_tool_call_start: nil,
+            on_tool_call_delta: nil,
             should_stop: nil
 
   @doc """
@@ -117,12 +127,26 @@ defmodule Nest.LLM.StreamConsumer do
     {Client.accumulate(acc, {:thinking, text}), response, error, new_sent}
   end
 
-  defp dispatch({:tool_call_start, event}, {acc, response, error, sent}, _consumer) do
-    {Client.accumulate(acc, {:tool_call_start, event}), response, error, sent}
+  defp dispatch({:tool_call_start, event}, {acc, response, error, sent}, consumer) do
+    new_sent =
+      if consumer.on_tool_call_start do
+        consumer.on_tool_call_start.(event, sent)
+      else
+        sent
+      end
+
+    {Client.accumulate(acc, {:tool_call_start, event}), response, error, new_sent}
   end
 
-  defp dispatch({:tool_call_delta, event}, {acc, response, error, sent}, _consumer) do
-    {Client.accumulate(acc, {:tool_call_delta, event}), response, error, sent}
+  defp dispatch({:tool_call_delta, event}, {acc, response, error, sent}, consumer) do
+    new_sent =
+      if consumer.on_tool_call_delta do
+        consumer.on_tool_call_delta.(event, sent)
+      else
+        sent
+      end
+
+    {Client.accumulate(acc, {:tool_call_delta, event}), response, error, new_sent}
   end
 
   defp dispatch({:thinking_signature, sig}, {acc, response, error, sent}, consumer) do

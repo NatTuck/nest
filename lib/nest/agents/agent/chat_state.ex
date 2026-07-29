@@ -88,6 +88,7 @@ defmodule Nest.Agents.Agent.ChatState do
   `Compaction.ResultHandler.handle_success/3`, so warnings
   re-fire if usage rises again after the history was summarized.
   """
+  # credo:disable-for-next-line Credo.Check.Warning.StructFieldAmount
   defstruct messages: [],
             history: [],
             last_compaction_index: -1,
@@ -113,7 +114,17 @@ defmodule Nest.Agents.Agent.ChatState do
             # `chat:compaction-loop`. The user clicks an OK
             # button on the banner to clear the state and
             # resume accepting new `chat:message` traffic.
-            consecutive_compaction_count: 0
+            consecutive_compaction_count: 0,
+            # Index→id map for tool-use streaming. Anthropic
+            # sends subsequent `input_json_delta` events keyed
+            # by the tool-call's `index` (not its concrete id);
+            # we maintain this map so the JS streaming partial
+            # can be told the concrete id of the call each
+            # fragment belongs to. Populated by the
+            # `tool_use_start` handler in `LLMStreamHandler`,
+            # reset to `%{}` when the streaming accumulator
+            # resets (start of a new LLM iteration).
+            tool_index_map: %{}
 
   @type mid_turn_entry :: %{entry: Nest.Agents.Agent.ChatTurn.State.entry() | nil}
 end

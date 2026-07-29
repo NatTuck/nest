@@ -131,6 +131,22 @@ defmodule Nest.Agents.Agent.ChatTurn.HTTPWorker do
       on_signature: fn _sig ->
         :ok
       end,
+      # Tool-call events are forwarded to the Agent so the JS
+      # streaming partial can render the in-flight tool use as a
+      # first-class `ToolCalls` card instead of waiting for the
+      # message to finalize. Without this, a think-only assistant
+      # message that emits a tool call stays invisible to the
+      # UI until the BEAM broadcasts the assistant message.
+      # The Agent resolves `:by_index` ids (Anthropic) into the
+      # concrete tool-call id via its own streaming accumulator.
+      on_tool_call_start: fn event, sent ->
+        send(state.ctx.agent_pid, {:delta_received, event, :tool_use_start})
+        sent
+      end,
+      on_tool_call_delta: fn event, sent ->
+        send(state.ctx.agent_pid, {:delta_received, event, :tool_use_delta})
+        sent
+      end,
       on_error: fn error ->
         error_msg = Runner.format_error(error)
         send(state.ctx.agent_pid, {:llm_error, error_msg})

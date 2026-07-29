@@ -37,6 +37,11 @@ export function textPartsFor(message) {
 // are present, mirroring the live-area derivation in
 // `addChatMessage` so a re-broadcast tool-call message renders
 // the same in the history pane.
+//
+// `arguments` is JSON-decoded when it's a string (the
+// streaming shape appends fragments into a string buffer),
+// and passed through unchanged when it's already an object
+// (the finalized / DB-restored shape).
 export function toolCallsFromParts(parts) {
   if (!Array.isArray(parts)) return null;
   const tcs = parts.filter((p) => p && p.kind === "tool_use");
@@ -44,8 +49,19 @@ export function toolCallsFromParts(parts) {
   return tcs.map((p) => ({
     id: p.id,
     name: p.name,
-    arguments: p.arguments || {},
+    arguments: decodeArguments(p.arguments),
   }));
+}
+
+function decodeArguments(args) {
+  if (typeof args !== "string") return args || {};
+  if (args === "") return {};
+  try {
+    const parsed = JSON.parse(args);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
 }
 
 // Derive the legacy `toolResults` shape from a message's `parts`.

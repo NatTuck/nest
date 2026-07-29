@@ -174,37 +174,62 @@ defmodule Nest.Agents.Agent.Broadcasts do
   # metadata. The frontend uses `chars_start`/`chars_end` to splice
   # the delta into the assistant message without flicker.
   def delta_text(agent_id, message_index, content, chars_start) do
-    chars_end = chars_start + String.length(content)
-
-    Phoenix.PubSub.broadcast(
-      PubSub,
-      "agent:#{agent_id}",
-      {:chat_delta,
-       %{
-         index: message_index,
-         content: content,
-         chars_start: chars_start,
-         chars_end: chars_end,
-         part_type: :text
-       }}
-    )
+    broadcast_delta(agent_id, %{
+      index: message_index,
+      content: content,
+      chars_start: chars_start,
+      chars_end: chars_start + String.length(content),
+      part_type: :text
+    })
   end
 
   def delta_thinking(agent_id, message_index, content, chars_start) do
-    chars_end = chars_start + String.length(content)
+    broadcast_delta(agent_id, %{
+      index: message_index,
+      content: content,
+      chars_start: chars_start,
+      chars_end: chars_start + String.length(content),
+      part_type: :thinking
+    })
+  end
 
-    Phoenix.PubSub.broadcast(
-      PubSub,
-      "agent:#{agent_id}",
-      {:chat_delta,
-       %{
-         index: message_index,
-         content: content,
-         chars_start: chars_start,
-         chars_end: chars_end,
-         part_type: :thinking
-       }}
-    )
+  # Broadcasts a tool-use start so the JS streaming partial
+  # can create a `tool_use` part with the call's id+name
+  # before the first arguments fragment arrives. `index` is
+  # the LLM content-block index; the Agent's `tool_index_map`
+  # uses it to resolve later `:by_index`-keyed deltas to
+  # this concrete id.
+  def delta_tool_use_start(agent_id, message_index, id, name, index) do
+    broadcast_delta(agent_id, %{
+      index: message_index,
+      content: "",
+      chars_start: 0,
+      chars_end: 0,
+      part_type: :tool_use_start,
+      tool_call_id: id,
+      tool_call_name: name,
+      tool_call_block_index: index
+    })
+  end
+
+  # Broadcasts a tool-use arguments fragment so the JS
+  # streaming partial can append to the call's `arguments`.
+  # `id` is the concrete tool-call id (resolved from
+  # `:by_index` upstream).
+  def delta_tool_use_delta(agent_id, message_index, id, index, fragment) do
+    broadcast_delta(agent_id, %{
+      index: message_index,
+      content: fragment,
+      chars_start: 0,
+      chars_end: 0,
+      part_type: :tool_use_delta,
+      tool_call_id: id,
+      tool_call_block_index: index
+    })
+  end
+
+  defp broadcast_delta(agent_id, payload) do
+    Phoenix.PubSub.broadcast(PubSub, "agent:#{agent_id}", {:chat_delta, payload})
   end
 
   # Wire-format status payload. Always include the current context_limit

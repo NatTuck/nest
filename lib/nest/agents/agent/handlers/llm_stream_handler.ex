@@ -115,10 +115,78 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
     end
   end
 
+  # Tool-use streaming. The HTTP worker forwards
+  # `{:tool_call_start, %{id, name, index}}` and
+  # `{:tool_call_delta, %{id, index, arguments_delta}}` from
+  # the LLM client's canonical event stream. We broadcast
+  # them as `chat:delta` with `part_type: :tool_use_start`
+  # / `:tool_use_delta` so the JS streaming partial can
+  # render the in-flight tool call. The `tool_index_map`
+  # resolves `:by_index` ids (Anthropic's
+  # `input_json_delta` for tool calls) into the concrete
+  # tool-call id so the JS only ever sees concrete ids.
+  defp delta_received(%{id: id, name: name, index: index}, :tool_use_start, state) do
+    acc = state.chat_state.streaming_acc
+
+    if acc == nil do
+      {:noreply, state}
+    else
+      new_tool_index_map =
+        if is_binary(id),
+          do: Map.put(state.chat_state.tool_index_map, index, id),
+          else: state.chat_state.tool_index_map
+
+      Broadcasts.delta_tool_use_start(state.name, acc.index, id, name, index)
+
+      {:noreply,
+       %{
+         state
+         | chat_state: %{state.chat_state | tool_index_map: new_tool_index_map}
+       }}
+    end
+  end
+
+  defp delta_received(%{id: id, index: index, arguments_delta: fragment}, :tool_use_delta, state) do
+    acc = state.chat_state.streaming_acc
+
+    if acc == nil do
+      {:noreply, state}
+    else
+      concrete_id = resolve_tool_call_id(id, index, state.chat_state.tool_index_map)
+
+      if concrete_id do
+        Broadcasts.delta_tool_use_delta(
+          state.name,
+          acc.index,
+          concrete_id,
+          index,
+          fragment
+        )
+      end
+
+      {:noreply, state}
+    end
+  end
+
   defp delta_received(delta_content, _part_type, state) do
     # For unsupported types, append as text for now.
     delta_received(delta_content, :text, state)
   end
+
+  # Resolve an LLM-emitted tool-call id to a concrete string id.
+  # Anthropic's `input_json_delta` events (and OpenAI's
+  # subsequent tool-call deltas) use `id: :by_index` with the
+  # block's index, so we look it up in the running map seeded
+  # by `tool_use_start` events. Returns `nil` if the index
+  # isn't known yet — the JS doesn't get a delta for it (the
+  # next `tool_use_start` will arrive and we'll catch up).
+  defp resolve_tool_call_id(id, _index, _map) when is_binary(id), do: id
+
+  defp resolve_tool_call_id(:by_index, index, map) do
+    Map.get(map, index)
+  end
+
+  defp resolve_tool_call_id(_other, _index, _map), do: nil
 
   # Anthropic's extended thinking emits a signature alongside the
   # thinking content. Stash it on the streaming accumulator so it
@@ -158,7 +226,8 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
             active_message_index: stamped_index,
             pending_api_logs:
               Nest.Agents.Agent.__clear_pending_api_logs__(state, stamped_index).chat_state.pending_api_logs,
-            status: :idle
+            status: :idle,
+            tool_index_map: %{}
         }
     }
 
@@ -244,7 +313,8 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
           | pending_api_logs:
               Nest.Agents.Agent.__clear_pending_api_logs__(state, stamped_index).chat_state.pending_api_logs,
             status: :streaming,
-            streaming_acc: Streaming.new(stamped_index + 1)
+            streaming_acc: Streaming.new(stamped_index + 1),
+            tool_index_map: %{}
         }
     }
 

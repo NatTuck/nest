@@ -169,6 +169,66 @@ const partialPartsToText = (parts) =>
     .map((p) => p.text || "")
     .join("");
 
+// `accumulatePart` only handles the text/thinking/refusal shapes
+// cleanly. Tool-use streaming has a different shape (`{id, name,
+// arguments}` per part), so we route tool_use_start and
+// tool_use_delta through these dedicated helpers. The Agent
+// already resolves `:by_index` ids to concrete strings before
+// broadcasting, so the JS never sees `:by_index`.
+
+// Push a new tool_use part onto the parts list. Idempotent
+// against a duplicate start (same `id` already present): we
+// don't re-push and don't mutate the existing part — the second
+// event is treated as a no-op so a retransmitted start doesn't
+// lose any arguments the JS has already accumulated.
+const applyToolUseStart = (parts, { id, name }) => {
+  if (parts.some((p) => p && p.kind === "tool_use" && p.id === id)) {
+    return parts;
+  }
+  return [...parts, { kind: "tool_use", id, name, arguments: "" }];
+};
+
+// Route a streaming delta to the right accumulator helper based
+// on its `partType`. Returns the updated parts list. Text/
+// thinking/refusal and the legacy `tool_use` shape (used by
+// older tests) still go through `accumulatePart` so existing
+// call paths keep working; the new `tool_use_start` /
+// `tool_use_delta` shapes route through the dedicated helpers
+// above.
+const applyPartDelta = (parts, partType, payload) => {
+  if (partType === "tool_use_start") {
+    return applyToolUseStart(parts, {
+      id: payload.toolCallId,
+      name: payload.toolCallName,
+    });
+  }
+  if (partType === "tool_use_delta") {
+    return applyToolUseDelta(parts, {
+      id: payload.toolCallId,
+      argumentsDelta: payload.content || "",
+    });
+  }
+  return parts;
+};
+
+// Append an `arguments_delta` fragment to the matching tool_use
+// part. Returns the parts list unchanged if no part with the
+// given `id` exists yet (the BEAM may emit a delta before the
+// matching start — uncommon but possible if the wire reorder
+// happens; in that case we drop the fragment and the JS's first
+// paint of the tool call just shows the name without arguments).
+const applyToolUseDelta = (parts, { id, argumentsDelta }) => {
+  let found = false;
+  const next = parts.map((p) => {
+    if (p && p.kind === "tool_use" && p.id === id) {
+      found = true;
+      return { ...p, arguments: (p.arguments || "") + argumentsDelta };
+    }
+    return p;
+  });
+  return found ? next : parts;
+};
+
 // Legacy streaming accumulator wire format (kept on the BEAM
 // side as `content` + `segments: [{type, content}]` +
 // `currentType`) → canonical `parts: [{kind, text|thinking}]`
@@ -782,14 +842,28 @@ export const useStore = create(
             };
           }
 
-          // Apply the delta
-          const { parts: newParts, currentKind: newCurrentKind } =
-            accumulatePart(
-              streaming.parts || [],
-              streaming.currentKind,
-              content,
-              partType,
-            );
+          // Apply the delta. The new `tool_use_start` /
+          // `tool_use_delta` shapes bypass `accumulatePart`
+          // (which handles text/thinking/refusal and the legacy
+          // `tool_use` / `tool_result` shapes) and route through
+          // dedicated helpers so the tool_use part carries
+          // proper `id`, `name`, and accumulated `arguments`
+          // from the first event onward. The BEAM resolves
+          // `:by_index` to a concrete id before broadcasting, so
+          // the JS only sees concrete ids.
+          const newParts =
+            partType === "tool_use_start" || partType === "tool_use_delta"
+              ? applyPartDelta(streaming.parts || [], partType, payload)
+              : accumulatePart(
+                  streaming.parts || [],
+                  streaming.currentKind,
+                  content,
+                  partType,
+                ).parts;
+          const newCurrentKind =
+            partType === "tool_use_start" || partType === "tool_use_delta"
+              ? "tool_use"
+              : partType || "text";
 
           set((s) => ({
             agentsCache: {
@@ -913,12 +987,18 @@ export const useStore = create(
           }
         }
 
-        const { parts: newParts, currentKind: newCurrentKind } = accumulatePart(
-          existingParts,
-          existingCurrentKind,
-          newContent,
-          partType,
-        );
+        const { parts: newParts, currentKind: newCurrentKind } =
+          partType === "tool_use_start" || partType === "tool_use_delta"
+            ? {
+                parts: applyPartDelta(existingParts, partType, payload),
+                currentKind: "tool_use",
+              }
+            : accumulatePart(
+                existingParts,
+                existingCurrentKind,
+                newContent,
+                partType,
+              );
 
         const updatedPartial = {
           ...partial,
@@ -1098,28 +1178,37 @@ export const useStore = create(
             };
 
             const direct = fromParts(message.parts) ?? message.thinking;
-            if (direct) return direct;
+
             const streamingParts =
               (streaming?.parts ?? []).length > 0
                 ? streaming.parts
                 : legacyToParts(streaming).parts;
-            if (!streamingParts.length) return direct ?? null;
-            const fromStreaming = streamingParts
-              .filter((p) => p && p.kind === "thinking")
-              .map((p) => p.thinking || "")
-              .join("");
-            if (fromStreaming) {
+
+            const fromStreaming = streamingParts.length
+              ? streamingParts
+                  .filter((p) => p && p.kind === "thinking")
+                  .map((p) => p.thinking || "")
+                  .join("")
+              : null;
+
+            // Prefer the streaming partial when it's strictly longer
+            // than the broadcast thinking — defends against a BEAM-
+            // side path that abbreviates thinking on tool-call
+            // finalization. Broadcast stays authoritative when the
+            // two are equal-length or the broadcast is longer, so a
+            // legitimate edit on the server side still wins.
+            if (fromStreaming && fromStreaming.length > (direct?.length ?? 0)) {
               console.error(
-                "[NEST REGRESSION] Thinking lost on tool-call finalization; " +
+                "[NEST REGRESSION] Broadcast thinking shorter than streaming partial; " +
                   "fell back to streaming partial. " +
-                  "The server's `build_tool_pair/3` is dropping the " +
-                  "thinking field again — see llm_runner.ex:274-288. " +
-                  "Preserved thinking:",
-                fromStreaming,
+                  "Server may be dropping/summarizing thinking on tool-call finalization.",
+                { broadcast: direct, streaming: fromStreaming },
               );
               return fromStreaming;
             }
-            return direct ?? null;
+            if (direct) return direct;
+            if (fromStreaming) return fromStreaming;
+            return null;
           })();
 
           // Derive tool calls / results from `parts` (the new

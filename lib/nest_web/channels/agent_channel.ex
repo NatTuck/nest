@@ -80,7 +80,14 @@ defmodule NestWeb.AgentChannel do
       "content" => delta.content,
       "charsStart" => delta.chars_start,
       "charsEnd" => delta.chars_end,
-      "partType" => delta.part_type
+      "partType" => delta.part_type,
+      # Tool-use fields; only present on `part_type:
+      # :tool_use_start` / `:tool_use_delta`. Omitted
+      # otherwise so the wire payload stays minimal for the
+      # hot text/thinking path.
+      "toolCallId" => delta[:tool_call_id],
+      "toolCallName" => delta[:tool_call_name],
+      "toolCallBlockIndex" => delta[:tool_call_block_index]
     })
 
     {:noreply, socket}

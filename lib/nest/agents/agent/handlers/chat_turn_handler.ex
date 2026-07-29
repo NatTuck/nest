@@ -87,7 +87,8 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
           | status: :idle,
             streaming_acc: nil,
             chat_turn_pid: nil,
-            cancelled: false
+            cancelled: false,
+            tool_index_map: %{}
         }
     }
 
@@ -269,7 +270,7 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
   defp finalize_partial_if_any(state) do
     final_message = build_partial_assistant_message(state)
     {_stamped, state} = Nest.Agents.Agent.__append_message__(state, final_message)
-    %{state | chat_state: %{state.chat_state | streaming_acc: nil}}
+    %{state | chat_state: %{state.chat_state | streaming_acc: nil, tool_index_map: %{}}}
   end
 
   defp build_partial_assistant_message(state) do

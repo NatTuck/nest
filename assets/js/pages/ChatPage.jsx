@@ -26,7 +26,6 @@ import { CompactionMarker } from "../components/CompactionMarker";
 import { StreamingDots } from "../components/StreamingDots";
 import { MessagesList } from "../components/MessagesList";
 import { StreamingMessage } from "../components/StreamingMessage";
-import { DelegatedTasks } from "../components/DelegatedTaskBlock";
 import { useScrollToBottom } from "../hooks/useScrollToBottom";
 import { stripModePrefix } from "../utils/stripModePrefix.js";
 
@@ -508,14 +507,6 @@ export function ChatPage() {
             <StreamingMessage agentName={name} />
           </>
         )}
-
-        {/* Sub-agent: surface `clone_agent` calls as a
-            first-class Delegated Task card. Rendered once
-            per conversation (NOT per message) so each
-            clone_agent tool call appears exactly once.
-            `DelegatedTasks` self-subscribes to the slices
-            it needs; ChatPage doesn't pass anything. */}
-        <DelegatedTasks agentName={name} />
 
         <div ref={setMessagesEndEl} />
       </div>
