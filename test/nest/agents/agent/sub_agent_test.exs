@@ -103,6 +103,37 @@ defmodule Nest.Agents.Agent.SubAgentTest do
     end
   end
 
+  describe "stop_pending_children/1" do
+    test "clears pending_children and walks Supervisor.stop_agent for each entry" do
+      parent = build_parent_state()
+      task_pid = self()
+      child_a = "stop-child-a-#{System.unique_integer([:positive])}"
+      child_b = "stop-child-b-#{System.unique_integer([:positive])}"
+
+      state =
+        %{
+          parent
+          | chat_state: %{
+              parent.chat_state
+              | pending_children: %{child_a => task_pid, child_b => task_pid}
+            }
+        }
+
+      # The two fake names aren't registered in the live
+      # ChildRegistry, so `Supervisor.stop_agent/1` returns
+      # `{:error, :not_found}` for each — which the helper
+      # discards. The bookkeeping assertions below are what
+      # the unit actually pins: the map resets cleanly so a
+      # late-arriving `:child_completed` becomes a defensive
+      # no-op in `handle_child_completed/4`.
+      new_state = SubAgent.stop_pending_children(state)
+      assert new_state.chat_state.pending_children == %{}
+      # Other fields are untouched.
+      assert new_state.name == state.name
+      assert new_state.chat_state.status == state.chat_state.status
+    end
+  end
+
   # Helpers
 
   defp build_parent_state do

@@ -40,6 +40,7 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
   """
 
   alias Nest.Agents.Agent.Broadcasts
+  alias Nest.Agents.Agent.SubAgent
   alias Nest.Agents.Registry, as: AgentsRegistry
   alias Nest.LLM.Client
   alias Nest.Messages.Assistant
@@ -148,10 +149,14 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
   end
 
   # The user clicked Stop. The ChatTurn killed the active
-  # worker and is winding down. Finalize the streaming
-  # accumulator (if any) as an assistant message tagged
-  # with `metadata.stopped_by_user: true`, transition to
-  # :idle, and clear bookkeeping.
+  # worker and is winding down. First, stop any spawned
+  # children that the agent has been running (the cascade
+  # walks the ChildRegistry through Supervisor.stop_agent/1
+  # — recursion is handled there, so each grandchild stops
+  # without us caring about it explicitly). Then finalize
+  # the streaming accumulator (if any) as an assistant
+  # message tagged with `metadata.stopped_by_user: true`,
+  # transition to :idle, and clear bookkeeping.
   #
   # If the streaming_acc accumulator is `nil` (no deltas
   # arrived before the stop), we still append a placeholder
@@ -159,7 +164,7 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
   # so the message list is consistent — the user clicked
   # Stop, so the assistant turn exists, just empty.
   defp chat_stopped(state) do
-    state = finalize_partial_if_any(state)
+    state = state |> SubAgent.stop_pending_children() |> finalize_partial_if_any()
 
     state = %{
       state

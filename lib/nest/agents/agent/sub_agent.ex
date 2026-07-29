@@ -175,6 +175,41 @@ defmodule Nest.Agents.Agent.SubAgent do
   end
 
   @doc """
+  Stop every agent in `state.chat_state.pending_children` and clear
+  the map. Called from `ChatTurnHandler.chat_stopped/1` so a
+  user-initiated Stop cascades through the same `Supervisor` walk
+  that `terminate/2` already does on GenServer death.
+
+  The walk is recursive for free: `Supervisor.stop_agent/1` walks
+  each child's registered grandchildren before terminating the
+  child itself, and each child's `terminate/2` re-enters
+  `cascade_terminate/1` → `Supervisor.cascade_children_only/1`,
+  so the cascade holds at any depth up to `max_depth`.
+
+  `Supervisor.stop_agent/1` returns `:ok` on success and
+  `{:error, :not_found}` when the child has already terminated
+  (e.g. it finished during the same `chat_stopped` flush). Both
+  outcomes satisfy "no descendants are running," so we discard
+  them all. `ChatRegistry`'s `:DOWN` self-cleanup keeps the
+  bookkeeping consistent if a child died between iteration steps.
+
+  The returned state has `pending_children` cleared to `%{}` so a
+  late-arriving `:child_completed` cast (a child that finished
+  milliseconds before we stopped it) becomes a defensive no-op in
+  `handle_child_completed/4` via its `Map.get`-then-`nil`
+  short-circuit.
+  """
+  @spec stop_pending_children(Agent.t()) :: Agent.t()
+  def stop_pending_children(state) do
+    state.chat_state.pending_children
+    |> Enum.each(fn {child_name, _task_pid} ->
+      _ = Supervisor.stop_agent(child_name)
+    end)
+
+    %{state | chat_state: %{state.chat_state | pending_children: %{}}}
+  end
+
+  @doc """
   Cascade-stop this agent's registered children before the
   GenServer itself is torn down. Called from
   `Nest.Agents.Agent.terminate/2`.
