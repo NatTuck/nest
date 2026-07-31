@@ -1,4 +1,4 @@
-# Stopping the parent also stops all descendant agents
+# Stopping the parent chat also stops all descendant agents
 
 ## Goal
 
@@ -34,6 +34,19 @@ The `ToolLoop.run_clone_agent/2` `receive` block matches only
 `:clone_agent_result`; it has no clause for `{:stop_chat, _}`. That's fine: the
 tool worker is killed before it would matter. The fix is on the Agent side.
 
+Note that **two independent cascade paths** coexist after this change:
+
+* `Agent.terminate/2` → `SubAgent.cascade_terminate/1` →
+  `Supervisor.cascade_children_only/1` — fires on GenServer death (lobby
+  `delete_agent`, crash, supervisor restart). Already correct.
+* `ChatTurnHandler.chat_stopped/1` → `SubAgent.stop_pending_children/1`
+  (new) → `Supervisor.stop_agent/1` per child — fires on user-initiated Stop.
+
+Both paths terminate every descendant and rely on `ChildRegistry`'s
+`:DOWN`-based self-cleanup to keep bookkeeping consistent. We deliberately do
+not unify them: chat-stop must keep the parent GenServer alive while still
+tearing down the rest of the tree, which is a different shape than `terminate/2`.
+
 ## Design
 
 ### Where to put the cascade
@@ -41,19 +54,18 @@ tool worker is killed before it would matter. The fix is on the Agent side.
 `ChatTurnHandler.chat_stopped/1` is the right insertion point. By the time it
 runs:
 
-- The ChatTurn has stopped (`Lifecycle.stop_chat/2` already returned
+* The ChatTurn has stopped (`Lifecycle.stop_chat/2` already returned
   `{:stop, :normal, _}`).
-- The active worker (tool worker Task) has been killed, so there are no
+* The active worker (tool worker Task) has been killed, so there are no
   in-flight tool workers that could race a `:clone_agent_result` send.
-- `state.chat_state.pending_children` still contains the unconsumed
+* `state.chat_state.pending_children` still contains the unconsumed
   `{child_name, task_pid}` entries (those were never cleared because the worker
   died before `handle_child_completed` could run).
-- The parent is about to transition to `:idle` and broadcast the new status —
+* The parent is about to transition to `:idle` and broadcast the new status —
   children stopping is part of "the chat is done."
 
-We do this **before** `finalize_partial_if_any` so the side-effect ordering in
-the user-visible timeline is "stop requested → children stopped → chat turn
-unwinds → partial finalized → status goes idle."
+We do this **before** `finalize_partial_if_any` so the user-visible timeline
+is "stop requested → children stopped → partial finalized → status goes idle."
 
 ### What to call
 
@@ -82,12 +94,12 @@ We treat both as success — the goal is "no descendants are running," and a
 We could trigger the cascade earlier, in `StopHandler.stop_chat_requested/2`.
 Two reasons against:
 
-- `stop_chat_requested/2` runs *before* the ChatTurn has unwound. The active
+* `stop_chat_requested/2` runs *before* the ChatTurn has unwound. The active
   worker is still alive at that point; if it is in the middle of executing a
   regular (non-`clone_agent`) tool, killing children has no race but the
   messaging order is messier ("Stop arrived → children killed → tool worker
   killed → chat_turn stopped → partial finalized").
-- `chat_stopped/1` is the natural "end of turn" point. It already owns
+* `chat_stopped/1` is the natural "end of turn" point. It already owns
   partial finalization and the `:idle` transition. Adding one more cleanup
   step there keeps the lifecycle reasoning in one place.
 
@@ -117,11 +129,11 @@ def stop_pending_children(state) do
 end
 ```
 
-- Clears `pending_children` in the returned state so a subsequent
+* Clears `pending_children` in the returned state so a subsequent
   `:child_completed` cast (a child that finished just before we stopped it)
   becomes a defensive no-op in `handle_child_completed/4` (already handled —
   it `Map.get`s and short-circuits on `nil`).
-- Best-effort via the `= _` discard; `not_found` is fine, anything else
+* Best-effort via the `= _` discard; `not_found` is fine, anything else
   surfaces in the test logs but doesn't crash the parent.
 
 ### 2. `lib/nest/agents/agent/handlers/chat_turn_handler.ex`
@@ -152,6 +164,39 @@ existing `alias Nest.Agents.Agent.Broadcasts`).
 
 ## Tests
 
+### Test entry point: direct `{:chat_stopped, _}` cast, NOT `Agents.stop_chat/2`
+
+`StopHandler.stop_chat_requested/2` only sends `{:stop_chat, from}` to the
+ChatTurn **when `state.chat_state.chat_turn_pid` is a pid**. With no ChatTurn
+in flight (exactly what the test setup produces — `raw :clone_agent_request`
+without ever starting a turn), it just sets `cancelled = true` and
+`chat_stopped/1` is never invoked. Calling `Agents.stop_chat/2` from the test
+therefore exercises nothing.
+
+The E2E tests instead drive the new path by sending the `{:chat_stopped, _}`
+message the ChatTurn would have sent, directly to the parent GenServer:
+
+```elixir
+send(parent_pid, {:chat_stopped, parent_pid})
+:sys.get_state(parent_pid)  # flushes the parent's mailbox
+```
+
+* `handle_info/2` routes the message through `Handlers.handle/2` →
+  `ChatTurnHandler.handle/2` → `chat_stopped/1`. The `_chat_turn_pid` argument
+  is unused except for the in-handler reset to `nil`.
+* `:sys.get_state/1` is synchronous and drains the parent's mailbox before
+  returning the state, so subsequent assertions on the parent's
+  `chat_state.chat_turn_pid`, `cancelled`, and `pending_children` are
+  deterministic.
+* `Agent.stop_chat/2` is therefore deliberately not covered here. Its
+  end-to-end pathway (channel → StopHandler → ChatTurn → Agent) belongs in a
+  future channel-driven test if we ever want one; the unit under test here is
+  `chat_stopped/1`'s cascade.
+
+The `ChildRegistry` `:DOWN`-based cleanup is asynchronous, so post-conditions
+that depend on it (registry misses, `children_of/1 == []`) still need
+`eventually` with a small timeout.
+
 ### `test/nest/agents/agent/clone_agent_chat_stop_test.exs` (new)
 
 `use Nest.DataCase, async: false` — same constraint as the registration test
@@ -160,72 +205,93 @@ because it touches the live `ChildRegistry` and `Supervisor`.
 Setup mirrors `clone_agent_registration_test.exs`: ensure `ChildRegistry` is
 supervised, swap parent to `MockClient`, stub `Nest.Agents.chat/2` so children
 do not actually drive an LLM cycle, register a vocation with `clone_agent` in
-its tool list.
+its tool list. **Reuse the `start_parent/1`, `upsert_vocation/0`,
+`assert_registry_misses/1`, and `swap_to_mock/1` helpers verbatim** from
+`clone_agent_registration_test.exs` (or factor them into a shared test helper
+module if the duplication bothers a reviewer; leaving them duplicated for now
+keeps each test file self-contained).
 
 Test cases:
 
-1. **`"stopping the parent chat terminates the spawned child"`** — start
-   parent, raw `:clone_agent_request` (so the child is registered but never
-   advances), then send `chat:stop` via
-   `Nest.Agents.Agent.stop_chat(parent_pid, self())`. Assert
-   `eventually AgentsRegistry.lookup(child_name) == {:error, :not_found}` and
-   `ChildRegistry.children_of(parent_name) == []`.
+1. **`"chat_stopped terminates the spawned child and clears pending_children"`**
+   — start parent, raw `:clone_agent_request` (so the child is registered but
+   never advances), assert
+   `pending_children[child_name] == self()` (sanity), then
+   `send(parent_pid, {:chat_stopped, parent_pid})` and `:sys.get_state/1` to
+   flush. Assert:
+
+   * `state.chat_state.pending_children == %{}`
+   * `state.chat_state.chat_turn_pid == nil`
+   * `state.chat_state.cancelled == false`
+   * `state.chat_state.status == :idle`
+   * `eventually AgentsRegistry.lookup(child_name) == {:error, :not_found}`
+   * `eventually ChildRegistry.children_of(parent_name) == []`
+
+   This single test covers what was originally test #1 and test #3 in the
+   earlier note — same code path, all post-conditions asserted together.
 
 2. **`"the cascade walks grandchildren"`** — start parent A; raw-spawn child B
    from A (so B is registered under A and has no chat running); raw-spawn
    child C from B (so C is registered under B and is the grandchild).
-   `stop_chat` A. Assert all three are gone and both
-   `ChildRegistry.children_of(A)` and `ChildRegistry.children_of(B)` are
-   empty lists.
+   `send(A, {:chat_stopped, A})` then `:sys.get_state(A)`. Assert all three are
+   gone and both `ChildRegistry.children_of(A)` and
+   `ChildRegistry.children_of(B)` are empty lists (`eventually`).
 
-3. **`"clear_pending_children is reflected on :get_pending_children"`** —
-   same setup as #1, after `chat_stopped` is processed,
-   `GenServer.call(parent_pid, :get_pending_children)` returns `%{}`.
-
-4. **`"a child that completed just before stop is still merged into
-   descendant_usage"`** — direct-cast `:child_completed` with a known usage
-   map into the parent (using the `SubAgent.handle_child_completed/4` path
-   that the existing `sub_agent_test.exs` already covers), then `stop_chat`.
-   Assert the parent's `descendant_usage` retains the merged tokens (i.e. the
-   order in test #1's race window: completed-before-stop wins). This pins the
-   behavior so a future refactor doesn't accidentally lose usage.
+3. **`"a child that completed just before stop is still merged into
+   descendant_usage"`** — same setup, but **before** sending
+   `{:chat_stopped, _}`, direct-cast `{:child_completed, child_name, "ok",
+   %{input: 5, output: 7, cost: 0.42}}` to the parent
+   (the same shape `chat_idle/1` would have produced through
+   `notify_parent_on_idle/2`). Then send `{:chat_stopped, _}` and flush.
+   Assert `state.llm_metrics.descendant_usage` retains the merged tokens
+   (using `Broadcasts.total_usage(%{}, child_usage)` as the expected value).
+   This pins the race-window behavior so a future refactor doesn't
+   accidentally lose usage when a child completes during the stop transition.
 
 ### `test/nest/agents/agent/sub_agent_test.exs` (extend)
 
 Add a unit test for `SubAgent.stop_pending_children/1`:
 
-- Synthesize a state with two pending children (task_pid = `self()`), call
+* Synthesize a state with two pending children (task_pid = `self()`), call
   the helper, assert `pending_children == %{}` in the returned state and
   that `Supervisor.stop_agent/1` was attempted for both. The children don't
   actually need to be running for the bookkeeping assertion; we exercise the
   end-to-end Agent-stop path in the new test file.
+* Add as a new `describe "stop_pending_children/1"` block alongside the
+  existing `"handle_child_completed/4"` and `"cascade_terminate/1"` blocks.
 
 ## Files touched
 
-- `lib/nest/agents/agent/sub_agent.ex` — new public function
+* `lib/nest/agents/agent/sub_agent.ex` — new public function
   `stop_pending_children/1`.
-- `lib/nest/agents/agent/handlers/chat_turn_handler.ex` — call it at the top
+* `lib/nest/agents/agent/handlers/chat_turn_handler.ex` — call it at the top
   of `chat_stopped/1`; add the alias.
-- `test/nest/agents/agent/sub_agent_test.exs` — add the unit test for
+* `test/nest/agents/agent/sub_agent_test.exs` — add the `describe` block for
   `stop_pending_children/1`.
-- `test/nest/agents/agent/clone_agent_chat_stop_test.exs` — new file with
-  the four E2E cases above.
+* `test/nest/agents/agent/clone_agent_chat_stop_test.exs` — new file with
+  the three E2E cases above (was four; merged test #1 and the original
+  test #3 into one).
 
 ## Risks and notes
 
-- `stop_pending_children/1` is synchronous and walks the full descendant
+* `stop_pending_children/1` is synchronous and walks the full descendant
   tree. In practice the tree is bounded by `max_depth` (default 3) and the
   `clone_agent_wait_ms` of 120s — the cascade happens in milliseconds
   because `terminate/2` runs in process and is just registry walks + a
   synchronous `GenServer.stop`. No timeout risk.
-- `sub_agent.ex`'s `maybe_test_swap_to_mock/1` only runs on spawn; a child
+* `sub_agent.ex`'s `maybe_test_swap_to_mock/1` only runs on spawn; a child
   stopped via this path is simply `GenServer.stop`-ed by the supervisor, so
   the mock swap doesn't interfere.
-- The existing `stopping the parent cascades through to the child` test in
+* The existing `stopping the parent cascades through to the child` test in
   `clone_agent_registration_test.exs` covers `delete_agent` (GenServer
-  termination). The new test covers the *chat-stop* path, which is distinct.
-- `ToolLoop.run_clone_agent/2`'s `receive` block stays as-is. We don't add a
+  termination). The new test covers the *chat-stop* path, which is distinct
+  and complementary.
+* `ToolLoop.run_clone_agent/2`'s `receive` block stays as-is. We don't add a
   `{:stop_chat, _}` clause there because the tool worker is killed before
   it would matter, and adding the clause would require also forwarding the
   stop to the child (which the new helper already handles at the Agent
   layer).
+* `Broadcasts.status/2` runs *after* `stop_pending_children/1` finishes its
+  walk. Each child's terminate does not broadcast (kills don't go through
+  `chat_idle/0` / `chat_stopped/0`), so the lobby sees exactly one
+  status=:idle transition at the end, which is the right shape for the UI.

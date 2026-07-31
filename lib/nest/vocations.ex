@@ -267,8 +267,10 @@ defmodule Nest.Vocations do
       |> Enum.map_join("\n", &format_mode_line/1)
 
     "\n\n[Available modes]\n\n" <>
-      "The user picks a mode per message via the UI. " <>
-      "Each mode changes the sandbox profile (filesystem permissions, network access).\n\n" <>
+      "The user picks a mode per message via the UI. Pay close attention to [mode: ...] prefixes\n" <>
+      "on user messages to determine the current mode. Modes apply until the next user message.\n" <>
+      "Each mode changes the sandbox profile (filesystem permissions, network access).\n" <>
+      "If you run into unexpected errors in tool calls, double check your current mode.\n\n" <>
       "#{catalog}\n"
   end
 

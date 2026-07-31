@@ -78,14 +78,19 @@ alias Nest.Vocations
     ],
     modes: %{
       "build" => %{
-        "description" => "You're clear to edit the project in the workspace.",
+        "description" => """
+        You have write access to the workspace. You can make modifications as appropriate. Don't make extra changes the user didn't request.
+        """,
         "caps" => %{
           "net" => true,
           "fs" => %{"read" => ["/"], "write" => ["/tmp", ":workspace"]}
         }
       },
       "plan" => %{
-        "description" => "Read-only planning only, can still run commands.",
+        "description" => """
+        You have read-only access to the workspace. You are free to make tool calls, but workspace writes will fail because you're supposed to
+        be inspecting the workspace but not changing it right now.
+        """,
         "caps" => %{
           "net" => true,
           "fs" => %{"read" => ["/"], "write" => ["/tmp"]}
