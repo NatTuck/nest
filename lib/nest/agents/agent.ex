@@ -14,13 +14,12 @@ defmodule Nest.Agents.Agent do
   require Logger
 
   alias Nest.Agents.Agent.ApiLogs
-  alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ChatPipeline
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Handlers
   alias Nest.Agents.Agent.Init
   alias Nest.Agents.Agent.IntrospectionHandler
-  alias Nest.Agents.Agent.Persistence, as: AgentPersistence
+  alias Nest.Agents.Agent.MessageAppender
   alias Nest.Agents.Agent.Restore
   alias Nest.Agents.Agent.SubAgent
   alias Nest.Agents.Agent.TmpSpace
@@ -360,22 +359,21 @@ defmodule Nest.Agents.Agent do
   # whenever a side-channel message like a budget reminder was
   # injected, causing the reminder and the next response to
   # share an index).
+  #
+  # Both single and batch variants delegate to
+  # `Nest.Agents.Agent.MessageAppender` so the loop-breaker
+  # reset and `__append_message__/2` reuse logic lives in one
+  # place. The batch variant exists for the Case 2 notice-pair
+  # injectors (see `Nest.Agents.Agent.NoticePairInjector`).
   @impl true
   def handle_call({:append_message, message}, _from, state) do
-    # Reset the loop-breaker counter on genuine progress:
-    # appending a user message, the LLM's assistant response,
-    # or a successful tool result. `{:system, _}` (context
-    # reminders, budget warnings) and `{:compaction, _}`
-    # (markers) are bookkeeping, not progress.
-    state =
-      case message do
-        {:user, _} -> reset_consecutive(state)
-        {:assistant, _} -> reset_consecutive(state)
-        {:tool, _} -> reset_consecutive(state)
-        _ -> state
-      end
+    {stamped, state} = MessageAppender.handle_single(state, message)
+    {:reply, stamped, state}
+  end
 
-    {stamped, state} = __append_message__(state, message)
+  @impl true
+  def handle_call({:append_messages, messages}, _from, state) do
+    {stamped, state} = MessageAppender.handle_batch(state, messages)
     {:reply, stamped, state}
   end
 
@@ -406,48 +404,27 @@ defmodule Nest.Agents.Agent do
     IntrospectionHandler.handle(msg, from, state)
   end
 
-  defp reset_consecutive(state) do
-    %{state | chat_state: %{state.chat_state | consecutive_compaction_count: 0}}
-  end
-
   @doc false
   # In-process variant of `handle_call({:append_message, _})`
-  # for callers that don't want the mailbox round-trip. The
-  # message is a `{role, %{index: _}}` tuple; the inner
-  # struct's `index` is overwritten with
-  # `state.chat_state.next_message_index`. Returns
-  # `{stamped_message, new_state}`.
+  # for callers that don't want the mailbox round-trip.
+  # Delegates to `Nest.Agents.Agent.MessageAppender.append_one/2`
+  # which owns the stamp + broadcast + persist logic.
   #
-  # After stamping and broadcasting, the message is
-  # persisted into the `messages` table and the agent's
-  # `next_message_index` is bumped on the row. Both writes
-  # run in this process, walking `$callers` back to the
-  # test's sandboxed connection (or the production pool)
-  # without per-pid `Sandbox.allow/3`.
+  # Returns `{stamped_message, new_state}`.
   @spec __append_message__(t(), {atom(), map()}) :: {term(), t()}
-  def __append_message__(state, message) do
-    index = state.chat_state.next_message_index
-    stamped = put_message_index(message, index)
+  defdelegate __append_message__(state, message), to: MessageAppender, as: :append_one
 
-    messages = state.chat_state.messages ++ [stamped]
-
-    state = %{
-      state
-      | chat_state: %{state.chat_state | messages: messages, next_message_index: index + 1}
-    }
-
-    Broadcasts.message(state.name, stamped)
-    persist_appended_message(state, stamped)
-    {stamped, state}
-  end
-
-  # Persist a freshly-appended message. Failures are logged
-  # but don't crash the in-memory append — the live state
-  # is the source of truth for the current turn; the
-  # persisted row is for cross-restart recovery.
-  defp persist_appended_message(state, stamped) do
-    AgentPersistence.append_message(state.name, stamped, state.chat_state.next_message_index)
-  end
+  @doc false
+  # In-process batch append. Same atomicity guarantee as
+  # the `{:append_messages, _}` GenServer.call handler
+  # without paying the round-trip cost for callers that
+  # already run inside the Agent process (e.g. the
+  # user-message pipeline injection). Delegates to
+  # `Nest.Agents.Agent.MessageAppender.append_in_process/2`.
+  #
+  # Returns `{stamped_messages, new_state}`.
+  @spec __append_messages__(t(), [{atom(), map()}]) :: {[term()], t()}
+  defdelegate __append_messages__(state, messages), to: MessageAppender, as: :append_in_process
 
   # Extract the index from a stamped message tuple. Exposed
   # so in-process callers can read back the stamped index
@@ -455,10 +432,6 @@ defmodule Nest.Agents.Agent do
   @doc false
   @spec stamped_index(term()) :: non_neg_integer()
   def stamped_index({_role, %{index: index}}), do: index
-
-  defp put_message_index({role, %{index: _} = msg}, index) do
-    {role, %{msg | index: index}}
-  end
 
   # Compaction completion is now handled in-process by
   # `Nest.Agents.Agent.Compaction.ResultHandler.handle_success/3`

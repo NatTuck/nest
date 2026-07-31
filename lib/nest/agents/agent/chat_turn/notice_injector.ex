@@ -22,9 +22,8 @@ defmodule Nest.Agents.Agent.ChatTurn.NoticeInjector do
   alias Nest.Agents.Agent.ChatTurn.BudgetReminder
   alias Nest.Agents.Agent.ChatTurn.ContextReminder
   alias Nest.Agents.Agent.ChatTurn.State
+  alias Nest.Agents.Agent.NoticePairInjector
   alias Nest.LLM.RunResponse
-  alias Nest.Messages.Assistant
-  alias Nest.Messages.Part
   alias Nest.Tokens.Estimator, as: TokensEstimator
   alias Nest.Tokens.Reserve
 
@@ -121,44 +120,30 @@ defmodule Nest.Agents.Agent.ChatTurn.NoticeInjector do
     inject_specs(rest, state)
   end
 
-  defp inject_one_spec(%{attention: attention, notice: notice}, state) do
-    # The ChatTurn process can't call `Agent.__append_message__/2`
-    # directly (that function mutates Agent state from within the
-    # Agent process). Use the canonical `{:append_message, _}`
-    # GenServer.call so the Agent appends each message atomically
-    # and broadcasts the `chat:message` events to the UI.
+  defp inject_one_spec(spec, state) do
+    # Use the unified `NoticePairInjector.inject_pair/3` so the
+    # `[assistant(attention), user(notice)]` pair lands atomically
+    # via a single `{:append_messages, _}` GenServer.call. If the
+    # Agent has shut down between the LLM call and this point
+    # (chat crash, user stop, etc.) the call exits and we silently
+    # skip the injection — the Agent is gone, so there's no one
+    # to receive the messages anyway. Direction is `:agent_user`
+    # because we're appending to the wire stream that the LLM's
+    # response will follow (the trailing wire role is `:user` or
+    # `:tool`); the response handler then appends the LLM's
+    # assistant message after our pair.
     #
-    # If the Agent has shut down between the LLM call and this
-    # point (chat crash, user stop, etc.), the calls will exit
-    # and we silently skip the injection — the Agent is gone, so
-    # there's no one to receive the messages anyway. This
-    # prevents the ChatTurn from crashing on the crash path.
-    case append_messages(state, attention, notice) do
+    # `:deferred` is returned if the trailing role is `:assistant`
+    # carrying an unpaired `Part.ToolUse{}` — putting a synthetic
+    # pair between the tool_use and its upcoming tool_result
+    # breaks Anthropic's pairing invariant. We silently skip in
+    # that case; the next safe boundary (the next iteration's
+    # response handler) will retry.
+    case NoticePairInjector.inject_pair(state.ctx.agent_pid, spec, :agent_user) do
+      {:ok, _shape, _stamped} -> state
+      :deferred -> state
       :agent_dead -> state
-      :ok -> state
     end
-  end
-
-  defp append_messages(state, attention, notice) do
-    _stamped_attention =
-      GenServer.call(
-        state.ctx.agent_pid,
-        {:append_message, build_attention_assistant(attention)},
-        5_000
-      )
-
-    _stamped_notice =
-      GenServer.call(
-        state.ctx.agent_pid,
-        {:append_message, ContextReminder.build_user_notice(notice, state.ctx.client_config)},
-        5_000
-      )
-
-    :ok
-  rescue
-    _ -> :agent_dead
-  catch
-    :exit, _ -> :agent_dead
   end
 
   # Best-effort: the Agent may have shut down between the LLM
@@ -218,15 +203,5 @@ defmodule Nest.Agents.Agent.ChatTurn.NoticeInjector do
       TokensEstimator.estimate(Jason.encode!(tc.arguments || %{})) + 20
     end)
     |> Enum.sum()
-  end
-
-  defp build_attention_assistant(text) do
-    {:assistant,
-     %Assistant{
-       index: nil,
-       timestamp: DateTime.utc_now(),
-       parts: [%Part.Text{text: text}],
-       api_logs: []
-     }}
   end
 end

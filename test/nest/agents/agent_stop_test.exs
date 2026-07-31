@@ -106,6 +106,71 @@ defmodule Nest.Agents.AgentStopTest do
     end
   end
 
+  describe "stop_chat/2 before any LLM delta" do
+    test "inserts a placeholder assistant message so the messages list stays alternation-valid" do
+      # The user clicks Stop between sending the message and
+      # receiving any text from the LLM (e.g., the HTTP worker
+      # is mid-stream, has not yet emitted any delta events).
+      # The Agent's `chat_stopped` handler must append a
+      # placeholder assistant message — `streaming_acc` is
+      # `nil` because no deltas arrived — so the messages
+      # list alternation invariant holds for the next user
+      # turn (which will need a trailing `:assistant` to
+      # land Case A's full-pair injection).
+      #
+      # Without the placeholder, the messages list would end
+      # with `user(real)` and any subsequent chat would
+      # start from there — wire-valid for Case A trailing
+      # `:user`. But the user already started a turn, so the
+      # assistant turn is *in flight* and must be recorded
+      # (even if empty) before the chat finalizes. This
+      # matches the UX: the user sees "stopped" in the UI,
+      # not a missing assistant message.
+      #
+      # Send stop directly to the chat turn pid so the stop
+      # wins the race against the streaming worker (the
+      # worker is spawned but has not yet emitted deltas).
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      :ok = Agent.chat(pid, "Start")
+
+      assert_receive {:chat_message, {:user, _}}, 500
+      assert_receive {:chat_status, %{status: "streaming"}}, 500
+
+      chat_turn_pid = :sys.get_state(pid).chat_state.chat_turn_pid
+      assert is_pid(chat_turn_pid)
+
+      # Stop before any delta arrives. `streaming_acc` is
+      # `nil` because no `{:delta_received, _, :text}` event
+      # has reached the Agent yet.
+      send(chat_turn_pid, {:stop_chat, self()})
+
+      assert_receive {:chat_message,
+                      {:assistant, %Assistant{metadata: %{"stopped_by_user" => true}}}},
+                     500
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
+
+      # The placeholder assistant carries empty parts (no
+      # partial text — no deltas arrived). The `stopped_by_user`
+      # metadata flag is set so the UI can render the "stopped"
+      # indicator on the empty assistant message.
+      state = :sys.get_state(pid)
+
+      assert Enum.any?(
+               state.chat_state.messages,
+               fn
+                 {:assistant, %Assistant{parts: [], metadata: %{"stopped_by_user" => true}}} ->
+                   true
+
+                 _ ->
+                   false
+               end
+             )
+    end
+  end
+
   describe "stop_chat/2 during context tool (compact action)" do
     test "the tool-call mid-execution stop unwinds without auto-resume" do
       # Set up a stream that emits one `context` tool call

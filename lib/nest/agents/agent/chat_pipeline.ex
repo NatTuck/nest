@@ -22,8 +22,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   alias Nest.Agents.Agent.ChatTurnSpawner
   alias Nest.Agents.Agent.Compaction.Overflow
   alias Nest.Agents.Agent.Compaction.Trigger
-  alias Nest.Messages.Assistant
-  alias Nest.Messages.MessageList
+  alias Nest.Agents.Agent.NoticePairInjector
   alias Nest.Messages.Part
   alias Nest.Messages.Streaming
   alias Nest.Messages.User
@@ -122,55 +121,26 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   defp inject_notice(state, atom, _crossed) do
     notice = ContextReminder.notice_text(atom)
     ack = ContextReminder.ack_text_for(atom)
-    last_role = MessageList.last_wire_role(state.chat_state.messages)
+    spec = %{kind: :context, attention: "Context?", notice: notice, ack: ack}
 
-    cond do
-      # Trailing assistant carries an unpaired tool_use (in-flight
-      # tool call). Defer the notice to the ChatTurn's response-
-      # construction path so the synthetic pair never lands between
-      # the tool_use and its upcoming tool_result.
-      last_role == :assistant and trailing_has_tool_use?(state) ->
-        state
+    case NoticePairInjector.inject_pair_in_process(
+           state.chat_state.messages,
+           state,
+           spec,
+           :user_agent
+         ) do
+      {:ok, _shape, _stamped, new_state} ->
+        new_state
 
-      last_role == :user ->
-        text = notice <> " " <> ack
-
-        {_stamped, state} =
-          Nest.Agents.Agent.__append_message__(state, build_ack_assistant(text))
-
-        state
-
-      true ->
-        {_stamped, state} =
-          Nest.Agents.Agent.__append_message__(
-            state,
-            ContextReminder.build_user_notice(notice, state.client_config)
-          )
-
-        {_stamped, state} =
-          Nest.Agents.Agent.__append_message__(state, build_ack_assistant(ack))
-
+      :deferred ->
+        # Trailing assistant carries an unpaired tool_use (in-flight
+        # tool call). The notice is deferred to the ChatTurn's
+        # response-construction path (Case 2), which fires on a
+        # wire-safe boundary. `crossed_thresholds` is still updated
+        # upstream so the threshold doesn't re-fire on subsequent
+        # user messages while the tool call is in flight.
         state
     end
-  end
-
-  defp trailing_has_tool_use?(state) do
-    case List.last(state.chat_state.messages) do
-      {:assistant, %Assistant{parts: parts}} ->
-        Enum.any?(parts || [], &match?(%Part.ToolUse{}, &1))
-
-      _ ->
-        false
-    end
-  end
-
-  defp build_ack_assistant(text) do
-    {:assistant,
-     %Assistant{
-       parts: [%Part.Text{text: text}],
-       timestamp: DateTime.utc_now(),
-       api_logs: []
-     }}
   end
 
   # Store `{content, mode}` in `state.chat_state.pending_user_message`.
