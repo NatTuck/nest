@@ -58,11 +58,17 @@ defmodule Nest.Agents.Agent.ChatTurn do
       compactor's own chat turn finished; the Agent's
       `Compaction.ResultHandler` takes over from here
 
-  ## Agent contract (Agent → ChatTurn, `send/2`)
+  ## Agent contract (Agent → ChatTurn, `GenServer.call`)
 
-    * `{:stop_chat, from}` — user clicked Stop. The
-      ChatTurn replies `:stopped` to `from` and kills
-      the active worker.
+    * `{:stop_chat, channel_pid}` — user clicked Stop. The
+      ChatTurn's `handle_call/3` replies `:ok` AFTER
+      `Lifecycle.stop_chat/2` has acked `:stopped` to
+      `channel_pid`, killed the active worker (with the
+      stop-aware cleanup hook), and cast `{:chat_stopped,
+      self()}` to the Agent. The 5s call timeout in the
+      Agent's handler breaks the rare deadlock where the
+      ChatTurn is itself blocked on `safe_iterate/1`'s
+      `GenServer.call(agent, :get_messages_with_cancelled)`.
 
   The ChatTurn's `init/1` sets
   `Process.put(:"$callers", [agent_pid])` so Mimic
@@ -127,6 +133,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
       active_worker: nil,
       active_worker_kind: nil,
       active_message_index: 0,
+      stop_requested: false,
       entry: entry
     }
 
@@ -139,23 +146,23 @@ defmodule Nest.Agents.Agent.ChatTurn do
   def handle_info(:iterate, state), do: iterate(state)
 
   def handle_info({:http_response, response}, state) when is_map(response) do
-    # Check for a pending stop before processing the response.
-    # The worker sends `{:http_response, _}` when it finishes
-    # the stream. The agent sends `{:stop_chat, _}` when the
-    # user clicks Stop. If both are in the mailbox, the stop
-    # must be processed first — otherwise the chat turn would
-    # finalize the full response and `stop_chat/2` would never
-    # run, so the partial message (with `stopped_by_user: true`)
-    # would never be appended. This is the racy case: the
-    # worker finishes its 1000-event stream in microseconds
-    # (MockClient yields events instantly), the test receives
-    # the first delta and calls stop, but the stop arrives at
-    # the chat turn AFTER the http_response. Without this
-    # check, the chat turn would finalize and stop, discarding
-    # the stop message. With it, we honor the user's intent.
-    case Lifecycle.drain_stop_message() do
-      {:stop, from} -> Lifecycle.stop_chat(from, state)
-      nil -> handle_response(response, state)
+    # The user clicked Stop while the HTTP worker was finishing
+    # the stream. Skip response processing if the Agent's
+    # `cancelled` flag is set — appending a full response
+    # would leave a second assistant message after the
+    # cancelled-by-user placeholder. The flag is set
+    # synchronously by the Agent's `handle_call({:stop_chat, _})`
+    # before it calls us, so a `GenServer.call` here with a
+    # short timeout returns the latest value. On timeout
+    # (rare — Agent is blocked), `cancelled?/1` defaults to
+    # `false` and we proceed; the cancelled flag is also
+    # picked up by `safe_iterate/1`'s same call (without a
+    # timeout) on the next iteration.
+    if cancelled?(state) do
+      GenServer.cast(state.ctx.agent_pid, {:chat_stopped, self()})
+      {:stop, :normal, state}
+    else
+      handle_response(response, state)
     end
   end
 
@@ -181,15 +188,24 @@ defmodule Nest.Agents.Agent.ChatTurn do
     handle_tool_results(results, state)
   end
 
-  def handle_info({:stop_chat, from}, state) do
-    Lifecycle.stop_chat(from, state)
-  end
-
   def handle_info({:EXIT, pid, reason}, state) do
     Lifecycle.worker_exited(pid, reason, state)
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
+
+  # User clicked Stop. The Agent's `handle_call({:stop_chat, _})`
+  # propagates the stop here via `GenServer.call` (per SMELLS.md
+  # — no `send` between our own GenServers). The ChatTurn's
+  # reply is sent AFTER `Lifecycle.stop_chat/2` kills the
+  # active worker and casts `{:chat_stopped, _}` to the
+  # Agent, so when the Agent's GenServer.call returns, the
+  # Agent immediately processes the `:chat_stopped` cast
+  # from its mailbox and broadcasts `:idle`.
+  @impl true
+  def handle_call({:stop_chat, channel_pid}, _from, state) do
+    Lifecycle.stop_chat(channel_pid, state)
+  end
 
   # The iteration step. Wrapped in an implicit `try/catch` so
   # a dead agent (e.g. `Agent.terminate/1` mid-turn) doesn't
@@ -348,15 +364,40 @@ defmodule Nest.Agents.Agent.ChatTurn do
   # (the formatter destructures mixed parts into separate
   # wire messages, separating the tool_result from its
   # tool_use).
+  #
+  # If the user clicked Stop while the tool was finishing,
+  # `cancelled?/1` returns true and we skip the append —
+  # otherwise the message list would carry both the tool
+  # result and the cancelled-by-user placeholder.
   defp handle_tool_results(results, state) do
     state = %{state | active_worker: nil, active_worker_kind: nil}
 
-    tool_msg = Messages.tool(results)
+    if cancelled?(state) do
+      GenServer.cast(state.ctx.agent_pid, {:chat_stopped, self()})
+      {:stop, :normal, state}
+    else
+      tool_msg = Messages.tool(results)
 
-    send(state.ctx.agent_pid, {:tool_results_received, tool_msg})
-    state = %{state | pending_notice: nil}
-    Process.send(self(), :iterate, [])
-    {:noreply, state}
+      send(state.ctx.agent_pid, {:tool_results_received, tool_msg})
+      state = %{state | pending_notice: nil}
+      Process.send(self(), :iterate, [])
+      {:noreply, state}
+    end
+  end
+
+  # Synchronous cancelled-flag read from the Agent. 100ms
+  # timeout prevents deadlock if the Agent is itself blocked
+  # (e.g. on the `GenServer.call({:stop_chat, _})` chain).
+  # On timeout, defaults to `false` — `safe_iterate/1` makes
+  # the same call without a timeout on the next iteration,
+  # so the flag is eventually observed.
+  defp cancelled?(state) do
+    {_messages, cancelled} =
+      GenServer.call(state.ctx.agent_pid, :get_messages_with_cancelled, 100)
+
+    cancelled
+  catch
+    :exit, _ -> false
   end
 
   # Spawn the tool worker as a Task. The worker calls

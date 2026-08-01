@@ -143,8 +143,11 @@ defmodule Nest.Agents.AgentStopTest do
 
       # Stop before any delta arrives. `streaming_acc` is
       # `nil` because no `{:delta_received, _, :text}` event
-      # has reached the Agent yet.
-      send(chat_turn_pid, {:stop_chat, self()})
+      # has reached the Agent yet. Use `GenServer.call`
+      # (per SMELLS.md) — the call blocks until the
+      # ChatTurn's `handle_call({:stop_chat, _})` replies
+      # `:ok`.
+      GenServer.call(chat_turn_pid, {:stop_chat, self()}, :infinity)
 
       assert_receive {:chat_message,
                       {:assistant, %Assistant{metadata: %{"stopped_by_user" => true}}}},
@@ -205,12 +208,29 @@ defmodule Nest.Agents.AgentStopTest do
       assert_receive {:chat_status, %{status: "executing_tools"}}, 500
 
       # The chat task is now in the blocking receive inside
-      # `request_compaction_from_task/2`. Send the stop
-      # directly to the chat task pid (avoids the GenServer
-      # mailbox-ordering race).
+      # `request_compaction_from_task/2`. Send the stop via
+      # `GenServer.call` (per SMELLS.md, no `send` between
+      # our own GenServers) so the call blocks until the
+      # ChatTurn's `handle_call({:stop_chat, _})` replies
+      # `:ok`.
       chat_turn_pid = :sys.get_state(pid).chat_state.chat_turn_pid
       assert is_pid(chat_turn_pid)
-      send(chat_turn_pid, {:stop_chat, self()})
+
+      # The ChatTurn's `handle_call({:stop_chat, _})` returns
+      # `{:reply, :ok, {:stop, :normal, state}}` — it sends the
+      # reply AND stops with :normal. GenServer.call in some
+      # OTP versions treats the reply-then-stop as a `:normal`
+      # exit signal on the caller (the monitor fires before the
+      # reply is processed). Catch the exit and assert the
+      # reply value matches.
+      call_reply =
+        try do
+          GenServer.call(chat_turn_pid, {:stop_chat, self()}, :infinity)
+        catch
+          :exit, :normal -> :ok
+        end
+
+      assert call_reply == :ok
 
       # The agent's stop handler waits for the chat task to
       # ack via `{:chat_stopped, _}`. The tool loop's
@@ -236,15 +256,20 @@ defmodule Nest.Agents.AgentStopTest do
       assert_receive {:chat_message, {:user, _}}, 500
       assert_receive {:chat_delta, _}, 500
 
-      # Three rapid stops directly to the chat task. The
-      # first sets the stream to halt; the second and third
-      # are picked up by no receive (the consumer has already
-      # halted) so they're no-ops.
-      chat_turn_pid = :sys.get_state(pid).chat_state.chat_turn_pid
-
-      send(chat_turn_pid, {:stop_chat, self()})
-      send(chat_turn_pid, {:stop_chat, self()})
-      send(chat_turn_pid, {:stop_chat, self()})
+      # Three rapid stops via the public `Agent.stop_chat/2`
+      # entry point. Each is a `GenServer.call` to the
+      # Agent's `handle_call({:stop_chat, _})`, which sets
+      # `cancelled` and propagates to the ChatTurn via
+      # `GenServer.call(chat_turn_pid, {:stop_chat, _}, 5_000)`.
+      # The first call does the real work (kills the worker,
+      # stops the ChatTurn, casts `{:chat_stopped, _}` to
+      # the Agent). After it returns, `state.chat_state.chat_turn_pid`
+      # is `nil`, so the second and third calls' `if chat_turn_pid`
+      # branch is skipped — no work, no second `chat_stopped`
+      # cast.
+      Agent.stop_chat(pid, self())
+      Agent.stop_chat(pid, self())
+      Agent.stop_chat(pid, self())
 
       assert_receive {:chat_status, %{status: "idle"}}, 2000
 
@@ -349,6 +374,47 @@ defmodule Nest.Agents.AgentStopTest do
       # The Agent GenServer must still be alive (the
       # original bug crashed it with FunctionClauseError).
       assert Process.alive?(pid)
+    end
+  end
+
+  describe "stop_chat/2 returns synchronously" do
+    test "Agent.stop_chat/2 is a GenServer.call that blocks until the Agent's handle_call replies" do
+      # The new `Agent.stop_chat/2` is `GenServer.call(pid,
+      # {:stop_chat, from}, :infinity)`. Per SMELLS.md, all
+      # own-GenServer communication uses call/cast — no
+      # `send/2`. The test verifies the call returns `:ok`
+      # (the synchronous return) and that the ChatTurn's pid
+      # is gone from the Agent's state by the time the call
+      # returns (because the Agent's `handle_call({:stop_chat,
+      # _})` propagated to the ChatTurn before replying).
+      events = for _ <- 1..100, do: {:text, "x"}
+      MockClient.set_stream_events(events)
+
+      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+
+      :ok = Agent.chat(pid, "Start")
+
+      assert_receive {:chat_message, {:user, _}}, 500
+      assert_receive {:chat_delta, _}, 500
+
+      # The call is synchronous — it returns :ok only after
+      # the Agent has processed the stop and replied. The
+      # :ok pattern match here verifies the return value.
+      assert :ok = Agent.stop_chat(pid, self())
+
+      # After the call returns, the ChatTurn has been
+      # signaled to stop and the Agent's state reflects
+      # `chat_turn_pid: nil`. The `cancelled` flag has
+      # already been cleared by the casted `{:chat_stopped,
+      # _}` handler that runs immediately after the call
+      # returns (the cast is queued in the Agent's mailbox
+      # and processed before our `:sys.get_state/1` call).
+      state = :sys.get_state(pid)
+      assert state.chat_state.chat_turn_pid == nil
+      assert state.chat_state.cancelled == false
+
+      assert_receive {:chat_status, %{status: "idle"}}, 2000
     end
   end
 

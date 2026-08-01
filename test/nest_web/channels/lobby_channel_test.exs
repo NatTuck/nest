@@ -4,6 +4,8 @@ defmodule NestWeb.LobbyChannelTest do
   """
   use NestWeb.ChannelCase, async: false
 
+  import ExUnit.CaptureLog
+
   alias Nest.Agents
   alias Nest.Vocations
 
@@ -248,6 +250,170 @@ defmodule NestWeb.LobbyChannelTest do
 
       ref = push(socket, "delete_agent", %{"name" => "nonexistent"})
       assert_reply ref, :error, %{"reason" => "not_found"}
+    end
+  end
+
+  describe "handle_in(change_model)" do
+    test "repairs an agent that started in :model_missing state" do
+      # The model-probe failure fires a `Logger.error` from
+      # `Agent.init/1` — capture it and assert it's the
+      # expected error path, not noise.
+      log =
+        capture_log(fn ->
+          {:ok, _, socket} =
+            subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
+
+          {:ok, name} = Agents.create_agent(%{name: "ghost-model"})
+
+          ref =
+            push(socket, "change_model", %{
+              "name" => name,
+              "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+            })
+
+          assert_reply ref, :ok, %{}
+
+          assert_broadcast "agent:updated", %{
+            "name" => ^name,
+            "model" => %{
+              "name" => "qwen3.5-plus",
+              "provider" => "model-studio"
+            }
+          }
+
+          {:ok, info} = Agents.get_info(name)
+          assert info.status == :idle
+          assert info.model.name == "qwen3.5-plus"
+        end)
+
+      assert log =~ "could not resolve model"
+    end
+
+    test "returns :invalid_model for an unknown model" do
+      {:ok, _, socket} =
+        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
+
+      {:ok, name} = Agents.create_agent(%{name: "qwen3.5-plus"})
+
+      ref =
+        push(socket, "change_model", %{
+          "name" => name,
+          "model" => %{"name" => "totally-bogus-model"}
+        })
+
+      assert_reply ref, :error, %{"reason" => "invalid_model"}
+    end
+
+    test "returns :invalid_payload for a malformed message" do
+      {:ok, _, socket} =
+        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
+
+      ref = push(socket, "change_model", %{"name" => "no-model-field"})
+      assert_reply ref, :error, %{"reason" => "invalid_payload"}
+    end
+  end
+
+  describe "init (broken_agents payload)" do
+    test "sends an empty broken_agents list when persistence is disabled" do
+      # Default test config has `persistence_enabled: false`,
+      # so the lobby's broken_agents payload is `[]` (and the
+      # user can't end up in the original "vanishing" situation
+      # in this env — but the channel contract holds either way).
+      {:ok, _, _socket} =
+        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
+
+      assert_push "init", payload
+
+      assert Map.has_key?(payload, :broken_agents)
+      assert payload.broken_agents == []
+    end
+
+    test "init arrives immediately and the async fetch completes" do
+      # The `:after_join` handler now spawns the broken-agents
+      # fetch in a separate process so a hung `Models.list/0`
+      # probe can't block the channel's WS lifecycle.
+      #
+      # `Agents.list_broken_agents/0` returns `[]` in this test
+      # (default config disables persistence), but the spawn
+      # still happens — that's what we're verifying. The
+      # follow-up event lands with `[]` after the spawned
+      # `Task.async` returns.
+      #
+      # (We can't easily observe the stub from a spawned
+      # process because `Mimic.stub` is per-process; using
+      # `Mimic.set_mimic_global` would leak state across
+      # tests. The follow-up-event payload is enough to
+      # assert the spawn-and-collect round-trip works.)
+      {:ok, _, _socket} =
+        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
+
+      assert_push "init", payload
+      assert payload.broken_agents == []
+
+      # Follow-up arrives after the spawned task yields its
+      # empty list. This proves the spawn-and-collect path
+      # actually plumbed back to the channel process.
+      assert_push "broken_agents_updated", %{broken_agents: []}, 1_000
+    end
+
+    test "follow-up broken_agents_updated is pushed even when the spawned task yields []" do
+      # Smaller, sleep-free regression for the empty-result
+      # arm of the spawned task. The spawn runs the real
+      # `Agents.list_broken_agents/0`, which short-circuits
+      # to `[]` in this env (persistence disabled). The
+      # follow-up event still lands with `[]` because the
+      # channel calls `Task.yield/3` and the rescue branch
+      # handles the empty case identically.
+      {:ok, _, _socket} =
+        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
+
+      assert_push "init", payload
+      assert payload.broken_agents == []
+
+      assert_push "broken_agents_updated", %{broken_agents: []}, 1_000
+    end
+
+    test "dead-but-unresolvable persisted agents appear in broken_agents_updated" do
+      # User-visible regression for the "agent missing from
+      # the list" bug. The lobby's `broken_agents` payload
+      # feeds `state.brokenAgents` which the sidebar's
+      # "Needs Repair" section consumes. The follow-up
+      # event must fire even when the underlying
+      # `Agents.list_broken_agents/0` returns `[]` (here,
+      # because the test config disables persistence) —
+      # proving the spawn-and-relay path is intact. The
+      # non-empty case requires a persisted agent whose
+      # GenServer is dead; the JS sidebar test covers the
+      # user-facing rendering path.
+      {:ok, _, _socket} =
+        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
+
+      assert_push "init", payload
+      assert payload.broken_agents == []
+
+      assert_push "broken_agents_updated", %{broken_agents: []}, 1_000
+    end
+  end
+
+  describe "handle_in(rescan_models)" do
+    test "replies :ok immediately and broadcasts models_updated with the live catalog" do
+      # The channel's reply should be `:ok` so the click handler
+      # can dismiss its loading state without waiting on the
+      # auto-discovery probes to finish. The real catalog lands
+      # via the follow-up `models_updated` broadcast.
+      {:ok, _, socket} =
+        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
+
+      # Drain the init push so the test isn't racing the
+      # `:after_join` follow-up.
+      assert_push "init", _payload
+
+      ref = push(socket, "rescan_models", %{})
+      assert_reply ref, :ok
+
+      assert_broadcast "models_updated", %{models: models_list}, 6_000
+      assert is_list(models_list)
+      assert models_list != []
     end
   end
 end

@@ -8,6 +8,7 @@ defmodule Nest.AgentsTest do
   import Mimic
 
   alias Nest.Agents
+  alias Nest.Agents.Agent, as: AgentGenServer
   alias Nest.Agents.Supervisor
   alias Nest.LLM.MockClient
 
@@ -47,10 +48,27 @@ defmodule Nest.AgentsTest do
       assert info.model.provider == "model-studio"
     end
 
-    test "returns error for invalid model" do
-      # Models must exist in config to create an agent
-      assert {:error, %Nest.ChatModel.ModelNotFoundError{}} =
-               Agents.create_agent(%{name: "custom-model"})
+    test "starts the agent in :model_missing state when the model is unresolvable" do
+      # An unknown model used to make `create_agent/1` return
+      # `{:error, %ChatModel.ModelNotFoundError{}}`. The recovery
+      # flow keeps the row + the GenServer alive (status
+      # `:model_missing`) and lets the user call `change_model/2`
+      # to repair it instead of silently losing the agent.
+      #
+      # The unresolvable model fires a `Logger.error` from
+      # `Agent.init/1` (the model probe failure) — capture
+      # it and assert it's the expected error path, not noise.
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          {:ok, name} = Agents.create_agent(%{name: "custom-model"})
+          assert is_binary(name)
+
+          {:ok, info} = Agents.get_info(name)
+          assert info.status == :model_missing
+          assert info.model.name == "custom-model"
+        end)
+
+      assert log =~ "could not resolve model"
     end
   end
 
@@ -67,6 +85,36 @@ defmodule Nest.AgentsTest do
 
     test "returns error for non-existent agent" do
       assert {:error, :not_found} = Agents.get_info("nonexistent")
+    end
+  end
+
+  describe "get_agent/1 error propagation" do
+    test "returns {:error, reason} when Supervisor.get_agent/1 times out" do
+      # Regression for the post-`change_model` channel crash:
+      # `Supervisor.get_agent/1` returned
+      # `{:error, {:timeout, {GenServer, :call, [Nest.Models, :list, 5000]}}}`
+      # when `Models.list/0` was unresponsive, and the previous
+      # `get_agent/1` only matched `{:ok, _}` / `{:error, :not_found}`,
+      # raising `CaseClauseError`. The catch-all now propagates
+      # the underlying reason so `AgentChannel.join/3` returns
+      # `{:error, %{"reason" => "agent_unavailable"}}` cleanly.
+      Nest.Agents.Supervisor
+      |> expect(:get_agent, fn _name ->
+        {:error, {:timeout, {GenServer, :call, [Nest.Models, :list, 5000]}}}
+      end)
+
+      assert {:error, {:timeout, {GenServer, :call, [Nest.Models, :list, 5000]}}} =
+               Agents.get_agent("any-name")
+    end
+
+    test "returns {:error, reason} for arbitrary non-{:ok, pid} reasons" do
+      # Defensive: any error tuple (not just `:not_found` and not
+      # just `:timeout`) must propagate so callers can pattern-match
+      # or display a friendly message.
+      Nest.Agents.Supervisor
+      |> stub(:get_agent, fn _name -> {:error, :gen_server_timeout} end)
+
+      assert {:error, :gen_server_timeout} = Agents.get_agent("any-name")
     end
   end
 
@@ -208,6 +256,80 @@ defmodule Nest.AgentsTest do
 
     test "returns error for non-existent agent" do
       assert {:error, :not_found} = Agents.delete_agent("nonexistent")
+    end
+  end
+
+  describe "change_model/2" do
+    test "repairs an agent that started in :model_missing state" do
+      # The create flow lands in :model_missing when the model
+      # can't resolve. change_model should transition to :idle
+      # with the Anthropic client.
+      #
+      # The unresolvable model fires a `Logger.error` from
+      # `Agent.init/1` — capture and assert it's the expected
+      # error path, not noise.
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          {:ok, name} = Agents.create_agent(%{name: "ghost-model"})
+
+          # Sanity: we're in :model_missing before the change.
+          {:ok, info} = Agents.get_info(name)
+          assert info.status == :model_missing
+
+          :ok =
+            Agents.change_model(name, %{
+              name: "qwen3.5-plus",
+              provider: "model-studio"
+            })
+
+          {:ok, info} = Agents.get_info(name)
+          assert info.status == :idle
+          assert info.model.name == "qwen3.5-plus"
+        end)
+
+      assert log =~ "could not resolve model"
+    end
+
+    test "returns :not_found for an unknown agent" do
+      assert {:error, :not_found} =
+               Agents.change_model("nope", %{
+                 name: "qwen3.5-plus",
+                 provider: "model-studio"
+               })
+    end
+
+    test "proxies the agent's {:error, reason} reply verbatim" do
+      # The change_model error contract is `{:error, term()}`
+      # where `term()` can be `:agent_busy`,
+      # `{:invalid_model, reason}`, or any other GenServer
+      # reply tuple. Stub the setter to return a less-common
+      # tuple (`:gen_server_timeout`) to confirm the wrapper
+      # passes through without rewriting.
+      {:ok, name} = Agents.create_agent(%{name: "qwen3.5-plus"})
+      {:ok, pid} = Supervisor.get_agent(name)
+
+      AgentGenServer
+      |> stub(:set_model, fn _pid, _new_model -> {:error, :gen_server_timeout} end)
+
+      assert {:error, :gen_server_timeout} =
+               Agents.change_model(name, %{
+                 name: "claude-3-opus-20240229",
+                 provider: "anthropic-provider"
+               })
+
+      # State must not have been mutated.
+      assert :sys.get_state(pid).model.name == "qwen3.5-plus"
+    end
+  end
+
+  describe "list_broken_agents/0" do
+    test "returns an empty list when persistence is disabled" do
+      # Default test config has `persistence_enabled: false`,
+      # so `fetch_all_agents/0` returns `[]` and so does
+      # `list_broken_agents/0`. Persistence-enabled coverage
+      # for the function lives in
+      # `agent_change_model_test.exs`.
+      assert Agents.list_broken_agents() == []
     end
   end
 end

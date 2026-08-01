@@ -30,6 +30,48 @@ import { useStore } from "../store";
 
 const EMPTY_MESSAGES = [];
 
+const STREAMING_PLACEHOLDER = "(receiving instruction…)";
+
+/**
+ * Pull the `instruction` field out of a `clone_agent` tool
+ * call's arguments, in any of the shapes it can take:
+ *
+ *   - Already-parsed object (`{ instruction: "do X" }`) →
+ *     return the field.
+ *   - Streaming partial buffer (e.g.
+ *     `'{"instruction":"do X'` or `'{"instruction":"do X\\nX"'`).
+ *     Try `JSON.parse` for fully-formed prefixes; on failure,
+ *     fall back to a regex that pulls whatever substring is
+ *     inside the open `"instruction":"` marker. Returns
+ *     `null` while the buffer is too small to contain any
+ *     instruction text (e.g. `'{"instr'`).
+ */
+function extractCloneInstruction(args) {
+  if (args == null) return null;
+  if (typeof args === "object") {
+    return args.instruction ?? null;
+  }
+  if (typeof args !== "string") return null;
+
+  try {
+    const parsed = JSON.parse(args);
+    if (parsed && typeof parsed === "object" && parsed.instruction) {
+      return parsed.instruction;
+    }
+  } catch {
+    // fall through — partial buffer; use the regex fallback
+  }
+
+  // Snip whatever lives inside `"instruction":"<chars>` for
+  // early buffers. The capture stops at the next unescaped
+  // quote (escaped `\"` is consumed but not split on). The
+  // regex is just for visual streaming UX — the finalized
+  // `addChatMessage` reassembles the full string.
+  const match = args.match(/"instruction"\s*:\s*"((?:[^"\\]|\\.)*)/);
+  if (match) return match[1];
+  return null;
+}
+
 /**
  * Render one `DelegatedTaskBlock` per `clone_agent` tool
  * call in a single assistant message. Mounted inside
@@ -85,19 +127,24 @@ export function DelegatedTask({ message, agentName }) {
       {cloneCalls.map((call) => {
         const result = resultById.get(call.id);
         const resultContent = result?.content ?? null;
-        // For now we surface the response content; the
-        // child_name from a successful spawn is the next
-        // child that registered itself in the AgentsRegistry.
-        // The Tools worker already includes a stable
-        // identifier in the result content if we want to
-        // surface it as a link later.
+        // Extract the instruction from the (possibly
+        // streaming) arguments. Falls back to the legacy
+        // `call.input.instruction` shape for messages that
+        // pre-date the streaming-args refactor.
+        const rawArgs =
+          call.arguments !== undefined ? call.arguments : call.input;
+        const extracted = extractCloneInstruction(rawArgs);
+        const instruction =
+          extracted != null
+            ? extracted
+            : typeof rawArgs === "string"
+              ? STREAMING_PLACEHOLDER
+              : "";
         return (
           <DelegatedTaskBlock
             key={call.id}
             toolCallId={call.id}
-            instruction={
-              call.arguments?.instruction ?? call.input?.instruction ?? ""
-            }
+            instruction={instruction}
             response={result ? resultContent : null}
             isError={
               result ? (result.is_error ?? result.isError ?? false) : false

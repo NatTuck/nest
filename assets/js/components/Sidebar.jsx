@@ -145,7 +145,7 @@ function AgentTreeRow({ node, depth, location, navigate, onDelete }) {
 export function Sidebar() {
   const location = useLocation();
   const navigate = useNavigate();
-  const { agents } = useStore();
+  const { agents, brokenAgents } = useStore();
 
   const handleDeleteAgent = (e, name) => {
     e.preventDefault();
@@ -214,7 +214,7 @@ export function Sidebar() {
             Active Agents
           </h2>
 
-          {agents.length === 0 ? (
+          {(agents?.length ?? 0) === 0 ? (
             <p className="text-sm text-gray-400 px-2 py-2">
               No agents yet. Create one!
             </p>
@@ -233,6 +233,87 @@ export function Sidebar() {
             </ul>
           )}
         </div>
+
+        {/* Needs Repair section — surfaces persistent rows whose
+            GenServer is gone (e.g. crashed, or never created in
+            this BEAM session with persistence on). The store
+            keeps them in `state.brokenAgents` from the lobby's
+            `init`/`broken_agents_updated` payloads; the agents
+            list above cannot show them because their GenServer
+            is dead. Clicking a row navigates to the chat page,
+            which triggers the existing :model_missing banner
+            and the "Choose replacement model" CTA. The row
+            disappears from this list once the user picks a
+            replacement (`applyAgentModelUpdate` drops the
+            name from `state.brokenAgents`). */}
+        {brokenAgents.length > 0 && (
+          <div className="mb-6">
+            <h2 className="text-xs font-semibold text-amber-700 uppercase tracking-wider mb-2 px-2 flex items-center gap-2">
+              <span>Needs Repair</span>
+              <span className="text-amber-600 bg-amber-100 px-1.5 py-0.5 rounded-full normal-case font-medium tracking-normal">
+                {brokenAgents.length}
+              </span>
+            </h2>
+
+            <ul className="space-y-1">
+              {brokenAgents.map((entry) => {
+                const isCurrent = location.pathname === `/agent/${entry.name}`;
+                return (
+                  <li key={entry.name}>
+                    <div
+                      className={`
+                        flex items-center justify-between rounded-lg group
+                        transition-colors duration-200
+                        ${
+                          isCurrent
+                            ? "bg-amber-50 text-amber-800 border border-amber-200"
+                            : "text-gray-700 hover:bg-amber-50"
+                        }
+                      `}
+                    >
+                      <Link
+                        to={`/agent/${entry.name}`}
+                        className="flex items-center gap-2 min-w-0 flex-1 px-3 py-2"
+                      >
+                        <div className="w-2 h-2 rounded-full flex-shrink-0 bg-amber-500 animate-pulse" />
+                        <span className="truncate text-sm font-medium">
+                          {entry.name}
+                        </span>
+                      </Link>
+
+                      <button
+                        type="button"
+                        onClick={(e) => handleDeleteAgent(e, entry.name)}
+                        className="
+                          opacity-0 group-hover:opacity-100
+                          p-1 mr-1 rounded hover:bg-red-100 text-gray-400 hover:text-red-600
+                          transition-all duration-200
+                        "
+                        title={`Delete ${entry.name}`}
+                        aria-label={`Delete ${entry.name}`}
+                      >
+                        <svg
+                          className="w-4 h-4"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                          aria-hidden="true"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                          />
+                        </svg>
+                      </button>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        )}
 
         {/* About Link */}
         <Link

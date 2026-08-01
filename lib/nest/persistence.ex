@@ -339,90 +339,30 @@ defmodule Nest.Persistence do
   end
 
   @doc """
-  Bump the `next_message_index` column on the agent row.
-
-  Called after every successful `insert_message/2` so a
-  restarted agent reads the right counter on the next
-  message append. One UPDATE per message; a single agent's
-  counter is in a single row, so this is O(1) and not a
-  contention hot spot.
+  Bump the `next_message_index` column on the agent row. The
+  implementation lives in `Nest.Persistence.Messages` (so
+  this module stays under the credo 500-line cap); the
+  public re-export here keeps call sites unchanged.
   """
-  @spec update_next_message_index(String.t(), non_neg_integer()) ::
-          :ok | {:error, term()}
-  def update_next_message_index(agent_name, new_index) do
-    case fetch_agent_by_name(agent_name) do
-      {:ok, %PersistedAgent{id: agent_id}} ->
-        from(a in PersistedAgent, where: a.id == ^agent_id)
-        |> Repo.update_all(
-          set: [
-            next_message_index: new_index,
-            updated_at: now()
-          ]
-        )
-
-        :ok
-
-      {:error, :not_found} ->
-        {:error, :agent_not_found}
-    end
-  end
+  defdelegate update_next_message_index(name, new_index),
+    to: Nest.Persistence.Messages,
+    as: :update_next_message_index
 
   @doc """
-  Load every message for an agent (active + history + compaction
-  markers), in `message_index` order. Returns a list of
-  `Message.t()` tagged tuples — the canonical runtime shape.
-
-  This is the single consistent sequence restored by the
-  on-demand-load path in `Supervisor.fetch_or_start_agent/1`.
-  The caller partitions the list into
-  `state.chat_state.history` (rows with
-  `message_index <= agents.last_compaction_index`) and
-  `state.chat_state.messages` (rows strictly greater).
-  Compaction markers live in `state.chat_state.history` by that
-  same rule — they sit at the boundary, not in the active slice.
-
-  The previous `load_active_messages/1` filter
-  (`is_nil(archived_at) AND role != "compaction"`) is gone:
-  active/history is a view computed from
-  `agents.last_compaction_index`, not a filter on the rows
-  themselves.
+  Load every message for an agent. Implementation in
+  `Nest.Persistence.Messages`.
   """
-  @spec load_messages(String.t()) :: [Message.t()]
-  def load_messages(agent_name) do
-    case fetch_agent_by_name(agent_name) do
-      {:ok, %PersistedAgent{id: agent_id}} ->
-        from(m in PersistedMessage,
-          where: m.agent_id == ^agent_id,
-          order_by: [asc: m.message_index]
-        )
-        |> Repo.all()
-        |> Enum.map(&PersistedMessage.to_runtime/1)
-
-      {:error, :not_found} ->
-        []
-    end
-  end
+  defdelegate load_messages(name),
+    to: Nest.Persistence.Messages,
+    as: :load_messages
 
   @doc """
-  Read the `last_compaction_index` boundary column from the
-  agents row. Returns `{:ok, -1}` for fresh agents (no compaction
-  has happened) and the marker's `message_index` (an integer
-  `>= 0`) after the first compaction. Returns
-  `{:error, :agent_not_found}` when the name does not resolve.
-
-  Used by the on-demand-load path in
-  `Supervisor.fetch_or_start_agent/1` (returned via
-  `build_attrs_for_start/1`) and by callers that need the
-  boundary without doing a full message load.
+  Read the `last_compaction_index` boundary column. Implementation
+  in `Nest.Persistence.Messages`.
   """
-  @spec last_compaction_index(String.t()) ::
-          {:ok, integer()} | {:error, :agent_not_found}
-  def last_compaction_index(agent_name) do
-    case fetch_agent_by_name(agent_name) do
-      {:ok, %PersistedAgent{last_compaction_index: idx}} -> {:ok, idx}
-      {:error, :not_found} -> {:error, :agent_not_found}
-    end
-  end
+  defdelegate last_compaction_index(name),
+    to: Nest.Persistence.Messages,
+    as: :last_compaction_index
 
   @doc """
   Convenience: load the agent row, the full message sequence,
@@ -475,6 +415,28 @@ defmodule Nest.Persistence do
       {:ok, attrs}
     end
   end
+
+  @doc """
+  Update the `model` column on an agent row. Used by the
+  `Agent.set_model/2` recovery flow when the user picks a
+  replacement model from the UI. Implementation lives in
+  `Nest.Persistence.AgentAttrs` so this module stays under
+  the credo 500-line cap; the public re-export here keeps the
+  call sites unchanged.
+  """
+  defdelegate update_agent_model(name, model_map),
+    to: Nest.Persistence.AgentAttrs,
+    as: :update_agent_model
+
+  @doc """
+  List every persisted agent row, ordered by name. Used by
+  `Agents.list_broken_agents/0` to assemble the lobby's
+  "broken agents" payload. Implementation lives in
+  `Nest.Persistence.AgentAttrs` for the same cap reason.
+  """
+  defdelegate fetch_all_agents(),
+    to: Nest.Persistence.AgentAttrs,
+    as: :fetch_all_agents
 
   @doc """
   Current UTC timestamp truncated to second precision.

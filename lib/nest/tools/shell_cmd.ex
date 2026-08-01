@@ -159,27 +159,53 @@ defmodule Nest.Tools.ShellCmd do
   defp collect_output(os_pid, timeout, acc) do
     receive do
       {:stdout, ^os_pid, data} ->
-        acc = %{acc | stdout: [to_string(data) | acc.stdout]}
-        collect_output(os_pid, timeout, acc)
+        collect_output(os_pid, timeout, append_stdout(acc, data))
 
       {:stderr, ^os_pid, data} ->
-        acc = %{acc | stderr: [to_string(data) | acc.stderr]}
-        collect_output(os_pid, timeout, acc)
+        collect_output(os_pid, timeout, append_stderr(acc, data))
 
-      {:DOWN, _ref, :process, _pid, :normal} ->
-        output = combine_output(acc)
-        {:ok, acc.exit_code || 0, output}
+      {:stop_chat, _from} ->
+        handle_stop_chat(os_pid, acc)
 
       {:DOWN, _ref, :process, _pid, reason} ->
-        output = combine_output(acc)
-        exit_code = if is_integer(reason), do: reason, else: 1
-        {:ok, exit_code, output}
+        handle_down(acc, reason)
     after
-      timeout ->
-        :exec.stop(os_pid)
-        output = combine_output(acc) <> "\n[Command timed out after #{timeout}ms]"
-        {:ok, 1, output}
+      timeout -> handle_timeout(os_pid, timeout, acc)
     end
+  end
+
+  defp append_stdout(acc, data),
+    do: %{acc | stdout: [to_string(data) | acc.stdout]}
+
+  defp append_stderr(acc, data),
+    do: %{acc | stderr: [to_string(data) | acc.stderr]}
+
+  # The user clicked Stop. `Lifecycle.stop_chat/2` forwards
+  # `{:stop_chat, _}` to the tool worker before
+  # `Process.exit(worker, :kill)` so we can clean up the bwrap
+  # OS process explicitly. Without this, the `:erlexec` port
+  # close + `:kill_timeout, 5000` cleanup is fragile (bwrap's
+  # PID namespace isolation can leave the inner command
+  # running).
+  defp handle_stop_chat(os_pid, acc) do
+    :exec.stop(os_pid)
+    output = combine_output(acc) <> "\n[Command cancelled]"
+    # 130 = 128 + SIGINT(2), the conventional shell cancellation
+    # exit code (Ctrl-C).
+    {:ok, 130, output}
+  end
+
+  defp handle_down(acc, :normal), do: {:ok, acc.exit_code || 0, combine_output(acc)}
+
+  defp handle_down(acc, reason) do
+    exit_code = if is_integer(reason), do: reason, else: 1
+    {:ok, exit_code, combine_output(acc)}
+  end
+
+  defp handle_timeout(os_pid, timeout, acc) do
+    :exec.stop(os_pid)
+    output = combine_output(acc) <> "\n[Command timed out after #{timeout}ms]"
+    {:ok, 1, output}
   end
 
   defp combine_output(acc) do

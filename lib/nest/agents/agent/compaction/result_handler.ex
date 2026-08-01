@@ -97,9 +97,17 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
         "carried_entry=#{carried_entry_tag(carried_entry)}"
     )
 
-    state = clear_mid_turn_entry(state)
-    state = put_status(state, :idle)
-    state = reset_crossed_thresholds(state)
+    state =
+      state
+      |> clear_mid_turn_entry()
+      |> put_status(:idle)
+      |> reset_crossed_thresholds()
+      # Post-compaction the LLM is summarized and doesn't
+      # "remember" what it read before. Force a fresh
+      # re-read cycle by clearing the `read_files` cache so
+      # any subsequent `write_file` requires an explicit
+      # `read_file` first.
+      |> reset_read_files()
 
     # 1. Strip `<think>...</think>` content from the
     #    summary text. Stripped once here (when building
@@ -462,5 +470,13 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   # per-ChatTurn — see the field's moduledoc).
   defp reset_crossed_thresholds(state) do
     %{state | chat_state: %{state.chat_state | crossed_thresholds: %MapSet{}}}
+  end
+
+  # Reset the `read_files` cache. Same pattern as
+  # `reset_crossed_thresholds/1` above. See the
+  # `ChatState.read_files` moduledoc for why we clear this
+  # at compaction-time.
+  defp reset_read_files(state) do
+    %{state | chat_state: %{state.chat_state | read_files: %{}}}
   end
 end

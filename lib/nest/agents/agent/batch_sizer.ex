@@ -65,6 +65,8 @@ defmodule Nest.Agents.Agent.BatchSizer do
   degraded-but-hopeful path).
   """
 
+  alias Nest.Agents.Agent.BatchSizer.FilePolicy
+  alias Nest.Agents.Agent.BatchSizer.ProjectedSize
   alias Nest.Agents.Agent.CapCalculator
   alias Nest.LLM.Tools, as: LLMTools
   alias Nest.Messages.ToolCall
@@ -73,9 +75,6 @@ defmodule Nest.Agents.Agent.BatchSizer do
   alias Nest.Tokens.Reserve
 
   require Logger
-
-  @safety_padding 1.20
-  @max_read_file_bytes 100 * 1_000_000
 
   @empty_output_placeholder "[Command executed successfully with no output]"
 
@@ -150,86 +149,36 @@ defmodule Nest.Agents.Agent.BatchSizer do
   defdelegate effective_max_result_tokens(tool_call, usable), to: CapCalculator
 
   # ---- Phase 1: per-tool projected sizes (pre-execution) ----
-
-  defp projected_size(%ToolCall{name: "read_file"} = tc, _ctx) do
-    read_file_projection(tc)
-  end
-
-  defp projected_size(%ToolCall{name: "shell_cmd"}, _ctx) do
-    summary_baseline_size() * @safety_padding
-  end
-
-  defp projected_size(%ToolCall{name: "write_file"}, _ctx) do
-    estimator_overhead("Successfully wrote N bytes to path.txt")
-  end
-
-  defp projected_size(%ToolCall{name: "edit"}, _ctx) do
-    estimator_overhead("Replaced N occurrence(s) in path.txt")
-  end
-
-  defp projected_size(%ToolCall{name: "inspect_file"}, _ctx) do
-    # inspect_file's largest historical output (~256 tokens of
-    # stats); metric scale-up by repeating the format's longest line.
-    estimator_overhead(
-      "File: path/to/file.txt\n" <>
-        "Type: ASCII text\n" <>
-        "Size: N bytes\n" <>
-        "Lines: N\n" <>
-        "Non-blank lines: N\n" <>
-        "Characters: N\n" <>
-        "Max line length: N\n" <>
-        "Estimated tokens: ~N"
-    )
-  end
-
-  defp projected_size(%ToolCall{name: "context"}, _ctx) do
-    estimator_overhead("Context: N messages, ~X / Y tokens (Z%)")
-  end
-
-  # Catch-all for tools the LLM hallucinates or spells
-  # incorrectly. These calls never reach execution; they return
-  # small error strings ("Unknown tool: X", "Tool X not
-  # registered", "missing required argument", etc.) whose size
-  # is far smaller than the worst-case output of a real tool.
-  # Project off a representative error so preflight stays
-  # honest about what's actually going on the wire.
   #
-  # This is NOT the place for registered tools without a
-  # specific clause — when a real tool is added to Nest.Tools,
-  # add a `projected_size/2` clause above with a regression test.
-  defp projected_size(%ToolCall{name: name}, _ctx) do
-    estimator_overhead("Unknown tool '#{name}'. Use one of the registered tools.")
-  end
+  # The per-tool projection lives in
+  # `Nest.Agents.Agent.BatchSizer.ProjectedSize.project/2`. This
+  # module just delegates to it.
 
-  # read_file projection: stat-then-cap, then estimate from byte size.
-  # The actual File.read happens in Phase 2; preflight does the cheaper
-  # File.stat so the batch can be refused before doing the read work.
-  defp read_file_projection(%ToolCall{arguments: args} = _tc) do
-    case args do
-      %{"path" => path} when is_binary(path) and path != "" ->
-        case File.stat(path) do
-          {:ok, %{size: bytes}} when bytes > @max_read_file_bytes ->
-            estimator_overhead(
-              "File is #{div(bytes, 1_000_000)} MB; read_file is capped at " <>
-                "100 MB. Use inspect_file or shell_cmd with head/tail/sed " <>
-                "for partial reads."
-            )
-
-          {:ok, %{size: bytes}} ->
-            estimator_overhead(byte_size_to_string(bytes))
-
-          {:error, _reason} ->
-            estimator_overhead("File not found")
-        end
-
-      _ ->
-        estimator_overhead("Missing required arguments: path")
-    end
-  end
+  defp projected_size(%ToolCall{} = tc, ctx), do: ProjectedSize.project(tc, ctx)
 
   # ---- Phase 2: execute the batch ----
 
+  # Pre-call hook for `write_file`. Refuses the tool call
+  # with a structured `{:error, reason}` if the agent has
+  # not previously read the target path, or if the file on
+  # disk no longer matches the recorded `{mtime, size}`.
+  # The refusal flows through the same `execute_one/3`
+  # error path as a missing-args or sandbox refusal, so the
+  # LLM sees a tool result with `is_error: true` and can
+  # retry (after `read_file`). The check + the user-facing
+  # translation live in `FilePolicy` (extracted to keep
+  # this module under credo/line-count rules).
   defp execute_one(%ToolCall{} = tc, ctx) do
+    case FilePolicy.check(tc, ctx) do
+      :ok ->
+        do_execute(tc, ctx)
+
+      {:error, _reason} = err ->
+        {tc, :error, FilePolicy.error_message(err)}
+    end
+  end
+
+  defp do_execute(tc, ctx) do
     case LLMTools.execute_one(ctx.tools, tc, %{caps: ctx.caps}) do
       {:ok, content} -> {tc, :ok, ensure_non_empty(content)}
       {:error, reason} -> {tc, :error, ensure_non_empty(reason)}
@@ -464,15 +413,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
 
   # ---- helpers ----
 
-  defp estimator_overhead(s), do: Estimator.estimate(s) + per_message_overhead()
-
-  defp summary_baseline_size do
-    estimator_overhead("Command output of '' (~0 tokens) saved to (temp file unavailable).")
-  end
-
   defp per_message_overhead, do: 10
-
-  defp byte_size_to_string(bytes), do: String.duplicate("x", bytes)
 
   defp ensure_non_empty(""), do: @empty_output_placeholder
   defp ensure_non_empty(nil), do: @empty_output_placeholder

@@ -21,6 +21,7 @@ defmodule Nest.ModelsTest do
   """
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
   import Mimic
 
   alias Nest.Models
@@ -145,6 +146,147 @@ defmodule Nest.ModelsTest do
       assert per_model != nil
       assert per_model["provider"] == "pegasus"
       assert per_model["context_limit"] == 32_000
+    end
+  end
+
+  describe "refresh(reload_static: true)" do
+    test "re-reads ~/.config/nest/config.toml before the auto-discovery pass" do
+      # The default `Models.refresh/0` (no opts) keeps the static
+      # config captured at `init/1`. The new opt-in opts reload
+      # from disk — so a user adding a new `[providers.<n>]`
+      # entry to `config.toml` sees it in `Models.list/0` without
+      # restarting the app.
+      #
+      # The setup above already populated `state.static_config`
+      # with the real `test/data/config.toml` (via init +
+      # `Models.refresh/0`). We stub `DotConfig.load/0` here so
+      # a synthetic model appears only after a reload — the
+      # pre-reload `Models.list/0` should NOT have it.
+
+      # Snapshot the current static config (loaded from the
+      # real `test/data/config.toml` by `init/1` + the
+      # setup's `Models.refresh/0`). We use this after the
+      # test to restore the canonical state for any
+      # subsequent tests in the file.
+      pre_reload_static =
+        :sys.get_state(Models)
+        |> Map.fetch!(:static_config)
+
+      # Stub `DotConfig.load/0` for this test only. The call
+      # returns a config with the canonical test `pegasus`
+      # provider (so auto-discovery continues to produce the
+      # regression-test names) plus one extra static model
+      # entry that proves the reload actually re-read the
+      # file.
+      Nest.DotConfig
+      |> stub(:load, fn ->
+        pegasus = %Nest.DotConfig.Provider{
+          name: "pegasus",
+          auto_models: true,
+          base_url: "http://pegasus.local",
+          api_key: "test",
+          default_context_limit: 512_000
+        }
+
+        reload_model = %Nest.DotConfig.Model{
+          name: "reload-only-model",
+          provider_name: "synthetic",
+          context_limit: 8000
+        }
+
+        pegasus_model = %Nest.DotConfig.Model{
+          name: "pegasus-static",
+          provider_name: "pegasus",
+          context_limit: 8000
+        }
+
+        {:ok,
+         %{
+           providers: %{"pegasus" => pegasus},
+           models: %{
+             "reload-only-model" => reload_model,
+             "pegasus-static" => pegasus_model
+           }
+         }}
+      end)
+
+      Models.refresh(reload_static: true)
+      _ = :sys.get_state(Models)
+
+      names = Models.list() |> Enum.map(& &1["name"])
+      # Reloaded static-only entry:
+      assert "reload-only-model" in names
+      # Static entry alongside auto-discovery:
+      assert "pegasus-static" in names
+      # Auto-discovered entry from pegasus (the `Req.get`
+      # stub from setup supplies these names):
+      assert "MiniMax-M3" in names
+
+      # Restore the snapshot taken before this test so the
+      # next test sees the canonical catalog (the reload
+      # stub above wiped the real `static_config`).
+      :sys.replace_state(Models, fn state ->
+        %{state | static_config: pre_reload_static}
+      end)
+
+      _ = :sys.get_state(Models)
+    end
+
+    test "plain refresh/0 keeps the previously-captured static_config snapshot" do
+      # Without `:reload_static`, the existing `state.static_config`
+      # is reused. If a user adds a new `[providers.<n>]` block to
+      # `config.toml` and calls `Models.refresh()` without opts,
+      # the new provider stays invisible until app restart.
+
+      # Stub `DotConfig.load/0` to return a synthetic config.
+      # Even though our stub fires, the refresh-without-reload
+      # path must NOT call it (it doesn't reload from disk
+      # in the no-opts branch).
+      Nest.DotConfig
+      |> stub(:load, fn ->
+        {:ok,
+         %{
+           providers: %{},
+           models: %{
+             "should-not-appear" => %Nest.DotConfig.Model{
+               name: "should-not-appear",
+               provider_name: "never",
+               context_limit: 1
+             }
+           }
+         }}
+      end)
+
+      Models.refresh()
+      _ = :sys.get_state(Models)
+
+      names = Models.list() |> Enum.map(& &1["name"])
+      refute "should-not-appear" in names
+    end
+
+    test "keeps the previous static_config snapshot when DotConfig.load/0 returns an error" do
+      # Malformed TOML should not wipe the model catalog. The
+      # GenServer logs and discards the error; the prior
+      # `state.static_config` survives.
+      #
+      # The reload error fires a `Logger.error` from
+      # `Models.handle_cast({:refresh, _}, ...)` — capture
+      # it and assert it's the expected error path, not noise.
+      current = Models.list()
+      current_names = Enum.map(current, & &1["name"])
+
+      Nest.DotConfig
+      |> stub(:load, fn -> {:error, :parse_failed} end)
+
+      log =
+        capture_log(fn ->
+          Models.refresh(reload_static: true)
+          _ = :sys.get_state(Models)
+
+          assert Enum.map(Models.list(), & &1["name"]) == current_names
+        end)
+
+      assert log =~ "Failed to reload static config"
     end
   end
 end

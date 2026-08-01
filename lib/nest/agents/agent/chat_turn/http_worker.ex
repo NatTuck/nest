@@ -161,10 +161,9 @@ defmodule Nest.Agents.Agent.ChatTurn.HTTPWorker do
   # Cooperative halt check. Polls the Agent's `cancelled`
   # flag via `:sys.get_state/1` — a synchronous system message
   # that returns the Agent's current state. The Agent sets
-  # `cancelled = true` in its `stop_chat_requested` handler
-  # (see `Nest.Agents.Agent.Handlers.StopHandler`), which
-  # runs when the Agent processes the `{:stop_chat, from}`
-  # message.
+  # `cancelled = true` in its `handle_call({:stop_chat, _})`
+  # handler, which runs synchronously when the channel's
+  # `chat:stop` push calls `Agent.stop_chat/2`.
   #
   # We check the Agent's state (not the worker's local
   # mailbox) because the stop is delivered to the chat_turn,

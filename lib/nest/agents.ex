@@ -8,7 +8,9 @@ defmodule Nest.Agents do
   """
 
   alias Nest.Agents.{Agent, Registry, Supervisor}
+  alias Nest.Agents.PersistedAgent
   alias Nest.DotConfig
+  alias Nest.Persistence
   alias Nest.Vocations
 
   @doc """
@@ -88,13 +90,21 @@ defmodule Nest.Agents do
   ## Returns
   - `{:ok, agent}` - Agent found with full state including messages
   - `{:error, :not_found}` - Agent doesn't exist
+  - `{:error, reason}` - Any other `Supervisor.get_agent/1` failure
+    (e.g. `:timeout` if a GenServer call inside the hydration
+    path blocked — `Models.list/0` is the usual culprit). The
+    AgentChannel's `join/3` catches this and returns
+    `{:error, %{"reason" => "agent_unavailable"}}` so the WS
+    doesn't crash on a transient hydration hiccup.
 
   """
-  @spec get_agent(String.t()) :: {:ok, map()} | {:error, :not_found}
+  @spec get_agent(String.t()) ::
+          {:ok, map()} | {:error, :not_found | term()}
   def get_agent(name) do
     case Supervisor.get_agent(name) do
       {:ok, pid} -> build_agent_data(pid)
       {:error, :not_found} -> {:error, :not_found}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -310,5 +320,83 @@ defmodule Nest.Agents do
   @spec delete_agent(String.t()) :: :ok | {:error, :not_found}
   def delete_agent(name) do
     Supervisor.stop_agent(name)
+  end
+
+  @doc """
+  Change an agent's persisted `model` and resolved LLM client.
+
+  Allowed only when the agent's runtime status is `:idle` or
+  `:model_missing`. Returns `{:error, :agent_busy}` when the
+  agent is streaming, executing tools, or in any other status.
+  Returns `{:error, {:invalid_model, reason}}` when the new
+  model can't be resolved to a runtime provider.
+
+  The user-supplied `model` map can have either atom or string
+  keys; both shapes are passed through to
+  `Config.create_client_config/1`, which extracts the `:name`
+  (or `"name"`) key for `ChatModel.new(model: name)`.
+
+  ## Examples
+
+      :ok = Agents.change_model("clever-raven", %{name: "claude-haiku-4-5", provider: "anthropic"})
+  """
+  @spec change_model(String.t(), map()) :: :ok | {:error, term()}
+  def change_model(name, new_model) when is_map(new_model) do
+    case Supervisor.get_agent(name) do
+      {:ok, pid} -> Agent.set_model(pid, new_model)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  List agents whose persisted `model` no longer resolves to a
+  runtime provider. Each entry carries `name`, the unresolved
+  `model` map, and a `:status` of `:model_missing`.
+
+  Used by the lobby's `:after_join` payload so the UI can
+  surface broken agents and offer the user a repair path
+  (`Agents.change_model/2`). The recovery flow is independent
+  of `list_agents_info/0`, which only returns live (startable)
+  agents — broken agents are intentionally excluded from that
+  view because their `client_config.client` would be
+  `RecoveryClient`, which can't actually chat.
+  """
+  @spec list_broken_agents() :: [map()]
+  def list_broken_agents do
+    Enum.flat_map(Persistence.fetch_all_agents(), &maybe_report_broken/1)
+  end
+
+  # Decide whether a single persisted agent row should appear
+  # in the lobby's `broken_agents` payload. Returns `[]` for
+  # agents that are either alive in the Registry (the
+  # supervisor's `get_agent/1` will hydrate them on demand) or
+  # that *can* be hydrated right now (a transient inconsistency
+  # we don't want to surface as broken), and `[%{name, model,
+  # status: :model_missing}]` for the rest.
+  defp maybe_report_broken(%PersistedAgent{name: name, model: model}) do
+    cond do
+      agent_alive?(name) ->
+        []
+
+      not agent_loadable?(model) ->
+        [%{name: name, model: model, status: :model_missing}]
+
+      true ->
+        []
+    end
+  end
+
+  defp agent_alive?(name) do
+    case Registry.lookup(name) do
+      {:ok, _pid} -> true
+      {:error, :not_found} -> false
+    end
+  end
+
+  defp agent_loadable?(model) do
+    case Agent.Config.create_client_config(model) do
+      {:ok, _client_config} -> true
+      {:error, _reason} -> false
+    end
   end
 end

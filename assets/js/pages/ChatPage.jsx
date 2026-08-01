@@ -17,6 +17,7 @@ import {
   stopMessage,
   retryCompaction,
   compactionLoopOk,
+  changeAgentModel,
 } from "../channels";
 import { ChatInput } from "../components/ChatInput";
 import { TokenUsageChip } from "../components/TokenUsageChip";
@@ -26,6 +27,7 @@ import { CompactionMarker } from "../components/CompactionMarker";
 import { StreamingDots } from "../components/StreamingDots";
 import { MessagesList } from "../components/MessagesList";
 import { StreamingMessage } from "../components/StreamingMessage";
+import { AgentModelPicker } from "../components/AgentModelPicker";
 import { useScrollToBottom } from "../hooks/useScrollToBottom";
 import { stripModePrefix } from "../utils/stripModePrefix.js";
 
@@ -47,6 +49,14 @@ export function ChatPage() {
   const [inputValue, setInputValue] = useState("");
   const [sendError, setSendError] = useState(null);
   const [currentMode, setCurrentMode] = useState(null);
+  // Backing state for the model picker modal. Open the
+  // picker either from the header chip (always available)
+  // or from the prominent :model_missing banner (the
+  // recovery flow). Both paths funnel through the same
+  // `handleChangeModel` callback to keep the wire push
+  // uniform.
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [changeModelError, setChangeModelError] = useState(null);
   // Tracks the optimistic "stop in flight" state. Flips to `true`
   // immediately when the user clicks Stop, then back to `false`
   // when the next `chat:status` push arrives (which carries the
@@ -308,6 +318,42 @@ export function ChatPage() {
     joinAgent(name);
   };
 
+  // Push a new model to the server. Reset any previous error
+  // before firing so a typo'd provider doesn't lock the user
+  // out of retrying from a clean slate. The server's
+  // `agent:updated` broadcast (lobby) and `chat:status`
+  // (per-agent) both flow through
+  // `applyAgentModelUpdate` so the cache and `agents` list
+  // reconcile themselves.
+  const handleChangeModel = (newModel) => {
+    setChangeModelError(null);
+    setModelPickerOpen(false);
+
+    changeAgentModel(name, newModel, undefined, (err) => {
+      setChangeModelError(describeChangeModelError(err?.reason));
+    });
+  };
+
+  // Translate the server's error-reason string into a
+  // user-friendly message. Each branch mirrors a `:reply`
+  // reason from `LobbyChannel.handle_in("change_model", …)`.
+  function describeChangeModelError(reason) {
+    switch (reason) {
+      case "agent_busy":
+        return "Agent is busy. Wait for the current chat to finish before changing models.";
+      case "invalid_model":
+        return "That model isn't configured on the server.";
+      case "not_found":
+        return "Agent not found. Refresh the page and try again.";
+      case "invalid_payload":
+        return "Couldn't read the model selection. Try again.";
+      default:
+        return reason
+          ? `Failed to change model: ${reason}`
+          : "Failed to change model.";
+    }
+  }
+
   // Dismiss a chat-task error without re-joining the channel.
   // Useful when the LLM call crashed but the WS channel is
   // still alive (the companion `chat:status: idle` already
@@ -373,12 +419,50 @@ export function ChatPage() {
               )}
             </h1>
             <p className="text-sm text-gray-500 break-all">
-              {(() => {
-                const modelName = model?.name;
-                const provider = model?.provider;
-                if (!modelName) return "[missing]";
-                return provider ? `${provider}: ${modelName}` : modelName;
-              })()}
+              <button
+                type="button"
+                onClick={() => setModelPickerOpen(true)}
+                aria-label="Change model"
+                className={`
+                  inline-flex items-center gap-1
+                  px-2 py-0.5 rounded-md
+                  transition-colors duration-150
+                  hover:bg-gray-100
+                  ${
+                    agentState === "model_missing"
+                      ? "bg-amber-100 text-amber-900 hover:bg-amber-200"
+                      : "text-gray-500"
+                  }
+                `}
+              >
+                <span className="font-mono text-xs">
+                  {(() => {
+                    const modelName = model?.name;
+                    const provider = model?.provider;
+                    if (!modelName) return "[missing]";
+                    return provider ? `${provider}: ${modelName}` : modelName;
+                  })()}
+                </span>
+                <svg
+                  className="w-3 h-3 opacity-60"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                  aria-hidden="true"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M19 9l-7 7-7-7"
+                  />
+                </svg>
+              </button>
+              {changeModelError && (
+                <span className="ml-2 text-xs text-red-600">
+                  {changeModelError}
+                </span>
+              )}
             </p>
             {parentName && (
               <p className="text-xs text-gray-500 mt-1">
@@ -439,6 +523,46 @@ export function ChatPage() {
         compactionError={compactionError}
         compactionLoop={compactionLoop}
       />
+
+      {/* Repair banner — only shown when the agent's persisted
+          model no longer resolves to a runtime provider
+          (status ":model_missing"). Per the recovery flow,
+          the user picks a replacement model from here; the
+          channel layer blocks all `chat:message` traffic
+          while in this state, so this banner is the only way
+          forward. The picker's selection calls
+          `handleChangeModel`, which closes the picker and
+          pushes `"change_model"` over the lobby channel. */}
+      {agentState === "model_missing" && (
+        <div
+          role="alert"
+          aria-live="polite"
+          className="bg-amber-50 border-l-4 border-amber-500 p-4 mb-4"
+        >
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-amber-900 font-medium">
+                Model{" "}
+                <span className="font-mono">{model?.name ?? "(unknown)"}</span>{" "}
+                is no longer available
+              </p>
+              <p className="text-amber-800 text-sm mt-1">
+                Your conversation history is preserved. Pick a replacement model
+                to continue — the agent resumes in{" "}
+                <span className="font-mono">idle</span> the moment the new model
+                is set.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setModelPickerOpen(true)}
+              className="flex-shrink-0 px-4 py-2 rounded-lg font-medium text-amber-900 bg-amber-200 hover:bg-amber-300 active:bg-amber-400 transition-colors"
+            >
+              Choose replacement model
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Notification banner */}
       <NotificationBanner
@@ -591,6 +715,22 @@ export function ChatPage() {
           history={history}
         />
       </div>
+
+      {/* Model picker modal — opens from the header chip
+          (any state) or the :model_missing banner (repair
+          flow). The picker's `onSelect` pushes
+          `"change_model"` over the lobby channel. The agent
+          broadcasts `agent:updated` back, which
+          `applyAgentModelUpdate` propagates into the cache
+          and `agents` list. If the new model fails to
+          resolve (provider removed, etc.) the server
+          replies `agent_busy` or `invalid_model` and we
+          surface the message inline below the picker. */}
+      <AgentModelPicker
+        open={modelPickerOpen}
+        onClose={() => setModelPickerOpen(false)}
+        onSelect={handleChangeModel}
+      />
     </div>
   );
 }

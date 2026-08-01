@@ -4,13 +4,12 @@
  * back into the flat legacy fields some components still
  * read (thinking, toolCalls, toolResults, textParts).
  *
- * `toolCallsFromParts/1` deserves specific coverage because
- * it JSON-decodes the `arguments` string assembled by the
- * streaming accumulator (a tool_use part's `arguments`
- * arrives as a string buffer of concatenated
- * `arguments_delta` fragments). The finalized shape has
- * `arguments` already as an object; both shapes need to
- * round-trip into the structured form `ToolCalls` expects.
+ * `toolCallsFromParts/1` passes `arguments` through unchanged
+ * so the renderer (`formatToolCall` + `ToolCalls.jsx`) can
+ * decide between streaming-monospace and final-JSON based
+ * on whether the value is a partial buffer or a parsed
+ * object. The legacy behavior of decoding partial JSON to
+ * `{}` lost the streaming preview; we now keep the raw.
  */
 import { describe, it, expect } from "vitest";
 
@@ -19,6 +18,8 @@ import {
   textPartsFor,
   toolCallsFromParts,
   toolResultsFromParts,
+  formatToolCall,
+  LONG_FIELD_THRESHOLD,
 } from "./messageParts.js";
 
 describe("thinkingFor", () => {
@@ -44,17 +45,21 @@ describe("thinkingFor", () => {
 });
 
 describe("textPartsFor", () => {
-  it("splits <think> tags out of Part.Text entries", () => {
+  it("splits think tags out of Part.Text entries", () => {
     expect(
       textPartsFor({
-        parts: [{ kind: "text", text: "before<think>reasoning</think>after" }],
+        parts: [
+          {
+            kind: "text",
+            text: "before<think>reasoning</think>after",
+          },
+        ],
       }),
     ).toEqual([
       { kind: "text", text: "before" },
       { kind: "text", text: "after" },
     ]);
   });
-
   it("preserves non-text/non-thinking parts (e.g. tool_use) for downstream renderers", () => {
     const toolUse = { kind: "tool_use", id: "x", name: "shell_cmd" };
     expect(textPartsFor({ parts: [toolUse] })).toEqual([toolUse]);
@@ -95,54 +100,119 @@ describe("toolCallsFromParts", () => {
     expect(result[0].arguments).toBe(args);
   });
 
-  it("JSON-decodes string `arguments` (the streaming shape)", () => {
+  it("passes through string `arguments` (the streaming shape) unchanged", () => {
+    // The renderer (`formatToolCall`) decides how to display
+    // the partial buffer. We keep the raw bytes here so the
+    // streaming preview is never thrown away.
     const result = toolCallsFromParts([
       {
         kind: "tool_use",
         id: "a",
         name: "shell_cmd",
-        arguments: '{"command":"ls"}',
+        arguments: '{"command":',
       },
     ]);
-    expect(result[0].arguments).toEqual({ command: "ls" });
+    expect(result[0].arguments).toBe('{"command":');
   });
 
-  it("decodes empty string `arguments` to an empty object", () => {
-    const result = toolCallsFromParts([
-      { kind: "tool_use", id: "a", name: "shell_cmd", arguments: "" },
-    ]);
-    expect(result[0].arguments).toEqual({});
-  });
-
-  it("falls back to an empty object when the JSON is malformed", () => {
-    const result = toolCallsFromParts([
-      {
-        kind: "tool_use",
-        id: "a",
-        name: "shell_cmd",
-        arguments: "{not valid json",
-      },
-    ]);
-    expect(result[0].arguments).toEqual({});
-  });
-
-  it("falls back to an empty object when the JSON is a non-object primitive", () => {
-    const result = toolCallsFromParts([
-      {
-        kind: "tool_use",
-        id: "a",
-        name: "shell_cmd",
-        arguments: "42",
-      },
-    ]);
-    expect(result[0].arguments).toEqual({});
-  });
-
-  it("falls back to an empty object when `arguments` is missing/null", () => {
+  it("substitutes an empty string for missing/null `arguments`", () => {
+    // The streaming model: `arguments` is always a string (or
+    // absent → ""). Previously this returned `{}` which the
+    // renderer treated as "no preview to show"; now we pass
+    // through so `formatToolCall` can branch on emptiness.
     const result = toolCallsFromParts([
       { kind: "tool_use", id: "a", name: "shell_cmd" },
     ]);
-    expect(result[0].arguments).toEqual({});
+    expect(result[0].arguments).toBe("");
+  });
+});
+
+describe("formatToolCall", () => {
+  it("returns kind:empty when arguments is missing or empty", () => {
+    expect(formatToolCall(null)).toEqual({ kind: "empty" });
+    expect(formatToolCall({ name: "x" })).toEqual({ kind: "empty" });
+    expect(formatToolCall({ name: "x", arguments: "" })).toEqual({
+      kind: "empty",
+    });
+  });
+
+  it("returns kind:object for finalized (parsed) arguments", () => {
+    const args = { command: "ls -la" };
+    expect(formatToolCall({ name: "shell_cmd", arguments: args })).toEqual({
+      kind: "object",
+      value: args,
+    });
+  });
+
+  it("returns kind:stream-short for partial JSON that doesn't parse yet", () => {
+    // `{"command":` is partial — JSON.parse throws, so we land in
+    // the monospace-raw branch.
+    const formatted = formatToolCall({
+      name: "shell_cmd",
+      arguments: '{"command":',
+    });
+    expect(formatted.kind).toBe("stream-short");
+    expect(formatted.raw).toBe('{"command":');
+  });
+
+  it("returns kind:object when the partial buffer parses to a small object", () => {
+    // `{"command":"ls"}` parses cleanly — render the same
+    // object-shape row as the finalized version.
+    const formatted = formatToolCall({
+      name: "shell_cmd",
+      arguments: '{"command":"ls"}',
+    });
+    expect(formatted).toEqual({
+      kind: "object",
+      value: { command: "ls" },
+    });
+  });
+
+  it("returns kind:stream-long when a single string field crosses the long-field threshold", () => {
+    const longContent = "x".repeat(LONG_FIELD_THRESHOLD + 1);
+    const formatted = formatToolCall({
+      name: "write_file",
+      arguments: JSON.stringify({
+        path: "/tmp/foo.txt",
+        content: longContent,
+      }),
+    });
+    expect(formatted.kind).toBe("stream-long");
+    expect(formatted.previewField).toBe("content");
+    expect(formatted.preview).toBe(longContent);
+  });
+
+  it("returns kind:object when a short partial buffer parses to a small object", () => {
+    // Below `LONG_TOTAL_THRESHOLD` total length and with a
+    // parseable object shape, the small-object path renders
+    // the formatted JSON preview. The buffer happens to be
+    // mid-stream (the LLM might be still streaming more
+    // fields), but at this size the preview reads cleanly
+    // and the user can see what's flowing through.
+    const args = JSON.stringify({
+      command: "ls",
+      metadata: "x".repeat(150),
+    });
+    const formatted = formatToolCall({
+      name: "shell_cmd",
+      arguments: args,
+    });
+    expect(formatted.kind).toBe("object");
+    expect(formatted.value).toEqual({
+      command: "ls",
+      metadata: "x".repeat(150),
+    });
+  });
+
+  it("picks the longest string field when multiple cross the threshold", () => {
+    const formatted = formatToolCall({
+      name: "write_file",
+      arguments: JSON.stringify({
+        content1: "a".repeat(LONG_FIELD_THRESHOLD + 10),
+        content2: "b".repeat(LONG_FIELD_THRESHOLD + 200),
+      }),
+    });
+    expect(formatted.previewField).toBe("content2");
   });
 });
 

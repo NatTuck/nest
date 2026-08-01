@@ -10,10 +10,43 @@
  * - Navigate to new agent on success
  */
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useStore } from "../store";
-import { createAgent } from "../channels";
+import { createAgent, rescanModels } from "../channels";
+
+/**
+ * Validate the new-agent form before firing the lobby push.
+ * Returns the user-facing error message, or `null` when the
+ * form is submittable. Pure function — extracted from
+ * `handleCreateAgent` so the conditional branches are
+ * unit-testable without spinning up React.
+ *
+ * @param {object} params
+ * @param {string} params.selectedModel — the model `<select>` value.
+ * @param {string} params.selectedVocation — the vocation `<select>` value.
+ * @param {boolean} params.requiresWorkspace — true when the
+ *   chosen vocation is the Programmer (which requires a path).
+ * @param {string} params.workspacePath — the workspace text input.
+ * @returns {string | null} the validation error, or `null`.
+ */
+export function validateNewAgentForm({
+  selectedModel,
+  selectedVocation,
+  requiresWorkspace,
+  workspacePath,
+}) {
+  if (!selectedModel) {
+    return "Please select a model";
+  }
+  if (!selectedVocation) {
+    return "Please select a vocation";
+  }
+  if (requiresWorkspace && !workspacePath) {
+    return "Please specify a workspace path for the Programmer vocation";
+  }
+  return null;
+}
 
 /**
  * New Agent Page component
@@ -26,6 +59,22 @@ export function NewAgentPage() {
   const [workspacePath, setWorkspacePath] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState(null);
+  const [isRescanning, setIsRescanning] = useState(false);
+
+  // Reset the rescan spinner when the merged catalog lands.
+  // The `rescan_models` push reply is `:ok`; the real catalog
+  // arrives via the follow-up `models_updated` broadcast which
+  // mutates `store.models`. Comparing the array reference (the
+  // store replaces the whole array on each `setModels`) is
+  // enough to know the round-trip completed.
+  const lastModelsRef = useRef(models);
+
+  useEffect(() => {
+    if (lastModelsRef.current !== models && isRescanning) {
+      lastModelsRef.current = models;
+      setIsRescanning(false);
+    }
+  }, [models, isRescanning]);
 
   const selectedVocationData = vocations?.find(
     (v) => v.id.toString() === selectedVocation,
@@ -33,18 +82,15 @@ export function NewAgentPage() {
   const requiresWorkspace = selectedVocationData?.name === "Programmer";
 
   const handleCreateAgent = () => {
-    if (!selectedModel) {
-      setError("Please select a model");
-      return;
-    }
+    const validationError = validateNewAgentForm({
+      selectedModel,
+      selectedVocation,
+      requiresWorkspace,
+      workspacePath,
+    });
 
-    if (!selectedVocation) {
-      setError("Please select a vocation");
-      return;
-    }
-
-    if (requiresWorkspace && !workspacePath) {
-      setError("Please specify a workspace path for the Programmer vocation");
+    if (validationError) {
+      setError(validationError);
       return;
     }
 
@@ -68,6 +114,23 @@ export function NewAgentPage() {
       (err) => {
         setError(err.message || "Failed to create agent");
         setIsCreating(false);
+      },
+    );
+  };
+
+  const handleRescanModels = () => {
+    setIsRescanning(true);
+    rescanModels(
+      () => {
+        // The actual catalog lands via the `models_updated`
+        // broadcast → `setModels` in the store. We don't get
+        // a per-payload hook, so use a small effect on the
+        // store's last-applied index to clear `isRescanning`
+        // (see below).
+      },
+      (err) => {
+        setIsRescanning(false);
+        setError(err?.message || "Failed to rescan providers");
       },
     );
   };
@@ -145,12 +208,57 @@ export function NewAgentPage() {
 
         {/* Model selection */}
         <div className="mb-6">
-          <label
-            htmlFor="model-select"
-            className="block text-sm font-medium text-gray-700 mb-2"
-          >
-            Select Model
-          </label>
+          <div className="flex items-end justify-between mb-2 gap-3">
+            <label
+              htmlFor="model-select"
+              className="block text-sm font-medium text-gray-700"
+            >
+              Select Model
+            </label>
+            <button
+              type="button"
+              onClick={handleRescanModels}
+              disabled={isRescanning || isCreating}
+              aria-label="Rescan providers"
+              className={`
+                inline-flex items-center gap-2 px-3 py-1.5 rounded-md
+                text-xs font-medium border transition-all
+                ${
+                  isRescanning || isCreating
+                    ? "bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed"
+                    : "bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100 hover:border-amber-300 active:bg-amber-200"
+                }
+              `}
+            >
+              {isRescanning ? (
+                <>
+                  <svg
+                    className="animate-spin h-3.5 w-3.5"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    aria-hidden="true"
+                  >
+                    <circle
+                      className="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      strokeWidth="4"
+                    />
+                    <path
+                      className="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                    />
+                  </svg>
+                  Rescanning…
+                </>
+              ) : (
+                "Rescan providers"
+              )}
+            </button>
+          </div>
           <select
             id="model-select"
             value={selectedModel}

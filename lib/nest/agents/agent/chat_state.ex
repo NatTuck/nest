@@ -87,6 +87,21 @@ defmodule Nest.Agents.Agent.ChatState do
   to `%MapSet{}` on successful compaction in
   `Compaction.ResultHandler.handle_success/3`, so warnings
   re-fire if usage rises again after the history was summarized.
+
+  The `read_files` map gates the `write_file` tool: every
+  successful `read_file` and `write_file` is recorded here as
+  `path => %{mtime: DateTime.t(), size: non_neg_integer()}`,
+  taken from `File.stat/1` immediately after the tool worker
+  returns. `BatchSizer.execute_one/2` consults the `:check_read_policy`
+  introspection clause before any `write_file` runs and refuses
+  the call with `"You must read that file before overwriting it."`
+  when the path is absent, or `"File contents have changed, re-read that
+  file before writing it."` when the recorded `mtime`/`size` no
+  longer matches the on-disk file. Successful `write_file` calls
+  overwrite the entry (so a follow-up write to the same path passes
+  its own mtime check). Cleared on successful compaction
+  (the LLM is summarized and shouldn't carry pre-summary reads forward)
+  and on agent restart.
   """
   # credo:disable-for-next-line Credo.Check.Warning.StructFieldAmount
   defstruct messages: [],
@@ -124,7 +139,14 @@ defmodule Nest.Agents.Agent.ChatState do
             # `tool_use_start` handler in `LLMStreamHandler`,
             # reset to `%{}` when the streaming accumulator
             # resets (start of a new LLM iteration).
-            tool_index_map: %{}
+            tool_index_map: %{},
+            # Per-agent cache of `path => %{mtime, size}` for
+            # every successful `read_file` and `write_file` —
+            # gates the `write_file` "must read first" /
+            # "contents changed" policy in
+            # `Nest.Agents.Agent.IntrospectionHandler`.
+            # Reset on compaction success and on agent restart.
+            read_files: %{}
 
   @type mid_turn_entry :: %{entry: Nest.Agents.Agent.ChatTurn.State.entry() | nil}
 end

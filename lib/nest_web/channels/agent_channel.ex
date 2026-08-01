@@ -38,6 +38,14 @@ defmodule NestWeb.AgentChannel do
 
       {:error, :not_found} ->
         {:error, %{"reason" => "agent not found"}}
+
+      {:error, reason} ->
+        # Catch-all for non-`:not_found` failures — e.g. an
+        # unresolved provider when the supervisor's on-demand load
+        # was retried. Logged server-side; the channel refuses the
+        # join gracefully instead of crashing the socket.
+        Logger.warning("agent:#{agent_name} channel join failed: #{inspect(reason)}")
+        {:error, %{"reason" => "agent_unavailable"}}
     end
   end
 
@@ -176,7 +184,8 @@ defmodule NestWeb.AgentChannel do
              :compacting,
              :compaction_failed,
              :compaction_loop_detected,
-             :context_overflow
+             :context_overflow,
+             :model_missing
            ] ->
         # Reject incoming messages while the agent is in a
         # frozen state. The frontend hides the chat input and
@@ -191,6 +200,11 @@ defmodule NestWeb.AgentChannel do
         # `:compaction_failed`: it shows an OK button instead
         # of Retry. Once the user clicks OK, status returns to
         # `:idle` and incoming messages resume.
+        #
+        # `:model_missing` rejects incoming messages because
+        # the persisted model no longer resolves to a runtime
+        # provider. The user must pick a replacement model
+        # first; the ChatPage shows a banner with the picker.
         {:reply, {:error, %{"reason" => "agent_status_#{status}"}}, socket}
 
       {:ok, %{status: status}}
@@ -221,6 +235,41 @@ defmodule NestWeb.AgentChannel do
       {:error, :not_found} ->
         {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
     end
+  end
+
+  @impl true
+  def handle_in("change_model", %{"model" => model_params}, socket)
+      when is_map(model_params) do
+    agent_name = socket.assigns.agent_name
+    new_name = model_params["name"] || model_params[:name]
+    new_provider = model_params["provider"] || model_params[:provider]
+
+    case Agents.change_model(agent_name, %{name: new_name, provider: new_provider}) do
+      :ok ->
+        # The agent broadcasts `chat:status` from the
+        # `:set_model` handler with the new `model` field;
+        # this socket is already subscribed so no extra push
+        # is needed here.
+        {:reply, {:ok, %{}}, socket}
+
+      {:error, :agent_busy} ->
+        {:reply, {:error, %{"reason" => "agent_busy"}}, socket}
+
+      {:error, {:invalid_model, _reason}} ->
+        {:reply, {:error, %{"reason" => "invalid_model"}}, socket}
+
+      {:error, :not_found} ->
+        {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
+
+      {:error, reason} ->
+        Logger.warning("change_model failed on agent:#{agent_name}: #{inspect(reason)}")
+
+        {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
+    end
+  end
+
+  def handle_in("change_model", _payload, socket) do
+    {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
   end
 
   @impl true

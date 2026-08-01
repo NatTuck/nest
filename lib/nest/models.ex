@@ -52,9 +52,18 @@ defmodule Nest.Models do
   @doc """
   Refreshes the model list by re-querying auto-providers.
   Also re-populates the context-limit cache.
+
+  ## Options
+
+    * `:reload_static` (default `false`) — when `true`, also
+      re-read `~/.config/nest/config.toml` from disk before
+      the auto-discovery pass. This makes adding a new
+      `[providers.<n>]` entry in the file take effect without
+      an app restart. The static-config snapshot is otherwise
+      captured once at `init/1` time.
   """
-  def refresh do
-    GenServer.cast(__MODULE__, :refresh)
+  def refresh(opts \\ []) do
+    GenServer.cast(__MODULE__, {:refresh, opts})
   end
 
   @doc """
@@ -107,7 +116,27 @@ defmodule Nest.Models do
   end
 
   @impl true
-  def handle_cast(:refresh, state) do
+  def handle_cast({:refresh, opts}, state) when is_list(opts) do
+    # When `:reload_static` is set, re-parse the dotconfig from
+    # disk so adding a new `[providers.<n>]` entry takes effect
+    # without a server restart. The file path comes from
+    # `DotConfig.load/0` (XDG-resolved at call time). Errors are
+    # logged but non-fatal — the previous `state.static_config`
+    # is kept so a malformed edit doesn't wipe the model catalog.
+    state =
+      if opts[:reload_static] do
+        case DotConfig.load() do
+          {:ok, config} ->
+            %{state | static_config: config}
+
+          {:error, reason} ->
+            Logger.error("Failed to reload static config during refresh: #{inspect(reason)}")
+            state
+        end
+      else
+        state
+      end
+
     send(self(), :query_auto_providers)
     {:noreply, state}
   end

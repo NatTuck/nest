@@ -8,6 +8,8 @@ defmodule NestWeb.AgentChannelTest do
 
   import Mimic
 
+  alias Nest.Agents
+
   setup :verify_on_exit!
 
   describe "join/3" do
@@ -84,6 +86,33 @@ defmodule NestWeb.AgentChannelTest do
                  NestWeb.AgentChannel,
                  "agent:nonexistent"
                )
+    end
+
+    test "returns agent_unavailable (not a crash) for non-:not_found errors" do
+      # `Agents.get_agent/1` propagates whatever
+      # `Supervisor.get_agent/1` returns. To exercise the
+      # non-`:not_found` branch, stub it to return a tuple
+      # other than `:not_found`.
+      #
+      # The channel's catch-all path logs a `Logger.warning`
+      # via `agent_channel.ex:47` — capture it and assert
+      # it's the expected error path, not noise.
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          Nest.Agents
+          |> expect(:get_agent, fn _name ->
+            {:error, %Nest.ChatModel.ModelNotFoundError{message: "x"}}
+          end)
+
+          assert {:error, %{"reason" => "agent_unavailable"}} =
+                   subscribe_and_join(
+                     socket(NestWeb.UserSocket),
+                     NestWeb.AgentChannel,
+                     "agent:any-missing"
+                   )
+        end)
+
+      assert log =~ "agent:any-missing channel join failed"
     end
   end
 
@@ -215,10 +244,100 @@ defmodule NestWeb.AgentChannelTest do
       ref = push(socket, "chat:status", %{})
       assert_reply ref, :ok, payload
 
-      # currentMode must be present so the client can re-sync
+      # currentModel must be present so the client can re-sync
       # the dropdown on reconnect / re-fetch. For a vocation-less
       # agent the default is "chat".
       assert payload["currentMode"] == "chat"
+    end
+  end
+
+  describe "handle_in(change_model)" do
+    test "repairs an agent that is in :model_missing state" do
+      # Stub the lookup for the broken model name so the agent
+      # lands in :model_missing without polluting the suite.
+      #
+      # The model-probe failure fires a `Logger.error` from
+      # `Agent.init/1` — capture it and assert it's the
+      # expected error path, not noise.
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          Nest.Agents.Agent.Config
+          |> stub(:create_client_config, fn model ->
+            if model[:name] == "ghost-model" do
+              {:error, %Nest.ChatModel.ModelNotFoundError{message: "x"}}
+            else
+              real_fn = Function.capture(Nest.Agents.Agent.Config, :create_client_config, 1)
+              real_fn.(model)
+            end
+          end)
+
+          {:ok, name} = Agents.create_agent(%{name: "ghost-model"})
+
+          {:ok, _, socket} =
+            subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{name}")
+
+          # Subscribe to follow-up status pushes (the agent
+          # broadcasts chat:status from the set_model handler).
+          Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{name}")
+
+          ref =
+            push(socket, "change_model", %{
+              "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+            })
+
+          assert_reply ref, :ok, %{}
+
+          # The agent emits a chat:status broadcast carrying the
+          # new model — the canonical wire signal for the JS to
+          # drop the repair banner. The PubSub payload uses atom
+          # keys (it doesn't transit through JSON encoding — JS
+          # reads those maps via React's normal serialization).
+          assert_receive {:chat_status, payload}, 500
+          assert payload.status == "idle"
+          assert payload.model["name"] == "qwen3.5-plus"
+        end)
+
+      assert log =~ "could not resolve model"
+    end
+
+    test "returns :invalid_payload when the model field is missing" do
+      {:ok, name} = Agents.create_agent(%{name: "qwen3.5-plus"})
+
+      {:ok, _, socket} =
+        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{name}")
+
+      ref = push(socket, "change_model", %{"some_other_field" => "x"})
+      assert_reply ref, :error, %{"reason" => "invalid_payload"}
+    end
+  end
+
+  describe "handle_in(chat:message) in :model_missing state" do
+    test "rejects with agent_status_model_missing" do
+      # The model-probe failure fires a `Logger.error` from
+      # `Agent.init/1` — capture it and assert it's the
+      # expected error path, not noise.
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          Nest.Agents.Agent.Config
+          |> stub(:create_client_config, fn model ->
+            if model[:name] == "ghost-model" do
+              {:error, %Nest.ChatModel.ModelNotFoundError{message: "x"}}
+            else
+              real_fn = Function.capture(Nest.Agents.Agent.Config, :create_client_config, 1)
+              real_fn.(model)
+            end
+          end)
+
+          {:ok, name} = Agents.create_agent(%{name: "ghost-model"})
+
+          {:ok, _, socket} =
+            subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{name}")
+
+          ref = push(socket, "chat:message", %{"content" => "hello?"})
+          assert_reply ref, :error, %{"reason" => "agent_status_model_missing"}
+        end)
+
+      assert log =~ "could not resolve model"
     end
   end
 end

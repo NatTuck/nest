@@ -276,6 +276,328 @@ describe("channels", () => {
         );
       });
     });
+
+    it("should update brokenAgents on broken_agents_updated event", async () => {
+      // The lobby's `init` ships with `broken_agents: []` (so
+      // the channel join doesn't block on `Models.list/0`); a
+      // follow-up `broken_agents_updated` event arrives once the
+      // async fetch completes. Verify the JS store reacts to that
+      // follow-up — without it the broken agents would never
+      // appear in the sidebar's broken list.
+      setNextJoinResult("lobby", {
+        autoInit: { agents: [], models: [], broken_agents: [] },
+      });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        assert.deepStrictEqual(useStore.getState().brokenAgents, []);
+      });
+
+      simulateServerEvent("lobby", "broken_agents_updated", {
+        broken_agents: [
+          {
+            name: "ghost-agent",
+            model: { name: "ghost-model" },
+            status: "model_missing",
+          },
+        ],
+      });
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().brokenAgents.length, 1);
+        assert.strictEqual(
+          useStore.getState().brokenAgents[0].name,
+          "ghost-agent",
+        );
+      });
+    });
+
+    it("should ignore agent:updated broadcasts without name or model", async () => {
+      // Defensive guard — a malformed broadcast should not
+      // crash the store. Without `name` or `model` we
+      // simply skip the `applyAgentModelUpdate` call. The
+      // `if (payload?.name && payload?.model)` short-circuit
+      // is the only branch in this handler and exercising
+      // the false branch is the primary value of this test.
+      setNextJoinResult("lobby", {
+        autoInit: { agents: [], models: [], broken_agents: [] },
+      });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        return true;
+      });
+
+      // Should not throw with a payload missing `name`:
+      simulateServerEvent("lobby", "agent:updated", { model: { name: "x" } });
+
+      // Or with a payload missing `model`:
+      simulateServerEvent("lobby", "agent:updated", { name: "x" });
+
+      // Or with an empty payload entirely:
+      simulateServerEvent("lobby", "agent:updated", {});
+
+      // Sanity: the store's agents list is empty (none of
+      // the malformed payloads should have created an
+      // entry).
+      assert.strictEqual(useStore.getState().agents.length, 0);
+    });
+
+    it("applies the model update when both name and model are present", async () => {
+      // The success path of the same handler. When the
+      // payload includes `name` AND `model`, the gate
+      // opens and `applyAgentModelUpdate` runs end-to-end.
+      setNextJoinResult("lobby", {
+        autoInit: {
+          agents: [{ name: "agent-1", model: { name: "old-model" } }],
+          models: [],
+          broken_agents: [],
+        },
+      });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().agents.length, 1);
+      });
+
+      simulateServerEvent("lobby", "agent:updated", {
+        name: "agent-1",
+        model: { name: "new-model", provider: "openai" },
+      });
+
+      await vi.waitFor(() => {
+        const agents = useStore.getState().agents;
+        assert.strictEqual(agents[0].model.name, "new-model");
+        assert.strictEqual(agents[0].model.provider, "openai");
+      });
+    });
+
+    it("should update store.models on models_updated event", async () => {
+      // Triggered by `rescanModels/0` on the new-agent page (and
+      // any future rescan CTA). The lobby rebroadcasts the merged
+      // catalog (static + auto-discovered, with any
+      // `config.toml` changes reloaded server-side) so the
+      // store's `models` reflects whatever the server holds.
+      setNextJoinResult("lobby", {
+        autoInit: {
+          agents: [],
+          models: [{ name: "old-model", provider: "old-provider" }],
+          broken_agents: [],
+        },
+      });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().models.length, 1);
+      });
+
+      simulateServerEvent("lobby", "models_updated", {
+        models: [
+          { name: "old-model", provider: "old-provider" },
+          { name: "fresh-model", provider: "fresh-provider" },
+        ],
+      });
+
+      await vi.waitFor(() => {
+        const names = useStore.getState().models.map((m) => m.name);
+        assert.deepStrictEqual(names, ["old-model", "fresh-model"]);
+      });
+    });
+  });
+
+  describe("rescanModels", () => {
+    it("pushes rescan_models over the lobby channel", async () => {
+      const { rescanModels } = await import("./channels");
+      setNextJoinResult("lobby", { autoInit: { agents: [], models: [] } });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        // channel is joined
+        assert.strictEqual(useStore.getState().models.length >= 0, true);
+      });
+
+      const capturePromise = captureNextPush("lobby", "rescan_models");
+      rescanModels();
+      const captured = await capturePromise;
+      assert.deepStrictEqual(captured, {});
+    });
+
+    it("invokes onError when not connected to lobby", async () => {
+      const { rescanModels } = await import("./channels");
+      let errorCalled = false;
+      rescanModels(
+        () => {},
+        () => {
+          errorCalled = true;
+        },
+      );
+      assert.strictEqual(errorCalled, true);
+    });
+
+    it("is a no-op when not connected and no onError is provided", async () => {
+      // Cover the `if (onError)` short-circuit inside the
+      // disconnected-lobby branch — when the caller passes
+      // no error callback, the inner `onError(...)` call
+      // is skipped (otherwise we'd dereference undefined).
+      const { rescanModels } = await import("./channels");
+      // Should not throw.
+      rescanModels();
+    });
+
+    it("forwards the lobby-disconnect error to deleteAgent's onError", async () => {
+      // Mirror of the rescanModels coverage above —
+      // exercise the `if (onError)` truthy branch inside
+      // `deleteAgent`'s not-connected path. Without this
+      // the v8 coverage reports line 590 uncovered (the
+      // inner `onError(...)` call).
+      const { deleteAgent } = await import("./channels");
+      let captured = null;
+      deleteAgent("ghost", (err) => {
+        captured = err;
+      });
+      assert.notStrictEqual(captured, null);
+      assert.strictEqual(captured.message, "Not connected to lobby");
+    });
+
+    it("is a no-op when deleteAgent is called without an onError", async () => {
+      // Mirror of the rescanModels no-onError coverage.
+      const { deleteAgent } = await import("./channels");
+      // Should not throw on the disconnected path.
+      deleteAgent("ghost");
+    });
+
+    it("forwards the lobby-disconnect error to createAgent's onError", async () => {
+      // Mirror for `createAgent` — exercise the
+      // `if (onError)` truthy branch on the disconnected
+      // path. Closes the last remaining uncovered line in
+      // `channels.js`'s lobbyChannel-is-null guards.
+      const { createAgent } = await import("./channels");
+      let captured = null;
+      createAgent(
+        { name: "x" },
+        1,
+        null,
+        () => {},
+        (err) => {
+          captured = err;
+        },
+      );
+      assert.notStrictEqual(captured, null);
+      assert.strictEqual(captured.message, "Not connected to lobby");
+    });
+
+    it("is a no-op when createAgent is called without an onError", async () => {
+      // Mirror of the rescanModels/deleteAgent no-onError
+      // coverage — verifies the short-circuit cleanly
+      // when the caller only cares about success.
+      const { createAgent } = await import("./channels");
+      // Should not throw on the disconnected path even
+      // without a fallback onError.
+      createAgent({ name: "x" }, 1, null, () => {});
+    });
+
+    it("forwards the server-side error payload to onError", async () => {
+      const { rescanModels } = await import("./channels");
+      setNextJoinResult("lobby", { autoInit: { agents: [], models: [] } });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        return true;
+      });
+
+      setNextPushResult("lobby", "rescan_models", { error: { reason: "x" } });
+
+      let captured = null;
+      rescanModels(
+        () => {},
+        (err) => {
+          captured = err;
+        },
+      );
+
+      await vi.waitFor(() => {
+        assert.notStrictEqual(captured, null);
+      });
+      assert.deepStrictEqual(captured, { reason: "x" });
+    });
+  });
+
+  describe("changeAgentModel", () => {
+    it("invokes onError when not connected to lobby", async () => {
+      const { changeAgentModel } = await import("./channels");
+      let captured = null;
+      changeAgentModel(
+        "ghost-agent",
+        { name: "gpt-4", provider: "openai" },
+        () => {},
+        (err) => {
+          captured = err;
+        },
+      );
+      assert.notStrictEqual(captured, null);
+      assert.strictEqual(captured.message, "Not connected to lobby");
+    });
+
+    it("forwards the server-side error payload to onError", async () => {
+      const { changeAgentModel } = await import("./channels");
+      setNextJoinResult("lobby", { autoInit: { agents: [], models: [] } });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        return true;
+      });
+
+      setNextPushResult("lobby", "change_model", {
+        error: { reason: "agent_busy" },
+      });
+
+      let captured = null;
+      changeAgentModel(
+        "ghost-agent",
+        { name: "gpt-4", provider: "openai" },
+        () => {},
+        (err) => {
+          captured = err;
+        },
+      );
+
+      await vi.waitFor(() => {
+        assert.notStrictEqual(captured, null);
+      });
+      assert.deepStrictEqual(captured, { reason: "agent_busy" });
+    });
+
+    it("invokes onOk on a successful change", async () => {
+      const { changeAgentModel } = await import("./channels");
+      setNextJoinResult("lobby", { autoInit: { agents: [], models: [] } });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        return true;
+      });
+
+      setNextPushResult("lobby", "change_model", { ok: {} });
+
+      const capturePromise = captureNextPush("lobby", "change_model");
+      let okCalled = false;
+      changeAgentModel(
+        "ghost-agent",
+        { name: "gpt-4", provider: "openai" },
+        () => {
+          okCalled = true;
+        },
+        () => {},
+      );
+
+      const captured = await capturePromise;
+      assert.deepStrictEqual(captured, {
+        name: "ghost-agent",
+        model: { name: "gpt-4", provider: "openai" },
+      });
+      await vi.waitFor(() => {
+        assert.strictEqual(okCalled, true);
+      });
+    });
   });
 
   describe("leaveLobby", () => {
@@ -634,6 +956,28 @@ describe("channels", () => {
       await new Promise((resolve) => setTimeout(resolve, 30));
       assert.strictEqual(errorCalled, true);
       assert.strictEqual(errorReason, "not_in_loop");
+    });
+
+    it("compactionLoopOk is a no-op when no onError is provided", async () => {
+      // Cover the `if (onError)` short-circuit inside the
+      // error receive. Without a callback the inner
+      // `onError(...)` call is skipped — important since
+      // v8 instrument counts both branches.
+      joinAgent("agent-1");
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      setNextPushResult("agent:agent-1", "chat:loop-detected-ok", {
+        error: { reason: "not_in_loop" },
+      });
+
+      // Should not throw on the onError-less receive.
+      compactionLoopOk("agent-1");
+      await new Promise((resolve) => setTimeout(resolve, 30));
     });
 
     it("joinLobby is idempotent — calling it twice with the lobby already connected calls onOk immediately", () => {
@@ -1254,6 +1598,53 @@ describe("channels", () => {
         assert.deepStrictEqual(cache?.usage, {
           promptTokens: 12,
           completionTokens: 34,
+        });
+      });
+    });
+
+    it("should forward parentId, parentName, depth, descendantUsage, and totalUsage from chat:status", async () => {
+      // The remaining extra-arg branches (parentId, parentName,
+      // depth, descendantUsage, totalUsage) are reserved for
+      // delegated sub-agents and the parent's usage totals.
+      // Each is forwarded into the cache via setAgentState's
+      // extra-arg path. This test exercises the matching five
+      // conditional branches in one push.
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+        status: "idle",
+      });
+
+      joinAgent("agent-1");
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      simulateServerEvent("agent:agent-1", "chat:status", {
+        status: "idle",
+        parentId: "parent-1",
+        parentName: "delegating-parent",
+        depth: 1,
+        descendantUsage: { promptTokens: 100, completionTokens: 50 },
+        totalUsage: { promptTokens: 200, completionTokens: 75 },
+      });
+
+      await vi.waitFor(() => {
+        const cache = useStore.getState().agentsCache["agent-1"];
+        assert.strictEqual(cache?.parentId, "parent-1");
+        assert.strictEqual(cache?.parentName, "delegating-parent");
+        assert.strictEqual(cache?.depth, 1);
+        assert.deepStrictEqual(cache?.descendantUsage, {
+          promptTokens: 100,
+          completionTokens: 50,
+        });
+        assert.deepStrictEqual(cache?.totalUsage, {
+          promptTokens: 200,
+          completionTokens: 75,
         });
       });
     });

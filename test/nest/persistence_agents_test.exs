@@ -213,4 +213,60 @@ defmodule Nest.PersistenceAgentsTest do
       assert hd(api_logs).type == :request
     end
   end
+
+  describe "update_agent_model/2" do
+    test "replaces the jsonb model column with the new map" do
+      attrs = agent_attrs("update-model-#{Elixir.System.unique_integer([:positive])}")
+      {:ok, _} = Persistence.insert_agent(attrs)
+
+      new_model = %{"name" => "claude-3-opus-20240229", "provider" => "anthropic-provider"}
+
+      assert :ok = Persistence.update_agent_model(attrs.name, new_model)
+
+      {:ok, %PersistedAgent{model: persisted_model}} =
+        Persistence.fetch_agent_by_name(attrs.name)
+
+      # jsonb columns come back with string keys.
+      assert persisted_model == new_model
+    end
+
+    test "returns :not_found when the agent row is absent" do
+      new_model = %{"name" => "ghost", "provider" => "ghost"}
+      assert {:error, :not_found} = Persistence.update_agent_model("missing-agent", new_model)
+    end
+
+    test "touches updated_at on the existing row" do
+      attrs = agent_attrs("update-model-ts-#{Elixir.System.unique_integer([:positive])}")
+      {:ok, %PersistedAgent{updated_at: original_ts}} = Persistence.insert_agent(attrs)
+
+      new_model = %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+      :ok = Persistence.update_agent_model(attrs.name, new_model)
+
+      {:ok, %PersistedAgent{updated_at: new_ts}} =
+        Persistence.fetch_agent_by_name(attrs.name)
+
+      # Both timestamps may equal each other within the second
+      # truncation window. Compare using `>=` so a fast-clock
+      # tick between the two writes counts.
+      assert DateTime.compare(new_ts, original_ts) in [:gt, :eq]
+    end
+  end
+
+  describe "fetch_all_agents/0" do
+    test "lists every persisted agent, ordered by name" do
+      base = "list-#{Elixir.System.unique_integer([:positive])}"
+      attrs_a = agent_attrs("#{base}-a")
+      attrs_b = agent_attrs("#{base}-b")
+      attrs_c = agent_attrs("#{base}-c")
+
+      {:ok, _} = Persistence.insert_agent(attrs_a)
+      {:ok, _} = Persistence.insert_agent(attrs_b)
+      {:ok, _} = Persistence.insert_agent(attrs_c)
+
+      all = Persistence.fetch_all_agents() |> Enum.map(& &1.name)
+      assert "#{base}-a" in all
+      assert "#{base}-b" in all
+      assert "#{base}-c" in all
+    end
+  end
 end

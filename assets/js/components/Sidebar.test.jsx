@@ -30,6 +30,10 @@ function withStore(agents) {
   useStore.setState({ agents });
 }
 
+function clearAgents() {
+  useStore.setState({ agents: null });
+}
+
 beforeEach(() => {
   resetMockSocket();
   // Connect socket and join lobby so the click reaches the
@@ -297,5 +301,125 @@ describe("Sidebar tree", () => {
     // The "About" link carries the bg-blue-50 active class
     // when the route starts with `/about`.
     expect(about.className).toMatch(/bg-blue-50/);
+  });
+
+  it("renders gracefully when state.agents is null (defensive)", () => {
+    // The lobby initializes `state.agents` to `[]` but a
+    // race or stale state could leave it `null`. `buildAgentTree`
+    // short-circuits via `agents || []` so the sidebar must
+    // handle this without crashing.
+    act(() => {
+      clearAgents();
+    });
+
+    const { container } = render(
+      <MemoryRouter>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    // "No agents yet" empty state shows.
+    expect(container.textContent).toContain("No agents yet");
+  });
+});
+
+describe("Sidebar Needs Repair section", () => {
+  // The "Needs Repair" section consumes `state.brokenAgents`,
+  // populated by the lobby's `init` payload + the
+  // `broken_agents_updated` follow-up. It shows rows for
+  // persistent agents whose GenServer is gone but whose model
+  // is still unresolvable — those entries cannot appear in
+  // the regular agents list (`Registry.list/0` excludes them)
+  // so without this section the user can't see them at all.
+
+  beforeEach(() => {
+    // Start from a fully reset store so each test sees a
+    // clean `brokenAgents`. The beforeEach at the top sets up
+    // the lobby channel; the model-picker / store-isolation
+    // reset is the same `useStore.getState()._reset()` used
+    // elsewhere.
+    useStore.getState()._reset();
+  });
+
+  it("hides the section when state.brokenAgents is empty", () => {
+    act(() => {
+      withStore([]);
+    });
+    useStore.setState({ brokenAgents: [] });
+
+    render(
+      <MemoryRouter>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByText(/needs repair/i)).toBeNull();
+  });
+
+  it("renders a row per broken-agent entry with an amber pulsing dot", () => {
+    act(() => {
+      withStore([]);
+    });
+    useStore.setState({
+      brokenAgents: [
+        {
+          name: "ghost-agent",
+          model: { name: "ghost-model" },
+          status: "model_missing",
+        },
+        {
+          name: "second-ghost",
+          model: { name: "other-missing" },
+          status: "model_missing",
+        },
+      ],
+    });
+
+    render(
+      <MemoryRouter>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    // Section header is visible with the count badge.
+    expect(screen.getByText(/needs repair/i)).toBeInTheDocument();
+    // Two distinct agent names rendered as links.
+    const ghostLinks = screen.getAllByRole("link", {
+      name: /ghost-agent/i,
+    });
+    expect(ghostLinks.length).toBeGreaterThan(0);
+    expect(screen.getByText(/second-ghost/i)).toBeInTheDocument();
+
+    // Each row carries the amber pulsing dot — the section
+    // uses the same `.animate-pulse.bg-amber-500` selector
+    // already exercised by the "executing_tools amber pulse
+    // dot" test above; here we count two of them (the rest of
+    // the sidebar's amber dots come from elsewhere).
+    const amberDots = document.querySelectorAll(".animate-pulse.bg-amber-500");
+    expect(amberDots.length).toBe(2);
+  });
+
+  it("clicking a broken-agent row navigates to /agent/<name>", () => {
+    act(() => {
+      withStore([]);
+    });
+    useStore.setState({
+      brokenAgents: [
+        {
+          name: "ghost-agent",
+          model: { name: "ghost-model" },
+          status: "model_missing",
+        },
+      ],
+    });
+
+    render(
+      <MemoryRouter>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    const link = screen.getByRole("link", { name: /ghost-agent/i });
+    expect(link.getAttribute("href")).toBe("/agent/ghost-agent");
   });
 });

@@ -60,5 +60,8 @@ config :phoenix_live_view,
 config :phoenix,
   sort_verified_routes_query_params: true
 
-# Use null adapter for Req in tests to prevent real HTTP requests
-config :req, default_options: [adapter: &Nest.Test.ReqNullAdapter.run/1]
+# Use null adapter for Req in tests to prevent real HTTP requests.
+# Per Req 0.7.1+, the adapter must be a module (not a function) —
+# using a function here triggers the `IO.warn` deprecation in
+# `Req.Request.adapter/1` on every request.
+config :req, default_options: [adapter: Nest.Test.ReqNullAdapter]

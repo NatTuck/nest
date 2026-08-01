@@ -18,10 +18,41 @@ defmodule Nest.Agents.AgentTestHelpers do
 
   def start_agent(attrs) do
     agent_name = "test-agent-#{System.unique_integer([:positive])}"
-    pid = start_supervised!({Agent, build_attrs(agent_name, attrs)})
+    merged = build_attrs(agent_name, attrs)
+
+    # When persistence is enabled, the Agent's `init/1` calls
+    # `persist_initial_system_message/1` → `AgentPersistence.append_message/3`
+    # → `Persistence.insert_message/2`. That function looks up
+    # the agent row by name and returns `{:error, :agent_not_found}`
+    # if it doesn't exist — it does NOT upsert. Without an
+    # existing row, every test that enables persistence fires
+    # a "Failed to persist message: :agent_not_found" warning
+    # during init (and again for every subsequent message append,
+    # including during teardown).
+    #
+    # Insert the row here when persistence is enabled and the
+    # caller provided a real vocation_id. The `0` sentinel
+    # default would violate the FK constraint; tests that need
+    # a real row should pass one via `vocation_id_for_test/0`.
+    if persistence_enabled?() and Map.get(merged, :vocation_id) != 0 do
+      {:ok, _} =
+        Persistence.insert_agent(%{
+          name: merged.name,
+          model: merged.model,
+          vocation_id: merged.vocation_id
+        })
+    end
+
+    pid = start_supervised!({Agent, merged})
 
     allow_mimic_stubs(pid)
     swap_to_mock_client(pid)
+
+    # Wait for Nest.Models to populate its cache so the
+    # agent's model resolution (which already happened in
+    # init/1 above) had a populated cache. Also future agent
+    # state changes that look up the model benefit.
+    ensure_models_loaded()
 
     test_pid = Process.get(:nest_test_agent_pid)
     transfer_mock_queue(pid, test_pid)
@@ -33,6 +64,27 @@ defmodule Nest.Agents.AgentTestHelpers do
     register_on_exit_cleanup(pid, agent_name, test_pid)
 
     {pid, agent_name}
+  end
+
+  # `Nest.Models.init/1` returns `models: %{}` and asynchronously
+  # sends itself `:query_auto_providers` to populate the cache
+  # from auto-discovery providers. By the time `start_agent/1`
+  # starts an agent (which calls `ChatModel.new/1` →
+  # `Models.list/0`), the cache is usually still empty —
+  # causing the agent's model-resolution probe to fail with
+  # `ModelNotFoundError` and log "could not resolve model" from
+  # `Agent.init/1`. Force a refresh and synchronously wait for
+  # the GenServer to drain before starting the agent so the
+  # static models from `test/data/config.toml` (`qwen3.5-plus`,
+  # `pegasus-default-only`, etc.) are visible.
+  def ensure_models_loaded do
+    Nest.Models.refresh()
+    _ = :sys.get_state(Nest.Models)
+    :ok
+  end
+
+  defp persistence_enabled? do
+    Application.get_env(:nest, :persistence, %{})[:enabled] != false
   end
 
   @doc """
@@ -223,5 +275,38 @@ defmodule Nest.Agents.AgentTestHelpers do
 
     assert duplicates == [],
            "duplicate message indices: #{inspect(duplicates)} — dual-counter bug"
+  end
+
+  @doc """
+  Seed an entry in the agent's `read_files` cache. Tests
+  for the `write_file` "must read first" / "contents
+  changed" policy use this to skip the streaming `read_file`
+  flow and pre-populate the cache with a specific
+  `{mtime, size}` pair. Bypasses the `:check_read_policy`
+  introspection clause (the worker never gets a chance to
+  refuse) — purely a setup helper.
+
+  `path` MUST be the same string the LLM will pass in
+  `write_file.arguments["path"]` (i.e. the agent's
+  workspace-relative path; the policy check resolves
+  relative paths against `client_config.workspace_path`).
+
+  `mtime` defaults to the current POSIX mtime if omitted,
+  and `size` defaults to 0. Both can be overridden when
+  the test wants to assert a specific staleness error.
+  """
+  @spec record_read_file(pid(), String.t(), keyword()) :: :ok
+  def record_read_file(pid, path, opts \\ []) do
+    %{mtime: mtime, size: size} = File.stat!(path, time: :posix)
+
+    recorded = %{
+      mtime: Keyword.get(opts, :mtime, mtime),
+      size: Keyword.get(opts, :size, size)
+    }
+
+    :sys.replace_state(pid, fn state ->
+      new_cache = Map.put(state.chat_state.read_files, path, recorded)
+      %{state | chat_state: %{state.chat_state | read_files: new_cache}}
+    end)
   end
 end

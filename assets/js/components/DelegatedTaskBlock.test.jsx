@@ -277,4 +277,209 @@ describe("DelegatedTask", () => {
       "do W via input",
     );
   });
+
+  it("surfaces the partial `instruction` from a streaming JSON buffer", () => {
+    // The clone_agent tool call is mid-stream: the buffer
+    // is `'{"instruction":"do X'` (not yet self-balanced).
+    // The user should see "do X" — not a blank card.
+    seedCache({ messages: [] });
+
+    const message = {
+      index: 1,
+      role: "assistant",
+      toolCalls: [
+        {
+          id: "call-stream",
+          name: "clone_agent",
+          arguments: '{"instruction":"do X',
+        },
+      ],
+    };
+
+    render(
+      <MemoryRouter>
+        <DelegatedTask message={message} agentName={AGENT_NAME} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId("delegated-task-instruction")).toHaveTextContent(
+      "do X",
+    );
+  });
+
+  it("shows a placeholder when the streaming buffer is too small to contain instruction text", () => {
+    // Very early in the stream — the buffer is `'{"inst'` so
+    // neither `JSON.parse` nor the regex can pull anything
+    // out. We render a placeholder so the card isn't blank.
+    seedCache({ messages: [] });
+
+    const message = {
+      index: 1,
+      role: "assistant",
+      toolCalls: [
+        {
+          id: "call-early",
+          name: "clone_agent",
+          arguments: '{"inst',
+        },
+      ],
+    };
+
+    render(
+      <MemoryRouter>
+        <DelegatedTask message={message} agentName={AGENT_NAME} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId("delegated-task-instruction")).toHaveTextContent(
+      "(receiving instruction…)",
+    );
+  });
+
+  it("reads instruction from finalized object-form `arguments` (post-stream)", () => {
+    // Once the BEAM commits the assistant message,
+    // `arguments` is a parsed object — `extractCloneInstruction`
+    // short-circuits through `args.instruction`. Verify the
+    // round trip works even when the streaming buffer has
+    // cleared and a different message shape is in the cache.
+    seedCache({ messages: [] });
+
+    const message = {
+      index: 1,
+      role: "assistant",
+      toolCalls: [
+        {
+          id: "call-obj",
+          name: "clone_agent",
+          arguments: { instruction: "do V via object" },
+        },
+      ],
+    };
+
+    render(
+      <MemoryRouter>
+        <DelegatedTask message={message} agentName={AGENT_NAME} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId("delegated-task-instruction")).toHaveTextContent(
+      "do V via object",
+    );
+  });
+
+  it("parses fully-formed streaming JSON and reads the parsed instruction", () => {
+    // When the buffer parses cleanly via `JSON.parse` (the
+    // buffer happens to be a balanced JSON object), the
+    // helper returns `parsed.instruction` directly without
+    // falling through to the regex fallback. Covering this
+    // branch is separate from the partial-buffer case above.
+    seedCache({ messages: [] });
+
+    const message = {
+      index: 1,
+      role: "assistant",
+      toolCalls: [
+        {
+          id: "call-full-json",
+          name: "clone_agent",
+          arguments: '{"instruction":"do Q via parse"}',
+        },
+      ],
+    };
+
+    render(
+      <MemoryRouter>
+        <DelegatedTask message={message} agentName={AGENT_NAME} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId("delegated-task-instruction")).toHaveTextContent(
+      "do Q via parse",
+    );
+  });
+
+  it("renders nothing for the instruction block when an object form is missing the field", () => {
+    // `args.instruction ?? null` short-circuits to `null`
+    // when the object form omits the `instruction` field.
+    // The renderer then falls through to the streaming
+    // placeholder (since `typeof rawArgs === "object"`,
+    // not "string"). The instruction block is suppressed.
+    seedCache({ messages: [] });
+
+    const message = {
+      index: 1,
+      role: "assistant",
+      toolCalls: [
+        {
+          id: "call-no-instr",
+          name: "clone_agent",
+          arguments: { path: "/tmp/x" },
+        },
+      ],
+    };
+
+    render(
+      <MemoryRouter>
+        <DelegatedTask message={message} agentName={AGENT_NAME} />
+      </MemoryRouter>,
+    );
+
+    // No instruction block — the placeholder string is
+    // shown without being rendered (the component gates on
+    // `instruction` being truthy).
+    expect(screen.queryByTestId("delegated-task-instruction")).toBeNull();
+  });
+
+  it("handles a numeric / non-string non-object `arguments` value defensively", () => {
+    // The BEAM should always send strings or objects, but a
+    // mid-stream corruption or a buggy custom worker could
+    // emit a primitive. The renderer must not crash and
+    // should suppress the instruction block.
+    seedCache({ messages: [] });
+
+    const message = {
+      index: 1,
+      role: "assistant",
+      toolCalls: [
+        {
+          id: "call-numeric",
+          name: "clone_agent",
+          arguments: 42,
+        },
+      ],
+    };
+
+    render(
+      <MemoryRouter>
+        <DelegatedTask message={message} agentName={AGENT_NAME} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByTestId("delegated-task-instruction")).toBeNull();
+  });
+
+  it("handles null `arguments` defensively", () => {
+    // Same defensive path — `args == null` short-circuits.
+    seedCache({ messages: [] });
+
+    const message = {
+      index: 1,
+      role: "assistant",
+      toolCalls: [
+        {
+          id: "call-null",
+          name: "clone_agent",
+          arguments: null,
+        },
+      ],
+    };
+
+    render(
+      <MemoryRouter>
+        <DelegatedTask message={message} agentName={AGENT_NAME} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByTestId("delegated-task-instruction")).toBeNull();
+  });
 });

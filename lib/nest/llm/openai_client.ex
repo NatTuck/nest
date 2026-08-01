@@ -224,11 +224,12 @@ defmodule Nest.LLM.OpenAIClient do
     # finishes without emitting a final frame). Without this
     # synthesis, the `StreamConsumer` returns `response: nil`,
     # which the dispatcher in `LLMRunner` interprets as a
-    # user-initiated stop and routes through `StopHandler` —
-    # tagging the partial with `metadata: %{"stopped_by_user"
-    # => true}` and skipping the response log. Synthesizing
-    # the `:done` event here routes the stream through the
-    # normal `handle_new_response/3` path, which calls
+    # user-initiated stop and routes through the ChatTurn's
+    # `Lifecycle.stop_chat/2` — tagging the partial with
+    # `metadata: %{"stopped_by_user" => true}` and skipping
+    # the response log. Synthesizing the `:done` event here
+    # routes the stream through the normal
+    # `handle_new_response/3` path, which calls
     # `Broadcasts.api_response/4` (so the response log lands)
     # and finalizes the partial with the correct metadata.
     #

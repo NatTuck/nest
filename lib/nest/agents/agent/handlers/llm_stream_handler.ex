@@ -28,6 +28,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   """
 
   alias Nest.Agents.Agent.Broadcasts
+  alias Nest.Agents.Agent.Handlers.LLMStreamHandler.FileAccess
   alias Nest.Messages.Assistant
   alias Nest.Messages.Part
   alias Nest.Messages.Streaming
@@ -306,6 +307,16 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
     {stamped, state} = Nest.Agents.Agent.__append_message__(state, tool_result_message)
     stamped_index = Nest.Agents.Agent.stamped_index(stamped)
 
+    # Update the `read_files` cache from this tool result
+    # (only on success — a failed read/write shouldn't pin a
+    # stale mtime into the cache). Successful `write_file`
+    # is also recorded here so a follow-up `write_file` from
+    # the same agent sees the new on-disk state, not the
+    # pre-write state. Path resolution goes through the same
+    # workspace-root convention `read_file` uses, so cache
+    # keys match the policy-check keys at write time.
+    state = FileAccess.record(stamped, state)
+
     state = %{
       state
       | chat_state: %{
@@ -321,6 +332,13 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
     Broadcasts.status(state.name, state)
     {:noreply, state}
   end
+
+  # The `read_files` cache update moved to
+  # `Nest.Agents.Agent.Handlers.LLMStreamHandler.FileAccess` so
+  # this file stays under credo's 500-line cap. The `tool_results_received/2`
+  # handler above calls `FileAccess.record/2` to populate the
+  # cache from each successful `read_file` / `write_file`
+  # tool result.
 
   defp llm_usage(usage, state) do
     # Mark the last message in the Agent's messages list with

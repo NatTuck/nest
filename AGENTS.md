@@ -65,12 +65,19 @@ errors or warnings. NO EXCEPTIONS, NO EXCUSES.
 - **NEVER** run tests and throw away the output by piping to tail, head, grep or
 similar. If you expect long output, redirect to a temporary file (e.g.
 notes/test-runs/test-run.log).
-- **ALL** test run output should go under notes/test-runs
+- **ALL** test run output should go under notes/test-runs.
 - The Elixir test suite must take less than 5 seconds to run. If it ever takes
 longer, that's a major issue that needs to be addressed immediately.
-- Tests must not print to the console except during debugging. If they print
-logs correctly, capture and test those logs. If the log outputs are unexpected,
-fix them.
+- If something noteworthy and bad happens or an unexpected error occurs, the program
+*should* log a warning or error to the console.
+- Tests must not print to the console except during debugging. If logger output
+appears in tests, it must be fixed by:
+  - If expected, capture and assert.
+  - If unexpected, fix the bug.
+  - If inconsistent, the bug may be a race condition. You still need to fix it.
+- Some tests may capture and discard log lines with explanatory comments. Those
+should not be changed unless the code they test changed, but you may not add
+more without explicit user instruction.
 - It doesn't matter if the test failures or test prints were there before you
 started working. If you see them, fix them.
 - *NEVER* sleep directly in tests; use vi.waitFor for async conditions or one of

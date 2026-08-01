@@ -41,6 +41,9 @@ vi.mock("../store", () => {
 });
 
 // Mock channels — ChatPage calls joinAgent/leaveAgent on mount.
+const mocks = vi.hoisted(() => ({
+  changeAgentModel: vi.fn(),
+}));
 import {
   joinAgent,
   leaveAgent,
@@ -56,11 +59,32 @@ vi.mock("../channels", () => ({
   stopMessage: vi.fn(),
   retryCompaction: vi.fn(),
   compactionLoopOk: vi.fn(),
+  changeAgentModel: mocks.changeAgentModel,
 }));
 
 // Mock useScrollToBottom (not relevant to these tests).
 vi.mock("../hooks/useScrollToBottom", () => ({
   useScrollToBottom: () => [vi.fn(), null],
+}));
+
+// Mock AgentModelPicker — render nothing but expose the
+// props so tests can drive `open` → `onSelect`
+// transitions directly.
+vi.mock("../components/AgentModelPicker", () => ({
+  AgentModelPicker: ({ open, onSelect, onClose }) =>
+    open ? (
+      <div data-testid="mock-model-picker">
+        <button
+          type="button"
+          onClick={() => onSelect({ name: "gpt-4", provider: "openai" })}
+        >
+          pick
+        </button>
+        <button type="button" onClick={onClose}>
+          close
+        </button>
+      </div>
+    ) : null,
 }));
 
 import { ChatPage } from "./ChatPage";
@@ -1637,10 +1661,55 @@ describe("ChatPage think-only streaming message with an in-flight tool call", ()
     // for the assistant message to finalize.
     expect(screen.getByText("Using tool: shell_cmd")).toBeInTheDocument();
 
-    // The accumulated `arguments` are JSON-decoded for
-    // display.
+    // The arguments are JSON-parsed and rendered as a
+    // formatted preview (object path through formatToolCall).
     expect(screen.getByText(/"command"/)).toBeInTheDocument();
     expect(screen.getByText(/"ls"/)).toBeInTheDocument();
+  });
+
+  it("streams the partial JSON buffer verbatim for tool calls still arriving", () => {
+    // Regression for the "tool call doesn't stream" UX:
+    // when the LLM is mid-`tool_use_delta`, the buffer
+    // `'{"command":'` (still arriving) must be visible in
+    // the chat — not silently dropped. The renderer puts it
+    // in a `<pre>` monospace block.
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "streaming",
+        messages: [
+          { index: 0, role: "user", parts: [{ kind: "text", text: "Hi" }] },
+        ],
+        partial: {
+          messageIndex: 1,
+          role: "assistant",
+          parts: [
+            {
+              kind: "tool_use",
+              id: "call_stream_partial",
+              name: "shell_cmd",
+              arguments: '{"command":',
+            },
+          ],
+          isPartial: true,
+        },
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+
+    renderChat();
+
+    expect(screen.getByText("Using tool: shell_cmd")).toBeInTheDocument();
+    // The streaming `<pre>` carries the raw partial buffer
+    // — same bytes the BEAM is broadcasting.
+    expect(screen.getByTestId("tool-call-streaming-pre").textContent).toBe(
+      '{"command":',
+    );
+    // The "Receiving" pulse indicates the buffer is still
+    // in flight.
+    expect(
+      screen.getByTestId("streaming-indicator-call_stream_partial"),
+    ).toBeInTheDocument();
   });
 
   it("does not place the in-flight tool call after the scroll anchor", () => {
@@ -1689,5 +1758,66 @@ describe("ChatPage think-only streaming message with an in-flight tool call", ()
     // tool card).
     renderChat();
     expect(screen.getByText("Using tool: clone_agent")).toBeInTheDocument();
+  });
+});
+
+describe("ChatPage model picker (model_missing recovery)", () => {
+  it("opens the picker when the user clicks the model_missing banner", () => {
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "model_missing",
+        messages: [],
+        model: { name: "ghost-model" },
+      },
+    };
+
+    renderChat();
+
+    const bannerButton = screen.getByRole("button", {
+      name: /choose replacement model/i,
+    });
+    fireEvent.click(bannerButton);
+
+    expect(screen.getByTestId("mock-model-picker")).toBeInTheDocument();
+  });
+
+  it("calls changeAgentModel when the user picks a replacement", () => {
+    mocks.changeAgentModel.mockImplementation(
+      (_name, _model, _onOk, onError) => {
+        // Simulate the server error reply so the
+        // `setChangeModelError` branch runs end-to-end.
+        if (onError) onError({ reason: "agent_busy" });
+      },
+    );
+
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "model_missing",
+        messages: [],
+        model: { name: "ghost-model" },
+      },
+    };
+
+    renderChat();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /choose replacement model/i }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /pick/i }));
+
+    expect(mocks.changeAgentModel).toHaveBeenCalledWith(
+      "test-agent",
+      { name: "gpt-4", provider: "openai" },
+      undefined,
+      expect.any(Function),
+    );
+
+    // The agent_busy error reason surfaces the user-friendly
+    // message inline.
+    expect(
+      screen.getByText(/agent is busy.*wait for the current chat to finish/i),
+    ).toBeInTheDocument();
   });
 });

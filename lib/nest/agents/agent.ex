@@ -15,6 +15,7 @@ defmodule Nest.Agents.Agent do
 
   alias Nest.Agents.Agent.ApiLogs
   alias Nest.Agents.Agent.ChatPipeline
+  alias Nest.Agents.Agent.ClientAPI
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Handlers
   alias Nest.Agents.Agent.Init
@@ -26,7 +27,6 @@ defmodule Nest.Agents.Agent do
   alias Nest.Agents.Registry
   alias Nest.LLM.ClientConfig
   alias Nest.Messages.Assistant
-  alias Nest.Messages.Message
   alias Nest.Messages.System
   alias Nest.Messages.Tool
   alias Nest.Messages.User
@@ -136,14 +136,14 @@ defmodule Nest.Agents.Agent do
 
   @doc """
   Signal the in-flight chat task (if any) to stop. `from` is the
-  channel pid that initiated the stop (used so the agent can
-  reply `{:reply, :ok, ...}` via the GenServer mailbox). A no-op
-  when idle; idempotent.
+  channel pid that initiated the stop (used so the ChatTurn
+  can ack `:stopped` to it). Blocks until the Agent's
+  `handle_call({:stop_chat, _})` returns. A no-op when idle;
+  idempotent.
   """
   @spec stop_chat(pid(), pid()) :: :ok
   def stop_chat(pid, from \\ self()) do
-    send(pid, {:stop_chat, from})
-    :ok
+    GenServer.call(pid, {:stop_chat, from}, :infinity)
   end
 
   @doc """
@@ -161,6 +161,14 @@ defmodule Nest.Agents.Agent do
   def compaction_loop_detected_ok(pid),
     do: send_and_ok(pid, :compaction_loop_detected_ok)
 
+  @doc """
+  Change the agent's resolved LLM client (`client_config`)
+  and persisted `model` map. See
+  `Nest.Agents.Agent.IntrospectionHandler` for the handler.
+  """
+  @spec set_model(pid(), map()) :: :ok | {:error, term()}
+  def set_model(pid, new_model), do: GenServer.call(pid, {:set_model, new_model}, :infinity)
+
   defp send_and_ok(pid, msg) do
     send(pid, msg)
     :ok
@@ -169,81 +177,48 @@ defmodule Nest.Agents.Agent do
   @doc """
   Test-only: returns the pid of the in-flight ChatTurn (or
   `nil` if the agent is idle). Production code should use
-  `stop_chat/2` instead.
+  `stop_chat/2` instead. Re-export of `ClientAPI.get_chat_turn_pid/1`.
   """
-  @spec get_chat_turn_pid(pid()) :: pid() | nil
-  def get_chat_turn_pid(pid) do
-    GenServer.call(pid, :get_chat_turn_pid)
-  end
+  defdelegate get_chat_turn_pid(pid), to: ClientAPI
 
   @doc """
-  Terminates the agent process.
+  Terminates the agent process. Re-export of `ClientAPI.terminate/1`.
   """
-  @spec terminate(pid()) :: :ok
-  def terminate(pid) do
-    GenServer.stop(pid, :normal)
-  end
+  defdelegate terminate(pid), to: ClientAPI
 
   @doc """
-  Returns public information about the agent for the WebSocket protocol.
+  Returns public information about the agent for the WebSocket
+  protocol. Returns a map with :id, :model, :message_count,
+  :status, :vocation_id, :partial, :parent_id, :parent_name,
+  :depth, :descendant_usage, and :total_usage.
 
-  Returns a map with :id, :model, :message_count, :status, :vocation_id,
-  :partial, :parent_id, :parent_name, :depth, :descendant_usage, and
-  :total_usage.
+  Re-export of `ClientAPI.get_public_info/1` so existing call
+  sites and `@spec`s continue to work.
   """
-  @spec get_public_info(pid()) :: %{
-          id: String.t(),
-          model: map(),
-          message_count: non_neg_integer(),
-          status: atom(),
-          vocation_id: integer() | nil,
-          tmp_path: String.t() | nil,
-          partial: map() | nil,
-          parent_id: integer() | nil,
-          parent_name: String.t() | nil,
-          depth: non_neg_integer(),
-          descendant_usage: map() | nil,
-          total_usage: map() | nil
-        }
-  def get_public_info(pid) do
-    GenServer.call(pid, :get_public_info)
-  end
+  defdelegate get_public_info(pid), to: ClientAPI
 
   @doc """
   Returns the combined usage map for the agent: `usage_totals +
-  descendant_usage`, computed field-by-field. Returns `nil` when
-  either side is `nil` (an uninitialized state).
+  descendant_usage`, computed field-by-field. Mirrors the
+  JS-side chip rendering for "total tokens used".
 
-  Mirrors the JS-side chip rendering for "total tokens used"
-  (the cumulative spend across this agent and its descendants).
-  The split between direct and total is what the UI's token
-  chip displays — direct is `usage_totals`, total is this
-  function.
+  Re-export of `ClientAPI.get_total_usage/1`.
   """
-  @spec get_total_usage(pid()) :: map() | nil
-  def get_total_usage(pid) do
-    GenServer.call(pid, :get_total_usage)
-  end
+  defdelegate get_total_usage(pid), to: ClientAPI
 
   @doc """
-  Returns the message history for the agent.
+  Returns the active message list for the agent.
+
+  Re-export of `ClientAPI.get_messages/1`.
   """
-  @spec get_messages(pid()) :: [Message.t()]
-  def get_messages(pid) do
-    GenServer.call(pid, :get_messages)
-  end
+  defdelegate get_messages(pid), to: ClientAPI
 
   @doc """
-  Returns the archived history (compacted-away messages plus
-  `{:compaction, _}` markers between them) for the agent.
+  Returns the archived history for the agent.
 
-  The full sequence visible to the UI is `get_history(agent) ++
-  get_messages(agent)`.
+  Re-export of `ClientAPI.get_history/1`.
   """
-  @spec get_history(pid()) :: [Message.t()]
-  def get_history(pid) do
-    GenServer.call(pid, :get_history)
-  end
+  defdelegate get_history(pid), to: ClientAPI
 
   # Server Callbacks
 
@@ -257,50 +232,60 @@ defmodule Nest.Agents.Agent do
 
     case Config.create_client_config(model) do
       {:ok, client_config} ->
-        state = Init.build_state(attrs, client_config)
-
-        # If the Supervisor passed a `:preloaded_messages` list
-        # (the on-demand-load path), partition it at
-        # `last_compaction_index` into `state.chat_state.messages`
-        # and `state.chat_state.history`, and bump
-        # `next_message_index` to one past the highest stamped
-        # index. The preloaded list is already `message_index`-
-        # sorted by `Persistence.load_messages/1`.
-        state =
-          Init.seed_from_db(
-            state,
-            Map.get(attrs, :preloaded_messages, []),
-            Map.get(attrs, :last_compaction_index, -1)
-          )
-
-        # Replay the request-payload build for every `:user`
-        # and `:tool` message so the agent's API log history
-        # survives a BEAM restart. The rebuilt logs match the
-        # wire format `Broadcasts.api_log/4` would have produced
-        # for the same message slice, and live requests after
-        # restore pick up at `.001` (no id collision). Idempotent
-        # with respect to messages that already carry non-empty
-        # api_logs; today the rebuild is the only writer for
-        # user/tool api_logs.
-        state =
-          Restore.attach_rebuilt_api_logs(
-            state,
-            Map.get(attrs, :preloaded_messages, []),
-            Map.get(attrs, :last_compaction_index, -1)
-          )
-
-        Init.persist_initial_system_message(state)
-
-        Logger.info(
-          "Agent started: #{state.name} with vocation_id: #{inspect(state.vocation_id)}, mode: #{state.mode}, tools: #{length(state.tools)}, client: #{inspect(state.client_config.client)}, context_limit: #{inspect(state.llm_metrics.context_limit)} (#{state.llm_metrics.context_limit_source}), parent_id: #{inspect(state.parent_id)}, parent_name: #{inspect(state.parent_name)}, depth: #{state.depth}"
-        )
-
+        state = build_active_state(attrs, client_config)
+        log_active_start(state)
         {:ok, state}
 
       {:error, reason} ->
-        cleanup_tmp(name)
-        {:stop, reason}
+        # The persisted model no longer resolves to a runtime
+        # provider (e.g. the provider was removed from
+        # `~/.config/nest/config.toml`). Earlier behavior was
+        # `:stop, reason`, which silently filtered the agent out
+        # of `list_agents_info/0` and made it impossible to load
+        # or repair from the UI. Instead, start the agent with
+        # an inert `RecoveryClient` and a `:model_missing` status.
+        # The channel layer blocks inbound `chat:message`
+        # traffic while in this state and the lobby surfaces the
+        # row via `list_broken_agents/0`, so the user can call
+        # `Agents.change_model/2` to transition back to `:idle`.
+        Logger.error(
+          "Agent #{name} could not resolve model #{inspect(model)}: #{inspect(reason)}. " <>
+            "Starting in :model_missing state — pick a replacement model to recover."
+        )
+
+        {:ok, build_recovery_state(attrs, model, reason)}
     end
+  end
+
+  # Happy-path state construction: build from attrs, hydrate
+  # the persisted message sequence, replay the api_log, then
+  # log a structured start banner. Extracted from `init/1`
+  # so the top-level case statement stays readable.
+  defp build_active_state(attrs, client_config) do
+    state = Init.build_state(attrs, client_config)
+
+    state =
+      Init.seed_from_db(
+        state,
+        Map.get(attrs, :preloaded_messages, []),
+        Map.get(attrs, :last_compaction_index, -1)
+      )
+
+    state =
+      Restore.attach_rebuilt_api_logs(
+        state,
+        Map.get(attrs, :preloaded_messages, []),
+        Map.get(attrs, :last_compaction_index, -1)
+      )
+
+    Init.persist_initial_system_message(state)
+    state
+  end
+
+  defp log_active_start(state) do
+    Logger.info(
+      "Agent started: #{state.name} with vocation_id: #{inspect(state.vocation_id)}, mode: #{state.mode}, tools: #{length(state.tools)}, client: #{inspect(state.client_config.client)}, context_limit: #{inspect(state.llm_metrics.context_limit)} (#{state.llm_metrics.context_limit_source}), parent_id: #{inspect(state.parent_id)}, parent_name: #{inspect(state.parent_name)}, depth: #{state.depth}"
+    )
   end
 
   @impl true
@@ -327,6 +312,18 @@ defmodule Nest.Agents.Agent do
     SubAgent.handle_child_completed(state, child_name, response, child_total_usage)
   end
 
+  # ChatTurn finished unwinding from a user-initiated stop.
+  # The ChatTurn casts this from `Lifecycle.stop_chat/2`'s
+  # cleanup — it doesn't wait for a reply (the Agent's
+  # `chat_stopped/1` does DB I/O). Delegated to the existing
+  # `ChatTurnHandler.chat_stopped/2` via `Handlers.handle/2`'s
+  # `route_for/1` — but `handle_cast` doesn't go through
+  # `Handlers`, so we delegate directly.
+  @impl true
+  def handle_cast({:chat_stopped, chat_turn_pid}, state) do
+    Handlers.ChatTurnHandler.handle({:chat_stopped, chat_turn_pid}, state)
+  end
+
   # Defense-in-depth: drop messages while busy. See channel layer.
   @impl true
   def handle_cast({:chat, content}, state), do: chat_or_drop(state, content, nil)
@@ -334,10 +331,17 @@ defmodule Nest.Agents.Agent do
   def handle_cast({:chat, content, mode}, state), do: chat_or_drop(state, content, mode)
 
   defp chat_or_drop(state, _content, _mode)
-       when state.chat_state.status in [:streaming, :executing_tools],
+       when state.chat_state.status in [:streaming, :executing_tools, :model_missing],
        do: {:noreply, state}
 
   defp chat_or_drop(state, content, mode), do: ChatPipeline.handle_chat(state, content, mode)
+
+  # Construct the `:model_missing` recovery state. The
+  # implementation lives in `Init.Recovery` so the GenServer
+  # module stays under the credo 500-line cap.
+  defp build_recovery_state(attrs, model, reason) do
+    Init.Recovery.build(attrs, model, reason)
+  end
 
   # Test-only helpers for asserting on the loop-breaker counter.
   # Production callers should not need these — the counter is
@@ -396,6 +400,32 @@ defmodule Nest.Agents.Agent do
   @impl true
   def handle_call({:clone_agent_request, task_pid, instruction}, _from, state) do
     SubAgent.handle_clone_request(state, task_pid, instruction)
+  end
+
+  # User clicked Stop. Synchronously mark the in-flight
+  # ChatTurn as cancelled and tell it to do the actual stop
+  # work (kill worker, ack the channel, send `:chat_stopped`
+  # to ourselves, stop). The `cancelled` flag is set FIRST
+  # so any concurrent `GenServer.call(:get_messages_with_cancelled)`
+  # from the ChatTurn's `handle_info` clauses sees the flag
+  # after this `handle_call` returns. The call to the
+  # ChatTurn uses a 5s timeout to break the rare deadlock
+  # where the ChatTurn is itself blocked on
+  # `safe_iterate/1`'s `GenServer.call(agent, ...)` — the
+  # ChatTurn's `iterate/1` catches the exit and stops cleanly.
+  @impl true
+  def handle_call({:stop_chat, channel_pid}, _from, state) do
+    state = %{state | chat_state: %{state.chat_state | cancelled: true}}
+
+    if chat_turn_pid = state.chat_state.chat_turn_pid do
+      try do
+        GenServer.call(chat_turn_pid, {:stop_chat, channel_pid}, 5_000)
+      catch
+        :exit, _ -> :ok
+      end
+    end
+
+    {:reply, :ok, state}
   end
 
   # Catch-all dispatcher for introspection calls.

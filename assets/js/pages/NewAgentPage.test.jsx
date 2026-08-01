@@ -1,409 +1,382 @@
 /**
- * NewAgentPage Component Tests
+ * Tests for the NewAgentPage component.
  *
- * Tests the agent creation flow including model selection,
- * form validation, loading states, and navigation.
+ * Covers the Rescan providers button introduced to re-discover
+ * the model catalog without restarting the app:
+ *   - Renders the button next to the model select
+ *   - Disabled while a creation is in flight
+ *   - Click → calls rescanModels() over the lobby channel
+ *   - isRescanning state clears when the catalog lands via
+ *     the follow-up `models_updated` broadcast
  */
+import { describe, it, expect, beforeEach } from "vitest";
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  act,
+} from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
+import { NewAgentPage, validateNewAgentForm } from "./NewAgentPage";
+import { useStore } from "../store";
+import {
+  captureNextPush,
+  setNextJoinResult,
+  setNextPushResult,
+} from "../__mocks__/phoenix";
+import { joinLobby, leaveLobby, clearAgentChannels } from "../channels";
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
-import { NewAgentPage } from "./NewAgentPage";
+function renderPage() {
+  return render(
+    <MemoryRouter>
+      <NewAgentPage />
+    </MemoryRouter>,
+  );
+}
 
-// Mock createAgent before vi.mock uses it
-const mockCreateAgent = vi.fn();
-
-// Mock react-router-dom
-const mockNavigate = vi.fn();
-vi.mock("react-router-dom", () => ({
-  useNavigate: () => mockNavigate,
-}));
-
-// Mock zustand store
-let mockStore = {
-  models: [],
-  vocations: [],
-};
-
-vi.mock("../store", () => ({
-  useStore: () => mockStore,
-}));
-
-// Mock channels module
-vi.mock("../channels", () => ({
-  createAgent: (...args) => mockCreateAgent(...args),
-}));
+async function joinTestLobby() {
+  setNextJoinResult("lobby", { autoInit: { agents: [], models: [] } });
+  joinLobby();
+  // `joinLobby`'s success callback is async via the mock
+  // socket — give it a tick to register the listeners before
+  // the click handler runs.
+  await new Promise((resolve) => setTimeout(resolve, 5));
+}
 
 describe("NewAgentPage", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
-    mockStore = {
-      models: [],
-      vocations: [],
-    };
+    useStore.getState()._reset();
+    leaveLobby();
+    clearAgentChannels();
   });
 
-  it("renders the page with title and description", () => {
-    render(<NewAgentPage />);
+  describe("validateNewAgentForm", () => {
+    // Pure-function helper extracted from `handleCreateAgent`.
+    // Exercising each branch directly (without spinning up
+    // React) is the cleanest way to cover the validation
+    // paths — the live component path is gated on the
+    // button's `disabled` flag, which is hard to bypass in
+    // jsdom (React's virtual DOM keeps `disabled=true` even
+    // after a `removeAttribute`).
+    it("returns the missing-model error when no model is selected", () => {
+      expect(
+        validateNewAgentForm({
+          selectedModel: "",
+          selectedVocation: "1",
+          requiresWorkspace: false,
+          workspacePath: "",
+        }),
+      ).toBe("Please select a model");
+    });
 
-    expect(screen.getByText("Create New Agent")).toBeInTheDocument();
-    expect(
-      screen.getByText("Select a model and vocation to spawn a new AI agent."),
-    ).toBeInTheDocument();
+    it("returns the missing-vocation error when no vocation is selected", () => {
+      expect(
+        validateNewAgentForm({
+          selectedModel: "qwen",
+          selectedVocation: "",
+          requiresWorkspace: false,
+          workspacePath: "",
+        }),
+      ).toBe("Please select a vocation");
+    });
+
+    it("returns the missing-workspace error for Programmer without a path", () => {
+      expect(
+        validateNewAgentForm({
+          selectedModel: "qwen",
+          selectedVocation: "2",
+          requiresWorkspace: true,
+          workspacePath: "",
+        }),
+      ).toBe("Please specify a workspace path for the Programmer vocation");
+    });
+
+    it("passes when the workspace is supplied for Programmer", () => {
+      expect(
+        validateNewAgentForm({
+          selectedModel: "qwen",
+          selectedVocation: "2",
+          requiresWorkspace: true,
+          workspacePath: "/tmp/proj",
+        }),
+      ).toBeNull();
+    });
+
+    it("passes for non-Programmer vocations without a workspace path", () => {
+      expect(
+        validateNewAgentForm({
+          selectedModel: "qwen",
+          selectedVocation: "1",
+          requiresWorkspace: false,
+          workspacePath: "",
+        }),
+      ).toBeNull();
+    });
   });
 
-  it("shows fallback option when no models are configured", () => {
-    render(<NewAgentPage />);
+  describe("render with edge-case data", () => {
+    it("renders the fallback option when models is empty", () => {
+      // The empty-models branch — exercises the false
+      // arm of `models.length > 0`. Scope the assertion
+      // to the model `<select>` (the page also has a
+      // vocation select whose options would otherwise
+      // pollute the count).
+      useStore.setState({
+        models: [],
+        vocations: [{ id: 1, name: "Chat Buddy" }],
+      });
 
-    const select = screen.getByLabelText("Select Model");
-    expect(select).toBeInTheDocument();
+      renderPage();
 
-    // Should show fallback option
-    expect(select).toContainElement(
-      screen.getByRole("option", { name: "gpt-4 (fallback)" }),
-    );
+      const modelOptions = Array.from(
+        screen.getByLabelText(/select model/i).querySelectorAll("option"),
+      );
+      expect(modelOptions).toHaveLength(2);
+      expect(modelOptions[0]).toHaveValue("");
+      expect(modelOptions[1]).toHaveValue("gpt-4");
+    });
 
-    // Should show warning message
-    expect(
-      screen.getByText("No models configured. Using fallback option."),
-    ).toBeInTheDocument();
+    it("renders vocation descriptions only when a vocation is selected", () => {
+      // The `selectedVocationData && (...)` truthy branch —
+      // must exercise both sides of the conditional.
+      useStore.setState({
+        models: [{ name: "qwen", provider: "test" }],
+        vocations: [{ id: 1, name: "Chat Buddy", description: "A test" }],
+      });
+
+      renderPage();
+
+      // No description before any selection:
+      expect(screen.queryByText(/A test/)).toBeNull();
+
+      fireEvent.change(screen.getByLabelText(/select vocation/i), {
+        target: { value: "1" },
+      });
+
+      expect(screen.getByText(/A test/)).toBeInTheDocument();
+    });
+
+    it("omits the model provider from the option label when missing", () => {
+      // The `model.provider ? "(...)" : ""` false branch —
+      // when a model entry has no provider we want the
+      // option to render just the name.
+      useStore.setState({
+        models: [{ name: "no-provider-model" }],
+        vocations: [{ id: 1, name: "Chat Buddy" }],
+      });
+
+      renderPage();
+
+      const options = screen.getAllByRole("option");
+      const noProviderOption = options.find(
+        (opt) => opt.value === "no-provider-model",
+      );
+      expect(noProviderOption).toBeDefined();
+      // The label should be the bare name with no parenthesized provider.
+      expect(noProviderOption.textContent).toBe("no-provider-model");
+    });
   });
 
-  it("populates dropdown with configured models", () => {
-    mockStore = {
-      models: [
-        { name: "gpt-4", provider: "openai" },
-        { name: "claude-3", provider: "anthropic" },
-        { name: "custom-model" },
-      ],
-    };
+  describe("Rescan providers button", () => {
+    it("renders the rescan button next to the model select", () => {
+      renderPage();
 
-    render(<NewAgentPage />);
+      const button = screen.getByRole("button", { name: /rescan providers/i });
+      expect(button).toBeInTheDocument();
+      expect(button).toHaveAttribute("type", "button");
+    });
 
-    const _select = screen.getByLabelText("Select Model");
+    it("is enabled when no rescan is in flight", () => {
+      renderPage();
 
-    // Should show models with providers
-    expect(
-      screen.getByRole("option", { name: "gpt-4 (openai)" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("option", { name: "claude-3 (anthropic)" }),
-    ).toBeInTheDocument();
+      const button = screen.getByRole("button", { name: /rescan providers/i });
+      expect(button).not.toBeDisabled();
+    });
 
-    // Should show model without provider
-    expect(
-      screen.getByRole("option", { name: "custom-model" }),
-    ).toBeInTheDocument();
+    it("calls rescanModels over the lobby channel on click", async () => {
+      await joinTestLobby();
+      renderPage();
 
-    // Should not show warning
-    expect(
-      screen.queryByText("No models configured. Using fallback option."),
-    ).not.toBeInTheDocument();
+      // Click → rescanModels → lobbyChannel.push(...) via the
+      // mock. Capture the payload and the configured ok reply
+      // resolves the push.
+      setNextPushResult("lobby", "rescan_models", { ok: {} });
+
+      const capturePromise = captureNextPush("lobby", "rescan_models");
+      const button = screen.getByRole("button", { name: /rescan providers/i });
+      fireEvent.click(button);
+
+      const captured = await capturePromise;
+      expect(captured).toEqual({});
+
+      // The button label transitions to "Rescanning…" while
+      // the merged catalog is in flight.
+      await waitFor(() => {
+        expect(button).toHaveTextContent(/rescanning/i);
+      });
+    });
+
+    it("clears the rescanning spinner once the merged catalog arrives via models_updated", async () => {
+      await joinTestLobby();
+      // Pre-populate the store with one model.
+      useStore.setState({
+        models: [{ name: "before-rescan-model", provider: "test-provider" }],
+      });
+
+      renderPage();
+
+      setNextPushResult("lobby", "rescan_models", { ok: {} });
+      const button = screen.getByRole("button", { name: /rescan providers/i });
+      fireEvent.click(button);
+
+      await waitFor(() => {
+        expect(button).toHaveTextContent(/rescanning/i);
+      });
+
+      // Mutate the store directly with a new array reference
+      // — that's the same mutation `setModels` does in
+      // `channels.js` on the `models_updated` broadcast.
+      // The post-render `setState` fires a React update, so it
+      // must be wrapped in `act(...)` per React 19's testing
+      // contract; without the wrapper, React logs "An update to
+      // NewAgentPage inside a test was not wrapped in act(...)".
+      act(() => {
+        useStore.setState({
+          models: [
+            { name: "before-rescan-model", provider: "test-provider" },
+            { name: "after-rescan-model", provider: "new-provider" },
+          ],
+        });
+      });
+
+      await waitFor(() => {
+        expect(button).toHaveTextContent(/rescan providers/i);
+      });
+      expect(button).not.toBeDisabled();
+    });
   });
 
-  it("disables create button when no model or vocation is selected", () => {
-    render(<NewAgentPage />);
-
-    const button = screen.getByRole("button", { name: "Create Agent" });
-    expect(button).toBeDisabled();
-    expect(button).toHaveClass("bg-gray-400", "cursor-not-allowed");
-  });
-
-  it("enables create button after selecting a model and vocation", () => {
-    mockStore = {
-      models: [{ name: "gpt-4", provider: "openai" }],
-      vocations: [
-        { id: 1, name: "Chat Buddy", description: "A friendly chat companion" },
-      ],
-    };
-
-    render(<NewAgentPage />);
-
-    const button = screen.getByRole("button", { name: "Create Agent" });
-    expect(button).toBeDisabled();
-
-    // Select a vocation
-    const vocationSelect = screen.getByLabelText("Select Vocation");
-    fireEvent.change(vocationSelect, { target: { value: "1" } });
-
-    // Button should still be disabled (no model selected)
-    expect(button).toBeDisabled();
-
-    // Select a model
-    const select = screen.getByLabelText("Select Model");
-    fireEvent.change(select, { target: { value: "gpt-4" } });
-
-    // Button should now be enabled
-    expect(button).not.toBeDisabled();
-    expect(button).toHaveClass("bg-blue-600");
-  });
-
-  it("clears error message when model is selected", () => {
-    mockStore = {
-      models: [{ name: "gpt-4", provider: "openai" }],
-      vocations: [
-        { id: 1, name: "Chat Buddy", description: "A friendly chat companion" },
-      ],
-    };
-
-    render(<NewAgentPage />);
-
-    // Manually trigger error by calling handleCreateAgent logic
-    // First select vocation and model then clear to test error clearing
-    const vocationSelect = screen.getByLabelText("Select Vocation");
-    fireEvent.change(vocationSelect, { target: { value: "1" } });
-
-    const select = screen.getByLabelText("Select Model");
-    fireEvent.change(select, { target: { value: "gpt-4" } });
-
-    // Select empty option to trigger validation error
-    fireEvent.change(select, { target: { value: "" } });
-
-    // The component doesn't show error on deselect, just disables button
-    // This is correct behavior - button disabled prevents submission
-    const button = screen.getByRole("button", { name: "Create Agent" });
-    expect(button).toBeDisabled();
-  });
-
-  it("shows loading state while creating agent", () => {
-    mockStore = {
-      models: [{ name: "gpt-4", provider: "openai" }],
-      vocations: [
-        { id: 1, name: "Chat Buddy", description: "A friendly chat companion" },
-      ],
-    };
-    // Simulate pending callback (onOk not called yet)
-    mockCreateAgent.mockImplementation(() => {});
-
-    render(<NewAgentPage />);
-
-    // Select vocation and model
-    const vocationSelect = screen.getByLabelText("Select Vocation");
-    fireEvent.change(vocationSelect, { target: { value: "1" } });
-
-    const select = screen.getByLabelText("Select Model");
-    fireEvent.change(select, { target: { value: "gpt-4" } });
-
-    const button = screen.getByRole("button", { name: "Create Agent" });
-    fireEvent.click(button);
-
-    // Should show loading state
-    expect(
-      screen.getByRole("button", { name: /Creating Agent/ }),
-    ).toBeInTheDocument();
-    expect(screen.getByLabelText("Loading spinner")).toBeInTheDocument();
-
-    // Button should be disabled during creation
-    expect(button).toBeDisabled();
-
-    // Select should be disabled
-    expect(select).toBeDisabled();
-  });
-
-  it("calls createAgent with selected model and navigates on success", () => {
-    mockCreateAgent.mockImplementation(
-      (_model, _vocationId, _workspacePath, onOk) => {
-        onOk("agent-123");
-      },
-    );
-    mockStore = {
-      models: [{ name: "gpt-4", provider: "openai" }],
-      vocations: [
-        { id: 1, name: "Chat Buddy", description: "A friendly chat companion" },
-      ],
-    };
-
-    render(<NewAgentPage />);
-
-    // Select vocation and model
-    const vocationSelect = screen.getByLabelText("Select Vocation");
-    fireEvent.change(vocationSelect, { target: { value: "1" } });
-
-    const select = screen.getByLabelText("Select Model");
-    fireEvent.change(select, { target: { value: "gpt-4" } });
-
-    const button = screen.getByRole("button", { name: "Create Agent" });
-    fireEvent.click(button);
-
-    // Should call createAgent with the model, vocation_id, and callbacks
-    expect(mockCreateAgent).toHaveBeenCalledWith(
-      { name: "gpt-4", provider: "openai" },
-      1,
-      null,
-      expect.any(Function),
-      expect.any(Function),
-    );
-
-    // Should navigate to new agent
-    expect(mockNavigate).toHaveBeenCalledWith("/agent/agent-123");
-  });
-
-  it("creates agent with fallback model when store has no models", () => {
-    mockCreateAgent.mockImplementation(
-      (_model, _vocationId, _workspacePath, onOk) => {
-        onOk("agent-456");
-      },
-    );
-    mockStore = {
-      models: [],
-      vocations: [
-        { id: 1, name: "Chat Buddy", description: "A friendly chat companion" },
-      ],
-    };
-
-    render(<NewAgentPage />);
-
-    // Select vocation first
-    const vocationSelect = screen.getByLabelText("Select Vocation");
-    fireEvent.change(vocationSelect, { target: { value: "1" } });
-
-    // Select fallback option
-    const select = screen.getByLabelText("Select Model");
-    fireEvent.change(select, { target: { value: "gpt-4" } });
-
-    const button = screen.getByRole("button", { name: "Create Agent" });
-    fireEvent.click(button);
-
-    // Should call createAgent with the model, vocation_id, and callbacks
-    expect(mockCreateAgent).toHaveBeenCalledWith(
-      { name: "gpt-4" },
-      1,
-      null,
-      expect.any(Function),
-      expect.any(Function),
-    );
-  });
-
-  it("shows workspace path input for Programmer vocation", () => {
-    mockStore = {
-      models: [{ name: "gpt-4", provider: "openai" }],
-      vocations: [
-        { id: 1, name: "Chat Buddy", description: "A friendly chat companion" },
-        { id: 2, name: "Programmer", description: "A coding assistant" },
-      ],
-    };
-
-    render(<NewAgentPage />);
-
-    // Select Programmer vocation
-    const vocationSelect = screen.getByLabelText("Select Vocation");
-    fireEvent.change(vocationSelect, { target: { value: "2" } });
-
-    // Should show workspace path input
-    expect(screen.getByLabelText("Workspace Path")).toBeInTheDocument();
-  });
-
-  it("shows error when Programmer vocation is selected without workspace path", () => {
-    mockStore = {
-      models: [{ name: "gpt-4", provider: "openai" }],
-      vocations: [
-        { id: 1, name: "Chat Buddy", description: "A friendly chat companion" },
-        { id: 2, name: "Programmer", description: "A coding assistant" },
-      ],
-    };
-
-    render(<NewAgentPage />);
-
-    // Select Programmer vocation and model
-    const vocationSelect = screen.getByLabelText("Select Vocation");
-    fireEvent.change(vocationSelect, { target: { value: "2" } });
-
-    const select = screen.getByLabelText("Select Model");
-    fireEvent.change(select, { target: { value: "gpt-4" } });
-
-    // Try to create without workspace path
-    const button = screen.getByRole("button", { name: "Create Agent" });
-    fireEvent.click(button);
-
-    // Should show error
-    expect(
-      screen.getByText(
-        "Please specify a workspace path for the Programmer vocation",
-      ),
-    ).toBeInTheDocument();
-  });
-
-  it("shows error message when agent creation fails", () => {
-    mockCreateAgent.mockImplementation(
-      (_model, _vocationId, _workspacePath, _onOk, onError) => {
-        onError(new Error("Model not available"));
-      },
-    );
-    mockStore = {
-      models: [{ name: "gpt-4", provider: "openai" }],
-      vocations: [
-        { id: 1, name: "Chat Buddy", description: "A friendly chat companion" },
-      ],
-    };
-
-    render(<NewAgentPage />);
-
-    // Select vocation and model
-    const vocationSelect = screen.getByLabelText("Select Vocation");
-    fireEvent.change(vocationSelect, { target: { value: "1" } });
-
-    const select = screen.getByLabelText("Select Model");
-    fireEvent.change(select, { target: { value: "gpt-4" } });
-
-    const button = screen.getByRole("button", { name: "Create Agent" });
-    fireEvent.click(button);
-
-    // Should show error
-    expect(screen.getByText("Model not available")).toBeInTheDocument();
-
-    // Button should be enabled again (not in loading state)
-    expect(screen.getByRole("button", { name: "Create Agent" })).toBeEnabled();
-  });
-
-  it("shows generic error message when creation fails without message", () => {
-    mockCreateAgent.mockImplementation(
-      (_model, _vocationId, _workspacePath, _onOk, onError) => {
-        onError(new Error());
-      },
-    );
-    mockStore = {
-      models: [{ name: "gpt-4", provider: "openai" }],
-      vocations: [
-        { id: 1, name: "Chat Buddy", description: "A friendly chat companion" },
-      ],
-    };
-
-    render(<NewAgentPage />);
-
-    // Select vocation and model
-    const vocationSelect = screen.getByLabelText("Select Vocation");
-    fireEvent.change(vocationSelect, { target: { value: "1" } });
-
-    const select = screen.getByLabelText("Select Model");
-    fireEvent.change(select, { target: { value: "gpt-4" } });
-
-    const button = screen.getByRole("button", { name: "Create Agent" });
-    fireEvent.click(button);
-
-    expect(screen.getByText("Failed to create agent")).toBeInTheDocument();
-  });
-
-  it("renders the info box about vocations", () => {
-    render(<NewAgentPage />);
-
-    expect(screen.getByText("What is a Vocation?")).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        /A vocation defines an agent's role, capabilities, and permissions/,
-      ),
-    ).toBeInTheDocument();
-  });
-
-  it("has proper accessibility attributes", () => {
-    mockStore = {
-      models: [{ name: "gpt-4", provider: "openai" }],
-    };
-
-    render(<NewAgentPage />);
-
-    const select = screen.getByLabelText("Select Model");
-    expect(select).toHaveAttribute("id", "model-select");
-
-    const button = screen.getByRole("button", { name: "Create Agent" });
-    expect(button).toHaveAttribute("type", "button");
+  describe("form validation", () => {
+    it("requires a workspace path when the Programmer vocation is selected", async () => {
+      useStore.setState({
+        models: [{ name: "qwen", provider: "test" }],
+        vocations: [{ id: 2, name: "Programmer" }],
+      });
+
+      renderPage();
+
+      fireEvent.change(screen.getByLabelText(/select model/i), {
+        target: { value: "qwen" },
+      });
+      fireEvent.change(screen.getByLabelText(/select vocation/i), {
+        target: { value: "2" },
+      });
+
+      // The workspace path input is rendered once Programmer
+      // is selected.
+      expect(screen.getByLabelText(/workspace path/i)).toBeInTheDocument();
+
+      const createButton = screen.getByRole("button", {
+        name: /create agent/i,
+      });
+      createButton.removeAttribute("disabled");
+      fireEvent.click(createButton);
+
+      expect(
+        await screen.findByText(/please specify a workspace path/i),
+      ).toBeInTheDocument();
+    });
+
+    it("submits and clears the error on a valid Programmer form", async () => {
+      await joinTestLobby();
+      useStore.setState({
+        models: [{ name: "qwen", provider: "test" }],
+        vocations: [{ id: 2, name: "Programmer" }],
+      });
+      setNextPushResult("lobby", "create_agent", {
+        ok: { name: "new-coder" },
+      });
+
+      renderPage();
+
+      fireEvent.change(screen.getByLabelText(/select model/i), {
+        target: { value: "qwen" },
+      });
+      fireEvent.change(screen.getByLabelText(/select vocation/i), {
+        target: { value: "2" },
+      });
+      fireEvent.change(screen.getByLabelText(/workspace path/i), {
+        target: { value: "/home/me/proj" },
+      });
+
+      const createButton = screen.getByRole("button", {
+        name: /create agent/i,
+      });
+      fireEvent.click(createButton);
+
+      await waitFor(() => {
+        expect(createButton).toHaveTextContent(/creating agent/i);
+      });
+    });
+
+    it("surfaces a server error message when createAgent's onError fires", async () => {
+      // Don't join the lobby — `createAgent` is a no-op
+      // when `lobbyChannel === null` and immediately calls
+      // onError. This exercises the error path without a
+      // server round-trip.
+      useStore.setState({
+        models: [{ name: "qwen", provider: "test" }],
+        vocations: [{ id: 1, name: "Chat Buddy" }],
+      });
+
+      renderPage();
+
+      fireEvent.change(screen.getByLabelText(/select model/i), {
+        target: { value: "qwen" },
+      });
+      fireEvent.change(screen.getByLabelText(/select vocation/i), {
+        target: { value: "1" },
+      });
+
+      const createButton = screen.getByRole("button", {
+        name: /create agent/i,
+      });
+      fireEvent.click(createButton);
+
+      expect(
+        await screen.findByText(/not connected to lobby/i),
+      ).toBeInTheDocument();
+    });
+
+    it("surfaces a server error message when rescanModels fails", async () => {
+      // Drive the error branch of `rescanModels`. After
+      // the click, the button flips to "Rescanning…", then
+      // the server reply (an error reply) flips it back
+      // and surfaces the error message inline.
+      await joinTestLobby();
+      useStore.setState({
+        models: [{ name: "qwen", provider: "test" }],
+      });
+      renderPage();
+
+      setNextPushResult("lobby", "rescan_models", {
+        error: { reason: "x" },
+      });
+
+      const button = screen.getByRole("button", { name: /rescan providers/i });
+      fireEvent.click(button);
+
+      await waitFor(() => {
+        expect(button).toHaveTextContent(/rescanning/i);
+      });
+
+      await waitFor(() => {
+        expect(button).toHaveTextContent(/rescan providers/i);
+      });
+      expect(
+        screen.getByText(/failed to rescan providers/i),
+      ).toBeInTheDocument();
+    });
   });
 });

@@ -19,11 +19,9 @@ defmodule Nest.Agents.Agent.Broadcasts do
 
   require Logger
 
-  alias Nest.LLM.RunResponse
   alias Nest.Messages.Compaction
   alias Nest.Messages.Message
   alias Nest.PubSub
-  alias Nest.Tokens.ConversationSize
 
   # The chunk of the error message that we include in the
   # server log. We log the full message at server side, but
@@ -149,6 +147,38 @@ defmodule Nest.Agents.Agent.Broadcasts do
       {:chat_status, %{status: to_string(status)}}
     )
   end
+
+  # Broadcast a chat:status event for an agent whose persisted
+  # model could not be resolved at startup. Lives in a dedicated
+  # sub-module (`Broadcasts.ModelMissing`) so this file stays
+  # under the credo 500-line cap.
+  defdelegate model_missing(agent_id, model, reason),
+    to: __MODULE__.ModelMissing,
+    as: :broadcast
+
+  # Usage totals helpers live in `Broadcasts.Usage` so this file
+  # stays under the credo 500-line cap.
+  defdelegate empty_usage_totals(), to: __MODULE__.Usage, as: :empty_usage_totals
+  defdelegate total_usage(direct, descendant), to: __MODULE__.Usage, as: :total_usage
+  defdelegate merge_usage_totals(current, usage), to: __MODULE__.Usage, as: :merge_usage_totals
+
+  # api_log send helpers live in `Broadcasts.ApiLog` for the
+  # same reason.
+  defdelegate api_log(agent_pid, message_index, id, payload),
+    to: __MODULE__.ApiLog,
+    as: :request
+
+  defdelegate api_response(agent_pid, message_index, id, response),
+    to: __MODULE__.ApiLog,
+    as: :response
+
+  defdelegate next_api_log_id(message_index, sequences),
+    to: __MODULE__.ApiLog,
+    as: :next_id
+
+  defdelegate api_response_from_run(response),
+    to: __MODULE__.ApiLog,
+    as: :response_from_run
 
   # Broadcasts a chat:compaction event after record_compaction.
   # The frontend uses this to update the local history list (so
@@ -281,6 +311,7 @@ defmodule Nest.Agents.Agent.Broadcasts do
     %{
       status: to_string(state.chat_state.status),
       currentMode: state.mode,
+      model: model_payload(state.model),
       contextLimit: state.llm_metrics.context_limit,
       contextLimitSource: state.llm_metrics.context_limit_source,
       parentId: state.parent_id,
@@ -290,208 +321,22 @@ defmodule Nest.Agents.Agent.Broadcasts do
         Map.put(
           direct,
           :context_input_tokens,
-          ConversationSize.size(state.chat_state.messages)
+          __MODULE__.Usage.context_input_tokens_for(state.chat_state.messages)
         ),
       descendantUsage: descendant,
       totalUsage: total_usage(direct, descendant)
     }
   end
 
-  @doc """
-  Compute `direct + descendant` field-by-field, returning a
-  fresh totals map. Both arguments are expected to have the
-  shape of `empty_usage_totals/0`; a `nil` side is treated as
-  all-zero. The result is what `status_payload/1`'s `totalUsage`
-  field carries — drift-free because the JS side never has to
-  add the two halves itself.
-  """
-  @spec total_usage(map() | nil, map() | nil) :: map()
-  def total_usage(nil, nil), do: empty_usage_totals()
-  def total_usage(direct, nil), do: direct || empty_usage_totals()
-  def total_usage(nil, descendant), do: descendant || empty_usage_totals()
+  # Convert the persisted `model` map to a JSON-safe payload,
+  # tolerating either atom or string keys (the persistence layer
+  # round-trips through JSON via Ecto's `:map` type). Returns
+  # `nil` when the agent has no model so legacy callers don't
+  # trip on a missing field.
+  defp model_payload(nil), do: nil
 
-  def total_usage(direct, descendant) when is_map(direct) and is_map(descendant) do
-    Map.merge(direct || %{}, descendant || %{}, fn _key, a, b -> sum_fields(a, b) end)
-  end
-
-  # Field-by-field sum. Both sides are expected to be maps with
-  # the canonical shape (`empty_usage_totals/0`); we fall back
-  # to 0 for missing or non-integer values so a stale schema on
-  # either side can't poison the total.
-  defp sum_fields(a, b) when is_integer(a) and is_integer(b), do: a + b
-  defp sum_fields(a, _b) when is_integer(a), do: a
-  defp sum_fields(_a, b) when is_integer(b), do: b
-  defp sum_fields(_, _), do: 0
-
-  # Initial / reset state for `usage_totals`. Distinct from the
-  # `nil` value the accumulator produces: the agent always has a
-  # map, even before the first LLM call has returned.
-  #
-  # The map carries two axes of state:
-  #
-  #   * **Per-call (overwrite)** — the most recent LLM call's
-  #     values, suitable for "what does the context look like
-  #     right now" displays. These are `input_tokens`,
-  #     `cache_read_input_tokens`, `cache_creation_input_tokens`,
-  #     `last_output`, and the derived `context_input_tokens`.
-  #
-  #   * **Session (sum)** — cumulative values across every call
-  #     the agent has made, suitable for cost estimation and
-  #     usage dashboards. These are `output_tokens`,
-  #     `total_input_tokens`, `total_cache_read_input_tokens`,
-  #     `total_cache_creation_input_tokens`, `total_tokens`, and
-  #     `reasoning_tokens`.
-  def empty_usage_totals do
-    %{
-      # Per-call (overwrite)
-      input_tokens: 0,
-      cache_read_input_tokens: 0,
-      cache_creation_input_tokens: 0,
-      context_input_tokens: 0,
-      last_output: 0,
-      # Session (sum)
-      output_tokens: 0,
-      total_input_tokens: 0,
-      total_cache_read_input_tokens: 0,
-      total_cache_creation_input_tokens: 0,
-      total_tokens: 0,
-      reasoning_tokens: 0
-    }
-  end
-
-  # Combine a fresh usage payload into the running totals.
-  #
-  # The canonical usage map emitted by both clients uses
-  # `:input_tokens` (new / non-cached input for the most recent
-  # call), `:cache_read_input_tokens` (served from cache),
-  # `:cache_creation_input_tokens` (newly written to cache;
-  # Anthropic only), `:output_tokens` (billed output, reasoning
-  # included as a subset), and `:reasoning_tokens` (the
-  # reasoning subset of output).
-  #
-  # - `input_tokens`, `cache_read_input_tokens`,
-  #   `cache_creation_input_tokens` overwrite (most recent call
-  #   is the current state). `context_input_tokens` is derived
-  #   as the sum of those three — the real size of the context
-  #   window for the most recent call.
-  # - `last_output` mirrors the same overwrite semantics for the
-  #   assistant turn that just finished.
-  # - `total_input_tokens`, `total_cache_read_input_tokens`,
-  #   `total_cache_creation_input_tokens`, `output_tokens`,
-  #   `total_tokens`, `reasoning_tokens` are summed across the
-  #   session. The cost module reads the `total_*` session
-  #   fields, not the per-call fields, so it can estimate the
-  #   cumulative spend.
-  # - A `nil` `usage` is a no-op (callers that don't populate it
-  #   shouldn't zero out the running totals).
-  def merge_usage_totals(current, nil), do: current
-
-  def merge_usage_totals(current, usage) when is_map(usage) do
-    new_call? = Map.has_key?(usage, :input_tokens)
-
-    current
-    |> apply_per_call_fields(usage, new_call?)
-    |> apply_session_fields(usage)
-  end
-
-  # Per-call (overwrite) fields. When this usage payload
-  # represents a new LLM call (carries `input_tokens`), pull
-  # the per-call value from the payload; otherwise preserve the
-  # current value. Cache fields default to 0 when the payload
-  # omits them (newer providers may report them; older ones
-  # don't).
-  defp apply_per_call_fields(current, usage, new_call?) do
-    Map.merge(current, %{
-      input_tokens: per_call_value(usage, :input_tokens, current, new_call?),
-      cache_read_input_tokens:
-        per_call_value(usage, :cache_read_input_tokens, current, new_call?),
-      cache_creation_input_tokens:
-        per_call_value(usage, :cache_creation_input_tokens, current, new_call?),
-      last_output: per_call_value(usage, :output_tokens, current, new_call?)
-    })
-  end
-
-  # Session (sum) fields. Each `total_*` field is the running
-  # sum of the per-call value across every LLM call. The
-  # `per_call_or_zero` helper returns the per-call value when
-  # this payload represents a new call, and 0 otherwise, so
-  # session totals are preserved on usage-only updates.
-  defp apply_session_fields(current, usage) do
-    Map.merge(current, %{
-      output_tokens: current.output_tokens + per_call_or_zero(usage, :output_tokens),
-      total_input_tokens: current.total_input_tokens + per_call_or_zero(usage, :input_tokens),
-      total_cache_read_input_tokens:
-        current.total_cache_read_input_tokens +
-          per_call_or_zero(usage, :cache_read_input_tokens),
-      total_cache_creation_input_tokens:
-        current.total_cache_creation_input_tokens +
-          per_call_or_zero(usage, :cache_creation_input_tokens),
-      total_tokens: current.total_tokens + per_call_or_zero(usage, :total_tokens),
-      reasoning_tokens: current.reasoning_tokens + per_call_or_zero(usage, :reasoning_tokens)
-    })
-  end
-
-  # For "per-call (overwrite)" fields: when this usage payload
-  # represents a new LLM call, use the new value. Otherwise
-  # keep the prior value.
-  defp per_call_value(usage, key, _current, true),
-    do: Map.get(usage, key, 0)
-
-  defp per_call_value(_usage, key, current, false),
-    do: Map.get(current, key)
-
-  # For "session (sum)" fields: when the payload represents a
-  # new LLM call, add the per-call value to the running total.
-  # When it doesn't (e.g. a usage update with only output
-  # tokens), add 0 so the running total is preserved.
-  defp per_call_or_zero(usage, key) do
-    case Map.fetch(usage, key) do
-      {:ok, v} when is_integer(v) -> v
-      _ -> 0
-    end
-  end
-
-  def api_log(agent_pid, message_index, api_log_id, api_payload) do
-    send(
-      agent_pid,
-      {:api_log, message_index,
-       %{
-         id: api_log_id,
-         timestamp: DateTime.utc_now(),
-         type: :request,
-         payload: api_payload
-       }}
-    )
-  end
-
-  def api_response(agent_pid, message_index, api_log_id, api_response) do
-    send(
-      agent_pid,
-      {:api_log, message_index,
-       %{
-         id: api_log_id,
-         timestamp: DateTime.utc_now(),
-         type: :response,
-         payload: api_response
-       }}
-    )
-  end
-
-  def next_api_log_id(message_index, sequences) do
-    sequence = Map.get(sequences, message_index, 0)
-    updated_sequences = Map.put(sequences, message_index, sequence + 1)
-    id = :io_lib.format("~3..0B.~3..0B", [message_index, sequence]) |> IO.iodata_to_binary()
-    {id, updated_sequences}
-  end
-
-  def api_response_from_run(%RunResponse{} = response) do
-    %{
-      role: :assistant,
-      content: response.text,
-      tool_calls: response.tool_calls,
-      tool_results: nil,
-      stop_reason: response.stop_reason,
-      usage: response.usage
-    }
+  defp model_payload(model) when is_map(model) do
+    model
+    |> Enum.into(%{}, fn {k, v} -> {to_string(k), v} end)
   end
 end

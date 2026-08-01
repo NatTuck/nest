@@ -281,6 +281,11 @@ export const useStore = create(
 
       // Agents list from lobby
       agents: [],
+      // Agents whose persisted `model` no longer resolves to a
+      // runtime provider. Surfaced in the sidebar as broken
+      // entries so the user can pick a replacement model from
+      // the ChatPage's :model_missing banner.
+      brokenAgents: [],
       models: [],
 
       /**
@@ -315,6 +320,17 @@ export const useStore = create(
        */
       setModels: (models) => {
         set({ models });
+      },
+
+      /**
+       * Set the broken-agents list from the lobby's `init`
+       * payload. Agents in this list are still listed in the
+       * sidebar (so the user can pick them and repair), but
+       * they have `:model_missing` status and a banner in the
+       * ChatPage prompts a replacement-model selection.
+       */
+      setBrokenAgents: (brokenAgents) => {
+        set({ brokenAgents: brokenAgents || [] });
       },
 
       /**
@@ -356,6 +372,48 @@ export const useStore = create(
           return {
             agents: state.agents.filter((a) => a.name !== name),
             agentsCache: newCache,
+            // Same lifecycle for the broken-agents list —
+            // the user can no longer repair what's gone.
+            brokenAgents: state.brokenAgents.filter((a) => a.name !== name),
+          };
+        });
+      },
+
+      /**
+       * Update the model on the agents list AND the per-agent
+       * cache when the server broadcasts `agent:updated`
+       * (the lobby path for `Agents.change_model/2`). Also
+       * drops the agent from the `brokenAgents` payload if
+       * it was previously reported as unresolvable.
+       *
+       * The per-agent `cache.model` is updated so an open
+       * ChatPage that has already joined sees the new model
+       * header immediately. Same shape as the wire payload:
+       * `model = { name: string, provider: string | null }`.
+       */
+      applyAgentModelUpdate: (name, model) => {
+        set((state) => {
+          const newAgents = state.agents.map((a) =>
+            a.name === name ? { ...a, model, status: "idle" } : a,
+          );
+          const newCache = state.agentsCache[name]
+            ? {
+                ...state.agentsCache,
+                [name]: { ...state.agentsCache[name], model },
+              }
+            : state.agentsCache;
+
+          // Drop the agent from `brokenAgents` once a
+          // replacement has been picked (we assume the new
+          // model resolves — `change_model/2` already
+          // validated that server-side, and the server's
+          // reply confirms it).
+          const newBroken = state.brokenAgents.filter((a) => a.name !== name);
+
+          return {
+            agents: newAgents,
+            agentsCache: newCache,
+            brokenAgents: newBroken,
           };
         });
       },

@@ -70,6 +70,7 @@ defmodule Nest.Agents.Agent.ChatTurn.State do
             active_worker_kind: nil,
             active_message_index: 0,
             pending_notice: nil,
+            stop_requested: false,
             entry: {:user_message, %Nest.Messages.User{parts: []}}
 
   @type tool_pair :: [Nest.Messages.Assistant.t() | Nest.Messages.Tool.t()]

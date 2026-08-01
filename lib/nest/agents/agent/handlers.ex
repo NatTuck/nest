@@ -17,10 +17,8 @@ defmodule Nest.Agents.Agent.Handlers do
       compaction completion + retry events (the
       trigger-side lives in
       `Nest.Agents.Agent.Compaction.Trigger`).
-    * `Nest.Agents.Agent.Handlers.ExitHandler` — process
-      exit signals.
-    * `Nest.Agents.Agent.Handlers.StopHandler` — stop
-      signals.
+  * `Nest.Agents.Agent.Handlers.ExitHandler` —
+      process exit signals.
 
   Context-limit resolution happens once at startup in
   `Nest.Agents.Agent.Init.initial_context_limit/1` (synchronous,
@@ -33,7 +31,6 @@ defmodule Nest.Agents.Agent.Handlers do
   alias Nest.Agents.Agent.Handlers.ChatTurnHandler
   alias Nest.Agents.Agent.Handlers.ExitHandler
   alias Nest.Agents.Agent.Handlers.LLMStreamHandler
-  alias Nest.Agents.Agent.Handlers.StopHandler
 
   @doc """
   Dispatch an arbitrary `handle_info/2` message. Returns
@@ -53,7 +50,6 @@ defmodule Nest.Agents.Agent.Handlers do
       {:ok, ApiLogHandler} -> ApiLogHandler.handle(msg, state)
       {:ok, ResultHandler} -> ResultHandler.handle(msg, state)
       {:ok, ExitHandler} -> ExitHandler.handle(msg, state)
-      {:ok, StopHandler} -> StopHandler.handle(msg, state)
       :no_match -> unknown(state)
     end
   end
@@ -77,7 +73,6 @@ defmodule Nest.Agents.Agent.Handlers do
   defp route_for({:needs_compaction, _, _}), do: {:ok, ResultHandler}
   defp route_for(:retry_compaction), do: {:ok, ResultHandler}
   defp route_for(:compaction_loop_detected_ok), do: {:ok, ResultHandler}
-  defp route_for({:stop_chat, _}), do: {:ok, StopHandler}
   defp route_for({:EXIT, _, _}), do: {:ok, ExitHandler}
 
   defp route_for(_), do: :no_match

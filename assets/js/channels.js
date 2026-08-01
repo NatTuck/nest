@@ -55,8 +55,20 @@ export function joinLobby(onOk, onError) {
   lobbyChannel.on("init", (payload) => {
     const store = getStore();
     store.setAgents(payload.agents || []);
+    store.setBrokenAgents(payload.broken_agents || []);
     store.setModels(payload.models || []);
     store.setVocations(payload.vocations || []);
+  });
+
+  // Follow-up to the initial `init` push. The lobby pushes an
+  // empty `broken_agents` list on join (so the WS first-frame
+  // is fast even when `Models.list/0` is hung), then computes
+  // the real list asynchronously and rebroadcasts here. JS
+  // replaces the empty list with whatever comes back (or
+  // `[]` again on timeout).
+  lobbyChannel.on("broken_agents_updated", (payload) => {
+    const store = getStore();
+    store.setBrokenAgents(payload.broken_agents || []);
   });
 
   lobbyChannel.on("agent:created", (payload) => {
@@ -67,6 +79,30 @@ export function joinLobby(onOk, onError) {
   lobbyChannel.on("agent:deleted", (payload) => {
     const store = getStore();
     store.removeAgent(payload.name);
+  });
+
+  // Broadcast when a user changes an agent's model via
+  // `Agents.change_model/2`. The agent's GenServer emits a
+  // matching `chat:status` push on the per-agent topic with
+  // the new `model` field; this lobby broadcast is the
+  // mechanism that lets the sidebar's list also reflect the
+  // change without a rejoin.
+  lobbyChannel.on("agent:updated", (payload) => {
+    const store = getStore();
+    if (payload?.name && payload?.model) {
+      store.applyAgentModelUpdate(payload.name, payload.model);
+    }
+  });
+
+  // Follow-up to a `rescan_models` push. The lobby rebroadcasts
+  // the merged catalog (static + auto-discovered, with any
+  // config.toml changes reloaded server-side) so every client
+  // sees the new model list. Both the new-agent form and any
+  // open `AgentModelPicker` modal pick up the update via
+  // `useStore((state) => state.models)`.
+  lobbyChannel.on("models_updated", (payload) => {
+    const store = getStore();
+    store.setModels(payload.models || []);
   });
 
   lobbyChannel
@@ -558,4 +594,71 @@ export function deleteAgent(name, onError) {
   lobbyChannel.push("delete_agent", { name }).receive("error", (err) => {
     if (onError) onError(err);
   });
+}
+
+/**
+ * Request a server-side rescan of the model catalog. The server
+ * replies `:ok` immediately and follows up with a `models_updated`
+ * broadcast carrying the merged catalog. Both the new-agent form
+ * and any open `AgentModelPicker` modal pick up the new list via
+ * the store (no extra wiring).
+ *
+ * Caller is responsible for tracking loading state — the helper
+ * itself is fire-and-forget. Pass `onError` if you want to react
+ * to a WS push failure (e.g. the user clicked the button while
+ * disconnected).
+ */
+export function rescanModels(onOk, onError) {
+  if (!lobbyChannel) {
+    if (onError) onError(new Error("Not connected to lobby"));
+    return;
+  }
+
+  lobbyChannel
+    .push("rescan_models", {})
+    .receive("ok", () => {
+      if (onOk) onOk();
+    })
+    .receive("error", (err) => {
+      if (onError) onError(err);
+    });
+}
+
+/**
+ * Change the LLM model of an agent at runtime.
+ *
+ * `model` is a `{name, provider}` map sourced from the
+ * `init.models` payload (or the AgentModelPicker catalog).
+ * The lobby broadcast then delivers `agent:updated` to every
+ * connected client; the per-agent channel delivers the
+ * canonical `chat:status` push with the new `model` field.
+ *
+ * Distinct error reasons the server can return:
+ *   * "agent_busy" — agent is streaming / executing tools;
+ *     retry once the next `chat:status: idle` lands.
+ *   * "invalid_model" — the provider/model pair can't be
+ *     resolved; surface a friendly message in the UI.
+ *   * "not_found" — the agent's GenServer is gone (shouldn't
+ *     happen normally).
+ *   * "invalid_payload" — missing `model.name` / `model.provider`.
+ */
+export function changeAgentModel(name, model, onOk, onError) {
+  if (!lobbyChannel) {
+    if (onError) onError(new Error("Not connected to lobby"));
+    return;
+  }
+
+  const payload = {
+    name,
+    model: { name: model.name, provider: model.provider ?? null },
+  };
+
+  lobbyChannel
+    .push("change_model", payload)
+    .receive("ok", () => {
+      if (onOk) onOk();
+    })
+    .receive("error", (err) => {
+      if (onError) onError(err);
+    });
 }
