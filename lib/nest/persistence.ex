@@ -61,6 +61,7 @@ defmodule Nest.Persistence do
   alias Nest.Agents.Agent.Restore
   alias Nest.Agents.PersistedAgent
   alias Nest.Agents.PersistedMessage
+  alias Nest.Messages.Compaction
   alias Nest.Messages.Message
   alias Nest.Persistence.CompactionMarker
   alias Nest.Repo
@@ -254,6 +255,11 @@ defmodule Nest.Persistence do
   The agent's integer FK (`agents.id`) is resolved
   internally.
 
+  `{:compaction, _}` tuples route through `CompactionMarker`
+  which writes the marker row + bumps `agents.last_compaction_index`
+  atomically in one transaction. All other roles take the
+  regular path (`PersistedMessage.from_runtime/2` + `Repo.insert`).
+
   Returns `{:ok, %PersistedMessage{}}` on success, or
   `{:error, term()}` on failure (including
   `{:error, :agent_not_found}` when the agent name does
@@ -267,15 +273,42 @@ defmodule Nest.Persistence do
         {:error, :agent_not_found}
 
       {:ok, %PersistedAgent{id: agent_id}} ->
-        attrs = PersistedMessage.from_runtime(agent_id, message)
+        insert_message_with_agent_id(agent_id, agent_name, message)
+    end
+  end
 
-        %PersistedMessage{}
-        |> PersistedMessage.changeset(attrs)
-        |> Repo.insert(
-          on_conflict: :nothing,
-          conflict_target: [:agent_id, :message_index]
+  defp insert_message_with_agent_id(agent_id, agent_name, {:compaction, _} = message) do
+    case message do
+      {:compaction, %Compaction{} = marker} ->
+        # The marker carries its own `index`. `CompactionMarker.record/5`
+        # also takes `(marker_index, archived_count, tokens...)` as
+        # separate positional args; lift them off the struct so the
+        # canonical call site doesn't have to.
+        CompactionMarker.record(
+          agent_id,
+          marker.index,
+          marker.archived_count,
+          marker.tokens_compacted,
+          marker.tokens_compacted_to
+        )
+
+      other ->
+        Logger.warning(
+          "Compaction tuple without %Compaction{} struct: #{inspect(other)}. " <>
+            "agent=#{agent_name}"
         )
     end
+  end
+
+  defp insert_message_with_agent_id(agent_id, _agent_name, message) do
+    attrs = PersistedMessage.from_runtime(agent_id, message)
+
+    %PersistedMessage{}
+    |> PersistedMessage.changeset(attrs)
+    |> Repo.insert(
+      on_conflict: :nothing,
+      conflict_target: [:agent_id, :message_index]
+    )
   end
 
   @doc """
@@ -305,13 +338,20 @@ defmodule Nest.Persistence do
   don't have both numbers available — the columns are
   nullable so the marker row still inserts.
 
+  Kept as a thin convenience entry point for callers that
+  don't already have a `%Compaction{}` struct in hand. New
+  callers should use `insert_message/2` with a
+  `{:compaction, %Compaction{}}` tuple — the same transaction
+  is taken on the `CompactionMarker` side and persistence
+  funnels through one path.
+
   Implementation lives in `Nest.Persistence.CompactionMarker`;
   this is a thin delegator that resolves the agent row then
   forwards the integer `agent_id`.
 
   Returns the new marker row on success,
-  `{:error, :agent_not_found}` when the agent name does not
-  resolve, or `{:error, term()}` on other failures.
+  `{:error, :agent_not_found}` when the agent name does
+  not resolve, or `{:error, term()}` on other failures.
   """
   @spec record_compaction(
           String.t(),
@@ -327,14 +367,18 @@ defmodule Nest.Persistence do
         tokens_compacted \\ nil,
         tokens_compacted_to \\ nil
       ) do
-    with {:ok, %PersistedAgent{id: agent_id}} <- fetch_agent_by_name(agent_name) do
-      CompactionMarker.record(
-        agent_id,
-        marker_index,
-        archived_count,
-        tokens_compacted,
-        tokens_compacted_to
-      )
+    case fetch_agent_by_name(agent_name) do
+      {:error, :not_found} ->
+        {:error, :agent_not_found}
+
+      {:ok, %PersistedAgent{id: agent_id}} ->
+        CompactionMarker.record(
+          agent_id,
+          marker_index,
+          archived_count,
+          tokens_compacted,
+          tokens_compacted_to
+        )
     end
   end
 

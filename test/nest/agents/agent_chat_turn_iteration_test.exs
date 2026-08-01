@@ -412,16 +412,30 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
 
       chat_turn_state = :sys.get_state(chat_turn_pid)
 
-      # The agent's chat_state.messages now ends with the carried-forward
-      # assistant+ToolUse, preceded by summary_user. (The system
-      # message is in history after the swap — the new design
-      # doesn't regenerate it.)
+      # Post-compaction, the agent's chat_state.messages is the
+      # canonical shape:
+      #   [system_fresh, summary_user, carried_assistant+ToolUse]
+      #
+      # - `system_fresh` is re-rendered from the latest DB vocation
+      #   and on-disk AGENTS.md via
+      #   `SystemPrompt.compose_vocation_config/4` and is at index
+      #   `marker_index + 1`. AGENTS.md allows the system message
+      #   to change at compaction because the prefix cache is
+      #   invalidated.
+      # - `summary_user` is the compactor's "Summary of earlier
+      #   conversation:\n\n<text>" message at `marker_index + 2`.
+      # - The carried assistant+ToolUse is appended via the
+      #   canonical message path at `marker_index + 3` (its
+      #   pre-seeded `index: 2` is overwritten by `append_one/2`'s
+      #   `put_message_index/2`).
       final_messages = :sys.get_state(pid).chat_state.messages
 
-      assert length(final_messages) == 2,
-             "expected [summary_user, assistant+ToolUse]; got #{inspect(final_messages)}"
+      assert length(final_messages) == 3,
+             "expected [system, summary_user, assistant+ToolUse]; " <>
+               "got #{inspect(final_messages)}"
 
-      assert match?({:user, _}, Enum.at(final_messages, 0))
+      assert match?({:system, _}, Enum.at(final_messages, 0))
+      assert match?({:user, _}, Enum.at(final_messages, 1))
 
       # The carried-forward trailing assistant message must carry the
       # original ToolUse parts (the renumbering pass in

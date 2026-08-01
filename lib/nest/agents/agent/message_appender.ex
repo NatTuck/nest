@@ -128,6 +128,43 @@ defmodule Nest.Agents.Agent.MessageAppender do
     {stamped, state}
   end
 
+  @doc """
+  Stamp and append a single message to `state.chat_state.history`
+  (instead of `messages`). Index still comes from
+  `state.chat_state.next_message_index` — appending to history
+  consumes the same index slot as appending to messages; both
+  are parts of the combined `history ++ messages` sequence.
+
+  Used for messages that should never be sent to the LLM
+  (the compaction marker): they live in history only but still
+  consume an index slot in the DB so the on-demand-load path
+  can reconstruct the boundary.
+
+  Does NOT broadcast `chat:message` — the marker's broadcast
+  path is `chat:compaction` (carries the marker + history),
+  which the caller fires separately via
+  `Nest.Agents.Agent.Broadcasts.compaction/3`. Does NOT call
+  `reset_consecutive/1` — archiving a marker is not a "progress"
+  signal.
+
+  Returns `{stamped_message, new_state}`.
+  """
+  @spec append_history_one(Agent.t(), {atom(), map()}) :: {term(), Agent.t()}
+  def append_history_one(state, message) do
+    index = state.chat_state.next_message_index
+    stamped = put_message_index(message, index)
+
+    history = (state.chat_state.history || []) ++ [stamped]
+
+    state = %{
+      state
+      | chat_state: %{state.chat_state | history: history, next_message_index: index + 1}
+    }
+
+    AgentPersistence.append_message(state.name, stamped, state.chat_state.next_message_index)
+    {stamped, state}
+  end
+
   defp put_message_index({role, %{index: _} = msg}, index) do
     {role, %{msg | index: index}}
   end

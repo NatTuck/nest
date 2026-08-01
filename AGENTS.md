@@ -18,10 +18,9 @@ root, something is wrong - delete them immediately
 ### LLM Calls
 
 - Once we have an active conversation, we *NEVER* make changes that would
-disrupt prefix caching.
-- Specifically, that means our main system message is fixed once set and can
-never be changed. We can add more system / developer messages later if needed
-(depending on protocol).
+disrupt prefix caching, except on compaction.
+- Specifically, that means our main system message is fixed once set and does
+not change except potentially on compaction.
 - The main system message explains things that will always be true for the
 current session. This includes a fixed vocation (and thus mode list) and a
 project root (and thus an AGENTS.md if present).

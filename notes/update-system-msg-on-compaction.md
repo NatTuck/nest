@@ -1,20 +1,53 @@
 # Regenerate system prompt on compaction
 
-## Goal
+## Implementation Status
 
-On every compaction, the agent rebuilds position 0 of `state.chat_state.messages`
-(the system prompt) from the latest DB state, so the LLM sees a fresh base
-prompt (vocation `system_prompt` + AGENTS.md + suffix) that reflects any
-vocation edits made via `mix run priv/repo/seeds.exs` (or via the
-`Vocations.update_vocation/2` API).
+This design has been **implemented and superseded** by a simpler structural
+fix in the post-compaction message sequence. The fresh system message is
+re-rendered at compaction time via
+`SystemPrompt.compose_vocation_config/4` (which re-reads AGENTS.md from disk
+via `agents_md_section/1` and the vocation from the DB via
+`Vocations.get_vocation/1`); the canonical `MessageAppender.append_one/2`
+path assigns the index and persists the row. The post-compaction sequence
+is now `[system_fresh, summary_user, ...carried_messages]`.
 
-The compactor's `new_messages` is re-tagged: the compactor's `{:system, _}`
-summary becomes a `{:user, _}` "Summary of earlier conversation" message at
-position 1, and the fresh base system prompt takes position 0.
+Sections 1-5 (schema changes + `delete_vocation/1` guard) remain valid
+future-work notes; sections 6 and 7 (the `regenerate_for_compaction/2`
+helper design) are obsolete — replaced by the canonical-message-append
+path (see `notes/unify-message-sequence.md`).
 
-All post-compaction messages get persisted to the `messages` table (closing
-the latent gap where the compactor's output was in-memory only and a BEAM
-restart re-loaded the pre-compaction history).
+## Architectural Notes (current implementation)
+
+The architectural fix is that every entry added to
+`(state.chat_state.history ++ state.chat_state.messages)` flows through
+the canonical `MessageAppender` path:
+
+  - New active messages → `MessageAppender.append_one/2` →
+    `AgentPersistence.append_message/3` → `Persistence.insert_message/2`.
+    Each gets stamped from `next_message_index`, persisted, broadcast
+    as `chat:message`.
+  - The compaction marker → `MessageAppender.append_history_one/2` (a
+    history-variant sibling of `append_one/2`). Same stamp + persist,
+    but writes to `state.chat_state.history` and skips the
+    `chat:message` broadcast (the `chat:compaction` event carries
+    the marker separately).
+  - Pre-swap messages → moved to `history` in-memory only (their DB
+    rows already exist at their pre-swap indices from earlier
+    canonical appends).
+
+`Persistence.insert_message/2` is the single insert primitive. It
+dispatches on tuple shape: regular tuples (`{:system, _}`,
+`{:user, _}`, `{:assistant, _}`, `{:tool, _}`) take the regular
+`PersistedMessage.from_runtime/2` path; `{:compaction, %Compaction{}}`
+takes the `CompactionMarker.record/5` path (atomic INSERT row + UPDATE
+`agents.last_compaction_index` in one transaction).
+
+This makes the invariant **structural**: there's no code path that
+adds to `state.chat_state.messages` or `state.chat_state.history`
+without also persisting a row at the assigned index. A future
+refactor that adds a bypass would need to add new clauses to
+`MessageAppender` and `Persistence.insert_message/2`, which is
+obviously different from the existing code.
 
 ## Constraints
 

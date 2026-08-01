@@ -17,6 +17,7 @@ defmodule Nest.Agents.AgentCompactionTest do
   alias Nest.Messages.Part
   alias Nest.Messages.Tool
   alias Nest.Messages.User
+  alias Nest.Persistence
   alias Nest.Vocations
 
   setup :verify_on_exit!
@@ -288,7 +289,21 @@ defmodule Nest.Agents.AgentCompactionTest do
       # so it falls back to a random text summary. We assert on
       # the final post-compaction shape, not on the compactor's text.
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      # Use a real Programmer vocation so the compaction
+      # re-renders the system prompt (proving the
+      # `compose_vocation_config/4` path runs). Tests
+      # without a real vocation also pass — the
+      # re-rendered system is just absent — but this
+      # exercises the full code path.
+      voc_id = programmer_vocation_id()
+
+      {pid, agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: voc_id,
+          vocation: Persistence.load_vocation(voc_id)
+        })
+
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "compact please")
@@ -302,20 +317,27 @@ defmodule Nest.Agents.AgentCompactionTest do
       messages = state.chat_state.messages
       history = state.chat_state.history
 
-      # Post-compaction shape (new design — compactor is a chat turn):
-      # History: [system, user, assistant, tool_call_assistant,
-      #          tool_result, suffix, compactor_assistant, marker]
-      # Messages: [system, summary_user, carried_tool_call_assistant,
-      #            carried_tool_result, post_chat_assistant]
+      # Post-compaction shape (compactor is a chat turn, compactor
+      # re-renders the system message per AGENTS.md exception).
+      #
+      # History:  [old_system, old_user, old_assistant, tool_call_assistant,
+      #             tool_result, [mode: compact] suffix, compactor_assistant,
+      #             marker]
+      # Messages: [new_system_fresh, summary_user, post_chat_assistant]
+      #             (the carried tool_call was executed by the post-swap
+      #              chat turn, so it's consumed and replaced with the
+      #              final assistant response)
+      #
       # Index positions vary; assert by role + content.
 
-      # The original system message is now in history
-      # (the swap archives the pre-swap active list, which
-      # included the system message at index 0).
-      assert Enum.any?(history, &match?({:system, _}, &1)),
-             "expected the original system message in history"
+      # The fresh system message is the head of the active
+      # list (re-rendered from the latest DB vocation + AGENTS.md
+      # at compaction time).
+      assert match?({:system, _}, Enum.at(messages, 0)),
+             "expected fresh system message at messages[0]; got #{inspect(Enum.at(messages, 0))}"
 
-      # The summary_user (compactor's summary) is in messages.
+      # The summary_user (compactor's summary) follows the
+      # fresh system.
       assert Enum.any?(messages, fn
                {:user, %{parts: [%Part.Text{text: t}]}} when is_binary(t) ->
                  String.starts_with?(t, "Summary of earlier conversation:")
@@ -325,13 +347,26 @@ defmodule Nest.Agents.AgentCompactionTest do
              end),
              "expected a summary_user in the active chat"
 
+      # The fresh system message's text contains the
+      # rendered system prompt (vocation `system_prompt`
+      # plus tool budget / context limit / delegation sections).
+      [{:system, sys_struct} | _] = messages
+
+      sys_text =
+        sys_struct.parts
+        |> Enum.map_join("", fn
+          %Part.Text{text: text} -> text
+          _ -> ""
+        end)
+
+      assert sys_text =~ "Test programmer prompt.",
+             "expected fresh system message to contain the rendered system prompt"
+
       # The carried tool_call was executed by the post-swap
       # chat turn (Trigger 2 mid-turn resume), so the
       # tool_call + tool_result are consumed and replaced
-      # with the tool result + the next assistant response.
-      # The summary_user is at the head of the post-swap
-      # active list (verified above), and the final assistant
-      # response is at the tail.
+      # with the final assistant response. Assert the tail
+      # carries an assistant message.
       assert Enum.any?(messages, &match?({:assistant, _}, &1)),
              "expected a final assistant message in the active chat"
 
@@ -341,6 +376,12 @@ defmodule Nest.Agents.AgentCompactionTest do
                _ -> false
              end),
              "expected chat:compaction marker in history with archived_count > 0"
+
+      # The original system message is now in history
+      # (the swap archives the pre-swap active list, which
+      # included the original system message at index 0).
+      assert Enum.any?(history, &match?({:system, _}, &1)),
+             "expected the original system message in history"
 
       # The suffix + compactor's assistant response are in
       # history (they were the pre-swap active messages).
