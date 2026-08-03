@@ -19,6 +19,8 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
 
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.LLM.Tool
   alias Nest.Messages.{Part, ToolCall, ToolResult}
@@ -124,26 +126,37 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
     test "marks error results as is_error: true" do
       tools = [failing_tool("crashy")]
 
-      assert [%ToolResult{is_error: true, content: content}] =
-               BatchSizer.run([call("c1", "crashy")], ctx(tools))
+      log =
+        capture_log(fn ->
+          assert [%ToolResult{is_error: true, content: content}] =
+                   BatchSizer.run([call("c1", "crashy")], ctx(tools))
 
-      assert content =~ "intentional failure"
+          assert content =~ "intentional failure"
+        end)
+
+      assert log =~ "BatchSizer produced is_error=true tool result"
+      assert log =~ "tool=crashy"
     end
 
     test "returns synthetic error results when preflight refuses the batch" do
       tools = [small_tool("echo"), small_tool("beta")]
       c = ctx(tools, context_limit: 50)
 
-      [r1, r2] =
-        BatchSizer.run(
-          [call("c1", "echo"), call("c2", "beta")],
-          c
-        )
+      log =
+        capture_log(fn ->
+          [r1, r2] =
+            BatchSizer.run(
+              [call("c1", "echo"), call("c2", "beta")],
+              c
+            )
 
-      assert r1.is_error == true and r2.is_error == true
-      assert r1.content == r2.content
-      assert r1.content =~ "Batch refused"
-      assert r1.content =~ "Reformulate"
+          assert r1.is_error == true and r2.is_error == true
+          assert r1.content == r2.content
+          assert r1.content =~ "Batch refused"
+          assert r1.content =~ "Reformulate"
+        end)
+
+      assert log =~ "BatchSizer refused batch (preflight)"
     end
 
     test "preserves empty batch results in input order" do
@@ -251,10 +264,17 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       tools = [Tools.get_function("read_file", dir)]
       c = ctx(tools)
 
-      [%ToolResult{is_error: true, content: error}] =
-        BatchSizer.run([call("c1", "read_file", %{"path" => "nope.txt"})], c)
+      log =
+        capture_log(fn ->
+          [%ToolResult{is_error: true, content: error}] =
+            BatchSizer.run([call("c1", "read_file", %{"path" => "nope.txt"})], c)
 
-      assert error =~ "File not found"
+          assert error =~ "File not found"
+        end)
+
+      assert log =~ "BatchSizer produced is_error=true tool result"
+      assert log =~ "tool=read_file"
+      assert log =~ "nope.txt"
     end
   end
 
@@ -356,8 +376,14 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       tools = [small_tool("read_file")]
       c = ctx(tools, context_limit: 100_000)
 
-      assert [%ToolResult{is_error: true, name: "ghost_tool"}] =
-               BatchSizer.run([call("c1", "ghost_tool")], c)
+      log =
+        capture_log(fn ->
+          assert [%ToolResult{is_error: true, name: "ghost_tool"}] =
+                   BatchSizer.run([call("c1", "ghost_tool")], c)
+        end)
+
+      assert log =~ "BatchSizer produced is_error=true tool result"
+      assert log =~ "tool=ghost_tool"
     end
 
     test "the catch-all projection is small, not worst-case (Bug 1 enabler)" do

@@ -98,8 +98,7 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
         Map.new(attrs)
       )
 
-    {pid, agent_id} = start_agent(full_attrs)
-    {pid, agent_id}
+    start_agent(full_attrs)
   end
 
   # Pre-seed `chat_state.messages` via the canonical append

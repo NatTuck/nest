@@ -26,6 +26,7 @@ defmodule Nest.Agents.AgentToolsTest do
   end
 
   import Nest.Agents.AgentTestHelpers
+  alias Nest.TestSupport.AgentToolsWaiters
   alias Nest.TestSupport.AssistantWaiters
 
   describe "chat/2 with tool calls" do
@@ -39,7 +40,11 @@ defmodule Nest.Agents.AgentToolsTest do
 
       MockClient.set_response("Here are the directory contents")
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
       :ok = Agent.chat(pid, "List the files")
 
@@ -111,7 +116,11 @@ defmodule Nest.Agents.AgentToolsTest do
 
       MockClient.set_response("Done")
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
       :ok = Agent.chat(pid, "Run a command")
 
@@ -134,24 +143,36 @@ defmodule Nest.Agents.AgentToolsTest do
 
       MockClient.set_response("The result is 4")
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
-      :ok = Agent.chat(pid, "What is 2+2?")
+      log =
+        capture_log(fn ->
+          :ok = Agent.chat(pid, "What is 2+2?")
 
-      assert_receive {:chat_message, {:user, _}}, 500
+          assert_receive {:chat_message, {:user, _}}, 500
 
-      # The first turn's assistant message carries the tool call.
-      # A context-notice synthetic pair may shift the index; match
-      # by content.
-      msg_with_tool = AssistantWaiters.assistant_with_tool(pid, "call_456", 5_000)
-      assert msg_with_tool != nil
-      assert msg_with_tool.index > 1
+          msg_with_tool = AssistantWaiters.assistant_with_tool(pid, "call_456", 5_000)
+          assert msg_with_tool != nil
+          assert msg_with_tool.index > 1
 
-      tool_call = Enum.find(msg_with_tool.parts, &match?(%Part.ToolUse{}, &1))
-      assert tool_call.name == "calculator"
-      assert tool_call.arguments == %{"expression" => "2 + 2"}
+          tool_call = Enum.find(msg_with_tool.parts, &match?(%Part.ToolUse{}, &1))
+          assert tool_call.name == "calculator"
+          assert tool_call.arguments == %{"expression" => "2 + 2"}
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+          assert_receive {:chat_status, %{status: "idle"}}, 500
+        end)
+
+      # The tool name `calculator` isn't in the programmer
+      # vocation (it's intentionally not — this test only
+      # verifies message-shape, not actual tool execution), so
+      # BatchSizer correctly emits `is_error: true` and the
+      # permanent diagnostic below.
+      assert log =~ "BatchSizer produced is_error=true tool result"
+      assert log =~ "tool=calculator"
 
       MockClient.clear()
     end
@@ -166,17 +187,29 @@ defmodule Nest.Agents.AgentToolsTest do
 
       MockClient.set_response("The weather is sunny")
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
-      :ok = Agent.chat(pid, "What's the weather?")
+      log =
+        capture_log(fn ->
+          :ok = Agent.chat(pid, "What's the weather?")
 
-      assert_receive {:chat_message, {:user, _}}, 500
-      # The tool message index may shift if a context-notice
-      # synthetic pair was injected. Match by content.
-      assert_receive {:chat_message, {:tool, %Tool{parts: tool_results}}}, 500
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+          assert_receive {:chat_message, {:user, _}}, 500
+          assert_receive {:chat_message, {:tool, %Tool{parts: tool_results}}}, 500
+          assert_receive {:chat_status, %{status: "idle"}}, 500
 
-      assert tool_results != []
+          assert tool_results != []
+        end)
+
+      # `weather` isn't a real tool — this test verifies the
+      # chat-message shape on the tool-result side. BatchSizer
+      # emits the standard is_error diagnostic when the tool
+      # lookup fails.
+      assert log =~ "BatchSizer produced is_error=true tool result"
+      assert log =~ "tool=weather"
 
       MockClient.clear()
     end
@@ -191,7 +224,11 @@ defmodule Nest.Agents.AgentToolsTest do
 
       MockClient.set_response("Directory listing complete")
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
       :ok = Agent.chat(pid, "List files")
       assert_receive {:chat_status, %{status: "idle"}}, 500
@@ -199,7 +236,7 @@ defmodule Nest.Agents.AgentToolsTest do
       # Drain all messages from the first turn so the second
       # turn's `assert_receive` calls don't accidentally match
       # a leftover message from turn 1.
-      flush_all_messages()
+      AgentToolsWaiters.flush_all_messages()
 
       MockClient.set_response("Second response received")
 
@@ -232,14 +269,18 @@ defmodule Nest.Agents.AgentToolsTest do
 
       MockClient.set_response("Tool executed successfully")
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
       :ok = Agent.chat(pid, "Run a command")
 
       # The tool message is re-broadcast after its api_logs are
       # populated. Drain tool messages until we find the one
       # with api_logs populated.
-      tool_msg = wait_for_tool_with_api_logs(5_000)
+      tool_msg = AgentToolsWaiters.wait_for_tool_with_api_logs(5_000)
       assert tool_msg != nil, "expected tool message with api_logs"
       tool_logs = tool_msg.api_logs
       assert tool_logs != []
@@ -248,7 +289,7 @@ defmodule Nest.Agents.AgentToolsTest do
       # carries the tool call). Drain assistant messages until
       # we find one with a `Part.Text` matching the final response
       # and no `Part.ToolUse`.
-      final_msg = wait_for_final_assistant("Tool executed successfully", 5_000)
+      final_msg = AgentToolsWaiters.wait_for_final_assistant("Tool executed successfully", 5_000)
       assert final_msg != nil, "expected final assistant message"
       assert final_msg.index > tool_msg.index
       final_logs = final_msg.api_logs
@@ -263,76 +304,6 @@ defmodule Nest.Agents.AgentToolsTest do
              "Expected API response log in final assistant message"
 
       MockClient.clear()
-    end
-
-    defp wait_for_final_assistant(wanted_text, timeout) do
-      deadline = System.monotonic_time(:millisecond) + timeout
-
-      do_wait_for_final_assistant(wanted_text, deadline)
-    end
-
-    defp do_wait_for_final_assistant(_text, deadline) do
-      if System.monotonic_time(:millisecond) >= deadline do
-        nil
-      else
-        receive do
-          {:chat_message, {:assistant, msg}} ->
-            if matches_final_assistant?(msg) and has_api_logs?(msg) do
-              msg
-            else
-              do_wait_for_final_assistant("Tool executed successfully", deadline)
-            end
-        after
-          100 -> do_wait_for_final_assistant("Tool executed successfully", deadline)
-        end
-      end
-    end
-
-    defp matches_final_assistant?(msg) do
-      has_tool_use = Enum.any?(msg.parts, &match?(%Part.ToolUse{}, &1))
-
-      has_text =
-        Enum.any?(msg.parts, fn
-          %Part.Text{text: text} -> text == "Tool executed successfully"
-          _ -> false
-        end)
-
-      has_text and not has_tool_use
-    end
-
-    defp has_api_logs?(msg) do
-      msg.api_logs != nil and msg.api_logs != []
-    end
-
-    defp wait_for_tool_with_api_logs(timeout) do
-      deadline = System.monotonic_time(:millisecond) + timeout
-
-      do_wait_for_tool_with_api_logs(deadline)
-    end
-
-    defp do_wait_for_tool_with_api_logs(deadline) do
-      if System.monotonic_time(:millisecond) >= deadline do
-        nil
-      else
-        receive do
-          {:chat_message, {:tool, msg}} ->
-            if msg.api_logs != nil and msg.api_logs != [] do
-              msg
-            else
-              do_wait_for_tool_with_api_logs(deadline)
-            end
-        after
-          100 -> do_wait_for_tool_with_api_logs(deadline)
-        end
-      end
-    end
-
-    defp flush_all_messages do
-      receive do
-        _ -> flush_all_messages()
-      after
-        0 -> :ok
-      end
     end
 
     test "broadcasts notification and produces final response when max tool iterations reached" do
@@ -353,7 +324,11 @@ defmodule Nest.Agents.AgentToolsTest do
 
       MockClient.set_response("I've completed the task after multiple iterations")
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
       capture_log(fn ->
         :ok = Agent.chat(pid, "Keep looping")
@@ -393,7 +368,11 @@ defmodule Nest.Agents.AgentToolsTest do
 
       MockClient.set_response("Done well under the cap")
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
       :ok = Agent.chat(pid, "Brief loop")
 
@@ -447,7 +426,11 @@ defmodule Nest.Agents.AgentToolsTest do
 
       MockClient.set_response("Forced final answer after second-chance")
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
       capture_log(fn ->
         :ok = Agent.chat(pid, "Exhaust iterations")

@@ -19,6 +19,7 @@ defmodule Nest.AgentsAutoNameTest do
   use Nest.DataCase, async: false
 
   import ExUnit.Callbacks
+  import ExUnit.CaptureLog
   import Mimic
 
   alias Nest.Agents
@@ -53,37 +54,46 @@ defmodule Nest.AgentsAutoNameTest do
       # Pass a model with provider but no `:name` (the model's
       # `:name` is the LLM identifier, not the agent's registry
       # key). `Agents.create_agent/2` falls back to
-      # `Supervisor.generate_unique_name/0`.
-      {:ok, name} =
-        Agents.create_agent(
-          %{provider: "model-studio"},
-          vocation_id: vid()
-        )
+      # `Supervisor.generate_unique_name/0`. The model's `:name`
+      # is omitted on purpose — leaving it nil forces the agent
+      # into `:model_missing` state and exercises the diagnostic
+      # log below; the test's actual assertion is the
+      # auto-generated name.
+      log =
+        capture_log(fn ->
+          {:ok, name} =
+            Agents.create_agent(
+              %{provider: "model-studio"},
+              vocation_id: vid()
+            )
 
-      assert is_binary(name)
-      # Adjective-animal pattern (lowercase-lowercase).
-      assert Regex.match?(~r/^[a-z]+-[a-z]+$/, name)
+          assert is_binary(name)
+          assert Regex.match?(~r/^[a-z]+-[a-z]+$/, name)
+          assert {:ok, _pid} = Supervisor.get_agent(name)
+        end)
 
-      # The agent exists in the supervisor's Registry.
-      assert {:ok, _pid} = Supervisor.get_agent(name)
+      assert log =~ "could not resolve model"
     end
 
     test "auto-generated names are unique across consecutive calls" do
-      {:ok, name1} =
-        Agents.create_agent(
-          %{provider: "model-studio"},
-          vocation_id: vid()
-        )
+      log =
+        capture_log(fn ->
+          {:ok, name1} =
+            Agents.create_agent(
+              %{provider: "model-studio"},
+              vocation_id: vid()
+            )
 
-      {:ok, name2} =
-        Agents.create_agent(
-          %{provider: "model-studio"},
-          vocation_id: vid()
-        )
+          {:ok, name2} =
+            Agents.create_agent(
+              %{provider: "model-studio"},
+              vocation_id: vid()
+            )
 
-      assert name1 != name2
-      assert Regex.match?(~r/^[a-z]+-[a-z]+$/, name1)
-      assert Regex.match?(~r/^[a-z]+-[a-z]+$/, name2)
+          assert name1 != name2
+          assert Regex.match?(~r/^[a-z]+-[a-z]+$/, name1)
+          assert Regex.match?(~r/^[a-z]+-[a-z]+$/, name2)
+        end)
     end
 
     test "auto-generated name can be used to look up the agent via get_info/1" do
@@ -112,7 +122,7 @@ defmodule Nest.AgentsAutoNameTest do
 
       {:ok, name} =
         Agents.create_agent(
-          %{provider: "model-studio"},
+          %{name: "qwen3.5-plus", provider: "model-studio"},
           name: explicit,
           vocation_id: vid()
         )

@@ -52,30 +52,12 @@ defmodule Nest.Agents.AgentCompactionTest do
   end
 
   # Create a Programmer vocation in the test DB and return its id.
-  # The "tool budget loop" tests need `shell_cmd` registered; without
-  # it, the agent has an empty tool list and every call returns
-  # "Unknown tool: ...".
-  defp programmer_vocation_id do
-    {:ok, vocation} =
-      Vocations.create_vocation(%{
-        name: "Test Programmer (#{Elixir.System.unique_integer([:positive])})",
-        description: "A coding assistant that can read and write files in a workspace",
-        system_prompt: "Test programmer prompt.",
-        tools: ["read_file", "write_file", "edit", "shell_cmd", "context"],
-        modes: %{
-          "build" => %{
-            "description" => "Test mode",
-            "caps" => %{
-              "net" => true,
-              "fs" => %{"read" => ["/"], "write" => ["/tmp", ":workspace"]}
-            }
-          }
-        }
-      })
-
-    vocation.id
-  end
-
+  # `programmer_vocation_id_for_test/0` lives in `AgentTestHelpers`
+  # (promoted from a local `defp` for cross-file reuse). Tests
+  # that exercise the tool-call flow pass it as `vocation_id:`
+  # to `start_agent/1` so `shell_cmd` (and the file tools) are
+  # actually registered; otherwise BatchSizer returns
+  # "Unknown tool: shell_cmd" for every call.
   import Nest.Agents.AgentTestHelpers
 
   describe "tool budget loop" do
@@ -89,10 +71,10 @@ defmodule Nest.Agents.AgentCompactionTest do
 
       MockClient.set_response("Done")
 
-      {pid, agent_id} =
+      {pid, _agent_id} =
         start_agent(%{
           model: %{name: "qwen3.5-plus"},
-          vocation_id: programmer_vocation_id()
+          vocation_id: programmer_vocation_id_for_test()
         })
 
       :ok = Agent.chat(pid, "Read a file")
@@ -150,7 +132,11 @@ defmodule Nest.Agents.AgentCompactionTest do
 
       MockClient.set_response("All done")
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
       :ok = Agent.chat(pid, "Run two")
 
@@ -172,7 +158,11 @@ defmodule Nest.Agents.AgentCompactionTest do
 
   describe "compaction history" do
     test "compaction_done archives previous messages to history with a marker" do
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
       old_messages = [
         {:user, %User{index: 0, parts: [%Part.Text{text: "First"}], api_logs: []}},
@@ -213,7 +203,11 @@ defmodule Nest.Agents.AgentCompactionTest do
 
   describe "per-iteration preflight has been removed" do
     test "CompactionHandler does not accept {:preflight_request, _, _} (Trigger A is gone)" do
-      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
       # Per-iteration preflight compaction was removed in favor of
       # the BatchSizer + Trigger B (per-handle_chat). The Agent
@@ -234,7 +228,11 @@ defmodule Nest.Agents.AgentCompactionTest do
     end
 
     test "CompactionHandler does not accept {:compaction_failed_for_preflight, _, _}" do
-      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
       fake_task = self()
 
@@ -291,9 +289,9 @@ defmodule Nest.Agents.AgentCompactionTest do
       # without a real vocation also pass — the
       # re-rendered system is just absent — but this
       # exercises the full code path.
-      voc_id = programmer_vocation_id()
+      voc_id = programmer_vocation_id_for_test()
 
-      {pid, agent_id} =
+      {pid, _agent_id} =
         start_agent(%{
           model: %{name: "qwen3.5-plus"},
           vocation_id: voc_id,

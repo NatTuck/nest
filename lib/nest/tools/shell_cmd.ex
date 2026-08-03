@@ -55,63 +55,75 @@ defmodule Nest.Tools.ShellCmd do
     timeout = Keyword.get(opts, :timeout, @default_timeout_ms)
     stdin = Keyword.get(opts, :stdin, "")
 
-    # Validate workspace exists
     workspace = resolve_workspace(workspace_path)
 
     if tmp_path, do: File.mkdir_p!(tmp_path)
 
-    # If stdin is provided, embed it via base64 to avoid stdin redirection issues
-    final_command =
-      if stdin != "" do
-        # Encode stdin content as base64 and pipe through base64 -d
-        encoded = Base.encode64(stdin)
-        # Escape single quotes in the base64 string for shell safety
-        escaped = String.replace(encoded, "'", "'\\''")
-        "printf '%s' '#{escaped}' | base64 -d | #{command}"
-      else
-        command
-      end
-
-    # Build the sandboxed command
+    final_command = compose_command_with_stdin(command, stdin)
     sandboxed_cmd = build_sandboxed_command(final_command, workspace, tmp_path, caps)
 
     Logger.info("Executing sandboxed command in #{workspace}: #{truncate_log(command)}")
 
-    # Execute via erlexec
     case run_with_erlexec(sandboxed_cmd, timeout) do
-      {:ok, exit_code, output} when exit_code == 0 ->
-        # Return placeholder if output is empty so the LLM gets
-        # feedback that the command succeeded but produced nothing.
-        if output == "" do
-          {:ok, "[Command executed successfully with no output]"}
-        else
-          {:ok, output}
-        end
-
       {:ok, exit_code, output} ->
-        # Permanent diagnostic. bwrap exiting non-zero is the rare
-        # path; under heavy parallel load it can fire intermittently
-        # for reasons we don't fully understand yet. We want the
-        # server log to capture every occurrence with enough detail
-        # to diagnose a flake from the log alone.
-        Logger.error(
-          "ShellCmd.execute: bwrap exited non-zero " <>
-            "(exit_code=#{exit_code}) for command=#{truncate_log(command)} " <>
-            "workspace=#{workspace} tmp_path=#{tmp_path || "none"} " <>
-            "output=#{inspect(output)}"
-        )
-
-        {:error, "Exit code #{exit_code}:\n#{output}"}
+        handle_exit_result(command, exit_code, output, workspace, tmp_path)
 
       {:error, reason} ->
-        Logger.error(
-          "ShellCmd.execute: erlexec failed to start process " <>
-            "(reason=#{inspect(reason)}) for command=#{truncate_log(command)} " <>
-            "workspace=#{workspace} tmp_path=#{tmp_path || "none"}"
-        )
-
-        {:error, "Execution failed: #{reason}"}
+        handle_startup_failure(command, reason, workspace, tmp_path)
     end
+  end
+
+  defp handle_exit_result(_command, 0, "", _workspace, _tmp_path) do
+    {:ok, "[Command executed successfully with no output]"}
+  end
+
+  defp handle_exit_result(_command, 0, output, _workspace, _tmp_path) do
+    {:ok, output}
+  end
+
+  defp handle_exit_result(command, exit_code, output, workspace, tmp_path) do
+    log_bwrap_failure(command, exit_code, output, workspace, tmp_path)
+    {:error, "Exit code #{exit_code}:\n#{output}"}
+  end
+
+  defp handle_startup_failure(command, reason, workspace, tmp_path) do
+    log_erlexec_start_failure(command, reason, workspace, tmp_path)
+    {:error, "Execution failed: #{reason}"}
+  end
+
+  # Permanent diagnostic. bwrap exiting non-zero is the rare
+  # path; under heavy parallel load it can fire intermittently
+  # for reasons we don't fully understand yet. We want the
+  # server log to capture every occurrence with enough detail
+  # to diagnose a flake from the log alone.
+  defp log_bwrap_failure(command, exit_code, output, workspace, tmp_path) do
+    Logger.error(
+      "ShellCmd.execute: bwrap exited non-zero " <>
+        "(exit_code=#{exit_code}) for command=#{truncate_log(command)} " <>
+        "workspace=#{workspace} tmp_path=#{tmp_path || "none"} " <>
+        "output=#{inspect(output)}"
+    )
+  end
+
+  defp log_erlexec_start_failure(command, reason, workspace, tmp_path) do
+    Logger.error(
+      "ShellCmd.execute: erlexec failed to start process " <>
+        "(reason=#{inspect(reason)}) for command=#{truncate_log(command)} " <>
+        "workspace=#{workspace} tmp_path=#{tmp_path || "none"}"
+    )
+  end
+
+  # If stdin is provided, embed it via base64 to avoid stdin
+  # redirection issues. The base64 blob is single-quoted and
+  # any embedded single quotes are escaped with the standard
+  # `'\''` shell idiom so the receiving shell sees a clean
+  # literal.
+  defp compose_command_with_stdin(command, ""), do: command
+
+  defp compose_command_with_stdin(command, stdin) do
+    encoded = Base.encode64(stdin)
+    escaped = String.replace(encoded, "'", "'\\''")
+    "printf '%s' '#{escaped}' | base64 -d | #{command}"
   end
 
   @doc """

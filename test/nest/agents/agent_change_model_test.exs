@@ -12,6 +12,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
 
   import Mimic
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias Nest.Agents
   alias Nest.Agents.Agent
   alias Nest.Agents.AgentTestHelpers
@@ -20,6 +21,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
   alias Nest.LLM.OpenAIClient
   alias Nest.LLM.RecoveryClient
   alias Nest.Persistence
+  alias Nest.Repo
 
   setup :verify_on_exit!
 
@@ -54,7 +56,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
     # calls `Persistence.update_agent_model/2`) need
     # explicit sandbox access — the supervisor-spawned
     # child doesn't inherit the test pid's `$callers`.
-    Ecto.Adapters.SQL.Sandbox.allow(Nest.Repo, self(), pid)
+    Sandbox.allow(Repo, self(), pid)
 
     {pid, name}
   end

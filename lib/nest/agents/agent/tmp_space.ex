@@ -34,22 +34,15 @@ defmodule Nest.Agents.Agent.TmpSpace do
       )
     end
 
-    parent_path = Path.dirname(tmp_path)
-
-    if String.starts_with?(parent_path, @tmp_prefix) do
-      case File.rmdir(parent_path) do
-        :ok ->
-          Logger.info("Cleaned up empty parent directory: #{parent_path}")
-
-        {:error, :enoent} ->
-          :ok
-
-        {:error, reason} ->
-          Logger.debug(
-            "TmpSpace.cleanup: parent rmdir returned #{inspect(reason)} for " <>
-              "#{parent_path}; leaving directory in place."
-          )
-      end
-    end
+    # NOTE: do NOT `rmdir` the shared parent `tmp/nest-<OS_PID>`.
+    # Every Agent in the same BEAM shares one OS pid, so the parent
+    # is process-global, not per-agent. Calling `rmdir` here races
+    # with a sibling agent's `mkdir_p!` during a parallel `mix test`:
+    # one's `terminate/2` removes the parent another agent's
+    # `init/1` is about to nest under, producing
+    # `File.Error{reason: :enoent}` in `start_agent/1`. The parent is
+    # recreated on demand by `mkdir_p!` anyway, so the cleanup gains
+    # nothing and the race was a real bug. `/tmp` is wiped on system
+    # cleanup, so leaving the parent in place has no lifecycle cost.
   end
 end

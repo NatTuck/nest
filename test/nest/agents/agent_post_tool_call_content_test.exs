@@ -22,6 +22,7 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
   use Nest.DataCase, async: true
 
   import Mimic
+  import ExUnit.CaptureLog
 
   alias Nest.Agents.Agent
   alias Nest.LLM.MockClient
@@ -93,36 +94,37 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
          }}
       ])
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
-      :ok = Agent.chat(pid, "List the files")
+      log =
+        capture_log(fn ->
+          :ok = Agent.chat(pid, "List the files")
 
-      # Fence on idle: 500ms accounts for preflight BPE init
-      # (Tiktoken CL100K count_tokens is a DirtyCpu NIF; first
-      # call on each of BEAM's 32 dirty CPU threads pays a
-      # 200-325ms init cost). Once the fence passes, every
-      # earlier chat message has already arrived in the test's
-      # mailbox.
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+          assert_receive {:chat_status, %{status: "idle"}}, 500
 
-      # Wait for the first turn's tool-call assistant message.
-      # The synthetic context-notice pair (assistant("Context?")
-      # + user(notice)) may precede it when a threshold crosses.
-      msg1 = wait_for_assistant_with_tool_use(5_000)
-      assert msg1 != nil
+          msg1 = wait_for_assistant_with_tool_use(5_000)
+          assert msg1 != nil
 
-      assert Enum.any?(msg1.parts, &match?(%Part.ToolUse{}, &1)),
-             "expected first turn assistant to have a Part.ToolUse"
+          assert Enum.any?(msg1.parts, &match?(%Part.ToolUse{}, &1)),
+                 "expected first turn assistant to have a Part.ToolUse"
 
-      # Wait for the second turn's assistant message. Its
-      # parts must include the visible text and the thinking.
-      msg2 = wait_for_assistant_with_text_and_thinking(5_000)
-      assert msg2 != nil
+          msg2 = wait_for_assistant_with_text_and_thinking(5_000)
+          assert msg2 != nil
 
-      text = only_text(msg2.parts)
-      thinking = only_thinking(msg2.parts)
-      assert text == "There are 3 files in the directory."
-      assert thinking == "The directory has a few files. Let me summarize them for the user."
+          text = only_text(msg2.parts)
+          thinking = only_thinking(msg2.parts)
+          assert text == "There are 3 files in the directory."
+          assert thinking == "The directory has a few files. Let me summarize them for the user."
+        end)
+
+      # Empty `arguments: %{}` on the shell_cmd call fails tool
+      # validation (`command` required). The BatchSizer diagnostic
+      # is the test's incidental side-effect.
+      assert log =~ "Missing required arguments: command"
 
       MockClient.clear()
     end
@@ -284,32 +286,34 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
          }}
       ])
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
-      :ok = Agent.chat(pid, "Run it")
+      log =
+        capture_log(fn ->
+          :ok = Agent.chat(pid, "Run it")
 
-      # The final assistant message carries its api_logs
-      # (re-broadcast after the response log lands). Drain to
-      # the SECOND assistant (the first carries the tool call;
-      # a context-notice synthetic pair may also be present).
-      logs = wait_for_final_assistant_api_logs(5_000)
-      assert logs != nil and logs != []
+          logs = wait_for_final_assistant_api_logs(5_000)
+          assert logs != nil and logs != []
 
-      # The response log's `content` field is the visible text,
-      # not the thinking. (Before the fix, this assertion
-      # would have failed because `Client.accumulate(acc,
-      # {:text, text})` was being called for thinking events,
-      # folding the reasoning into `acc.text` → `response.text`
-      # → the api_log's `content`.)
-      response_log = Enum.find(logs, fn log -> log.type == :response end)
+          response_log = Enum.find(logs, fn log -> log.type == :response end)
 
-      assert response_log,
-             "expected a response log in the post-tool assistant message's api_logs"
+          assert response_log,
+                 "expected a response log in the post-tool assistant message's api_logs"
 
-      assert response_log.payload.content == "Result: success"
-      refute response_log.payload.content =~ "interpret"
+          assert response_log.payload.content == "Result: success"
+          refute response_log.payload.content =~ "interpret"
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+          assert_receive {:chat_status, %{status: "idle"}}, 500
+        end)
+
+      # `call_x` arguments `{}` fails shell_cmd validation. The
+      # diagnostic is incidental; the test's contract is the
+      # api_log content.
+      assert log =~ "Missing required arguments: command"
 
       MockClient.clear()
     end
@@ -349,20 +353,36 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
          }}
       ])
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
-      :ok = Agent.chat(pid, "How many?")
+      log =
+        capture_log(fn ->
+          :ok = Agent.chat(pid, "How many?")
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+          assert_receive {:chat_status, %{status: "idle"}}, 500
 
-      # Drain to find the assistant with the expected thinking
-      # content. The context-notice synthetic pair may shift the
-      # exact index, so match by content.
-      thinking_msg = wait_for_assistant_with_thinking("The user wants a count.", 5_000)
-      assert thinking_msg != nil
-      assert Enum.any?(thinking_msg.parts, &match?(%Part.Thinking{}, &1))
+          # Drain to find the assistant with the expected thinking
+          # content. The context-notice synthetic pair may shift the
+          # exact index, so match by content.
+          thinking_msg = wait_for_assistant_with_thinking("The user wants a count.", 5_000)
 
-      MockClient.clear()
+          assert thinking_msg != nil
+          assert Enum.any?(thinking_msg.parts, &match?(%Part.Thinking{}, &1))
+
+          MockClient.clear()
+        end)
+
+      # The empty `arguments: %{}` on the shell_cmd call gets
+      # validated by the tool wrapper, which requires `:command`.
+      # BatchSizer's permanent diagnostic fires alongside the
+      # normal is_error=true result.
+      assert log =~ "BatchSizer produced is_error=true tool result"
+      assert log =~ "tool=shell_cmd"
+      assert log =~ "Missing required arguments: command"
     end
   end
 
@@ -410,27 +430,32 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
          }}
       ])
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
-      :ok = Agent.chat(pid, "List the files")
+      log =
+        capture_log(fn ->
+          :ok = Agent.chat(pid, "List the files")
 
-      # The tool-call assistant message carries the thinking
-      # part — that's the regression guard. A context-notice
-      # synthetic pair may precede this message, so drain to
-      # find the one with the tool call.
-      tool_assistant = wait_for_assistant_with_tool_use(5_000)
-      assert tool_assistant != nil
-      parts = tool_assistant.parts
+          tool_assistant = wait_for_assistant_with_tool_use(5_000)
+          assert tool_assistant != nil
+          parts = tool_assistant.parts
 
-      assert only_text(parts) == "Running ls"
+          assert only_text(parts) == "Running ls"
 
-      assert only_thinking(parts) ==
-               "Let me check the directory listing. I'll run ls."
+          assert only_thinking(parts) ==
+                   "Let me check the directory listing. I'll run ls."
 
-      assert Enum.any?(parts, &match?(%Part.ToolUse{}, &1))
+          assert Enum.any?(parts, &match?(%Part.ToolUse{}, &1))
 
-      # The agent still goes idle after the post-tool reply.
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+          assert_receive {:chat_status, %{status: "idle"}}, 500
+        end)
+
+      # Same incidental shell_cmd validation failure.
+      assert log =~ "Missing required arguments: command"
 
       MockClient.clear()
     end

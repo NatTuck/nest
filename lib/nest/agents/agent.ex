@@ -14,12 +14,10 @@ defmodule Nest.Agents.Agent do
   require Logger
 
   alias Nest.Agents.Agent.ApiLogs
-  alias Nest.Agents.Agent.ChatPipeline
+  alias Nest.Agents.Agent.Callbacks
   alias Nest.Agents.Agent.ClientAPI
   alias Nest.Agents.Agent.Config
-  alias Nest.Agents.Agent.Handlers
   alias Nest.Agents.Agent.Init
-  alias Nest.Agents.Agent.IntrospectionHandler
   alias Nest.Agents.Agent.MessageAppender
   alias Nest.Agents.Agent.Restore
   alias Nest.Agents.Agent.SubAgent
@@ -335,10 +333,10 @@ defmodule Nest.Agents.Agent do
     # Trap exits to ensure cleanup runs when agent is stopped
     Process.flag(:trap_exit, true)
 
-    unless persistence_enabled?() do
-      {:stop, :non_persistence_not_implemented}
-    else
+    if persistence_enabled?() do
       do_init(attrs)
+    else
+      {:stop, :non_persistence_not_implemented}
     end
   end
 
@@ -369,7 +367,7 @@ defmodule Nest.Agents.Agent do
             "Starting in :model_missing state — pick a replacement model to recover."
         )
 
-        {:ok, build_recovery_state(attrs, model, reason)}
+        {:ok, Callbacks.build_recovery_state(attrs, model, reason)}
     end
   end
 
@@ -422,134 +420,34 @@ defmodule Nest.Agents.Agent do
     :ok
   end
 
-  # Sub-agent: child finished its turn. Merge usage, drop the
-  # pending-child entry, forward the result, broadcast status.
   @impl true
-  def handle_cast({:child_completed, child_name, response, child_total_usage}, state) do
-    SubAgent.handle_child_completed(state, child_name, response, child_total_usage)
+  def handle_cast(msg, state), do: Callbacks.handle_cast(msg, state)
+
+  @impl true
+  def handle_call(msg, from, state), do: Callbacks.handle_call(msg, from, state)
+
+  @impl true
+  def handle_info(msg, state), do: Callbacks.handle_info(msg, state)
+
+  # Private functions
+
+  # Clean up the per-agent tmp directory and parent if empty.
+  # Delegates to `Nest.Agents.Agent.TmpSpace.cleanup/1` so this
+  # module doesn't carry the boilerplate.
+  defp cleanup_tmp(agent_id), do: TmpSpace.cleanup(agent_id)
+
+  defp persistence_enabled? do
+    Application.get_env(:nest, :persistence, %{})[:enabled] != false
   end
 
-  # ChatTurn finished unwinding from a user-initiated stop.
-  # The ChatTurn casts this from `Lifecycle.stop_chat/2`'s
-  # cleanup — it doesn't wait for a reply (the Agent's
-  # `chat_stopped/1` does DB I/O). Delegated to the existing
-  # `ChatTurnHandler.chat_stopped/2` via `Handlers.handle/2`'s
-  # `route_for/1` — but `handle_cast` doesn't go through
-  # `Handlers`, so we delegate directly.
-  @impl true
-  def handle_cast({:chat_stopped, chat_turn_pid}, state) do
-    Handlers.ChatTurnHandler.handle({:chat_stopped, chat_turn_pid}, state)
-  end
-
-  # Defense-in-depth: drop messages while busy. See channel layer.
-  @impl true
-  def handle_cast({:chat, content}, state), do: chat_or_drop(state, content, nil)
-  @impl true
-  def handle_cast({:chat, content, mode}, state), do: chat_or_drop(state, content, mode)
-
-  defp chat_or_drop(state, _content, _mode)
-       when state.chat_state.status in [:streaming, :executing_tools, :model_missing],
-       do: {:noreply, state}
-
-  defp chat_or_drop(state, content, mode), do: ChatPipeline.handle_chat(state, content, mode)
-
-  # Construct the `:model_missing` recovery state. The
-  # implementation lives in `Init.Recovery` so the GenServer
-  # module stays under the credo 500-line cap.
-  defp build_recovery_state(attrs, model, reason) do
-    Init.Recovery.build(attrs, model, reason)
-  end
-
-  # Test-only helpers for asserting on the loop-breaker counter.
-  # Production callers should not need these — the counter is
-  # managed internally by `CompactionHandler.check_consecutive/1`
-  # Introspection handle_calls (`:get_*` etc.) live in
-  # Introspection handle_calls (`:get_*` etc.) live in
-  # `IntrospectionHandler`. The clauses below are the
-  # message-mutation path (`:append_message`,
-  # `:append_compaction_messages`); the catch-all at the
-  # bottom dispatches every other tag to
-  # `IntrospectionHandler.handle/3`.
-
-  # The canonical message-append path. The Agent is the single
-  # writer of `index`: every message — user, assistant, tool
-  # result, system reminder — flows through this handler. This
-  # closes the dual-counter bug class (the old code had the
-  # LLMRunner maintaining its own `state.message_index` counter
-  # in parallel with `next_message_index`; the two drifted
-  # whenever a side-channel message like a budget reminder was
-  # injected, causing the reminder and the next response to
-  # share an index).
-  #
-  # Both single and batch variants delegate to
-  # `Nest.Agents.Agent.MessageAppender` so the loop-breaker
-  # reset and `__append_message__/2` reuse logic lives in one
-  # place. The batch variant exists for the Case 2 notice-pair
-  # injectors (see `Nest.Agents.Agent.NoticePairInjector`).
-  @impl true
-  def handle_call({:append_message, message}, _from, state) do
-    {stamped, state} = MessageAppender.handle_single(state, message)
-    {:reply, stamped, state}
-  end
-
-  @impl true
-  def handle_call({:append_messages, messages}, _from, state) do
-    {stamped, state} = MessageAppender.handle_batch(state, messages)
-    {:reply, stamped, state}
-  end
-
-  # Compactor's suffix is now appended by the trigger
-  # via `__append_message__/2` before the compactor's
-  # chat turn spawns. The LLM's response (the summary)
-  # is appended by the LLM stream handler's
-  # `tool_calls_received/2` (same path as a regular chat
-  # turn). The previous `{:append_compaction_messages, _}`
-  # bulk-append is no longer needed.
-
-  # Sub-agent: a tool worker (running in the chat turn) is
-  # blocked on the tool dispatch and has hit a `clone_agent`
-  # tool call. Spawn a child agent, kick off its chat
-  # turn with the supplied instruction, remember the
-  # worker's pid so we can forward the eventual
-  # `:clone_agent_result`, and reply synchronously with the
-  # child's name so the worker can match its `receive` on
-  # child identity.
-  @impl true
-  def handle_call({:clone_agent_request, task_pid, instruction}, _from, state) do
-    SubAgent.handle_clone_request(state, task_pid, instruction)
-  end
-
-  # User clicked Stop. Synchronously mark the in-flight
-  # ChatTurn as cancelled and tell it to do the actual stop
-  # work (kill worker, ack the channel, send `:chat_stopped`
-  # to ourselves, stop). The `cancelled` flag is set FIRST
-  # so any concurrent `GenServer.call(:get_messages_with_cancelled)`
-  # from the ChatTurn's `handle_info` clauses sees the flag
-  # after this `handle_call` returns. The call to the
-  # ChatTurn uses a 5s timeout to break the rare deadlock
-  # where the ChatTurn is itself blocked on
-  # `safe_iterate/1`'s `GenServer.call(agent, ...)` — the
-  # ChatTurn's `iterate/1` catches the exit and stops cleanly.
-  @impl true
-  def handle_call({:stop_chat, channel_pid}, _from, state) do
-    state = %{state | chat_state: %{state.chat_state | cancelled: true}}
-
-    if chat_turn_pid = state.chat_state.chat_turn_pid do
-      try do
-        GenServer.call(chat_turn_pid, {:stop_chat, channel_pid}, 5_000)
-      catch
-        :exit, _ -> :ok
-      end
-    end
-
-    {:reply, :ok, state}
-  end
-
-  # Catch-all dispatcher for introspection calls.
-  @impl true
-  def handle_call(msg, from, state) do
-    IntrospectionHandler.handle(msg, from, state)
-  end
+  # Public-for-Handlers: message-construction logic. The
+  # canonical impl lives in `Nest.Agents.Agent.ApiLogs` /
+  # `Nest.Agents.Agent.TmpSpace`; the `__` prefix marks these
+  # as internal. See those modules for why.
+  @doc false
+  defdelegate __pending_api_logs__(state, message_index), to: ApiLogs, as: :get
+  defdelegate __clear_pending_api_logs__(state, message_index), to: ApiLogs, as: :clear
+  defdelegate __create_tmp_space__(agent_id), to: TmpSpace, as: :create
 
   @doc false
   # In-process variant of `handle_call({:append_message, _})`
@@ -573,45 +471,7 @@ defmodule Nest.Agents.Agent do
   @spec __append_messages__(t(), [{atom(), map()}]) :: {[term()], t()}
   defdelegate __append_messages__(state, messages), to: MessageAppender, as: :append_in_process
 
-  # Extract the index from a stamped message tuple. Exposed
-  # so in-process callers can read back the stamped index
-  # without re-doing the pattern match.
   @doc false
   @spec stamped_index(term()) :: non_neg_integer()
-  def stamped_index({_role, %{index: index}}), do: index
-
-  # Compaction completion is now handled in-process by
-  # `Nest.Agents.Agent.Compaction.ResultHandler.handle_success/3`
-  # (called from `Handlers.CompactionHandler.handle/2` on
-  # `{:compaction_done, ...}` arrival). The previous
-  # `__compaction_completed__/2` defdelegate (which
-  # forwarded to `Compaction.Lifecycle.apply/2`) is
-  # removed — the result handler owns the full flow
-  # (strip → summary_user → archive → persist →
-  # broadcast → spawn next).
-
-  @impl true
-  def handle_info(msg, state) do
-    Handlers.handle(msg, state)
-  end
-
-  # Private functions
-
-  # Clean up the per-agent tmp directory and parent if empty.
-  # Delegates to `Nest.Agents.Agent.TmpSpace.cleanup/1` so this
-  # module doesn't carry the boilerplate.
-  defp cleanup_tmp(agent_id), do: TmpSpace.cleanup(agent_id)
-
-  defp persistence_enabled? do
-    Application.get_env(:nest, :persistence, %{})[:enabled] != false
-  end
-
-  # Public-for-Handlers: message-construction logic. The
-  # canonical impl lives in `Nest.Agents.Agent.ApiLogs` /
-  # `Nest.Agents.Agent.TmpSpace`; the `__` prefix marks these
-  # as internal. See those modules for why.
-  @doc false
-  defdelegate __pending_api_logs__(state, message_index), to: ApiLogs, as: :get
-  defdelegate __clear_pending_api_logs__(state, message_index), to: ApiLogs, as: :clear
-  defdelegate __create_tmp_space__(agent_id), to: TmpSpace, as: :create
+  defdelegate stamped_index(message), to: Callbacks
 end

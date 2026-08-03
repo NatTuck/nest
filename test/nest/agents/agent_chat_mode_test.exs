@@ -30,7 +30,7 @@ defmodule Nest.Agents.AgentChatModeTest do
 
   describe "chat/3 with mode" do
     test "user message includes the resolved mode in metadata (vocation-less agent defaults to chat)" do
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
       :ok = Agent.chat(pid, "Read foo", "build")
 
@@ -47,7 +47,7 @@ defmodule Nest.Agents.AgentChatModeTest do
     end
 
     test "falls back to default mode when requested mode is unknown" do
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
       :ok = Agent.chat(pid, "Hello", "nonexistent-mode")
 
@@ -63,7 +63,7 @@ defmodule Nest.Agents.AgentChatModeTest do
     end
 
     test "uses agent's current mode when no mode is passed" do
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
       :ok = Agent.chat(pid, "Hello")
 
@@ -96,7 +96,7 @@ defmodule Nest.Agents.AgentChatModeTest do
           }
         })
 
-      {pid, agent_id} =
+      {pid, _agent_id} =
         start_agent(%{
           model: %{name: "qwen3.5-plus"},
           vocation_id: vocation.id
@@ -133,7 +133,7 @@ defmodule Nest.Agents.AgentChatModeTest do
           }
         })
 
-      {pid, agent_id} =
+      {pid, _agent_id} =
         start_agent(%{
           model: %{name: "qwen3.5-plus"},
           vocation_id: vocation.id
@@ -170,7 +170,7 @@ defmodule Nest.Agents.AgentChatModeTest do
           }
         })
 
-      {pid, agent_id} =
+      {pid, _agent_id} =
         start_agent(%{model: %{name: "qwen3.5-plus"}, vocation_id: vocation.id})
 
       # The externally visible signals of the mode are the user
@@ -251,7 +251,7 @@ defmodule Nest.Agents.AgentChatModeTest do
           }
         })
 
-      {pid, agent_id} =
+      {pid, _agent_id} =
         start_agent(%{model: %{name: "qwen3.5-plus"}, vocation_id: vocation.id})
 
       :ok = Agent.chat(pid, "Hello", "nonexistent")
@@ -283,7 +283,7 @@ defmodule Nest.Agents.AgentChatModeTest do
           }
         })
 
-      {pid, agent_id} =
+      {pid, _agent_id} =
         start_agent(%{model: %{name: "qwen3.5-plus"}, vocation_id: vocation.id})
 
       :ok = Agent.chat(pid, "Hi", "nonexistent")

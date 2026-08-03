@@ -17,12 +17,14 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
   import Mimic
   import Eventually
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.ChildRegistry
   alias Nest.Agents.Registry, as: AgentsRegistry
   alias Nest.Agents.Supervisor
   alias Nest.LLM.MockClient
+  alias Nest.Repo
   alias Nest.Vocations
 
   setup :verify_on_exit!
@@ -104,7 +106,7 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
     # spawning child B.
     Mimic.allow(Nest.Agents, self(), child_a_pid)
     Mimic.allow(Nest.LLM.MockClient, self(), child_a_pid)
-    Ecto.Adapters.SQL.Sandbox.allow(Nest.Repo, self(), child_a_pid)
+    Sandbox.allow(Repo, self(), child_a_pid)
 
     # Spawn grandchild B from child A. The grandchild registration
     # goes through ChildRegistry the same way.

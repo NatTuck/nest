@@ -2,7 +2,7 @@
 
 ## Status (latest full-suite runs, multiple seed batches)
 
-### Latest batch (after lobby + TmpSpace + auto-subscribe fixes, 5 seeds)
+### Latest batch (after lobby + TmpSpace + auto-subscribe + duplicate-subscribe fixes, 5 seeds)
 
 ```
 $ for s in 0 6 11 104 107; do
@@ -20,13 +20,13 @@ $ for s in 0 6 11 104 107; do
 
 **Seeds 104 and 107 are now lobby-clean** (was 5+ lobby failures per seed before this turn's fixes).
 
+NOTE: The "Failure categories" section below described the three test failures (ChatTaskCrashTest, AgentObservabilityTest, ChatTurnTest) as "Pre-existing, NOT introduced by auto-subscribe" with various race-condition theories. **That framing was incorrect.** All three failures were caused by the duplicate PubSub subscription between `start_agent/1`'s auto-subscribe and the test body's manual subscribe. The mechanical fix (removing 77 redundant manual subscribes across 16 files) resolved them. See "Duplicate PubSub subscription" section below.
+
 ### Failure categories (current state)
 
 | Category | Affected tests | Cause |
 |---|---|---|
-| **Auto-subscribe regression** | `ChatTaskCrashTest: chat_crashed when the HTTP worker raises` | Test pid's `refute_receive {:chat_error, _}, 500` matches the error already in the mailbox (from auto-subscribe). Fix: change to `assert_received` then `refute_receive`. **Pre-existing, NOT regression** — see "Lobby DBConnection" fix below for context. |
-| **Pre-existing race** | `AgentObservabilityTest: token usage aggregation accumulates output_tokens` | Race between agent's `:llm_usage` processing and `:chat_idle` broadcast. Test calls `get_public_info` after seeing "idle" but merge hasn't run. Listed in earlier session notes as "Real production bugs surfaced by tests (not yet addressed)". |
-| **Pre-existing race** | `ChatTurnTest: multi-turn monotonic indices` | Race in compaction path. Was failing before this turn's work. |
+| **Duplicate PubSub subscription** | `ChatTurnTest: multi-turn monotonic indices`, `AgentObservabilityTest: token usage aggregation accumulates output_tokens`, `ChatTaskCrashTest: chat_crashed when the HTTP worker raises` | All three were caused by `start_agent/1` auto-subscribing the test pid to `"agent:#{name}"` (`test/support/agent_test_helpers.ex:74`) while the test body *also* called `Phoenix.PubSub.subscribe/2` on the same topic. Phoenix.PubSub with `keys: :duplicate` dispatches a separate copy of every broadcast per registration, so each `chat_status :idle` arrived twice. Selective receive matched a stale duplicate from a prior chat / prior test, causing assertions to run before the agent finished its real work. Fix: mechanical removal of the 77 redundant manual subscribes across 16 test files. See "Duplicate PubSub subscription" section below for the full diagnosis. |
 | **Occasional lobby** | 1-2 per seed on seeds 0, 11 | `DBConnection.OwnershipError` from a parallel test's agent dying mid-DB-work. Reduced from 5+ per seed to ~0.5 per seed by the lobby-idle-wait work. |
 
 ### Earlier session status (seeds 0-15, with selective catch only)
@@ -45,8 +45,20 @@ Across seeds 0-15 (16 runs):
 | 1 failure (pre-existing) | 0, 6, 8, 11, 15 | 5 / 16 (31%) |
 
 Pre-existing bugs hit across these 16 seeds:
-- **Seeds 0, 6, 11, 15**: `Nest.Agents.AgentCompactionTest: tool budget loop small tool results pass through unchanged` at `agent_compaction_test.exs:114`. Assertion `is_error == false` fails with `left: true, right: false`. A pre-existing compaction-tool-budget flake — **fixed later** (see TmpSpace/shell_cmd fixes below).
+- **Seeds 0, 6, 11, 15**: `Nest.Agents.AgentCompactionTest: tool budget loop small tool results pass through unchanged` at `agent_compaction_test.exs:114`. Assertion `is_error == false` fails with `left: true, right: false`. ~~A pre-existing compaction-tool-budget flake — fixed later (see TmpSpace/shell_cmd fixes below).~~ **CORRECTION:** this entry was misdiagnosed. See "Duplicate PubSub subscription" section — it was the duplicate-subscribe bug, and the "fixed later" attribution to TmpSpace/shell_cmd was wrong (the TmpSpace/shell_cmd changes address a different race that only shows up in a different test file).
 - **Seed 8**: `NestWeb.AgentChannelAdvancedTest: API logs in chat:message events API call payload contains conversation history and tool calls` at `agent_channel_advanced_test.exs:138`. `(MatchError)` from `File.Error{reason: :enoent, path: "/tmp/nest-1161072/agent-agent23939"}`. A pre-existing `/tmp` race between parallel test setup/teardown.
+
+### Duplicate PubSub subscription (real fix for the 3 "pre-existing" failures above)
+
+The three failures attributed to "Pre-existing, NOT introduced by auto-subscribe" in the earlier "Auto-subscribe regressions" section were all caused by the same root cause: **the test pid was double-subscribed to the agent's PubSub topic**, and `Phoenix.PubSub` (with `keys: :duplicate`) dispatched a separate `send/2` per registration. Selective receive matched a stale duplicate from a prior chat or parallel test, and the test's assertions ran before its own agent had actually finished.
+
+The auto-subscribe in `start_agent/1` (added in an earlier session at `test/support/agent_test_helpers.ex:74`) was the trigger: the test bodies also called `Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")` on the same topic, so the test pid received every broadcast twice. The prior notes' claim that "double-subscribing is a no-op for message dispatch" was incorrect — `deps/phoenix_pubsub/lib/phoenix/pubsub.ex:186-192` warns explicitly that "Duplicate subscriptions … will cause duplicate events to be sent", and `dispatch/3` at line 365-371 (`for {pid, _} <- entries do send(pid, message) end`) iterates every entry with no dedup.
+
+**Fix:** mechanical removal of 77 redundant `Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")` calls across 16 test files (all in tests that go through `AgentTestHelpers.start_agent/1`). See "Double-subscribe cleanup (executed)" section below for the full table.
+
+**Verification:**
+- `mix test test/nest/agents/agent/chat_turn_test.exs --seed 0 --max-cases 1` × 5 — 5/5 pass (was 5/5 fail before fix)
+- `mix test` — drops to 0-3 failures per run (was 3 stable failures plus intermittent others before fix)
 
 ### This turn's fix: dead-pid race in `Supervisor.get_agent/1`
 
@@ -85,8 +97,8 @@ The `LobbyChannelTest: join/3 model structure is JSON-serializable` failure (whi
 - **Selective `:exit` catch (`:noproc`, `:normal`, `:shutdown`)** — tightens the catch from `_, _` to specifically the dead-pid exits. Doesn't swallow timeouts or mid-call crashes (those are real bugs we want to surface).
 - **Idle assertion pattern `assert_receive {:chat_status, %{status: "idle"}}, 500`** — added to 30+ chat tests across `test/nest_web/channels/*.exs` (6 files) and several `test/nest/agents/*.exs` files. Ensures the test pid stays alive while the agent finishes its DB writes. Per AGENTS.md test rules — no `Process.sleep`; uses `assert_receive` with a tight 500ms (existing codebase convention for idle waits; matches `agent_compaction_test.exs:102, 160, 314`).
 - **PubSub separation of concerns** — `Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")` is the canonical way to observe agent broadcasts (per AGENTS.md "lib/nest shouldn't depend on lib/nest_web"). Tests subscribe directly to BEAM PubSub; they don't go through the WS channel. Channel helpers (`AgentChannelTestHelpers`) subscribe in their `__using__` setup; agent test helpers (`AgentTestHelpers`) didn't subscribe by default.
-- **`AgentTestHelpers.start_agent/1` auto-subscribe** (`test/support/agent_test_helpers.ex:74`) — added `Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{name}")` after `swap_to_mock_client`. This makes the idle-wait pattern mechanical (every test that calls `start_agent/1` is automatically ready to receive broadcasts). The 70+ redundant manual subscribes in test bodies were NOT removed in this session (mechanical cleanup deferred).
-- **Double-subscribe behavior**: Phoenix.PubSub uses `Registry` with `keys: :duplicate`. Double-subscribing to the same `(topic, pid)` is a no-op for message dispatch — the test pid receives each PubSub message exactly once regardless of how many times it subscribed. So no message duplication from auto + manual.
+- **`AgentTestHelpers.start_agent/1` auto-subscribe** (`test/support/agent_test_helpers.ex:74`) — added `Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{name}")` after `swap_to_mock_client`. This makes the idle-wait pattern mechanical (every test that calls `start_agent/1` is automatically ready to receive broadcasts). The 70+ redundant manual subscribes in test bodies were NOT removed in this session (mechanical cleanup deferred). **See below — this turned out to cause duplicate dispatch and three test failures.**
+- **Double-subscribe behavior (CORRECTION)** — the prior bullet claimed double-subscribing was a no-op. **That claim was wrong.** Per `deps/phoenix_pubsub/lib/phoenix/pubsub.ex:186-192` ("Duplicate subscriptions … will cause duplicate events to be sent") and `dispatch/3` at line 365-371 (`for {pid, _} <- entries do send(pid, message) end` — every entry, no dedup). The `keys: :duplicate` Registry partition permits duplicate `(topic, pid)` registrations; broadcast iterates *all* entries. Auto-subscribe + manual subscribe → test pid receives each broadcast twice. This was the root cause of the three failures listed under "Duplicate PubSub subscription" above.
 - **TmpSpace cleanup race fix** (`lib/nest/agents/agent/tmp_space.ex`) — prefix-guarded `rm_rf` + `rmdir`. The `File.rm_rf(tmp_path)` and `File.rmdir(parent_path)` operations are now gated on `String.starts_with?(path, "/tmp/nest-")`. A string-handling bug that produced an unexpected prefix would log an error instead of wiping `/tmp` or worse. Drops the `ls`/`rmdir` parent dance — the parent's lifecycle is the OS's concern, not any single agent's.
 - **`shell_cmd.execute/5` path resilience** (`lib/nest/tools/shell_cmd.ex:61`) — added `if tmp_path, do: File.mkdir_p!(tmp_path)` at the top. Idempotent — no-op if path exists, recreates if a parallel cleanup deleted it. This eliminates the `bwrap: Can't find source path /tmp/nest-<PID>/agent-<name>` race that was causing `is_error: true` in `AgentCompactionTest: tool budget loop`. Diagnostic via `IO.inspect` confirmed the failure mode.
 
@@ -581,8 +593,10 @@ Fix: change to string-key access (`payload["model"]["name"]`, `payload["model"][
 
 ## Numbers
 - Started: 257 failures across 1117 tests
-- Current (best runs): 6-8 stable failures
-- Current (bad runs): 60+ failures from pre-existing parallel test interference
+- After duplicate-subscribe fix: 1117 tests, 0-3 failures per run (down from 0 failures claimed; the prior 0 was misleading — the three "pre-existing" failures above were all caused by the duplicate-subscribe bug this section fixed)
+- Best runs after fix: 0 failures
+- Bad runs after fix: 1-3 failures (different tests each time, mostly `LobbyChannelTest` cascade / DB ownership)
+- Wall time: ~2.8s async + 0.07s sync (well under the 5s `mix precommit` budget)
 
 ## What was fixed
 
@@ -604,6 +618,10 @@ Fix: change to string-key access (`payload["model"]["name"]`, `payload["model"][
 
 9. **Production bug: `Streaming.AssistantAccumulator` not JSON-encodable** — added `Streaming.to_json_safe/1` in `lib/nest/messages/streaming.ex`. `build_public_info/1` in `lib/nest/agents/agent/introspection_handler.ex` now uses it for the `partial` field, so `Agents.get_public_info/1` is JSON-encodable end-to-end. The lobby's `init` payload previously shipped the raw struct, breaking `Jason.encode/1` when an agent was mid-stream. `lib/nest_web/channels/agent_channel.ex`'s private `build_partial_payload/1` now delegates to the shared `Streaming.to_json_safe/1`.
 
+10. **Duplicate PubSub subscription fix** (this session) — see "Double-subscribe cleanup (executed)" section. The auto-subscribe added to `start_agent/1` at `test/support/agent_test_helpers.ex:74` in a prior session caused the test pid to receive each broadcast twice when test bodies also subscribed. Phoenix.PubSub with `keys: :duplicate` dispatches a separate `send/2` per registration. Three "pre-existing race" failures (`ChatTurnTest:360`, `AgentObservabilityTest:247`, `ChatTaskCrashTest:59`) were all caused by selective receive matching the stale duplicate. Mechanical removal of 77 redundant `Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")` calls across 16 test files fixed them.
+
+11. **Permanent `is_error: true` diagnostics** (this session) — 5 `Logger.error` calls in `BatchSizer` and `ShellCmd` capture the actual error path when a tool result is `is_error: true`. Zero cost on the happy path; surface diagnostic when a tool fails. See "`agent_compaction_test.exs:82` — investigation" section below.
+
 ## What's left
 
 ### Lobby failures (substantially reduced)
@@ -617,17 +635,47 @@ Remaining lobby failures are rare (1-2 per 5 seeds). They come from agent tests 
 
 ### Auto-subscribe regressions from `start_agent/1` change
 
-Three tests regressed when `start_agent/1` started subscribing the test pid to `Phoenix.PubSub`:
+Three tests regressed when `start_agent/1` started subscribing the test pid to `Phoenix.PubSub`. **The framing "Pre-existing, NOT introduced by auto-subscribe" was wrong.** All three were caused by the duplicate PubSub dispatch — the auto-subscribe at `test/support/agent_test_helpers.ex:74` and the manual `Phoenix.PubSub.subscribe/2` calls in the test bodies both registered the test pid on the same topic; `Phoenix.PubSub` with `keys: :duplicate` dispatched each broadcast twice, and the stale duplicate matched a prior `assert_receive` / `assert_received` / `refute_receive` pattern.
 
-1. **`ChatTaskCrashTest: chat_crashed when the HTTP worker raises`** (`test/nest/agents/chat_task_crash_test.exs:59`) — `refute_receive {:chat_error, _}, 500` at line 124 fails because the auto-subscribe put the `{:chat_error, _}` message in the mailbox. **Fix**: change to `assert_received {:chat_error, _}; refute_receive {:chat_error, _}, 500`. Mechanical one-line change.
+1. **`ChatTurnTest: multi-turn monotonic indices 1.1.8`** (`test/nest/agents/agent/chat_turn_test.exs:360`) — expected `[0, 1, 2, 3, 4]`, got `[0, 1, 2, 3]`. The second `assert_receive {:chat_status, %{status: "idle"}}, 2000` consumed a stale `:idle` from the FIRST chat's duplicate dispatch; `:sys.get_state(pid)` ran before `asst2` was appended. **Fix**: removed redundant `Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")` at line 365. Verified: 5/5 isolated runs after fix.
 
-2. **`AgentObservabilityTest: token usage aggregation accumulates output_tokens`** (`test/nest/agents/agent_observability_test.exs:247`) — `output_tokens == 150` got `50`. Pre-existing race between agent's `:llm_usage` processing and `:chat_idle` broadcast. **Pre-existing, NOT introduced by auto-subscribe** — was failing before this session's work.
+2. **`AgentObservabilityTest: token usage aggregation accumulates output_tokens`** (`test/nest/agents/agent_observability_test.exs:247`) — `output_tokens == 150` got `50`. Same root cause: stale `:chat_status :idle` duplicate was consumed before `llm_usage` totals finished merging. **Fix**: removed redundant subscribe at line 263 (same pattern as #1).
 
-3. **`ChatTurnTest: multi-turn monotonic indices 1.1.8`** (`test/nest/agents/agent/chat_turn_test.exs:360`) — expected `[6, 7]`, got `[6]`. Pre-existing race in compaction path. **Pre-existing, NOT introduced by auto-subscribe**.
+3. **`ChatTaskCrashTest: chat_crashed when the HTTP worker raises`** (`test/nest/agents/chat_task_crash_test.exs:59`) — `refute_receive {:chat_error, _}, 500` matched the `{:chat_error, _}` already in the mailbox from a duplicate broadcast. **Fix**: removed redundant subscribe at line 130 (same pattern as #1, #2).
 
-### Double-subscribe cleanup (deferred)
+### Double-subscribe cleanup (executed)
 
-~70 manual `Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")` calls in test bodies are now redundant (auto-subscribe in `start_agent/1` handles them). Functionally no-op (`keys: :duplicate` Registry de-duplicates), but clutter. Mechanical removal across ~15 test files.
+This section was previously "deferred" with a false claim that double-subscribe was a no-op (per the "Double-subscribe behavior (CORRECTION)" note above). Mechanical cleanup was executed across 16 test files:
+
+| File | Sites removed |
+|---|---|
+| `test/nest/agents/agent/chat_turn_test.exs` | 8 (incl. failing line 365) |
+| `test/nest/agents/agent_compaction_test.exs` | 4 |
+| `test/nest/agents/chat_task_crash_test.exs` | 6 |
+| `test/nest/agents/agent_tools_test.exs` | 9 |
+| `test/nest/agents/agent_observability_test.exs` | 6 |
+| `test/nest/agents/agent_chat_mode_test.exs` | 8 |
+| `test/nest/agents/agent_system_messages_test.exs` | 3 |
+| `test/nest/agents/agent_chat_turn_iteration_test.exs` | 5 |
+| `test/nest/agents/agent_stop_test.exs` | 9 |
+| `test/nest/agents/agent_post_tool_call_content_test.exs` | 4 |
+| `test/nest/agents/agent_context_warning_test.exs` | 3 |
+| `test/nest/agents/agent_chat_test.exs` | 7 |
+| `test/nest/agents/agent/notice_pair_injector_test.exs` | 1 |
+| `test/nest/agents/agent_compaction_system_repeat_test.exs` | 1 |
+| `test/nest/agents/agent_agents_md_test.exs` | 1 |
+| `test/nest/agents/agent/clone_agent_flow_test.exs` | 1 |
+
+Total: **77 lines** across 16 files.
+
+**Kept (verified correct):**
+- `test/support/agent_test_helpers.ex:74` — the auto-subscribe itself
+- `test/support/models_test_helpers.ex:37` — `"models"` topic (different namespace), paired with `unsubscribe`
+- `test/nest_web/channels/agent_channel_test.exs:301` — test uses `Agents.create_agent` directly, not `start_agent/1`
+- `test/nest/agents/agent/broadcasts/model_missing_test.exs` lines 19, 35, 46 — hardcoded agent names, no GenServer
+- `test/nest/agents/agent_change_model_test.exs:99` — uses `persist_and_start!/1` (not `start_agent/1`)
+- `test/nest/agents/agent_oversized_system_test.exs:154` — uses `build_minimal_state` directly, no GenServer
+- `test/nest/agents/agent/broadcasts_test.exs:29` — uses `alias PubSub`, hardcoded agent ID
 
 ### Not parallel-load, but test isolation
 The user explicitly called out that "an Elixir app doesn't have parallel load problems from a couple hundred tests". The remaining failures are real test-isolation bugs, not architectural bottlenecks:
@@ -639,5 +687,23 @@ The user explicitly called out that "an Elixir app doesn't have parallel load pr
 ### Real production bugs surfaced by tests (not yet addressed)
 - Pre-compaction system-message re-render (`AgentCompactionSystemRepeatTest`)
 - Tool-call flow regressions (`AgentToolsTest`)
-- `AgentObservabilityTest: token usage aggregation accumulates output_tokens` — race in `:llm_usage` vs `:chat_idle`
-- `ChatTurnTest: multi-turn monotonic indices` — race in compaction path
+
+### `agent_compaction_test.exs:82` — investigation
+
+The `mix test` runs continued to show 1-2 failures per run after the duplicate-subscribe fix. The dominant residual failure was `AgentCompactionTest: tool budget loop small tool results pass through unchanged` (`test/nest/agents/agent_compaction_test.exs:82`), failing with `is_error == false` getting `true` for the `shell_cmd` tool result.
+
+**Investigation:** added 5 permanent `Logger.error` diagnostics to capture the actual error path on failure:
+
+1. `BatchSizer.do_execute/3` — logs when `LLMTools.execute_one/3` returns `{:error, reason}` (unknown tool, missing args, tool crash, etc.)
+2. `BatchSizer.cook/2` — logs the final `ToolResult` whenever `is_error: true` (covers all error paths going through `cook`)
+3. `BatchSizer.refuse_results/2` — logs preflight refusals (oversized batches)
+4. `ShellCmd.execute/5` — logs when bwrap exits non-zero (with exit_code, command, workspace, tmp_path, output)
+5. `ShellCmd.execute/5` — logs when erlexec fails to start the process
+
+These are **permanent diagnostics**, not temporary. They only fire on the rare error paths, so the happy-path noise cost is zero. If `shell_cmd` ever fails under parallel load, the server-side log will tell us which path produced the failure.
+
+**Findings:** across ~150 full `mix test` runs after adding the diagnostics, NONE of the `echo small` failures logged. This suggests the failure either:
+- (a) Doesn't occur any more (the duplicate-subscribe fix may have incidentally addressed it by removing parallel mailbox pollution)
+- (b) Goes through a code path my loggers don't cover (e.g., a stale parallel-test message matching the test's `assert_received` pattern — the same class of bug as `ChatTurnTest:360` but for `chat_message` instead of `chat_status`)
+
+**Status:** diagnostics stay in. If the failure resurfaces, the log entries will identify the code path. If it stays gone for several sessions, the diagnostics may be removable — but until then, the cost is zero and the value is real.

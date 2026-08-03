@@ -8,8 +8,10 @@ defmodule NestWeb.AgentChannelTest do
 
   import Mimic
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias Nest.Agents
   alias Nest.Agents.AgentTestHelpers
+  alias Nest.Repo
 
   setup :verify_on_exit!
 
@@ -291,7 +293,7 @@ defmodule NestWeb.AgentChannelTest do
             )
 
           {:ok, agent_pid} = Nest.Agents.Supervisor.get_agent(name)
-          Ecto.Adapters.SQL.Sandbox.allow(Nest.Repo, self(), agent_pid)
+          Sandbox.allow(Repo, self(), agent_pid)
 
           {:ok, _, socket} =
             subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{name}")
@@ -328,7 +330,7 @@ defmodule NestWeb.AgentChannelTest do
         )
 
       {:ok, agent_pid} = Nest.Agents.Supervisor.get_agent(name)
-      Ecto.Adapters.SQL.Sandbox.allow(Nest.Repo, self(), agent_pid)
+      Sandbox.allow(Repo, self(), agent_pid)
 
       {:ok, _, socket} =
         subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{name}")

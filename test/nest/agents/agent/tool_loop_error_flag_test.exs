@@ -18,6 +18,8 @@ defmodule Nest.Agents.Agent.ToolLoopErrorFlagTest do
   """
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias Nest.Agents.Agent.ToolLoop
   alias Nest.LLM.Tool
   alias Nest.Messages.ToolCall
@@ -45,15 +47,21 @@ defmodule Nest.Agents.Agent.ToolLoopErrorFlagTest do
           }
         ])
 
-      [%ToolResult{} = result] =
-        ToolLoop.execute(ctx, %{}, [
-          %ToolCall{id: "c1", name: "nope", arguments: %{}}
-        ])
+      log =
+        capture_log(fn ->
+          [%ToolResult{} = result] =
+            ToolLoop.execute(ctx, %{}, [
+              %ToolCall{id: "c1", name: "nope", arguments: %{}}
+            ])
 
-      assert result.is_error == true
-      assert result.tool_call_id == "c1"
-      assert result.name == "nope"
-      assert result.content =~ "Unknown tool: nope"
+          assert result.is_error == true
+          assert result.tool_call_id == "c1"
+          assert result.name == "nope"
+          assert result.content =~ "Unknown tool: nope"
+        end)
+
+      assert log =~ "BatchSizer produced is_error=true tool result"
+      assert log =~ "tool=nope"
     end
   end
 
@@ -62,15 +70,21 @@ defmodule Nest.Agents.Agent.ToolLoopErrorFlagTest do
       tool = Tools.get_function("write_file", "/tmp")
       ctx = make_ctx([tool])
 
-      [%ToolResult{} = result] =
-        ToolLoop.execute(ctx, %{}, [
-          %ToolCall{id: "c1", name: "write_file", arguments: %{}}
-        ])
+      log =
+        capture_log(fn ->
+          [%ToolResult{} = result] =
+            ToolLoop.execute(ctx, %{}, [
+              %ToolCall{id: "c1", name: "write_file", arguments: %{}}
+            ])
 
-      assert result.is_error == true
-      assert result.tool_call_id == "c1"
-      assert result.name == "write_file"
-      assert result.content =~ "Missing required arguments"
+          assert result.is_error == true
+          assert result.tool_call_id == "c1"
+          assert result.name == "write_file"
+          assert result.content =~ "Missing required arguments"
+        end)
+
+      assert log =~ "BatchSizer produced is_error=true tool result"
+      assert log =~ "tool=write_file"
     end
   end
 
@@ -104,13 +118,19 @@ defmodule Nest.Agents.Agent.ToolLoopErrorFlagTest do
 
       ctx = make_ctx([tool])
 
-      [%ToolResult{} = result] =
-        ToolLoop.execute(ctx, %{}, [
-          %ToolCall{id: "c1", name: "crashy", arguments: %{}}
-        ])
+      log =
+        capture_log(fn ->
+          [%ToolResult{} = result] =
+            ToolLoop.execute(ctx, %{}, [
+              %ToolCall{id: "c1", name: "crashy", arguments: %{}}
+            ])
 
-      assert result.is_error == true
-      assert result.content =~ "intentional failure"
+          assert result.is_error == true
+          assert result.content =~ "intentional failure"
+        end)
+
+      assert log =~ "BatchSizer produced is_error=true tool result"
+      assert log =~ "tool=crashy"
     end
   end
 end

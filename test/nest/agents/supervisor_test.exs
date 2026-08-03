@@ -25,8 +25,9 @@ defmodule Nest.Agents.SupervisorTest do
   import Eventually
 
   alias Nest.Agents
-  alias Nest.Agents.{Registry, Supervisor}
   alias Nest.Agents.AgentTestHelpers
+  alias Nest.Agents.Registry
+  alias Nest.Agents.Supervisor
 
   setup do
     # Note: we deliberately do NOT call `Supervisor.stop_agent/1`

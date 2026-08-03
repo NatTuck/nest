@@ -129,7 +129,7 @@ defmodule Nest.Agents.AgentAgentsMdTest do
         "# Secret agent directive\nFROM_COMPACTION_FIXTURE\n#{marker}\n"
       )
 
-      {pid, agent_id} =
+      {pid, _agent_id} =
         start_agent(%{
           model: %{name: "qwen3.5-plus"},
           workspace_path: workspace_path,

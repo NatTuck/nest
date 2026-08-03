@@ -32,7 +32,7 @@ defmodule Nest.Agents.AgentChatTest do
 
   describe "chat/2" do
     test "broadcasts user message and LLM response via PubSub" do
-      {pid, agent_id} = start_agent()
+      {pid, _agent_id} = start_agent()
 
       :ok = Agent.chat(pid, "Hello")
 
@@ -44,7 +44,7 @@ defmodule Nest.Agents.AgentChatTest do
     end
 
     test "broadcasts status changes via PubSub" do
-      {pid, agent_id} = start_agent()
+      {pid, _agent_id} = start_agent()
 
       :ok = Agent.chat(pid, "Hello")
 
@@ -58,7 +58,7 @@ defmodule Nest.Agents.AgentChatTest do
     test "handles LLM error gracefully" do
       MockClient.set_error("Connection failed")
 
-      {pid, agent_id} = start_agent()
+      {pid, _agent_id} = start_agent()
 
       log =
         capture_log(fn ->
@@ -80,7 +80,7 @@ defmodule Nest.Agents.AgentChatTest do
     test "LLM error path returns a RunState (Task body destructures successfully)" do
       MockClient.set_error("Connection failed")
 
-      {pid, agent_id} = start_agent()
+      {pid, _agent_id} = start_agent()
 
       log =
         capture_log(fn ->
@@ -108,7 +108,7 @@ defmodule Nest.Agents.AgentChatTest do
       # instead of an orphaned assistant error with no api_logs.
       MockClient.set_error("Connection failed")
 
-      {pid, agent_id} = start_agent()
+      {pid, _agent_id} = start_agent()
 
       capture_log(fn ->
         :ok = Agent.chat(pid, "Hello")
@@ -127,7 +127,7 @@ defmodule Nest.Agents.AgentChatTest do
     end
 
     test "accumulates delta content from streaming LLM response" do
-      {pid, agent_id} = start_agent()
+      {pid, _agent_id} = start_agent()
 
       :ok = Agent.chat(pid, "Hello")
 
@@ -152,7 +152,7 @@ defmodule Nest.Agents.AgentChatTest do
 
   describe "delta handling" do
     test "accumulates deltas with correct character counts" do
-      {pid, agent_id} = start_agent()
+      {pid, _agent_id} = start_agent()
 
       :ok = Agent.chat(pid, "Hello")
 

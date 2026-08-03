@@ -204,11 +204,6 @@ defmodule NestWeb.LobbyChannel do
 
   @impl true
   def handle_in("create_agent", %{"model" => model_params} = payload, socket) do
-    # Extract model name and provider from params. The frontend
-    # sends both from the lobby's model catalog; we forward the
-    # provider to `Agents.create_agent` so auto-discovered models
-    # (which aren't in the static DotConfig) still get a provider
-    # on the wire to the ChatPage header.
     model_name = model_params["name"] || model_params[:name]
     model_provider = model_params["provider"] || model_params[:provider]
 
@@ -228,26 +223,12 @@ defmodule NestWeb.LobbyChannel do
     # `name:` in the payload (the lobby lets users rename
     # before submitting); when missing, `Agents.create_agent/2`
     # falls back to the supervisor's name generator.
-    agent_name = payload["name"]
+    opts = build_create_opts(payload, vocation_id, workspace_path)
+    model = %{name: model_name, provider: model_provider}
 
-    # Build opts for agent creation
-    opts =
-      []
-      |> maybe_add_opt(:name, agent_name)
-      |> maybe_add_opt(:vocation_id, vocation_id)
-      |> maybe_add_opt(:workspace_path, workspace_path)
-
-    # Create the agent
-    case Agents.create_agent(%{name: model_name, provider: model_provider}, opts) do
+    case Agents.create_agent(model, opts) do
       {:ok, name} ->
-        # Broadcast to all clients with full agent info
-        broadcast(socket, "agent:created", %{
-          "name" => name,
-          "model" => %{"name" => model_name, "provider" => model_provider},
-          "vocation_id" => vocation_id,
-          "workspace_path" => workspace_path
-        })
-
+        broadcast_agent_created(socket, name, model, vocation_id, workspace_path)
         {:reply, {:ok, %{"name" => name}}, socket}
 
       {:error, reason} ->
@@ -285,6 +266,24 @@ defmodule NestWeb.LobbyChannel do
 
   def handle_in("change_model", _payload, socket) do
     {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
+  end
+
+  # The frontend may send keys as strings or atoms depending on
+  # the codec; normalize to atoms for `Agents.create_agent/2`.
+  defp build_create_opts(payload, vocation_id, workspace_path) do
+    []
+    |> maybe_add_opt(:name, payload["name"])
+    |> maybe_add_opt(:vocation_id, vocation_id)
+    |> maybe_add_opt(:workspace_path, workspace_path)
+  end
+
+  defp broadcast_agent_created(socket, name, model, vocation_id, workspace_path) do
+    broadcast(socket, "agent:created", %{
+      "name" => name,
+      "model" => %{"name" => model.name, "provider" => model.provider},
+      "vocation_id" => vocation_id,
+      "workspace_path" => workspace_path
+    })
   end
 
   # Build the atom-keyed model map from the wire-format

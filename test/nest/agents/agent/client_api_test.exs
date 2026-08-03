@@ -42,7 +42,9 @@ defmodule Nest.Agents.Agent.ClientAPITest do
 
   describe "get_public_info/1" do
     test "returns the agent's full public info map" do
-      {pid, name} = AgentTestHelpers.start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, name} =
+        AgentTestHelpers.start_agent(%{model: %{name: "qwen3.5-plus", provider: "model-studio"}})
+
       _ref = Process.monitor(pid)
 
       info = ClientAPI.get_public_info(pid)
@@ -54,7 +56,8 @@ defmodule Nest.Agents.Agent.ClientAPITest do
 
   describe "get_messages/1" do
     test "returns the system prompt only for a fresh agent" do
-      {pid, _name} = AgentTestHelpers.start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _name} =
+        AgentTestHelpers.start_agent(%{model: %{name: "qwen3.5-plus", provider: "model-studio"}})
 
       messages = ClientAPI.get_messages(pid)
       # A fresh agent hydrates the immutable initial system
@@ -68,7 +71,8 @@ defmodule Nest.Agents.Agent.ClientAPITest do
 
   describe "get_history/1" do
     test "returns an empty list when no compaction has run" do
-      {pid, _name} = AgentTestHelpers.start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _name} =
+        AgentTestHelpers.start_agent(%{model: %{name: "qwen3.5-plus", provider: "model-studio"}})
 
       assert ClientAPI.get_history(pid) == []
     end
@@ -76,7 +80,8 @@ defmodule Nest.Agents.Agent.ClientAPITest do
 
   describe "get_total_usage/1" do
     test "returns the zero-totals placeholder before any LLM call" do
-      {pid, _name} = AgentTestHelpers.start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _name} =
+        AgentTestHelpers.start_agent(%{model: %{name: "qwen3.5-plus", provider: "model-studio"}})
 
       totals = ClientAPI.get_total_usage(pid)
       assert is_map(totals)
@@ -87,7 +92,8 @@ defmodule Nest.Agents.Agent.ClientAPITest do
 
   describe "get_chat_turn_pid/1" do
     test "returns nil when the agent is idle" do
-      {pid, _name} = AgentTestHelpers.start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _name} =
+        AgentTestHelpers.start_agent(%{model: %{name: "qwen3.5-plus", provider: "model-studio"}})
 
       assert ClientAPI.get_chat_turn_pid(pid) == nil
     end
@@ -95,7 +101,9 @@ defmodule Nest.Agents.Agent.ClientAPITest do
 
   describe "terminate/1" do
     test "stops the agent process" do
-      {pid, _name} = AgentTestHelpers.start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _name} =
+        AgentTestHelpers.start_agent(%{model: %{name: "qwen3.5-plus", provider: "model-studio"}})
+
       ref = Process.monitor(pid)
       assert Process.alive?(pid)
 

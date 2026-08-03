@@ -22,7 +22,7 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
   alias Nest.LLM.MockClient
   alias Nest.Vocations
 
-  import Nest.Agents.AgentTestHelpers, only: [start_agent: 1]
+  import Nest.Agents.AgentTestHelpers, only: [start_agent: 1, vocation_id_for_test: 0]
 
   setup do
     Process.put(:nest_test_agent_pid, self())
@@ -212,7 +212,7 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
       # `messages[0]` so the compaction can still proceed
       # (preserves the pre-fix behavior for tests that relied
       # on it).
-      vid = Nest.Agents.AgentTestHelpers.vocation_id_for_test()
+      vid = vocation_id_for_test()
       {pid, _agent_id} = start_agent(%{vocation_id: vid, vocation: nil})
 
       state = agent_state(pid)

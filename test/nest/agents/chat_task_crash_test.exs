@@ -126,7 +126,7 @@ defmodule Nest.Agents.ChatTaskCrashTest do
     end
 
     test "the agent GenServer stays alive after the HTTP worker crashes", %{} do
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
       Mimic.stub(MockClient, :run, fn _request, _opts ->
         raise "boom"
@@ -156,7 +156,7 @@ defmodule Nest.Agents.ChatTaskCrashTest do
       # multi-frame stacktrace snippet in the user-facing
       # error message so the user can see WHERE the crash
       # happened without grepping the server log.
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
       Mimic.stub(MockClient, :run, fn _request, _opts ->
         # Raise from a known source so the stacktrace has a
@@ -184,7 +184,7 @@ defmodule Nest.Agents.ChatTaskCrashTest do
   describe "chat_crashed with partial content" do
     test "partial streaming content is saved as a normal assistant message before the error is broadcast",
          %{} do
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
       # Simulate the crash happening *after* some content was
       # streamed. The HTTP worker's streaming callback

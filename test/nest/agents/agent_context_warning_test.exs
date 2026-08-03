@@ -93,7 +93,7 @@ defmodule Nest.Agents.AgentContextWarningTest do
 
   @tag timeout: 30_000
   test "fires :p25 once across multiple user messages past 25%" do
-    {pid, agent_id} = AgentTestHelpers.start_agent(%{})
+    {pid, _agent_id} = AgentTestHelpers.start_agent(%{})
 
     seed_past_25_percent(pid)
 
@@ -115,7 +115,7 @@ defmodule Nest.Agents.AgentContextWarningTest do
 
   @tag timeout: 30_000
   test "the Agent's crossed_thresholds persists the fired atom across ChatTurns" do
-    {pid, agent_id} = AgentTestHelpers.start_agent(%{})
+    {pid, _agent_id} = AgentTestHelpers.start_agent(%{})
 
     seed_past_25_percent(pid)
 
@@ -130,7 +130,7 @@ defmodule Nest.Agents.AgentContextWarningTest do
   end
 
   test "compaction_done clears crossed_thresholds so the next ChatTurn can re-fire" do
-    {pid, agent_id} = AgentTestHelpers.start_agent(%{})
+    {pid, _agent_id} = AgentTestHelpers.start_agent(%{})
 
     :sys.replace_state(pid, fn state ->
       # Seeded messages are short enough that any post-compaction

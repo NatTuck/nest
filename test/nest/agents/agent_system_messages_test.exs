@@ -39,7 +39,11 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
 
   describe "initial system message" do
     test "the agent's messages list always starts with a {:system, _} message" do
-      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
       state = :sys.get_state(pid)
       first = hd(state.chat_state.messages)
@@ -78,7 +82,11 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
 
       MockClient.set_response("All done, used tools 4 times")
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
       capture_log(fn ->
         :ok = Agent.chat(pid, "Loop until done")
@@ -132,7 +140,11 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
 
       MockClient.set_response("All done, used tools 4 times")
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
       capture_log(fn ->
         :ok = Agent.chat(pid, "Loop until done")
@@ -191,7 +203,11 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
 
       MockClient.set_response("All done")
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
       # Force the context threshold to cross by seeding a
       # large user body and a small context_limit. The Case 1

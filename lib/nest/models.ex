@@ -272,43 +272,56 @@ defmodule Nest.Models do
   # (never raises). The merged view is computed at read time
   # in `build_model_list/1`.
   defp do_query_auto_providers(static_config) do
-    auto_providers =
-      (static_config.providers || %{})
-      |> Map.values()
-      |> Enum.filter(& &1.auto_models)
+    static_config
+    |> auto_providers()
+    |> Enum.map(&run_provider_query/1)
+    |> Enum.map(&Task.await(&1, :infinity))
+    |> merge_query_results()
+  end
 
-    results =
-      auto_providers
-      |> Enum.map(fn provider ->
-        Task.async(fn ->
-          try do
-            query_provider(provider)
-          rescue
-            e -> {:error, provider.name, e}
-          catch
-            kind, reason -> {:error, provider.name, {kind, reason}}
-          end
-        end)
-      end)
-      |> Enum.map(&Task.await(&1, :infinity))
+  defp auto_providers(static_config) do
+    static_config.providers
+    |> Kernel.||(%{})
+    |> Map.values()
+    |> Enum.filter(& &1.auto_models)
+  end
 
+  defp run_provider_query(provider) do
+    Task.async(fn ->
+      try do
+        query_provider(provider)
+      rescue
+        e -> {:error, provider.name, e}
+      catch
+        kind, reason -> {:error, provider.name, {kind, reason}}
+      end
+    end)
+  end
+
+  defp merge_query_results(results) do
     {auto_models, limits_by_provider, failures} =
-      Enum.reduce(results, {%{}, %{}, []}, fn
-        {models, limits}, {am, al, errs} ->
-          {Map.merge(am, models), Map.merge(al, limits), errs}
+      Enum.reduce(results, {%{}, %{}, []}, &merge_one_result/2)
 
-        {:error, name, reason}, {am, al, errs} ->
-          {am, al, [{name, reason} | errs]}
-      end)
-
-    if failures != [] do
-      Logger.warning(
-        "Models scan: #{length(failures)} provider(s) failed: " <>
-          Enum.map_join(failures, ", ", fn {name, _} -> name end)
-      )
-    end
+    log_provider_failures(failures)
 
     %{auto_models: auto_models, limits_by_provider: limits_by_provider}
+  end
+
+  defp merge_one_result({models, limits}, {am, al, errs}) do
+    {Map.merge(am, models), Map.merge(al, limits), errs}
+  end
+
+  defp merge_one_result({:error, name, reason}, {am, al, errs}) do
+    {am, al, [{name, reason} | errs]}
+  end
+
+  defp log_provider_failures([]), do: :ok
+
+  defp log_provider_failures(failures) do
+    Logger.warning(
+      "Models scan: #{length(failures)} provider(s) failed: " <>
+        Enum.map_join(failures, ", ", fn {name, _} -> name end)
+    )
   end
 
   # Query a single provider. The two HTTP calls (names + limits)

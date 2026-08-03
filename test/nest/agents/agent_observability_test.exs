@@ -30,7 +30,11 @@ defmodule Nest.Agents.AgentObservabilityTest do
 
   describe "API logs" do
     test "every message in simple conversation has API log" do
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
       :ok = Agent.chat(pid, "Hello")
 
@@ -64,7 +68,11 @@ defmodule Nest.Agents.AgentObservabilityTest do
 
       MockClient.set_response("Command executed successfully")
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
       :ok = Agent.chat(pid, "Run a command")
 
@@ -112,7 +120,11 @@ defmodule Nest.Agents.AgentObservabilityTest do
 
       MockClient.set_response("Done")
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
       :ok = Agent.chat(pid, "List files")
 
@@ -180,7 +192,11 @@ defmodule Nest.Agents.AgentObservabilityTest do
 
   describe "context limit (configured)" do
     test "uses the configured context_limit from DotConfig when present" do
-      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
       info = Agent.get_public_info(pid)
       assert info.context_limit == 512_000
@@ -190,7 +206,11 @@ defmodule Nest.Agents.AgentObservabilityTest do
     end
 
     test "does not call Discover when context_limit is already configured" do
-      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
       # :sys.get_state/1 is a synchronous call — by the time it
       # returns, the GenServer has finished processing any
@@ -218,7 +238,12 @@ defmodule Nest.Agents.AgentObservabilityTest do
       # messages, it equals the system prompt's estimated size —
       # non-zero. The other usage_totals fields stay at 0 until
       # the first LLM call completes.
-      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
+
       info = Agent.get_public_info(pid)
 
       assert info.usage == %{
@@ -256,7 +281,11 @@ defmodule Nest.Agents.AgentObservabilityTest do
         {:done, %{response: %RunResponse{text: "response 2", stop_reason: "stop"}}}
       ])
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
       :ok = Agent.chat(pid, "First")
       assert_receive {:chat_status, %{status: "idle"}}, 500
@@ -302,7 +331,11 @@ defmodule Nest.Agents.AgentObservabilityTest do
         {:done, %{response: %RunResponse{text: "Final answer", stop_reason: "stop"}}}
       ])
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
       :ok = Agent.chat(pid, "Run a command")
       assert_receive {:chat_status, %{status: "idle"}}, 500
@@ -329,7 +362,11 @@ defmodule Nest.Agents.AgentObservabilityTest do
         {:done, %{response: %RunResponse{text: "Second", stop_reason: "stop"}}}
       ])
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
       :ok = Agent.chat(pid, "First")
       assert_receive {:chat_status, %{status: "idle"}}, 500

@@ -30,7 +30,8 @@ defmodule NestWeb.AgentChannelTestHelpers do
       setup do
         {_agent_pid, agent_id} =
           AgentTestHelpers.start_agent(%{
-            model: %{name: "qwen3.5-plus", provider: "model-studio"}
+            model: %{name: "qwen3.5-plus", provider: "model-studio"},
+            vocation_id: AgentTestHelpers.programmer_vocation_id_for_test()
           })
 
         MockClient.clear()

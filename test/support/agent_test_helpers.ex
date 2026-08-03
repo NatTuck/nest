@@ -41,13 +41,7 @@ defmodule Nest.Agents.AgentTestHelpers do
     # here the supervisor's `generate_unique_name/0` would produce
     # a "clever-raven"-style pair, defeating the
     # `System.unique_integer/1`-based test name.
-    {:ok, name} =
-      Agents.create_agent(
-        Map.get(merged, :model),
-        name: Map.get(merged, :name),
-        vocation_id: Map.get(merged, :vocation_id),
-        workspace_path: Map.get(merged, :workspace_path)
-      )
+    {:ok, name} = create_agent_via_supervisor(merged)
 
     {:ok, agent_pid} = Supervisor.get_agent(name)
 
@@ -71,7 +65,20 @@ defmodule Nest.Agents.AgentTestHelpers do
     # requests.
     swap_to_mock_client(agent_pid)
 
-    Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{name}")
+    # Drop any prior subscription this test pid holds. The
+    # `on_exit` hook in `register_on_exit_cleanup/3` runs in a
+    # separate ExUnit runner process (async tests), so its
+    # `Phoenix.PubSub.unsubscribe/2` doesn't reach the test
+    # pid — `Registry.unregister/2` always targets `self()`.
+    # Without an explicit drop here, the test pid keeps stale
+    # subscriptions to dead agents' topics across tests; a
+    # sibling test's `:chat_message` or `:chat_status`
+    # broadcast then leaks into this test's mailbox and
+    # matches `assert_received` patterns prematurely. The
+    # bug surfaces most visibly in `agent_compaction_test.exs:82`
+    # under parallel coverage runs.
+    drop_stale_pubsub_subscription()
+    subscribe_to_agent_topic(name)
 
     # Move pre-`start_agent/1` queued items from the test pid's
     # queue to the per-agent queue, then point `:nest_test_agent_pid`
@@ -122,6 +129,48 @@ defmodule Nest.Agents.AgentTestHelpers do
       })
 
     vid
+  end
+
+  @doc """
+  Returns a fresh `vocation_id` whose `:tools` list includes the
+  shell/file tools (`shell_cmd`, `read_file`, `write_file`,
+  `edit`) — for tests that exercise the tool-call flow and need
+  the tools to actually be registered on the agent.
+
+  Every call creates a new row (`create_vocation`, not
+  `upsert_vocation`) so tests don't fight over the same row. The
+  per-test `setup` blocks in the consumer files iterate
+  `Vocations.delete_vocation/1` to clean up afterwards, so a fresh
+  row per call is safe under `async: true` parallel runs.
+
+  Returns `vocation.id` so the caller can pass it as
+  `vocation_id:` to `start_agent/1`.
+  """
+  def programmer_vocation_id_for_test do
+    {:ok, vocation} =
+      Vocations.create_vocation(%{
+        name: "Test Programmer (#{Elixir.System.unique_integer([:positive])})",
+        description: "A coding assistant that can read and write files in a workspace",
+        system_prompt: "Test programmer prompt.",
+        tools: ["read_file", "write_file", "edit", "shell_cmd", "context"],
+        # Single mode — keeps the Agent's default mode = "chat"
+        # and the chat-message prefix `[mode: chat]` that tests
+        # assert on. `Map.keys/1` of a single-entry map returns
+        # that one key as the initial mode regardless of
+        # internal hash ordering, so we're not at the mercy of
+        # Elixir's map iteration order.
+        modes: %{
+          "chat" => %{
+            "description" => "General conversation.",
+            "caps" => %{
+              "net" => false,
+              "fs" => %{"read" => ["/"], "write" => ["/tmp"]}
+            }
+          }
+        }
+      })
+
+    vocation.id
   end
 
   defp build_attrs(agent_name, attrs) do
@@ -330,5 +379,39 @@ defmodule Nest.Agents.AgentTestHelpers do
       new_cache = Map.put(state.chat_state.read_files, path, recorded)
       %{state | chat_state: %{state.chat_state | read_files: new_cache}}
     end)
+  end
+
+  # Drop any leftover PubSub subscription left over from a
+  # prior test in this same pid. `on_exit` runs in a separate
+  # ExUnit runner process and can't unsubscribe the test pid,
+  # so each `start_agent/1` clears any topic the test pid
+  # still holds before subscribing to the new agent's topic.
+  # The current topic is recorded in the `:nest_test_subscribed_topic`
+  # process-dict key; absence means nothing to drop.
+  defp drop_stale_pubsub_subscription do
+    case Process.get(:nest_test_subscribed_topic) do
+      nil -> :ok
+      old_topic -> Phoenix.PubSub.unsubscribe(Nest.PubSub, old_topic)
+    end
+
+    Process.delete(:nest_test_subscribed_topic)
+  end
+
+  defp subscribe_to_agent_topic(name) do
+    Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{name}")
+    Process.put(:nest_test_subscribed_topic, "agent:#{name}")
+  end
+
+  # Run the agent through the supervisor path (the standard
+  # caller interface). Pure data shaping — no DB writes, no
+  # process spawning here; the supervisor owns both. Returns
+  # the new agent's registry name on success.
+  defp create_agent_via_supervisor(attrs) do
+    Agents.create_agent(
+      Map.get(attrs, :model),
+      name: Map.get(attrs, :name),
+      vocation_id: Map.get(attrs, :vocation_id),
+      workspace_path: Map.get(attrs, :workspace_path)
+    )
   end
 end

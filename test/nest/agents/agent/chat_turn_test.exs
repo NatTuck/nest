@@ -57,7 +57,11 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
     test "1.1.1 appends user + assistant, transitions to idle" do
       MockClient.set_response("Hello back")
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
       :ok = Agent.chat(pid, "Hello")
 
@@ -98,7 +102,11 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
 
       MockClient.set_response("Tool result was hi")
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
       :ok = Agent.chat(pid, "Run a command")
 
@@ -134,7 +142,11 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
 
       MockClient.set_response("All done")
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
       capture_log(fn ->
         :ok = Agent.chat(pid, "Loop until done")
@@ -209,7 +221,11 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
         })
       end
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
       capture_log(fn ->
         :ok = Agent.chat(pid, "Keep looping")
@@ -247,7 +263,11 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
       events = for _ <- 1..50, do: {:text, "x"}
       MockClient.set_stream_events(events)
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
       :ok = Agent.chat(pid, "Tell me a long story")
 
@@ -295,7 +315,11 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
 
   describe "HTTP worker crash" do
     test "1.1.6 Agent receives {:chat_crashed, _}, broadcasts chat:error, transitions to idle" do
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
       Mimic.stub(MockClient, :run, fn _request, _opts ->
         raise FunctionClauseError,
@@ -329,7 +353,11 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
       MockClient.set_response("First response")
       MockClient.set_response("Second response with no usage event")
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
       :ok = Agent.chat(pid, "First")
       assert_receive {:chat_status, %{status: "idle"}}, 2000
@@ -354,7 +382,11 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
       MockClient.set_response("First")
       MockClient.set_response("Second")
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
 
       :ok = Agent.chat(pid, "First chat")
       assert_receive {:chat_status, %{status: "idle"}}, 2000

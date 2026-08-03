@@ -51,7 +51,7 @@ defmodule Nest.Agents.AgentStopTest do
       events = for _ <- 1..1000, do: {:text, "x"}
       MockClient.set_stream_events(events)
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
       :ok = Agent.chat(pid, "Start")
 
@@ -72,7 +72,7 @@ defmodule Nest.Agents.AgentStopTest do
       events = for _ <- 1..1000, do: {:text, "x"}
       MockClient.set_stream_events(events)
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
       :ok = Agent.chat(pid, "Tell me a story")
       assert_receive {:chat_message, {:user, _}}, 500
@@ -94,7 +94,7 @@ defmodule Nest.Agents.AgentStopTest do
 
   describe "stop_chat/2 between turns" do
     test "is a no-op when the agent is idle" do
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
       # No chat turn is in flight. The stop handler runs
       # without crashing; no `chat:status: idle` is broadcast
@@ -129,7 +129,7 @@ defmodule Nest.Agents.AgentStopTest do
       # Send stop directly to the chat turn pid so the stop
       # wins the race against the streaming worker (the
       # worker is spawned but has not yet emitted deltas).
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
       :ok = Agent.chat(pid, "Start")
 
@@ -189,7 +189,7 @@ defmodule Nest.Agents.AgentStopTest do
         ]
       })
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
       :ok = Agent.chat(pid, "compact please")
 
@@ -250,7 +250,7 @@ defmodule Nest.Agents.AgentStopTest do
       events = for _ <- 1..100, do: {:text, "x"}
       MockClient.set_stream_events(events)
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
       :ok = Agent.chat(pid, "Start")
 
@@ -296,7 +296,7 @@ defmodule Nest.Agents.AgentStopTest do
       events = for _ <- 1..100, do: {:text, "x"}
       MockClient.set_stream_events(events)
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
       :ok = Agent.chat(pid, "First turn")
       assert_receive {:chat_message, {:user, _}}, 500
@@ -348,7 +348,7 @@ defmodule Nest.Agents.AgentStopTest do
       events = for _ <- 1..50, do: {:text, "x"}
       MockClient.set_stream_events(events)
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
       :ok = Agent.chat(pid, "First turn")
       assert_receive {:chat_message, {:user, _}}, 500
@@ -389,7 +389,7 @@ defmodule Nest.Agents.AgentStopTest do
       events = for _ <- 1..100, do: {:text, "x"}
       MockClient.set_stream_events(events)
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
       :ok = Agent.chat(pid, "Start")
 

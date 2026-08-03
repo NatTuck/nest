@@ -142,14 +142,16 @@ defmodule Nest.Agents.Agent.ChatTurnStructureTest do
       # The introspection `:get_*` handle_calls live in
       # `IntrospectionHandler` (extracted from `agent.ex` to
       # keep that module under the credo 500-line cap); the
-      # agent module dispatches to it via a catch-all clause.
-      agent_content = File.read!("lib/nest/agents/agent.ex")
+      # Agent dispatches to it via a catch-all clause in the
+      # GenServer callbacks module (also extracted for the
+      # 500-line cap).
+      callbacks_content = File.read!("lib/nest/agents/agent/callbacks.ex")
 
       introspection_content =
         File.read!("lib/nest/agents/agent/introspection_handler.ex")
 
-      assert agent_content =~ "IntrospectionHandler.handle",
-             "Agent must dispatch to IntrospectionHandler for :get_* calls"
+      assert callbacks_content =~ "IntrospectionHandler.handle",
+             "Callbacks must dispatch to IntrospectionHandler for :get_* calls"
 
       assert introspection_content =~ "def handle(:get_messages,",
              "IntrospectionHandler must expose :get_messages for ChatTurn iteration"

@@ -17,6 +17,8 @@ defmodule NestWeb.LobbyChannel.RescanModelsListTest do
 
   alias NestWeb.LobbyChannel
 
+  import ExUnit.CaptureLog
+
   describe "rescan_models_list/2" do
     test "returns the runner's result on the happy path" do
       runner = fn -> [%{"name" => "x", "provider" => "y", "context_limit" => nil}] end
@@ -36,10 +38,18 @@ defmodule NestWeb.LobbyChannel.RescanModelsListTest do
       # The function calls `safe_models_list/0` from the test's
       # pid, where `Models.list/0` succeeds against the running
       # `Nest.Models` GenServer — so the assertion is on "returns
-      # a list, doesn't crash".
+      # a list, doesn't crash". The raise inside the runner makes
+      # the supervised Task die; `Task.Supervisor` logs the
+      # exception before the rescue arm runs. Capture it and
+      # assert it's the expected error path, not noise.
       runner = fn -> raise "models.list timeout" end
 
-      assert is_list(LobbyChannel.rescan_models_list(100, runner))
+      log =
+        capture_log(fn ->
+          assert is_list(LobbyChannel.rescan_models_list(100, runner))
+        end)
+
+      assert log =~ "models.list timeout"
     end
 
     test "catches a :timeout exit raised inside the task" do
@@ -52,7 +62,12 @@ defmodule NestWeb.LobbyChannel.RescanModelsListTest do
 
       runner = fn -> exit({:timeout, :boom}) end
 
-      assert is_list(LobbyChannel.rescan_models_list(100, runner))
+      log =
+        capture_log(fn ->
+          assert is_list(LobbyChannel.rescan_models_list(100, runner))
+        end)
+
+      assert log =~ ":timeout, :boom"
     end
   end
 end

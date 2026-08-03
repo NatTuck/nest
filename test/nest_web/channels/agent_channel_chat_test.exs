@@ -19,9 +19,8 @@ defmodule NestWeb.AgentChannelChatTest do
 
   describe "handle_in(chat:sync)" do
     test "returns empty sync for new agent", %{socket: socket} do
-      # The new agent has a single system message at position 0
-      # (added by `initial_messages_with_system/1`). Sync from
-      # lastIndex=-1 returns that one message.
+      # New agent has a single system message at index 0; sync
+      # from lastIndex=-1 returns that one.
       ref = push(socket, "chat:sync", %{"lastIndex" => -1})
 
       assert_reply ref, :ok, %{"messages" => [system_msg], "partial" => nil, "status" => "idle"}
@@ -30,27 +29,23 @@ defmodule NestWeb.AgentChannelChatTest do
     end
 
     test "returns messages after lastIndex", %{socket: socket} do
-      # Send first message and wait for completion
       ref1 = push(socket, "chat:message", %{"content" => "First"})
       assert_reply ref1, :ok, %{}
 
-      # Wait for user message (index 1), then assistant message (index 2)
       assert_push "chat:message", %{"index" => 1, "role" => "user"}, 2000
       assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 2000
 
-      # Sync should return no new messages (we're up to date)
+      # Sync from current tip: no new messages.
       ref_sync = push(socket, "chat:sync", %{"lastIndex" => 2})
       assert_reply ref_sync, :ok, %{"messages" => [], "partial" => nil, "status" => "idle"}
 
-      # Send second message
       ref2 = push(socket, "chat:message", %{"content" => "Second"})
       assert_reply ref2, :ok, %{}
 
-      # Wait for second user message (index 3), then assistant (index 4)
       assert_push "chat:message", %{"index" => 3, "role" => "user"}, 2000
       assert_push "chat:message", %{"index" => 4, "role" => "assistant"}, 2000
 
-      # Sync from index 2 should return messages at index 3 and 4
+      # Sync from index 2: messages 3 and 4.
       ref_sync2 = push(socket, "chat:sync", %{"lastIndex" => 2})
 
       assert_reply ref_sync2, :ok, %{
@@ -142,15 +137,9 @@ defmodule NestWeb.AgentChannelChatTest do
 
       assert limit == 512_000
       assert source == "config"
-      # `assert_reply` captures the Erlang reply, so the map keys
-      # are still atoms. The wire format is JSON for the frontend.
-      #
-      # `context_input_tokens` is computed from the messages list
-      # (real-valued `tokens` from prior LLM responses as a floor,
-      # estimator for the suffix). For a fresh agent with just a
-      # system prompt in the messages list, it's the system
-      # prompt's estimated size — non-zero, so the chip displays a
-      # meaningful fill rate from the moment the page loads.
+      # `context_input_tokens` is the system prompt's estimated
+      # size — non-zero so the chip displays a meaningful fill
+      # rate from page load.
       assert usage == %{
                input_tokens: 0,
                cache_read_input_tokens: 0,
@@ -165,16 +154,13 @@ defmodule NestWeb.AgentChannelChatTest do
                reasoning_tokens: 0
              }
 
-      assert usage.context_input_tokens > 0,
-             "expected context_input_tokens > 0 (system prompt estimated size), got #{usage.context_input_tokens}"
+      assert usage.context_input_tokens > 0
     end
 
     test "returns status with messageCount after messages", %{socket: socket, agent_id: id} do
-      # Send a message to create history
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
-      # Wait for completion (user message first, then assistant)
       assert_push "chat:message", %{"index" => 1, "role" => "user"}, 2000
       assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 2000
 
@@ -223,7 +209,6 @@ defmodule NestWeb.AgentChannelChatTest do
     test "returns empty messages when lastIndex exceeds server's messageCount", %{
       socket: socket
     } do
-      # Send a message to create history
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
@@ -252,7 +237,6 @@ defmodule NestWeb.AgentChannelChatTest do
     end
 
     test "sync with lastIndex: -1 returns all complete messages", %{socket: socket} do
-      # Send first message
       ref1 = push(socket, "chat:message", %{"content" => "First"})
       assert_reply ref1, :ok, %{}
 
@@ -303,14 +287,25 @@ defmodule NestWeb.AgentChannelChatTest do
     end
 
     test "error event is broadcast when LLM fails" do
-      # Create the second agent for this test BEFORE injecting the
-      # error, so the MockClient error lands in this test's queue
-      # (not the previous test's).
-      {:ok, error_agent_id} =
-        Agents.create_agent(
-          %{name: "qwen3.5-plus"},
-          vocation_id: AgentTestHelpers.vocation_id_for_test()
-        )
+      # Capture the model-missing log from `init/1`. The agent
+      # boots in `:model_missing` (the test's actual target)
+      # because `model` omits `:provider`.
+      on_exit(fn -> Process.delete(:test_error_agent_id) end)
+
+      _creation_log =
+        capture_log(fn ->
+          {:ok, id} =
+            Agents.create_agent(
+              %{name: "qwen3.5-plus"},
+              vocation_id: AgentTestHelpers.vocation_id_for_test()
+            )
+
+          Process.put(:test_error_agent_id, id)
+          :ok
+        end)
+
+      error_agent_id = Process.get(:test_error_agent_id)
+      {:ok, error_agent_pid} = Supervisor.get_agent(error_agent_id)
 
       {:ok, error_agent_pid} = Supervisor.get_agent(error_agent_id)
 
@@ -318,12 +313,9 @@ defmodule NestWeb.AgentChannelChatTest do
         %{state | client_config: %{state.client_config | client: MockClient}}
       end)
 
-      # Runtime DB writes from the agent pid (the chat pipeline
-      # appends to the `messages` table via `MessageAppender.append_one/2`)
-      # need explicit sandbox access — the test pid owns the
-      # sandbox checkout, and the agent pid would otherwise
-      # deadlock waiting for it. Without this, `Persistence.insert_message/2`
-      # blocks indefinitely and the chat task never spawns.
+      # Agent pid needs explicit sandbox access — without it,
+      # `Persistence.insert_message/2` blocks indefinitely on
+      # the test pid's sandbox checkout.
       Sandbox.allow(Nest.Repo, self(), error_agent_pid)
 
       Process.put(:nest_test_agent_pid, error_agent_pid)
@@ -393,11 +385,9 @@ defmodule NestWeb.AgentChannelChatTest do
       socket: socket,
       agent_id: id
     } do
-      # The context-overflow state is distinct from the compaction
-      # pair: the model is fundamentally too small for the system
-      # prompt and a Retry button would be misleading. The channel
-      # still rejects `chat:message` so the user can't keep adding
-      # messages to an agent that can't respond.
+      # `context_overflow` is distinct from the compaction pair:
+      # the model can't respond at all, so we still reject the
+      # push.
       {:ok, agent_pid} = Supervisor.get_agent(id)
 
       :sys.replace_state(agent_pid, fn state ->
@@ -409,9 +399,8 @@ defmodule NestWeb.AgentChannelChatTest do
       assert_reply ref, :error, %{"reason" => "agent_status_context_overflow"}
     end
 
-    test "accepts chat:message when the agent is idle", %{socket: socket, agent_id: _id} do
-      # No `:sys.replace_state` — the agent defaults to :idle after
-      # join. The first chat:message should succeed normally.
+    test "accepts chat:message when the agent is idle", %{socket: socket} do
+      # No `:sys.replace_state` — agent defaults to :idle after join.
       MockClient.set_response("Response")
 
       ref = push(socket, "chat:message", %{"content" => "Hello"})
@@ -427,10 +416,8 @@ defmodule NestWeb.AgentChannelChatTest do
     test "forwards to Agents.retry_compaction/1", %{socket: socket, agent_id: id} do
       {:ok, agent_pid} = Supervisor.get_agent(id)
 
-      # The retry path resumes the user message held in
-      # `pending_user_message`. Set both the status and the held
-      # message so the retry's Trigger B path actually fires a
-      # compaction.
+      # The retry path resumes `pending_user_message`. Set both the
+      # status and the held message so Trigger B fires.
       :sys.replace_state(agent_pid, fn state ->
         %{
           state
@@ -461,37 +448,24 @@ defmodule NestWeb.AgentChannelChatTest do
 
   describe "handle_in(chat:stop)" do
     test "reply is immediate {:ok, %{}} and does not block on the agent", %{socket: socket} do
-      # The `chat:stop` push is fire-and-forget from the channel's
-      # perspective: the reply goes back to the client immediately
-      # and the actual stop finalization (chat:message with
-      # `metadata.stopped_by_user`, chat:status: idle) happens
-      # asynchronously in the agent. The mid-stream interrupt
-      # behavior is covered by `Nest.Agents.AgentStopTest`; this
-      # test only verifies the channel-level contract.
+      # Fire-and-forget: reply goes back immediately; finalization
+      # is async. Mid-stream interrupt behavior is in
+      # `Nest.Agents.AgentStopTest`; this verifies channel only.
       ref = push(socket, "chat:stop", %{})
       assert_reply ref, :ok, %{}
     end
 
     test "is a no-op when no chat is in flight", %{socket: socket} do
-      # The agent is idle (no `chat:message` has been pushed).
-      # `chat:stop` should reply successfully and not crash
-      # anything; the agent's stop handler treats the missing
-      # chat task as a no-op and broadcasts no extra events.
+      # Agent is idle; stop is a no-op and broadcasts no events.
       ref = push(socket, "chat:stop", %{})
       assert_reply ref, :ok, %{}
 
-      # No `chat:status: idle` push is expected — the agent was
-      # already idle. The 50ms `refute_receive` is the test's
-      # deterministic wait for "nothing happens".
       refute_receive %Phoenix.Socket.Message{event: "chat:status"}, 50
     end
 
     test "the agent can run a new turn after a stop", %{socket: socket, agent_id: id} do
-      # Send and complete a normal turn, then stop, then start a
-      # new turn. The "stop" is a no-op (the agent is already
-      # idle by the time it arrives), so the verification is
-      # that the new turn works normally — i.e. the stop
-      # handler doesn't leave the agent in a broken state.
+      # Send a normal turn, then a no-op stop, then a new turn.
+      # The stop must not leave the agent in a broken state.
       MockClient.set_response("First response")
 
       ref_msg = push(socket, "chat:message", %{"content" => "First"})
@@ -518,8 +492,7 @@ defmodule NestWeb.AgentChannelChatTest do
 
       assert [%{"kind" => "text", "text" => content} | _] = parts
       assert content == "After the stop"
-
-      # Sanity check: the agent is still queryable after the stop.
+      # Sanity: agent still queryable after stop.
       assert {:ok, %{name: ^id}} = Agents.get_info(id)
     end
   end

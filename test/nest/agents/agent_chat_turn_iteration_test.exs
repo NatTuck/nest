@@ -93,7 +93,6 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
   describe ":needs_compaction handler (mid-turn trigger)" do
     test "Agent transitions to :compacting when :needs_compaction arrives" do
       {pid, _name} = start_test_agent()
-      state = :sys.get_state(pid)
 
       capture_log(fn ->
         # `:needs_compaction` now carries the full
@@ -123,7 +122,6 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
 
     test "Agent passes iteration and max_iterations through to the compactor" do
       {pid, _name} = start_test_agent()
-      state = :sys.get_state(pid)
 
       capture_log(fn ->
         :sys.replace_state(pid, fn state ->
@@ -166,7 +164,6 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
   describe "mid_turn_entry field lifecycle" do
     test "mid_turn_entry is cleared on successful compaction_done" do
       {pid, _name} = start_test_agent()
-      state = :sys.get_state(pid)
 
       # Pre-seed mid_turn_entry as if a mid-turn
       # compaction is in progress. The new field shape
@@ -210,7 +207,6 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
   describe "retry_compaction branches on mid_turn_entry" do
     test "retry uses mid-turn continuation when mid_turn_entry is set" do
       {pid, _name} = start_test_agent()
-      state = :sys.get_state(pid)
 
       :sys.replace_state(pid, fn state ->
         %{
@@ -234,7 +230,6 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
 
     test "retry uses Trigger B path when mid_turn_entry is nil" do
       {pid, _name} = start_test_agent()
-      state = :sys.get_state(pid)
 
       :sys.replace_state(pid, fn state ->
         %{
