@@ -1,11 +1,14 @@
 defmodule Nest.Agents.AgentTmpPathTest do
   @moduledoc """
-  Agent tmp_path lifecycle tests. These are in a separate `async: false`
-  module because the agent's tmp_path is /tmp/nest-VMPID/ which is
-  shared across all tests in the BEAM VM. Concurrent async tests'
-  cleanup can wipe the parent dir and cause these tests to flake.
+  Agent tmp_path lifecycle tests. `async: true`. The
+  `/tmp/nest-VMPID/agent-NAME/` dirs are per-VM shared
+  state, but each test uses a fresh `System.unique_integer/1`
+  agent name and asserts on its own dir; concurrent tests'
+  dirs sit at their own VMPID+name path and don't collide.
+  The per-test setup still wipes this VM's parent dir so a
+  flaky earlier test doesn't leave stale dirs behind.
   """
-  use Nest.DataCase, async: false
+  use Nest.DataCase, async: true
 
   import ExUnit.CaptureLog
   import Mimic
@@ -18,9 +21,6 @@ defmodule Nest.Agents.AgentTmpPathTest do
   setup :verify_on_exit!
 
   setup do
-    # Wipe the parent tmp dir at setup; safe because the module is
-    # async: false. Other tests' agents are also wiped — this is
-    # acceptable because the parent dir is per-VM shared state.
     parent_dir = "/tmp/nest-#{System.pid()}"
     File.rm_rf(parent_dir)
     on_exit(fn -> File.rm_rf(parent_dir) end)
@@ -38,7 +38,7 @@ defmodule Nest.Agents.AgentTmpPathTest do
 
   describe "tmp_path lifecycle" do
     test "creates tmp directory on agent start" do
-      {_pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {_pid, agent_id} = start_agent()
       expected_tmp_path = "/tmp/nest-#{System.pid()}/agent-#{agent_id}"
 
       assert File.exists?(expected_tmp_path),
@@ -48,7 +48,7 @@ defmodule Nest.Agents.AgentTmpPathTest do
     end
 
     test "passes tmp_path to agent state" do
-      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, _agent_id} = start_agent()
       info = Agent.get_public_info(pid)
 
       assert info.tmp_path =~ ~r|/tmp/nest-#{System.pid()}/agent-|,
@@ -56,7 +56,7 @@ defmodule Nest.Agents.AgentTmpPathTest do
     end
 
     test "cleans up tmp directory on agent termination" do
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      {pid, agent_id} = start_agent()
       expected_tmp_path = "/tmp/nest-#{System.pid()}/agent-#{agent_id}"
 
       assert File.exists?(expected_tmp_path)
@@ -70,39 +70,37 @@ defmodule Nest.Agents.AgentTmpPathTest do
     end
 
     test "uses unique tmp_path per agent" do
-      agent_name1 = "unique-test-1-#{System.unique_integer([:positive])}"
+      name = "unique-#{System.unique_integer([:positive])}"
+      model = %{name: "qwen3.5-plus", provider: "model-studio"}
 
-      pid1 =
-        start_supervised!(
-          {Agent,
-           %{
-             name: agent_name1,
-             model: %{name: "qwen3.5-plus"},
-             vocation_id: AgentTestHelpers.vocation_id_for_test()
-           }}
+      {:ok, agent_id} =
+        Agents.create_agent(model,
+          name: name,
+          vocation_id: AgentTestHelpers.vocation_id_for_test()
         )
 
-      info1 = Agent.get_public_info(pid1)
+      {:ok, pid} = Nest.Agents.Supervisor.get_agent(agent_id)
+      info = Agent.get_public_info(pid)
 
-      assert info1.tmp_path =~ ~r|/tmp/nest-#{System.pid()}/agent-#{agent_name1}|
+      assert info.tmp_path =~ ~r|/tmp/nest-#{System.pid()}/agent-#{name}|
     end
 
     test "cleans up tmp directory when stopped via Agents.delete_agent/1" do
-      alias Nest.Agents.Supervisor
+      name = "delete-#{System.unique_integer([:positive])}"
+      model = %{name: "qwen3.5-plus", provider: "model-studio"}
 
       {:ok, agent_id} =
-        Supervisor.fetch_or_start_agent(%{
-          model: %{name: "qwen3.5-plus"},
-          vocation_id: 0,
-          vocation: nil
-        })
+        Agents.create_agent(model,
+          name: name,
+          vocation_id: AgentTestHelpers.vocation_id_for_test()
+        )
 
       expected_tmp_path = "/tmp/nest-#{System.pid()}/agent-#{agent_id}"
 
       assert File.exists?(expected_tmp_path),
              "Expected tmp directory to exist: #{expected_tmp_path}"
 
-      {:ok, pid} = Supervisor.get_agent(agent_id)
+      {:ok, pid} = Nest.Agents.Supervisor.get_agent(agent_id)
       ref = Process.monitor(pid)
 
       :ok = Agents.delete_agent(agent_id)
@@ -113,7 +111,9 @@ defmodule Nest.Agents.AgentTmpPathTest do
     end
 
     test "cleans up tmp directory when agent crashes" do
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Process.flag(:trap_exit, true)
+
+      {pid, agent_id} = start_agent()
       expected_tmp_path = "/tmp/nest-#{System.pid()}/agent-#{agent_id}"
 
       assert File.exists?(expected_tmp_path),
@@ -131,7 +131,9 @@ defmodule Nest.Agents.AgentTmpPathTest do
     end
 
     test "cleans up tmp directory when linked process dies" do
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+      Process.flag(:trap_exit, true)
+
+      {pid, agent_id} = start_agent()
       expected_tmp_path = "/tmp/nest-#{System.pid()}/agent-#{agent_id}"
 
       assert File.exists?(expected_tmp_path),
@@ -147,27 +149,16 @@ defmodule Nest.Agents.AgentTmpPathTest do
     end
 
     test "agent tmp dirs are removed per-agent on stop" do
-      alias Nest.Agents.Supervisor
+      Process.flag(:trap_exit, true)
 
       unique = System.unique_integer([:positive])
-      id1 = "parent-cleanup-a-#{unique}"
-      id2 = "parent-cleanup-b-#{unique}"
+      name1 = "parent-cleanup-a-#{unique}"
+      name2 = "parent-cleanup-b-#{unique}"
+      model = %{name: "qwen3.5-plus", provider: "model-studio"}
+      vid = AgentTestHelpers.vocation_id_for_test()
 
-      {:ok, agent_id1} =
-        Supervisor.fetch_or_start_agent(%{
-          name: id1,
-          model: %{name: "qwen3.5-plus"},
-          vocation_id: 0,
-          vocation: nil
-        })
-
-      {:ok, agent_id2} =
-        Supervisor.fetch_or_start_agent(%{
-          name: id2,
-          model: %{name: "qwen3.5-plus"},
-          vocation_id: 0,
-          vocation: nil
-        })
+      {:ok, agent_id1} = Agents.create_agent(model, name: name1, vocation_id: vid)
+      {:ok, agent_id2} = Agents.create_agent(model, name: name2, vocation_id: vid)
 
       parent_dir = "/tmp/nest-#{System.pid()}"
       path1 = "#{parent_dir}/agent-#{agent_id1}"
@@ -176,8 +167,8 @@ defmodule Nest.Agents.AgentTmpPathTest do
       assert File.exists?(path1)
       assert File.exists?(path2)
 
-      {:ok, pid1} = Supervisor.get_agent(agent_id1)
-      {:ok, pid2} = Supervisor.get_agent(agent_id2)
+      {:ok, pid1} = Nest.Agents.Supervisor.get_agent(agent_id1)
+      {:ok, pid2} = Nest.Agents.Supervisor.get_agent(agent_id2)
       ref1 = Process.monitor(pid1)
       ref2 = Process.monitor(pid2)
 

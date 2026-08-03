@@ -35,12 +35,31 @@ defmodule Nest.Agents do
   @spec create_agent(map(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def create_agent(model, opts \\ []) when is_map(model) do
     attrs = %{
+      name: name_or_generate(model, opts),
       model: enrich_model(model),
       vocation_id: Keyword.get(opts, :vocation_id),
       workspace_path: Keyword.get(opts, :workspace_path)
     }
 
-    Supervisor.fetch_or_start_agent(attrs)
+    # Pre-spawn DB work in the caller's pid. Then the supervisor
+    # just spawns — no DB in the supervisor pid. Callers
+    # guarantee unique names (test pid uses
+    # `System.unique_integer/1`; channel may also pre-generate).
+    # `:duplicate_name` propagates if it ever happens.
+    with :ok <- Agent.pre_spawn(attrs) do
+      Supervisor.fetch_or_start_agent(attrs)
+    end
+  end
+
+  # The agent's registry key comes from `opts[:name]` when the
+  # caller supplies one, otherwise the supervisor's name
+  # generator produces an adjective-animal pair. The model
+  # map's `:name` is the LLM identifier (e.g. "qwen3.5-plus")
+  # and is deliberately NOT used as the agent's name — the
+  # previous `Map.get(model, :name)` fallback was a legacy
+  # shim for callers that pre-dated the `name:` opt.
+  defp name_or_generate(_model, opts) do
+    Keyword.get(opts, :name) || Supervisor.generate_unique_name()
   end
 
   # Adds `:provider` to the model map if it's missing and the model is
@@ -79,9 +98,19 @@ defmodule Nest.Agents do
   @spec get_info(String.t()) :: {:ok, map()} | {:error, :not_found}
   def get_info(name) do
     case Supervisor.get_agent(name) do
-      {:ok, pid} -> {:ok, Agent.get_public_info(pid)}
+      {:ok, pid} -> fetch_public_info(pid)
       {:error, _} = err -> err
     end
+  end
+
+  defp fetch_public_info(pid) do
+    {:ok, Agent.get_public_info(pid)}
+  catch
+    :exit, reason when reason in [:noproc, :normal, :shutdown] ->
+      {:error, :not_found}
+
+    :exit, {reason, _} when reason in [:noproc, :normal, :shutdown] ->
+      {:error, :not_found}
   end
 
   @doc """
@@ -130,6 +159,12 @@ defmodule Nest.Agents do
     }
 
     {:ok, agent}
+  catch
+    :exit, reason when reason in [:noproc, :normal, :shutdown] ->
+      {:error, :not_found}
+
+    :exit, {reason, _} when reason in [:noproc, :normal, :shutdown] ->
+      {:error, :not_found}
   end
 
   defp get_vocation_info(nil), do: nil
@@ -319,7 +354,14 @@ defmodule Nest.Agents do
   """
   @spec delete_agent(String.t()) :: :ok | {:error, :not_found}
   def delete_agent(name) do
-    Supervisor.stop_agent(name)
+    with :ok <- Supervisor.stop_agent(name) do
+      # Drop the DB row so subsequent `get_info/1` (which falls
+      # through to the on-demand-load path) returns `:not_found`
+      # instead of `:duplicate_name`. Idempotent if the row is
+      # already absent.
+      Persistence.delete_agent_by_name(name)
+      :ok
+    end
   end
 
   @doc """

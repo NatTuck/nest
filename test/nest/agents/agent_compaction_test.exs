@@ -95,8 +95,6 @@ defmodule Nest.Agents.AgentCompactionTest do
           vocation_id: programmer_vocation_id()
         })
 
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
-
       :ok = Agent.chat(pid, "Read a file")
 
       assert_receive {:chat_status, %{status: "idle"}}, 500
@@ -153,7 +151,6 @@ defmodule Nest.Agents.AgentCompactionTest do
       MockClient.set_response("All done")
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "Run two")
 
@@ -176,7 +173,6 @@ defmodule Nest.Agents.AgentCompactionTest do
   describe "compaction history" do
     test "compaction_done archives previous messages to history with a marker" do
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       old_messages = [
         {:user, %User{index: 0, parts: [%Part.Text{text: "First"}], api_logs: []}},
@@ -303,8 +299,6 @@ defmodule Nest.Agents.AgentCompactionTest do
           vocation_id: voc_id,
           vocation: Persistence.load_vocation(voc_id)
         })
-
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "compact please")
 

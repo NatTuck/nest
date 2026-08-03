@@ -13,7 +13,7 @@ defmodule Nest.Agents.Agent.NoticePairInjectorTest do
       alternation that Anthropic and OpenAI require.
   """
 
-  use ExUnit.Case, async: true
+  use Nest.DataCase, async: true
   use Mimic
 
   alias Nest.Agents.Agent
@@ -223,7 +223,6 @@ defmodule Nest.Agents.Agent.NoticePairInjectorTest do
   # need a real GenServer target for `GenServer.call`.
   defp start_agent_test_helper do
     {pid, agent_id} = AgentTestHelpers.start_agent(%{model: %{name: "qwen3.5-plus"}})
-    Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
     {pid, agent_id}
   end
 

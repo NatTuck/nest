@@ -14,10 +14,10 @@ defmodule Nest.ModelsTest do
 
   `Nest.Models` is a singleton GenServer shared across tests in the
   whole `mix test` run, so this module is `async: false`. Each test
-  stubs `Req.get` (Mimic), casts `Models.refresh/0`, then synchronizes
-  by calling `:sys.get_state(Nest.Models)` — which forces the GenServer
-  to drain its mailbox, guaranteeing `:refresh` → `:query_auto_providers`
-  has completed before assertions run.
+  stubs `Req.get` (Mimic), triggers `Models.refresh/0`, then waits
+  for the next `{:models_updated, _}` PubSub broadcast via
+  `ModelsTestHelpers.await_models_refresh/0` — which guarantees the
+  background scan Task has completed before assertions run.
   """
   use ExUnit.Case, async: false
 
@@ -25,6 +25,7 @@ defmodule Nest.ModelsTest do
   import Mimic
 
   alias Nest.Models
+  alias Nest.Test.ModelsTestHelpers
 
   setup :set_mimic_global
 
@@ -74,10 +75,9 @@ defmodule Nest.ModelsTest do
       end
     end)
 
-    Models.refresh()
-    # Force the GenServer to drain `refresh` → `:query_auto_providers`
-    # before the test body runs.
-    _ = :sys.get_state(Models)
+    # Kick a scan and wait for the broadcast so the cache is
+    # populated before the test body runs.
+    ModelsTestHelpers.await_models_refresh()
 
     # Mimic's `:DOWN` handler clears the stub map for the test pid
     # once it exits *unless* `verify_on_exit!` is set — which we
@@ -149,13 +149,13 @@ defmodule Nest.ModelsTest do
     end
   end
 
-  describe "refresh(reload_static: true)" do
-    test "re-reads ~/.config/nest/config.toml before the auto-discovery pass" do
-      # The default `Models.refresh/0` (no opts) keeps the static
-      # config captured at `init/1`. The new opt-in opts reload
-      # from disk — so a user adding a new `[providers.<n>]`
-      # entry to `config.toml` sees it in `Models.list/0` without
-      # restarting the app.
+  describe "reload_static/0" do
+    test "re-reads ~/.config/nest/config.toml" do
+      # The default `Models.refresh/0` keeps the static config
+      # captured at `init/1`. The new `Models.reload_static/0`
+      # re-reads from disk — so a user adding a new
+      # `[providers.<n>]` entry to `config.toml` sees it in
+      # `Models.list/0` without restarting the app.
       #
       # The setup above already populated `state.static_config`
       # with the real `test/data/config.toml` (via init +
@@ -210,8 +210,7 @@ defmodule Nest.ModelsTest do
          }}
       end)
 
-      Models.refresh(reload_static: true)
-      _ = :sys.get_state(Models)
+      Models.reload_static()
 
       names = Models.list() |> Enum.map(& &1["name"])
       # Reloaded static-only entry:
@@ -228,20 +227,18 @@ defmodule Nest.ModelsTest do
       :sys.replace_state(Models, fn state ->
         %{state | static_config: pre_reload_static}
       end)
-
-      _ = :sys.get_state(Models)
     end
 
     test "plain refresh/0 keeps the previously-captured static_config snapshot" do
-      # Without `:reload_static`, the existing `state.static_config`
-      # is reused. If a user adds a new `[providers.<n>]` block to
+      # `Models.refresh/0` (no opts) does not reload static config.
+      # If a user adds a new `[providers.<n>]` block to
       # `config.toml` and calls `Models.refresh()` without opts,
-      # the new provider stays invisible until app restart.
+      # the new provider stays invisible until app restart (or
+      # until they call `reload_static/0` explicitly).
 
       # Stub `DotConfig.load/0` to return a synthetic config.
       # Even though our stub fires, the refresh-without-reload
-      # path must NOT call it (it doesn't reload from disk
-      # in the no-opts branch).
+      # path must NOT call it (it doesn't reload from disk).
       Nest.DotConfig
       |> stub(:load, fn ->
         {:ok,
@@ -258,7 +255,7 @@ defmodule Nest.ModelsTest do
       end)
 
       Models.refresh()
-      _ = :sys.get_state(Models)
+      ModelsTestHelpers.await_models_refresh()
 
       names = Models.list() |> Enum.map(& &1["name"])
       refute "should-not-appear" in names
@@ -270,7 +267,7 @@ defmodule Nest.ModelsTest do
       # `state.static_config` survives.
       #
       # The reload error fires a `Logger.error` from
-      # `Models.handle_cast({:refresh, _}, ...)` — capture
+      # `Models.handle_call(:reload_static, ...)` — capture
       # it and assert it's the expected error path, not noise.
       current = Models.list()
       current_names = Enum.map(current, & &1["name"])
@@ -280,8 +277,7 @@ defmodule Nest.ModelsTest do
 
       log =
         capture_log(fn ->
-          Models.refresh(reload_static: true)
-          _ = :sys.get_state(Models)
+          Models.reload_static()
 
           assert Enum.map(Models.list(), & &1["name"]) == current_names
         end)

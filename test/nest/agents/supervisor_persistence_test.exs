@@ -23,19 +23,12 @@ defmodule Nest.Agents.SupervisorPersistenceTest do
   when an explicit name has no DB row, instead of falling through
   to `do_insert_and_start/2` with a partial attrs map.
   """
-  use Nest.DataCase, async: false
+  use Nest.DataCase, async: true
 
   alias Nest.Agents
   alias Nest.Agents.Supervisor
   alias Nest.Persistence
   alias Nest.Vocations
-
-  setup do
-    previous = Application.get_env(:nest, :persistence, %{})
-    Application.put_env(:nest, :persistence, enabled: true)
-    on_exit(fn -> Application.put_env(:nest, :persistence, previous) end)
-    :ok
-  end
 
   defp test_vocation_id do
     {:ok, %Vocations.Vocation{id: id}} =

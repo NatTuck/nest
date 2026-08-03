@@ -41,19 +41,22 @@ defmodule Nest.Agents.Agent.ChatTurn.State do
   #     (last message is a `{:tool, _}`, not a tool_call).
   #     Iteration count preserved.
   #
-  #   * `{:compaction, System.t(), entry_or_nil}` — compactor's
-  #     own chat turn. The system message (the `[mode: compact]`
-  #     suffix) is at the tail of `state.chat_state.messages`.
-  #     The ChatTurn's first action is to call the LLM with
+  #   * `{:compaction, term(), entry_or_nil}` — compactor's
+  #     own chat turn. The `[mode: compact]` suffix is at
+  #     the tail of `state.chat_state.messages`. The
+  #     ChatTurn's first action is to call the LLM with
   #     `tools: nil, tool_choice: :none`. When the LLM
   #     returns, the ChatTurn sends `{:compaction_done,
   #     summary_text, carried_entry}` to the Agent — NOT
-  #     the normal `{:chat_idle, _}`. The third element is
-  #     `nil` for Trigger A (post-turn) and the carried
-  #     `{:tool_call, _, _, _}` / `{:compact_tool, _, _, _}`
-  #     for Trigger B (mid-turn resume). Only 1/4 of the
-  #     entry shapes are true continuations (the third
-  #     element of the compactor entry, when non-nil).
+  #     the normal `{:chat_idle, _}`. The middle slot is
+  #     reserved (currently `nil` from the Trigger —
+  #     `lifecycle.ex`'s finalize destructure discards it).
+  #     The third element is `nil` for Trigger A (post-turn)
+  #     and the carried `{:tool_call, _, _, _}` /
+  #     `{:compact_tool, _, _, _}` for Trigger B (mid-turn
+  #     resume). Only 1/4 of the entry shapes are true
+  #     continuations (the third element of the compactor
+  #     entry, when non-nil).
   #
   # The entry is the contract — no
   # `state.chat_state.messages`-tail inspection happens after
@@ -78,5 +81,5 @@ defmodule Nest.Agents.Agent.ChatTurn.State do
           {:user_message, Nest.Messages.User.t()}
           | {:tool_call, Nest.Messages.Assistant.t(), non_neg_integer(), pos_integer()}
           | {:compact_tool, tool_pair, non_neg_integer(), pos_integer()}
-          | {:compaction, Nest.Messages.System.t(), entry() | nil}
+          | {:compaction, term(), entry() | nil}
 end

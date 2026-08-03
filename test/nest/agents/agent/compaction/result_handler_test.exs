@@ -19,7 +19,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandlerTest do
   (test/nest/agents/agent_test.exs).
   """
 
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   import ExUnit.CaptureLog
 

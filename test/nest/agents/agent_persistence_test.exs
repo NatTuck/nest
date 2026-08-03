@@ -4,20 +4,14 @@ defmodule Nest.Agents.Agent.PersistenceTest do
   wrapper around `Nest.Persistence` that the Agent's `init/1`
   and `__append_message__/2` paths use.
 
-  The wrapper gates every write on the `:persistence_enabled`
-  app-env flag (see `config/test.exs`), so the disabled-path
-  is a no-op and the enabled-path forwards to the real
-  `Persistence.insert_message/2` / `update_next_message_index/2`
-  calls.
-
-  This file uses `Nest.DataCase, async: false` and toggles the
-  app env in `setup` / `on_exit` (matching the pattern in
-  `test/nest/persistence_test.exs`). The wrapper has no other
-  direct test coverage today.
+  Persistence is always enabled (see `config/test.exs`), so the
+  wrapper always forwards to the real `Persistence.insert_message/2` /
+  `update_next_message_index/2` calls. The wrapper's no-op
+  disabled-path is defensive code (returns `:ok` immediately
+  when the `:persistence_enabled` flag is false), not exercised
+  by tests.
   """
-  use Nest.DataCase, async: false
-
-  import ExUnit.Callbacks
+  use Nest.DataCase, async: true
 
   alias Nest.Agents.Agent.Persistence, as: AgentPersistence
   alias Nest.Agents.PersistedAgent
@@ -26,13 +20,6 @@ defmodule Nest.Agents.Agent.PersistenceTest do
   alias Nest.Messages.System, as: MsgSystem
   alias Nest.Persistence
   alias Nest.Vocations
-
-  setup do
-    previous = Application.get_env(:nest, :persistence, %{})
-    Application.put_env(:nest, :persistence, enabled: true)
-    on_exit(fn -> Application.put_env(:nest, :persistence, previous) end)
-    :ok
-  end
 
   defp test_vocation_id do
     {:ok, %Vocations.Vocation{id: id}} =
@@ -83,26 +70,6 @@ defmodule Nest.Agents.Agent.PersistenceTest do
       assert :ok = AgentPersistence.append_message(name, system_msg, 1)
     end
 
-    test "is a no-op when persistence is disabled" do
-      # Pin the disabled-path. With persistence off (the test
-      # default), the wrapper short-circuits and never touches
-      # the DB. No DB row exists for this name; if the wrapper
-      # were forwarding through to `Persistence.insert_message/2`,
-      # the FK constraint on `agent_id` would fire and the
-      # call would raise. The wrapper must short-circuit.
-      Application.put_env(:nest, :persistence, enabled: false)
-      name = "disabled-#{System.unique_integer([:positive])}"
-
-      system_msg = {:system, %MsgSystem{index: 0, parts: [%Part.Text{text: "x"}]}}
-
-      # The disabled-path returns `nil` (the value of the `if`
-      # expression when the else branch is implicit). Callers
-      # (Agent.init/1, __append_message__/2) don't read the
-      # return value, so this is a pin on the short-circuit
-      # behavior rather than a contract assertion.
-      assert AgentPersistence.append_message(name, system_msg, 1) == nil
-    end
-
     test "bumps next_message_index on a fresh insert" do
       name = "bump-#{System.unique_integer([:positive])}"
 
@@ -146,12 +113,20 @@ defmodule Nest.Agents.Agent.PersistenceTest do
         |> Nest.Repo.insert!()
 
       # 3-arity call: all five clauses are exercised (3 required,
-      # 2 default). With persistence disabled, returns `:ok`
-      # immediately — this pins the default-arg branches on the
-      # public function rather than on the underlying
-      # `Persistence.record_compaction/5` path.
-      Application.put_env(:nest, :persistence, enabled: false)
+      # 2 default). Persistence is always on, so the call forwards
+      # through to the underlying `Persistence.record_compaction/5`
+      # with `nil` for both token stats.
       assert :ok = AgentPersistence.record_compaction(name, 1, 1)
+
+      # Confirm the marker row landed with nil token stats.
+      assert [
+               %PersistedMessage{
+                 compaction_tokens_compacted: nil,
+                 compaction_tokens_compacted_to: nil
+               }
+             ] =
+               Nest.Repo.all(PersistedMessage)
+               |> Enum.filter(&(&1.agent_id == agent_id and &1.message_index == 1))
     end
 
     test "the 5-arity form passes token stats through to the underlying Persistence call" do

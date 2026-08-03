@@ -40,7 +40,6 @@ defmodule Nest.Agents.AgentToolsTest do
       MockClient.set_response("Here are the directory contents")
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "List the files")
 
@@ -113,7 +112,6 @@ defmodule Nest.Agents.AgentToolsTest do
       MockClient.set_response("Done")
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "Run a command")
 
@@ -137,7 +135,6 @@ defmodule Nest.Agents.AgentToolsTest do
       MockClient.set_response("The result is 4")
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "What is 2+2?")
 
@@ -170,7 +167,6 @@ defmodule Nest.Agents.AgentToolsTest do
       MockClient.set_response("The weather is sunny")
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "What's the weather?")
 
@@ -196,7 +192,6 @@ defmodule Nest.Agents.AgentToolsTest do
       MockClient.set_response("Directory listing complete")
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "List files")
       assert_receive {:chat_status, %{status: "idle"}}, 500
@@ -238,7 +233,6 @@ defmodule Nest.Agents.AgentToolsTest do
       MockClient.set_response("Tool executed successfully")
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "Run a command")
 
@@ -360,7 +354,6 @@ defmodule Nest.Agents.AgentToolsTest do
       MockClient.set_response("I've completed the task after multiple iterations")
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       capture_log(fn ->
         :ok = Agent.chat(pid, "Keep looping")
@@ -401,7 +394,6 @@ defmodule Nest.Agents.AgentToolsTest do
       MockClient.set_response("Done well under the cap")
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "Brief loop")
 
@@ -456,7 +448,6 @@ defmodule Nest.Agents.AgentToolsTest do
       MockClient.set_response("Forced final answer after second-chance")
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       capture_log(fn ->
         :ok = Agent.chat(pid, "Exhaust iterations")

@@ -47,12 +47,9 @@ defmodule Nest.Agents.Supervisor do
 
   alias Nest.Agents.{Agent, ChildRegistry, NameGenerator, Registry}
   alias Nest.Agents.PersistedAgent
-  alias Nest.Messages.MessageList
   alias Nest.Persistence
 
   @supervisor_name __MODULE__
-
-  @max_insert_attempts 5
 
   # Client API
 
@@ -89,9 +86,6 @@ defmodule Nest.Agents.Supervisor do
     * If no row exists, generate a unique `name` (when the
       caller didn't supply one), insert a new row, then
       start a fresh process. Returns `{:ok, name}`.
-    * If the row insert races a concurrent insert with the
-      same `name` (Postgres `23505`), regenerate the `name`
-      and retry, up to `@max_insert_attempts` times.
     * Persistence disabled in test/env: fall through to
       the in-process `Registry`. If the agent is already
       running, return its name; if not, start a process
@@ -117,13 +111,18 @@ defmodule Nest.Agents.Supervisor do
 
   # Path A — persistence enabled. DB lookup is the source
   # of truth; the in-process `Registry` is a running-cache.
+  #
+  # `name` is required. Callers (e.g. `Agents.create_agent/2`)
+  # generate a unique name before calling this function; the
+  # supervisor no longer auto-generates. The nil-name branch
+  # is kept as defensive code for direct callers (returns
+  # `:not_found`).
   defp do_fetch_or_start_with_persistence(attrs) do
-    name = Map.get(attrs, :name)
-
-    case name do
+    case Map.get(attrs, :name) do
       nil ->
-        initial_name = generate_unique_name()
-        do_insert_and_start(Map.put(attrs, :name, initial_name), @max_insert_attempts)
+        # Defensive: caller didn't supply a name. Real callers
+        # always do (`Agents.create_agent/2` generates one).
+        {:error, :not_found}
 
       existing_name ->
         case safe_fetch_for_start(existing_name) do
@@ -143,28 +142,6 @@ defmodule Nest.Agents.Supervisor do
           {:error, reason} ->
             {:error, reason}
         end
-    end
-  end
-
-  # Try inserting the row, retrying with a fresh name on
-  # `:duplicate_name`. After all attempts are exhausted,
-  # return `:could_not_generate_unique_name`.
-  defp do_insert_and_start(attrs, attempts_remaining) do
-    attrs = Persistence.build_agent_attrs(attrs)
-
-    case Persistence.insert_agent(attrs) do
-      {:ok, _row} ->
-        start_under_supervisor(attrs, attrs.name)
-
-      {:error, :duplicate_name} when attempts_remaining > 1 ->
-        new_attrs = Map.put(attrs, :name, generate_unique_name())
-        do_insert_and_start(new_attrs, attempts_remaining - 1)
-
-      {:error, :duplicate_name} ->
-        {:error, :could_not_generate_unique_name}
-
-      {:error, reason} ->
-        {:error, reason}
     end
   end
 
@@ -261,10 +238,8 @@ defmodule Nest.Agents.Supervisor do
   integer→name lookup at completion time.
 
   Messages: a copy of `parent_state.chat_state.messages` is
-  passed via `:preloaded_messages`. The child's
-  `Init.persist_initial_system_message/1` re-inserts the
-  system row idempotently under the `(agent_id,
-  message_index)` unique constraint, and the rest of the
+  passed via `:preloaded_messages`. The child's `Agent.init/1`
+  loads them via `Init.seed_from_db/3`, and the rest of the
   preloaded sequence round-trips into the child's
   `state.chat_state.messages`. Each child has its own
   integer `agents.id`, so the rows are independent —
@@ -277,6 +252,13 @@ defmodule Nest.Agents.Supervisor do
   does not start the turn itself — that would couple spawn
   to message delivery and break unit tests that want a
   spawned-but-idle child).
+
+  The supervisor's remaining concerns are: resolve the
+  parent's integer `agents.id`, generate a unique child name,
+  register the child in `ChildRegistry`, and orchestrate the
+  spawn. The agent-row insert and system-message write live
+  in `Agent.start_link/1` (the Agent module owns its own
+  pre-spawn setup).
   """
   @spec start_agent_with_parent(Nest.Agents.Agent.t(), String.t()) ::
           {:ok, String.t()} | {:error, term()}
@@ -286,37 +268,12 @@ defmodule Nest.Agents.Supervisor do
 
     with {:ok, %PersistedAgent{id: parent_id}} <- Persistence.fetch_agent_by_name(parent_name),
          child_name <- generate_unique_name(),
-         attrs <-
-           build_child_attrs(parent_name, parent_id, parent_state, child_name, instruction),
-         {:ok, _row} <- Persistence.insert_agent(attrs),
+         attrs <- Agent.build_child_attrs(parent_state, instruction, child_name, parent_id),
+         :ok <- Agent.pre_spawn(attrs),
          {:ok, _pid} <- start_under_supervisor(attrs, child_name),
          :ok <- ChildRegistry.register(parent_name, child_name) do
       {:ok, child_name}
     end
-  end
-
-  defp build_child_attrs(parent_name, parent_id, parent_state, child_name, _instruction) do
-    {stripped, _clone_instruction} =
-      parent_state.chat_state.messages
-      |> MessageList.extract_clone_instruction()
-
-    {preloaded, next_index} =
-      MessageList.build_clone_fork(stripped, parent_state.chat_state.next_message_index)
-
-    %{
-      name: child_name,
-      model: parent_state.model,
-      vocation_id: parent_state.vocation_id,
-      vocation: parent_state.vocation,
-      workspace_path: parent_state.workspace_path,
-      parent_id: parent_id,
-      parent_name: parent_name,
-      depth: parent_state.depth + 1,
-      preloaded_messages: preloaded,
-      last_compaction_index: Map.get(parent_state.chat_state, :last_compaction_index, -1),
-      next_message_index: next_index,
-      initial_api_log_sequences: %{}
-    }
   end
 
   @doc """
@@ -350,7 +307,7 @@ defmodule Nest.Agents.Supervisor do
   defp stop_one(name) do
     case Registry.lookup(name) do
       {:ok, pid} ->
-        DynamicSupervisor.terminate_child(@supervisor_name, pid)
+        Process.exit(pid, :shutdown)
         :ok
 
       {:error, :not_found} ->
@@ -401,7 +358,11 @@ defmodule Nest.Agents.Supervisor do
   def get_agent(name) do
     case Registry.lookup(name) do
       {:ok, pid} ->
-        {:ok, pid}
+        if Process.alive?(pid) do
+          {:ok, pid}
+        else
+          {:error, :not_found}
+        end
 
       {:error, :not_found} ->
         # On-demand load. With persistence enabled, ask the
@@ -456,11 +417,10 @@ defmodule Nest.Agents.Supervisor do
 
   # Generate a unique agent name against the combined
   # in-process `Registry` keys and the DB-resident names.
-  # The DB names reduce (but do not eliminate) the
-  # probability of a Postgres `23505` race; the retry
-  # loop in `do_insert_and_start/2` handles the rare
-  # collision case explicitly.
-  defp generate_unique_name do
+  # Returns an adjective-animal pair (e.g. "clever-raven").
+  # Public — called by `Agents.create_agent/2` when the caller
+  # doesn't pass a name.
+  def generate_unique_name do
     existing_names = Registry.list() ++ persistence_list_names()
     NameGenerator.generate_unique(MapSet.new(existing_names))
   end

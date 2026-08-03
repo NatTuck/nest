@@ -298,6 +298,16 @@ defmodule Nest.Messages.Streaming do
     }
   end
 
+  @doc """
+  Nil-safe wrapper around `to_json/1` for embedding an accumulator
+  in a wire payload (e.g. `state.public_info.partial`,
+  `init_payload.partial`). Returns `nil` for nil input so callers
+  don't have to pattern-match.
+  """
+  @spec to_json_safe(AssistantAccumulator.t() | nil) :: map() | nil
+  def to_json_safe(nil), do: nil
+  def to_json_safe(%AssistantAccumulator{} = acc), do: to_json(acc)
+
   # Update segments in O(1). Segments are stored in REVERSE
   # chronological order (most recent first) so the head is
   # always the current segment — prepending to the head is O(1).

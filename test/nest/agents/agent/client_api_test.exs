@@ -10,20 +10,31 @@ defmodule Nest.Agents.Agent.ClientAPITest do
   wrapper is genuinely exercised (not just defined).
   """
 
-  use ExUnit.Case, async: false
+  use Nest.DataCase, async: true
 
   import Mimic
 
   alias Nest.Agents.Agent.ClientAPI
   alias Nest.Agents.AgentTestHelpers
+  alias Nest.LLM.MockClient
 
   setup :verify_on_exit!
 
   setup do
+    Process.put(:nest_test_agent_pid, self())
+    MockClient.start_link()
+    MockClient.clear()
+
+    # The DataCase's automatic sandbox rollback covers
+    # the agent rows (`Agents.create_agent/2`'s pre_spawn
+    # insert is rolled back). A `for id <- ...;
+    # delete_agent(id)` here would deadlock on
+    # `DBConnection.OwnershipError` because `on_exit`
+    # runs in `ExUnit.OnExitHandler`'s runner process
+    # — no sandbox ownership. The same pattern is
+    # documented in `agent_file_policy_test.exs`.
     on_exit(fn ->
-      for id <- Nest.Agents.list_agents() do
-        Nest.Agents.delete_agent(id)
-      end
+      Process.delete(:nest_test_agent_pid)
     end)
 
     :ok
@@ -36,7 +47,7 @@ defmodule Nest.Agents.Agent.ClientAPITest do
 
       info = ClientAPI.get_public_info(pid)
       assert info.name == name
-      assert info.model.name == "qwen3.5-plus"
+      assert model_name(info.model) == "qwen3.5-plus"
       assert info.status == :idle
     end
   end
@@ -92,4 +103,6 @@ defmodule Nest.Agents.Agent.ClientAPITest do
       assert_receive {:DOWN, ^ref, :process, ^pid, _}, 1000
     end
   end
+
+  defp model_name(model), do: model[:name] || model["name"]
 end

@@ -27,6 +27,68 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   alias Nest.Tokens.Reserve
   alias Nest.Vocations
 
+  @max_fraction_of_context 0.25
+
+  # Conservative upper-bound token estimate used by the
+  # `within_size_budget?/2` safety check. `chars / 3`
+  # is more pessimistic than cl100k_base's typical ~4
+  # chars/token — it accounts for code-heavy content
+  # where individual characters are common tokens and
+  # BPE expansions can balloon the count. We deliberately
+  # don't use `Nest.Tokens.Estimator.estimate/1` here
+  # because that calls the tiktoken NIF, which hangs or
+  # panics on very large inputs (the NIF stack-overflows
+  # on multi-MB strings). The safety check needs an
+  # upper bound, not a precise count, so `chars / 3 +
+  # overhead` is correct AND fast.
+  @safety_chars_per_token 3
+  @safety_overhead 10
+
+  @doc """
+  The token budget the safety check uses. Returns 0 for
+  non-positive context limits (so the check trivially rejects
+  an empty context).
+  """
+  @spec within_size_budget_budget(integer()) :: non_neg_integer()
+  def within_size_budget_budget(context_limit)
+      when is_integer(context_limit) and context_limit > 0 do
+    div(context_limit, round(1 / @max_fraction_of_context))
+  end
+
+  def within_size_budget_budget(_), do: 0
+
+  @doc """
+  Returns true when `system_prompt` fits within the safety
+  budget for `context_limit`.
+
+  The budget is `#max_fraction_of_context` (`@max_fraction_of_context`)
+  of `context_limit` — a belt-and-suspenders sanity check on
+  top of the `compute_summary_budget/5` reserve logic. We
+  refuse to produce a system prompt that would itself consume
+  more than a quarter of the context window, even when the
+  LLM could technically accept it (so the summary + system
+  budget is guaranteed to fit).
+
+  Uses `chars/3 + overhead` instead of
+  `Nest.Tokens.Estimator.estimate/1` — see
+  `@safety_chars_per_token` for why.
+
+  `nil` returns `false` — the empty / no-system case is
+  handled separately by the reserve-exhausted path, not by
+  an "oversized" message.
+  """
+  @spec within_size_budget?(String.t() | nil, pos_integer()) :: boolean()
+  def within_size_budget?(nil, _context_limit), do: false
+
+  def within_size_budget?(system_prompt, context_limit)
+      when is_binary(system_prompt) and is_integer(context_limit) and context_limit > 0 do
+    upper_estimate(system_prompt) <= within_size_budget_budget(context_limit)
+  end
+
+  defp upper_estimate(text) when is_binary(text) do
+    div(byte_size(text) + @safety_chars_per_token - 1, @safety_chars_per_token) + @safety_overhead
+  end
+
   @doc """
   Compose the initial system prompt + mode + tool list from a
   pre-loaded `vocation` struct (or `nil`).

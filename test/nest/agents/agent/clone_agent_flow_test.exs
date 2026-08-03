@@ -41,9 +41,6 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
 
   ## What's stubbed
 
-    * `Nest.Persistence.fetch_agent_by_name/1` and
-      `insert_agent/1` — sidestep the DB so the test
-      doesn't need persistence enabled.
     * `Nest.Agents.chat/2` — short-circuit the child's
       chat cycle. The child's `preloaded_messages` carry
       the parent's `assistant[clone_agent]` tool_use but
@@ -53,7 +50,10 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
       production bug to fix (the spawned child's history
       should drop unpaired trailing tool_uses). Stubbing
       lets the test focus on what it actually exercises:
-      the parent's full chat pipeline through MockClient.
+      the parent's full chat pipeline through MockClient,
+      plus the round-trip persistence of the parent's
+      user/assistant/tool messages and the child's
+      `build_attrs_for_start` DB read of `preloaded_messages`.
 
   ## What's asserted
 
@@ -79,7 +79,6 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
   alias Nest.Agents.Agent
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.ChildRegistry
-  alias Nest.Agents.PersistedAgent
   alias Nest.Agents.Registry, as: AgentsRegistry
   alias Nest.LLM.MockClient
   alias Nest.Messages.Part
@@ -88,7 +87,6 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
   setup :verify_on_exit!
 
   setup do
-    stub_persistence()
     stub_child_chat()
     {:ok, vid: upsert_clone_agent_vocation()}
   end
@@ -101,14 +99,12 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
         vocation_id: vid
       })
 
-    # Mimic stubs are scoped per-source-process. The parent's
-    # GenServer process is started by `DynamicSupervisor.start_child`,
-    # which doesn't propagate `$callers` from the test pid, so we
-    # must explicitly allow it to use the stubs set in `self()`.
-    Mimic.allow(Nest.Persistence, self(), parent_pid)
+    # `Mimic.stub(Nest.Agents, :chat, ...)` is scoped per-source-process.
+    # The parent's GenServer process is started by
+    # `DynamicSupervisor.start_child`, which doesn't propagate `$callers`
+    # from the test pid, so we must explicitly allow it to use the
+    # stub set in `self()`.
     Mimic.allow(Nest.Agents, self(), parent_pid)
-
-    Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{parent_name}")
 
     MockClient.set_tool_response(%{
       text: "delegating",
@@ -257,31 +253,6 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
     }
 
     GenServer.cast(parent_pid, {:child_completed, child_name, response, usage})
-  end
-
-  # `Supervisor.start_agent_with_parent/2` calls
-  # `Persistence.fetch_agent_by_name/1` and
-  # `Persistence.insert_agent/1` unconditionally. With
-  # `:persistence` set to `enabled: false` in `config/test.exs`
-  # the parent row never gets inserted, so the fetch returns
-  # `:not_found` and the spawn path errors out. We sidestep the
-  # DB by stubbing both calls with Mimic.
-  defp stub_persistence do
-    counter = :counters.new(1, [])
-
-    Mimic.stub(Nest.Persistence, :fetch_agent_by_name, fn name ->
-      id = :counters.get(counter, 1)
-      :counters.add(counter, 1, 1)
-
-      {:ok, %PersistedAgent{id: id, name: name}}
-    end)
-
-    Mimic.stub(Nest.Persistence, :insert_agent, fn attrs ->
-      id = :counters.get(counter, 1)
-      :counters.add(counter, 1, 1)
-
-      {:ok, %PersistedAgent{id: id, name: attrs.name}}
-    end)
   end
 
   # The spawned child's first LLM call would normally land on

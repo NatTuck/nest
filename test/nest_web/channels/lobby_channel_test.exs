@@ -2,24 +2,70 @@ defmodule NestWeb.LobbyChannelTest do
   @moduledoc """
   Tests for the LobbyChannel.
   """
-  use NestWeb.ChannelCase, async: false
+  use NestWeb.ChannelCase, async: true
 
   import ExUnit.CaptureLog
 
   alias Nest.Agents
   alias Nest.Vocations
 
+  # The `LobbyChannel.handle_info(:after_join, ...)` handler
+  # spawns a supervised `Task` to fetch `broken_agents` so a
+  # hung `Models.list/0` probe doesn't block the channel's
+  # WS lifecycle. The Task uses the channel pid's `$callers`
+  # to find a sandbox connection. In async tests the channel
+  # pid and the Task don't share a `$callers` chain with
+  # the test pid (async = `shared: false` mode), so the
+  # Task's `Repo.all(...)` raises `DBConnection.OwnershipError`.
+  # The `fetch_broken_agents/0` rescue returns `[]`, so the
+  # follow-up push still fires — but the supervisor still
+  # logs the death. Suppress the noise for the whole module
+  # with `capture_log` in a wrapping setup.
+  #
+  # The pre-test cleanup uses `Persistence.list_agent_names/0`
+  # (DB query) rather than `Nest.Agents.list_agents/0`
+  # (`Registry.list/0`). The Registry only contains live
+  # GenServers; per-test on_exit handlers terminate the
+  # GenServer but leave the DB row behind, so the Registry
+  # misses those rows. Querying the DB catches both running
+  # and dead-but-row-still-present agents.
+  #
+  # `Persistence.delete_agent_by_name/1` is a single SQL
+  # DELETE — no `Supervisor.stop_agent/1` call, so this loop
+  # doesn't serialize through the supervisor's GenServer under
+  # parallel load. The previous `Agents.delete_agent/1` loop
+  # timed out at 5s when many parallel tests' setups queued
+  # supervisor stops on a single mailbox.
   setup do
-    # Agents supervision tree is already started by Application
-    # Just need to clean up any agents from previous tests
-    for id <- Nest.Agents.list_agents() do
-      Nest.Agents.delete_agent(id)
+    for name <- Nest.Persistence.list_agent_names() do
+      Nest.Persistence.delete_agent_by_name(name)
     end
 
-    # Clean up any vocations from previous tests
     for v <- Vocations.list_vocations() do
       Vocations.delete_vocation(v)
     end
+
+    # Seed a default vocation. The channel handler's
+    # `default_vocation_id/0` falls back to the first available
+    # vocation when the client doesn't supply one (e.g. the
+    # `NewAgentPage` test path), so the test catalog must
+    # always have at least one entry.
+    {:ok, _} =
+      Vocations.create_vocation(%{
+        name: "Test Default",
+        description: "Default vocation for tests",
+        system_prompt: "You are a helpful test assistant.",
+        tools: ["context"],
+        modes: %{
+          "chat" => %{
+            "description" => "General conversation.",
+            "caps" => %{
+              "net" => false,
+              "fs" => %{"read" => ["/"], "write" => ["/tmp"]}
+            }
+          }
+        }
+      })
 
     :ok
   end
@@ -216,8 +262,8 @@ defmodule NestWeb.LobbyChannelTest do
       assert_reply ref, :ok, %{"name" => name}
 
       assert {:ok, info} = Agents.get_info(name)
-      assert info.model.name == "qwen3.5-plus"
-      assert info.model.provider == "model-studio"
+      assert model_name(info.model) == "qwen3.5-plus"
+      assert model_provider(info.model) == "model-studio"
 
       assert_broadcast "agent:created", %{
         "name" => ^name,
@@ -232,8 +278,16 @@ defmodule NestWeb.LobbyChannelTest do
       {:ok, _, socket} =
         subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
 
-      # First create an agent
-      {:ok, name} = Agents.create_agent(%{name: "qwen3.5-plus"})
+      # First create an agent via the channel so the standard
+      # `default_vocation_id/0` fallback applies. `Agents.create_agent/2`
+      # directly would skip that and trip the NOT NULL
+      # constraint on `agents.vocation_id`.
+      ref =
+        push(socket, "create_agent", %{
+          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+        })
+
+      assert_reply ref, :ok, %{"name" => name}
 
       ref = push(socket, "delete_agent", %{"name" => name})
       assert_reply ref, :ok, %{}
@@ -263,7 +317,7 @@ defmodule NestWeb.LobbyChannelTest do
           {:ok, _, socket} =
             subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
 
-          {:ok, name} = Agents.create_agent(%{name: "ghost-model"})
+          {:ok, name} = create_test_agent(socket, "ghost-model")
 
           ref =
             push(socket, "change_model", %{
@@ -283,7 +337,7 @@ defmodule NestWeb.LobbyChannelTest do
 
           {:ok, info} = Agents.get_info(name)
           assert info.status == :idle
-          assert info.model.name == "qwen3.5-plus"
+          assert model_name(info.model) == "qwen3.5-plus"
         end)
 
       assert log =~ "could not resolve model"
@@ -293,7 +347,7 @@ defmodule NestWeb.LobbyChannelTest do
       {:ok, _, socket} =
         subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
 
-      {:ok, name} = Agents.create_agent(%{name: "qwen3.5-plus"})
+      {:ok, name} = create_test_agent(socket, "qwen3.5-plus")
 
       ref =
         push(socket, "change_model", %{
@@ -416,4 +470,46 @@ defmodule NestWeb.LobbyChannelTest do
       assert models_list != []
     end
   end
+
+  # Create an agent through the channel so the standard
+  # `default_vocation_id/0` fallback applies (the channel
+  # requires `agents.vocation_id NOT NULL`). Bypassing the
+  # channel and calling `Agents.create_agent/2` directly
+  # would trip that constraint. `model_name` is the LLM
+  # identifier (e.g. "ghost-model"); the channel's
+  # `create_agent` handler turns it into an
+  # `Agents.create_agent/2` call with auto-generated
+  # agent name.
+  #
+  # The channel-spawned agent pid does NOT inherit the
+  # test pid's sandbox via `$callers` walking (it does
+  # inherit through the channel pid's caller chain, but
+  # async tests use `shared: false` mode and the test
+  # pid's connection is the only one checked out). Calls
+  # that hit the DB from the agent pid — `change_model`,
+  # runtime message appends, etc. — need an explicit
+  # `Sandbox.allow/3` from the test pid.
+  defp create_test_agent(socket, model_name) do
+    ref = push(socket, "create_agent", %{"model" => %{"name" => model_name}})
+    assert_reply ref, :ok, %{"name" => agent_name}
+
+    case Nest.Agents.Supervisor.get_agent(agent_name) do
+      {:ok, agent_pid} ->
+        Ecto.Adapters.SQL.Sandbox.allow(Nest.Repo, self(), agent_pid)
+
+      _ ->
+        :ok
+    end
+
+    {:ok, agent_name}
+  end
+
+  # The `model` field on `info` arrives as string keys for
+  # agents loaded from the JSONB column (via `Persistence.
+  # build_attrs_for_start/1` → `state.model`) and as atom keys
+  # when the caller passes atom-keyed attrs directly. Both
+  # shapes are valid; tests use this accessor to assert
+  # without coupling to the source shape.
+  defp model_name(model), do: model[:name] || model["name"]
+  defp model_provider(model), do: model[:provider] || model["provider"]
 end

@@ -23,6 +23,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   alias Nest.Agents.Agent.Compaction.Overflow
   alias Nest.Agents.Agent.Compaction.Trigger
   alias Nest.Agents.Agent.NoticePairInjector
+  alias Nest.Agents.Agent.SystemPrompt
   alias Nest.Messages.Part
   alias Nest.Messages.Streaming
   alias Nest.Messages.User
@@ -334,13 +335,49 @@ defmodule Nest.Agents.Agent.ChatPipeline do
 
     Broadcasts.status(state.name, state)
 
+    system_prompt = render_system_prompt(state)
+    reason = refusal_reason(system_prompt, state.llm_metrics.context_limit)
+
     Overflow.broadcast(
       state,
       "Nest.Agents.Agent.ChatPipeline.handle_preflight/2",
-      "start a conversation"
+      "start a conversation",
+      system_prompt,
+      reason
     )
 
     state
+  end
+
+  # Render the current system prompt via the same path the
+  # Trigger uses, so the refusal message reports the actual
+  # rendered size, not whatever happens to be at
+  # `messages[0]` (which can drift).
+  defp render_system_prompt(state) do
+    {system_prompt, _mode, _tools, _vocation} =
+      SystemPrompt.compose_vocation_config(
+        state.vocation,
+        state.workspace_path,
+        {state.llm_metrics.context_limit, state.llm_metrics.context_limit_source},
+        state.depth
+      )
+
+    system_prompt
+  end
+
+  # Pick the error-message reason: `:system_oversized` when
+  # the rendered prompt exceeds the 25% safety budget,
+  # `:reserve_exhausted` for everything else (no system, or
+  # the headroom-vs-conversation arithmetic failed). Both
+  # paths end up in `Overflow.broadcast/5`'s `:reserve_exhausted`
+  # default wording except for the oversized case.
+  defp refusal_reason(system_prompt, context_limit) do
+    if system_prompt != nil and
+         not SystemPrompt.within_size_budget?(system_prompt, context_limit) do
+      :system_oversized
+    else
+      :reserve_exhausted
+    end
   end
 
   # The message list for the pre-flight check: existing messages

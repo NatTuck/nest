@@ -25,7 +25,7 @@ defmodule Nest.PersistenceTest do
   `:append_message` smoke test exercises the live path.
   """
 
-  use Nest.DataCase, async: false
+  use Nest.DataCase, async: true
 
   import Ecto.Query, warn: false
   import Nest.PersistenceTestHelpers
@@ -38,16 +38,6 @@ defmodule Nest.PersistenceTest do
   alias Nest.Messages.Tool
   alias Nest.Messages.User
   alias Nest.Persistence
-
-  setup do
-    Application.put_env(:nest, :persistence, enabled: true)
-
-    on_exit(fn ->
-      Application.put_env(:nest, :persistence, enabled: false)
-    end)
-
-    :ok
-  end
 
   describe "insert_message/2" do
     test "round-trips a system message" do

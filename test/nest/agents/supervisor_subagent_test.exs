@@ -7,8 +7,9 @@ defmodule Nest.Agents.SupervisorSubagentTest do
   child writes a new `agents` row with `parent_id` /
   `depth` set; it also exercises the on-demand-load
   path (`build_attrs_for_start`) when restoring the
-  parent later. Tests run `async: false` because they
-  touch the persistent schema.
+  parent later. Tests run `async: true` — the sandbox
+  rollback handles DB cleanup at test exit, so each
+  test's row inserts are isolated.
 
   ## What's covered
 
@@ -27,7 +28,7 @@ defmodule Nest.Agents.SupervisorSubagentTest do
     * `cascade_children_only/1` stops children WITHOUT
       terminating the named parent.
   """
-  use Nest.DataCase, async: false
+  use Nest.DataCase, async: true
 
   import Eventually
 
@@ -39,10 +40,6 @@ defmodule Nest.Agents.SupervisorSubagentTest do
   alias Nest.Vocations
 
   setup do
-    previous = Application.get_env(:nest, :persistence, %{})
-    Application.put_env(:nest, :persistence, enabled: true)
-    on_exit(fn -> Application.put_env(:nest, :persistence, previous) end)
-
     case Process.whereis(ChildRegistry) do
       nil -> start_supervised!(ChildRegistry.child_spec())
       _pid -> :ok
@@ -251,9 +248,16 @@ defmodule Nest.Agents.SupervisorSubagentTest do
     pid
   end
 
+  # `ExUnit`'s on_exit handler runs in a separate pid that does
+  # NOT own the test pid's sandbox checkout, so a DB write
+  # here (e.g. `Agents.delete_agent/1` → `Persistence.
+  # delete_agent_by_name/1`) would fail with
+  # `DBConnection.OwnershipError`. `Supervisor.stop_agent/1`
+  # terminates the GenServer only; the DB row is cleaned up
+  # by `DataCase`'s sandbox rollback at test exit.
   defp safe_stop(name) do
     case AgentsRegistry.lookup(name) do
-      {:ok, _pid} -> :ok = Agents.delete_agent(name)
+      {:ok, _pid} -> :ok = Supervisor.stop_agent(name)
       _ -> :ok
     end
   end

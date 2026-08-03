@@ -66,6 +66,7 @@ defmodule Nest.Tokens.Compactor do
   the compactor call and the next agent call.
   """
 
+  alias Nest.Agents.Agent.Compaction.Overflow
   alias Nest.LLM.RunResponse
   alias Nest.Messages.Message
   alias Nest.Messages.Part
@@ -106,9 +107,12 @@ defmodule Nest.Tokens.Compactor do
   ## Parameters
 
     * `context_limit` — the model's context window in tokens.
-    * `system_msg` — the agent's `{:system, _}` message
-      (index 0 of the chat state). The caller must extract
-      this and pass it in; it's not derived here.
+    * `system_prompt` — the rendered system prompt string
+      (from `SystemPrompt.compose_vocation_config/4`). The
+      caller precomputes it; this module does not read
+      `state.chat_state.messages[0]` (the rendered string is
+      the single source of truth for the system size —
+      `messages[0]` can drift and the size must not).
     * `current_messages` — the full chat-state message list
       (used to verify the compactor's call will fit).
     * `optional_guidance` — `:compact` tool's `focus` arg, or
@@ -141,14 +145,14 @@ defmodule Nest.Tokens.Compactor do
   """
   @spec compute_summary_budget(
           pos_integer(),
-          Message.t(),
+          String.t() | nil,
           [Message.t()],
           String.t() | nil
         ) :: summary_budget()
-  def compute_summary_budget(context_limit, system_msg, current_messages, optional_guidance)
+  def compute_summary_budget(context_limit, system_prompt, current_messages, optional_guidance)
       when is_integer(context_limit) and context_limit > 0 and is_list(current_messages) do
     reserve = Reserve.response_budget(context_limit)
-    system_size = Estimator.estimate_message(system_msg)
+    system_size = Overflow.system_size(system_prompt)
 
     placeholder = render_suffix(1, optional_guidance)
     suffix_base = Estimator.estimate_message(placeholder)

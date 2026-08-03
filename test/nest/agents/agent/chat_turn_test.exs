@@ -20,7 +20,7 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
   `LLMRunner.run/2`-in-a-Task design broke with the
   dual-counter bug class.
   """
-  use ExUnit.Case, async: true
+  use Nest.DataCase, async: true
 
   import ExUnit.CaptureLog
   import Mimic
@@ -58,7 +58,6 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
       MockClient.set_response("Hello back")
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "Hello")
 
@@ -100,7 +99,6 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
       MockClient.set_response("Tool result was hi")
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "Run a command")
 
@@ -137,7 +135,6 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
       MockClient.set_response("All done")
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       capture_log(fn ->
         :ok = Agent.chat(pid, "Loop until done")
@@ -213,7 +210,6 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
       end
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       capture_log(fn ->
         :ok = Agent.chat(pid, "Keep looping")
@@ -252,7 +248,6 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
       MockClient.set_stream_events(events)
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "Tell me a long story")
 
@@ -301,7 +296,6 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
   describe "HTTP worker crash" do
     test "1.1.6 Agent receives {:chat_crashed, _}, broadcasts chat:error, transitions to idle" do
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       Mimic.stub(MockClient, :run, fn _request, _opts ->
         raise FunctionClauseError,
@@ -336,7 +330,6 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
       MockClient.set_response("Second response with no usage event")
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "First")
       assert_receive {:chat_status, %{status: "idle"}}, 2000
@@ -362,7 +355,6 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
       MockClient.set_response("Second")
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "First chat")
       assert_receive {:chat_status, %{status: "idle"}}, 2000

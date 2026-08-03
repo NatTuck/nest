@@ -10,7 +10,7 @@ defmodule Nest.Agents.Agent.Broadcasts.ModelMissingTest do
   (`model_label(nil)`, `model_label(other)`).
   """
 
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Nest.Agents.Agent.Broadcasts.ModelMissing
 

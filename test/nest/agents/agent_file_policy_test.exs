@@ -22,7 +22,7 @@ defmodule Nest.Agents.Agent.FilePolicyTest do
        describe block in that file.
   """
 
-  use Nest.DataCase, async: false
+  use Nest.DataCase, async: true
 
   import Mimic
 
@@ -37,11 +37,16 @@ defmodule Nest.Agents.Agent.FilePolicyTest do
     MockClient.start_link()
     MockClient.clear()
 
+    # `Agents.delete_agent/1` does a DB write that requires
+    # the test pid's sandbox checkout. In `on_exit` that
+    # checkout is gone, so the DB call would deadlock on
+    # `DBConnection.OwnershipError`. The DataCase's
+    # automatic sandbox rollback covers the agent rows
+    # (`Agents.create_agent/2`'s pre_spawn insert is
+    # rolled back); the agent GenServers are orphaned for
+    # the remainder of the session, but `System.unique_integer/1`
+    # names mean other tests' agents don't collide.
     on_exit(fn ->
-      for id <- Nest.Agents.list_agents() do
-        Nest.Agents.delete_agent(id)
-      end
-
       Process.delete(:nest_test_agent_pid)
     end)
 
@@ -321,11 +326,6 @@ defmodule Nest.Agents.Agent.FilePolicyTest do
     File.mkdir_p!(workspace_root)
 
     vid = AgentTestHelpers.vocation_id_for_test()
-
-    # Enable persistence (default in dev/prod, off in test).
-    prev = Application.get_env(:nest, :persistence, %{})
-    Application.put_env(:nest, :persistence, enabled: true)
-    on_exit(fn -> Application.put_env(:nest, :persistence, prev) end)
 
     # Use a real workspace path on the agent. The MockClient
     # doesn't reach out to any LLM — we just script tool

@@ -9,6 +9,7 @@ defmodule NestWeb.AgentChannelTest do
   import Mimic
 
   alias Nest.Agents
+  alias Nest.Agents.AgentTestHelpers
 
   setup :verify_on_exit!
 
@@ -20,7 +21,7 @@ defmodule NestWeb.AgentChannelTest do
       assert socket.topic == "agent:#{id}"
       assert_push "init", payload
       assert payload["name"] == id
-      assert payload["model"][:name] == "qwen3.5-plus"
+      assert payload["model"]["name"] == "qwen3.5-plus"
       assert payload["messageCount"] == 1
       assert payload["status"] == "idle"
       # Init includes partial (nil when not streaming)
@@ -75,8 +76,8 @@ defmodule NestWeb.AgentChannelTest do
       # The model map must carry both :name and :provider so the
       # frontend can render "provider: model-name" in the chat
       # header (assets/js/pages/ChatPage.jsx).
-      assert payload["model"][:name] == "qwen3.5-plus"
-      assert payload["model"][:provider] == "model-studio"
+      assert payload["model"]["name"] == "qwen3.5-plus"
+      assert payload["model"]["provider"] == "model-studio"
     end
 
     test "returns error for non-existent agent" do
@@ -133,6 +134,8 @@ defmodule NestWeb.AgentChannelTest do
       assert_push "chat:message", %{"index" => 1, "role" => "user"}, 2000
       assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 2000
 
+      assert_receive {:chat_status, %{status: "idle"}}, 500
+
       # Drop the first channel and wait for it to actually terminate
       # before rejoining. Monitor + :DOWN is the synchronous Erlang
       # primitive; GenServer.stop/2 is async and would race.
@@ -158,6 +161,8 @@ defmodule NestWeb.AgentChannelTest do
       # Wait for the user message to be broadcast so the LLM Task is
       # actively using the stub before the test exits.
       assert_push "chat:message", %{"role" => "user"}, 500
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
 
     test "accepts a mode field in the payload", %{socket: socket} do
@@ -167,12 +172,16 @@ defmodule NestWeb.AgentChannelTest do
       # The user message broadcast includes the mode (which gets stored
       # in the User struct's metadata).
       assert_push "chat:message", %{"role" => "user"}, 500
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
 
     test "omitting mode is allowed (defaults to chat)", %{socket: socket} do
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
       assert_push "chat:message", %{"role" => "user"}, 500
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
 
     test "broadcasts user message with index", %{socket: socket} do
@@ -188,6 +197,8 @@ defmodule NestWeb.AgentChannelTest do
       assert is_binary(payload["content"])
       assert is_integer(payload["charsStart"])
       assert is_integer(payload["charsEnd"])
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
 
     test "chat:status broadcast carries currentMode (sticky mode)", %{socket: socket} do
@@ -235,6 +246,8 @@ defmodule NestWeb.AgentChannelTest do
 
       assert_push "chat:message", %{"role" => "assistant", "index" => idx}, 500
       assert idx >= 0
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
   end
 
@@ -271,7 +284,14 @@ defmodule NestWeb.AgentChannelTest do
             end
           end)
 
-          {:ok, name} = Agents.create_agent(%{name: "ghost-model"})
+          {:ok, name} =
+            Agents.create_agent(
+              %{name: "ghost-model"},
+              vocation_id: AgentTestHelpers.vocation_id_for_test()
+            )
+
+          {:ok, agent_pid} = Nest.Agents.Supervisor.get_agent(name)
+          Ecto.Adapters.SQL.Sandbox.allow(Nest.Repo, self(), agent_pid)
 
           {:ok, _, socket} =
             subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{name}")
@@ -301,7 +321,14 @@ defmodule NestWeb.AgentChannelTest do
     end
 
     test "returns :invalid_payload when the model field is missing" do
-      {:ok, name} = Agents.create_agent(%{name: "qwen3.5-plus"})
+      {:ok, name} =
+        Agents.create_agent(
+          %{name: "ghost-model"},
+          vocation_id: AgentTestHelpers.vocation_id_for_test()
+        )
+
+      {:ok, agent_pid} = Nest.Agents.Supervisor.get_agent(name)
+      Ecto.Adapters.SQL.Sandbox.allow(Nest.Repo, self(), agent_pid)
 
       {:ok, _, socket} =
         subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{name}")
@@ -328,7 +355,11 @@ defmodule NestWeb.AgentChannelTest do
             end
           end)
 
-          {:ok, name} = Agents.create_agent(%{name: "ghost-model"})
+          {:ok, name} =
+            Agents.create_agent(
+              %{name: "ghost-model"},
+              vocation_id: AgentTestHelpers.vocation_id_for_test()
+            )
 
           {:ok, _, socket} =
             subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{name}")

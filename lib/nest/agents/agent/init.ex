@@ -87,13 +87,12 @@ defmodule Nest.Agents.Agent.Init do
   into the `messages` table. No-op when persistence is disabled
   or when the agent's `chat_state.messages` list is empty.
 
-  This is what makes the system prompt survive a BEAM restart;
-  `Supervisor.fetch_or_start_agent/1`'s restore path reads the
-  active messages and seeds them into `state.chat_state.messages`.
-  Subsequent re-renders (via `seed_from_db/3`) keep the system
-  prompt at position 0 either because the persisted row already
-  exists or because the in-memory system message is prepended
-  defensively.
+  This function is retained for direct callers that want to
+  pre-persist a system message row outside of `Agent.start_link/1`
+  — for example, the regression test in `agent_persistence_test.exs`
+  that pins the wrapper's idempotency contract. `Agent.init/1`
+  no longer calls this; the canonical pre-spawn write lives in
+  `Agent.start_link/1` itself (in the calling process's DB context).
   """
   @spec persist_initial_system_message(Nest.Agents.Agent.t()) :: :ok
   def persist_initial_system_message(state) do

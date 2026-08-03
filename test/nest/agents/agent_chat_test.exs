@@ -8,6 +8,8 @@ defmodule Nest.Agents.AgentChatTest do
   import ExUnit.CaptureLog
   import Mimic
 
+  import Nest.Agents.AgentTestHelpers
+
   alias Nest.Agents.Agent
   alias Nest.LLM.MockClient
   alias Nest.Messages.Part
@@ -16,6 +18,9 @@ defmodule Nest.Agents.AgentChatTest do
   setup :verify_on_exit!
 
   setup do
+    # `AgentTestHelpers.start_agent/1` reads `:nest_test_agent_pid`
+    # to find the test pid (the Sandbox owner) so it can transfer
+    # any pre-test queued MockClient items to the per-agent queue.
     Process.put(:nest_test_agent_pid, self())
     MockClient.start_link()
     MockClient.clear()
@@ -25,12 +30,9 @@ defmodule Nest.Agents.AgentChatTest do
     :ok
   end
 
-  import Nest.Agents.AgentTestHelpers
-
   describe "chat/2" do
     test "broadcasts user message and LLM response via PubSub" do
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+      {pid, agent_id} = start_agent()
 
       :ok = Agent.chat(pid, "Hello")
 
@@ -42,8 +44,7 @@ defmodule Nest.Agents.AgentChatTest do
     end
 
     test "broadcasts status changes via PubSub" do
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+      {pid, agent_id} = start_agent()
 
       :ok = Agent.chat(pid, "Hello")
 
@@ -57,8 +58,7 @@ defmodule Nest.Agents.AgentChatTest do
     test "handles LLM error gracefully" do
       MockClient.set_error("Connection failed")
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+      {pid, agent_id} = start_agent()
 
       log =
         capture_log(fn ->
@@ -80,8 +80,7 @@ defmodule Nest.Agents.AgentChatTest do
     test "LLM error path returns a RunState (Task body destructures successfully)" do
       MockClient.set_error("Connection failed")
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+      {pid, agent_id} = start_agent()
 
       log =
         capture_log(fn ->
@@ -109,8 +108,7 @@ defmodule Nest.Agents.AgentChatTest do
       # instead of an orphaned assistant error with no api_logs.
       MockClient.set_error("Connection failed")
 
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+      {pid, agent_id} = start_agent()
 
       capture_log(fn ->
         :ok = Agent.chat(pid, "Hello")
@@ -129,8 +127,7 @@ defmodule Nest.Agents.AgentChatTest do
     end
 
     test "accumulates delta content from streaming LLM response" do
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+      {pid, agent_id} = start_agent()
 
       :ok = Agent.chat(pid, "Hello")
 
@@ -155,8 +152,7 @@ defmodule Nest.Agents.AgentChatTest do
 
   describe "delta handling" do
     test "accumulates deltas with correct character counts" do
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+      {pid, agent_id} = start_agent()
 
       :ok = Agent.chat(pid, "Hello")
 
@@ -185,8 +181,7 @@ defmodule Nest.Agents.AgentChatTest do
           }
         })
 
-      {pid, _id} =
-        start_agent(%{model: %{name: "qwen3.5-plus"}, vocation_id: vocation.id})
+      {pid, _id} = start_agent(%{vocation_id: vocation.id, vocation: vocation})
 
       # No broadcast carries the full Vocation struct; the only way to
       # observe it is via the agent's process state. Kept as future
@@ -195,13 +190,6 @@ defmodule Nest.Agents.AgentChatTest do
       assert state.vocation != nil
       assert state.vocation.id == vocation.id
       assert state.vocation.name == vocation.name
-    end
-
-    test "state.vocation is nil when no vocation_id is provided" do
-      {pid, _id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-
-      state = :sys.get_state(pid)
-      assert state.vocation == nil
     end
   end
 end

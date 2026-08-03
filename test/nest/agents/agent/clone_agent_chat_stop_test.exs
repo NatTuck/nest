@@ -12,27 +12,22 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
   See `notes/stop-children-when-parent-stopped.md` for the
   design and the race analysis this test pins down.
   """
-  use Nest.DataCase, async: false
+  use Nest.DataCase, async: true
 
   import Mimic
   import Eventually
 
-  alias Nest.Agents
   alias Nest.Agents.Agent.Broadcasts
+  alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.ChildRegistry
   alias Nest.Agents.Registry, as: AgentsRegistry
   alias Nest.Agents.Supervisor
   alias Nest.LLM.MockClient
-  alias Nest.Persistence
   alias Nest.Vocations
 
   setup :verify_on_exit!
 
   setup do
-    previous = Application.get_env(:nest, :persistence, %{})
-    Application.put_env(:nest, :persistence, enabled: true)
-    on_exit(fn -> Application.put_env(:nest, :persistence, previous) end)
-
     case Process.whereis(ChildRegistry) do
       nil -> start_supervised!(ChildRegistry.child_spec())
       _pid -> :ok
@@ -45,18 +40,19 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
     # parent's `handle_clone_request/3` doesn't actually drive an
     # LLM cycle on the spawned child.
     Mimic.copy(Nest.Agents)
+    Mimic.stub(Nest.Agents, :chat, fn _name, _content -> :ok end)
 
     {:ok, vid: upsert_vocation()}
   end
 
   test "chat_stopped terminates the spawned child and clears pending_children",
        %{vid: vid} do
+    Process.flag(:trap_exit, true)
     {:ok, parent_name, parent_pid, _parent_id} = start_parent(vid)
     Mimic.allow(MockClient, self(), parent_pid)
+    Mimic.allow(Nest.Agents, self(), parent_pid)
     :sys.replace_state(parent_pid, &swap_to_mock/1)
     MockClient.start_link(parent_pid)
-
-    Mimic.stub(Nest.Agents, :chat, fn _name, _content -> :ok end)
 
     {:ok, child_name} =
       GenServer.call(parent_pid, {:clone_agent_request, self(), "x"}, 5_000)
@@ -89,12 +85,11 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
   end
 
   test "the cascade walks grandchildren", %{vid: vid} do
+    Process.flag(:trap_exit, true)
     {:ok, parent_name, parent_pid, _parent_id} = start_parent(vid)
     Mimic.allow(MockClient, self(), parent_pid)
     :sys.replace_state(parent_pid, &swap_to_mock/1)
     MockClient.start_link(parent_pid)
-
-    Mimic.stub(Nest.Agents, :chat, fn _name, _content -> :ok end)
 
     # Spawn child A (the grandchild's parent) from the parent.
     {:ok, child_a_name} =
@@ -102,6 +97,14 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
 
     {:ok, child_a_pid} = AgentsRegistry.lookup(child_a_name)
     MockClient.start_link(child_a_pid)
+
+    # Child A inherits the test pid's MockClient and Mimic stubs
+    # — propagate them, plus the test pid's sandbox checkout for
+    # the DB writes that `handle_clone_request/3` will do when
+    # spawning child B.
+    Mimic.allow(Nest.Agents, self(), child_a_pid)
+    Mimic.allow(Nest.LLM.MockClient, self(), child_a_pid)
+    Ecto.Adapters.SQL.Sandbox.allow(Nest.Repo, self(), child_a_pid)
 
     # Spawn grandchild B from child A. The grandchild registration
     # goes through ChildRegistry the same way.
@@ -146,12 +149,12 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
 
   test "a child that completed just before stop is still merged into descendant_usage",
        %{vid: vid} do
+    Process.flag(:trap_exit, true)
     {:ok, parent_name, parent_pid, _parent_id} = start_parent(vid)
     Mimic.allow(MockClient, self(), parent_pid)
+    Mimic.allow(Nest.Agents, self(), parent_pid)
     :sys.replace_state(parent_pid, &swap_to_mock/1)
     MockClient.start_link(parent_pid)
-
-    Mimic.stub(Nest.Agents, :chat, fn _name, _content -> :ok end)
 
     {:ok, child_name} =
       GenServer.call(parent_pid, {:clone_agent_request, self(), "x"}, 5_000)
@@ -208,41 +211,33 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
   end
 
   defp start_parent(vid) do
-    name = "stop-parent-#{System.unique_integer([:positive])}"
-    model = %{name: "qwen3.5-plus", provider: "model-studio"}
-
-    {:ok, row} =
-      Persistence.insert_agent(%{
-        name: name,
-        model: model,
-        vocation_id: vid
-      })
-
-    attrs = %{
-      name: name,
-      model: model,
-      vocation_id: vid,
-      vocation: Vocations.get_vocation(vid),
-      parent_id: nil,
-      depth: 0
-    }
-
-    {:ok, parent_pid} = Supervisor.start_under_test(attrs)
-    {:ok, name, parent_pid, row.id}
+    # Use the standard helper to handle row insertion (via
+    # pre_spawn), sandbox allow, MockClient swap, and on_exit
+    # cleanup. The helper's `vocation_id_for_test/0` creates
+    # a "Test Default" vocation with `tools: ["context"]` —
+    # sufficient for the tool-call shape exercised here. The
+    # `vid` argument is unused now but kept for API compatibility
+    # with the original `start_parent/1` signature (some tests
+    # threaded the vid through state pre-seeding).
+    _ = vid
+    {parent_pid, name} = AgentTestHelpers.start_agent()
+    {:ok, name, parent_pid, nil}
   end
 
   defp swap_to_mock(state) do
     %{state | client_config: %{state.client_config | client: MockClient}}
   end
 
+  # Best-effort cleanup. `Agents.delete_agent/1` would do a
+  # DB write that requires the test pid's sandbox checkout,
+  # but `on_exit` runs in `ExUnit.OnExitHandler` — no
+  # ownership. Use `Supervisor.stop_agent/1` (GenServer only;
+  # no DB write) and let the DataCase sandbox rollback handle
+  # row cleanup at test exit.
   defp on_exit_cleanup(names) do
-    # Best-effort cleanup. `Agents.delete_agent/1` returns
-    # `{:error, :not_found}` when the agent has already been
-    # terminated by the cascade under test — those are
-    # silently discarded.
     for name <- names do
       case AgentsRegistry.lookup(name) do
-        {:ok, _pid} -> :ok = Agents.delete_agent(name)
+        {:ok, _pid} -> :ok = Supervisor.stop_agent(name)
         _ -> :ok
       end
     end

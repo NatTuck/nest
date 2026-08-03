@@ -29,6 +29,8 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       assert_push "chat:message", %{"index" => 1, "role" => "user"}, 500
       assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 500
 
+      assert_receive {:chat_status, %{status: "idle"}}, 500
+
       # Sync verifies state via the channel's sync handler (a sync
       # GenServer.call). The reply includes the agent's messages.
       sync_ref = push(socket, "chat:sync", %{"lastIndex" => -1})
@@ -62,6 +64,8 @@ defmodule NestWeb.AgentChannelAdvancedTest do
 
       assert_push "chat:message", %{"index" => 1, "role" => "user"}, 500
       assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 500
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
 
       channel_pid = socket.channel_pid
       mon = Process.monitor(channel_pid)
@@ -133,6 +137,8 @@ defmodule NestWeb.AgentChannelAdvancedTest do
 
       assert asst2_log["type"] == "response"
       assert asst2_log["id"] == "004.000"
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
 
     test "API call payload contains conversation history and tool calls", %{socket: socket} do
@@ -152,6 +158,8 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       assert asst_resp["id"] == "002.000"
       assert is_map(asst_resp["payload"])
       assert asst_resp["timestamp"] != nil
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
 
     test "tool messages have API request logs from continuation", %{socket: socket} do
@@ -195,6 +203,8 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       assert tool_req["timestamp"] != nil
 
       MockClient.clear()
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
   end
 
@@ -286,6 +296,8 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       assert part["toolCallId"] == "call_123"
       assert part["content"] == "total 4\ndrwxrwxr-x 1 user user 18 May 29 10:49 ."
       assert part["arguments"] == %{"command" => "ls -la"}
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
 
     test "chat:sync handles messages with ToolResult structs in api_logs", %{
@@ -356,6 +368,8 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       refute is_struct(tool_result)
       assert tool_result["tool_call_id"] == "call_456"
       assert tool_result["content"] == "output"
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
   end
 end

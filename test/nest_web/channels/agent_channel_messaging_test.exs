@@ -27,6 +27,8 @@ defmodule NestWeb.AgentChannelMessagingTest do
       assert_push "chat:message", %{"index" => asst_idx, "role" => "assistant"}, 500
 
       assert asst_idx == user_idx + 1
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
 
     test "messageCount is highest complete (non-partial) message", %{socket: socket} do
@@ -41,6 +43,8 @@ defmodule NestWeb.AgentChannelMessagingTest do
 
       # System + user + assistant = 3 messages
       assert final_count == 3
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
   end
 
@@ -71,6 +75,8 @@ defmodule NestWeb.AgentChannelMessagingTest do
       assert is_integer(first_idx)
 
       MockClient.clear()
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
 
     test "delta charsStart and charsEnd represent content slice", %{socket: socket} do
@@ -90,6 +96,8 @@ defmodule NestWeb.AgentChannelMessagingTest do
       assert is_integer(end_pos)
       assert end_pos > start_pos
       assert String.length(content) == end_pos - start_pos
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
   end
 
@@ -119,6 +127,8 @@ defmodule NestWeb.AgentChannelMessagingTest do
 
       Process.unlink(socket2.channel_pid)
       GenServer.stop(socket2.channel_pid, :normal)
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
 
     test "assistant message has correct index and role", %{socket: socket} do
@@ -131,6 +141,8 @@ defmodule NestWeb.AgentChannelMessagingTest do
       assert is_list(payload["parts"])
       assert idx >= 1
       assert idx == 2
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
   end
 
@@ -154,6 +166,8 @@ defmodule NestWeb.AgentChannelMessagingTest do
 
       ref3 = push(socket, "chat:status", %{"lastIndex" => -1})
       assert_reply ref3, :ok, %{"status" => "idle"}
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
   end
 
@@ -212,6 +226,8 @@ defmodule NestWeb.AgentChannelMessagingTest do
       GenServer.stop(new_socket.channel_pid, :normal)
 
       MockClient.clear()
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
 
     test "mid-stream join does not trigger delta gap warnings", %{socket: socket, agent_id: id} do
@@ -266,6 +282,8 @@ defmodule NestWeb.AgentChannelMessagingTest do
 
       Process.unlink(new_socket.channel_pid)
       GenServer.stop(new_socket.channel_pid, :normal)
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
   end
 end

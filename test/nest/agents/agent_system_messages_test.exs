@@ -13,7 +13,7 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
   notices.
   """
 
-  use ExUnit.Case, async: true
+  use Nest.DataCase, async: true
 
   import ExUnit.CaptureLog
   import Mimic
@@ -47,12 +47,17 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
       assert match?({:system, %SystemMsg{}}, first)
     end
 
-    test "the empty system message is in state (transparency)" do
-      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+    test "the system message is in state (transparency)" do
+      {pid, _agent_id} = start_agent()
 
       messages = Nest.Agents.Agent.get_messages(pid)
 
-      assert {:system, %SystemMsg{parts: [%Part.Text{text: ""}]}} = hd(messages)
+      # Transparency: the system message is always the first
+      # entry in the messages list, never hidden. It is
+      # non-empty whenever the agent was created with a
+      # real vocation (the default `start_agent/1` path).
+      assert {:system, %SystemMsg{parts: [%Part.Text{text: text}]}} = hd(messages)
+      assert text != ""
     end
   end
 
@@ -74,7 +79,6 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
       MockClient.set_response("All done, used tools 4 times")
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       capture_log(fn ->
         :ok = Agent.chat(pid, "Loop until done")
@@ -129,7 +133,6 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
       MockClient.set_response("All done, used tools 4 times")
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       capture_log(fn ->
         :ok = Agent.chat(pid, "Loop until done")
@@ -214,7 +217,6 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
         }
       end)
 
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
       :ok = Agent.chat(pid, "Loop until done")
       assert_receive {:chat_status, %{status: "idle"}}, 5000
 

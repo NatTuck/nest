@@ -25,15 +25,18 @@ defmodule Nest.Agents.Agent.ChatTurnSpawner do
       iter falls through to the LLM (last message is the tool
       result, not a tool_call).
 
-    * `{:compaction, System.t(), entry() | nil}` — the
-      compactor's own chat turn. The system message (the
-      `[mode: compact]` suffix) is already in
-      `state.chat_state.messages`; the new ChatTurn's first
-      iter calls the LLM with `tools: nil, tool_choice: :none`,
-      then sends `{:compaction_done, summary_text,
-      carried_entry}` to the Agent when finished. The third
-      element is `nil` for Trigger A (post-turn) and the
-      carried `{:tool_call, _, _, _}` /
+    * `{:compaction, term(), entry() | nil}` — the
+      compactor's own chat turn. The `[mode: compact]`
+      suffix is already in `state.chat_state.messages`; the
+      new ChatTurn's first iter calls the LLM with
+      `tools: nil, tool_choice: :none`, then sends
+      `{:compaction_done, summary_text, carried_entry}` to
+      the Agent when finished. The middle slot is reserved
+      for a future contract (currently `nil` from the
+      Trigger — `lifecycle.ex`'s finalize destructure
+      currently discards it). The third element is `nil`
+      for Trigger A (post-turn) and the carried
+      `{:tool_call, _, _, _}` /
       `{:compact_tool, _, _, _}` for Trigger B (mid-turn).
 
   All four production entries are explicit. No `nil` case

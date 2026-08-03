@@ -9,7 +9,9 @@ defmodule NestWeb.AgentChannelChatTest do
   import ExUnit.CaptureLog
   import Mimic
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias Nest.Agents
+  alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Supervisor
   alias Nest.LLM.MockClient
 
@@ -59,6 +61,8 @@ defmodule NestWeb.AgentChannelChatTest do
 
       assert length(messages) == 2
       assert Enum.all?(messages, fn m -> m["index"] > 1 end)
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
 
     test "returns partial message when streaming", %{socket: socket} do
@@ -90,6 +94,8 @@ defmodule NestWeb.AgentChannelChatTest do
       }
 
       assert partial == nil
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
   end
 
@@ -119,7 +125,7 @@ defmodule NestWeb.AgentChannelChatTest do
       }
 
       assert status_name == id
-      assert model[:name] == "qwen3.5-plus"
+      assert model["name"] == "qwen3.5-plus"
       assert last_index == 1
       assert status == "idle"
     end
@@ -183,6 +189,8 @@ defmodule NestWeb.AgentChannelChatTest do
       assert status_name == id
       assert last_index >= 0
       assert status == "idle"
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
 
     test "returns streaming status during LLM response", %{socket: socket} do
@@ -196,6 +204,8 @@ defmodule NestWeb.AgentChannelChatTest do
       # After completion, status should be back to "idle"
       ref_status = push(socket, "chat:status", %{"lastIndex" => -1})
       assert_reply ref_status, :ok, %{"status" => "idle"}
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
 
     test "returns error when agent not found", %{socket: _socket} do
@@ -229,6 +239,8 @@ defmodule NestWeb.AgentChannelChatTest do
 
       assert messages == []
       assert last_complete_index < 999
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
 
     test "sync response includes messageCount field", %{socket: socket} do
@@ -259,6 +271,8 @@ defmodule NestWeb.AgentChannelChatTest do
       # Should have both user (0) and assistant (1) messages
       assert length(messages) >= 2
       assert last_complete_index >= 1
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
   end
 
@@ -292,12 +306,25 @@ defmodule NestWeb.AgentChannelChatTest do
       # Create the second agent for this test BEFORE injecting the
       # error, so the MockClient error lands in this test's queue
       # (not the previous test's).
-      {:ok, error_agent_id} = Agents.create_agent(%{name: "qwen3.5-plus"})
+      {:ok, error_agent_id} =
+        Agents.create_agent(
+          %{name: "qwen3.5-plus"},
+          vocation_id: AgentTestHelpers.vocation_id_for_test()
+        )
+
       {:ok, error_agent_pid} = Supervisor.get_agent(error_agent_id)
 
       :sys.replace_state(error_agent_pid, fn state ->
         %{state | client_config: %{state.client_config | client: MockClient}}
       end)
+
+      # Runtime DB writes from the agent pid (the chat pipeline
+      # appends to the `messages` table via `MessageAppender.append_one/2`)
+      # need explicit sandbox access — the test pid owns the
+      # sandbox checkout, and the agent pid would otherwise
+      # deadlock waiting for it. Without this, `Persistence.insert_message/2`
+      # blocks indefinitely and the chat task never spawns.
+      Sandbox.allow(Nest.Repo, self(), error_agent_pid)
 
       Process.put(:nest_test_agent_pid, error_agent_pid)
       MockClient.start_link(error_agent_pid)
@@ -391,6 +418,8 @@ defmodule NestWeb.AgentChannelChatTest do
 
       assert_reply ref, :ok, %{}
       assert_push "chat:message", %{"index" => 1, "role" => "user"}, 2000
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
   end
 

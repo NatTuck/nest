@@ -11,7 +11,7 @@ defmodule Nest.Agents.AgentUserMessageModePrefixTest do
   fails this single, clearly-flagged test instead of being lost
   among unrelated chat tests.
   """
-  use ExUnit.Case, async: true
+  use Nest.DataCase, async: true
 
   import Mimic
 
@@ -61,8 +61,7 @@ defmodule Nest.Agents.AgentUserMessageModePrefixTest do
   # If you are changing this test, you are almost certainly
   # breaking the design. Talk to the team first.
   test "user message content is prefixed with the effective mode (intentional design choice)" do
-    {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-    Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+    {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
     # No mode argument -> defaults to "chat" (vocation-less agent).
     :ok = Agent.chat(pid, "Hello world")
@@ -74,5 +73,7 @@ defmodule Nest.Agents.AgentUserMessageModePrefixTest do
                        metadata: %{"mode" => "chat"}
                      }}},
                    500
+
+    assert_receive {:chat_status, %{status: "idle"}}, 500
   end
 end

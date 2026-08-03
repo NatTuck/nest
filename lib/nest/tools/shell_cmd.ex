@@ -58,6 +58,8 @@ defmodule Nest.Tools.ShellCmd do
     # Validate workspace exists
     workspace = resolve_workspace(workspace_path)
 
+    if tmp_path, do: File.mkdir_p!(tmp_path)
+
     # If stdin is provided, embed it via base64 to avoid stdin redirection issues
     final_command =
       if stdin != "" do
@@ -87,9 +89,27 @@ defmodule Nest.Tools.ShellCmd do
         end
 
       {:ok, exit_code, output} ->
+        # Permanent diagnostic. bwrap exiting non-zero is the rare
+        # path; under heavy parallel load it can fire intermittently
+        # for reasons we don't fully understand yet. We want the
+        # server log to capture every occurrence with enough detail
+        # to diagnose a flake from the log alone.
+        Logger.error(
+          "ShellCmd.execute: bwrap exited non-zero " <>
+            "(exit_code=#{exit_code}) for command=#{truncate_log(command)} " <>
+            "workspace=#{workspace} tmp_path=#{tmp_path || "none"} " <>
+            "output=#{inspect(output)}"
+        )
+
         {:error, "Exit code #{exit_code}:\n#{output}"}
 
       {:error, reason} ->
+        Logger.error(
+          "ShellCmd.execute: erlexec failed to start process " <>
+            "(reason=#{inspect(reason)}) for command=#{truncate_log(command)} " <>
+            "workspace=#{workspace} tmp_path=#{tmp_path || "none"}"
+        )
+
         {:error, "Execution failed: #{reason}"}
     end
   end

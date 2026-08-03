@@ -23,13 +23,17 @@ defmodule Nest.Agents.Agent do
   alias Nest.Agents.Agent.MessageAppender
   alias Nest.Agents.Agent.Restore
   alias Nest.Agents.Agent.SubAgent
+  alias Nest.Agents.Agent.SystemPrompt
   alias Nest.Agents.Agent.TmpSpace
   alias Nest.Agents.Registry
   alias Nest.LLM.ClientConfig
   alias Nest.Messages.Assistant
+  alias Nest.Messages.MessageList
+  alias Nest.Messages.Part
   alias Nest.Messages.System
   alias Nest.Messages.Tool
   alias Nest.Messages.User
+  alias Nest.Persistence
 
   defstruct [
     :name,
@@ -110,12 +114,116 @@ defmodule Nest.Agents.Agent do
   - `:name` - Unique readable agent name (the human identifier)
   - `:model` - Model configuration map with :name key
 
+  Pure spawn. Pre-spawn DB work (agent row + system message
+  inserts) is the caller's responsibility — call `Agent.pre_spawn/1`
+  in the caller's pid before `start_link/1`. The supervisor pid
+  (or any pid that wraps `start_link/1` via `DynamicSupervisor`)
+  has no DB work to do, so it doesn't need a Sandbox checkout.
+
   The agent registers itself in the Registry under its name.
   """
   @spec start_link(attrs :: map()) :: GenServer.on_start()
   def start_link(attrs) do
     name = Map.fetch!(attrs, :name)
     GenServer.start_link(__MODULE__, attrs, name: Registry.via_tuple(name))
+  end
+
+  @doc """
+  Pre-spawn DB work for `start_link/1`. Inserts the agent row
+  and the initial system message in the *caller's* DB context
+  (test pid for tests, channel pid for production) so the
+  supervisor pid never has to do DB work during spawn.
+
+  Returns `:ok` on success, `{:error, reason}` on failure. On
+  `:duplicate_name` the row is left untouched — the caller
+  decides whether to retry with a fresh name or surface the
+  error.
+  """
+  @spec pre_spawn(map()) :: :ok | {:error, term()}
+  def pre_spawn(attrs) do
+    with {:ok, _agent_row} <- Persistence.insert_agent(attrs),
+         {:ok, _msg_row} <- persist_system_message(attrs) do
+      :ok
+    end
+  end
+
+  # Render the system prompt in the calling process (so the
+  # DB write below runs in a pid with DB access) and persist
+  # the row at index 0. No-op when the rendered prompt is
+  # `nil` (defensive — `compose_vocation_config/4` returns
+  # `nil` when the vocation struct is missing or the
+  # `system_prompt` field is blank).
+  defp persist_system_message(attrs) do
+    name = Map.fetch!(attrs, :name)
+    model = Map.fetch!(attrs, :model)
+    workspace_path = Map.get(attrs, :workspace_path)
+    vocation = Map.get(attrs, :vocation)
+    depth = Map.get(attrs, :depth, 0)
+
+    {context_limit, context_limit_source} = Init.initial_context_limit(model)
+
+    {system_prompt, _mode, _tools, _cached_vocation} =
+      SystemPrompt.compose_vocation_config(
+        vocation,
+        workspace_path,
+        {context_limit, context_limit_source},
+        depth
+      )
+
+    case system_prompt do
+      text when is_binary(text) and text != "" ->
+        Persistence.insert_message(
+          name,
+          {:system,
+           %System{
+             index: 0,
+             parts: [%Part.Text{text: text}],
+             timestamp: DateTime.utc_now(),
+             api_logs: []
+           }}
+        )
+
+      _ ->
+        {:ok, :no_system_message}
+    end
+  end
+
+  @doc """
+  Build a child agent's attrs from a parent state and the
+  clone instruction. Pure data shaping — no DB writes, no
+  spawning.
+
+  The caller (the supervisor's `start_agent_with_parent/2`)
+  provides:
+    * `child_name` — a freshly-generated unique name
+    * `parent_id` — the parent's integer `agents.id`,
+      resolved via `Persistence.fetch_agent_by_name/1`
+
+  Returns the attrs map ready to pass to `start_link/1`.
+  """
+  @spec build_child_attrs(map(), String.t(), String.t(), integer()) :: map()
+  def build_child_attrs(parent_state, _instruction, child_name, parent_id) do
+    {stripped, _clone_instruction} =
+      parent_state.chat_state.messages
+      |> MessageList.extract_clone_instruction()
+
+    {preloaded, next_index} =
+      MessageList.build_clone_fork(stripped, parent_state.chat_state.next_message_index)
+
+    %{
+      name: child_name,
+      model: parent_state.model,
+      vocation_id: parent_state.vocation_id,
+      vocation: parent_state.vocation,
+      workspace_path: parent_state.workspace_path,
+      parent_id: parent_id,
+      parent_name: parent_state.name,
+      depth: parent_state.depth + 1,
+      preloaded_messages: preloaded,
+      last_compaction_index: Map.get(parent_state.chat_state, :last_compaction_index, -1),
+      next_message_index: next_index,
+      initial_api_log_sequences: %{}
+    }
   end
 
   @doc """
@@ -227,6 +335,14 @@ defmodule Nest.Agents.Agent do
     # Trap exits to ensure cleanup runs when agent is stopped
     Process.flag(:trap_exit, true)
 
+    unless persistence_enabled?() do
+      {:stop, :non_persistence_not_implemented}
+    else
+      do_init(attrs)
+    end
+  end
+
+  defp do_init(attrs) do
     name = Map.fetch!(attrs, :name)
     model = Map.fetch!(attrs, :model)
 
@@ -261,6 +377,11 @@ defmodule Nest.Agents.Agent do
   # the persisted message sequence, replay the api_log, then
   # log a structured start banner. Extracted from `init/1`
   # so the top-level case statement stays readable.
+  #
+  # Pure: no DB writes here. `start_link/1` pre-persists the
+  # agent row and the system message in the calling process
+  # so the child pid's `init/1` doesn't need `$callers`
+  # propagation back to a Sandbox owner.
   defp build_active_state(attrs, client_config) do
     state = Init.build_state(attrs, client_config)
 
@@ -271,15 +392,11 @@ defmodule Nest.Agents.Agent do
         Map.get(attrs, :last_compaction_index, -1)
       )
 
-    state =
-      Restore.attach_rebuilt_api_logs(
-        state,
-        Map.get(attrs, :preloaded_messages, []),
-        Map.get(attrs, :last_compaction_index, -1)
-      )
-
-    Init.persist_initial_system_message(state)
-    state
+    Restore.attach_rebuilt_api_logs(
+      state,
+      Map.get(attrs, :preloaded_messages, []),
+      Map.get(attrs, :last_compaction_index, -1)
+    )
   end
 
   defp log_active_start(state) do
@@ -484,6 +601,10 @@ defmodule Nest.Agents.Agent do
   # Delegates to `Nest.Agents.Agent.TmpSpace.cleanup/1` so this
   # module doesn't carry the boilerplate.
   defp cleanup_tmp(agent_id), do: TmpSpace.cleanup(agent_id)
+
+  defp persistence_enabled? do
+    Application.get_env(:nest, :persistence, %{})[:enabled] != false
+  end
 
   # Public-for-Handlers: message-construction logic. The
   # canonical impl lives in `Nest.Agents.Agent.ApiLogs` /

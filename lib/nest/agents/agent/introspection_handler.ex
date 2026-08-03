@@ -37,6 +37,7 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ModelHandler
   alias Nest.LLM.Client
+  alias Nest.Messages.Streaming
   alias Nest.Tokens.ConversationSize
   alias Nest.Vocations
 
@@ -166,7 +167,14 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
       status: state.chat_state.status,
       vocation_id: state.vocation_id,
       tmp_path: state.tmp_path,
-      partial: state.chat_state.streaming_acc,
+      # Run the streaming accumulator (or nil) through
+      # `Streaming.to_json_safe/1` so `get_public_info/1`
+      # is JSON-encodable end-to-end. Lobby and AgentChannel
+      # both consume this map and Phoenix.Channel.push/3
+      # encodes it as JSON before the WS frame hits the wire;
+      # a raw `%AssistantAccumulator{}` struct trips
+      # `Protocol.UndefinedError` at `Jason.encode/1` time.
+      partial: Streaming.to_json_safe(state.chat_state.streaming_acc),
       modes: Vocations.list_modes(vocation),
       default_mode: Vocations.default_mode(vocation),
       current_mode: state.mode,

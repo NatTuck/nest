@@ -2,13 +2,11 @@ defmodule Nest.Agents.Agent.Persistence do
   @moduledoc """
   Agent-side glue around `Nest.Persistence`.
 
-  The persistence functions are gated on the runtime
-  `:persistence_enabled` config flag (see `config/test.exs`).
-  In test envs the flag is `false` so the writes are
-  no-ops — the live in-memory state remains the source of
-  truth for the test, and the DB connection lifecycle
-  (private-mode Sandbox in async tests) doesn't get
-  exercised by the agent process.
+  Defense-in-depth: each function returns `:ok` immediately
+  when the runtime `:persistence_enabled` config flag is
+  `false` (see `config/test.exs`). Production code never
+  disables persistence; the no-op branch is a guardrail for
+  manual dev experiments, not exercised by tests.
 
   Extracted from `Nest.Agents.Agent` so the GenServer module
   stays under the 500-line credo limit.
@@ -21,13 +19,19 @@ defmodule Nest.Agents.Agent.Persistence do
   @doc """
   Persist a freshly-stamped message into the `messages`
   table and bump the agent's `next_message_index` on the
-  `agents` row. No-op when persistence is disabled.
+  `agents` row. No-op when persistence is disabled, or
+  when `agent_id` is `nil` (unit tests for the
+  `NoticePairInjector` and similar modules build an
+  `Agent{}` struct without a registered name).
   """
-  def append_message(agent_id, stamped, new_index) do
+  def append_message(agent_id, stamped, new_index)
+      when is_binary(agent_id) do
     if persistence_enabled?() do
       do_append_message(agent_id, stamped, new_index)
     end
   end
+
+  def append_message(_agent_id, _stamped, _new_index), do: :ok
 
   def record_compaction(
         agent_id,
@@ -53,6 +57,14 @@ defmodule Nest.Agents.Agent.Persistence do
     case Persistence.insert_message(agent_id, stamped) do
       {:ok, _row} ->
         :ok = Persistence.update_next_message_index(agent_id, new_index)
+
+      :ok ->
+        # `Persistence.insert_message/2` returns `:ok` for
+        # no-op paths that already log a warning themselves
+        # (e.g. a `{:compaction, _}` tuple without a
+        # `%Compaction{}` struct). No row was inserted, so
+        # don't bump the index either.
+        :ok
 
       {:error, reason} ->
         Logger.warning("Failed to persist message for agent #{agent_id}: #{inspect(reason)}")

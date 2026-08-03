@@ -158,8 +158,17 @@ defmodule NestWeb.AgentChannel do
   defp build_partial_payload(nil), do: nil
 
   defp build_partial_payload(%Streaming.AssistantAccumulator{} = acc) do
-    Streaming.to_json(acc)
+    Streaming.to_json_safe(acc)
   end
+
+  # `agent.partial` arrives here already JSON-serialized from
+  # `Nest.Agents.Agent.IntrospectionHandler.build_public_info/1`
+  # (which runs `Streaming.to_json_safe/1` before returning the
+  # info map). Pass through unchanged — running it through
+  # `to_json_safe/1` again would error because the `defimpl
+  # Jason.Encoder` is only defined for `%AssistantAccumulator{}`,
+  # not for plain maps.
+  defp build_partial_payload(%{} = payload), do: payload
 
   # The context_limit_source is an internal atom (`:config`, `:vllm`,
   # etc.) that survives the JSON wire trip as a string. Convert

@@ -41,6 +41,7 @@ defmodule Nest.Agents.Agent.Compaction.Trigger do
   alias Nest.Agents.Agent.ChatTurnSpawner
   alias Nest.Agents.Agent.Compaction.Overflow
   alias Nest.Agents.Agent.Compaction.ResultHandler
+  alias Nest.Agents.Agent.SystemPrompt
   alias Nest.Messages.Streaming
   alias Nest.Tokens.Compactor, as: TokensCompactor
 
@@ -96,42 +97,91 @@ defmodule Nest.Agents.Agent.Compaction.Trigger do
   end
 
   # Common spawn path for both post-turn and mid-turn
-  # triggers. Computes the summary budget, builds the
-  # suffix, appends it to the messages list (the user
-  # sees the compaction request), then spawns a
-  # ChatTurn with `{:compaction, suffix, carried_entry}`.
+  # triggers. Renders the system prompt via
+  # `SystemPrompt.compose_vocation_config/4` (single source
+  # of truth for the system size when a vocation is present),
+  # checks the 25% safety budget, computes the summary budget,
+  # builds the suffix, appends it to the messages list (the
+  # user sees the compaction request), then spawns a
+  # ChatTurn with `{:compaction, _, carried_entry}`.
+  #
+  # When `state.vocation` is `nil` (test fixtures use this as
+  # a "minimal default" sentinel), fall back to extracting the
+  # rendered prompt text from the system message at
+  # `state.chat_state.messages[0]` — the same source the
+  # pre-refactor code used. This keeps those fixtures
+  # working while the production path (vocations are always
+  # present) still uses the rendered string as the source of
+  # truth.
   defp start(state, carried_entry) do
     messages = state.chat_state.messages || []
-    system_msg = Enum.find(messages, &match?({:system, _}, &1))
 
-    case system_msg do
-      nil ->
-        broadcast_reserve_exhausted(state)
+    system_prompt = render_system_prompt(state, messages)
+
+    cond do
+      system_prompt != nil and
+          not SystemPrompt.within_size_budget?(system_prompt, state.llm_metrics.context_limit) ->
+        broadcast_oversized(state, system_prompt)
+
+      system_prompt == nil ->
+        broadcast_reserve_exhausted(state, nil)
         state
 
-      sys ->
+      true ->
         case TokensCompactor.compute_summary_budget(
                state.llm_metrics.context_limit,
-               sys,
+               system_prompt,
                messages,
                nil
              ) do
           {:ok, _n, rendered_suffix} ->
-            spawn_compaction_chat_turn(state, sys, carried_entry, rendered_suffix)
+            spawn_compaction_chat_turn(state, carried_entry, rendered_suffix)
 
           {:error, :reserve_exhausted} ->
-            broadcast_reserve_exhausted(state)
+            broadcast_reserve_exhausted(state, system_prompt)
             state
         end
     end
+  end
+
+  # Render the system prompt. Production path: compose from
+  # `state.vocation`. Test-fixture / legacy path (no
+  # vocation): extract the rendered text from the system
+  # message at `state.chat_state.messages[0]`. Both branches
+  # produce a string suitable for `Overflow.system_size/1`
+  # and `compute_summary_budget/5`.
+  defp render_system_prompt(state, messages) do
+    if state.vocation do
+      {system_prompt, _mode, _tools, _vocation} =
+        SystemPrompt.compose_vocation_config(
+          state.vocation,
+          state.workspace_path,
+          {state.llm_metrics.context_limit, state.llm_metrics.context_limit_source},
+          state.depth
+        )
+
+      system_prompt
+    else
+      case Enum.find(messages, &match?({:system, _}, &1)) do
+        nil -> nil
+        {:system, %Nest.Messages.System{parts: parts}} -> system_text_from_parts(parts)
+      end
+    end
+  end
+
+  defp system_text_from_parts(parts) do
+    Enum.map_join(parts, "", fn
+      %Nest.Messages.Part.Text{text: text} -> text || ""
+      _ -> ""
+    end)
   end
 
   # Append the suffix to the messages list and spawn
   # the compactor's chat turn. Extracted to avoid a
   # type-inference problem with `__append_message__/2`'s
   # return tuple.
-  defp spawn_compaction_chat_turn(state, system_msg, carried_entry, suffix_message) do
-    # `__append_message__/2` returns `{stamped, new_state}`.
+  defp spawn_compaction_chat_turn(state, carried_entry, suffix_message) do
+    # `__append_message__/2` returns `{stamped, next_state}`.
     # `stamped` is a `{role, struct}` tuple; the struct's
     # `:index` field was stamped with the agent's
     # `next_message_index`.
@@ -158,17 +208,46 @@ defmodule Nest.Agents.Agent.Compaction.Trigger do
     ChatTurnSpawner.spawn(
       next_state,
       Map.get(next_state, :chat_state).messages,
-      {:compaction, system_msg, carried_entry},
+      {:compaction, nil, carried_entry},
       caps
     )
   end
 
-  # Both `:system_msg == nil` and `:reserve_exhausted` from
-  # `compute_summary_budget/4` surface the same overflow to
-  # the user — the compactor can't run. The message
-  # construction is centralized in `Overflow` so the two
-  # paths can't drift apart.
-  defp broadcast_reserve_exhausted(state) do
-    Overflow.broadcast(state, inspect(__MODULE__), "compact")
+  # `:reserve_exhausted` from `compute_summary_budget/5`
+  # (or `system_prompt == nil` upstream) surface the same
+  # overflow to the user — the compactor can't run. The
+  # message construction is centralized in `Overflow` so
+  # the two paths can't drift apart.
+  defp broadcast_reserve_exhausted(state, system_prompt) do
+    Overflow.broadcast(
+      state,
+      inspect(__MODULE__),
+      "compact",
+      system_prompt,
+      :reserve_exhausted
+    )
+  end
+
+  # Belt-and-suspenders: the rendered system prompt exceeds
+  # the 25% safety budget for the context window. The agent
+  # transitions to `:context_overflow` (blocking future
+  # `chat:message` traffic) and returns the updated state.
+  defp broadcast_oversized(state, system_prompt) do
+    state = %{
+      state
+      | chat_state: %{state.chat_state | status: :context_overflow}
+    }
+
+    Broadcasts.status(state.name, state)
+
+    Overflow.broadcast(
+      state,
+      inspect(__MODULE__),
+      "compact",
+      system_prompt,
+      :system_oversized
+    )
+
+    state
   end
 end

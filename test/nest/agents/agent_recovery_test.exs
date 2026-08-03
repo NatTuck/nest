@@ -18,19 +18,32 @@ defmodule Nest.Agents.Agent.RecoveryTest do
   can call `Agents.change_model/2` to repair.
   """
 
-  use Nest.DataCase, async: false
+  use Nest.DataCase, async: true
 
   import Mimic
 
-  alias Nest.Agents
   alias Nest.Agents.Agent
   alias Nest.LLM.RecoveryClient
 
   setup :verify_on_exit!
 
+  # The pre-test cleanup uses `Nest.Persistence.list_agent_names/0`
+  # (DB query) rather than `Agents.list_agents/0`
+  # (`Registry.list/0`). The Registry only contains live
+  # GenServers; per-test on_exit handlers terminate the
+  # GenServer but leave the DB row behind, so the Registry
+  # misses those rows. Querying the DB catches both running
+  # and dead-but-row-still-present agents.
+  #
+  # `Nest.Persistence.delete_agent_by_name/1` is a single SQL
+  # DELETE — no `Supervisor.stop_agent/1` call, so this loop
+  # doesn't serialize through the supervisor's GenServer under
+  # parallel load. The previous `Agents.delete_agent/1` loop
+  # timed out at 5s when many parallel tests' setups queued
+  # supervisor stops on a single mailbox.
   setup do
-    for id <- Agents.list_agents() do
-      Agents.delete_agent(id)
+    for name <- Nest.Persistence.list_agent_names() do
+      Nest.Persistence.delete_agent_by_name(name)
     end
 
     :ok
@@ -47,6 +60,11 @@ defmodule Nest.Agents.Agent.RecoveryTest do
       # The model-probe failure fires a `Logger.error` from
       # `Agent.init/1` — capture it and assert it's the
       # expected error path, not noise.
+      #
+      # `name:` is suffixed with `System.unique_integer/1` so
+      # the agent's registry key doesn't collide with another
+      # test (or a prior run whose auto-cleanup hasn't yet
+      # finished) under `async: true` parallel execution.
       log =
         ExUnit.CaptureLog.capture_log(fn ->
           Nest.DotConfig
@@ -56,7 +74,7 @@ defmodule Nest.Agents.Agent.RecoveryTest do
             start_supervised(
               {Agent,
                %{
-                 name: "ghost-agent",
+                 name: "ghost-agent-#{System.unique_integer([:positive])}",
                  model: %{name: "ghost-model"},
                  vocation_id: vocation_id()
                }}
@@ -85,7 +103,7 @@ defmodule Nest.Agents.Agent.RecoveryTest do
             start_supervised(
               {Agent,
                %{
-                 name: "ghost-agent",
+                 name: "ghost-agent-#{System.unique_integer([:positive])}",
                  model: %{name: "ghost-model"},
                  vocation_id: vocation_id()
                }}

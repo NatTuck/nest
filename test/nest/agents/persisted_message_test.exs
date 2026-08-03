@@ -19,7 +19,7 @@ defmodule Nest.Agents.PersistedMessageTest do
   in the setup block (mirrors `test/nest/persistence_test.exs`).
   """
 
-  use Nest.DataCase, async: false
+  use Nest.DataCase, async: true
 
   import Nest.PersistenceTestHelpers
 
@@ -30,16 +30,6 @@ defmodule Nest.Agents.PersistedMessageTest do
   alias Nest.Messages.System, as: MsgSystem
   alias Nest.Messages.User
   alias Nest.Persistence
-
-  setup do
-    Application.put_env(:nest, :persistence, enabled: true)
-
-    on_exit(fn ->
-      Application.put_env(:nest, :persistence, enabled: false)
-    end)
-
-    :ok
-  end
 
   describe "serialize_content (assistant apiLogs)" do
     test "round-trips a non-empty api_logs list through insert_message/2 + to_runtime/1" do

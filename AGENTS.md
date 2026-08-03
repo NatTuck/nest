@@ -38,6 +38,12 @@ just in the API log, but the UI always includes everything that happened).
 
 ## Project guidelines
 
+### Before Commit
+
+- Read SMELLS.md. Check the proposed changes for code stench.
+- Run `mix precommit` and read the *full* output. No head/tail/grep, read the
+whole thing.
+
 ### During Development
 
 - Never run any dev servers, neither `mix phx.server` nor `npx vite`. The user will manage that manually.
@@ -74,6 +80,10 @@ appears in tests, it must be fixed by:
   - If expected, capture and assert.
   - If unexpected, fix the bug.
   - If inconsistent, the bug may be a race condition. You still need to fix it.
+  - Note: capture_log may return extra logs from concurrent tests. That means
+  we can safely assert on inclusion, but not exclusion or exact output.
+  - Note: Double check that the log is guaranteed to happen before the end of
+  the capture_log block.
 - Some tests may capture and discard log lines with explanatory comments. Those
 should not be changed unless the code they test changed, but you may not add
 more without explicit user instruction.

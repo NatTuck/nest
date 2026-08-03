@@ -63,13 +63,11 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
       # `:context_overflow` status, broadcast a `chat:error`
       # with the actual numbers, and stay idle. No chat turn
       # is spawned.
-      {pid, agent_id} =
+      {pid, _agent_id} =
         start_agent(%{
           model: %{name: "qwen3.5-plus"},
           vocation_id: programmer_vocation_id()
         })
-
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       # Drop the agent's context_limit to 10k so the test
       # matches the API log scenario. The default for
@@ -131,13 +129,11 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
       # the preflight returns `:fits` and the chat turn proceeds
       # normally. We use a generous context_limit (128k) so the
       # default system prompt + user message + reserve all fit.
-      {pid, agent_id} =
+      {pid, _agent_id} =
         start_agent(%{
           model: %{name: "qwen3.5-plus"},
           vocation_id: programmer_vocation_id()
         })
-
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       MockClient.set_response("Hello back")
 
@@ -148,15 +144,15 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
       assert_receive {:chat_message, {:user, _}}, 500
       refute_receive {:chat_status, %{status: "context_overflow"}}, 200
 
+      assert_receive {:chat_status, %{status: "idle"}}, 500
+
       Agent.terminate(pid)
     end
   end
 
   describe "chat:compaction broadcast" do
     test "compaction_done broadcasts chat:compaction with marker and history" do
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
       old_messages = [
         {:user, %Nest.Messages.User{index: 0, parts: [%Part.Text{text: "First"}], api_logs: []}},

@@ -8,7 +8,9 @@ defmodule Nest.Agents.AgentTestHelpers do
   import ExUnit.Callbacks
   import ExUnit.Assertions
 
-  alias Nest.Agents.Agent
+  alias Ecto.Adapters.SQL.Sandbox
+  alias Nest.Agents
+  alias Nest.Agents.Supervisor
   alias Nest.DotConfig
   alias Nest.LLM.MockClient
   alias Nest.LLM.OpenAIClient
@@ -16,76 +18,80 @@ defmodule Nest.Agents.AgentTestHelpers do
   alias Nest.Persistence
   alias Nest.Vocations
 
-  def start_agent(attrs) do
-    agent_name = "test-agent-#{System.unique_integer([:positive])}"
+  def start_agent(attrs \\ %{}) do
+    # Provably unique within a single BEAM (process-global monotonic).
+    # Avoids the adjective-animal generator's race risk under async
+    # tests and exercises the explicit-name path of
+    # `Agents.create_agent/2`.
+    agent_name = "agent#{System.unique_integer([:positive])}"
     merged = build_attrs(agent_name, attrs)
 
-    # When persistence is enabled, the Agent's `init/1` calls
-    # `persist_initial_system_message/1` → `AgentPersistence.append_message/3`
-    # → `Persistence.insert_message/2`. That function looks up
-    # the agent row by name and returns `{:error, :agent_not_found}`
-    # if it doesn't exist — it does NOT upsert. Without an
-    # existing row, every test that enables persistence fires
-    # a "Failed to persist message: :agent_not_found" warning
-    # during init (and again for every subsequent message append,
-    # including during teardown).
+    # Use the standard caller interface so the agent is registered
+    # in the supervisor's `Registry` (the supervisor path). The
+    # helper still does the same setup it always did (Sandbox.allow,
+    # Mimic.allow, MockClient swap, queue transfer) but on the
+    # supervisor-spawned pid rather than a `start_supervised!` pid.
     #
-    # Insert the row here when persistence is enabled and the
-    # caller provided a real vocation_id. The `0` sentinel
-    # default would violate the FK constraint; tests that need
-    # a real row should pass one via `vocation_id_for_test/0`.
-    if persistence_enabled?() and Map.get(merged, :vocation_id) != 0 do
-      {:ok, _} =
-        Persistence.insert_agent(%{
-          name: merged.name,
-          model: merged.model,
-          vocation_id: merged.vocation_id
-        })
-    end
+    # `Agents.create_agent/2` takes `(model, opts)`: the model map
+    # carries the LLM model name (used by `enrich_model/1` to look
+    # up the provider from DotConfig), and `vocation_id` /
+    # `workspace_path` are opts. The agent's registry key (`name:`)
+    # is also an opt — the model's `:name` is the LLM identifier
+    # (e.g. "qwen3.5-plus"), NOT the agent name. Without `name:`
+    # here the supervisor's `generate_unique_name/0` would produce
+    # a "clever-raven"-style pair, defeating the
+    # `System.unique_integer/1`-based test name.
+    {:ok, name} =
+      Agents.create_agent(
+        Map.get(merged, :model),
+        name: Map.get(merged, :name),
+        vocation_id: Map.get(merged, :vocation_id),
+        workspace_path: Map.get(merged, :workspace_path)
+      )
 
-    pid = start_supervised!({Agent, merged})
+    {:ok, agent_pid} = Supervisor.get_agent(name)
 
-    allow_mimic_stubs(pid)
-    swap_to_mock_client(pid)
+    # `Process.link/1` makes the test process crash if the agent
+    # dies unexpectedly. Tests that intentionally kill the agent
+    # must set `Process.flag(:trap_exit, true)` and assert on the
+    # resulting `:EXIT` message.
+    Process.link(agent_pid)
 
-    # Wait for Nest.Models to populate its cache so the
-    # agent's model resolution (which already happened in
-    # init/1 above) had a populated cache. Also future agent
-    # state changes that look up the model benefit.
-    ensure_models_loaded()
+    # Runtime writes from the agent pid — chat message appends,
+    # runtime model changes — need explicit access to the test
+    # pid's checked-out connection.
+    Sandbox.allow(Nest.Repo, self(), agent_pid)
 
+    # Mimic stubs are scoped to the test pid by default; the
+    # spawned agent pid can't see them without explicit `allow`.
+    allow_mimic_stubs(agent_pid)
+
+    # Swap the agent's HTTP client to MockClient so chat turns use
+    # the per-test queue instead of real `dashscope.aliyuncs.com`
+    # requests.
+    swap_to_mock_client(agent_pid)
+
+    Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{name}")
+
+    # Move pre-`start_agent/1` queued items from the test pid's
+    # queue to the per-agent queue, then point `:nest_test_agent_pid`
+    # at the agent pid so subsequent `MockClient.set_*` calls
+    # land on the agent's queue.
     test_pid = Process.get(:nest_test_agent_pid)
-    transfer_mock_queue(pid, test_pid)
+    transfer_mock_queue(agent_pid, test_pid)
+    Process.put(:nest_test_agent_pid, agent_pid)
 
-    Process.put(:nest_test_agent_pid, pid)
-    # NB: no MockClient.clear() here — that would wipe the
-    # transferred items.
+    register_on_exit_cleanup(agent_pid, name, test_pid)
 
-    register_on_exit_cleanup(pid, agent_name, test_pid)
-
-    {pid, agent_name}
+    {agent_pid, name}
   end
 
-  # `Nest.Models.init/1` returns `models: %{}` and asynchronously
-  # sends itself `:query_auto_providers` to populate the cache
-  # from auto-discovery providers. By the time `start_agent/1`
-  # starts an agent (which calls `ChatModel.new/1` →
-  # `Models.list/0`), the cache is usually still empty —
-  # causing the agent's model-resolution probe to fail with
-  # `ModelNotFoundError` and log "could not resolve model" from
-  # `Agent.init/1`. Force a refresh and synchronously wait for
-  # the GenServer to drain before starting the agent so the
-  # static models from `test/data/config.toml` (`qwen3.5-plus`,
-  # `pegasus-default-only`, etc.) are visible.
-  def ensure_models_loaded do
-    Nest.Models.refresh()
-    _ = :sys.get_state(Nest.Models)
-    :ok
-  end
-
-  defp persistence_enabled? do
-    Application.get_env(:nest, :persistence, %{})[:enabled] != false
-  end
+  # Tests that need `Models.list/0` to reflect auto-discovered
+  # models should call `Nest.Test.ModelsTestHelpers.await_models_refresh/1`
+  # directly. The default `start_agent/1` here doesn't need to
+  # wait — the test config's `qwen3.5-plus` (the default model
+  # name) is a static-config entry, which `Models.list/0`
+  # returns immediately regardless of scan state.
 
   @doc """
   Returns a `vocation_id` for use in test attrs that bypass
@@ -122,15 +128,19 @@ defmodule Nest.Agents.AgentTestHelpers do
     defaults = %{
       name: agent_name,
       model: %{name: "qwen3.5-plus", provider: "model-studio"},
-      # `agents.vocation_id` is NOT NULL, so every test must
-      # supply one. Use a sentinel id (never dereferenced) plus
-      # `vocation: nil` to short-circuit the system-prompt
-      # composition to a minimal default. Tests that need a
-      # real vocation (e.g. for the compaction regeneration
-      # path) should pass an explicit `vocation_id:` plus
-      # `vocation:` from `vocation_id_for_test/0`.
-      vocation_id: 0,
-      vocation: nil
+      # `agents.vocation_id` is NOT NULL and FKs to `vocations.id`.
+      # Insert a fresh "Test Default" vocation in the test pid's
+      # sandboxed transaction; the id resolves before
+      # `Agent.start_link/1` runs `Persistence.insert_agent/1`.
+      # Tests that need a different vocation can override
+      # `:vocation_id` (and optionally `:vocation`) in `attrs`.
+      vocation_id: vocation_id_for_test(),
+      vocation: nil,
+      # `workspace_path` is optional in `agents.workspace_path`
+      # (nullable column) and `Init.build_state/2` reads it via
+      # `Map.get/2` so `nil` is fine. Tests that need a workspace
+      # can override `:workspace_path` in `attrs`.
+      workspace_path: nil
     }
 
     merged = Map.merge(defaults, attrs)
@@ -139,17 +149,19 @@ defmodule Nest.Agents.AgentTestHelpers do
     # `init/1` has no DB work. The test process owns the sandbox
     # connection (via `DataCase.setup_sandbox`) and uses it for
     # this read; subsequent DB writes from the agent's handlers
-    # walk `$callers` back to the test pid and use the same
-    # connection. No `Sandbox.allow/3` per agent pid needed.
+    # need explicit `Sandbox.allow/3` (see `start_agent/1`) since
+    # they happen in the spawned child pid which doesn't inherit
+    # `$callers` via `start_supervised!`.
     #
     # Always overwrite `vocation` so the loaded struct wins
     # over the `nil` default — `Map.put_new_lazy` would skip
     # the upsert because the key is present (with value `nil`).
-    if Map.get(merged, :vocation_id) == 0 do
-      merged
-    else
-      vocation_id = Map.fetch!(merged, :vocation_id)
-      Map.put(merged, :vocation, Persistence.load_vocation(vocation_id))
+    case Map.get(merged, :vocation_id) do
+      id when is_integer(id) and id != 0 ->
+        Map.put(merged, :vocation, Persistence.load_vocation(id))
+
+      _ ->
+        merged
     end
   end
 
@@ -188,16 +200,26 @@ defmodule Nest.Agents.AgentTestHelpers do
     end
   end
 
-  # on_exit runs after the test's last assertion. Unsubscribe from
-  # the agent's PubSub topic first (so late broadcasts from the
-  # still-cleaning-up chat task can't land in the next test's
-  # mailbox) then drain anything the test process already
-  # received. The unsubscribe + drain is sufficient — `send/2`
-  # messages from the chat task (e.g. the `:stopped` reply) are
-  # already in the mailbox by the time the test ends.
+  # on_exit runs after the test's last assertion, in a SEPARATE
+  # ExUnit runner process that does NOT own the test pid's
+  # sandbox checkout — so any DB write here would fail with
+  # `DBConnection.OwnershipError`. `Supervisor.stop_agent/1`
+  # is the right cleanup: it terminates the GenServer, and the
+  # sandbox's checkin (registered by `DataCase.setup_sandbox/2`)
+  # rolls back the agent row automatically. `Agents.delete_agent/1`
+  # (which also drops the DB row) is therefore reserved for
+  # test bodies where the test pid still owns the connection.
+  #
+  # Order: unlink the agent first so a normal terminate doesn't
+  # propagate `:EXIT` to the (already-dead) test pid. Then
+  # stop the agent via the supervisor, unsubscribe from its
+  # PubSub topic, and restore the test pid's
+  # `:nest_test_agent_pid` process dict key.
   defp register_on_exit_cleanup(pid, agent_id, test_pid) do
     on_exit(fn ->
+      Process.unlink(pid)
       MockClient.stop(pid)
+      _ = Supervisor.stop_agent(agent_id)
       Phoenix.PubSub.unsubscribe(Nest.PubSub, "agent:#{agent_id}")
       drain_mailbox()
       Process.put(:nest_test_agent_pid, test_pid)

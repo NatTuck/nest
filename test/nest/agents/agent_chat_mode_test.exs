@@ -31,7 +31,6 @@ defmodule Nest.Agents.AgentChatModeTest do
   describe "chat/3 with mode" do
     test "user message includes the resolved mode in metadata (vocation-less agent defaults to chat)" do
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "Read foo", "build")
 
@@ -43,11 +42,12 @@ defmodule Nest.Agents.AgentChatModeTest do
                          metadata: %{"mode" => "chat"}
                        }}},
                      500
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
 
     test "falls back to default mode when requested mode is unknown" do
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "Hello", "nonexistent-mode")
 
@@ -58,11 +58,12 @@ defmodule Nest.Agents.AgentChatModeTest do
                          metadata: %{"mode" => "chat"}
                        }}},
                      500
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
 
     test "uses agent's current mode when no mode is passed" do
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "Hello")
 
@@ -73,6 +74,8 @@ defmodule Nest.Agents.AgentChatModeTest do
                          metadata: %{"mode" => "chat"}
                        }}},
                      500
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
 
     test "vocation with modes: requested mode is preserved when valid" do
@@ -98,8 +101,6 @@ defmodule Nest.Agents.AgentChatModeTest do
           model: %{name: "qwen3.5-plus"},
           vocation_id: vocation.id
         })
-
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "Run", "build")
 
@@ -138,8 +139,6 @@ defmodule Nest.Agents.AgentChatModeTest do
           vocation_id: vocation.id
         })
 
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
-
       :ok = Agent.chat(pid, "Hello", "nonexistent")
 
       assert_receive {:chat_message,
@@ -173,8 +172,6 @@ defmodule Nest.Agents.AgentChatModeTest do
 
       {pid, agent_id} =
         start_agent(%{model: %{name: "qwen3.5-plus"}, vocation_id: vocation.id})
-
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       # The externally visible signals of the mode are the user
       # message's `metadata.mode` field AND the `currentMode` on
@@ -222,6 +219,7 @@ defmodule Nest.Agents.AgentChatModeTest do
       # Send a chat with mode "plan". The agent's state.mode
       # should update to "plan".
       :ok = Agent.chat(pid, "Plan this", "plan")
+      assert_receive {:chat_status, %{status: "idle"}}, 500
       state = :sys.get_state(pid)
       assert state.mode == "plan"
 
@@ -230,6 +228,7 @@ defmodule Nest.Agents.AgentChatModeTest do
       # through handle_chat's `mode = requested_mode || state.mode`
       # fallback.
       :ok = Agent.chat(pid, "And another")
+      assert_receive {:chat_status, %{status: "idle"}}, 500
       state = :sys.get_state(pid)
       assert state.mode == "plan"
     end
@@ -254,8 +253,6 @@ defmodule Nest.Agents.AgentChatModeTest do
 
       {pid, agent_id} =
         start_agent(%{model: %{name: "qwen3.5-plus"}, vocation_id: vocation.id})
-
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "Hello", "nonexistent")
 
@@ -288,8 +285,6 @@ defmodule Nest.Agents.AgentChatModeTest do
 
       {pid, agent_id} =
         start_agent(%{model: %{name: "qwen3.5-plus"}, vocation_id: vocation.id})
-
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "Hi", "nonexistent")
 

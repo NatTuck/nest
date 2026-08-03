@@ -180,8 +180,22 @@ defmodule Nest.Agents.Agent.BatchSizer do
 
   defp do_execute(tc, ctx) do
     case LLMTools.execute_one(ctx.tools, tc, %{caps: ctx.caps}) do
-      {:ok, content} -> {tc, :ok, ensure_non_empty(content)}
-      {:error, reason} -> {tc, :error, ensure_non_empty(reason)}
+      {:ok, content} ->
+        {tc, :ok, ensure_non_empty(content)}
+
+      {:error, reason} ->
+        # Permanent diagnostic. The tool returned an error tuple
+        # rather than crashing. The LLM is going to see this as
+        # the tool result's content (with is_error=true). When
+        # this fires for shell_cmd under parallel load, we want
+        # the server-side record so we can diagnose the cause.
+        Logger.error(
+          "BatchSizer.do_execute: tool returned error " <>
+            "tool=#{tc.name} tool_call_id=#{tc.id} " <>
+            "arguments=#{inspect(tc.arguments)} reason=#{inspect(reason)}"
+        )
+
+        {tc, :error, ensure_non_empty(reason)}
     end
   end
 
@@ -203,6 +217,22 @@ defmodule Nest.Agents.Agent.BatchSizer do
       end)
 
     Enum.map(cooked, fn {tc, kind, content} ->
+      if kind == :error do
+        # Permanent diagnostic. The LLM is going to see this error
+        # as a tool result and decide what to do next, but we also
+        # want a server-side record so a flake in this code path
+        # is observable in the log. is_error=true is the rare path
+        # (bwrap failures, preflight refusals, missing tools, tool
+        # function crashes). If this fires for shell_cmd under
+        # parallel load, we need to know.
+        Logger.error(
+          "BatchSizer produced is_error=true tool result: " <>
+            "tool=#{tc.name} tool_call_id=#{tc.id} " <>
+            "arguments=#{inspect(tc.arguments)} " <>
+            "content=#{inspect(content)}"
+        )
+      end
+
       %ToolResult{
         tool_call_id: tc.id,
         name: tc.name,
@@ -400,6 +430,15 @@ defmodule Nest.Agents.Agent.BatchSizer do
   end
 
   defp refuse_results(tool_calls, reason) do
+    # Permanent diagnostic. Preflight refused the batch (projected
+    # token total exceeds the context window). The LLM will see
+    # this as the tool result's content with is_error=true. Fires
+    # only on oversized batches — should be rare.
+    Logger.error(
+      "BatchSizer refused batch (preflight): " <>
+        "tool_calls=#{length(tool_calls)} reason=#{inspect(reason)}"
+    )
+
     Enum.map(tool_calls, fn tc ->
       %ToolResult{
         tool_call_id: tc.id,

@@ -31,18 +31,17 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
   mocking the LLM stream and tool execution pipeline).
   """
 
-  use Nest.DataCase, async: false
+  use Nest.DataCase, async: true
 
   import ExUnit.CaptureLog
   import Mimic
 
-  alias Nest.Agents.Agent
+  import Nest.Agents.AgentTestHelpers
+
   alias Nest.LLM.MockClient
   alias Nest.Messages.Assistant
   alias Nest.Messages.Part
   alias Nest.Messages.User
-  alias Nest.Persistence
-  alias Nest.Vocations
 
   setup :verify_on_exit!
 
@@ -56,66 +55,17 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
     :ok
   end
 
-  defp programmer_vocation_id do
-    {:ok, vocation} =
-      Vocations.create_vocation(%{
-        name: "Iteration Test (#{Elixir.System.unique_integer([:positive])})",
-        description: "For mid-turn iteration tests",
-        system_prompt: "Test prompt.",
-        tools: ["read_file", "write_file", "edit", "shell_cmd", "context"],
-        modes: %{
-          "build" => %{
-            "description" => "Test mode",
-            "caps" => %{
-              "net" => false,
-              "fs" => %{"read" => ["/"], "write" => ["/tmp"]}
-            }
-          }
-        }
-      })
-
-    vocation.id
-  end
-
   defp start_test_agent do
-    vocation_id = programmer_vocation_id()
-    agent_name = "test-agent-#{System.unique_integer([:positive])}"
-
-    {:ok, _} =
-      Nest.Persistence.insert_agent(%{
-        name: agent_name,
-        model: %{name: "qwen3.5-plus"},
-        vocation_id: vocation_id
-      })
-
-    attrs = %{
-      name: agent_name,
-      model: %{name: "qwen3.5-plus", provider: "model-studio"},
-      vocation_id: vocation_id,
-      vocation: Persistence.load_vocation(vocation_id)
-    }
-
-    pid = start_supervised!({Agent, attrs})
-
-    # Swap the agent's client to MockClient so any ChatTurn
-    # the compaction handler respawns ends up calling
-    # MockClient (which returns a canned response without
-    # touching the network). The OLD test passed without
-    # an LLM hit because the chat turn's pre-refactor
-    # sanity check finalized before calling the LLM; the
-    # new ChatTurn falls through to the LLM on
-    # dispatch_batch, so the swap is what keeps the test
-    # hermetic against real HTTP requests.
-    :sys.replace_state(pid, fn state ->
-      %{state | client_config: %{state.client_config | client: MockClient}}
-    end)
-
-    # Re-key the per-agent MockClient queue onto the agent
-    # pid so the chat turn's HTTP worker (which threads
-    # `opts[:agent_pid]`) finds the test's queue.
-    MockClient.start_link(pid)
-
-    pid
+    # The standard helper handles row insertion (via
+    # `Agent.pre_spawn/1`), supervisor spawn, sandbox allow
+    # (so spawned ChatTurn pids can do DB writes), and
+    # MockClient swap. The synthetic tool calls in this
+    # file use `name: "context"`, which the helper's
+    # default "Test Default" vocation includes in its
+    # `tools: ["context"]`. The "build" mode and extra
+    # tools from the previous bespoke `programmer_vocation_id`
+    # were never read by any handler exercised here.
+    start_agent()
   end
 
   # Synthetic assistant+ToolUse used as the carried tool_call
@@ -142,9 +92,8 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
 
   describe ":needs_compaction handler (mid-turn trigger)" do
     test "Agent transitions to :compacting when :needs_compaction arrives" do
-      pid = start_test_agent()
+      {pid, _name} = start_test_agent()
       state = :sys.get_state(pid)
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.name}")
 
       capture_log(fn ->
         # `:needs_compaction` now carries the full
@@ -170,14 +119,11 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
         # recovery, not a failure.
         refute_receive {:chat_error, _}, 200
       end)
-
-      Agent.terminate(pid)
     end
 
     test "Agent passes iteration and max_iterations through to the compactor" do
-      pid = start_test_agent()
+      {pid, _name} = start_test_agent()
       state = :sys.get_state(pid)
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.name}")
 
       capture_log(fn ->
         :sys.replace_state(pid, fn state ->
@@ -214,16 +160,13 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
         # chat turn finalizes with a chat:status broadcast.
         assert_receive {:chat_status, _payload}, 500
       end)
-
-      Agent.terminate(pid)
     end
   end
 
   describe "mid_turn_entry field lifecycle" do
     test "mid_turn_entry is cleared on successful compaction_done" do
-      pid = start_test_agent()
+      {pid, _name} = start_test_agent()
       state = :sys.get_state(pid)
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.name}")
 
       # Pre-seed mid_turn_entry as if a mid-turn
       # compaction is in progress. The new field shape
@@ -261,16 +204,13 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
 
       state_after = :sys.get_state(pid)
       assert state_after.chat_state.mid_turn_entry == nil
-
-      Agent.terminate(pid)
     end
   end
 
   describe "retry_compaction branches on mid_turn_entry" do
     test "retry uses mid-turn continuation when mid_turn_entry is set" do
-      pid = start_test_agent()
+      {pid, _name} = start_test_agent()
       state = :sys.get_state(pid)
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.name}")
 
       :sys.replace_state(pid, fn state ->
         %{
@@ -290,14 +230,11 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
 
         assert_receive {:chat_status, %{status: "compacting"}}, 500
       end)
-
-      Agent.terminate(pid)
     end
 
     test "retry uses Trigger B path when mid_turn_entry is nil" do
-      pid = start_test_agent()
+      {pid, _name} = start_test_agent()
       state = :sys.get_state(pid)
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.name}")
 
       :sys.replace_state(pid, fn state ->
         %{
@@ -316,8 +253,6 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
 
         assert_receive {:chat_status, %{status: "compacting"}}, 500
       end)
-
-      Agent.terminate(pid)
     end
   end
 
@@ -331,7 +266,7 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
     # straight through to the LLM — losing the LLM's already-emitted
     # tool calls.
     test "post-compaction messages end [system, summary_user, assistant+ToolUse]" do
-      pid = start_test_agent()
+      {pid, _name} = start_test_agent()
 
       # Pre-seed: messages list contains a trailing assistant message
       # with a ToolUse part. This is what the chat task appends when
@@ -461,8 +396,6 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
       # Silence the unused-variable warning on `log` — captured so
       # debugging output (if any) lands in the test report.
       _ = log
-
-      Agent.terminate(pid)
     end
   end
 

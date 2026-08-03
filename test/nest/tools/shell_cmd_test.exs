@@ -13,7 +13,7 @@ defmodule Nest.Tools.ShellCmdTest do
   requiring mocks or a long-running command.
   """
 
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Nest.Tools.ShellCmd
 

@@ -19,7 +19,7 @@ defmodule Nest.Persistence.CompactionMarkerTest do
   commit to the sandboxed connection.
   """
 
-  use Nest.DataCase, async: false
+  use Nest.DataCase, async: true
 
   import Ecto.Query, warn: false
   import Nest.PersistenceTestHelpers
@@ -28,16 +28,6 @@ defmodule Nest.Persistence.CompactionMarkerTest do
   alias Nest.Agents.PersistedMessage
   alias Nest.Persistence.CompactionMarker
   alias PersistedMessage, as: PersistedMessageSchema
-
-  setup do
-    Application.put_env(:nest, :persistence, enabled: true)
-
-    on_exit(fn ->
-      Application.put_env(:nest, :persistence, enabled: false)
-    end)
-
-    :ok
-  end
 
   describe "record/5 — token stats" do
     test "writes both token-stat columns when both values are integers" do

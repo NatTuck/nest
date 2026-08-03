@@ -31,7 +31,7 @@ defmodule Nest.Agents.ChatTaskCrashTest do
   boundary). The stubs in this file target the new
   boundary.
   """
-  use ExUnit.Case, async: true
+  use Nest.DataCase, async: true
 
   import ExUnit.CaptureLog
   import Mimic
@@ -57,8 +57,7 @@ defmodule Nest.Agents.ChatTaskCrashTest do
 
   describe "chat_crashed when the HTTP worker raises" do
     test "an unhandled FunctionClauseError is caught and the agent transitions to idle", %{} do
-      {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
       # Stub the LLM client (the new crash boundary) to
       # raise a `FunctionClauseError` — the same shape
@@ -128,7 +127,6 @@ defmodule Nest.Agents.ChatTaskCrashTest do
 
     test "the agent GenServer stays alive after the HTTP worker crashes", %{} do
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       Mimic.stub(MockClient, :run, fn _request, _opts ->
         raise "boom"
@@ -159,7 +157,6 @@ defmodule Nest.Agents.ChatTaskCrashTest do
       # error message so the user can see WHERE the crash
       # happened without grepping the server log.
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       Mimic.stub(MockClient, :run, fn _request, _opts ->
         # Raise from a known source so the stacktrace has a
@@ -188,7 +185,6 @@ defmodule Nest.Agents.ChatTaskCrashTest do
     test "partial streaming content is saved as a normal assistant message before the error is broadcast",
          %{} do
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       # Simulate the crash happening *after* some content was
       # streamed. The HTTP worker's streaming callback
@@ -248,7 +244,6 @@ defmodule Nest.Agents.ChatTaskCrashTest do
     # output.
     test "a {:normal, {GenServer, :call, _}} exit does NOT log or broadcast chat:error", %{} do
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       Mimic.stub(MockClient, :run, fn _request, _opts ->
         # Simulate the MockClient's `Agent` exiting normally
@@ -297,7 +292,6 @@ defmodule Nest.Agents.ChatTaskCrashTest do
 
     test "a {:noproc, {GenServer, :call, _}} exit (target already gone) is also silent", %{} do
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       Mimic.stub(MockClient, :run, fn _request, _opts ->
         exit({:noproc, {GenServer, :call, [self(), :get_and_update, 5000]}})
@@ -330,7 +324,6 @@ defmodule Nest.Agents.ChatTaskCrashTest do
       # future exit that happens to be `:normal` doesn't get
       # swallowed silently.
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       Mimic.stub(MockClient, :run, fn _request, _opts ->
         # A bare :normal exit (no GenServer.call wrapping).

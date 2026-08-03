@@ -110,6 +110,7 @@ defmodule Nest.MixProject do
         "deps.unlock --unused",
         "format",
         "credo",
+        # This cannot be increased or removed *EVER*. No exceptions. 
         "cmd timeout 5 mix test",
         "cmd --cd assets pnpm biome ci",
         "test --cover",

@@ -13,16 +13,13 @@ config :nest, Nest.Repo,
   ownership_timeout: 30_000,
   pool: Ecto.Adapters.SQL.Sandbox
 
-# Disable agent persistence in tests. The agent process
-# runs in a child of the test process; the Ecto Sandbox's
-# private-mode connection (async tests) doesn't survive
-# the test's lifecycle, and the test process exits before
-# the agent's async writes complete, so a sync `Repo.insert`
-# from the agent would race the test cleanup and fail.
-# `Persistence` is still exercised by its own test
-# (persistence_test.exs) which uses its own connection
-# setup that doesn't depend on the agent's lifecycle.
-config :nest, persistence: [enabled: false]
+# Agent persistence is required: `Agent.init/1` rejects
+# spawn attempts with `{:error, :non_persistence_not_implemented}`
+# when this flag is `false`. Tests that exercise persistence
+# (the Agent test suite) must therefore run with a DataCase
+# sandbox. `Nest.Persistence` exercises its own connection
+# setup in `persistence_test.exs`.
+config :nest, persistence: [enabled: true]
 
 # Subagent tests need freshly-spawned children to land on
 # `MockClient` rather than the real HTTP client. The default-

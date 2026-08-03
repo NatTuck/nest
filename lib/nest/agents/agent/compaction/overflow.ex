@@ -27,53 +27,73 @@ defmodule Nest.Agents.Agent.Compaction.Overflow do
   (the pre-refactor code had three copies of the message
   and they had already diverged in tone).
 
-  The `verb` parameter (`"start a conversation"` vs
-  `"compact"`) is the only difference between the two
-  paths' messages — it tells the user *what* the agent
-  was trying to do when the overflow was detected.
+  ## Source of truth for the system size
+
+  The rendered system prompt (from
+  `Nest.Agents.Agent.SystemPrompt.compose_vocation_config/4`)
+  is the single source of truth for the system size. Callers
+  precompute it and pass it in; `Overflow` does NOT look at
+  `state.chat_state.messages[0]`. This avoids the trap where
+  `messages[0]` is non-system (e.g. a legacy conversation, or
+  a transient state after a partial compaction swap where
+  the rebuilt system was dropped) and a fallback inflated the
+  size to the whole conversation.
   """
 
   alias Nest.Agents.Agent.Broadcasts
+  alias Nest.Agents.Agent.SystemPrompt
   alias Nest.Tokens.Estimator
   alias Nest.Tokens.Reserve
 
   @type verb :: String.t()
+  @type reason :: :reserve_exhausted | :system_oversized
 
   @doc """
   Build the user-facing `chat:error` string for a context
-  overflow. Includes the actual numbers (limit, system
-  prompt size, reserved response budget) so the user can
-  see why the conversation cannot fit.
+  overflow. `reason` selects the wording:
 
-  `verb` is the action the agent was attempting when the
-  overflow was detected:
+    * `:reserve_exhausted` (default) — the compactor's
+      summary budget computation found the system + suffix
+      would overflow the LLM's response budget.
 
-    * `"start a conversation"` — the preflight refused
-      the user's message before any compaction ran
-      (`:cannot_compact`).
-    * `"compact"` — the compactor's budget check refused
-      to run (`:reserve_exhausted`).
+    * `:system_oversized` — the rendered system prompt
+      exceeds the `#max_fraction_of_context` safety budget
+      for the context window. Refuses to produce the
+      oversized system message and surfaces the actual size
+      so the user can shorten it.
   """
-  @spec message(Nest.Agents.Agent.t(), verb()) :: String.t()
-  def message(state, verb \\ "compact") do
-    limit = state.llm_metrics.context_limit
-    sys_size = system_size(state)
+  @spec message(non_neg_integer(), String.t() | nil, verb(), reason()) :: String.t()
+  def message(limit, system_prompt, verb \\ "compact", reason \\ :reserve_exhausted)
+
+  def message(limit, system_prompt, verb, :reserve_exhausted)
+      when is_integer(limit) and limit > 0 do
+    sys_size = system_size(system_prompt)
 
     "Cannot #{verb}: model context limit (#{limit}) cannot fit the system prompt (~#{sys_size} tokens) + reserved response budget (#{Reserve.response_budget(limit)} tokens). Use a model with a larger context window, or clear conversation history."
   end
 
+  def message(limit, system_prompt, verb, :system_oversized)
+      when is_integer(limit) and limit > 0 do
+    sys_size = system_size(system_prompt)
+    budget = SystemPrompt.within_size_budget_budget(limit)
+
+    "Cannot #{verb}: system prompt is ~#{sys_size} tokens, exceeding the 25% safety budget (~#{budget} tokens) for this #{limit}-token context window. Use a shorter system prompt or change model."
+  end
+
   @doc """
-  Find the system message and estimate its size in tokens.
-  When no system message is present (defensive — should
-  never happen in normal flow), the estimate falls back
-  to the full message-list size.
+  Estimate the token count for the rendered `system_prompt`.
+  The wire-format overhead (`@per_message_overhead` from the
+  Estimator) is included so the size is comparable to
+  `Estimator.estimate_message/1`'s `{:system, _}` clause.
+
+  `nil` returns `0` — no system prompt was rendered (e.g.
+  the agent has no vocation).
   """
-  @spec system_size(Nest.Agents.Agent.t()) :: non_neg_integer()
-  def system_size(state) do
-    case Enum.find(state.chat_state.messages, &match?({:system, _}, &1)) do
-      nil -> Estimator.estimate_messages(state.chat_state.messages)
-      sys_msg -> Estimator.estimate_message(sys_msg)
-    end
+  @spec system_size(String.t() | nil) :: non_neg_integer()
+  def system_size(nil), do: 0
+
+  def system_size(system_prompt) when is_binary(system_prompt) do
+    Estimator.estimate(system_prompt)
   end
 
   @doc """
@@ -81,7 +101,9 @@ defmodule Nest.Agents.Agent.Compaction.Overflow do
   `source` is the call site (e.g.
   `"Nest.Agents.Agent.ChatPipeline.handle_preflight/2"` or
   `inspect(Nest.Agents.Agent.Compaction.Trigger)`) for log
-  correlation.
+  correlation. The `system_prompt` is the rendered string
+  from `compose_vocation_config/4`; `reason` selects the
+  message shape (see `message/4`).
 
   Does NOT change the agent's status — callers set the
   status they want (e.g. `chat_pipeline` sets
@@ -90,12 +112,18 @@ defmodule Nest.Agents.Agent.Compaction.Overflow do
   semantics and this module is the shared part, not the
   status policy.
   """
-  @spec broadcast(Nest.Agents.Agent.t(), String.t(), verb()) :: :ok
-  def broadcast(state, source, verb \\ "compact") do
+  @spec broadcast(Nest.Agents.Agent.t(), String.t(), verb(), String.t() | nil, reason()) :: :ok
+  def broadcast(
+        state,
+        source,
+        verb \\ "compact",
+        system_prompt \\ nil,
+        reason \\ :reserve_exhausted
+      ) do
     Broadcasts.error(
       state.name,
       nil,
-      message(state, verb),
+      message(state.llm_metrics.context_limit, system_prompt, verb, reason),
       source
     )
   end

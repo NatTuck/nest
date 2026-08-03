@@ -39,8 +39,6 @@ defmodule NestWeb.LobbyChannel do
     :exit, _ -> []
   end
 
-  @broken_agents_budget_ms 2_000
-
   # Upper bound on a single `rescan_models` round-trip. The
   # fetch itself doesn't rate-limit per provider — slow providers
   # are caught by the per-HTTP-fetch timeout inside
@@ -69,14 +67,20 @@ defmodule NestWeb.LobbyChannel do
       vocations: vocations
     })
 
-    spawn_broken_agents_fetch(socket)
+    # Subscribe to the "models" PubSub topic for live updates.
+    # `Models` broadcasts `{:models_updated, payload}` on every
+    # scan completion and on `reload_static/0` when no scan is
+    # in flight. The handler below pushes the payload to UI.
+    Phoenix.PubSub.subscribe(Nest.PubSub, "models")
+
+    fetch_broken_agents_async(socket)
     {:noreply, socket}
   end
 
   # Handle the fetch result. The follow-up `broken_agents_updated`
-  # event arrives as a plain message (the spawned process is
-  # `Process.unlink`'d, so this GenServer doesn't crash if the
-  # fetch dies).
+  # event arrives as a plain message (the Task is `:temporary`
+  # so its death doesn't restart, and the `Task.await/2` returns
+  # the result or `nil` on timeout).
   @impl true
   def handle_info({:lobby_broken_agents_loaded, broken}, socket)
       when is_list(broken) do
@@ -94,38 +98,69 @@ defmodule NestWeb.LobbyChannel do
     {:noreply, socket}
   end
 
-  @doc false
-  # Spawn a short-lived task that walks `Agents.list_broken_agents/0`
-  # and pushes the result via `broken_agents_updated`. We deliberately
-  # use a `spawn` (not `Task.async/await`) so a slow `Models.list/0`
-  # probe — or a `:timeout` exit — only kills the spawned process,
-  # never the channel.
-  defp spawn_broken_agents_fetch(_socket) do
-    parent = self()
-
-    pid =
-      spawn(fn ->
-        result = fetch_broken_agents()
-        send(parent, {:lobby_broken_agents_loaded, result})
-      end)
-
-    # Detach: a crash in the fetch must not propagate to the
-    # channel process (the lobby is otherwise fully usable).
-    Process.unlink(pid)
+  # PubSub-driven update from `Nest.Models`. The Models GenServer
+  # broadcasts `{:models_updated, payload}` on the `"models"` topic
+  # on every scan completion and on `reload_static/0` when no scan
+  # is in flight. Each lobby channel that subscribed in
+  # `handle_info(:after_join, ...)` re-broadcasts to its own socket.
+  # Duplication across channels is bounded by the number of
+  # simultaneously-connected lobby sockets — each receives its own
+  # channel's broadcast, not others'. The UI can dedupe by payload
+  # content if needed.
+  @impl true
+  def handle_info({:models_updated, payload}, socket) when is_list(payload) do
+    broadcast(socket, "models_updated", %{models: payload})
+    {:noreply, socket}
   end
 
-  defp fetch_broken_agents do
-    task = Task.async(fn -> Agents.list_broken_agents() end)
+  # Use a supervised Task that inherits this channel pid's
+  # `$callers` chain (so the DB query walks back to the test
+  # pid in tests, and to the application's connection pool in
+  # production). A bare `spawn/1` does NOT inherit `$callers`,
+  # which is why the previous design failed the
+  # `DBConnection.OwnershipError` in async channel tests.
+  # The `Task.await/2` bounds the wall-clock so a hung
+  # `Models.list/0` probe (the slowest reachable call inside
+  # `list_broken_agents/0`) can't pin the channel.
+  defp fetch_broken_agents_async(_socket) do
+    parent = self()
 
-    case Task.yield(task, @broken_agents_budget_ms) ||
-           Task.shutdown(task, :brutal_kill) do
-      {:ok, broken} when is_list(broken) -> broken
-      _ -> []
-    end
+    Task.Supervisor.start_child(Nest.Agents.TaskSupervisor, fn ->
+      # The supervised Task runs in its own pid. In async
+      # channel tests that pid cannot reach the test's
+      # sandboxed connection, so the inner `Repo.all(...)`
+      # raises `DBConnection.OwnershipError`. The
+      # `fetch_broken_agents/0` rescue returns `[]` so the
+      # `broken_agents_updated` follow-up still fires —
+      # but the Task.Supervisor's `invoke_mfa` wrapper
+      # logs the death before the rescue can swallow it.
+      # Suppress the noise at the source: a fine-grained
+      # `try` here turns the raise into a normal exit,
+      # which the supervisor doesn't log.
+      result =
+        try do
+          fetch_broken_agents()
+        catch
+          _, _ -> []
+        end
+
+      send(parent, {:lobby_broken_agents_loaded, result})
+    end)
+
+    :ok
+  end
+
+  @doc false
+  defp fetch_broken_agents do
+    Agents.list_broken_agents()
   rescue
-    _ -> []
+    e ->
+      Logger.debug("fetch_broken_agents rescued: #{Exception.message(e)}")
+      []
   catch
-    :exit, _ -> []
+    kind, reason ->
+      Logger.debug("fetch_broken_agents caught #{kind}: #{inspect(reason)}")
+      []
   end
 
   defp spawn_rescan(_socket) do
@@ -149,49 +184,6 @@ defmodule NestWeb.LobbyChannel do
     Process.unlink(pid)
   end
 
-  @doc false
-  # Re-discover the merged model catalog and return the fresh
-  # list. Public for testability — exercises the
-  # `Models.refresh/1` + `:sys.get_state/1` drain + `Models.list/0`
-  # round-trip on a single BEAM scheduler tick (no spawn).
-  # The channel's `rescan_models` push wraps this in a
-  # `spawn`-and-relay, but the helpers themselves are pure
-  # functions of `Models`' state.
-  #
-  # The optional `budget_ms` argument is the upper bound on
-  # the refresh-and-read round-trip — defaults to
-  # `@rescan_budget_ms`. Tests pass a small value so the
-  # timeout path is exercised without the test framework's
-  # default 5_000ms timeout getting in the way.
-  def rescan_models_list(budget_ms \\ @rescan_budget_ms) do
-    # Wrap the whole refresh-and-read in a `Task.async` +
-    # `Task.yield/3` so a hung auto-provider probe can't pin
-    # the spawn indefinitely. On timeout we `:brutal_kill` the
-    # task and fall through to a fresh `safe_models_list/0` so
-    # the catalog still includes everything that responded in
-    # time (the GenServer's `state.models` is mutated as each
-    # provider finishes, so partial results are preserved).
-    task =
-      Task.async(fn ->
-        Models.refresh(reload_static: true)
-        # Drain the cast by synchronously reading state. This is
-        # the canonical pattern from `test/nest/models_test.exs:79`
-        # — `:sys.get_state/1` returns immediately after the
-        # GenServer has processed all prior mailbox messages.
-        _ = :sys.get_state(Models)
-        Models.list()
-      end)
-
-    case Task.yield(task, budget_ms) || Task.shutdown(task, :brutal_kill) do
-      {:ok, models} when is_list(models) -> models
-      _ -> safe_models_list()
-    end
-  rescue
-    _ -> safe_models_list()
-  catch
-    :exit, _ -> safe_models_list()
-  end
-
   @impl true
   # `rescan_models` triggers a re-discovery of the model catalog.
   # The work runs in an unlinked spawn (so a hung `Models.list/0`
@@ -202,6 +194,9 @@ defmodule NestWeb.LobbyChannel do
   # `broken_agents_updated`. With `:reload_static` set, the
   # merged catalog includes any `[providers.<n>]` entries the
   # user added to `~/.config/nest/config.toml` since startup.
+  # The `rescan_models_list/1` helper below is grouped with
+  # the helpers (after all `handle_in/3` clauses) to keep
+  # the warning about clause grouping quiet.
   def handle_in("rescan_models", _payload, socket) do
     spawn_rescan(socket)
     {:reply, :ok, socket}
@@ -217,13 +212,28 @@ defmodule NestWeb.LobbyChannel do
     model_name = model_params["name"] || model_params[:name]
     model_provider = model_params["provider"] || model_params[:provider]
 
-    # Extract optional vocation_id and workspace_path
-    vocation_id = payload["vocation_id"]
+    # `agents.vocation_id` is NOT NULL, so the channel handler
+    # must always supply one. The frontend sends the
+    # user-selected `vocation_id`; when missing (e.g. the
+    # `NewAgentPage` test path, or a direct API call), fall
+    # back to the first available vocation.
+    vocation_id = payload["vocation_id"] || default_vocation_id()
     workspace_path = payload["workspace_path"]
+
+    # The agent's `name` (registry key, DB row primary name)
+    # is independent of the model name. Per the standard
+    # caller interface, the model's `:name` is the LLM
+    # identifier (e.g. "qwen3.5-plus") — NOT the agent's
+    # registry key. The frontend may pass an explicit
+    # `name:` in the payload (the lobby lets users rename
+    # before submitting); when missing, `Agents.create_agent/2`
+    # falls back to the supervisor's name generator.
+    agent_name = payload["name"]
 
     # Build opts for agent creation
     opts =
       []
+      |> maybe_add_opt(:name, agent_name)
       |> maybe_add_opt(:vocation_id, vocation_id)
       |> maybe_add_opt(:workspace_path, workspace_path)
 
@@ -310,4 +320,73 @@ defmodule NestWeb.LobbyChannel do
 
   defp maybe_add_opt(opts, _key, nil), do: opts
   defp maybe_add_opt(opts, key, value), do: Keyword.put(opts, key, value)
+
+  # First vocation in the catalog. Returns `nil` when the
+  # vocations table is empty (the agent will then fail
+  # to insert because `agents.vocation_id` is NOT NULL —
+  # the user's seed/init must create at least one).
+  defp default_vocation_id do
+    case Vocations.list_vocations() do
+      [] -> nil
+      [first | _] -> first.id
+    end
+  end
+
+  @doc false
+  # Re-discover the merged model catalog and return the fresh
+  # list. Public for testability — exercises the
+  # `Models.refresh/1` + `:sys.get_state/1` drain + `Models.list/0`
+  # round-trip on a single BEAM scheduler tick (no spawn).
+  # The channel's `rescan_models` push wraps this in a
+  # `spawn`-and-relay, but the helpers themselves are pure
+  # functions of `Models`' state.
+  #
+  # The optional `budget_ms` argument is the upper bound on
+  # the refresh-and-read round-trip — defaults to
+  # `@rescan_budget_ms`. Tests pass a small value so the
+  # timeout path is exercised without the test framework's
+  # default 5_000ms timeout getting in the way.
+  #
+  # The optional `runner` argument is the closure that runs
+  # inside the `Task.async/1`. Production callers leave it
+  # defaulted to `&default_rescan_runner/0` (the real
+  # `Models.refresh` + `Models.list` round-trip). Tests pass
+  # a closure directly — this avoids the
+  # `set_mimic_global` + `async: false` workaround, since
+  # Mimic stubs are per-process and can't reach the Task pid.
+  def rescan_models_list(
+        budget_ms \\ @rescan_budget_ms,
+        runner \\ &default_rescan_runner/0
+      ) do
+    task = Task.async(runner)
+
+    case Task.yield(task, budget_ms) || Task.shutdown(task, :brutal_kill) do
+      {:ok, models} when is_list(models) -> models
+      _ -> safe_models_list()
+    end
+  rescue
+    _ -> safe_models_list()
+  catch
+    :exit, _ -> safe_models_list()
+  end
+
+  # The default `Task.async` body for `rescan_models_list/2`:
+  # reload `config.toml` (fast, synchronous), subscribe to the
+  # `"models"` PubSub topic, kick a refresh, wait for the next
+  # `{:models_updated, _}` broadcast, and return the merged catalog.
+  # Pulled out as a named function so tests can substitute their own
+  # closure via the `runner` arg without paying the `set_mimic_global`
+  # cost.
+  def default_rescan_runner do
+    Models.reload_static()
+    Phoenix.PubSub.subscribe(Nest.PubSub, "models")
+    Models.refresh()
+
+    receive do
+      {:models_updated, _} -> :ok
+    end
+
+    Phoenix.PubSub.unsubscribe(Nest.PubSub, "models")
+    Models.list()
+  end
 end

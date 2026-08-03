@@ -226,7 +226,16 @@ defmodule Nest.Agents.Agent.SubAgent do
   def cascade_terminate(state) do
     Nest.Agents.Supervisor.cascade_children_only(state.name)
     :ok
-  rescue
-    _ -> :ok
+  catch
+    # `rescue _ -> :ok` does NOT catch `:exit` — `catch :exit, _`
+    # does. The supervisor's `cascade_children_only/1` makes a
+    # `GenServer.call` to `Nest.Agents.ChildRegistry`, which exits
+    # `:noproc` during application shutdown (ChildRegistry is
+    # torn down after the agent's supervisor in reverse start
+    # order). Without this catch, the Agent's `terminate/2`
+    # crashes with `(stop) exited in: GenServer.call(...)` and
+    # logs an `[error]` per agent during teardown — a noisy,
+    # recoverable shutdown error.
+    :exit, _ -> :ok
   end
 end

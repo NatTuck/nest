@@ -1,12 +1,12 @@
 Here are some things to watch for in code reviews:
 
-- Redundant code.
+- Avoid redundant code.
   - ex. If every call to a function has the same code next to it, that code should
   probably be in the function.
-- Useless precondition checking.
+- Avoid useless precondition checking.
   - ex. Doing an extra O(n) DB call to check for a unique or foreign key violation.
   Better to just try it and handle the error.
-- Useless delegation or abstraction.
+- Avoid useless delegation or abstraction.
   - A helper function that just calls a function in another module should
   typically be eliminated in favor of just calling the function directly.
 
@@ -21,6 +21,12 @@ with a GenServer that blocks, and most of our GenServers don't block by design.
 *ever* blocks for an unknown amount of time or not. If the doc says it doesn't block,
 then it doesn't block. A GenServer.call to a GenServer that "doesn't block"
 doesn't count as blocking for this purpose - it's just synchronous communication.
+- We can't do db access in the GenServer init callback. That breaks async tests.
+Push any such logic out to the calling process (e.g. in start_link, or have a
+helper function in the GenServer module that gets called by whatever the
+external interface function is that eventually leads to start_link being
+called. If there's a Supervisor.start_child in the chain, it needs to be
+outside of that).
 
 Testing:
 
@@ -32,3 +38,13 @@ no more than 500ms unless there are comments describing the concrete timings
 we know for sure the block will end in a fixed time - optimally we should only
 be doing a receive if the message is *already* in the mailbox.
 - We don't do "drain loops" in tests.
+- We don't do "async: false" just because a test hits the DB. Any "async: false"
+must have a clear and concrete justification that explains some atypical
+situation.
+
+Temp files:
+
+- Temp files should go somewhere appropriate, with a path including a string
+(e.g. "nest-tmp") that is unlikely to occur in other paths.
+- Cleanup of a temp directory with "rm -rf" or similar should always be guarded
+by a check to confirm that the path contains that identifying string.

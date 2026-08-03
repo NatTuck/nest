@@ -8,7 +8,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
   covered separately in `test/nest/persistence_test.exs`.
   """
 
-  use Nest.DataCase, async: false
+  use Nest.DataCase, async: true
 
   import Mimic
 
@@ -24,18 +24,17 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
   setup :verify_on_exit!
 
   setup do
-    previous = Application.get_env(:nest, :persistence, %{})
-    Application.put_env(:nest, :persistence, enabled: true)
-    on_exit(fn -> Application.put_env(:nest, :persistence, previous) end)
-
     vid = AgentTestHelpers.vocation_id_for_test()
     Process.put(:test_vocation_id, vid)
 
-    on_exit(fn ->
-      for id <- Agents.list_agents() do
-        Agents.delete_agent(id)
-      end
-    end)
+    # The DataCase's automatic sandbox rollback covers
+    # the agent rows. A `for id <- ...; delete_agent(id)`
+    # here would deadlock on `DBConnection.OwnershipError`
+    # because `on_exit` runs in `ExUnit.OnExitHandler`'s
+    # runner process — no sandbox ownership. See
+    # `agent_file_policy_test.exs` for the canonical
+    # version of this comment.
+    on_exit(fn -> :ok end)
 
     :ok
   end
@@ -50,6 +49,13 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
 
     {:ok, ^name} = Supervisor.fetch_or_start_agent(attrs)
     {:ok, pid} = Supervisor.get_agent(name)
+
+    # Runtime DB writes from the agent pid (`set_model/2`
+    # calls `Persistence.update_agent_model/2`) need
+    # explicit sandbox access — the supervisor-spawned
+    # child doesn't inherit the test pid's `$callers`.
+    Ecto.Adapters.SQL.Sandbox.allow(Nest.Repo, self(), pid)
+
     {pid, name}
   end
 
@@ -161,12 +167,26 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
       #
       # The model-probe failure fires a `Logger.error` from
       # `Agent.init/1` — capture it and assert it's the
-      # expected error path, not noise.
+      # expected error path, not noise. Use a unique agent name
+      # so the asserted substring is specific to this test's
+      # agent (concurrent async tests' `:model_missing` agents
+      # also log the same phrase, which would make a generic
+      # substring match hit-or-miss under parallel load).
+      agent_name = "ghost-agent-#{System.unique_integer([:positive])}"
+
       log =
         ExUnit.CaptureLog.capture_log(fn ->
           Nest.Agents.Agent.Config
           |> stub(:create_client_config, fn model ->
-            if model[:name] == "ghost-model" do
+            # `build_attrs_for_start/1` round-trips the JSONB
+            # `model` column as string keys (Ecto's :map
+            # deserialization). The stub sees the agent's
+            # in-memory shape, which the supervisor reads back
+            # from DB. Handle both shapes here so this test
+            # doesn't depend on a specific keying.
+            name = model[:name] || model["name"]
+
+            if name == "ghost-model" do
               {:error, %Nest.ChatModel.ModelNotFoundError{message: "ghost"}}
             else
               real_fn = Function.capture(Nest.Agents.Agent.Config, :create_client_config, 1)
@@ -174,9 +194,9 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
             end
           end)
 
-          {pid, name} =
+          {pid, ^agent_name} =
             persist_and_start!(%{
-              name: "ghost-agent",
+              name: agent_name,
               model: %{name: "ghost-model"},
               vocation_id: vid()
             })
@@ -187,7 +207,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
 
           # Repair through Agents.change_model/2.
           :ok =
-            Agents.change_model(name, %{
+            Agents.change_model(agent_name, %{
               name: "claude-3-opus-20240229",
               provider: "anthropic-provider"
             })
@@ -203,7 +223,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
 
           # The persisted row reflects the new model. Ecto's
           # `:map` column normalizes to string keys on read.
-          {:ok, row} = Persistence.fetch_agent_by_name(name)
+          {:ok, row} = Persistence.fetch_agent_by_name(agent_name)
 
           assert row.model == %{
                    "name" => "claude-3-opus-20240229",
@@ -211,7 +231,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
                  }
         end)
 
-      assert log =~ "could not resolve model"
+      assert log =~ "Agent #{agent_name} could not resolve model"
     end
 
     test "proxies {:error, reason} replies unchanged so the channel can pattern-match" do
@@ -323,12 +343,26 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
       #
       # The model-probe failure fires a `Logger.error` from
       # `Agent.init/1` — capture it and assert it's the
-      # expected error path, not noise.
+      # expected error path, not noise. Use a unique agent name
+      # so the asserted substring is specific to this test's
+      # agent (concurrent async tests' `:model_missing` agents
+      # also log the same phrase, which would make a generic
+      # substring match hit-or-miss under parallel load).
+      agent_name = "ghost-agent-#{System.unique_integer([:positive])}"
+
       log =
         ExUnit.CaptureLog.capture_log(fn ->
           Nest.Agents.Agent.Config
           |> stub(:create_client_config, fn model ->
-            if model[:name] == "ghost-model" do
+            # `build_attrs_for_start/1` round-trips the JSONB
+            # `model` column as string keys (Ecto's :map
+            # deserialization). The stub sees the agent's
+            # in-memory shape, which the supervisor reads back
+            # from DB. Handle both shapes here so this test
+            # doesn't depend on a specific keying.
+            name = model[:name] || model["name"]
+
+            if name == "ghost-model" do
               {:error, %Nest.ChatModel.ModelNotFoundError{message: "ghost"}}
             else
               real_fn = Function.capture(Nest.Agents.Agent.Config, :create_client_config, 1)
@@ -336,9 +370,9 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
             end
           end)
 
-          {_pid, name} =
+          {_pid, ^agent_name} =
             persist_and_start!(%{
-              name: "ghost-agent",
+              name: agent_name,
               model: %{name: "ghost-model"},
               vocation_id: vid()
             })
@@ -347,10 +381,10 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
           # it's alive in the Registry — `list_broken_agents/0`
           # skips it.
           broken = Agents.list_broken_agents()
-          refute Enum.any?(broken, fn entry -> entry.name == name end)
+          refute Enum.any?(broken, fn entry -> entry.name == agent_name end)
         end)
 
-      assert log =~ "could not resolve model"
+      assert log =~ "Agent #{agent_name} could not resolve model"
     end
   end
 end

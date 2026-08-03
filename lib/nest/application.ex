@@ -26,6 +26,7 @@ defmodule Nest.Application do
       Nest.Agents.Supervisor.child_spec(),
       ChatTurnSupervisor,
       {Task.Supervisor, name: Nest.Agents.TaskSupervisor},
+      {Task.Supervisor, name: Nest.Models.TaskSupervisor},
       # Start model manager (queries auto-providers)
       Nest.Models
     ]

@@ -25,9 +25,7 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
     coverage for the unified `Persistence.insert_message/2`
     compaction clause.
   """
-  use Nest.DataCase, async: false
-
-  import Mimic
+  use Nest.DataCase, async: true
 
   alias Nest.Agents.Agent.ClientAPI
   alias Nest.LLM.AnthropicClient
@@ -39,20 +37,12 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
   alias Nest.Messages.User
   alias Nest.Vocations
 
-  setup :verify_on_exit!
-
   setup do
     Process.put(:nest_test_agent_pid, self())
     MockClient.start_link()
     MockClient.clear()
 
     on_exit(fn -> Process.delete(:nest_test_agent_pid) end)
-
-    Application.put_env(:nest, :persistence, enabled: true)
-
-    on_exit(fn ->
-      Application.put_env(:nest, :persistence, enabled: false)
-    end)
 
     :ok
   end
@@ -89,7 +79,10 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
   # Start an agent bound to `vocation`. The `start_agent/1`
   # helper generates its own unique agent name and inserts the
   # agent row. We pass `vocation` as the cached `vocation:`
-  # field to avoid a redundant DB roundtrip.
+  # field to avoid a redundant DB roundtrip. Also subscribes
+  # the test process to the agent's PubSub topic so the
+  # `:chat_message` broadcasts from `run_compaction/3`'s
+  # pre-seed loop are observable via `assert_receive/1`.
   defp start_with_vocation(vocation, attrs \\ []) do
     # Canned response for the next chat turn spawned by
     # `spawn_next_chat_turn/2` after compaction.
@@ -105,7 +98,8 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
         Map.new(attrs)
       )
 
-    start_agent(full_attrs)
+    {pid, agent_id} = start_agent(full_attrs)
+    {pid, agent_id}
   end
 
   # Pre-seed `chat_state.messages` via the canonical append
@@ -113,12 +107,30 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
   # `next_message_index` past the highest so the marker lands
   # at a non-colliding slot, then trigger the compaction.
   defp run_compaction(pid, summary_text \\ "Test summary.", messages \\ default_messages()) do
+    seed_pre_swap_messages(pid, messages)
+    consume_pre_seed_broadcasts(messages)
+
+    send(pid, {:compaction_done, summary_text, nil})
+    _ = :sys.get_state(pid)
+    state = :sys.get_state(pid)
+
+    # Terminate the agent so the spawned chat turn's
+    # `tool_calls_received` handler doesn't crash during
+    # teardown (purely test-induced noise).
+    ClientAPI.terminate(pid)
+
+    state
+  end
+
+  # Seed `state.chat_state.messages` with the test fixtures,
+  # bumping `next_message_index` past the highest pre-seeded
+  # index so the compaction marker lands at a non-colliding
+  # slot. Then append each via the canonical `append_message`
+  # GenServer call so DB rows mirror the in-memory state.
+  defp seed_pre_swap_messages(pid, messages) do
     highest_index =
       messages
-      |> Enum.flat_map(fn
-        {_, %{index: idx}} -> [idx]
-        _ -> []
-      end)
+      |> Enum.map(&message_index/1)
       |> Enum.max(fn -> -1 end)
 
     :sys.replace_state(pid, fn state ->
@@ -133,33 +145,25 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
     for stamped <- messages do
       GenServer.call(pid, {:append_message, stamped}, 5_000)
     end
-
-    drain_chat_messages()
-
-    send(pid, {:compaction_done, summary_text, nil})
-    _ = :sys.get_state(pid)
-    state = :sys.get_state(pid)
-
-    # Terminate the agent so the spawned chat turn's
-    # `tool_calls_received` handler doesn't crash during
-    # teardown (purely test-induced noise).
-    ClientAPI.terminate(pid)
-
-    state
   end
 
-  # Drain any pending `:chat_message` PubSub messages — the
-  # pre-seed loop above broadcasts one per pre-seeded entry,
-  # and the next chat turn's LLM response may also broadcast.
-  # We want the post-compaction broadcasts to be the only ones
-  # the test's assert_receive patterns collect.
-  defp drain_chat_messages do
-    receive do
-      {:chat_message, _} -> drain_chat_messages()
-    after
-      100 -> :ok
+  # Each pre-seeded `append_message` broadcasts one `:chat_message`
+  # PubSub event. Consume them deterministically (one per pre-seeded
+  # entry) so the post-compaction broadcasts are the only events
+  # left in the test process's mailbox. AGENTS.md line 96 prohibits
+  # `receive ... after` drains; consuming the exact expected count
+  # is deterministic and gives a real failure if the broadcast
+  # count drifts.
+  defp consume_pre_seed_broadcasts(messages) do
+    for _ <- messages do
+      assert_receive {:chat_message, _}
     end
   end
+
+  # Pull the `:index` out of a `{role, struct}` pre-seeded entry,
+  # tolerating the rare case where the entry isn't a tagged tuple.
+  defp message_index({_, %{index: idx}}), do: idx
+  defp message_index(_), do: -1
 
   defp default_messages do
     [
@@ -234,60 +238,48 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
     end
 
     test "AGENTS.md changes on disk between init and compaction are reflected" do
-      # This is a duplicate of the test in `agent_agents_md_test.exs`,
-      # brought into this file so the system-repeat contract is
-      # documented in one place.
       vocation = create_vocation(%{})
 
-      # Use the project root as the workspace so AGENTS.md exists.
-      workspace_path = File.cwd!()
-
-      # Save the real AGENTS.md for restoration; write a
-      # sentinel AGENTS.md while the test runs.
-      real_path = Path.join(workspace_path, "AGENTS.md")
-
-      backup_path =
+      workspace_path =
         Path.join(
           System.tmp_dir!(),
-          "agents_md_backup_#{System.unique_integer([:positive])}"
+          "nest-tmp-system-repeat-#{System.unique_integer([:positive])}"
         )
 
-      File.cp!(real_path, backup_path)
-      on_exit(fn -> File.cp!(backup_path, real_path) end)
+      File.mkdir_p!(workspace_path)
+      on_exit(fn -> safe_rm_rf(workspace_path) end)
+
+      agents_md_path = Path.join(workspace_path, "AGENTS.md")
 
       sentinel = "REFRESH-MARKER-#{System.unique_integer([:positive])}"
-      File.write!(real_path, "# Test AGENTS.md\nFROM_COMPACTION_TEST\n#{sentinel}\n")
+      File.write!(agents_md_path, "# Test AGENTS.md\nFROM_COMPACTION_TEST\n#{sentinel}\n")
 
-      try do
-        {pid, _agent_id} = start_with_vocation(vocation, workspace_path: workspace_path)
+      {pid, _agent_id} = start_with_vocation(vocation, workspace_path: workspace_path)
 
-        # Verify the initial system prompt contains the sentinel.
-        init_state = :sys.get_state(pid)
-        [{:system, init_sys} | _] = init_state.chat_state.messages
-        init_text = text_from_parts(init_sys.parts)
+      # Verify the initial system prompt contains the sentinel.
+      init_state = :sys.get_state(pid)
+      [{:system, init_sys} | _] = init_state.chat_state.messages
+      init_text = text_from_parts(init_sys.parts)
 
-        assert init_text =~ sentinel
+      assert init_text =~ sentinel
 
-        # Write a NEW sentinel to the file and trigger compaction.
-        new_sentinel = "POST-COMPACTION-#{System.unique_integer([:positive])}"
-        File.write!(real_path, "# Test AGENTS.md\nFROM_COMPACTION_TEST\n#{new_sentinel}\n")
+      # Write a NEW sentinel to the file and trigger compaction.
+      new_sentinel = "POST-COMPACTION-#{System.unique_integer([:positive])}"
+      File.write!(agents_md_path, "# Test AGENTS.md\nFROM_COMPACTION_TEST\n#{new_sentinel}\n")
 
-        state = run_compaction(pid)
+      state = run_compaction(pid)
 
-        [{:system, post_sys} | _] = state.chat_state.messages
-        post_text = text_from_parts(post_sys.parts)
+      [{:system, post_sys} | _] = state.chat_state.messages
+      post_text = text_from_parts(post_sys.parts)
 
-        assert post_text =~ new_sentinel
-      after
-        File.cp!(backup_path, real_path)
-      end
+      assert post_text =~ new_sentinel
     end
+  end
 
-    # Companion test for AGENTS.md re-read lives in
-    # `agent_agents_md_test.exs` ("AGENTS.md changes between
-    # init and compaction are reflected in the regenerated
-    # system prompt"). That test pins the same behavior with
-    # its own fixture setup.
+  defp safe_rm_rf(path) do
+    if String.contains?(path, "nest-tmp") do
+      File.rm_rf!(path)
+    end
   end
 
   describe "index assignment via canonical path" do
@@ -318,7 +310,7 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
       state = run_compaction(pid)
 
       request = %RunRequest{
-        model: state.model.name,
+        model: model_name(state.model),
         messages: state.chat_state.messages,
         tools: state.tools,
         tool_choice: :auto
@@ -338,7 +330,7 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
       state = run_compaction(pid)
 
       request = %RunRequest{
-        model: state.model.name,
+        model: model_name(state.model),
         messages: state.chat_state.messages,
         tools: state.tools,
         tool_choice: :auto
@@ -471,4 +463,12 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
                "got #{agent_row.last_compaction_index}"
     end
   end
+
+  # The `model` field on `state` arrives as string keys for
+  # agents loaded from the JSONB column (via `Persistence.
+  # build_attrs_for_start/1` → `state.model`) and as atom keys
+  # when the caller passes atom-keyed attrs directly. Both
+  # shapes are valid; tests use this accessor to assert
+  # without coupling to the source shape.
+  defp model_name(model), do: model[:name] || model["name"]
 end

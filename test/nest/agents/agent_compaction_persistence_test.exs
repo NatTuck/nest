@@ -17,7 +17,7 @@ defmodule Nest.Agents.AgentCompactionPersistenceTest do
     coverage of the system-message + tools + AGENTS.md re-read
     on compaction.
   """
-  use Nest.DataCase, async: false
+  use Nest.DataCase, async: true
 
   import Ecto.Query, warn: false
   import Nest.PersistenceTestHelpers
@@ -31,16 +31,6 @@ defmodule Nest.Agents.AgentCompactionPersistenceTest do
   alias Nest.Messages.Tool
   alias Nest.Messages.User
   alias Nest.Persistence
-
-  setup do
-    Application.put_env(:nest, :persistence, enabled: true)
-
-    on_exit(fn ->
-      Application.put_env(:nest, :persistence, enabled: false)
-    end)
-
-    :ok
-  end
 
   describe "Persistence.insert_message/2 unified compaction clause" do
     test "compaction tuple writes a role:compaction row AND bumps agents.last_compaction_index atomically" do

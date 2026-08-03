@@ -19,7 +19,7 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
   the model's hidden reasoning, while the user-visible
   assistant message's `content` was empty.
   """
-  use ExUnit.Case, async: true
+  use Nest.DataCase, async: true
 
   import Mimic
 
@@ -94,7 +94,6 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
       ])
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "List the files")
 
@@ -286,7 +285,6 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
       ])
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "Run it")
 
@@ -310,6 +308,8 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
 
       assert response_log.payload.content == "Result: success"
       refute response_log.payload.content =~ "interpret"
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
 
       MockClient.clear()
     end
@@ -350,7 +350,6 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
       ])
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "How many?")
 
@@ -412,7 +411,6 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
       ])
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "List the files")
 

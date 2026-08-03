@@ -36,6 +36,8 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
 
   require Logger
 
+  require Logger
+
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ChatPipeline
@@ -104,7 +106,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
       |> reset_crossed_thresholds()
       |> reset_read_files()
 
-    state = refresh_vocation_and_tools(state)
+    {state, system_prompt} = refresh_vocation_and_tools(state)
     summary_text = ThinkTags.strip(summary_text)
 
     marker_index = state.chat_state.next_message_index
@@ -112,7 +114,14 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
     archived_count = length(archived_messages)
 
     {new_messages, marker} =
-      build_post_swap_messages(state, summary_text, carried_entry, marker_index, archived_count)
+      build_post_swap_messages(
+        state,
+        summary_text,
+        carried_entry,
+        marker_index,
+        archived_count,
+        system_prompt
+      )
 
     state = archive_pre_swap(state, archived_messages)
     state = apply_post_swap(state, marker, new_messages)
@@ -127,7 +136,9 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   # `fetch_fresh_vocation/1`) and re-render the system prompt
   # + tools. Per AGENTS.md, the system message may change at
   # compaction (the prefix cache is invalidated by the
-  # compaction itself).
+  # compaction itself). Returns the rendered `system_prompt`
+  # string so the post-swap builder can decide whether to
+  # prepend it.
   defp refresh_vocation_and_tools(state) do
     fresh_vocation = fetch_fresh_vocation(state)
 
@@ -141,26 +152,24 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
 
     tools = Nest.Tools.get_functions(tool_names, state.workspace_path, state.tmp_path)
 
-    _ = system_prompt
-
-    %{state | vocation: fresh_vocation, tools: tools}
+    {%{state | vocation: fresh_vocation, tools: tools}, system_prompt}
   end
 
   # Build the post-swap message sequence: prepended fresh
-  # system (when a vocation is present), summary_user, and
+  # system (when a vocation is present AND the rendered
+  # prompt fits the 25% safety budget), summary_user, and
   # the carried entry's messages. Build the marker with
   # token-count stats. Pure — doesn't mutate state.
-  defp build_post_swap_messages(state, summary_text, carried_entry, marker_index, archived_count) do
+  defp build_post_swap_messages(
+         state,
+         summary_text,
+         carried_entry,
+         marker_index,
+         archived_count,
+         system_prompt
+       ) do
     now = DateTime.utc_now()
     archived_messages = state.chat_state.messages || []
-
-    {system_prompt, _mode, _tool_names, _vocation} =
-      SystemPrompt.compose_vocation_config(
-        state.vocation,
-        state.workspace_path,
-        {state.llm_metrics.context_limit, state.llm_metrics.context_limit_source},
-        state.depth
-      )
 
     summary_user =
       {:user,
@@ -170,21 +179,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
          api_logs: []
        }}
 
-    rebuilt_system =
-      case system_prompt do
-        nil ->
-          nil
-
-        prompt ->
-          {:system,
-           %System{
-             parts: [%Part.Text{text: prompt}],
-             timestamp: now,
-             api_logs: [],
-             metadata: nil,
-             tokens: nil
-           }}
-      end
+    rebuilt_system = build_rebuilt_system(system_prompt, state.llm_metrics.context_limit, now)
 
     new_messages =
       case rebuilt_system do
@@ -199,6 +194,39 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
       Marker.build_marker(marker_index, archived_count, tokens_compacted, tokens_compacted_to)
 
     {new_messages, marker}
+  end
+
+  # Build the post-swap `{:system, _}` message — only when
+  # we have a vocation-derived prompt AND it fits within the
+  # 25% safety budget. Over-budget prompts are NOT produced
+  # (the Trigger's preflight already refused the compaction
+  # in that case; this is the in-flight success path, where
+  # the system had a chance to grow between Trigger's render
+  # and ours — we drop it and log a warning so the next
+  # message-flow can surface a clearer error).
+  defp build_rebuilt_system(system_prompt, context_limit, now) do
+    cond do
+      is_nil(system_prompt) ->
+        nil
+
+      not SystemPrompt.within_size_budget?(system_prompt, context_limit) ->
+        Logger.warning(
+          "Compaction post-swap dropping rebuilt system: rendered prompt exceeds " <>
+            "25% safety budget for context_limit=#{context_limit}"
+        )
+
+        nil
+
+      true ->
+        {:system,
+         %System{
+           parts: [%Part.Text{text: system_prompt}],
+           timestamp: now,
+           api_logs: [],
+           metadata: nil,
+           tokens: nil
+         }}
+    end
   end
 
   # Place post-swap entries via the canonical message append

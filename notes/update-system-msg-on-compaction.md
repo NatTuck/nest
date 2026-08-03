@@ -2,19 +2,48 @@
 
 ## Implementation Status
 
-This design has been **implemented and superseded** by a simpler structural
-fix in the post-compaction message sequence. The fresh system message is
-re-rendered at compaction time via
-`SystemPrompt.compose_vocation_config/4` (which re-reads AGENTS.md from disk
-via `agents_md_section/1` and the vocation from the DB via
-`Vocations.get_vocation/1`); the canonical `MessageAppender.append_one/2`
-path assigns the index and persists the row. The post-compaction sequence
-is now `[system_fresh, summary_user, ...carried_messages]`.
+Two design changes have landed on top of the original system-message
+refresh:
 
-Sections 1-5 (schema changes + `delete_vocation/1` guard) remain valid
-future-work notes; sections 6 and 7 (the `regenerate_for_compaction/2`
-helper design) are obsolete — replaced by the canonical-message-append
-path (see `notes/unify-message-sequence.md`).
+1. **Honest overflow error** (Aug 2026). The rendered system prompt
+   is the single source of truth for the system size — not
+   `state.chat_state.messages[0]`. Before this fix, when
+   `messages[0]` was non-system (a `{:user, _}` or anything else),
+   `Overflow.system_size/1` fell back to estimating the WHOLE
+   messages list and surfaced as "~85504 tokens" in the error
+   string, even when the actual system content was a few hundred
+   tokens. The new design:
+
+     * `Overflow.system_size/1` takes the rendered string
+       directly. `nil → 0`, otherwise `Estimator.estimate(text)`.
+     * `Overflow.message/4` takes `(limit, system_prompt, verb,
+       reason)`. The two current reasons (`:reserve_exhausted`
+       and `:system_oversized`) share the structure but pick
+       different wording.
+     * `Overflow.broadcast/5` takes the rendered prompt and
+       reason, threads them through to `message/4`.
+     * `Compactor.compute_summary_budget/4` (now `/5`) takes the
+       rendered prompt string. Was `{:system, %System{}}` — the
+       `Message.t()` shape is no longer needed for sizing.
+     * `Trigger.start/2` and `ChatPipeline.refuse_compaction/1`
+       render via `SystemPrompt.compose_vocation_config/4` (or
+       fall back to extracting from `messages[0]` for the
+       `vocation: nil` test fixture) before calling `Overflow`.
+
+   The drift in `messages[0]` no longer affects the reported size.
+
+2. **25% safety budget** (Aug 2026, belt-and-suspenders). Any
+   rendered system prompt that exceeds 25% of `context_limit`
+   refuses the compaction with a tailored `:system_oversized`
+   error message that names the actual size and the 25% budget,
+   instead of the generic "cannot fit the system prompt + reserve"
+   wording. The check is a `:safety_chars_per_token = 3` upper-bound
+   estimate (intentionally cheaper than the tiktoken NIF, which
+   hangs on multi-MB inputs). Helpers live in
+   `SystemPrompt.within_size_budget?/2` and
+   `SystemPrompt.within_size_budget_budget/1`. The Trigger and
+   `ChatPipeline.refuse_compaction` both check before invoking
+   `compute_summary_budget`.
 
 ## Architectural Notes (current implementation)
 

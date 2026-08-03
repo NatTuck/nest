@@ -8,6 +8,10 @@ defmodule Nest.Agents.Agent.Init.Recovery do
   the recovery signal so any subscribed channel surfaces the
   repair banner.
 
+  The system message was already persisted by `Agent.pre_spawn/1`
+  in the caller's pid; this function only constructs the
+  in-memory state. No DB work happens in the agent pid.
+
   Lives in a separate file from `Nest.Agents.Agent` so the
   GenServer module stays under the credo 500-line cap. The
   one-line wrapper at the bottom is delegated back to
@@ -50,8 +54,6 @@ defmodule Nest.Agents.Agent.Init.Recovery do
         Map.get(attrs, :preloaded_messages, []),
         Map.get(attrs, :last_compaction_index, -1)
       )
-
-    Init.persist_initial_system_message(state)
 
     Broadcasts.model_missing(state.name, model_label, reason)
 

@@ -31,7 +31,6 @@ defmodule Nest.Agents.AgentObservabilityTest do
   describe "API logs" do
     test "every message in simple conversation has API log" do
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "Hello")
 
@@ -66,7 +65,6 @@ defmodule Nest.Agents.AgentObservabilityTest do
       MockClient.set_response("Command executed successfully")
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "Run a command")
 
@@ -115,7 +113,6 @@ defmodule Nest.Agents.AgentObservabilityTest do
       MockClient.set_response("Done")
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "List files")
 
@@ -260,7 +257,6 @@ defmodule Nest.Agents.AgentObservabilityTest do
       ])
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "First")
       assert_receive {:chat_status, %{status: "idle"}}, 500
@@ -307,7 +303,6 @@ defmodule Nest.Agents.AgentObservabilityTest do
       ])
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "Run a command")
       assert_receive {:chat_status, %{status: "idle"}}, 500
@@ -335,7 +330,6 @@ defmodule Nest.Agents.AgentObservabilityTest do
       ])
 
       {pid, agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_id}")
 
       :ok = Agent.chat(pid, "First")
       assert_receive {:chat_status, %{status: "idle"}}, 500
