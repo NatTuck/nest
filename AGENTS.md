@@ -80,7 +80,7 @@ explanation tool.
 errors or warnings. NO EXCEPTIONS, NO EXCUSES.
 - **NEVER** run tests and throw away the output by piping to tail, head, grep or
 similar. If you expect long output, redirect to a temporary file (e.g.
-notes/test-runs/test-run.log).
+/tmp/opencode/test-runs/test-run.log).
 - **ALL** test run output should go under notes/test-runs.
 - The Elixir test suite must take less than 5 seconds to run. If it ever takes
 longer, that's a major issue that needs to be addressed immediately.
