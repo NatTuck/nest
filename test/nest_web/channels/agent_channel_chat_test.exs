@@ -9,7 +9,6 @@ defmodule NestWeb.AgentChannelChatTest do
   import ExUnit.CaptureLog
   import Mimic
 
-  alias Ecto.Adapters.SQL.Sandbox
   alias Nest.Agents
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Supervisor
@@ -287,69 +286,61 @@ defmodule NestWeb.AgentChannelChatTest do
     end
 
     test "error event is broadcast when LLM fails" do
-      # Capture the model-missing log from `init/1`. The agent
-      # boots in `:model_missing` (the test's actual target)
-      # because `model` omits `:provider`.
-      on_exit(fn -> Process.delete(:test_error_agent_id) end)
+      # Stub the model probe so the agent boots in
+      # `:model_missing`. The `start_agent/1` helper handles
+      # Sandbox.allow + Mimic.allow + `on_exit`
+      # `Supervisor.stop_agent/1` cleanup; we keep the
+      # `:sys.replace_state` + MockClient.set_error sequence
+      # because the agent needs `MockClient` as its runtime
+      # client (the recovery flow uses an inert one) and we
+      # need to script an error response.
+      Nest.Agents.Agent.Config
+      |> stub(:create_client_config, fn _model ->
+        {:error, %Nest.ChatModel.ModelNotFoundError{message: "x"}}
+      end)
 
       _creation_log =
         capture_log(fn ->
-          {:ok, id} =
-            Agents.create_agent(
-              %{name: "qwen3.5-plus"},
+          {error_agent_pid, error_agent_id} =
+            AgentTestHelpers.start_agent(%{
+              name: "error-agent-#{System.unique_integer([:positive])}",
+              model: %{name: "qwen3.5-plus"},
               vocation_id: AgentTestHelpers.vocation_id_for_test()
-            )
+            })
 
-          Process.put(:test_error_agent_id, id)
-          :ok
+          :sys.replace_state(error_agent_pid, fn state ->
+            %{state | client_config: %{state.client_config | client: MockClient}}
+          end)
+
+          Process.put(:nest_test_agent_pid, error_agent_pid)
+          MockClient.set_error("model failed")
+
+          Process.put(:test_error_agent_id, error_agent_id)
+
+          log =
+            capture_log(fn ->
+              # Connect to the new agent
+              {:ok, _, error_socket} =
+                subscribe_and_join(
+                  socket(NestWeb.UserSocket),
+                  NestWeb.AgentChannel,
+                  "agent:#{Process.get(:test_error_agent_id)}"
+                )
+
+              ref = push(error_socket, "chat:message", %{"content" => "Trigger error"})
+              assert_reply ref, :ok, %{}
+
+              # Wait for error broadcast
+              assert_push "chat:error", error_payload, 2000
+              assert error_payload["index"] >= 0
+              assert is_binary(error_payload["content"])
+            end)
+
+          # Verify the error was logged with the correct message
+          assert log =~ "chat:error"
+          assert log =~ "ChatTurn.run_chat_task/1"
+          assert log =~ "model failed"
         end)
-
-      error_agent_id = Process.get(:test_error_agent_id)
-      {:ok, error_agent_pid} = Supervisor.get_agent(error_agent_id)
-
-      {:ok, error_agent_pid} = Supervisor.get_agent(error_agent_id)
-
-      :sys.replace_state(error_agent_pid, fn state ->
-        %{state | client_config: %{state.client_config | client: MockClient}}
-      end)
-
-      # Agent pid needs explicit sandbox access — without it,
-      # `Persistence.insert_message/2` blocks indefinitely on
-      # the test pid's sandbox checkout.
-      Sandbox.allow(Nest.Repo, self(), error_agent_pid)
-
-      Process.put(:nest_test_agent_pid, error_agent_pid)
-      MockClient.start_link(error_agent_pid)
-      MockClient.set_error("model failed")
-
-      on_exit(fn ->
-        MockClient.stop(error_agent_pid)
-        Process.delete(:nest_test_agent_pid)
-      end)
-
-      log =
-        capture_log(fn ->
-          # Connect to the new agent
-          {:ok, _, error_socket} =
-            subscribe_and_join(
-              socket(NestWeb.UserSocket),
-              NestWeb.AgentChannel,
-              "agent:#{error_agent_id}"
-            )
-
-          ref = push(error_socket, "chat:message", %{"content" => "Trigger error"})
-          assert_reply ref, :ok, %{}
-
-          # Wait for error broadcast
-          assert_push "chat:error", error_payload, 2000
-          assert error_payload["index"] >= 0
-          assert is_binary(error_payload["content"])
-        end)
-
-      # Verify the error was logged with the correct message
-      assert log =~ "chat:error"
-      assert log =~ "ChatTurn.run_chat_task/1"
-      assert log =~ "model failed"
     end
   end
 

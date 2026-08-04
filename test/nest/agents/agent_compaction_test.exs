@@ -8,6 +8,7 @@ defmodule Nest.Agents.AgentCompactionTest do
   """
   use Nest.DataCase, async: true
 
+  import ExUnit.CaptureLog
   import Mimic
 
   alias Nest.Agents.Agent
@@ -18,7 +19,6 @@ defmodule Nest.Agents.AgentCompactionTest do
   alias Nest.Messages.Tool
   alias Nest.Messages.User
   alias Nest.Persistence
-  alias Nest.Vocations
 
   setup :verify_on_exit!
 
@@ -140,19 +140,29 @@ defmodule Nest.Agents.AgentCompactionTest do
 
       :ok = Agent.chat(pid, "Run two")
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      log =
+        capture_log(fn ->
+          assert_receive {:chat_status, %{status: "idle"}}, 500
 
-      assert_received {:chat_message, {:user, _}}
-      assert_received {:chat_status, %{status: "streaming"}}
-      assert_received {:chat_delta, %{content: "Running two commands"}}
-      assert_received {:chat_message, {:tool, %Tool{parts: parts}}}
-      assert_received {:chat_delta, %{content: "All done"}}
-      assert_received {:chat_message, {:assistant, _}}
+          assert_received {:chat_message, {:user, _}}
+          assert_received {:chat_status, %{status: "streaming"}}
+          assert_received {:chat_delta, %{content: "Running two commands"}}
+          assert_received {:chat_message, {:tool, %Tool{parts: parts}}}
+          assert_received {:chat_delta, %{content: "All done"}}
+          assert_received {:chat_message, {:assistant, _}}
 
-      assert length(parts) == 2
-      assert Enum.map(parts, & &1.tool_call_id) == ["call_1", "call_2"]
+          assert length(parts) == 2
+          assert Enum.map(parts, & &1.tool_call_id) == ["call_1", "call_2"]
 
-      Agent.terminate(pid)
+          Agent.terminate(pid)
+        end)
+
+      # The MockClient stream events include `arguments_delta: "{}"`
+      # which the ChatTurn validates against the schema's `required`
+      # fields before the final `{:done, ...}` arrives. The
+      # "Missing required arguments" log is a deliberate diagnostic
+      # for that incremental-validation path.
+      assert log =~ "Missing required arguments"
     end
   end
 

@@ -90,6 +90,7 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
     Process.flag(:trap_exit, true)
     {:ok, parent_name, parent_pid, _parent_id} = start_parent(vid)
     Mimic.allow(MockClient, self(), parent_pid)
+    Mimic.allow(Nest.Agents, self(), parent_pid)
     :sys.replace_state(parent_pid, &swap_to_mock/1)
     MockClient.start_link(parent_pid)
 

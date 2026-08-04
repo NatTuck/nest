@@ -73,6 +73,8 @@ defmodule Nest.Agents.SupervisorTest do
           )
         end)
 
+      AgentTestHelpers.ensure_cleanup(name)
+
       assert Regex.match?(~r/^[a-z]+-[a-z]+$/, name)
       assert {:ok, _pid} = Registry.lookup(name)
     end
@@ -85,6 +87,8 @@ defmodule Nest.Agents.SupervisorTest do
           name: name,
           vocation_id: AgentTestHelpers.vocation_id_for_test()
         )
+
+      AgentTestHelpers.ensure_cleanup(name)
 
       assert {:ok, _pid} = Registry.lookup(name)
     end
@@ -99,6 +103,8 @@ defmodule Nest.Agents.SupervisorTest do
           name: name,
           vocation_id: AgentTestHelpers.vocation_id_for_test()
         )
+
+      AgentTestHelpers.ensure_cleanup(name)
 
       assert {:ok, pid} = Registry.lookup(name)
       assert Process.alive?(pid)
@@ -124,7 +130,10 @@ defmodule Nest.Agents.SupervisorTest do
       vid = AgentTestHelpers.vocation_id_for_test()
 
       {:ok, ^name1} = Agents.create_agent(test_model(), name: name1, vocation_id: vid)
+      AgentTestHelpers.ensure_cleanup(name1)
+
       {:ok, ^name2} = Agents.create_agent(test_model(), name: name2, vocation_id: vid)
+      AgentTestHelpers.ensure_cleanup(name2)
 
       # In async mode, other tests may have started/stopped agents
       # concurrently. Assert on this test's own names (definitely
@@ -151,6 +160,8 @@ defmodule Nest.Agents.SupervisorTest do
           name: name,
           vocation_id: AgentTestHelpers.vocation_id_for_test()
         )
+
+      AgentTestHelpers.ensure_cleanup(name)
 
       assert {:ok, pid} = Supervisor.get_agent(name)
       assert is_pid(pid)

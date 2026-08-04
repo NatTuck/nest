@@ -13,6 +13,13 @@ Our JavaScript/browser code lives exclusively in `./assets/`.
 - If you see `package.json`, `node_modules`, or other similar JS artifacts in the project
 root, something is wrong - delete them immediately
 
+## ⚠️ CRITICAL: Testing Protocol
+
+- **ABSOLUTELY NEVER** run a test command and throw away the output with grep,
+head, or tail. This behavior is **NEVER** acceptable. If you do it even once,
+stop running commands for *any reason*, explain how to avoid the error in the
+future, and stop.
+
 ## Project Design
 
 ### LLM Calls
@@ -43,6 +50,10 @@ just in the API log, but the UI always includes everything that happened).
 - Read SMELLS.md. Check the proposed changes for code stench.
 - Run `mix precommit` and read the *full* output. No head/tail/grep, read the
 whole thing.
+- There's no such thing as "out of scope" or "pre-existing issue" for this step.
+Either we're 100% clean (no fails, no warnings, no style suggestions, no test
+log prints, etc) or we're not.
+- **ABSOLUTELY NEVER** run `git stash`. NEVER. NOT FOR ANY REASON, NO EXCUSES.
 
 ### During Development
 

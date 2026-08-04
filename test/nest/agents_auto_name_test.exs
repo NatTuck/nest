@@ -67,6 +67,12 @@ defmodule Nest.AgentsAutoNameTest do
               vocation_id: vid()
             )
 
+          # Auto-generated name test — direct `Agents.create_agent/2`
+          # is intentional (the helper always passes `name:` and
+          # would never exercise the no-name fallback). Register
+          # cleanup so the BEAM pid doesn't outlive the test.
+          AgentTestHelpers.ensure_cleanup(name)
+
           assert is_binary(name)
           assert Regex.match?(~r/^[a-z]+-[a-z]+$/, name)
           assert {:ok, _pid} = Supervisor.get_agent(name)
@@ -76,7 +82,12 @@ defmodule Nest.AgentsAutoNameTest do
     end
 
     test "auto-generated names are unique across consecutive calls" do
-      log =
+      # `capture_log/1` swallows the per-agent "could not
+      # resolve model" warnings (each test agent has no model
+      # `name:` — only the static-config lookup-name-key —
+      # so `Agent.init/1` logs once per agent). The unique-
+      # name assertions below are unrelated to those logs.
+      _ =
         capture_log(fn ->
           {:ok, name1} =
             Agents.create_agent(
@@ -84,11 +95,15 @@ defmodule Nest.AgentsAutoNameTest do
               vocation_id: vid()
             )
 
+          AgentTestHelpers.ensure_cleanup(name1)
+
           {:ok, name2} =
             Agents.create_agent(
               %{provider: "model-studio"},
               vocation_id: vid()
             )
+
+          AgentTestHelpers.ensure_cleanup(name2)
 
           assert name1 != name2
           assert Regex.match?(~r/^[a-z]+-[a-z]+$/, name1)
@@ -111,6 +126,8 @@ defmodule Nest.AgentsAutoNameTest do
           vocation_id: vid()
         )
 
+      AgentTestHelpers.ensure_cleanup(name)
+
       assert {:ok, info} = Agents.get_info(name)
       assert info.name == name
       assert info.status == :idle
@@ -126,6 +143,8 @@ defmodule Nest.AgentsAutoNameTest do
           name: explicit,
           vocation_id: vid()
         )
+
+      AgentTestHelpers.ensure_cleanup(name)
 
       assert name == explicit
     end

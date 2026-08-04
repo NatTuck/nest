@@ -17,6 +17,8 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
 
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.LLM.Tool
   alias Nest.Messages.ToolCall
@@ -178,19 +180,29 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
       tools = [Tools.get_function("read_file", dir)]
       c = ctx(tools, context_limit: 100_000)
 
-      assert [%ToolResult{is_error: true, content: error}] =
-               BatchSizer.run(
-                 [
-                   call("c1", "read_file", %{
-                     "path" => "big.txt",
-                     "max_result_tokens" => 100
-                   })
-                 ],
-                 c
-               )
+      log =
+        capture_log(fn ->
+          assert [%ToolResult{is_error: true, content: error}] =
+                   BatchSizer.run(
+                     [
+                       call("c1", "read_file", %{
+                         "path" => "big.txt",
+                         "max_result_tokens" => 100
+                       })
+                     ],
+                     c
+                   )
 
-      assert error =~ "File is"
-      assert error =~ "tokens which exceeds your requested limit of 100"
+          assert error =~ "File is"
+          assert error =~ "tokens which exceeds your requested limit of 100"
+        end)
+
+      # The `is_error=true` cap-overflow path is a deliberate
+      # diagnostic — assert on it so the test's intent is
+      # self-documenting and the log doesn't escape to the test
+      # output.
+      assert log =~ "BatchSizer produced is_error=true tool result"
+      assert log =~ "tool=read_file"
     end
 
     test "no cap when context_limit is nil (degraded-but-hopeful path)" do

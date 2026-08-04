@@ -6,8 +6,6 @@ defmodule Nest.Agents.AgentTest do
 
   import ExUnit.CaptureLog
 
-  alias Ecto.Adapters.SQL.Sandbox
-  alias Nest.Agents
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Registry
   alias Nest.Messages.Assistant
@@ -16,39 +14,21 @@ defmodule Nest.Agents.AgentTest do
 
   describe "start_link/1" do
     test "starts agent and registers in registry" do
-      agent_name = "registered-agent-#{System.unique_integer([:positive])}"
-      model = %{name: "qwen3.5-plus", provider: "model-studio"}
+      {_pid, name} =
+        AgentTestHelpers.start_agent(%{
+          name: "registered-agent-#{System.unique_integer([:positive])}"
+        })
 
-      {:ok, name} =
-        Agents.create_agent(model,
-          name: agent_name,
-          vocation_id: AgentTestHelpers.vocation_id_for_test()
-        )
-
-      assert ^name = agent_name
       assert {:ok, _pid} = Registry.lookup(name)
     end
   end
 
   describe "consecutive_compaction_count reset on append_message" do
     test "appending :user, :assistant, or :tool messages resets to 0" do
-      agent_name = "loop-counter-agent-#{System.unique_integer([:positive])}"
-      model = %{name: "qwen3.5-plus", provider: "model-studio"}
-
-      {:ok, name} =
-        Agents.create_agent(model,
-          name: agent_name,
-          vocation_id: AgentTestHelpers.vocation_id_for_test()
-        )
-
-      {:ok, pid} = Registry.lookup(name)
-
-      # The supervisor-spawned agent pid doesn't inherit the
-      # test pid's sandbox via `$callers` (that walked through
-      # `start_supervised!` in the old design). DB writes
-      # from `append_message/1` therefore need an explicit
-      # allow.
-      Sandbox.allow(Nest.Repo, self(), pid)
+      {pid, _name} =
+        AgentTestHelpers.start_agent(%{
+          name: "loop-counter-agent-#{System.unique_integer([:positive])}"
+        })
 
       # Bump the counter out-of-band via the GenServer API.
       :ok = GenServer.call(pid, {:set_consecutive_compaction_count, 5})

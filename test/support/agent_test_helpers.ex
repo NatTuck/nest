@@ -101,6 +101,51 @@ defmodule Nest.Agents.AgentTestHelpers do
   # returns immediately regardless of scan state.
 
   @doc """
+  Standalone cleanup registration for tests that bypass
+  `start_agent/1` — for example, supervisor tests that call
+  `Supervisor.fetch_or_start_agent/1` directly to exercise
+  the spawn API, auto-name tests that omit `name:` to test
+  the registry-based generator, or terminate-during-test
+  cases that need raw `Process.flag(:trap_exit, true)` +
+  `Process.exit(pid, :shutdown)` semantics.
+
+  Registers `on_exit(fn -> wait_for_pid_down(name) end)`.
+  The `wait_for_pid_down/2` helper sends
+  `Process.exit(pid, :shutdown)` and BLOCKS on a single
+  `:DOWN` message (NOT a drain loop — see comment on
+  `wait_for_pid_down/2`). This guarantees the agent
+  GenServer has fully terminated (mailbox can no longer
+  fire DB calls) before the test exits the cleanup
+  callback — closing the parallel-test ownership race
+  window.
+
+  Note: this helper does NOT delete the `agents` DB row.
+  The `DataCase` setup's automatic sandbox rollback already
+  covers that — running a DB write in the on_exit process
+  would fail with `DBConnection.OwnershipError` because
+  the on_exit runner doesn't own the test's sandbox
+  checkout. The supervisor stop is what prevents the
+  next test from racing against a ghost pid's DB calls.
+
+  Pair with `vocation_id_for_test/0` for tests that need
+  a vocation but don't want the full `start_agent/1` setup.
+
+      {:ok, name} =
+        Agents.create_agent(test_model(),
+          name: fresh_name(),
+          vocation_id: AgentTestHelpers.vocation_id_for_test()
+        )
+
+      AgentTestHelpers.ensure_cleanup(name)
+  """
+  def ensure_cleanup(name) do
+    on_exit(fn ->
+      _ = Supervisor.stop_agent(name)
+      wait_for_pid_down(name)
+    end)
+  end
+
+  @doc """
   Returns a `vocation_id` for use in test attrs that bypass
   `start_agent/1` (e.g. tests that call `start_supervised!({Agent, ...})`
   directly). Upserts a shared "Test Default" vocation in the
@@ -261,16 +306,22 @@ defmodule Nest.Agents.AgentTestHelpers do
   #
   # Order: unlink the agent first so a normal terminate doesn't
   # propagate `:EXIT` to the (already-dead) test pid. Then
-  # stop the agent via the supervisor, unsubscribe from its
-  # PubSub topic, and restore the test pid's
-  # `:nest_test_agent_pid` process dict key.
+  # stop the agent via the supervisor, wait for the agent
+  # GenServer to fully terminate before returning (so its
+  # mailbox can't fire DB calls after the test pid has
+  # exited), unsubscribe from its PubSub topic, and restore
+  # the test pid's `:nest_test_agent_pid` process dict key.
+  #
+  # The wait-for-DOWN is a SINGLE-MESSAGE receive — not a
+  # drain loop. The drain loop used to live here was killed
+  # with fire and can *NEVER EVER* come back.
   defp register_on_exit_cleanup(pid, agent_id, test_pid) do
     on_exit(fn ->
       Process.unlink(pid)
       MockClient.stop(pid)
       _ = Supervisor.stop_agent(agent_id)
+      wait_for_pid_down(agent_id)
       Phoenix.PubSub.unsubscribe(Nest.PubSub, "agent:#{agent_id}")
-      drain_mailbox()
       Process.put(:nest_test_agent_pid, test_pid)
     end)
   end
@@ -298,26 +349,42 @@ defmodule Nest.Agents.AgentTestHelpers do
     end)
   end
 
-  @doc false
-  # Drain any remaining messages from the test process's
-  # mailbox. Called from the on_exit hook so stale
-  # messages from one test don't pollute the next
-  # test's `assert_receive` patterns.
-  defp drain_mailbox do
-    receive do
-      _ -> drain_mailbox()
-    after
-      0 -> :ok
-    end
-  end
-
+  # Single-message wait on the agent pid's :DOWN. Not a drain
+  # loop. The drain loop used to live here was killed with
+  # fire and can *NEVER EVER* come back.
+  #
+  # `Process.monitor/1` registers the DOWN subscription
+  # before `Process.exit/2` so the receive can't miss the
+  # event even if the pid was already dead at monitor-time
+  # (returns `:DOWN, :noproc`). `Process.demonitor/1, [:flush]`
+  # on timeout cleans up any pending DOWN. Default 100ms
+  # matches the project standard for `assert_receive`; the
+  # agent's `terminate/2` is filesystem-only and completes
+  # well within this window.
   @doc """
-  Drain the test process's mailbox. Useful at the start
-  of a test to discard any stale messages from a
-  previous test.
+  Send `:shutdown` to the agent pid and wait for its
+  `:DOWN` (single-message receive, not a drain loop).
+  No-op if the pid is already gone. Public so tests can
+  call it directly without re-implementing the pattern.
   """
-  def drain_test_mailbox do
-    drain_mailbox()
+  @spec wait_for_pid_down(String.t(), pos_integer()) :: :ok
+  def wait_for_pid_down(name, timeout \\ 100) do
+    case Nest.Agents.Registry.lookup(name) do
+      {:ok, pid} ->
+        ref = Process.monitor(pid)
+        Process.exit(pid, :shutdown)
+
+        receive do
+          {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
+        after
+          timeout ->
+            Process.demonitor(ref, [:flush])
+            :ok
+        end
+
+      _ ->
+        :ok
+    end
   end
 
   @doc """

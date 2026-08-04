@@ -71,8 +71,6 @@ defmodule Nest.Agents.Agent.Handlers do
   defp route_for({:compaction_done, _, _}), do: {:ok, ResultHandler}
   defp route_for({:compaction_failed, _, _}), do: {:ok, ResultHandler}
   defp route_for({:needs_compaction, _, _}), do: {:ok, ResultHandler}
-  defp route_for(:retry_compaction), do: {:ok, ResultHandler}
-  defp route_for(:compaction_loop_detected_ok), do: {:ok, ResultHandler}
   defp route_for({:EXIT, _, _}), do: {:ok, ExitHandler}
 
   defp route_for(_), do: :no_match

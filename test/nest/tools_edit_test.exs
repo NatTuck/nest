@@ -13,6 +13,8 @@ defmodule Nest.ToolsEditTest do
   """
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias Nest.LLM.Tool, as: Function
   alias Nest.Tools
 
@@ -139,14 +141,23 @@ defmodule Nest.ToolsEditTest do
     test "returns error when the file does not exist", %{tmp: dir} do
       function = Tools.get_function("edit", dir)
 
-      assert {:error, msg} =
-               invoke(function, %{
-                 "path" => "missing.txt",
-                 "old_text" => "foo",
-                 "new_text" => "bar"
-               })
+      log =
+        capture_log(fn ->
+          assert {:error, msg} =
+                   invoke(function, %{
+                     "path" => "missing.txt",
+                     "old_text" => "foo",
+                     "new_text" => "bar"
+                   })
 
-      assert msg =~ "missing.txt" or msg =~ "No such file"
+          assert msg =~ "missing.txt" or msg =~ "No such file"
+        end)
+
+      # bwrap's non-zero exit on the missing-file path is a
+      # deliberate diagnostic — assert on it so the test's
+      # intent is self-documenting and the log doesn't escape.
+      assert log =~ "ShellCmd.execute: bwrap exited non-zero"
+      assert log =~ "missing.txt"
     end
 
     test "edit preserves surrounding content (not the whole file)", %{tmp: dir} do

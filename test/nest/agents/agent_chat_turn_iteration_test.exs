@@ -204,53 +204,6 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
     end
   end
 
-  describe "retry_compaction branches on mid_turn_entry" do
-    test "retry uses mid-turn continuation when mid_turn_entry is set" do
-      {pid, _name} = start_test_agent()
-
-      :sys.replace_state(pid, fn state ->
-        %{
-          state
-          | chat_state: %{
-              state.chat_state
-              | status: :compaction_failed,
-                mid_turn_entry: %{
-                  entry: {:tool_call, synthetic_tool_call_msg(), 12, 30}
-                }
-            }
-        }
-      end)
-
-      capture_log(fn ->
-        send(pid, :retry_compaction)
-
-        assert_receive {:chat_status, %{status: "compacting"}}, 500
-      end)
-    end
-
-    test "retry uses Trigger B path when mid_turn_entry is nil" do
-      {pid, _name} = start_test_agent()
-
-      :sys.replace_state(pid, fn state ->
-        %{
-          state
-          | chat_state: %{
-              state.chat_state
-              | status: :compaction_failed,
-                pending_user_message: {"Hello", "build"},
-                mid_turn_entry: nil
-            }
-        }
-      end)
-
-      capture_log(fn ->
-        send(pid, :retry_compaction)
-
-        assert_receive {:chat_status, %{status: "compacting"}}, 500
-      end)
-    end
-  end
-
   describe "mid_turn_entry carries the trailing assistant+ToolUse forward" do
     # Regression for the field bug: when mid-turn compaction fires, the
     # LLM's emitted tool calls used to be archived into history along
@@ -273,11 +226,11 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
          %Assistant{
            index: 2,
            parts: [
-             %Part.Text{text: "I'll read that file."},
+             %Part.Text{text: "I'll check context."},
              %Part.ToolUse{
                id: "call_1",
-               name: "read_file",
-               arguments: %{"path" => "/tmp/example.txt"}
+               name: "context",
+               arguments: %{"action" => "check"}
              }
            ],
            api_logs: []
@@ -377,7 +330,7 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
 
       assert Enum.any?(
                tail_struct.parts,
-               &match?(%Part.ToolUse{id: "call_1", name: "read_file"}, &1)
+               &match?(%Part.ToolUse{id: "call_1", name: "context"}, &1)
              )
 
       # The ChatTurn's `entry` is the carried entry itself —

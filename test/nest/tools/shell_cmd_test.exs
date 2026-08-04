@@ -15,6 +15,8 @@ defmodule Nest.Tools.ShellCmdTest do
 
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias Nest.Tools.ShellCmd
 
   @tag :bwrap
@@ -30,10 +32,19 @@ defmodule Nest.Tools.ShellCmdTest do
     # the process and `:exec.run/2` returns the os_pid —
     # that's what `collect_output/3` needs to forward to
     # `:exec.stop/1`.
-    assert {:error, message} = ShellCmd.execute("true", "/tmp", nil, nil, [])
+    log =
+      capture_log(fn ->
+        assert {:error, message} = ShellCmd.execute("true", "/tmp", nil, nil, [])
 
-    assert message =~ "Exit code 130"
-    assert message =~ "[Command cancelled]"
+        assert message =~ "Exit code 130"
+        assert message =~ "[Command cancelled]"
+      end)
+
+    # The bwrap non-zero exit on cancel is a deliberate
+    # diagnostic — assert on it so the test's intent is
+    # self-documenting and the log doesn't escape.
+    assert log =~ "ShellCmd.execute: bwrap exited non-zero"
+    assert log =~ "exit_code=130"
   end
 
   test "execute/5 returns the natural output for a successful command" do

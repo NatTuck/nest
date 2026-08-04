@@ -80,6 +80,20 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
     {:noreply, loop_detected_ok(state)}
   end
 
+  # Synchronous retry/loop-ack dispatch for `Agent.retry_compaction/1`
+  # and `Agent.compaction_loop_detected_ok/1` (both `GenServer.call/3`,
+  # via `Nest.Agents.Agent.Callbacks.handle_call/3`). Replaces the
+  # previous `send/2` paths so callers wait for the agent to actually
+  # handle the request — the channel's `:reply, :ok, socket` only
+  # makes sense after the agent has run. Tests no longer need a drain.
+  def handle_call(:retry_compaction, _from, state) do
+    {:reply, :ok, retry_compaction(state)}
+  end
+
+  def handle_call(:compaction_loop_detected_ok, _from, state) do
+    {:reply, :ok, loop_detected_ok(state)}
+  end
+
   @doc """
   Run the success path: re-render system + tools, archive
   pre-swap, append marker to history, append new active

@@ -1,6 +1,8 @@
 defmodule Nest.ToolsTest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias Nest.LLM.Tool, as: Function
   alias Nest.Tools
 
@@ -63,8 +65,7 @@ defmodule Nest.ToolsTest do
 
   describe "read_file tool" do
     setup do
-      # Project-relative tmp dir under _build/ — gitignored, cleaned by
-      # `mix clean`, always writable regardless of outer sandbox permissions.
+      # Project-relative tmp dir under _build/ — gitignored, always writable.
       test_workspace =
         Path.join([
           File.cwd!(),
@@ -110,8 +111,7 @@ defmodule Nest.ToolsTest do
 
   describe "write_file tool" do
     setup do
-      # Project-relative tmp dir under _build/ — gitignored, cleaned by
-      # `mix clean`, always writable regardless of outer sandbox permissions.
+      # Project-relative tmp dir under _build/ — gitignored, always writable.
       test_workspace =
         Path.join([
           File.cwd!(),
@@ -148,14 +148,21 @@ defmodule Nest.ToolsTest do
     test "returns error when parent directory does not exist", %{workspace: workspace} do
       function = Tools.get_function("write_file", workspace)
 
-      assert {:error, error_msg} =
-               Function.execute(
-                 function,
-                 %{"path" => "subdir/nested/file.txt", "content" => "nested"},
-                 nil
-               )
+      log =
+        capture_log(fn ->
+          assert {:error, error_msg} =
+                   Function.execute(
+                     function,
+                     %{"path" => "subdir/nested/file.txt", "content" => "nested"},
+                     nil
+                   )
 
-      assert error_msg =~ "Directory nonexistent" or error_msg =~ "No such file"
+          assert error_msg =~ "Directory nonexistent" or error_msg =~ "No such file"
+        end)
+
+      # bwrap's non-zero exit is a deliberate diagnostic.
+      assert log =~ "ShellCmd.execute: bwrap exited non-zero"
+      assert log =~ "Directory nonexistent"
     end
 
     test "overwrites existing files", %{workspace: workspace} do
@@ -184,8 +191,7 @@ defmodule Nest.ToolsTest do
 
   describe "shell_cmd tool" do
     setup do
-      # Project-relative tmp dir under _build/ — gitignored, cleaned by
-      # `mix clean`, always writable regardless of outer sandbox permissions.
+      # Project-relative tmp dir under _build/ — gitignored, always writable.
       test_workspace =
         Path.join([
           File.cwd!(),
@@ -213,8 +219,15 @@ defmodule Nest.ToolsTest do
     test "returns error for failed commands", %{workspace: workspace} do
       function = Tools.get_function("shell_cmd", workspace)
 
-      assert {:error, result} = function.function.(%{"command" => "exit 1"}, nil)
-      assert result =~ "Exit code"
+      log =
+        capture_log(fn ->
+          assert {:error, result} = function.function.(%{"command" => "exit 1"}, nil)
+          assert result =~ "Exit code"
+        end)
+
+      # bwrap's non-zero exit is a deliberate diagnostic.
+      assert log =~ "ShellCmd.execute: bwrap exited non-zero"
+      assert log =~ "exit_code=1"
     end
 
     test "captures stderr", %{workspace: workspace} do
@@ -283,17 +296,23 @@ defmodule Nest.ToolsTest do
 
       # Try to write to /tmp - this should fail when no tmp_path is provided
       # (because /tmp is read-only in the sandbox without a bind mount)
-      assert {:error, result} =
-               function.function.(%{"command" => "echo 'test' > /tmp/test_file.txt"}, nil)
+      log =
+        capture_log(fn ->
+          assert {:error, result} =
+                   function.function.(%{"command" => "echo 'test' > /tmp/test_file.txt"}, nil)
 
-      # Should fail with a read-only filesystem error
-      assert result =~ "Read-only file system" or result =~ "Exit code"
+          # Should fail with a read-only filesystem error
+          assert result =~ "Read-only file system" or result =~ "Exit code"
+        end)
+
+      # bwrap's non-zero exit is a deliberate diagnostic.
+      assert log =~ "ShellCmd.execute: bwrap exited non-zero"
+      assert log =~ "Read-only file system"
     end
 
     test "can redirect stdout to /dev/null", %{workspace: workspace} do
       # Regression: previously the read-only bind of the host root shadowed
-      # the devtmpfs at /dev, so `> /dev/null` failed with
-      # "cannot create /dev/null: Permission denied".
+      # the devtmpfs at /dev, so `> /dev/null` failed with "Permission denied".
       function = Tools.get_function("shell_cmd", workspace, nil)
 
       assert {:ok, result} =
@@ -325,11 +344,8 @@ defmodule Nest.ToolsTest do
     end
 
     test "handles find with 2>/dev/null redirect", %{workspace: workspace} do
-      # Mirrors the user-reported failing command: find a missing path
-      # while redirecting stderr to /dev/null, then echo a marker. If /dev
-      # is misconfigured, the shell prints "cannot create /dev/null" to
-      # stderr which (since this command has no 2>/dev/null on the echo)
-      # would be captured.
+      # Mirrors a user-reported failing command: find a missing path
+      # while redirecting stderr to /dev/null, then echo a marker.
       function = Tools.get_function("shell_cmd", workspace, nil)
 
       assert {:ok, result} =
@@ -349,8 +365,7 @@ defmodule Nest.ToolsTest do
 
   describe "caps threading through context" do
     setup do
-      # Project-relative tmp dir under _build/ — gitignored, cleaned by
-      # `mix clean`, always writable regardless of outer sandbox permissions.
+      # Project-relative tmp dir under _build/ — gitignored, always writable.
       test_workspace =
         Path.join([
           File.cwd!(),
@@ -385,14 +400,21 @@ defmodule Nest.ToolsTest do
       # fail at the kernel level.
       caps = %{"net" => false, "fs" => %{"read" => ["/"], "write" => ["/tmp"]}}
 
-      assert {:error, error_msg} =
-               Function.execute(
-                 function,
-                 %{"path" => "out.txt", "content" => "data"},
-                 %{caps: caps}
-               )
+      log =
+        capture_log(fn ->
+          assert {:error, error_msg} =
+                   Function.execute(
+                     function,
+                     %{"path" => "out.txt", "content" => "data"},
+                     %{caps: caps}
+                   )
 
-      assert error_msg =~ "Read-only file system"
+          assert error_msg =~ "Read-only file system"
+        end)
+
+      # bwrap's non-zero exit is a deliberate diagnostic.
+      assert log =~ "ShellCmd.execute: bwrap exited non-zero"
+      assert log =~ "Read-only file system"
     end
 
     test "write_file succeeds when :workspace is in the write list", %{workspace: workspace} do

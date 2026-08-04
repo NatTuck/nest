@@ -32,14 +32,7 @@ defmodule Nest.Agents.AgentStopTest do
     MockClient.start_link()
     MockClient.clear()
 
-    # Drain the test process's mailbox at the start of
-    # each test. The previous test's chat turn may have
-    # left late events in flight (deltas, status pushes,
-    # :stopped replies) that would otherwise match this
-    # test's assert_receive patterns. The on_exit hook
-    # in start_agent/1 also drains, but it runs AFTER
-    # this setup; we drain BEFORE the test's assertions.
-    drain_test_mailbox()
+    # drain loop killed with fire, it can *NEVER EVER* come back
 
     on_exit(fn -> Process.delete(:nest_test_agent_pid) end)
 

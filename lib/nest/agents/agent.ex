@@ -255,17 +255,27 @@ defmodule Nest.Agents.Agent do
   @doc """
   Re-run the compactor after a `:compaction_failed` status.
   Handler no-ops when the agent isn't in `:compaction_failed`.
+
+  Synchronous: the channel's `handle_in("chat:retry-compaction", ...)`
+  reply now lands after the agent has actually handled the
+  retry, not the moment the message queued. `GenServer.call/3`
+  with `:infinity` timeout matches `set_model/2`'s call
+  contract; the retry handler is fast (log + state return) so
+  the unbounded wait is fine.
   """
   @spec retry_compaction(pid()) :: :ok
-  def retry_compaction(pid), do: send_and_ok(pid, :retry_compaction)
+  def retry_compaction(pid), do: GenServer.call(pid, :retry_compaction, :infinity)
 
   @doc """
   Acknowledge a `:compaction_loop_detected` status. Handler
   no-ops when the agent isn't in that status.
+
+  Synchronous: the channel's reply is held until the agent
+  has cleared the loop state (or logged the no-op warning).
   """
   @spec compaction_loop_detected_ok(pid()) :: :ok
   def compaction_loop_detected_ok(pid),
-    do: send_and_ok(pid, :compaction_loop_detected_ok)
+    do: GenServer.call(pid, :compaction_loop_detected_ok, :infinity)
 
   @doc """
   Change the agent's resolved LLM client (`client_config`)
@@ -274,11 +284,6 @@ defmodule Nest.Agents.Agent do
   """
   @spec set_model(pid(), map()) :: :ok | {:error, term()}
   def set_model(pid, new_model), do: GenServer.call(pid, {:set_model, new_model}, :infinity)
-
-  defp send_and_ok(pid, msg) do
-    send(pid, msg)
-    :ok
-  end
 
   @doc """
   Test-only: returns the pid of the in-flight ChatTurn (or

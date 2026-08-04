@@ -26,6 +26,7 @@ defmodule Nest.Agents.SupervisorPersistenceTest do
   use Nest.DataCase, async: true
 
   alias Nest.Agents
+  alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Supervisor
   alias Nest.Persistence
   alias Nest.Vocations
@@ -66,6 +67,15 @@ defmodule Nest.Agents.SupervisorPersistenceTest do
           model: %{name: "qwen3.5-plus"},
           vocation_id: test_vocation_id()
         })
+
+      # `Supervisor.fetch_or_start_agent/1` (under
+      # `Supervisor.get_agent/1`) lazily starts the BEAM pid
+      # on the registry lookup. Without `ensure_cleanup/1`,
+      # the pid would persist into other parallel tests'
+      # scope — the registry holds a reference, the test pid
+      # has exited, and any subsequent DB call by the agent
+      # fails with `DBConnection.OwnershipError`.
+      AgentTestHelpers.ensure_cleanup(name)
 
       assert {:ok, pid} = Supervisor.get_agent(name)
       assert is_pid(pid)

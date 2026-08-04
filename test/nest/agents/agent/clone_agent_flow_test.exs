@@ -74,11 +74,8 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
 
   import Mimic
 
-  import Eventually
-
   alias Nest.Agents.Agent
   alias Nest.Agents.AgentTestHelpers
-  alias Nest.Agents.ChildRegistry
   alias Nest.Agents.Registry, as: AgentsRegistry
   alias Nest.LLM.MockClient
   alias Nest.Messages.Part
@@ -121,45 +118,24 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
 
     :ok = Agent.chat(parent_pid, "delegate a thing")
 
-    child_name =
-      eventually(
-        fn ->
-          case ChildRegistry.children_of(parent_name) do
-            [name | _] -> name
-            _ -> nil
-          end
-        end,
-        # Tight: parent's `:clone_agent_request` cast → SubAgent
-        # → `Supervisor.start_agent_with_parent/2` → `ChildRegistry.register/2`
-        # is a few in-process GenServer hops, well under 200ms
-        # with MockClient yielding instantly.
-        timeout: 200
-      )
+    # Deterministic wait: the parent's `handle_clone_request/3`
+    # calls `broadcast_subagent_creation/2` which does
+    # `Phoenix.Endpoint.broadcast("lobby", "agent:created", ...)`
+    # right after `ChildRegistry.register/2` succeeds (see
+    # `sub_agent.ex:160-175`). By the time we receive the
+    # broadcast, child A is registered and `pending_children`
+    # has the entry — no need for a separate pending_children
+    # poll. Filter on `parentName` so concurrent tests'
+    # `agent:created` broadcasts don't match.
+    Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
 
-    refute is_nil(child_name)
+    assert_receive %Phoenix.Socket.Broadcast{
+                     event: "agent:created",
+                     payload: %{"name" => child_name, "parentName" => ^parent_name}
+                   },
+                   5_000
+
     {:ok, child_pid} = AgentsRegistry.lookup(child_name)
-
-    # Wait for the parent's worker (running
-    # `ToolLoop.run_clone_agent`) to begin its blocking receive
-    # on `:clone_agent_result`. Then simulate the child
-    # completing: cast `:child_completed` directly to the
-    # parent, which causes `SubAgent.handle_child_completed/4`
-    # to forward `:clone_agent_result` to the worker.
-    eventually(
-      fn ->
-        case AgentsRegistry.lookup(parent_name) do
-          {:ok, parent} ->
-            pending =
-              parent
-              |> :sys.get_state()
-              |> Map.get(:chat_state)
-              |> Map.get(:pending_children)
-
-            Map.has_key?(pending, child_name)
-        end
-      end,
-      timeout: 200
-    )
 
     cast_child_completed_to_parent(parent_name, child_name, "the answer is 4")
 

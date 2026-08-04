@@ -33,6 +33,7 @@ defmodule Nest.Agents.SupervisorSubagentTest do
   import Eventually
 
   alias Nest.Agents
+  alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.ChildRegistry
   alias Nest.Agents.Registry, as: AgentsRegistry
   alias Nest.Agents.Supervisor
@@ -184,6 +185,16 @@ defmodule Nest.Agents.SupervisorSubagentTest do
         Mimic.allow(Nest.LLM.MockClient, self(), parent_pid)
         :sys.replace_state(parent_pid, &swap_to_mock/1)
 
+        # Parent cleanup: register the same DOWN-blocking
+        # teardown that `AgentTestHelpers.start_agent/1` uses.
+        # Tests that already call `Agents.delete_agent/2` or
+        # `Supervisor.cascade_children_only/1` mid-test
+        # terminate the parent early; the registered cleanup
+        # is idempotent (the monitor's `Registry.lookup/2`
+        # returns `:not_found` for an already-dead pid and
+        # `wait_for_pid_down/2` short-circuits).
+        AgentTestHelpers.ensure_cleanup(name)
+
         {:ok, name, parent_pid, row.id}
 
       _ ->
@@ -191,6 +202,8 @@ defmodule Nest.Agents.SupervisorSubagentTest do
         # if the supervisor refused (already started by
         # a sibling test, etc.).
         parent_pid = via_registry(name)
+        AgentTestHelpers.ensure_cleanup(name)
+
         {:ok, name, parent_pid, row.id}
     end
   end
@@ -254,11 +267,13 @@ defmodule Nest.Agents.SupervisorSubagentTest do
   # delete_agent_by_name/1`) would fail with
   # `DBConnection.OwnershipError`. `Supervisor.stop_agent/1`
   # terminates the GenServer only; the DB row is cleaned up
-  # by `DataCase`'s sandbox rollback at test exit.
+  # by `DataCase`'s sandbox rollback at test exit. The
+  # single-message `:DOWN` wait is delegated to
+  # `AgentTestHelpers.wait_for_pid_down/2` so the parallel-test
+  # ownership race window is closed (the agent's mailbox
+  # can't fire DB calls after `terminate/2` finishes).
   defp safe_stop(name) do
-    case AgentsRegistry.lookup(name) do
-      {:ok, _pid} -> :ok = Supervisor.stop_agent(name)
-      _ -> :ok
-    end
+    _ = Supervisor.stop_agent(name)
+    AgentTestHelpers.wait_for_pid_down(name)
   end
 end

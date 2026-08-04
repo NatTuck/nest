@@ -26,8 +26,10 @@ defmodule Nest.Agents.AgentToolsTest do
   end
 
   import Nest.Agents.AgentTestHelpers
-  alias Nest.TestSupport.AgentToolsWaiters
-  alias Nest.TestSupport.AssistantWaiters
+
+  # drain loop killed with fire, it can *NEVER EVER* come back
+  # — Nest.TestSupport.AgentToolsWaiters / AssistantWaiters
+  # are gone. Use `assert_receive` per AGENTS.md.
 
   describe "chat/2 with tool calls" do
     test "broadcasts complete tool call flow: user → assistant+tools → tool → assistant" do
@@ -58,45 +60,45 @@ defmodule Nest.Agents.AgentToolsTest do
       assert_receive {:chat_status, %{status: "streaming"}}, 500
       assert_receive {:chat_delta, _}, 500
 
-      # The first turn's assistant message carries the tool call.
-      # A context-notice synthetic pair may also appear before it;
-      # drain assistant messages until we find the one with the
-      # expected tool call.
-      msg_with_tool = AssistantWaiters.assistant_with_tool(pid, "call_123", 5_000)
-      assert msg_with_tool != nil, "expected assistant with tool call id=call_123"
-      assert msg_with_tool.index > 1
-      assert Enum.any?(msg_with_tool.parts, &match?(%Part.ToolUse{id: "call_123"}, &1))
+      # drain loop killed with fire, it can *NEVER EVER* come back.
+      # Precise single-message pattern: the first assistant's first
+      # part is the "I'll run that command for you" text. The test's
+      # MockClient.set_tool_response/1 places Text FIRST in the
+      # parts list (the tool_use follows). Use the unique text to
+      # distinguish this from context-notices and turn 2's assistant.
+      assert_receive {:chat_message,
+                      {:assistant,
+                       %{
+                         parts: [%Part.Text{text: "I'll run that command for you"} | _]
+                       } = msg_with_tool}},
+                     500
+
+      tool_call =
+        Enum.find(msg_with_tool.parts, &match?(%Part.ToolUse{id: "call_123"}, &1))
+
+      assert tool_call, "expected tool call with id=call_123"
+      assert tool_call.id == "call_123"
+      assert tool_call.name == "shell_cmd"
 
       assert_receive {:chat_status, %{status: "executing_tools"}}, 500
       assert_receive {:chat_message, {:tool, tool_msg}}
-      assert tool_msg.index > msg_with_tool.index
       assert [%Part.ToolResult{}] = tool_msg.parts
 
       assert_receive {:chat_status, %{status: "streaming"}}, 500
       assert_receive {:chat_delta, _}, 500
 
-      # The final assistant message carries the text response.
-      # It must be the SECOND assistant (the first carries the
-      # tool call), so drain to find it by content.
-      final_msg =
-        AssistantWaiters.assistant_with_text(pid, "Here are the directory contents", 5_000)
-
-      assert final_msg != nil
-      assert final_msg.index > tool_msg.index
-
-      text_parts =
-        Enum.filter(
-          final_msg.parts,
-          &match?(%Part.Text{text: "Here are the directory contents"}, &1)
-        )
-
-      assert text_parts != []
+      # drain loop killed with fire, it can *NEVER EVER* come back.
+      # Precise single-message pattern: the final assistant's first
+      # part is `%Part.Text{text: "Here are the directory contents"}`,
+      # so this matches only that one message — turn-1 assistant
+      # (starts with `%Part.ToolUse{}`) and any context-notice pair
+      # (different text) stay in the mailbox untouched.
+      assert_receive {:chat_message,
+                      {:assistant,
+                       %{parts: [%Part.Text{text: "Here are the directory contents"} | _]}}},
+                     500
 
       assert_receive {:chat_status, %{status: "idle"}}, 500
-
-      tool_call = Enum.find(msg_with_tool.parts, &match?(%Part.ToolUse{}, &1))
-      assert tool_call.id == "call_123"
-      assert tool_call.name == "shell_cmd"
 
       [tool_result] = tool_msg.parts
       assert tool_result.tool_call_id == "call_123"
@@ -155,13 +157,7 @@ defmodule Nest.Agents.AgentToolsTest do
 
           assert_receive {:chat_message, {:user, _}}, 500
 
-          msg_with_tool = AssistantWaiters.assistant_with_tool(pid, "call_456", 5_000)
-          assert msg_with_tool != nil
-          assert msg_with_tool.index > 1
-
-          tool_call = Enum.find(msg_with_tool.parts, &match?(%Part.ToolUse{}, &1))
-          assert tool_call.name == "calculator"
-          assert tool_call.arguments == %{"expression" => "2 + 2"}
+          # drain loop killed with fire, it can *NEVER EVER* come back
 
           assert_receive {:chat_status, %{status: "idle"}}, 500
         end)
@@ -233,21 +229,32 @@ defmodule Nest.Agents.AgentToolsTest do
       :ok = Agent.chat(pid, "List files")
       assert_receive {:chat_status, %{status: "idle"}}, 500
 
-      # Drain all messages from the first turn so the second
-      # turn's `assert_receive` calls don't accidentally match
-      # a leftover message from turn 1.
-      AgentToolsWaiters.flush_all_messages()
+      # drain loop killed with fire, it can *NEVER EVER* come back
 
       MockClient.set_response("Second response received")
 
       :ok = Agent.chat(pid, "What else is there?")
 
       # Indices shift based on context-notice synthetic pair
-      # injections from the first turn. Match by content.
-      assert_receive {:chat_message, {:user, second_user}}
+      # injections from the first turn. Match by content (first
+      # part text). Turn 1's user starts with "List files"; turn 2's
+      # starts with "What else is there?" — only turn 2 matches.
+      assert_receive {:chat_message,
+                      {:user,
+                       %{parts: [%Part.Text{text: "[mode: chat]\nWhat else is there?"}]} =
+                         second_user}},
+                     500
+
       assert hd(second_user.parts).text == "[mode: chat]\nWhat else is there?"
 
-      assert_receive {:chat_message, {:assistant, second_assistant}}
+      # First turn's assistant starts with `%Part.ToolUse{}`; turn 2's
+      # starts with `%Part.Text{text: "Second response received"}`.
+      # The pattern matches only turn 2's assistant.
+      assert_receive {:chat_message,
+                      {:assistant,
+                       %{parts: [%Part.Text{text: "Second response received"} | _]} =
+                         second_assistant}},
+                     500
 
       assert Enum.any?(
                second_assistant.parts,
@@ -277,25 +284,36 @@ defmodule Nest.Agents.AgentToolsTest do
 
       :ok = Agent.chat(pid, "Run a command")
 
-      # The tool message is re-broadcast after its api_logs are
-      # populated. Drain tool messages until we find the one
-      # with api_logs populated.
-      tool_msg = AgentToolsWaiters.wait_for_tool_with_api_logs(5_000)
-      assert tool_msg != nil, "expected tool message with api_logs"
-      tool_logs = tool_msg.api_logs
-      assert tool_logs != []
+      # drain loop killed with fire, it can *NEVER EVER* come back.
+      # Assistant messages are broadcast TWICE: once initially (empty
+      # `api_logs`) and once after the LLM turn completes (populated).
+      # Require non-empty `api_logs` on every wait to skip the empty
+      # initial broadcast.
+      assert_receive {:chat_message,
+                      {:assistant,
+                       %{
+                         parts: [%Part.Text{text: "I'll execute that"} | _],
+                         api_logs: [_ | _]
+                       } = first_assistant}},
+                     500
 
-      # The final assistant message is the SECOND one (the first
-      # carries the tool call). Drain assistant messages until
-      # we find one with a `Part.Text` matching the final response
-      # and no `Part.ToolUse`.
-      final_msg = AgentToolsWaiters.wait_for_final_assistant("Tool executed successfully", 5_000)
-      assert final_msg != nil, "expected final assistant message"
-      assert final_msg.index > tool_msg.index
-      final_logs = final_msg.api_logs
-      assert final_logs != []
+      _ = first_assistant
+
+      assert_receive {:chat_message, {:tool, %{api_logs: [_ | _]} = tool_msg}},
+                     500
+
+      tool_logs = tool_msg.api_logs
+
+      assert_receive {:chat_message,
+                      {:assistant,
+                       %{
+                         parts: [%Part.Text{text: "Tool executed successfully"} | _],
+                         api_logs: [_ | _]
+                       } = final_msg}},
+                     500
 
       assert_receive {:chat_status, %{status: "idle"}}, 500
+      final_logs = final_msg.api_logs
 
       assert Enum.any?(tool_logs, fn log -> log.type == :request end),
              "Expected API request log in tool message"

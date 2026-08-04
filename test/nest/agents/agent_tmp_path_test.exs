@@ -79,6 +79,8 @@ defmodule Nest.Agents.AgentTmpPathTest do
           vocation_id: AgentTestHelpers.vocation_id_for_test()
         )
 
+      AgentTestHelpers.ensure_cleanup(agent_id)
+
       {:ok, pid} = Nest.Agents.Supervisor.get_agent(agent_id)
       info = Agent.get_public_info(pid)
 
@@ -94,6 +96,8 @@ defmodule Nest.Agents.AgentTmpPathTest do
           name: name,
           vocation_id: AgentTestHelpers.vocation_id_for_test()
         )
+
+      AgentTestHelpers.ensure_cleanup(agent_id)
 
       expected_tmp_path = "/tmp/nest-#{System.pid()}/agent-#{agent_id}"
 
@@ -158,7 +162,10 @@ defmodule Nest.Agents.AgentTmpPathTest do
       vid = AgentTestHelpers.vocation_id_for_test()
 
       {:ok, agent_id1} = Agents.create_agent(model, name: name1, vocation_id: vid)
+      AgentTestHelpers.ensure_cleanup(agent_id1)
+
       {:ok, agent_id2} = Agents.create_agent(model, name: name2, vocation_id: vid)
+      AgentTestHelpers.ensure_cleanup(agent_id2)
 
       parent_dir = "/tmp/nest-#{System.pid()}"
       path1 = "#{parent_dir}/agent-#{agent_id1}"

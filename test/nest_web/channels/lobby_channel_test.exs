@@ -9,37 +9,21 @@ defmodule NestWeb.LobbyChannelTest do
   alias Ecto.Adapters.SQL.Sandbox
   alias Nest.Agents
   alias Nest.Agents.AgentTestHelpers
+  alias Nest.Agents.Supervisor
   alias Nest.Repo
   alias Nest.Vocations
 
-  # The `LobbyChannel.handle_info(:after_join, ...)` handler
-  # spawns a supervised `Task` to fetch `broken_agents` so a
-  # hung `Models.list/0` probe doesn't block the channel's
-  # WS lifecycle. The Task uses the channel pid's `$callers`
-  # to find a sandbox connection. In async tests the channel
-  # pid and the Task don't share a `$callers` chain with
-  # the test pid (async = `shared: false` mode), so the
-  # Task's `Repo.all(...)` raises `DBConnection.OwnershipError`.
-  # The `fetch_broken_agents/0` rescue returns `[]`, so the
-  # follow-up push still fires — but the supervisor still
-  # logs the death. Suppress the noise for the whole module
-  # with `capture_log` in a wrapping setup.
+  # The channel's `:after_join` spawns a supervised `Task` for
+  # `broken_agents`; in async mode the inner `Repo.all` raises
+  # `DBConnection.OwnershipError`, rescued to `[]` (module-level
+  # `capture_log` swallows the death).
   #
-  # The pre-test cleanup uses `Persistence.list_agent_names/0`
-  # (DB query) rather than `Nest.Agents.list_agents/0`
-  # (`Registry.list/0`). The Registry only contains live
-  # GenServers; per-test on_exit handlers terminate the
-  # GenServer but leave the DB row behind, so the Registry
-  # misses those rows. Querying the DB catches both running
-  # and dead-but-row-still-present agents.
-  #
-  # `Persistence.delete_agent_by_name/1` is a single SQL DELETE
-  # with no supervisor mailbox hop; the previous
-  # `Agents.delete_agent/1` loop timed out at 5s under parallel
-  # load because every test queued a stop on the supervisor's
-  # single GenServer mailbox.
+  # Setup stops leftover agent pids (`Supervisor.stop_agent/1`
+  # is idempotent) before deleting their DB rows; that's what
+  # closes the parallel-test ghost-pid race window.
   setup do
     for name <- Nest.Persistence.list_agent_names() do
+      _ = Supervisor.stop_agent(name)
       Nest.Persistence.delete_agent_by_name(name)
     end
 
@@ -57,11 +41,9 @@ defmodule NestWeb.LobbyChannelTest do
   describe "join/3" do
     test "returns agents, models, and vocations on join" do
       # Connect socket and join lobby
-      {:ok, _, _socket} =
-        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
+      {_socket, payload} = join_lobby()
 
       # After joining, we should receive initial state
-      assert_push "init", payload
       assert is_list(payload.agents)
       assert is_list(payload.models)
       assert is_list(payload.vocations)
@@ -83,10 +65,7 @@ defmodule NestWeb.LobbyChannelTest do
         })
 
       # Now connect socket and join lobby
-      {:ok, _, _socket} =
-        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
-
-      assert_push "init", payload
+      {_socket, payload} = join_lobby()
 
       # Verify vocations is a list
       assert is_list(payload.vocations)
@@ -124,10 +103,7 @@ defmodule NestWeb.LobbyChannelTest do
         })
 
       # Now connect socket and join lobby
-      {:ok, _, _socket} =
-        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
-
-      assert_push "init", payload
+      {_socket, payload} = join_lobby()
 
       # Verify the payload can be encoded to JSON
       assert {:ok, json} = Jason.encode(payload)
@@ -160,10 +136,7 @@ defmodule NestWeb.LobbyChannelTest do
 
     test "returns models with correct JSON structure" do
       # Connect socket and join lobby
-      {:ok, _, _socket} =
-        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
-
-      assert_push "init", payload
+      {_socket, payload} = join_lobby()
 
       # Verify models is a non-empty list from test/data/config.toml
       assert is_list(payload.models)
@@ -195,10 +168,7 @@ defmodule NestWeb.LobbyChannelTest do
 
     test "model structure is JSON-serializable" do
       # Connect socket and join lobby
-      {:ok, _, _socket} =
-        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
-
-      assert_push "init", payload
+      {_socket, payload} = join_lobby()
 
       # Verify the payload can be encoded to JSON
       # This ensures no atoms that would break JSON serialization
@@ -218,8 +188,7 @@ defmodule NestWeb.LobbyChannelTest do
 
   describe "handle_in(create_agent)" do
     test "creates agent and broadcasts event" do
-      {:ok, _, socket} =
-        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
+      {socket, _payload} = join_lobby()
 
       ref =
         push(socket, "create_agent", %{
@@ -228,6 +197,13 @@ defmodule NestWeb.LobbyChannelTest do
 
       assert_reply ref, :ok, %{"name" => name}
       assert Regex.match?(~r/^[a-z]+-[a-z]+$/, name)
+
+      # Register cleanup for the push-created agent so the
+      # singleton `Nest.Agents.Supervisor` doesn't carry a
+      # ghost pid into subsequent parallel tests — and so
+      # the agent's mailbox can't fire DB calls after this
+      # test has exited its sandbox checkout.
+      AgentTestHelpers.ensure_cleanup(name)
 
       assert_broadcast "agent:created", %{
         "name" => ^name,
@@ -240,8 +216,7 @@ defmodule NestWeb.LobbyChannelTest do
       # static DotConfig or auto-discovery) so the wire shape is
       # always complete, even when the model isn't statically
       # configured.
-      {:ok, _, socket} =
-        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
+      {socket, _payload} = join_lobby()
 
       ref =
         push(socket, "create_agent", %{
@@ -249,6 +224,7 @@ defmodule NestWeb.LobbyChannelTest do
         })
 
       assert_reply ref, :ok, %{"name" => name}
+      AgentTestHelpers.ensure_cleanup(name)
 
       assert {:ok, info} = Agents.get_info(name)
       assert model_name(info.model) == "qwen3.5-plus"
@@ -263,8 +239,7 @@ defmodule NestWeb.LobbyChannelTest do
 
   describe "handle_in(delete_agent)" do
     test "deletes agent and broadcasts event" do
-      {:ok, _, socket} =
-        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
+      {socket, _payload} = join_lobby()
 
       # Create via the channel so the channel's
       # `default_vocation_id/0` fallback applies.
@@ -287,8 +262,7 @@ defmodule NestWeb.LobbyChannelTest do
 
     test "returns error for non-existent agent" do
       # Connect socket and join lobby
-      {:ok, _, socket} =
-        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
+      {socket, _payload} = join_lobby()
 
       ref = push(socket, "delete_agent", %{"name" => "nonexistent"})
       assert_reply ref, :error, %{"reason" => "not_found"}
@@ -303,8 +277,7 @@ defmodule NestWeb.LobbyChannelTest do
       # model-missing path.
       log =
         capture_log(fn ->
-          {:ok, _, socket} =
-            subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
+          {socket, _payload} = join_lobby()
 
           {:ok, name} = create_test_agent(socket, "ghost-model", nil)
 
@@ -333,8 +306,7 @@ defmodule NestWeb.LobbyChannelTest do
     end
 
     test "returns :invalid_model for an unknown model" do
-      {:ok, _, socket} =
-        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
+      {socket, _payload} = join_lobby()
 
       {:ok, name} = create_test_agent(socket, "qwen3.5-plus")
 
@@ -348,8 +320,7 @@ defmodule NestWeb.LobbyChannelTest do
     end
 
     test "returns :invalid_payload for a malformed message" do
-      {:ok, _, socket} =
-        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
+      {socket, _payload} = join_lobby()
 
       ref = push(socket, "change_model", %{"name" => "no-model-field"})
       assert_reply ref, :error, %{"reason" => "invalid_payload"}
@@ -361,10 +332,7 @@ defmodule NestWeb.LobbyChannelTest do
       # Default config has `persistence_enabled: false`, so the
       # broken_agents payload is `[]`. The channel contract
       # holds either way (with or without persisted agents).
-      {:ok, _, _socket} =
-        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
-
-      assert_push "init", payload
+      {_socket, payload} = join_lobby()
 
       assert Map.has_key?(payload, :broken_agents)
       assert payload.broken_agents == []
@@ -383,16 +351,9 @@ defmodule NestWeb.LobbyChannelTest do
       # `Mimic.set_mimic_global` would leak state across
       # tests. The follow-up-event payload is enough to
       # assert the spawn-and-collect round-trip works.)
-      {:ok, _, _socket} =
-        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
+      {_socket, payload} = join_lobby()
 
-      assert_push "init", payload
       assert payload.broken_agents == []
-
-      # Follow-up arrives after the spawned task yields its
-      # empty list. This proves the spawn-and-collect path
-      # actually plumbed back to the channel process.
-      assert_push "broken_agents_updated", %{broken_agents: []}, 1_000
     end
 
     test "follow-up broken_agents_updated is pushed even when the spawned task yields []" do
@@ -400,13 +361,9 @@ defmodule NestWeb.LobbyChannelTest do
       # arm. The spawn runs `Agents.list_broken_agents/0`,
       # which short-circuits to `[]` here; the follow-up
       # event still lands with `[]`.
-      {:ok, _, _socket} =
-        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
+      {_socket, payload} = join_lobby()
 
-      assert_push "init", payload
       assert payload.broken_agents == []
-
-      assert_push "broken_agents_updated", %{broken_agents: []}, 1_000
     end
 
     test "dead-but-unresolvable persisted agents appear in broken_agents_updated" do
@@ -420,13 +377,9 @@ defmodule NestWeb.LobbyChannelTest do
       # non-empty case requires a persisted agent whose
       # GenServer is dead; the JS sidebar test covers the
       # user-facing rendering path.
-      {:ok, _, _socket} =
-        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
+      {_socket, payload} = join_lobby()
 
-      assert_push "init", payload
       assert payload.broken_agents == []
-
-      assert_push "broken_agents_updated", %{broken_agents: []}, 1_000
     end
   end
 
@@ -436,12 +389,7 @@ defmodule NestWeb.LobbyChannelTest do
       # its loading state without waiting on the auto-discovery
       # probes; the real catalog lands via the follow-up
       # `models_updated` broadcast.
-      {:ok, _, socket} =
-        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
-
-      # Drain the init push so the test isn't racing the
-      # `:after_join` follow-up.
-      assert_push "init", _payload
+      {socket, _payload} = join_lobby()
 
       ref = push(socket, "rescan_models", %{})
       assert_reply ref, :ok
@@ -453,16 +401,15 @@ defmodule NestWeb.LobbyChannelTest do
   end
 
   # Creates the agent through the channel so the channel's
-  # `default_vocation_id/0` fallback applies — bypassing
-  # the channel and calling `Agents.create_agent/2` direct
-  # would trip `agents.vocation_id NOT NULL`.
-  #
-  # The spawned agent pid doesn't inherit the test pid's
-  # sandbox (`shared: false` async mode); DB calls from
-  # the agent pid need explicit `Sandbox.allow/3`.
-  #
-  # `provider` defaults to `"model-studio"`; pass `nil` to
-  # exercise the model-missing path.
+  # `default_vocation_id/0` fallback applies (calling
+  # `Agents.create_agent/2` direct would skip it and trip
+  # `agents.vocation_id NOT NULL`). `provider` defaults to
+  # `"model-studio"`; pass `nil` to exercise the model-
+  # missing path. Registers `AgentTestHelpers.ensure_cleanup/1`
+  # so the spawned pid is fully terminated (waiting for
+  # `:DOWN`) before the test exits the cleanup callback —
+  # the parallel-test ownership race window is closed
+  # without mailbox draining.
   defp create_test_agent(socket, model_name, provider \\ "model-studio") do
     model_attrs =
       if provider,
@@ -471,6 +418,8 @@ defmodule NestWeb.LobbyChannelTest do
 
     ref = push(socket, "create_agent", %{"model" => model_attrs})
     assert_reply ref, :ok, %{"name" => agent_name}
+
+    AgentTestHelpers.ensure_cleanup(agent_name)
 
     case Nest.Agents.Supervisor.get_agent(agent_name) do
       {:ok, agent_pid} ->
@@ -487,8 +436,29 @@ defmodule NestWeb.LobbyChannelTest do
   # agents loaded from the JSONB column (via `Persistence.
   # build_attrs_for_start/1` → `state.model`) and as atom keys
   # when the caller passes atom-keyed attrs directly. Both
-  # shapes are valid; tests use this accessor to assert
-  # without coupling to the source shape.
+  # shapes are valid in the system; tests use this accessor to
+  # assert without coupling to the source shape.
   defp model_name(model), do: model[:name] || model["name"]
   defp model_provider(model), do: model[:provider] || model["provider"]
+
+  # Join the lobby and BLOCK until the `:after_join` async
+  # broken-agents fetch delivers its follow-up push. The
+  # `assert_push "broken_agents_updated"` is critical: the
+  # `:after_join` handler spawns a `Task.Supervisor` child
+  # that does `Repo.all/1` using this test pid's sandbox
+  # checkout. Without the wait, the Task outlives the test
+  # pid's `Sandbox.checkin/1`, and Postgrex logs
+  # "client is still using a connection from owner" on
+  # DataCase teardown. Returning `{socket, init_payload}`
+  # lets callers inspect the initial payload (`{socket,
+  # payload} = join_lobby()`) or discard it (`{socket,
+  # _payload} = join_lobby()`).
+  defp join_lobby do
+    {:ok, _, socket} =
+      subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
+
+    assert_push "init", init_payload
+    assert_push "broken_agents_updated", %{broken_agents: _list}, 1_000
+    {socket, init_payload}
+  end
 end

@@ -5,6 +5,7 @@ defmodule Nest.Agents.AgentObservabilityTest do
   """
   use Nest.DataCase, async: true
 
+  import ExUnit.CaptureLog
   import Mimic
 
   alias Nest.Agents.Agent
@@ -338,12 +339,22 @@ defmodule Nest.Agents.AgentObservabilityTest do
         })
 
       :ok = Agent.chat(pid, "Run a command")
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+
+      log =
+        capture_log(fn ->
+          assert_receive {:chat_status, %{status: "idle"}}, 500
+        end)
 
       info = Agent.get_public_info(pid)
       assert info.usage.output_tokens == 204
       assert info.usage.input_tokens == 1003
       assert info.usage.last_output == 103
+
+      # Empty `arguments_delta: "{}"` triggers the BatchSizer's
+      # "Missing required arguments" diagnostic during the
+      # incremental stream validation. The test's contract is
+      # the accumulated usage; the log is incidental.
+      assert log =~ "Missing required arguments: command"
 
       Agent.terminate(pid)
     end

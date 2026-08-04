@@ -163,4 +163,83 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandlerTest do
       end
     end
   end
+
+  describe "retry_compaction/1" do
+    # `retry_compaction/1` has two branches: when `mid_turn_entry`
+    # is set, it dispatches to `needs_entry/2` (carries the
+    # mid-turn entry forward); when nil, it dispatches to
+    # `Trigger.post_turn/1` (resumes from a held user message).
+    # Both branches run through `Trigger.start/2` and would spawn
+    # a ChatTurn — the unit test sets `vocation: nil` and
+    # `messages: []` so `render_system_prompt/2` returns nil and
+    # `start/2` short-circuits to `broadcast_reserve_exhausted/2`
+    # (no spawn). The catch is the `Logger.error/2` that the
+    # reserve-exhausted broadcast path fires, which `capture_log`
+    # swallows.
+    #
+    # The branch observable is the post-state `mid_turn_entry`
+    # field:
+    #   * `needs_entry` clears it then re-sets it to
+    #     `%{entry: carried_entry}` so the next ChatTurn sees
+    #     the carried tool_call continuation.
+    #   * `Trigger.post_turn` does not touch it.
+    # Both branches broadcast `{:chat_status, %{status: "compacting"}}`
+    # at the same point, so the broadcast alone is not
+    # branch-distinguishing.
+
+    test "needs_entry path: mid_turn_entry is re-set after clear_mid_turn_entry" do
+      state = build_state()
+
+      state = %{
+        state
+        | chat_state: %{
+            state.chat_state
+            | status: :compaction_failed,
+              mid_turn_entry: %{entry: :synthetic_carried_entry}
+          }
+      }
+
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.name}")
+
+      _ =
+        capture_log(fn ->
+          result = ResultHandler.retry_compaction(state)
+
+          # Branch assertion: `needs_entry/2` re-set `mid_turn_entry`
+          # (after `clear_mid_turn_entry/1` briefly cleared it).
+          # `Trigger.post_turn/1` would have left it nil.
+          assert result.chat_state.status == :compacting
+          assert result.chat_state.mid_turn_entry == %{entry: :synthetic_carried_entry}
+
+          # External observable: the `:compacting` broadcast fired.
+          assert_receive {:chat_status, %{status: "compacting"}}
+        end)
+    end
+
+    test "Trigger.post_turn path: mid_turn_entry stays nil when not set" do
+      state = build_state()
+
+      state = %{
+        state
+        | chat_state: %{state.chat_state | status: :compaction_failed, mid_turn_entry: nil}
+      }
+
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.name}")
+
+      _ =
+        capture_log(fn ->
+          result = ResultHandler.retry_compaction(state)
+
+          # Branch assertion: `Trigger.post_turn/1` does not touch
+          # `mid_turn_entry`. If `needs_entry/2` had been called,
+          # `mid_turn_entry` would have been re-set to
+          # `%{entry: carried_entry}`.
+          assert result.chat_state.status == :compacting
+          assert result.chat_state.mid_turn_entry == nil
+
+          # External observable: the `:compacting` broadcast fired.
+          assert_receive {:chat_status, %{status: "compacting"}}
+        end)
+    end
+  end
 end

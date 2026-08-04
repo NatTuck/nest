@@ -43,13 +43,25 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
 
   defp vid, do: Process.get(:test_vocation_id)
 
+  # Spawn an agent via the supervisor path. We can't use
+  # `AgentTestHelpers.start_agent/1` here because it swaps
+  # the agent's HTTP client to `MockClient` (line 66 in
+  # `agent_test_helpers.ex`), and several tests in this file
+  # assert on `client_config.client` directly — `RecoveryClient`
+  # for the `:model_missing` paths, `AnthropicClient` for the
+  # post-`change_model` paths. Test-side setup would have to
+  # either restore the swapped client per-test or skip
+  # `start_agent/1` entirely; the latter is cleaner.
+  #
+  # `AgentTestHelpers.ensure_cleanup/1` provides the missing
+  # `on_exit` cleanup that direct `Supervisor.fetch_or_start_agent/1`
+  # callers lacked before this round.
   defp persist_and_start!(attrs) do
     name = Map.fetch!(attrs, :name)
+    attrs_with_vid = Map.put(attrs, :vocation_id, vid())
 
-    {:ok, _row} =
-      Persistence.insert_agent(Map.put(attrs, :vocation_id, vid()))
-
-    {:ok, ^name} = Supervisor.fetch_or_start_agent(attrs)
+    {:ok, _row} = Persistence.insert_agent(attrs_with_vid)
+    {:ok, ^name} = Supervisor.fetch_or_start_agent(attrs_with_vid)
     {:ok, pid} = Supervisor.get_agent(name)
 
     # Runtime DB writes from the agent pid (`set_model/2`
@@ -57,6 +69,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
     # explicit sandbox access — the supervisor-spawned
     # child doesn't inherit the test pid's `$callers`.
     Sandbox.allow(Repo, self(), pid)
+    AgentTestHelpers.ensure_cleanup(name)
 
     {pid, name}
   end

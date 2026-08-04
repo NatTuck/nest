@@ -16,6 +16,7 @@ defmodule Nest.Agents.Agent.Callbacks do
   """
 
   alias Nest.Agents.Agent.ChatPipeline
+  alias Nest.Agents.Agent.Compaction.ResultHandler
   alias Nest.Agents.Agent.Handlers
   alias Nest.Agents.Agent.Init
   alias Nest.Agents.Agent.IntrospectionHandler
@@ -122,6 +123,20 @@ defmodule Nest.Agents.Agent.Callbacks do
     end
 
     {:reply, :ok, state}
+  end
+
+  # Synchronous retry/loop-ack handlers. The Agent API exposes
+  # `retry_compaction/1` and `compaction_loop_detected_ok/1` as
+  # `GenServer.call/3`s (was `send/2`) so callers can wait for
+  # the agent to actually process the request — the channel's
+  # `:reply, :ok, socket` only makes sense after the agent has
+  # handled the message.
+  def handle_call(:retry_compaction, from, state) do
+    ResultHandler.handle_call(:retry_compaction, from, state)
+  end
+
+  def handle_call(:compaction_loop_detected_ok, from, state) do
+    ResultHandler.handle_call(:compaction_loop_detected_ok, from, state)
   end
 
   # Catch-all dispatcher for introspection calls.

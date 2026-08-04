@@ -8,10 +8,7 @@ defmodule NestWeb.AgentChannelTest do
 
   import Mimic
 
-  alias Ecto.Adapters.SQL.Sandbox
-  alias Nest.Agents
   alias Nest.Agents.AgentTestHelpers
-  alias Nest.Repo
 
   setup :verify_on_exit!
 
@@ -276,24 +273,20 @@ defmodule NestWeb.AgentChannelTest do
       # expected error path, not noise.
       log =
         ExUnit.CaptureLog.capture_log(fn ->
-          Nest.Agents.Agent.Config
-          |> stub(:create_client_config, fn model ->
-            if model[:name] == "ghost-model" do
-              {:error, %Nest.ChatModel.ModelNotFoundError{message: "x"}}
-            else
-              real_fn = Function.capture(Nest.Agents.Agent.Config, :create_client_config, 1)
-              real_fn.(model)
-            end
-          end)
+          stub_ghost_model_config()
 
-          {:ok, name} =
-            Agents.create_agent(
-              %{name: "ghost-model"},
+          # The `start_agent/1` helper handles Sandbox.allow +
+          # Mimic.allow + on_exit `Supervisor.stop_agent/1`
+          # cleanup. The Mimic stub above is set on the test
+          # pid; `start_agent/1`'s `allow_mimic_stubs/1`
+          # propagates it to the spawned agent pid before
+          # `init/1` runs.
+          {_pid, name} =
+            AgentTestHelpers.start_agent(%{
+              name: "ghost-agent-repair-#{System.unique_integer([:positive])}",
+              model: %{name: "ghost-model"},
               vocation_id: AgentTestHelpers.vocation_id_for_test()
-            )
-
-          {:ok, agent_pid} = Nest.Agents.Supervisor.get_agent(name)
-          Sandbox.allow(Repo, self(), agent_pid)
+            })
 
           {:ok, _, socket} =
             subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{name}")
@@ -323,20 +316,34 @@ defmodule NestWeb.AgentChannelTest do
     end
 
     test "returns :invalid_payload when the model field is missing" do
-      {:ok, name} =
-        Agents.create_agent(
-          %{name: "ghost-model"},
-          vocation_id: AgentTestHelpers.vocation_id_for_test()
-        )
+      # Stub `Config.create_client_config/1` to reject the
+      # `:model_missing` model name so `init/1` boots in
+      # the recovery state. The change_model handler under
+      # test doesn't care about the agent's status — it
+      # pattern-matches purely on the request payload.
+      #
+      # `start_agent/1` registers the on_exit cleanup so
+      # this agent pid doesn't leak into the singleton
+      # `Nest.Agents.Supervisor` between tests.
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          stub_ghost_model_config()
 
-      {:ok, agent_pid} = Nest.Agents.Supervisor.get_agent(name)
-      Sandbox.allow(Repo, self(), agent_pid)
+          {_pid, name} =
+            AgentTestHelpers.start_agent(%{
+              name: "invalid-payload-agent-#{System.unique_integer([:positive])}",
+              model: %{name: "ghost-model"},
+              vocation_id: AgentTestHelpers.vocation_id_for_test()
+            })
 
-      {:ok, _, socket} =
-        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{name}")
+          {:ok, _, socket} =
+            subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{name}")
 
-      ref = push(socket, "change_model", %{"some_other_field" => "x"})
-      assert_reply ref, :error, %{"reason" => "invalid_payload"}
+          ref = push(socket, "change_model", %{"some_other_field" => "x"})
+          assert_reply ref, :error, %{"reason" => "invalid_payload"}
+        end)
+
+      assert log =~ "could not resolve model"
     end
   end
 
@@ -347,21 +354,14 @@ defmodule NestWeb.AgentChannelTest do
       # expected error path, not noise.
       log =
         ExUnit.CaptureLog.capture_log(fn ->
-          Nest.Agents.Agent.Config
-          |> stub(:create_client_config, fn model ->
-            if model[:name] == "ghost-model" do
-              {:error, %Nest.ChatModel.ModelNotFoundError{message: "x"}}
-            else
-              real_fn = Function.capture(Nest.Agents.Agent.Config, :create_client_config, 1)
-              real_fn.(model)
-            end
-          end)
+          stub_ghost_model_config()
 
-          {:ok, name} =
-            Agents.create_agent(
-              %{name: "ghost-model"},
+          {_pid, name} =
+            AgentTestHelpers.start_agent(%{
+              name: "reject-model-missing-#{System.unique_integer([:positive])}",
+              model: %{name: "ghost-model"},
               vocation_id: AgentTestHelpers.vocation_id_for_test()
-            )
+            })
 
           {:ok, _, socket} =
             subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{name}")
@@ -372,5 +372,24 @@ defmodule NestWeb.AgentChannelTest do
 
       assert log =~ "could not resolve model"
     end
+  end
+
+  # Stub `Config.create_client_config/1` so `Agent.init/1`
+  # boots in `:model_missing` for the "ghost-model" test
+  # agent, while passing through to the real function for
+  # any other model name. The three callers below all
+  # need this exact pattern (change_model + invalid_payload
+  # + chat:message in :model_missing) but differ in the
+  # downstream handler under test.
+  defp stub_ghost_model_config do
+    Nest.Agents.Agent.Config
+    |> stub(:create_client_config, fn model ->
+      if model[:name] == "ghost-model" do
+        {:error, %Nest.ChatModel.ModelNotFoundError{message: "x"}}
+      else
+        real_fn = Function.capture(Nest.Agents.Agent.Config, :create_client_config, 1)
+        real_fn.(model)
+      end
+    end)
   end
 end
