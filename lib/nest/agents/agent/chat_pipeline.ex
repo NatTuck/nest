@@ -413,14 +413,28 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   @doc """
   Public for use by the GenServer's `handle_info({:preflight_request, ...})`.
   Returns one of `:fits`, `:no_limit_known`, or `:needs_compaction`.
+
+  When `state.llm_metrics.context_limit` is `nil` (probe hasn't
+  completed or the model isn't in the discovery cache), defers
+  to `PreFlight.check_messages/3` with the response-budget floor
+  rather than calling `Reserve.response_budget/1` — that function
+  has no clause for `nil` and would crash the GenServer. The
+  `nil`-limit path returns `:no_limit_known`, which
+  `handle_preflight/2` treats the same as `:fits`.
   """
   @spec preflight_decision([{atom(), map()}], Nest.Agents.Agent.t()) :: atom()
   def preflight_decision(messages_for_llm, state) do
-    PreFlight.check_messages(
-      messages_for_llm,
-      state.llm_metrics.context_limit,
-      Reserve.response_budget(state.llm_metrics.context_limit)
-    )
+    case state.llm_metrics.context_limit do
+      limit when is_integer(limit) and limit > 0 ->
+        PreFlight.check_messages(
+          messages_for_llm,
+          limit,
+          Reserve.response_budget(limit)
+        )
+
+      _ ->
+        PreFlight.check_messages(messages_for_llm, nil, Reserve.response_budget_floor())
+    end
   end
 
   @doc """

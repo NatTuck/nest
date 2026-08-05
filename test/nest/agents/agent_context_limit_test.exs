@@ -141,4 +141,52 @@ defmodule Nest.Agents.AgentContextLimitTest do
 
     Agent.terminate(pid)
   end
+
+  test "propagates an Olla-extracted context-limit from the cache" do
+    # The typhon /olla gateway returns `max_context_length` under
+    # the `olla` namespace rather than at the model root, which
+    # Discover now extracts as `{:olla, N}`. This pins the full
+    # chain: Discover → Nest.Models cache → Init.initial_context_limit
+    # → Agent.llm_metrics. Without the Olla branch, this case
+    # would fall through to provider default and (with the typhon
+    # provider not configured in test/data/config.toml) end up
+    # with `context_limit: nil`.
+    test_pid = self()
+
+    Models
+    |> stub(:context_limit, fn _provider, _model_name ->
+      send(test_pid, {:cache_lookup, "typhon"})
+      {:olla, 224_000}
+    end)
+
+    # Stub `create_client_config` so the agent starts despite
+    # the typhon provider not being in test/data/config.toml.
+    # The model-resolution side-effect is what we care about.
+    Nest.Agents.Agent.Config
+    |> stub(:create_client_config, fn _model ->
+      {:ok,
+       %Nest.LLM.ClientConfig{
+         client: Nest.LLM.OpenAIClient,
+         base_url: "http://typhon:4040/olla",
+         api_key: "none",
+         model: "Qwen/Qwen3.6-27B-FP8",
+         receive_timeout: 5000
+       }}
+    end)
+
+    agent_name = "probe-olla-#{System.unique_integer([:positive])}"
+
+    {pid, _} =
+      start_probe_agent(%{
+        name: agent_name,
+        model: %{name: "Qwen/Qwen3.6-27B-FP8", provider: "typhon"}
+      })
+
+    state = :sys.get_state(pid)
+    assert state.llm_metrics.context_limit == 224_000
+    assert state.llm_metrics.context_limit_source == :olla
+    assert_received {:cache_lookup, "typhon"}
+
+    Agent.terminate(pid)
+  end
 end

@@ -3,8 +3,8 @@ defmodule Nest.LLM.DiscoverTest do
   Tests for the best-effort context-window discovery probe.
 
   Covers every known provider response shape (vLLM, OpenRouter,
-  llama.cpp) and the failure modes that should fall through to the
-  128k default.
+  Olla, llama.cpp) and the failure modes that should fall
+  through to the 128k default.
   """
   use ExUnit.Case, async: true
 
@@ -80,6 +80,104 @@ defmodule Nest.LLM.DiscoverTest do
 
       assert Discover.context_limit(build_config(model: "openai/gpt-4o")) ==
                {:openrouter, 128_000}
+    end
+  end
+
+  describe "Olla response shape" do
+    # Olla wraps upstream providers behind an OpenAI-shaped
+    # `/v1/models` body. The context length lives under the
+    # `olla` namespace rather than at the model root, so
+    # `extract_limit_from_model/1` must look for
+    # `olla.max_context_length`.
+    test "extracts olla.max_context_length from a populated entry" do
+      body = %{
+        "object" => "list",
+        "data" => [
+          %{
+            "id" => "Qwen/Qwen3.6-27B-FP8",
+            "object" => "model",
+            "owned_by" => "olla",
+            "olla" => %{
+              "max_context_length" => 224_000,
+              "family" => "qwen",
+              "variant" => "3.6"
+            }
+          }
+        ]
+      }
+
+      Mimic.expect(Req, :get, fn _url, _opts ->
+        {:ok, %{status: 200, body: body}}
+      end)
+
+      assert Discover.context_limit(build_config(model: "Qwen/Qwen3.6-27B-FP8")) ==
+               {:olla, 224_000}
+    end
+
+    test "falls through to default when olla block lacks max_context_length" do
+      # Upstream backends whose operators haven't populated
+      # `max_context_length` (e.g. llama.cpp in the typhon
+      # probe) leave the field absent — the cache layer then
+      # falls through to per-model or provider-default
+      # resolution rather than getting a 128k default.
+      body = %{
+        "data" => [
+          %{
+            "id" => "unsloth/Qwen3.5-122B-A10B-GGUF",
+            "olla" => %{"family" => "qwen", "variant" => "3.5"}
+          }
+        ]
+      }
+
+      Mimic.expect(Req, :get, fn _url, _opts ->
+        {:ok, %{status: 200, body: body}}
+      end)
+
+      assert Discover.context_limit(build_config()) == {:default, @default_limit}
+    end
+
+    test "extract_limit_from_model returns {:olla, n} for populated entry" do
+      model = %{
+        "id" => "Qwen/Qwen3.6-27B-FP8",
+        "olla" => %{"max_context_length" => 224_000}
+      }
+
+      assert Discover.extract_limit_from_model(model) == {:olla, 224_000}
+    end
+
+    test "extract_limit_from_model returns nil when max_context_length is absent" do
+      model = %{
+        "id" => "unsloth/Qwen3.5-122B-A10B-GGUF",
+        "olla" => %{"family" => "qwen"}
+      }
+
+      assert Discover.extract_limit_from_model(model) == nil
+    end
+
+    test "extract_limit_from_model returns nil when olla block is absent" do
+      assert Discover.extract_limit_from_model(%{"id" => "some-model"}) == nil
+    end
+
+    test "vLLM wins over Olla when both fields are present" do
+      # When an upstream vLLM is fronted by Olla, the upstream
+      # response may still expose `max_model_len` at the top
+      # level if Olla passes it through. Pin the precedence
+      # so a future refactor doesn't silently demote vLLM.
+      body = %{
+        "data" => [
+          %{
+            "id" => "x",
+            "max_model_len" => 4096,
+            "olla" => %{"max_context_length" => 128_000}
+          }
+        ]
+      }
+
+      Mimic.expect(Req, :get, fn _url, _opts ->
+        {:ok, %{status: 200, body: body}}
+      end)
+
+      assert Discover.context_limit(build_config()) == {:vllm, 4096}
     end
   end
 

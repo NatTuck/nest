@@ -10,6 +10,7 @@ defmodule Nest.Agents.AgentCompactionTest do
 
   import ExUnit.CaptureLog
   import Mimic
+  require Logger
 
   alias Nest.Agents.Agent
   alias Nest.LLM.MockClient
@@ -89,9 +90,15 @@ defmodule Nest.Agents.AgentCompactionTest do
       assert_received {:chat_message, {:assistant, _}}
 
       %Part.ToolResult{content: content, is_error: is_error} = result_part
+
+      if is_error do
+        Logger.info(%{test: "tool budget loop", tool_result: result_part})
+      end
+
       refute String.contains?(content, "[truncated:")
       refute String.contains?(content, "[skipped:")
       assert is_error == false
+
       # The tool actually ran (we have a Programmer vocation with
       # shell_cmd registered), so the result should be the
       # command's output, not "Unknown tool: ...".

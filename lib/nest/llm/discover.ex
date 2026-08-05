@@ -8,6 +8,10 @@ defmodule Nest.LLM.Discover do
 
   - **vLLM** — top-level `max_model_len` per model
   - **OpenRouter** — top-level `context_length` per model
+  - **Olla** — `olla.max_context_length` (Olla wraps upstream
+    providers with an OpenAI-shaped `/models` body; the
+    context length lives under the `olla` namespace rather
+    than at the model root)
   - **llama.cpp** — `meta.n_ctx` (configured) or
     `meta.n_ctx_train` (model's training max)
 
@@ -33,7 +37,7 @@ defmodule Nest.LLM.Discover do
   @default_limit 128_000
   @probe_timeout 3_000
 
-  @type source :: :vllm | :openrouter | :llama_cpp
+  @type source :: :vllm | :openrouter | :llama_cpp | :olla
 
   @doc """
   Probe a provider's `/v1/models` endpoint for the
@@ -80,12 +84,11 @@ defmodule Nest.LLM.Discover do
       is_integer(model["context_length"]) ->
         {:openrouter, model["context_length"]}
 
-      (meta = model["meta"]) && is_map(meta) ->
-        cond do
-          is_integer(meta["n_ctx"]) -> {:llama_cpp, meta["n_ctx"]}
-          is_integer(meta["n_ctx_train"]) -> {:llama_cpp, meta["n_ctx_train"]}
-          true -> nil
-        end
+      olla_limit = olla_limit(model) ->
+        olla_limit
+
+      meta_limit = meta_limit(model) ->
+        meta_limit
 
       true ->
         nil
@@ -93,6 +96,19 @@ defmodule Nest.LLM.Discover do
   end
 
   def extract_limit_from_model(_), do: nil
+
+  defp olla_limit(%{"olla" => %{"max_context_length" => limit}}) when is_integer(limit),
+    do: {:olla, limit}
+
+  defp olla_limit(_), do: nil
+
+  defp meta_limit(%{"meta" => %{"n_ctx" => limit}}) when is_integer(limit),
+    do: {:llama_cpp, limit}
+
+  defp meta_limit(%{"meta" => %{"n_ctx_train" => limit}}) when is_integer(limit),
+    do: {:llama_cpp, limit}
+
+  defp meta_limit(_), do: nil
 
   @doc """
   Extract the model id from a `/models` response entry.

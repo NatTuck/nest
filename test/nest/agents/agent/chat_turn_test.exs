@@ -148,10 +148,8 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
           vocation_id: programmer_vocation_id_for_test()
         })
 
-      capture_log(fn ->
-        :ok = Agent.chat(pid, "Loop until done")
-        assert_receive {:chat_status, %{status: "idle"}}, 2000
-      end)
+      :ok = Agent.chat(pid, "Loop until done")
+      assert_receive {:chat_status, %{status: "idle"}}, 2000
 
       state = :sys.get_state(pid)
 
