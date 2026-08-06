@@ -5,8 +5,9 @@
  * Holds channel refs as module-level variables.
  */
 
-import { socket } from "./socket";
+import { socket, readAuthToken } from "./socket";
 import { useStore } from "./store";
+import { useAuthStore } from "./store/auth";
 
 // Module-level channel refs (NOT in store - they're mutable references)
 let lobbyChannel = null;
@@ -32,13 +33,33 @@ function getStore() {
 }
 
 /**
- * Initialize channels module
+ * Initialize channels module.
+ *
+ * Hooks the socket lifecycle callbacks AND opens the
+ * connection — but only when a token is present in
+ * `localStorage`. This is called from `Layout`'s
+ * `useEffect`, which only runs on authenticated routes
+ * (`/`, `/agent/:name`, `/about`, `/invites`). On
+ * `/login` and `/register` (sibling top-level routes
+ * outside `Layout`), `initChannels` is never called and
+ * the socket stays closed, so the server doesn't see
+ * anonymous `/socket` dial-ins and spam its log.
+ *
+ * If a token appears later (login/register success
+ * navigates into `Layout`), `initChannels` runs again and
+ * opens the connection. If the token disappears (logout),
+ * `handleLogout` in `Sidebar.jsx` calls `disconnect()`
+ * directly via `window.__nest_socket`.
  */
 export function initChannels() {
   const store = getStore();
   socket.onOpen(() => store.setIsConnected(true));
   socket.onClose(() => store.setIsConnected(false));
   socket.onError(() => store.setIsConnected(false));
+
+  if (readAuthToken() && !socket.isConnected()) {
+    socket.connect();
+  }
 }
 
 /**
@@ -58,6 +79,13 @@ export function joinLobby(onOk, onError) {
     store.setBrokenAgents(payload.broken_agents || []);
     store.setModels(payload.models || []);
     store.setVocations(payload.vocations || []);
+    // `current_user` is the JSON-safe slice the server sends
+    // on every lobby init. Overwrite whatever the auth
+    // store has so the UI shows the authoritative name
+    // (e.g. after the user changed their password elsewhere).
+    if (payload.current_user !== undefined) {
+      useAuthStore.getState().setCurrentUser(payload.current_user);
+    }
   });
 
   // Follow-up to the initial `init` push. The lobby pushes an
@@ -558,7 +586,14 @@ export function compactionLoopOk(agentId, onError) {
 /**
  * Create agent via lobby
  */
-export function createAgent(model, vocationId, workspacePath, onOk, onError) {
+export function createAgent(
+  model,
+  vocationId,
+  workspacePath,
+  onOk,
+  onError,
+  opts = {},
+) {
   if (!lobbyChannel) {
     if (onError) onError(new Error("Not connected to lobby"));
     return;
@@ -570,6 +605,9 @@ export function createAgent(model, vocationId, workspacePath, onOk, onError) {
   }
   if (workspacePath) {
     payload.workspace_path = workspacePath;
+  }
+  if (opts.shared) {
+    payload.shared = true;
   }
 
   lobbyChannel

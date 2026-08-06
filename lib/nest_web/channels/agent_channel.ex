@@ -17,27 +17,33 @@ defmodule NestWeb.AgentChannel do
   require Logger
 
   alias Nest.Agents
+  alias Nest.Agents.PersistedAgent
   alias Nest.Messages.Message
   alias Nest.Messages.Streaming
 
   @impl true
   def join("agent:" <> agent_name, _payload, socket) do
-    case Agents.get_agent(agent_name) do
-      {:ok, agent} ->
-        # Subscribe to PubSub topic for this agent
-        # All channels connected to this agent will receive broadcasts
-        Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_name}")
+    current_user = socket.assigns.current_user
 
-        # Send initial state via handle_info. The init is published
-        # to the test's mailbox as a socket push. Tests use
-        # `assert_push "init"` with a generous timeout (the init is
-        # the first event after the channel is established).
-        send(self(), {:after_join, agent})
+    with {:ok, agent} <- Agents.get_agent(agent_name),
+         :ok <- authorize_join(agent_name, current_user) do
+      # Subscribe to PubSub topic for this agent
+      # All channels connected to this agent will receive broadcasts
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_name}")
 
-        {:ok, assign(socket, :agent_name, agent_name)}
+      # Send initial state via handle_info. The init is published
+      # to the test's mailbox as a socket push. Tests use
+      # `assert_push "init"` with a generous timeout (the init is
+      # the first event after the channel is established).
+      send(self(), {:after_join, agent})
 
+      {:ok, assign(socket, :agent_name, agent_name) |> assign(:current_user, current_user)}
+    else
       {:error, :not_found} ->
         {:error, %{"reason" => "agent not found"}}
+
+      {:error, :forbidden} ->
+        {:error, %{"reason" => "forbidden"}}
 
       {:error, reason} ->
         # Catch-all for non-`:not_found` failures — e.g. an
@@ -48,6 +54,46 @@ defmodule NestWeb.AgentChannel do
         {:error, %{"reason" => "agent_unavailable"}}
     end
   end
+
+  # Allow the join when the user owns the agent or the agent
+  # is shared. `Agent.get_public_info/1` is the source of truth
+  # for ownership and visibility — the runtime state carries
+  # the same fields the DB row does, so this avoids a separate
+  # `fetch_agent_by_name/1` round-trip.
+  # Allow the join when the user owns the agent or the agent
+  # is shared. `Agent.get_public_info/1` is the source of truth
+  # for ownership and visibility — the runtime state carries
+  # the same fields the DB row does, so this avoids a separate
+  # `fetch_agent_by_name/1` round-trip.
+  defp authorize_join(agent_name, current_user) do
+    case Agents.Registry.lookup(agent_name) do
+      {:ok, pid} ->
+        info = Nest.Agents.Agent.get_public_info(pid)
+        authorize_from(info, current_user)
+
+      _ ->
+        # The supervisor's on-demand loader can hydrate an
+        # agent that's not currently in the Registry. Fall
+        # back to a DB lookup for that case.
+        case Nest.Persistence.fetch_agent_by_name(agent_name) do
+          {:ok, %PersistedAgent{} = row} -> authorize_from(row, current_user)
+          {:error, :not_found} -> {:error, :not_found}
+        end
+    end
+  end
+
+  # Shared predicate for both runtime + persisted rows. The
+  # schema field name `created_by_user_id` matches the runtime
+  # state field name, so we can destructure either uniformly.
+  defp authorize_from(%{created_by_user_id: id, shared: shared}, current_user)
+       when id == current_user.id or shared == true,
+       do: :ok
+
+  defp authorize_from(%PersistedAgent{created_by_user_id: id, shared: shared}, current_user)
+       when id == current_user.id or shared == true,
+       do: :ok
+
+  defp authorize_from(_other, _current_user), do: {:error, :forbidden}
 
   @impl true
   def handle_info({:after_join, agent}, socket) do

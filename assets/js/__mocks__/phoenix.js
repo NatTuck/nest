@@ -263,7 +263,7 @@ function createMockChannel(topic) {
  * @param {Object} _opts - Socket options (ignored in mock)
  * @returns {Object} Socket instance
  */
-function createSocketInstance(_endpoint, _opts) {
+function createSocketInstance(_endpoint, opts) {
   return {
     onOpen(callback) {
       mockState.socketCallbacks.onOpen.push(callback);
@@ -275,6 +275,22 @@ function createSocketInstance(_endpoint, _opts) {
 
     onError(callback) {
       mockState.socketCallbacks.onError.push(callback);
+    },
+
+    isConnected() {
+      return mockState.connected;
+    },
+
+    params() {
+      // The real Phoenix Socket wraps the constructor's
+      // `params` option in a closure so it's callable as a
+      // function. The mock mirrors that so test code can
+      // assert on `socket.params()` shape.
+      const provided = opts?.params;
+      if (typeof provided === "function") {
+        return provided();
+      }
+      return provided || {};
     },
 
     connect() {

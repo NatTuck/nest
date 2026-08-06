@@ -45,8 +45,11 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       GenServer.stop(channel_pid, :normal)
       assert_receive {:DOWN, ^mon, :process, ^channel_pid, _reason}, 500
 
+      {:ok, new_conn} =
+        connect(NestWeb.UserSocket, %{"token" => Process.get(:agent_test_token)})
+
       {:ok, _, new_socket} =
-        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{id}")
+        subscribe_and_join(new_conn, NestWeb.AgentChannel, "agent:#{id}")
 
       sync_ref2 = push(new_socket, "chat:sync", %{"lastIndex" => -1})
       assert_reply sync_ref2, :ok, %{"messages" => messages2, "messageCount" => msg_count2}
@@ -72,8 +75,11 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       GenServer.stop(channel_pid, :normal)
       assert_receive {:DOWN, ^mon, :process, ^channel_pid, _reason}, 500
 
+      {:ok, socket2_conn} =
+        connect(NestWeb.UserSocket, %{"token" => Process.get(:agent_test_token)})
+
       {:ok, _, socket2} =
-        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{id}")
+        subscribe_and_join(socket2_conn, NestWeb.AgentChannel, "agent:#{id}")
 
       ref_sync = push(socket2, "chat:sync", %{"lastIndex" => -1})
       assert_reply ref_sync, :ok, %{"messages" => messages, "messageCount" => last_complete}
@@ -86,8 +92,11 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       GenServer.stop(channel_pid, :normal)
       assert_receive {:DOWN, ^mon, :process, ^channel_pid, _reason}, 500
 
+      {:ok, socket3_conn} =
+        connect(NestWeb.UserSocket, %{"token" => Process.get(:agent_test_token)})
+
       {:ok, _, socket3} =
-        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{id}")
+        subscribe_and_join(socket3_conn, NestWeb.AgentChannel, "agent:#{id}")
 
       ref_sync2 = push(socket3, "chat:sync", %{"lastIndex" => -1})
       assert_reply ref_sync2, :ok, %{"messages" => messages2, "messageCount" => last_complete2}

@@ -170,4 +170,89 @@ defmodule Nest.ChatModel.ListModelsTest do
                ChatModel.list_models_with_limits(provider)
     end
   end
+
+  describe "probe-base-url routing" do
+    test "list_models/1 hits probe-base-url when set, NOT base-url" do
+      # The provider's chat URL is /v1; the discovery URL is a
+      # divergent /olla path. Listing should use the discovery URL
+      # because that's where the Olla-shaped metadata lives.
+      provider = %DotConfig.Provider{
+        name: "typhon",
+        base_url: "http://chat.example.com/v1",
+        probe_base_url: "http://probe.example.com/olla",
+        api_key: "k",
+        protocol: "openai",
+        auto_models: true,
+        tags: [],
+        models: []
+      }
+
+      test_pid = self()
+
+      stub(Req, :get, fn url, _opts ->
+        send(test_pid, {:probe_url, url})
+        {:ok, %{status: 200, body: %{"data" => [%{"id" => "m1"}]}}}
+      end)
+
+      names = ChatModel.list_models(provider)
+      assert names == ["m1"]
+      assert_received {:probe_url, "http://probe.example.com/olla/models"}
+    end
+
+    test "list_models/1 falls back to base-url when probe-base-url is nil" do
+      # The common case: chat and discovery share one URL. Stays
+      # on `base-url` when no `probe-base-url` is configured.
+      provider = %DotConfig.Provider{
+        name: "shared",
+        base_url: "http://api.test/v1",
+        probe_base_url: nil,
+        api_key: "k",
+        protocol: "openai",
+        auto_models: true,
+        tags: [],
+        models: []
+      }
+
+      test_pid = self()
+
+      stub(Req, :get, fn url, _opts ->
+        send(test_pid, {:probe_url, url})
+        {:ok, %{status: 200, body: %{"data" => [%{"id" => "m1"}]}}}
+      end)
+
+      assert ChatModel.list_models(provider) == ["m1"]
+      assert_received {:probe_url, "http://api.test/v1/models"}
+    end
+
+    test "list_models_with_limits/1 routes through probe-base-url and parses Olla shape" do
+      # End-to-end: a provider with split URLs surfaces Olla-shaped
+      # metadata from the discovery URL via the Olla extractor.
+      provider = %DotConfig.Provider{
+        name: "typhon",
+        base_url: "http://chat.example.com/v1",
+        probe_base_url: "http://probe.example.com/olla",
+        api_key: "k",
+        protocol: "openai",
+        auto_models: true,
+        tags: [],
+        models: []
+      }
+
+      body = %{
+        "data" => [
+          %{
+            "id" => "Qwen/Qwen3.6-27B-FP8",
+            "object" => "model",
+            "owned_by" => "olla",
+            "olla" => %{"max_context_length" => 224_000}
+          }
+        ]
+      }
+
+      stub(Req, :get, fn _url, _opts -> {:ok, %{status: 200, body: body}} end)
+
+      assert [%{name: "Qwen/Qwen3.6-27B-FP8", source: :olla, limit: 224_000}] =
+               ChatModel.list_models_with_limits(provider)
+    end
+  end
 end

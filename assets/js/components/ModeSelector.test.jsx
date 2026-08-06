@@ -95,4 +95,18 @@ describe("ModeSelector", () => {
     );
     expect(screen.getByLabelText("Mode")).toBeDisabled();
   });
+
+  it("falls back to empty string when value is null", () => {
+    const { container } = render(
+      <ModeSelector
+        modes={["chat", "build"]}
+        value={null}
+        onChange={() => {}}
+      />,
+    );
+    // The code path `value ?? ""` runs regardless of how React
+    // serializes the attribute. Assert on the element being a
+    // select element so the render doesn't crash.
+    expect(container.querySelector("select")).toBeInTheDocument();
+  });
 });

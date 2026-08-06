@@ -129,15 +129,24 @@ defmodule Nest.LLM.Discover do
   # Private helpers — internal to the probe path. Body parsing
   # tolerates OpenAI's `{"data": [...]}` and the alternate
   # `{"models": [...]}` (Ollama) and bare-list bodies.
-  defp fetch_models(%ClientConfig{base_url: nil}), do: :error
+  defp fetch_models(%ClientConfig{} = config) do
+    # The probe URL is the discovery URL — `GET /models`. When
+    # `probe_base_url` is set, use it for discovery only; chat
+    # callers continue to use `base_url`. Falls back to `base_url`
+    # when `probe_base_url` is `nil` (the common case). If both
+    # are nil, the call is short-circuited — the provider isn't
+    # configured for any HTTP traffic.
+    case config.probe_base_url || config.base_url do
+      nil ->
+        :error
 
-  defp fetch_models(%ClientConfig{base_url: base_url, api_key: api_key}) do
-    url = base_url <> "/models"
-    headers = build_headers(api_key)
+      url ->
+        headers = build_headers(config.api_key)
 
-    case Req.get(url, headers: headers, receive_timeout: @probe_timeout) do
-      {:ok, %{status: 200, body: body}} -> {:ok, body}
-      _ -> :error
+        case Req.get(url <> "/models", headers: headers, receive_timeout: @probe_timeout) do
+          {:ok, %{status: 200, body: body}} -> {:ok, body}
+          _ -> :error
+        end
     end
   end
 

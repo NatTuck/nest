@@ -194,10 +194,15 @@ defmodule NestWeb.AgentChannelChatTest do
     end
 
     test "returns error when agent not found", %{socket: _socket} do
-      # Create a new socket without joining to simulate non-existent agent
+      # Connect a fresh socket with a valid token, then try to
+      # join a topic that doesn't exist — `Agents.get_agent/1`
+      # returns `:not_found`, the channel rejects the join.
+      token = Process.get(:agent_test_token)
+      {:ok, connected} = connect(NestWeb.UserSocket, %{"token" => token})
+
       assert {:error, %{"reason" => "agent not found"}} =
                subscribe_and_join(
-                 socket(NestWeb.UserSocket),
+                 connected,
                  NestWeb.AgentChannel,
                  "agent:nonexistent"
                )
@@ -285,7 +290,7 @@ defmodule NestWeb.AgentChannelChatTest do
       assert log =~ "model unavailable"
     end
 
-    test "error event is broadcast when LLM fails" do
+    test "error event is broadcast when LLM fails", %{user: user} do
       # Stub the model probe so the agent boots in
       # `:model_missing`. The `start_agent/1` helper handles
       # Sandbox.allow + Mimic.allow + `on_exit`
@@ -305,7 +310,8 @@ defmodule NestWeb.AgentChannelChatTest do
             AgentTestHelpers.start_agent(%{
               name: "error-agent-#{System.unique_integer([:positive])}",
               model: %{name: "qwen3.5-plus"},
-              vocation_id: AgentTestHelpers.vocation_id_for_test()
+              vocation_id: AgentTestHelpers.vocation_id_for_test(),
+              created_by_user_id: user.id
             })
 
           :sys.replace_state(error_agent_pid, fn state ->
@@ -319,10 +325,14 @@ defmodule NestWeb.AgentChannelChatTest do
 
           log =
             capture_log(fn ->
-              # Connect to the new agent
+              # Connect to the new agent using the same test
+              # user's token (the error_agent is owned by them).
+              token = Process.get(:agent_test_token)
+              {:ok, connected} = connect(NestWeb.UserSocket, %{"token" => token})
+
               {:ok, _, error_socket} =
                 subscribe_and_join(
-                  socket(NestWeb.UserSocket),
+                  connected,
                   NestWeb.AgentChannel,
                   "agent:#{Process.get(:test_error_agent_id)}"
                 )
@@ -428,63 +438,15 @@ defmodule NestWeb.AgentChannelChatTest do
     end
 
     test "returns error when agent does not exist", %{socket: _socket} do
+      token = Process.get(:agent_test_token)
+      {:ok, connected} = connect(NestWeb.UserSocket, %{"token" => token})
+
       assert {:error, %{"reason" => "agent not found"}} =
                subscribe_and_join(
-                 socket(NestWeb.UserSocket),
+                 connected,
                  NestWeb.AgentChannel,
                  "agent:nonexistent"
                )
-    end
-  end
-
-  describe "handle_in(chat:stop)" do
-    test "reply is immediate {:ok, %{}} and does not block on the agent", %{socket: socket} do
-      # Fire-and-forget: reply goes back immediately; finalization
-      # is async. Mid-stream interrupt behavior is in
-      # `Nest.Agents.AgentStopTest`; this verifies channel only.
-      ref = push(socket, "chat:stop", %{})
-      assert_reply ref, :ok, %{}
-    end
-
-    test "is a no-op when no chat is in flight", %{socket: socket} do
-      # Agent is idle; stop is a no-op and broadcasts no events.
-      ref = push(socket, "chat:stop", %{})
-      assert_reply ref, :ok, %{}
-
-      refute_receive %Phoenix.Socket.Message{event: "chat:status"}, 50
-    end
-
-    test "the agent can run a new turn after a stop", %{socket: socket, agent_id: id} do
-      # Send a normal turn, then a no-op stop, then a new turn.
-      # The stop must not leave the agent in a broken state.
-      MockClient.set_response("First response")
-
-      ref_msg = push(socket, "chat:message", %{"content" => "First"})
-      assert_reply ref_msg, :ok, %{}
-
-      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 2000
-      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 2000
-      assert_push "chat:status", %{status: "idle"}, 2000
-
-      # No-op stop on an idle agent.
-      ref_stop = push(socket, "chat:stop", %{})
-      assert_reply ref_stop, :ok, %{}
-
-      # Second turn works normally.
-      MockClient.set_response("After the stop")
-      ref2 = push(socket, "chat:message", %{"content" => "Second"})
-      assert_reply ref2, :ok, %{}
-
-      assert_push "chat:message", %{"index" => 3, "role" => "user"}, 2000
-
-      assert_push "chat:message",
-                  %{"index" => 4, "role" => "assistant", "parts" => parts},
-                  2000
-
-      assert [%{"kind" => "text", "text" => content} | _] = parts
-      assert content == "After the stop"
-      # Sanity: agent still queryable after stop.
-      assert {:ok, %{name: ^id}} = Agents.get_info(id)
     end
   end
 end

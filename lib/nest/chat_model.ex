@@ -115,7 +115,8 @@ defmodule Nest.ChatModel do
       base_url: provider.base_url,
       api_key: api_key,
       model: actual,
-      receive_timeout: receive_timeout_ms(provider)
+      receive_timeout: receive_timeout_ms(provider),
+      probe_base_url: provider.probe_base_url
     }
     |> wrap_ok()
   end
@@ -129,7 +130,8 @@ defmodule Nest.ChatModel do
       base_url: provider.base_url,
       api_key: api_key,
       model: actual,
-      receive_timeout: receive_timeout_ms(provider)
+      receive_timeout: receive_timeout_ms(provider),
+      probe_base_url: provider.probe_base_url
     }
     |> wrap_ok()
   end
@@ -246,7 +248,13 @@ defmodule Nest.ChatModel do
   end
 
   defp fetch_models_body(provider) do
-    url = provider.base_url <> "/models"
+    # The probe URL is the discovery URL — `GET /models`. When the
+    # provider configures a `probe-base-url`, use it; otherwise
+    # fall back to `base-url`. Providers whose chat and listing
+    # endpoints live at different paths (e.g. Olla-style discovery
+    # vs. an OpenAI-compatible `/olla/proxy/v1/chat/completions`)
+    # need this split.
+    url = (provider.probe_base_url || provider.base_url) <> "/models"
     headers = [{"Authorization", "Bearer #{DotConfig.resolve_api_key(provider.api_key)}"}]
 
     case Req.get(url, headers: headers) do

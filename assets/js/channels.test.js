@@ -79,6 +79,77 @@ describe("channels", () => {
         assert.strictEqual(useStore.getState().isConnected, false);
       });
     });
+
+    describe("token-gated connect", () => {
+      it("does not call socket.connect() when no token is in localStorage", async () => {
+        localStorage.removeItem("nest_token");
+        const { getSocket } = await import("./channels");
+        const sock = getSocket();
+        const original = sock.connect;
+        let calls = 0;
+        sock.connect = (...args) => {
+          calls += 1;
+          return original.apply(sock, args);
+        };
+
+        initChannels();
+
+        assert.strictEqual(
+          calls,
+          0,
+          "initChannels must not connect when no token is stored",
+        );
+
+        sock.connect = original;
+      });
+
+      it("calls socket.connect() when a token is in localStorage", async () => {
+        localStorage.setItem("nest_token", "valid-token");
+        const { getSocket } = await import("./channels");
+        const sock = getSocket();
+        const original = sock.connect;
+        let calls = 0;
+        sock.connect = (...args) => {
+          calls += 1;
+          return original.apply(sock, args);
+        };
+
+        initChannels();
+
+        assert.strictEqual(
+          calls,
+          1,
+          "initChannels must connect exactly once when a token is stored",
+        );
+
+        sock.connect = original;
+      });
+
+      it("does not call socket.connect() when socket is already connected", async () => {
+        localStorage.setItem("nest_token", "valid-token");
+        const { getSocket } = await import("./channels");
+        const sock = getSocket();
+        // Simulate the socket already being open (e.g. HMR
+        // re-init without a page refresh).
+        connectSocket();
+        const original = sock.connect;
+        let calls = 0;
+        sock.connect = (...args) => {
+          calls += 1;
+          return original.apply(sock, args);
+        };
+
+        initChannels();
+
+        assert.strictEqual(
+          calls,
+          0,
+          "initChannels must not reconnect when socket is already open",
+        );
+
+        sock.connect = original;
+      });
+    });
   });
 
   describe("getSocket", () => {

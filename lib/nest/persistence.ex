@@ -170,6 +170,14 @@ defmodule Nest.Persistence do
         # don't have to change.
         parent_id: Map.get(attrs, :parent_id),
         depth: Map.get(attrs, :depth, 0),
+        # Multi-user identity. `created_by_user_id` is the
+        # integer `users.id` of the agent's owner; nil for
+        # pre-multi-user rows that haven't been backfilled
+        # yet. `shared` is the visibility flag — see
+        # `notes/multiple-users.md` for the permission
+        # model.
+        created_by_user_id: Map.get(attrs, :created_by_user_id),
+        shared: Map.get(attrs, :shared, false),
         inserted_at: now,
         updated_at: now
       }
@@ -412,22 +420,8 @@ defmodule Nest.Persistence do
   @doc """
   Convenience: load the agent row, the full message sequence,
   the boundary pointer, and the vocation struct. Returns
-  `{:ok, attrs_map}` suitable for passing to
-  `Agent.start_link/1`, or `{:error, :not_found}` when no row
-  exists for the name.
-
-  `attrs_map` carries the loaded `Vocation` struct on
-  `:vocation`, the `model` from the row, the `workspace_path`
-  from the row, the `next_message_index` from the row, the
-  `:last_compaction_index` boundary, the
-  `:initial_api_log_sequences` map to seed
-  `state.chat_state.api_log_sequences` (computed via
-  `Restore.initial_sequences_for/1`), and a `:preloaded_messages`
-  list of every `Message.t()` the Agent's `init/1` should split
-  into `state.chat_state.messages` and `state.chat_state.history`.
-
-  Used by `Supervisor.fetch_or_start_agent/1`'s on-demand-load
-  path.
+  `{:ok, attrs_map}` for `Agent.start_link/1`, or
+  `{:error, :not_found}` when no row exists for the name.
   """
   @spec build_attrs_for_start(String.t()) ::
           {:ok, map()} | {:error, :not_found}
@@ -452,6 +446,8 @@ defmodule Nest.Persistence do
         # system prompt's `[Delegation]` section.
         parent_id: row.parent_id,
         depth: row.depth || 0,
+        created_by_user_id: row.created_by_user_id,
+        shared: row.shared == true,
         initial_api_log_sequences: Restore.initial_sequences_for(preloaded),
         preloaded_messages: preloaded,
         vocation: load_vocation(row.vocation_id)
@@ -462,22 +458,16 @@ defmodule Nest.Persistence do
   end
 
   @doc """
-  Update the `model` column on an agent row. Used by the
-  `Agent.set_model/2` recovery flow when the user picks a
-  replacement model from the UI. Implementation lives in
-  `Nest.Persistence.AgentAttrs` so this module stays under
-  the credo 500-line cap; the public re-export here keeps the
-  call sites unchanged.
+  Update the `model` column on an agent row. Implementation
+  in `Nest.Persistence.AgentAttrs`.
   """
   defdelegate update_agent_model(name, model_map),
     to: Nest.Persistence.AgentAttrs,
     as: :update_agent_model
 
   @doc """
-  List every persisted agent row, ordered by name. Used by
-  `Agents.list_broken_agents/0` to assemble the lobby's
-  "broken agents" payload. Implementation lives in
-  `Nest.Persistence.AgentAttrs` for the same cap reason.
+  List every persisted agent row, ordered by name. Implementation
+  in `Nest.Persistence.AgentAttrs`.
   """
   defdelegate fetch_all_agents(),
     to: Nest.Persistence.AgentAttrs,
@@ -485,12 +475,6 @@ defmodule Nest.Persistence do
 
   @doc """
   Current UTC timestamp truncated to second precision.
-
-  Shared by every `INSERT`/`UPDATE` that records an `archived_at`,
-  `updated_at`, or similar wall-clock column. Truncating to `:second`
-  matches Postgres' default `timestamp(0)` semantics so a value
-  written by `now/0` and one written by an SQL `DEFAULT now()`
-  compare equal.
   """
   @spec now() :: DateTime.t()
   def now, do: DateTime.utc_now() |> DateTime.truncate(:second)

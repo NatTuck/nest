@@ -390,6 +390,33 @@ describe("TokenUsageChip", () => {
       fireEvent.click(toggle);
       expect(toggle).toHaveAttribute("aria-expanded", "true");
     });
+
+    it("renders Children/Total rows when descendant usage is present", () => {
+      render(
+        <TokenUsageChip
+          usage={{
+            input_tokens: 100,
+            total_input_tokens: 1000,
+            output_tokens: 200,
+          }}
+          contextLimit={10000}
+          descendantUsage={{
+            total_input_tokens: 5000,
+            output_tokens: 1500,
+          }}
+        />,
+      );
+
+      fireEvent.click(
+        screen.getByRole("button", { name: /toggle token usage details/i }),
+      );
+
+      const details = document.querySelector(
+        '[data-testid="token-usage-details"]',
+      );
+      expect(details.textContent).toContain("Children:");
+      expect(details.textContent).toContain("Total:");
+    });
   });
 });
 

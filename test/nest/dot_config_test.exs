@@ -225,6 +225,104 @@ defmodule Nest.DotConfigTest do
     end
   end
 
+  describe "provider probe-base-url" do
+    test "is nil for providers that don't set it" do
+      {:ok, config} = DotConfig.load()
+      assert config.providers["model-studio"].probe_base_url == nil
+      assert config.providers["anthropic-provider"].probe_base_url == nil
+    end
+
+    test "is set when the fixture provider configures it" do
+      {:ok, config} = DotConfig.load()
+      assert config.providers["pegasus"].probe_base_url == "http://pegasus-probe.local/olla"
+    end
+
+    test "parses the configured value when present" do
+      toml = """
+      [providers.foo]
+      base-url = "http://chat.example.com/v1"
+      probe-base-url = "http://probe.example.com/v1"
+      api-key = "x"
+      """
+
+      tmp_path =
+        Path.join(
+          System.tmp_dir!(),
+          "probe_url_set_#{System.unique_integer([:positive])}.toml"
+        )
+
+      File.write!(tmp_path, toml)
+      on_exit(fn -> File.rm(tmp_path) end)
+
+      {:ok, config} = DotConfig.load(tmp_path)
+      assert config.providers["foo"].probe_base_url == "http://probe.example.com/v1"
+    end
+
+    test "is nil when absent from a TOML with only a provider block" do
+      toml = """
+      [providers.foo]
+      base-url = "http://example.com/v1"
+      api-key = "x"
+      """
+
+      tmp_path =
+        Path.join(
+          System.tmp_dir!(),
+          "no_probe_url_#{System.unique_integer([:positive])}.toml"
+        )
+
+      File.write!(tmp_path, toml)
+      on_exit(fn -> File.rm(tmp_path) end)
+
+      {:ok, config} = DotConfig.load(tmp_path)
+      assert config.providers["foo"].probe_base_url == nil
+    end
+
+    test "raises on empty-string probe-base-url" do
+      bad_toml = """
+      [providers.bad]
+      base-url = "http://example.com/v1"
+      api-key = "x"
+      probe-base-url = ""
+      """
+
+      tmp_path =
+        Path.join(
+          System.tmp_dir!(),
+          "empty_probe_url_#{System.unique_integer([:positive])}.toml"
+        )
+
+      File.write!(tmp_path, bad_toml)
+      on_exit(fn -> File.rm(tmp_path) end)
+
+      assert_raise RuntimeError, ~r/invalid probe-base-url/, fn ->
+        DotConfig.load(tmp_path)
+      end
+    end
+
+    test "raises on non-string probe-base-url" do
+      bad_toml = """
+      [providers.bad]
+      base-url = "http://example.com/v1"
+      api-key = "x"
+      probe-base-url = 42
+      """
+
+      tmp_path =
+        Path.join(
+          System.tmp_dir!(),
+          "non_string_probe_url_#{System.unique_integer([:positive])}.toml"
+        )
+
+      File.write!(tmp_path, bad_toml)
+      on_exit(fn -> File.rm(tmp_path) end)
+
+      assert_raise RuntimeError, ~r/invalid probe-base-url/, fn ->
+        DotConfig.load(tmp_path)
+      end
+    end
+  end
+
   describe "max-tool-iterations" do
     test "parses the configured value from the test data file" do
       assert {:ok, config} = DotConfig.load()

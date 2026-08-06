@@ -49,7 +49,8 @@ defmodule NestWeb.LobbyChannel do
 
   @impl true
   def handle_info(:after_join, socket) do
-    agents = Agents.list_agents_info()
+    user = socket.assigns.current_user
+    agents = Agents.list_visible_agents_for(user.id)
     vocations = Vocations.list_vocations()
     models = safe_models_list()
 
@@ -64,7 +65,8 @@ defmodule NestWeb.LobbyChannel do
       agents: agents,
       broken_agents: [],
       models: models,
-      vocations: vocations
+      vocations: vocations,
+      current_user: public_current_user(user)
     })
 
     # Subscribe to the "models" PubSub topic for live updates.
@@ -73,7 +75,7 @@ defmodule NestWeb.LobbyChannel do
     # in flight. The handler below pushes the payload to UI.
     Phoenix.PubSub.subscribe(Nest.PubSub, "models")
 
-    fetch_broken_agents_async(socket)
+    fetch_broken_agents_async(socket, user.id)
     {:noreply, socket}
   end
 
@@ -122,7 +124,7 @@ defmodule NestWeb.LobbyChannel do
   # The `Task.await/2` bounds the wall-clock so a hung
   # `Models.list/0` probe (the slowest reachable call inside
   # `list_broken_agents/0`) can't pin the channel.
-  defp fetch_broken_agents_async(_socket) do
+  defp fetch_broken_agents_async(_socket, user_id) do
     parent = self()
 
     Task.Supervisor.start_child(Nest.Agents.TaskSupervisor, fn ->
@@ -139,7 +141,7 @@ defmodule NestWeb.LobbyChannel do
       # which the supervisor doesn't log.
       result =
         try do
-          fetch_broken_agents()
+          fetch_broken_agents(user_id)
         catch
           _, _ -> []
         end
@@ -151,8 +153,21 @@ defmodule NestWeb.LobbyChannel do
   end
 
   @doc false
-  defp fetch_broken_agents do
+  defp fetch_broken_agents(user_id) do
     Agents.list_broken_agents()
+    |> Enum.filter(fn broken ->
+      row_owner = broken_agent_owner(broken)
+      row_shared = broken_agent_shared?(broken)
+
+      # Same ownership predicate as `Agents.list_visible_agents_for/1`
+      # but applied to the persisted row (we may not have the
+      # Agent pid alive). Use the row's `created_by_user_id`
+      # and `shared` directly. Shared-but-broken agents stay
+      # visible — every authenticated user can see the row in
+      # `agents`, and an operator who can chat with a shared
+      # agent also gets the repair path.
+      row_owner == user_id or row_shared
+    end)
   rescue
     e ->
       Logger.debug("fetch_broken_agents rescued: #{Exception.message(e)}")
@@ -162,6 +177,12 @@ defmodule NestWeb.LobbyChannel do
       Logger.debug("fetch_broken_agents caught #{kind}: #{inspect(reason)}")
       []
   end
+
+  defp broken_agent_owner(%{created_by_user_id: id}), do: id
+  defp broken_agent_owner(_), do: nil
+
+  defp broken_agent_shared?(%{shared: shared}), do: shared == true
+  defp broken_agent_shared?(_), do: false
 
   defp spawn_rescan(_socket) do
     parent = self()
@@ -184,7 +205,6 @@ defmodule NestWeb.LobbyChannel do
     Process.unlink(pid)
   end
 
-  @impl true
   # `rescan_models` triggers a re-discovery of the model catalog.
   # The work runs in an unlinked spawn (so a hung `Models.list/0`
   # probe doesn't crash the channel), and the channel replies
@@ -194,41 +214,15 @@ defmodule NestWeb.LobbyChannel do
   # `broken_agents_updated`. With `:reload_static` set, the
   # merged catalog includes any `[providers.<n>]` entries the
   # user added to `~/.config/nest/config.toml` since startup.
-  # The `rescan_models_list/1` helper below is grouped with
-  # the helpers (after all `handle_in/3` clauses) to keep
-  # the warning about clause grouping quiet.
-  def handle_in("rescan_models", _payload, socket) do
-    spawn_rescan(socket)
-    {:reply, :ok, socket}
-  end
-
   @impl true
   def handle_in("create_agent", %{"model" => model_params} = payload, socket) do
-    model_name = model_params["name"] || model_params[:name]
-    model_provider = model_params["provider"] || model_params[:provider]
-
-    # `agents.vocation_id` is NOT NULL, so the channel handler
-    # must always supply one. The frontend sends the
-    # user-selected `vocation_id`; when missing (e.g. the
-    # `NewAgentPage` test path, or a direct API call), fall
-    # back to the first available vocation.
-    vocation_id = payload["vocation_id"] || default_vocation_id()
-    workspace_path = payload["workspace_path"]
-
-    # The agent's `name` (registry key, DB row primary name)
-    # is independent of the model name. Per the standard
-    # caller interface, the model's `:name` is the LLM
-    # identifier (e.g. "qwen3.5-plus") — NOT the agent's
-    # registry key. The frontend may pass an explicit
-    # `name:` in the payload (the lobby lets users rename
-    # before submitting); when missing, `Agents.create_agent/2`
-    # falls back to the supervisor's name generator.
-    opts = build_create_opts(payload, vocation_id, workspace_path)
-    model = %{name: model_name, provider: model_provider}
+    model = extract_model(model_params)
+    opts = build_create_opts_from_payload(payload, socket.assigns.current_user.id)
+    vocation_id = Keyword.fetch!(opts, :vocation_id)
 
     case Agents.create_agent(model, opts) do
       {:ok, name} ->
-        broadcast_agent_created(socket, name, model, vocation_id, workspace_path)
+        broadcast_agent_created(socket, name, model, vocation_id, opts[:workspace_path])
         {:reply, {:ok, %{"name" => name}}, socket}
 
       {:error, reason} ->
@@ -237,21 +231,55 @@ defmodule NestWeb.LobbyChannel do
     end
   end
 
+  alias NestWeb.LobbyChannel.Authz
+
   @impl true
   def handle_in("delete_agent", %{"name" => name}, socket) do
-    case Agents.delete_agent(name) do
+    case Authz.authorize_owner(name, socket.assigns.current_user) do
       :ok ->
-        broadcast(socket, "agent:deleted", %{"name" => name})
-        {:reply, {:ok, %{}}, socket}
+        case Agents.delete_agent(name) do
+          :ok ->
+            broadcast(socket, "agent:deleted", %{"name" => name})
+            {:reply, {:ok, %{}}, socket}
 
-      {:error, :not_found} ->
-        {:reply, {:error, %{"reason" => "not_found"}}, socket}
+          {:error, :not_found} ->
+            {:reply, {:error, %{"reason" => "not_found"}}, socket}
+        end
+
+      {:error, reason} ->
+        {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
     end
   end
 
   @impl true
   def handle_in("change_model", %{"name" => name, "model" => model_params}, socket)
       when is_map(model_params) do
+    case Authz.authorize_owner_or_shared(name, socket.assigns.current_user) do
+      {:ok, :owner} ->
+        do_change_model(name, model_params, socket)
+
+      {:ok, :shared} ->
+        # Shared agents are chat-only from non-owners; the
+        # model is fixed by the creator. Reject the edit
+        # rather than silently rewriting it.
+        {:reply, {:error, %{"reason" => "shared_read_only"}}, socket}
+
+      {:error, reason} ->
+        {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
+    end
+  end
+
+  def handle_in("change_model", _payload, socket) do
+    {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
+  end
+
+  @impl true
+  def handle_in("rescan_models", _payload, socket) do
+    spawn_rescan(socket)
+    {:reply, :ok, socket}
+  end
+
+  defp do_change_model(name, model_params, socket) do
     payload_model = build_model_map(model_params)
 
     case Agents.change_model(name, payload_model) do
@@ -264,8 +292,36 @@ defmodule NestWeb.LobbyChannel do
     end
   end
 
-  def handle_in("change_model", _payload, socket) do
-    {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
+  # Build the agent model map from the wire payload. The
+  # model's `:name` is the LLM identifier (e.g. "qwen3.5-plus"),
+  # NOT the agent's registry key. The frontend may pass an
+  # explicit `name:` in the payload; when missing, `Agents.
+  # create_agent/2` falls back to the supervisor's name
+  # generator.
+  defp extract_model(model_params) do
+    %{
+      name: model_params["name"] || model_params[:name],
+      provider: model_params["provider"] || model_params[:provider]
+    }
+  end
+
+  # Assemble the keyword list for `Agents.create_agent/2`.
+  # `agents.vocation_id` is NOT NULL, so the channel handler
+  # must always supply one — the frontend sends the user-selected
+  # `vocation_id`; when missing (e.g. the `NewAgentPage` test
+  # path, or a direct API call), fall back to the first available
+  # vocation.
+  defp build_create_opts_from_payload(payload, current_user_id) do
+    base_opts =
+      build_create_opts(
+        payload,
+        payload["vocation_id"] || default_vocation_id(),
+        payload["workspace_path"]
+      )
+
+    base_opts
+    |> Keyword.put(:created_by_user_id, current_user_id)
+    |> Keyword.put(:shared, payload["shared"] == true)
   end
 
   # The frontend may send keys as strings or atoms depending on
@@ -315,6 +371,21 @@ defmodule NestWeb.LobbyChannel do
   defp change_model_error_payload(name, reason) do
     Logger.error("Failed to change model on agent #{inspect(name)}: #{inspect(reason)}")
     {:error, %{"reason" => to_string(reason)}}
+  end
+
+  # JSON-safe slice of the current user to ship in the lobby's
+  # `init` payload. Mirrors `Nest.Accounts.User`'s `@derive
+  # {Jason.Encoder, only: [...]}` so the JS side gets the same
+  # shape across all paths. Exposed to every connected socket
+  # so the UI can render "logged in as X" without an extra
+  # round-trip; the only sensitive field (`password_hash`) is
+  # excluded by the schema's encoder.
+  defp public_current_user(%Nest.Accounts.User{} = user) do
+    %{
+      id: user.id,
+      username: user.username,
+      is_admin: user.is_admin
+    }
   end
 
   defp maybe_add_opt(opts, _key, nil), do: opts

@@ -234,7 +234,15 @@ defmodule Nest.Agents.AgentTestHelpers do
       # (nullable column) and `Init.build_state/2` reads it via
       # `Map.get/2` so `nil` is fine. Tests that need a workspace
       # can override `:workspace_path` in `attrs`.
-      workspace_path: nil
+      workspace_path: nil,
+      # Multi-user identity. Defaults to `nil` so tests that
+      # pre-date the multi-user migration keep working
+      # without changes. Tests that exercise ownership /
+      # shared-agent rules should set `:created_by_user_id`
+      # explicitly so the joined socket and the agent row
+      # line up.
+      created_by_user_id: nil,
+      shared: false
     }
 
     merged = Map.merge(defaults, attrs)
@@ -478,7 +486,9 @@ defmodule Nest.Agents.AgentTestHelpers do
       Map.get(attrs, :model),
       name: Map.get(attrs, :name),
       vocation_id: Map.get(attrs, :vocation_id),
-      workspace_path: Map.get(attrs, :workspace_path)
+      workspace_path: Map.get(attrs, :workspace_path),
+      created_by_user_id: Map.get(attrs, :created_by_user_id),
+      shared: Map.get(attrs, :shared, false)
     )
   end
 end

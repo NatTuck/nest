@@ -103,8 +103,11 @@ defmodule NestWeb.AgentChannelMessagingTest do
 
   describe "message broadcasting" do
     test "assistant message is broadcast to all subscribers", %{socket: socket, agent_id: id} do
+      {:ok, socket2_conn} =
+        connect(NestWeb.UserSocket, %{"token" => Process.get(:agent_test_token)})
+
       {:ok, _, socket2} =
-        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{id}")
+        subscribe_and_join(socket2_conn, NestWeb.AgentChannel, "agent:#{id}")
 
       ref = push(socket, "chat:message", %{"content" => "Hello from client 1"})
       assert_reply ref, :ok, %{}
@@ -206,8 +209,11 @@ defmodule NestWeb.AgentChannelMessagingTest do
       GenServer.stop(channel_pid, :normal)
       assert_receive {:DOWN, ^mon, :process, ^channel_pid, _reason}, 500
 
+      {:ok, new_conn} =
+        connect(NestWeb.UserSocket, %{"token" => Process.get(:agent_test_token)})
+
       {:ok, _, new_socket} =
-        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{id}")
+        subscribe_and_join(new_conn, NestWeb.AgentChannel, "agent:#{id}")
 
       # The new channel's join pushes the init synchronously.
       assert_push "init", init_payload, 500
@@ -263,8 +269,11 @@ defmodule NestWeb.AgentChannelMessagingTest do
       GenServer.stop(channel_pid, :normal)
       assert_receive {:DOWN, ^mon, :process, ^channel_pid, _reason}, 500
 
+      {:ok, new_conn} =
+        connect(NestWeb.UserSocket, %{"token" => Process.get(:agent_test_token)})
+
       {:ok, _, new_socket} =
-        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{id}")
+        subscribe_and_join(new_conn, NestWeb.AgentChannel, "agent:#{id}")
 
       assert_push "init", init_payload, 500
 

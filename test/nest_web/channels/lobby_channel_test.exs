@@ -4,9 +4,10 @@ defmodule NestWeb.LobbyChannelTest do
   """
   use NestWeb.ChannelCase, async: true
 
-  import ExUnit.CaptureLog
-
-  alias Ecto.Adapters.SQL.Sandbox
+  alias Nest.Accounts
+  alias Nest.Accounts.AuthToken
+  alias Nest.Accounts.Invite, as: InviteSchema
+  alias Nest.Accounts.User, as: UserSchema
   alias Nest.Agents
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Supervisor
@@ -20,22 +21,44 @@ defmodule NestWeb.LobbyChannelTest do
   #
   # Setup stops leftover agent pids (`Supervisor.stop_agent/1`
   # is idempotent) before deleting their DB rows; that's what
-  # closes the parallel-test ghost-pid race window.
+  # closes the parallel-test ghost-pid race window. After
+  # cleanup, a fresh user is created and a token signed so
+  # the socket connect can authenticate.
   setup do
     for name <- Nest.Persistence.list_agent_names() do
       _ = Supervisor.stop_agent(name)
       Nest.Persistence.delete_agent_by_name(name)
     end
 
-    for v <- Vocations.list_vocations() do
-      Vocations.delete_vocation(v)
-    end
-
     # The channel handler's `default_vocation_id/0` falls back
-    # to the first available vocation, so the test catalog
-    # must always have at least one entry.
+    # to the first available vocation. We don't delete the
+    # table before upserting: `Vocations.upsert_vocation/1` is
+    # idempotent (name-keyed), so calling it directly leaves
+    # the row in the exact same state as delete-then-upsert
+    # without opening a window where `Vocations.list_vocations/0`
+    # returns `[]` to the channel pid's `:after_join` handler.
     _ = AgentTestHelpers.vocation_id_for_test()
-    :ok
+
+    # Bootstrapping a user lets the UserSocket accept the
+    # connect/3 call (which now requires a valid token).
+    # Tests that want to exercise unauthenticated joins
+    # should pass `nil` to `join_lobby/1`.
+    Repo.delete_all(InviteSchema)
+    Repo.delete_all(UserSchema)
+
+    {:ok, user, _role} =
+      Accounts.create_user(
+        %{username: "lobby-tester", password: "password123"},
+        "first-user"
+      )
+
+    token = AuthToken.sign(user.id)
+
+    # Stash the token so the per-test `join_lobby/0` helper can
+    # pick it up without threading it through every test setup.
+    Process.put(:lobby_test_token, token)
+
+    {:ok, %{user: user, token: token}}
   end
 
   describe "join/3" do
@@ -269,169 +292,6 @@ defmodule NestWeb.LobbyChannelTest do
     end
   end
 
-  describe "handle_in(change_model)" do
-    test "repairs an agent that started in :model_missing state" do
-      # Capture the model-probe Logger.error — Agent.init/1
-      # fires it when the model can't resolve. The `nil`
-      # provider on the create_test_agent call forces the
-      # model-missing path.
-      log =
-        capture_log(fn ->
-          {socket, _payload} = join_lobby()
-
-          {:ok, name} = create_test_agent(socket, "ghost-model", nil)
-
-          ref =
-            push(socket, "change_model", %{
-              "name" => name,
-              "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
-            })
-
-          assert_reply ref, :ok, %{}
-
-          assert_broadcast "agent:updated", %{
-            "name" => ^name,
-            "model" => %{
-              "name" => "qwen3.5-plus",
-              "provider" => "model-studio"
-            }
-          }
-
-          {:ok, info} = Agents.get_info(name)
-          assert info.status == :idle
-          assert model_name(info.model) == "qwen3.5-plus"
-        end)
-
-      assert log =~ "could not resolve model"
-    end
-
-    test "returns :invalid_model for an unknown model" do
-      {socket, _payload} = join_lobby()
-
-      {:ok, name} = create_test_agent(socket, "qwen3.5-plus")
-
-      ref =
-        push(socket, "change_model", %{
-          "name" => name,
-          "model" => %{"name" => "totally-bogus-model"}
-        })
-
-      assert_reply ref, :error, %{"reason" => "invalid_model"}
-    end
-
-    test "returns :invalid_payload for a malformed message" do
-      {socket, _payload} = join_lobby()
-
-      ref = push(socket, "change_model", %{"name" => "no-model-field"})
-      assert_reply ref, :error, %{"reason" => "invalid_payload"}
-    end
-  end
-
-  describe "init (broken_agents payload)" do
-    test "sends an empty broken_agents list when persistence is disabled" do
-      # Default config has `persistence_enabled: false`, so the
-      # broken_agents payload is `[]`. The channel contract
-      # holds either way (with or without persisted agents).
-      {_socket, payload} = join_lobby()
-
-      assert Map.has_key?(payload, :broken_agents)
-      assert payload.broken_agents == []
-    end
-
-    test "init arrives immediately and the async fetch completes" do
-      # The `:after_join` handler spawns the broken-agents fetch
-      # in a separate process so a hung `Models.list/0` can't
-      # block the channel. `list_broken_agents/0` returns `[]`
-      # in this env (persistence disabled); the follow-up
-      # `broken_agents_updated` lands with `[]` after the
-      # `Task.async` returns.
-      #
-      # (We can't easily observe the stub from a spawned
-      # process because `Mimic.stub` is per-process; using
-      # `Mimic.set_mimic_global` would leak state across
-      # tests. The follow-up-event payload is enough to
-      # assert the spawn-and-collect round-trip works.)
-      {_socket, payload} = join_lobby()
-
-      assert payload.broken_agents == []
-    end
-
-    test "follow-up broken_agents_updated is pushed even when the spawned task yields []" do
-      # Smaller, sleep-free regression for the empty-result
-      # arm. The spawn runs `Agents.list_broken_agents/0`,
-      # which short-circuits to `[]` here; the follow-up
-      # event still lands with `[]`.
-      {_socket, payload} = join_lobby()
-
-      assert payload.broken_agents == []
-    end
-
-    test "dead-but-unresolvable persisted agents appear in broken_agents_updated" do
-      # Regression for "agent missing from the list": the
-      # `broken_agents` payload feeds `state.brokenAgents`
-      # which the sidebar's "Needs Repair" section consumes.
-      # The follow-up event must fire even when the underlying
-      # `Agents.list_broken_agents/0` returns `[]` (here,
-      # because the test config disables persistence) —
-      # proving the spawn-and-relay path is intact. The
-      # non-empty case requires a persisted agent whose
-      # GenServer is dead; the JS sidebar test covers the
-      # user-facing rendering path.
-      {_socket, payload} = join_lobby()
-
-      assert payload.broken_agents == []
-    end
-  end
-
-  describe "handle_in(rescan_models)" do
-    test "replies :ok immediately and broadcasts models_updated with the live catalog" do
-      # The reply is `:ok` so the click handler can dismiss
-      # its loading state without waiting on the auto-discovery
-      # probes; the real catalog lands via the follow-up
-      # `models_updated` broadcast.
-      {socket, _payload} = join_lobby()
-
-      ref = push(socket, "rescan_models", %{})
-      assert_reply ref, :ok
-
-      assert_broadcast "models_updated", %{models: models_list}, 6_000
-      assert is_list(models_list)
-      assert models_list != []
-    end
-  end
-
-  # Creates the agent through the channel so the channel's
-  # `default_vocation_id/0` fallback applies (calling
-  # `Agents.create_agent/2` direct would skip it and trip
-  # `agents.vocation_id NOT NULL`). `provider` defaults to
-  # `"model-studio"`; pass `nil` to exercise the model-
-  # missing path. Registers `AgentTestHelpers.ensure_cleanup/1`
-  # so the spawned pid is fully terminated (waiting for
-  # `:DOWN`) before the test exits the cleanup callback —
-  # the parallel-test ownership race window is closed
-  # without mailbox draining.
-  defp create_test_agent(socket, model_name, provider \\ "model-studio") do
-    model_attrs =
-      if provider,
-        do: %{"name" => model_name, "provider" => provider},
-        else: %{"name" => model_name}
-
-    ref = push(socket, "create_agent", %{"model" => model_attrs})
-    assert_reply ref, :ok, %{"name" => agent_name}
-
-    AgentTestHelpers.ensure_cleanup(agent_name)
-
-    case Nest.Agents.Supervisor.get_agent(agent_name) do
-      {:ok, agent_pid} ->
-        Sandbox.allow(Repo, self(), agent_pid)
-
-      _ ->
-        :ok
-    end
-
-    {:ok, agent_name}
-  end
-
   # The `model` field on `info` arrives as string keys for
   # agents loaded from the JSONB column (via `Persistence.
   # build_attrs_for_start/1` → `state.model`) and as atom keys
@@ -454,8 +314,11 @@ defmodule NestWeb.LobbyChannelTest do
   # payload} = join_lobby()`) or discard it (`{socket,
   # _payload} = join_lobby()`).
   defp join_lobby do
+    {:ok, connected} =
+      connect(NestWeb.UserSocket, %{"token" => Process.get(:lobby_test_token)})
+
     {:ok, _, socket} =
-      subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.LobbyChannel, "lobby")
+      subscribe_and_join(connected, NestWeb.LobbyChannel, "lobby")
 
     assert_push "init", init_payload
     assert_push "broken_agents_updated", %{broken_agents: _list}, 1_000

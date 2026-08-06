@@ -38,7 +38,9 @@ defmodule Nest.Agents do
       name: name_or_generate(model, opts),
       model: enrich_model(model),
       vocation_id: Keyword.get(opts, :vocation_id),
-      workspace_path: Keyword.get(opts, :workspace_path)
+      workspace_path: Keyword.get(opts, :workspace_path),
+      created_by_user_id: Keyword.get(opts, :created_by_user_id),
+      shared: Keyword.get(opts, :shared, false)
     }
 
     # Pre-spawn DB work in the caller's pid. Then the supervisor
@@ -211,6 +213,19 @@ defmodule Nest.Agents do
     end)
     |> Enum.map(fn {:ok, info} -> info end)
   end
+
+  @doc """
+  Lists public info for the agents the given user is allowed
+  to see: their own private agents (created_by_user_id ==
+  user.id and shared == false) plus every shared agent.
+
+  Implemented in `Nest.Agents.Visibility` — see that module
+  for the per-user predicate. Returns the same shape as
+  `list_agents_info/0`; only the membership differs.
+  """
+  @spec list_visible_agents_for(integer()) :: list(map())
+  defdelegate list_visible_agents_for(user_id),
+    to: Nest.Agents.Visibility
 
   @doc """
   Gets the messages for an agent by its name.
@@ -415,13 +430,26 @@ defmodule Nest.Agents do
   # that *can* be hydrated right now (a transient inconsistency
   # we don't want to surface as broken), and `[%{name, model,
   # status: :model_missing}]` for the rest.
-  defp maybe_report_broken(%PersistedAgent{name: name, model: model}) do
+  defp maybe_report_broken(%PersistedAgent{
+         name: name,
+         model: model,
+         created_by_user_id: owner_id,
+         shared: shared
+       }) do
     cond do
       agent_alive?(name) ->
         []
 
       not agent_loadable?(model) ->
-        [%{name: name, model: model, status: :model_missing}]
+        [
+          %{
+            name: name,
+            model: model,
+            created_by_user_id: owner_id,
+            shared: shared,
+            status: :model_missing
+          }
+        ]
 
       true ->
         []

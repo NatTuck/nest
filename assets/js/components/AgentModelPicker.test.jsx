@@ -63,4 +63,42 @@ describe("AgentModelPicker", () => {
     fireEvent.click(screen.getByLabelText("Close"));
     expect(onClose).toHaveBeenCalled();
   });
+
+  test("calls onClose when the Escape key is pressed", () => {
+    const onClose = vi.fn();
+    render(
+      <AgentModelPicker open={true} onClose={onClose} onSelect={() => {}} />,
+    );
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  test("calls onClose when the backdrop is clicked", () => {
+    const onClose = vi.fn();
+    render(
+      <AgentModelPicker open={true} onClose={onClose} onSelect={() => {}} />,
+    );
+    const dialog = screen.getByRole("dialog");
+    fireEvent.click(dialog, { target: dialog });
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  test("does not close when an inner element is clicked", () => {
+    const onClose = vi.fn();
+    render(
+      <AgentModelPicker open={true} onClose={onClose} onSelect={() => {}} />,
+    );
+    fireEvent.click(screen.getByText("Pick a model"));
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  test("shows an empty-state message when no models match the filter", () => {
+    render(
+      <AgentModelPicker open={true} onClose={() => {}} onSelect={() => {}} />,
+    );
+    fireEvent.input(screen.getByPlaceholderText("Filter models…"), {
+      target: { value: "no-such-model" },
+    });
+    expect(screen.getByText("No models match the filter.")).toBeDefined();
+  });
 });

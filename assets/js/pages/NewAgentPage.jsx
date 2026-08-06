@@ -57,6 +57,7 @@ export function NewAgentPage() {
   const [selectedModel, setSelectedModel] = useState("");
   const [selectedVocation, setSelectedVocation] = useState("");
   const [workspacePath, setWorkspacePath] = useState("");
+  const [shared, setShared] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState(null);
   const [isRescanning, setIsRescanning] = useState(false);
@@ -115,6 +116,7 @@ export function NewAgentPage() {
         setError(err.message || "Failed to create agent");
         setIsCreating(false);
       },
+      { shared },
     );
   };
 
@@ -283,6 +285,27 @@ export function NewAgentPage() {
               No models configured. Using fallback option.
             </p>
           )}
+        </div>
+
+        {/* Visibility toggle */}
+        <div className="mb-6 flex items-start gap-3 rounded-lg border border-gray-200 p-4">
+          <input
+            id="shared-toggle"
+            type="checkbox"
+            checked={shared}
+            onChange={(e) => setShared(e.target.checked)}
+            disabled={isCreating}
+            className="mt-1 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+          />
+          <label htmlFor="shared-toggle" className="flex-1 cursor-pointer">
+            <span className="block text-sm font-medium text-gray-700">
+              Shared agent
+            </span>
+            <span className="block text-xs text-gray-500">
+              Everyone signed in to this Nest can see and chat with shared
+              agents. Only you can edit or delete them.
+            </span>
+          </label>
         </div>
 
         {/* Create button */}

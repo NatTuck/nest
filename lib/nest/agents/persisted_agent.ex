@@ -43,6 +43,8 @@ defmodule Nest.Agents.PersistedAgent do
           last_compaction_index: integer(),
           parent_id: integer() | nil,
           depth: non_neg_integer(),
+          created_by_user_id: integer() | nil,
+          shared: boolean(),
           inserted_at: DateTime.t() | nil,
           updated_at: DateTime.t() | nil
         }
@@ -77,6 +79,22 @@ defmodule Nest.Agents.PersistedAgent do
 
     belongs_to :parent, __MODULE__, foreign_key: :parent_id, define_field: false
 
+    # Multi-user identity. `created_by_user_id` is the
+    # integer `users.id` of the user who created the agent.
+    # Nullable in the schema because rows created before
+    # the multi-user migration landed have no owner; new
+    # rows are inserted with the caller's id (see
+    # `Agents.create_agent/2`).
+    #
+    # `shared` is the visibility flag. When `true`, every
+    # authenticated user can see and chat with the agent
+    # in the lobby; the owner still has edit/delete rights.
+    # Default `false` keeps the privacy guarantee for new
+    # agents created without an explicit `shared: true`
+    # opt-in.
+    field :created_by_user_id, :integer
+    field :shared, :boolean, default: false
+
     timestamps(type: :utc_datetime)
   end
 
@@ -106,7 +124,9 @@ defmodule Nest.Agents.PersistedAgent do
       :next_message_index,
       :last_compaction_index,
       :parent_id,
-      :depth
+      :depth,
+      :created_by_user_id,
+      :shared
     ])
     |> validate_required([:name, :model])
     |> validate_length(:name, min: 1)

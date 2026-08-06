@@ -80,9 +80,12 @@ defmodule NestWeb.AgentChannelTest do
     end
 
     test "returns error for non-existent agent" do
+      token = Process.get(:agent_test_token)
+      {:ok, connected} = connect(NestWeb.UserSocket, %{"token" => token})
+
       assert {:error, %{"reason" => "agent not found"}} =
                subscribe_and_join(
-                 socket(NestWeb.UserSocket),
+                 connected,
                  NestWeb.AgentChannel,
                  "agent:nonexistent"
                )
@@ -104,9 +107,12 @@ defmodule NestWeb.AgentChannelTest do
             {:error, %Nest.ChatModel.ModelNotFoundError{message: "x"}}
           end)
 
+          token = Process.get(:agent_test_token)
+          {:ok, connected} = connect(NestWeb.UserSocket, %{"token" => token})
+
           assert {:error, %{"reason" => "agent_unavailable"}} =
                    subscribe_and_join(
-                     socket(NestWeb.UserSocket),
+                     connected,
                      NestWeb.AgentChannel,
                      "agent:any-missing"
                    )
@@ -144,8 +150,13 @@ defmodule NestWeb.AgentChannelTest do
       GenServer.stop(channel_pid, :normal)
       assert_receive {:DOWN, ^monitor_ref, :process, ^channel_pid, _}, 1000
 
+      # Reconnect the socket — the dropped channel's pid is
+      # gone, so we open a fresh connection with the same token.
+      token = Process.get(:agent_test_token)
+      {:ok, connected} = connect(NestWeb.UserSocket, %{"token" => token})
+
       {:ok, _, _new_socket} =
-        subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{id}")
+        subscribe_and_join(connected, NestWeb.AgentChannel, "agent:#{id}")
 
       assert_push "init", payload, 2000
       assert payload["messageCount"] == 3
@@ -264,7 +275,7 @@ defmodule NestWeb.AgentChannelTest do
   end
 
   describe "handle_in(change_model)" do
-    test "repairs an agent that is in :model_missing state" do
+    test "repairs an agent that is in :model_missing state", %{user: user} do
       # Stub the lookup for the broken model name so the agent
       # lands in :model_missing without polluting the suite.
       #
@@ -285,11 +296,15 @@ defmodule NestWeb.AgentChannelTest do
             AgentTestHelpers.start_agent(%{
               name: "ghost-agent-repair-#{System.unique_integer([:positive])}",
               model: %{name: "ghost-model"},
-              vocation_id: AgentTestHelpers.vocation_id_for_test()
+              vocation_id: AgentTestHelpers.vocation_id_for_test(),
+              created_by_user_id: user.id
             })
 
+          token = Process.get(:agent_test_token)
+          {:ok, connected} = connect(NestWeb.UserSocket, %{"token" => token})
+
           {:ok, _, socket} =
-            subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{name}")
+            subscribe_and_join(connected, NestWeb.AgentChannel, "agent:#{name}")
 
           # Subscribe to follow-up status pushes (the agent
           # broadcasts chat:status from the set_model handler).
@@ -315,7 +330,7 @@ defmodule NestWeb.AgentChannelTest do
       assert log =~ "could not resolve model"
     end
 
-    test "returns :invalid_payload when the model field is missing" do
+    test "returns :invalid_payload when the model field is missing", %{user: user} do
       # Stub `Config.create_client_config/1` to reject the
       # `:model_missing` model name so `init/1` boots in
       # the recovery state. The change_model handler under
@@ -333,11 +348,15 @@ defmodule NestWeb.AgentChannelTest do
             AgentTestHelpers.start_agent(%{
               name: "invalid-payload-agent-#{System.unique_integer([:positive])}",
               model: %{name: "ghost-model"},
-              vocation_id: AgentTestHelpers.vocation_id_for_test()
+              vocation_id: AgentTestHelpers.vocation_id_for_test(),
+              created_by_user_id: user.id
             })
 
+          token = Process.get(:agent_test_token)
+          {:ok, connected} = connect(NestWeb.UserSocket, %{"token" => token})
+
           {:ok, _, socket} =
-            subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{name}")
+            subscribe_and_join(connected, NestWeb.AgentChannel, "agent:#{name}")
 
           ref = push(socket, "change_model", %{"some_other_field" => "x"})
           assert_reply ref, :error, %{"reason" => "invalid_payload"}
@@ -348,7 +367,7 @@ defmodule NestWeb.AgentChannelTest do
   end
 
   describe "handle_in(chat:message) in :model_missing state" do
-    test "rejects with agent_status_model_missing" do
+    test "rejects with agent_status_model_missing", %{user: user} do
       # The model-probe failure fires a `Logger.error` from
       # `Agent.init/1` — capture it and assert it's the
       # expected error path, not noise.
@@ -360,11 +379,15 @@ defmodule NestWeb.AgentChannelTest do
             AgentTestHelpers.start_agent(%{
               name: "reject-model-missing-#{System.unique_integer([:positive])}",
               model: %{name: "ghost-model"},
-              vocation_id: AgentTestHelpers.vocation_id_for_test()
+              vocation_id: AgentTestHelpers.vocation_id_for_test(),
+              created_by_user_id: user.id
             })
 
+          token = Process.get(:agent_test_token)
+          {:ok, connected} = connect(NestWeb.UserSocket, %{"token" => token})
+
           {:ok, _, socket} =
-            subscribe_and_join(socket(NestWeb.UserSocket), NestWeb.AgentChannel, "agent:#{name}")
+            subscribe_and_join(connected, NestWeb.AgentChannel, "agent:#{name}")
 
           ref = push(socket, "chat:message", %{"content" => "hello?"})
           assert_reply ref, :error, %{"reason" => "agent_status_model_missing"}

@@ -33,53 +33,54 @@ defmodule Nest.Agents.Agent.Init do
   """
   @spec build_state(map(), Nest.LLM.ClientConfig.t()) :: Nest.Agents.Agent.t()
   def build_state(attrs, client_config) do
+    {system_prompt, mode, tool_names, cached_vocation, llm_metrics} =
+      build_vocation_pipeline(attrs)
+
     name = Map.fetch!(attrs, :name)
-    model = Map.fetch!(attrs, :model)
-    vocation_id = Map.fetch!(attrs, :vocation_id)
-    workspace_path = Map.get(attrs, :workspace_path)
-    vocation = Map.get(attrs, :vocation)
-    parent_id = Map.get(attrs, :parent_id)
-    parent_name = Map.get(attrs, :parent_name)
-    depth = Map.get(attrs, :depth, 0)
-
-    # Resolve the context limit before building the system prompt
-    # so the prompt can include the limit as a static piece of
-    # context. The cache lookup is synchronous (read from `Nest.Models`)
-    # — no async probe, no `:default` source in the rendered
-    # prompt.
-    {context_limit, context_limit_source} = initial_context_limit(model)
-
-    {system_prompt, mode, tool_names, cached_vocation} =
-      SystemPrompt.compose_vocation_config(
-        vocation,
-        workspace_path,
-        {context_limit, context_limit_source},
-        depth
-      )
-
     tmp_path = create_tmp_space(name)
-    tools = Tools.get_functions(tool_names, workspace_path, tmp_path)
+    tools = Tools.get_functions(tool_names, Map.get(attrs, :workspace_path), tmp_path)
 
     {initial_messages, next_index} = initial_messages_with_system(system_prompt)
-
     initial_api_log_sequences = Map.get(attrs, :initial_api_log_sequences, %{})
 
     %Nest.Agents.Agent{
       name: name,
-      model: model,
+      model: Map.fetch!(attrs, :model),
       client_config: client_config,
       vocation: cached_vocation,
-      vocation_id: vocation_id,
-      workspace_path: workspace_path,
+      vocation_id: Map.fetch!(attrs, :vocation_id),
+      workspace_path: Map.get(attrs, :workspace_path),
       tmp_path: tmp_path,
       tools: tools,
-      llm_metrics: build_llm_metrics(context_limit, context_limit_source),
-      parent_id: parent_id,
-      parent_name: parent_name,
-      depth: depth,
+      llm_metrics: llm_metrics,
+      parent_id: Map.get(attrs, :parent_id),
+      parent_name: Map.get(attrs, :parent_name),
+      created_by_user_id: Map.get(attrs, :created_by_user_id),
+      shared: Map.get(attrs, :shared, false),
+      depth: Map.get(attrs, :depth, 0),
       mode: mode,
       chat_state: build_chat_state(initial_messages, next_index, initial_api_log_sequences)
     }
+  end
+
+  # Vocation-derived attributes: context limit, system prompt,
+  # tool list, cached vocation struct, and the `llm_metrics`
+  # initializer. Kept as its own helper so `build_state/2`
+  # stays under the credo ABC cap.
+  defp build_vocation_pipeline(attrs) do
+    model = Map.fetch!(attrs, :model)
+    {context_limit, context_limit_source} = initial_context_limit(model)
+
+    {system_prompt, mode, tool_names, cached_vocation} =
+      SystemPrompt.compose_vocation_config(
+        Map.get(attrs, :vocation),
+        Map.get(attrs, :workspace_path),
+        {context_limit, context_limit_source},
+        Map.get(attrs, :depth, 0)
+      )
+
+    {system_prompt, mode, tool_names, cached_vocation,
+     build_llm_metrics(context_limit, context_limit_source)}
   end
 
   @doc """

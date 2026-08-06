@@ -46,6 +46,16 @@ config :swoosh, :api_client, false
 # Print only warnings and errors during test
 config :logger, level: :warning
 
+# `argon2_elixir` defaults to a memory cost of `m=65536` and a
+# time cost of `t=3` — appropriate for production but ~30ms per
+# `hash_pwd_salt/1` call in tests, which adds ~3 seconds across
+# the test suite given how many `Accounts.create_user/2` calls
+# the multi-user tests make. Drop the cost to the minimum
+# (`t=1, m=8`) in the test environment — the hashing still
+# runs the full argon2id pipeline, so the test coverage of
+# `Accounts.authenticate/2` exercises the real codepath.
+config :argon2_elixir, t_cost: 1, m_cost: 8
+
 # Initialize plugs at runtime for faster test compilation
 config :phoenix, :plug_init_mode, :runtime
 

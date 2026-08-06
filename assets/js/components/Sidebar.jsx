@@ -18,7 +18,9 @@
 
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useStore } from "../store";
+import { useAuthStore } from "../store/auth";
 import { deleteAgent } from "../channels";
+import { logout } from "../api/auth";
 
 /**
  * Build a tree from a flat agents list. Each agent's
@@ -155,13 +157,13 @@ export function Sidebar() {
       console.error("Failed to delete agent:", error);
     });
     if (location.pathname === `/agent/${name}`) {
-      navigate("/");
+      navigate("/new_agent");
     }
   };
 
   const isActive = (path) => {
-    if (path === "/") {
-      return location.pathname === "/";
+    if (path === "/new_agent") {
+      return location.pathname === "/new_agent";
     }
     return location.pathname.startsWith(path);
   };
@@ -180,12 +182,12 @@ export function Sidebar() {
       <nav className="flex-1 overflow-y-auto p-4">
         {/* New Agent Button */}
         <Link
-          to="/"
+          to="/new_agent"
           className={`
             w-full flex items-center gap-2 px-4 py-2 rounded-lg mb-4
             transition-colors duration-200
             ${
-              isActive("/")
+              isActive("/new_agent")
                 ? "bg-blue-600 text-white"
                 : "bg-gray-100 text-gray-700 hover:bg-gray-200"
             }
@@ -348,9 +350,67 @@ export function Sidebar() {
 
       {/* Footer */}
       <div className="p-4 border-t border-gray-200">
-        <p className="text-xs text-gray-400">Nest v0.1.0</p>
+        <CurrentUserBar />
       </div>
     </aside>
+  );
+}
+
+/**
+ * Footer block showing the current user and a logout button.
+ * Reads `currentUser` from the auth store; when unset (e.g.
+ * the socket's `init` payload hasn't arrived yet), renders
+ * nothing.
+ */
+function CurrentUserBar() {
+  const currentUser = useAuthStore((state) => state.currentUser);
+  const setCurrentUser = useAuthStore((state) => state.setCurrentUser);
+  const navigate = useNavigate();
+
+  if (!currentUser) {
+    return <p className="text-xs text-gray-400">Nest v0.1.0</p>;
+  }
+
+  async function handleLogout() {
+    await logout();
+    setCurrentUser(null);
+    // Drop the WS so the next connect (if any) re-prompts
+    // for credentials. The Phoenix socket is reused across
+    // logins — the same singleton reconnects with the new
+    // token on the next join.
+    const sock = window.__nest_socket;
+    if (sock && typeof sock.disconnect === "function") {
+      sock.disconnect();
+    }
+    navigate("/login", { replace: true });
+  }
+
+  return (
+    <div className="space-y-2">
+      <p className="truncate text-sm font-medium text-gray-700">
+        {currentUser.username}
+        {currentUser.is_admin ? (
+          <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">
+            admin
+          </span>
+        ) : null}
+      </p>
+      <div className="flex gap-2">
+        <Link
+          to="/invites"
+          className="flex-1 rounded border border-gray-300 px-2 py-1 text-center text-xs text-gray-700 hover:bg-gray-50"
+        >
+          Invites
+        </Link>
+        <button
+          type="button"
+          onClick={handleLogout}
+          className="flex-1 rounded border border-gray-300 px-2 py-1 text-xs text-gray-700 hover:bg-gray-50"
+        >
+          Logout
+        </button>
+      </div>
+    </div>
   );
 }
 

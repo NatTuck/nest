@@ -7,6 +7,7 @@ auto-models = true
 tags = ["local"]
 timeout = 60
 default-context-limit = 512000
+probe-base-url = "http://pegasus-probe.local/olla"
 
 [[providers.pegasus.models]]
 name = "pegasus-per-model-test"

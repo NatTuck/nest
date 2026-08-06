@@ -188,6 +188,12 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
       parent_id: state.parent_id,
       parent_name: state.parent_name,
       depth: state.depth,
+      # Multi-user identity. Exposed so the lobby can render
+      # ownership + visibility badges without an extra DB
+      # round-trip and so the agent channel can enforce
+      # edit/delete rules on the basis of the same numbers.
+      created_by_user_id: state.created_by_user_id,
+      shared: state.shared,
       # Direct usage (this agent's own LLM calls).
       usage:
         Map.put(

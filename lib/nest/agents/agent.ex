@@ -57,6 +57,17 @@ defmodule Nest.Agents.Agent do
     # without an integer→name lookup at completion time. The
     # integer FK above is the durable identifier.
     :parent_name,
+    # `created_by_user_id` is the integer `users.id` of the
+    # user who created this agent. Carried as runtime state
+    # so chat-attribution, ownership checks, and the
+    # visibility filter in the lobby can run without a DB
+    # round-trip. Persisted via `agents.created_by_user_id`.
+    :created_by_user_id,
+    # `shared` mirrors `agents.shared` so the lobby filter
+    # and ownership checks don't need a DB lookup. Children
+    # inherit their parent's `shared` value (see
+    # `build_child_attrs/4`).
+    shared: false,
     mode: "chat",
     # `depth` is the agent's distance from its tree root.
     # 0 = root (no parent). Children of a depth-D parent are
@@ -92,6 +103,8 @@ defmodule Nest.Agents.Agent do
           llm_metrics: __MODULE__.LlmMetrics.t(),
           parent_id: integer() | nil,
           parent_name: String.t() | nil,
+          created_by_user_id: integer() | nil,
+          shared: boolean(),
           depth: non_neg_integer(),
           mode: String.t(),
           chat_state: __MODULE__.ChatState.t()
@@ -216,6 +229,14 @@ defmodule Nest.Agents.Agent do
       workspace_path: parent_state.workspace_path,
       parent_id: parent_id,
       parent_name: parent_state.name,
+      # Children inherit the parent's user identity and
+      # visibility — a private agent always spawns private
+      # children, and a shared parent may spawn shared
+      # children. The child can be flipped later via an
+      # edit flow (currently the new-agent form is the only
+      # place to set `shared`).
+      created_by_user_id: parent_state.created_by_user_id,
+      shared: parent_state.shared,
       depth: parent_state.depth + 1,
       preloaded_messages: preloaded,
       last_compaction_index: Map.get(parent_state.chat_state, :last_compaction_index, -1),
@@ -455,24 +476,13 @@ defmodule Nest.Agents.Agent do
   defdelegate __create_tmp_space__(agent_id), to: TmpSpace, as: :create
 
   @doc false
-  # In-process variant of `handle_call({:append_message, _})`
-  # for callers that don't want the mailbox round-trip.
-  # Delegates to `Nest.Agents.Agent.MessageAppender.append_one/2`
-  # which owns the stamp + broadcast + persist logic.
-  #
+  # In-process variant of `handle_call({:append_message, _})`.
   # Returns `{stamped_message, new_state}`.
   @spec __append_message__(t(), {atom(), map()}) :: {term(), t()}
   defdelegate __append_message__(state, message), to: MessageAppender, as: :append_one
 
   @doc false
-  # In-process batch append. Same atomicity guarantee as
-  # the `{:append_messages, _}` GenServer.call handler
-  # without paying the round-trip cost for callers that
-  # already run inside the Agent process (e.g. the
-  # user-message pipeline injection). Delegates to
-  # `Nest.Agents.Agent.MessageAppender.append_in_process/2`.
-  #
-  # Returns `{stamped_messages, new_state}`.
+  # In-process batch append. Returns `{stamped_messages, new_state}`.
   @spec __append_messages__(t(), [{atom(), map()}]) :: {[term()], t()}
   defdelegate __append_messages__(state, messages), to: MessageAppender, as: :append_in_process
 

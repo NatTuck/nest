@@ -41,6 +41,14 @@ defmodule Nest.DotConfig do
     template enforces "system must be at the beginning" (Qwen3.5 on
     vLLM, etc.). Parsed from the optional `rewrite-late-system-messages`
     TOML key. See `Nest.Agents.Agent.ChatTurn.LateMessage.build/2`.
+
+    `probe_base_url` is the optional URL used for *model discovery*
+    only (`GET <base>/models`). Defaults to `nil`, in which case
+    `base_url` is used for both chat and discovery. Set this on
+    providers whose chat base and discovery base diverge — e.g. an
+    Olla-style discovery listing at one path and OpenAI-compatible
+    chat at another. Parsed from the optional `probe-base-url`
+    TOML key. See `Nest.LLM.Discover` and `Nest.ChatModel`.
     """
     defstruct [
       :name,
@@ -51,7 +59,8 @@ defmodule Nest.DotConfig do
       :tags,
       :models,
       :timeout_seconds,
-      :default_context_limit
+      :default_context_limit,
+      :probe_base_url
     ]
   end
 
@@ -319,8 +328,26 @@ defmodule Nest.DotConfig do
       models: models,
       timeout_seconds: parse_timeout(Map.get(data, "timeout"), name),
       default_context_limit:
-        parse_default_context_limit(Map.get(data, "default-context-limit"), name)
+        parse_default_context_limit(Map.get(data, "default-context-limit"), name),
+      probe_base_url: parse_probe_base_url(Map.get(data, "probe-base-url"), name)
     }
+  end
+
+  # Parses the optional `probe-base-url` (a discovery-only URL) for
+  # a provider. `nil` when absent (the default — discovery then
+  # reuses `base_url`). The schema is "any non-empty binary"; we
+  # keep validation lightweight because the URL is dereferenced
+  # lazily on the first probe. A typo at config-write time will
+  # surface as a probe HTTP error rather than a startup crash, but
+  # `parse_default_context_limit`'s stricter convention (raise on
+  # nonsense) doesn't fit here — the URL is a string, not a number.
+  defp parse_probe_base_url(nil, _provider_name), do: nil
+
+  defp parse_probe_base_url(url, _provider_name) when is_binary(url) and url != "",
+    do: url
+
+  defp parse_probe_base_url(value, provider_name) do
+    raise "Provider #{provider_name}: invalid probe-base-url #{inspect(value)}: must be a non-empty string"
   end
 
   # Parses and validates the optional `timeout` (in seconds) for a provider.
