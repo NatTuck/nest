@@ -295,4 +295,93 @@ defmodule NestWeb.AgentChannelMessagingTest do
       assert_receive {:chat_status, %{status: "idle"}}, 500
     end
   end
+
+  describe "tool-call delta streaming" do
+    # Regression for the wire-up gap in `Runner.build_stream_consumer/1`:
+    # the HTTP worker's `on_tool_call_start` / `on_tool_call_delta`
+    # callbacks were dropped before this fix, so tool calls were
+    # only visible in the final `chat:message` push. The JS streaming
+    # partial needs `chat:delta` events with `partType: :tool_use_*`
+    # (atom keys on the wire) to render in-flight tool calls in
+    # real time.
+    test "emits chat:delta with partType :tool_use_start before chat:message", %{socket: socket} do
+      MockClient.set_tool_response(%{
+        text: "Let me check",
+        tool_calls: [
+          %{
+            id: "call_stream_1",
+            name: "shell_cmd",
+            arguments: %{"command" => "ls"}
+          }
+        ]
+      })
+
+      MockClient.set_response("Done")
+
+      ref = push(socket, "chat:message", %{"content" => "list files"})
+      assert_reply ref, :ok, %{}
+
+      # `partType` is an atom on the wire (it's serialized to
+      # `"tool_use_start"` for the JSON client but the test
+      # process receives the raw Elixir term from the channel
+      # push, so we match on the atom here).
+      assert_receive %Phoenix.Socket.Message{
+                       event: "chat:delta",
+                       payload: %{"partType" => :tool_use_start} = p1
+                     },
+                     2000
+
+      assert p1["toolCallId"] == "call_stream_1"
+      assert p1["toolCallName"] == "shell_cmd"
+
+      assert_receive %Phoenix.Socket.Message{
+                       event: "chat:delta",
+                       payload: %{"partType" => :tool_use_delta} = p2
+                     },
+                     2000
+
+      assert p2["toolCallId"] == "call_stream_1"
+      assert p2["content"] == "{\"command\":\"ls\"}"
+
+      # The assistant message with the parsed tool_use part
+      # arrives after the deltas (not before).
+      # Drain until we see the assistant message whose
+      # `parts` carries the parsed tool_use (the synthetic
+      # "Context?" budget-reminder pair injected between the
+      # tool result and the final assistant lands first and
+      # would otherwise satisfy `assert_push` with empty parts).
+      tool_use_parts =
+        Stream.unfold(nil, fn _ ->
+          receive do
+            %Phoenix.Socket.Message{
+              event: "chat:message",
+              payload: %{"role" => "assistant", "parts" => parts}
+            } ->
+              {parts, parts}
+
+            _other ->
+              {:skip, nil}
+          after
+            2000 -> nil
+          end
+        end)
+        |> Stream.filter(&match?([_ | _], &1))
+        |> Enum.find_value(fn parts ->
+          Enum.find(parts, fn
+            %{"kind" => "tool_use"} = p -> p
+            _ -> nil
+          end)
+        end)
+
+      assert tool_use_parts != nil,
+             "expected an assistant message with a tool_use part"
+
+      assert tool_use_parts["name"] == "shell_cmd"
+      assert tool_use_parts["arguments"] == %{"command" => "ls"}
+
+      MockClient.clear()
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
+    end
+  end
 end

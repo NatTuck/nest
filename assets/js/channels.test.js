@@ -29,6 +29,8 @@ import {
   compactionLoopOk,
   createAgent,
   deleteAgent,
+  createInvite,
+  revokeInvite,
   clearAgentChannels,
 } from "./channels";
 
@@ -2497,6 +2499,103 @@ describe("channels", () => {
 
       // Just wait a bit to ensure no errors
       await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+  });
+
+  describe("createInvite", () => {
+    it("routes an error reply into useStore.invitesError", async () => {
+      setNextPushResult("lobby", "create_invite", {
+        error: { error: "too_many_invites" },
+      });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().agents.length >= 0, true);
+      });
+
+      createInvite();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().invitesError,
+          "too_many_invites",
+        );
+      });
+    });
+
+    it("falls back to a generic message when the error has no `error` field", async () => {
+      setNextPushResult("lobby", "create_invite", {
+        error: { reason: "boom" },
+      });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().agents.length >= 0, true);
+      });
+
+      createInvite();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().invitesError,
+          "Failed to create invite",
+        );
+      });
+    });
+
+    it("sets invitesError when not connected to lobby", () => {
+      createInvite();
+
+      assert.strictEqual(
+        useStore.getState().invitesError,
+        "Not connected to lobby",
+      );
+    });
+  });
+
+  describe("revokeInvite", () => {
+    it("routes an error reply into useStore.invitesError", async () => {
+      setNextPushResult("lobby", "revoke_invite", {
+        error: { error: "not_found" },
+      });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().agents.length >= 0, true);
+      });
+
+      revokeInvite(42);
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().invitesError, "not_found");
+      });
+    });
+
+    it("falls back to a generic message when the error has no `error` field", async () => {
+      setNextPushResult("lobby", "revoke_invite", { error: null });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().agents.length >= 0, true);
+      });
+
+      revokeInvite(42);
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().invitesError,
+          "Failed to revoke invite",
+        );
+      });
+    });
+
+    it("sets invitesError when not connected to lobby", () => {
+      revokeInvite(42);
+
+      assert.strictEqual(
+        useStore.getState().invitesError,
+        "Not connected to lobby",
+      );
     });
   });
 

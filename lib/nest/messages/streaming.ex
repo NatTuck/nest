@@ -11,6 +11,8 @@ defmodule Nest.Messages.Streaming do
   boundary (finalize, to_json, etc.).
   """
 
+  require Logger
+
   alias Nest.Messages.Assistant
 
   defmodule PartialToolCall do
@@ -117,7 +119,11 @@ defmodule Nest.Messages.Streaming do
   end
 
   @doc """
-  Start a new tool call with the given id and name.
+  Start a new tool call with the given id and name. Also
+  prepends a `%{type: {:tool_use, id}}` marker segment so the
+  `init` partial payload and the finalized parts list both
+  preserve the tool call's position relative to surrounding
+  text/thinking.
   """
   @spec start_tool_call(AssistantAccumulator.t(), String.t(), String.t()) ::
           AssistantAccumulator.t()
@@ -133,8 +139,25 @@ defmodule Nest.Messages.Streaming do
     %AssistantAccumulator{
       acc
       | tool_calls: Map.put(acc.tool_calls, id, partial),
+        segments: [%{type: {:tool_use, id}} | acc.segments],
         current_block: {:tool_use, id}
     }
+  end
+
+  # Defensive fallthrough: a malformed event with a non-binary
+  # id or name (e.g. `id: :by_index` leaking through from a
+  # provider that didn't resolve the index) would otherwise
+  # raise `FunctionClauseError` and crash the Agent. Skip the
+  # event with a warning instead — we don't invent ids, so
+  # any later `append_tool_call_args/3` for the same call
+  # also won't find a matching entry and will itself skip.
+  def start_tool_call(%AssistantAccumulator{} = acc, id, name) do
+    Logger.warning(
+      "Streaming.start_tool_call: skipping event with non-binary " <>
+        "id=#{inspect(id)} or name=#{inspect(name)}"
+    )
+
+    acc
   end
 
   @doc """
@@ -145,12 +168,38 @@ defmodule Nest.Messages.Streaming do
           AssistantAccumulator.t()
   def append_tool_call_args(%AssistantAccumulator{} = acc, id, fragment)
       when is_binary(id) and is_binary(fragment) do
-    tool_calls =
-      Map.update!(acc.tool_calls, id, fn %PartialToolCall{} = partial ->
-        %PartialToolCall{partial | arguments_buffer: [fragment | partial.arguments_buffer]}
-      end)
+    case Map.fetch(acc.tool_calls, id) do
+      {:ok, %PartialToolCall{} = partial} ->
+        new_partial = %PartialToolCall{
+          partial
+          | arguments_buffer: [fragment | partial.arguments_buffer]
+        }
 
-    %AssistantAccumulator{acc | tool_calls: tool_calls}
+        %AssistantAccumulator{
+          acc
+          | tool_calls: Map.put(acc.tool_calls, id, new_partial)
+        }
+
+      :error ->
+        Logger.warning(
+          "Streaming.append_tool_call_args: skipping fragment for " <>
+            "unknown tool_call_id=#{inspect(id)} (no matching start)"
+        )
+
+        acc
+    end
+  end
+
+  # Defensive fallthrough for non-binary id/fragment — the
+  # caller passed something we can't append to a tool call.
+  # Skip rather than crash the Agent.
+  def append_tool_call_args(%AssistantAccumulator{} = acc, id, fragment) do
+    Logger.warning(
+      "Streaming.append_tool_call_args: skipping event with non-binary " <>
+        "id=#{inspect(id)} or fragment=#{inspect(fragment)}"
+    )
+
+    acc
   end
 
   @doc """
@@ -288,11 +337,37 @@ defmodule Nest.Messages.Streaming do
       "timestamp" => acc.timestamp,
       # Segments are stored in reverse order (most recent first)
       # for O(1) prepending. Reverse here for the wire format.
+      # Tool-use markers (`%{type: {:tool_use, id}}`) carry no
+      # content of their own — the partial JSON lives in the
+      # `toolCalls` map keyed by id — so we serialize them as
+      # `{"type": "tool_use", "id": id}` for the JS to splice
+      # into its `parts` list.
       "segments" =>
         acc.segments
         |> Enum.reverse()
-        |> Enum.map(fn seg ->
-          %{"type" => seg.type, "content" => IO.iodata_to_binary(seg.content)}
+        |> Enum.map(fn
+          %{type: {:tool_use, id}} ->
+            %{"type" => "tool_use", "id" => id}
+
+          %{type: type, content: content} ->
+            %{"type" => type, "content" => IO.iodata_to_binary(content)}
+        end),
+      # In-flight tool calls with their partial JSON argument
+      # buffers as strings. Used by the JS store's
+      # `normalizePartial` to rebuild `parts` entries so a
+      # client joining mid-stream sees an in-progress tool
+      # call alongside any text/thinking. The JS detects the
+      # "still streaming" state by checking whether the
+      # argument is a string (vs. a parsed map in the
+      # finalized `chat:message` payload).
+      "toolCalls" =>
+        acc.tool_calls
+        |> Enum.map(fn {_id, partial} ->
+          %{
+            "id" => partial.id,
+            "name" => partial.name,
+            "arguments" => IO.iodata_to_binary(partial.arguments_buffer)
+          }
         end),
       "currentType" => acc.current_block
     }
@@ -313,13 +388,25 @@ defmodule Nest.Messages.Streaming do
   # always the current segment — prepending to the head is O(1).
   # Callers reverse the list at serialization time.
   # Returns `{reversed_segments, current_segment}`.
+  #
+  # Segments are one of:
+  #   - `%{type: :text | :thinking, content: IO.iodata()}` — for
+  #     streamed text/thinking blocks.
+  #   - `%{type: {:tool_use, id}}` — a marker for an in-flight
+  #     tool call. The actual partial-JSON arguments live in
+  #     `tool_calls` keyed by id, not in the segment.
+  #
+  # The "merge into current" clause below uses `is_tuple/1` on
+  # `current.type` to skip tool-use markers: a marker has no
+  # `:content` key, so we can't splice into it. Markers always
+  # open a fresh segment via the catch-all clause.
   defp update_segments([], type, content, _current_block) do
     new_segment = %{type: type, content: [content]}
     {[new_segment], new_segment}
   end
 
   defp update_segments([current | rest], _type, content, current_block)
-       when current.type == current_block do
+       when current.type == current_block and not is_tuple(current.type) do
     new_current = %{current | content: [content | current.content]}
     {[new_current | rest], new_current}
   end

@@ -343,6 +343,70 @@ defmodule Nest.AccountsTest do
     end
   end
 
+  describe "create_invite/1 10-invite cap" do
+    setup do
+      {:ok, alice, _} = Accounts.create_user(registration_attrs("alice"), "first-user")
+      %{alice: alice}
+    end
+
+    test "succeeds for the first 10 invites", %{alice: alice} do
+      for n <- 1..10 do
+        assert {:ok, _, _} = Accounts.create_invite(alice.id),
+               "create_invite/1 failed at invite #{n}"
+      end
+    end
+
+    test "returns :too_many_invites on the 11th attempt", %{alice: alice} do
+      for _ <- 1..10, do: {:ok, _, _} = Accounts.create_invite(alice.id)
+
+      assert {:error, :too_many_invites} = Accounts.create_invite(alice.id)
+    end
+
+    test "does not insert a row when the cap is hit", %{alice: alice} do
+      for _ <- 1..10, do: {:ok, _, _} = Accounts.create_invite(alice.id)
+      before_count = Accounts.count_user_invites(alice.id)
+
+      assert {:error, :too_many_invites} = Accounts.create_invite(alice.id)
+
+      assert Accounts.count_user_invites(alice.id) == before_count
+    end
+  end
+
+  describe "count_user_invites/1" do
+    test "returns 0 when the user owns no invites" do
+      {:ok, alice, _} = Accounts.create_user(registration_attrs("alice"), "first-user")
+
+      assert Accounts.count_user_invites(alice.id) == 0
+    end
+
+    test "counts active, used, and revoked invites together" do
+      {:ok, alice, _} = Accounts.create_user(registration_attrs("alice"), "first-user")
+
+      {:ok, _active, _} = Accounts.create_invite(alice.id)
+      {:ok, used, _} = Accounts.create_invite(alice.id)
+      {:ok, revoked, _} = Accounts.create_invite(alice.id)
+      :ok = Accounts.revoke_invite(revoked.id, alice.id)
+
+      {:ok, _} =
+        Accounts.redeem_invite(used.token, registration_attrs("carol"))
+
+      # 3 owned: active, used, revoked — all count toward
+      # the 10-invite cap.
+      assert Accounts.count_user_invites(alice.id) == 3
+    end
+
+    test "does not include invites owned by other users" do
+      {:ok, alice, _} = Accounts.create_user(registration_attrs("alice"), "first-user")
+      {:ok, _invite, raw} = Accounts.create_invite(alice.id)
+      {:ok, bob} = Accounts.redeem_invite(raw, registration_attrs("bob"))
+
+      {:ok, _, _} = Accounts.create_invite(bob.id)
+
+      assert Accounts.count_user_invites(alice.id) == 1
+      assert Accounts.count_user_invites(bob.id) == 1
+    end
+  end
+
   describe "list_user_invites/1" do
     test "returns only the user's invites, newest first" do
       {:ok, alice, _} = Accounts.create_user(registration_attrs("alice"), "first-user")

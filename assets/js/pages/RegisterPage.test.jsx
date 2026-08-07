@@ -13,14 +13,17 @@
  *    generic "Registration failed" message
  *  - The submit button is disabled when no token is
  *    supplied (defensive)
+ *  - Submitting shows a "Creating account…" label while
+ *    the request is in flight.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { MemoryRouter, Routes, Route } from "react-router-dom";
+import { screen, fireEvent, waitFor, act } from "@testing-library/react";
 
 import { RegisterPage } from "./RegisterPage";
 import { ApiError } from "../api/client";
+import { renderWithRouter } from "../test/render_with_router";
+import { createDeferred } from "../test/create_deferred";
 
 vi.mock("../api/auth", () => ({
   register: vi.fn(),
@@ -28,15 +31,14 @@ vi.mock("../api/auth", () => ({
 
 import { register } from "../api/auth";
 
-function renderPage(search = "?token=invite-abc") {
-  return render(
-    <MemoryRouter initialEntries={[`/register${search}`]}>
-      <Routes>
-        <Route path="/register" element={<RegisterPage />} />
-        <Route path="/new_agent" element={<div>New agent page</div>} />
-      </Routes>
-    </MemoryRouter>,
-  );
+async function renderPage(search = "?token=invite-abc") {
+  return renderWithRouter(<RegisterPage />, {
+    route: `/register${search}`,
+    routes: [
+      { path: "/register", element: <RegisterPage /> },
+      { path: "/new_agent", element: <div>New agent page</div> },
+    ],
+  });
 }
 
 describe("RegisterPage", () => {
@@ -48,8 +50,8 @@ describe("RegisterPage", () => {
     vi.clearAllMocks();
   });
 
-  it("renders the registration form with the invite token input populated", () => {
-    renderPage();
+  it("renders the registration form with the invite token input populated", async () => {
+    await renderPage();
 
     expect(
       screen.getByRole("heading", { name: /create an account/i }),
@@ -66,8 +68,8 @@ describe("RegisterPage", () => {
     );
   });
 
-  it("hides the invite-token input on the first-user bootstrap path", () => {
-    renderPage("?token=first-user");
+  it("hides the invite-token input on the first-user bootstrap path", async () => {
+    await renderPage("?token=first-user");
 
     expect(
       screen.getByRole("heading", { name: /create the first admin/i }),
@@ -83,7 +85,7 @@ describe("RegisterPage", () => {
       token: "tok",
       user: { id: 1, username: "bob", is_admin: true },
     });
-    renderPage();
+    await renderPage();
 
     fireEvent.change(screen.getByLabelText(/username/i), {
       target: { value: "bob" },
@@ -106,7 +108,7 @@ describe("RegisterPage", () => {
     register.mockRejectedValueOnce(
       new ApiError(409, { error: "username taken" }),
     );
-    renderPage();
+    await renderPage();
 
     fireEvent.change(screen.getByLabelText(/username/i), {
       target: { value: "bob" },
@@ -121,7 +123,7 @@ describe("RegisterPage", () => {
 
   it("falls back to a generic message when the failure is not an ApiError", async () => {
     register.mockRejectedValueOnce(new Error("network down"));
-    renderPage();
+    await renderPage();
 
     fireEvent.change(screen.getByLabelText(/username/i), {
       target: { value: "bob" },
@@ -134,8 +136,8 @@ describe("RegisterPage", () => {
     expect(await screen.findByText(/registration failed/i)).toBeInTheDocument();
   });
 
-  it("handles a missing ?token= query parameter gracefully", () => {
-    renderPage("");
+  it("handles a missing ?token= query parameter gracefully", async () => {
+    await renderPage("");
 
     // Without a token the heading collapses to the generic
     // form and the token field stays empty (no input shown).
@@ -149,14 +151,14 @@ describe("RegisterPage", () => {
   });
 
   it("shows a 'Creating account…' label while the request is in flight", async () => {
-    let resolveRegister;
-    register.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          resolveRegister = resolve;
-        }),
-    );
-    renderPage();
+    // `createDeferred` lets the test control exactly when
+    // the register promise settles so the `setSubmitting(true)`
+    // state update lands inside an `act()` boundary. Same
+    // pattern as LoginPage's "Signing in…" test.
+    const deferred = createDeferred();
+    register.mockReturnValueOnce(deferred.promise);
+
+    await renderPage();
 
     fireEvent.change(screen.getByLabelText(/username/i), {
       target: { value: "bob" },
@@ -170,6 +172,10 @@ describe("RegisterPage", () => {
       await screen.findByRole("button", { name: /creating account/i }),
     ).toBeDisabled();
 
-    resolveRegister({ token: "t", user: {} });
+    // Resolve inside an act so the navigation on success
+    // lands inside the act boundary.
+    await act(async () => {
+      deferred.resolve({ token: "t", user: {} });
+    });
   });
 });

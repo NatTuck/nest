@@ -50,4 +50,63 @@ defmodule Nest.LLM.RunnerTest do
                "Error: :something_else"
     end
   end
+
+  describe "consume/2 forwards tool-call hooks" do
+    # Regression: `Runner.build_stream_consumer/1` used to drop
+    # `on_tool_call_start` / `on_tool_call_delta` from the
+    # `StreamConsumer` struct, so the HTTP worker's hooks that
+    # forward `:delta_received` to the Agent mailbox were
+    # silently inert. Without the forwarding, the JS never
+    # saw `chat:delta` events with `partType: "tool_use_*"`
+    # and tool calls only appeared once the assistant message
+    # finalized.
+    test "invokes on_tool_call_start and on_tool_call_delta for each event" do
+      test_pid = self()
+
+      events = [
+        {:tool_call_start, %{id: "call_abc", name: "shell_cmd", index: 0}},
+        {:tool_call_delta, %{id: "call_abc", index: 0, arguments_delta: "{\"command\":"}},
+        {:tool_call_delta, %{id: "call_abc", index: 0, arguments_delta: "\"ls\"}"}},
+        {:finish_reason, "tool_calls"},
+        {:done, nil}
+      ]
+
+      callbacks = %{
+        on_tool_call_start: fn event, sent ->
+          send(test_pid, {:tool_call_start_fwd, event})
+          sent
+        end,
+        on_tool_call_delta: fn event, sent ->
+          send(test_pid, {:tool_call_delta_fwd, event})
+          sent
+        end,
+        should_stop: fn _ -> false end
+      }
+
+      assert {:ok, _} = Runner.consume(events, callbacks)
+
+      assert_received {:tool_call_start_fwd, %{id: "call_abc", name: "shell_cmd"}}
+      assert_received {:tool_call_delta_fwd, %{arguments_delta: "{\"command\":"}}
+      assert_received {:tool_call_delta_fwd, %{arguments_delta: "\"ls\"}"}}
+    end
+
+    test "compactor-style consumer (no tool hooks) still works" do
+      # When the callbacks map omits tool-call hooks, the
+      # consumer's default `nil` path takes over — no forward,
+      # no crash. The compactor uses this shape.
+      events = [
+        {:tool_call_start, %{id: "call_x", name: "noop"}},
+        {:finish_reason, "stop"},
+        {:done, nil}
+      ]
+
+      callbacks = %{
+        on_text: fn _text, sent -> sent end,
+        on_thinking: fn _text, sent -> sent end,
+        should_stop: fn _ -> false end
+      }
+
+      assert {:ok, _} = Runner.consume(events, callbacks)
+    end
+  end
 end

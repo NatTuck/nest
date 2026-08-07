@@ -18,9 +18,7 @@
 
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useStore } from "../store";
-import { useAuthStore } from "../store/auth";
 import { deleteAgent } from "../channels";
-import { logout } from "../api/auth";
 
 /**
  * Build a tree from a flat agents list. Each agent's
@@ -358,30 +356,30 @@ export function Sidebar() {
 
 /**
  * Footer block showing the current user and a logout button.
- * Reads `currentUser` from the auth store; when unset (e.g.
+ * Reads `currentUser` from the main store; when unset (e.g.
  * the socket's `init` payload hasn't arrived yet), renders
  * nothing.
  */
 function CurrentUserBar() {
-  const currentUser = useAuthStore((state) => state.currentUser);
-  const setCurrentUser = useAuthStore((state) => state.setCurrentUser);
+  const currentUser = useStore((state) => state.currentUser);
+  const logout = useStore((state) => state.logout);
   const navigate = useNavigate();
 
   if (!currentUser) {
     return <p className="text-xs text-gray-400">Nest v0.1.0</p>;
   }
 
-  async function handleLogout() {
-    await logout();
-    setCurrentUser(null);
-    // Drop the WS so the next connect (if any) re-prompts
-    // for credentials. The Phoenix socket is reused across
-    // logins — the same singleton reconnects with the new
-    // token on the next join.
+  function handleLogout() {
+    // Order matters: disconnect the WS first so no further
+    // pushes arrive, then wipe every piece of session state
+    // (agents, agentsCache, invites, currentUser, ...) in
+    // one store write. After both, navigate to /login so the
+    // user lands on the auth surface.
     const sock = window.__nest_socket;
     if (sock && typeof sock.disconnect === "function") {
       sock.disconnect();
     }
+    logout();
     navigate("/login", { replace: true });
   }
 

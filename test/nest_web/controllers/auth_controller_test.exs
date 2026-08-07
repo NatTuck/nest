@@ -1,12 +1,15 @@
 defmodule NestWeb.AuthControllerTest do
   @moduledoc """
   Tests for `NestWeb.AuthController` (`/api/v1/login`,
-  `/api/v1/register`, `/api/v1/logout`).
+  `/api/v1/register`).
 
   Covers happy paths and the meaningful failure modes: bad
   credentials, missing fields, the magic `first-user` token
   rejected once users exist, invite redemption paths
   (invalid token, used token, expired token).
+
+  Logout is intentionally absent — it's a client-only
+  operation in v1 (no server state to clear).
   """
 
   use NestWeb.ConnCase, async: false
@@ -222,13 +225,6 @@ defmodule NestWeb.AuthControllerTest do
         })
 
       assert json_response(conn, 400) == %{"error" => "missing_fields"}
-    end
-  end
-
-  describe "POST /api/v1/logout" do
-    test "returns 204 unconditionally", %{conn: conn} do
-      conn = post(conn, "/api/v1/logout", %{})
-      assert conn.status == 204
     end
   end
 end

@@ -165,6 +165,14 @@ defmodule Nest.LLM.Runner do
       on_text: callbacks[:on_text] || (& &1),
       on_thinking: callbacks[:on_thinking] || (& &1),
       on_signature: callbacks[:on_signature] || (& &1),
+      # Pass tool-call hooks through with no default so callers
+      # that don't supply them (e.g. the compactor) get the
+      # default-nil no-op path in `StreamConsumer.dispatch/3`.
+      # The HTTP worker supplies both hooks so its Agent can
+      # forward the canonical `:tool_call_start` /
+      # `:tool_call_delta` events to the JS streaming partial.
+      on_tool_call_start: callbacks[:on_tool_call_start],
+      on_tool_call_delta: callbacks[:on_tool_call_delta],
       should_stop: callbacks[:should_stop] || fn -> false end
     }
   end

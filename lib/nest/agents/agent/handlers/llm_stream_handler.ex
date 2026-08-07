@@ -126,33 +126,49 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   # resolves `:by_index` ids (Anthropic's
   # `input_json_delta` for tool calls) into the concrete
   # tool-call id so the JS only ever sees concrete ids.
-  defp delta_received(%{id: id, name: name, index: index}, :tool_use_start, state) do
+  defp delta_received(%{id: id, name: name} = event, :tool_use_start, state) do
     acc = state.chat_state.streaming_acc
 
     if acc == nil do
       {:noreply, state}
     else
+      # Mock and Anthropic clients emit `tool_call_start`
+      # events without an `index` field — the OpenAI client
+      # always sends one. Default to 0 (single-tool turns)
+      # when absent so the JS and the tool_index_map see a
+      # stable key.
+      index = Map.get(event, :index, 0)
+
       new_tool_index_map =
         if is_binary(id),
           do: Map.put(state.chat_state.tool_index_map, index, id),
           else: state.chat_state.tool_index_map
+
+      new_acc = Streaming.start_tool_call(acc, id, name)
 
       Broadcasts.delta_tool_use_start(state.name, acc.index, id, name, index)
 
       {:noreply,
        %{
          state
-         | chat_state: %{state.chat_state | tool_index_map: new_tool_index_map}
+         | chat_state: %{
+             state.chat_state
+             | tool_index_map: new_tool_index_map,
+               streaming_acc: new_acc
+           }
        }}
     end
   end
 
-  defp delta_received(%{id: id, index: index, arguments_delta: fragment}, :tool_use_delta, state) do
+  defp delta_received(%{id: id, arguments_delta: fragment} = event, :tool_use_delta, state) do
     acc = state.chat_state.streaming_acc
 
     if acc == nil do
       {:noreply, state}
     else
+      # See `:tool_use_start` clause above for why we
+      # default `index` to 0 here.
+      index = Map.get(event, :index, 0)
       concrete_id = resolve_tool_call_id(id, index, state.chat_state.tool_index_map)
 
       if concrete_id do
@@ -163,9 +179,17 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
           index,
           fragment
         )
-      end
 
-      {:noreply, state}
+        new_acc = Streaming.append_tool_call_args(acc, concrete_id, fragment)
+
+        {:noreply,
+         %{
+           state
+           | chat_state: %{state.chat_state | streaming_acc: new_acc}
+         }}
+      else
+        {:noreply, state}
+      end
     end
   end
 

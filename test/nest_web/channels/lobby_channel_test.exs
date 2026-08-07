@@ -54,9 +54,11 @@ defmodule NestWeb.LobbyChannelTest do
 
     token = AuthToken.sign(user.id)
 
-    # Stash the token so the per-test `join_lobby/0` helper can
-    # pick it up without threading it through every test setup.
+    # Stash the token + user id so the per-test `join_lobby/0`
+    # helper and the invite-related tests below can pick them
+    # up without threading through every test setup.
     Process.put(:lobby_test_token, token)
+    Process.put(:lobby_test_user_id, user.id)
 
     {:ok, %{user: user, token: token}}
   end
@@ -206,6 +208,125 @@ defmodule NestWeb.LobbyChannelTest do
       first_model = List.first(decoded["models"])
       assert is_binary(first_model["name"])
       assert is_binary(first_model["provider"])
+    end
+  end
+
+  describe "init push carries invites" do
+    test "returns an empty invites list when the user owns none", %{} do
+      {_socket, payload} = join_lobby()
+
+      assert is_list(payload.invites)
+      assert payload.invites == []
+    end
+
+    test "returns the user's invites (active + used + revoked) sorted newest first", %{} do
+      # Mint three invites for the lobby-tester user:
+      # one to be redeemed, one to be revoked, one left active.
+      {:ok, used_invite, used_token} =
+        Accounts.create_invite(Process.get(:lobby_test_user_id))
+
+      {:ok, revoked_invite, _} =
+        Accounts.create_invite(Process.get(:lobby_test_user_id))
+
+      {:ok, _active_invite, _} =
+        Accounts.create_invite(Process.get(:lobby_test_user_id))
+
+      :ok = Accounts.revoke_invite(revoked_invite.id, Process.get(:lobby_test_user_id))
+      {:ok, _} = Accounts.redeem_invite(used_token, %{username: "carol", password: "password123"})
+
+      {_socket, payload} = join_lobby()
+
+      assert is_list(payload.invites)
+      assert length(payload.invites) == 3
+
+      ids = Enum.map(payload.invites, & &1.id)
+      # Every invite owned by the test user shows up —
+      # active, used, and revoked alike.
+      assert used_invite.id in ids
+      assert revoked_invite.id in ids
+
+      # The token is included so the UI can render a copy
+      # button on every row.
+      for invite <- payload.invites do
+        assert is_binary(invite.token)
+        assert byte_size(invite.token) == 43
+      end
+    end
+  end
+
+  describe "handle_in(create_invite)" do
+    test "issues an invite and pushes invite:created on success" do
+      {socket, _payload} = join_lobby()
+
+      ref = push(socket, "create_invite", %{})
+
+      assert_reply ref, :ok, public
+      assert is_integer(public.id)
+      assert is_binary(public.token)
+      assert byte_size(public.token) == 43
+      assert public.created_by_user_id == Process.get(:lobby_test_user_id)
+
+      # The server also pushes invite:created to this socket
+      # so the in-memory list updates without re-fetching.
+      assert_push "invite:created", pushed
+      assert pushed.id == public.id
+      assert pushed.token == public.token
+    end
+
+    test "returns :too_many_invites error after 10 invites" do
+      # Mint 10 invites for the test user; the 11th must
+      # hit the cap and reply with the `too_many_invites`
+      # error string.
+      for _ <- 1..10 do
+        {:ok, _, _} = Accounts.create_invite(Process.get(:lobby_test_user_id))
+      end
+
+      {socket, _payload} = join_lobby()
+
+      ref = push(socket, "create_invite", %{})
+
+      assert_reply ref, :error, %{error: "too_many_invites"}
+    end
+  end
+
+  describe "handle_in(revoke_invite)" do
+    test "owner can revoke their own invite" do
+      {socket, _payload} = join_lobby()
+
+      {:ok, invite, _} =
+        Accounts.create_invite(Process.get(:lobby_test_user_id))
+
+      ref = push(socket, "revoke_invite", %{"id" => invite.id})
+      assert_reply ref, :ok
+
+      assert_push "invite:revoked", pushed
+      assert pushed.id == invite.id
+    end
+
+    test "non-owner receives the :forbidden error" do
+      # Mint an invite owned by a different user; the
+      # lobby-tester cannot revoke it. Use a real invite
+      # (the magic `first-user` token was already spent on
+      # the test setup's bootstrap user).
+      {:ok, _invite, raw_token} =
+        Accounts.create_invite(Process.get(:lobby_test_user_id))
+
+      {:ok, alice} =
+        Accounts.redeem_invite(raw_token, %{username: "alice-other", password: "password123"})
+
+      {:ok, invite, _} = Accounts.create_invite(alice.id)
+
+      {socket, _payload} = join_lobby()
+
+      ref = push(socket, "revoke_invite", %{"id" => invite.id})
+      assert_reply ref, :error, %{error: "forbidden"}
+    end
+
+    test "invalid id returns :invalid_id" do
+      {socket, _payload} = join_lobby()
+
+      ref = push(socket, "revoke_invite", %{"id" => "not-a-number"})
+      assert_reply ref, :error, %{error: "invalid_id"}
     end
   end
 

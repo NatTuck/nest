@@ -105,7 +105,9 @@ defmodule Nest.MixProject do
         "phx.copy default",
         "phx.digest"
       ],
-      "assets.test": ["cmd --cd assets pnpm vitest run --coverage"],
+      "assets.test": [
+        "cmd --cd assets '(pnpm vitest run --no-color --coverage --reporter=verbose) 2>&1'"
+      ],
       "assets.check": ["cmd --cd assets pnpm biome check"],
       precommit: [
         "compile --warnings-as-errors",

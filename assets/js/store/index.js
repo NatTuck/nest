@@ -33,6 +33,18 @@ const initialState = {
   models: [],
   vocations: [],
   agentsCache: {},
+  // The current authenticated user, populated by the lobby's
+  // `init` payload (`current_user`). Kept on the main store
+  // rather than a separate auth slice so a single `_reset()`
+  // clears every bit of session state in one place.
+  currentUser: null,
+  // The caller's invites (active, used, revoked). Populated
+  // by the lobby's `init` payload (`invites`) and mutated by
+  // `invite:created` / `invite:revoked` pushes.
+  invites: [],
+  // Inline error from the last invite create/revoke attempt
+  // that failed at the server. Cleared on the next attempt.
+  invitesError: null,
 };
 
 /**
@@ -238,6 +250,23 @@ const applyToolUseDelta = (parts, { id, argumentsDelta }) => {
 // Also tolerates the legacy flat-string `content` shape (still
 // seeded in legacy tests) by folding it into a single text
 // part.
+//
+// In-flight tool calls surface in two places on the wire:
+//   - `segments` may carry a `%{type: "tool_use", id}` marker
+//     for each in-progress tool call (the same marker that
+//     `finalize/1` uses to splice the ToolUse part into the
+//     finalized message), AND
+//   - `toolCalls` is a list of `{id, name, arguments}`
+//     describing every in-flight call — `arguments` is a
+//     partial JSON string at this stage (vs. a parsed map in
+//     the finalized `chat:message` payload).
+//
+// When `toolCalls` is present, we use it as the source of
+// truth for tool-call parts and skip any `tool_use` markers
+// in `segments` (they'd produce empty `tool_use` parts).
+// Otherwise we synthesize a `tool_use` part from each marker
+// with `arguments: ""` so the renderer at least shows the
+// tool name.
 const legacyToParts = (acc) => {
   if (!acc) return { parts: [], currentKind: null };
 
@@ -248,15 +277,54 @@ const legacyToParts = (acc) => {
     };
   }
 
-  if (Array.isArray(acc.segments)) {
-    const parts = acc.segments.map((seg) =>
-      seg?.type === "thinking"
-        ? { kind: "thinking", thinking: seg.content || "" }
-        : { kind: "text", text: seg.content || "" },
+  if (Array.isArray(acc.segments) || Array.isArray(acc.toolCalls)) {
+    const toolCallById = new Map(
+      (acc.toolCalls ?? []).map((tc) => [tc.id, tc]),
     );
+    const parts = (acc.segments ?? []).map((seg) => {
+      if (seg?.type === "thinking") {
+        return { kind: "thinking", thinking: seg.content || "" };
+      }
+      if (seg?.type === "tool_use") {
+        const tc = toolCallById.get(seg.id);
+        return {
+          kind: "tool_use",
+          id: seg.id,
+          name: tc?.name ?? "",
+          arguments: tc?.arguments ?? "",
+        };
+      }
+      return { kind: "text", text: seg.content || "" };
+    });
+    // If `toolCalls` had entries that didn't appear in
+    // `segments` (defensive — the BEAM emits both), append
+    // them at the end so they're not lost.
+    const seenIds = new Set(
+      parts.filter((p) => p.kind === "tool_use").map((p) => p.id),
+    );
+    for (const tc of acc.toolCalls ?? []) {
+      if (!seenIds.has(tc.id)) {
+        parts.push({
+          kind: "tool_use",
+          id: tc.id,
+          name: tc.name ?? "",
+          arguments: tc.arguments ?? "",
+        });
+      }
+    }
+
+    // `currentType` from the wire is `{:tool_use, id}` (Elixir
+    // tuple → JSON array `["tool_use", "call_abc"]`) for
+    // tool-use blocks, or `:text` / `:thinking` (atom →
+    // string) for the others. Collapse the array shape to the
+    // plain kind string the rest of the store expects.
+    const currentKind = Array.isArray(acc.currentType)
+      ? (acc.currentType[0] ?? null)
+      : (acc.currentType ?? null);
+
     return {
       parts,
-      currentKind: acc.currentType ?? null,
+      currentKind,
     };
   }
 
@@ -994,13 +1062,25 @@ export const useStore = create(
 
         const currentReceived = partial.charsReceived || 0;
 
-        if (charsStart > currentReceived) {
+        // Tool-use events ship `charsStart: 0, charsEnd: 0`
+        // — the `content` field is the partial-JSON fragment,
+        // not a grapheme position in the streamed text.
+        // Bypass the charsStart/charsEnd overlap check entirely
+        // and let `applyPartDelta` route the event into the
+        // tool_use part. Without this, a tool_use_start
+        // arriving after any text delta trips the integrity
+        // check (its `charsStart: 0` is below the running
+        // `charsReceived`) and the event is silently dropped.
+        const isToolUseEvent =
+          partType === "tool_use_start" || partType === "tool_use_delta";
+
+        if (charsStart > currentReceived && !isToolUseEvent) {
           return { applied: false, needsSync: true };
         }
 
         let newContent = content;
         let overlapMismatch = false;
-        if (charsStart < currentReceived) {
+        if (charsStart < currentReceived && !isToolUseEvent) {
           const overlap = currentReceived - charsStart;
           const streamingText = partialPartsToText(existingParts);
           const expectedOverlap = graphemeLast(streamingText, overlap);
@@ -1045,24 +1125,32 @@ export const useStore = create(
           }
         }
 
-        const { parts: newParts, currentKind: newCurrentKind } =
-          partType === "tool_use_start" || partType === "tool_use_delta"
-            ? {
-                parts: applyPartDelta(existingParts, partType, payload),
-                currentKind: "tool_use",
-              }
-            : accumulatePart(
-                existingParts,
-                existingCurrentKind,
-                newContent,
-                partType,
-              );
+        const { parts: newParts, currentKind: newCurrentKind } = isToolUseEvent
+          ? {
+              parts: applyPartDelta(existingParts, partType, payload),
+              currentKind: "tool_use",
+            }
+          : accumulatePart(
+              existingParts,
+              existingCurrentKind,
+              newContent,
+              partType,
+            );
 
         const updatedPartial = {
           ...partial,
           // Drop the legacy `content` once we've migrated.
           content: undefined,
-          charsReceived: charsEnd,
+          // Only advance `charsReceived` for text/thinking
+          // deltas. Tool-use events ship `chars_end: 0`
+          // (their payload is the partial-JSON fragment, not
+          // a grapheme position in the text buffer), so
+          // writing `charsEnd` here would clobber the text
+          // position and force every post-tool text delta
+          // to trip the integrity check + `needsSync`.
+          charsReceived: isToolUseEvent
+            ? (partial.charsReceived ?? 0)
+            : charsEnd,
           parts: newParts,
           currentKind: newCurrentKind,
         };
@@ -1611,7 +1699,51 @@ export const useStore = create(
       },
 
       /**
-       * Reset store to initial state (for testing)
+       * Set the current user. Called by:
+       *  - the lobby's `init` push when the WS handshake
+       *    completes (overwrites whatever was here with the
+       *    server-authoritative slice).
+       *  - tests that need to seed `currentUser` directly.
+       */
+      setCurrentUser: (user) => {
+        set({ currentUser: user });
+      },
+
+      /**
+       * Set the caller's invites list. Called by the lobby's
+       * `init` push to populate the slice on connect, and by
+       * tests that need to seed invites directly.
+       */
+      setInvites: (invites) => {
+        set({ invites: invites || [] });
+      },
+
+      /**
+       * Set (or clear) the inline invite-error message. The
+       * channel handlers call this when the server replies
+       * `{:error, ...}` to a `create_invite` or `revoke_invite`
+       * push; the InvitesPage renders the message above the
+       * table. `null` clears it.
+       */
+      setInvitesError: (error) => {
+        set({ invitesError: error });
+      },
+
+      /**
+       * Reset every piece of session state. The WS is
+       * disconnected by the caller before this fires (see
+       * `Sidebar`'s `handleLogout`); this is the in-memory
+       * counterpart. The `_reset` alias is kept for tests
+       * that already call it directly.
+       */
+      logout: () => {
+        set(initialState);
+      },
+
+      /**
+       * Reset store to initial state (for testing).
+       * Same body as `logout` — kept as a separate name so
+       * test setup can stay explicit about intent.
        */
       _reset: () => {
         set(initialState);

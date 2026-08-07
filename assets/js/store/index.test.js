@@ -3908,4 +3908,341 @@ describe("store", () => {
       });
     });
   });
+
+  describe("legacy addChatDelta with tool_use_start / tool_use_delta", () => {
+    // Regression for the wire-up gap that left tool-call
+    // streaming in the dark. The legacy wire format uses
+    // `charsStart` / `charsEnd` (not `deltaIndex`) and the
+    // payload carries `partType: "tool_use_start"` /
+    // `"tool_use_delta"`. Tool-use events ship `chars_end: 0`
+    // (the fragment is the partial-JSON content, not a
+    // grapheme position), so we have to make sure the store
+    // doesn't clobber the running `charsReceived` when it
+    // applies them — otherwise the next text delta trips the
+    // integrity check and triggers a wasteful `chat:sync`.
+    beforeEach(() => {
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+        messages: [],
+      });
+    });
+
+    it("tool_use_start preserves the running charsReceived", () => {
+      useStore.getState().agentsCache["agent-1"].partial = {
+        index: 1,
+        content: "Let me check",
+        charsReceived: 12,
+        parts: [{ kind: "text", text: "Let me check" }],
+        currentKind: "text",
+      };
+
+      useStore.getState().addChatDelta("agent-1", {
+        index: 1,
+        partType: "tool_use_start",
+        toolCallId: "call_legacy",
+        toolCallName: "shell_cmd",
+        charsStart: 0,
+        charsEnd: 0,
+        content: "",
+      });
+
+      const partial = useStore.getState().agentsCache["agent-1"].partial;
+      // The bug: `charsReceived` was unconditionally reset to
+      // `charsEnd` (= 0), which would force the next text
+      // delta to look like a gap.
+      expect(partial.charsReceived).toBe(12);
+      const toolPart = partial.parts.find((p) => p.kind === "tool_use");
+      expect(toolPart.id).toBe("call_legacy");
+      expect(toolPart.name).toBe("shell_cmd");
+      expect(partial.currentKind).toBe("tool_use");
+    });
+
+    it("tool_use_delta appends to the matching tool_use part without touching charsReceived", () => {
+      useStore.getState().addChatDelta("agent-1", {
+        index: 1,
+        partType: "tool_use_start",
+        toolCallId: "call_legacy",
+        toolCallName: "shell_cmd",
+        charsStart: 0,
+        charsEnd: 0,
+        content: "",
+      });
+      useStore.getState().addChatDelta("agent-1", {
+        index: 1,
+        partType: "tool_use_delta",
+        toolCallId: "call_legacy",
+        charsStart: 0,
+        charsEnd: 0,
+        content: '{"command":',
+      });
+      useStore.getState().addChatDelta("agent-1", {
+        index: 1,
+        partType: "tool_use_delta",
+        toolCallId: "call_legacy",
+        charsStart: 0,
+        charsEnd: 0,
+        content: '"ls"}',
+      });
+
+      const partial = useStore.getState().agentsCache["agent-1"].partial;
+      const toolPart = partial.parts.find((p) => p.kind === "tool_use");
+      expect(toolPart.arguments).toBe('{"command":"ls"}');
+      expect(partial.charsReceived).toBe(0);
+    });
+
+    it("text delta after a tool_use_delta does not trigger needsSync", () => {
+      // The bug: `charsReceived` was clobbered to 0 by the
+      // tool_use event, so the next text delta (with
+      // charsStart=N > charsReceived=0) tripped `needsSync`.
+      useStore.getState().agentsCache["agent-1"].partial = {
+        index: 1,
+        content: "before ",
+        charsReceived: 7,
+        parts: [{ kind: "text", text: "before " }],
+        currentKind: "text",
+      };
+
+      useStore.getState().addChatDelta("agent-1", {
+        index: 1,
+        partType: "tool_use_start",
+        toolCallId: "call_post",
+        toolCallName: "noop",
+        charsStart: 0,
+        charsEnd: 0,
+        content: "",
+      });
+      useStore.getState().addChatDelta("agent-1", {
+        index: 1,
+        partType: "tool_use_delta",
+        toolCallId: "call_post",
+        charsStart: 0,
+        charsEnd: 0,
+        content: "{}",
+      });
+
+      const beforeText = useStore.getState().agentsCache["agent-1"].partial;
+      expect(beforeText.charsReceived).toBe(7);
+
+      // Now apply a text delta that picks up where the
+      // original text left off.
+      useStore.getState().addChatDelta("agent-1", {
+        index: 1,
+        content: "after",
+        charsStart: 7,
+        charsEnd: 11,
+      });
+
+      const afterText = useStore.getState().agentsCache["agent-1"].partial;
+      expect(afterText.charsReceived).toBe(11);
+    });
+
+    it("multi-call interleaving: a second tool_use_start creates a second tool_use part", () => {
+      useStore.getState().addChatDelta("agent-1", {
+        index: 1,
+        partType: "tool_use_start",
+        toolCallId: "call_a",
+        toolCallName: "first",
+        charsStart: 0,
+        charsEnd: 0,
+        content: "",
+      });
+      useStore.getState().addChatDelta("agent-1", {
+        index: 1,
+        partType: "tool_use_start",
+        toolCallId: "call_b",
+        toolCallName: "second",
+        charsStart: 0,
+        charsEnd: 0,
+        content: "",
+      });
+      useStore.getState().addChatDelta("agent-1", {
+        index: 1,
+        partType: "tool_use_delta",
+        toolCallId: "call_b",
+        charsStart: 0,
+        charsEnd: 0,
+        content: '{"k":1}',
+      });
+
+      const partial = useStore.getState().agentsCache["agent-1"].partial;
+      const parts = partial.parts.filter((p) => p.kind === "tool_use");
+      expect(parts).toHaveLength(2);
+      expect(parts[0].id).toBe("call_a");
+      expect(parts[0].arguments).toBe("");
+      expect(parts[1].id).toBe("call_b");
+      expect(parts[1].arguments).toBe('{"k":1}');
+    });
+  });
+
+  describe("setAgentConnected normalizes in-flight tool calls from init partial", () => {
+    // Regression for the "mid-stream join" gap: the BEAM's
+    // `Streaming.to_json/1` carries a `toolCalls` array with
+    // partial-JSON strings for any in-flight tool calls. The
+    // JS `setAgentConnected` (via `normalizePartial`) must
+    // convert those into `tool_use` parts so the joining
+    // client renders them in real time, not just text.
+    it("synthesizes a tool_use part for each in-flight tool call", () => {
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        partial: {
+          index: 2,
+          role: "assistant",
+          content: "Let me check",
+          charsEnd: 12,
+          segments: [
+            { type: "text", content: "Let me check" },
+            { type: "tool_use", id: "call_x" },
+          ],
+          toolCalls: [
+            {
+              id: "call_x",
+              name: "shell_cmd",
+              arguments: '{"command":',
+            },
+          ],
+          currentType: ["tool_use", "call_x"],
+        },
+      });
+
+      const partial = useStore.getState().agentsCache["agent-1"].partial;
+      expect(partial.parts).toEqual([
+        { kind: "text", text: "Let me check" },
+        {
+          kind: "tool_use",
+          id: "call_x",
+          name: "shell_cmd",
+          arguments: '{"command":',
+        },
+      ]);
+      expect(partial.currentKind).toBe("tool_use");
+    });
+
+    it("appends toolCalls entries that are not referenced by segments", () => {
+      // Defensive: if the BEAM ever ships toolCalls without a
+      // matching tool_use marker in segments, we still want
+      // them rendered.
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        partial: {
+          index: 2,
+          content: "x",
+          charsEnd: 1,
+          segments: [{ type: "text", content: "x" }],
+          toolCalls: [{ id: "orphan", name: "noop", arguments: "" }],
+          currentType: "text",
+        },
+      });
+
+      const partial = useStore.getState().agentsCache["agent-1"].partial;
+      const toolPart = partial.parts.find((p) => p.kind === "tool_use");
+      expect(toolPart).toMatchObject({
+        id: "orphan",
+        name: "noop",
+        arguments: "",
+      });
+    });
+
+    it("collapses a currentType tuple to its kind string", () => {
+      // The wire sends `currentType: {:tool_use, id}` which
+      // JSON-encodes to `["tool_use", "call_abc"]`. The store
+      // must surface just the kind ("tool_use"), not the
+      // array.
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        partial: {
+          index: 2,
+          content: "",
+          charsEnd: 0,
+          segments: [],
+          toolCalls: [{ id: "call_abc", name: "noop", arguments: "" }],
+          currentType: ["tool_use", "call_abc"],
+        },
+      });
+
+      const partial = useStore.getState().agentsCache["agent-1"].partial;
+      expect(partial.currentKind).toBe("tool_use");
+    });
+  });
+
+  describe("setCurrentUser", () => {
+    it("sets the current user", () => {
+      expect(useStore.getState().currentUser).toBe(null);
+
+      useStore.getState().setCurrentUser({ id: 1, username: "alice" });
+
+      expect(useStore.getState().currentUser).toEqual({
+        id: 1,
+        username: "alice",
+      });
+    });
+  });
+
+  describe("setInvites", () => {
+    it("replaces the invites list with the provided array", () => {
+      expect(useStore.getState().invites).toEqual([]);
+
+      useStore.getState().setInvites([
+        { id: 1, token: "abc" },
+        { id: 2, token: "def" },
+      ]);
+
+      expect(useStore.getState().invites).toEqual([
+        { id: 1, token: "abc" },
+        { id: 2, token: "def" },
+      ]);
+    });
+
+    it("treats undefined as an empty list", () => {
+      useStore.getState().setInvites([{ id: 1, token: "abc" }]);
+      expect(useStore.getState().invites).toHaveLength(1);
+
+      useStore.getState().setInvites(undefined);
+
+      expect(useStore.getState().invites).toEqual([]);
+    });
+  });
+
+  describe("setInvitesError", () => {
+    it("sets the invitesError string", () => {
+      expect(useStore.getState().invitesError).toBe(null);
+
+      useStore.getState().setInvitesError("too_many_invites");
+
+      expect(useStore.getState().invitesError).toBe("too_many_invites");
+    });
+
+    it("clears the invitesError when set to null", () => {
+      useStore.getState().setInvitesError("boom");
+      expect(useStore.getState().invitesError).toBe("boom");
+
+      useStore.getState().setInvitesError(null);
+
+      expect(useStore.getState().invitesError).toBe(null);
+    });
+  });
+
+  describe("logout", () => {
+    it("resets every piece of session state", () => {
+      // Seed state across multiple slices.
+      useStore.getState().setIsConnected(true);
+      useStore.getState().setAgents([{ name: "agent-1" }]);
+      useStore.getState().setCurrentUser({ id: 1, username: "alice" });
+      useStore.getState().setInvites([{ id: 1, token: "abc" }]);
+      useStore.getState().setInvitesError("some error");
+
+      useStore.getState().logout();
+
+      expect(useStore.getState().isConnected).toBe(false);
+      expect(useStore.getState().agents).toEqual([]);
+      expect(useStore.getState().currentUser).toBe(null);
+      expect(useStore.getState().invites).toEqual([]);
+      expect(useStore.getState().invitesError).toBe(null);
+      expect(useStore.getState().agentsCache).toEqual({});
+    });
+  });
 });

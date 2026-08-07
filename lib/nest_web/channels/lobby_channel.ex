@@ -14,9 +14,12 @@ defmodule NestWeb.LobbyChannel do
 
   require Logger
 
+  alias Nest.Accounts
   alias Nest.Agents
   alias Nest.Models
   alias Nest.Vocations
+  alias NestWeb.InviteJSON
+  alias NestWeb.LobbyChannel.Invites
 
   @impl true
   def join("lobby", _payload, socket) do
@@ -66,7 +69,11 @@ defmodule NestWeb.LobbyChannel do
       broken_agents: [],
       models: models,
       vocations: vocations,
-      current_user: public_current_user(user)
+      current_user: public_current_user(user),
+      invites:
+        user.id
+        |> Accounts.list_user_invites()
+        |> Enum.map(&InviteJSON.public_invite/1)
     })
 
     # Subscribe to the "models" PubSub topic for live updates.
@@ -277,6 +284,21 @@ defmodule NestWeb.LobbyChannel do
   def handle_in("rescan_models", _payload, socket) do
     spawn_rescan(socket)
     {:reply, :ok, socket}
+  end
+
+  # Invite CRUD lives in the `Invites` sub-module — see
+  # `lib/nest_web/channels/lobby_channel/invites.ex`. The
+  # handlers below are thin delegates so `handle_in` dispatch
+  # stays co-located with the rest of the lobby's message
+  # surface.
+  @impl true
+  def handle_in("create_invite", payload, socket) do
+    Invites.create_invite(payload, socket)
+  end
+
+  @impl true
+  def handle_in("revoke_invite", payload, socket) do
+    Invites.revoke_invite(payload, socket)
   end
 
   defp do_change_model(name, model_params, socket) do

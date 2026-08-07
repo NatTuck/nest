@@ -13,6 +13,8 @@
  * - /agent/:name → ChatPage (chat with agent)
  * - /about → AboutPage (about with mascot)
  * - /login, /register → standalone auth pages (no sidebar)
+ * - /invites → InvitesPage (sidebar visible; invite CRUD via
+ *              Phoenix Channel, not HTTP)
  *
  * The RootGate pattern exists because the WebSocket
  * connection is the source of truth for "logged in". A user
@@ -28,8 +30,9 @@
 
 import { useEffect, useRef } from "react";
 import {
-  createBrowserRouter,
-  RouterProvider,
+  BrowserRouter,
+  Routes,
+  Route,
   Outlet,
   useNavigate,
 } from "react-router-dom";
@@ -134,50 +137,28 @@ function Layout() {
 }
 
 /**
- * Router configuration
- */
-const router = createBrowserRouter([
-  {
-    path: "/login",
-    element: <LoginPage />,
-  },
-  {
-    path: "/register",
-    element: <RegisterPage />,
-  },
-  {
-    path: "/",
-    element: <RootGate />,
-  },
-  {
-    path: "/",
-    element: <Layout />,
-    children: [
-      {
-        path: "new_agent",
-        element: <NewAgentPage />,
-      },
-      {
-        path: "agent/:name",
-        element: <ChatPage />,
-      },
-      {
-        path: "about",
-        element: <AboutPage />,
-      },
-      {
-        path: "invites",
-        element: <InvitesPage />,
-      },
-    ],
-  },
-]);
-
-/**
- * Main App component
+ * Main App component. Uses `<BrowserRouter>` + `<Routes>`
+ * + `<Route>` directly — no data API (`createBrowserRouter`
+ * / `RouterProvider`). URL is parsed by react-router;
+ * everything else (state, data fetching, side effects)
+ * lives in Zustand + Phoenix Channels.
  */
 export function App() {
-  return <RouterProvider router={router} />;
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/register" element={<RegisterPage />} />
+        <Route path="/" element={<RootGate />} />
+        <Route path="/" element={<Layout />}>
+          <Route path="new_agent" element={<NewAgentPage />} />
+          <Route path="agent/:name" element={<ChatPage />} />
+          <Route path="about" element={<AboutPage />} />
+          <Route path="invites" element={<InvitesPage />} />
+        </Route>
+      </Routes>
+    </BrowserRouter>
+  );
 }
 
 export { RootGate, Layout };

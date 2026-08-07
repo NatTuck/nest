@@ -24,10 +24,17 @@ defmodule Nest.Accounts do
   | `create_user/2`         | yes       | n/a    | no          |
   | `get_user_by_token/1`   | yes       | yes    | no          |
   | `get_user/1`            | yes       | yes    | no          |
-  | `create_invite/1`       | 401       | yes    | no          |
+  | `create_invite/1`       | 401       | yes    | no, ≤10     |
   | `redeem_invite/2`       | yes       | n/a    | no          |
   | `revoke_invite/2`       | 401       | owner  | no          |
   | `list_user_invites/1`   | 401       | self   | no          |
+  | `count_user_invites/1`  | 401       | self   | no          |
+
+  The 10-invite cap on `create_invite/1` counts ALL invites
+  the user owns (active, used, revoked). When the count is
+  at or above 10, `create_invite/1` returns
+  `{:error, :too_many_invites}` — the lobby channel surfaces
+  this as a `"too_many_invites"` error string to the JS side.
 
   "Owner" in `revoke_invite/2` means the authenticated user
   matches the invite's `created_by_user_id`. Server enforces
@@ -215,36 +222,58 @@ defmodule Nest.Accounts do
   the URL-safe base64 token in the same shape the registration
   page expects.
 
+  Enforces a 10-invite-per-user cap: the count is taken BEFORE
+  insertion so the user can hold exactly 10 invites (active,
+  used, or revoked) at any time. The 11th create returns
+  `{:error, :too_many_invites}` and the row is not inserted.
+
   ## Returns
 
     * `{:ok, invite, token}` — invite created; `token` is the
       url-safe-base64 string stored verbatim in `invites.token`
       (the same string the recipient pastes into `/register`).
+    * `{:error, :too_many_invites}` — the user already owns
+      10 invites; no row was inserted.
     * `{:error, changeset}` — validation failure (shouldn't
       happen in practice; the function fills every required
       field).
   """
   @spec create_invite(integer()) ::
-          {:ok, InviteSchema.t(), String.t()} | {:error, Changeset.t()}
+          {:ok, InviteSchema.t(), String.t()}
+          | {:error, :too_many_invites | Changeset.t()}
   def create_invite(user_id) when is_integer(user_id) do
-    token = generate_token()
+    if count_user_invites(user_id) >= 10 do
+      {:error, :too_many_invites}
+    else
+      token = generate_token()
 
-    expires_at =
-      DateTime.utc_now()
-      |> DateTime.add(@invite_ttl_seconds, :second)
-      |> DateTime.truncate(:second)
+      expires_at =
+        DateTime.utc_now()
+        |> DateTime.add(@invite_ttl_seconds, :second)
+        |> DateTime.truncate(:second)
 
-    %InviteSchema{}
-    |> InviteSchema.new_changeset(%{
-      token: token,
-      created_by_user_id: user_id,
-      expires_at: expires_at
-    })
-    |> Repo.insert()
-    |> case do
-      {:ok, invite} -> {:ok, invite, token}
-      {:error, cs} -> {:error, cs}
+      %InviteSchema{}
+      |> InviteSchema.new_changeset(%{
+        token: token,
+        created_by_user_id: user_id,
+        expires_at: expires_at
+      })
+      |> Repo.insert()
+      |> case do
+        {:ok, invite} -> {:ok, invite, token}
+        {:error, cs} -> {:error, cs}
+      end
     end
+  end
+
+  @doc """
+  Count the invites a user owns (active, used, revoked —
+  every row where `created_by_user_id == user_id`).
+  """
+  @spec count_user_invites(integer()) :: non_neg_integer()
+  def count_user_invites(user_id) when is_integer(user_id) do
+    from(i in InviteSchema, where: i.created_by_user_id == ^user_id)
+    |> Repo.aggregate(:count, :id)
   end
 
   @doc """

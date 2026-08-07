@@ -7,7 +7,6 @@
 
 import { socket, readAuthToken } from "./socket";
 import { useStore } from "./store";
-import { useAuthStore } from "./store/auth";
 
 // Module-level channel refs (NOT in store - they're mutable references)
 let lobbyChannel = null;
@@ -80,12 +79,42 @@ export function joinLobby(onOk, onError) {
     store.setModels(payload.models || []);
     store.setVocations(payload.vocations || []);
     // `current_user` is the JSON-safe slice the server sends
-    // on every lobby init. Overwrite whatever the auth
-    // store has so the UI shows the authoritative name
-    // (e.g. after the user changed their password elsewhere).
+    // on every lobby init. Overwrite whatever the store has
+    // so the UI shows the authoritative name (e.g. after the
+    // user changed their password elsewhere).
     if (payload.current_user !== undefined) {
-      useAuthStore.getState().setCurrentUser(payload.current_user);
+      store.setCurrentUser(payload.current_user);
     }
+    // The same payload carries the caller's invites so the
+    // InvitesPage has data on first render without a separate
+    // fetch. The server's InviteJSON includes the plaintext
+    // token (the user can always copy it back).
+    if (payload.invites !== undefined) {
+      store.setInvites(payload.invites || []);
+    }
+  });
+
+  // Server-side push when a `create_invite` reply succeeds
+  // — prepended to the in-memory list so the InvitesPage
+  // reflects the new row without a re-fetch. The server's
+  // `invite:created` payload is the full InviteJSON (with
+  // token), so the UI can render the new token cell
+  // immediately.
+  lobbyChannel.on("invite:created", (invite) => {
+    const store = getStore();
+    store.setInvites([invite, ...store.invites]);
+    store.setInvitesError(null);
+  });
+
+  // Server-side push when a `revoke_invite` reply succeeds
+  // — drops the row from the in-memory list. The payload is
+  // `{id}`; matching is on integer id.
+  lobbyChannel.on("invite:revoked", (payload) => {
+    const store = getStore();
+    if (payload?.id !== undefined) {
+      store.setInvites(store.invites.filter((i) => i.id !== payload.id));
+    }
+    store.setInvitesError(null);
   });
 
   // Follow-up to the initial `init` push. The lobby pushes an
@@ -699,4 +728,57 @@ export function changeAgentModel(name, model, onOk, onError) {
     .receive("error", (err) => {
       if (onError) onError(err);
     });
+}
+
+/**
+ * Issue a fresh invite via the lobby channel. The server
+ * replies with `{:ok, invite}` on success and pushes
+ * `invite:created` so the in-memory list updates
+ * automatically (handled by the `invite:created` listener
+ * registered in `joinLobby`). Failure replies are routed
+ * to the store as `invitesError`; the channel's
+ * `invite:created` push is suppressed on failure.
+ *
+ * No callback signature — the InvitesPage reads `invites`
+ * and `invitesError` from `useStore`. The store is the
+ * single source of truth.
+ */
+export function createInvite() {
+  if (!lobbyChannel) {
+    useStore.getState().setInvitesError("Not connected to lobby");
+    return;
+  }
+
+  lobbyChannel.push("create_invite", {}).receive("error", (err) => {
+    const message =
+      err && typeof err === "object" && "error" in err
+        ? err.error
+        : "Failed to create invite";
+    useStore.getState().setInvitesError(message);
+  });
+}
+
+/**
+ * Revoke an existing invite via the lobby channel. The
+ * server replies `:ok` on success and pushes `invite:revoked`
+ * so the in-memory list drops the row automatically
+ * (handled by the `invite:revoked` listener registered in
+ * `joinLobby`). Failure replies are routed to the store as
+ * `invitesError`.
+ *
+ * No callback signature — same contract as `createInvite`.
+ */
+export function revokeInvite(id) {
+  if (!lobbyChannel) {
+    useStore.getState().setInvitesError("Not connected to lobby");
+    return;
+  }
+
+  lobbyChannel.push("revoke_invite", { id }).receive("error", (err) => {
+    const message =
+      err && typeof err === "object" && "error" in err
+        ? err.error
+        : "Failed to revoke invite";
+    useStore.getState().setInvitesError(message);
+  });
 }

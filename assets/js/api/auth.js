@@ -4,9 +4,15 @@
  * Each function returns the parsed response on success and
  * throws `ApiError` on non-2xx responses so the caller can
  * surface the message in a toast.
+ *
+ * Logout is intentionally NOT exposed here: the server has
+ * no session to clear in v1. Clients drop their
+ * `localStorage` entry directly via `clearStoredToken` from
+ * `./client` and disconnect the socket via
+ * `window.__nest_socket.disconnect()`.
  */
 
-import { apiFetch, setStoredToken, clearStoredToken } from "./client";
+import { apiFetch, setStoredToken } from "./client";
 
 /**
  * POST /api/v1/login — username + password → {token, user}.
@@ -38,19 +44,4 @@ export async function register({ username, password, token }) {
 
   setStoredToken(result.token);
   return result;
-}
-
-/**
- * POST /api/v1/logout — server no-op (token lives on the
- * client). Clears the local token and drops the WS so the
- * caller can route to `/login`.
- */
-export async function logout() {
-  try {
-    await apiFetch("/api/v1/logout", { method: "POST", body: {} });
-  } catch {
-    // Best-effort; the server can't revoke the token in v1.
-  }
-
-  clearStoredToken();
 }
