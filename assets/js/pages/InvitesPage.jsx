@@ -3,26 +3,29 @@
  *
  * Lists the current user's invites (used and unused), lets
  * them mint a fresh invite (the only way to add new users
- * in v1), and revoke unused ones. The freshly-created token
- * is rendered once in a copy-friendly format — the server
- * doesn't store the plaintext and there's no way to recover
- * it after this page is left.
+ * in v1), and revoke unused ones. The token is visible on
+ * every row in a copy-friendly cell — the server stores
+ * the plaintext in `invites.token`, so there's no one-time
+ * window after creation. The "freshly minted" banner is
+ * dropped in favor of always-visible tokens.
  *
- * This page checks `isConnected` from the main store
- * rather than `currentUser` from the auth store. The WS
- * connection is the source of truth for "logged in" —
- * `currentUser` is set asynchronously by the lobby's
- * `init` push, which can lag the connection landing. If we
- * gated on `currentUser`, a fresh WS connection would
- * bounce the user to /login before the lobby had a chance
- * to populate the user object.
+ * This is a pure renderer over `useStore.invites`. The
+ * store is populated by the lobby's `init` payload; create
+ * and revoke pushes update the slice in place via
+ * `invite:created` / `invite:revoked` listeners registered
+ * in `channels.js`. There is NO `useEffect` async fetch —
+ * data lives in the store, not in component state.
+ *
+ * The page gates on `isConnected` (the WS connection is
+ * the source of truth for "logged in") rather than
+ * `currentUser` (which lags the connection landing via the
+ * lobby's `init` push).
  */
 
-import { useEffect, useState } from "react";
 import { Navigate } from "react-router-dom";
 
-import { ApiError } from "../api/client";
-import { listInvites, createInvite, revokeInvite } from "../api/invites";
+import { CopyButton } from "../components/CopyButton";
+import { createInvite, revokeInvite } from "../channels";
 import { useStore } from "../store";
 
 function formatDate(iso) {
@@ -45,120 +48,54 @@ function statusFor(invite) {
 
 export function InvitesPage() {
   const isConnected = useStore((state) => state.isConnected);
-  const [invites, setInvites] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [freshToken, setFreshToken] = useState(null);
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    if (!isConnected) return;
-    let cancelled = false;
-    setLoading(true);
-
-    listInvites()
-      .then((body) => {
-        if (cancelled) return;
-        setInvites(body.invites || []);
-        setLoading(false);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setError(err instanceof ApiError ? err.message : "Failed to load");
-        setLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [isConnected]);
+  const invites = useStore((state) => state.invites);
+  const invitesError = useStore((state) => state.invitesError);
+  const setInvitesError = useStore((state) => state.setInvitesError);
 
   if (!isConnected) {
     return <Navigate to="/login" replace />;
   }
 
-  async function handleCreate() {
-    setError(null);
-    setBusy(true);
-    setFreshToken(null);
-
-    try {
-      const result = await createInvite();
-      setFreshToken(result.token);
-      // Re-fetch the list so the new row appears without a
-      // full reload — but skip if the request was canceled.
-      const refreshed = await listInvites();
-      setInvites(refreshed.invites || []);
-    } catch (err) {
-      setError(
-        err instanceof ApiError ? err.message : "Failed to create invite",
-      );
-    } finally {
-      setBusy(false);
-    }
+  function handleCreate() {
+    setInvitesError(null);
+    createInvite();
   }
 
-  async function handleRevoke(id) {
-    setError(null);
-    setBusy(true);
-
-    try {
-      await revokeInvite(id);
-      const refreshed = await listInvites();
-      setInvites(refreshed.invites || []);
-    } catch (err) {
-      setError(
-        err instanceof ApiError ? err.message : "Failed to revoke invite",
-      );
-    } finally {
-      setBusy(false);
-    }
+  function handleRevoke(id) {
+    setInvitesError(null);
+    revokeInvite(id);
   }
 
   return (
-    <div className="mx-auto max-w-2xl p-6">
+    <div className="mx-auto max-w-3xl p-6">
       <h1 className="mb-2 text-xl font-semibold text-gray-900">Invites</h1>
       <p className="mb-4 text-sm text-gray-600">
         Mint a fresh invite token and share it with the person you want to add.
-        The token is shown ONCE when created — copy it then. Anyone with the
-        token can register on this Nest instance.
+        Anyone with the token can register on this Nest instance.
       </p>
 
       <button
         type="button"
         onClick={handleCreate}
-        disabled={busy}
-        className="mb-4 rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+        className="mb-4 rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
       >
-        {busy ? "Creating…" : "Create new invite"}
+        Create new invite
       </button>
 
-      {freshToken ? (
-        <div className="mb-4 rounded border border-green-300 bg-green-50 p-3">
-          <p className="mb-2 text-sm font-medium text-green-800">
-            New invite token — share it now:
-          </p>
-          <code className="block break-all rounded bg-white px-2 py-1 font-mono text-xs text-gray-800">
-            {freshToken}
-          </code>
-        </div>
-      ) : null}
-
-      {error ? (
+      {invitesError ? (
         <p className="mb-4 rounded bg-red-50 px-3 py-2 text-sm text-red-700">
-          {error}
+          {invitesError}
         </p>
       ) : null}
 
-      {loading ? (
-        <p className="text-sm text-gray-500">Loading…</p>
-      ) : invites.length === 0 ? (
+      {invites.length === 0 ? (
         <p className="text-sm text-gray-500">No invites yet.</p>
       ) : (
         <table className="w-full border-collapse text-sm">
           <thead>
             <tr className="border-b text-left text-xs uppercase text-gray-500">
               <th className="py-2">Status</th>
+              <th className="py-2">Token</th>
               <th className="py-2">Created</th>
               <th className="py-2">Expires</th>
               <th className="py-2">Used</th>
@@ -170,7 +107,7 @@ export function InvitesPage() {
               const status = statusFor(invite);
               const revokable = !invite.used_at && !invite.revoked_at;
               return (
-                <tr key={invite.id} className="border-b">
+                <tr key={invite.id} className="border-b align-top">
                   <td className="py-2">
                     <span
                       className={`inline-block rounded px-2 py-0.5 text-xs text-white ${
@@ -179,6 +116,15 @@ export function InvitesPage() {
                     >
                       {status.label}
                     </span>
+                  </td>
+                  <td className="py-2">
+                    <code className="break-all font-mono text-xs text-gray-800">
+                      {invite.token}
+                    </code>
+                    <CopyButton
+                      getText={() => invite.token}
+                      label="Copy invite token"
+                    />
                   </td>
                   <td className="py-2 text-gray-700">
                     {formatDate(invite.inserted_at)}
@@ -194,8 +140,7 @@ export function InvitesPage() {
                       <button
                         type="button"
                         onClick={() => handleRevoke(invite.id)}
-                        disabled={busy}
-                        className="text-xs text-red-600 hover:underline disabled:opacity-50"
+                        className="text-xs text-red-600 hover:underline"
                       >
                         Revoke
                       </button>

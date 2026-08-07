@@ -16,8 +16,11 @@ defmodule NestWeb.AuthController do
       `{token, user}`. The `token` is either an invite token
       issued by an existing user, or the magic `"first-user"`
       token accepted only when the users table is empty.
-    * `POST /api/v1/logout` — no-op (the client just discards its
-      `localStorage` entry). Returns 204.
+
+  Logout is not a server endpoint in v1: the token lives on
+  the client, the server has no session to clear. Clients
+  drop their `localStorage` entry and disconnect the socket
+  directly.
   """
 
   use NestWeb, :controller
@@ -161,12 +164,5 @@ defmodule NestWeb.AuthController do
       username: user.username,
       is_admin: user.is_admin == true
     }
-  end
-
-  def logout(conn, _params) do
-    # The server has no session to clear — the token lives on
-    # the client. Return 204 so the client can chain a
-    # `localStorage.removeItem("token")` on `.then(...)`.
-    send_resp(conn, 204, "")
   end
 end

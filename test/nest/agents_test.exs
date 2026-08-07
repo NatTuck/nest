@@ -153,6 +153,43 @@ defmodule Nest.AgentsTest do
       assert Enum.any?(agents_info, fn info -> info.name == id1 end)
       assert Enum.any?(agents_info, fn info -> info.name == id2 end)
     end
+
+    test "skips agents whose process dies during enumeration" do
+      # Regression for the race where a sibling test's agent
+      # is alive at `Supervisor.get_agent/1` time but exits
+      # with `:crash` (or any non-graceful reason) between
+      # the alive-check and the `GenServer.call`. The
+      # catch clause in `Agents.fetch_public_info/1` and
+      # `Agents.build_agent_data/1` must treat any exit as
+      # `:not_found` rather than propagating the `:crash`
+      # and aborting the whole listing.
+      {_pid1, id1} = AgentTestHelpers.start_agent(%{name: fresh_name()})
+      {_pid2, id2} = AgentTestHelpers.start_agent(%{name: fresh_name()})
+
+      # Stub `Agent.get_public_info/1` to `exit(:crash)` for
+      # every agent — simulates the case where every
+      # registered agent's GenServer crashed between the
+      # supervisor lookup and the call landing. The widened
+      # catch should swallow every `:crash` exit and the
+      # list should come back empty.
+      Mimic.copy(Nest.Agents.Agent)
+      Mimic.stub(Nest.Agents.Agent, :get_public_info, fn _pid -> exit(:crash) end)
+
+      assert Agents.list_agents_info() == []
+
+      # Negative control: with the stub cleared, both
+      # agents show up. This pins the test to the stub —
+      # if the stub silently no-ops we'd see the agents
+      # and the assertion above would still pass but for
+      # the wrong reason.
+      Mimic.stub(Nest.Agents.Agent, :get_public_info, fn pid ->
+        GenServer.call(pid, :get_public_info)
+      end)
+
+      agents_info = Agents.list_agents_info()
+      assert Enum.any?(agents_info, fn info -> info.name == id1 end)
+      assert Enum.any?(agents_info, fn info -> info.name == id2 end)
+    end
   end
 
   describe "chat/2" do

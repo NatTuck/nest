@@ -9,7 +9,7 @@
  *   - Token present + WS becomes connected → navigate to
  *     `/new_agent`.
  *
- * We test `RootGate` in isolation with a `MemoryRouter`
+ * We test `RootGate` in isolation with `renderWithRouter`
  * because the rest of `App.jsx` (the full router config
  * with all pages) is exercised by the existing
  * NewAgentPage / Sidebar / ChatPage test suites. Exporting
@@ -19,10 +19,10 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, waitFor, act } from "@testing-library/react";
-import { MemoryRouter, Routes, Route } from "react-router-dom";
 
 import { RootGate, Layout } from "./App";
 import { useStore } from "./store";
+import { renderWithRouter } from "./test/render_with_router";
 
 // `vi.mock` is hoisted, so the import path must be a
 // literal — Vitest will replace the module before any test
@@ -41,21 +41,15 @@ function setConnected(value) {
   });
 }
 
-function renderGate(initialPath = "/") {
-  // The MemoryRouter's `<Routes>` here is just so the
-  // navigation triggered by `RootGate` actually renders
-  // *something* observable. We don't need the full
-  // production router — just enough to land on a page
-  // distinct from the loading screen.
-  return render(
-    <MemoryRouter initialEntries={[initialPath]}>
-      <Routes>
-        <Route path="/" element={<RootGate />} />
-        <Route path="/login" element={<div>Sign in</div>} />
-        <Route path="/new_agent" element={<div>Create agent</div>} />
-      </Routes>
-    </MemoryRouter>,
-  );
+async function renderGate(initialPath = "/") {
+  return renderWithRouter(<RootGate />, {
+    route: initialPath,
+    routes: [
+      { path: "/", element: <RootGate /> },
+      { path: "/login", element: <div>Sign in</div> },
+      { path: "/new_agent", element: <div>Create agent</div> },
+    ],
+  });
 }
 
 describe("RootGate", () => {
@@ -71,16 +65,16 @@ describe("RootGate", () => {
     useStore.getState()._reset();
   });
 
-  it("renders a loading screen on first paint when a token is present", () => {
+  it("renders a loading screen on first paint when a token is present", async () => {
     localStorage.setItem("nest_token", "valid-token");
-    renderGate();
+    await renderGate();
 
     expect(screen.getByText(/loading/i)).toBeInTheDocument();
     expect(initChannels).toHaveBeenCalledTimes(1);
   });
 
   it("redirects to /login when no token is in localStorage", async () => {
-    renderGate();
+    await renderGate();
 
     await waitFor(() => {
       expect(screen.getByText(/sign in/i)).toBeInTheDocument();
@@ -90,23 +84,25 @@ describe("RootGate", () => {
 
   it("navigates to /new_agent when isConnected becomes true", async () => {
     localStorage.setItem("nest_token", "valid-token");
-    renderGate();
+    await renderGate();
 
     // Loading screen visible before connection lands.
     expect(screen.getByText(/loading/i)).toBeInTheDocument();
 
-    // Simulate the WS handshake completing.
-    setConnected(true);
-
-    await waitFor(() => {
-      expect(screen.getByText(/create agent/i)).toBeInTheDocument();
+    // Simulate the WS handshake completing. Wrap in `act` so
+    // the Zustand subscription update that triggers
+    // RootGate's `useEffect` lands inside the act boundary.
+    await act(async () => {
+      useStore.setState({ isConnected: true });
     });
+
+    expect(await screen.findByText(/create agent/i)).toBeInTheDocument();
     expect(screen.queryByText(/loading/i)).toBeNull();
   });
 
-  it("stays on the loading screen if the WS never connects", () => {
+  it("stays on the loading screen if the WS never connects", async () => {
     localStorage.setItem("nest_token", "valid-token");
-    renderGate();
+    await renderGate();
 
     // isConnected stays false (default) → gate remains on
     // the loading screen. We don't auto-redirect to /login
@@ -118,28 +114,31 @@ describe("RootGate", () => {
 
 describe("App default export", () => {
   it("renders without crashing and lands on the RootGate", async () => {
-    // The full production App wires its own
-    // `createBrowserRouter`. We can't reach into it from
-    // outside, so this test only confirms that the App
-    // component mounts without throwing. The detailed
-    // navigation behavior is exercised by the RootGate
-    // describe block above with its own minimal router.
+    // The full App wires its own `<BrowserRouter>` +
+    // `<Routes>`. We don't reach into its router from
+    // here — we render the App in a fresh jsdom window so
+    // the production router config (incl. RootGate /
+    // LoginPage / NewAgentPage routes) is exercised
+    // end-to-end. The detailed navigation behavior is
+    // covered by the RootGate describe block above.
     const { default: App } = await import("./App");
     const { container } = render(<App />);
 
     // RootGate's loading state or one of its redirect
-    // targets ("Sign in" on /login, "Create agent" on
-    // /new_agent) should be visible depending on the
-    // token presence. jsdom defaults to `about:blank` so
-    // the production router lands on `/`, which the
-    // RootGate sees with no token and routes to /login.
+    // targets ("Sign in" on /login) should be visible
+    // depending on the token presence. jsdom defaults to
+    // `about:blank` so the production router lands on
+    // `/`, which the RootGate sees with no token and
+    // routes to /login.
     expect(container.textContent).toMatch(/loading|sign in/i);
   });
 });
 
 describe("Layout", () => {
   beforeEach(() => {
-    useStore.getState()._reset();
+    act(() => {
+      useStore.getState()._reset();
+    });
     initChannels.mockClear();
     joinLobby.mockClear();
     leaveLobby.mockClear();
@@ -147,49 +146,70 @@ describe("Layout", () => {
 
   afterEach(() => {
     vi.clearAllMocks();
-    useStore.getState()._reset();
+    act(() => {
+      useStore.getState()._reset();
+    });
   });
 
-  it("calls initChannels on mount", () => {
-    render(
-      <MemoryRouter>
-        <Layout />
-      </MemoryRouter>,
-    );
+  it("calls initChannels on mount", async () => {
+    // Render `<Layout />` as a parent route with a dummy
+    // Outlet child so react-router's router state settles
+    // synchronously (a bare `<Layout />` with no outlet
+    // match triggers an async re-render after the test's
+    // `act` closes).
+    await renderWithRouter(<Layout />, {
+      routes: [
+        {
+          path: "/",
+          element: <Layout />,
+          children: [{ path: "*", element: <div data-testid="outlet" /> }],
+        },
+      ],
+    });
 
     expect(initChannels).toHaveBeenCalledTimes(1);
   });
 
-  it("calls joinLobby when isConnected is true", () => {
-    useStore.setState({ isConnected: true });
-
-    render(
-      <MemoryRouter>
-        <Layout />
-      </MemoryRouter>,
-    );
+  it("calls joinLobby when isConnected is true", async () => {
+    setConnected(true);
+    await renderWithRouter(<Layout />, {
+      routes: [
+        {
+          path: "/",
+          element: <Layout />,
+          children: [{ path: "*", element: <div data-testid="outlet" /> }],
+        },
+      ],
+    });
 
     expect(joinLobby).toHaveBeenCalledTimes(1);
   });
 
-  it("does not call joinLobby when isConnected is false", () => {
-    useStore.setState({ isConnected: false });
-
-    render(
-      <MemoryRouter>
-        <Layout />
-      </MemoryRouter>,
-    );
+  it("does not call joinLobby when isConnected is false", async () => {
+    setConnected(false);
+    await renderWithRouter(<Layout />, {
+      routes: [
+        {
+          path: "/",
+          element: <Layout />,
+          children: [{ path: "*", element: <div data-testid="outlet" /> }],
+        },
+      ],
+    });
 
     expect(joinLobby).not.toHaveBeenCalled();
   });
 
-  it("calls leaveLobby on unmount", () => {
-    const { unmount } = render(
-      <MemoryRouter>
-        <Layout />
-      </MemoryRouter>,
-    );
+  it("calls leaveLobby on unmount", async () => {
+    const { unmount } = await renderWithRouter(<Layout />, {
+      routes: [
+        {
+          path: "/",
+          element: <Layout />,
+          children: [{ path: "*", element: <div data-testid="outlet" /> }],
+        },
+      ],
+    });
 
     unmount();
     expect(leaveLobby).toHaveBeenCalledTimes(1);

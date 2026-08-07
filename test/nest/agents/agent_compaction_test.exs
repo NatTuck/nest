@@ -92,7 +92,7 @@ defmodule Nest.Agents.AgentCompactionTest do
       %Part.ToolResult{content: content, is_error: is_error} = result_part
 
       if is_error do
-        Logger.info(%{test: "tool budget loop", tool_result: result_part})
+        Logger.error(tool_result: result_part)
       end
 
       refute String.contains?(content, "[truncated:")

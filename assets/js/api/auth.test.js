@@ -1,14 +1,16 @@
 /**
  * Tests for `js/api/auth.js`.
  *
- * Covers: login, register, and logout calling the right endpoints,
- * storing the returned token on success, and clearing it on logout
- * (best-effort even if the server request fails).
+ * Covers: login and register calling the right endpoints,
+ * storing the returned token on success. Logout is no
+ * longer in this module — it's a client-only operation
+ * (clearStoredToken + socket disconnect) since the server
+ * has no session state to clear in v1.
  */
 
 import { describe, it, beforeEach, afterEach, vi } from "vitest";
 import assert from "node:assert";
-import { login, register, logout } from "./auth";
+import { login, register } from "./auth";
 import { getStoredToken } from "./client";
 
 describe("api/auth", () => {
@@ -96,36 +98,6 @@ describe("api/auth", () => {
       });
 
       assert.strictEqual(getStoredToken(), "reg-token");
-    });
-  });
-
-  describe("logout", () => {
-    it("POSTs to /api/v1/logout", async () => {
-      mockJson(204, {});
-
-      await logout();
-
-      const [path, opts] = global.fetch.mock.calls[0];
-      assert.strictEqual(path, "/api/v1/logout");
-      assert.strictEqual(opts.method, "POST");
-    });
-
-    it("clears the stored token even when the server call succeeds", async () => {
-      mockJson(204, {});
-      localStorage.setItem("nest_token", "to-clear");
-
-      await logout();
-
-      assert.strictEqual(getStoredToken(), null);
-    });
-
-    it("still clears the stored token when the server call fails", async () => {
-      mockJson(500, { error: "boom" });
-      localStorage.setItem("nest_token", "to-clear");
-
-      await logout();
-
-      assert.strictEqual(getStoredToken(), null);
     });
   });
 });

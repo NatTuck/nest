@@ -108,10 +108,14 @@ defmodule Nest.Agents do
   defp fetch_public_info(pid) do
     {:ok, Agent.get_public_info(pid)}
   catch
-    :exit, reason when reason in [:noproc, :normal, :shutdown] ->
-      {:error, :not_found}
-
-    :exit, {reason, _} when reason in [:noproc, :normal, :shutdown] ->
+    # Any exit reason — graceful (`:normal`, `:shutdown`,
+    # `:noproc`), abnormal (`:crash`, `:killed`, `:timeout`),
+    # or tagged `{reason, _}` — means "the agent isn't here
+    # anymore." Treat them uniformly as `:not_found` so the
+    # enumeration API in `list_agents_info/0` can skip stale
+    # registry entries (sibling tests' agents mid-shutdown)
+    # without aborting the whole listing.
+    :exit, _reason ->
       {:error, :not_found}
   end
 
@@ -162,10 +166,10 @@ defmodule Nest.Agents do
 
     {:ok, agent}
   catch
-    :exit, reason when reason in [:noproc, :normal, :shutdown] ->
-      {:error, :not_found}
-
-    :exit, {reason, _} when reason in [:noproc, :normal, :shutdown] ->
+    # See `fetch_public_info/1` for the rationale. Same
+    # treatment for the `get_info/1` path: any exit means
+    # the agent is gone, return `:not_found`.
+    :exit, _reason ->
       {:error, :not_found}
   end
 

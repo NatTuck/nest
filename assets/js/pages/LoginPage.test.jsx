@@ -8,14 +8,17 @@
  *  - Failed login surfaces the server's error string
  *  - Failed login with a non-ApiError falls back to the
  *    generic "Login failed" message
+ *  - Submitting shows a "Signing in…" label while the
+ *    request is in flight.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { screen, fireEvent, waitFor, act } from "@testing-library/react";
 
 import { LoginPage } from "./LoginPage";
 import { ApiError } from "../api/client";
+import { renderWithRouter } from "../test/render_with_router";
+import { createDeferred } from "../test/create_deferred";
 
 vi.mock("../api/auth", () => ({
   login: vi.fn(),
@@ -23,12 +26,8 @@ vi.mock("../api/auth", () => ({
 
 import { login } from "../api/auth";
 
-function renderPage() {
-  return render(
-    <MemoryRouter initialEntries={["/login"]}>
-      <LoginPage />
-    </MemoryRouter>,
-  );
+async function renderPage() {
+  return renderWithRouter(<LoginPage />, { route: "/login" });
 }
 
 describe("LoginPage", () => {
@@ -40,8 +39,8 @@ describe("LoginPage", () => {
     vi.clearAllMocks();
   });
 
-  it("renders the sign-in form", () => {
-    renderPage();
+  it("renders the sign-in form", async () => {
+    await renderPage();
 
     expect(
       screen.getByRole("heading", { name: /sign in/i }),
@@ -62,7 +61,7 @@ describe("LoginPage", () => {
       token: "tok",
       user: { id: 1, username: "alice", is_admin: false },
     });
-    renderPage();
+    await renderPage();
 
     fireEvent.change(screen.getByLabelText(/username/i), {
       target: { value: "alice" },
@@ -81,7 +80,7 @@ describe("LoginPage", () => {
     login.mockRejectedValueOnce(
       new ApiError(401, { error: "invalid_credentials" }),
     );
-    renderPage();
+    await renderPage();
 
     fireEvent.change(screen.getByLabelText(/username/i), {
       target: { value: "alice" },
@@ -96,7 +95,7 @@ describe("LoginPage", () => {
 
   it("falls back to a generic message when the failure is not an ApiError", async () => {
     login.mockRejectedValueOnce(new Error("network down"));
-    renderPage();
+    await renderPage();
 
     fireEvent.change(screen.getByLabelText(/username/i), {
       target: { value: "alice" },
@@ -110,14 +109,16 @@ describe("LoginPage", () => {
   });
 
   it("shows a 'Signing in…' label while the request is in flight", async () => {
-    let resolveLogin;
-    login.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          resolveLogin = resolve;
-        }),
-    );
-    renderPage();
+    // `createDeferred` lets the test control exactly when
+    // the login promise settles so the `setSubmitting(true)`
+    // state update lands inside an `act()` boundary. Without
+    // it the promise resolves on a microtask after `render`'s
+    // internal act closes, triggering an "update to LoginPage
+    // was not wrapped in act(...)" warning under React 19.
+    const deferred = createDeferred();
+    login.mockReturnValueOnce(deferred.promise);
+
+    await renderPage();
 
     fireEvent.change(screen.getByLabelText(/username/i), {
       target: { value: "alice" },
@@ -131,6 +132,10 @@ describe("LoginPage", () => {
       await screen.findByRole("button", { name: /signing in/i }),
     ).toBeDisabled();
 
-    resolveLogin({ token: "t", user: {} });
+    // Resolve inside an act so the navigation on success
+    // lands inside the act boundary.
+    await act(async () => {
+      deferred.resolve({ token: "t", user: {} });
+    });
   });
 });

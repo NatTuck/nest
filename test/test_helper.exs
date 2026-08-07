@@ -10,6 +10,7 @@ Mimic.copy(Nest.Agents.Agent)
 Mimic.copy(Nest.Agents.Agent.Config)
 Mimic.copy(Nest.Agents)
 Mimic.copy(Nest.Agents.Supervisor)
+Mimic.copy(Phoenix.Channel)
 
 ExUnit.configure(timeout: 5_000)
 ExUnit.start()
