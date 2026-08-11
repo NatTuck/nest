@@ -22,6 +22,8 @@ defmodule Nest.Agents.SupervisorSpawnTest do
   """
   use Nest.DataCase, async: true
 
+  import Eventually
+
   alias Nest.Agents
   alias Nest.Agents.Agent
   alias Nest.Agents.AgentTestHelpers
@@ -162,6 +164,31 @@ defmodule Nest.Agents.SupervisorSpawnTest do
                Supervisor.spawn_agent_in_space(coordinator_state(space.id), name, vid)
 
       on_exit(fn -> _ = Supervisor.stop_agent(space.id, name) end)
+    end
+  end
+
+  describe "archive_agent/2" do
+    test "stops the process and marks the row archived" do
+      space_id = AgentTestHelpers.current_space_id()
+      vid = fresh_vocation()
+      name = "archive-me-#{System.unique_integer([:positive])}"
+
+      assert {:ok, ^name} =
+               Supervisor.spawn_agent_in_space(coordinator_state(space_id), name, vid)
+
+      assert :ok = Supervisor.archive_agent(space_id, name)
+
+      # The process is stopped (registry eventually clears).
+      assert eventually(
+               fn ->
+                 Nest.Agents.Registry.lookup(space_id, name) == {:error, :not_found}
+               end,
+               timeout: 1_000
+             )
+
+      # The row is marked archived.
+      {:ok, row} = Nest.Persistence.fetch_agent(space_id, name)
+      assert row.archived == true
     end
   end
 end

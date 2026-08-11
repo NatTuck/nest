@@ -62,7 +62,15 @@ const sampleBlueprints = [
 
 const sampleVocations = [
   { id: 10, name: "Chat" },
-  { id: 20, name: "Grading Coordinator" },
+  {
+    id: 20,
+    name: "Grading Coordinator",
+    modes: {
+      chat: {
+        caps: { net: true, fs: { read: ["/"], write: ["/tmp", ":workspace"] } },
+      },
+    },
+  },
 ];
 
 const sampleModels = [
@@ -110,6 +118,30 @@ describe("validateNewSpaceForm", () => {
       }),
     ).toBeNull();
   });
+
+  it("requires a workspace path when the vocation needs one", () => {
+    expect(
+      validateNewSpaceForm({
+        name: "My Space",
+        selectedBlueprint: "2",
+        selectedModel: "gpt-4o",
+        requiresWorkspace: true,
+        workspacePath: "",
+      }),
+    ).toBe("Please specify a workspace path");
+  });
+
+  it("passes when a required workspace path is supplied", () => {
+    expect(
+      validateNewSpaceForm({
+        name: "My Space",
+        selectedBlueprint: "2",
+        selectedModel: "gpt-4o",
+        requiresWorkspace: true,
+        workspacePath: "/tmp/proj",
+      }),
+    ).toBeNull();
+  });
 });
 
 describe("NewSpacePage", () => {
@@ -118,28 +150,20 @@ describe("NewSpacePage", () => {
       models: sampleModels,
       blueprints: sampleBlueprints,
       vocations: sampleVocations,
+      suggestedName: "clever-raven",
     };
     mocks.createSpace.mockReset();
     mocks.suggestSpaceName.mockReset();
     mocks.rescanModels.mockReset();
   });
 
-  it("pre-fills the name with a suggestion from the backend", async () => {
-    mocks.suggestSpaceName.mockImplementation((onOk) => {
-      onOk("clever-raven");
-    });
-
+  it("pre-fills the name with the backend-suggested name", () => {
     renderPage();
 
-    expect(await screen.findByDisplayValue("clever-raven")).toBeInTheDocument();
-    expect(mocks.suggestSpaceName).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText("Space Name")).toHaveValue("clever-raven");
   });
 
   it("does not overwrite a name the user has already typed", () => {
-    mocks.suggestSpaceName.mockImplementation((onOk) => {
-      onOk("clever-raven");
-    });
-
     renderPage();
     fireEvent.change(screen.getByLabelText("Space Name"), {
       target: { value: "My Project" },
@@ -194,7 +218,50 @@ describe("NewSpacePage", () => {
     expect(screen.getByRole("option", { name: "gpt-4o" })).toBeInTheDocument();
   });
 
+  it("shows the workspace path input when the blueprint's vocation needs one", () => {
+    renderPage();
+
+    fireEvent.change(screen.getByLabelText("Select Blueprint"), {
+      target: { value: "2" },
+    });
+
+    expect(screen.getByLabelText("Workspace Path")).toBeInTheDocument();
+  });
+
+  it("hides the workspace path input when the blueprint's vocation does not need one", () => {
+    renderPage();
+
+    fireEvent.change(screen.getByLabelText("Select Blueprint"), {
+      target: { value: "1" },
+    });
+
+    expect(screen.queryByLabelText("Workspace Path")).not.toBeInTheDocument();
+  });
+
+  it("blocks submission when a required workspace path is missing", () => {
+    renderPage();
+
+    fireEvent.change(screen.getByLabelText("Space Name"), {
+      target: { value: "My Project" },
+    });
+    fireEvent.change(screen.getByLabelText("Select Blueprint"), {
+      target: { value: "2" },
+    });
+    fireEvent.change(screen.getByLabelText("Select Model"), {
+      target: { value: "gpt-4o" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Create Space" }));
+
+    expect(
+      screen.getByText("Please specify a workspace path"),
+    ).toBeInTheDocument();
+    expect(mocks.createSpace).not.toHaveBeenCalled();
+  });
+
   it("shows a validation error and does not create on empty submit", () => {
+    mockState = { ...mockState, suggestedName: null };
+
     renderPage();
 
     fireEvent.click(screen.getByRole("button", { name: "Create Space" }));
@@ -213,7 +280,7 @@ describe("NewSpacePage", () => {
     expect(screen.getByText("A grading space.")).toBeInTheDocument();
   });
 
-  it("calls createSpace with the space name and blueprint_id on valid submit", () => {
+  it("calls createSpace with the space name, blueprint_id, and workspace_path on valid submit", () => {
     renderPage();
 
     fireEvent.change(screen.getByLabelText("Space Name"), {
@@ -225,6 +292,9 @@ describe("NewSpacePage", () => {
     fireEvent.change(screen.getByLabelText("Select Model"), {
       target: { value: "gpt-4o" },
     });
+    fireEvent.change(screen.getByLabelText("Workspace Path"), {
+      target: { value: "/tmp/proj" },
+    });
 
     fireEvent.click(screen.getByRole("button", { name: "Create Space" }));
 
@@ -235,7 +305,11 @@ describe("NewSpacePage", () => {
     expect(vocationId).toBeNull();
     expect(typeof onOk).toBe("function");
     expect(typeof onError).toBe("function");
-    expect(opts).toEqual({ name: "My Project", blueprint_id: 2 });
+    expect(opts).toEqual({
+      name: "My Project",
+      blueprint_id: 2,
+      workspace_path: "/tmp/proj",
+    });
   });
 
   it("navigates to /spaces on success", () => {
@@ -257,6 +331,7 @@ describe("NewSpacePage", () => {
     act(() => onOk({ space_id: 5, name: "my-project" }));
 
     expect(screen.getByText("Spaces Landing")).toBeInTheDocument();
+    expect(mocks.suggestSpaceName).toHaveBeenCalledTimes(1);
   });
 
   it("falls back to a name-only model object when the model is unknown", () => {

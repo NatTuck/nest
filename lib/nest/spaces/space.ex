@@ -27,6 +27,7 @@ defmodule Nest.Spaces.Space do
              :name,
              :slug,
              :blueprint_id,
+             :workspace_path,
              :created_by_user_id,
              :inserted_at,
              :updated_at
@@ -37,6 +38,7 @@ defmodule Nest.Spaces.Space do
     field :name, :string
     field :slug, :string
     field :blueprint_id, :integer
+    field :workspace_path, :string
     field :created_by_user_id, :integer
 
     timestamps(type: :utc_datetime)
@@ -46,11 +48,12 @@ defmodule Nest.Spaces.Space do
   Build a changeset for inserting or updating a space row.
 
   Required: `:name`, `:created_by_user_id`. `:slug` is derived
-  from `:name` if not provided. `:blueprint_id` is optional.
+  from `:name` if not provided. `:blueprint_id` and
+  `:workspace_path` are optional.
   """
   def changeset(source, params) do
     source
-    |> cast(params, [:name, :slug, :blueprint_id, :created_by_user_id])
+    |> cast(params, [:name, :slug, :blueprint_id, :workspace_path, :created_by_user_id])
     |> validate_required([:name])
     |> maybe_generate_slug()
     |> validate_required([:slug])

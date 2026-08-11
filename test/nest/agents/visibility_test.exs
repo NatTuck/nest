@@ -125,4 +125,26 @@ defmodule Nest.Agents.VisibilityTest do
     visible = Visibility.list_visible_agents_for(AgentTestHelpers.current_space_id(), alice.id)
     assert Enum.all?(visible, &(&1.name != name))
   end
+
+  test "an archived agent is filtered out of the persisted backfill" do
+    {:ok, alice, :admin} =
+      Accounts.create_user(%{username: "alice", password: "password123"}, "first-user")
+
+    {_pid, name} =
+      AgentTestHelpers.start_agent(%{
+        name: "archived-#{System.unique_integer([:positive])}",
+        model: %{name: "qwen3.5-plus", provider: "model-studio"}
+      })
+
+    # Archive: stop the process + mark the DB row archived.
+    # The persisted-backfill path in `Visibility` would otherwise
+    # surface the row even though the pid is down. Trap exits so
+    # the linked agent's stop doesn't kill the test pid.
+    Process.flag(:trap_exit, true)
+    :ok = Supervisor.archive_agent(AgentTestHelpers.current_space_id(), name)
+    assert_receive {:EXIT, _, _}, 500
+
+    visible = Visibility.list_visible_agents_for(AgentTestHelpers.current_space_id(), alice.id)
+    assert Enum.all?(visible, &(&1.name != name))
+  end
 end

@@ -16,6 +16,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useStore } from "../store";
 import { createSpace, rescanModels, suggestSpaceName } from "../channels";
+import { vocationRequiresWorkspace } from "../utils/vocationWorkspace";
 
 /**
  * Validate the new-space form before firing the lobby push.
@@ -25,12 +26,17 @@ import { createSpace, rescanModels, suggestSpaceName } from "../channels";
  * @param {string} params.name — the space name input.
  * @param {string} params.selectedBlueprint — the blueprint `<select>` value.
  * @param {string} params.selectedModel — the model `<select>` value.
+ * @param {boolean} params.requiresWorkspace — whether the selected
+ *   blueprint's root vocation expects a workspace.
+ * @param {string} params.workspacePath — the workspace path input.
  * @returns {string | null}
  */
 export function validateNewSpaceForm({
   name,
   selectedBlueprint,
   selectedModel,
+  requiresWorkspace,
+  workspacePath,
 }) {
   if (!name?.trim()) {
     return "Please enter a space name";
@@ -40,6 +46,9 @@ export function validateNewSpaceForm({
   }
   if (!selectedModel) {
     return "Please select a model";
+  }
+  if (requiresWorkspace && !workspacePath?.trim()) {
+    return "Please specify a workspace path";
   }
   return null;
 }
@@ -52,20 +61,35 @@ export function NewSpacePage() {
   const models = useStore((s) => s.models);
   const blueprints = useStore((s) => s.blueprints);
   const vocations = useStore((s) => s.vocations);
+  const suggestedName = useStore((s) => s.suggestedName);
   const [name, setName] = useState("");
   const [selectedBlueprint, setSelectedBlueprint] = useState("");
   const [selectedModel, setSelectedModel] = useState("");
+  const [workspacePath, setWorkspacePath] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const [isRescanning, setIsRescanning] = useState(false);
   const [error, setError] = useState(null);
 
+  // Pre-fill the name with the backend-suggested space name from the
+  // lobby `init` payload. Apply it once, only if the user hasn't typed
+  // anything yet.
+  const appliedSuggestionRef = useRef(false);
+
+  useEffect(() => {
+    if (suggestedName && !appliedSuggestionRef.current) {
+      appliedSuggestionRef.current = true;
+      setName((current) => current || suggestedName);
+    }
+  }, [suggestedName]);
+
   const selectedBlueprintData = blueprints?.find(
     (b) => b.id.toString() === selectedBlueprint,
   );
-  const selectedVocationName = selectedBlueprintData
+  const selectedVocation = selectedBlueprintData
     ? vocations.find((v) => v.id === selectedBlueprintData.root_vocation_id)
-        ?.name
     : null;
+  const selectedVocationName = selectedVocation?.name;
+  const requiresWorkspace = vocationRequiresWorkspace(selectedVocation);
 
   // Reset the rescan spinner when the merged catalog lands. The
   // `rescan_models` push reply is `:ok`; the real catalog arrives
@@ -79,15 +103,6 @@ export function NewSpacePage() {
       setIsRescanning(false);
     }
   }, [models, isRescanning]);
-
-  // Pre-fill the name with a unique adjective-animal suggestion
-  // from the backend. The push resolves asynchronously, so only
-  // apply it if the user hasn't typed anything yet.
-  useEffect(() => {
-    suggestSpaceName((suggested) => {
-      setName((current) => current || suggested);
-    });
-  }, []);
 
   const handleRescanModels = () => {
     setIsRescanning(true);
@@ -105,6 +120,8 @@ export function NewSpacePage() {
       name,
       selectedBlueprint,
       selectedModel,
+      requiresWorkspace,
+      workspacePath,
     });
 
     if (validationError) {
@@ -124,7 +141,10 @@ export function NewSpacePage() {
       null,
       () => {
         // The `space:created` + `agent:created` broadcasts update
-        // the store; land on the spaces index.
+        // the store; land on the spaces index. Regenerate the
+        // suggestion so the next new-space form doesn't collide
+        // with the name we just used.
+        suggestSpaceName();
         navigate("/spaces");
       },
       (err) => {
@@ -134,6 +154,7 @@ export function NewSpacePage() {
       {
         name: name.trim(),
         blueprint_id: parseInt(selectedBlueprint, 10),
+        workspace_path: requiresWorkspace ? workspacePath.trim() : undefined,
       },
     );
   };
@@ -286,6 +307,32 @@ export function NewSpacePage() {
             )}
           </select>
         </div>
+
+        {/* Workspace path input (for blueprints whose root vocation
+            expects a workspace) */}
+        {requiresWorkspace && (
+          <div className="mb-6">
+            <label
+              htmlFor="space-workspace-path"
+              className="block text-sm font-medium text-gray-700 mb-2"
+            >
+              Workspace Path
+            </label>
+            <input
+              id="space-workspace-path"
+              type="text"
+              value={workspacePath}
+              onChange={(e) => setWorkspacePath(e.target.value)}
+              placeholder="/path/to/project"
+              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+              disabled={isCreating}
+            />
+            <p className="mt-2 text-sm text-gray-500">
+              This blueprint's root agent needs a workspace directory to read
+              and write files.
+            </p>
+          </div>
+        )}
 
         {/* Create button */}
         <button

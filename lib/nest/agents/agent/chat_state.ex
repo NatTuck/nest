@@ -50,12 +50,18 @@ defmodule Nest.Agents.Agent.ChatState do
   because of the `<=` rule.
 
   The `pending_children` map tracks child agents that this
-  agent has spawned via `clone_agent`. Keys are child agent
-  IDs (strings), values are the pid of the blocked tool task
-  waiting for the child's response. When a child completes,
-  its GenServer sends `{:child_completed, child_id, response, total_usage}`
-  to the parent, and the parent routes the response to the
-  waiting tool task.
+  agent has spawned via `agents/spawn` (with a `query`). Keys
+  are child agent IDs (strings), values are the pid of the
+  blocked tool task waiting for the child's response. When a
+  child completes, its GenServer sends
+  `{:child_completed, child_id, response, total_usage}` to the
+  parent, and the parent routes the response to the waiting
+  tool task.
+
+  The `archiving` MapSet holds the names of children spawned
+  with `archive: true`. After their response is forwarded, the
+  parent stops + marks them archived (one-shot spawns). Cleared
+  alongside `pending_children`.
 
   The `read_files` map gates the `write_file` tool: every
   successful `read_file` and `write_file` is recorded here as
@@ -77,6 +83,7 @@ defmodule Nest.Agents.Agent.ChatState do
             last_compaction_index: -1,
             next_message_index: 0,
             pending_children: %{},
+            archiving: %MapSet{},
             read_files: %{}
 end
 

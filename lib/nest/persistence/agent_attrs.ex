@@ -50,4 +50,31 @@ defmodule Nest.Persistence.AgentAttrs do
       []
     end
   end
+
+  @spec archive_agent(integer(), String.t()) :: :ok | {:error, :not_found}
+  def archive_agent(space_id, name) do
+    if Application.get_env(:nest, :persistence, %{})[:enabled] != false do
+      do_archive(space_id, name)
+    else
+      :ok
+    end
+  end
+
+  defp do_archive(space_id, name) do
+    case Persistence.fetch_agent(space_id, name) do
+      {:ok, %PersistedAgent{id: agent_id}} ->
+        from(a in PersistedAgent, where: a.id == ^agent_id)
+        |> Repo.update_all(
+          set: [
+            archived: true,
+            updated_at: Persistence.now()
+          ]
+        )
+
+        :ok
+
+      {:error, :not_found} ->
+        {:error, :not_found}
+    end
+  end
 end

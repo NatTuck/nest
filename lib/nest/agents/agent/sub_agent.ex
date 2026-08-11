@@ -4,22 +4,22 @@ defmodule Nest.Agents.Agent.SubAgent do
 
   Owns two concerns:
 
-    * `handle_clone_request/3` — a tool worker blocked on a
-      `clone_agent` tool call asked this agent to spawn a
-      child. We pull the parent's integer `agents.id`,
-      delegate to `Supervisor.start_agent_with_parent/2`,
-      record `{child_name => task_pid}` in
-      `state.chat_state.pending_children`, kick off
-      `Agents.chat(child_name, instruction)`, then reply
-      with the child's name (the worker matches its
-      eventual `:clone_agent_result` on it).
+    * `handle_spawn_request/3` — a tool worker blocked on an
+      `agents/spawn` tool call asked this agent to spawn a
+      child. We delegate to the supervisor (fresh or
+      context-cloned), record `{child_name => task_pid}` in
+      `state.chat_state.pending_children` when a `query` is
+      present, kick off `Agents.chat(child_name, query)`, then
+      reply with the child's name (the worker matches its
+      eventual `:spawn_agent_result` on it).
 
     * `handle_child_completed/4` — a child cast up the
       tree carrying its last assistant content and its
       total usage. We merge the child's total into the
       parent's `descendant_usage`, drop the pending entry,
-      forward `:clone_agent_result` to the worker, and
-      broadcast an updated status (so the token chip's
+      forward `:spawn_agent_result` to the worker (archiving
+      the child first if it was spawned with `archive: true`),
+      and broadcast an updated status (so the token chip's
       total updates mid-stream).
 
   ## Address strategy
@@ -28,7 +28,7 @@ defmodule Nest.Agents.Agent.SubAgent do
   `Nest.Agents.Registry.via_tuple(space_id, parent_name)`. The
   parent looks the child up in `pending_children` by name (the
   `task_pid` is the only pid we hold; the worker has no
-  registered name, so `:clone_agent_result` reaches it via
+  registered name, so `:spawn_agent_result` reaches it via
   `send/2` from the parent).
   """
 
@@ -42,28 +42,89 @@ defmodule Nest.Agents.Agent.SubAgent do
   alias Nest.Persistence
 
   @doc """
-  Spawn a child of `state` for the supplied `instruction`
-  and remember the `task_pid` so the eventual completion
-  can be forwarded. Returns the GenServer reply tuple.
-  """
-  @spec handle_clone_request(Agent.t(), pid(), String.t()) :: {:reply, term(), Agent.t()}
-  def handle_clone_request(state, task_pid, instruction) do
-    case Supervisor.start_agent_with_parent(state, instruction) do
-      {:ok, child_name} ->
-        chat_state = %{
-          state.chat_state
-          | pending_children: Map.put(state.chat_state.pending_children, child_name, task_pid)
-        }
+  Spawn a child of `state` and remember the `task_pid` so the
+  eventual completion can be forwarded. Unifies the old
+  `clone_agent` (via `clone_context: true`) and the fresh
+  `spawn_agent`. `opts` carries `name`, `vocation_id`,
+  `clone_context`, `query`, and `archive`.
 
-        state = %{state | chat_state: chat_state}
+  Returns the GenServer reply tuple.
+  """
+  @spec handle_spawn_request(Agent.t(), pid(), map()) :: {:reply, term(), Agent.t()}
+  def handle_spawn_request(state, task_pid, opts) do
+    case spawn_child(state, opts) do
+      {:ok, child_name} ->
+        state = track_child(state, child_name, task_pid, opts)
 
         broadcast_subagent_creation(state, child_name)
 
         maybe_test_swap_to_mock(state.space_id, child_name)
 
-        Nest.Agents.chat(state.space_id, child_name, instruction)
+        if Map.get(opts, :query, "") != "" do
+          Nest.Agents.chat(state.space_id, child_name, Map.get(opts, :query))
+        end
 
         {:reply, {:ok, child_name}, state}
+
+      {:error, _reason} = err ->
+        {:reply, err, state}
+    end
+  end
+
+  # Spawn the child via the appropriate path:
+  #   * `clone_context: true` → fork the parent's message history
+  #     (synthetic origin-story fork) at depth parent+1, tracked
+  #     in ChildRegistry so the parent waits for completion.
+  #   * otherwise → fresh-context specialist, `vocation_id`
+  #     defaulting to the parent's.
+  # The spawn is whitelist- and workspace-checked by the
+  # supervisor.
+  defp spawn_child(state, opts) do
+    if Map.get(opts, :clone_context, false) do
+      Supervisor.start_agent_with_parent(state, Map.get(opts, :query, ""))
+    else
+      vocation_id = Map.get(opts, :vocation_id) || state.vocation_id
+      Supervisor.spawn_agent_in_space(state, Map.get(opts, :name, ""), vocation_id)
+    end
+  end
+
+  # Register the child in `pending_children` only when it has a
+  # `query` to answer (the worker is blocked awaiting the
+  # result). A child spawned without a query runs independently
+  # and never calls back, so there's nothing to track. When
+  # `archive` is set, remember the child in
+  # `chat_state.archiving` so `handle_child_completed/4`
+  # archives it after the response is forwarded.
+  defp track_child(state, child_name, task_pid, opts) do
+    if Map.get(opts, :query, "") != "" do
+      chat_state = %{
+        state.chat_state
+        | pending_children: Map.put(state.chat_state.pending_children, child_name, task_pid)
+      }
+
+      archiving =
+        if Map.get(opts, :archive, false) do
+          MapSet.put(state.chat_state.archiving, child_name)
+        else
+          state.chat_state.archiving
+        end
+
+      %{state | chat_state: %{chat_state | archiving: archiving}}
+    else
+      state
+    end
+  end
+
+  @doc """
+  Stop + mark an existing agent in `state`'s space archived.
+  Used by the `agents/archive` tool. The target may be a peer
+  or a child. Returns the GenServer reply tuple.
+  """
+  @spec handle_archive_request(Agent.t(), pid(), String.t()) :: {:reply, term(), Agent.t()}
+  def handle_archive_request(state, _task_pid, name) do
+    case Nest.Agents.Supervisor.archive_agent(state.space_id, name) do
+      :ok ->
+        {:reply, {:ok, name}, state}
 
       {:error, _reason} = err ->
         {:reply, err, state}
@@ -114,38 +175,11 @@ defmodule Nest.Agents.Agent.SubAgent do
   end
 
   @doc """
-  Spawn an independent, fresh-context sub-agent in `state`'s
-  space via `Supervisor.spawn_agent_in_space/3`.
-
-  Unlike `handle_clone_request/3`, this does NOT register a
-  `pending_children` entry or wait for completion — the spawned
-  specialist runs independently and the worker returns
-  immediately with its name. Used by the `spawn_agent` tool.
-
-  The `task_pid` is unused here (the reply is returned
-  synchronously to the worker, which is the same process on a
-  `GenServer.call`), but kept for signature symmetry with
-  `handle_clone_request/3`.
-  """
-  @spec handle_spawn_request(Agent.t(), pid(), String.t(), integer()) ::
-          {:reply, term(), Agent.t()}
-  def handle_spawn_request(state, _task_pid, name, vocation_id) do
-    case Supervisor.spawn_agent_in_space(state, name, vocation_id) do
-      {:ok, spawned_name} ->
-        maybe_test_swap_to_mock(state.space_id, spawned_name)
-        {:reply, {:ok, spawned_name}, state}
-
-      {:error, _reason} = err ->
-        {:reply, err, state}
-    end
-  end
-
-  @doc """
   Merge `child_total_usage` into `state.llm_metrics.descendant_usage`,
-  drop the pending entry, forward `:clone_agent_result` to the
-  blocked worker, and broadcast the updated status. Returns
-  the GenServer reply tuple (which for a `handle_cast` is just
-  `{:noreply, new_state}`).
+  drop the pending entry, forward `:spawn_agent_result` to the
+  blocked worker, archive the child if requested, and broadcast
+  the updated status. Returns the GenServer reply tuple (which
+  for a `handle_cast` is just `{:noreply, new_state}`).
   """
   @spec handle_child_completed(Agent.t(), String.t(), String.t(), map()) ::
           {:noreply, Agent.t()}
@@ -166,17 +200,34 @@ defmodule Nest.Agents.Agent.SubAgent do
               Broadcasts.total_usage(state.llm_metrics.descendant_usage, child_total_usage)
         }
 
-        send(task_pid, {:clone_agent_result, child_name, response})
+        send(task_pid, {:spawn_agent_result, child_name, response})
 
         new_state = %{
           state
-          | chat_state: %{state.chat_state | pending_children: new_pending},
+          | chat_state: %{
+              state.chat_state
+              | pending_children: new_pending,
+                archiving: MapSet.delete(state.chat_state.archiving, child_name)
+            },
             llm_metrics: new_llm_metrics
         }
+
+        maybe_archive_completed_child(new_state, child_name)
 
         Broadcasts.status(new_state)
         {:noreply, new_state}
     end
+  end
+
+  # If the child was spawned with `archive: true`, stop + mark
+  # it archived now that its response has been forwarded. Runs
+  # after the status broadcast so the UI sees the final state.
+  defp maybe_archive_completed_child(state, child_name) do
+    if MapSet.member?(state.chat_state.archiving, child_name) do
+      Nest.Agents.Supervisor.archive_agent(state.space_id, child_name)
+    end
+
+    :ok
   end
 
   # Notify all connected lobby clients that a subagent has
@@ -233,7 +284,10 @@ defmodule Nest.Agents.Agent.SubAgent do
       _ = Supervisor.stop_agent(state.space_id, child_name)
     end)
 
-    %{state | chat_state: %{state.chat_state | pending_children: %{}}}
+    %{
+      state
+      | chat_state: %{state.chat_state | pending_children: %{}, archiving: %MapSet{}}
+    }
   end
 
   @doc """

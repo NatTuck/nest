@@ -95,28 +95,45 @@ The workspace is organized conventionally rather than by enforcement:
 
 Coordinator agents interact with their sub-agents via a standardized logical namespace. Most interactions are **synchronous request-response** cycles.
 
-The existing `clone_agent` tool covers "fork context + spawn + wait for result." The new `agents/*` tools extend this with more structured operations.
+The API is unified around a single general `agents/spawn` that absorbs the old `clone_agent` (via `clone_context`) and exposes optional first-query (`query`) and post-response lifecycle (`archive`) behavior. It is complemented by `agents/query` for interacting with existing agents, `agents/list` for enumeration, and `agents/archive` for lifecycle cleanup. `clone_agent` no longer exists as a separate tool — it is `agents/spawn(clone_context: true, query: "...")`.
 
 ### API endpoints:
 
-- `agents/spawn(name, vocation_id)`: Creates a new agent within the space with a **fresh** context (system prompt + spawn instruction only, no parent message history). Different from `clone_agent` which inherits the parent's full context.
+- `agents/spawn(name, vocation_id?, clone_context?, query?, archive?, timeout?)`: Creates a new agent within the space.
   - `name` must be unique within the space.
-  - Returns the child's `name` on success.
+  - `vocation_id` **defaults to the parent's vocation** — generally optional. Required to differ from the parent (for a fresh specialist with a different role).
+  - `clone_context` (boolean, default `false`): when `false`, the child gets a **fresh** context (system prompt only, no parent history). When `true`, the child **inherits the parent's full context** (synthetic fork origin-story; same vocation) — this is the old `clone_agent` behavior.
+  - `query` (string, optional): when given, sends it as the child's first instruction and **blocks** for the response; otherwise returns immediately.
+  - `archive` (boolean, default `false`): when set **with** `query`, stop + mark the child archived after its response (one-shot). Only meaningful together with `query`.
+  - `timeout` (integer ms, optional): caps how long `spawn` blocks on the query response. Defaults to 5 minutes (300,000 ms). Intended to be raised when the task is slow.
+  - Returns the child's `name` on success; if `query` was given it additionally returns the child's response content.
+  - **Every spawn is a tracked child at `depth = parent + 1`** (unified tree: cascade-stop, descendant usage, sidebar all behave uniformly). This fixes the old fresh-`spawn_agent` inconsistency of `depth: 0` + independent.
 
-- `agents/query(name, prompt)`: Sends a prompt to an **existing** agent in the same space and waits for the response synchronously.
+- `agents/query(name, prompt, timeout?)`: Sends a prompt to an **existing** agent in the same space and waits for the response synchronously.
   - Resolves `name` within the calling agent's space.
   - Reuses the `Agents.chat/3` path (`space_id`, `name`, `content`) under the hood.
-  - Blocks until the agent completes its turn (same pattern as `clone_agent`'s wait in `ToolLoop`).
+  - Blocks until the agent completes its turn (same pattern as `agents/spawn`'s `query` wait in `ToolLoop`).
+  - `timeout` (integer ms, optional): caps how long to block. Defaults to 5 minutes (300,000 ms). Raised when the target is slow.
   - Result returned as tool output.
   - Allows the Coordinator to gather multiple "expert opinions" before synthesizing a final response.
+  - Querying an **archived** agent is an error.
 
-- `agents/list()`: Returns all agents in the current space with their `name`, status, role, and depth.
-  - Simple DB query: `FROM agents WHERE space_id = ^space_id`.
+- `agents/list()`: Returns all **non-archived** agents in the current space with their `name`, status, role, and depth.
+  - Simple DB query: `FROM agents WHERE space_id = ^space_id AND NOT archived`.
 
-### Deferred tools:
+- `agents/archive(name)`: Stop + mark an existing agent archived. Lifecycle cleanup for long-lived specialists spawned without `archive` (or queried repeatedly). Archived agents are excluded from `agents/list` and the lobby sidebar.
 
-- ~~`agents/clone(source_name, new_name)`~~ — Covered by existing `clone_agent`. No change needed.
-- ~~`agents/archive(name)`~~ — Deferred. "Archive" is essentially "stop + mark as archived." The state is already persisted on every message; this would be a lifecycle state addition.
+### Timeout
+
+All blocking sub-agent waits (`agents/spawn` with `query`, and `agents/query`) default to **5 minutes (300,000 ms)** — raised from the earlier 120s clone / 60s query caps, because agent work can legitimately be slow. Both tools accept a `timeout` argument (integer ms) to override. The 250 ms poll slice is unchanged. A block that exceeds the timeout surfaces as a tool error the Coordinator can handle; it is not silently extended.
+
+### DB / lifecycle
+
+`agents` gains an `archived` boolean (default `false`, not null) via migration. Archived agents are filtered from `agents/list` and the lobby sidebar, but are **not** filtered out of persisted message-history / parent-child joins (parents still reference children for cascade and usage). We expect to accumulate many archived rows over time — acceptable now, but a later cleanup/partitioning story is future work.
+
+### Deferred:
+
+- Nothing here is deferred; `agents/archive` is no longer deferred — it is implemented as the lifecycle tool above.
 
 ---
 
@@ -507,3 +524,74 @@ Access-control rules on workspace sub-paths (read-only, coordinator-only, privat
 - RPG-specific feature, not needed for general coordinator pattern
 - Requires channel-layer rejection of out-of-turn messages
 - Can be added as blueprint-specific behavior
+
+---
+
+## PLAN: Unify sub-agent tools into `agents/*` (spawn with clone_context/query/archive, query with timeout, archive tool)
+
+The original plan (§3) called for a namespaced `agents/*` logical API; the
+implementation shipped flat names (`clone_agent`, `spawn_agent`,
+`query_agent`, `list_agents`). This plan implements the finalized §3 API and
+removes `clone_agent` as a separate tool.
+
+### Target API (finalized §3)
+
+- `agents/spawn(name, vocation_id?, clone_context?, query?, archive?, timeout?)` — general spawn; absorbs `clone_agent`.
+- `agents/query(name, prompt, timeout?)` — block on an existing agent.
+- `agents/list()` — enumerate non-archived space agents.
+- `agents/archive(name)` — NEW: stop + mark archived.
+- `clone_agent` and `agents/clone` are eliminated (subsumed by `spawn(clone_context: true, ...)`).
+
+### Renames / merges
+
+- `clone_agent` → removed (folded into `agents/spawn`)
+- `spawn_agent` → `agents/spawn` (now carries `clone_context`, `query`, `archive`, `timeout`)
+- `query_agent` → `agents/query` (now carries `timeout`)
+- `list_agents` → `agents/list`
+- internal plumbing (`Supervisor.spawn_agent_in_space/3`, `Agents.list_agents_for_space/1`, GenServer message atoms, `run_*`/`sub_agent_tool_function/1`) stays.
+
+### Behavior changes
+
+- **Unified tree**: every spawn is a tracked child at `depth = parent + 1`
+  (fresh spawn no longer `depth: 0` + independent). Cascade-stop, descendant
+  usage, and sidebar tree behave uniformly.
+- **Vocation defaults to parent**; required only to differ.
+- **`clone_context: true`** reuses the synthetic fork (`MessageList.extract_clone_instruction`/`build_clone_fork`) and same-vocation inheritance (old `build_child_attrs` clone branch).
+- **`query` present** → block on child completion (`pending_children` + `:child_completed`); returns name + response.
+- **`archive` honored only with `query`** → after response, `Supervisor.stop_agent` + set `archived=true`.
+- **`agents/archive(name)`** → stop + set `archived=true`; querying an archived agent is an error; archived agents excluded from `agents/list` + lobby.
+- **Timeout default 300,000 ms (5 min)** on all blocking waits, overridable via `timeout` arg; 250 ms poll slice unchanged.
+- **Depth filter** gates the spawning tool uniformly at `max_depth`.
+
+### Files to change
+
+**Backend:**
+- `priv/repo/seeds.exs` — tool arrays (`all_tools`, `minimal_tools`)
+- `lib/nest/tools.ex` — `:60` guard, `:71-74` heads, stub `name:` fields, add `agents/archive`; comments
+- `lib/nest/agents/agent/tool_loop.ex` — merge `run_clone_agent`+`run_spawn_agent` into `run_spawn_agent` (flags); add `run_archive_agent`; unify timeout; result names
+- `lib/nest/agents/agent/system_prompt.ex` — delegation section documents the unified tools; depth filter gates spawn
+- `lib/nest/messages/message_list.ex` — keep fork builders for the clone branch
+- `lib/nest/agents/agent/config.ex` — doc comment
+- `lib/nest/agents/agent/sub_agent.ex` — merge `handle_clone_request`/`handle_spawn_request`; conditional blocking; archive-after-response
+- `lib/nest/agents/supervisor.ex` — `spawn_agent_in_space` gains clone-context + depth + registry tracking; add `archive_agent/2`
+- `lib/nest/agents/agent.ex` — `build_child_attrs` = clone branch; fresh branch via `create_agent`
+- `lib/nest/agents/agent/callbacks.ex` — drop `:clone_agent_request`/`:clone_agent_result`; `:spawn_agent_request` carries flags; add archive message
+- `agents` schema/changeset — `archived` field
+- Migration — `add :archived, :boolean, default: false, null: false` to `agents`
+- Lobby / `Agents` queries — filter archived agents from `agents/list`, `visible_agents_across_spaces`, sidebar
+
+**Frontend:**
+- `assets/js/components/DelegatedTaskBlock.jsx` — render `agents/spawn` (clone branch) instead of `clone_agent`
+- `ChatPage.test.jsx` / `DelegatedTaskBlock.test.jsx` fixtures → new names
+
+**Tests:**
+- `test/nest/agents/agent/sub_agent_tools_test.exs`
+- `test/nest/agents/agent/system_prompt_depth_filter_test.exs` (add: spawn filtered at max depth)
+- archive behavior tests (spawn+query+archive, `agents/archive`, archived-query error, list/lobby filtering)
+- `%Part.ToolResult{name: ...}` assertions → new names
+
+### Verify
+
+- Re-run `mix run priv/repo/seeds.exs` so existing vocation `tools` arrays
+  are upserted to the new names (seeds are idempotent).
+- `mix precommit` fully green (credo, Elixir tests, JS tests, coverage ≥90%).

@@ -94,8 +94,9 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
 
   # Test-friendly: returns the `pending_children` map so
   # a test can assert which workers are currently parked
-  # on a `clone_agent` tool call. Production code should
-  # use `:get_total_usage` / `get_public_info` instead.
+  # on an `agents/spawn` (with `query`) tool call. Production
+  # code should use `:get_total_usage` / `get_public_info`
+  # instead.
   def handle(:get_pending_children, _from, state) do
     {:reply, state.chat_state.pending_children, state}
   end

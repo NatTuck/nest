@@ -19,6 +19,7 @@ defmodule Nest.Spaces do
   alias Nest.Persistence
   alias Nest.Repo
   alias Nest.Spaces.Space
+  alias Nest.Vocations
 
   @doc """
   List all spaces visible to the given user.
@@ -178,12 +179,12 @@ defmodule Nest.Spaces do
   Resolve the spawnable-vocation whitelist for a space.
 
   Returns `nil` when the space has no blueprint (or the
-  blueprint is missing) — meaning `spawn_agent` allows any
+  blueprint is missing) — meaning `agents/spawn` allows any
   vocation. Otherwise returns the blueprint's
   `spawnable_vocation_ids` (an empty list also means
   unrestricted; a non-empty list is a strict whitelist).
 
-  `spawn_agent` enforcement lives in
+  `agents/spawn` enforcement lives in
   `Nest.Agents.Supervisor.spawn_agent_in_space/3`, which calls
   this to authorize a requested `vocation_id`.
   """
@@ -247,8 +248,9 @@ defmodule Nest.Spaces do
     # constraint on insert (a raw `Ecto.ConstraintError`) instead
     # of surfacing a clean `{:error, :blueprint_missing}`.
     with {:ok, root_vocation_id} <- resolve_root_vocation(attrs),
+         :ok <- ensure_root_workspace(attrs, root_vocation_id),
          {:ok, %Space{} = space} <-
-           create_space(user_id, Map.take(attrs, [:name, :slug, :blueprint_id])),
+           create_space(user_id, Map.take(attrs, [:name, :slug, :blueprint_id, :workspace_path])),
          agent_opts = build_root_agent_opts(user_id, attrs, space, root_vocation_id),
          {:ok, agent_name} <- Agents.create_agent(space.id, attrs[:model], agent_opts) do
       {space, agent_name}
@@ -256,6 +258,29 @@ defmodule Nest.Spaces do
       {:error, reason} -> Repo.rollback(reason)
     end
   end
+
+  # The workspace is a space property that agents inherit. When the
+  # resolved root vocation's agents expect a workspace (their caps
+  # write to `":workspace"`), the space must be given one up front —
+  # otherwise the root agent would start with a nil workspace and its
+  # file/shell tools would fail at runtime. Reject the creation
+  # immediately instead.
+  defp ensure_root_workspace(attrs, root_vocation_id) do
+    case Vocations.get_vocation(root_vocation_id) do
+      nil -> :ok
+      vocation -> ensure_workspace_for(vocation, attrs)
+    end
+  end
+
+  defp ensure_workspace_for(%Nest.Vocations.Vocation{} = vocation, attrs) do
+    if Vocations.requires_workspace?(vocation) and is_nil(attrs[:workspace_path]) do
+      {:error, :workspace_required}
+    else
+      :ok
+    end
+  end
+
+  defp ensure_workspace_for(_vocation, _attrs), do: :ok
 
   # Vocation resolution order:
   #
@@ -292,7 +317,9 @@ defmodule Nest.Spaces do
     [
       name: root_agent_name(attrs, space),
       vocation_id: root_vocation_id,
-      workspace_path: attrs[:workspace_path],
+      # The workspace is a space property; the root agent inherits
+      # the space's path (an explicit override in `attrs` still wins).
+      workspace_path: attrs[:workspace_path] || space.workspace_path,
       created_by_user_id: user_id,
       shared: Map.get(attrs, :shared, false)
     ]

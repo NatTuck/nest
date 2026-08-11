@@ -73,6 +73,7 @@ defmodule NestWeb.LobbyChannel do
       blueprints: blueprints,
       models: models,
       vocations: vocations,
+      suggested_name: Spaces.suggest_name(),
       current_user: public_current_user(user),
       invites:
         user.id

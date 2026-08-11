@@ -21,7 +21,8 @@ defmodule Nest.Agents.PersistedAgent do
   ## Sub-agent tree
 
   `parent_id` is the integer `agents.id` of the agent that
-  spawned this one via the `clone_agent` tool (nil for roots).
+  spawned this one via the `agents/spawn` tool (with
+  `clone_context`) (nil for roots).
   `depth` is the agent's tree depth (0 for roots; `parent.depth
   + 1` for children). Both columns survive a BEAM restart so the
   agent's tree position is reconstructed on reload. The runtime
@@ -46,6 +47,7 @@ defmodule Nest.Agents.PersistedAgent do
           depth: non_neg_integer(),
           created_by_user_id: integer() | nil,
           shared: boolean(),
+          archived: boolean(),
           inserted_at: DateTime.t() | nil,
           updated_at: DateTime.t() | nil
         }
@@ -98,6 +100,13 @@ defmodule Nest.Agents.PersistedAgent do
     field :created_by_user_id, :integer
     field :shared, :boolean, default: false
 
+    # Lifecycle. `archived` marks an agent as stopped + hidden
+    # from `agents/list` and the lobby sidebar. Archived rows
+    # accumulate over time (fine for now; a cleanup/partitioning
+    # story is future work). Archived agents are NOT excluded
+    # from persisted message-history / parent-child joins.
+    field :archived, :boolean, default: false
+
     timestamps(type: :utc_datetime)
   end
 
@@ -130,7 +139,8 @@ defmodule Nest.Agents.PersistedAgent do
       :parent_id,
       :depth,
       :created_by_user_id,
-      :shared
+      :shared,
+      :archived
     ])
     |> validate_required([:name, :space_id, :model])
     |> validate_length(:name, min: 1)

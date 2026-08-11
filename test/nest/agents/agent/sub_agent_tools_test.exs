@@ -1,19 +1,19 @@
 defmodule Nest.Agents.Agent.SubAgentToolsTest do
   @moduledoc """
   E2E test that drives a coordinator's full chat turn through
-  `MockClient.run/2` and confirms the Phase 3 `spawn_agent` and
-  `list_agents` tools produce correctly-paired
+  `MockClient.run/2` and confirms the unified `agents/spawn`,
+  `agents/list`, and `agents/query` tools produce correctly-paired
   `assistant[tool] → tool[result]` messages.
 
   ## Pipeline under test
 
     1. Coordinator Agent A starts with a vocation whose
-       `tools` include `spawn_agent` (and `list_agents`).
+       `tools` include the `agents/spawn`, `agents/list`, and `agents/query` tools.
     2. A's MockClient FIFO returns a tool call for the tool
        under test, then a final text response.
     3. `ToolLoop` intercepts the sub-agent tool, routes it
        through the coordinator GenServer (`:spawn_agent_request`)
-       or reads the space inline (`list_agents`), and returns
+       or reads the space inline (`agents/list`), and returns
        a synthetic `ToolResult`.
     4. The coordinator's next MockClient run produces the
        final text; A goes `:idle`.
@@ -40,7 +40,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     {:ok, vid: upsert_tools_vocation()}
   end
 
-  test "spawn_agent tool creates a specialist and returns its name", %{vid: vid} do
+  test "agents/spawn tool creates a specialist and returns its name", %{vid: vid} do
     {coordinator_pid, _name} =
       AgentTestHelpers.start_agent(%{
         model: %{name: "qwen3.5-plus", provider: "model-studio"},
@@ -55,7 +55,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
       tool_calls: [
         %{
           id: "call_spawn_1",
-          name: "spawn_agent",
+          name: "agents/spawn",
           arguments: %{"name" => specialist_name, "vocation_id" => specialist_vid}
         }
       ]
@@ -79,7 +79,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     {:tool, tool_msg} =
       Enum.find(coordinator_state.chat_state.messages, fn
         {:tool, %{parts: parts}} ->
-          Enum.any?(parts, &match?(%Part.ToolResult{name: "spawn_agent"}, &1))
+          Enum.any?(parts, &match?(%Part.ToolResult{name: "agents/spawn"}, &1))
 
         _ ->
           false
@@ -87,7 +87,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
 
     assert [
              %Part.ToolResult{
-               name: "spawn_agent",
+               name: "agents/spawn",
                content: content,
                is_error: false
              }
@@ -96,7 +96,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     assert content =~ specialist_name
   end
 
-  test "list_agents tool returns the space's running agents", %{vid: vid} do
+  test "agents/list tool returns the space's running agents", %{vid: vid} do
     {coordinator_pid, _name} =
       AgentTestHelpers.start_agent(%{
         model: %{name: "qwen3.5-plus", provider: "model-studio"},
@@ -105,7 +105,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
 
     space_id = AgentTestHelpers.current_space_id()
 
-    # Pre-seed a specialist so `list_agents` has something to show.
+    # Pre-seed a specialist so `agents/list` has something to show.
     specialist_name = "listed-#{System.unique_integer([:positive])}"
     specialist_vid = specialist_vocation_id()
 
@@ -125,7 +125,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
 
     MockClient.set_tool_response(%{
       text: "listing",
-      tool_calls: [%{id: "call_list_1", name: "list_agents", arguments: %{}}]
+      tool_calls: [%{id: "call_list_1", name: "agents/list", arguments: %{}}]
     })
 
     MockClient.set_response("coordinator done")
@@ -140,7 +140,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     {:tool, tool_msg} =
       Enum.find(coordinator_state.chat_state.messages, fn
         {:tool, %{parts: parts}} ->
-          Enum.any?(parts, &match?(%Part.ToolResult{name: "list_agents"}, &1))
+          Enum.any?(parts, &match?(%Part.ToolResult{name: "agents/list"}, &1))
 
         _ ->
           false
@@ -148,7 +148,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
 
     assert [
              %Part.ToolResult{
-               name: "list_agents",
+               name: "agents/list",
                content: content,
                is_error: false
              }
@@ -157,7 +157,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     assert content =~ specialist_name
   end
 
-  test "query_agent tool sends a chat to a specialist and returns its response", %{vid: vid} do
+  test "agents/query tool sends a chat to a specialist and returns its response", %{vid: vid} do
     {coordinator_pid, _name} =
       AgentTestHelpers.start_agent(%{
         model: %{name: "qwen3.5-plus", provider: "model-studio"},
@@ -176,7 +176,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
       tool_calls: [
         %{
           id: "call_query_1",
-          name: "query_agent",
+          name: "agents/query",
           arguments: %{"name" => specialist_name, "prompt" => "what is 2+2?"}
         }
       ]
@@ -194,7 +194,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     {:tool, tool_msg} =
       Enum.find(coordinator_state.chat_state.messages, fn
         {:tool, %{parts: parts}} ->
-          Enum.any?(parts, &match?(%Part.ToolResult{name: "query_agent"}, &1))
+          Enum.any?(parts, &match?(%Part.ToolResult{name: "agents/query"}, &1))
 
         _ ->
           false
@@ -202,7 +202,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
 
     assert [
              %Part.ToolResult{
-               name: "query_agent",
+               name: "agents/query",
                content: content,
                is_error: false
              }
@@ -218,7 +218,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
         name: "SubAgentTools #{System.unique_integer([:positive])}",
         description: "Coordinator with sub-agent tools",
         system_prompt: "Coordinate specialists in this space.",
-        tools: ["spawn_agent", "list_agents", "query_agent", "context"],
+        tools: ["agents/spawn", "agents/list", "agents/query", "context"],
         modes: %{
           "chat" => %{
             "description" => "Chat",
@@ -245,7 +245,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
   end
 
   # Spawn an independent specialist into `space_id` (via the same
-  # `Supervisor.spawn_agent_in_space/3` the `spawn_agent` tool
+  # `Supervisor.spawn_agent_in_space/3` the `agents/spawn` tool
   # uses) and wire it up to answer a query:
   #
   #   * Swap its HTTP client to `MockClient` so its chat turn

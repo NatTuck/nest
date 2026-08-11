@@ -13,7 +13,7 @@ defmodule Nest.Agents.Agent.SubAgentTest do
 
     * `handle_child_completed/4` merges the child's total
       usage into `descendant_usage`, removes the pending
-      entry, and forwards `:clone_agent_result` to the
+      entry, and forwards `:spawn_agent_result` to the
       blocked worker.
     * When `handle_child_completed/4` arrives for an
       unknown child (e.g. double-completion), the
@@ -33,7 +33,7 @@ defmodule Nest.Agents.Agent.SubAgentTest do
   alias Nest.Agents.Agent.SubAgent
 
   describe "handle_child_completed/4" do
-    test "merges child usage, drops the pending entry, forwards :clone_agent_result" do
+    test "merges child usage, drops the pending entry, forwards :spawn_agent_result" do
       parent = build_parent_state()
       task_pid = self()
       child_name = "completed-child-#{System.unique_integer([:positive])}"
@@ -53,7 +53,7 @@ defmodule Nest.Agents.Agent.SubAgentTest do
 
       # Forwarded to the worker — the test process is the
       # worker.
-      assert_receive {:clone_agent_result, ^child_name, "done"}, 200
+      assert_receive {:spawn_agent_result, ^child_name, "done"}, 200
 
       # Pending entry removed.
       assert new_state.chat_state.pending_children == %{}
@@ -82,13 +82,13 @@ defmodule Nest.Agents.Agent.SubAgentTest do
 
       total_a = %{Broadcasts.empty_usage_totals() | output_tokens: 10, total_input_tokens: 50}
       {:noreply, state} = SubAgent.handle_child_completed(state, child_a, "a", total_a)
-      assert_receive {:clone_agent_result, ^child_a, "a"}, 200
+      assert_receive {:spawn_agent_result, ^child_a, "a"}, 200
 
       state = put_in(state.chat_state.pending_children[child_b], task_pid)
 
       total_b = %{Broadcasts.empty_usage_totals() | output_tokens: 20, total_input_tokens: 70}
       {:noreply, state} = SubAgent.handle_child_completed(state, child_b, "b", total_b)
-      assert_receive {:clone_agent_result, ^child_b, "b"}, 200
+      assert_receive {:spawn_agent_result, ^child_b, "b"}, 200
 
       # Cumulative: 10 + 20 = 30 output, 50 + 70 = 120 input.
       assert state.llm_metrics.descendant_usage.output_tokens == 30

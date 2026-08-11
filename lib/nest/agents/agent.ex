@@ -5,7 +5,7 @@ defmodule Nest.Agents.Agent.TreePosition do
   the parent doesn't push past the 16-field cap.
 
   `parent_id` is the integer `agents.id` of the agent that
-  spawned this one via `clone_agent`. `nil` for root agents.
+  spawned this one via `agents/spawn` (with `clone_context`). `nil` for root agents.
   `parent_name` is the parent's readable identifier (a
   String), held so the child can dispatch messages to the
   parent's GenServer through `Agents.Registry.via_tuple/2`
@@ -64,7 +64,7 @@ defmodule Nest.Agents.Agent do
     :created_by_user_id,
     # `depth` is the agent's distance from its tree root (0 =
     # root). Children inherit their parent's `depth + 1`; the
-    # `clone_agent` tool is only available when `depth <
+    # `agents/spawn` tool is only available when `depth <
     # configured_max_depth()`. Persisted via `agents.depth`.
     depth: 0,
     # `shared` mirrors `agents.shared` so the lobby filter

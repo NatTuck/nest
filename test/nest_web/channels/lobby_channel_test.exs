@@ -15,14 +15,11 @@ defmodule NestWeb.LobbyChannelTest do
   alias Nest.Repo
   alias Nest.Vocations
 
-  # The channel's `:after_join` spawns a supervised `Task` for
-  # `broken_agents`; in async mode the inner `Repo.all` raises
-  # `DBConnection.OwnershipError`, rescued to `[]` (module-level
-  # `capture_log` swallows the death). Setup stops leftover agent
-  # pids (`Supervisor.stop_agent/1` is idempotent) before deleting
-  # their DB rows, closing the parallel-test ghost-pid race window;
-  # then a fresh user is created and a token signed so the socket
-  # connect can authenticate.
+  # The `:after_join` spawns a supervised `Task` for `broken_agents`;
+  # in async mode the inner `Repo.all` raises `DBConnection.OwnershipError`,
+  # rescued to `[]` (module-level `capture_log` swallows the death). Setup
+  # stops leftover agent pids (idempotent) before deleting their rows to close
+  # the parallel-test ghost-pid race, then creates a user + token for connect.
   setup do
     {:ok, space_id} = AgentTestHelpers.create_test_space()
 
@@ -75,6 +72,7 @@ defmodule NestWeb.LobbyChannelTest do
       assert is_list(payload.vocations)
       assert is_list(payload.blueprints)
       assert is_list(payload.spaces)
+      assert payload.suggested_name not in [nil, ""]
     end
 
     test "returns vocations with correct JSON structure" do

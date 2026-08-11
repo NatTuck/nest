@@ -19,6 +19,7 @@ defmodule Nest.Agents.Supervisor do
   alias Nest.Agents.PersistedAgent
   alias Nest.Persistence
   alias Nest.Spaces
+  alias Nest.Vocations
 
   @supervisor_name __MODULE__
 
@@ -177,15 +178,38 @@ defmodule Nest.Agents.Supervisor do
           {:ok, String.t()} | {:error, term()}
   def spawn_agent_in_space(parent_state, name, vocation_id)
       when is_map(parent_state) and is_binary(name) and is_integer(vocation_id) do
-    with :ok <- authorize_spawn(parent_state.space_id, vocation_id) do
+    with :ok <- authorize_spawn(parent_state.space_id, vocation_id),
+         :ok <- ensure_spawn_workspace(parent_state, vocation_id) do
       Nest.Agents.create_agent(
         parent_state.space_id,
         parent_state.model,
         name: name,
         vocation_id: vocation_id,
+        # Sub-agents inherit the parent's workspace path so a
+        # workspace-needing child spawned by a parent in a workspace
+        # space keeps access to that workspace.
+        workspace_path: parent_state.workspace_path,
         created_by_user_id: parent_state.created_by_user_id,
         shared: parent_state.shared
       )
+    end
+  end
+
+  # A sub-agent whose vocation expects a workspace can't be spawned if
+  # the parent has no workspace to inherit (e.g. a Chat parent spawning
+  # a Programmer child). Reject immediately rather than starting a child
+  # whose file/shell tools would fail at runtime.
+  defp ensure_spawn_workspace(parent_state, vocation_id) do
+    case Vocations.get_vocation(vocation_id) do
+      nil ->
+        :ok
+
+      vocation ->
+        if Vocations.requires_workspace?(vocation) and is_nil(parent_state.workspace_path) do
+          {:error, :workspace_required}
+        else
+          :ok
+        end
     end
   end
 
@@ -210,6 +234,18 @@ defmodule Nest.Agents.Supervisor do
         do: _ = stop_agent(space_id, child_name)
 
     stop_one(space_id, name)
+  end
+
+  @doc """
+  Stops an agent by its `{space_id, name}` and marks its DB
+  row archived. Used by the `agents/archive` tool and the
+  `archive` spawn flag. `:ok` whether or not the process was
+  running; the DB row is still marked archived either way.
+  """
+  @spec archive_agent(integer(), String.t()) :: :ok | {:error, :not_found}
+  def archive_agent(space_id, name) do
+    _ = stop_agent(space_id, name)
+    Persistence.archive_agent(space_id, name)
   end
 
   defp stop_one(space_id, name) do

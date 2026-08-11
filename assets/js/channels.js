@@ -80,6 +80,7 @@ export function joinLobby(onOk, onError) {
     store.setVocations(payload.vocations || []);
     store.setSpaces(payload.spaces || []);
     store.setBlueprints(payload.blueprints || []);
+    store.setSuggestedName(payload.suggested_name);
     // `currentSpaceId` is client-side state. Seed it to the first
     // space (the initial sidebar selection) unless one is already
     // set.
@@ -664,14 +665,21 @@ export function createSpace(model, vocationId, onOk, onError, opts = {}) {
 
 /**
  * Ask the lobby for a unique, readable space-name suggestion
- * (adjective-animal, e.g. "clever-raven"). The new-space form
- * pre-fills the name field with it. `onOk` receives the suggested
- * name string.
+ * (adjective-animal, e.g. "clever-raven"). Stores it in
+ * `store.suggestedName` (which the new-space form pre-fills) and,
+ * when `onOk` is given, also passes the name to it.
+ *
+ * The initial suggestion arrives with the lobby `init` payload;
+ * call this again after a space is created so the next suggestion
+ * doesn't collide with the used name.
  */
 export function suggestSpaceName(onOk) {
   if (!lobbyChannel) return;
   lobbyChannel.push("suggest_space_name", {}).receive("ok", (resp) => {
-    if (onOk && resp?.name) onOk(resp.name);
+    if (resp?.name) {
+      getStore().setSuggestedName(resp.name);
+      if (onOk) onOk(resp.name);
+    }
   });
 }
 

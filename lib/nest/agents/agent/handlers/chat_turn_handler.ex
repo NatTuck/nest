@@ -75,11 +75,11 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
   # (the message is in the list, the live partial is no
   # longer valid), and transition to :idle.
   #
-  # If this agent has a parent (`clone_agent` spawned
-  # it), forward a `:child_completed` cast so the parent
-  # can merge our total usage into its `descendant_usage`,
-  # forward `:clone_agent_result` to the blocked tool
-  # worker, and broadcast its updated status.
+  # If this agent has a parent (an `agents/spawn` with
+  # `clone_context` spawned it), forward a `:child_completed`
+  # cast so the parent can merge our total usage into its
+  # `descendant_usage`, forward `:spawn_agent_result` to the
+  # blocked tool worker, and broadcast its updated status.
   defp chat_idle(state) do
     state = %{
       state
@@ -108,7 +108,7 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
   # (already inclusive of any grandchildren — see
   # `Broadcasts.total_usage/2`) up the tree. The parent's
   # `handle_cast({:child_completed, ...}, _)` merges the
-  # usage and forwards `:clone_agent_result` to the tool
+  # usage and forwards `:spawn_agent_result` to the tool
   # worker that's been blocked on our completion.
   #
   # We compute `total_usage` directly from the LLM metrics

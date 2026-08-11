@@ -23,7 +23,7 @@ defmodule Nest.Agents.SupervisorSubagentTest do
       without a pid lookup).
     * `Agents.delete_agent/1` cascade-walks children
       before terminating the parent.
-    * A grandchild (clone_agent of clone_agent) is also
+    * A grandchild (agents/spawn of agents/spawn) is also
       cleaned up when the root parent dies.
     * `cascade_children_only/1` stops children WITHOUT
       terminating the named parent.
@@ -193,7 +193,7 @@ defmodule Nest.Agents.SupervisorSubagentTest do
         name: "Subagent Supervisor Test Vocation #{System.unique_integer([:positive])}",
         description: "Subagent test default",
         system_prompt: "You are a test agent.",
-        tools: ["context", "clone_agent"],
+        tools: ["context", "agents/spawn"],
         modes: %{
           "chat" => %{
             "description" => "General conversation.",

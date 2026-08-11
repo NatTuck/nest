@@ -28,7 +28,7 @@ alias Nest.Vocations
     name: "Default",
     description: "A minimal default vocation for agents without a specific role",
     system_prompt: "You are a helpful assistant.",
-    tools: ["context", "clone_agent"],
+    tools: ["context", "agents/spawn"],
     modes: %{
       "chat" => %{
         "description" => "General conversation.",
@@ -75,7 +75,7 @@ alias Nest.Vocations
       "edit",
       "shell_cmd",
       "context",
-      "clone_agent"
+      "agents/spawn"
     ],
     modes: %{
       "build" => %{
@@ -112,13 +112,13 @@ all_tools = [
   "edit",
   "shell_cmd",
   "context",
-  "clone_agent",
-  "spawn_agent",
-  "query_agent",
-  "list_agents"
+  "agents/spawn",
+  "agents/query",
+  "agents/list",
+  "agents/archive"
 ]
 
-minimal_tools = ["context", "clone_agent"]
+minimal_tools = ["context", "agents/spawn"]
 
 # Chat — general-purpose conversation with no filesystem/network.
 {:ok, chat_vocation} =

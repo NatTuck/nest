@@ -78,7 +78,8 @@ defmodule Nest.Agents.Visibility do
   defp persisted_visible(space_id, user_id) do
     from(a in PersistedAgent,
       where: a.space_id == ^space_id,
-      where: a.created_by_user_id == ^user_id or a.shared == true
+      where: a.created_by_user_id == ^user_id or a.shared == true,
+      where: a.archived == false
     )
     |> Repo.all()
     |> Enum.map(fn %PersistedAgent{

@@ -1,10 +1,10 @@
 defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
   @moduledoc """
-  Focused E2E test for the clone_agent wiring that does NOT
+  Focused E2E test for the agents/spawn wiring that does NOT
   drive LLM on the child. We:
     1. Start a parent under the supervisor.
     2. Issue a raw `GenServer.call` to the parent (acting as
-       the tool worker) for `:clone_agent_request`.
+       the tool worker) for `:spawn_agent_request`.
     3. Verify the parent spawns a child, registers it in the
        ChildRegistry, replies with the child's name, and
        remembers the worker pid under that child.
@@ -48,7 +48,7 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
     {:ok, vid: upsert_vocation()}
   end
 
-  test "raw :clone_agent_request to the parent spawns, registers, and replies",
+  test "raw :spawn_agent_request to the parent spawns, registers, and replies",
        %{vid: vid} do
     Process.flag(:trap_exit, true)
     {:ok, parent_name, parent_pid, parent_id} = start_parent(vid)
@@ -63,7 +63,7 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
     {:ok, child_name} =
       GenServer.call(
         parent_pid,
-        {:clone_agent_request, self(), "do the thing"},
+        {:spawn_agent_request, self(), %{query: "do the thing", clone_context: true}},
         5_000
       )
 
@@ -80,7 +80,7 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
     # The parent's pending_children contains our pid under
     # the new child's name. (Without this, the parent's
     # worker dispatcher wouldn't know where to forward
-    # `:clone_agent_result`.)
+    # `:spawn_agent_result`.)
     pending_children = GenServer.call(parent_pid, :get_pending_children)
     assert pending_children[child_name] == self()
 
@@ -98,7 +98,7 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
     {:ok, child_name} =
       GenServer.call(
         parent_pid,
-        {:clone_agent_request, self(), "x"},
+        {:spawn_agent_request, self(), %{query: "x", clone_context: true}},
         5_000
       )
 
@@ -117,7 +117,7 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
         name: "SubAgentRegistration Vocation #{System.unique_integer([:positive])}",
         description: "Sub-agent raw-registration test",
         system_prompt: "x",
-        tools: ["clone_agent", "context"],
+        tools: ["agents/spawn", "context"],
         modes: %{
           "chat" => %{
             "description" => "Chat",

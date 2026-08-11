@@ -89,25 +89,22 @@ defmodule Nest.Agents.Agent.Callbacks do
   end
 
   # Sub-agent: a tool worker (running in the chat turn) is
-  # blocked on the tool dispatch and has hit a `clone_agent`
-  # tool call. Spawn a child agent, kick off its chat
-  # turn with the supplied instruction, remember the
-  # worker's pid so we can forward the eventual
-  # `:clone_agent_result`, and reply synchronously with the
-  # child's name so the worker can match its `receive` on
-  # child identity.
-  def handle_call({:clone_agent_request, task_pid, instruction}, _from, state) do
-    SubAgent.handle_clone_request(state, task_pid, instruction)
+  # blocked on the tool dispatch and has hit an `agents/spawn`
+  # tool call. `opts` carries `name`, `vocation_id`,
+  # `clone_context`, `query`, and `archive`. Spawn the child
+  # (fresh or context-cloned), kick off its chat turn with the
+  # `query` (if any), remember the worker's pid so we can
+  # forward the eventual `:spawn_agent_result`, and reply
+  # synchronously with the child's name so the worker can match
+  # its `receive` on child identity.
+  def handle_call({:spawn_agent_request, task_pid, opts}, _from, state) do
+    SubAgent.handle_spawn_request(state, task_pid, opts)
   end
 
-  # Sub-agent: a tool worker hit a `spawn_agent` call. Spawn an
-  # independent, fresh-context specialist in the coordinator's
-  # space (whitelist-checked by
-  # `Supervisor.spawn_agent_in_space/3`) and reply synchronously
-  # with its name. No pending-child tracking — the specialist
-  # runs independently.
-  def handle_call({:spawn_agent_request, task_pid, name, vocation_id}, _from, state) do
-    SubAgent.handle_spawn_request(state, task_pid, name, vocation_id)
+  # Sub-agent: a tool worker hit an `agents/archive` call. Stop +
+  # mark the named agent in this space archived.
+  def handle_call({:archive_agent_request, task_pid, name}, _from, state) do
+    SubAgent.handle_archive_request(state, task_pid, name)
   end
 
   # User clicked Stop. Synchronously mark the in-flight

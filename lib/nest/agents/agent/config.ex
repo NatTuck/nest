@@ -110,7 +110,7 @@ defmodule Nest.Agents.Agent.Config do
   unset.
 
   Used by `SystemPrompt.compose_vocation_config/4` to
-  filter the `clone_agent` tool out of an agent's tool
+  filter the `agents/spawn` tool out of an agent's tool
   list when the agent is at the maximum depth (cannot
   spawn further children).
   """

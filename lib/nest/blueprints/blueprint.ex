@@ -20,10 +20,10 @@ defmodule Nest.Blueprints.Blueprint do
   * `root_vocation_id` — the root agent's vocation when a
     space is created from this blueprint. Always set.
   * `spawnable_vocation_ids` — whitelist of vocation ids the
-    space's agents are allowed to spawn via the `spawn_agent`
+    space's agents are allowed to spawn via the `agents/spawn`
     tool. `[]` (or `nil`) means **unrestricted** — any
     vocation may be spawned. A non-empty list is a strict
-    whitelist; `spawn_agent` rejects vocations outside it.
+    whitelist; `agents/spawn` rejects vocations outside it.
     A space without a blueprint (or with a missing blueprint)
     is also unrestricted.
   * `workspace_template` — map of initial workspace files.

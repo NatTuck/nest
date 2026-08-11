@@ -194,6 +194,32 @@ defmodule Nest.Vocations do
   def get_caps(%Vocation{}, _mode), do: {:error, :unknown_mode}
 
   @doc """
+  Whether the vocation's agents expect a workspace directory.
+
+  Derived from the vocation's mode caps: a vocation requires a
+  workspace iff any of its modes writes to the symbolic `":workspace"`
+  path. Deriving keeps this correct automatically — a vocation whose
+  caps write to `":workspace"` (e.g. `Programmer`, `Game Master`) needs
+  one, while one that only writes to `/tmp` (e.g. `Chat`) does not.
+
+  A vocation with no modes, or modes with no `caps.fs.write`, never
+  requires a workspace.
+  """
+  @spec requires_workspace?(Vocation.t() | nil) :: boolean()
+  def requires_workspace?(%Vocation{modes: modes}) when is_map(modes) do
+    Enum.any?(modes, fn {_name, mode} -> mode_write_workspace?(mode) end)
+  end
+
+  def requires_workspace?(_vocation), do: false
+
+  defp mode_write_workspace?(%{"caps" => %{"fs" => %{"write" => writes}}})
+       when is_list(writes) do
+    ":workspace" in writes
+  end
+
+  defp mode_write_workspace?(_mode), do: false
+
+  @doc """
   Returns the sorted list of mode names for a vocation.
 
   Returns `["chat"]` for vocations with no modes defined (the
