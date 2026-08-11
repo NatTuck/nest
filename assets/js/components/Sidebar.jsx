@@ -254,7 +254,7 @@ export function Sidebar() {
   };
 
   const isActive = (path) => {
-    if (path === "/spaces/new" || path === "/new_agent") {
+    if (path === "/spaces/new") {
       return location.pathname === path;
     }
     return location.pathname.startsWith(path);

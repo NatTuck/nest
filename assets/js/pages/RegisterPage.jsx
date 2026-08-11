@@ -7,7 +7,7 @@
  * the users table is empty. The bootstrap path lands here
  * via the `PageController.home/2` redirect.
  *
- * On successful registration we navigate to `/new_agent`.
+ * On successful registration we navigate to `/spaces`.
  * The WS connection establishes when that route mounts.
  *
  * Login/register pages intentionally don't check
@@ -40,7 +40,7 @@ export function RegisterPage() {
 
     try {
       await register({ username, password, token });
-      navigate("/new_agent", { replace: true });
+      navigate("/spaces", { replace: true });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Registration failed");
       setSubmitting(false);

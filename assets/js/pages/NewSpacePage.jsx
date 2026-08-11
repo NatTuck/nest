@@ -12,10 +12,10 @@
  * - Loading state
  */
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useStore } from "../store";
-import { createSpace } from "../channels";
+import { createSpace, rescanModels, suggestSpaceName } from "../channels";
 
 /**
  * Validate the new-space form before firing the lobby push.
@@ -51,15 +51,54 @@ export function NewSpacePage() {
   const navigate = useNavigate();
   const models = useStore((s) => s.models);
   const blueprints = useStore((s) => s.blueprints);
+  const vocations = useStore((s) => s.vocations);
   const [name, setName] = useState("");
   const [selectedBlueprint, setSelectedBlueprint] = useState("");
   const [selectedModel, setSelectedModel] = useState("");
   const [isCreating, setIsCreating] = useState(false);
+  const [isRescanning, setIsRescanning] = useState(false);
   const [error, setError] = useState(null);
 
   const selectedBlueprintData = blueprints?.find(
     (b) => b.id.toString() === selectedBlueprint,
   );
+  const selectedVocationName = selectedBlueprintData
+    ? vocations.find((v) => v.id === selectedBlueprintData.root_vocation_id)
+        ?.name
+    : null;
+
+  // Reset the rescan spinner when the merged catalog lands. The
+  // `rescan_models` push reply is `:ok`; the real catalog arrives
+  // via the follow-up `models_updated` broadcast which replaces the
+  // whole `models` array in the store.
+  const lastModelsRef = useRef(models);
+
+  useEffect(() => {
+    if (lastModelsRef.current !== models && isRescanning) {
+      lastModelsRef.current = models;
+      setIsRescanning(false);
+    }
+  }, [models, isRescanning]);
+
+  // Pre-fill the name with a unique adjective-animal suggestion
+  // from the backend. The push resolves asynchronously, so only
+  // apply it if the user hasn't typed anything yet.
+  useEffect(() => {
+    suggestSpaceName((suggested) => {
+      setName((current) => current || suggested);
+    });
+  }, []);
+
+  const handleRescanModels = () => {
+    setIsRescanning(true);
+    rescanModels(
+      () => {},
+      (err) => {
+        setIsRescanning(false);
+        setError(err?.message || "Failed to rescan providers");
+      },
+    );
+  };
 
   const handleCreateSpace = () => {
     const validationError = validateNewSpaceForm({
@@ -158,20 +197,75 @@ export function NewSpacePage() {
             ))}
           </select>
           {selectedBlueprintData && (
-            <p className="mt-2 text-sm text-gray-600">
-              {selectedBlueprintData.description}
-            </p>
+            <div className="mt-2 text-sm text-gray-600 space-y-1">
+              {selectedVocationName && (
+                <p>
+                  Root agent vocation:{" "}
+                  <span className="font-medium text-gray-800">
+                    {selectedVocationName}
+                  </span>
+                </p>
+              )}
+              {selectedBlueprintData.description && (
+                <p>{selectedBlueprintData.description}</p>
+              )}
+            </div>
           )}
         </div>
 
         {/* Model selection */}
         <div className="mb-6">
-          <label
-            htmlFor="space-model-select"
-            className="block text-sm font-medium text-gray-700 mb-2"
-          >
-            Select Model
-          </label>
+          <div className="flex items-end justify-between mb-2 gap-3">
+            <label
+              htmlFor="space-model-select"
+              className="block text-sm font-medium text-gray-700"
+            >
+              Select Model
+            </label>
+            <button
+              type="button"
+              onClick={handleRescanModels}
+              disabled={isRescanning || isCreating}
+              aria-label="Rescan providers"
+              className={`
+                inline-flex items-center gap-2 px-3 py-1.5 rounded-md
+                text-xs font-medium border transition-all
+                ${
+                  isRescanning || isCreating
+                    ? "bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed"
+                    : "bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100 hover:border-amber-300 active:bg-amber-200"
+                }
+              `}
+            >
+              {isRescanning ? (
+                <>
+                  <svg
+                    className="animate-spin h-3.5 w-3.5"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    aria-hidden="true"
+                  >
+                    <circle
+                      className="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      strokeWidth="4"
+                    />
+                    <path
+                      className="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                    />
+                  </svg>
+                  Rescanning…
+                </>
+              ) : (
+                "Rescan providers"
+              )}
+            </button>
+          </div>
           <select
             id="space-model-select"
             value={selectedModel}

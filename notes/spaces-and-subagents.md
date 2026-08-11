@@ -6,12 +6,12 @@ The goal is to move from a simple "Collection of Agents" to "Collaborative Envir
 ## Decisions captured during Phase 1 closeout
 
 - **No synthetic default space.** Every `space_id` is a real `Space.id`. The migration does not seed a fallback row.
-- **No "active space" state.** Every operation that touches an agent carries `{space_id, agent_id}` explicitly. The LobbyChannel resolves the user's primary space (auto-created on first connect) and pins it in `socket.assigns.primary_space_id`, but the channel never infers a space from "the current session."
+- **No "active space" state.** Every operation that touches an agent carries `{space_id, agent_id}` explicitly. The LobbyChannel never infers a space from "the current session."
 - **No "new agent" flow.** The unit of creation is a space. `Spaces.create_space_with_root_agent/2` creates the space and its root agent in a single transaction. The lobby's old `create_agent` push is replaced by `create_space`.
 - **Required args are positional.** `space_id` is the first positional argument on every public API (`Agents.create_agent(space_id, model, opts)`, `Agents.chat(space_id, name, content)`, etc.). It does not live in `opts`.
 - **Identity is `{space_id, agent_name}` everywhere.** PubSub topics, Channel topics, Registry keys, and Persistence lookups all use the composite key.
 - **`ChildRegistry` is space-scoped.** Parent→children maps are keyed by `{space_id, name}` so children with the same name in different spaces don't collide.
-- **Primary space is lazy.** Every user gets exactly one primary space, created on first WS connect by `Spaces.ensure_primary_space/1`. The lobby pins this in `socket.assigns.primary_space_id` and uses it as the default scope for `change_model` and `delete_agent` until the JS client ships the explicit `space_id`. See "Phase 1 followups" below.
+- **No primary space.** Spaces are never auto-created on connect (`Spaces.ensure_primary_space/1` was removed). A user starts with zero spaces and creates one explicitly. Every channel operation requires an explicit `space_id` in the payload — there is no `primary_space_id` fallback. The lobby's `init` payload loads agents across **all** the user's spaces (not a single primary one).
 
 ---
 
@@ -63,8 +63,8 @@ Spaces are created from **Blueprints**, which define the "rules of engagement":
 - **Agents**: Names are unique **within a space**, not globally. The composite key `{space_id, name}` is the unique agent identifier everywhere.
 - **Hierarchies**: Agents can be named using slashes (e.g., `guard_1`, `npc/bard`) to represent logical hierarchy. Since names are per-space, `guard_1` in one space is unrelated to `guard_1` in another.
 
-### Primary Space
-Each user has a `primary_space_id` — the space that the lobby uses as the default for the user's first session after registration. It is created automatically on first WS connect by `Nest.Spaces.ensure_primary_space/1`. The user can create additional spaces; the lobby's `:after_join` always resolves the user's "first" space (ordered by `inserted_at`) as the primary for that session.
+### Space Selection
+There is no primary space. Spaces are never auto-created on connect; a user starts with zero spaces and creates one via `Spaces.create_space_with_root_agent/2`. The lobby's `:after_join` loads the user's spaces and the agents across all of them. The frontend's "selected space" (`currentSpaceId`) is client-side state, seeded from the first space in the `init` `spaces` payload for the initial sidebar highlight.
 
 ---
 
@@ -171,7 +171,6 @@ Nest.Spaces.get_space(id) :: %Space{} | nil
 Nest.Spaces.get_by_slug(slug) :: %Space{} | nil
 Nest.Spaces.create_space(user_id, attrs) :: {:ok, %Space{}} | {:error, Ecto.Changeset.t()}
 Nest.Spaces.delete_space(id) :: :ok | {:error, :not_found}
-Nest.Spaces.ensure_primary_space(user_id) :: {:ok, %Space{}}
 Nest.Spaces.create_space_with_root_agent(user_id, attrs) :: {:ok, %Space{}, String.t()} | {:error, term()}
 ```
 
@@ -276,18 +275,18 @@ Agent channel:    "agent:#{space_id}:#{name}"
 11. **`ModelHandler.perform_set_model/2`** passes `state.space_id` to `Persistence.update_agent_model`.
 
 **Context module & API:**
-12. **`Nest.Spaces`** — `list_for_user/1`, `get_space/1`, `get_by_slug/1`, `create_space/2`, `delete_space/1`, **`ensure_primary_space/1`**, **`create_space_with_root_agent/2`**.
+12. **`Nest.Spaces`** — `list_for_user/1`, `get_space/1`, `get_by_slug/1`, `create_space/2`, `delete_space/1`, **`create_space_with_root_agent/2`**.
 13. **`Nest.Agents` public API** — `space_id` as first positional arg on every function.
 
 **Channel & PubSub changes:**
 14. **`AgentChannel`** joins as `"agent:#{space_id}:#{name}"`. Subscribes to PubSub topic of the same name.
-15. **`LobbyChannel`** `:after_join` calls `Nest.Spaces.ensure_primary_space/1` and stashes `primary_space_id` in socket assigns. Replaces `create_agent` push with `create_space` push. `delete_agent` and `change_model` use `primary_space_id` (with a fallback to `payload["space_id"]` — see Phase 1 followups).
+15. **`LobbyChannel`** `:after_join` loads the user's spaces and the agents across all of them. Replaces `create_agent` push with `create_space` push. `delete_agent` and `change_model` require an explicit `space_id` in the payload (no fallback).
 16. **`LobbyChannel.Authz`** takes `(space_id, name)` as positional args.
 
 **Tests:**
 17. Full test suite migration to use `space_id` in all agent operations.
 18. Registry partition tests (same name, different spaces → different agents).
-19. Space CRUD, primary-space creation, space-with-root-agent transactional flow.
+19. Space CRUD, space-with-root-agent transactional flow.
 20. New test files for Spaces and for the create_space channel handler.
 
 **Phase 1 followups:**
@@ -296,8 +295,8 @@ A handful of small cleanups surfaced during the closeout review. **F1–F4 all l
 
 - **[DONE] F1. Restore `parent_name` from the DB on agent restore.** `Persistence.build_attrs_for_start/2` now looks up the parent row's `name` by `parent_id` (same space) and includes it in the returned attrs. Two regression tests in `supervisor_subagent_test.exs` pin the restore path (child carries `parent_name`; root has `parent_name: nil`).
 - **[DONE] F2. Strip stale docstrings.** Updated `broadcasts.ex:6` (`agent:<space_id>:<name>`), `agent.ex` (`fetch_agent/2`), `sub_agent.ex` (`via_tuple(space_id, parent_name)`), `persisted_agent.ex` (reach parent via `fetch_agent/2` by `parent_id`), the `create_spaces` migration (removed the synthetic-default paragraph), and `spaces.ex` `delete_space` (docstring now matches the code: caller is responsible for terminating agents first).
-- **[DONE] F3. Annotate the `payload["space_id"] || primary_space_id` fallback.** Both `change_model` and `delete_agent` in `LobbyChannel` now carry a "Phase 1 followup (F3)" comment noting the fallback is safe today (one primary space per user) but must be removed once the JS client ships `space_id` in Phase 4.
-- **[DONE] F4. Unify wire field naming.** Chose **snake_case `space_id`** for all space-id wire fields (`agent:created`, `agent:init`, `chat:status`) and `current_space_id` for the lobby `init` key. Landed in Phase 4.
+- **[DONE] F3. Remove the `primary_space_id` fallback.** The `payload["space_id"] || primary_space_id` fallback in `change_model` and `delete_agent` was removed once the JS client always sent `space_id`. The entire primary-space concept was later deleted (see the "No primary space" note above).
+- **[DONE] F4. Unify wire field naming.** Chose **snake_case `space_id`** for all space-id wire fields (`agent:created`, `agent:init`, `chat:status`) and `current_space_id` for the lobby `init` key. Landed in Phase 4. (`current_space_id` was later dropped from the init payload when the primary space was removed; `currentSpaceId` is now client-side state.)
 
 ### Phase 2: Blueprints  **[DONE]** (2 items deferred to Phase 3)
 
@@ -378,7 +377,7 @@ A handful of small cleanups surfaced during the closeout review. **F1–F4 all l
    - `space:created` broadcast handled (adds the space to the store).
 5. **[DONE] Main View (`SpaceView`)**: default "space overview" showing the space's agents + status with links to each Agent View. Blueprint-driven `main_view_config` layouts remain a future extension (all seeded blueprints have empty `main_view_config`).
 6. **[DONE] Agent View (`ChatPage`)**: reads `{spaceSlug, name}` from the route, resolves `space_id` from the store, and joins `agent:<space_id>:<name>` (fixing the pre-Phase-4 broken single-name topic). `changeAgentModel`/`deleteAgent` thread `space_id`; parent back-link is `/space/:slug/agent/:parent`.
-7. **[DONE] F4 — wire-field naming unified to snake_case `space_id`**: `agent:created`, `agent:init` (`space_id`), `chat:status` (`space_id`), and the lobby `init` key `current_space_id`. Removed the camelCase `spaceId` variants.
+7. **[DONE] F4 — wire-field naming unified to snake_case `space_id`**: `agent:created`, `agent:init` (`space_id`), `chat:status` (`space_id`), and the lobby `init` key `current_space_id`. Removed the camelCase `spaceId` variants. (Later, when the primary space was removed, `current_space_id` was dropped from `init`; `currentSpaceId` is now client-side state seeded from the first space.)
 8. **[DONE] Backend**:
    - Lobby `init` payload now includes `blueprints: Blueprints.list_blueprints()` (the blueprint picker's data source).
    - All wire `spaceId` → `space_id`.
@@ -404,7 +403,7 @@ A handful of small cleanups surfaced during the closeout review. **F1–F4 all l
    - **Deferred by decision** in the Phase 5 lifecycle pass: the `ChildRegistry` rekeying for parent/child agents is the risky part; a safe subset (rename a root with no children) is possible but the full child-aware rename needs its own focused effort.
 4. **Multi-participant** (optional): Space membership, sharing, role-based access.
 5. **Structured turn-taking** (optional): Phase state, `current_turn_owner`, UI input gating.
-6. **Tests**: Space-deletion cascade + rename covered in `test/nest/spaces_test.exs`. Lifecycle integration (delete via the channel, primary-space re-creation) is a Phase 4 follow-on.
+6. **Tests**: Space-deletion cascade + rename covered in `test/nest/spaces_test.exs`. Lifecycle integration (delete via the channel) is a Phase 4 follow-on.
 
 ### Phase 5 followups (structural cleanup from Phase 1 review)
 

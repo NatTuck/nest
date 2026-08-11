@@ -100,48 +100,158 @@ alias Nest.Vocations
     }
   })
 
-# ---- Phase 2: Blueprints ----
+# ---- Role vocations ----
+# Beyond the minimal `Default` fallback, every root vocation gets
+# the full toolset. `Chat` is deliberately minimal (conversation
+# only), matching the old default-agent behavior.
+
+all_tools = [
+  "read_file",
+  "inspect_file",
+  "write_file",
+  "edit",
+  "shell_cmd",
+  "context",
+  "clone_agent",
+  "spawn_agent",
+  "query_agent",
+  "list_agents"
+]
+
+minimal_tools = ["context", "clone_agent"]
+
+# Chat — general-purpose conversation with no filesystem/network.
+{:ok, chat_vocation} =
+  Vocations.upsert_vocation(%{
+    name: "Chat",
+    description: "A general-purpose conversational agent.",
+    system_prompt: "You are a helpful assistant.",
+    tools: minimal_tools,
+    modes: %{
+      "chat" => %{
+        "description" => "General conversation.",
+        "caps" => %{
+          "net" => false,
+          "fs" => %{"read" => ["/"], "write" => ["/tmp"]}
+        }
+      }
+    }
+  })
+
+# Code Review Coordinator — reviews code, spawns specialist reviewers.
+{:ok, code_review_vocation} =
+  Vocations.upsert_vocation(%{
+    name: "Code Review Coordinator",
+    description: "A coordinator that reviews code and spawns specialist reviewers.",
+    system_prompt:
+      "You are a code review coordinator. Coordinate reviewers and synthesize their findings.",
+    tools: all_tools,
+    modes: %{
+      "chat" => %{
+        "description" => "General conversation.",
+        "caps" => %{
+          "net" => true,
+          "fs" => %{"read" => ["/"], "write" => ["/tmp", ":workspace"]}
+        }
+      }
+    }
+  })
+
+# Game Master — runs a tabletop RPG campaign.
+{:ok, game_master_vocation} =
+  Vocations.upsert_vocation(%{
+    name: "Game Master",
+    description: "A game master that runs tabletop RPG campaigns.",
+    system_prompt:
+      "You are a tabletop RPG game master. Narrate the world, run NPCs, and arbitrate the rules.",
+    tools: all_tools,
+    modes: %{
+      "chat" => %{
+        "description" => "General conversation.",
+        "caps" => %{
+          "net" => true,
+          "fs" => %{"read" => ["/"], "write" => ["/tmp", ":workspace"]}
+        }
+      }
+    }
+  })
+
+# Grading Coordinator — grades work and spawns specialist graders.
+{:ok, grading_vocation} =
+  Vocations.upsert_vocation(%{
+    name: "Grading Coordinator",
+    description: "A coordinator that grades submissions and spawns specialist graders.",
+    system_prompt:
+      "You are a grading coordinator. Coordinate graders and synthesize their assessments.",
+    tools: all_tools,
+    modes: %{
+      "chat" => %{
+        "description" => "General conversation.",
+        "caps" => %{
+          "net" => true,
+          "fs" => %{"read" => ["/"], "write" => ["/tmp", ":workspace"]}
+        }
+      }
+    }
+  })
+
+# ---- Blueprints ----
 # Each blueprint pins a root vocation (so the space's first
 # agent starts with the right role) and lists vocations the
-# space's agents are allowed to spawn. `workspace_template`
-# and `main_view_config` ship as empty maps — Phase 2
-# doesn't read them; Phase 3 will consume `workspace_template`
-# and Phase 4 will consume `main_view_config`.
+# space's agents are allowed to spawn. `spawnable_vocation_ids: []`
+# means unrestricted. `workspace_template` and `main_view_config`
+# ship as empty maps for now.
 
-default_vid = default_vocation.id
+chat_vid = chat_vocation.id
 programmer_vid = programmer_vocation.id
+code_review_vid = code_review_vocation.id
+game_master_vid = game_master_vocation.id
+grading_vid = grading_vocation.id
 
-# "Agent" — single-agent space, no restrictions. Mirrors the
-# pre-Phase-1 behavior: every user gets a Default-rooted agent
-# in their primary space. `spawnable_vocation_ids: []` means
-# unrestricted (any vocation may be spawned).
+# The old "Agent" blueprint (rooted in `Default`) is obsolete —
+# the default set is now the five role blueprints below. Delete it
+# so it no longer appears in the picker.
+case Blueprints.get_by_slug("agent") do
+  nil -> :ok
+  %Nest.Blueprints.Blueprint{} = blueprint -> Blueprints.delete_blueprint(blueprint)
+end
+
 {:ok, _} =
   Blueprints.upsert_blueprint(%{
-    name: "Agent",
-    description: "A single-agent space with no spawning restrictions.",
-    root_vocation_id: default_vid,
+    name: "Chat",
+    description: "A single-agent conversational space.",
+    root_vocation_id: chat_vid,
     spawnable_vocation_ids: []
   })
 
-# "Tabletop RPG" — DM root with NPC spawnable vocations.
-# Left unrestricted until real NPC vocations are seeded; a
-# future seed can narrow `spawnable_vocation_ids` to the
-# specific NPC vocations.
 {:ok, _} =
   Blueprints.upsert_blueprint(%{
-    name: "Tabletop RPG",
-    description: "A Dungeon Master root agent that spawns NPC specialists.",
-    root_vocation_id: default_vid,
+    name: "Coding",
+    description: "A coding agent that reads and writes a workspace.",
+    root_vocation_id: programmer_vid,
     spawnable_vocation_ids: []
   })
 
-# "Code Review" — Reviewer root, language-specialist
-# sub-vocations. Left unrestricted until real specialist
-# vocations are seeded.
 {:ok, _} =
   Blueprints.upsert_blueprint(%{
     name: "Code Review",
-    description: "A Reviewer root agent that spawns language-specialist sub-agents.",
-    root_vocation_id: programmer_vid,
+    description: "A coordinator that reviews code with specialist sub-agents.",
+    root_vocation_id: code_review_vid,
+    spawnable_vocation_ids: []
+  })
+
+{:ok, _} =
+  Blueprints.upsert_blueprint(%{
+    name: "Tabletop RPG",
+    description: "A game master that runs a tabletop RPG campaign.",
+    root_vocation_id: game_master_vid,
+    spawnable_vocation_ids: []
+  })
+
+{:ok, _} =
+  Blueprints.upsert_blueprint(%{
+    name: "Grading",
+    description: "A coordinator that grades submissions with specialist sub-agents.",
+    root_vocation_id: grading_vid,
     spawnable_vocation_ids: []
   })

@@ -8,15 +8,15 @@ defmodule NestWeb.LobbyChannel do
   - Deleting agents
   - Changing an agent's model
 
-  The `:after_join` resolves the user's primary space
-  (`Nest.Spaces.ensure_primary_space/1`) and stashes it
-  in `socket.assigns.primary_space_id`. Every operation
-  that touches an agent runs against that space.
+  The `:after_join` loads the user's spaces and the agents
+  across all of them (so the sidebar can render every space's
+  agent tree). Every operation that touches an agent carries
+  its `space_id` explicitly in the payload.
 
   Topic format: `"lobby"`. The wire payload of the `init`
-  event includes the user's full spaces list and the
-  primary space's agents, so the sidebar can render the
-  selection without an extra round-trip.
+  event includes the user's full spaces list and the agents
+  across all spaces, so the sidebar can render the selection
+  without an extra round-trip.
   """
 
   use NestWeb, :channel
@@ -60,21 +60,14 @@ defmodule NestWeb.LobbyChannel do
   def handle_info(:after_join, socket) do
     user = socket.assigns.current_user
 
-    # Resolve (or lazily create) the user's primary space.
-    # The primary space is the lobby's default scope for every
-    # Agents.* call on this socket.
-    {:ok, primary_space} = Spaces.ensure_primary_space(user.id)
-    primary_space_id = primary_space.id
-
     spaces = Spaces.list_for_user(user.id)
-    agents = Agents.list_visible_agents_for(primary_space_id, user.id)
+    agents = visible_agents_across_spaces(spaces, user.id)
     vocations = Vocations.list_vocations()
     blueprints = Blueprints.list_blueprints()
     models = safe_models_list()
 
     push(socket, "init", %{
       spaces: spaces,
-      current_space_id: primary_space_id,
       agents: agents,
       broken_agents: [],
       blueprints: blueprints,
@@ -89,12 +82,9 @@ defmodule NestWeb.LobbyChannel do
 
     Phoenix.PubSub.subscribe(Nest.PubSub, "models")
 
-    socket =
-      socket
-      |> assign(:primary_space_id, primary_space_id)
-      |> assign(:user_id, user.id)
+    socket = assign(socket, :user_id, user.id)
 
-    fetch_broken_agents_async(socket, primary_space_id, user.id)
+    fetch_broken_agents_async(socket, spaces, user.id)
     {:noreply, socket}
   end
 
@@ -140,14 +130,12 @@ defmodule NestWeb.LobbyChannel do
   end
 
   @impl true
-  def handle_in("change_model", %{"model" => model_params, "name" => name} = payload, socket)
+  def handle_in(
+        "change_model",
+        %{"model" => model_params, "name" => name, "space_id" => space_id},
+        socket
+      )
       when is_map(model_params) do
-    # Phase 1 followup (F3): drop the primary_space_id fallback
-    # once the JS client always sends `space_id`. Today every user
-    # has exactly one primary space so the fallback is safe, but
-    # Phase 4 ships multi-space UI and the fallback could resolve
-    # to the wrong space.
-    space_id = payload["space_id"] || socket.assigns.primary_space_id
     user = socket.assigns.current_user
 
     case Authz.authorize_owner_or_shared(space_id, name, user) do
@@ -168,10 +156,7 @@ defmodule NestWeb.LobbyChannel do
 
   @impl true
   def handle_in("delete_agent", payload, socket) when is_map(payload) do
-    # Phase 1 followup (F3): drop the primary_space_id fallback
-    # once the JS client always sends `space_id`. See the matching
-    # note in `change_model/3` below.
-    space_id = payload["space_id"] || socket.assigns.primary_space_id
+    space_id = payload["space_id"]
     name = payload["name"]
     user = socket.assigns.current_user
 
@@ -198,6 +183,11 @@ defmodule NestWeb.LobbyChannel do
   end
 
   @impl true
+  def handle_in("suggest_space_name", _payload, socket) do
+    {:reply, {:ok, %{"name" => Spaces.suggest_name()}}, socket}
+  end
+
+  @impl true
   def handle_in("create_invite", payload, socket) do
     Invites.create_invite(payload, socket)
   end
@@ -209,13 +199,25 @@ defmodule NestWeb.LobbyChannel do
 
   # -- Private helpers --
 
-  defp fetch_broken_agents_async(_socket, space_id, user_id) do
+  # Agents visible to `user_id` across every space in `spaces`,
+  # flattened into one list. The sidebar renders a per-space agent
+  # tree, so the init payload carries every space's agents rather
+  # than a single "primary" space's.
+  defp visible_agents_across_spaces(spaces, user_id) do
+    Enum.flat_map(spaces, fn %Spaces.Space{id: space_id} ->
+      Agents.list_visible_agents_for(space_id, user_id)
+    end)
+  end
+
+  defp fetch_broken_agents_async(_socket, spaces, user_id) do
     parent = self()
 
     Task.Supervisor.start_child(Nest.Agents.TaskSupervisor, fn ->
       result =
         try do
-          fetch_broken_agents(space_id, user_id)
+          Enum.flat_map(spaces, fn %Spaces.Space{id: space_id} ->
+            fetch_broken_agents(space_id, user_id)
+          end)
         catch
           _, _ -> []
         end

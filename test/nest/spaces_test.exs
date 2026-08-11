@@ -5,10 +5,9 @@ defmodule Nest.SpacesTest do
   agent's `vocation_id` from the supplied `blueprint_id`
   when the caller doesn't pass an explicit `vocation_id:`.
 
-  Earlier Phase 1 work covered `create_space/2`,
-  `ensure_primary_space/1`, and `delete_space/1`. These
-  tests cover the Phase 2 surface area added by the
-  blueprints work.
+  Earlier Phase 1 work covered `create_space/2` and
+  `delete_space/1`. These tests cover the Phase 2 surface
+  area added by the blueprints work.
   """
   use Nest.DataCase, async: true
 
@@ -238,6 +237,28 @@ defmodule Nest.SpacesTest do
       # A's slug, but the name constraint fires first).
       assert {:error, %Ecto.Changeset{} = cs} = Spaces.rename_space(id_b, %{name: name_a})
       assert errors_on(cs).name != []
+    end
+  end
+
+  describe "suggest_name/0" do
+    test "returns a non-empty adjective-animal name" do
+      name = Spaces.suggest_name()
+
+      assert is_binary(name) and name != ""
+      assert String.contains?(name, "-")
+    end
+
+    test "does not collide with an existing space name", %{user_id: user_id} do
+      {:ok, %Space{name: existing}} =
+        Spaces.create_space(user_id, %{
+          name: "existing-space-#{System.unique_integer([:positive])}"
+        })
+
+      # `generate_unique` excludes the existing-name set, so the
+      # suggestion must never come back as the space we created.
+      for _ <- 1..20 do
+        refute Spaces.suggest_name() == existing
+      end
     end
   end
 

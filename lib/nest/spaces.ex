@@ -5,21 +5,15 @@ defmodule Nest.Spaces do
   Spaces are containers for groups of collaborating agents.
   Every agent belongs to exactly one space. There is no
   synthetic default space — every `space_id` is a real
-  `Space.id` allocated by the application.
-
-  ## Primary space
-
-  Each user has a *primary space* — the first space in their
-  catalog (ordered by `inserted_at`). It's created lazily on
-  first WS connect by `ensure_primary_space/1`. The lobby pins
-  this space in `socket.assigns.primary_space_id` so every
-  channel operation has a real `space_id` to pass through.
+  `Space.id` allocated by the application, and no space is
+  auto-created on connect. A user starts with no spaces and
+  creates one explicitly via `create_space_with_root_agent/2`.
   """
 
   import Ecto.Query, warn: false
 
-  alias Nest.Accounts
   alias Nest.Agents
+  alias Nest.Agents.NameGenerator
   alias Nest.Agents.Supervisor
   alias Nest.Blueprints
   alias Nest.Persistence
@@ -39,6 +33,21 @@ defmodule Nest.Spaces do
       order_by: [asc: s.inserted_at]
     )
     |> Repo.all()
+  end
+
+  @doc """
+  Suggest a unique, readable space name (adjective-animal format,
+  e.g. "clever-raven").
+
+  Space names are globally unique, so the suggestion is generated
+  against the set of *all* space names, not just the current user's.
+  The new-space form pre-fills this so a user can create a space
+  without typing a name, without colliding with an existing one.
+  """
+  @spec suggest_name() :: String.t()
+  def suggest_name do
+    existing = Repo.all(from(s in Space, select: s.name))
+    NameGenerator.generate_unique(MapSet.new(existing))
   end
 
   @doc """
@@ -163,42 +172,6 @@ defmodule Nest.Spaces do
     |> Enum.each(fn %{name: name} ->
       _ = Persistence.delete_agent(space_id, name)
     end)
-  end
-
-  @doc """
-  Ensure the user has a primary space. Returns the user's
-  first space if one exists; otherwise creates a personal space
-  named "<username>'s space" with slug `"<username>-personal"`.
-
-  Called on the lobby's `:after_join` so the channel always
-  has a real `space_id` to pass to `Agents.*` calls.
-
-  Returns `{:ok, %Space{}}` or `{:error, term()}`.
-  """
-  @spec ensure_primary_space(integer()) :: {:ok, Space.t()} | {:error, term()}
-  def ensure_primary_space(user_id) when is_integer(user_id) do
-    case list_for_user(user_id) do
-      [space | _] ->
-        {:ok, space}
-
-      [] ->
-        create_personal_space(user_id)
-    end
-  end
-
-  defp create_personal_space(user_id) do
-    case Accounts.get_user(user_id) do
-      nil ->
-        {:error, :user_not_found}
-
-      %{username: username} ->
-        attrs = %{
-          name: "#{username}'s space",
-          slug: "#{username}-personal"
-        }
-
-        create_space(user_id, attrs)
-    end
   end
 
   @doc """

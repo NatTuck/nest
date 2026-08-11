@@ -14,7 +14,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 
-let mockState = { models: [], blueprints: [] };
+let mockState = { models: [], blueprints: [], vocations: [] };
 
 vi.mock("../store", () => ({
   useStore: (selector) => selector(mockState),
@@ -22,10 +22,14 @@ vi.mock("../store", () => ({
 
 const mocks = vi.hoisted(() => ({
   createSpace: vi.fn(),
+  suggestSpaceName: vi.fn(),
+  rescanModels: vi.fn(),
 }));
 
 vi.mock("../channels", () => ({
   createSpace: mocks.createSpace,
+  suggestSpaceName: mocks.suggestSpaceName,
+  rescanModels: mocks.rescanModels,
 }));
 
 import { NewSpacePage, validateNewSpaceForm } from "./NewSpacePage";
@@ -42,8 +46,23 @@ function renderPage() {
 }
 
 const sampleBlueprints = [
-  { id: 1, name: "Agent", description: "A single-agent space." },
-  { id: 2, name: "Code Review", description: "A reviewer space." },
+  {
+    id: 1,
+    name: "Chat",
+    description: "A conversational space.",
+    root_vocation_id: 10,
+  },
+  {
+    id: 2,
+    name: "Grading",
+    description: "A grading space.",
+    root_vocation_id: 20,
+  },
+];
+
+const sampleVocations = [
+  { id: 10, name: "Chat" },
+  { id: 20, name: "Grading Coordinator" },
 ];
 
 const sampleModels = [
@@ -95,8 +114,38 @@ describe("validateNewSpaceForm", () => {
 
 describe("NewSpacePage", () => {
   beforeEach(() => {
-    mockState = { models: sampleModels, blueprints: sampleBlueprints };
+    mockState = {
+      models: sampleModels,
+      blueprints: sampleBlueprints,
+      vocations: sampleVocations,
+    };
     mocks.createSpace.mockReset();
+    mocks.suggestSpaceName.mockReset();
+    mocks.rescanModels.mockReset();
+  });
+
+  it("pre-fills the name with a suggestion from the backend", async () => {
+    mocks.suggestSpaceName.mockImplementation((onOk) => {
+      onOk("clever-raven");
+    });
+
+    renderPage();
+
+    expect(await screen.findByDisplayValue("clever-raven")).toBeInTheDocument();
+    expect(mocks.suggestSpaceName).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not overwrite a name the user has already typed", () => {
+    mocks.suggestSpaceName.mockImplementation((onOk) => {
+      onOk("clever-raven");
+    });
+
+    renderPage();
+    fireEvent.change(screen.getByLabelText("Space Name"), {
+      target: { value: "My Project" },
+    });
+
+    expect(screen.getByLabelText("Space Name")).toHaveValue("My Project");
   });
 
   it("renders the form with blueprint and model options", () => {
@@ -108,16 +157,29 @@ describe("NewSpacePage", () => {
 
     expect(screen.getByLabelText("Space Name")).toBeInTheDocument();
 
-    expect(screen.getByRole("option", { name: "Agent" })).toBeInTheDocument();
-    expect(
-      screen.getByRole("option", { name: "Code Review" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Chat" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Grading" })).toBeInTheDocument();
 
     expect(
       screen.getByRole("option", { name: "qwen3.5-plus (model-studio)" }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("option", { name: "gpt-4o (openai)" }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows the selected blueprint's root agent vocation", () => {
+    renderPage();
+
+    fireEvent.change(screen.getByLabelText("Select Blueprint"), {
+      target: { value: "2" },
+    });
+
+    expect(
+      screen.getByText((content) => content.includes("Grading Coordinator")),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText((content) => content.includes("Root agent vocation")),
     ).toBeInTheDocument();
   });
 
@@ -148,7 +210,7 @@ describe("NewSpacePage", () => {
       target: { value: "2" },
     });
 
-    expect(screen.getByText("A reviewer space.")).toBeInTheDocument();
+    expect(screen.getByText("A grading space.")).toBeInTheDocument();
   });
 
   it("calls createSpace with the space name and blueprint_id on valid submit", () => {
@@ -198,7 +260,11 @@ describe("NewSpacePage", () => {
   });
 
   it("falls back to a name-only model object when the model is unknown", () => {
-    mockState = { models: [], blueprints: sampleBlueprints };
+    mockState = {
+      models: [],
+      blueprints: sampleBlueprints,
+      vocations: sampleVocations,
+    };
 
     renderPage();
 
@@ -302,5 +368,23 @@ describe("NewSpacePage", () => {
     expect(
       screen.getByRole("option", { name: "Choose a blueprint..." }),
     ).toBeInTheDocument();
+  });
+
+  it("calls rescanModels when the Rescan providers button is clicked", () => {
+    renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: "Rescan providers" }));
+
+    expect(mocks.rescanModels).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a Rescanning spinner while the rescan is in flight", () => {
+    renderPage();
+
+    const button = screen.getByRole("button", { name: "Rescan providers" });
+    fireEvent.click(button);
+
+    expect(button).toHaveTextContent(/rescanning/i);
+    expect(button).toBeDisabled();
   });
 });

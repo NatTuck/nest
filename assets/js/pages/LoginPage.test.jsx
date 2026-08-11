@@ -4,7 +4,7 @@
  * Covers:
  *  - The form's initial render (heading, two inputs,
  *    submit button, register link)
- *  - Successful login navigates to /new_agent
+ *  - Successful login navigates to /spaces
  *  - Failed login surfaces the server's error string
  *  - Failed login with a non-ApiError falls back to the
  *    generic "Login failed" message
@@ -27,7 +27,13 @@ vi.mock("../api/auth", () => ({
 import { login } from "../api/auth";
 
 async function renderPage() {
-  return renderWithRouter(<LoginPage />, { route: "/login" });
+  return renderWithRouter(<LoginPage />, {
+    route: "/login",
+    routes: [
+      { path: "/login", element: <LoginPage /> },
+      { path: "/spaces", element: <div>Spaces landing</div> },
+    ],
+  });
 }
 
 describe("LoginPage", () => {
@@ -56,7 +62,7 @@ describe("LoginPage", () => {
     );
   });
 
-  it("submits the form and navigates to /new_agent on success", async () => {
+  it("submits the form and navigates to /spaces on success", async () => {
     login.mockResolvedValueOnce({
       token: "tok",
       user: { id: 1, username: "alice", is_admin: false },
@@ -74,6 +80,8 @@ describe("LoginPage", () => {
     await waitFor(() => {
       expect(login).toHaveBeenCalledWith("alice", "hunter2");
     });
+
+    expect(await screen.findByText("Spaces landing")).toBeInTheDocument();
   });
 
   it("surfaces the server's error message on a 4xx response", async () => {

@@ -80,8 +80,11 @@ export function joinLobby(onOk, onError) {
     store.setVocations(payload.vocations || []);
     store.setSpaces(payload.spaces || []);
     store.setBlueprints(payload.blueprints || []);
-    if (payload.current_space_id !== undefined) {
-      store.setCurrentSpaceId(payload.current_space_id);
+    // `currentSpaceId` is client-side state. Seed it to the first
+    // space (the initial sidebar selection) unless one is already
+    // set.
+    if (payload.spaces?.length > 0 && store.currentSpaceId == null) {
+      store.setCurrentSpaceId(payload.spaces[0].id);
     }
     // `current_user` is the JSON-safe slice the server sends
     // on every lobby init. Overwrite whatever the store has
@@ -530,21 +533,11 @@ export function leaveAgent(agentId) {
  * Send chat message to specific agent. The optional `mode` selects
  * the sandbox profile for this message's tool calls. The optional
  * `onError` callback fires when the server rejects the push.
- *
- * Call shape is overloaded for back-compat:
- *   sendMessage(id, content)
- *   sendMessage(id, content, onError)
- *   sendMessage(id, content, mode, onError)
  */
-export function sendMessage(agentId, content, modeOrOnError, onError) {
-  // Back-compat: 3rd arg may be a function (onError) or a string (mode)
-  const mode = typeof modeOrOnError === "function" ? undefined : modeOrOnError;
-  const errorCallback =
-    typeof modeOrOnError === "function" ? modeOrOnError : onError;
-
+export function sendMessage(agentId, content, mode, onError) {
   const channel = agentChannels.get(agentId);
   if (!channel) {
-    if (errorCallback) errorCallback(new Error("Not connected to agent"));
+    if (onError) onError(new Error("Not connected to agent"));
     return;
   }
 
@@ -564,7 +557,7 @@ export function sendMessage(agentId, content, modeOrOnError, onError) {
     .receive("error", (err) => {
       // Clear partial on error
       store.clearPartial(agentId);
-      if (errorCallback) errorCallback(err);
+      if (onError) onError(err);
     });
 }
 
@@ -670,9 +663,21 @@ export function createSpace(model, vocationId, onOk, onError, opts = {}) {
 }
 
 /**
- * Delete agent via lobby. `spaceId` is threaded so the lobby
- * resolves the right space (the backend's primary-space
- * fallback is a Phase 1 transitional shim).
+ * Ask the lobby for a unique, readable space-name suggestion
+ * (adjective-animal, e.g. "clever-raven"). The new-space form
+ * pre-fills the name field with it. `onOk` receives the suggested
+ * name string.
+ */
+export function suggestSpaceName(onOk) {
+  if (!lobbyChannel) return;
+  lobbyChannel.push("suggest_space_name", {}).receive("ok", (resp) => {
+    if (onOk && resp?.name) onOk(resp.name);
+  });
+}
+
+/**
+ * Delete agent via lobby. `spaceId` identifies the space the
+ * agent lives in.
  */
 export function deleteAgent(name, spaceId, onError) {
   if (!lobbyChannel) {

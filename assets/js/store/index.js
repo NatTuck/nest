@@ -34,8 +34,8 @@ const initialState = {
   // payload's space struct (id, name, slug, ...). The sidebar
   // renders these as the top level of its tree.
   spaces: [],
-  // The currently-selected space id. Seeded from the lobby's
-  // `init` `current_space_id` (the user's primary space).
+  // The currently-selected space id. Client-side state seeded
+  // from the first space in the lobby `init` `spaces` payload.
   currentSpaceId: null,
   // Available blueprints for the "new space" flow, from the
   // lobby `init` `blueprints` payload.
@@ -361,7 +361,8 @@ export const useStore = create(
       agents: [],
       // The user's spaces, from the lobby `init` `spaces` payload.
       spaces: [],
-      // The currently-selected space id (seeded from `current_space_id`).
+      // The currently-selected space id. Client-side state seeded
+      // from the first space in the lobby `init` `spaces` payload.
       currentSpaceId: null,
       // Available blueprints for the "new space" flow.
       blueprints: [],

@@ -28,6 +28,7 @@ import {
   retryCompaction,
   compactionLoopOk,
   createSpace,
+  suggestSpaceName,
   deleteAgent,
   createInvite,
   revokeInvite,
@@ -591,6 +592,46 @@ describe("channels", () => {
         assert.notStrictEqual(captured, null);
       });
       assert.deepStrictEqual(captured, { reason: "x" });
+    });
+  });
+
+  describe("suggestSpaceName", () => {
+    it("is a no-op when not connected to the lobby", () => {
+      // `lobbyChannel` is null before `joinLobby`; the guard
+      // returns without pushing.
+      suggestSpaceName(() => {});
+    });
+
+    it("delivers the suggested name via onOk on success", async () => {
+      setNextJoinResult("lobby", { autoInit: { agents: [], models: [] } });
+      joinLobby();
+      setNextPushResult("lobby", "suggest_space_name", {
+        ok: { name: "clever-raven" },
+      });
+
+      let captured = null;
+      suggestSpaceName((name) => {
+        captured = name;
+      });
+
+      await vi.waitFor(() => {
+        assert.strictEqual(captured, "clever-raven");
+      });
+    });
+
+    it("ignores a payload without a name", async () => {
+      setNextJoinResult("lobby", { autoInit: { agents: [], models: [] } });
+      joinLobby();
+      setNextPushResult("lobby", "suggest_space_name", { ok: {} });
+
+      let captured = "not-called";
+      suggestSpaceName((name) => {
+        captured = name;
+      });
+
+      await vi.waitFor(() => {
+        assert.strictEqual(captured, "not-called");
+      });
     });
   });
 
@@ -2005,7 +2046,7 @@ describe("channels", () => {
   describe("sendMessage", () => {
     it("should call onError when not connected to agent", async () => {
       let errorCalled = false;
-      sendMessage("agent-1", "Hello", (_err) => {
+      sendMessage("agent-1", "Hello", undefined, (_err) => {
         errorCalled = true;
       });
 
@@ -2074,7 +2115,7 @@ describe("channels", () => {
       });
 
       let errorCalled = false;
-      sendMessage("agent-1", "Hello", (_err) => {
+      sendMessage("agent-1", "Hello", undefined, (_err) => {
         errorCalled = true;
       });
 

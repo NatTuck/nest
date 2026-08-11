@@ -62,7 +62,7 @@ import { InvitesPage } from "./pages/InvitesPage";
  *    `isConnected` store flag.
  *
  * On `isConnected` becoming true (i.e. the server accepted
- * our token), navigate to `/new_agent`. The user is now in
+ * our token), navigate to `/spaces`. The user is now in
  * an authenticated session.
  *
  * We intentionally do NOT add a timeout: a stale or
@@ -106,9 +106,9 @@ function RootGate() {
 /**
  * Layout component with sidebar and main content.
  *
- * Mounts only for authenticated routes (`/new_agent`,
- * `/agent/:name`, `/about`, `/invites`). The WS connection
- * is established via `initChannels` and the lobby is joined
+ * Mounts only for authenticated routes (`/spaces`,
+ * `/space/:slug/agent/:name`, `/about`, `/invites`). The WS
+ * connection is established via `initChannels` and the lobby is joined
  * once `isConnected` flips true.
  */
 function Layout() {
