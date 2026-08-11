@@ -13,10 +13,10 @@ defmodule Nest.Agents.Agent.Broadcasts.ModelMissing do
 
   alias Nest.PubSub
 
-  def broadcast(agent_id, model, reason) do
+  def broadcast(space_id, name, model, reason) do
     Phoenix.PubSub.broadcast(
       PubSub,
-      "agent:#{agent_id}",
+      "agent:#{space_id}:#{name}",
       {:chat_status,
        %{
          status: "model_missing",

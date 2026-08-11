@@ -18,11 +18,17 @@ defmodule Nest.Agents.Agent.ToolLoopCloneAgentTest do
   Mixed-batch reordering is exercised separately by the
   BatchSizer + tool ordering test in `batch_sizer_test.exs`.
   """
-  use ExUnit.Case, async: false
+  use Nest.DataCase, async: false
 
   alias Nest.Agents.Agent.ToolLoop
+  alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Registry, as: AgentsRegistry
   alias Nest.Messages.{ToolCall, ToolResult}
+
+  setup do
+    {:ok, _space_id} = AgentTestHelpers.create_test_space()
+    :ok
+  end
 
   defmodule FakeParent do
     @moduledoc """
@@ -86,14 +92,14 @@ defmodule Nest.Agents.Agent.ToolLoopCloneAgentTest do
     test "a single clone_agent call produces a synthetic ToolResult with the child's response" do
       {:ok, _pid} =
         FakeParent.start(
-          via: AgentsRegistry.via_tuple("parent-success"),
+          via: AgentsRegistry.via_tuple(AgentTestHelpers.current_space_id(), "parent-success"),
           child_name: "child-success",
           response: "delegate said hello"
         )
 
       results =
         ToolLoop.execute(
-          %{agent_name: "parent-success"},
+          %{agent_name: "parent-success", space_id: AgentTestHelpers.current_space_id()},
           %{},
           [
             %ToolCall{
@@ -118,13 +124,13 @@ defmodule Nest.Agents.Agent.ToolLoopCloneAgentTest do
     test "parent reply of {:error, _} surfaces as an is_error ToolResult" do
       {:ok, _pid} =
         FakeParent.start(
-          via: AgentsRegistry.via_tuple("parent-err"),
+          via: AgentsRegistry.via_tuple(AgentTestHelpers.current_space_id(), "parent-err"),
           reply_failure: :max_depth_reached
         )
 
       results =
         ToolLoop.execute(
-          %{agent_name: "parent-err"},
+          %{agent_name: "parent-err", space_id: AgentTestHelpers.current_space_id()},
           %{},
           [
             %ToolCall{

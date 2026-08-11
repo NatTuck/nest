@@ -26,18 +26,20 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandlerTest do
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ChatState
+  alias Nest.Agents.Agent.ChatState.Live
   alias Nest.Agents.Agent.Compaction.ResultHandler
   alias Nest.Agents.Agent.LlmMetrics
 
   defp build_state do
     %Agent{
       name: "test-agent-loop",
-      mode: "chat",
       llm_metrics: %LlmMetrics{
         context_limit: 200_000,
         usage_totals: Broadcasts.empty_usage_totals()
       },
-      chat_state: %ChatState{
+      chat_state: %ChatState{},
+      live: %Live{
+        mode: "chat",
         consecutive_compaction_count: 0,
         pending_user_message: {"hi", "chat"}
       }
@@ -49,23 +51,24 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandlerTest do
       state = build_state()
 
       assert {:ok, state1} = ResultHandler.check_consecutive(state)
-      assert state1.chat_state.consecutive_compaction_count == 1
+      assert state1.live.consecutive_compaction_count == 1
 
       assert {:ok, state2} = ResultHandler.check_consecutive(state1)
-      assert state2.chat_state.consecutive_compaction_count == 2
+      assert state2.live.consecutive_compaction_count == 2
 
       assert {:ok, state3} = ResultHandler.check_consecutive(state2)
-      assert state3.chat_state.consecutive_compaction_count == 3
+      assert state3.live.consecutive_compaction_count == 3
     end
 
     test "refuses after the 4th call (counter exceeds threshold of 3)" do
       state = build_state()
 
       # 4 consecutive checks yield counter=4, exceeds @max=3, refuses.
-      # The 4th call's `set_compaction_loop/2` broadcasts
-      # `:chat:error` with "compaction isn't reducing the conversation…"
-      # and logs at `:error` level — capture the log to satisfy
-      # AGENTS.md's "tests must not print to the console" rule.
+      # The 4th call's `set_compaction_loop/3` broadcasts
+      # `chat:compaction-loop` with "compaction isn't reducing the
+      # conversation…" and logs at `:error` level — capture the log
+      # to satisfy AGENTS.md's "tests must not print to the console"
+      # rule.
       log =
         capture_log(fn ->
           final =
@@ -82,6 +85,23 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandlerTest do
       assert log =~ "compaction isn't reducing the conversation"
     end
 
+    test "the loop trip broadcasts attempt_count and max_attempts in the payload" do
+      # Start the counter at the limit (3); the next check makes the
+      # would-be 4th compaction exceed it, tripping the loop.
+      state = %{build_state() | space_id: 12_345}
+      state = %{state | live: %{state.live | consecutive_compaction_count: 3}}
+
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:12345:test-agent-loop")
+
+      capture_log(fn ->
+        :refuse = ResultHandler.check_consecutive(state)
+      end)
+
+      # attempt_count = the consecutive compactions that already
+      # happened (3); max_attempts = the configured limit (3).
+      assert_receive {:chat_compaction_loop, %{content: _, attempt_count: 3, max_attempts: 3}}
+    end
+
     test "the refused call transitions status to :compaction_loop_detected" do
       state = build_state()
 
@@ -92,7 +112,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandlerTest do
           state1 = elem(ResultHandler.check_consecutive(state), 1)
           state2 = elem(ResultHandler.check_consecutive(state1), 1)
           state3 = elem(ResultHandler.check_consecutive(state2), 1)
-          assert state3.chat_state.status != :compaction_loop_detected
+          assert state3.live.status != :compaction_loop_detected
 
           # 4th bumps to 4, exceeds threshold, refuses.
           :refuse = ResultHandler.check_consecutive(state3)
@@ -106,12 +126,13 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandlerTest do
     test "transitions :compaction_loop_detected → :idle, resets counter, clears pending user message" do
       state = %Agent{
         name: "test-agent-loop",
-        mode: "chat",
         llm_metrics: %LlmMetrics{
           context_limit: 200_000,
           usage_totals: Broadcasts.empty_usage_totals()
         },
-        chat_state: %ChatState{
+        chat_state: %ChatState{},
+        live: %Live{
+          mode: "chat",
           status: :compaction_loop_detected,
           consecutive_compaction_count: 4,
           pending_user_message: {"hi", "chat"}
@@ -120,9 +141,9 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandlerTest do
 
       assert {:noreply, new_state} = ResultHandler.handle(:compaction_loop_detected_ok, state)
 
-      assert new_state.chat_state.status == :idle
-      assert new_state.chat_state.consecutive_compaction_count == 0
-      assert new_state.chat_state.pending_user_message == nil
+      assert new_state.live.status == :idle
+      assert new_state.live.consecutive_compaction_count == 0
+      assert new_state.live.pending_user_message == nil
     end
 
     test "no-ops when status isn't :compaction_loop_detected" do
@@ -131,12 +152,13 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandlerTest do
           for status <- [:idle, :compacting, :streaming, :compaction_failed, :context_overflow] do
             state = %Agent{
               name: "test-agent-loop",
-              mode: "chat",
               llm_metrics: %LlmMetrics{
                 context_limit: 200_000,
                 usage_totals: Broadcasts.empty_usage_totals()
               },
-              chat_state: %ChatState{
+              chat_state: %ChatState{},
+              live: %Live{
+                mode: "chat",
                 status: status,
                 consecutive_compaction_count: 5,
                 pending_user_message: {"hi", "chat"}
@@ -147,9 +169,9 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandlerTest do
                      ResultHandler.handle(:compaction_loop_detected_ok, state)
 
             # No state change when status is wrong.
-            assert returned_state.chat_state.status == status
-            assert returned_state.chat_state.consecutive_compaction_count == 5
-            assert returned_state.chat_state.pending_user_message == {"hi", "chat"}
+            assert returned_state.live.status == status
+            assert returned_state.live.consecutive_compaction_count == 5
+            assert returned_state.live.pending_user_message == {"hi", "chat"}
           end
         end)
 
@@ -192,14 +214,14 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandlerTest do
 
       state = %{
         state
-        | chat_state: %{
-            state.chat_state
+        | live: %{
+            state.live
             | status: :compaction_failed,
               mid_turn_entry: %{entry: :synthetic_carried_entry}
           }
       }
 
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.name}")
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.space_id}:#{state.name}")
 
       _ =
         capture_log(fn ->
@@ -208,8 +230,8 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandlerTest do
           # Branch assertion: `needs_entry/2` re-set `mid_turn_entry`
           # (after `clear_mid_turn_entry/1` briefly cleared it).
           # `Trigger.post_turn/1` would have left it nil.
-          assert result.chat_state.status == :compacting
-          assert result.chat_state.mid_turn_entry == %{entry: :synthetic_carried_entry}
+          assert result.live.status == :compacting
+          assert result.live.mid_turn_entry == %{entry: :synthetic_carried_entry}
 
           # External observable: the `:compacting` broadcast fired.
           assert_receive {:chat_status, %{status: "compacting"}}
@@ -221,10 +243,10 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandlerTest do
 
       state = %{
         state
-        | chat_state: %{state.chat_state | status: :compaction_failed, mid_turn_entry: nil}
+        | live: %{state.live | status: :compaction_failed, mid_turn_entry: nil}
       }
 
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.name}")
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.space_id}:#{state.name}")
 
       _ =
         capture_log(fn ->
@@ -234,8 +256,8 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandlerTest do
           # `mid_turn_entry`. If `needs_entry/2` had been called,
           # `mid_turn_entry` would have been re-set to
           # `%{entry: carried_entry}`.
-          assert result.chat_state.status == :compacting
-          assert result.chat_state.mid_turn_entry == nil
+          assert result.live.status == :compacting
+          assert result.live.mid_turn_entry == nil
 
           # External observable: the `:compacting` broadcast fired.
           assert_receive {:chat_status, %{status: "compacting"}}

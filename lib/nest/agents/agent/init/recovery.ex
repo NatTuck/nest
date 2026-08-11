@@ -39,7 +39,7 @@ defmodule Nest.Agents.Agent.Init.Recovery do
     }
 
     state = Init.build_state(attrs, recovery_client)
-    state = %{state | chat_state: %{state.chat_state | status: :model_missing}}
+    state = %{state | live: %{state.live | status: :model_missing}}
 
     state =
       Init.seed_from_db(
@@ -55,7 +55,7 @@ defmodule Nest.Agents.Agent.Init.Recovery do
         Map.get(attrs, :last_compaction_index, -1)
       )
 
-    Broadcasts.model_missing(state.name, model_label, reason)
+    Broadcasts.model_missing(state.space_id, state.name, model_label, reason)
 
     state
   end

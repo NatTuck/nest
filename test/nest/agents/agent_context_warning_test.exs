@@ -4,7 +4,7 @@ defmodule Nest.Agents.AgentContextWarningTest do
   user message past 25%" bug.
 
   The "already announced" set lives on
-  `state.chat_state.crossed_thresholds` (per conversation, not per
+  `state.live.crossed_thresholds` (per conversation, not per
   ChatTurn); a ChatTurn reads it from `ctx` and sends the updated
   set back via `{:set_crossed_thresholds, set}`. Cleared on
   successful compaction in `Compaction.ResultHandler`. The pure
@@ -124,9 +124,9 @@ defmodule Nest.Agents.AgentContextWarningTest do
 
     state = :sys.get_state(pid)
 
-    assert MapSet.member?(state.chat_state.crossed_thresholds, :p25),
+    assert MapSet.member?(state.live.crossed_thresholds, :p25),
            "expected :p25 to be persisted on the Agent after firing, " <>
-             "got #{inspect(state.chat_state.crossed_thresholds)}"
+             "got #{inspect(state.live.crossed_thresholds)}"
   end
 
   test "compaction_done clears crossed_thresholds so the next ChatTurn can re-fire" do
@@ -148,11 +148,8 @@ defmodule Nest.Agents.AgentContextWarningTest do
 
       %{
         state
-        | chat_state: %{
-            state.chat_state
-            | messages: messages,
-              crossed_thresholds: MapSet.new([:p25, :p50, :p75])
-          },
+        | chat_state: %{state.chat_state | messages: messages},
+          live: %{state.live | crossed_thresholds: MapSet.new([:p25, :p50, :p75])},
           llm_metrics: %{state.llm_metrics | context_limit: 200_000}
       }
     end)
@@ -167,9 +164,9 @@ defmodule Nest.Agents.AgentContextWarningTest do
 
     state = :sys.get_state(pid)
 
-    assert state.chat_state.crossed_thresholds == %MapSet{},
+    assert state.live.crossed_thresholds == %MapSet{},
            "expected crossed_thresholds cleared after compaction, " <>
-             "got #{inspect(state.chat_state.crossed_thresholds)}"
+             "got #{inspect(state.live.crossed_thresholds)}"
   end
 
   @tag timeout: 30_000
@@ -230,7 +227,7 @@ defmodule Nest.Agents.AgentContextWarningTest do
     # in a real scenario) so the test exercises the pipeline's
     # injection guard specifically.
     state = :sys.get_state(pid)
-    state = put_in(state.chat_state.pending_user_message, {"New request", "chat"})
+    state = put_in(state.live.pending_user_message, {"New request", "chat"})
 
     # The pending message is enough tokens to push usage past
     # 25% of the working budget.
@@ -242,7 +239,7 @@ defmodule Nest.Agents.AgentContextWarningTest do
       ContextReminder.highest_unannounced(
         projected,
         state.llm_metrics.context_limit,
-        state.chat_state.crossed_thresholds
+        state.live.crossed_thresholds
       )
 
     assert crossed == :p25,

@@ -102,12 +102,16 @@ defmodule NestWeb.AgentChannelMessagingTest do
   end
 
   describe "message broadcasting" do
-    test "assistant message is broadcast to all subscribers", %{socket: socket, agent_id: id} do
+    test "assistant message is broadcast to all subscribers", %{
+      socket: socket,
+      agent_id: id,
+      space_id: space_id
+    } do
       {:ok, socket2_conn} =
         connect(NestWeb.UserSocket, %{"token" => Process.get(:agent_test_token)})
 
       {:ok, _, socket2} =
-        subscribe_and_join(socket2_conn, NestWeb.AgentChannel, "agent:#{id}")
+        subscribe_and_join(socket2_conn, NestWeb.AgentChannel, "agent:#{space_id}:#{id}")
 
       ref = push(socket, "chat:message", %{"content" => "Hello from client 1"})
       assert_reply ref, :ok, %{}
@@ -177,7 +181,8 @@ defmodule NestWeb.AgentChannelMessagingTest do
   describe "channel lifecycle edge cases" do
     test "rejoining mid-stream receives correct charsEnd in partial", %{
       socket: socket,
-      agent_id: id
+      agent_id: id,
+      space_id: space_id
     } do
       MockClient.set_stream_events([
         {:text, "First "},
@@ -213,7 +218,7 @@ defmodule NestWeb.AgentChannelMessagingTest do
         connect(NestWeb.UserSocket, %{"token" => Process.get(:agent_test_token)})
 
       {:ok, _, new_socket} =
-        subscribe_and_join(new_conn, NestWeb.AgentChannel, "agent:#{id}")
+        subscribe_and_join(new_conn, NestWeb.AgentChannel, "agent:#{space_id}:#{id}")
 
       # The new channel's join pushes the init synchronously.
       assert_push "init", init_payload, 500
@@ -236,7 +241,11 @@ defmodule NestWeb.AgentChannelMessagingTest do
       assert_receive {:chat_status, %{status: "idle"}}, 500
     end
 
-    test "mid-stream join does not trigger delta gap warnings", %{socket: socket, agent_id: id} do
+    test "mid-stream join does not trigger delta gap warnings", %{
+      socket: socket,
+      agent_id: id,
+      space_id: space_id
+    } do
       MockClient.set_stream_events([
         {:text, "Hello "},
         {:text, "world "},
@@ -273,7 +282,7 @@ defmodule NestWeb.AgentChannelMessagingTest do
         connect(NestWeb.UserSocket, %{"token" => Process.get(:agent_test_token)})
 
       {:ok, _, new_socket} =
-        subscribe_and_join(new_conn, NestWeb.AgentChannel, "agent:#{id}")
+        subscribe_and_join(new_conn, NestWeb.AgentChannel, "agent:#{space_id}:#{id}")
 
       assert_push "init", init_payload, 500
 

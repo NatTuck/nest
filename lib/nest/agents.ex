@@ -3,39 +3,42 @@ defmodule Nest.Agents do
   Public API for agent management.
 
   This module provides a high-level interface for creating, managing, and
-  interacting with agents. It delegates to the appropriate modules in the
-  supervision tree.
+  interacting with agents. Agent names are unique within a space, and the
+  identity tuple `{space_id, name}` is carried positionally through every
+  public function — it never lives in `opts`.
   """
 
   alias Nest.Agents.{Agent, Registry, Supervisor}
   alias Nest.Agents.PersistedAgent
+  alias Nest.Agents.Visibility
   alias Nest.DotConfig
   alias Nest.Persistence
   alias Nest.Vocations
 
   @doc """
-  Creates a new agent with the given model and optional vocation.
+  Creates a new agent with the given model in `space_id`.
 
   ## Parameters
-  - `model` - A map with `:name` and optionally other model configuration
-  - `opts` - Optional parameters:
-    - `:vocation_id` - ID of the vocation to use
-    - `:workspace_path` - Path to the workspace directory
+
+  * `space_id` — the id of the space the agent belongs to (required)
+  * `model` — a map with `:name` and optionally `:provider`
+  * `opts` — additional parameters:
+    * `:name` — explicit agent name (default: auto-generated)
+    * `:vocation_id` — id of the vocation to use
+    * `:workspace_path` — path to the workspace directory
+    * `:created_by_user_id` — the owning user
+    * `:shared` — visibility flag (default `false`)
 
   ## Returns
-  - `{:ok, name}` - Agent created successfully with readable name
-  - `{:error, reason}` - Failed to create agent
 
-  ## Examples
-
-      {:ok, "clever-raven"} = Agents.create_agent(%{name: "gpt-4"})
-      {:ok, "clever-raven"} = Agents.create_agent(%{name: "gpt-4"}, vocation_id: 1, workspace_path: "/tmp/workspace")
-
+  * `{:ok, name}` — agent created successfully with readable name
+  * `{:error, reason}` — failed to create agent
   """
-  @spec create_agent(map(), keyword()) :: {:ok, String.t()} | {:error, term()}
-  def create_agent(model, opts \\ []) when is_map(model) do
+  @spec create_agent(integer(), map(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  def create_agent(space_id, model, opts \\ []) when is_integer(space_id) and is_map(model) do
     attrs = %{
-      name: name_or_generate(model, opts),
+      name: name_or_generate(space_id, opts),
+      space_id: space_id,
       model: enrich_model(model),
       vocation_id: Keyword.get(opts, :vocation_id),
       workspace_path: Keyword.get(opts, :workspace_path),
@@ -43,30 +46,15 @@ defmodule Nest.Agents do
       shared: Keyword.get(opts, :shared, false)
     }
 
-    # Pre-spawn DB work in the caller's pid. Then the supervisor
-    # just spawns — no DB in the supervisor pid. Callers
-    # guarantee unique names (test pid uses
-    # `System.unique_integer/1`; channel may also pre-generate).
-    # `:duplicate_name` propagates if it ever happens.
     with :ok <- Agent.pre_spawn(attrs) do
-      Supervisor.fetch_or_start_agent(attrs)
+      Supervisor.fetch_or_start_agent(space_id, attrs)
     end
   end
 
-  # The agent's registry key comes from `opts[:name]` when the
-  # caller supplies one, otherwise the supervisor's name
-  # generator produces an adjective-animal pair. The model
-  # map's `:name` is the LLM identifier (e.g. "qwen3.5-plus")
-  # and is deliberately NOT used as the agent's name — the
-  # previous `Map.get(model, :name)` fallback was a legacy
-  # shim for callers that pre-dated the `name:` opt.
-  defp name_or_generate(_model, opts) do
-    Keyword.get(opts, :name) || Supervisor.generate_unique_name()
+  defp name_or_generate(space_id, opts) do
+    Keyword.get(opts, :name) || Supervisor.generate_unique_name_for_space(space_id)
   end
 
-  # Adds `:provider` to the model map if it's missing and the model is
-  # known to DotConfig. The channel sends the model map to the JS
-  # client, which uses `provider` to render `provider: model-name`.
   defp enrich_model(%{provider: _} = model), do: model
 
   defp enrich_model(%{name: name} = model) when is_binary(name) do
@@ -85,58 +73,30 @@ defmodule Nest.Agents do
   defp enrich_model(model), do: model
 
   @doc """
-  Gets the public info of an agent by its name.
-
-  ## Returns
-  - `{:ok, info}` - Agent found with public info
-  - `{:error, :not_found}` - Agent doesn't exist
-
-  ## Examples
-
-      {:ok, info} = Agents.get_info("clever-raven")
-      # info.name, info.model, info.message_count, info.status, info.partial
-
+  Gets the public info of an agent by its `{space_id, name}`.
   """
-  @spec get_info(String.t()) :: {:ok, map()} | {:error, :not_found}
-  def get_info(name) do
-    case Supervisor.get_agent(name) do
-      {:ok, pid} -> fetch_public_info(pid)
-      {:error, _} = err -> err
+  @spec get_info(integer(), String.t()) :: {:ok, map()} | {:error, :not_found}
+  def get_info(space_id, name) do
+    case Supervisor.get_agent(space_id, name) do
+      {:ok, pid} ->
+        try do
+          {:ok, Agent.get_public_info(pid)}
+        catch
+          :exit, _ -> {:error, :not_found}
+        end
+
+      {:error, _} = err ->
+        err
     end
   end
 
-  defp fetch_public_info(pid) do
-    {:ok, Agent.get_public_info(pid)}
-  catch
-    # Any exit reason — graceful (`:normal`, `:shutdown`,
-    # `:noproc`), abnormal (`:crash`, `:killed`, `:timeout`),
-    # or tagged `{reason, _}` — means "the agent isn't here
-    # anymore." Treat them uniformly as `:not_found` so the
-    # enumeration API in `list_agents_info/0` can skip stale
-    # registry entries (sibling tests' agents mid-shutdown)
-    # without aborting the whole listing.
-    :exit, _reason ->
-      {:error, :not_found}
-  end
-
   @doc """
-  Gets the full agent state by its name.
-
-  ## Returns
-  - `{:ok, agent}` - Agent found with full state including messages
-  - `{:error, :not_found}` - Agent doesn't exist
-  - `{:error, reason}` - Any other `Supervisor.get_agent/1` failure
-    (e.g. `:timeout` if a GenServer call inside the hydration
-    path blocked — `Models.list/0` is the usual culprit). The
-    AgentChannel's `join/3` catches this and returns
-    `{:error, %{"reason" => "agent_unavailable"}}` so the WS
-    doesn't crash on a transient hydration hiccup.
-
+  Gets the full agent state by its `{space_id, name}`.
   """
-  @spec get_agent(String.t()) ::
+  @spec get_agent(integer(), String.t()) ::
           {:ok, map()} | {:error, :not_found | term()}
-  def get_agent(name) do
-    case Supervisor.get_agent(name) do
+  def get_agent(space_id, name) do
+    case Supervisor.get_agent(space_id, name) do
       {:ok, pid} -> build_agent_data(pid)
       {:error, :not_found} -> {:error, :not_found}
       {:error, reason} -> {:error, reason}
@@ -150,6 +110,7 @@ defmodule Nest.Agents do
 
     agent = %{
       name: info.name,
+      space_id: info.space_id,
       model: info.model,
       vocation: vocation,
       messages: messages,
@@ -166,11 +127,7 @@ defmodule Nest.Agents do
 
     {:ok, agent}
   catch
-    # See `fetch_public_info/1` for the rationale. Same
-    # treatment for the `get_info/1` path: any exit means
-    # the agent is gone, return `:not_found`.
-    :exit, _reason ->
-      {:error, :not_found}
+    :exit, _reason -> {:error, :not_found}
   end
 
   defp get_vocation_info(nil), do: nil
@@ -183,34 +140,21 @@ defmodule Nest.Agents do
   end
 
   @doc """
-  Lists all running agent names.
-
-  Returns a list of agent name strings.
-
-  ## Examples
-
-      ["clever-raven", "swift-fox"]
-
+  Lists all running agent names in `space_id`.
   """
-  @spec list_agents() :: list(String.t())
-  def list_agents do
-    Registry.list()
+  @spec list_agents_for_space(integer()) :: list(String.t())
+  def list_agents_for_space(space_id) do
+    Registry.list_for_space(space_id)
   end
 
   @doc """
-  Lists public info for all running agents.
-
-  Returns a list of maps containing agent public info.
-
-  ## Examples
-
-      [%{name: "clever-raven", model: %{name: "gpt-4"}, status: :idle, message_count: 0}, ...]
-
+  Lists public info for all running agents in `space_id`.
   """
-  @spec list_agents_info() :: list(map())
-  def list_agents_info do
-    list_agents()
-    |> Enum.map(&get_info/1)
+  @spec list_agents_info_for_space(integer()) :: list(map())
+  def list_agents_info_for_space(space_id) do
+    space_id
+    |> list_agents_for_space()
+    |> Enum.map(&get_info(space_id, &1))
     |> Enum.filter(fn
       {:ok, info} -> info
       _ -> nil
@@ -219,59 +163,31 @@ defmodule Nest.Agents do
   end
 
   @doc """
-  Lists public info for the agents the given user is allowed
-  to see: their own private agents (created_by_user_id ==
-  user.id and shared == false) plus every shared agent.
-
-  Implemented in `Nest.Agents.Visibility` — see that module
-  for the per-user predicate. Returns the same shape as
-  `list_agents_info/0`; only the membership differs.
+  Lists public info for the agents in `space_id` that the given
+  user is allowed to see.
   """
-  @spec list_visible_agents_for(integer()) :: list(map())
-  defdelegate list_visible_agents_for(user_id),
-    to: Nest.Agents.Visibility
+  @spec list_visible_agents_for(integer(), integer()) :: list(map())
+  def list_visible_agents_for(space_id, user_id) do
+    Visibility.list_visible_agents_for(space_id, user_id)
+  end
 
   @doc """
-  Gets the messages for an agent by its name.
-
-  ## Returns
-  - `{:ok, messages}` - Agent found with messages
-  - `{:error, :not_found}` - Agent doesn't exist
-
+  Gets the messages for an agent by its `{space_id, name}`.
   """
-  @spec get_messages(String.t()) :: {:ok, [map()]} | {:error, :not_found}
-  def get_messages(name) do
-    case Supervisor.get_agent(name) do
+  @spec get_messages(integer(), String.t()) :: {:ok, [map()]} | {:error, :not_found}
+  def get_messages(space_id, name) do
+    case Supervisor.get_agent(space_id, name) do
       {:ok, pid} -> {:ok, Agent.get_messages(pid)}
       {:error, _} = err -> err
     end
   end
 
   @doc """
-  Sends a chat message to an agent.
-
-  The message is added to the agent's history and triggers a streaming
-  response from the LLM.
-
-  The optional `mode` selects the sandbox capability profile for this
-  message's tool calls. When `nil`, defaults to the agent's current
-  mode (first key in the vocation's `modes` map, or `"chat"` if none).
-  The mode is stored on the user message and applied to subsequent
-  tool calls in the same round.
-
-  ## Returns
-  - `:ok` - Message sent successfully
-  - `{:error, :not_found}` - Agent doesn't exist
-
-  ## Examples
-
-      :ok = Agents.chat("clever-raven", "Hello!")
-      :ok = Agents.chat("clever-raven", "Read foo.md", "plan")
-
+  Sends a chat message to an agent in `space_id`.
   """
-  @spec chat(String.t(), String.t(), String.t() | nil) :: :ok | {:error, :not_found}
-  def chat(name, content, mode \\ nil) do
-    case Supervisor.get_agent(name) do
+  @spec chat(integer(), String.t(), String.t(), String.t() | nil) :: :ok | {:error, :not_found}
+  def chat(space_id, name, content, mode \\ nil) do
+    case Supervisor.get_agent(space_id, name) do
       {:ok, pid} ->
         Agent.chat(pid, content, mode)
         :ok
@@ -286,24 +202,10 @@ defmodule Nest.Agents do
 
   @doc """
   Signal the in-flight chat task on the named agent to stop.
-
-  The `from` is the channel pid that initiated the stop; it is
-  threaded through so the agent's `handle_info({:stop_chat, from}, _)`
-  can forward a reply if needed (currently it does not, but
-  keeping the indirection lets us add an ack later without
-  breaking the channel contract).
-
-  A no-op when the agent is idle (no in-flight chat task).
-  Idempotent — multiple calls just re-set the `cancelled`
-  flag on the GenServer's state.
-
-  ## Returns
-  - `:ok` - Stop signal sent (agent exists)
-  - `{:error, :not_found}` - Agent doesn't exist
   """
-  @spec stop_chat(String.t(), pid()) :: :ok | {:error, :not_found}
-  def stop_chat(name, from) do
-    case Supervisor.get_agent(name) do
+  @spec stop_chat(integer(), String.t(), pid()) :: :ok | {:error, :not_found}
+  def stop_chat(space_id, name, from) do
+    case Supervisor.get_agent(space_id, name) do
       {:ok, pid} ->
         Agent.stop_chat(pid, from)
         :ok
@@ -317,137 +219,76 @@ defmodule Nest.Agents do
   end
 
   @doc """
-  Retry a compaction that previously failed. The agent must be in
-  `:compaction_failed` status (otherwise this is a no-op and returns
-  `{:error, :not_in_compaction_failed_state}`). On success, the
-  compactor runs again; on failure, the agent stays in
-  `:compaction_failed` and the user can retry again.
+  Retry a compaction that previously failed.
   """
-  @spec retry_compaction(String.t()) :: :ok | {:error, atom()}
-  def retry_compaction(name) do
-    case Supervisor.get_agent(name) do
-      {:ok, pid} ->
-        Agent.retry_compaction(pid)
-
-      {:error, :not_found} ->
-        {:error, :not_found}
-
-      {:error, reason} ->
-        {:error, reason}
+  @spec retry_compaction(integer(), String.t()) :: :ok | {:error, atom()}
+  def retry_compaction(space_id, name) do
+    case Supervisor.get_agent(space_id, name) do
+      {:ok, pid} -> Agent.retry_compaction(pid)
+      {:error, :not_found} -> {:error, :not_found}
+      {:error, reason} -> {:error, reason}
     end
   end
 
   @doc """
-  Acknowledge a `:compaction_loop_detected` status by sending
-  `:compaction_loop_detected_ok` to the agent. The handler
-  transitions the agent back to `:idle` and clears the
-  consecutive-compaction counter (so the next compaction
-  cycle has a fresh budget). No-op if the agent isn't in the
-  loop state.
+  Acknowledge a `:compaction_loop_detected` status.
   """
-  @spec compaction_loop_detected_ok(String.t()) :: :ok | {:error, atom()}
-  def compaction_loop_detected_ok(name) do
-    case Supervisor.get_agent(name) do
-      {:ok, pid} ->
-        Agent.compaction_loop_detected_ok(pid)
-
-      {:error, :not_found} ->
-        {:error, :not_found}
-
-      {:error, reason} ->
-        {:error, reason}
+  @spec compaction_loop_detected_ok(integer(), String.t()) :: :ok | {:error, atom()}
+  def compaction_loop_detected_ok(space_id, name) do
+    case Supervisor.get_agent(space_id, name) do
+      {:ok, pid} -> Agent.compaction_loop_detected_ok(pid)
+      {:error, :not_found} -> {:error, :not_found}
+      {:error, reason} -> {:error, reason}
     end
   end
 
   @doc """
-  Deletes an agent by its name.
-
-  ## Returns
-  - `:ok` - Agent deleted successfully
-  - `{:error, :not_found}` - Agent doesn't exist
-
-  ## Examples
-
-      :ok = Agents.delete_agent("clever-raven")
-
+  Deletes an agent by its `{space_id, name}`.
   """
-  @spec delete_agent(String.t()) :: :ok | {:error, :not_found}
-  def delete_agent(name) do
-    with :ok <- Supervisor.stop_agent(name) do
-      # Drop the DB row so subsequent `get_info/1` (which falls
-      # through to the on-demand-load path) returns `:not_found`
-      # instead of `:duplicate_name`. Idempotent if the row is
-      # already absent.
-      Persistence.delete_agent_by_name(name)
+  @spec delete_agent(integer(), String.t()) :: :ok | {:error, :not_found}
+  def delete_agent(space_id, name) do
+    with :ok <- Supervisor.stop_agent(space_id, name) do
+      Persistence.delete_agent(space_id, name)
       :ok
     end
   end
 
   @doc """
   Change an agent's persisted `model` and resolved LLM client.
-
-  Allowed only when the agent's runtime status is `:idle` or
-  `:model_missing`. Returns `{:error, :agent_busy}` when the
-  agent is streaming, executing tools, or in any other status.
-  Returns `{:error, {:invalid_model, reason}}` when the new
-  model can't be resolved to a runtime provider.
-
-  The user-supplied `model` map can have either atom or string
-  keys; both shapes are passed through to
-  `Config.create_client_config/1`, which extracts the `:name`
-  (or `"name"`) key for `ChatModel.new(model: name)`.
-
-  ## Examples
-
-      :ok = Agents.change_model("clever-raven", %{name: "claude-haiku-4-5", provider: "anthropic"})
   """
-  @spec change_model(String.t(), map()) :: :ok | {:error, term()}
-  def change_model(name, new_model) when is_map(new_model) do
-    case Supervisor.get_agent(name) do
+  @spec change_model(integer(), String.t(), map()) :: :ok | {:error, term()}
+  def change_model(space_id, name, new_model) when is_map(new_model) do
+    case Supervisor.get_agent(space_id, name) do
       {:ok, pid} -> Agent.set_model(pid, new_model)
       {:error, reason} -> {:error, reason}
     end
   end
 
   @doc """
-  List agents whose persisted `model` no longer resolves to a
-  runtime provider. Each entry carries `name`, the unresolved
-  `model` map, and a `:status` of `:model_missing`.
-
-  Used by the lobby's `:after_join` payload so the UI can
-  surface broken agents and offer the user a repair path
-  (`Agents.change_model/2`). The recovery flow is independent
-  of `list_agents_info/0`, which only returns live (startable)
-  agents — broken agents are intentionally excluded from that
-  view because their `client_config.client` would be
-  `RecoveryClient`, which can't actually chat.
+  List agents in `space_id` whose persisted `model` no longer
+  resolves to a runtime provider.
   """
-  @spec list_broken_agents() :: [map()]
-  def list_broken_agents do
-    Enum.flat_map(Persistence.fetch_all_agents(), &maybe_report_broken/1)
+  @spec list_broken_agents(integer()) :: [map()]
+  def list_broken_agents(space_id) when is_integer(space_id) do
+    Enum.flat_map(Persistence.fetch_all_agents_for_space(space_id), &maybe_report_broken/1)
   end
 
-  # Decide whether a single persisted agent row should appear
-  # in the lobby's `broken_agents` payload. Returns `[]` for
-  # agents that are either alive in the Registry (the
-  # supervisor's `get_agent/1` will hydrate them on demand) or
-  # that *can* be hydrated right now (a transient inconsistency
-  # we don't want to surface as broken), and `[%{name, model,
-  # status: :model_missing}]` for the rest.
   defp maybe_report_broken(%PersistedAgent{
          name: name,
+         space_id: space_id,
          model: model,
          created_by_user_id: owner_id,
          shared: shared
        }) do
     cond do
-      agent_alive?(name) ->
+      agent_alive?(space_id, name) ->
         []
 
       not agent_loadable?(model) ->
         [
           %{
             name: name,
+            space_id: space_id,
             model: model,
             created_by_user_id: owner_id,
             shared: shared,
@@ -460,8 +301,8 @@ defmodule Nest.Agents do
     end
   end
 
-  defp agent_alive?(name) do
-    case Registry.lookup(name) do
+  defp agent_alive?(space_id, name) do
+    case Registry.lookup(space_id, name) do
       {:ok, _pid} -> true
       {:error, :not_found} -> false
     end

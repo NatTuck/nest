@@ -36,7 +36,7 @@ defmodule Nest.Agents.Agent.Handlers.ApiLogHandler do
     messages = Enum.map(state.chat_state.messages, &append_api_log(&1, message_index, api_log))
     updated_message = find_message_by_index(messages, message_index)
 
-    Broadcasts.message(state.name, updated_message)
+    Broadcasts.message(state, updated_message)
 
     {:noreply, %{state | chat_state: %{state.chat_state | messages: messages}}}
   end
@@ -52,12 +52,12 @@ defmodule Nest.Agents.Agent.Handlers.ApiLogHandler do
   defp append_api_log(msg, _idx, _api_log), do: msg
 
   defp queue_for_pending_message(state, message_index, api_log) do
-    pending = Map.get(state.chat_state.pending_api_logs, message_index, [])
+    pending = Map.get(state.live.pending_api_logs, message_index, [])
 
     pending_api_logs =
-      Map.put(state.chat_state.pending_api_logs, message_index, pending ++ [api_log])
+      Map.put(state.live.pending_api_logs, message_index, pending ++ [api_log])
 
-    {:noreply, %{state | chat_state: %{state.chat_state | pending_api_logs: pending_api_logs}}}
+    {:noreply, %{state | live: %{state.live | pending_api_logs: pending_api_logs}}}
   end
 
   defp api_log_sequences_updated(sequences, state) do
@@ -67,13 +67,13 @@ defmodule Nest.Agents.Agent.Handlers.ApiLogHandler do
     # the same; this handler exists to keep the api_log
     # sequences consistent in case the Agent's lifecycle
     # state diverged (defense in depth).
-    chat_state =
-      state.chat_state
+    live =
+      state.live
       |> Map.put(:api_log_sequences, sequences)
       |> Map.put(:chat_turn_pid, nil)
       |> Map.put(:cancelled, false)
 
-    {:noreply, %{state | chat_state: chat_state}}
+    {:noreply, %{state | live: live}}
   end
 
   defp find_message_by_index(messages, idx) do

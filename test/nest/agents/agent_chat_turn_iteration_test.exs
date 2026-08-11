@@ -173,8 +173,8 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
       :sys.replace_state(pid, fn state ->
         %{
           state
-          | chat_state: %{
-              state.chat_state
+          | live: %{
+              state.live
               | mid_turn_entry: %{
                   entry: {:tool_call, synthetic_tool_call_msg(), 7, 30}
                 }
@@ -200,7 +200,7 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
       end)
 
       state_after = :sys.get_state(pid)
-      assert state_after.chat_state.mid_turn_entry == nil
+      assert state_after.live.mid_turn_entry == nil
     end
   end
 
@@ -282,10 +282,10 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
           # Capture the chat_turn_pid while the new ChatTurn is
           # still alive — it iterates and finalizes promptly once
           # MockClient returns its canned response, after which
-          # `state.chat_state.chat_turn_pid` is cleared by
+          # `state.live.chat_turn_pid` is cleared by
           # `chat_idle`. The state below is read here so the
           # carry-forward assertions can run before that happens.
-          chat_turn_pid = :sys.get_state(pid).chat_state.chat_turn_pid
+          chat_turn_pid = :sys.get_state(pid).live.chat_turn_pid
 
           send(self(), {:chat_turn_pid_captured, chat_turn_pid})
         end)

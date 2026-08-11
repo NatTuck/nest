@@ -32,24 +32,46 @@ defmodule Nest.Tools do
   @spec get_function(String.t(), String.t() | nil, String.t() | nil) :: Tool.t() | nil
   def get_function(name, workspace_path, tmp_path \\ nil) do
     case name do
-      "read_file" -> FileTools.read_file_function(workspace_path, tmp_path)
-      "write_file" -> FileTools.write_file_function(workspace_path, tmp_path)
-      "edit" -> FileTools.edit_function(workspace_path, tmp_path)
-      "inspect_file" -> InspectFile.build(workspace_path, tmp_path)
-      "shell_cmd" -> shell_cmd_function(workspace_path, tmp_path)
-      "context" -> context_function()
-      # `clone_agent` is intercepted by the ChatTurn /
-      # ToolLoop machinery — the registered tool is just a
-      # stub that surfaces in the LLM's tool list with the
-      # right schema. The real execution path is
-      # `Nest.Agents.Agent.ToolLoop.run_clone_agent/2`,
-      # which sends a `clone_agent_request` to the parent
-      # GenServer and blocks awaiting the result before
-      # returning a synthetic `ToolResult`.
-      "clone_agent" -> clone_agent_function()
-      _ -> nil
+      "read_file" ->
+        FileTools.read_file_function(workspace_path, tmp_path)
+
+      "write_file" ->
+        FileTools.write_file_function(workspace_path, tmp_path)
+
+      "edit" ->
+        FileTools.edit_function(workspace_path, tmp_path)
+
+      "inspect_file" ->
+        InspectFile.build(workspace_path, tmp_path)
+
+      "shell_cmd" ->
+        shell_cmd_function(workspace_path, tmp_path)
+
+      "context" ->
+        context_function()
+
+      # `clone_agent`, `spawn_agent`, `query_agent`, and
+      # `list_agents` are intercepted by the ChatTurn / ToolLoop
+      # machinery — the registered tools are stubs that surface
+      # the right schema in the LLM's tool list. Real execution
+      # lives in `Nest.Agents.Agent.ToolLoop` (clone/spawn route
+      # through the agent GenServer; list reads the space inline;
+      # query waits on the target's PubSub topic).
+      name when name in ["clone_agent", "spawn_agent", "query_agent", "list_agents"] ->
+        sub_agent_tool_function(name)
+
+      _ ->
+        nil
     end
   end
+
+  # Dispatch the sub-agent tool stubs. Kept as its own function
+  # so `get_function/3` stays under the credo cyclomatic-
+  # complexity cap.
+  defp sub_agent_tool_function("clone_agent"), do: clone_agent_function()
+  defp sub_agent_tool_function("spawn_agent"), do: spawn_agent_function()
+  defp sub_agent_tool_function("query_agent"), do: query_agent_function()
+  defp sub_agent_tool_function("list_agents"), do: list_agents_function()
 
   @doc """
   JSON schema fragment for the `max_result_tokens` call arg.
@@ -181,6 +203,105 @@ defmodule Nest.Tools do
       },
       function: fn _args, _context ->
         {:ok, "Clone agent request received."}
+      end
+    }
+  end
+
+  # The `spawn_agent` tool: create an independent, fresh-context
+  # sub-agent in this space with the given `name` and
+  # `vocation_id`. Unlike `clone_agent`, the spawned specialist
+  # does NOT inherit this conversation — it starts from a fresh
+  # system prompt. The coordinator can then talk to it (via a
+  # future `query_agent` tool or the normal channel) and list it
+  # (`list_agents`).
+  #
+  # The `function` here is a stub. Real execution lives in
+  # `Nest.Agents.Agent.ToolLoop`, which intercepts the batch,
+  # sends a `:spawn_agent_request` to the coordinator GenServer,
+  # and returns the specialist's name. Spawning is whitelist-
+  # checked against the space's blueprint `spawnable_vocation_ids`.
+  defp spawn_agent_function do
+    %Tool{
+      name: "spawn_agent",
+      description:
+        "Create an independent sub-agent in this space with a fresh context. " <>
+          "The specialist starts with only its system prompt (no conversation history). " <>
+          "Returns the new agent's name. Spawned vocations may be restricted by this " <>
+          "space's blueprint.",
+      parameters_schema: %{
+        "type" => "object",
+        "properties" => %{
+          "name" => %{
+            "type" => "string",
+            "description" => "The unique name of the new sub-agent within this space."
+          },
+          "vocation_id" => %{
+            "type" => "integer",
+            "description" => "The vocation id that defines the specialist's role and tools."
+          }
+        },
+        "required" => ["name", "vocation_id"]
+      },
+      function: fn _args, _context ->
+        {:ok, "Spawn agent request received."}
+      end
+    }
+  end
+
+  # The `list_agents` tool: enumerate the live agents in this
+  # space. Returns each agent's name, vocation, status, and
+  # depth. Like `spawn_agent`, the `function` here is a stub —
+  # `ToolLoop` handles it inline by reading the space's running
+  # agents.
+  defp list_agents_function do
+    %Tool{
+      name: "list_agents",
+      description:
+        "List the running sub-agents in this space, with their name, vocation, " <>
+          "status, and depth. Use this to discover agents you can delegate to.",
+      parameters_schema: %{
+        "type" => "object",
+        "properties" => %{},
+        "required" => []
+      },
+      function: fn _args, _context ->
+        {:ok, "List agents request received."}
+      end
+    }
+  end
+
+  # The `query_agent` tool: send a chat message to a peer
+  # sub-agent in this space and return its final response.
+  #
+  # The `function` here is a stub. Real execution lives in
+  # `Nest.Agents.Agent.ToolLoop.run_query_agent/2`, which
+  # subscribes to the target's PubSub topic, triggers its turn
+  # via `Agents.chat/3`, and waits for the idle status before
+  # returning the target's latest assistant text.
+  defp query_agent_function do
+    %Tool{
+      name: "query_agent",
+      description:
+        "Send a chat message to a sub-agent in this space and wait for its " <>
+          "response. Use this to delegate a question to a specialist you have " <>
+          "already spawned (see `spawn_agent` and `list_agents`). Your turn " <>
+          "blocks until the target responds.",
+      parameters_schema: %{
+        "type" => "object",
+        "properties" => %{
+          "name" => %{
+            "type" => "string",
+            "description" => "The name of the sub-agent to query."
+          },
+          "prompt" => %{
+            "type" => "string",
+            "description" => "The message to send to the sub-agent."
+          }
+        },
+        "required" => ["name", "prompt"]
+      },
+      function: fn _args, _context ->
+        {:ok, "Query agent request received."}
       end
     }
   end

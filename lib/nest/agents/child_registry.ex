@@ -16,16 +16,25 @@ defmodule Nest.Agents.ChildRegistry do
   uses `ON DELETE SET NULL` so a deleted parent orphans
   children rather than cascading the row delete.
 
+  ## Space-scoped keys
+
+  Every registration is keyed by `{space_id, name}` so that
+  a parent and child named `clever-raven` in space 1 don't
+  collide with the same names in space 2. The
+  `Agents.Registry` is also partitioned by `{space_id, name}`,
+  so the monitor target lookup (`AgentsRegistry.lookup/2`)
+  matches the supervisor's address strategy.
+
   Operations the Agent GenServer and `Supervisor` need:
 
-    * Lookup by name — `parent_of/1` for routing messages,
-      `children_of/1` for cascade walks.
+    * Lookup by name — `parent_of/2` for routing messages,
+      `children_of/2` for cascade walks.
     * Register on spawn — the supervisor's
-      `start_agent_with_parent/2` calls `register/2` after
+      `start_agent_with_parent/2` calls `register/3` after
       the child process is alive.
     * Self-cleanup on child death — each registered child
       is `Process.monitor/1`-ed via
-      `Nest.Agents.Registry.via_tuple/1`. The DOWN handler
+      `Nest.Agents.Registry.via_tuple/2`. The DOWN handler
       removes the child from both maps.
 
   ## Naming and address strategy
@@ -42,11 +51,14 @@ defmodule Nest.Agents.ChildRegistry do
 
   Two mirrors of the same relationship:
 
-    * `parent_to_children` — `parent_name => MapSet<child_name>`.
+    * `parent_to_children` —
+      `%{{space_id, parent_name} => MapSet<{space_id, child_name}>}`
       Used for cascade termination (iterate, terminate each).
-    * `child_to_parent` — `child_name => parent_name`. Reverse
-      lookup used by the broadcast / message-routing path
-      when a child needs to send a notification to its parent.
+    * `child_to_parent` —
+      `%{{space_id, child_name} => {space_id, parent_name}}`.
+      Reverse lookup used by the broadcast / message-routing
+      path when a child needs to send a notification to its
+      parent.
 
   Both are updated under the registry's GenServer lock so
   they cannot diverge mid-operation.
@@ -92,10 +104,10 @@ defmodule Nest.Agents.ChildRegistry do
   end
 
   @doc """
-  Register `child_name` as a descendant of `parent_name`.
-  Installs a `Process.monitor/1` on the child's via-tuple so
-  this registry self-cleans when the child dies for any
-  reason (Stop, crash, supervisor shutdown).
+  Register `child_name` as a descendant of `parent_name` in
+  `space_id`. Installs a `Process.monitor/1` on the child's
+  via-tuple so this registry self-cleans when the child dies
+  for any reason (Stop, crash, supervisor shutdown).
 
   No-op if the child is already registered under the same
   parent (idempotent — the supervisor's `child_completed`
@@ -104,39 +116,41 @@ defmodule Nest.Agents.ChildRegistry do
   No-op if either name is `nil` — root agents never have a
   parent and shouldn't show up here.
   """
-  @spec register(String.t(), String.t()) :: :ok
-  def register(parent_name, child_name) do
-    GenServer.call(@registry_name, {:register, parent_name, child_name})
+  @spec register(integer(), String.t(), String.t()) :: :ok
+  def register(space_id, parent_name, child_name) do
+    GenServer.call(@registry_name, {:register, space_id, parent_name, child_name})
   end
 
   @doc """
-  Explicitly unregister `child_name`. Used by tests that
-  want to inspect state without waiting for a DOWN. Production
-  paths rely on the monitor-driven self-cleanup instead.
+  Explicitly unregister `child_name` in `space_id`. Used by
+  tests that want to inspect state without waiting for a
+  DOWN. Production paths rely on the monitor-driven
+  self-cleanup instead.
   """
-  @spec unregister(String.t()) :: :ok
-  def unregister(child_name) do
-    GenServer.call(@registry_name, {:unregister, child_name})
+  @spec unregister(integer(), String.t()) :: :ok
+  def unregister(space_id, child_name) do
+    GenServer.call(@registry_name, {:unregister, space_id, child_name})
   end
 
   @doc """
-  Names of all registered children of `parent_name`. Returns
-  an empty list (not `:not_found`) when the parent has no
-  children — cascade walks iterate, not match.
+  Names of all registered children of `parent_name` in
+  `space_id`. Returns an empty list (not `:not_found`) when
+  the parent has no children — cascade walks iterate, not
+  match.
   """
-  @spec children_of(String.t()) :: [String.t()]
-  def children_of(parent_name) do
-    GenServer.call(@registry_name, {:children_of, parent_name})
+  @spec children_of(integer(), String.t()) :: [String.t()]
+  def children_of(space_id, parent_name) do
+    GenServer.call(@registry_name, {:children_of, space_id, parent_name})
   end
 
   @doc """
-  Reverse lookup: the parent name for `child_name`, or `nil`
-  if the child isn't registered (root agents never have a
-  parent here).
+  Reverse lookup: the parent name for `child_name` in
+  `space_id`, or `nil` if the child isn't registered (root
+  agents never have a parent here).
   """
-  @spec parent_of(String.t()) :: String.t() | nil
-  def parent_of(child_name) do
-    GenServer.call(@registry_name, {:parent_of, child_name})
+  @spec parent_of(integer(), String.t()) :: String.t() | nil
+  def parent_of(space_id, child_name) do
+    GenServer.call(@registry_name, {:parent_of, space_id, child_name})
   end
 
   @doc """
@@ -158,13 +172,15 @@ defmodule Nest.Agents.ChildRegistry do
   end
 
   @impl true
-  def handle_call({:register, parent_name, child_name}, _from, state) do
-    state =
-      case Map.get(state.child_to_parent, child_name) do
-        nil ->
-          do_register(state, parent_name, child_name)
+  def handle_call({:register, space_id, parent_name, child_name}, _from, state) do
+    child_key = {space_id, child_name}
 
-        ^parent_name ->
+    state =
+      case Map.get(state.child_to_parent, child_key) do
+        nil ->
+          do_register(state, space_id, parent_name, child_name)
+
+        {^space_id, ^parent_name} ->
           # Already registered under the same parent; idempotent.
           state
 
@@ -174,29 +190,32 @@ defmodule Nest.Agents.ChildRegistry do
           # parent at spawn time). Treat defensively: drop
           # the old link and clean up the stale monitor before
           # installing the new one.
-          state = unregister_child(child_name, state)
-          do_register(state, parent_name, child_name)
+          state = unregister_child(space_id, child_name, state)
+          do_register(state, space_id, parent_name, child_name)
       end
 
     {:reply, :ok, state}
   end
 
   @impl true
-  def handle_call({:unregister, child_name}, _from, state) do
-    {:reply, :ok, unregister_child(child_name, state)}
+  def handle_call({:unregister, space_id, child_name}, _from, state) do
+    {:reply, :ok, unregister_child(space_id, child_name, state)}
   end
 
-  def handle_call({:children_of, parent_name}, _from, state) do
+  def handle_call({:children_of, space_id, parent_name}, _from, state) do
     children =
       state.parent_to_children
-      |> Map.get(parent_name, MapSet.new())
-      |> Enum.to_list()
+      |> Map.get({space_id, parent_name}, MapSet.new())
+      |> Enum.map(fn {_sid, name} -> name end)
 
     {:reply, children, state}
   end
 
-  def handle_call({:parent_of, child_name}, _from, state) do
-    {:reply, Map.get(state.child_to_parent, child_name), state}
+  def handle_call({:parent_of, space_id, child_name}, _from, state) do
+    case Map.get(state.child_to_parent, {space_id, child_name}) do
+      nil -> {:reply, nil, state}
+      {_sid, parent_name} -> {:reply, parent_name, state}
+    end
   end
 
   def handle_call(:state, _from, state) do
@@ -212,17 +231,17 @@ defmodule Nest.Agents.ChildRegistry do
     # Find the child whose monitor matches the ref and
     # remove it. If the ref doesn't match any registered
     # child, the registry has already cleaned up (e.g.
-    # explicit `unregister/1` between DOWN arrival and
+    # explicit `unregister/2` between DOWN arrival and
     # processing); drop the ref silently.
-    child_name =
-      Enum.find_value(state.monitors, fn {name, %{ref: r}} ->
-        if r == ref, do: name
+    child_key =
+      Enum.find_value(state.monitors, fn {key, %{ref: r}} ->
+        if r == ref, do: key
       end)
 
     state =
-      case child_name do
+      case child_key do
         nil -> state
-        name -> unregister_child(name, state)
+        {space_id, child_name} -> unregister_child(space_id, child_name, state)
       end
 
     {:noreply, state}
@@ -236,36 +255,40 @@ defmodule Nest.Agents.ChildRegistry do
   # `Process.monitor/1` doesn't accept `{:via, Registry, _}`
   # tuples directly, so we resolve the via-tuple to the
   # child's pid at register time. The AgentsRegistry is
-  # keyed by agent name (unique keys), so `Registry.lookup/2`
-  # gives us the pid the supervisor attached when it
-  # started the child.
+  # keyed by `{space_id, name}` (unique keys), so
+  # `Registry.lookup/2` gives us the pid the supervisor
+  # attached when it started the child.
   #
   # If the lookup misses (child died between start and
   # register — vanishingly rare), install no monitor and
   # let the caller handle the lifecycle. The next register
   # attempt, if any, will pick up a fresh pid.
-  defp do_register(state, parent_name, child_name)
-       when is_binary(parent_name) and is_binary(child_name) do
-    monitor_ref = monitor_ref_for(state, child_name)
+  defp do_register(state, space_id, parent_name, child_name)
+       when is_integer(space_id) and is_binary(parent_name) and is_binary(child_name) do
+    monitor_ref = monitor_ref_for(state, space_id, child_name)
 
     %{
       state
-      | parent_to_children: child_to_set(state.parent_to_children, parent_name, child_name),
-        child_to_parent: Map.put(state.child_to_parent, child_name, parent_name),
-        monitors: maybe_put_monitor(state.monitors, child_name, monitor_ref)
+      | parent_to_children:
+          child_to_set(state.parent_to_children, space_id, parent_name, child_name),
+        child_to_parent:
+          Map.put(state.child_to_parent, {space_id, child_name}, {space_id, parent_name}),
+        monitors: maybe_put_monitor(state.monitors, {space_id, child_name}, monitor_ref)
     }
   end
 
   # Look up — or install — the monitor reference for the
   # given child. Returns `nil` only when the lookup fails
   # (the child's pid can't be resolved).
-  defp monitor_ref_for(state, child_name) do
-    case state.monitors[child_name] do
+  defp monitor_ref_for(state, space_id, child_name) do
+    key = {space_id, child_name}
+
+    case state.monitors[key] do
       %{ref: existing} ->
         existing
 
       nil ->
-        case AgentsRegistry.lookup(child_name) do
+        case AgentsRegistry.lookup(space_id, child_name) do
           {:ok, pid} -> Process.monitor(pid)
           {:error, :not_found} -> nil
         end
@@ -274,43 +297,48 @@ defmodule Nest.Agents.ChildRegistry do
 
   # Add `child_name` to the MapSet at `parent_name`,
   # returning the updated parent_to_children map.
-  defp child_to_set(parent_to_children, parent_name, child_name) do
+  defp child_to_set(parent_to_children, space_id, parent_name, child_name) do
+    parent_key = {space_id, parent_name}
+
     parent_to_children
-    |> Map.get(parent_name, MapSet.new())
-    |> MapSet.put(child_name)
-    |> then(fn set -> Map.put(parent_to_children, parent_name, set) end)
+    |> Map.get(parent_key, MapSet.new())
+    |> MapSet.put({space_id, child_name})
+    |> then(fn set -> Map.put(parent_to_children, parent_key, set) end)
   end
 
-  defp maybe_put_monitor(monitors, _child_name, nil), do: monitors
+  defp maybe_put_monitor(monitors, _child_key, nil), do: monitors
 
-  defp maybe_put_monitor(monitors, child_name, ref),
-    do: Map.put(monitors, child_name, %{ref: ref})
+  defp maybe_put_monitor(monitors, child_key, ref),
+    do: Map.put(monitors, child_key, %{ref: ref})
 
   # Remove `child_name` from both maps and the monitor table.
-  defp unregister_child(child_name, state) do
-    case Map.get(state.child_to_parent, child_name) do
+  defp unregister_child(space_id, child_name, state) do
+    child_key = {space_id, child_name}
+
+    case Map.get(state.child_to_parent, child_key) do
       nil ->
         # Not registered (or already cleaned up); ensure
         # the monitors map is consistent anyway in case a
         # stale ref is still parked here.
-        %{state | monitors: Map.delete(state.monitors, child_name)}
+        %{state | monitors: Map.delete(state.monitors, child_key)}
 
-      parent_name ->
-        monitors = Map.delete(state.monitors, child_name)
+      {_sid, parent_name} ->
+        monitors = Map.delete(state.monitors, child_key)
+        parent_key = {space_id, parent_name}
 
         parent_to_children =
           state.parent_to_children
-          |> Map.get(parent_name, MapSet.new())
-          |> MapSet.delete(child_name)
+          |> Map.get(parent_key, MapSet.new())
+          |> MapSet.delete(child_key)
           |> then(fn
-            set when map_size(set) == 0 -> Map.delete(state.parent_to_children, parent_name)
-            set -> Map.put(state.parent_to_children, parent_name, set)
+            set when map_size(set) == 0 -> Map.delete(state.parent_to_children, parent_key)
+            set -> Map.put(state.parent_to_children, parent_key, set)
           end)
 
         %{
           state
           | parent_to_children: parent_to_children,
-            child_to_parent: Map.delete(state.child_to_parent, child_name),
+            child_to_parent: Map.delete(state.child_to_parent, child_key),
             monitors: monitors
         }
     end

@@ -89,4 +89,18 @@ defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
 
     refute "clone_agent" in tools
   end
+
+  test "a vocation with spawn_agent/list_agents documents them in the [Delegation] section",
+       %{vocation: vocation} do
+    tools_vocation = %{vocation | tools: ["spawn_agent", "list_agents"]}
+
+    {prompt, _mode, tools, _vocation} =
+      SystemPrompt.compose_vocation_config(tools_vocation, nil, {nil, nil}, 0)
+
+    assert "spawn_agent" in tools
+    assert "list_agents" in tools
+    assert prompt =~ "[Delegation]"
+    assert prompt =~ "`spawn_agent`"
+    assert prompt =~ "`list_agents`"
+  end
 end

@@ -47,7 +47,7 @@ defmodule Nest.Agents.AgentCompactionPersistenceTest do
       }
 
       assert {:ok, %PersistedMessage{} = row} =
-               Persistence.insert_message(attrs.name, {:compaction, marker})
+               Persistence.insert_message(test_space_id(), attrs.name, {:compaction, marker})
 
       assert row.role == "compaction"
       assert row.message_index == 5
@@ -83,7 +83,7 @@ defmodule Nest.Agents.AgentCompactionPersistenceTest do
       }
 
       assert {:error, _reason} =
-               Persistence.insert_message(attrs.name, {:compaction, marker})
+               Persistence.insert_message(test_space_id(), attrs.name, {:compaction, marker})
 
       # Rollback: boundary column must NOT be bumped.
       agent_row = Nest.Repo.one!(from(a in PersistedAgent, where: a.id == ^agent_id))
@@ -98,7 +98,7 @@ defmodule Nest.Agents.AgentCompactionPersistenceTest do
         {:system, %MsgSystem{index: 0, parts: [%Part.Text{text: "regular"}]}}
 
       assert {:ok, %PersistedMessage{} = row} =
-               Persistence.insert_message(attrs.name, system_msg)
+               Persistence.insert_message(test_space_id(), attrs.name, system_msg)
 
       assert row.role == "system"
 
@@ -121,7 +121,7 @@ defmodule Nest.Agents.AgentCompactionPersistenceTest do
 
       results =
         Enum.map(messages, fn stamped ->
-          Persistence.insert_message(attrs.name, stamped)
+          Persistence.insert_message(test_space_id(), attrs.name, stamped)
         end)
 
       assert Enum.all?(results, &match?({:ok, _}, &1))
@@ -145,7 +145,7 @@ defmodule Nest.Agents.AgentCompactionPersistenceTest do
       {:ok, _} = Persistence.insert_agent(attrs)
 
       assert {:ok, %PersistedMessage{} = row} =
-               Persistence.record_compaction(attrs.name, 4, 2, 1_000, 200)
+               Persistence.record_compaction(test_space_id(), attrs.name, 4, 2, 1_000, 200)
 
       assert row.role == "compaction"
       assert row.message_index == 4

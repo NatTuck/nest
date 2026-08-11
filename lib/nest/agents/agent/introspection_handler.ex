@@ -47,11 +47,11 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
   """
   @spec handle(term(), GenServer.from(), Agent.t()) :: GenServer.reply()
   def handle({:set_consecutive_compaction_count, n}, _from, state) when is_integer(n) do
-    {:reply, :ok, %{state | chat_state: %{state.chat_state | consecutive_compaction_count: n}}}
+    {:reply, :ok, %{state | live: %{state.live | consecutive_compaction_count: n}}}
   end
 
   def handle(:get_consecutive_compaction_count, _from, state) do
-    {:reply, state.chat_state.consecutive_compaction_count, state}
+    {:reply, state.live.consecutive_compaction_count, state}
   end
 
   def handle(:get_public_info, _from, state) do
@@ -66,11 +66,11 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
   # short-circuit on user-initiated stops without waiting
   # for the next `:stop_chat` message to be processed.
   def handle(:get_messages_with_cancelled, _from, state) do
-    {:reply, {state.chat_state.messages, state.chat_state.cancelled}, state}
+    {:reply, {state.chat_state.messages, state.live.cancelled}, state}
   end
 
   def handle(:get_crossed_thresholds, _from, state) do
-    {:reply, state.chat_state.crossed_thresholds, state}
+    {:reply, state.live.crossed_thresholds, state}
   end
 
   def handle(:get_next_index, _from, state) do
@@ -89,7 +89,7 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
   end
 
   def handle(:get_chat_turn_pid, _from, state) do
-    {:reply, state.chat_state.chat_turn_pid, state}
+    {:reply, state.live.chat_turn_pid, state}
   end
 
   # Test-friendly: returns the `pending_children` map so
@@ -162,9 +162,10 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
 
     public_info = %{
       name: state.name,
+      space_id: state.space_id,
       model: state.model,
       message_count: length(state.chat_state.messages),
-      status: state.chat_state.status,
+      status: state.live.status,
       vocation_id: state.vocation_id,
       tmp_path: state.tmp_path,
       # Run the streaming accumulator (or nil) through
@@ -174,10 +175,10 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
       # encodes it as JSON before the WS frame hits the wire;
       # a raw `%AssistantAccumulator{}` struct trips
       # `Protocol.UndefinedError` at `Jason.encode/1` time.
-      partial: Streaming.to_json_safe(state.chat_state.streaming_acc),
+      partial: Streaming.to_json_safe(state.live.streaming_acc),
       modes: Vocations.list_modes(vocation),
       default_mode: Vocations.default_mode(vocation),
-      current_mode: state.mode,
+      current_mode: state.live.mode,
       context_limit: state.llm_metrics.context_limit,
       context_limit_source: state.llm_metrics.context_limit_source,
       # Sub-agent identity: the integer `agents.id` of the
@@ -185,8 +186,8 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
       # the parent's readable name (so the UI's "back to
       # parent" link can navigate without an extra lookup),
       # plus the depth (0 for roots).
-      parent_id: state.parent_id,
-      parent_name: state.parent_name,
+      parent_id: state.tree_position.parent_id,
+      parent_name: state.tree_position.parent_name,
       depth: state.depth,
       # Multi-user identity. Exposed so the lobby can render
       # ownership + visibility badges without an extra DB

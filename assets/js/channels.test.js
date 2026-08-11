@@ -27,7 +27,7 @@ import {
   stopMessage,
   retryCompaction,
   compactionLoopOk,
-  createAgent,
+  createSpace,
   deleteAgent,
   createInvite,
   revokeInvite,
@@ -525,7 +525,7 @@ describe("channels", () => {
       // inner `onError(...)` call).
       const { deleteAgent } = await import("./channels");
       let captured = null;
-      deleteAgent("ghost", (err) => {
+      deleteAgent("ghost", 1, (err) => {
         captured = err;
       });
       assert.notStrictEqual(captured, null);
@@ -536,20 +536,19 @@ describe("channels", () => {
       // Mirror of the rescanModels no-onError coverage.
       const { deleteAgent } = await import("./channels");
       // Should not throw on the disconnected path.
-      deleteAgent("ghost");
+      deleteAgent("ghost", 1);
     });
 
-    it("forwards the lobby-disconnect error to createAgent's onError", async () => {
-      // Mirror for `createAgent` — exercise the
+    it("forwards the lobby-disconnect error to createSpace's onError", async () => {
+      // Mirror for `createSpace` — exercise the
       // `if (onError)` truthy branch on the disconnected
       // path. Closes the last remaining uncovered line in
       // `channels.js`'s lobbyChannel-is-null guards.
-      const { createAgent } = await import("./channels");
+      const { createSpace } = await import("./channels");
       let captured = null;
-      createAgent(
+      createSpace(
         { name: "x" },
         1,
-        null,
         () => {},
         (err) => {
           captured = err;
@@ -559,14 +558,14 @@ describe("channels", () => {
       assert.strictEqual(captured.message, "Not connected to lobby");
     });
 
-    it("is a no-op when createAgent is called without an onError", async () => {
+    it("is a no-op when createSpace is called without an onError", async () => {
       // Mirror of the rescanModels/deleteAgent no-onError
       // coverage — verifies the short-circuit cleanly
       // when the caller only cares about success.
-      const { createAgent } = await import("./channels");
+      const { createSpace } = await import("./channels");
       // Should not throw on the disconnected path even
       // without a fallback onError.
-      createAgent({ name: "x" }, 1, null, () => {});
+      createSpace({ name: "x" }, 1, () => {});
     });
 
     it("forwards the server-side error payload to onError", async () => {
@@ -601,6 +600,7 @@ describe("channels", () => {
       let captured = null;
       changeAgentModel(
         "ghost-agent",
+        1,
         { name: "gpt-4", provider: "openai" },
         () => {},
         (err) => {
@@ -627,6 +627,7 @@ describe("channels", () => {
       let captured = null;
       changeAgentModel(
         "ghost-agent",
+        1,
         { name: "gpt-4", provider: "openai" },
         () => {},
         (err) => {
@@ -655,6 +656,7 @@ describe("channels", () => {
       let okCalled = false;
       changeAgentModel(
         "ghost-agent",
+        1,
         { name: "gpt-4", provider: "openai" },
         () => {
           okCalled = true;
@@ -665,6 +667,7 @@ describe("channels", () => {
       const captured = await capturePromise;
       assert.deepStrictEqual(captured, {
         name: "ghost-agent",
+        space_id: 1,
         model: { name: "gpt-4", provider: "openai" },
       });
       await vi.waitFor(() => {
@@ -684,10 +687,9 @@ describe("channels", () => {
       leaveLobby();
 
       let errorCalled = false;
-      createAgent(
+      createSpace(
         "gpt-4",
         1,
-        null,
         () => {},
         (_err) => {
           errorCalled = true;
@@ -702,7 +704,7 @@ describe("channels", () => {
 
   describe("joinAgent", () => {
     it("should set agent status to connecting in store before join completes", () => {
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
       assert.strictEqual(
         useStore.getState().agentsCache["agent-1"]?.status,
         "connecting",
@@ -710,7 +712,7 @@ describe("channels", () => {
     });
 
     it("should store init payload - status, model, but not set lastIndex from messageCount", async () => {
-      setNextJoinResult("agent:agent-1", {
+      setNextJoinResult("agent:1:agent-1", {
         autoInit: {
           id: "agent-1",
           model: { name: "claude-3", provider: "anthropic" },
@@ -719,7 +721,7 @@ describe("channels", () => {
         },
       });
 
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         const cache = useStore.getState().agentsCache["agent-1"];
@@ -737,7 +739,7 @@ describe("channels", () => {
         messages: [{ index: 0, role: "user", content: "Hello" }],
       });
 
-      setNextJoinResult("agent:agent-1", {
+      setNextJoinResult("agent:1:agent-1", {
         autoInit: {
           id: "agent-1",
           model: { name: "gpt-4" },
@@ -747,7 +749,7 @@ describe("channels", () => {
         },
       });
 
-      setNextPushResult("agent:agent-1", "chat:sync", {
+      setNextPushResult("agent:1:agent-1", "chat:sync", {
         ok: {
           messages: [
             { index: 1, role: "assistant", content: "Response 1" },
@@ -758,7 +760,7 @@ describe("channels", () => {
         },
       });
 
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -781,7 +783,7 @@ describe("channels", () => {
       // `2 > cache.messages.length(1)` is true, so the
       // sync fires. The sync uses `cache.lastIndex` (= 0)
       // as the lower bound.
-      setNextJoinResult("agent:agent-1", {
+      setNextJoinResult("agent:1:agent-1", {
         autoInit: {
           id: "agent-1",
           model: { name: "gpt-4" },
@@ -791,8 +793,8 @@ describe("channels", () => {
         },
       });
 
-      const pushPromise = captureNextPush("agent:agent-1", "chat:sync");
-      joinAgent("agent-1");
+      const pushPromise = captureNextPush("agent:1:agent-1", "chat:sync");
+      joinAgent("agent-1", 1);
 
       const pushPayload = await pushPromise;
       assert.deepStrictEqual(pushPayload, { lastIndex: 0 });
@@ -805,8 +807,8 @@ describe("channels", () => {
       // test below asserts the error was emitted.
       const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
       try {
-        setNextJoinResult("agent:agent-1", { error: "agent_not_found" });
-        joinAgent("agent-1");
+        setNextJoinResult("agent:1:agent-1", { error: "agent_not_found" });
+        joinAgent("agent-1", 1);
 
         await vi.waitFor(() => {
           assert.strictEqual(
@@ -825,9 +827,9 @@ describe("channels", () => {
 
     it("should log console error on agent join failure", async () => {
       const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-      setNextJoinResult("agent:agent-1", { error: "agent_not_found" });
+      setNextJoinResult("agent:1:agent-1", { error: "agent_not_found" });
 
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(errorSpy.mock.calls.length > 0, true);
@@ -848,8 +850,8 @@ describe("channels", () => {
       // test below asserts the error was emitted.
       const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
       try {
-        setNextJoinResult("agent:agent-1", { timeout: true });
-        joinAgent("agent-1");
+        setNextJoinResult("agent:1:agent-1", { timeout: true });
+        joinAgent("agent-1", 1);
 
         await vi.waitFor(() => {
           assert.strictEqual(
@@ -868,9 +870,9 @@ describe("channels", () => {
 
     it("should log console error on agent join timeout", async () => {
       const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-      setNextJoinResult("agent:agent-1", { timeout: true });
+      setNextJoinResult("agent:1:agent-1", { timeout: true });
 
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(errorSpy.mock.calls.length > 0, true);
@@ -885,7 +887,7 @@ describe("channels", () => {
     });
 
     it("should handle rejoin - send chat:status and update from response", async () => {
-      setNextJoinResult("agent:agent-1", {
+      setNextJoinResult("agent:1:agent-1", {
         autoInit: {
           id: "agent-1",
           model: { name: "gpt-4", provider: "openai" },
@@ -893,7 +895,7 @@ describe("channels", () => {
           status: "idle",
         },
       });
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -906,14 +908,14 @@ describe("channels", () => {
         );
       });
 
-      setNextPushResult("agent:agent-1", "chat:status", {
+      setNextPushResult("agent:1:agent-1", "chat:status", {
         ok: {
           model: { name: "claude-3", provider: "anthropic" },
           messageCount: 0,
         },
       });
 
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -929,7 +931,7 @@ describe("channels", () => {
       // payload's `messageCount` is checked against the
       // current cache; if the server has more messages,
       // the new requestSync is fired.
-      setNextJoinResult("agent:agent-1", {
+      setNextJoinResult("agent:1:agent-1", {
         autoInit: {
           id: "agent-1",
           model: { name: "gpt-4" },
@@ -937,7 +939,7 @@ describe("channels", () => {
           status: "idle",
         },
       });
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
       await vi.waitFor(() => {
         assert.strictEqual(
           useStore.getState().agentsCache["agent-1"]?.status,
@@ -948,14 +950,14 @@ describe("channels", () => {
       // Now simulate a rejoin where the server reports
       // more messages than the client has cached. The
       // rejoin handler's check fires requestSync.
-      setNextPushResult("agent:agent-1", "chat:status", {
+      setNextPushResult("agent:1:agent-1", "chat:status", {
         ok: {
           model: { name: "gpt-4" },
           messageCount: 5,
         },
       });
-      const pushPromise = captureNextPush("agent:agent-1", "chat:sync");
-      joinAgent("agent-1");
+      const pushPromise = captureNextPush("agent:1:agent-1", "chat:sync");
+      joinAgent("agent-1", 1);
 
       const pushPayload = await pushPromise;
       // Sync uses cache.lastIndex (-1) as the lower bound
@@ -966,7 +968,7 @@ describe("channels", () => {
 
   describe("defensive error paths", () => {
     // Branch coverage: the `!lobbyChannel` early-return
-    // branches in `createAgent` and `deleteAgent`, the
+    // branches in `createSpace` and `deleteAgent`, the
     // `compactionLoopOk` error receive, and the
     // `joinLobby` idempotent path are defensive paths
     // that only fire when the lobby is disconnected, the
@@ -974,12 +976,11 @@ describe("channels", () => {
     // They're straightforward to exercise but the
     // existing tests never hit them.
 
-    it("createAgent returns an error when the lobby isn't connected", () => {
+    it("createSpace returns an error when the lobby isn't connected", () => {
       let errorCalled = false;
       let errorMessage = null;
-      createAgent(
+      createSpace(
         { name: "gpt-4" },
-        null,
         null,
         () => {},
         (err) => {
@@ -994,7 +995,7 @@ describe("channels", () => {
     it("deleteAgent returns an error when the lobby isn't connected", () => {
       let errorCalled = false;
       let errorMessage = null;
-      deleteAgent("test-agent", (err) => {
+      deleteAgent("test-agent", 1, (err) => {
         errorCalled = true;
         errorMessage = err.message;
       });
@@ -1006,7 +1007,7 @@ describe("channels", () => {
       // The push is configured to return an error in the
       // receive("error", ...) callback. Verify the
       // onError path is wired correctly.
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
       await vi.waitFor(() => {
         assert.strictEqual(
           useStore.getState().agentsCache["agent-1"]?.status,
@@ -1014,7 +1015,7 @@ describe("channels", () => {
         );
       });
 
-      setNextPushResult("agent:agent-1", "chat:loop-detected-ok", {
+      setNextPushResult("agent:1:agent-1", "chat:loop-detected-ok", {
         error: { reason: "not_in_loop" },
       });
 
@@ -1036,7 +1037,7 @@ describe("channels", () => {
       // error receive. Without a callback the inner
       // `onError(...)` call is skipped — important since
       // v8 instrument counts both branches.
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
       await vi.waitFor(() => {
         assert.strictEqual(
           useStore.getState().agentsCache["agent-1"]?.status,
@@ -1044,7 +1045,7 @@ describe("channels", () => {
         );
       });
 
-      setNextPushResult("agent:agent-1", "chat:loop-detected-ok", {
+      setNextPushResult("agent:1:agent-1", "chat:loop-detected-ok", {
         error: { reason: "not_in_loop" },
       });
 
@@ -1082,7 +1083,7 @@ describe("channels", () => {
 
   describe("agent chat:delta events", () => {
     it("should append delta content to partial message", async () => {
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -1091,7 +1092,7 @@ describe("channels", () => {
         );
       });
 
-      simulateServerEvent("agent:agent-1", "chat:delta", {
+      simulateServerEvent("agent:1:agent-1", "chat:delta", {
         index: 0,
         content: "Hello",
         charsStart: 0,
@@ -1109,7 +1110,7 @@ describe("channels", () => {
     });
 
     it("should accumulate multiple deltas", async () => {
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -1118,7 +1119,7 @@ describe("channels", () => {
         );
       });
 
-      simulateServerEvent("agent:agent-1", "chat:delta", {
+      simulateServerEvent("agent:1:agent-1", "chat:delta", {
         index: 0,
         content: "Hel",
         charsStart: 0,
@@ -1138,7 +1139,7 @@ describe("channels", () => {
         );
       });
 
-      simulateServerEvent("agent:agent-1", "chat:delta", {
+      simulateServerEvent("agent:1:agent-1", "chat:delta", {
         index: 0,
         content: "lo",
         charsStart: 3,
@@ -1169,9 +1170,9 @@ describe("channels", () => {
         content: "Old content",
       };
 
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
-      simulateServerEvent("agent:agent-1", "chat:delta", {
+      simulateServerEvent("agent:1:agent-1", "chat:delta", {
         index: 3,
         content: "New",
         charsStart: 0,
@@ -1197,7 +1198,7 @@ describe("channels", () => {
     });
 
     it("should set waitingForResponse to false on first delta", async () => {
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -1208,7 +1209,7 @@ describe("channels", () => {
 
       useStore.getState().agentsCache["agent-1"].waitingForResponse = true;
 
-      simulateServerEvent("agent:agent-1", "chat:delta", {
+      simulateServerEvent("agent:1:agent-1", "chat:delta", {
         index: 0,
         content: "Hello",
         charsStart: 0,
@@ -1224,7 +1225,7 @@ describe("channels", () => {
     });
 
     it("should detect gap and return needsSync when charsStart > charsReceived", async () => {
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -1264,7 +1265,7 @@ describe("channels", () => {
     });
 
     it("should handle overlap by slicing correctly", async () => {
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -1282,7 +1283,7 @@ describe("channels", () => {
       };
 
       // Send overlapping delta: charsStart=2, content="llo" (overlap is 1 char "l")
-      simulateServerEvent("agent:agent-1", "chat:delta", {
+      simulateServerEvent("agent:1:agent-1", "chat:delta", {
         index: 0,
         content: "llo",
         charsStart: 2,
@@ -1316,7 +1317,7 @@ describe("channels", () => {
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
       try {
-        joinAgent("agent-1");
+        joinAgent("agent-1", 1);
 
         await vi.waitFor(() => {
           assert.strictEqual(
@@ -1362,7 +1363,7 @@ describe("channels", () => {
     });
 
     it("should not apply delta when overlap consumes entire content", async () => {
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -1404,7 +1405,7 @@ describe("channels", () => {
 
   describe("agent chat:message events", () => {
     it("should add complete message to messages array", async () => {
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -1413,7 +1414,7 @@ describe("channels", () => {
         );
       });
 
-      simulateServerEvent("agent:agent-1", "chat:message", {
+      simulateServerEvent("agent:1:agent-1", "chat:message", {
         index: 0,
         role: "user",
         content: "Hello",
@@ -1441,9 +1442,9 @@ describe("channels", () => {
         content: "Streaming",
       };
 
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
-      simulateServerEvent("agent:agent-1", "chat:message", {
+      simulateServerEvent("agent:1:agent-1", "chat:message", {
         index: 3,
         role: "assistant",
         content: "Complete",
@@ -1458,7 +1459,7 @@ describe("channels", () => {
     });
 
     it("should update lastIndex to message index", async () => {
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -1467,7 +1468,7 @@ describe("channels", () => {
         );
       });
 
-      simulateServerEvent("agent:agent-1", "chat:message", {
+      simulateServerEvent("agent:1:agent-1", "chat:message", {
         index: 5,
         role: "user",
         content: "Test",
@@ -1482,7 +1483,7 @@ describe("channels", () => {
     });
 
     it("should not duplicate messages with same index", async () => {
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -1491,7 +1492,7 @@ describe("channels", () => {
         );
       });
 
-      simulateServerEvent("agent:agent-1", "chat:message", {
+      simulateServerEvent("agent:1:agent-1", "chat:message", {
         index: 0,
         role: "user",
         content: "First",
@@ -1504,7 +1505,7 @@ describe("channels", () => {
         );
       });
 
-      simulateServerEvent("agent:agent-1", "chat:message", {
+      simulateServerEvent("agent:1:agent-1", "chat:message", {
         index: 0,
         role: "user",
         content: "Duplicate",
@@ -1531,7 +1532,7 @@ describe("channels", () => {
       };
       useStore.getState().agentsCache["agent-1"].waitingForResponse = true;
 
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -1540,7 +1541,7 @@ describe("channels", () => {
         );
       });
 
-      simulateServerEvent("agent:agent-1", "chat:error", {
+      simulateServerEvent("agent:1:agent-1", "chat:error", {
         content: "Model unavailable",
       });
 
@@ -1559,7 +1560,7 @@ describe("channels", () => {
         messageCount: 0,
       });
 
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
       await vi.waitFor(() => {
         assert.strictEqual(
           useStore.getState().agentsCache["agent-1"]?.status,
@@ -1572,7 +1573,7 @@ describe("channels", () => {
       // failures. The frontend routes to setCompactionError,
       // which sets `cache.compactionError` without flipping the
       // connection-level status to "error".
-      simulateServerEvent("agent:agent-1", "chat:error", {
+      simulateServerEvent("agent:1:agent-1", "chat:error", {
         index: null,
         content: "Compaction failed: LLM returned empty summary.",
         compactionError: true,
@@ -1597,7 +1598,7 @@ describe("channels", () => {
         status: "idle",
       });
 
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -1606,7 +1607,7 @@ describe("channels", () => {
         );
       });
 
-      simulateServerEvent("agent:agent-1", "chat:status", {
+      simulateServerEvent("agent:1:agent-1", "chat:status", {
         status: "streaming",
       });
 
@@ -1615,7 +1616,7 @@ describe("channels", () => {
         assert.strictEqual(cache?.agentState, "streaming");
       });
 
-      simulateServerEvent("agent:agent-1", "chat:status", {
+      simulateServerEvent("agent:1:agent-1", "chat:status", {
         status: "executing_tools",
       });
 
@@ -1624,7 +1625,7 @@ describe("channels", () => {
         assert.strictEqual(cache?.agentState, "executing_tools");
       });
 
-      simulateServerEvent("agent:agent-1", "chat:status", {
+      simulateServerEvent("agent:1:agent-1", "chat:status", {
         status: "idle",
       });
 
@@ -1646,7 +1647,7 @@ describe("channels", () => {
         status: "idle",
       });
 
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -1655,7 +1656,7 @@ describe("channels", () => {
         );
       });
 
-      simulateServerEvent("agent:agent-1", "chat:status", {
+      simulateServerEvent("agent:1:agent-1", "chat:status", {
         status: "idle",
         contextLimit: 200000,
         contextLimitSource: "auto",
@@ -1688,7 +1689,7 @@ describe("channels", () => {
         status: "idle",
       });
 
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -1697,7 +1698,7 @@ describe("channels", () => {
         );
       });
 
-      simulateServerEvent("agent:agent-1", "chat:status", {
+      simulateServerEvent("agent:1:agent-1", "chat:status", {
         status: "idle",
         parentId: "parent-1",
         parentName: "delegating-parent",
@@ -1735,7 +1736,7 @@ describe("channels", () => {
         status: "idle",
       });
 
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -1750,7 +1751,7 @@ describe("channels", () => {
       useStore.getState().setWaitingForResponse("agent-1", true);
 
       // Streaming starts (no deltas ever arrive — thinking-only).
-      simulateServerEvent("agent:agent-1", "chat:status", {
+      simulateServerEvent("agent:1:agent-1", "chat:status", {
         status: "streaming",
       });
 
@@ -1765,7 +1766,7 @@ describe("channels", () => {
       // LLM completes. The `chat:status: idle` push is the
       // explicit signal that the response is done; reset
       // `waitingForResponse` so the typing indicator clears.
-      simulateServerEvent("agent:agent-1", "chat:status", {
+      simulateServerEvent("agent:1:agent-1", "chat:status", {
         status: "idle",
       });
 
@@ -1785,7 +1786,7 @@ describe("channels", () => {
         status: "idle",
       });
 
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -1796,7 +1797,7 @@ describe("channels", () => {
 
       useStore.getState().setWaitingForResponse("agent-1", true);
 
-      simulateServerEvent("agent:agent-1", "chat:status", {
+      simulateServerEvent("agent:1:agent-1", "chat:status", {
         status: "streaming",
       });
 
@@ -1818,7 +1819,7 @@ describe("channels", () => {
         status: "idle",
       });
 
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -1829,7 +1830,7 @@ describe("channels", () => {
 
       useStore.getState().setWaitingForResponse("agent-1", true);
 
-      simulateServerEvent("agent:agent-1", "chat:status", {
+      simulateServerEvent("agent:1:agent-1", "chat:status", {
         status: "executing_tools",
       });
 
@@ -1850,7 +1851,7 @@ describe("channels", () => {
         history: [{ index: 0, role: "compaction", archivedCount: 1 }],
       });
 
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -1859,7 +1860,7 @@ describe("channels", () => {
         );
       });
 
-      simulateServerEvent("agent:agent-1", "chat:compaction", {
+      simulateServerEvent("agent:1:agent-1", "chat:compaction", {
         marker: {
           index: 5,
           role: "compaction",
@@ -1910,7 +1911,7 @@ describe("channels", () => {
         status: "idle",
       });
 
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -1919,7 +1920,7 @@ describe("channels", () => {
         );
       });
 
-      simulateServerEvent("agent:agent-1", "chat:notification", {
+      simulateServerEvent("agent:1:agent-1", "chat:notification", {
         type: "max_iterations",
         message: "Max tool iterations reached",
       });
@@ -1941,7 +1942,7 @@ describe("channels", () => {
         status: "idle",
       });
 
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -1950,7 +1951,7 @@ describe("channels", () => {
         );
       });
 
-      simulateServerEvent("agent:agent-1", "chat:notification", {
+      simulateServerEvent("agent:1:agent-1", "chat:notification", {
         type: "max_iterations",
         message: "Max tool iterations reached",
       });
@@ -1967,7 +1968,7 @@ describe("channels", () => {
 
   describe("leaveAgent", () => {
     it("should disconnect agent and remove channel reference", async () => {
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -1986,10 +1987,9 @@ describe("channels", () => {
       });
 
       let errorCalled = false;
-      createAgent(
+      createSpace(
         "gpt-4",
         1,
-        null,
         () => {},
         (_err) => {
           errorCalled = true;
@@ -2015,7 +2015,7 @@ describe("channels", () => {
     });
 
     it("should handle successful message send - add user message, set partial, and waiting", async () => {
-      setNextJoinResult("agent:agent-1", {
+      setNextJoinResult("agent:1:agent-1", {
         autoInit: {
           id: "agent-1",
           model: { name: "gpt-4", provider: "openai" },
@@ -2023,7 +2023,7 @@ describe("channels", () => {
           status: "idle",
         },
       });
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -2032,7 +2032,7 @@ describe("channels", () => {
         );
       });
 
-      setNextPushResult("agent:agent-1", "chat:message", { ok: {} });
+      setNextPushResult("agent:1:agent-1", "chat:message", { ok: {} });
 
       sendMessage("agent-1", "Hello");
 
@@ -2052,7 +2052,7 @@ describe("channels", () => {
     });
 
     it("should handle message send error - clear partial and call onError", async () => {
-      setNextJoinResult("agent:agent-1", {
+      setNextJoinResult("agent:1:agent-1", {
         autoInit: {
           id: "agent-1",
           model: { name: "gpt-4", provider: "openai" },
@@ -2060,7 +2060,7 @@ describe("channels", () => {
           status: "idle",
         },
       });
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -2069,7 +2069,7 @@ describe("channels", () => {
         );
       });
 
-      setNextPushResult("agent:agent-1", "chat:message", {
+      setNextPushResult("agent:1:agent-1", "chat:message", {
         error: { reason: "rate_limited" },
       });
 
@@ -2088,7 +2088,7 @@ describe("channels", () => {
     });
 
     it("invokes the error callback when the server rejects the push", async () => {
-      setNextJoinResult("agent:agent-1", {
+      setNextJoinResult("agent:1:agent-1", {
         autoInit: {
           id: "agent-1",
           model: { name: "gpt-4", provider: "openai" },
@@ -2096,7 +2096,7 @@ describe("channels", () => {
           status: "idle",
         },
       });
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -2105,12 +2105,12 @@ describe("channels", () => {
         );
       });
 
-      setNextPushResult("agent:agent-1", "chat:message", {
+      setNextPushResult("agent:1:agent-1", "chat:message", {
         error: { reason: "rate_limited" },
       });
 
       let errorCalled = false;
-      sendMessage("agent-1", "Hello", "build", (_err) => {
+      deleteAgent("agent-1", 1, (_err) => {
         errorCalled = true;
       });
 
@@ -2120,7 +2120,7 @@ describe("channels", () => {
     });
 
     it("should include mode in the push payload and in the optimistic user message", async () => {
-      setNextJoinResult("agent:agent-1", {
+      setNextJoinResult("agent:1:agent-1", {
         autoInit: {
           id: "agent-1",
           model: { name: "gpt-4", provider: "openai" },
@@ -2128,7 +2128,7 @@ describe("channels", () => {
           status: "idle",
         },
       });
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -2138,7 +2138,7 @@ describe("channels", () => {
       });
 
       // Capture the next push payload
-      const pushCapture = captureNextPush("agent:agent-1", "chat:message");
+      const pushCapture = captureNextPush("agent:1:agent-1", "chat:message");
 
       sendMessage("agent-1", "Hello", "build");
 
@@ -2151,7 +2151,7 @@ describe("channels", () => {
     });
 
     it("omits the mode key from the payload when no mode is passed", async () => {
-      setNextJoinResult("agent:agent-1", {
+      setNextJoinResult("agent:1:agent-1", {
         autoInit: {
           id: "agent-1",
           model: { name: "gpt-4", provider: "openai" },
@@ -2159,7 +2159,7 @@ describe("channels", () => {
           status: "idle",
         },
       });
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -2168,7 +2168,7 @@ describe("channels", () => {
         );
       });
 
-      const pushCapture = captureNextPush("agent:agent-1", "chat:message");
+      const pushCapture = captureNextPush("agent:1:agent-1", "chat:message");
 
       sendMessage("agent-1", "Hello");
 
@@ -2205,7 +2205,7 @@ describe("channels", () => {
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
       try {
-        setNextJoinResult("agent:agent-1", {
+        setNextJoinResult("agent:1:agent-1", {
           autoInit: {
             id: "agent-1",
             model: { name: "gpt-4", provider: "openai" },
@@ -2213,7 +2213,7 @@ describe("channels", () => {
             status: "idle",
           },
         });
-        joinAgent("agent-1");
+        joinAgent("agent-1", 1);
 
         await vi.waitFor(() => {
           assert.strictEqual(
@@ -2229,7 +2229,7 @@ describe("channels", () => {
           -1,
         );
 
-        setNextPushResult("agent:agent-1", "chat:message", { ok: {} });
+        setNextPushResult("agent:1:agent-1", "chat:message", { ok: {} });
         sendMessage("agent-1", "Hello");
 
         // Optimistic add lands the message at index 0 (the
@@ -2248,7 +2248,7 @@ describe("channels", () => {
         // The server echoes the user message with its
         // authoritative index 1 (the system message is at 0
         // server-side).
-        simulateServerEvent("agent:agent-1", "chat:message", {
+        simulateServerEvent("agent:1:agent-1", "chat:message", {
           index: 1,
           role: "user",
           parts: [{ kind: "text", text: "Hello" }],
@@ -2273,13 +2273,12 @@ describe("channels", () => {
     });
   });
 
-  describe("createAgent", () => {
+  describe("createSpace", () => {
     it("should call onError when not connected to lobby", async () => {
       let errorCalled = false;
-      createAgent(
+      createSpace(
         "gpt-4",
         1,
-        null,
         () => {},
         (_err) => {
           errorCalled = true;
@@ -2292,7 +2291,9 @@ describe("channels", () => {
     });
 
     it("should call onOk with agent name on create success", async () => {
-      setNextPushResult("lobby", "create_agent", { ok: { name: "new-agent" } });
+      setNextPushResult("lobby", "create_space", {
+        ok: { space_id: 1, name: "new-agent" },
+      });
       joinLobby();
 
       await vi.waitFor(() => {
@@ -2301,9 +2302,9 @@ describe("channels", () => {
 
       let okCalled = false;
       let agentName = null;
-      createAgent("gpt-4", 1, null, (name) => {
+      createSpace("gpt-4", 1, (resp) => {
         okCalled = true;
-        agentName = name;
+        agentName = resp.name;
       });
 
       await vi.waitFor(() => {
@@ -2313,12 +2314,13 @@ describe("channels", () => {
     });
 
     it("should pass the agent name (not undefined) to onOk", async () => {
-      // Regression for the /agent/undefined redirect bug. The server
-      // returns {name: "..."} and the createAgent wrapper must read
-      // that field; reading resp.id would silently deliver undefined
-      // to NewAgentPage's navigate() callback.
-      setNextPushResult("lobby", "create_agent", {
-        ok: { name: "clever-raven" },
+      // Regression for the /space/<slug>/agent/undefined redirect
+      // bug. The server returns {space_id: ..., name: "..."} and the
+      // createSpace wrapper must read the `name` field; reading
+      // resp.id would silently deliver undefined to the navigate()
+      // callback.
+      setNextPushResult("lobby", "create_space", {
+        ok: { space_id: 5, name: "clever-raven" },
       });
       joinLobby();
 
@@ -2327,17 +2329,17 @@ describe("channels", () => {
       });
 
       let onOkArg = "sentinel";
-      createAgent("gpt-4", 1, null, (arg) => {
+      createSpace("gpt-4", 1, (arg) => {
         onOkArg = arg;
       });
 
       await vi.waitFor(() => {
-        assert.strictEqual(onOkArg, "clever-raven");
+        assert.strictEqual(onOkArg?.name, "clever-raven");
       });
     });
 
     it("should call onError on create failure", async () => {
-      setNextPushResult("lobby", "create_agent", {
+      setNextPushResult("lobby", "create_space", {
         error: { reason: "limit_reached" },
       });
       joinLobby();
@@ -2347,10 +2349,9 @@ describe("channels", () => {
       });
 
       let errorCalled = false;
-      createAgent(
+      createSpace(
         "gpt-4",
         1,
-        null,
         () => {},
         (_err) => {
           errorCalled = true;
@@ -2362,7 +2363,9 @@ describe("channels", () => {
       });
     });
     it("should include workspace_path in payload when provided", async () => {
-      setNextPushResult("lobby", "create_agent", { ok: { name: "new-agent" } });
+      setNextPushResult("lobby", "create_space", {
+        ok: { space_id: 1, name: "new-agent" },
+      });
       joinLobby();
 
       await vi.waitFor(() => {
@@ -2370,9 +2373,15 @@ describe("channels", () => {
       });
 
       let okCalled = false;
-      createAgent("gpt-4", 1, "/path/to/workspace", (_name) => {
-        okCalled = true;
-      });
+      createSpace(
+        "gpt-4",
+        1,
+        (_resp) => {
+          okCalled = true;
+        },
+        undefined,
+        { workspace_path: "/path/to/workspace" },
+      );
 
       await vi.waitFor(() => {
         assert.strictEqual(okCalled, true);
@@ -2380,7 +2389,9 @@ describe("channels", () => {
     });
 
     it("should include vocation_id in payload when provided", async () => {
-      setNextPushResult("lobby", "create_agent", { ok: { name: "new-agent" } });
+      setNextPushResult("lobby", "create_space", {
+        ok: { space_id: 1, name: "new-agent" },
+      });
       joinLobby();
 
       await vi.waitFor(() => {
@@ -2388,7 +2399,7 @@ describe("channels", () => {
       });
 
       let okCalled = false;
-      createAgent("gpt-4", 42, null, (_name) => {
+      createSpace("gpt-4", 42, (_resp) => {
         okCalled = true;
       });
 
@@ -2398,18 +2409,20 @@ describe("channels", () => {
     });
 
     it("should omit vocation_id from payload when null", async () => {
-      // Pin the falsy branch of `if (vocationId)` in createAgent.
-      // All other createAgent tests pass a non-null vocationId, so
+      // Pin the falsy branch of `if (vocationId)` in createSpace.
+      // All other createSpace tests pass a non-null vocationId, so
       // the omit-path is otherwise untested.
-      const capturePromise = captureNextPush("lobby", "create_agent");
-      setNextPushResult("lobby", "create_agent", { ok: { name: "new-agent" } });
+      const capturePromise = captureNextPush("lobby", "create_space");
+      setNextPushResult("lobby", "create_space", {
+        ok: { space_id: 1, name: "new-agent" },
+      });
       joinLobby();
 
       await vi.waitFor(() => {
         assert.strictEqual(useStore.getState().agents.length >= 0, true);
       });
 
-      createAgent("gpt-4", null, null, () => {});
+      createSpace("gpt-4", null, () => {});
 
       const captured = await capturePromise;
       assert.strictEqual(
@@ -2420,7 +2433,9 @@ describe("channels", () => {
     });
 
     it("should work without onOk callback on success", async () => {
-      setNextPushResult("lobby", "create_agent", { ok: { name: "new-agent" } });
+      setNextPushResult("lobby", "create_space", {
+        ok: { space_id: 1, name: "new-agent" },
+      });
       joinLobby();
 
       await vi.waitFor(() => {
@@ -2428,14 +2443,14 @@ describe("channels", () => {
       });
 
       // Call without onOk callback - should not throw
-      createAgent("gpt-4", 1, null, undefined);
+      createSpace("gpt-4", 1, undefined);
 
       // Just wait a bit to ensure no errors
       await new Promise((resolve) => setTimeout(resolve, 50));
     });
 
     it("should work without onError callback on error", async () => {
-      setNextPushResult("lobby", "create_agent", {
+      setNextPushResult("lobby", "create_space", {
         error: { reason: "limit_reached" },
       });
       joinLobby();
@@ -2445,7 +2460,7 @@ describe("channels", () => {
       });
 
       // Call without onError callback - should not throw
-      createAgent("gpt-4", 1, null, undefined, undefined);
+      createSpace("gpt-4", 1, undefined, undefined);
 
       // Just wait a bit to ensure no errors
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -2455,7 +2470,7 @@ describe("channels", () => {
   describe("deleteAgent", () => {
     it("should call onError when not connected to lobby", async () => {
       let errorCalled = false;
-      deleteAgent("agent-1", (_err) => {
+      deleteAgent("agent-1", 1, (_err) => {
         errorCalled = true;
       });
 
@@ -2475,7 +2490,7 @@ describe("channels", () => {
       });
 
       let errorCalled = false;
-      deleteAgent("agent-1", (_err) => {
+      deleteAgent("agent-1", 1, (_err) => {
         errorCalled = true;
       });
 
@@ -2495,7 +2510,7 @@ describe("channels", () => {
       });
 
       // Call without onError callback - should not throw
-      deleteAgent("agent-1");
+      deleteAgent("agent-1", 1);
 
       // Just wait a bit to ensure no errors
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -2619,7 +2634,7 @@ describe("channels", () => {
     });
 
     it("should push chat:stop and invoke onError on push failure", async () => {
-      setNextJoinResult("agent:agent-1", {
+      setNextJoinResult("agent:1:agent-1", {
         autoInit: {
           id: "agent-1",
           model: { name: "gpt-4", provider: "openai" },
@@ -2627,7 +2642,7 @@ describe("channels", () => {
           status: "idle",
         },
       });
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -2636,7 +2651,7 @@ describe("channels", () => {
         );
       });
 
-      setNextPushResult("agent:agent-1", "chat:stop", {
+      setNextPushResult("agent:1:agent-1", "chat:stop", {
         error: { reason: "agent_not_found" },
       });
 
@@ -2670,7 +2685,7 @@ describe("channels", () => {
     });
 
     it("should push chat:retry-compaction and invoke onError on push failure", async () => {
-      setNextJoinResult("agent:agent-1", {
+      setNextJoinResult("agent:1:agent-1", {
         autoInit: {
           id: "agent-1",
           model: { name: "gpt-4", provider: "openai" },
@@ -2678,7 +2693,7 @@ describe("channels", () => {
           status: "idle",
         },
       });
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -2687,7 +2702,7 @@ describe("channels", () => {
         );
       });
 
-      setNextPushResult("agent:agent-1", "chat:retry-compaction", {
+      setNextPushResult("agent:1:agent-1", "chat:retry-compaction", {
         error: { reason: "agent_status_idle" },
       });
 
@@ -2702,7 +2717,7 @@ describe("channels", () => {
     });
 
     it("should not throw on push failure when onError is omitted", async () => {
-      setNextJoinResult("agent:agent-1", {
+      setNextJoinResult("agent:1:agent-1", {
         autoInit: {
           id: "agent-1",
           model: { name: "gpt-4", provider: "openai" },
@@ -2710,7 +2725,7 @@ describe("channels", () => {
           status: "idle",
         },
       });
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -2719,7 +2734,7 @@ describe("channels", () => {
         );
       });
 
-      setNextPushResult("agent:agent-1", "chat:retry-compaction", {
+      setNextPushResult("agent:1:agent-1", "chat:retry-compaction", {
         error: { reason: "agent_status_idle" },
       });
 
@@ -2748,7 +2763,7 @@ describe("channels", () => {
     });
 
     it("should push chat:loop-detected-ok and invoke onError on push failure", async () => {
-      setNextJoinResult("agent:agent-1", {
+      setNextJoinResult("agent:1:agent-1", {
         autoInit: {
           id: "agent-1",
           model: { name: "gpt-4", provider: "openai" },
@@ -2756,7 +2771,7 @@ describe("channels", () => {
           status: "compaction_loop_detected",
         },
       });
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -2765,7 +2780,7 @@ describe("channels", () => {
         );
       });
 
-      setNextPushResult("agent:agent-1", "chat:loop-detected-ok", {
+      setNextPushResult("agent:1:agent-1", "chat:loop-detected-ok", {
         error: { reason: "wrong_state" },
       });
 
@@ -2841,7 +2856,7 @@ describe("channels", () => {
     it("should trigger sync when server sends delta with gap", async () => {
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -2859,7 +2874,7 @@ describe("channels", () => {
       };
 
       // Simulate server sending delta with a gap (charsStart=5 > charsReceived=3)
-      simulateServerEvent("agent:agent-1", "chat:delta", {
+      simulateServerEvent("agent:1:agent-1", "chat:delta", {
         index: 0,
         content: "lo",
         charsStart: 5, // Gap from 3 to 5
@@ -2894,7 +2909,7 @@ describe("channels", () => {
     // new active messages never reach the client.
 
     it("pushes chat:sync with lastIndex = marker.index when chat:compaction arrives", async () => {
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -2903,9 +2918,9 @@ describe("channels", () => {
         );
       });
 
-      const pushPromise = captureNextPush("agent:agent-1", "chat:sync");
+      const pushPromise = captureNextPush("agent:1:agent-1", "chat:sync");
 
-      simulateServerEvent("agent:agent-1", "chat:compaction", {
+      simulateServerEvent("agent:1:agent-1", "chat:compaction", {
         marker: {
           index: 6,
           role: "compaction",
@@ -2928,7 +2943,7 @@ describe("channels", () => {
       // index <= marker.index=6). The chat:sync then fills
       // it with the new active list (the server responds
       // with messages where index > 6).
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -2953,7 +2968,7 @@ describe("channels", () => {
 
       // Set up the chat:sync response that the channel
       // will request after the compaction event
-      setNextPushResult("agent:agent-1", "chat:sync", {
+      setNextPushResult("agent:1:agent-1", "chat:sync", {
         ok: {
           messages: [
             { index: 7, role: "system", content: "fresh system" },
@@ -2967,7 +2982,7 @@ describe("channels", () => {
         },
       });
 
-      simulateServerEvent("agent:agent-1", "chat:compaction", {
+      simulateServerEvent("agent:1:agent-1", "chat:compaction", {
         marker: { index: 6, role: "compaction", archivedCount: 6 },
         history: [
           { index: 0, role: "system", content: "system" },
@@ -2994,7 +3009,7 @@ describe("channels", () => {
       // `chat:message` was silently lost in transit. The
       // channel handler must trigger a sync to fill the
       // gap.
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -3014,10 +3029,10 @@ describe("channels", () => {
         ],
       });
 
-      const pushPromise = captureNextPush("agent:agent-1", "chat:sync");
+      const pushPromise = captureNextPush("agent:1:agent-1", "chat:sync");
 
       // Incoming message at index 5 — gap of 2 (indices 3, 4 missing)
-      simulateServerEvent("agent:agent-1", "chat:message", {
+      simulateServerEvent("agent:1:agent-1", "chat:message", {
         index: 5,
         role: "assistant",
         parts: [{ kind: "text", text: "E" }],
@@ -3032,7 +3047,7 @@ describe("channels", () => {
       // lastIndex=2, incoming message.index=3 → no gap, no
       // sync. (If a sync fires here, the test would have
       // captured a push that never came.)
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -3053,13 +3068,13 @@ describe("channels", () => {
 
       // `captureNextPush` would resolve on the next push;
       // a 50ms wait with no push means none fired.
-      const pushPromise = captureNextPush("agent:agent-1", "chat:sync");
+      const pushPromise = captureNextPush("agent:1:agent-1", "chat:sync");
       const timeout = new Promise((resolve) =>
         setTimeout(() => resolve("timeout"), 50),
       );
       const result = await Promise.race([pushPromise, timeout]);
 
-      simulateServerEvent("agent:agent-1", "chat:message", {
+      simulateServerEvent("agent:1:agent-1", "chat:message", {
         index: 3,
         role: "assistant",
         parts: [{ kind: "text", text: "D" }],
@@ -3077,7 +3092,7 @@ describe("channels", () => {
     // latest `lastIndex` (so the freshest lower bound wins).
 
     it("coalesces two rapid chat:compaction events: each fires its own push, and the second uses the latest lastIndex", async () => {
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -3086,11 +3101,11 @@ describe("channels", () => {
         );
       });
 
-      const push1Promise = captureNextPush("agent:agent-1", "chat:sync");
+      const push1Promise = captureNextPush("agent:1:agent-1", "chat:sync");
 
       // First compaction: marker at index 5 → triggers sync
       // with lastIndex=5
-      simulateServerEvent("agent:agent-1", "chat:compaction", {
+      simulateServerEvent("agent:1:agent-1", "chat:compaction", {
         marker: { index: 5, role: "compaction", archivedCount: 5 },
         history: [{ index: 5, role: "compaction", archivedCount: 5 }],
       });
@@ -3102,9 +3117,9 @@ describe("channels", () => {
       // fires its own push (the response merge is idempotent);
       // the test asserts the second push uses the latest
       // `lastIndex`.
-      const push2Promise = captureNextPush("agent:agent-1", "chat:sync");
+      const push2Promise = captureNextPush("agent:1:agent-1", "chat:sync");
 
-      simulateServerEvent("agent:agent-1", "chat:compaction", {
+      simulateServerEvent("agent:1:agent-1", "chat:compaction", {
         marker: { index: 9, role: "compaction", archivedCount: 4 },
         history: [{ index: 9, role: "compaction", archivedCount: 4 }],
       });
@@ -3114,7 +3129,7 @@ describe("channels", () => {
     });
 
     it("clears the per-agent sync state on leaveAgent", async () => {
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -3123,9 +3138,9 @@ describe("channels", () => {
         );
       });
 
-      const push1Promise = captureNextPush("agent:agent-1", "chat:sync");
+      const push1Promise = captureNextPush("agent:1:agent-1", "chat:sync");
 
-      simulateServerEvent("agent:agent-1", "chat:compaction", {
+      simulateServerEvent("agent:1:agent-1", "chat:compaction", {
         marker: { index: 5, role: "compaction", archivedCount: 5 },
         history: [{ index: 5, role: "compaction", archivedCount: 5 }],
       });
@@ -3144,7 +3159,7 @@ describe("channels", () => {
       // post-rejoin marker's index (the symptom of
       // `syncState` not being cleared would be a stale
       // inFlight flag from the previous session).
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
         assert.strictEqual(
@@ -3153,9 +3168,9 @@ describe("channels", () => {
         );
       });
 
-      const push2Promise = captureNextPush("agent:agent-1", "chat:sync");
+      const push2Promise = captureNextPush("agent:1:agent-1", "chat:sync");
 
-      simulateServerEvent("agent:agent-1", "chat:compaction", {
+      simulateServerEvent("agent:1:agent-1", "chat:compaction", {
         marker: { index: 7, role: "compaction", archivedCount: 3 },
         history: [{ index: 7, role: "compaction", archivedCount: 3 }],
       });
@@ -3175,7 +3190,7 @@ describe("channels", () => {
       // silently drops the event since the channel is
       // gone, and `requestSync`'s `!channel` guard
       // also bails).
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
       await vi.waitFor(() => {
         assert.strictEqual(
           useStore.getState().agentsCache["agent-1"]?.status,
@@ -3184,7 +3199,7 @@ describe("channels", () => {
       });
       leaveAgent("agent-1");
 
-      const pushPromise = captureNextPush("agent:agent-1", "chat:sync");
+      const pushPromise = captureNextPush("agent:1:agent-1", "chat:sync");
       const timeout = new Promise((resolve) =>
         setTimeout(() => resolve("timeout"), 30),
       );
@@ -3195,38 +3210,38 @@ describe("channels", () => {
 
   describe("agent chat:compaction-loop events", () => {
     it("records the loop message via setCompactionLoop", async () => {
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
       await vi.waitFor(() => {
         assert.strictEqual(
           useStore.getState().agentsCache["agent-1"]?.status,
           "connected",
         );
       });
-      simulateServerEvent("agent:agent-1", "chat:compaction-loop", {
+      simulateServerEvent("agent:1:agent-1", "chat:compaction-loop", {
         content: "compaction isn't reducing the conversation",
       });
 
       await vi.waitFor(() => {
         assert.strictEqual(
-          useStore.getState().agentsCache["agent-1"].compactionLoop,
+          useStore.getState().agentsCache["agent-1"].compactionLoop?.content,
           "compaction isn't reducing the conversation",
         );
       });
     });
 
     it("falls back to the default loop message when content is missing", async () => {
-      joinAgent("agent-1");
+      joinAgent("agent-1", 1);
       await vi.waitFor(() => {
         assert.strictEqual(
           useStore.getState().agentsCache["agent-1"]?.status,
           "connected",
         );
       });
-      simulateServerEvent("agent:agent-1", "chat:compaction-loop", {});
+      simulateServerEvent("agent:1:agent-1", "chat:compaction-loop", {});
 
       await vi.waitFor(() => {
         assert.strictEqual(
-          useStore.getState().agentsCache["agent-1"].compactionLoop,
+          useStore.getState().agentsCache["agent-1"].compactionLoop?.content,
           "compaction isn't reducing the conversation",
         );
       });

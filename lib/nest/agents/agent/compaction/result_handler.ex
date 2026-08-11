@@ -140,7 +140,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
     state = archive_pre_swap(state, archived_messages)
     state = apply_post_swap(state, marker, new_messages)
 
-    Broadcasts.compaction(state.name, marker, state.chat_state.history)
+    Broadcasts.compaction(state, marker, state.chat_state.history)
 
     spawn_next_chat_turn(state, carried_entry)
   end
@@ -277,7 +277,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
     Logger.warning("Compaction failed: agent=#{state.name} reason=#{inspect(reason)}")
 
     state = put_status(state, :compaction_failed)
-    Broadcasts.status(state.name, state)
+    Broadcasts.status(state)
 
     Broadcasts.compaction_error(
       state.name,
@@ -299,51 +299,58 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   def needs_entry(state, carried_entry) do
     state = %{
       state
-      | chat_state: %{
-          state.chat_state
+      | live: %{
+          state.live
           | status: :compacting,
             mid_turn_entry: %{entry: carried_entry}
         }
     }
 
-    Broadcasts.status(state.name, state)
+    Broadcasts.status(state)
     Trigger.mid_turn(state, carried_entry)
   end
 
   @spec check_consecutive(Agent.t()) :: :refuse | {:ok, Agent.t()}
   def check_consecutive(state) do
-    count = state.chat_state.consecutive_compaction_count + 1
+    count = state.live.consecutive_compaction_count + 1
 
     if count > @max_consecutive_compactions do
-      set_compaction_loop(state, :consecutive_compaction_threshold)
+      # Report the N compactions that already happened as "attempted".
+      set_compaction_loop(
+        state,
+        :consecutive_compaction_threshold,
+        state.live.consecutive_compaction_count,
+        @max_consecutive_compactions
+      )
+
       :refuse
     else
-      state = %{state | chat_state: %{state.chat_state | consecutive_compaction_count: count}}
+      state = %{state | live: %{state.live | consecutive_compaction_count: count}}
       {:ok, state}
     end
   end
 
   @spec loop_detected_ok(Agent.t()) :: Agent.t()
   def loop_detected_ok(state) do
-    if state.chat_state.status != :compaction_loop_detected do
+    if state.live.status != :compaction_loop_detected do
       Logger.warning(
         "compaction_loop_detected_ok ignored: agent=#{state.name} " <>
-          "status=#{inspect(state.chat_state.status)} (expected :compaction_loop_detected)"
+          "status=#{inspect(state.live.status)} (expected :compaction_loop_detected)"
       )
 
       state
     else
       state = %{
         state
-        | chat_state: %{
-            state.chat_state
+        | live: %{
+            state.live
             | status: :idle,
               consecutive_compaction_count: 0,
               pending_user_message: nil
           }
       }
 
-      Broadcasts.status(state.name, state)
+      Broadcasts.status(state)
       state
     end
   end
@@ -351,14 +358,14 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   @spec retry_compaction(Agent.t()) :: Agent.t()
   def retry_compaction(state) do
     cond do
-      state.chat_state.status != :compaction_failed ->
+      state.live.status != :compaction_failed ->
         Logger.warning(
-          "retry_compaction ignored: agent=#{state.name} status=#{inspect(state.chat_state.status)} (expected :compaction_failed)"
+          "retry_compaction ignored: agent=#{state.name} status=#{inspect(state.live.status)} (expected :compaction_failed)"
         )
 
         state
 
-      entry = state.chat_state.mid_turn_entry ->
+      entry = state.live.mid_turn_entry ->
         state = clear_mid_turn_entry(state)
         needs_entry(state, entry.entry)
 
@@ -369,19 +376,28 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
 
   # --- private helpers ---
 
-  defp set_compaction_loop(state, reason) do
-    state = %{state | chat_state: %{state.chat_state | status: :compaction_loop_detected}}
-    Broadcasts.status(state.name, state)
-    Broadcasts.compaction_loop(state.name, format_reason(reason), inspect(__MODULE__))
+  defp set_compaction_loop(state, reason, attempt_count, max_attempts) do
+    state = %{state | live: %{state.live | status: :compaction_loop_detected}}
+    Broadcasts.status(state)
+
+    Broadcasts.compaction_loop(
+      state.space_id,
+      state.name,
+      format_reason(reason),
+      inspect(__MODULE__),
+      attempt_count,
+      max_attempts
+    )
+
     state
   end
 
   defp clear_mid_turn_entry(state) do
-    %{state | chat_state: %{state.chat_state | mid_turn_entry: nil}}
+    %{state | live: %{state.live | mid_turn_entry: nil}}
   end
 
   defp put_status(state, status) do
-    %{state | chat_state: %{state.chat_state | status: status}}
+    %{state | live: %{state.live | status: status}}
   end
 
   # Append the carried entry's messages to the post-swap active
@@ -441,9 +457,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   end
 
   defp spawn_with_entry(state, entry) do
-    {_effective_mode, caps} =
-      ChatPipeline.resolve_mode_and_caps(state.mode, state.vocation)
-
+    {_effective_mode, caps} = ChatPipeline.resolve_mode_and_caps(state.live.mode, state.vocation)
     ChatTurnSpawner.spawn(state, state.chat_state.messages, entry, caps)
   end
 
@@ -472,7 +486,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   # ChatTurn re-fires warnings if usage rises again after the
   # history was summarized.
   defp reset_crossed_thresholds(state) do
-    %{state | chat_state: %{state.chat_state | crossed_thresholds: %MapSet{}}}
+    %{state | live: %{state.live | crossed_thresholds: %MapSet{}}}
   end
 
   # Reset the `read_files` cache. Same pattern as

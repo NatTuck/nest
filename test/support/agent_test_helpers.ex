@@ -3,28 +3,116 @@ defmodule Nest.Agents.AgentTestHelpers do
   Shared setup and helpers for `Nest.Agents.AgentTest` and its
   split files. The setup creates the per-test MockClient queue and
   `start_agent/1` starts an agent with that queue.
+
+  ## Spaces
+
+  Every test that needs an agent also needs a space. `start_agent/1`
+  creates a fresh space in the test pid's sandboxed transaction
+  and stashes the `space_id` in the test process dict under
+  `:nest_test_space_id`. Callers that need the value can read it
+  via `current_space_id/0`; everything else routes through it
+  implicitly (the agent's session itself carries the `space_id`).
+
+  The on-exit cleanup walks the agent's Supervisor child tree to
+  terminate the GenServer; the `spaces` row is rolled back
+  automatically by the sandbox when the test exits.
+
+  ## Helpers split out
+
+  The general-purpose test helpers (text serialization, index
+  uniqueness checks, file cache seeding, pid-down waits) live
+  in `Nest.Agents.AgentTestAssertions` and
+  `Nest.Agents.AgentTestLifecycle` so this module stays under
+  the credo 500-line cap.
   """
 
-  import ExUnit.Callbacks
   import ExUnit.Assertions
+  import ExUnit.Callbacks
+
+  require Logger
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Nest.Agents
+  alias Nest.Agents.AgentTestAssertions
+  alias Nest.Agents.AgentTestLifecycle
   alias Nest.Agents.Supervisor
   alias Nest.DotConfig
   alias Nest.LLM.MockClient
   alias Nest.LLM.OpenAIClient
   alias Nest.Messages.Part
   alias Nest.Persistence
+  alias Nest.Spaces
   alias Nest.Vocations
+
+  defdelegate text_from_parts(parts), to: AgentTestAssertions
+  defdelegate assert_unique_message_indices(state), to: AgentTestAssertions
+  defdelegate record_read_file(pid, path, opts \\ []), to: AgentTestAssertions
+  defdelegate wait_for_pid_down(space_id, name, timeout \\ 100), to: AgentTestLifecycle
+
+  @space_id_key :nest_test_space_id
+
+  @doc """
+  Returns the `space_id` stored in the test process dict by the
+  most recent `start_agent/1` call. Tests that bypass
+  `start_agent/1` (e.g. supervisor tests) should call
+  `create_test_space/0` directly and stash the result with
+  `put_space_id/1`.
+  """
+  def current_space_id do
+    case Process.get(@space_id_key) do
+      nil -> raise "no test space_id set — call start_agent/1 or create_test_space/0 first"
+      id -> id
+    end
+  end
+
+  def put_space_id(space_id), do: Process.put(@space_id_key, space_id)
+
+  @doc """
+  Assert a shell_cmd tool result succeeded (`is_error == false`).
+
+  When the command errored (`is_error == true`), dump the full
+  result struct (including `content`, `is_error`, `tool_call_id`,
+  `name`, `arguments`) via `Logger.error/1` before asserting, so a
+  real shell failure (bwrap exit, tmp-dir `:enoent`, "Unknown tool")
+  is visible in the test output instead of surfacing as a bare
+  `is_error == false` assertion failure.
+  """
+  def assert_shell_ok(%Part.ToolResult{} = result) do
+    if result.is_error do
+      Logger.error("shell_cmd failed: #{inspect(result, pretty: true)}")
+    end
+
+    assert result.is_error == false
+    result
+  end
+
+  @doc """
+  Create a fresh space for the test. Returns `{:ok, space_id}`.
+  The row is rolled back by the sandbox on test exit.
+  """
+  def create_test_space do
+    {:ok, space} =
+      Spaces.create_space(nil, %{
+        name: "test-space-#{System.unique_integer([:positive])}",
+        slug: "test-space-#{System.unique_integer([:positive])}"
+      })
+
+    Process.put(@space_id_key, space.id)
+    {:ok, space.id}
+  end
 
   def start_agent(attrs \\ %{}) do
     # Provably unique within a single BEAM (process-global monotonic).
     # Avoids the adjective-animal generator's race risk under async
     # tests and exercises the explicit-name path of
-    # `Agents.create_agent/2`.
+    # `Agents.create_agent/3`.
     agent_name = "agent#{System.unique_integer([:positive])}"
-    merged = build_attrs(agent_name, attrs)
+
+    # Create a fresh space for this agent. The space_id is the
+    # first positional arg to `Agents.create_agent/3`; everything
+    # else stays in opts.
+    {:ok, space_id} = create_test_space()
+    merged = build_attrs(agent_name, space_id, attrs)
 
     # Use the standard caller interface so the agent is registered
     # in the supervisor's `Registry` (the supervisor path). The
@@ -32,19 +120,30 @@ defmodule Nest.Agents.AgentTestHelpers do
     # Mimic.allow, MockClient swap, queue transfer) but on the
     # supervisor-spawned pid rather than a `start_supervised!` pid.
     #
-    # `Agents.create_agent/2` takes `(model, opts)`: the model map
-    # carries the LLM model name (used by `enrich_model/1` to look
-    # up the provider from DotConfig), and `vocation_id` /
+    # `Agents.create_agent/3` takes `(space_id, model, opts)`: the
+    # model map carries the LLM model name (used by `enrich_model/1`
+    # to look up the provider from DotConfig), and `vocation_id` /
     # `workspace_path` are opts. The agent's registry key (`name:`)
     # is also an opt — the model's `:name` is the LLM identifier
     # (e.g. "qwen3.5-plus"), NOT the agent name. Without `name:`
-    # here the supervisor's `generate_unique_name/0` would produce
-    # a "clever-raven"-style pair, defeating the
+    # here the supervisor's `generate_unique_name_for_space/1`
+    # would produce a "clever-raven"-style pair, defeating the
     # `System.unique_integer/1`-based test name.
-    {:ok, name} = create_agent_via_supervisor(merged)
+    {:ok, name} = create_agent_via_supervisor(space_id, merged)
 
-    {:ok, agent_pid} = Supervisor.get_agent(name)
+    {:ok, agent_pid} = Supervisor.get_agent(space_id, name)
 
+    bridge_test_to_agent(agent_pid, space_id, name)
+
+    {agent_pid, name}
+  end
+
+  # Hand the test process ownership links to the freshly-spawned
+  # agent pid: DB sandbox checkout, Mimic stubs, MockClient swap,
+  # PubSub subscription, mock-queue transfer, on_exit cleanup.
+  # Factored out so `start_agent/1` doesn't blow past the credo
+  # "function complexity" threshold.
+  defp bridge_test_to_agent(agent_pid, space_id, name) do
     # `Process.link/1` makes the test process crash if the agent
     # dies unexpectedly. Tests that intentionally kill the agent
     # must set `Process.flag(:trap_exit, true)` and assert on the
@@ -78,7 +177,7 @@ defmodule Nest.Agents.AgentTestHelpers do
     # bug surfaces most visibly in `agent_compaction_test.exs:82`
     # under parallel coverage runs.
     drop_stale_pubsub_subscription()
-    subscribe_to_agent_topic(name)
+    subscribe_to_agent_topic(space_id, name)
 
     # Move pre-`start_agent/1` queued items from the test pid's
     # queue to the per-agent queue, then point `:nest_test_agent_pid`
@@ -88,9 +187,7 @@ defmodule Nest.Agents.AgentTestHelpers do
     transfer_mock_queue(agent_pid, test_pid)
     Process.put(:nest_test_agent_pid, agent_pid)
 
-    register_on_exit_cleanup(agent_pid, name, test_pid)
-
-    {agent_pid, name}
+    register_on_exit_cleanup(agent_pid, space_id, name)
   end
 
   # Tests that need `Models.list/0` to reflect auto-discovered
@@ -103,17 +200,17 @@ defmodule Nest.Agents.AgentTestHelpers do
   @doc """
   Standalone cleanup registration for tests that bypass
   `start_agent/1` — for example, supervisor tests that call
-  `Supervisor.fetch_or_start_agent/1` directly to exercise
+  `Supervisor.fetch_or_start_agent/2` directly to exercise
   the spawn API, auto-name tests that omit `name:` to test
   the registry-based generator, or terminate-during-test
-  cases that need raw `Process.flag(:trap_exit, true)` +
+  cases that want raw `Process.flag(:trap_exit, true)` +
   `Process.exit(pid, :shutdown)` semantics.
 
-  Registers `on_exit(fn -> wait_for_pid_down(name) end)`.
-  The `wait_for_pid_down/2` helper sends
+  Registers `on_exit(fn -> wait_for_pid_down(space_id, name) end)`.
+  The `wait_for_pid_down/3` helper sends
   `Process.exit(pid, :shutdown)` and BLOCKS on a single
   `:DOWN` message (NOT a drain loop — see comment on
-  `wait_for_pid_down/2`). This guarantees the agent
+  `wait_for_pid_down/3`). This guarantees the agent
   GenServer has fully terminated (mailbox can no longer
   fire DB calls) before the test exits the cleanup
   callback — closing the parallel-test ownership race
@@ -131,7 +228,7 @@ defmodule Nest.Agents.AgentTestHelpers do
   a vocation but don't want the full `start_agent/1` setup.
 
       {:ok, name} =
-        Agents.create_agent(test_model(),
+        Agents.create_agent(current_space_id(), test_model(),
           name: fresh_name(),
           vocation_id: AgentTestHelpers.vocation_id_for_test()
         )
@@ -139,9 +236,11 @@ defmodule Nest.Agents.AgentTestHelpers do
       AgentTestHelpers.ensure_cleanup(name)
   """
   def ensure_cleanup(name) do
+    space_id = current_space_id()
+
     on_exit(fn ->
-      _ = Supervisor.stop_agent(name)
-      wait_for_pid_down(name)
+      _ = Supervisor.stop_agent(space_id, name)
+      AgentTestLifecycle.wait_for_pid_down(space_id, name)
     end)
   end
 
@@ -218,9 +317,10 @@ defmodule Nest.Agents.AgentTestHelpers do
     vocation.id
   end
 
-  defp build_attrs(agent_name, attrs) do
+  defp build_attrs(agent_name, space_id, attrs) do
     defaults = %{
       name: agent_name,
+      space_id: space_id,
       model: %{name: "qwen3.5-plus", provider: "model-studio"},
       # `agents.vocation_id` is NOT NULL and FKs to `vocations.id`.
       # Insert a fresh "Test Default" vocation in the test pid's
@@ -305,10 +405,10 @@ defmodule Nest.Agents.AgentTestHelpers do
   # on_exit runs after the test's last assertion, in a SEPARATE
   # ExUnit runner process that does NOT own the test pid's
   # sandbox checkout — so any DB write here would fail with
-  # `DBConnection.OwnershipError`. `Supervisor.stop_agent/1`
+  # `DBConnection.OwnershipError`. `Supervisor.stop_agent/2`
   # is the right cleanup: it terminates the GenServer, and the
   # sandbox's checkin (registered by `DataCase.setup_sandbox/2`)
-  # rolls back the agent row automatically. `Agents.delete_agent/1`
+  # rolls back the agent row automatically. `Agents.delete_agent/2`
   # (which also drops the DB row) is therefore reserved for
   # test bodies where the test pid still owns the connection.
   #
@@ -317,143 +417,31 @@ defmodule Nest.Agents.AgentTestHelpers do
   # stop the agent via the supervisor, wait for the agent
   # GenServer to fully terminate before returning (so its
   # mailbox can't fire DB calls after the test pid has
-  # exited), unsubscribe from its PubSub topic, and restore
-  # the test pid's `:nest_test_agent_pid` process dict key.
+  # exited), and unsubscribe from its PubSub topic.
+  #
+  # Note: this on_exit runs in a SEPARATE ExUnit runner process,
+  # so it CANNOT mutate the test process's process dict. Any
+  # attempt to restore `:nest_test_agent_pid` / `:nest_test_subscribed_topic`
+  # here would be dead code (the write wouldn't reach the test
+  # pid). Those keys are instead refreshed at the start of the
+  # next `start_agent/1` (see `drop_stale_pubsub_subscription/0`
+  # and the `Process.put` in `bridge_test_to_agent/3`).
   #
   # The wait-for-DOWN is a SINGLE-MESSAGE receive — not a
   # drain loop. The drain loop used to live here was killed
   # with fire and can *NEVER EVER* come back.
-  defp register_on_exit_cleanup(pid, agent_id, test_pid) do
+  defp register_on_exit_cleanup(pid, space_id, agent_id) do
     on_exit(fn ->
       Process.unlink(pid)
       MockClient.stop(pid)
-      _ = Supervisor.stop_agent(agent_id)
-      wait_for_pid_down(agent_id)
-      Phoenix.PubSub.unsubscribe(Nest.PubSub, "agent:#{agent_id}")
-      Process.put(:nest_test_agent_pid, test_pid)
+      _ = Supervisor.stop_agent(space_id, agent_id)
+      AgentTestLifecycle.wait_for_pid_down(space_id, agent_id)
+      Phoenix.PubSub.unsubscribe(Nest.PubSub, "agent:#{space_id}:#{agent_id}")
     end)
   end
 
   def get_system_prompt(pid) do
     GenServer.call(pid, :get_system_prompt)
-  end
-
-  @doc """
-  Concatenate the text from a list of `Part` structs, in order.
-  Used by tests that used to assert on `message.content` to
-  bridge to the parts-based representation. Skips non-text
-  parts.
-  """
-  @spec text_from_parts([Part.t()]) :: String.t()
-  def text_from_parts(nil), do: ""
-  def text_from_parts([]), do: ""
-
-  def text_from_parts(parts) when is_list(parts) do
-    Enum.map_join(parts, "", fn
-      %Part.Text{text: text} -> text
-      %Part.Thinking{thinking: text} -> text
-      %Part.Refusal{refusal: text} -> text
-      _ -> ""
-    end)
-  end
-
-  # Single-message wait on the agent pid's :DOWN. Not a drain
-  # loop. The drain loop used to live here was killed with
-  # fire and can *NEVER EVER* come back.
-  #
-  # `Process.monitor/1` registers the DOWN subscription
-  # before `Process.exit/2` so the receive can't miss the
-  # event even if the pid was already dead at monitor-time
-  # (returns `:DOWN, :noproc`). `Process.demonitor/1, [:flush]`
-  # on timeout cleans up any pending DOWN. Default 100ms
-  # matches the project standard for `assert_receive`; the
-  # agent's `terminate/2` is filesystem-only and completes
-  # well within this window.
-  @doc """
-  Send `:shutdown` to the agent pid and wait for its
-  `:DOWN` (single-message receive, not a drain loop).
-  No-op if the pid is already gone. Public so tests can
-  call it directly without re-implementing the pattern.
-  """
-  @spec wait_for_pid_down(String.t(), pos_integer()) :: :ok
-  def wait_for_pid_down(name, timeout \\ 100) do
-    case Nest.Agents.Registry.lookup(name) do
-      {:ok, pid} ->
-        ref = Process.monitor(pid)
-        Process.exit(pid, :shutdown)
-
-        receive do
-          {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
-        after
-          timeout ->
-            Process.demonitor(ref, [:flush])
-            :ok
-        end
-
-      _ ->
-        :ok
-    end
-  end
-
-  @doc """
-  Assert every message in `state.chat_state.messages` has a
-  unique `index` field. Regression guard for the
-  dual-counter bug class: a budget reminder and the next
-  response used to share an index, causing the UI's
-  `addChatMessage` merge to silently overwrite the reminder
-  with the response. Call this at the end of any
-  chat-flow integration test that drives a turn to
-  completion.
-
-  Compaction markers (which are `{:compaction, _}` tuples
-  with their own `index` field) are ignored — only the four
-  persisted message roles are asserted.
-  """
-  def assert_unique_message_indices(state) do
-    indices =
-      state.chat_state.messages
-      |> Enum.flat_map(fn
-        {_, %{index: idx}} -> [idx]
-        _ -> []
-      end)
-
-    duplicates = indices -- Enum.uniq(indices)
-
-    assert duplicates == [],
-           "duplicate message indices: #{inspect(duplicates)} — dual-counter bug"
-  end
-
-  @doc """
-  Seed an entry in the agent's `read_files` cache. Tests
-  for the `write_file` "must read first" / "contents
-  changed" policy use this to skip the streaming `read_file`
-  flow and pre-populate the cache with a specific
-  `{mtime, size}` pair. Bypasses the `:check_read_policy`
-  introspection clause (the worker never gets a chance to
-  refuse) — purely a setup helper.
-
-  `path` MUST be the same string the LLM will pass in
-  `write_file.arguments["path"]` (i.e. the agent's
-  workspace-relative path; the policy check resolves
-  relative paths against `client_config.workspace_path`).
-
-  `mtime` defaults to the current POSIX mtime if omitted,
-  and `size` defaults to 0. Both can be overridden when
-  the test wants to assert a specific staleness error.
-  """
-  @spec record_read_file(pid(), String.t(), keyword()) :: :ok
-  def record_read_file(pid, path, opts \\ []) do
-    %{mtime: mtime, size: size} = File.stat!(path, time: :posix)
-
-    recorded = %{
-      mtime: Keyword.get(opts, :mtime, mtime),
-      size: Keyword.get(opts, :size, size)
-    }
-
-    :sys.replace_state(pid, fn state ->
-      new_cache = Map.put(state.chat_state.read_files, path, recorded)
-      %{state | chat_state: %{state.chat_state | read_files: new_cache}}
-    end)
   end
 
   # Drop any leftover PubSub subscription left over from a
@@ -472,17 +460,19 @@ defmodule Nest.Agents.AgentTestHelpers do
     Process.delete(:nest_test_subscribed_topic)
   end
 
-  defp subscribe_to_agent_topic(name) do
-    Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{name}")
-    Process.put(:nest_test_subscribed_topic, "agent:#{name}")
+  defp subscribe_to_agent_topic(space_id, name) do
+    topic = "agent:#{space_id}:#{name}"
+    Phoenix.PubSub.subscribe(Nest.PubSub, topic)
+    Process.put(:nest_test_subscribed_topic, topic)
   end
 
   # Run the agent through the supervisor path (the standard
   # caller interface). Pure data shaping — no DB writes, no
   # process spawning here; the supervisor owns both. Returns
   # the new agent's registry name on success.
-  defp create_agent_via_supervisor(attrs) do
+  defp create_agent_via_supervisor(space_id, attrs) do
     Agents.create_agent(
+      space_id,
       Map.get(attrs, :model),
       name: Map.get(attrs, :name),
       vocation_id: Map.get(attrs, :vocation_id),

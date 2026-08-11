@@ -59,8 +59,8 @@ defmodule Nest.Agents.Agent.Compaction.Trigger do
   """
   @spec post_turn(Agent.t()) :: Agent.t()
   def post_turn(state) do
-    state = %{state | chat_state: %{state.chat_state | status: :compacting}}
-    Broadcasts.status(state.name, state)
+    state = %{state | live: %{state.live | status: :compacting}}
+    Broadcasts.status(state)
 
     case ResultHandler.check_consecutive(state) do
       :refuse ->
@@ -195,8 +195,8 @@ defmodule Nest.Agents.Agent.Compaction.Trigger do
     next_state =
       Map.put(
         next_state,
-        :chat_state,
-        Map.put(next_state.chat_state, :streaming_acc, Streaming.new(stamped_index + 1))
+        :live,
+        Map.put(next_state.live, :streaming_acc, Streaming.new(stamped_index + 1))
       )
 
     {_effective_mode, caps} =
@@ -235,10 +235,10 @@ defmodule Nest.Agents.Agent.Compaction.Trigger do
   defp broadcast_oversized(state, system_prompt) do
     state = %{
       state
-      | chat_state: %{state.chat_state | status: :context_overflow}
+      | live: %{state.live | status: :context_overflow}
     }
 
-    Broadcasts.status(state.name, state)
+    Broadcasts.status(state)
 
     Overflow.broadcast(
       state,

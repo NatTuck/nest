@@ -94,7 +94,11 @@ defmodule NestWeb.AgentChannelChatTest do
   end
 
   describe "terminate/2" do
-    test "cleans up channel subscription", %{socket: socket, agent_id: id} do
+    test "cleans up channel subscription", %{
+      socket: socket,
+      agent_id: id,
+      space_id: space_id
+    } do
       # Simulate disconnect by leaving the channel
       Process.unlink(socket.channel_pid)
       channel_pid = socket.channel_pid
@@ -103,12 +107,15 @@ defmodule NestWeb.AgentChannelChatTest do
       assert_receive {:DOWN, ^ref, :process, ^channel_pid, _reason}, 1000
 
       # Agent should still exist (no auto-terminate)
-      assert {:ok, _} = Agents.get_info(id)
+      assert {:ok, _} = Agents.get_info(space_id, id)
     end
   end
 
   describe "handle_in(chat:status)" do
-    test "returns status payload matching init format", %{socket: socket, agent_id: id} do
+    test "returns status payload matching init format", %{
+      socket: socket,
+      agent_id: id
+    } do
       ref = push(socket, "chat:status", %{"lastIndex" => -1})
 
       assert_reply ref, :ok, %{
@@ -204,7 +211,7 @@ defmodule NestWeb.AgentChannelChatTest do
                subscribe_and_join(
                  connected,
                  NestWeb.AgentChannel,
-                 "agent:nonexistent"
+                 "agent:1:nonexistent"
                )
     end
   end
@@ -322,6 +329,8 @@ defmodule NestWeb.AgentChannelChatTest do
           MockClient.set_error("model failed")
 
           Process.put(:test_error_agent_id, error_agent_id)
+          error_space_id = AgentTestHelpers.current_space_id()
+          Process.put(:test_error_agent_space_id, error_space_id)
 
           log =
             capture_log(fn ->
@@ -334,7 +343,7 @@ defmodule NestWeb.AgentChannelChatTest do
                 subscribe_and_join(
                   connected,
                   NestWeb.AgentChannel,
-                  "agent:#{Process.get(:test_error_agent_id)}"
+                  "agent:#{Process.get(:test_error_agent_space_id)}:#{Process.get(:test_error_agent_id)}"
                 )
 
               ref = push(error_socket, "chat:message", %{"content" => "Trigger error"})
@@ -355,11 +364,15 @@ defmodule NestWeb.AgentChannelChatTest do
   end
 
   describe "handle_in(chat:message) compaction-frozen state rejection" do
-    test "rejects chat:message when the agent is :compacting", %{socket: socket, agent_id: id} do
-      {:ok, agent_pid} = Supervisor.get_agent(id)
+    test "rejects chat:message when the agent is :compacting", %{
+      socket: socket,
+      agent_id: id,
+      space_id: space_id
+    } do
+      {:ok, agent_pid} = Supervisor.get_agent(space_id, id)
 
       :sys.replace_state(agent_pid, fn state ->
-        %{state | chat_state: %{state.chat_state | status: :compacting}}
+        %{state | live: %{state.live | status: :compacting}}
       end)
 
       ref = push(socket, "chat:message", %{"content" => "during compaction"})
@@ -369,12 +382,13 @@ defmodule NestWeb.AgentChannelChatTest do
 
     test "rejects chat:message when the agent is :compaction_failed", %{
       socket: socket,
-      agent_id: id
+      agent_id: id,
+      space_id: space_id
     } do
-      {:ok, agent_pid} = Supervisor.get_agent(id)
+      {:ok, agent_pid} = Supervisor.get_agent(space_id, id)
 
       :sys.replace_state(agent_pid, fn state ->
-        %{state | chat_state: %{state.chat_state | status: :compaction_failed}}
+        %{state | live: %{state.live | status: :compaction_failed}}
       end)
 
       ref = push(socket, "chat:message", %{"content" => "after failure"})
@@ -384,15 +398,16 @@ defmodule NestWeb.AgentChannelChatTest do
 
     test "rejects chat:message when the agent is :context_overflow", %{
       socket: socket,
-      agent_id: id
+      agent_id: id,
+      space_id: space_id
     } do
       # `context_overflow` is distinct from the compaction pair:
       # the model can't respond at all, so we still reject the
       # push.
-      {:ok, agent_pid} = Supervisor.get_agent(id)
+      {:ok, agent_pid} = Supervisor.get_agent(space_id, id)
 
       :sys.replace_state(agent_pid, fn state ->
-        %{state | chat_state: %{state.chat_state | status: :context_overflow}}
+        %{state | live: %{state.live | status: :context_overflow}}
       end)
 
       ref = push(socket, "chat:message", %{"content" => "this won't fit"})
@@ -414,16 +429,20 @@ defmodule NestWeb.AgentChannelChatTest do
   end
 
   describe "handle_in(chat:retry-compaction)" do
-    test "forwards to Agents.retry_compaction/1", %{socket: socket, agent_id: id} do
-      {:ok, agent_pid} = Supervisor.get_agent(id)
+    test "forwards to Agents.retry_compaction/1", %{
+      socket: socket,
+      agent_id: id,
+      space_id: space_id
+    } do
+      {:ok, agent_pid} = Supervisor.get_agent(space_id, id)
 
       # The retry path resumes `pending_user_message`. Set both the
       # status and the held message so Trigger B fires.
       :sys.replace_state(agent_pid, fn state ->
         %{
           state
-          | chat_state: %{
-              state.chat_state
+          | live: %{
+              state.live
               | status: :compaction_failed,
                 pending_user_message: {"Hello", "chat"}
             }
@@ -445,7 +464,7 @@ defmodule NestWeb.AgentChannelChatTest do
                subscribe_and_join(
                  connected,
                  NestWeb.AgentChannel,
-                 "agent:nonexistent"
+                 "agent:1:nonexistent"
                )
     end
   end

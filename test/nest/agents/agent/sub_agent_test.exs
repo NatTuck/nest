@@ -130,7 +130,7 @@ defmodule Nest.Agents.Agent.SubAgentTest do
       assert new_state.chat_state.pending_children == %{}
       # Other fields are untouched.
       assert new_state.name == state.name
-      assert new_state.chat_state.status == state.chat_state.status
+      assert new_state.live.status == state.live.status
     end
   end
 

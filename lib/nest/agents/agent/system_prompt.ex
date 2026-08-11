@@ -130,7 +130,7 @@ defmodule Nest.Agents.Agent.SystemPrompt do
     system_prompt =
       (vocation.system_prompt || "") <>
         Vocations.mode_catalog(vocation) <>
-        build_suffix(workspace_path, context_limit_info, depth, max_depth)
+        build_suffix(workspace_path, context_limit_info, depth, max_depth, tools)
 
     {system_prompt, initial_mode, tools, vocation}
   end
@@ -148,11 +148,11 @@ defmodule Nest.Agents.Agent.SystemPrompt do
     Enum.reject(tool_names, &(&1 == "clone_agent"))
   end
 
-  defp build_suffix(workspace_path, context_limit_info, depth, max_depth) do
+  defp build_suffix(workspace_path, context_limit_info, depth, max_depth, tools) do
     workspace_section(workspace_path) <>
       tool_call_limit_section() <>
       context_limit_section(context_limit_info) <>
-      delegation_section(depth, max_depth) <>
+      delegation_section(depth, max_depth, tools) <>
       agents_md_section(workspace_path)
   end
 
@@ -198,32 +198,89 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   end
 
   # Renders the `[Delegation]` section in the system prompt when
-  # the agent can still spawn children. The section explains
-  # the `clone_agent` tool's semantics (inherited context, the
-  # blocking flow, the response-as-tool-result contract). Agents
-  # at max depth get nothing — the tool is filtered out of their
-  # tool list at the same time.
-  defp delegation_section(depth, max_depth)
-       when is_integer(depth) and is_integer(max_depth) and depth < max_depth do
-    remaining = max_depth - depth - 1
-    chain = if remaining == 0, do: "one more level", else: "#{remaining} more levels"
+  # the agent has any sub-agent tool available (`clone_agent`,
+  # `spawn_agent`, `list_agents`). Each tool that is present in
+  # the filtered tool list gets its own paragraph explaining its
+  # semantics. `clone_agent` is depth-filtered separately (see
+  # `filter_tools_for_depth/3`), so an agent at max depth that
+  # only has `clone_agent` gets no section at all — matching the
+  # pre-Phase-3 contract.
+  defp delegation_section(depth, max_depth, tools) do
+    paragraphs =
+      [
+        clone_delegation(depth, max_depth, tools),
+        spawn_delegation(tools),
+        query_delegation(tools),
+        list_delegation(tools)
+      ]
+      |> Enum.reject(&(&1 == ""))
 
-    "\n\n[Delegation]\n\n" <>
-      "You have access to the `clone_agent` tool. " <>
-      "Calling it spawns a child agent with a copy of this conversation " <>
-      "(your full message history including the system prompt) plus the " <>
-      "instruction as a new user message. The child runs to completion " <>
-      "before the result is returned to you — your chat turn blocks " <>
-      "until the child goes idle. The child's final assistant message " <>
-      "content is delivered to you as the tool result; use it as your " <>
-      "answer or to drive further tool calls.\n\n" <>
-      "Children can call `clone_agent` themselves up to #{chain} of " <>
-      "recursion (current depth #{depth}, max #{max_depth}). " <>
-      "Children inherit your context, so their first call sends a large " <>
-      "message list — keep that in mind when delegating deep conversations.\n"
+    case paragraphs do
+      [] -> ""
+      _ -> "\n\n[Delegation]\n\n" <> Enum.join(paragraphs, "\n\n") <> "\n"
+    end
   end
 
-  defp delegation_section(_depth, _max_depth), do: ""
+  defp clone_delegation(depth, max_depth, tools)
+       when is_integer(depth) and is_integer(max_depth) and depth < max_depth do
+    if "clone_agent" in tools do
+      remaining = max_depth - depth - 1
+      chain = if remaining == 0, do: "one more level", else: "#{remaining} more levels"
+
+      "You have access to the `clone_agent` tool. " <>
+        "Calling it spawns a child agent with a copy of this conversation " <>
+        "(your full message history including the system prompt) plus the " <>
+        "instruction as a new user message. The child runs to completion " <>
+        "before the result is returned to you — your chat turn blocks " <>
+        "until the child goes idle. The child's final assistant message " <>
+        "content is delivered to you as the tool result; use it as your " <>
+        "answer or to drive further tool calls.\n\n" <>
+        "Children can call `clone_agent` themselves up to #{chain} of " <>
+        "recursion (current depth #{depth}, max #{max_depth}). " <>
+        "Children inherit your context, so their first call sends a large " <>
+        "message list — keep that in mind when delegating deep conversations."
+    else
+      ""
+    end
+  end
+
+  defp clone_delegation(_depth, _max_depth, _tools), do: ""
+
+  defp spawn_delegation(tools) do
+    if "spawn_agent" in tools do
+      "You have access to the `spawn_agent` tool. " <>
+        "Calling it creates an independent sub-agent in this space with a " <>
+        "fresh context (only its system prompt — no conversation history). " <>
+        "It runs independently and does not block your turn. Pass a unique " <>
+        "`name` and a `vocation_id` (list the space's vocations if unsure). " <>
+        "This is how you assemble a team of specialists that you can later " <>
+        "talk to."
+    else
+      ""
+    end
+  end
+
+  defp query_delegation(tools) do
+    if "query_agent" in tools do
+      "You have access to the `query_agent` tool. Calling it sends a message " <>
+        "to a sub-agent in this space and blocks your turn until that agent " <>
+        "responds, returning its reply as the tool result. Use it to ask a " <>
+        "specialist (spawned via `spawn_agent`) to do work on your behalf."
+    else
+      ""
+    end
+  end
+
+  defp list_delegation(tools) do
+    if "list_agents" in tools do
+      "You have access to the `list_agents` tool. Calling it returns the " <>
+        "sub-agents running in this space, with their name, vocation, " <>
+        "status, and depth. Use it to discover which specialists already " <>
+        "exist before spawning new ones."
+    else
+      ""
+    end
+  end
 
   defp get_initial_mode(nil), do: "chat"
 

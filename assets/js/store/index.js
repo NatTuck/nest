@@ -30,6 +30,16 @@ import {
 const initialState = {
   isConnected: false,
   agents: [],
+  // The user's spaces. Each entry is the lobby `init` `spaces`
+  // payload's space struct (id, name, slug, ...). The sidebar
+  // renders these as the top level of its tree.
+  spaces: [],
+  // The currently-selected space id. Seeded from the lobby's
+  // `init` `current_space_id` (the user's primary space).
+  currentSpaceId: null,
+  // Available blueprints for the "new space" flow, from the
+  // lobby `init` `blueprints` payload.
+  blueprints: [],
   models: [],
   vocations: [],
   agentsCache: {},
@@ -349,6 +359,12 @@ export const useStore = create(
 
       // Agents list from lobby
       agents: [],
+      // The user's spaces, from the lobby `init` `spaces` payload.
+      spaces: [],
+      // The currently-selected space id (seeded from `current_space_id`).
+      currentSpaceId: null,
+      // Available blueprints for the "new space" flow.
+      blueprints: [],
       // Agents whose persisted `model` no longer resolves to a
       // runtime provider. Surfaced in the sidebar as broken
       // entries so the user can pick a replacement model from
@@ -409,6 +425,46 @@ export const useStore = create(
       },
 
       /**
+       * Set the user's spaces list from the lobby `init` payload.
+       */
+      setSpaces: (spaces) => {
+        set({ spaces: spaces || [] });
+      },
+
+      /**
+       * Set the currently-selected space id.
+       */
+      setCurrentSpaceId: (currentSpaceId) => {
+        set({ currentSpaceId });
+      },
+
+      /**
+       * Set the available blueprints list from the lobby `init` payload.
+       */
+      setBlueprints: (blueprints) => {
+        set({ blueprints: blueprints || [] });
+      },
+
+      /**
+       * Add a newly-created space (from the `space:created` push).
+       * The payload carries the space struct plus the root agent.
+       */
+      addSpace: (space) => {
+        set((state) => ({
+          spaces: [...state.spaces, space],
+        }));
+      },
+
+      /**
+       * Remove a deleted space (from a future `space:deleted` push).
+       */
+      removeSpace: (spaceId) => {
+        set((state) => ({
+          spaces: state.spaces.filter((s) => s.id !== spaceId),
+        }));
+      },
+
+      /**
        * Add newly created agent
        */
       addAgent: (agent) => {
@@ -417,6 +473,7 @@ export const useStore = create(
             ...state.agents,
             {
               name: agent.name,
+              space_id: agent.space_id ?? agent.spaceId ?? null,
               model: agent.model,
               status: agent.status || "idle",
               // Sub-agent identity — used to render the agent
@@ -713,20 +770,23 @@ export const useStore = create(
       },
 
       /**
-       * Set a compaction-loop error message on the agent cache.
+       * Set the compaction-loop banner data on the agent cache.
        * Distinct from `setCompactionError`: this is paired with the
        * `:compaction_loop_detected` agentState, which renders an OK
        * button (not Retry). The StatusBanner reads both fields to
        * render the right banner.
+       *
+       * `loopInfo` is `{ content, attemptCount, maxAttempts }` so the
+       * banner can render "tried X of Y times".
        */
-      setCompactionLoop: (id, error) => {
+      setCompactionLoop: (id, loopInfo) => {
         set((state) => {
           const cache = state.agentsCache[id];
           if (!cache) return state;
           return {
             agentsCache: {
               ...state.agentsCache,
-              [id]: { ...cache, compactionLoop: error },
+              [id]: { ...cache, compactionLoop: loopInfo },
             },
           };
         });

@@ -24,6 +24,8 @@ defmodule Nest.Agents.AgentObservabilityTest do
 
     on_exit(fn -> Process.delete(:nest_test_agent_pid) end)
 
+    {:ok, _space_id} = AgentTestHelpers.create_test_space()
+
     :ok
   end
 
@@ -174,12 +176,14 @@ defmodule Nest.Agents.AgentObservabilityTest do
 
   test "stops agent process" do
     agent_name = "terminating-agent-#{System.unique_integer([:positive])}"
+    space_id = AgentTestHelpers.current_space_id()
 
     pid =
       start_supervised!(
         {Agent,
          %{
            name: agent_name,
+           space_id: space_id,
            model: %{name: "qwen3.5-plus"},
            vocation_id: AgentTestHelpers.vocation_id_for_test()
          }}

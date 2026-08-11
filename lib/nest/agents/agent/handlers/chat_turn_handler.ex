@@ -83,8 +83,8 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
   defp chat_idle(state) do
     state = %{
       state
-      | chat_state: %{
-          state.chat_state
+      | live: %{
+          state.live
           | status: :idle,
             streaming_acc: nil,
             chat_turn_pid: nil,
@@ -93,9 +93,9 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
         }
     }
 
-    Broadcasts.status(state.name, state)
+    Broadcasts.status(state)
 
-    case state.parent_name do
+    case state.tree_position.parent_name do
       nil ->
         {:noreply, state}
 
@@ -127,7 +127,7 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
     response = last_assistant_text(state)
 
     GenServer.cast(
-      AgentsRegistry.via_tuple(parent_name),
+      AgentsRegistry.via_tuple(state.space_id, parent_name),
       {:child_completed, state.name, response, total_usage}
     )
 
@@ -168,15 +168,15 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
 
     state = %{
       state
-      | chat_state: %{
-          state.chat_state
+      | live: %{
+          state.live
           | status: :idle,
             chat_turn_pid: nil,
             cancelled: false
         }
     }
 
-    Broadcasts.status(state.name, state)
+    Broadcasts.status(state)
     {:noreply, state}
   end
 
@@ -210,8 +210,8 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
       # user — the partial is already finalized above. Move
       # silently back to `:idle` without a `chat:error`
       # broadcast.
-      state = %{state | chat_state: %{state.chat_state | status: :idle, chat_turn_pid: nil}}
-      Broadcasts.status(state.name, state)
+      state = %{state | live: %{state.live | status: :idle, chat_turn_pid: nil}}
+      Broadcasts.status(state)
       {:noreply, state}
     else
       Logger.error(fn ->
@@ -220,14 +220,15 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
       end)
 
       Broadcasts.error(
+        state.space_id,
         state.name,
         state.chat_state.next_message_index,
         error_msg,
         "ChatTurn.run_chat_task/1"
       )
 
-      state = %{state | chat_state: %{state.chat_state | status: :idle, chat_turn_pid: nil}}
-      Broadcasts.status(state.name, state)
+      state = %{state | live: %{state.live | status: :idle, chat_turn_pid: nil}}
+      Broadcasts.status(state)
 
       {:noreply, state}
     end
@@ -255,7 +256,7 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
   # always send one, but a future bug that sends a list
   # shouldn't silently corrupt the field.
   defp set_crossed_thresholds(%MapSet{} = set, state) do
-    state = %{state | chat_state: %{state.chat_state | crossed_thresholds: set}}
+    state = %{state | live: %{state.live | crossed_thresholds: set}}
     {:noreply, state}
   end
 
@@ -275,11 +276,11 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
   defp finalize_partial_if_any(state) do
     final_message = build_partial_assistant_message(state)
     {_stamped, state} = Nest.Agents.Agent.__append_message__(state, final_message)
-    %{state | chat_state: %{state.chat_state | streaming_acc: nil, tool_index_map: %{}}}
+    %{state | live: %{state.live | streaming_acc: nil, tool_index_map: %{}}}
   end
 
   defp build_partial_assistant_message(state) do
-    case state.chat_state.streaming_acc do
+    case state.live.streaming_acc do
       %Streaming.AssistantAccumulator{} = acc ->
         # Reuse the streaming module's `finalize/1` to assemble
         # parts in the order the events arrived. The accumulator's
@@ -302,7 +303,7 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
         # No accumulator (stop arrived between turns, or
         # before the first delta). Build a placeholder so
         # the message list is consistent.
-        index = state.chat_state.active_message_index
+        index = state.live.active_message_index
 
         {:assistant,
          %Assistant{

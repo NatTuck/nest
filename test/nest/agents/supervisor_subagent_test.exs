@@ -46,6 +46,7 @@ defmodule Nest.Agents.SupervisorSubagentTest do
       _pid -> :ok
     end
 
+    {:ok, _space_id} = AgentTestHelpers.create_test_space()
     {:ok, vid} = upsert_test_vocation()
     {:ok, vid: vid}
   end
@@ -68,7 +69,8 @@ defmodule Nest.Agents.SupervisorSubagentTest do
       assert info.parent_name == parent_name
       assert info.parent_id == parent_id
 
-      on_exit(fn -> safe_stop(child_name) end)
+      space_id = AgentTestHelpers.current_space_id()
+      on_exit(fn -> safe_stop(space_id, child_name) end)
     end
 
     test "registers the parent/child link in ChildRegistry", %{vid: vid} do
@@ -77,10 +79,16 @@ defmodule Nest.Agents.SupervisorSubagentTest do
 
       {:ok, child_name} = Supervisor.start_agent_with_parent(parent_state, "do it")
 
-      assert ChildRegistry.parent_of(child_name) == parent_name
-      assert child_name in ChildRegistry.children_of(parent_name)
+      assert ChildRegistry.parent_of(AgentTestHelpers.current_space_id(), child_name) ==
+               parent_name
 
-      on_exit(fn -> safe_stop(child_name) end)
+      assert child_name in ChildRegistry.children_of(
+               AgentTestHelpers.current_space_id(),
+               parent_name
+             )
+
+      space_id = AgentTestHelpers.current_space_id()
+      on_exit(fn -> safe_stop(space_id, child_name) end)
     end
   end
 
@@ -92,13 +100,13 @@ defmodule Nest.Agents.SupervisorSubagentTest do
       {:ok, child_a} = Supervisor.start_agent_with_parent(parent_state, "a")
       {:ok, child_b} = Supervisor.start_agent_with_parent(parent_state, "b")
 
-      :ok = Agents.delete_agent(parent_name)
+      :ok = Agents.delete_agent(AgentTestHelpers.current_space_id(), parent_name)
 
       assert_registry_misses(parent_name)
       assert_registry_misses(child_a)
       assert_registry_misses(child_b)
 
-      assert ChildRegistry.children_of(parent_name) == []
+      assert ChildRegistry.children_of(AgentTestHelpers.current_space_id(), parent_name) == []
     end
 
     test "cascades through grandchildren (a child that itself spawned another)", %{vid: vid} do
@@ -110,7 +118,7 @@ defmodule Nest.Agents.SupervisorSubagentTest do
 
       {:ok, grandchild_name} = Supervisor.start_agent_with_parent(child_state, "grandchild")
 
-      :ok = Agents.delete_agent(parent_name)
+      :ok = Agents.delete_agent(AgentTestHelpers.current_space_id(), parent_name)
 
       assert_registry_misses(parent_name)
       assert_registry_misses(child_name)
@@ -125,10 +133,55 @@ defmodule Nest.Agents.SupervisorSubagentTest do
 
       {:ok, child_name} = Supervisor.start_agent_with_parent(parent_state, "child")
 
-      :ok = Supervisor.cascade_children_only(parent_name)
+      :ok = Supervisor.cascade_children_only(AgentTestHelpers.current_space_id(), parent_name)
 
       assert_registry_misses(child_name)
       assert Process.alive?(parent_pid)
+    end
+  end
+
+  describe "parent_name restoration on agent restore" do
+    # Phase 1 followup F1: after `Persistence.build_attrs_for_start/2`
+    # loads a child agent from the DB, the returned attrs must carry
+    # `parent_name` so the chat_turn_handler's `:child_completed`
+    # notification reaches the parent. Without it the child
+    # silently vanishes from the parent's view after a BEAM
+    # restart, even though the DB row's `parent_id` is intact.
+    test "child's restored attrs carry the parent's name", %{vid: vid} do
+      {:ok, parent_name, parent_pid, _parent_id} = start_root_parent(vid)
+      parent_state = read_parent_state(parent_name, parent_pid)
+
+      {:ok, child_name} = Supervisor.start_agent_with_parent(parent_state, "child")
+      space_id = AgentTestHelpers.current_space_id()
+      on_exit(fn -> safe_stop(space_id, child_name) end)
+
+      # Verify the live child carries parent_name (sanity).
+      child_pid = via_registry(child_name)
+      info = Nest.Agents.Agent.get_public_info(child_pid)
+      assert info.parent_name == parent_name
+
+      # Now exercise the restore path: `build_attrs_for_start/2`
+      # is what `Supervisor.fetch_or_start_agent/2` calls when
+      # the BEAM restarts. The DB row has `parent_id` set; the
+      # returned attrs must also carry `parent_name`.
+      {:ok, attrs} = Persistence.build_attrs_for_start(space_id, child_name)
+      assert attrs.parent_id != nil
+      assert attrs.parent_name == parent_name
+    end
+
+    test "root agent's restored attrs have parent_name nil", %{vid: vid} do
+      {:ok, _parent_name, _parent_pid, _} = start_root_parent(vid)
+
+      space_id = AgentTestHelpers.current_space_id()
+
+      [{name, _}] =
+        Persistence.fetch_all_agents_for_space(space_id)
+        |> Enum.take(1)
+        |> Enum.map(&{&1.name, &1.id})
+
+      {:ok, attrs} = Persistence.build_attrs_for_start(space_id, name)
+      assert attrs.parent_id == nil
+      assert attrs.parent_name == nil
     end
   end
 
@@ -161,6 +214,7 @@ defmodule Nest.Agents.SupervisorSubagentTest do
     # connection via `$callers`).
     {:ok, row} =
       Persistence.insert_agent(%{
+        space_id: AgentTestHelpers.current_space_id(),
         name: name,
         model: model,
         vocation_id: vid
@@ -170,6 +224,7 @@ defmodule Nest.Agents.SupervisorSubagentTest do
     # so `Agents.delete_agent/1`'s cascade walk can
     # terminate it via the same DynamicSupervisor.
     attrs = %{
+      space_id: AgentTestHelpers.current_space_id(),
       name: name,
       model: model,
       vocation_id: vid,
@@ -218,11 +273,12 @@ defmodule Nest.Agents.SupervisorSubagentTest do
   # depth + parent_name + the full Vocation struct to feed
   # back into `Supervisor.start_agent_with_parent/2`.
   defp read_parent_state(name, pid) do
-    {:ok, attrs} = Persistence.build_attrs_for_start(name)
+    {:ok, attrs} = Persistence.build_attrs_for_start(AgentTestHelpers.current_space_id(), name)
     info = Nest.Agents.Agent.get_public_info(pid)
     msgs = Nest.Agents.Agent.get_messages(pid)
 
     %Nest.Agents.Agent{
+      space_id: attrs.space_id,
       name: info.name,
       model: info.model,
       vocation: attrs.vocation,
@@ -235,8 +291,10 @@ defmodule Nest.Agents.SupervisorSubagentTest do
         descendant_usage: info.descendant_usage
       },
       depth: info.depth,
-      parent_id: info.parent_id,
-      parent_name: info.parent_name,
+      tree_position: %Nest.Agents.Agent.TreePosition{
+        parent_id: info.parent_id,
+        parent_name: info.parent_name
+      },
       chat_state: %Nest.Agents.Agent.ChatState{
         messages: msgs,
         next_message_index: attrs.next_message_index,
@@ -246,18 +304,22 @@ defmodule Nest.Agents.SupervisorSubagentTest do
   end
 
   defp assert_registry_misses(name) do
-    assert eventually(fn -> AgentsRegistry.lookup(name) == {:error, :not_found} end,
+    assert eventually(
+             fn ->
+               AgentsRegistry.lookup(AgentTestHelpers.current_space_id(), name) ==
+                 {:error, :not_found}
+             end,
              timeout: 1000
            )
   end
 
   defp child_row_by_name!(name) do
-    {:ok, row} = Persistence.fetch_agent_by_name(name)
+    {:ok, row} = Persistence.fetch_agent(AgentTestHelpers.current_space_id(), name)
     row
   end
 
   defp via_registry(name) do
-    {:ok, pid} = AgentsRegistry.lookup(name)
+    {:ok, pid} = AgentsRegistry.lookup(AgentTestHelpers.current_space_id(), name)
     pid
   end
 
@@ -272,8 +334,8 @@ defmodule Nest.Agents.SupervisorSubagentTest do
   # `AgentTestHelpers.wait_for_pid_down/2` so the parallel-test
   # ownership race window is closed (the agent's mailbox
   # can't fire DB calls after `terminate/2` finishes).
-  defp safe_stop(name) do
-    _ = Supervisor.stop_agent(name)
-    AgentTestHelpers.wait_for_pid_down(name)
+  defp safe_stop(space_id, name) do
+    _ = Supervisor.stop_agent(space_id, name)
+    AgentTestHelpers.wait_for_pid_down(space_id, name)
   end
 end

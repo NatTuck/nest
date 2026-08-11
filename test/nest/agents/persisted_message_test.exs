@@ -58,7 +58,7 @@ defmodule Nest.Agents.PersistedMessageTest do
            api_logs: [log1, log2]
          }}
 
-      assert {:ok, row} = Persistence.insert_message(attrs.name, message)
+      assert {:ok, row} = Persistence.insert_message(test_space_id(), attrs.name, message)
 
       assert is_list(row.content["apiLogs"])
       assert length(row.content["apiLogs"]) == 2
@@ -84,8 +84,8 @@ defmodule Nest.Agents.PersistedMessageTest do
       nil_msg =
         {:assistant, %Assistant{index: 2, parts: [%Part.Text{text: "hi"}], api_logs: nil}}
 
-      assert {:ok, row1} = Persistence.insert_message(attrs.name, empty_msg)
-      assert {:ok, row2} = Persistence.insert_message(attrs.name, nil_msg)
+      assert {:ok, row1} = Persistence.insert_message(test_space_id(), attrs.name, empty_msg)
+      assert {:ok, row2} = Persistence.insert_message(test_space_id(), attrs.name, nil_msg)
 
       # Both rows have `apiLogs: []` — the key is ALWAYS present.
       assert row1.content["apiLogs"] == []
@@ -99,7 +99,7 @@ defmodule Nest.Agents.PersistedMessageTest do
       {:ok, _} = Persistence.insert_agent(attrs)
 
       message = {:system, %MsgSystem{index: 0, parts: [%Part.Text{text: "sys"}]}}
-      assert {:ok, row} = Persistence.insert_message(attrs.name, message)
+      assert {:ok, row} = Persistence.insert_message(test_space_id(), attrs.name, message)
       assert row.content["apiLogs"] == []
     end
   end
@@ -119,7 +119,7 @@ defmodule Nest.Agents.PersistedMessageTest do
       message =
         {:user, %User{index: 1, parts: [%Part.Text{text: "hi"}], api_logs: [log]}}
 
-      assert {:ok, row} = Persistence.insert_message(attrs.name, message)
+      assert {:ok, row} = Persistence.insert_message(test_space_id(), attrs.name, message)
       refute Map.has_key?(row.content, "apiLogs")
     end
 
@@ -136,7 +136,7 @@ defmodule Nest.Agents.PersistedMessageTest do
            ]
          }}
 
-      assert {:ok, row} = Persistence.insert_message(attrs.name, message)
+      assert {:ok, row} = Persistence.insert_message(test_space_id(), attrs.name, message)
       refute Map.has_key?(row.content, "apiLogs")
     end
   end
@@ -151,7 +151,7 @@ defmodule Nest.Agents.PersistedMessageTest do
       message =
         {:assistant, %Assistant{index: 0, parts: [%Part.Text{text: "hello"}], api_logs: []}}
 
-      assert {:ok, row} = Persistence.insert_message(attrs.name, message)
+      assert {:ok, row} = Persistence.insert_message(test_space_id(), attrs.name, message)
 
       # Hand-build a PersistedMessage with no apiLogs key to
       # simulate a row persisted before the api_log persistence
@@ -175,7 +175,7 @@ defmodule Nest.Agents.PersistedMessageTest do
       {:ok, _} = Persistence.insert_agent(attrs)
 
       message = {:system, %MsgSystem{index: 0, parts: [%Part.Text{text: "sys"}]}}
-      assert {:ok, row} = Persistence.insert_message(attrs.name, message)
+      assert {:ok, row} = Persistence.insert_message(test_space_id(), attrs.name, message)
 
       stripped = %PersistedMessage{
         id: row.id,
@@ -233,7 +233,7 @@ defmodule Nest.Agents.PersistedMessageTest do
       # Insert a marker via record_compaction with the legacy
       # 3-arity (default-arg) call so the token columns stay
       # unset (pre-migration marker row shape).
-      assert {:ok, marker_row} = Persistence.record_compaction(attrs.name, 4, 3)
+      assert {:ok, marker_row} = Persistence.record_compaction(test_space_id(), attrs.name, 4, 3)
 
       # Strip any token-stat columns the migration might have
       # populated by accident — simulate a row persisted before

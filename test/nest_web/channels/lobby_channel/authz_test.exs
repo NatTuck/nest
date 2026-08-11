@@ -23,11 +23,13 @@ defmodule NestWeb.LobbyChannel.AuthzTest do
     Repo.delete_all(InviteSchema)
     Repo.delete_all(UserSchema)
 
+    {:ok, space_id} = AgentTestHelpers.create_test_space()
+
     # Drain leftover agents so the Registry lookup test
     # paths behave deterministically.
-    for name <- Persistence.list_agent_names() do
-      Supervisor.stop_agent(name)
-      Persistence.delete_agent_by_name(name)
+    for name <- Persistence.list_agent_names_for_space(space_id) do
+      Supervisor.stop_agent(space_id, name)
+      Persistence.delete_agent(space_id, name)
     end
 
     :ok
@@ -47,8 +49,10 @@ defmodule NestWeb.LobbyChannel.AuthzTest do
           created_by_user_id: alice.id
         })
 
-      assert Authz.authorize_owner(name, alice) == :ok
-      assert Authz.authorize_owner(name, bob) == {:error, :forbidden}
+      assert Authz.authorize_owner(AgentTestHelpers.current_space_id(), name, alice) == :ok
+
+      assert Authz.authorize_owner(AgentTestHelpers.current_space_id(), name, bob) ==
+               {:error, :forbidden}
     end
 
     test "returns :forbidden on a private agent whose owner has no live pid" do
@@ -67,14 +71,17 @@ defmodule NestWeb.LobbyChannel.AuthzTest do
         })
 
       Process.flag(:trap_exit, true)
-      Supervisor.stop_agent(name)
+      Supervisor.stop_agent(AgentTestHelpers.current_space_id(), name)
       assert_receive {:EXIT, ^pid, _}, 1000
 
-      assert Authz.authorize_owner(name, bob) == {:error, :forbidden}
+      assert Authz.authorize_owner(AgentTestHelpers.current_space_id(), name, bob) ==
+               {:error, :forbidden}
     end
 
     test "returns :not_found for an unknown agent name" do
-      assert Authz.authorize_owner("nope-not-here", %{id: 999}) ==
+      assert Authz.authorize_owner(AgentTestHelpers.current_space_id(), "nope-not-here", %{
+               id: 999
+             }) ==
                {:error, :not_found}
     end
   end
@@ -94,12 +101,16 @@ defmodule NestWeb.LobbyChannel.AuthzTest do
           shared: false
         })
 
-      assert Authz.authorize_owner_or_shared(name, bob) == {:error, :forbidden}
+      assert Authz.authorize_owner_or_shared(AgentTestHelpers.current_space_id(), name, bob) ==
+               {:error, :forbidden}
     end
 
     test "returns :not_found when the row lookup itself misses" do
-      assert Authz.authorize_owner_or_shared("definitely-not-a-real-agent", %{id: 1}) ==
-               {:error, :not_found}
+      assert Authz.authorize_owner_or_shared(
+               AgentTestHelpers.current_space_id(),
+               "definitely-not-a-real-agent",
+               %{id: 1}
+             ) == {:error, :not_found}
     end
   end
 end

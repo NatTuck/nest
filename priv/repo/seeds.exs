@@ -16,13 +16,14 @@
 # We recommend using the bang functions (`insert!`, `update!`
 # and so on) as they will fail if something goes wrong.
 
+alias Nest.Blueprints
 alias Nest.Vocations
 
 # Default - minimal vocation for agents without a specific role.
 # Used as the fallback for any test or runtime path that needs a
 # vocation but doesn't care which one. Single "chat" mode with the
 # `context` tool only (no filesystem, no network).
-{:ok, _} =
+{:ok, default_vocation} =
   Vocations.upsert_vocation(%{
     name: "Default",
     description: "A minimal default vocation for agents without a specific role",
@@ -45,7 +46,7 @@ alias Nest.Vocations
 #              and access the network (for fetching docs, packages, etc.)
 #   - "plan":  read-only; explore the workspace without making changes
 # Network is enabled in both modes.
-{:ok, _} =
+{:ok, programmer_vocation} =
   Vocations.upsert_vocation(%{
     name: "Programmer",
     description: "A coding assistant that can read and write files in a workspace",
@@ -97,4 +98,50 @@ alias Nest.Vocations
         }
       }
     }
+  })
+
+# ---- Phase 2: Blueprints ----
+# Each blueprint pins a root vocation (so the space's first
+# agent starts with the right role) and lists vocations the
+# space's agents are allowed to spawn. `workspace_template`
+# and `main_view_config` ship as empty maps — Phase 2
+# doesn't read them; Phase 3 will consume `workspace_template`
+# and Phase 4 will consume `main_view_config`.
+
+default_vid = default_vocation.id
+programmer_vid = programmer_vocation.id
+
+# "Agent" — single-agent space, no restrictions. Mirrors the
+# pre-Phase-1 behavior: every user gets a Default-rooted agent
+# in their primary space. `spawnable_vocation_ids: []` means
+# unrestricted (any vocation may be spawned).
+{:ok, _} =
+  Blueprints.upsert_blueprint(%{
+    name: "Agent",
+    description: "A single-agent space with no spawning restrictions.",
+    root_vocation_id: default_vid,
+    spawnable_vocation_ids: []
+  })
+
+# "Tabletop RPG" — DM root with NPC spawnable vocations.
+# Left unrestricted until real NPC vocations are seeded; a
+# future seed can narrow `spawnable_vocation_ids` to the
+# specific NPC vocations.
+{:ok, _} =
+  Blueprints.upsert_blueprint(%{
+    name: "Tabletop RPG",
+    description: "A Dungeon Master root agent that spawns NPC specialists.",
+    root_vocation_id: default_vid,
+    spawnable_vocation_ids: []
+  })
+
+# "Code Review" — Reviewer root, language-specialist
+# sub-vocations. Left unrestricted until real specialist
+# vocations are seeded.
+{:ok, _} =
+  Blueprints.upsert_blueprint(%{
+    name: "Code Review",
+    description: "A Reviewer root agent that spawns language-specialist sub-agents.",
+    root_vocation_id: programmer_vid,
+    spawnable_vocation_ids: []
   })

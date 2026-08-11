@@ -23,11 +23,12 @@ defmodule NestWeb.AgentChannelCompactionTest do
   setup :verify_on_exit!
 
   test "channel pushes chat:compaction to the socket on a chat_compaction broadcast", %{
-    agent_id: agent_id
+    agent_id: agent_id,
+    space_id: space_id
   } do
     # Drive the broadcast directly: the channel is
-    # subscribed to `"agent:#{agent_id}"` via the `join/3`
-    # handler. Pre-fix, the channel process would crash
+    # subscribed to `"agent:#{space_id}:#{agent_id}"` via the
+    # `join/3` handler. Pre-fix, the channel process would crash
     # with `FunctionClauseError` on this broadcast (no
     # `handle_info({:chat_compaction, _}, _)` clause).
     # Top-level keys are atoms (mirroring
@@ -35,7 +36,7 @@ defmodule NestWeb.AgentChannelCompactionTest do
     # fields are strings (from `Message.to_json/1`).
     Phoenix.PubSub.broadcast(
       Nest.PubSub,
-      "agent:#{agent_id}",
+      "agent:#{space_id}:#{agent_id}",
       {:chat_compaction,
        %{
          marker: %{"index" => 5, "role" => "compaction", "archivedCount" => 3},

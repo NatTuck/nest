@@ -14,7 +14,7 @@ defmodule Nest.Agents.Agent.RestoreTest do
     skip assistant/system.
   - `attach_rebuilt_api_logs/3` — sets `:user`/`:tool`
     `.api_logs = [rebuilt]` and seeds
-    `state.chat_state.api_log_sequences`. Idempotent.
+    `state.live.api_log_sequences`. Idempotent.
   """
 
   use ExUnit.Case, async: true
@@ -83,7 +83,8 @@ defmodule Nest.Agents.Agent.RestoreTest do
       model: %{name: "test-model", provider: "test"},
       client_config: client_config,
       tools: tools,
-      chat_state: %ChatState{messages: fixture_messages(), history: [], api_log_sequences: %{}}
+      chat_state: %ChatState{messages: fixture_messages(), history: []},
+      live: %ChatState.Live{api_log_sequences: %{}}
     }
   end
 
@@ -314,23 +315,23 @@ defmodule Nest.Agents.Agent.RestoreTest do
       messages = fixture_messages()
 
       new_state = Restore.attach_rebuilt_api_logs(state, messages, -1)
-      assert new_state.chat_state.api_log_sequences == %{1 => 1, 3 => 1, 4 => 1}
+      assert new_state.live.api_log_sequences == %{1 => 1, 3 => 1, 4 => 1}
     end
 
     test "preserves existing api_log_sequences entries (forward-compat for future rebroadcasts)" do
       state = %{
         fixture_state()
-        | chat_state: %{fixture_state().chat_state | api_log_sequences: %{99 => 7}}
+        | live: %{fixture_state().live | api_log_sequences: %{99 => 7}}
       }
 
       new_state = Restore.attach_rebuilt_api_logs(state, fixture_messages(), -1)
 
       # 99 => 7 (pre-existing) is preserved; users at 1, 3 and
       # tool at 4 are added.
-      assert new_state.chat_state.api_log_sequences[99] == 7
-      assert new_state.chat_state.api_log_sequences[1] == 1
-      assert new_state.chat_state.api_log_sequences[3] == 1
-      assert new_state.chat_state.api_log_sequences[4] == 1
+      assert new_state.live.api_log_sequences[99] == 7
+      assert new_state.live.api_log_sequences[1] == 1
+      assert new_state.live.api_log_sequences[3] == 1
+      assert new_state.live.api_log_sequences[4] == 1
     end
 
     test "is idempotent: a second call does not duplicate entries" do
@@ -383,22 +384,16 @@ defmodule Nest.Agents.Agent.RestoreTest do
   end
 
   describe "reset_sequences/2" do
-    test "resets chat_state.api_log_sequences from the given preloaded list" do
+    test "resets live.api_log_sequences from the given preloaded list" do
       state = fixture_state()
+      state = %{state | live: %{state.live | api_log_sequences: %{99 => 7}}}
 
-      chat_state = %ChatState{
-        state.chat_state
-        | api_log_sequences: %{99 => 7},
-          history: [],
-          messages: state.chat_state.messages
-      }
-
-      new_chat_state = Restore.reset_sequences(chat_state, fixture_messages())
+      new_state = Restore.reset_sequences(state, fixture_messages())
 
       # `%{99 => 7}` is replaced (not merged). Forward-compat
       # use case: future "Refresh from DB" admin tool that
       # rebuilds sequences from scratch.
-      assert new_chat_state.api_log_sequences == %{1 => 1, 3 => 1, 4 => 1}
+      assert new_state.live.api_log_sequences == %{1 => 1, 3 => 1, 4 => 1}
     end
   end
 end

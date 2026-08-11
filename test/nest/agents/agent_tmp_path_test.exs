@@ -31,6 +31,8 @@ defmodule Nest.Agents.AgentTmpPathTest do
 
     on_exit(fn -> Process.delete(:nest_test_agent_pid) end)
 
+    {:ok, _space_id} = AgentTestHelpers.create_test_space()
+
     :ok
   end
 
@@ -74,14 +76,14 @@ defmodule Nest.Agents.AgentTmpPathTest do
       model = %{name: "qwen3.5-plus", provider: "model-studio"}
 
       {:ok, agent_id} =
-        Agents.create_agent(model,
+        Agents.create_agent(AgentTestHelpers.current_space_id(), model,
           name: name,
           vocation_id: AgentTestHelpers.vocation_id_for_test()
         )
 
       AgentTestHelpers.ensure_cleanup(agent_id)
 
-      {:ok, pid} = Nest.Agents.Supervisor.get_agent(agent_id)
+      {:ok, pid} = Nest.Agents.Supervisor.get_agent(AgentTestHelpers.current_space_id(), agent_id)
       info = Agent.get_public_info(pid)
 
       assert info.tmp_path =~ ~r|/tmp/nest-#{System.pid()}/agent-#{name}|
@@ -92,7 +94,7 @@ defmodule Nest.Agents.AgentTmpPathTest do
       model = %{name: "qwen3.5-plus", provider: "model-studio"}
 
       {:ok, agent_id} =
-        Agents.create_agent(model,
+        Agents.create_agent(AgentTestHelpers.current_space_id(), model,
           name: name,
           vocation_id: AgentTestHelpers.vocation_id_for_test()
         )
@@ -104,10 +106,10 @@ defmodule Nest.Agents.AgentTmpPathTest do
       assert File.exists?(expected_tmp_path),
              "Expected tmp directory to exist: #{expected_tmp_path}"
 
-      {:ok, pid} = Nest.Agents.Supervisor.get_agent(agent_id)
+      {:ok, pid} = Nest.Agents.Supervisor.get_agent(AgentTestHelpers.current_space_id(), agent_id)
       ref = Process.monitor(pid)
 
-      :ok = Agents.delete_agent(agent_id)
+      :ok = Agents.delete_agent(AgentTestHelpers.current_space_id(), agent_id)
       assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 100
 
       refute File.exists?(expected_tmp_path),
@@ -161,10 +163,20 @@ defmodule Nest.Agents.AgentTmpPathTest do
       model = %{name: "qwen3.5-plus", provider: "model-studio"}
       vid = AgentTestHelpers.vocation_id_for_test()
 
-      {:ok, agent_id1} = Agents.create_agent(model, name: name1, vocation_id: vid)
+      {:ok, agent_id1} =
+        Agents.create_agent(AgentTestHelpers.current_space_id(), model,
+          name: name1,
+          vocation_id: vid
+        )
+
       AgentTestHelpers.ensure_cleanup(agent_id1)
 
-      {:ok, agent_id2} = Agents.create_agent(model, name: name2, vocation_id: vid)
+      {:ok, agent_id2} =
+        Agents.create_agent(AgentTestHelpers.current_space_id(), model,
+          name: name2,
+          vocation_id: vid
+        )
+
       AgentTestHelpers.ensure_cleanup(agent_id2)
 
       parent_dir = "/tmp/nest-#{System.pid()}"
@@ -174,18 +186,22 @@ defmodule Nest.Agents.AgentTmpPathTest do
       assert File.exists?(path1)
       assert File.exists?(path2)
 
-      {:ok, pid1} = Nest.Agents.Supervisor.get_agent(agent_id1)
-      {:ok, pid2} = Nest.Agents.Supervisor.get_agent(agent_id2)
+      {:ok, pid1} =
+        Nest.Agents.Supervisor.get_agent(AgentTestHelpers.current_space_id(), agent_id1)
+
+      {:ok, pid2} =
+        Nest.Agents.Supervisor.get_agent(AgentTestHelpers.current_space_id(), agent_id2)
+
       ref1 = Process.monitor(pid1)
       ref2 = Process.monitor(pid2)
 
-      :ok = Agents.delete_agent(agent_id1)
+      :ok = Agents.delete_agent(AgentTestHelpers.current_space_id(), agent_id1)
       assert_receive {:DOWN, ^ref1, :process, ^pid1, _reason}, 100
 
       refute File.exists?(path1)
       assert File.exists?(path2)
 
-      :ok = Agents.delete_agent(agent_id2)
+      :ok = Agents.delete_agent(AgentTestHelpers.current_space_id(), agent_id2)
       assert_receive {:DOWN, ^ref2, :process, ^pid2, _reason}, 100
 
       refute File.exists?(path2)

@@ -43,7 +43,7 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
 
     # Allow Mimic to stub `Nest.Agents.chat/2` in this test.
     Mimic.copy(Nest.Agents)
-    Mimic.stub(Nest.Agents, :chat, fn _name, _content -> :ok end)
+    Mimic.stub(Nest.Agents, :chat, fn _space_id, _name, _content -> :ok end)
 
     {:ok, vid: upsert_vocation()}
   end
@@ -102,11 +102,11 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
         5_000
       )
 
-    :ok = Agents.delete_agent(parent_name)
+    :ok = Agents.delete_agent(AgentTestHelpers.current_space_id(), parent_name)
 
     assert_registry_misses(parent_name)
     assert_registry_misses(child_name)
-    assert ChildRegistry.children_of(parent_name) == []
+    assert ChildRegistry.children_of(AgentTestHelpers.current_space_id(), parent_name) == []
   end
 
   # Helpers
@@ -145,7 +145,7 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
   end
 
   defp fetch_row!(name) do
-    {:ok, row} = Persistence.fetch_agent_by_name(name)
+    {:ok, row} = Persistence.fetch_agent(AgentTestHelpers.current_space_id(), name)
     row
   end
 
@@ -157,15 +157,18 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
   # row cleanup at test exit.
   defp on_exit_cleanup(parent_name, child_name) do
     for name <- [parent_name, child_name] do
-      case AgentsRegistry.lookup(name) do
-        {:ok, _pid} -> :ok = Supervisor.stop_agent(name)
+      case AgentsRegistry.lookup(AgentTestHelpers.current_space_id(), name) do
+        {:ok, _pid} -> :ok = Supervisor.stop_agent(AgentTestHelpers.current_space_id(), name)
         _ -> :ok
       end
     end
   end
 
   defp assert_registry_misses(name) do
-    eventually(fn -> AgentsRegistry.lookup(name) == {:error, :not_found} end,
+    eventually(
+      fn ->
+        AgentsRegistry.lookup(AgentTestHelpers.current_space_id(), name) == {:error, :not_found}
+      end,
       timeout: 1_000
     )
   end

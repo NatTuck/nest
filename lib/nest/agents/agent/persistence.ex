@@ -4,12 +4,8 @@ defmodule Nest.Agents.Agent.Persistence do
 
   Defense-in-depth: each function returns `:ok` immediately
   when the runtime `:persistence_enabled` config flag is
-  `false` (see `config/test.exs`). Production code never
-  disables persistence; the no-op branch is a guardrail for
-  manual dev experiments, not exercised by tests.
-
-  Extracted from `Nest.Agents.Agent` so the GenServer module
-  stays under the 500-line credo limit.
+  `false`. Production code never disables persistence; the
+  no-op branch is a guardrail for manual dev experiments.
   """
 
   require Logger
@@ -18,22 +14,34 @@ defmodule Nest.Agents.Agent.Persistence do
 
   @doc """
   Persist a freshly-stamped message into the `messages`
-  table and bump the agent's `next_message_index` on the
-  `agents` row. No-op when persistence is disabled, or
-  when `agent_id` is `nil` (unit tests for the
-  `NoticePairInjector` and similar modules build an
-  `Agent{}` struct without a registered name).
+  table and bump the agent's `next_message_index`.
   """
-  def append_message(agent_id, stamped, new_index)
-      when is_binary(agent_id) do
+  def append_message(space_id, agent_id, stamped, new_index)
+      when is_integer(space_id) and is_binary(agent_id) do
     if persistence_enabled?() do
-      do_append_message(agent_id, stamped, new_index)
+      do_append_message(space_id, agent_id, stamped, new_index)
+    else
+      :ok
     end
   end
 
-  def append_message(_agent_id, _stamped, _new_index), do: :ok
+  def append_message(_space_id, _agent_id, _stamped, _new_index), do: :ok
+
+  defp do_append_message(space_id, agent_id, stamped, new_index) do
+    case Persistence.insert_message(space_id, agent_id, stamped) do
+      {:ok, _row} ->
+        :ok = Persistence.update_next_message_index(space_id, agent_id, new_index)
+
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Failed to persist message for agent #{agent_id}: #{inspect(reason)}")
+    end
+  end
 
   def record_compaction(
+        space_id,
         agent_id,
         marker_index,
         archived_count,
@@ -42,6 +50,7 @@ defmodule Nest.Agents.Agent.Persistence do
       ) do
     if persistence_enabled?() do
       do_record_compaction(
+        space_id,
         agent_id,
         marker_index,
         archived_count,
@@ -53,25 +62,8 @@ defmodule Nest.Agents.Agent.Persistence do
     end
   end
 
-  defp do_append_message(agent_id, stamped, new_index) do
-    case Persistence.insert_message(agent_id, stamped) do
-      {:ok, _row} ->
-        :ok = Persistence.update_next_message_index(agent_id, new_index)
-
-      :ok ->
-        # `Persistence.insert_message/2` returns `:ok` for
-        # no-op paths that already log a warning themselves
-        # (e.g. a `{:compaction, _}` tuple without a
-        # `%Compaction{}` struct). No row was inserted, so
-        # don't bump the index either.
-        :ok
-
-      {:error, reason} ->
-        Logger.warning("Failed to persist message for agent #{agent_id}: #{inspect(reason)}")
-    end
-  end
-
   defp do_record_compaction(
+         space_id,
          agent_id,
          marker_index,
          archived_count,
@@ -79,6 +71,7 @@ defmodule Nest.Agents.Agent.Persistence do
          tokens_compacted_to
        ) do
     case Persistence.record_compaction(
+           space_id,
            agent_id,
            marker_index,
            archived_count,

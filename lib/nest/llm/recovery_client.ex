@@ -6,7 +6,7 @@ defmodule Nest.LLM.RecoveryClient do
 
   The agent's `Agent.init/1` constructs a `%ClientConfig{client: RecoveryClient}`
   in this situation so the GenServer can still start (with
-  `chat_state.status == :model_missing`). The runtime channel and
+  `live.status == :model_missing`). The runtime channel and
   GenServer blocks inbound `chat:message` traffic while in this
   state, so `run/2` is never invoked in normal operation.
 

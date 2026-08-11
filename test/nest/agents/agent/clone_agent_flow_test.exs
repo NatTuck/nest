@@ -135,7 +135,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
                    },
                    5_000
 
-    {:ok, child_pid} = AgentsRegistry.lookup(child_name)
+    {:ok, child_pid} = AgentsRegistry.lookup(AgentTestHelpers.current_space_id(), child_name)
 
     cast_child_completed_to_parent(parent_name, child_name, "the answer is 4")
 
@@ -210,7 +210,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
   # forwards `:clone_agent_result` to the blocked tool worker,
   # and merges the child's usage into `descendant_usage`.
   defp cast_child_completed_to_parent(parent_name, child_name, response) do
-    {:ok, parent_pid} = AgentsRegistry.lookup(parent_name)
+    {:ok, parent_pid} = AgentsRegistry.lookup(AgentTestHelpers.current_space_id(), parent_name)
 
     # Realistic child usage — `output_tokens: 42` proves the
     # parent's `descendant_usage` actually got merged into.
@@ -246,7 +246,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
   # in iteration 2, after the synthesized tool result lands).
   defp stub_child_chat do
     Mimic.copy(Nest.Agents)
-    Mimic.stub(Nest.Agents, :chat, fn _name, _content -> :ok end)
+    Mimic.stub(Nest.Agents, :chat, fn _space_id, _name, _content -> :ok end)
   end
 
   defp upsert_clone_agent_vocation do

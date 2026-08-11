@@ -40,7 +40,7 @@ defmodule Nest.Agents.Agent.ModelHandler do
   """
   @spec handle(map(), GenServer.from(), Agent.t()) :: GenServer.reply()
   def handle({:set_model, new_model}, _from, state) when is_map(new_model) do
-    if state.chat_state.status in [:idle, :model_missing] do
+    if state.live.status in [:idle, :model_missing] do
       perform_set_model(state, new_model)
     else
       {:reply, {:error, :agent_busy}, state}
@@ -56,7 +56,7 @@ defmodule Nest.Agents.Agent.ModelHandler do
         {:reply, {:error, {:invalid_model, reason}}, state}
 
       {:ok, client_config} ->
-        case Persistence.update_agent_model(state.name, new_model) do
+        case Persistence.update_agent_model(state.space_id, state.name, new_model) do
           {:error, reason} ->
             {:reply, {:error, reason}, state}
 
@@ -82,7 +82,7 @@ defmodule Nest.Agents.Agent.ModelHandler do
         # and `ContextReminder.highest_unannounced/3` calls
         # `MapSet.member?/2` directly. Regression test in
         # `test/nest/agents/agent_change_model_test.exs`.
-        chat_state: %{state.chat_state | crossed_thresholds: MapSet.new()},
+        live: %{state.live | crossed_thresholds: MapSet.new()},
         llm_metrics: %{
           state.llm_metrics
           | context_limit: context_limit,
@@ -93,13 +93,13 @@ defmodule Nest.Agents.Agent.ModelHandler do
     # `:model_missing` recovery transition — flag flips to
     # `:idle` so the ChatPage's repair banner clears.
     state =
-      if state.chat_state.status == :model_missing do
-        %{state | chat_state: %{state.chat_state | status: :idle}}
+      if state.live.status == :model_missing do
+        %{state | live: %{state.live | status: :idle}}
       else
         state
       end
 
-    Broadcasts.status(state.name, state)
+    Broadcasts.status(state)
     state
   end
 end

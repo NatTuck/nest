@@ -121,6 +121,7 @@ defmodule Nest.Agents.Agent.Compaction.Overflow do
         reason \\ :reserve_exhausted
       ) do
     Broadcasts.error(
+      state.space_id,
       state.name,
       nil,
       message(state.llm_metrics.context_limit, system_prompt, verb, reason),

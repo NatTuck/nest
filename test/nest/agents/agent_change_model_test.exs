@@ -29,6 +29,8 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
     vid = AgentTestHelpers.vocation_id_for_test()
     Process.put(:test_vocation_id, vid)
 
+    {:ok, _space_id} = AgentTestHelpers.create_test_space()
+
     # The DataCase's automatic sandbox rollback covers
     # the agent rows. A `for id <- ...; delete_agent(id)`
     # here would deadlock on `DBConnection.OwnershipError`
@@ -58,11 +60,12 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
   # callers lacked before this round.
   defp persist_and_start!(attrs) do
     name = Map.fetch!(attrs, :name)
-    attrs_with_vid = Map.put(attrs, :vocation_id, vid())
+    space_id = AgentTestHelpers.current_space_id()
+    attrs_with_vid = attrs |> Map.put(:vocation_id, vid()) |> Map.put(:space_id, space_id)
 
     {:ok, _row} = Persistence.insert_agent(attrs_with_vid)
-    {:ok, ^name} = Supervisor.fetch_or_start_agent(attrs_with_vid)
-    {:ok, pid} = Supervisor.get_agent(name)
+    {:ok, ^name} = Supervisor.fetch_or_start_agent(space_id, attrs_with_vid)
+    {:ok, pid} = Supervisor.get_agent(space_id, name)
 
     # Runtime DB writes from the agent pid (`set_model/2`
     # calls `Persistence.update_agent_model/2`) need
@@ -100,7 +103,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
                provider: "anthropic-provider"
              }
 
-      assert state.chat_state.status == :idle
+      assert state.live.status == :idle
     end
 
     test "broadcasts chat:status with the new model" do
@@ -111,7 +114,10 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
           vocation_id: vid()
         })
 
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{name}")
+      Phoenix.PubSub.subscribe(
+        Nest.PubSub,
+        "agent:#{AgentTestHelpers.current_space_id()}:#{name}"
+      )
 
       Agent.set_model(pid, %{name: "claude-3-opus-20240229", provider: "anthropic-provider"})
 
@@ -136,7 +142,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
 
       # Force the agent into :streaming without an actual LLM call.
       :sys.replace_state(pid, fn state ->
-        %{state | chat_state: %{state.chat_state | status: :streaming}}
+        %{state | live: %{state.live | status: :streaming}}
       end)
 
       state_before = :sys.get_state(pid)
@@ -152,7 +158,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
       state_after = :sys.get_state(pid)
       assert state_after.client_config.client == state_before.client_config.client
       assert state_after.model == state_before.model
-      assert state_after.chat_state.status == :streaming
+      assert state_after.live.status == :streaming
     end
 
     test "rejects an unknown model with :invalid_model" do
@@ -217,18 +223,18 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
             })
 
           state = :sys.get_state(pid)
-          assert state.chat_state.status == :model_missing
+          assert state.live.status == :model_missing
           assert state.client_config.client == RecoveryClient
 
           # Repair through Agents.change_model/2.
           :ok =
-            Agents.change_model(agent_name, %{
+            Agents.change_model(AgentTestHelpers.current_space_id(), agent_name, %{
               name: "claude-3-opus-20240229",
               provider: "anthropic-provider"
             })
 
           state = :sys.get_state(pid)
-          assert state.chat_state.status == :idle
+          assert state.live.status == :idle
           assert state.client_config.client == AnthropicClient
 
           assert state.model == %{
@@ -238,7 +244,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
 
           # The persisted row reflects the new model. Ecto's
           # `:map` column normalizes to string keys on read.
-          {:ok, row} = Persistence.fetch_agent_by_name(agent_name)
+          {:ok, row} = Persistence.fetch_agent(AgentTestHelpers.current_space_id(), agent_name)
 
           assert row.model == %{
                    "name" => "claude-3-opus-20240229",
@@ -265,7 +271,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
         })
 
       assert {:error, :gen_server_timeout} =
-               Agents.change_model(name, %{
+               Agents.change_model(AgentTestHelpers.current_space_id(), name, %{
                  name: "claude-3-opus-20240229",
                  provider: "anthropic-provider"
                })
@@ -297,8 +303,8 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
       :sys.replace_state(pid, fn state ->
         %{
           state
-          | chat_state: %{
-              state.chat_state
+          | live: %{
+              state.live
               | crossed_thresholds: MapSet.put(MapSet.new(), :p25)
             }
         }
@@ -311,7 +317,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
         })
 
       state = :sys.get_state(pid)
-      crossed = state.chat_state.crossed_thresholds
+      crossed = state.live.crossed_thresholds
 
       assert is_struct(crossed, MapSet),
              "crossed_thresholds must be a MapSet (got #{inspect(crossed)})"
@@ -335,6 +341,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
       # The DB row is sitting on disk, the lobby should
       # surface it, and the user can repair via change_model.
       attrs = %{
+        space_id: AgentTestHelpers.current_space_id(),
         name: "ghost-row-only",
         model: %{name: "ghost-model-from-disk"},
         vocation_id: vid()
@@ -342,7 +349,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
 
       {:ok, _} = Persistence.insert_agent(attrs)
 
-      broken = Agents.list_broken_agents()
+      broken = Agents.list_broken_agents(AgentTestHelpers.current_space_id())
 
       assert Enum.any?(broken, fn entry ->
                entry.name == attrs.name and entry.status == :model_missing
@@ -395,7 +402,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
           # Even though the agent's status is :model_missing,
           # it's alive in the Registry — `list_broken_agents/0`
           # skips it.
-          broken = Agents.list_broken_agents()
+          broken = Agents.list_broken_agents(AgentTestHelpers.current_space_id())
           refute Enum.any?(broken, fn entry -> entry.name == agent_name end)
         end)
 

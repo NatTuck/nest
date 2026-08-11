@@ -27,11 +27,18 @@ import {
 } from "../__mocks__/phoenix";
 
 function withStore(agents) {
-  useStore.setState({ agents });
+  // Agents are grouped under a space row in the sidebar. Seed a
+  // space and make it the current one so its (expanded) agent tree
+  // renders. Default each agent's `space_id` to that space's id.
+  useStore.setState({
+    agents: agents.map((a) => ({ ...a, space_id: a.space_id ?? 1 })),
+    spaces: [{ id: 1, slug: "my-space", name: "My Space" }],
+    currentSpaceId: 1,
+  });
 }
 
 function clearAgents() {
-  useStore.setState({ agents: null });
+  useStore.setState({ agents: null, spaces: [], currentSpaceId: null });
 }
 
 beforeEach(() => {
@@ -163,7 +170,7 @@ describe("Sidebar tree", () => {
     });
 
     render(
-      <MemoryRouter initialEntries={["/agent/bravo"]}>
+      <MemoryRouter initialEntries={["/space/my-space/agent/bravo"]}>
         <Sidebar />
       </MemoryRouter>,
     );
@@ -198,7 +205,7 @@ describe("Sidebar tree", () => {
     // name. The push config (ok: {}) was set in beforeEach
     // so the handler completes without error.
     const payload = await pushPromise;
-    expect(payload).toEqual({ name: "trash-me" });
+    expect(payload).toEqual({ name: "trash-me", space_id: 1 });
   });
 
   it("navigates home when the deleted agent is the current route", async () => {
@@ -226,7 +233,7 @@ describe("Sidebar tree", () => {
     // directly; the assertion on the push payload is enough
     // to confirm the handler reached deleteAgent.
     const payload = await pushPromise;
-    expect(payload).toEqual({ name: "current-one" });
+    expect(payload).toEqual({ name: "current-one", space_id: 1 });
 
     // Wait for any pending navigation to settle (the test
     // doesn't assert on it but the await prevents teardown
@@ -305,9 +312,9 @@ describe("Sidebar tree", () => {
 
   it("renders gracefully when state.agents is null (defensive)", () => {
     // The lobby initializes `state.agents` to `[]` but a
-    // race or stale state could leave it `null`. `buildAgentTree`
-    // short-circuits via `agents || []` so the sidebar must
-    // handle this without crashing.
+    // race or stale state could leave it `null`. The sidebar
+    // reads `spaces`/`agents` defensively so it must handle
+    // this without crashing.
     act(() => {
       clearAgents();
     });
@@ -318,8 +325,8 @@ describe("Sidebar tree", () => {
       </MemoryRouter>,
     );
 
-    // "No agents yet" empty state shows.
-    expect(container.textContent).toContain("No agents yet");
+    // With no spaces, the sidebar shows the empty state.
+    expect(container.textContent).toContain("No spaces yet");
   });
 });
 

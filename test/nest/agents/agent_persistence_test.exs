@@ -13,6 +13,8 @@ defmodule Nest.Agents.Agent.PersistenceTest do
   """
   use Nest.DataCase, async: true
 
+  import Nest.PersistenceTestHelpers
+
   alias Nest.Agents.Agent.Persistence, as: AgentPersistence
   alias Nest.Agents.PersistedAgent
   alias Nest.Agents.PersistedMessage
@@ -21,7 +23,7 @@ defmodule Nest.Agents.Agent.PersistenceTest do
   alias Nest.Persistence
   alias Nest.Vocations
 
-  defp test_vocation_id do
+  defp local_vocation_id do
     {:ok, %Vocations.Vocation{id: id}} =
       Vocations.upsert_vocation(%{
         name: "Agent Persistence Test Default",
@@ -55,19 +57,20 @@ defmodule Nest.Agents.Agent.PersistenceTest do
 
       {:ok, _} =
         Persistence.insert_agent(%{
+          space_id: test_space_id(),
           name: name,
           model: %{name: "test-model", provider: "test"},
-          vocation_id: test_vocation_id()
+          vocation_id: local_vocation_id()
         })
 
       system_msg = {:system, %MsgSystem{index: 0, parts: [%Part.Text{text: "sys"}]}}
-      assert {:ok, _} = Persistence.insert_message(name, system_msg)
+      assert {:ok, _} = Persistence.insert_message(test_space_id(), name, system_msg)
 
       # The Agent's `init/1` calls `persist_initial_system_message/1`
       # which routes through `AgentPersistence.append_message/3`.
       # The second call (the one that triggered the production
       # crash) must succeed without raising.
-      assert :ok = AgentPersistence.append_message(name, system_msg, 1)
+      assert :ok = AgentPersistence.append_message(test_space_id(), name, system_msg, 1)
     end
 
     test "bumps next_message_index on a fresh insert" do
@@ -75,13 +78,14 @@ defmodule Nest.Agents.Agent.PersistenceTest do
 
       {:ok, %PersistedAgent{}} =
         Persistence.insert_agent(%{
+          space_id: test_space_id(),
           name: name,
           model: %{name: "test-model", provider: "test"},
-          vocation_id: test_vocation_id()
+          vocation_id: local_vocation_id()
         })
 
       system_msg = {:system, %MsgSystem{index: 0, parts: [%Part.Text{text: "x"}]}}
-      assert :ok = AgentPersistence.append_message(name, system_msg, 1)
+      assert :ok = AgentPersistence.append_message(test_space_id(), name, system_msg, 1)
 
       assert [%PersistedAgent{next_message_index: 1}] =
                Nest.Repo.all(PersistedAgent)
@@ -95,9 +99,10 @@ defmodule Nest.Agents.Agent.PersistenceTest do
 
       {:ok, %PersistedAgent{id: agent_id}} =
         Persistence.insert_agent(%{
+          space_id: test_space_id(),
           name: name,
           model: %{name: "test-model", provider: "test"},
-          vocation_id: test_vocation_id()
+          vocation_id: local_vocation_id()
         })
 
       # Pre-insert a row at the marker index so the marker row
@@ -116,7 +121,7 @@ defmodule Nest.Agents.Agent.PersistenceTest do
       # 2 default). Persistence is always on, so the call forwards
       # through to the underlying `Persistence.record_compaction/5`
       # with `nil` for both token stats.
-      assert :ok = AgentPersistence.record_compaction(name, 1, 1)
+      assert :ok = AgentPersistence.record_compaction(test_space_id(), name, 1, 1)
 
       # Confirm the marker row landed with nil token stats.
       assert [
@@ -134,13 +139,14 @@ defmodule Nest.Agents.Agent.PersistenceTest do
 
       {:ok, %PersistedAgent{}} =
         Persistence.insert_agent(%{
+          space_id: test_space_id(),
           name: name,
           model: %{name: "test-model", provider: "test"},
-          vocation_id: test_vocation_id()
+          vocation_id: local_vocation_id()
         })
 
       assert :ok =
-               AgentPersistence.record_compaction(name, 5, 3, 18_432, 4_096)
+               AgentPersistence.record_compaction(test_space_id(), name, 5, 3, 18_432, 4_096)
     end
   end
 end

@@ -37,6 +37,8 @@ defmodule Nest.AgentsAutoNameTest do
     Process.put(:test_vocation_id, AgentTestHelpers.vocation_id_for_test())
     on_exit(fn -> Process.delete(:test_vocation_id) end)
 
+    {:ok, _space_id} = AgentTestHelpers.create_test_space()
+
     # No `await_models_refresh/0` needed: this file's tests
     # either pass `%{provider: "model-studio"}` without a `:name`
     # (deliberately starting the agent in `:model_missing` to
@@ -63,6 +65,7 @@ defmodule Nest.AgentsAutoNameTest do
         capture_log(fn ->
           {:ok, name} =
             Agents.create_agent(
+              AgentTestHelpers.current_space_id(),
               %{provider: "model-studio"},
               vocation_id: vid()
             )
@@ -75,7 +78,7 @@ defmodule Nest.AgentsAutoNameTest do
 
           assert is_binary(name)
           assert Regex.match?(~r/^[a-z]+-[a-z]+$/, name)
-          assert {:ok, _pid} = Supervisor.get_agent(name)
+          assert {:ok, _pid} = Supervisor.get_agent(AgentTestHelpers.current_space_id(), name)
         end)
 
       assert log =~ "could not resolve model"
@@ -91,6 +94,7 @@ defmodule Nest.AgentsAutoNameTest do
         capture_log(fn ->
           {:ok, name1} =
             Agents.create_agent(
+              AgentTestHelpers.current_space_id(),
               %{provider: "model-studio"},
               vocation_id: vid()
             )
@@ -99,6 +103,7 @@ defmodule Nest.AgentsAutoNameTest do
 
           {:ok, name2} =
             Agents.create_agent(
+              AgentTestHelpers.current_space_id(),
               %{provider: "model-studio"},
               vocation_id: vid()
             )
@@ -121,6 +126,7 @@ defmodule Nest.AgentsAutoNameTest do
 
       {:ok, _name} =
         Agents.create_agent(
+          AgentTestHelpers.current_space_id(),
           %{name: "qwen3.5-plus", provider: "model-studio"},
           name: name,
           vocation_id: vid()
@@ -128,7 +134,7 @@ defmodule Nest.AgentsAutoNameTest do
 
       AgentTestHelpers.ensure_cleanup(name)
 
-      assert {:ok, info} = Agents.get_info(name)
+      assert {:ok, info} = Agents.get_info(AgentTestHelpers.current_space_id(), name)
       assert info.name == name
       assert info.status == :idle
       assert model_name(info.model) == "qwen3.5-plus"
@@ -139,6 +145,7 @@ defmodule Nest.AgentsAutoNameTest do
 
       {:ok, name} =
         Agents.create_agent(
+          AgentTestHelpers.current_space_id(),
           %{name: "qwen3.5-plus", provider: "model-studio"},
           name: explicit,
           vocation_id: vid()

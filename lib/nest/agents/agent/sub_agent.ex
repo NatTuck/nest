@@ -25,8 +25,8 @@ defmodule Nest.Agents.Agent.SubAgent do
   ## Address strategy
 
   The child reaches the parent by `GenServer.cast`-ing to
-  `Nest.Agents.Registry.via_tuple(parent.name)`. The parent
-  looks the child up in `pending_children` by name (the
+  `Nest.Agents.Registry.via_tuple(space_id, parent_name)`. The
+  parent looks the child up in `pending_children` by name (the
   `task_pid` is the only pid we hold; the worker has no
   registered name, so `:clone_agent_result` reaches it via
   `send/2` from the parent).
@@ -59,9 +59,9 @@ defmodule Nest.Agents.Agent.SubAgent do
 
         broadcast_subagent_creation(state, child_name)
 
-        maybe_test_swap_to_mock(child_name)
+        maybe_test_swap_to_mock(state.space_id, child_name)
 
-        Nest.Agents.chat(child_name, instruction)
+        Nest.Agents.chat(state.space_id, child_name, instruction)
 
         {:reply, {:ok, child_name}, state}
 
@@ -86,9 +86,9 @@ defmodule Nest.Agents.Agent.SubAgent do
   # parent GenServer happens to run in (the test process,
   # the dynamic supervisor, etc.).
   @doc false
-  def maybe_test_swap_to_mock(child_name) do
+  def maybe_test_swap_to_mock(space_id, child_name) do
     if Application.get_env(:nest, :force_subagent_mock, false) do
-      swap_to_mock(child_name)
+      swap_to_mock(space_id, child_name)
     end
 
     :ok
@@ -99,8 +99,8 @@ defmodule Nest.Agents.Agent.SubAgent do
   # first LLM call doesn't make a real HTTP request. We
   # also start a per-child MockClient queue so the chat
   # task finds a queue keyed by the child's pid.
-  defp swap_to_mock(child_name) do
-    case AgentsRegistry.lookup(child_name) do
+  defp swap_to_mock(space_id, child_name) do
+    case AgentsRegistry.lookup(space_id, child_name) do
       {:ok, pid} ->
         :sys.replace_state(pid, fn st ->
           %{st | client_config: %{st.client_config | client: MockClient}}
@@ -110,6 +110,33 @@ defmodule Nest.Agents.Agent.SubAgent do
 
       _ ->
         :ok
+    end
+  end
+
+  @doc """
+  Spawn an independent, fresh-context sub-agent in `state`'s
+  space via `Supervisor.spawn_agent_in_space/3`.
+
+  Unlike `handle_clone_request/3`, this does NOT register a
+  `pending_children` entry or wait for completion — the spawned
+  specialist runs independently and the worker returns
+  immediately with its name. Used by the `spawn_agent` tool.
+
+  The `task_pid` is unused here (the reply is returned
+  synchronously to the worker, which is the same process on a
+  `GenServer.call`), but kept for signature symmetry with
+  `handle_clone_request/3`.
+  """
+  @spec handle_spawn_request(Agent.t(), pid(), String.t(), integer()) ::
+          {:reply, term(), Agent.t()}
+  def handle_spawn_request(state, _task_pid, name, vocation_id) do
+    case Supervisor.spawn_agent_in_space(state, name, vocation_id) do
+      {:ok, spawned_name} ->
+        maybe_test_swap_to_mock(state.space_id, spawned_name)
+        {:reply, {:ok, spawned_name}, state}
+
+      {:error, _reason} = err ->
+        {:reply, err, state}
     end
   end
 
@@ -147,7 +174,7 @@ defmodule Nest.Agents.Agent.SubAgent do
             llm_metrics: new_llm_metrics
         }
 
-        Broadcasts.status(state.name, new_state)
+        Broadcasts.status(new_state)
         {:noreply, new_state}
     end
   end
@@ -159,7 +186,7 @@ defmodule Nest.Agents.Agent.SubAgent do
   # pipeline (no raw PubSub bypass needed by the lobby).
   defp broadcast_subagent_creation(state, child_name) do
     parent_db_id =
-      case Persistence.fetch_agent_by_name(state.name) do
+      case Persistence.fetch_agent(state.space_id, state.name) do
         {:ok, row} -> row.id
         _ -> nil
       end
@@ -203,7 +230,7 @@ defmodule Nest.Agents.Agent.SubAgent do
   def stop_pending_children(state) do
     state.chat_state.pending_children
     |> Enum.each(fn {child_name, _task_pid} ->
-      _ = Supervisor.stop_agent(child_name)
+      _ = Supervisor.stop_agent(state.space_id, child_name)
     end)
 
     %{state | chat_state: %{state.chat_state | pending_children: %{}}}
@@ -224,7 +251,7 @@ defmodule Nest.Agents.Agent.SubAgent do
   """
   @spec cascade_terminate(Agent.t()) :: :ok
   def cascade_terminate(state) do
-    Nest.Agents.Supervisor.cascade_children_only(state.name)
+    Nest.Agents.Supervisor.cascade_children_only(state.space_id, state.name)
     :ok
   catch
     # `rescue _ -> :ok` does NOT catch `:exit` — `catch :exit, _`

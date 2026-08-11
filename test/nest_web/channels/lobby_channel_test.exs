@@ -11,6 +11,7 @@ defmodule NestWeb.LobbyChannelTest do
   alias Nest.Agents
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Supervisor
+  alias Nest.Blueprints
   alias Nest.Repo
   alias Nest.Vocations
 
@@ -25,9 +26,11 @@ defmodule NestWeb.LobbyChannelTest do
   # cleanup, a fresh user is created and a token signed so
   # the socket connect can authenticate.
   setup do
-    for name <- Nest.Persistence.list_agent_names() do
-      _ = Supervisor.stop_agent(name)
-      Nest.Persistence.delete_agent_by_name(name)
+    {:ok, space_id} = AgentTestHelpers.create_test_space()
+
+    for name <- Nest.Persistence.list_agent_names_for_space(space_id) do
+      _ = Supervisor.stop_agent(space_id, name)
+      Nest.Persistence.delete_agent(space_id, name)
     end
 
     # The channel handler's `default_vocation_id/0` falls back
@@ -60,11 +63,11 @@ defmodule NestWeb.LobbyChannelTest do
     Process.put(:lobby_test_token, token)
     Process.put(:lobby_test_user_id, user.id)
 
-    {:ok, %{user: user, token: token}}
+    {:ok, %{user: user, token: token, space_id: space_id}}
   end
 
   describe "join/3" do
-    test "returns agents, models, and vocations on join" do
+    test "returns agents, models, vocations, blueprints, and spaces on join" do
       # Connect socket and join lobby
       {_socket, payload} = join_lobby()
 
@@ -72,6 +75,9 @@ defmodule NestWeb.LobbyChannelTest do
       assert is_list(payload.agents)
       assert is_list(payload.models)
       assert is_list(payload.vocations)
+      assert is_list(payload.blueprints)
+      assert is_list(payload.spaces)
+      assert is_integer(payload.current_space_id)
     end
 
     test "returns vocations with correct JSON structure" do
@@ -330,17 +336,18 @@ defmodule NestWeb.LobbyChannelTest do
     end
   end
 
-  describe "handle_in(create_agent)" do
-    test "creates agent and broadcasts event" do
+  describe "handle_in(create_space)" do
+    test "creates space (with root agent) and broadcasts event" do
       {socket, _payload} = join_lobby()
 
       ref =
-        push(socket, "create_agent", %{
+        push(socket, "create_space", %{
+          "name" => "test-space-#{System.unique_integer([:positive])}",
           "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
         })
 
-      assert_reply ref, :ok, %{"name" => name}
-      assert Regex.match?(~r/^[a-z]+-[a-z]+$/, name)
+      assert_reply ref, :ok, %{"space_id" => space_id, "name" => name}
+      assert Regex.match?(~r/^[a-z0-9-]+$/, name)
 
       # Register cleanup for the push-created agent so the
       # singleton `Nest.Agents.Supervisor` doesn't carry a
@@ -351,6 +358,7 @@ defmodule NestWeb.LobbyChannelTest do
 
       assert_broadcast "agent:created", %{
         "name" => ^name,
+        "space_id" => ^space_id,
         "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
       }
     end
@@ -363,14 +371,15 @@ defmodule NestWeb.LobbyChannelTest do
       {socket, _payload} = join_lobby()
 
       ref =
-        push(socket, "create_agent", %{
+        push(socket, "create_space", %{
+          "name" => "test-space-#{System.unique_integer([:positive])}",
           "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
         })
 
-      assert_reply ref, :ok, %{"name" => name}
+      assert_reply ref, :ok, %{"space_id" => space_id, "name" => name}
       AgentTestHelpers.ensure_cleanup(name)
 
-      assert {:ok, info} = Agents.get_info(name)
+      assert {:ok, info} = Agents.get_info(space_id, name)
       assert model_name(info.model) == "qwen3.5-plus"
       assert model_provider(info.model) == "model-studio"
 
@@ -378,6 +387,44 @@ defmodule NestWeb.LobbyChannelTest do
         "name" => ^name,
         "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
       }
+    end
+
+    test "blueprint_id drives the root agent's vocation over the default" do
+      # Phase 2: when the client picks a blueprint, the lobby must
+      # NOT forward its default `vocation_id` fallback, so the
+      # root agent's vocation comes from the blueprint's
+      # `root_vocation_id`.
+      vocation =
+        Vocations.upsert_vocation(%{
+          name: "lobby-blueprint-voc-#{System.unique_integer([:positive])}",
+          description: "Blueprint root vocation",
+          system_prompt: "You are the blueprint root.",
+          tools: [],
+          modes: %{}
+        })
+        |> elem(1)
+
+      blueprint =
+        Blueprints.upsert_blueprint(%{
+          name: "lobby-blueprint-#{System.unique_integer([:positive])}",
+          root_vocation_id: vocation.id
+        })
+        |> elem(1)
+
+      {socket, _payload} = join_lobby()
+
+      ref =
+        push(socket, "create_space", %{
+          "name" => "blueprint-space-#{System.unique_integer([:positive])}",
+          "blueprint_id" => blueprint.id,
+          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+        })
+
+      assert_reply ref, :ok, %{"space_id" => space_id, "name" => name}
+      AgentTestHelpers.ensure_cleanup(name)
+
+      assert {:ok, info} = Agents.get_info(space_id, name)
+      assert info.vocation_id == vocation.id
     end
   end
 
@@ -387,21 +434,22 @@ defmodule NestWeb.LobbyChannelTest do
 
       # Create via the channel so the channel's
       # `default_vocation_id/0` fallback applies.
-      # `Agents.create_agent/2` direct would skip that and
+      # `Agents.create_agent/3` direct would skip that and
       # trip the NOT NULL constraint on `agents.vocation_id`.
       ref =
-        push(socket, "create_agent", %{
+        push(socket, "create_space", %{
+          "name" => "test-space-#{System.unique_integer([:positive])}",
           "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
         })
 
-      assert_reply ref, :ok, %{"name" => name}
+      assert_reply ref, :ok, %{"space_id" => space_id, "name" => name}
 
-      ref = push(socket, "delete_agent", %{"name" => name})
+      ref = push(socket, "delete_agent", %{"name" => name, "space_id" => space_id})
       assert_reply ref, :ok, %{}
-      assert_broadcast "agent:deleted", %{"name" => ^name}
+      assert_broadcast "agent:deleted", %{"name" => ^name, "space_id" => _}
 
       # Verify agent is gone
-      assert {:error, :not_found} = Agents.get_info(name)
+      assert {:error, :not_found} = Agents.get_info(space_id, name)
     end
 
     test "returns error for non-existent agent" do

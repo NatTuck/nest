@@ -129,7 +129,7 @@ defmodule Nest.Agents.AgentStopTest do
       assert_receive {:chat_message, {:user, _}}, 500
       assert_receive {:chat_status, %{status: "streaming"}}, 500
 
-      chat_turn_pid = :sys.get_state(pid).chat_state.chat_turn_pid
+      chat_turn_pid = :sys.get_state(pid).live.chat_turn_pid
       assert is_pid(chat_turn_pid)
 
       # Stop before any delta arrives. `streaming_acc` is
@@ -203,7 +203,7 @@ defmodule Nest.Agents.AgentStopTest do
       # our own GenServers) so the call blocks until the
       # ChatTurn's `handle_call({:stop_chat, _})` replies
       # `:ok`.
-      chat_turn_pid = :sys.get_state(pid).chat_state.chat_turn_pid
+      chat_turn_pid = :sys.get_state(pid).live.chat_turn_pid
       assert is_pid(chat_turn_pid)
 
       # The ChatTurn's `handle_call({:stop_chat, _})` returns
@@ -257,7 +257,7 @@ defmodule Nest.Agents.AgentStopTest do
       # `GenServer.call(chat_turn_pid, {:stop_chat, _}, 5_000)`.
       # The first call does the real work (kills the worker,
       # stops the ChatTurn, casts `{:chat_stopped, _}` to
-      # the Agent). After it returns, `state.chat_state.chat_turn_pid`
+      # the Agent). After it returns, `state.live.chat_turn_pid`
       # is `nil`, so the second and third calls' `if chat_turn_pid`
       # branch is skipped — no work, no second `chat_stopped`
       # cast.
@@ -402,8 +402,8 @@ defmodule Nest.Agents.AgentStopTest do
       # returns (the cast is queued in the Agent's mailbox
       # and processed before our `:sys.get_state/1` call).
       state = :sys.get_state(pid)
-      assert state.chat_state.chat_turn_pid == nil
-      assert state.chat_state.cancelled == false
+      assert state.live.chat_turn_pid == nil
+      assert state.live.cancelled == false
 
       assert_receive {:chat_status, %{status: "idle"}}, 2000
     end

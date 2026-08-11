@@ -70,6 +70,7 @@ defmodule Nest.Agents.Agent.ChatTurnSpawner do
     ctx = %{
       agent_pid: agent_pid,
       agent_name: state.name,
+      space_id: state.space_id,
       client_config: state.client_config,
       tools: state.tools,
       tool_choice: :auto,
@@ -77,17 +78,17 @@ defmodule Nest.Agents.Agent.ChatTurnSpawner do
       context_limit: state.llm_metrics.context_limit,
       messages: messages,
       tmp_path: state.tmp_path,
-      crossed_thresholds: state.chat_state.crossed_thresholds
+      crossed_thresholds: state.live.crossed_thresholds
     }
 
     case ChatTurnSupervisor.start_chat_turn(agent_pid, ctx, entry) do
       {:ok, chat_turn_pid} ->
-        %{state | chat_state: %{state.chat_state | chat_turn_pid: chat_turn_pid}}
+        %{state | live: %{state.live | chat_turn_pid: chat_turn_pid}}
 
       _ ->
         Logger.warning("ChatTurnSpawner.spawn: supervisor saturated for agent=#{state.name}")
 
-        %{state | chat_state: %{state.chat_state | chat_turn_pid: nil}}
+        %{state | live: %{state.live | chat_turn_pid: nil}}
     end
   end
 end

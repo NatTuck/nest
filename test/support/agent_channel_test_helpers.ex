@@ -61,6 +61,7 @@ defmodule NestWeb.AgentChannelTestHelpers do
             created_by_user_id: user.id
           })
 
+        space_id = AgentTestHelpers.current_space_id()
         MockClient.clear()
 
         # Make the token reachable for tests that need to
@@ -71,9 +72,9 @@ defmodule NestWeb.AgentChannelTestHelpers do
         {:ok, connected} = connect(UserSocket, %{"token" => token})
 
         {:ok, _, socket} =
-          subscribe_and_join(connected, AgentChannel, "agent:#{agent_id}")
+          subscribe_and_join(connected, AgentChannel, "agent:#{space_id}:#{agent_id}")
 
-        {:ok, socket: socket, agent_id: agent_id, user: user}
+        {:ok, socket: socket, agent_id: agent_id, user: user, space_id: space_id}
       end
     end
   end

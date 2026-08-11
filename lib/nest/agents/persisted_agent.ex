@@ -36,6 +36,7 @@ defmodule Nest.Agents.PersistedAgent do
   @type t :: %__MODULE__{
           id: integer() | nil,
           name: String.t(),
+          space_id: integer() | nil,
           vocation_id: integer() | nil,
           model: map(),
           workspace_path: String.t() | nil,
@@ -52,6 +53,7 @@ defmodule Nest.Agents.PersistedAgent do
   @primary_key {:id, :id, autogenerate: true}
   schema "agents" do
     field :name, :string
+    field :space_id, :integer
     field :vocation_id, :integer
     field :model, :map
     field :workspace_path, :string
@@ -73,7 +75,8 @@ defmodule Nest.Agents.PersistedAgent do
     # below keeps the FK in the schema (so the migration's
     # `references` is enforced) without exposing a `:parent`
     # association accessor — callers reach the parent via
-    # `fetch_agent_by_id/1`.
+    # `Persistence.fetch_agent/2` (looked up by `parent_id`,
+    # not by name).
     field :parent_id, :integer
     field :depth, :integer, default: 0
 
@@ -118,6 +121,7 @@ defmodule Nest.Agents.PersistedAgent do
     source
     |> cast(params, [
       :name,
+      :space_id,
       :vocation_id,
       :model,
       :workspace_path,
@@ -128,9 +132,9 @@ defmodule Nest.Agents.PersistedAgent do
       :created_by_user_id,
       :shared
     ])
-    |> validate_required([:name, :model])
+    |> validate_required([:name, :space_id, :model])
     |> validate_length(:name, min: 1)
-    |> unique_constraint(:name)
+    |> unique_constraint([:space_id, :name])
     # Defensive: depth must be non-negative. The DB-side
     # CHECK constraint is the canonical guard; this one
     # surfaces the error as a changeset error instead of

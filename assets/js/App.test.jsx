@@ -7,12 +7,12 @@
  *   - Token present + WS not yet connected → render a
  *     loading screen and call `initChannels()`.
  *   - Token present + WS becomes connected → navigate to
- *     `/new_agent`.
+ *     `/spaces`.
  *
  * We test `RootGate` in isolation with `renderWithRouter`
  * because the rest of `App.jsx` (the full router config
  * with all pages) is exercised by the existing
- * NewAgentPage / Sidebar / ChatPage test suites. Exporting
+ * SpacesIndex / Sidebar / ChatPage test suites. Exporting
  * `RootGate` from App.jsx keeps the test surface small
  * without forcing a full-app render.
  */
@@ -47,7 +47,7 @@ async function renderGate(initialPath = "/") {
     routes: [
       { path: "/", element: <RootGate /> },
       { path: "/login", element: <div>Sign in</div> },
-      { path: "/new_agent", element: <div>Create agent</div> },
+      { path: "/spaces", element: <div>Spaces</div> },
     ],
   });
 }
@@ -82,7 +82,7 @@ describe("RootGate", () => {
     expect(initChannels).not.toHaveBeenCalled();
   });
 
-  it("navigates to /new_agent when isConnected becomes true", async () => {
+  it("navigates to /spaces when isConnected becomes true", async () => {
     localStorage.setItem("nest_token", "valid-token");
     await renderGate();
 
@@ -96,7 +96,7 @@ describe("RootGate", () => {
       useStore.setState({ isConnected: true });
     });
 
-    expect(await screen.findByText(/create agent/i)).toBeInTheDocument();
+    expect(await screen.findByText(/spaces/i)).toBeInTheDocument();
     expect(screen.queryByText(/loading/i)).toBeNull();
   });
 
@@ -118,7 +118,7 @@ describe("App default export", () => {
     // `<Routes>`. We don't reach into its router from
     // here — we render the App in a fresh jsdom window so
     // the production router config (incl. RootGate /
-    // LoginPage / NewAgentPage routes) is exercised
+    // LoginPage / SpacesIndex routes) is exercised
     // end-to-end. The detailed navigation behavior is
     // covered by the RootGate describe block above.
     const { default: App } = await import("./App");

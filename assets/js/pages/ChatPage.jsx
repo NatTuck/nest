@@ -43,7 +43,11 @@ const EMPTY_MODES = ["chat"];
  * Chat Page component
  */
 export function ChatPage() {
-  const { name } = useParams();
+  const { spaceSlug, name } = useParams();
+  const spaces = useStore((state) => state.spaces) ?? [];
+  // Resolve the current space id from the route's slug. The
+  // sidebar and channel joins all key off the integer space id.
+  const spaceId = spaces.find((s) => s.slug === spaceSlug)?.id ?? null;
   const [scrollContainerEl, setScrollContainerEl] = useState(null);
   const [messagesEndEl, setMessagesEndEl] = useState(null);
   const [inputValue, setInputValue] = useState("");
@@ -264,17 +268,19 @@ export function ChatPage() {
     partial ?? messages,
   );
 
-  // Join agent channel on mount/name change
+  // Join agent channel on mount/name/space change. The topic
+  // is `agent:<space_id>:<name>`, so the space must be resolved
+  // before joining.
   useEffect(() => {
-    if (!name) return;
+    if (!name || !spaceId) return;
 
     // Idempotent: joinAgent handles already-connected case
-    joinAgent(name);
+    joinAgent(name, spaceId);
 
     return () => {
       leaveAgent(name);
     };
-  }, [name]);
+  }, [name, spaceId]);
 
   const handleSendMessage = () => {
     if (!inputValue.trim() || isAgentBusy) {
@@ -315,7 +321,7 @@ export function ChatPage() {
 
   const handleRetry = () => {
     setSendError(null);
-    joinAgent(name);
+    joinAgent(name, spaceId);
   };
 
   // Push a new model to the server. Reset any previous error
@@ -329,7 +335,7 @@ export function ChatPage() {
     setChangeModelError(null);
     setModelPickerOpen(false);
 
-    changeAgentModel(name, newModel, undefined, (err) => {
+    changeAgentModel(name, spaceId, newModel, undefined, (err) => {
       setChangeModelError(describeChangeModelError(err?.reason));
     });
   };
@@ -468,7 +474,7 @@ export function ChatPage() {
               <p className="text-xs text-gray-500 mt-1">
                 ↑{" "}
                 <Link
-                  to={`/agent/${encodeURIComponent(parentName)}`}
+                  to={`/space/${encodeURIComponent(spaceSlug)}/agent/${encodeURIComponent(parentName)}`}
                   className="text-blue-600 hover:underline"
                 >
                   back to {parentName}
