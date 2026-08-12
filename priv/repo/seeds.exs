@@ -19,6 +19,12 @@
 alias Nest.Blueprints
 alias Nest.Vocations
 
+# Any vocation that gets any `agents/*` tool gets all of them
+# (`agents/spawn`, `agents/query`, `agents/list`,
+# `agents/archive`). `agents/spawn` is additionally stripped for
+# max-depth agents at spawn/compaction time (the others remain).
+agents_tools = ["agents/spawn", "agents/query", "agents/list", "agents/archive"]
+
 # Default - minimal vocation for agents without a specific role.
 # Used as the fallback for any test or runtime path that needs a
 # vocation but doesn't care which one. Single "chat" mode with the
@@ -28,7 +34,7 @@ alias Nest.Vocations
     name: "Default",
     description: "A minimal default vocation for agents without a specific role",
     system_prompt: "You are a helpful assistant.",
-    tools: ["context", "agents/spawn"],
+    tools: ["context" | agents_tools],
     modes: %{
       "chat" => %{
         "description" => "General conversation.",
@@ -75,7 +81,10 @@ alias Nest.Vocations
       "edit",
       "shell_cmd",
       "context",
-      "agents/spawn"
+      "agents/spawn",
+      "agents/query",
+      "agents/list",
+      "agents/archive"
     ],
     modes: %{
       "build" => %{
@@ -105,20 +114,17 @@ alias Nest.Vocations
 # the full toolset. `Chat` is deliberately minimal (conversation
 # only), matching the old default-agent behavior.
 
-all_tools = [
-  "read_file",
-  "inspect_file",
-  "write_file",
-  "edit",
-  "shell_cmd",
-  "context",
-  "agents/spawn",
-  "agents/query",
-  "agents/list",
-  "agents/archive"
-]
+all_tools =
+  [
+    "read_file",
+    "inspect_file",
+    "write_file",
+    "edit",
+    "shell_cmd",
+    "context"
+  ] ++ agents_tools
 
-minimal_tools = ["context", "agents/spawn"]
+minimal_tools = ["context" | agents_tools]
 
 # Chat — general-purpose conversation with no filesystem/network.
 {:ok, chat_vocation} =

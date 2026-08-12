@@ -156,28 +156,6 @@ defmodule NestWeb.LobbyChannel do
   end
 
   @impl true
-  def handle_in("delete_agent", payload, socket) when is_map(payload) do
-    space_id = payload["space_id"]
-    name = payload["name"]
-    user = socket.assigns.current_user
-
-    case Authz.authorize_owner(space_id, name, user) do
-      :ok ->
-        case Agents.delete_agent(space_id, name) do
-          :ok ->
-            broadcast(socket, "agent:deleted", %{"name" => name, "space_id" => space_id})
-            {:reply, {:ok, %{}}, socket}
-
-          {:error, :not_found} ->
-            {:reply, {:error, %{"reason" => "not_found"}}, socket}
-        end
-
-      {:error, reason} ->
-        {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
-    end
-  end
-
-  @impl true
   def handle_in("rescan_models", _payload, socket) do
     spawn_rescan(socket)
     {:reply, :ok, socket}

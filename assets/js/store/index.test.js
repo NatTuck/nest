@@ -2251,22 +2251,6 @@ describe("store", () => {
     });
   });
 
-  describe("removeAgent", () => {
-    it("removes agent from agents list and deletes cache", () => {
-      // Setup
-      useStore.getState().addAgent({ name: "agent-1", model: "gpt-4" });
-      useStore.getState().setAgentConnecting("agent-1");
-
-      expect(useStore.getState().agents).toHaveLength(1);
-      expect(useStore.getState().agentsCache["agent-1"]).toBeDefined();
-
-      useStore.getState().removeAgent("agent-1");
-
-      expect(useStore.getState().agents).toHaveLength(0);
-      expect(useStore.getState().agentsCache["agent-1"]).toBeUndefined();
-    });
-  });
-
   describe("clearAgentCache", () => {
     it("deletes only the agent cache while keeping agents list", () => {
       // Setup

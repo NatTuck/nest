@@ -27,7 +27,7 @@ The current codebase already has significant infrastructure that this plan build
 - `Supervisor.start_agent_with_parent/2` handles the full spawn pipeline (name gen, attrs build, pre-spawn DB, register)
 - `Supervisor.stop_agent/2` cascade-terminates subtrees
 - `PersistedAgent` schema carries `parent_id`, `depth`, `created_by_user_id`, `shared`
-- System prompt already has a `[Delegation]` section documenting `clone_agent` semantics
+- System prompt has an identity line with the agent's name + spawn depth; the `[Delegation]` section was removed in favor of tool descriptions
 - Depth-based tool filtering removes `clone_agent` from agents at `max_depth`
 - Frontend already renders agent tree in sidebar (`parentId`, `depth`, `parentName`)
 
@@ -358,7 +358,7 @@ A handful of small cleanups surfaced during the closeout review. **F1–F4 all l
    - **Concurrency caveat (documented):** if the target is already mid-turn for a *different* query when a new one arrives, the reader may return the earlier turn's response. Fine for the single-coordinator-per-specialist model; revisit if concurrent queries to one target become a real case.
 3. **[DONE] `list_agents()` tool**:
    - `ToolLoop` reads `Agents.list_agents_info_for_space(space_id)` inline (no GenServer round-trip) and serializes `name`, `vocation_id`, `status`, `depth`, truncated to 4000 chars.
-4. **[DONE] System prompt updates**: The `[Delegation]` section now renders paragraphs for whichever sub-agent tools are in the agent's filtered tool list — `clone_agent`, `spawn_agent`, `query_agent`, `list_agents`. The section is omitted when none are present (preserving the existing leaf-at-max-depth contract).
+ 4. **[SUPERSEDED] System prompt updates**: The original `[Delegation]` section has been **removed** — tool descriptions in the tool list are the only delegation guidance. Name + spawn depth now live in an identity line of the system message (non-clones and clones at/after compaction), and in the clone-fork notice (clones pre-compaction, whose system message is inherited verbatim). `agents/spawn` is dropped from the tool list only for non-clone agents at max depth (at spawn) and for any agent at max depth at compaction; clones pre-compaction keep it and are rejected at runtime.
 5. **[DONE] Tests**:
    - `supervisor_spawn_test.exs` (5 tests): unrestricted spawn, fresh-context count, duplicate name, whitelist allow/deny, empty-whitelist-is-unrestricted.
    - `sub_agent_tools_test.exs` (3 MockClient E2E tests): `spawn_agent`, `list_agents`, `query_agent` (a mocked specialist in the coordinator's space answers the query; the coordinator's tool result carries the answer).
@@ -569,7 +569,7 @@ removes `clone_agent` as a separate tool.
 - `priv/repo/seeds.exs` — tool arrays (`all_tools`, `minimal_tools`)
 - `lib/nest/tools.ex` — `:60` guard, `:71-74` heads, stub `name:` fields, add `agents/archive`; comments
 - `lib/nest/agents/agent/tool_loop.ex` — merge `run_clone_agent`+`run_spawn_agent` into `run_spawn_agent` (flags); add `run_archive_agent`; unify timeout; result names
-- `lib/nest/agents/agent/system_prompt.ex` — delegation section documents the unified tools; depth filter gates spawn
+- `lib/nest/agents/agent/system_prompt.ex` — identity line (name + depth); no delegation section; tool list is full (clones inherit it verbatim)
 - `lib/nest/messages/message_list.ex` — keep fork builders for the clone branch
 - `lib/nest/agents/agent/config.ex` — doc comment
 - `lib/nest/agents/agent/sub_agent.ex` — merge `handle_clone_request`/`handle_spawn_request`; conditional blocking; archive-after-response

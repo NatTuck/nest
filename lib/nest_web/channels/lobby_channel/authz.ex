@@ -1,7 +1,7 @@
 defmodule NestWeb.LobbyChannel.Authz do
   @moduledoc """
   Authorization helpers for the LobbyChannel handlers that
-  mutate agents (`delete_agent`, `change_model`, etc).
+  mutate agents (`change_model`, etc).
 
   Pure functions over `(space_id, name, current_user)` — no
   socket, no logging. Kept in a sibling file so `LobbyChannel`
@@ -9,8 +9,6 @@ defmodule NestWeb.LobbyChannel.Authz do
 
   ## Permission rules
 
-    * `delete_agent` — owner only. Shared agents are
-      chat-visible but not deletable by non-owners.
     * `change_model` — owner only. Shared-agent viewers
       can't rewrite the model of a shared agent (the JS
       side surfaces the `:shared_read_only` error).
@@ -28,15 +26,6 @@ defmodule NestWeb.LobbyChannel.Authz do
 
   alias Nest.Agents
   alias Nest.Agents.PersistedAgent
-
-  @doc "Owner-only check used by `delete_agent`."
-  def authorize_owner(space_id, name, current_user) do
-    case fetch_visibility(space_id, name) do
-      {:ok, %{created_by_user_id: id}} when id == current_user.id -> :ok
-      {:ok, _} -> {:error, :forbidden}
-      :error -> {:error, :not_found}
-    end
-  end
 
   @doc "Owner-or-shared check used by `change_model`."
   def authorize_owner_or_shared(space_id, name, current_user) do

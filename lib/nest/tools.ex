@@ -13,6 +13,7 @@ defmodule Nest.Tools do
 
   require Logger
 
+  alias Nest.Agents.Agent.Config
   alias Nest.LLM.Tool
   alias Nest.Tools.{FileTools, InspectFile, ShellCmd}
 
@@ -199,7 +200,9 @@ defmodule Nest.Tools do
           "`clone_context` to true to spawn the agent with a copy of this " <>
           "conversation instead of a fresh context. Set `archive` to true (with " <>
           "`query`) to stop and archive the agent after it responds (one-shot). " <>
-          "Spawned vocations may be restricted by this space's blueprint.",
+          "Spawned vocations may be restricted by this space's blueprint. " <>
+          "Sub-agents can be spawned down to a maximum depth of " <>
+          "#{Config.configured_max_depth()}.",
       parameters_schema: %{
         "type" => "object",
         "properties" => %{

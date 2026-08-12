@@ -19,11 +19,9 @@ defmodule Nest.Agents.Agent do
   @moduledoc """
   GenServer that manages an individual agent's state and chat.
 
-  Each agent runs as an independent process with:
-  - A unique readable name (e.g., "clever-raven")
-  - Message history with tool calling support
-  - LLM client config for model communication
-  - Streaming broadcast support for real-time responses via PubSub
+  Each agent runs as an independent process with a unique
+  readable name, message history with tool calling, LLM client
+  config, and streaming broadcast support via PubSub.
   """
 
   use GenServer, restart: :temporary
@@ -63,9 +61,9 @@ defmodule Nest.Agents.Agent do
     :llm_metrics,
     :created_by_user_id,
     # `depth` is the agent's distance from its tree root (0 =
-    # root). Children inherit their parent's `depth + 1`; the
-    # `agents/spawn` tool is only available when `depth <
-    # configured_max_depth()`. Persisted via `agents.depth`.
+    # root). Children inherit `parent.depth + 1`; `agents/spawn`
+    # is disabled at `depth >= configured_max_depth()`. Persisted
+    # via `agents.depth`.
     depth: 0,
     # `shared` mirrors `agents.shared` so the lobby filter
     # and ownership checks don't need a DB lookup. Children
@@ -163,9 +161,8 @@ defmodule Nest.Agents.Agent do
   # Render the system prompt in the calling process (so the
   # DB write below runs in a pid with DB access) and persist
   # the row at index 0. No-op when the rendered prompt is
-  # `nil` (defensive — `compose_vocation_config/4` returns
-  # `nil` when the vocation struct is missing or the
-  # `system_prompt` field is blank).
+  # `nil` (defensive — `compose_vocation_config/5` returns nil
+  # when the vocation struct is missing or the prompt is blank).
   defp persist_system_message(attrs) do
     name = Map.fetch!(attrs, :name)
     space_id = Map.fetch!(attrs, :space_id)
@@ -181,6 +178,7 @@ defmodule Nest.Agents.Agent do
         vocation,
         workspace_path,
         {context_limit, context_limit_source},
+        name,
         depth
       )
 
@@ -223,7 +221,12 @@ defmodule Nest.Agents.Agent do
       |> MessageList.extract_clone_instruction()
 
     {preloaded, next_index} =
-      MessageList.build_clone_fork(stripped, parent_state.chat_state.next_message_index)
+      MessageList.build_clone_fork(
+        stripped,
+        parent_state.chat_state.next_message_index,
+        child_name,
+        parent_state.depth + 1
+      )
 
     %{
       name: child_name,
@@ -436,12 +439,11 @@ defmodule Nest.Agents.Agent do
 
   @impl true
   def terminate(_reason, state) do
-    # Cascade-stop any registered children. The
-    # `ChildRegistry` walks by name (no pid work); the
-    # `Supervisor` then tears down each child via its own
-    # `terminate/2`. Defensive against the case where the
-    # supervisor gave up because we crashed: we still
-    # want children cleaned up.
+    # Stop any outstanding queries (children in
+    # `pending_children`) before teardown. Defensive against
+    # the case where the supervisor gave up because we
+    # crashed: we still want in-flight queries cut off. Idle
+    # specialists are left running.
     SubAgent.cascade_terminate(state)
 
     # Cleanup /tmp per design specification

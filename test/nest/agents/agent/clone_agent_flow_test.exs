@@ -202,6 +202,25 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
     # cast-back/merge surface under test.
     assert Process.alive?(child_pid)
     assert parent_state.llm_metrics.descendant_usage.output_tokens > 0
+
+    # The clone's fork notice carries its name and depth (its
+    # system message is inherited verbatim from the parent, so
+    # this user-visible notice is the only place to state the
+    # clone's true identity/depth).
+    child_state = :sys.get_state(child_pid)
+    assert child_state.depth == parent_state.depth + 1
+
+    ack_text =
+      child_state.chat_state.messages
+      |> Enum.filter(fn {role, _} -> role == :assistant end)
+      |> Enum.map(fn {_role, %{parts: parts}} ->
+        for %Part.Text{text: t} <- parts, do: t
+      end)
+      |> List.flatten()
+      |> Enum.join(" ")
+
+    assert ack_text =~ "named \"#{child_name}\""
+    assert ack_text =~ "at depth #{child_state.depth}"
   end
 
   # Cast `:child_completed` to the parent, mimicking what the

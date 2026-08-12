@@ -29,7 +29,6 @@ import {
   compactionLoopOk,
   createSpace,
   suggestSpaceName,
-  deleteAgent,
   createInvite,
   revokeInvite,
   clearAgentChannels,
@@ -303,54 +302,6 @@ describe("channels", () => {
       assert.strictEqual(useStore.getState().agents[0].name, "new-agent");
     });
 
-    it("should remove agent from store.agents on agent:deleted event", async () => {
-      setNextJoinResult("lobby", {
-        autoInit: {
-          agents: [{ name: "agent-1", model: { name: "gpt-4" } }],
-          models: [],
-        },
-      });
-      joinLobby();
-
-      await vi.waitFor(() => {
-        assert.strictEqual(useStore.getState().agents.length, 1);
-      });
-
-      simulateServerEvent("lobby", "agent:deleted", { name: "agent-1" });
-
-      await vi.waitFor(() => {
-        assert.strictEqual(useStore.getState().agents.length, 0);
-      });
-    });
-
-    it("should clear agent cache when agent is deleted", async () => {
-      setNextJoinResult("lobby", {
-        autoInit: {
-          agents: [{ name: "agent-1", model: { name: "gpt-4" } }],
-          models: [],
-        },
-      });
-      useStore.getState().setAgentConnected("agent-1", {
-        model: { name: "gpt-4" },
-        messageCount: 0,
-      });
-      joinLobby();
-
-      await vi.waitFor(() => {
-        assert.strictEqual(useStore.getState().agents.length, 1);
-      });
-
-      simulateServerEvent("lobby", "agent:deleted", { name: "agent-1" });
-
-      await vi.waitFor(() => {
-        assert.strictEqual(useStore.getState().agents.length, 0);
-        assert.strictEqual(
-          useStore.getState().agentsCache["agent-1"],
-          undefined,
-        );
-      });
-    });
-
     it("should update brokenAgents on broken_agents_updated event", async () => {
       // The lobby's `init` ships with `broken_agents: []` (so
       // the channel join doesn't block on `Models.list/0`); a
@@ -518,28 +469,6 @@ describe("channels", () => {
       rescanModels();
     });
 
-    it("forwards the lobby-disconnect error to deleteAgent's onError", async () => {
-      // Mirror of the rescanModels coverage above —
-      // exercise the `if (onError)` truthy branch inside
-      // `deleteAgent`'s not-connected path. Without this
-      // the v8 coverage reports line 590 uncovered (the
-      // inner `onError(...)` call).
-      const { deleteAgent } = await import("./channels");
-      let captured = null;
-      deleteAgent("ghost", 1, (err) => {
-        captured = err;
-      });
-      assert.notStrictEqual(captured, null);
-      assert.strictEqual(captured.message, "Not connected to lobby");
-    });
-
-    it("is a no-op when deleteAgent is called without an onError", async () => {
-      // Mirror of the rescanModels no-onError coverage.
-      const { deleteAgent } = await import("./channels");
-      // Should not throw on the disconnected path.
-      deleteAgent("ghost", 1);
-    });
-
     it("forwards the lobby-disconnect error to createSpace's onError", async () => {
       // Mirror for `createSpace` — exercise the
       // `if (onError)` truthy branch on the disconnected
@@ -560,7 +489,7 @@ describe("channels", () => {
     });
 
     it("is a no-op when createSpace is called without an onError", async () => {
-      // Mirror of the rescanModels/deleteAgent no-onError
+      // Mirror of the rescanModels no-onError
       // coverage — verifies the short-circuit cleanly
       // when the caller only cares about success.
       const { createSpace } = await import("./channels");
@@ -1009,7 +938,7 @@ describe("channels", () => {
 
   describe("defensive error paths", () => {
     // Branch coverage: the `!lobbyChannel` early-return
-    // branches in `createSpace` and `deleteAgent`, the
+    // branches in `createSpace`, the
     // `compactionLoopOk` error receive, and the
     // `joinLobby` idempotent path are defensive paths
     // that only fire when the lobby is disconnected, the
@@ -1029,17 +958,6 @@ describe("channels", () => {
           errorMessage = err.message;
         },
       );
-      assert.strictEqual(errorCalled, true);
-      assert.strictEqual(errorMessage, "Not connected to lobby");
-    });
-
-    it("deleteAgent returns an error when the lobby isn't connected", () => {
-      let errorCalled = false;
-      let errorMessage = null;
-      deleteAgent("test-agent", 1, (err) => {
-        errorCalled = true;
-        errorMessage = err.message;
-      });
       assert.strictEqual(errorCalled, true);
       assert.strictEqual(errorMessage, "Not connected to lobby");
     });
@@ -2151,7 +2069,7 @@ describe("channels", () => {
       });
 
       let errorCalled = false;
-      deleteAgent("agent-1", 1, (_err) => {
+      sendMessage("agent-1", "Hello", undefined, (_err) => {
         errorCalled = true;
       });
 
@@ -2502,56 +2420,6 @@ describe("channels", () => {
 
       // Call without onError callback - should not throw
       createSpace("gpt-4", 1, undefined, undefined);
-
-      // Just wait a bit to ensure no errors
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    });
-  });
-
-  describe("deleteAgent", () => {
-    it("should call onError when not connected to lobby", async () => {
-      let errorCalled = false;
-      deleteAgent("agent-1", 1, (_err) => {
-        errorCalled = true;
-      });
-
-      await vi.waitFor(() => {
-        assert.strictEqual(errorCalled, true);
-      });
-    });
-
-    it("should call onError on delete failure", async () => {
-      setNextPushResult("lobby", "delete_agent", {
-        error: { reason: "not_found" },
-      });
-      joinLobby();
-
-      await vi.waitFor(() => {
-        assert.strictEqual(useStore.getState().agents.length >= 0, true);
-      });
-
-      let errorCalled = false;
-      deleteAgent("agent-1", 1, (_err) => {
-        errorCalled = true;
-      });
-
-      await vi.waitFor(() => {
-        assert.strictEqual(errorCalled, true);
-      });
-    });
-
-    it("should work without onError callback", async () => {
-      setNextPushResult("lobby", "delete_agent", {
-        error: { reason: "not_found" },
-      });
-      joinLobby();
-
-      await vi.waitFor(() => {
-        assert.strictEqual(useStore.getState().agents.length >= 0, true);
-      });
-
-      // Call without onError callback - should not throw
-      deleteAgent("agent-1", 1);
 
       // Just wait a bit to ensure no errors
       await new Promise((resolve) => setTimeout(resolve, 50));

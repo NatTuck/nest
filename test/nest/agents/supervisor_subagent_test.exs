@@ -21,18 +21,13 @@ defmodule Nest.Agents.SupervisorSubagentTest do
       matching the parent's `name` (so the child can
       dispatch `:child_completed` to the right parent
       without a pid lookup).
-    * `Agents.delete_agent/1` cascade-walks children
-      before terminating the parent.
-    * A grandchild (agents/spawn of agents/spawn) is also
-      cleaned up when the root parent dies.
-    * `cascade_children_only/1` stops children WITHOUT
-      terminating the named parent.
+    * `Supervisor.stop_agent/2` stops only the named agent;
+      idle children (not in `pending_children`) survive.
   """
   use Nest.DataCase, async: true
 
   import Eventually
 
-  alias Nest.Agents
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.ChildRegistry
   alias Nest.Agents.Registry, as: AgentsRegistry
@@ -92,51 +87,24 @@ defmodule Nest.Agents.SupervisorSubagentTest do
     end
   end
 
-  describe "stop_agent/1 cascade" do
-    test "stops a parent and its spawned children in one call", %{vid: vid} do
+  describe "stop_agent/2" do
+    test "stops only the named agent — idle children survive", %{vid: vid} do
       {:ok, parent_name, parent_pid, _} = start_root_parent(vid)
       parent_state = read_parent_state(parent_name, parent_pid)
+      space_id = AgentTestHelpers.current_space_id()
 
       {:ok, child_a} = Supervisor.start_agent_with_parent(parent_state, "a")
       {:ok, child_b} = Supervisor.start_agent_with_parent(parent_state, "b")
 
-      :ok = Agents.delete_agent(AgentTestHelpers.current_space_id(), parent_name)
+      :ok = Supervisor.stop_agent(space_id, parent_name)
 
       assert_registry_misses(parent_name)
-      assert_registry_misses(child_a)
-      assert_registry_misses(child_b)
+      # Idle children (not in `pending_children`) are left running.
+      assert_registry_hits(child_a)
+      assert_registry_hits(child_b)
 
-      assert ChildRegistry.children_of(AgentTestHelpers.current_space_id(), parent_name) == []
-    end
-
-    test "cascades through grandchildren (a child that itself spawned another)", %{vid: vid} do
-      {:ok, parent_name, parent_pid, _} = start_root_parent(vid)
-      parent_state = read_parent_state(parent_name, parent_pid)
-
-      {:ok, child_name} = Supervisor.start_agent_with_parent(parent_state, "child")
-      child_state = read_parent_state(child_name, via_registry(child_name))
-
-      {:ok, grandchild_name} = Supervisor.start_agent_with_parent(child_state, "grandchild")
-
-      :ok = Agents.delete_agent(AgentTestHelpers.current_space_id(), parent_name)
-
-      assert_registry_misses(parent_name)
-      assert_registry_misses(child_name)
-      assert_registry_misses(grandchild_name)
-    end
-  end
-
-  describe "cascade_children_only/1" do
-    test "stops children WITHOUT terminating the named parent", %{vid: vid} do
-      {:ok, parent_name, parent_pid, _} = start_root_parent(vid)
-      parent_state = read_parent_state(parent_name, parent_pid)
-
-      {:ok, child_name} = Supervisor.start_agent_with_parent(parent_state, "child")
-
-      :ok = Supervisor.cascade_children_only(AgentTestHelpers.current_space_id(), parent_name)
-
-      assert_registry_misses(child_name)
-      assert Process.alive?(parent_pid)
+      on_exit(fn -> safe_stop(space_id, child_a) end)
+      on_exit(fn -> safe_stop(space_id, child_b) end)
     end
   end
 
@@ -220,8 +188,8 @@ defmodule Nest.Agents.SupervisorSubagentTest do
         vocation_id: vid
       })
 
-    # Start the agent under the application's supervisor
-    # so `Agents.delete_agent/1`'s cascade walk can
+    # Start the agent under the application supervisor
+    # so `Supervisor.stop_agent/2` can
     # terminate it via the same DynamicSupervisor.
     attrs = %{
       space_id: AgentTestHelpers.current_space_id(),
@@ -242,12 +210,12 @@ defmodule Nest.Agents.SupervisorSubagentTest do
 
         # Parent cleanup: register the same DOWN-blocking
         # teardown that `AgentTestHelpers.start_agent/1` uses.
-        # Tests that already call `Agents.delete_agent/2` or
-        # `Supervisor.cascade_children_only/1` mid-test
-        # terminate the parent early; the registered cleanup
-        # is idempotent (the monitor's `Registry.lookup/2`
-        # returns `:not_found` for an already-dead pid and
-        # `wait_for_pid_down/2` short-circuits).
+        # Tests that already call `Supervisor.stop_agent/2`
+        # mid-test terminate the parent early; the registered
+        # cleanup is idempotent (the monitor's
+        # `Registry.lookup/2` returns `:not_found` for an
+        # already-dead pid and `wait_for_pid_down/2`
+        # short-circuits).
         AgentTestHelpers.ensure_cleanup(name)
 
         {:ok, name, parent_pid, row.id}
@@ -313,6 +281,10 @@ defmodule Nest.Agents.SupervisorSubagentTest do
            )
   end
 
+  defp assert_registry_hits(name) do
+    assert {:ok, _pid} = AgentsRegistry.lookup(AgentTestHelpers.current_space_id(), name)
+  end
+
   defp child_row_by_name!(name) do
     {:ok, row} = Persistence.fetch_agent(AgentTestHelpers.current_space_id(), name)
     row
@@ -325,15 +297,13 @@ defmodule Nest.Agents.SupervisorSubagentTest do
 
   # `ExUnit`'s on_exit handler runs in a separate pid that does
   # NOT own the test pid's sandbox checkout, so a DB write
-  # here (e.g. `Agents.delete_agent/1` → `Persistence.
-  # delete_agent_by_name/1`) would fail with
-  # `DBConnection.OwnershipError`. `Supervisor.stop_agent/1`
-  # terminates the GenServer only; the DB row is cleaned up
-  # by `DataCase`'s sandbox rollback at test exit. The
-  # single-message `:DOWN` wait is delegated to
-  # `AgentTestHelpers.wait_for_pid_down/2` so the parallel-test
-  # ownership race window is closed (the agent's mailbox
-  # can't fire DB calls after `terminate/2` finishes).
+  # here would fail with `DBConnection.OwnershipError`.
+  # `Supervisor.stop_agent/2` terminates the GenServer only;
+  # the DB row is cleaned up by `DataCase`'s sandbox rollback
+  # at test exit. The single-message `:DOWN` wait is delegated
+  # to `AgentTestHelpers.wait_for_pid_down/2` so the
+  # parallel-test ownership race window is closed (the agent's
+  # mailbox can't fire DB calls after `terminate/2` finishes).
   defp safe_stop(space_id, name) do
     _ = Supervisor.stop_agent(space_id, name)
     AgentTestHelpers.wait_for_pid_down(space_id, name)

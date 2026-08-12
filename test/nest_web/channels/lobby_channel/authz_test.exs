@@ -35,57 +35,6 @@ defmodule NestWeb.LobbyChannel.AuthzTest do
     :ok
   end
 
-  describe "authorize_owner/2" do
-    test "returns :ok for the owner of a live agent" do
-      {:ok, alice, :admin} =
-        Accounts.create_user(%{username: "alice", password: "password123"}, "first-user")
-
-      {:ok, _invite, token} = Accounts.create_invite(alice.id)
-      {:ok, bob} = Accounts.redeem_invite(token, %{username: "bob", password: "password456"})
-
-      {_pid, name} =
-        AgentTestHelpers.start_agent(%{
-          model: %{name: "qwen3.5-plus", provider: "model-studio"},
-          created_by_user_id: alice.id
-        })
-
-      assert Authz.authorize_owner(AgentTestHelpers.current_space_id(), name, alice) == :ok
-
-      assert Authz.authorize_owner(AgentTestHelpers.current_space_id(), name, bob) ==
-               {:error, :forbidden}
-    end
-
-    test "returns :forbidden on a private agent whose owner has no live pid" do
-      # Persisted row fallback path: row exists, supervisor
-      # doesn't have a pid, caller is not the owner.
-      {:ok, alice, :admin} =
-        Accounts.create_user(%{username: "alice", password: "password123"}, "first-user")
-
-      {:ok, _invite, token} = Accounts.create_invite(alice.id)
-      {:ok, bob} = Accounts.redeem_invite(token, %{username: "bob", password: "password456"})
-
-      {pid, name} =
-        AgentTestHelpers.start_agent(%{
-          model: %{name: "qwen3.5-plus", provider: "model-studio"},
-          created_by_user_id: alice.id
-        })
-
-      Process.flag(:trap_exit, true)
-      Supervisor.stop_agent(AgentTestHelpers.current_space_id(), name)
-      assert_receive {:EXIT, ^pid, _}, 1000
-
-      assert Authz.authorize_owner(AgentTestHelpers.current_space_id(), name, bob) ==
-               {:error, :forbidden}
-    end
-
-    test "returns :not_found for an unknown agent name" do
-      assert Authz.authorize_owner(AgentTestHelpers.current_space_id(), "nope-not-here", %{
-               id: 999
-             }) ==
-               {:error, :not_found}
-    end
-  end
-
   describe "authorize_owner_or_shared/2" do
     test "returns :forbidden for a non-owner non-shared agent" do
       {:ok, alice, :admin} =

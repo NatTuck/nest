@@ -70,10 +70,16 @@ defmodule Nest.Messages.MessageList do
     * tool with a `Part.ToolResult` pairing the synthetic id
     * assistant acknowledging the fork
 
+  The acknowledgement tells the clone its name and spawn
+  depth (its system message is inherited verbatim from the
+  parent, so this user-visible notice is the only place to
+  state the clone's true identity/depth).
+
   Returns `{messages_with_fork, next_index}`.
   """
-  @spec build_clone_fork([term()], non_neg_integer()) :: {[term()], non_neg_integer()}
-  def build_clone_fork(messages, next_index) do
+  @spec build_clone_fork([term()], non_neg_integer(), String.t(), non_neg_integer()) ::
+          {[term()], non_neg_integer()}
+  def build_clone_fork(messages, next_index, child_name, depth) do
     clone_id = "subagent-clone-#{next_index}"
 
     assistant_clone =
@@ -93,7 +99,9 @@ defmodule Nest.Messages.MessageList do
            %Part.ToolResult{
              tool_call_id: clone_id,
              name: "agents/spawn",
-             content: "Subagent spawned successfully. You are now the delegated clone.",
+             content:
+               "Subagent spawned successfully. You are now the delegated clone, " <>
+                 "named \"#{child_name}\", at depth #{depth}.",
              arguments: %{},
              is_error: false
            }
@@ -106,7 +114,13 @@ defmodule Nest.Messages.MessageList do
       {:assistant,
        %Assistant{
          index: next_index + 2,
-         parts: [%Part.Text{text: "Understood. I am the clone. What is my task?"}],
+         parts: [
+           %Part.Text{
+             text:
+               "Understood. I am the clone, named \"#{child_name}\", at depth " <>
+                 "#{depth}. What is my task?"
+           }
+         ],
          timestamp: DateTime.utc_now(),
          api_logs: []
        }}

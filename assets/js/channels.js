@@ -142,11 +142,6 @@ export function joinLobby(onOk, onError) {
     store.addAgent(payload);
   });
 
-  lobbyChannel.on("agent:deleted", (payload) => {
-    const store = getStore();
-    store.removeAgent(payload.name);
-  });
-
   // Broadcast when a space (with its root agent) is created.
   // The payload carries the space struct plus the root agent's
   // name. We append the space to the sidebar list; the matching
@@ -680,23 +675,6 @@ export function suggestSpaceName(onOk) {
       getStore().setSuggestedName(resp.name);
       if (onOk) onOk(resp.name);
     }
-  });
-}
-
-/**
- * Delete agent via lobby. `spaceId` identifies the space the
- * agent lives in.
- */
-export function deleteAgent(name, spaceId, onError) {
-  if (!lobbyChannel) {
-    if (onError) onError(new Error("Not connected to lobby"));
-    return;
-  }
-
-  const payload = { name };
-  if (spaceId) payload.space_id = spaceId;
-  lobbyChannel.push("delete_agent", payload).receive("error", (err) => {
-    if (onError) onError(err);
   });
 }
 

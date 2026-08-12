@@ -305,30 +305,6 @@ defmodule Nest.AgentsTest do
     end
   end
 
-  describe "delete_agent/1" do
-    test "removes agent" do
-      {agent_pid, id} = AgentTestHelpers.start_agent(%{name: fresh_name()})
-
-      # `start_agent/1` links the test pid to the agent. The
-      # link makes the test crash on unexpected agent death,
-      # but `Agents.delete_agent/1` causes an intentional
-      # shutdown — unlink first so the `:shutdown` signal
-      # doesn't propagate here. (`start_agent/1`'s on_exit
-      # also unlinks; unlinking here is redundant for cleanup
-      # but is the only way to keep the test pid alive during
-      # the explicit delete.)
-      Process.unlink(agent_pid)
-      :ok = Agents.delete_agent(AgentTestHelpers.current_space_id(), id)
-
-      assert Agents.get_info(AgentTestHelpers.current_space_id(), id) == {:error, :not_found}
-    end
-
-    test "returns error for non-existent agent" do
-      assert Agents.delete_agent(AgentTestHelpers.current_space_id(), "nonexistent") ==
-               {:error, :not_found}
-    end
-  end
-
   describe "change_model/2" do
     test "repairs an agent that started in :model_missing state" do
       log =

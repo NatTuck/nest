@@ -21,7 +21,7 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
   import Mimic
   import Eventually
 
-  alias Nest.Agents
+  alias Nest.Agents.Agent.Config
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.ChildRegistry
   alias Nest.Agents.Registry, as: AgentsRegistry
@@ -102,11 +102,37 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
         5_000
       )
 
-    :ok = Agents.delete_agent(AgentTestHelpers.current_space_id(), parent_name)
+    :ok = Supervisor.stop_agent(AgentTestHelpers.current_space_id(), parent_name)
 
     assert_registry_misses(parent_name)
     assert_registry_misses(child_name)
     assert ChildRegistry.children_of(AgentTestHelpers.current_space_id(), parent_name) == []
+  end
+
+  test "spawning from an agent at max depth errors (clone keeps the tool, spawn is rejected)",
+       %{vid: vid} do
+    Process.flag(:trap_exit, true)
+    {:ok, parent_name, parent_pid, _parent_id} = start_parent(vid)
+    space_id = AgentTestHelpers.current_space_id()
+    Mimic.allow(MockClient, self(), parent_pid)
+    Mimic.allow(Nest.Agents, self(), parent_pid)
+    :sys.replace_state(parent_pid, &swap_to_mock/1)
+    MockClient.start_link(parent_pid)
+
+    # Force the parent to max depth — a clone at max depth still
+    # has `agents/spawn` in its (inherited) tool list, so the
+    # spawn must be rejected at runtime.
+    max = Config.configured_max_depth()
+    :sys.replace_state(parent_pid, &%{&1 | depth: max})
+
+    assert {:error, :max_depth_reached} =
+             GenServer.call(
+               parent_pid,
+               {:spawn_agent_request, self(), %{query: "x", clone_context: true}},
+               5_000
+             )
+
+    on_exit(fn -> _ = Supervisor.stop_agent(space_id, parent_name) end)
   end
 
   # Helpers
@@ -149,10 +175,10 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
     row
   end
 
-  # Best-effort cleanup. `Agents.delete_agent/1` would do a
-  # DB write that requires the test pid's sandbox checkout,
-  # but `on_exit` runs in `ExUnit.OnExitHandler` — no
-  # ownership. Use `Supervisor.stop_agent/1` (GenServer only;
+  # Best-effort cleanup. A DB write here would require the
+  # test pid's sandbox checkout, but `on_exit` runs in
+  # `ExUnit.OnExitHandler` — no ownership. Use
+  # `Supervisor.stop_agent/1` (GenServer only;
   # no DB write) and let the DataCase sandbox rollback handle
   # row cleanup at test exit.
   defp on_exit_cleanup(parent_name, child_name) do

@@ -149,11 +149,9 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
   end
 
   # The user clicked Stop. The ChatTurn killed the active
-  # worker and is winding down. First, stop any spawned
-  # children that the agent has been running (the cascade
-  # walks the ChildRegistry through Supervisor.stop_agent/1
-  # — recursion is handled there, so each grandchild stops
-  # without us caring about it explicitly). Then finalize
+  # worker and is winding down. First, stop any outstanding
+  # queries the agent was running (only `pending_children` —
+  # idle specialists are left running). Then finalize
   # the streaming accumulator (if any) as an assistant
   # message tagged with `metadata.stopped_by_user: true`,
   # transition to :idle, and clear bookkeeping.

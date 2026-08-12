@@ -1,19 +1,16 @@
 defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
   @moduledoc """
-  Tests for the depth-based filtering of the
-  `agents/spawn` tool in the agent's system prompt.
+  Tests for the system prompt's identity line and the
+  (now removal) depth-based `agents/spawn` tool filtering.
 
   ## What's covered
 
-    * At `depth < max_depth`, the prompt's `[Delegation]`
-      section appears AND `agents/spawn` is in the tool list.
-    * At `depth == max_depth`, neither appears.
-    * The filter is data-driven from
-      `DotConfig.configured_max_depth/0` (default 3).
-
-  These assertions cover the contract that decides
-  whether an agent can spawn children. The full call
-  flow is exercised by `clone_agent_flow_test.exs`.
+  * The `[Delegation]` section is gone from the system prompt —
+    tool descriptions in the tool list are the only guidance.
+  * `compose_vocation_config/5` always returns the full
+    vocation tool list regardless of depth (clones must keep
+    the parent's exact tool list).
+  * The identity line reports the agent's name and depth.
   """
   use Nest.DataCase, async: true
 
@@ -44,65 +41,56 @@ defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
     {:ok, vocation: vocation}
   end
 
-  test "root agent (depth 0) gets the [Delegation] section and agents/spawn in tools",
-       %{vocation: vocation} do
-    {prompt, _mode, tools, _vocation} =
-      SystemPrompt.compose_vocation_config(vocation, nil, {nil, nil}, 0)
+  test "the system prompt has no [Delegation] section", %{vocation: vocation} do
+    {prompt, _mode, _tools, _vocation} =
+      SystemPrompt.compose_vocation_config(vocation, nil, {nil, nil}, "root", 0)
 
-    assert "agents/spawn" in tools
-    assert prompt =~ "[Delegation]"
-    assert prompt =~ "agents/spawn"
-  end
-
-  test "intermediate agent (depth < max_depth) still gets the tool",
-       %{vocation: vocation} do
-    max = Config.configured_max_depth()
-
-    if max > 1 do
-      {_prompt, _mode, tools, _vocation} =
-        SystemPrompt.compose_vocation_config(vocation, nil, {nil, nil}, max - 1)
-
-      assert "agents/spawn" in tools
-    else
-      # max = 1 → only depth 0 agents get the tool. Skip.
-      :ok
-    end
-  end
-
-  test "leaf agent (depth == max_depth) does NOT get agents/spawn or the [Delegation] section",
-       %{vocation: vocation} do
-    max = Config.configured_max_depth()
-
-    {prompt, _mode, tools, _vocation} =
-      SystemPrompt.compose_vocation_config(vocation, nil, {nil, nil}, max)
-
-    refute "agents/spawn" in tools
     refute prompt =~ "[Delegation]"
   end
 
-  test "beyond max_depth (off-by-one safety) also strips agents/spawn",
+  test "tool list is the full vocation list at any depth (clone hard rule)",
        %{vocation: vocation} do
     max = Config.configured_max_depth()
 
-    {_prompt, _mode, tools, _vocation} =
-      SystemPrompt.compose_vocation_config(vocation, nil, {nil, nil}, max + 1)
+    for depth <- [0, max - 1, max, max + 1] do
+      {_prompt, _mode, tools, _vocation} =
+        SystemPrompt.compose_vocation_config(vocation, nil, {nil, nil}, "agent", depth)
 
-    refute "agents/spawn" in tools
+      assert "agents/spawn" in tools
+      assert "context" in tools
+    end
   end
 
-  test "a vocation with agents/query + agents/list documents them in the [Delegation] section",
-       %{vocation: vocation} do
-    tools_vocation = %{vocation | tools: ["agents/spawn", "agents/query", "agents/list"]}
+  test "the identity line reports the agent's name and depth", %{vocation: vocation} do
+    max = Config.configured_max_depth()
 
-    {prompt, _mode, tools, _vocation} =
-      SystemPrompt.compose_vocation_config(tools_vocation, nil, {nil, nil}, 0)
+    {prompt, _mode, _tools, _vocation} =
+      SystemPrompt.compose_vocation_config(vocation, nil, {nil, nil}, "clever-raven", 2)
+
+    assert prompt =~ ~s(Your name is "clever-raven")
+    assert prompt =~ "at spawn depth 2 of #{max}"
+  end
+
+  test "the identity line carries a caveat that it may change when cloned",
+       %{vocation: vocation} do
+    {prompt, _mode, _tools, _vocation} =
+      SystemPrompt.compose_vocation_config(vocation, nil, {nil, nil}, "bob", 1)
+
+    assert prompt =~ "may change when cloned"
+  end
+
+  test "query/list/archive tools still appear in the tool list", %{vocation: vocation} do
+    tools_vocation = %{
+      vocation
+      | tools: ["agents/spawn", "agents/query", "agents/list", "agents/archive"]
+    }
+
+    {_prompt, _mode, tools, _vocation} =
+      SystemPrompt.compose_vocation_config(tools_vocation, nil, {nil, nil}, "agent", 0)
 
     assert "agents/spawn" in tools
     assert "agents/query" in tools
     assert "agents/list" in tools
-    assert prompt =~ "[Delegation]"
-    assert prompt =~ "`agents/spawn`"
-    assert prompt =~ "`agents/query`"
-    assert prompt =~ "`agents/list`"
+    assert "agents/archive" in tools
   end
 end

@@ -16,6 +16,7 @@ defmodule Nest.Agents.Supervisor do
   require Logger
 
   alias Nest.Agents.{Agent, ChildRegistry, NameGenerator, Registry}
+  alias Nest.Agents.Agent.Config
   alias Nest.Agents.PersistedAgent
   alias Nest.Persistence
   alias Nest.Spaces
@@ -157,11 +158,10 @@ defmodule Nest.Agents.Supervisor do
   Spawn a fresh-context sub-agent in the coordinator's space.
 
   Unlike `start_agent_with_parent/2` (which forks the parent's
-  message history and registers the child in `ChildRegistry`
-  so the parent tracks its completion), this creates an
-  *independent* specialist: system-prompt-only context, no
-  `ChildRegistry` link, `depth: 0`. The coordinator just asks
-  for the specialist to exist in the space.
+  message history), this creates a specialist with a fresh
+  system-prompt-only context. The child is a tracked child at
+  `depth = parent.depth + 1` (so depth-limited recursion
+  applies uniformly to clones and fresh spawns).
 
   The spawn is authorized against the space's blueprint
   `spawnable_vocation_ids` whitelist: an unrestricted space
@@ -179,20 +179,42 @@ defmodule Nest.Agents.Supervisor do
   def spawn_agent_in_space(parent_state, name, vocation_id)
       when is_map(parent_state) and is_binary(name) and is_integer(vocation_id) do
     with :ok <- authorize_spawn(parent_state.space_id, vocation_id),
-         :ok <- ensure_spawn_workspace(parent_state, vocation_id) do
-      Nest.Agents.create_agent(
-        parent_state.space_id,
-        parent_state.model,
-        name: name,
-        vocation_id: vocation_id,
-        # Sub-agents inherit the parent's workspace path so a
-        # workspace-needing child spawned by a parent in a workspace
-        # space keeps access to that workspace.
-        workspace_path: parent_state.workspace_path,
-        created_by_user_id: parent_state.created_by_user_id,
-        shared: parent_state.shared
-      )
+         :ok <- ensure_spawn_workspace(parent_state, vocation_id),
+         {:ok, %PersistedAgent{id: parent_id}} <-
+           Persistence.fetch_agent(parent_state.space_id, parent_state.name),
+         :ok <- start_fresh_child(parent_state, name, vocation_id, parent_id) do
+      {:ok, name}
     end
+  end
+
+  # Build a fresh-context child's attrs (with `agents/spawn`
+  # excluded when the child is at max depth), pre-spawn, start
+  # it, and register it in `ChildRegistry`. Kept separate so
+  # `spawn_agent_in_space/3` stays under the credo ABC cap.
+  defp start_fresh_child(parent_state, name, vocation_id, parent_id) do
+    exclude_spawn = max_depth_reached?(parent_state.depth + 1)
+
+    attrs =
+      Agent.SubAgent.build_fresh_child_attrs(
+        parent_state,
+        name,
+        parent_id,
+        vocation_id,
+        exclude_spawn
+      )
+      |> Persistence.build_agent_attrs()
+
+    with :ok <- Agent.pre_spawn(attrs),
+         {:ok, _pid} <- start_under_supervisor(attrs, name) do
+      ChildRegistry.register(parent_state.space_id, parent_state.name, name)
+    end
+  end
+
+  # A child spawned at max depth cannot itself spawn children.
+  # Only used for fresh (non-clone) spawns — clones must keep
+  # the parent's exact tool list, so they never set this.
+  defp max_depth_reached?(child_depth) do
+    child_depth >= Config.configured_max_depth()
   end
 
   # A sub-agent whose vocation expects a workspace can't be spawned if
@@ -225,26 +247,33 @@ defmodule Nest.Agents.Supervisor do
   end
 
   @doc """
-  Stops an agent by its `{space_id, name}`. Cascade-walks
-  the `ChildRegistry` for descendants in the same space.
+  Stops an agent by its `{space_id, name}`. Stops only the
+  named agent's process — it does NOT cascade to descendants.
+  Stopping an agent's outstanding queries is handled by the
+  agent's own Stop path (which targets `pending_children`);
+  archiving a whole subtree is handled by `archive_agent/2`.
   """
   @spec stop_agent(integer(), String.t()) :: :ok | {:error, :not_found}
   def stop_agent(space_id, name) do
-    for child_name <- ChildRegistry.children_of(space_id, name),
-        do: _ = stop_agent(space_id, child_name)
-
     stop_one(space_id, name)
   end
 
   @doc """
   Stops an agent by its `{space_id, name}` and marks its DB
-  row archived. Used by the `agents/archive` tool and the
-  `archive` spawn flag. `:ok` whether or not the process was
-  running; the DB row is still marked archived either way.
+  row archived, then recursively does the same for every
+  ChildRegistry descendant. Used by the `agents/archive` tool
+  and the `archive` spawn flag, so archiving a parent stops
+  AND archives its whole subtree. `:ok` whether or not the
+  process was running; the DB rows are still marked archived
+  either way.
   """
   @spec archive_agent(integer(), String.t()) :: :ok | {:error, :not_found}
   def archive_agent(space_id, name) do
-    _ = stop_agent(space_id, name)
+    for child_name <- ChildRegistry.children_of(space_id, name) do
+      _ = archive_agent(space_id, child_name)
+    end
+
+    _ = stop_one(space_id, name)
     Persistence.archive_agent(space_id, name)
   end
 
@@ -257,22 +286,6 @@ defmodule Nest.Agents.Supervisor do
       {:error, :not_found} ->
         {:error, :not_found}
     end
-  end
-
-  @doc """
-  Cascade-walk `name`'s registered children in `space_id`
-  and terminate each subtree, WITHOUT terminating `name`
-  itself.
-  """
-  @spec cascade_children_only(integer(), String.t()) :: :ok
-  def cascade_children_only(space_id, name) do
-    children = ChildRegistry.children_of(space_id, name)
-
-    for child_name <- children do
-      _ = stop_agent(space_id, child_name)
-    end
-
-    :ok
   end
 
   @doc """

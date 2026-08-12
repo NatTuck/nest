@@ -25,7 +25,6 @@ defmodule Nest.Agents.SupervisorPersistenceTest do
   """
   use Nest.DataCase, async: true
 
-  alias Nest.Agents
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Supervisor
   alias Nest.Persistence
@@ -89,7 +88,7 @@ defmodule Nest.Agents.SupervisorPersistenceTest do
       assert is_pid(pid)
       assert Process.alive?(pid)
 
-      Agents.delete_agent(AgentTestHelpers.current_space_id(), name)
+      Supervisor.stop_agent(AgentTestHelpers.current_space_id(), name)
     end
   end
 end

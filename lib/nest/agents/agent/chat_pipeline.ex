@@ -358,6 +358,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
         state.vocation,
         state.workspace_path,
         {state.llm_metrics.context_limit, state.llm_metrics.context_limit_source},
+        state.name,
         state.depth
       )
 

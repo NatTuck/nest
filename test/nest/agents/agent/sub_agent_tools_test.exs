@@ -108,18 +108,10 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     # Pre-seed a specialist so `agents/list` has something to show.
     specialist_name = "listed-#{System.unique_integer([:positive])}"
     specialist_vid = specialist_vocation_id()
+    state = coordinator_state(space_id)
 
     assert {:ok, ^specialist_name} =
-             Supervisor.spawn_agent_in_space(
-               %Nest.Agents.Agent{
-                 space_id: space_id,
-                 model: %{name: "qwen3.5-plus", provider: "model-studio"},
-                 created_by_user_id: nil,
-                 shared: false
-               },
-               specialist_name,
-               specialist_vid
-             )
+             Supervisor.spawn_agent_in_space(state, specialist_name, specialist_vid)
 
     on_exit(fn -> _ = Supervisor.stop_agent(space_id, specialist_name) end)
 
@@ -259,13 +251,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
   #     `DBConnection.OwnershipError`.
   defp start_mocked_specialist(space_id, name, response) do
     vid = specialist_vocation_id()
-
-    state = %Agent{
-      space_id: space_id,
-      model: %{name: "qwen3.5-plus", provider: "model-studio"},
-      created_by_user_id: nil,
-      shared: false
-    }
+    state = coordinator_state(space_id)
 
     assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name, vid)
 
@@ -280,5 +266,22 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     MockClient.put_pending(pid, {:text, response})
 
     on_exit(fn -> _ = Supervisor.stop_agent(space_id, name) end)
+  end
+
+  # Start a real coordinator agent in `space_id` and return its
+  # runtime state. `spawn_agent_in_space/3` needs a real parent
+  # (name + persisted row for `parent_id`).
+  defp coordinator_state(space_id) do
+    coordinator_name = "coord-#{System.unique_integer([:positive])}"
+
+    {:ok, ^coordinator_name} =
+      Nest.Agents.create_agent(space_id, %{name: "qwen3.5-plus", provider: "model-studio"},
+        name: coordinator_name,
+        vocation_id: AgentTestHelpers.vocation_id_for_test()
+      )
+
+    AgentTestHelpers.ensure_cleanup(coordinator_name)
+    {:ok, pid} = Supervisor.get_agent(space_id, coordinator_name)
+    :sys.get_state(pid)
   end
 end

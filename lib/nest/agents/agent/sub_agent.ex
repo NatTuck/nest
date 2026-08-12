@@ -36,10 +36,45 @@ defmodule Nest.Agents.Agent.SubAgent do
 
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Broadcasts
+  alias Nest.Agents.Agent.Config
   alias Nest.Agents.Registry, as: AgentsRegistry
   alias Nest.Agents.Supervisor
   alias Nest.LLM.MockClient
   alias Nest.Persistence
+
+  @doc """
+  Build a fresh-context child agent's attrs from a parent
+  state and a chosen `vocation_id`. Unlike the clone path
+  (which forks the parent's message history), the fresh child
+  starts from a system-prompt-only context.
+
+  `child_name` and `parent_id` are provided by the supervisor's
+  `spawn_agent_in_space/3`. `exclude_spawn` is set when the
+  child is spawned at max depth, so its tool list omits
+  `agents/spawn` (non-clone spawns can be depth-limited safely).
+
+  Returns the attrs map ready to pass to `start_link/1`.
+  """
+  @spec build_fresh_child_attrs(map(), String.t(), integer(), integer(), boolean()) :: map()
+  def build_fresh_child_attrs(parent_state, child_name, parent_id, vocation_id, exclude_spawn) do
+    %{
+      name: child_name,
+      space_id: parent_state.space_id,
+      model: parent_state.model,
+      vocation_id: vocation_id,
+      workspace_path: parent_state.workspace_path,
+      parent_id: parent_id,
+      parent_name: parent_state.name,
+      created_by_user_id: parent_state.created_by_user_id,
+      shared: parent_state.shared,
+      depth: parent_state.depth + 1,
+      exclude_spawn: exclude_spawn,
+      preloaded_messages: [],
+      last_compaction_index: -1,
+      next_message_index: 1,
+      initial_api_log_sequences: %{}
+    }
+  end
 
   @doc """
   Spawn a child of `state` and remember the `task_pid` so the
@@ -77,9 +112,24 @@ defmodule Nest.Agents.Agent.SubAgent do
   #     in ChildRegistry so the parent waits for completion.
   #   * otherwise → fresh-context specialist, `vocation_id`
   #     defaulting to the parent's.
+  #
+  # An agent at max depth cannot spawn children. For a clone
+  # pre-compaction the `agents/spawn` tool is still present
+  # (it must keep the parent's tool list), so the spawn is
+  # rejected here at runtime rather than at tool-selection
+  # time. Non-clone max-depth spawns already lack the tool.
+  #
   # The spawn is whitelist- and workspace-checked by the
   # supervisor.
   defp spawn_child(state, opts) do
+    if state.depth + 1 > Config.configured_max_depth() do
+      {:error, :max_depth_reached}
+    else
+      do_spawn_child(state, opts)
+    end
+  end
+
+  defp do_spawn_child(state, opts) do
     if Map.get(opts, :clone_context, false) do
       Supervisor.start_agent_with_parent(state, Map.get(opts, :query, ""))
     else
@@ -255,14 +305,13 @@ defmodule Nest.Agents.Agent.SubAgent do
   @doc """
   Stop every agent in `state.chat_state.pending_children` and clear
   the map. Called from `ChatTurnHandler.chat_stopped/1` so a
-  user-initiated Stop cascades through the same `Supervisor` walk
-  that `terminate/2` already does on GenServer death.
+  user-initiated Stop cuts off outstanding queries, and from
+  `cascade_terminate/1` on GenServer death.
 
-  The walk is recursive for free: `Supervisor.stop_agent/1` walks
-  each child's registered grandchildren before terminating the
-  child itself, and each child's `terminate/2` re-enters
-  `cascade_terminate/1` → `Supervisor.cascade_children_only/1`,
-  so the cascade holds at any depth up to `max_depth`.
+  Only children currently being queried (in `pending_children`)
+  are stopped — idle specialists are left running. Archiving a
+  whole subtree is handled separately by
+  `Supervisor.archive_agent/2`.
 
   `Supervisor.stop_agent/1` returns `:ok` on success and
   `{:error, :not_found}` when the child has already terminated
@@ -291,32 +340,29 @@ defmodule Nest.Agents.Agent.SubAgent do
   end
 
   @doc """
-  Cascade-stop this agent's registered children before the
-  GenServer itself is torn down. Called from
-  `Nest.Agents.Agent.terminate/2`.
+  Stop this agent's outstanding queries before the GenServer
+  itself is torn down. Called from `Nest.Agents.Agent.terminate/2`.
 
-  The implementation reaches each child by name through the
-  supervisor's cascade path. It deliberately does NOT try
-  to terminate `state.name` itself — that's the supervisor's
-  job, and we're already in our own `terminate/2` callback
-  when this runs. Each child's own `terminate/2` cascades
-  its own subtree, so the call is recursive at the
-  runtime level.
+  Only children currently being queried (in `pending_children`)
+  are stopped — idle specialists survive their parent's death.
+  Archiving a whole subtree is handled separately by
+  `Supervisor.archive_agent/2`. We deliberately do NOT stop
+  `state.name` itself — that's the supervisor's job, and we're
+  already in our own `terminate/2` callback when this runs.
   """
   @spec cascade_terminate(Agent.t()) :: :ok
   def cascade_terminate(state) do
-    Nest.Agents.Supervisor.cascade_children_only(state.space_id, state.name)
+    _ = stop_pending_children(state)
     :ok
   catch
     # `rescue _ -> :ok` does NOT catch `:exit` — `catch :exit, _`
-    # does. The supervisor's `cascade_children_only/1` makes a
-    # `GenServer.call` to `Nest.Agents.ChildRegistry`, which exits
-    # `:noproc` during application shutdown (ChildRegistry is
-    # torn down after the agent's supervisor in reverse start
-    # order). Without this catch, the Agent's `terminate/2`
-    # crashes with `(stop) exited in: GenServer.call(...)` and
-    # logs an `[error]` per agent during teardown — a noisy,
-    # recoverable shutdown error.
+    # does. `stop_pending_children/1` reaches children via
+    # `Supervisor.stop_agent/1` → `Process.exit/2`, which can
+    # raise/exit under odd teardown ordering (e.g. the child
+    # registry already torn down during application shutdown).
+    # Without this catch, the Agent's `terminate/2` crashes and
+    # logs an `[error]` during teardown — a noisy, recoverable
+    # shutdown error.
     :exit, _ -> :ok
   end
 end

@@ -98,7 +98,7 @@ defmodule Nest.Agents.Agent.Compaction.Trigger do
 
   # Common spawn path for both post-turn and mid-turn
   # triggers. Renders the system prompt via
-  # `SystemPrompt.compose_vocation_config/4` (single source
+  # `SystemPrompt.compose_vocation_config/5` (single source
   # of truth for the system size when a vocation is present),
   # checks the 25% safety budget, computes the summary budget,
   # builds the suffix, appends it to the messages list (the
@@ -157,6 +157,7 @@ defmodule Nest.Agents.Agent.Compaction.Trigger do
           state.vocation,
           state.workspace_path,
           {state.llm_metrics.context_limit, state.llm_metrics.context_limit_source},
+          state.name,
           state.depth
         )
 

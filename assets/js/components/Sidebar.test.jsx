@@ -6,13 +6,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import {
-  render,
-  screen,
-  fireEvent,
-  waitFor,
-  act,
-} from "@testing-library/react";
+import { render, screen, act } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
 import { Sidebar } from "./Sidebar";
@@ -21,8 +15,6 @@ import { joinLobby } from "../channels";
 import {
   resetMockSocket,
   setNextJoinResult,
-  setNextPushResult,
-  captureNextPush,
   connectSocket,
 } from "../__mocks__/phoenix";
 
@@ -52,7 +44,6 @@ beforeEach(() => {
   connectSocket();
   setNextJoinResult("lobby", {});
   joinLobby();
-  setNextPushResult("lobby", "delete_agent", { ok: {} });
 });
 
 afterEach(() => {
@@ -181,66 +172,6 @@ describe("Sidebar tree", () => {
     // agent's link is reachable through the rendered tree.
     expect(screen.getByText("bravo")).toBeInTheDocument();
     expect(screen.getByText("alpha")).toBeInTheDocument();
-  });
-
-  it("deletes the agent when the trash icon is clicked", async () => {
-    act(() => {
-      withStore([
-        { name: "trash-me", parentId: null, parentName: null, depth: 0 },
-      ]);
-    });
-
-    const pushPromise = captureNextPush("lobby", "delete_agent");
-
-    render(
-      <MemoryRouter>
-        <Sidebar />
-      </MemoryRouter>,
-    );
-
-    const button = screen.getByRole("button", { name: /delete trash-me/i });
-    fireEvent.click(button);
-
-    // The mock channel receives the push with the agent
-    // name. The push config (ok: {}) was set in beforeEach
-    // so the handler completes without error.
-    const payload = await pushPromise;
-    expect(payload).toEqual({ name: "trash-me", space_id: 1 });
-  });
-
-  it("navigates home when the deleted agent is the current route", async () => {
-    act(() => {
-      withStore([
-        { name: "current-one", parentId: null, parentName: null, depth: 0 },
-      ]);
-    });
-
-    const pushPromise = captureNextPush("lobby", "delete_agent");
-
-    render(
-      <MemoryRouter initialEntries={["/agent/current-one"]}>
-        <Sidebar />
-      </MemoryRouter>,
-    );
-
-    const button = screen.getByRole("button", {
-      name: /delete current-one/i,
-    });
-    fireEvent.click(button);
-
-    // The push goes through and the navigation guard fires.
-    // With MemoryRouter we can't observe the navigate call
-    // directly; the assertion on the push payload is enough
-    // to confirm the handler reached deleteAgent.
-    const payload = await pushPromise;
-    expect(payload).toEqual({ name: "current-one", space_id: 1 });
-
-    // Wait for any pending navigation to settle (the test
-    // doesn't assert on it but the await prevents teardown
-    // from racing).
-    await waitFor(() => {
-      expect(button).toBeInTheDocument();
-    });
   });
 
   it("renders a streaming status dot (green pulse) for streaming agents", () => {

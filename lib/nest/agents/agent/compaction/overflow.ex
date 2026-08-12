@@ -30,7 +30,7 @@ defmodule Nest.Agents.Agent.Compaction.Overflow do
   ## Source of truth for the system size
 
   The rendered system prompt (from
-  `Nest.Agents.Agent.SystemPrompt.compose_vocation_config/4`)
+  `Nest.Agents.Agent.SystemPrompt.compose_vocation_config/5`)
   is the single source of truth for the system size. Callers
   precompute it and pass it in; `Overflow` does NOT look at
   `state.chat_state.messages[0]`. This avoids the trap where
@@ -102,7 +102,7 @@ defmodule Nest.Agents.Agent.Compaction.Overflow do
   `"Nest.Agents.Agent.ChatPipeline.handle_preflight/2"` or
   `inspect(Nest.Agents.Agent.Compaction.Trigger)`) for log
   correlation. The `system_prompt` is the rendered string
-  from `compose_vocation_config/4`; `reason` selects the
+  from `compose_vocation_config/5`; `reason` selects the
   message shape (see `message/4`).
 
   Does NOT change the agent's status — callers set the

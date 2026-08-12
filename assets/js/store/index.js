@@ -502,23 +502,6 @@ export const useStore = create(
       },
 
       /**
-       * Remove deleted agent
-       */
-      removeAgent: (name) => {
-        set((state) => {
-          const newCache = { ...state.agentsCache };
-          delete newCache[name];
-          return {
-            agents: state.agents.filter((a) => a.name !== name),
-            agentsCache: newCache,
-            // Same lifecycle for the broken-agents list —
-            // the user can no longer repair what's gone.
-            brokenAgents: state.brokenAgents.filter((a) => a.name !== name),
-          };
-        });
-      },
-
-      /**
        * Update the model on the agents list AND the per-agent
        * cache when the server broadcasts `agent:updated`
        * (the lobby path for `Agents.change_model/2`). Also

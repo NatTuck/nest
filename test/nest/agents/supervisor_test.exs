@@ -110,7 +110,7 @@ defmodule Nest.Agents.SupervisorTest do
       assert {:ok, pid} = Registry.lookup(AgentTestHelpers.current_space_id(), name)
       assert Process.alive?(pid)
 
-      :ok = Agents.delete_agent(AgentTestHelpers.current_space_id(), name)
+      :ok = Supervisor.stop_agent(AgentTestHelpers.current_space_id(), name)
 
       # The registry's auto-cleanup happens asynchronously after the
       # process exits, so poll until the lookup reflects the removal.
@@ -125,7 +125,7 @@ defmodule Nest.Agents.SupervisorTest do
 
     test "returns error for non-existent agent" do
       assert {:error, :not_found} =
-               Agents.delete_agent(AgentTestHelpers.current_space_id(), "nonexistent")
+               Supervisor.stop_agent(AgentTestHelpers.current_space_id(), "nonexistent")
     end
   end
 

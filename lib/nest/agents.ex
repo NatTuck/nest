@@ -25,9 +25,12 @@ defmodule Nest.Agents do
   * `opts` — additional parameters:
     * `:name` — explicit agent name (default: auto-generated)
     * `:vocation_id` — id of the vocation to use
-    * `:workspace_path` — path to the workspace directory
-    * `:created_by_user_id` — the owning user
-    * `:shared` — visibility flag (default `false`)
+  * `:workspace_path` — path to the workspace directory
+  * `:created_by_user_id` — the owning user
+  * `:shared` — visibility flag (default `false`)
+  * `:parent_id` — integer `agents.id` of the spawning agent
+  * `:parent_name` — readable name of the spawning agent
+  * `:depth` — tree depth (default 0); children get `parent + 1`
 
   ## Returns
 
@@ -43,7 +46,10 @@ defmodule Nest.Agents do
       vocation_id: Keyword.get(opts, :vocation_id),
       workspace_path: Keyword.get(opts, :workspace_path),
       created_by_user_id: Keyword.get(opts, :created_by_user_id),
-      shared: Keyword.get(opts, :shared, false)
+      shared: Keyword.get(opts, :shared, false),
+      parent_id: Keyword.get(opts, :parent_id),
+      parent_name: Keyword.get(opts, :parent_name),
+      depth: Keyword.get(opts, :depth, 0)
     }
 
     with :ok <- Agent.pre_spawn(attrs) do
@@ -239,17 +245,6 @@ defmodule Nest.Agents do
       {:ok, pid} -> Agent.compaction_loop_detected_ok(pid)
       {:error, :not_found} -> {:error, :not_found}
       {:error, reason} -> {:error, reason}
-    end
-  end
-
-  @doc """
-  Deletes an agent by its `{space_id, name}`.
-  """
-  @spec delete_agent(integer(), String.t()) :: :ok | {:error, :not_found}
-  def delete_agent(space_id, name) do
-    with :ok <- Supervisor.stop_agent(space_id, name) do
-      Persistence.delete_agent(space_id, name)
-      :ok
     end
   end
 

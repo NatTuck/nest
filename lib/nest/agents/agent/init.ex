@@ -80,12 +80,24 @@ defmodule Nest.Agents.Agent.Init do
         Map.get(attrs, :vocation),
         Map.get(attrs, :workspace_path),
         {context_limit, context_limit_source},
+        Map.get(attrs, :name, ""),
         Map.get(attrs, :depth, 0)
       )
+
+    tool_names = maybe_exclude_spawn(tool_names, attrs)
 
     {system_prompt, mode, tool_names, cached_vocation,
      build_llm_metrics(context_limit, context_limit_source)}
   end
+
+  # Non-clone agents spawned at max depth must not be able to
+  # spawn children, so `agents/spawn` is dropped from their
+  # tool list. Clones never set `:exclude_spawn` — they must
+  # keep the exact tool list of their parent (hard rule).
+  defp maybe_exclude_spawn(tool_names, %{exclude_spawn: true}),
+    do: Enum.reject(tool_names, &(&1 == "agents/spawn"))
+
+  defp maybe_exclude_spawn(tool_names, _attrs), do: tool_names
 
   @doc """
   Persist the initial system message built by `build_state/2`

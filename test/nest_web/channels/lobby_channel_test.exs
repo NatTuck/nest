@@ -423,40 +423,6 @@ defmodule NestWeb.LobbyChannelTest do
     end
   end
 
-  describe "handle_in(delete_agent)" do
-    test "deletes agent and broadcasts event" do
-      {socket, _payload} = join_lobby()
-
-      # Create via the channel so the channel's
-      # `default_vocation_id/0` fallback applies.
-      # `Agents.create_agent/3` direct would skip that and
-      # trip the NOT NULL constraint on `agents.vocation_id`.
-      ref =
-        push(socket, "create_space", %{
-          "name" => "test-space-#{System.unique_integer([:positive])}",
-          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
-        })
-
-      assert_reply ref, :ok, %{"space_id" => space_id, "name" => name}
-
-      ref = push(socket, "delete_agent", %{"name" => name, "space_id" => space_id})
-      assert_reply ref, :ok, %{}
-      assert_broadcast "agent:deleted", %{"name" => ^name, "space_id" => _}
-
-      # Verify agent is gone
-      assert {:error, :not_found} = Agents.get_info(space_id, name)
-    end
-
-    test "returns error for non-existent agent" do
-      # Connect socket and join lobby
-      {socket, _payload} = join_lobby()
-      space_id = AgentTestHelpers.current_space_id()
-
-      ref = push(socket, "delete_agent", %{"name" => "nonexistent", "space_id" => space_id})
-      assert_reply ref, :error, %{"reason" => "not_found"}
-    end
-  end
-
   describe "handle_in(suggest_space_name)" do
     test "replies with a non-empty adjective-animal space name" do
       {socket, _payload} = join_lobby()
