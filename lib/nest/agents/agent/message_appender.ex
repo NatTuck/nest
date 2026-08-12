@@ -123,8 +123,15 @@ defmodule Nest.Agents.Agent.MessageAppender do
       | chat_state: %{state.chat_state | messages: messages, next_message_index: index + 1}
     }
 
-    Broadcasts.message(state.name, stamped)
-    AgentPersistence.append_message(state.name, stamped, state.chat_state.next_message_index)
+    Broadcasts.message(state, stamped)
+
+    AgentPersistence.append_message(
+      state.space_id,
+      state.name,
+      stamped,
+      state.chat_state.next_message_index
+    )
+
     {stamped, state}
   end
 
@@ -161,7 +168,13 @@ defmodule Nest.Agents.Agent.MessageAppender do
       | chat_state: %{state.chat_state | history: history, next_message_index: index + 1}
     }
 
-    AgentPersistence.append_message(state.name, stamped, state.chat_state.next_message_index)
+    AgentPersistence.append_message(
+      state.space_id,
+      state.name,
+      stamped,
+      state.chat_state.next_message_index
+    )
+
     {stamped, state}
   end
 
@@ -170,6 +183,6 @@ defmodule Nest.Agents.Agent.MessageAppender do
   end
 
   defp reset_consecutive(state) do
-    %{state | chat_state: %{state.chat_state | consecutive_compaction_count: 0}}
+    %{state | live: %{state.live | consecutive_compaction_count: 0}}
   end
 end

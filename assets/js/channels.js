@@ -78,6 +78,15 @@ export function joinLobby(onOk, onError) {
     store.setBrokenAgents(payload.broken_agents || []);
     store.setModels(payload.models || []);
     store.setVocations(payload.vocations || []);
+    store.setSpaces(payload.spaces || []);
+    store.setBlueprints(payload.blueprints || []);
+    store.setSuggestedName(payload.suggested_name);
+    // `currentSpaceId` is client-side state. Seed it to the first
+    // space (the initial sidebar selection) unless one is already
+    // set.
+    if (payload.spaces?.length > 0 && store.currentSpaceId == null) {
+      store.setCurrentSpaceId(payload.spaces[0].id);
+    }
     // `current_user` is the JSON-safe slice the server sends
     // on every lobby init. Overwrite whatever the store has
     // so the UI shows the authoritative name (e.g. after the
@@ -133,9 +142,16 @@ export function joinLobby(onOk, onError) {
     store.addAgent(payload);
   });
 
-  lobbyChannel.on("agent:deleted", (payload) => {
+  // Broadcast when a space (with its root agent) is created.
+  // The payload carries the space struct plus the root agent's
+  // name. We append the space to the sidebar list; the matching
+  // `agent:created` broadcast (already handled above) adds the
+  // root agent to the agents list.
+  lobbyChannel.on("space:created", (payload) => {
     const store = getStore();
-    store.removeAgent(payload.name);
+    if (payload?.space) {
+      store.addSpace(payload.space);
+    }
   });
 
   // Broadcast when a user changes an agent's model via
@@ -231,10 +247,14 @@ function requestSync(agentId, opts = {}) {
 
 // Join agent channel
 /**
- * Join agent channel
- * Idempotent: if already connected, sends status check
+ * Join agent channel.
+ *
+ * The backend topic is `agent:<space_id>:<name>`, so the
+ * caller must supply the agent's `spaceId` (resolved from the
+ * route / store). Idempotent: if already connected, sends a
+ * status check.
  */
-export function joinAgent(agentId) {
+export function joinAgent(agentId, spaceId) {
   const store = getStore();
   const existingChannel = agentChannels.get(agentId);
 
@@ -263,7 +283,7 @@ export function joinAgent(agentId) {
   // Set connecting state
   store.setAgentConnecting(agentId);
 
-  const channel = socket.channel(`agent:${agentId}`);
+  const channel = socket.channel(`agent:${spaceId}:${agentId}`);
   agentChannels.set(agentId, channel);
 
   // Setup event handlers
@@ -314,10 +334,11 @@ export function joinAgent(agentId) {
   // compaction-failure path (which uses chat:error +
   // agentState="compaction_failed" + a Retry button).
   channel.on("chat:compaction-loop", (payload) => {
-    store.setCompactionLoop(
-      agentId,
-      payload?.content ?? "compaction isn't reducing the conversation",
-    );
+    store.setCompactionLoop(agentId, {
+      content: payload?.content ?? "compaction isn't reducing the conversation",
+      attemptCount: payload?.attemptCount,
+      maxAttempts: payload?.maxAttempts,
+    });
   });
 
   channel.on("chat:delta", (delta) => {
@@ -508,21 +529,11 @@ export function leaveAgent(agentId) {
  * Send chat message to specific agent. The optional `mode` selects
  * the sandbox profile for this message's tool calls. The optional
  * `onError` callback fires when the server rejects the push.
- *
- * Call shape is overloaded for back-compat:
- *   sendMessage(id, content)
- *   sendMessage(id, content, onError)
- *   sendMessage(id, content, mode, onError)
  */
-export function sendMessage(agentId, content, modeOrOnError, onError) {
-  // Back-compat: 3rd arg may be a function (onError) or a string (mode)
-  const mode = typeof modeOrOnError === "function" ? undefined : modeOrOnError;
-  const errorCallback =
-    typeof modeOrOnError === "function" ? modeOrOnError : onError;
-
+export function sendMessage(agentId, content, mode, onError) {
   const channel = agentChannels.get(agentId);
   if (!channel) {
-    if (errorCallback) errorCallback(new Error("Not connected to agent"));
+    if (onError) onError(new Error("Not connected to agent"));
     return;
   }
 
@@ -542,7 +553,7 @@ export function sendMessage(agentId, content, modeOrOnError, onError) {
     .receive("error", (err) => {
       // Clear partial on error
       store.clearPartial(agentId);
-      if (errorCallback) errorCallback(err);
+      if (onError) onError(err);
     });
 }
 
@@ -613,36 +624,34 @@ export function compactionLoopOk(agentId, onError) {
 }
 
 /**
- * Create agent via lobby
+ * Create a new space (with its root agent) via the lobby.
+ * The unit of creation is a space — the lobby's `create_space`
+ * push creates the space + root agent in one transaction.
+ *
+ * `opts` may carry `{ name, slug, blueprint_id, agent_name,
+ * workspace_path, shared }`. On success `onOk({ space_id,
+ * name })` is called with the new space id and the root agent's
+ * name.
  */
-export function createAgent(
-  model,
-  vocationId,
-  workspacePath,
-  onOk,
-  onError,
-  opts = {},
-) {
+export function createSpace(model, vocationId, onOk, onError, opts = {}) {
   if (!lobbyChannel) {
     if (onError) onError(new Error("Not connected to lobby"));
     return;
   }
 
   const payload = { model };
-  if (vocationId) {
-    payload.vocation_id = vocationId;
-  }
-  if (workspacePath) {
-    payload.workspace_path = workspacePath;
-  }
-  if (opts.shared) {
-    payload.shared = true;
-  }
+  if (vocationId) payload.vocation_id = vocationId;
+  if (opts.name) payload.name = opts.name;
+  if (opts.slug) payload.slug = opts.slug;
+  if (opts.blueprint_id) payload.blueprint_id = opts.blueprint_id;
+  if (opts.agent_name) payload.agent_name = opts.agent_name;
+  if (opts.workspace_path) payload.workspace_path = opts.workspace_path;
+  if (opts.shared) payload.shared = true;
 
   lobbyChannel
-    .push("create_agent", payload)
+    .push("create_space", payload)
     .receive("ok", (resp) => {
-      if (onOk) onOk(resp.name);
+      if (onOk) onOk(resp);
     })
     .receive("error", (err) => {
       if (onError) onError(err);
@@ -650,16 +659,22 @@ export function createAgent(
 }
 
 /**
- * Delete agent via lobby
+ * Ask the lobby for a unique, readable space-name suggestion
+ * (adjective-animal, e.g. "clever-raven"). Stores it in
+ * `store.suggestedName` (which the new-space form pre-fills) and,
+ * when `onOk` is given, also passes the name to it.
+ *
+ * The initial suggestion arrives with the lobby `init` payload;
+ * call this again after a space is created so the next suggestion
+ * doesn't collide with the used name.
  */
-export function deleteAgent(name, onError) {
-  if (!lobbyChannel) {
-    if (onError) onError(new Error("Not connected to lobby"));
-    return;
-  }
-
-  lobbyChannel.push("delete_agent", { name }).receive("error", (err) => {
-    if (onError) onError(err);
+export function suggestSpaceName(onOk) {
+  if (!lobbyChannel) return;
+  lobbyChannel.push("suggest_space_name", {}).receive("ok", (resp) => {
+    if (resp?.name) {
+      getStore().setSuggestedName(resp.name);
+      if (onOk) onOk(resp.name);
+    }
   });
 }
 
@@ -709,7 +724,7 @@ export function rescanModels(onOk, onError) {
  *     happen normally).
  *   * "invalid_payload" — missing `model.name` / `model.provider`.
  */
-export function changeAgentModel(name, model, onOk, onError) {
+export function changeAgentModel(name, spaceId, model, onOk, onError) {
   if (!lobbyChannel) {
     if (onError) onError(new Error("Not connected to lobby"));
     return;
@@ -717,6 +732,7 @@ export function changeAgentModel(name, model, onOk, onError) {
 
   const payload = {
     name,
+    space_id: spaceId,
     model: { name: model.name, provider: model.provider ?? null },
   };
 

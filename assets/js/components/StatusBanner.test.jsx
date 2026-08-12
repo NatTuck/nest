@@ -200,7 +200,12 @@ describe("StatusBanner", () => {
     const { container } = render(
       <StatusBanner
         status="compaction_loop_detected"
-        compactionLoop="compaction isn't reducing the conversation — start a new session, change model, or clear history"
+        compactionLoop={{
+          content:
+            "compaction isn't reducing the conversation — start a new session, change model, or clear history",
+          attemptCount: 3,
+          maxAttempts: 3,
+        }}
         onRetry={() => {}}
         onRetryCompaction={onRetryCompaction}
         onCompactionLoopOk={onCompactionLoopOk}
@@ -212,6 +217,9 @@ describe("StatusBanner", () => {
     ).toBeInTheDocument();
     expect(
       screen.getByText(/compaction isn't reducing the conversation/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/tried 3 of 3 consecutive compactions/i),
     ).toBeInTheDocument();
 
     // OK button calls onCompactionLoopOk, not onRetryCompaction.

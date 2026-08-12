@@ -1,6 +1,6 @@
 defmodule Nest.Agents.Agent.ToolLoopCloneAgentTest do
   @moduledoc """
-  Tests for `clone_agent` interception inside
+  Tests for `agents/spawn` interception inside
   `ToolLoop.execute/3`.
 
   The full E2E flow (driving MockClient through the
@@ -9,8 +9,8 @@ defmodule Nest.Agents.Agent.ToolLoopCloneAgentTest do
   `clone_agent_flow_test.exs`. This module exercises the
   interception narrowly:
 
-    * `clone_agent` tool calls route through the
-      synchronous parent-via-tuple path.
+    * `agents/spawn` tool calls (with a `query`) route
+      through the synchronous parent-via-tuple path.
     * The parent's `{:error, _}` reply surfaces as an
       `is_error` ToolResult rather than crashing the
       worker.
@@ -18,26 +18,32 @@ defmodule Nest.Agents.Agent.ToolLoopCloneAgentTest do
   Mixed-batch reordering is exercised separately by the
   BatchSizer + tool ordering test in `batch_sizer_test.exs`.
   """
-  use ExUnit.Case, async: false
+  use Nest.DataCase, async: false
 
   alias Nest.Agents.Agent.ToolLoop
+  alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Registry, as: AgentsRegistry
   alias Nest.Messages.{ToolCall, ToolResult}
+
+  setup do
+    {:ok, _space_id} = AgentTestHelpers.create_test_space()
+    :ok
+  end
 
   defmodule FakeParent do
     @moduledoc """
     Test double for the parent Agent GenServer. Started
     under `Agents.Registry.via_tuple(name)` so
-    `ToolLoop.run_clone_agent/2` can route to it through
+    `ToolLoop.run_spawn_agent/2` can route to it through
     the agents registry (no pid lookup).
 
     Behavior:
 
-      * `:clone_agent_request` synchronously replies
+      * `:spawn_agent_request` synchronously replies
         `{:ok, child_name}` then sends the matching
-        `:clone_agent_result` to the calling worker (we
+        `:spawn_agent_result` to the calling worker (we
         use the `from` arg to recover the worker's pid).
-      * `:clone_agent_request` opts can override the
+      * `:spawn_agent_request` opts can override the
         response: `{:reply_failure, reason}` makes the
         parent reply with `{:error, reason}` (no result
         sent).
@@ -62,10 +68,10 @@ defmodule Nest.Agents.Agent.ToolLoopCloneAgentTest do
     end
 
     @impl true
-    def handle_call({:clone_agent_request, _task_pid, _instruction}, {worker_pid, _tag}, state) do
+    def handle_call({:spawn_agent_request, _task_pid, _opts}, {worker_pid, _tag}, state) do
       case state.reply_failure do
         nil ->
-          send(worker_pid, {:clone_agent_result, state.child_name, state.response})
+          send(worker_pid, {:spawn_agent_result, state.child_name, state.response})
           {:reply, {:ok, state.child_name}, state}
 
         reason ->
@@ -82,24 +88,24 @@ defmodule Nest.Agents.Agent.ToolLoopCloneAgentTest do
     def handle_info(_, state), do: {:noreply, state}
   end
 
-  describe "clone_agent routing" do
-    test "a single clone_agent call produces a synthetic ToolResult with the child's response" do
+  describe "agents/spawn routing" do
+    test "a single agents/spawn call with a query produces a synthetic ToolResult with the child's response" do
       {:ok, _pid} =
         FakeParent.start(
-          via: AgentsRegistry.via_tuple("parent-success"),
+          via: AgentsRegistry.via_tuple(AgentTestHelpers.current_space_id(), "parent-success"),
           child_name: "child-success",
           response: "delegate said hello"
         )
 
       results =
         ToolLoop.execute(
-          %{agent_name: "parent-success"},
+          %{agent_name: "parent-success", space_id: AgentTestHelpers.current_space_id()},
           %{},
           [
             %ToolCall{
               id: "call-1",
-              name: "clone_agent",
-              arguments: %{"instruction" => "say hi"}
+              name: "agents/spawn",
+              arguments: %{"query" => "say hi"}
             }
           ]
         )
@@ -107,8 +113,8 @@ defmodule Nest.Agents.Agent.ToolLoopCloneAgentTest do
       assert [
                %ToolResult{
                  tool_call_id: "call-1",
-                 name: "clone_agent",
-                 arguments: %{"instruction" => "say hi"},
+                 name: "agents/spawn",
+                 arguments: %{"query" => "say hi"},
                  content: "delegate said hello",
                  is_error: false
                }
@@ -118,24 +124,24 @@ defmodule Nest.Agents.Agent.ToolLoopCloneAgentTest do
     test "parent reply of {:error, _} surfaces as an is_error ToolResult" do
       {:ok, _pid} =
         FakeParent.start(
-          via: AgentsRegistry.via_tuple("parent-err"),
+          via: AgentsRegistry.via_tuple(AgentTestHelpers.current_space_id(), "parent-err"),
           reply_failure: :max_depth_reached
         )
 
       results =
         ToolLoop.execute(
-          %{agent_name: "parent-err"},
+          %{agent_name: "parent-err", space_id: AgentTestHelpers.current_space_id()},
           %{},
           [
             %ToolCall{
               id: "call-1",
-              name: "clone_agent",
-              arguments: %{"instruction" => "x"}
+              name: "agents/spawn",
+              arguments: %{"query" => "x"}
             }
           ]
         )
 
-      assert [%ToolResult{tool_call_id: "call-1", name: "clone_agent", is_error: true}] = results
+      assert [%ToolResult{tool_call_id: "call-1", name: "agents/spawn", is_error: true}] = results
       assert results |> hd() |> Map.get(:content) =~ "max_depth_reached"
     end
   end

@@ -1,12 +1,27 @@
+defmodule Nest.Agents.Agent.TreePosition do
+  @moduledoc """
+  Sub-struct holding the agent's position in the spawned
+  child tree. Extracted from the parent `Agent` struct so
+  the parent doesn't push past the 16-field cap.
+
+  `parent_id` is the integer `agents.id` of the agent that
+  spawned this one via `agents/spawn` (with `clone_context`). `nil` for root agents.
+  `parent_name` is the parent's readable identifier (a
+  String), held so the child can dispatch messages to the
+  parent's GenServer through `Agents.Registry.via_tuple/2`
+  without an integer→name lookup at completion time.
+  """
+
+  defstruct parent_id: nil, parent_name: nil
+end
+
 defmodule Nest.Agents.Agent do
   @moduledoc """
   GenServer that manages an individual agent's state and chat.
 
-  Each agent runs as an independent process with:
-  - A unique readable name (e.g., "clever-raven")
-  - Message history with tool calling support
-  - LLM client config for model communication
-  - Streaming broadcast support for real-time responses via PubSub
+  Each agent runs as an independent process with a unique
+  readable name, message history with tool calling, LLM client
+  config, and streaming broadcast support via PubSub.
   """
 
   use GenServer, restart: :temporary
@@ -35,6 +50,7 @@ defmodule Nest.Agents.Agent do
 
   defstruct [
     :name,
+    :space_id,
     :model,
     :client_config,
     :vocation_id,
@@ -43,42 +59,25 @@ defmodule Nest.Agents.Agent do
     :tmp_path,
     :tools,
     :llm_metrics,
-    # `parent_id` is the integer `agents.id` of the agent that
-    # spawned this one via the `clone_agent` tool. `nil` for
-    # root agents. The corresponding Pubsub topic identity is
-    # the parent's `name` (a String); we keep the integer FK
-    # here so the persisted row carries the relationship and
-    # we can rebuild the tree after a BEAM restart.
-    :parent_id,
-    # `parent_name` is the parent's readable identifier
-    # (`String.t()`). Held as runtime state only (not
-    # persisted) so the child can dispatch messages to the
-    # parent's GenServer through `Agents.Registry.via_tuple/1`
-    # without an integer→name lookup at completion time. The
-    # integer FK above is the durable identifier.
-    :parent_name,
-    # `created_by_user_id` is the integer `users.id` of the
-    # user who created this agent. Carried as runtime state
-    # so chat-attribution, ownership checks, and the
-    # visibility filter in the lobby can run without a DB
-    # round-trip. Persisted via `agents.created_by_user_id`.
     :created_by_user_id,
+    # `depth` is the agent's distance from its tree root (0 =
+    # root). Children inherit `parent.depth + 1`; `agents/spawn`
+    # is disabled at `depth >= configured_max_depth()`. Persisted
+    # via `agents.depth`.
+    depth: 0,
     # `shared` mirrors `agents.shared` so the lobby filter
     # and ownership checks don't need a DB lookup. Children
     # inherit their parent's `shared` value (see
     # `build_child_attrs/4`).
     shared: false,
-    mode: "chat",
-    # `depth` is the agent's distance from its tree root.
-    # 0 = root (no parent). Children of a depth-D parent are
-    # depth D+1. The `clone_agent` tool is only available when
-    # `depth < configured_max_depth()`, so a depth-D agent
-    # can spawn children of depth D+1 (provided D+1 < max).
-    # Persisted via `agents.depth` so the value survives a
-    # BEAM restart and the system-prompt composition can
-    # honor it from `init/1`.
-    depth: 0,
-    chat_state: %__MODULE__.ChatState{}
+    # `tree_position` is `%__MODULE__.TreePosition{}` for
+    # child agents (carrying `parent_id` + `parent_name`) and
+    # the default (both fields `nil`) for root agents. Extracted
+    # into a sub-struct so the top-level `Agent` stays under
+    # the 16-field cap (credo's `Modules#MODULE_DOC`).
+    tree_position: %__MODULE__.TreePosition{},
+    chat_state: %__MODULE__.ChatState{},
+    live: %__MODULE__.ChatState.Live{}
   ]
 
   # Read-only context threaded through a single chat turn is
@@ -94,6 +93,7 @@ defmodule Nest.Agents.Agent do
 
   @type t :: %__MODULE__{
           name: String.t(),
+          space_id: integer(),
           model: map(),
           client_config: ClientConfig.t(),
           vocation: Vocations.Vocation.t(),
@@ -101,13 +101,12 @@ defmodule Nest.Agents.Agent do
           tmp_path: String.t() | nil,
           tools: [Nest.LLM.Tool.t()],
           llm_metrics: __MODULE__.LlmMetrics.t(),
-          parent_id: integer() | nil,
-          parent_name: String.t() | nil,
+          tree_position: __MODULE__.TreePosition.t(),
           created_by_user_id: integer() | nil,
           shared: boolean(),
           depth: non_neg_integer(),
-          mode: String.t(),
-          chat_state: __MODULE__.ChatState.t()
+          chat_state: __MODULE__.ChatState.t(),
+          live: __MODULE__.ChatState.Live.t()
         }
 
   @type message ::
@@ -136,7 +135,8 @@ defmodule Nest.Agents.Agent do
   @spec start_link(attrs :: map()) :: GenServer.on_start()
   def start_link(attrs) do
     name = Map.fetch!(attrs, :name)
-    GenServer.start_link(__MODULE__, attrs, name: Registry.via_tuple(name))
+    space_id = Map.fetch!(attrs, :space_id)
+    GenServer.start_link(__MODULE__, attrs, name: Registry.via_tuple(space_id, name))
   end
 
   @doc """
@@ -161,11 +161,11 @@ defmodule Nest.Agents.Agent do
   # Render the system prompt in the calling process (so the
   # DB write below runs in a pid with DB access) and persist
   # the row at index 0. No-op when the rendered prompt is
-  # `nil` (defensive — `compose_vocation_config/4` returns
-  # `nil` when the vocation struct is missing or the
-  # `system_prompt` field is blank).
+  # `nil` (defensive — `compose_vocation_config/5` returns nil
+  # when the vocation struct is missing or the prompt is blank).
   defp persist_system_message(attrs) do
     name = Map.fetch!(attrs, :name)
+    space_id = Map.fetch!(attrs, :space_id)
     model = Map.fetch!(attrs, :model)
     workspace_path = Map.get(attrs, :workspace_path)
     vocation = Map.get(attrs, :vocation)
@@ -178,12 +178,14 @@ defmodule Nest.Agents.Agent do
         vocation,
         workspace_path,
         {context_limit, context_limit_source},
+        name,
         depth
       )
 
     case system_prompt do
       text when is_binary(text) and text != "" ->
         Persistence.insert_message(
+          space_id,
           name,
           {:system,
            %System{
@@ -208,7 +210,7 @@ defmodule Nest.Agents.Agent do
   provides:
     * `child_name` — a freshly-generated unique name
     * `parent_id` — the parent's integer `agents.id`,
-      resolved via `Persistence.fetch_agent_by_name/1`
+      resolved via `Persistence.fetch_agent/2`
 
   Returns the attrs map ready to pass to `start_link/1`.
   """
@@ -219,10 +221,16 @@ defmodule Nest.Agents.Agent do
       |> MessageList.extract_clone_instruction()
 
     {preloaded, next_index} =
-      MessageList.build_clone_fork(stripped, parent_state.chat_state.next_message_index)
+      MessageList.build_clone_fork(
+        stripped,
+        parent_state.chat_state.next_message_index,
+        child_name,
+        parent_state.depth + 1
+      )
 
     %{
       name: child_name,
+      space_id: parent_state.space_id,
       model: parent_state.model,
       vocation_id: parent_state.vocation_id,
       vocation: parent_state.vocation,
@@ -425,18 +433,17 @@ defmodule Nest.Agents.Agent do
 
   defp log_active_start(state) do
     Logger.info(
-      "Agent started: #{state.name} with vocation_id: #{inspect(state.vocation_id)}, mode: #{state.mode}, tools: #{length(state.tools)}, client: #{inspect(state.client_config.client)}, context_limit: #{inspect(state.llm_metrics.context_limit)} (#{state.llm_metrics.context_limit_source}), parent_id: #{inspect(state.parent_id)}, parent_name: #{inspect(state.parent_name)}, depth: #{state.depth}"
+      "Agent started: #{state.name} with vocation_id: #{inspect(state.vocation_id)}, mode: #{state.live.mode}, tools: #{length(state.tools)}, client: #{inspect(state.client_config.client)}, context_limit: #{inspect(state.llm_metrics.context_limit)} (#{state.llm_metrics.context_limit_source}), parent_id: #{inspect(state.tree_position.parent_id)}, parent_name: #{inspect(state.tree_position.parent_name)}, depth: #{state.depth}"
     )
   end
 
   @impl true
   def terminate(_reason, state) do
-    # Cascade-stop any registered children. The
-    # `ChildRegistry` walks by name (no pid work); the
-    # `Supervisor` then tears down each child via its own
-    # `terminate/2`. Defensive against the case where the
-    # supervisor gave up because we crashed: we still
-    # want children cleaned up.
+    # Stop any outstanding queries (children in
+    # `pending_children`) before teardown. Defensive against
+    # the case where the supervisor gave up because we
+    # crashed: we still want in-flight queries cut off. Idle
+    # specialists are left running.
     SubAgent.cascade_terminate(state)
 
     # Cleanup /tmp per design specification

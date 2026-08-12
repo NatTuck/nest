@@ -46,7 +46,9 @@ defmodule Nest.PersistenceTest do
 
       message = {:system, %MsgSystem{index: 0, parts: [%Part.Text{text: "You are helpful"}]}}
 
-      assert {:ok, %PersistedMessage{} = row} = Persistence.insert_message(attrs.name, message)
+      assert {:ok, %PersistedMessage{} = row} =
+               Persistence.insert_message(test_space_id(), attrs.name, message)
+
       assert row.role == "system"
       assert row.message_index == 0
 
@@ -70,7 +72,9 @@ defmodule Nest.PersistenceTest do
            metadata: %{"mode" => "chat"}
          }}
 
-      assert {:ok, %PersistedMessage{} = row} = Persistence.insert_message(attrs.name, message)
+      assert {:ok, %PersistedMessage{} = row} =
+               Persistence.insert_message(test_space_id(), attrs.name, message)
+
       assert row.role == "user"
       assert row.message_index == 1
       assert row.metadata == %{"mode" => "chat"}
@@ -102,7 +106,8 @@ defmodule Nest.PersistenceTest do
            model: "claude-3-opus"
          }}
 
-      assert {:ok, %PersistedMessage{} = row} = Persistence.insert_message(attrs.name, message)
+      assert {:ok, %PersistedMessage{} = row} =
+               Persistence.insert_message(test_space_id(), attrs.name, message)
 
       assert row.role == "assistant"
       assert row.message_index == 2
@@ -145,7 +150,9 @@ defmodule Nest.PersistenceTest do
            ]
          }}
 
-      assert {:ok, %PersistedMessage{} = row} = Persistence.insert_message(attrs.name, message)
+      assert {:ok, %PersistedMessage{} = row} =
+               Persistence.insert_message(test_space_id(), attrs.name, message)
+
       assert row.role == "tool"
 
       assert %{"parts" => [r1, r2]} = row.content
@@ -159,6 +166,7 @@ defmodule Nest.PersistenceTest do
 
       assert {:error, :agent_not_found} =
                Persistence.insert_message(
+                 test_space_id(),
                  "never-seen-#{Elixir.System.unique_integer([:positive])}",
                  message
                )
@@ -181,14 +189,14 @@ defmodule Nest.PersistenceTest do
       original =
         {:system, %MsgSystem{index: 0, parts: [%Part.Text{text: "original prompt"}]}}
 
-      assert {:ok, first} = Persistence.insert_message(attrs.name, original)
+      assert {:ok, first} = Persistence.insert_message(test_space_id(), attrs.name, original)
       first_id = first.id
 
       duplicate =
         {:system, %MsgSystem{index: 0, parts: [%Part.Text{text: "different prompt"}]}}
 
       assert {:ok, %PersistedMessage{id: nil}} =
-               Persistence.insert_message(attrs.name, duplicate)
+               Persistence.insert_message(test_space_id(), attrs.name, duplicate)
 
       assert [%PersistedMessage{id: ^first_id}] =
                Nest.Repo.all(PersistedMessage)
@@ -199,10 +207,10 @@ defmodule Nest.PersistenceTest do
       {:ok, _} = Persistence.insert_agent(attrs)
 
       system_msg = {:system, %MsgSystem{index: 0, parts: [%Part.Text{text: "sys"}]}}
-      assert {:ok, _} = Persistence.insert_message(attrs.name, system_msg)
+      assert {:ok, _} = Persistence.insert_message(test_space_id(), attrs.name, system_msg)
 
       second_call = fn ->
-        Persistence.insert_message(attrs.name, system_msg)
+        Persistence.insert_message(test_space_id(), attrs.name, system_msg)
       end
 
       assert {:ok, _} = second_call.()
@@ -216,32 +224,36 @@ defmodule Nest.PersistenceTest do
 
       {:ok, _} =
         Persistence.insert_message(
+          test_space_id(),
           attrs.name,
           {:system, %MsgSystem{index: 0, parts: [%Part.Text{text: "sys"}]}}
         )
 
       {:ok, _} =
         Persistence.insert_message(
+          test_space_id(),
           attrs.name,
           {:user, %User{index: 1, parts: [%Part.Text{text: "hi"}]}}
         )
 
       {:ok, _} =
         Persistence.insert_message(
+          test_space_id(),
           attrs.name,
           {:assistant, %Assistant{index: 2, parts: [%Part.Text{text: "hello"}]}}
         )
 
-      assert {:ok, marker} = Persistence.record_compaction(attrs.name, 3, 3)
+      assert {:ok, marker} = Persistence.record_compaction(test_space_id(), attrs.name, 3, 3)
       assert marker.message_index == 3
 
       {:ok, _} =
         Persistence.insert_message(
+          test_space_id(),
           attrs.name,
           {:user, %User{index: 4, parts: [%Part.Text{text: "post-marker"}]}}
         )
 
-      messages = Persistence.load_messages(attrs.name)
+      messages = Persistence.load_messages(test_space_id(), attrs.name)
       assert length(messages) == 5
       assert Enum.map(messages, fn {_, %{index: idx}} -> idx end) == [0, 1, 2, 3, 4]
 
@@ -273,16 +285,19 @@ defmodule Nest.PersistenceTest do
            finish_reason: "tool_calls"
          }}
 
-      assert {:ok, _} = Persistence.insert_message(attrs.name, original)
+      assert {:ok, _} = Persistence.insert_message(test_space_id(), attrs.name, original)
 
-      [{:assistant, restored}] = Persistence.load_messages(attrs.name)
+      [{:assistant, restored}] = Persistence.load_messages(test_space_id(), attrs.name)
       assert restored.parts == original_parts
       assert restored.usage == %{"input_tokens" => 10}
       assert restored.finish_reason == "tool_calls"
     end
 
     test "empty agent returns empty list" do
-      assert Persistence.load_messages("load-empty-#{Elixir.System.unique_integer([:positive])}") ==
+      assert Persistence.load_messages(
+               test_space_id(),
+               "load-empty-#{Elixir.System.unique_integer([:positive])}"
+             ) ==
                []
     end
   end
@@ -294,18 +309,20 @@ defmodule Nest.PersistenceTest do
 
       {:ok, _} =
         Persistence.insert_message(
+          test_space_id(),
           attrs.name,
           {:user, %User{index: 0, parts: [%Part.Text{text: "First"}]}}
         )
 
       {:ok, _} =
         Persistence.insert_message(
+          test_space_id(),
           attrs.name,
           {:assistant, %Assistant{index: 1, parts: [%Part.Text{text: "Reply"}]}}
         )
 
       assert {:ok, %PersistedMessage{} = marker} =
-               Persistence.record_compaction(attrs.name, 2, 2)
+               Persistence.record_compaction(test_space_id(), attrs.name, 2, 2)
 
       assert marker.role == "compaction"
       assert marker.message_index == 2
@@ -326,24 +343,25 @@ defmodule Nest.PersistenceTest do
       # constraint violation.
       {:ok, _} =
         Persistence.insert_message(
+          test_space_id(),
           attrs.name,
           {:system, %MsgSystem{index: 5, parts: [%Part.Text{text: "collision"}]}}
         )
 
-      assert {:error, _reason} = Persistence.record_compaction(attrs.name, 5, 0)
+      assert {:error, _reason} = Persistence.record_compaction(test_space_id(), attrs.name, 5, 0)
 
-      assert {:ok, -1} = Persistence.last_compaction_index(attrs.name)
+      assert {:ok, -1} = Persistence.last_compaction_index(test_space_id(), attrs.name)
     end
 
     test "advances the boundary across multiple compactions" do
       attrs = agent_attrs("multi-#{Elixir.System.unique_integer([:positive])}")
       {:ok, _} = Persistence.insert_agent(attrs)
 
-      assert {:ok, _} = Persistence.record_compaction(attrs.name, 5, 0)
-      assert {:ok, _} = Persistence.record_compaction(attrs.name, 12, 0)
-      assert {:ok, _} = Persistence.record_compaction(attrs.name, 20, 0)
+      assert {:ok, _} = Persistence.record_compaction(test_space_id(), attrs.name, 5, 0)
+      assert {:ok, _} = Persistence.record_compaction(test_space_id(), attrs.name, 12, 0)
+      assert {:ok, _} = Persistence.record_compaction(test_space_id(), attrs.name, 20, 0)
 
-      assert {:ok, 20} = Persistence.last_compaction_index(attrs.name)
+      assert {:ok, 20} = Persistence.last_compaction_index(test_space_id(), attrs.name)
     end
   end
 
@@ -351,20 +369,21 @@ defmodule Nest.PersistenceTest do
     test "returns -1 for fresh agents" do
       attrs = agent_attrs("fresh-#{Elixir.System.unique_integer([:positive])}")
       {:ok, _} = Persistence.insert_agent(attrs)
-      assert {:ok, -1} = Persistence.last_compaction_index(attrs.name)
+      assert {:ok, -1} = Persistence.last_compaction_index(test_space_id(), attrs.name)
     end
 
     test "returns the boundary after a record_compaction" do
       attrs = agent_attrs("post-compact-#{Elixir.System.unique_integer([:positive])}")
       {:ok, _} = Persistence.insert_agent(attrs)
 
-      assert {:ok, _marker} = Persistence.record_compaction(attrs.name, 7, 5)
-      assert {:ok, 7} = Persistence.last_compaction_index(attrs.name)
+      assert {:ok, _marker} = Persistence.record_compaction(test_space_id(), attrs.name, 7, 5)
+      assert {:ok, 7} = Persistence.last_compaction_index(test_space_id(), attrs.name)
     end
 
     test "returns :agent_not_found for an unknown name" do
       assert {:error, :agent_not_found} =
                Persistence.last_compaction_index(
+                 test_space_id(),
                  "missing-#{Elixir.System.unique_integer([:positive])}"
                )
     end

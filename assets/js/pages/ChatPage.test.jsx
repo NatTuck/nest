@@ -16,6 +16,7 @@ import { MemoryRouter, Routes, Route } from "react-router-dom";
 // object that mutates `mockAgentsCache` so the dismissed-error
 // scenario flows end-to-end.
 let mockAgentsCache = {};
+let mockSpaces = [];
 vi.mock("../store", () => {
   const actions = {
     clearAgentError: (id) => {
@@ -34,8 +35,13 @@ vi.mock("../store", () => {
     },
   };
 
-  const useStore = (selector) => selector({ agentsCache: mockAgentsCache });
-  useStore.getState = () => ({ ...actions, agentsCache: mockAgentsCache });
+  const useStore = (selector) =>
+    selector({ agentsCache: mockAgentsCache, spaces: mockSpaces });
+  useStore.getState = () => ({
+    ...actions,
+    agentsCache: mockAgentsCache,
+    spaces: mockSpaces,
+  });
 
   return { useStore };
 });
@@ -89,11 +95,12 @@ vi.mock("../components/AgentModelPicker", () => ({
 
 import { ChatPage } from "./ChatPage";
 
-function renderChat(agentName = "test-agent") {
+function renderChat(agentName = "test-agent", spaceSlug = "my-space") {
+  mockSpaces = [{ id: 1, slug: spaceSlug, name: "My Space" }];
   return render(
-    <MemoryRouter initialEntries={[`/agent/${agentName}`]}>
+    <MemoryRouter initialEntries={[`/space/${spaceSlug}/agent/${agentName}`]}>
       <Routes>
-        <Route path="/agent/:name" element={<ChatPage />} />
+        <Route path="/space/:spaceSlug/agent/:name" element={<ChatPage />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -287,9 +294,9 @@ describe("ChatPage stop button", () => {
     // Agent transitions to idle (server pushed chat:status: idle).
     mockAgentsCache["test-agent"].agentState = "idle";
     rerender(
-      <MemoryRouter initialEntries={["/agent/test-agent"]}>
+      <MemoryRouter initialEntries={["/space/my-space/agent/test-agent"]}>
         <Routes>
-          <Route path="/agent/:name" element={<ChatPage />} />
+          <Route path="/space/:spaceSlug/agent/:name" element={<ChatPage />} />
         </Routes>
       </MemoryRouter>,
     );
@@ -1201,9 +1208,9 @@ describe("ChatPage mode selector", () => {
     mockAgentsCache["test-agent"].agentState = "streaming";
     mockAgentsCache["test-agent"].currentMode = "plan";
     rerender(
-      <MemoryRouter initialEntries={["/agent/test-agent"]}>
+      <MemoryRouter initialEntries={["/space/my-space/agent/test-agent"]}>
         <Routes>
-          <Route path="/agent/:name" element={<ChatPage />} />
+          <Route path="/space/:spaceSlug/agent/:name" element={<ChatPage />} />
         </Routes>
       </MemoryRouter>,
     );
@@ -1535,7 +1542,7 @@ describe("ChatPage compaction-frozen state", () => {
 
 describe("ChatPage delegated task placement", () => {
   // Regression coverage for the "delegated task boxes stuck
-  // at the bottom" bug. The card for a `clone_agent` call
+  // at the bottom" bug. The card for an `agents/spawn` call
   // must render inside the assistant message that issued
   // the call (between the assistant bubble and the tool
   // result bubble), NOT as a single block stacked at the
@@ -1563,8 +1570,8 @@ describe("ChatPage delegated task placement", () => {
             toolCalls: [
               {
                 id: "call-1",
-                name: "clone_agent",
-                arguments: { instruction: "investigate foo" },
+                name: "agents/spawn",
+                arguments: { query: "investigate foo" },
               },
             ],
           },
@@ -1574,7 +1581,7 @@ describe("ChatPage delegated task placement", () => {
             toolResults: [
               {
                 tool_call_id: "call-1",
-                name: "clone_agent",
+                name: "agents/spawn",
                 content: "child says done",
                 is_error: false,
               },
@@ -1735,8 +1742,8 @@ describe("ChatPage think-only streaming message with an in-flight tool call", ()
             {
               kind: "tool_use",
               id: "call_stream_2",
-              name: "clone_agent",
-              arguments: '{"instruction":"x"}',
+              name: "agents/spawn",
+              arguments: '{"query":"x"}',
             },
           ],
           isPartial: true,
@@ -1753,11 +1760,11 @@ describe("ChatPage think-only streaming message with an in-flight tool call", ()
     // scroll anchor. The first test already proves the
     // card is rendered with the right contents; this test
     // is a smoke check that confirms the rendering path
-    // doesn't crash on a `clone_agent` call (which has
+    // doesn't crash on an `agents/spawn` call (which has
     // special delegation rendering on top of the basic
     // tool card).
     renderChat();
-    expect(screen.getByText("Using tool: clone_agent")).toBeInTheDocument();
+    expect(screen.getByText("Using tool: agents/spawn")).toBeInTheDocument();
   });
 });
 
@@ -1784,7 +1791,7 @@ describe("ChatPage model picker (model_missing recovery)", () => {
 
   it("calls changeAgentModel when the user picks a replacement", () => {
     mocks.changeAgentModel.mockImplementation(
-      (_name, _model, _onOk, onError) => {
+      (_name, _spaceId, _model, _onOk, onError) => {
         // Simulate the server error reply so the
         // `setChangeModelError` branch runs end-to-end.
         if (onError) onError({ reason: "agent_busy" });
@@ -1809,6 +1816,7 @@ describe("ChatPage model picker (model_missing recovery)", () => {
 
     expect(mocks.changeAgentModel).toHaveBeenCalledWith(
       "test-agent",
+      1,
       { name: "gpt-4", provider: "openai" },
       undefined,
       expect.any(Function),

@@ -18,11 +18,19 @@ defmodule NestWeb.AgentChannelAdvancedTest do
   setup :verify_on_exit!
 
   describe "agent process isolation" do
-    test "agent process does not capture channel pid", %{socket: _socket, agent_id: id} do
-      {:ok, _pid} = Agents.Supervisor.get_agent(id)
+    test "agent process does not capture channel pid", %{
+      socket: _socket,
+      agent_id: id,
+      space_id: space_id
+    } do
+      {:ok, _pid} = Agents.Supervisor.get_agent(space_id, id)
     end
 
-    test "messages are not lost on channel rejoin", %{socket: socket, agent_id: id} do
+    test "messages are not lost on channel rejoin", %{
+      socket: socket,
+      agent_id: id,
+      space_id: space_id
+    } do
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
@@ -49,7 +57,7 @@ defmodule NestWeb.AgentChannelAdvancedTest do
         connect(NestWeb.UserSocket, %{"token" => Process.get(:agent_test_token)})
 
       {:ok, _, new_socket} =
-        subscribe_and_join(new_conn, NestWeb.AgentChannel, "agent:#{id}")
+        subscribe_and_join(new_conn, NestWeb.AgentChannel, "agent:#{space_id}:#{id}")
 
       sync_ref2 = push(new_socket, "chat:sync", %{"lastIndex" => -1})
       assert_reply sync_ref2, :ok, %{"messages" => messages2, "messageCount" => msg_count2}
@@ -61,7 +69,11 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       GenServer.stop(new_socket.channel_pid, :normal)
     end
 
-    test "sync returns correct messages after multiple rejoins", %{socket: socket, agent_id: id} do
+    test "sync returns correct messages after multiple rejoins", %{
+      socket: socket,
+      agent_id: id,
+      space_id: space_id
+    } do
       ref1 = push(socket, "chat:message", %{"content" => "Message 1"})
       assert_reply ref1, :ok, %{}
 
@@ -79,7 +91,7 @@ defmodule NestWeb.AgentChannelAdvancedTest do
         connect(NestWeb.UserSocket, %{"token" => Process.get(:agent_test_token)})
 
       {:ok, _, socket2} =
-        subscribe_and_join(socket2_conn, NestWeb.AgentChannel, "agent:#{id}")
+        subscribe_and_join(socket2_conn, NestWeb.AgentChannel, "agent:#{space_id}:#{id}")
 
       ref_sync = push(socket2, "chat:sync", %{"lastIndex" => -1})
       assert_reply ref_sync, :ok, %{"messages" => messages, "messageCount" => last_complete}
@@ -96,7 +108,7 @@ defmodule NestWeb.AgentChannelAdvancedTest do
         connect(NestWeb.UserSocket, %{"token" => Process.get(:agent_test_token)})
 
       {:ok, _, socket3} =
-        subscribe_and_join(socket3_conn, NestWeb.AgentChannel, "agent:#{id}")
+        subscribe_and_join(socket3_conn, NestWeb.AgentChannel, "agent:#{space_id}:#{id}")
 
       ref_sync2 = push(socket3, "chat:sync", %{"lastIndex" => -1})
       assert_reply ref_sync2, :ok, %{"messages" => messages2, "messageCount" => last_complete2}
@@ -256,7 +268,11 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       assert part["isError"] == false
     end
 
-    test "chat:sync handles messages with ToolResult structs", %{socket: socket, agent_id: id} do
+    test "chat:sync handles messages with ToolResult structs", %{
+      socket: socket,
+      agent_id: id,
+      space_id: space_id
+    } do
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
@@ -280,7 +296,7 @@ defmodule NestWeb.AgentChannelAdvancedTest do
            api_logs: []
          }}
 
-      {:ok, agent_pid} = Supervisor.get_agent(id)
+      {:ok, agent_pid} = Supervisor.get_agent(space_id, id)
 
       :sys.replace_state(agent_pid, fn state ->
         %{
@@ -311,7 +327,8 @@ defmodule NestWeb.AgentChannelAdvancedTest do
 
     test "chat:sync handles messages with ToolResult structs in api_logs", %{
       socket: socket,
-      agent_id: id
+      agent_id: id,
+      space_id: space_id
     } do
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
@@ -348,7 +365,7 @@ defmodule NestWeb.AgentChannelAdvancedTest do
            ]
          }}
 
-      {:ok, agent_pid} = Supervisor.get_agent(id)
+      {:ok, agent_pid} = Supervisor.get_agent(space_id, id)
 
       :sys.replace_state(agent_pid, fn state ->
         %{

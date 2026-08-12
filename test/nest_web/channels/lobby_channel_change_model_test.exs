@@ -22,6 +22,8 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
     Repo.delete_all(InviteSchema)
     Repo.delete_all(UserSchema)
 
+    {:ok, _space_id} = AgentTestHelpers.create_test_space()
+
     {:ok, user, _role} =
       Accounts.create_user(
         %{username: "lobby-change-tester", password: "password123"},
@@ -40,7 +42,7 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
   # `create_test_agent` mirrors the helper in
   # `NestWeb.LobbyChannelTest` — pushed via the channel so
   # the channel's `default_vocation_id/0` fallback applies
-  # (a direct `Agents.create_agent/2` would skip it and trip
+  # (a direct `Agents.create_agent/3` would skip it and trip
   # the NOT NULL constraint on `agents.vocation_id`). Marks
   # the agent `shared: true` so the change_model handler
   # accepts edits from any owner rather than only the creator.
@@ -58,17 +60,18 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
     vocation_id = AgentTestHelpers.vocation_id_for_test()
 
     ref =
-      push(socket, "create_agent", %{
+      push(socket, "create_space", %{
+        "name" => "test-space-#{System.unique_integer([:positive])}",
         "model" => model_attrs,
         "shared" => true,
         "vocation_id" => vocation_id
       })
 
-    assert_reply ref, :ok, %{"name" => agent_name}
+    assert_reply ref, :ok, %{"space_id" => space_id, "name" => agent_name}
 
     AgentTestHelpers.ensure_cleanup(agent_name)
 
-    case Nest.Agents.Supervisor.get_agent(agent_name) do
+    case Nest.Agents.Supervisor.get_agent(space_id, agent_name) do
       {:ok, agent_pid} ->
         Sandbox.allow(Repo, self(), agent_pid)
 
@@ -76,7 +79,7 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
         :ok
     end
 
-    {:ok, agent_name}
+    {:ok, space_id, agent_name}
   end
 
   describe "handle_in(change_model)" do
@@ -91,13 +94,14 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
       vocation_id = AgentTestHelpers.vocation_id_for_test()
 
       ref =
-        push(socket, "create_agent", %{
+        push(socket, "create_space", %{
+          "name" => "test-space-#{System.unique_integer([:positive])}",
           "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"},
           "shared" => true,
           "vocation_id" => vocation_id
         })
 
-      assert_reply ref, :ok, %{"name" => name}
+      assert_reply ref, :ok, %{"space_id" => space_id, "name" => name}
 
       AgentTestHelpers.ensure_cleanup(name)
 
@@ -116,6 +120,7 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
       bob_ref =
         push(bob_socket, "change_model", %{
           "name" => name,
+          "space_id" => space_id,
           "model" => %{"name" => "yolo", "provider" => "yolo"}
         })
 
@@ -129,11 +134,12 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
       # model-missing path.
       log =
         capture_log(fn ->
-          {:ok, name} = create_test_agent(socket, "ghost-model", nil)
+          {:ok, space_id, name} = create_test_agent(socket, "ghost-model", nil)
 
           ref =
             push(socket, "change_model", %{
               "name" => name,
+              "space_id" => space_id,
               "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
             })
 
@@ -154,11 +160,12 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
     end
 
     test "returns :invalid_model for an unknown model", %{socket: socket} do
-      {_pid, name} = create_test_agent(socket, "qwen3.5-plus")
+      {:ok, space_id, name} = create_test_agent(socket, "qwen3.5-plus")
 
       ref =
         push(socket, "change_model", %{
           "name" => name,
+          "space_id" => space_id,
           "model" => %{"name" => "totally-bogus-model"}
         })
 

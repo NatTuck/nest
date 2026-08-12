@@ -476,27 +476,29 @@ describe("store", () => {
   });
 
   describe("setCompactionLoop", () => {
-    it("sets the compactionLoop text on an existing agent", () => {
+    it("sets the compactionLoop banner data on an existing agent", () => {
       useStore.getState().setAgentConnected("agent-1", {
         messageCount: 0,
         status: "idle",
       });
 
-      useStore
-        .getState()
-        .setCompactionLoop(
-          "agent-1",
-          "compaction isn't reducing the conversation",
-        );
+      const loopInfo = {
+        content: "compaction isn't reducing the conversation",
+        attemptCount: 3,
+        maxAttempts: 3,
+      };
+      useStore.getState().setCompactionLoop("agent-1", loopInfo);
 
-      expect(useStore.getState().agentsCache["agent-1"].compactionLoop).toBe(
-        "compaction isn't reducing the conversation",
+      expect(useStore.getState().agentsCache["agent-1"].compactionLoop).toEqual(
+        loopInfo,
       );
     });
 
     it("no-ops on missing agent", () => {
       expect(() =>
-        useStore.getState().setCompactionLoop("missing-agent", "msg"),
+        useStore
+          .getState()
+          .setCompactionLoop("missing-agent", { content: "m" }),
       ).not.toThrow();
 
       expect(useStore.getState().agentsCache["missing-agent"]).toBeUndefined();
@@ -509,7 +511,7 @@ describe("store", () => {
         messageCount: 0,
         status: "idle",
       });
-      useStore.getState().setCompactionLoop("agent-1", "msg");
+      useStore.getState().setCompactionLoop("agent-1", { content: "msg" });
 
       useStore.getState().clearCompactionLoop("agent-1");
 
@@ -2246,22 +2248,6 @@ describe("store", () => {
       expect(cache.status).toBe("error");
       expect(cache.error).toBe('Error: "Max tool iterations reached"');
       expect(cache.partial).toBeNull();
-    });
-  });
-
-  describe("removeAgent", () => {
-    it("removes agent from agents list and deletes cache", () => {
-      // Setup
-      useStore.getState().addAgent({ name: "agent-1", model: "gpt-4" });
-      useStore.getState().setAgentConnecting("agent-1");
-
-      expect(useStore.getState().agents).toHaveLength(1);
-      expect(useStore.getState().agentsCache["agent-1"]).toBeDefined();
-
-      useStore.getState().removeAgent("agent-1");
-
-      expect(useStore.getState().agents).toHaveLength(0);
-      expect(useStore.getState().agentsCache["agent-1"]).toBeUndefined();
     });
   });
 

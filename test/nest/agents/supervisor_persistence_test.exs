@@ -25,11 +25,15 @@ defmodule Nest.Agents.SupervisorPersistenceTest do
   """
   use Nest.DataCase, async: true
 
-  alias Nest.Agents
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Supervisor
   alias Nest.Persistence
   alias Nest.Vocations
+
+  setup do
+    {:ok, _space_id} = AgentTestHelpers.create_test_space()
+    :ok
+  end
 
   defp test_vocation_id do
     {:ok, %Vocations.Vocation{id: id}} =
@@ -55,7 +59,9 @@ defmodule Nest.Agents.SupervisorPersistenceTest do
   describe "get_agent/1" do
     test "returns :not_found (not a crash) for an explicit name not in the DB" do
       name = "missing-#{System.unique_integer([:positive])}"
-      assert {:error, :not_found} = Supervisor.get_agent(name)
+
+      assert {:error, :not_found} =
+               Supervisor.get_agent(AgentTestHelpers.current_space_id(), name)
     end
 
     test "starts the agent when the row is in the DB but not in the Registry" do
@@ -63,6 +69,7 @@ defmodule Nest.Agents.SupervisorPersistenceTest do
 
       {:ok, _row} =
         Persistence.insert_agent(%{
+          space_id: AgentTestHelpers.current_space_id(),
           name: name,
           model: %{name: "qwen3.5-plus"},
           vocation_id: test_vocation_id()
@@ -77,11 +84,11 @@ defmodule Nest.Agents.SupervisorPersistenceTest do
       # fails with `DBConnection.OwnershipError`.
       AgentTestHelpers.ensure_cleanup(name)
 
-      assert {:ok, pid} = Supervisor.get_agent(name)
+      assert {:ok, pid} = Supervisor.get_agent(AgentTestHelpers.current_space_id(), name)
       assert is_pid(pid)
       assert Process.alive?(pid)
 
-      Agents.delete_agent(name)
+      Supervisor.stop_agent(AgentTestHelpers.current_space_id(), name)
     end
   end
 end

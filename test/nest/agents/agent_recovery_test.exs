@@ -23,6 +23,7 @@ defmodule Nest.Agents.Agent.RecoveryTest do
   import Mimic
 
   alias Nest.Agents.Agent
+  alias Nest.Agents.AgentTestHelpers
   alias Nest.LLM.RecoveryClient
 
   setup :verify_on_exit!
@@ -35,15 +36,17 @@ defmodule Nest.Agents.Agent.RecoveryTest do
   # misses those rows. Querying the DB catches both running
   # and dead-but-row-still-present agents.
   #
-  # `Nest.Persistence.delete_agent_by_name/1` is a single SQL
-  # DELETE — no `Supervisor.stop_agent/1` call, so this loop
+  # `Nest.Persistence.delete_agent/2` is a single SQL
+  # DELETE — no `Supervisor.stop_agent/2` call, so this loop
   # doesn't serialize through the supervisor's GenServer under
   # parallel load. The previous `Agents.delete_agent/1` loop
   # timed out at 5s when many parallel tests' setups queued
   # supervisor stops on a single mailbox.
   setup do
-    for name <- Nest.Persistence.list_agent_names() do
-      Nest.Persistence.delete_agent_by_name(name)
+    {:ok, space_id} = AgentTestHelpers.create_test_space()
+
+    for name <- Nest.Persistence.list_agent_names_for_space(space_id) do
+      Nest.Persistence.delete_agent(space_id, name)
     end
 
     :ok
@@ -74,6 +77,7 @@ defmodule Nest.Agents.Agent.RecoveryTest do
             start_supervised(
               {Agent,
                %{
+                 space_id: AgentTestHelpers.current_space_id(),
                  name: "ghost-agent-#{System.unique_integer([:positive])}",
                  model: %{name: "ghost-model"},
                  vocation_id: vocation_id()
@@ -83,7 +87,7 @@ defmodule Nest.Agents.Agent.RecoveryTest do
           assert Process.alive?(pid)
 
           state = :sys.get_state(pid)
-          assert state.chat_state.status == :model_missing
+          assert state.live.status == :model_missing
           assert state.client_config.client == RecoveryClient
           assert state.model == %{name: "ghost-model"}
         end)
@@ -103,6 +107,7 @@ defmodule Nest.Agents.Agent.RecoveryTest do
             start_supervised(
               {Agent,
                %{
+                 space_id: AgentTestHelpers.current_space_id(),
                  name: "ghost-agent-#{System.unique_integer([:positive])}",
                  model: %{name: "ghost-model"},
                  vocation_id: vocation_id()

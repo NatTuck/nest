@@ -268,15 +268,15 @@ defmodule Nest.LLM.Runner do
   end
 
   @doc false
-  # Re-export of `Broadcasts.delta_text/4` so consumer
+  # Re-export of `Broadcasts.delta_text/5` so consumer
   # modules that need it don't have to alias `Broadcasts`
   # themselves. Cheap convenience.
-  def delta_text(agent_id, message_index, content, chars_start) do
-    Broadcasts.delta_text(agent_id, message_index, content, chars_start)
+  def delta_text(space_id, name, message_index, content, chars_start) do
+    Broadcasts.delta_text(space_id, name, message_index, content, chars_start)
   end
 
   @doc false
-  def delta_thinking(agent_id, message_index, content, chars_start) do
-    Broadcasts.delta_thinking(agent_id, message_index, content, chars_start)
+  def delta_thinking(space_id, name, message_index, content, chars_start) do
+    Broadcasts.delta_thinking(space_id, name, message_index, content, chars_start)
   end
 end

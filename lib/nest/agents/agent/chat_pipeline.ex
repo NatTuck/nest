@@ -39,7 +39,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
           {:noreply, Nest.Agents.Agent.t()}
   def handle_chat(state, content, requested_mode) do
     # Resolve mode: explicit > agent's current mode > "chat"
-    mode = requested_mode || state.mode
+    mode = requested_mode || state.live.mode
     # Validate mode against the vocation; fall back to default if invalid.
     {effective_mode, _caps} = resolve_mode_and_caps(mode, state.vocation)
 
@@ -69,7 +69,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   end
 
   defp clear_cancelled(state) do
-    %{state | chat_state: %{state.chat_state | cancelled: false}}
+    %{state | live: %{state.live | cancelled: false}}
   end
 
   # Before appending the user message, check if its projected
@@ -102,7 +102,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     else
       projected = state.chat_state.messages ++ [pending]
       used = ContextReminder.estimate_messages(projected)
-      crossed = state.chat_state.crossed_thresholds
+      crossed = state.live.crossed_thresholds
 
       case ContextReminder.highest_unannounced(used, limit, crossed) do
         nil ->
@@ -113,7 +113,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
 
           %{
             state
-            | chat_state: %{state.chat_state | crossed_thresholds: MapSet.put(crossed, atom)}
+            | live: %{state.live | crossed_thresholds: MapSet.put(crossed, atom)}
           }
       end
     end
@@ -144,22 +144,22 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     end
   end
 
-  # Store `{content, mode}` in `state.chat_state.pending_user_message`.
+  # Store `{content, mode}` in `state.live.pending_user_message`.
   # The field is the source of truth for the user's incoming
   # message until we know whether compaction fires.
   defp put_pending_user_message(state, pending) do
-    %{state | chat_state: %{state.chat_state | pending_user_message: pending}}
+    %{state | live: %{state.live | pending_user_message: pending}}
   end
 
   defp clear_pending_user_message(state) do
-    %{state | chat_state: %{state.chat_state | pending_user_message: nil}}
+    %{state | live: %{state.live | pending_user_message: nil}}
   end
 
   # Build the `Message.t()` struct for the pending user message
   # without appending. Returns `nil` if the field is not set.
   @spec pending_user_message_struct(Nest.Agents.Agent.t()) :: {:user, User.t()} | nil
   def pending_user_message_struct(state) do
-    case state.chat_state.pending_user_message do
+    case state.live.pending_user_message do
       nil -> nil
       {content, effective_mode} -> build_user_message(state, content, effective_mode)
     end
@@ -199,19 +199,19 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     {stamped_user, state} = append_pending_user_message(state)
 
     effective_mode =
-      case state.chat_state.pending_user_message do
-        nil -> state.mode
-        {_content, mode} -> mode || state.mode
+      case state.live.pending_user_message do
+        nil -> state.live.mode
+        {_content, mode} -> mode || state.live.mode
       end
 
     state =
       prepare_streaming_state(
         state,
         effective_mode,
-        state.chat_state.active_message_index
+        state.live.active_message_index
       )
 
-    {_effective_mode, caps} = resolve_mode_and_caps(state.mode, state.vocation)
+    {_effective_mode, caps} = resolve_mode_and_caps(state.live.mode, state.vocation)
     ChatTurnSpawner.spawn(state, state.chat_state.messages, {:user_message, stamped_user}, caps)
   end
 
@@ -238,13 +238,12 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   defp prepare_streaming_state(state, effective_mode, stamped_index) do
     %{
       state
-      | mode: effective_mode,
-        chat_state: %{
-          state.chat_state
-          | status: :streaming,
+      | live: %{
+          state.live
+          | mode: effective_mode,
+            status: :streaming,
             active_message_index: stamped_index,
-            pending_api_logs:
-              clear_pending_api_logs(state, stamped_index).chat_state.pending_api_logs,
+            pending_api_logs: clear_pending_api_logs(state, stamped_index).live.pending_api_logs,
             streaming_acc: Streaming.new(stamped_index + 1),
             tool_index_map: %{}
         }
@@ -290,7 +289,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     # while streaming. The pre-flight will re-run on the
     # next call (which is the next chat turn, since the
     # in-progress stream is finalizing).
-    if streaming_active?(state.chat_state.streaming_acc) do
+    if streaming_active?(state.live.streaming_acc) do
       append_and_spawn(state, effective_mode)
     else
       handle_preflight(state, effective_mode)
@@ -331,9 +330,9 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   # messages until they restart the agent or change the model.
   defp refuse_compaction(state) do
     state = clear_pending_user_message(state)
-    state = %{state | chat_state: %{state.chat_state | status: :context_overflow}}
+    state = %{state | live: %{state.live | status: :context_overflow}}
 
-    Broadcasts.status(state.name, state)
+    Broadcasts.status(state)
 
     system_prompt = render_system_prompt(state)
     reason = refusal_reason(system_prompt, state.llm_metrics.context_limit)
@@ -359,6 +358,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
         state.vocation,
         state.workspace_path,
         {state.llm_metrics.context_limit, state.llm_metrics.context_limit_source},
+        state.name,
         state.depth
       )
 
@@ -402,11 +402,11 @@ defmodule Nest.Agents.Agent.ChatPipeline do
       prepare_streaming_state(
         state,
         effective_mode,
-        state.chat_state.active_message_index
+        state.live.active_message_index
       )
 
-    Broadcasts.status(state.name, state)
-    {_effective_mode, caps} = resolve_mode_and_caps(state.mode, state.vocation)
+    Broadcasts.status(state)
+    {_effective_mode, caps} = resolve_mode_and_caps(state.live.mode, state.vocation)
     ChatTurnSpawner.spawn(state, state.chat_state.messages, {:user_message, stamped_user}, caps)
   end
 
@@ -480,7 +480,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   # was actually appended; we read them here so the message
   # struct carries the api_logs forward.
   defp get_pending_api_logs(state, message_index) do
-    Map.get(state.chat_state.pending_api_logs, message_index, [])
+    Map.get(state.live.pending_api_logs, message_index, [])
   end
 
   # Clear the pending api_logs queue for the given message_index
@@ -489,8 +489,8 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   # can chain updates.
   defp clear_pending_api_logs(state, message_index) do
     pending_api_logs =
-      Map.delete(state.chat_state.pending_api_logs, message_index)
+      Map.delete(state.live.pending_api_logs, message_index)
 
-    %{state | chat_state: %{state.chat_state | pending_api_logs: pending_api_logs}}
+    %{state | live: %{state.live | pending_api_logs: pending_api_logs}}
   end
 end

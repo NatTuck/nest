@@ -2,23 +2,23 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
   @moduledoc """
   E2E test that drives the parent's full chat turn through
   `MockClient.run/2` (which is exactly the surface the
-  preflight gates) and confirms the clone_agent flow
-  produces a properly paired `assistant[clone_agent] →
+  preflight gates) and confirms the agents/spawn flow
+  produces a properly paired `assistant[agents/spawn] →
   tool[clone_result]` in the parent's messages list.
 
   ## Pipeline under test
 
     1. Parent Agent A starts under the Supervisor with
        `MockClient` (via the per-test `AgentTestHelpers`
-       swap). A's vocation includes the `clone_agent`
+       swap). A's vocation includes the `agents/spawn`
        tool.
     2. A's MockClient FIFO has (a) `set_tool_response`
-       carrying `clone_agent(instruction="compute 2+2")`,
+       carrying `agents/spawn(query="compute 2+2", clone_context: true)`,
        then (b) `set_response("parent final")`.
     3. `Agent.chat(A, "delegate a thing")` fires the
        chain. A's first MockClient run consumes (a);
-       `ToolLoop.run_clone_agent/2` calls A's
-       `:clone_agent_request` handler.
+       `ToolLoop.run_agents/spawn/2` calls A's
+       `:spawn_agent_request` handler.
     4. A's handler spawns Agent B via
        `Supervisor.start_agent_with_parent/2`. The child
        GenServer is registered, but its actual chat cycle
@@ -29,7 +29,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
        `:child_completed{child_name, response, usage}`
        directly to the parent. `SubAgent.handle_child_completed/4`
        merges the usage into `descendant_usage`, drops
-       the pending entry, and forwards `:clone_agent_result`
+       the pending entry, and forwards `:spawn_agent_result`
        to the blocked tool worker.
     6. The worker (Task) appends the synthesized `tool[X]`
        message with `tool_call_id: "call_clone_1"` and
@@ -43,7 +43,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
 
     * `Nest.Agents.chat/2` — short-circuit the child's
       chat cycle. The child's `preloaded_messages` carry
-      the parent's `assistant[clone_agent]` tool_use but
+      the parent's `assistant[agents/spawn]` tool_use but
       no paired tool_result; driving the child's LLM
       cycle would trip our preflight's
       `:unclosed_tool_responses` check. That's a separate
@@ -59,7 +59,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
 
     * 5 message indices in `[0, 1, 2, 3, 4]`.
     * Index 2 is the assistant `tool_use` for
-      `clone_agent(id="call_clone_1")`.
+      `agents/spawn(id="call_clone_1")`.
     * Index 3 is the `Part.ToolResult` carrying the
       child's text with `tool_call_id: "call_clone_1"` —
       i.e. the result of the call from step 4's
@@ -85,10 +85,10 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
 
   setup do
     stub_child_chat()
-    {:ok, vid: upsert_clone_agent_vocation()}
+    {:ok, vid: upsert_spawn_vocation()}
   end
 
-  test "clone_agent: parent's tool call spawns child, child's response via MockClient comes back as parent's tool result",
+  test "agents/spawn: parent's tool call spawns child, child's response via MockClient comes back as parent's tool result",
        %{vid: vid} do
     {parent_pid, parent_name} =
       AgentTestHelpers.start_agent(%{
@@ -108,8 +108,8 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
       tool_calls: [
         %{
           id: "call_clone_1",
-          name: "clone_agent",
-          arguments: %{"instruction" => "compute 2+2"}
+          name: "agents/spawn",
+          arguments: %{"query" => "compute 2+2", "clone_context" => true}
         }
       ]
     })
@@ -135,11 +135,11 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
                    },
                    5_000
 
-    {:ok, child_pid} = AgentsRegistry.lookup(child_name)
+    {:ok, child_pid} = AgentsRegistry.lookup(AgentTestHelpers.current_space_id(), child_name)
 
     cast_child_completed_to_parent(parent_name, child_name, "the answer is 4")
 
-    # Full chain: parent-turn-1 (clone_agent dispatch) +
+    # Full chain: parent-turn-1 (agents/spawn dispatch) +
     # synthesized child completion + parent-turn-2
     # (final text). The context-notice synthetic pair
     # (assistant("Context?") + user(notice)) may add 2
@@ -151,13 +151,13 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
     parent_state = :sys.get_state(parent_pid)
     AgentTestHelpers.assert_unique_message_indices(parent_state)
 
-    # Find the assistant message that carries the clone_agent
+    # Find the assistant message that carries the agents/spawn
     # tool call (the wire pairing test below depends on this).
     {:assistant, clone_assistant} =
       Enum.find(parent_state.chat_state.messages, fn
         {:assistant, %{parts: parts}} ->
           Enum.any?(parts, fn
-            %Part.ToolUse{name: "clone_agent"} -> true
+            %Part.ToolUse{name: "agents/spawn"} -> true
             _ -> false
           end)
 
@@ -170,21 +170,21 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
           match?(%Part.ToolUse{}, part),
           do: part
 
-    assert [%Part.ToolUse{id: "call_clone_1", name: "clone_agent"}] = tool_uses
+    assert [%Part.ToolUse{id: "call_clone_1", name: "agents/spawn"}] = tool_uses
 
-    # Find the tool message with the clone_agent result.
+    # Find the tool message with the agents/spawn result.
     {:tool, tool_msg} =
       Enum.find(parent_state.chat_state.messages, fn
-        {:tool, %{parts: [%Part.ToolResult{name: "clone_agent"}]}} -> true
+        {:tool, %{parts: [%Part.ToolResult{name: "agents/spawn"}]}} -> true
         _ -> false
       end)
 
     assert [
              %Part.ToolResult{
                tool_call_id: "call_clone_1",
-               name: "clone_agent",
+               name: "agents/spawn",
                content: content,
-               arguments: %{"instruction" => "compute 2+2"},
+               arguments: %{"query" => "compute 2+2", "clone_context" => true},
                is_error: false
              }
            ] = tool_msg.parts
@@ -202,15 +202,34 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
     # cast-back/merge surface under test.
     assert Process.alive?(child_pid)
     assert parent_state.llm_metrics.descendant_usage.output_tokens > 0
+
+    # The clone's fork notice carries its name and depth (its
+    # system message is inherited verbatim from the parent, so
+    # this user-visible notice is the only place to state the
+    # clone's true identity/depth).
+    child_state = :sys.get_state(child_pid)
+    assert child_state.depth == parent_state.depth + 1
+
+    ack_text =
+      child_state.chat_state.messages
+      |> Enum.filter(fn {role, _} -> role == :assistant end)
+      |> Enum.map(fn {_role, %{parts: parts}} ->
+        for %Part.Text{text: t} <- parts, do: t
+      end)
+      |> List.flatten()
+      |> Enum.join(" ")
+
+    assert ack_text =~ "named \"#{child_name}\""
+    assert ack_text =~ "at depth #{child_state.depth}"
   end
 
   # Cast `:child_completed` to the parent, mimicking what the
   # child's `chat_idle` handler does in production. The parent
   # reads the child's name from `state.chat_state.pending_children`,
-  # forwards `:clone_agent_result` to the blocked tool worker,
+  # forwards `:spawn_agent_result` to the blocked tool worker,
   # and merges the child's usage into `descendant_usage`.
   defp cast_child_completed_to_parent(parent_name, child_name, response) do
-    {:ok, parent_pid} = AgentsRegistry.lookup(parent_name)
+    {:ok, parent_pid} = AgentsRegistry.lookup(AgentTestHelpers.current_space_id(), parent_name)
 
     # Realistic child usage — `output_tokens: 42` proves the
     # parent's `descendant_usage` actually got merged into.
@@ -234,7 +253,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
   # The spawned child's first LLM call would normally land on
   # MockClient too (via `:force_subagent_mock`), but the
   # child's `preloaded_messages` include the parent's
-  # `assistant[clone_agent]` tool_use with no paired
+  # `assistant[agents/spawn]` tool_use with no paired
   # tool_result — the preflight we just added correctly
   # rejects this as `:unclosed_tool_responses`. Driving the
   # child's actual chat cycle would trigger that preflight
@@ -246,16 +265,16 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
   # in iteration 2, after the synthesized tool result lands).
   defp stub_child_chat do
     Mimic.copy(Nest.Agents)
-    Mimic.stub(Nest.Agents, :chat, fn _name, _content -> :ok end)
+    Mimic.stub(Nest.Agents, :chat, fn _space_id, _name, _content -> :ok end)
   end
 
-  defp upsert_clone_agent_vocation do
+  defp upsert_spawn_vocation do
     {:ok, %Vocations.Vocation{id: vid}} =
       Vocations.upsert_vocation(%{
         name: "CloneAgentFlow #{System.unique_integer([:positive])}",
-        description: "End-to-end clone_agent test",
+        description: "End-to-end agents/spawn test",
         system_prompt: "Delegate work to a subagent when asked.",
-        tools: ["clone_agent"],
+        tools: ["agents/spawn"],
         modes: %{
           "chat" => %{
             "description" => "Chat",

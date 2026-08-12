@@ -6,13 +6,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import {
-  render,
-  screen,
-  fireEvent,
-  waitFor,
-  act,
-} from "@testing-library/react";
+import { render, screen, act } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
 import { Sidebar } from "./Sidebar";
@@ -21,17 +15,22 @@ import { joinLobby } from "../channels";
 import {
   resetMockSocket,
   setNextJoinResult,
-  setNextPushResult,
-  captureNextPush,
   connectSocket,
 } from "../__mocks__/phoenix";
 
 function withStore(agents) {
-  useStore.setState({ agents });
+  // Agents are grouped under a space row in the sidebar. Seed a
+  // space and make it the current one so its (expanded) agent tree
+  // renders. Default each agent's `space_id` to that space's id.
+  useStore.setState({
+    agents: agents.map((a) => ({ ...a, space_id: a.space_id ?? 1 })),
+    spaces: [{ id: 1, slug: "my-space", name: "My Space" }],
+    currentSpaceId: 1,
+  });
 }
 
 function clearAgents() {
-  useStore.setState({ agents: null });
+  useStore.setState({ agents: null, spaces: [], currentSpaceId: null });
 }
 
 beforeEach(() => {
@@ -45,7 +44,6 @@ beforeEach(() => {
   connectSocket();
   setNextJoinResult("lobby", {});
   joinLobby();
-  setNextPushResult("lobby", "delete_agent", { ok: {} });
 });
 
 afterEach(() => {
@@ -163,7 +161,7 @@ describe("Sidebar tree", () => {
     });
 
     render(
-      <MemoryRouter initialEntries={["/agent/bravo"]}>
+      <MemoryRouter initialEntries={["/space/my-space/agent/bravo"]}>
         <Sidebar />
       </MemoryRouter>,
     );
@@ -174,66 +172,6 @@ describe("Sidebar tree", () => {
     // agent's link is reachable through the rendered tree.
     expect(screen.getByText("bravo")).toBeInTheDocument();
     expect(screen.getByText("alpha")).toBeInTheDocument();
-  });
-
-  it("deletes the agent when the trash icon is clicked", async () => {
-    act(() => {
-      withStore([
-        { name: "trash-me", parentId: null, parentName: null, depth: 0 },
-      ]);
-    });
-
-    const pushPromise = captureNextPush("lobby", "delete_agent");
-
-    render(
-      <MemoryRouter>
-        <Sidebar />
-      </MemoryRouter>,
-    );
-
-    const button = screen.getByRole("button", { name: /delete trash-me/i });
-    fireEvent.click(button);
-
-    // The mock channel receives the push with the agent
-    // name. The push config (ok: {}) was set in beforeEach
-    // so the handler completes without error.
-    const payload = await pushPromise;
-    expect(payload).toEqual({ name: "trash-me" });
-  });
-
-  it("navigates home when the deleted agent is the current route", async () => {
-    act(() => {
-      withStore([
-        { name: "current-one", parentId: null, parentName: null, depth: 0 },
-      ]);
-    });
-
-    const pushPromise = captureNextPush("lobby", "delete_agent");
-
-    render(
-      <MemoryRouter initialEntries={["/agent/current-one"]}>
-        <Sidebar />
-      </MemoryRouter>,
-    );
-
-    const button = screen.getByRole("button", {
-      name: /delete current-one/i,
-    });
-    fireEvent.click(button);
-
-    // The push goes through and the navigation guard fires.
-    // With MemoryRouter we can't observe the navigate call
-    // directly; the assertion on the push payload is enough
-    // to confirm the handler reached deleteAgent.
-    const payload = await pushPromise;
-    expect(payload).toEqual({ name: "current-one" });
-
-    // Wait for any pending navigation to settle (the test
-    // doesn't assert on it but the await prevents teardown
-    // from racing).
-    await waitFor(() => {
-      expect(button).toBeInTheDocument();
-    });
   });
 
   it("renders a streaming status dot (green pulse) for streaming agents", () => {
@@ -305,9 +243,9 @@ describe("Sidebar tree", () => {
 
   it("renders gracefully when state.agents is null (defensive)", () => {
     // The lobby initializes `state.agents` to `[]` but a
-    // race or stale state could leave it `null`. `buildAgentTree`
-    // short-circuits via `agents || []` so the sidebar must
-    // handle this without crashing.
+    // race or stale state could leave it `null`. The sidebar
+    // reads `spaces`/`agents` defensively so it must handle
+    // this without crashing.
     act(() => {
       clearAgents();
     });
@@ -318,8 +256,8 @@ describe("Sidebar tree", () => {
       </MemoryRouter>,
     );
 
-    // "No agents yet" empty state shows.
-    expect(container.textContent).toContain("No agents yet");
+    // With no spaces, the sidebar shows the empty state.
+    expect(container.textContent).toContain("No spaces yet");
   });
 });
 

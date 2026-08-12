@@ -45,7 +45,7 @@ defmodule Nest.Agents.Agent.Callbacks do
   def handle_cast({:chat, content, mode}, state), do: chat_or_drop(state, content, mode)
 
   defp chat_or_drop(state, _content, _mode)
-       when state.chat_state.status in [:streaming, :executing_tools, :model_missing],
+       when state.live.status in [:streaming, :executing_tools, :model_missing],
        do: {:noreply, state}
 
   defp chat_or_drop(state, content, mode), do: ChatPipeline.handle_chat(state, content, mode)
@@ -89,15 +89,22 @@ defmodule Nest.Agents.Agent.Callbacks do
   end
 
   # Sub-agent: a tool worker (running in the chat turn) is
-  # blocked on the tool dispatch and has hit a `clone_agent`
-  # tool call. Spawn a child agent, kick off its chat
-  # turn with the supplied instruction, remember the
-  # worker's pid so we can forward the eventual
-  # `:clone_agent_result`, and reply synchronously with the
-  # child's name so the worker can match its `receive` on
-  # child identity.
-  def handle_call({:clone_agent_request, task_pid, instruction}, _from, state) do
-    SubAgent.handle_clone_request(state, task_pid, instruction)
+  # blocked on the tool dispatch and has hit an `agents/spawn`
+  # tool call. `opts` carries `name`, `vocation_id`,
+  # `clone_context`, `query`, and `archive`. Spawn the child
+  # (fresh or context-cloned), kick off its chat turn with the
+  # `query` (if any), remember the worker's pid so we can
+  # forward the eventual `:spawn_agent_result`, and reply
+  # synchronously with the child's name so the worker can match
+  # its `receive` on child identity.
+  def handle_call({:spawn_agent_request, task_pid, opts}, _from, state) do
+    SubAgent.handle_spawn_request(state, task_pid, opts)
+  end
+
+  # Sub-agent: a tool worker hit an `agents/archive` call. Stop +
+  # mark the named agent in this space archived.
+  def handle_call({:archive_agent_request, task_pid, name}, _from, state) do
+    SubAgent.handle_archive_request(state, task_pid, name)
   end
 
   # User clicked Stop. Synchronously mark the in-flight
@@ -112,9 +119,9 @@ defmodule Nest.Agents.Agent.Callbacks do
   # `safe_iterate/1`'s `GenServer.call(agent, ...)` — the
   # ChatTurn's `iterate/1` catches the exit and stops cleanly.
   def handle_call({:stop_chat, channel_pid}, _from, state) do
-    state = %{state | chat_state: %{state.chat_state | cancelled: true}}
+    state = %{state | live: %{state.live | cancelled: true}}
 
-    if chat_turn_pid = state.chat_state.chat_turn_pid do
+    if chat_turn_pid = state.live.chat_turn_pid do
       try do
         GenServer.call(chat_turn_pid, {:stop_chat, channel_pid}, 5_000)
       catch

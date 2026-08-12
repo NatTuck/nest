@@ -10,7 +10,6 @@ defmodule Nest.Agents.AgentCompactionTest do
 
   import ExUnit.CaptureLog
   import Mimic
-  require Logger
 
   alias Nest.Agents.Agent
   alias Nest.LLM.MockClient
@@ -89,15 +88,13 @@ defmodule Nest.Agents.AgentCompactionTest do
       assert_received {:chat_delta, %{content: "Done"}}
       assert_received {:chat_message, {:assistant, _}}
 
-      %Part.ToolResult{content: content, is_error: is_error} = result_part
+      %Part.ToolResult{content: content} = result_part
 
-      if is_error do
-        Logger.error(tool_result: result_part)
-      end
+      assert_shell_ok(result_part)
 
       refute String.contains?(content, "[truncated:")
       refute String.contains?(content, "[skipped:")
-      assert is_error == false
+      assert content =~ "small"
 
       # The tool actually ran (we have a Programmer vocation with
       # shell_cmd registered), so the result should be the

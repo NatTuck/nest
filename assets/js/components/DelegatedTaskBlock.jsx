@@ -1,11 +1,12 @@
 /**
- * DelegatedTaskBlock — renders a `clone_agent` tool call as a
- * first-class "delegated task" card so the conversation reads
- * as a tree of subtasks rather than as another tool use.
+ * DelegatedTaskBlock — renders an `agents/spawn` tool call
+ * (with a `query`) as a first-class "delegated task" card so
+ * the conversation reads as a tree of subtasks rather than as
+ * another tool use.
  *
  * The block shows:
  *
- *   - The instruction text the parent sent to the child.
+ *   - The query text the parent sent to the child.
  *   - The child's name (linked to its chat page so the user
  *     can drill down into the child's full conversation).
  *   - Status: "running" while the parent is blocked on the
@@ -20,7 +21,7 @@
  * `MessageBubble`, after its `ToolCalls` block. This puts
  * the card visually between the assistant message and the
  * matching `ToolResults` block (which lives in a separate
- * `:tool` message). `DelegatedTask` reads `clone_agent`
+ * `:tool` message). `DelegatedTask` reads `agents/spawn`
  * tool calls from a single assistant message and pairs them
  * with their results by `tool_call_id`.
  */
@@ -33,49 +34,49 @@ const EMPTY_MESSAGES = [];
 const STREAMING_PLACEHOLDER = "(receiving instruction…)";
 
 /**
- * Pull the `instruction` field out of a `clone_agent` tool
+ * Pull the `query` field out of an `agents/spawn` tool
  * call's arguments, in any of the shapes it can take:
  *
- *   - Already-parsed object (`{ instruction: "do X" }`) →
+ *   - Already-parsed object (`{ query: "do X" }`) →
  *     return the field.
  *   - Streaming partial buffer (e.g.
- *     `'{"instruction":"do X'` or `'{"instruction":"do X\\nX"'`).
+ *     `'{"query":"do X'` or `'{"query":"do X\\nX"'`).
  *     Try `JSON.parse` for fully-formed prefixes; on failure,
  *     fall back to a regex that pulls whatever substring is
- *     inside the open `"instruction":"` marker. Returns
+ *     inside the open `"query":"` marker. Returns
  *     `null` while the buffer is too small to contain any
- *     instruction text (e.g. `'{"instr'`).
+ *     query text (e.g. `'{"que'`).
  */
 function extractCloneInstruction(args) {
   if (args == null) return null;
   if (typeof args === "object") {
-    return args.instruction ?? null;
+    return args.query ?? null;
   }
   if (typeof args !== "string") return null;
 
   try {
     const parsed = JSON.parse(args);
-    if (parsed && typeof parsed === "object" && parsed.instruction) {
-      return parsed.instruction;
+    if (parsed && typeof parsed === "object" && parsed.query) {
+      return parsed.query;
     }
   } catch {
     // fall through — partial buffer; use the regex fallback
   }
 
-  // Snip whatever lives inside `"instruction":"<chars>` for
+  // Snip whatever lives inside `"query":"<chars>` for
   // early buffers. The capture stops at the next unescaped
   // quote (escaped `\"` is consumed but not split on). The
   // regex is just for visual streaming UX — the finalized
   // `addChatMessage` reassembles the full string.
-  const match = args.match(/"instruction"\s*:\s*"((?:[^"\\]|\\.)*)/);
+  const match = args.match(/"query"\s*:\s*"((?:[^"\\]|\\.)*)/);
   if (match) return match[1];
   return null;
 }
 
 /**
- * Render one `DelegatedTaskBlock` per `clone_agent` tool
- * call in a single assistant message. Mounted inside
- * `MessageBubble`, between `<ToolCalls />` and
+ * Render one `DelegatedTaskBlock` per `agents/spawn` tool
+ * call (with a `query`) in a single assistant message. Mounted
+ * inside `MessageBubble`, between `<ToolCalls />` and
  * `<ToolResults />`, so the card sits inline with the
  * conversation flow rather than stacking at the bottom of
  * the chat log.
@@ -86,7 +87,7 @@ function extractCloneInstruction(args) {
  * `cache.messages` only — the streaming partial is rendered
  * through the same `MessageBubble` path, so a single
  * component covers both committed and in-flight messages.
- * Returns null when the message has no `clone_agent` calls,
+ * Returns null when the message has no `agents/spawn` calls,
  * so there's no rendering cost for the common case.
  *
  * Tolerates either snake_case (`tool_calls`,
@@ -103,7 +104,7 @@ export function DelegatedTask({ message, agentName }) {
   const calls = message.toolCalls || message.tool_calls || [];
   const cloneCalls = [];
   for (const c of calls) {
-    if (c && c.name === "clone_agent") {
+    if (c && c.name === "agents/spawn") {
       cloneCalls.push(c);
     }
   }
@@ -127,9 +128,9 @@ export function DelegatedTask({ message, agentName }) {
       {cloneCalls.map((call) => {
         const result = resultById.get(call.id);
         const resultContent = result?.content ?? null;
-        // Extract the instruction from the (possibly
+        // Extract the query from the (possibly
         // streaming) arguments. Falls back to the legacy
-        // `call.input.instruction` shape for messages that
+        // `call.input.query` shape for messages that
         // pre-date the streaming-args refactor.
         const rawArgs =
           call.arguments !== undefined ? call.arguments : call.input;
@@ -160,7 +161,7 @@ export function DelegatedTask({ message, agentName }) {
  * @param {Object} props
  * @param {string} props.toolCallId
  * @param {string} props.instruction
- *   The instruction that was passed to `clone_agent`.
+ *   The query that was passed to `agents/spawn`.
  * @param {string|null} props.childName
  *   The child's name (parsed from the matching
  *   `:tool_result` if the parent stored it; `null` while

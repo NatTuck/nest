@@ -109,10 +109,10 @@ defmodule Nest.Agents.Agent.Config do
   falls back to `DotConfig.default_max_depth/0` (3) when
   unset.
 
-  Used by `SystemPrompt.compose_vocation_config/4` to
-  filter the `clone_agent` tool out of an agent's tool
-  list when the agent is at the maximum depth (cannot
-  spawn further children).
+  Used by the spawn path to reject spawns at max depth, by
+  the compaction path to drop `agents/spawn` for a
+  max-depth agent, and by `SystemPrompt`'s identity line
+  (which reports the agent's depth of this cap).
   """
   @spec configured_max_depth() :: pos_integer()
   def configured_max_depth do

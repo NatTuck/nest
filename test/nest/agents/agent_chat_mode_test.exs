@@ -176,7 +176,7 @@ defmodule Nest.Agents.AgentChatModeTest do
       # The externally visible signals of the mode are the user
       # message's `metadata.mode` field AND the `currentMode` on
       # each `chat:status` payload. The agent now persists
-      # `state.mode` between chats ("sticky mode"), and broadcasts
+      # `state.live.mode` between chats ("sticky mode"), and broadcasts
       # it on every status push so the client can keep the
       # dropdown in sync.
       :ok = Agent.chat(pid, "Plan this", "plan")
@@ -191,7 +191,7 @@ defmodule Nest.Agents.AgentChatModeTest do
                         }}}
     end
 
-    test "state.mode is updated to the resolved mode after a chat (sticky mode)" do
+    test "state.live.mode is updated to the resolved mode after a chat (sticky mode)" do
       valid_caps = %{
         "net" => false,
         "fs" => %{"read" => ["/"], "write" => []}
@@ -214,26 +214,26 @@ defmodule Nest.Agents.AgentChatModeTest do
 
       # Initial state: vocation default (lex-first: "build").
       state = :sys.get_state(pid)
-      assert state.mode == "build"
+      assert state.live.mode == "build"
 
-      # Send a chat with mode "plan". The agent's state.mode
+      # Send a chat with mode "plan". The agent's state.live.mode
       # should update to "plan".
       :ok = Agent.chat(pid, "Plan this", "plan")
       assert_receive {:chat_status, %{status: "idle"}}, 500
       state = :sys.get_state(pid)
-      assert state.mode == "plan"
+      assert state.live.mode == "plan"
 
       # The next chat without an explicit mode arg uses the
-      # updated state.mode — confirms sticky mode is wired
-      # through handle_chat's `mode = requested_mode || state.mode`
+      # updated state.live.mode — confirms sticky mode is wired
+      # through handle_chat's `mode = requested_mode || state.live.mode`
       # fallback.
       :ok = Agent.chat(pid, "And another")
       assert_receive {:chat_status, %{status: "idle"}}, 500
       state = :sys.get_state(pid)
-      assert state.mode == "plan"
+      assert state.live.mode == "plan"
     end
 
-    test "state.mode falls back to vocation default when the requested mode is unknown" do
+    test "state.live.mode falls back to vocation default when the requested mode is unknown" do
       valid_caps = %{
         "net" => false,
         "fs" => %{"read" => ["/"], "write" => []}
@@ -257,9 +257,9 @@ defmodule Nest.Agents.AgentChatModeTest do
       :ok = Agent.chat(pid, "Hello", "nonexistent")
 
       # The fallback (vocation default, lex-first: "build") is
-      # written to state.mode.
+      # written to state.live.mode.
       state = :sys.get_state(pid)
-      assert state.mode == "build"
+      assert state.live.mode == "build"
 
       # And reflected in the chat:status broadcast.
       assert_receive {:chat_status, %{status: "idle", currentMode: "build"}}, 500

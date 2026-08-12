@@ -11,23 +11,21 @@ defmodule NestWeb.LobbyChannelTest do
   alias Nest.Agents
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Supervisor
+  alias Nest.Blueprints
   alias Nest.Repo
   alias Nest.Vocations
 
-  # The channel's `:after_join` spawns a supervised `Task` for
-  # `broken_agents`; in async mode the inner `Repo.all` raises
-  # `DBConnection.OwnershipError`, rescued to `[]` (module-level
-  # `capture_log` swallows the death).
-  #
-  # Setup stops leftover agent pids (`Supervisor.stop_agent/1`
-  # is idempotent) before deleting their DB rows; that's what
-  # closes the parallel-test ghost-pid race window. After
-  # cleanup, a fresh user is created and a token signed so
-  # the socket connect can authenticate.
+  # The `:after_join` spawns a supervised `Task` for `broken_agents`;
+  # in async mode the inner `Repo.all` raises `DBConnection.OwnershipError`,
+  # rescued to `[]` (module-level `capture_log` swallows the death). Setup
+  # stops leftover agent pids (idempotent) before deleting their rows to close
+  # the parallel-test ghost-pid race, then creates a user + token for connect.
   setup do
-    for name <- Nest.Persistence.list_agent_names() do
-      _ = Supervisor.stop_agent(name)
-      Nest.Persistence.delete_agent_by_name(name)
+    {:ok, space_id} = AgentTestHelpers.create_test_space()
+
+    for name <- Nest.Persistence.list_agent_names_for_space(space_id) do
+      _ = Supervisor.stop_agent(space_id, name)
+      Nest.Persistence.delete_agent(space_id, name)
     end
 
     # The channel handler's `default_vocation_id/0` falls back
@@ -60,11 +58,11 @@ defmodule NestWeb.LobbyChannelTest do
     Process.put(:lobby_test_token, token)
     Process.put(:lobby_test_user_id, user.id)
 
-    {:ok, %{user: user, token: token}}
+    {:ok, %{user: user, token: token, space_id: space_id}}
   end
 
   describe "join/3" do
-    test "returns agents, models, and vocations on join" do
+    test "returns agents, models, vocations, blueprints, and spaces on join" do
       # Connect socket and join lobby
       {_socket, payload} = join_lobby()
 
@@ -72,6 +70,9 @@ defmodule NestWeb.LobbyChannelTest do
       assert is_list(payload.agents)
       assert is_list(payload.models)
       assert is_list(payload.vocations)
+      assert is_list(payload.blueprints)
+      assert is_list(payload.spaces)
+      assert payload.suggested_name not in [nil, ""]
     end
 
     test "returns vocations with correct JSON structure" do
@@ -330,17 +331,18 @@ defmodule NestWeb.LobbyChannelTest do
     end
   end
 
-  describe "handle_in(create_agent)" do
-    test "creates agent and broadcasts event" do
+  describe "handle_in(create_space)" do
+    test "creates space (with root agent) and broadcasts event" do
       {socket, _payload} = join_lobby()
 
       ref =
-        push(socket, "create_agent", %{
+        push(socket, "create_space", %{
+          "name" => "test-space-#{System.unique_integer([:positive])}",
           "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
         })
 
-      assert_reply ref, :ok, %{"name" => name}
-      assert Regex.match?(~r/^[a-z]+-[a-z]+$/, name)
+      assert_reply ref, :ok, %{"space_id" => space_id, "name" => name}
+      assert Regex.match?(~r/^[a-z0-9-]+$/, name)
 
       # Register cleanup for the push-created agent so the
       # singleton `Nest.Agents.Supervisor` doesn't carry a
@@ -351,6 +353,7 @@ defmodule NestWeb.LobbyChannelTest do
 
       assert_broadcast "agent:created", %{
         "name" => ^name,
+        "space_id" => ^space_id,
         "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
       }
     end
@@ -363,14 +366,15 @@ defmodule NestWeb.LobbyChannelTest do
       {socket, _payload} = join_lobby()
 
       ref =
-        push(socket, "create_agent", %{
+        push(socket, "create_space", %{
+          "name" => "test-space-#{System.unique_integer([:positive])}",
           "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
         })
 
-      assert_reply ref, :ok, %{"name" => name}
+      assert_reply ref, :ok, %{"space_id" => space_id, "name" => name}
       AgentTestHelpers.ensure_cleanup(name)
 
-      assert {:ok, info} = Agents.get_info(name)
+      assert {:ok, info} = Agents.get_info(space_id, name)
       assert model_name(info.model) == "qwen3.5-plus"
       assert model_provider(info.model) == "model-studio"
 
@@ -379,37 +383,53 @@ defmodule NestWeb.LobbyChannelTest do
         "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
       }
     end
-  end
 
-  describe "handle_in(delete_agent)" do
-    test "deletes agent and broadcasts event" do
+    test "blueprint_id drives the root agent's vocation over the default" do
+      # Phase 2: when the client picks a blueprint, the lobby must
+      # NOT forward its default `vocation_id` fallback, so the
+      # root agent's vocation comes from the blueprint's
+      # `root_vocation_id`.
+      vocation =
+        Vocations.upsert_vocation(%{
+          name: "lobby-blueprint-voc-#{System.unique_integer([:positive])}",
+          description: "Blueprint root vocation",
+          system_prompt: "You are the blueprint root.",
+          tools: [],
+          modes: %{}
+        })
+        |> elem(1)
+
+      blueprint =
+        Blueprints.upsert_blueprint(%{
+          name: "lobby-blueprint-#{System.unique_integer([:positive])}",
+          root_vocation_id: vocation.id
+        })
+        |> elem(1)
+
       {socket, _payload} = join_lobby()
 
-      # Create via the channel so the channel's
-      # `default_vocation_id/0` fallback applies.
-      # `Agents.create_agent/2` direct would skip that and
-      # trip the NOT NULL constraint on `agents.vocation_id`.
       ref =
-        push(socket, "create_agent", %{
+        push(socket, "create_space", %{
+          "name" => "blueprint-space-#{System.unique_integer([:positive])}",
+          "blueprint_id" => blueprint.id,
           "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
         })
 
-      assert_reply ref, :ok, %{"name" => name}
+      assert_reply ref, :ok, %{"space_id" => space_id, "name" => name}
+      AgentTestHelpers.ensure_cleanup(name)
 
-      ref = push(socket, "delete_agent", %{"name" => name})
-      assert_reply ref, :ok, %{}
-      assert_broadcast "agent:deleted", %{"name" => ^name}
-
-      # Verify agent is gone
-      assert {:error, :not_found} = Agents.get_info(name)
+      assert {:ok, info} = Agents.get_info(space_id, name)
+      assert info.vocation_id == vocation.id
     end
+  end
 
-    test "returns error for non-existent agent" do
-      # Connect socket and join lobby
+  describe "handle_in(suggest_space_name)" do
+    test "replies with a non-empty adjective-animal space name" do
       {socket, _payload} = join_lobby()
 
-      ref = push(socket, "delete_agent", %{"name" => "nonexistent"})
-      assert_reply ref, :error, %{"reason" => "not_found"}
+      ref = push(socket, "suggest_space_name", %{})
+      assert_reply ref, :ok, %{"name" => name}
+      assert name =~ "-" and name != ""
     end
   end
 
@@ -423,17 +443,12 @@ defmodule NestWeb.LobbyChannelTest do
   defp model_provider(model), do: model[:provider] || model["provider"]
 
   # Join the lobby and BLOCK until the `:after_join` async
-  # broken-agents fetch delivers its follow-up push. The
-  # `assert_push "broken_agents_updated"` is critical: the
-  # `:after_join` handler spawns a `Task.Supervisor` child
-  # that does `Repo.all/1` using this test pid's sandbox
-  # checkout. Without the wait, the Task outlives the test
-  # pid's `Sandbox.checkin/1`, and Postgrex logs
-  # "client is still using a connection from owner" on
-  # DataCase teardown. Returning `{socket, init_payload}`
-  # lets callers inspect the initial payload (`{socket,
-  # payload} = join_lobby()`) or discard it (`{socket,
-  # _payload} = join_lobby()`).
+  # broken-agents fetch delivers its follow-up push. The wait
+  # is critical: the spawned `Task.Supervisor` child does
+  # `Repo.all/1` on this test pid's sandbox checkout; without
+  # it the Task outlives the pid's `Sandbox.checkin/1` and
+  # Postgrex logs "client is still using a connection from
+  # owner". Returns `{socket, init_payload}`.
   defp join_lobby do
     {:ok, connected} =
       connect(NestWeb.UserSocket, %{"token" => Process.get(:lobby_test_token)})

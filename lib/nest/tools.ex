@@ -13,6 +13,7 @@ defmodule Nest.Tools do
 
   require Logger
 
+  alias Nest.Agents.Agent.Config
   alias Nest.LLM.Tool
   alias Nest.Tools.{FileTools, InspectFile, ShellCmd}
 
@@ -32,24 +33,47 @@ defmodule Nest.Tools do
   @spec get_function(String.t(), String.t() | nil, String.t() | nil) :: Tool.t() | nil
   def get_function(name, workspace_path, tmp_path \\ nil) do
     case name do
-      "read_file" -> FileTools.read_file_function(workspace_path, tmp_path)
-      "write_file" -> FileTools.write_file_function(workspace_path, tmp_path)
-      "edit" -> FileTools.edit_function(workspace_path, tmp_path)
-      "inspect_file" -> InspectFile.build(workspace_path, tmp_path)
-      "shell_cmd" -> shell_cmd_function(workspace_path, tmp_path)
-      "context" -> context_function()
-      # `clone_agent` is intercepted by the ChatTurn /
-      # ToolLoop machinery — the registered tool is just a
-      # stub that surfaces in the LLM's tool list with the
-      # right schema. The real execution path is
-      # `Nest.Agents.Agent.ToolLoop.run_clone_agent/2`,
-      # which sends a `clone_agent_request` to the parent
-      # GenServer and blocks awaiting the result before
-      # returning a synthetic `ToolResult`.
-      "clone_agent" -> clone_agent_function()
-      _ -> nil
+      "read_file" ->
+        FileTools.read_file_function(workspace_path, tmp_path)
+
+      "write_file" ->
+        FileTools.write_file_function(workspace_path, tmp_path)
+
+      "edit" ->
+        FileTools.edit_function(workspace_path, tmp_path)
+
+      "inspect_file" ->
+        InspectFile.build(workspace_path, tmp_path)
+
+      "shell_cmd" ->
+        shell_cmd_function(workspace_path, tmp_path)
+
+      "context" ->
+        context_function()
+
+      # `agents/spawn`, `agents/query`, `agents/list`, and
+      # `agents/archive` are intercepted by the ChatTurn /
+      # ToolLoop machinery — the registered tools are stubs
+      # that surface the right schema in the LLM's tool list.
+      # Real execution lives in `Nest.Agents.Agent.ToolLoop`
+      # (spawn/archive route through the agent GenServer; list
+      # reads the space inline; query waits on the target's
+      # PubSub topic).
+      name when name in ["agents/spawn", "agents/query", "agents/list", "agents/archive"] ->
+        sub_agent_tool_function(name)
+
+      _ ->
+        nil
     end
   end
+
+  # Dispatch the sub-agent tool stubs. Kept as its own function
+  # so `get_function/3` stays under the credo cyclomatic-
+  # complexity cap.
+  defp sub_agent_tool_function("agents/spawn"), do: spawn_agent_function()
+  defp sub_agent_tool_function("agents/query"), do: query_agent_function()
+  defp sub_agent_tool_function("agents/list"), do: list_agents_function()
+  defp sub_agent_tool_function("agents/archive"), do: archive_agent_function()
 
   @doc """
   JSON schema fragment for the `max_result_tokens` call arg.
@@ -147,40 +171,176 @@ defmodule Nest.Tools do
     }
   end
 
-  # The `clone_agent` tool: spawn a child agent with the
-  # full conversation context plus the supplied `instruction`
-  # as a new user message; block until the child goes idle;
-  # return the child's last assistant message content as the
-  # tool result.
+  # The `agents/spawn` tool: the general sub-agent spawn API.
+  # Unifies the old `clone_agent` (via `clone_context`) and
+  # `spawn_agent`. A child is created in this space and (if
+  # `query` is given) immediately asked a task, blocking for its
+  # response. `vocation_id` defaults to the parent's vocation;
+  # it's only needed to differ. `clone_context: true` inherits
+  # the parent's full context (the old `clone_agent` behavior).
+  # `archive` (only meaningful with `query`) stops + marks the
+  # child archived after its response, making the spawn a
+  # one-shot. `timeout` caps how long the call blocks on the
+  # query response (default 5 minutes).
   #
-  # The `function` here is a stub. The real execution flow
-  # lives in `Nest.Agents.Agent.ToolLoop.run_clone_agent/2`
-  # (intercepts the tool-call batch and dispatches via
-  # `GenServer.call` to the parent Agent GenServer, then
-  # `receive`s the forwarded `:clone_agent_result` from the
-  # blocking tool worker).
-  defp clone_agent_function do
+  # The `function` here is a stub. Real execution lives in
+  # `Nest.Agents.Agent.ToolLoop`, which intercepts the batch,
+  # sends a `:spawn_agent_request` to the coordinator GenServer,
+  # and returns the child's name (and, if `query` was given, its
+  # response). Spawning is whitelist-checked against the space's
+  # blueprint `spawnable_vocation_ids`.
+  defp spawn_agent_function do
     %Tool{
-      name: "clone_agent",
+      name: "agents/spawn",
       description:
-        "Spawn a child agent with a copy of this conversation. The child " <>
-          "runs to completion (it may use other tools, call `clone_agent` itself, " <>
-          "or return text) and returns its final assistant message as the tool result. " <>
-          "Use this when a task can be delegated without holding the current context.",
+        "Create a sub-agent in this space and optionally delegate a task to it. " <>
+          "Returns the new agent's name; if `query` is given, additionally blocks " <>
+          "and returns the agent's response. `vocation_id` defaults to your own " <>
+          "vocation — set it to spawn a specialist with a different role. Set " <>
+          "`clone_context` to true to spawn the agent with a copy of this " <>
+          "conversation instead of a fresh context. Set `archive` to true (with " <>
+          "`query`) to stop and archive the agent after it responds (one-shot). " <>
+          "Spawned vocations may be restricted by this space's blueprint. " <>
+          "Sub-agents can be spawned down to a maximum depth of " <>
+          "#{Config.configured_max_depth()}.",
       parameters_schema: %{
         "type" => "object",
         "properties" => %{
-          "instruction" => %{
+          "name" => %{
+            "type" => "string",
+            "description" => "The unique name of the new sub-agent within this space."
+          },
+          "vocation_id" => %{
+            "type" => "integer",
+            "description" =>
+              "The vocation id defining the specialist's role and tools. " <>
+                "Defaults to your own vocation when omitted."
+          },
+          "clone_context" => %{
+            "type" => "boolean",
+            "description" =>
+              "When true, spawn the agent with a copy of this conversation " <>
+                "instead of a fresh context."
+          },
+          "query" => %{
             "type" => "string",
             "description" =>
-              "The task for the child agent to perform. Treated as a new " <>
-                "user message after the child's copied message history."
+              "When given, sends this as the agent's first task and blocks " <>
+                "for its response."
+          },
+          "archive" => %{
+            "type" => "boolean",
+            "description" =>
+              "When true (with `query`), stop and archive the agent after it " <>
+                "responds. Makes the spawn one-shot."
+          },
+          "timeout" => %{
+            "type" => "integer",
+            "description" =>
+              "Maximum milliseconds to block for the response (only used with " <>
+                "`query`). Defaults to 300000 (5 minutes)."
           }
         },
-        "required" => ["instruction"]
+        "required" => ["name"]
       },
       function: fn _args, _context ->
-        {:ok, "Clone agent request received."}
+        {:ok, "Spawn agent request received."}
+      end
+    }
+  end
+
+  # The `agents/list` tool: enumerate the non-archived agents in
+  # this space. Returns each agent's name, vocation, status, and
+  # depth. Like `agents/spawn`, the `function` here is a stub —
+  # `ToolLoop` handles it inline by reading the space's running
+  # agents.
+  defp list_agents_function do
+    %Tool{
+      name: "agents/list",
+      description:
+        "List the active sub-agents in this space, with their name, vocation, " <>
+          "status, and depth. Use this to discover agents you can delegate to.",
+      parameters_schema: %{
+        "type" => "object",
+        "properties" => %{},
+        "required" => []
+      },
+      function: fn _args, _context ->
+        {:ok, "List agents request received."}
+      end
+    }
+  end
+
+  # The `agents/query` tool: send a chat message to a peer
+  # sub-agent in this space and return its final response.
+  # `timeout` caps how long the call blocks (default 5 minutes).
+  #
+  # The `function` here is a stub. Real execution lives in
+  # `Nest.Agents.Agent.ToolLoop.run_query_agent/2`, which
+  # subscribes to the target's PubSub topic, triggers its turn
+  # via `Agents.chat/3`, and waits for the idle status before
+  # returning the target's latest assistant text.
+  defp query_agent_function do
+    %Tool{
+      name: "agents/query",
+      description:
+        "Send a chat message to a sub-agent in this space and wait for its " <>
+          "response. Use this to delegate a question to a specialist you have " <>
+          "already spawned (see `agents/spawn` and `agents/list`). Your turn " <>
+          "blocks until the target responds.",
+      parameters_schema: %{
+        "type" => "object",
+        "properties" => %{
+          "name" => %{
+            "type" => "string",
+            "description" => "The name of the sub-agent to query."
+          },
+          "prompt" => %{
+            "type" => "string",
+            "description" => "The message to send to the sub-agent."
+          },
+          "timeout" => %{
+            "type" => "integer",
+            "description" =>
+              "Maximum milliseconds to block for the response. Defaults to " <>
+                "300000 (5 minutes)."
+          }
+        },
+        "required" => ["name", "prompt"]
+      },
+      function: fn _args, _context ->
+        {:ok, "Query agent request received."}
+      end
+    }
+  end
+
+  # The `agents/archive` tool: stop + mark an existing agent in
+  # this space archived. It is then excluded from `agents/list`
+  # and the lobby sidebar, and querying it is an error. Use this
+  # to clean up long-lived specialists you're done with.
+  #
+  # The `function` here is a stub. Real execution lives in
+  # `Nest.Agents.Agent.ToolLoop`, which routes through the agent
+  # GenServer to stop and archive the target.
+  defp archive_agent_function do
+    %Tool{
+      name: "agents/archive",
+      description:
+        "Stop and archive a sub-agent in this space. The archived agent is no " <>
+          "longer listed or queryable. Use this to clean up a specialist you no " <>
+          "longer need.",
+      parameters_schema: %{
+        "type" => "object",
+        "properties" => %{
+          "name" => %{
+            "type" => "string",
+            "description" => "The name of the sub-agent to archive."
+          }
+        },
+        "required" => ["name"]
+      },
+      function: fn _args, _context ->
+        {:ok, "Archive agent request received."}
       end
     }
   end

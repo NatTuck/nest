@@ -7,10 +7,12 @@
  *
  * Routes:
  * - / → RootGate (transitional: checks for a token, attempts
- *         to connect the WS, then redirects to /new_agent or
+ *         to connect the WS, then redirects to /spaces or
  *         /login depending on outcome)
- * - /new_agent → NewAgentPage (create new agent; sidebar visible)
- * - /agent/:name → ChatPage (chat with agent)
+ * - /spaces → SpacesIndex (the user's spaces)
+ * - /spaces/new → NewSpacePage (create new space)
+ * - /space/:spaceSlug → SpaceView (space overview)
+ * - /space/:spaceSlug/agent/:name → ChatPage (chat with agent)
  * - /about → AboutPage (about with mascot)
  * - /login, /register → standalone auth pages (no sidebar)
  * - /invites → InvitesPage (sidebar visible; invite CRUD via
@@ -40,8 +42,10 @@ import { useStore } from "./store";
 import { initChannels, joinLobby, leaveLobby } from "./channels";
 import { readAuthToken } from "./socket";
 import { Sidebar } from "./components/Sidebar";
-import { NewAgentPage } from "./pages/NewAgentPage";
 import { ChatPage } from "./pages/ChatPage";
+import { SpaceView } from "./pages/SpaceView";
+import { NewSpacePage } from "./pages/NewSpacePage";
+import { SpacesIndex } from "./pages/SpacesIndex";
 import { AboutPage } from "./pages/AboutPage";
 import { LoginPage } from "./pages/LoginPage";
 import { RegisterPage } from "./pages/RegisterPage";
@@ -58,7 +62,7 @@ import { InvitesPage } from "./pages/InvitesPage";
  *    `isConnected` store flag.
  *
  * On `isConnected` becoming true (i.e. the server accepted
- * our token), navigate to `/new_agent`. The user is now in
+ * our token), navigate to `/spaces`. The user is now in
  * an authenticated session.
  *
  * We intentionally do NOT add a timeout: a stale or
@@ -88,7 +92,7 @@ function RootGate() {
 
   useEffect(() => {
     if (isConnected) {
-      navigate("/new_agent", { replace: true });
+      navigate("/spaces", { replace: true });
     }
   }, [isConnected, navigate]);
 
@@ -102,9 +106,9 @@ function RootGate() {
 /**
  * Layout component with sidebar and main content.
  *
- * Mounts only for authenticated routes (`/new_agent`,
- * `/agent/:name`, `/about`, `/invites`). The WS connection
- * is established via `initChannels` and the lobby is joined
+ * Mounts only for authenticated routes (`/spaces`,
+ * `/space/:slug/agent/:name`, `/about`, `/invites`). The WS
+ * connection is established via `initChannels` and the lobby is joined
  * once `isConnected` flips true.
  */
 function Layout() {
@@ -151,8 +155,10 @@ export function App() {
         <Route path="/register" element={<RegisterPage />} />
         <Route path="/" element={<RootGate />} />
         <Route path="/" element={<Layout />}>
-          <Route path="new_agent" element={<NewAgentPage />} />
-          <Route path="agent/:name" element={<ChatPage />} />
+          <Route path="spaces" element={<SpacesIndex />} />
+          <Route path="spaces/new" element={<NewSpacePage />} />
+          <Route path="space/:spaceSlug" element={<SpaceView />} />
+          <Route path="space/:spaceSlug/agent/:name" element={<ChatPage />} />
           <Route path="about" element={<AboutPage />} />
           <Route path="invites" element={<InvitesPage />} />
         </Route>

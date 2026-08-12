@@ -44,6 +44,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   alias Nest.Agents.Agent.ChatTurnSpawner
   alias Nest.Agents.Agent.Compaction.Marker
   alias Nest.Agents.Agent.Compaction.Trigger
+  alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.MessageAppender
   alias Nest.Agents.Agent.SystemPrompt
   alias Nest.Messages.Part
@@ -80,12 +81,10 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
     {:noreply, loop_detected_ok(state)}
   end
 
-  # Synchronous retry/loop-ack dispatch for `Agent.retry_compaction/1`
-  # and `Agent.compaction_loop_detected_ok/1` (both `GenServer.call/3`,
-  # via `Nest.Agents.Agent.Callbacks.handle_call/3`). Replaces the
-  # previous `send/2` paths so callers wait for the agent to actually
-  # handle the request — the channel's `:reply, :ok, socket` only
-  # makes sense after the agent has run. Tests no longer need a drain.
+  # Synchronous retry/loop-ack dispatch for
+  # `Agent.retry_compaction/1` and `Agent.compaction_loop_detected_ok/1`
+  # (both `GenServer.call/3` via `Callbacks.handle_call/3`), so
+  # callers wait for the agent to actually handle the request.
   def handle_call(:retry_compaction, _from, state) do
     {:reply, :ok, retry_compaction(state)}
   end
@@ -100,10 +99,9 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   messages, broadcast chat:compaction, spawn next.
 
   `summary_text` is the raw LLM text (may contain
-  `think.../think` markers). `carried_entry` is the third
-  element of the compactor entry — `nil` for Trigger A
-  (post-turn) or the carried `{:tool_call, _, _, _}` /
-  `{:compact_tool, _, _, _}` for Trigger B (mid-turn).
+  `think.../think` markers). `carried_entry` is `nil` for
+  Trigger A (post-turn) or the carried tool entry for
+  Trigger B (mid-turn).
   """
   @spec handle_success(Agent.t(), String.t(), Agent.ChatTurn.State.entry() | nil) :: Agent.t()
   def handle_success(state, summary_text, carried_entry) do
@@ -140,7 +138,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
     state = archive_pre_swap(state, archived_messages)
     state = apply_post_swap(state, marker, new_messages)
 
-    Broadcasts.compaction(state.name, marker, state.chat_state.history)
+    Broadcasts.compaction(state, marker, state.chat_state.history)
 
     spawn_next_chat_turn(state, carried_entry)
   end
@@ -161,12 +159,22 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
         fresh_vocation,
         state.workspace_path,
         {state.llm_metrics.context_limit, state.llm_metrics.context_limit_source},
+        state.name,
         state.depth
       )
 
+    tool_names = exclude_spawn_at_max_depth(tool_names, state.depth)
     tools = Nest.Tools.get_functions(tool_names, state.workspace_path, state.tmp_path)
 
     {%{state | vocation: fresh_vocation, tools: tools}, system_prompt}
+  end
+
+  # Compaction invalidates the prefix cache, so it's safe to
+  # drop `agents/spawn` for an agent at max depth.
+  defp exclude_spawn_at_max_depth(tool_names, depth) do
+    if depth >= Config.configured_max_depth(),
+      do: Enum.reject(tool_names, &(&1 == "agents/spawn")),
+      else: tool_names
   end
 
   # Build the post-swap message sequence: prepended fresh
@@ -211,13 +219,10 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   end
 
   # Build the post-swap `{:system, _}` message — only when
-  # we have a vocation-derived prompt AND it fits within the
-  # 25% safety budget. Over-budget prompts are NOT produced
-  # (the Trigger's preflight already refused the compaction
-  # in that case; this is the in-flight success path, where
-  # the system had a chance to grow between Trigger's render
-  # and ours — we drop it and log a warning so the next
-  # message-flow can surface a clearer error).
+  # there's a vocation-derived prompt AND it fits the 25%
+  # safety budget. Over-budget prompts are dropped with a
+  # warning (the Trigger preflight already refused in that
+  # case; this is the in-flight success path).
   defp build_rebuilt_system(system_prompt, context_limit, now) do
     cond do
       is_nil(system_prompt) ->
@@ -243,18 +248,17 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
     end
   end
 
-  # Place post-swap entries via the canonical message append
-  # path. The marker goes to `history` via `append_history_one/2`
-  # (no `chat:message` broadcast). New messages go to `messages`
-  # via `__append_messages__/2` (with `chat:message` broadcast).
+  # Place post-swap entries via the canonical append path: the
+  # marker to `history` (`append_history_one/2`, no broadcast),
+  # new messages to `messages` (`__append_messages__/2`).
   defp apply_post_swap(state, marker, new_messages) do
     {_marker, state} = MessageAppender.append_history_one(state, marker)
     {_stamped, state} = Agent.__append_messages__(state, new_messages)
     state
   end
 
-  # Move pre-swap `messages` to `history` (in-memory only;
-  # their DB rows already exist at their pre-swap indices).
+  # Move pre-swap `messages` to `history` (their DB rows already
+  # exist at pre-swap indices).
   defp archive_pre_swap(state, archived_messages) do
     %{
       state
@@ -267,17 +271,16 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   end
 
   @doc """
-  The compactor's chat turn failed. Set
-  `:compaction_failed` status, broadcast `chat:error` +
-  `chat:status`. No marker, no archive, no summary_user
-  (the user sees the real LLM error response if any).
+  The compactor's chat turn failed. Set `:compaction_failed`
+  status, broadcast `chat:error` + `chat:status`. No marker,
+  archive, or summary_user (the user sees the real error).
   """
   @spec handle_error(Agent.t(), term(), Agent.ChatTurn.State.entry() | nil) :: Agent.t()
   def handle_error(state, reason, carried_entry) do
     Logger.warning("Compaction failed: agent=#{state.name} reason=#{inspect(reason)}")
 
     state = put_status(state, :compaction_failed)
-    Broadcasts.status(state.name, state)
+    Broadcasts.status(state)
 
     Broadcasts.compaction_error(
       state.name,
@@ -299,51 +302,58 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   def needs_entry(state, carried_entry) do
     state = %{
       state
-      | chat_state: %{
-          state.chat_state
+      | live: %{
+          state.live
           | status: :compacting,
             mid_turn_entry: %{entry: carried_entry}
         }
     }
 
-    Broadcasts.status(state.name, state)
+    Broadcasts.status(state)
     Trigger.mid_turn(state, carried_entry)
   end
 
   @spec check_consecutive(Agent.t()) :: :refuse | {:ok, Agent.t()}
   def check_consecutive(state) do
-    count = state.chat_state.consecutive_compaction_count + 1
+    count = state.live.consecutive_compaction_count + 1
 
     if count > @max_consecutive_compactions do
-      set_compaction_loop(state, :consecutive_compaction_threshold)
+      # Report the N compactions that already happened as "attempted".
+      set_compaction_loop(
+        state,
+        :consecutive_compaction_threshold,
+        state.live.consecutive_compaction_count,
+        @max_consecutive_compactions
+      )
+
       :refuse
     else
-      state = %{state | chat_state: %{state.chat_state | consecutive_compaction_count: count}}
+      state = %{state | live: %{state.live | consecutive_compaction_count: count}}
       {:ok, state}
     end
   end
 
   @spec loop_detected_ok(Agent.t()) :: Agent.t()
   def loop_detected_ok(state) do
-    if state.chat_state.status != :compaction_loop_detected do
+    if state.live.status != :compaction_loop_detected do
       Logger.warning(
         "compaction_loop_detected_ok ignored: agent=#{state.name} " <>
-          "status=#{inspect(state.chat_state.status)} (expected :compaction_loop_detected)"
+          "status=#{inspect(state.live.status)} (expected :compaction_loop_detected)"
       )
 
       state
     else
       state = %{
         state
-        | chat_state: %{
-            state.chat_state
+        | live: %{
+            state.live
             | status: :idle,
               consecutive_compaction_count: 0,
               pending_user_message: nil
           }
       }
 
-      Broadcasts.status(state.name, state)
+      Broadcasts.status(state)
       state
     end
   end
@@ -351,14 +361,14 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   @spec retry_compaction(Agent.t()) :: Agent.t()
   def retry_compaction(state) do
     cond do
-      state.chat_state.status != :compaction_failed ->
+      state.live.status != :compaction_failed ->
         Logger.warning(
-          "retry_compaction ignored: agent=#{state.name} status=#{inspect(state.chat_state.status)} (expected :compaction_failed)"
+          "retry_compaction ignored: agent=#{state.name} status=#{inspect(state.live.status)} (expected :compaction_failed)"
         )
 
         state
 
-      entry = state.chat_state.mid_turn_entry ->
+      entry = state.live.mid_turn_entry ->
         state = clear_mid_turn_entry(state)
         needs_entry(state, entry.entry)
 
@@ -369,19 +379,28 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
 
   # --- private helpers ---
 
-  defp set_compaction_loop(state, reason) do
-    state = %{state | chat_state: %{state.chat_state | status: :compaction_loop_detected}}
-    Broadcasts.status(state.name, state)
-    Broadcasts.compaction_loop(state.name, format_reason(reason), inspect(__MODULE__))
+  defp set_compaction_loop(state, reason, attempt_count, max_attempts) do
+    state = %{state | live: %{state.live | status: :compaction_loop_detected}}
+    Broadcasts.status(state)
+
+    Broadcasts.compaction_loop(
+      state.space_id,
+      state.name,
+      format_reason(reason),
+      inspect(__MODULE__),
+      attempt_count,
+      max_attempts
+    )
+
     state
   end
 
   defp clear_mid_turn_entry(state) do
-    %{state | chat_state: %{state.chat_state | mid_turn_entry: nil}}
+    %{state | live: %{state.live | mid_turn_entry: nil}}
   end
 
   defp put_status(state, status) do
-    %{state | chat_state: %{state.chat_state | status: status}}
+    %{state | live: %{state.live | status: status}}
   end
 
   # Append the carried entry's messages to the post-swap active
@@ -399,12 +418,9 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
 
   defp append_entry_tail(new_messages, _other), do: new_messages
 
-  # Look up the freshest vocation from the DB. On nil or
-  # transient error, fall back to the cached `state.vocation`.
-  # In production `state.vocation` is always populated (set at
-  # agent init from the DB), so a nil-on-DB-lookup return still
-  # has a cached value to use; the system prompt stays valid
-  # even if a parallel writer deleted the vocation row.
+  # Look up the freshest vocation from the DB; on nil/error
+  # fall back to the cached `state.vocation` (always populated
+  # at init, so a nil DB lookup keeps the prompt valid).
   #
   # `DBConnection.OwnershipError` fires when this GenServer
   # runs inside an async test where the Ecto sandbox ownership
@@ -441,9 +457,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   end
 
   defp spawn_with_entry(state, entry) do
-    {_effective_mode, caps} =
-      ChatPipeline.resolve_mode_and_caps(state.mode, state.vocation)
-
+    {_effective_mode, caps} = ChatPipeline.resolve_mode_and_caps(state.live.mode, state.vocation)
     ChatTurnSpawner.spawn(state, state.chat_state.messages, entry, caps)
   end
 
@@ -472,7 +486,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   # ChatTurn re-fires warnings if usage rises again after the
   # history was summarized.
   defp reset_crossed_thresholds(state) do
-    %{state | chat_state: %{state.chat_state | crossed_thresholds: %MapSet{}}}
+    %{state | live: %{state.live | crossed_thresholds: %MapSet{}}}
   end
 
   # Reset the `read_files` cache. Same pattern as

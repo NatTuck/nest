@@ -21,7 +21,8 @@ defmodule Nest.Agents.PersistedAgent do
   ## Sub-agent tree
 
   `parent_id` is the integer `agents.id` of the agent that
-  spawned this one via the `clone_agent` tool (nil for roots).
+  spawned this one via the `agents/spawn` tool (with
+  `clone_context`) (nil for roots).
   `depth` is the agent's tree depth (0 for roots; `parent.depth
   + 1` for children). Both columns survive a BEAM restart so the
   agent's tree position is reconstructed on reload. The runtime
@@ -36,6 +37,7 @@ defmodule Nest.Agents.PersistedAgent do
   @type t :: %__MODULE__{
           id: integer() | nil,
           name: String.t(),
+          space_id: integer() | nil,
           vocation_id: integer() | nil,
           model: map(),
           workspace_path: String.t() | nil,
@@ -45,6 +47,7 @@ defmodule Nest.Agents.PersistedAgent do
           depth: non_neg_integer(),
           created_by_user_id: integer() | nil,
           shared: boolean(),
+          archived: boolean(),
           inserted_at: DateTime.t() | nil,
           updated_at: DateTime.t() | nil
         }
@@ -52,6 +55,7 @@ defmodule Nest.Agents.PersistedAgent do
   @primary_key {:id, :id, autogenerate: true}
   schema "agents" do
     field :name, :string
+    field :space_id, :integer
     field :vocation_id, :integer
     field :model, :map
     field :workspace_path, :string
@@ -73,7 +77,8 @@ defmodule Nest.Agents.PersistedAgent do
     # below keeps the FK in the schema (so the migration's
     # `references` is enforced) without exposing a `:parent`
     # association accessor — callers reach the parent via
-    # `fetch_agent_by_id/1`.
+    # `Persistence.fetch_agent/2` (looked up by `parent_id`,
+    # not by name).
     field :parent_id, :integer
     field :depth, :integer, default: 0
 
@@ -94,6 +99,13 @@ defmodule Nest.Agents.PersistedAgent do
     # opt-in.
     field :created_by_user_id, :integer
     field :shared, :boolean, default: false
+
+    # Lifecycle. `archived` marks an agent as stopped + hidden
+    # from `agents/list` and the lobby sidebar. Archived rows
+    # accumulate over time (fine for now; a cleanup/partitioning
+    # story is future work). Archived agents are NOT excluded
+    # from persisted message-history / parent-child joins.
+    field :archived, :boolean, default: false
 
     timestamps(type: :utc_datetime)
   end
@@ -118,6 +130,7 @@ defmodule Nest.Agents.PersistedAgent do
     source
     |> cast(params, [
       :name,
+      :space_id,
       :vocation_id,
       :model,
       :workspace_path,
@@ -126,11 +139,12 @@ defmodule Nest.Agents.PersistedAgent do
       :parent_id,
       :depth,
       :created_by_user_id,
-      :shared
+      :shared,
+      :archived
     ])
-    |> validate_required([:name, :model])
+    |> validate_required([:name, :space_id, :model])
     |> validate_length(:name, min: 1)
-    |> unique_constraint(:name)
+    |> unique_constraint([:space_id, :name])
     # Defensive: depth must be non-negative. The DB-side
     # CHECK constraint is the canonical guard; this one
     # surfaces the error as a changeset error instead of

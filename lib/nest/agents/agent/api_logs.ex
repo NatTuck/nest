@@ -12,16 +12,16 @@ defmodule Nest.Agents.Agent.ApiLogs do
 
   @doc false
   def get(state, message_index) do
-    Map.get(state.chat_state.pending_api_logs, message_index, [])
+    Map.get(state.live.pending_api_logs, message_index, [])
   end
 
   @doc false
   def clear(state, message_index) do
     %{
       state
-      | chat_state: %{
-          state.chat_state
-          | pending_api_logs: Map.delete(state.chat_state.pending_api_logs, message_index)
+      | live: %{
+          state.live
+          | pending_api_logs: Map.delete(state.live.pending_api_logs, message_index)
         }
     }
   end

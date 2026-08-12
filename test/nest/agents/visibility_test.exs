@@ -23,9 +23,11 @@ defmodule Nest.Agents.VisibilityTest do
     Repo.delete_all(InviteSchema)
     Repo.delete_all(UserSchema)
 
-    for name <- Nest.Persistence.list_agent_names() do
-      Supervisor.stop_agent(name)
-      Nest.Persistence.delete_agent_by_name(name)
+    {:ok, _space_id} = AgentTestHelpers.create_test_space()
+
+    for name <- Nest.Persistence.list_agent_names_for_space(AgentTestHelpers.current_space_id()) do
+      Supervisor.stop_agent(AgentTestHelpers.current_space_id(), name)
+      Nest.Persistence.delete_agent(AgentTestHelpers.current_space_id(), name)
     end
 
     :ok
@@ -49,7 +51,7 @@ defmodule Nest.Agents.VisibilityTest do
       })
 
     visible_ids =
-      Visibility.list_visible_agents_for(bob.id)
+      Visibility.list_visible_agents_for(AgentTestHelpers.current_space_id(), bob.id)
       |> Enum.map(& &1.name)
 
     assert name in visible_ids
@@ -73,7 +75,7 @@ defmodule Nest.Agents.VisibilityTest do
       })
 
     visible_ids =
-      Visibility.list_visible_agents_for(bob.id)
+      Visibility.list_visible_agents_for(AgentTestHelpers.current_space_id(), bob.id)
       |> Enum.map(& &1.name)
 
     refute name in visible_ids
@@ -97,7 +99,7 @@ defmodule Nest.Agents.VisibilityTest do
       })
 
     visible_ids =
-      Visibility.list_visible_agents_for(alice.id)
+      Visibility.list_visible_agents_for(AgentTestHelpers.current_space_id(), alice.id)
       |> Enum.map(& &1.name)
 
     assert name in visible_ids
@@ -117,10 +119,32 @@ defmodule Nest.Agents.VisibilityTest do
     # Trap exits so the agent's :EXIT doesn't kill the test
     # pid (the agent was started linked via `start_agent/1`).
     Process.flag(:trap_exit, true)
-    Supervisor.stop_agent(name)
+    Supervisor.stop_agent(AgentTestHelpers.current_space_id(), name)
     assert_receive {:EXIT, _, _}, 500
 
-    visible = Visibility.list_visible_agents_for(alice.id)
+    visible = Visibility.list_visible_agents_for(AgentTestHelpers.current_space_id(), alice.id)
+    assert Enum.all?(visible, &(&1.name != name))
+  end
+
+  test "an archived agent is filtered out of the persisted backfill" do
+    {:ok, alice, :admin} =
+      Accounts.create_user(%{username: "alice", password: "password123"}, "first-user")
+
+    {_pid, name} =
+      AgentTestHelpers.start_agent(%{
+        name: "archived-#{System.unique_integer([:positive])}",
+        model: %{name: "qwen3.5-plus", provider: "model-studio"}
+      })
+
+    # Archive: stop the process + mark the DB row archived.
+    # The persisted-backfill path in `Visibility` would otherwise
+    # surface the row even though the pid is down. Trap exits so
+    # the linked agent's stop doesn't kill the test pid.
+    Process.flag(:trap_exit, true)
+    :ok = Supervisor.archive_agent(AgentTestHelpers.current_space_id(), name)
+    assert_receive {:EXIT, _, _}, 500
+
+    visible = Visibility.list_visible_agents_for(AgentTestHelpers.current_space_id(), alice.id)
     assert Enum.all?(visible, &(&1.name != name))
   end
 end

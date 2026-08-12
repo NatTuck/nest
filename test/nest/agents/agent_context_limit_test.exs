@@ -24,11 +24,17 @@ defmodule Nest.Agents.AgentContextLimitTest do
   setup :set_mimic_global
   setup :verify_on_exit!
 
+  setup do
+    {:ok, _space_id} = AgentTestHelpers.create_test_space()
+    :ok
+  end
+
   defp start_probe_agent(attrs) do
     agent_name = "probe-agent-#{System.unique_integer([:positive])}"
 
     defaults = %{
       name: agent_name,
+      space_id: AgentTestHelpers.current_space_id(),
       model: %{name: "qwen3.5-plus", provider: "model-studio"},
       vocation_id: AgentTestHelpers.vocation_id_for_test()
     }

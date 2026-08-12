@@ -7,7 +7,10 @@ defmodule NestWeb.AgentChannel do
   - Sending/receiving chat messages
   - Streaming responses via deltas
 
-  Topic format: "agent:NAME" (e.g., "agent:clever-raven")
+  Topic format: `"agent:<space_id>:<name>"` (e.g.
+  `"agent:1:clever-raven"`). The space_id and name are
+  parsed from the topic on join and used as the
+  authoritative identity for every backend call.
 
   Uses Phoenix.PubSub for broadcasting to all connected clients.
   """
@@ -22,23 +25,17 @@ defmodule NestWeb.AgentChannel do
   alias Nest.Messages.Streaming
 
   @impl true
-  def join("agent:" <> agent_name, _payload, socket) do
+  def join("agent:" <> rest, _payload, socket) do
     current_user = socket.assigns.current_user
 
-    with {:ok, agent} <- Agents.get_agent(agent_name),
-         :ok <- authorize_join(agent_name, current_user) do
-      # Subscribe to PubSub topic for this agent
-      # All channels connected to this agent will receive broadcasts
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{agent_name}")
-
-      # Send initial state via handle_info. The init is published
-      # to the test's mailbox as a socket push. Tests use
-      # `assert_push "init"` with a generous timeout (the init is
-      # the first event after the channel is established).
-      send(self(), {:after_join, agent})
-
-      {:ok, assign(socket, :agent_name, agent_name) |> assign(:current_user, current_user)}
+    with {:ok, space_id, name} <- parse_topic(rest),
+         {:ok, agent} <- Agents.get_agent(space_id, name),
+         :ok <- authorize_join(space_id, name, current_user) do
+      joined_join(space_id, name, agent, current_user, socket)
     else
+      {:error, :bad_topic} ->
+        {:error, %{"reason" => "bad_topic"}}
+
       {:error, :not_found} ->
         {:error, %{"reason" => "agent not found"}}
 
@@ -46,12 +43,39 @@ defmodule NestWeb.AgentChannel do
         {:error, %{"reason" => "forbidden"}}
 
       {:error, reason} ->
-        # Catch-all for non-`:not_found` failures — e.g. an
-        # unresolved provider when the supervisor's on-demand load
-        # was retried. Logged server-side; the channel refuses the
-        # join gracefully instead of crashing the socket.
-        Logger.warning("agent:#{agent_name} channel join failed: #{inspect(reason)}")
+        Logger.warning("agent:#{rest} channel join failed: #{inspect(reason)}")
         {:error, %{"reason" => "agent_unavailable"}}
+    end
+  end
+
+  defp joined_join(space_id, name, agent, current_user, socket) do
+    Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{space_id}:#{name}")
+
+    send(self(), {:after_join, agent})
+
+    socket =
+      socket
+      |> assign(:space_id, space_id)
+      |> assign(:name, name)
+      |> assign(:current_user, current_user)
+
+    {:ok, socket}
+  end
+
+  # `agent:<space_id>:<name>` — split on the first two
+  # colons. A name with a colon would be unusual, but the
+  # DB schema allows it; we keep the parse tolerant so
+  # names like `dm:1` round-trip correctly.
+  defp parse_topic(rest) do
+    case String.split(rest, ":", parts: 2) do
+      [space_id_str, name] ->
+        case Integer.parse(space_id_str) do
+          {space_id, ""} -> {:ok, space_id, name}
+          _ -> {:error, :bad_topic}
+        end
+
+      _ ->
+        {:error, :bad_topic}
     end
   end
 
@@ -59,14 +83,9 @@ defmodule NestWeb.AgentChannel do
   # is shared. `Agent.get_public_info/1` is the source of truth
   # for ownership and visibility — the runtime state carries
   # the same fields the DB row does, so this avoids a separate
-  # `fetch_agent_by_name/1` round-trip.
-  # Allow the join when the user owns the agent or the agent
-  # is shared. `Agent.get_public_info/1` is the source of truth
-  # for ownership and visibility — the runtime state carries
-  # the same fields the DB row does, so this avoids a separate
-  # `fetch_agent_by_name/1` round-trip.
-  defp authorize_join(agent_name, current_user) do
-    case Agents.Registry.lookup(agent_name) do
+  # `fetch_agent/2` round-trip.
+  defp authorize_join(space_id, name, current_user) do
+    case Agents.Registry.lookup(space_id, name) do
       {:ok, pid} ->
         info = Nest.Agents.Agent.get_public_info(pid)
         authorize_from(info, current_user)
@@ -75,7 +94,7 @@ defmodule NestWeb.AgentChannel do
         # The supervisor's on-demand loader can hydrate an
         # agent that's not currently in the Registry. Fall
         # back to a DB lookup for that case.
-        case Nest.Persistence.fetch_agent_by_name(agent_name) do
+        case Nest.Persistence.fetch_agent(space_id, name) do
           {:ok, %PersistedAgent{} = row} -> authorize_from(row, current_user)
           {:error, :not_found} -> {:error, :not_found}
         end
@@ -97,24 +116,7 @@ defmodule NestWeb.AgentChannel do
 
   @impl true
   def handle_info({:after_join, agent}, socket) do
-    init_payload = %{
-      "name" => agent.name,
-      "model" => agent.model,
-      "vocation" => agent.vocation,
-      "messageCount" => length(agent.messages),
-      "history" => Enum.map(agent.history || [], &Message.to_json/1),
-      "status" => to_string(agent.status),
-      "partial" => build_partial_payload(agent.partial),
-      "modes" => agent.modes,
-      "defaultMode" => agent.default_mode,
-      "currentMode" => agent.current_mode,
-      "contextLimit" => agent.context_limit,
-      "contextLimitSource" => source_to_string(agent.context_limit_source),
-      "usage" => agent.usage
-    }
-
-    push(socket, "init", init_payload)
-
+    push(socket, "init", build_init_payload(agent))
     {:noreply, socket}
   end
 
@@ -201,6 +203,25 @@ defmodule NestWeb.AgentChannel do
     {:noreply, socket}
   end
 
+  defp build_init_payload(agent) do
+    %{
+      "name" => agent.name,
+      "space_id" => agent.space_id,
+      "model" => agent.model,
+      "vocation" => agent.vocation,
+      "messageCount" => length(agent.messages),
+      "history" => Enum.map(agent.history || [], &Message.to_json/1),
+      "status" => to_string(agent.status),
+      "partial" => build_partial_payload(agent.partial),
+      "modes" => agent.modes,
+      "defaultMode" => agent.default_mode,
+      "currentMode" => agent.current_mode,
+      "contextLimit" => agent.context_limit,
+      "contextLimitSource" => source_to_string(agent.context_limit_source),
+      "usage" => agent.usage
+    }
+  end
+
   defp build_partial_payload(nil), do: nil
 
   defp build_partial_payload(%Streaming.AssistantAccumulator{} = acc) do
@@ -224,16 +245,13 @@ defmodule NestWeb.AgentChannel do
   defp source_to_string(atom) when is_atom(atom), do: Atom.to_string(atom)
   defp source_to_string(other), do: other
 
-  defp format_message(message) do
-    Message.to_json(message)
-  end
-
   @impl true
   def handle_in("chat:message", %{"content" => content} = payload, socket) do
-    agent_name = socket.assigns.agent_name
+    space_id = socket.assigns.space_id
+    name = socket.assigns.name
     mode = Map.get(payload, "mode")
 
-    case Agents.get_agent(agent_name) do
+    case Agents.get_agent(space_id, name) do
       {:ok, %{status: status}}
       when status in [
              :compacting,
@@ -242,41 +260,13 @@ defmodule NestWeb.AgentChannel do
              :context_overflow,
              :model_missing
            ] ->
-        # Reject incoming messages while the agent is in a
-        # frozen state. The frontend hides the chat input and
-        # shows a banner; this is the server-side enforcement.
-        #
-        # `:context_overflow` is distinct from the compaction
-        # pair — the model is fundamentally too small for the
-        # system prompt and retrying won't help. The frontend
-        # banner reflects that (no Retry button).
-        #
-        # `:compaction_loop_detected` is new — distinct from
-        # `:compaction_failed`: it shows an OK button instead
-        # of Retry. Once the user clicks OK, status returns to
-        # `:idle` and incoming messages resume.
-        #
-        # `:model_missing` rejects incoming messages because
-        # the persisted model no longer resolves to a runtime
-        # provider. The user must pick a replacement model
-        # first; the ChatPage shows a banner with the picker.
         {:reply, {:error, %{"reason" => "agent_status_#{status}"}}, socket}
 
-      {:ok, %{status: status}}
-      when status in [:streaming, :executing_tools] ->
-        # Reject messages that arrive while the agent is
-        # actively working. The frontend disables the input
-        # when `isAgentBusy` is true (see `ChatPage.jsx`),
-        # so this branch only fires for programmatic API
-        # calls, multi-client races, or stale UI state.
-        # Accepting these would interleave the user message
-        # with an in-flight tool chain and break wire
-        # alternation / tool_use-tool_result pairing
-        # invariants.
+      {:ok, %{status: status}} when status in [:streaming, :executing_tools] ->
         {:reply, {:error, %{"reason" => "agent_busy"}}, socket}
 
       {:ok, _agent} ->
-        case Agents.chat(agent_name, content, mode) do
+        case Agents.chat(space_id, name, content, mode) do
           :ok ->
             {:reply, {:ok, %{}}, socket}
 
@@ -295,16 +285,13 @@ defmodule NestWeb.AgentChannel do
   @impl true
   def handle_in("change_model", %{"model" => model_params}, socket)
       when is_map(model_params) do
-    agent_name = socket.assigns.agent_name
+    space_id = socket.assigns.space_id
+    name = socket.assigns.name
     new_name = model_params["name"] || model_params[:name]
     new_provider = model_params["provider"] || model_params[:provider]
 
-    case Agents.change_model(agent_name, %{name: new_name, provider: new_provider}) do
+    case Agents.change_model(space_id, name, %{name: new_name, provider: new_provider}) do
       :ok ->
-        # The agent broadcasts `chat:status` from the
-        # `:set_model` handler with the new `model` field;
-        # this socket is already subscribed so no extra push
-        # is needed here.
         {:reply, {:ok, %{}}, socket}
 
       {:error, :agent_busy} ->
@@ -317,7 +304,7 @@ defmodule NestWeb.AgentChannel do
         {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
 
       {:error, reason} ->
-        Logger.warning("change_model failed on agent:#{agent_name}: #{inspect(reason)}")
+        Logger.warning("change_model failed on agent:#{space_id}:#{name}: #{inspect(reason)}")
 
         {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
     end
@@ -329,9 +316,10 @@ defmodule NestWeb.AgentChannel do
 
   @impl true
   def handle_in("chat:retry-compaction", _payload, socket) do
-    agent_name = socket.assigns.agent_name
+    space_id = socket.assigns.space_id
+    name = socket.assigns.name
 
-    case Agents.retry_compaction(agent_name) do
+    case Agents.retry_compaction(space_id, name) do
       :ok -> {:reply, {:ok, %{}}, socket}
       {:error, :not_found} -> {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
       {:error, reason} -> {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
@@ -340,9 +328,10 @@ defmodule NestWeb.AgentChannel do
 
   @impl true
   def handle_in("chat:loop-detected-ok", _payload, socket) do
-    agent_name = socket.assigns.agent_name
+    space_id = socket.assigns.space_id
+    name = socket.assigns.name
 
-    case Agents.compaction_loop_detected_ok(agent_name) do
+    case Agents.compaction_loop_detected_ok(space_id, name) do
       :ok -> {:reply, {:ok, %{}}, socket}
       {:error, :not_found} -> {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
       {:error, reason} -> {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
@@ -351,9 +340,10 @@ defmodule NestWeb.AgentChannel do
 
   @impl true
   def handle_in("chat:stop", _payload, socket) do
-    agent_name = socket.assigns.agent_name
+    space_id = socket.assigns.space_id
+    name = socket.assigns.name
 
-    case Agents.stop_chat(agent_name, self()) do
+    case Agents.stop_chat(space_id, name, self()) do
       :ok -> {:reply, {:ok, %{}}, socket}
       {:error, :not_found} -> {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
       {:error, reason} -> {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
@@ -362,12 +352,14 @@ defmodule NestWeb.AgentChannel do
 
   @impl true
   def handle_in("chat:status", _payload, socket) do
-    agent_name = socket.assigns.agent_name
+    space_id = socket.assigns.space_id
+    name = socket.assigns.name
 
-    case Agents.get_agent(agent_name) do
+    case Agents.get_agent(space_id, name) do
       {:ok, agent} ->
         reply = %{
           "name" => agent.name,
+          "space_id" => agent.space_id,
           "model" => agent.model,
           "messageCount" => length(agent.messages),
           "status" => to_string(agent.status),
@@ -390,9 +382,10 @@ defmodule NestWeb.AgentChannel do
 
   @impl true
   def handle_in("chat:sync", %{"lastIndex" => last_index}, socket) do
-    agent_name = socket.assigns.agent_name
+    space_id = socket.assigns.space_id
+    name = socket.assigns.name
 
-    case Agents.get_agent(agent_name) do
+    case Agents.get_agent(space_id, name) do
       {:ok, agent} ->
         new_messages =
           agent.messages
@@ -433,12 +426,16 @@ defmodule NestWeb.AgentChannel do
 
   defp partial_payload(_, _), do: nil
 
+  defp format_message(message) do
+    Message.to_json(message)
+  end
+
   # Cleanup: Unsubscribe from PubSub when channel terminates
   @impl true
   def terminate(_reason, socket) do
-    # Only unsubscribe if agent_name was assigned (join completed successfully)
-    if agent_name = socket.assigns[:agent_name] do
-      Phoenix.PubSub.unsubscribe(Nest.PubSub, "agent:#{agent_name}")
+    with {:ok, space_id} <- Map.fetch(socket.assigns, :space_id),
+         {:ok, name} <- Map.fetch(socket.assigns, :name) do
+      Phoenix.PubSub.unsubscribe(Nest.PubSub, "agent:#{space_id}:#{name}")
     end
 
     {:ok, socket}

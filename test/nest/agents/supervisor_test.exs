@@ -50,6 +50,7 @@ defmodule Nest.Agents.SupervisorTest do
     # force the auto-name path (which starts the agent in
     # `:model_missing` by design).
 
+    {:ok, _space_id} = AgentTestHelpers.create_test_space()
     :ok
   end
 
@@ -68,7 +69,7 @@ defmodule Nest.Agents.SupervisorTest do
       # force the generator path.
       {{:ok, name}, _log} =
         ExUnit.CaptureLog.with_log(fn ->
-          Agents.create_agent(%{provider: "model-studio"},
+          Agents.create_agent(AgentTestHelpers.current_space_id(), %{provider: "model-studio"},
             vocation_id: AgentTestHelpers.vocation_id_for_test()
           )
         end)
@@ -76,21 +77,21 @@ defmodule Nest.Agents.SupervisorTest do
       AgentTestHelpers.ensure_cleanup(name)
 
       assert Regex.match?(~r/^[a-z]+-[a-z]+$/, name)
-      assert {:ok, _pid} = Registry.lookup(name)
+      assert {:ok, _pid} = Registry.lookup(AgentTestHelpers.current_space_id(), name)
     end
 
     test "starts an agent with an explicit name" do
       name = fresh_name()
 
       {:ok, ^name} =
-        Agents.create_agent(test_model(),
+        Agents.create_agent(AgentTestHelpers.current_space_id(), test_model(),
           name: name,
           vocation_id: AgentTestHelpers.vocation_id_for_test()
         )
 
       AgentTestHelpers.ensure_cleanup(name)
 
-      assert {:ok, _pid} = Registry.lookup(name)
+      assert {:ok, _pid} = Registry.lookup(AgentTestHelpers.current_space_id(), name)
     end
   end
 
@@ -99,27 +100,32 @@ defmodule Nest.Agents.SupervisorTest do
       name = fresh_name()
 
       {:ok, ^name} =
-        Agents.create_agent(test_model(),
+        Agents.create_agent(AgentTestHelpers.current_space_id(), test_model(),
           name: name,
           vocation_id: AgentTestHelpers.vocation_id_for_test()
         )
 
       AgentTestHelpers.ensure_cleanup(name)
 
-      assert {:ok, pid} = Registry.lookup(name)
+      assert {:ok, pid} = Registry.lookup(AgentTestHelpers.current_space_id(), name)
       assert Process.alive?(pid)
 
-      :ok = Agents.delete_agent(name)
+      :ok = Supervisor.stop_agent(AgentTestHelpers.current_space_id(), name)
 
       # The registry's auto-cleanup happens asynchronously after the
       # process exits, so poll until the lookup reflects the removal.
-      assert eventually(fn -> Registry.lookup(name) == {:error, :not_found} end,
+      assert eventually(
+               fn ->
+                 Registry.lookup(AgentTestHelpers.current_space_id(), name) ==
+                   {:error, :not_found}
+               end,
                timeout: 1000
              )
     end
 
     test "returns error for non-existent agent" do
-      assert {:error, :not_found} = Agents.delete_agent("nonexistent")
+      assert {:error, :not_found} =
+               Supervisor.stop_agent(AgentTestHelpers.current_space_id(), "nonexistent")
     end
   end
 
@@ -129,17 +135,27 @@ defmodule Nest.Agents.SupervisorTest do
       name2 = fresh_name()
       vid = AgentTestHelpers.vocation_id_for_test()
 
-      {:ok, ^name1} = Agents.create_agent(test_model(), name: name1, vocation_id: vid)
+      {:ok, ^name1} =
+        Agents.create_agent(AgentTestHelpers.current_space_id(), test_model(),
+          name: name1,
+          vocation_id: vid
+        )
+
       AgentTestHelpers.ensure_cleanup(name1)
 
-      {:ok, ^name2} = Agents.create_agent(test_model(), name: name2, vocation_id: vid)
+      {:ok, ^name2} =
+        Agents.create_agent(AgentTestHelpers.current_space_id(), test_model(),
+          name: name2,
+          vocation_id: vid
+        )
+
       AgentTestHelpers.ensure_cleanup(name2)
 
       # In async mode, other tests may have started/stopped agents
       # concurrently. Assert on this test's own names (definitely
       # present) and an inclusive lower bound on the total — not
       # an exact count.
-      agents = Agents.list_agents()
+      agents = Agents.list_agents_for_space(AgentTestHelpers.current_space_id())
       assert name1 in agents
       assert name2 in agents
       assert length(agents) >= 2
@@ -156,21 +172,24 @@ defmodule Nest.Agents.SupervisorTest do
       name = fresh_name()
 
       {:ok, ^name} =
-        Agents.create_agent(test_model(),
+        Agents.create_agent(AgentTestHelpers.current_space_id(), test_model(),
           name: name,
           vocation_id: AgentTestHelpers.vocation_id_for_test()
         )
 
       AgentTestHelpers.ensure_cleanup(name)
 
-      assert {:ok, pid} = Supervisor.get_agent(name)
+      assert {:ok, pid} = Supervisor.get_agent(AgentTestHelpers.current_space_id(), name)
       assert is_pid(pid)
       assert Process.alive?(pid)
     end
 
     test "returns error for non-existent name" do
       assert {:error, :not_found} =
-               Supervisor.get_agent("nonexistent-#{System.unique_integer([:positive])}")
+               Supervisor.get_agent(
+                 AgentTestHelpers.current_space_id(),
+                 "nonexistent-#{System.unique_integer([:positive])}"
+               )
     end
   end
 

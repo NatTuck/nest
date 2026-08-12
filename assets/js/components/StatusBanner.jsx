@@ -113,6 +113,16 @@ export function StatusBanner({
     // tripping (consecutive compactions without progress). The
     // recovery is "OK" — the user acknowledges and types a fresh
     // message; the next compaction cycle gets a clean counter.
+    const loopText =
+      compactionLoop?.content ||
+      "Compaction is no longer reducing the conversation.";
+    const attempts =
+      compactionLoop &&
+      typeof compactionLoop.attemptCount === "number" &&
+      typeof compactionLoop.maxAttempts === "number"
+        ? `Tried ${compactionLoop.attemptCount} of ${compactionLoop.maxAttempts} consecutive compactions.`
+        : null;
+
     return (
       <div className="bg-yellow-100 border-l-4 border-yellow-500 p-4 mb-4">
         <div className="flex items-center justify-between">
@@ -120,10 +130,10 @@ export function StatusBanner({
             <p className="text-yellow-800 font-medium">
               Compaction isn't reducing context
             </p>
-            <p className="text-yellow-700 text-sm">
-              {compactionLoop ||
-                "Compaction is no longer reducing the conversation."}
-            </p>
+            <p className="text-yellow-700 text-sm">{loopText}</p>
+            {attempts && (
+              <p className="text-yellow-700 text-xs mt-1">{attempts}</p>
+            )}
           </div>
           <button
             type="button"

@@ -69,9 +69,9 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
 
       state = :sys.get_state(pid)
 
-      assert state.chat_state.status == :idle
-      assert state.chat_state.chat_turn_pid == nil
-      assert state.chat_state.cancelled == false
+      assert state.live.status == :idle
+      assert state.live.chat_turn_pid == nil
+      assert state.live.cancelled == false
 
       indices = message_indices(state)
 
@@ -125,7 +125,7 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
       assert length(indices) >= 5
       assert indices == Enum.sort(indices), "indices must be sorted"
       assert length(Enum.uniq(indices)) == length(indices), "indices must be unique"
-      assert state.chat_state.status == :idle
+      assert state.live.status == :idle
     end
   end
 
@@ -234,8 +234,8 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
 
       # The agent goes to :idle after the iteration
       # completes.
-      assert state.chat_state.status == :idle
-      assert state.chat_state.chat_turn_pid == nil
+      assert state.live.status == :idle
+      assert state.live.chat_turn_pid == nil
 
       # The conversation has the user message + multiple
       # tool iterations + a final assistant message.
@@ -289,8 +289,8 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
 
       state = :sys.get_state(pid)
 
-      assert state.chat_state.status == :idle
-      assert state.chat_state.chat_turn_pid == nil
+      assert state.live.status == :idle
+      assert state.live.chat_turn_pid == nil
 
       final_assistants =
         Enum.filter(state.chat_state.messages, fn
@@ -341,8 +341,8 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
 
       state = :sys.get_state(pid)
 
-      assert state.chat_state.status == :idle
-      assert state.chat_state.chat_turn_pid == nil
+      assert state.live.status == :idle
+      assert state.live.chat_turn_pid == nil
     end
   end
 

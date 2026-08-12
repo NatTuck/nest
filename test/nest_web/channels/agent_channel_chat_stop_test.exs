@@ -32,7 +32,11 @@ defmodule NestWeb.AgentChannelChatStopTest do
       refute_receive %Phoenix.Socket.Message{event: "chat:status"}, 50
     end
 
-    test "the agent can run a new turn after a stop", %{socket: socket, agent_id: id} do
+    test "the agent can run a new turn after a stop", %{
+      socket: socket,
+      agent_id: id,
+      space_id: space_id
+    } do
       # Send a normal turn, then a no-op stop, then a new turn.
       # The stop must not leave the agent in a broken state.
       MockClient.set_response("First response")
@@ -62,7 +66,7 @@ defmodule NestWeb.AgentChannelChatStopTest do
       assert [%{"kind" => "text", "text" => content} | _] = parts
       assert content == "After the stop"
       # Sanity: agent still queryable after stop.
-      assert {:ok, %{name: ^id}} = Agents.get_info(id)
+      assert {:ok, %{name: ^id}} = Agents.get_info(space_id, id)
     end
   end
 end

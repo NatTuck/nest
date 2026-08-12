@@ -184,7 +184,7 @@ defmodule Nest.Agents.Agent.ChatTurn.HTTPWorker do
   defp check_should_stop?(state) do
     state.ctx.agent_pid
     |> :sys.get_state()
-    |> Map.get(:chat_state)
+    |> Map.get(:live)
     |> Map.get(:cancelled)
   catch
     # Agent is gone (test cleanup, supervisor teardown).

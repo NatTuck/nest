@@ -106,55 +106,61 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   prompt is always confident — there is no `:default`
   placeholder.
 
-  The `depth` argument controls whether `clone_agent` is
-  included in the tool list and rendered into the system
-  prompt's delegation section. At `depth >= max_depth` the
-  agent cannot spawn children, so the tool is filtered out
-  and the section is omitted. Defaults to 0 (root agent).
+  The `name` argument is the agent's readable identifier; it
+  is rendered into an identity line telling the agent its name
+  and spawn depth. The `depth` argument is the agent's distance
+  from its tree root (0 for roots, `parent.depth + 1` for
+  children). The identity line reports `depth` of
+  `Config.configured_max_depth/0`. Note: a clone inherits this
+  system message from its parent, so the reported name/depth
+  may be stale once cloned — the clone's own "You are the
+  clone" notice supersedes it.
   """
   @spec compose_vocation_config(
           Nest.Vocations.Vocation.t() | nil,
           String.t() | nil,
           {integer() | nil, atom() | nil},
+          String.t(),
           non_neg_integer()
         ) ::
           {String.t() | nil, String.t(), [String.t()], Nest.Vocations.Vocation.t() | nil}
-  def compose_vocation_config(nil, _workspace_path, _context_limit_info, _depth),
+  def compose_vocation_config(nil, _workspace_path, _context_limit_info, _name, _depth),
     do: {nil, "chat", [], nil}
 
-  def compose_vocation_config(vocation, workspace_path, context_limit_info, depth) do
+  def compose_vocation_config(vocation, workspace_path, context_limit_info, name, depth) do
     initial_mode = get_initial_mode(vocation.modes)
-    max_depth = Config.configured_max_depth()
-    tools = filter_tools_for_depth(vocation.tools || [], depth, max_depth)
+    tools = vocation.tools || []
 
     system_prompt =
       (vocation.system_prompt || "") <>
         Vocations.mode_catalog(vocation) <>
-        build_suffix(workspace_path, context_limit_info, depth, max_depth)
+        build_suffix(workspace_path, context_limit_info, name, depth) <>
+        agents_md_section(workspace_path)
 
     {system_prompt, initial_mode, tools, vocation}
   end
 
-  # The `clone_agent` tool is only included when the agent
-  # can still spawn children. Roots (depth 0) and intermediate
-  # nodes (depth < max_depth) get the tool; leaves at max
-  # depth do not. Non-clone_agent tools pass through unchanged.
-  defp filter_tools_for_depth(tool_names, depth, max_depth)
-       when is_integer(depth) and depth < max_depth do
-    tool_names
-  end
-
-  defp filter_tools_for_depth(tool_names, _depth, _max_depth) do
-    Enum.reject(tool_names, &(&1 == "clone_agent"))
-  end
-
-  defp build_suffix(workspace_path, context_limit_info, depth, max_depth) do
-    workspace_section(workspace_path) <>
+  defp build_suffix(workspace_path, context_limit_info, name, depth) do
+    identity_section(name, depth) <>
+      workspace_section(workspace_path) <>
       tool_call_limit_section() <>
-      context_limit_section(context_limit_info) <>
-      delegation_section(depth, max_depth) <>
-      agents_md_section(workspace_path)
+      context_limit_section(context_limit_info)
   end
+
+  # Tell the agent its name and spawn depth. Non-clones and
+  # clones at/after compaction get this in the system message.
+  # A clone inherits this from its parent, so the "(may change
+  # when cloned)" caveat warns that a future clone is a
+  # different agent/depth; the clone's own fork notice carries
+  # the corrected values.
+  defp identity_section(name, depth) when is_binary(name) and name != "" do
+    max_depth = Config.configured_max_depth()
+
+    "\n\nYour name is \"#{name}\". You are at spawn depth #{depth} of #{max_depth}. " <>
+      "That may change when cloned.\n"
+  end
+
+  defp identity_section(_name, _depth), do: ""
 
   defp workspace_section(nil), do: ""
 
@@ -196,34 +202,6 @@ defmodule Nest.Agents.Agent.SystemPrompt do
         ""
     end
   end
-
-  # Renders the `[Delegation]` section in the system prompt when
-  # the agent can still spawn children. The section explains
-  # the `clone_agent` tool's semantics (inherited context, the
-  # blocking flow, the response-as-tool-result contract). Agents
-  # at max depth get nothing — the tool is filtered out of their
-  # tool list at the same time.
-  defp delegation_section(depth, max_depth)
-       when is_integer(depth) and is_integer(max_depth) and depth < max_depth do
-    remaining = max_depth - depth - 1
-    chain = if remaining == 0, do: "one more level", else: "#{remaining} more levels"
-
-    "\n\n[Delegation]\n\n" <>
-      "You have access to the `clone_agent` tool. " <>
-      "Calling it spawns a child agent with a copy of this conversation " <>
-      "(your full message history including the system prompt) plus the " <>
-      "instruction as a new user message. The child runs to completion " <>
-      "before the result is returned to you — your chat turn blocks " <>
-      "until the child goes idle. The child's final assistant message " <>
-      "content is delivered to you as the tool result; use it as your " <>
-      "answer or to drive further tool calls.\n\n" <>
-      "Children can call `clone_agent` themselves up to #{chain} of " <>
-      "recursion (current depth #{depth}, max #{max_depth}). " <>
-      "Children inherit your context, so their first call sends a large " <>
-      "message list — keep that in mind when delegating deep conversations.\n"
-  end
-
-  defp delegation_section(_depth, _max_depth), do: ""
 
   defp get_initial_mode(nil), do: "chat"
 

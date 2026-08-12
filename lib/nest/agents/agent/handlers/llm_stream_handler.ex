@@ -11,7 +11,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   directly (avoids duplicate events).
 
   `{:delta_received, _}` and `{:thinking_signature_received, _}`
-  update `state.chat_state.streaming_acc` (the authoritative
+  update `state.live.streaming_acc` (the authoritative
   in-flight accumulator) and broadcast `chat:delta` from here.
   Broadcasting from the Agent — not the HTTP worker — guarantees
   the test/UI sees the broadcast only after the accumulator is
@@ -87,20 +87,20 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   # `{:delta_received, _}` — leaving `streaming_acc` nil when
   # the `chat_stopped` handler tries to finalize the partial.
   defp delta_received(delta_content, :text, state) do
-    acc = state.chat_state.streaming_acc
+    acc = state.live.streaming_acc
 
     if acc == nil do
       {:noreply, state}
     else
       chars_start = acc.chars_sent
       new_acc = Streaming.append_text(acc, delta_content)
-      Broadcasts.delta_text(state.name, new_acc.index, delta_content, chars_start)
-      {:noreply, %{state | chat_state: %{state.chat_state | streaming_acc: new_acc}}}
+      Broadcasts.delta_text(state.space_id, state.name, new_acc.index, delta_content, chars_start)
+      {:noreply, %{state | live: %{state.live | streaming_acc: new_acc}}}
     end
   end
 
   defp delta_received(delta_content, :thinking, state) do
-    acc = state.chat_state.streaming_acc
+    acc = state.live.streaming_acc
 
     if acc == nil do
       {:noreply, state}
@@ -111,8 +111,16 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
       # text and thinking deltas.
       chars_start = acc.chars_sent
       new_acc = Streaming.append_thinking(acc, delta_content)
-      Broadcasts.delta_thinking(state.name, new_acc.index, delta_content, chars_start)
-      {:noreply, %{state | chat_state: %{state.chat_state | streaming_acc: new_acc}}}
+
+      Broadcasts.delta_thinking(
+        state.space_id,
+        state.name,
+        new_acc.index,
+        delta_content,
+        chars_start
+      )
+
+      {:noreply, %{state | live: %{state.live | streaming_acc: new_acc}}}
     end
   end
 
@@ -127,7 +135,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   # `input_json_delta` for tool calls) into the concrete
   # tool-call id so the JS only ever sees concrete ids.
   defp delta_received(%{id: id, name: name} = event, :tool_use_start, state) do
-    acc = state.chat_state.streaming_acc
+    acc = state.live.streaming_acc
 
     if acc == nil do
       {:noreply, state}
@@ -141,18 +149,18 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
 
       new_tool_index_map =
         if is_binary(id),
-          do: Map.put(state.chat_state.tool_index_map, index, id),
-          else: state.chat_state.tool_index_map
+          do: Map.put(state.live.tool_index_map, index, id),
+          else: state.live.tool_index_map
 
       new_acc = Streaming.start_tool_call(acc, id, name)
 
-      Broadcasts.delta_tool_use_start(state.name, acc.index, id, name, index)
+      Broadcasts.delta_tool_use_start(state.space_id, state.name, acc.index, id, name, index)
 
       {:noreply,
        %{
          state
-         | chat_state: %{
-             state.chat_state
+         | live: %{
+             state.live
              | tool_index_map: new_tool_index_map,
                streaming_acc: new_acc
            }
@@ -161,7 +169,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   end
 
   defp delta_received(%{id: id, arguments_delta: fragment} = event, :tool_use_delta, state) do
-    acc = state.chat_state.streaming_acc
+    acc = state.live.streaming_acc
 
     if acc == nil do
       {:noreply, state}
@@ -169,10 +177,11 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
       # See `:tool_use_start` clause above for why we
       # default `index` to 0 here.
       index = Map.get(event, :index, 0)
-      concrete_id = resolve_tool_call_id(id, index, state.chat_state.tool_index_map)
+      concrete_id = resolve_tool_call_id(id, index, state.live.tool_index_map)
 
       if concrete_id do
         Broadcasts.delta_tool_use_delta(
+          state.space_id,
           state.name,
           acc.index,
           concrete_id,
@@ -185,7 +194,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
         {:noreply,
          %{
            state
-           | chat_state: %{state.chat_state | streaming_acc: new_acc}
+           | live: %{state.live | streaming_acc: new_acc}
          }}
       else
         {:noreply, state}
@@ -217,8 +226,8 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   # thinking content. Stash it on the streaming accumulator so it
   # round-trips into the persisted assistant message's metadata.
   defp thinking_signature_received(signature, state) do
-    new_acc = %{state.chat_state.streaming_acc | thinking_signature: signature}
-    {:noreply, %{state | chat_state: %{state.chat_state | streaming_acc: new_acc}}}
+    new_acc = %{state.live.streaming_acc | thinking_signature: signature}
+    {:noreply, %{state | live: %{state.live | streaming_acc: new_acc}}}
   end
 
   # Finalize error message. The HTTP worker sent us the
@@ -229,7 +238,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   # tag so the user can grep the server log for the matching
   # entry.
   defp llm_error(error_msg, state) do
-    _ = state.chat_state.streaming_acc && state.chat_state.streaming_acc.index
+    _ = state.live.streaming_acc && state.live.streaming_acc.index
 
     error_message =
       {:assistant,
@@ -245,19 +254,26 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
 
     state = %{
       state
-      | chat_state: %{
-          state.chat_state
+      | live: %{
+          state.live
           | streaming_acc: nil,
             active_message_index: stamped_index,
             pending_api_logs:
-              Nest.Agents.Agent.__clear_pending_api_logs__(state, stamped_index).chat_state.pending_api_logs,
+              Nest.Agents.Agent.__clear_pending_api_logs__(state, stamped_index).live.pending_api_logs,
             status: :idle,
             tool_index_map: %{}
         }
     }
 
-    Broadcasts.error(state.name, stamped_index, error_msg, "ChatTurn.run_chat_task/1")
-    Broadcasts.status(state.name, state)
+    Broadcasts.error(
+      state.space_id,
+      state.name,
+      stamped_index,
+      error_msg,
+      "ChatTurn.run_chat_task/1"
+    )
+
+    Broadcasts.status(state)
     {:noreply, state}
   end
 
@@ -300,15 +316,15 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
 
     state = %{
       state
-      | chat_state: %{
-          state.chat_state
+      | live: %{
+          state.live
           | pending_api_logs:
-              Nest.Agents.Agent.__clear_pending_api_logs__(state, stamped_index).chat_state.pending_api_logs,
+              Nest.Agents.Agent.__clear_pending_api_logs__(state, stamped_index).live.pending_api_logs,
             status: :executing_tools
         }
     }
 
-    Broadcasts.status(state.name, state)
+    Broadcasts.status(state)
     {:noreply, state}
   end
 
@@ -343,17 +359,17 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
 
     state = %{
       state
-      | chat_state: %{
-          state.chat_state
+      | live: %{
+          state.live
           | pending_api_logs:
-              Nest.Agents.Agent.__clear_pending_api_logs__(state, stamped_index).chat_state.pending_api_logs,
+              Nest.Agents.Agent.__clear_pending_api_logs__(state, stamped_index).live.pending_api_logs,
             status: :streaming,
             streaming_acc: Streaming.new(stamped_index + 1),
             tool_index_map: %{}
         }
     }
 
-    Broadcasts.status(state.name, state)
+    Broadcasts.status(state)
     {:noreply, state}
   end
 
@@ -389,7 +405,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
         }
     }
 
-    Broadcasts.status(state.name, state)
+    Broadcasts.status(state)
     {:noreply, state}
   end
 

@@ -23,6 +23,15 @@ defmodule Nest.AgentsTest do
 
   setup :verify_on_exit!
 
+  setup do
+    # Tests that don't go through `start_agent/1` (e.g. the
+    # "returns error for non-existent agent" cases) still
+    # need a test space_id stashed so `current_space_id/0`
+    # works when they call Agents.* directly.
+    {:ok, _space_id} = AgentTestHelpers.create_test_space()
+    :ok
+  end
+
   # No `vid()` or `vocation_id_for_test/0` pre-fetch needed —
   # `AgentTestHelpers.start_agent/1` defaults its own vocation
   # (a real `upsert_vocation` row, shared across tests via
@@ -48,7 +57,7 @@ defmodule Nest.AgentsTest do
 
       assert Regex.match?(~r/agent\d+/, id)
 
-      {:ok, info} = Agents.get_info(id)
+      {:ok, info} = Agents.get_info(AgentTestHelpers.current_space_id(), id)
       assert model_name(info.model) == "qwen3.5-plus"
     end
 
@@ -62,7 +71,7 @@ defmodule Nest.AgentsTest do
           model: %{name: "qwen3.5-plus"}
         })
 
-      {:ok, info} = Agents.get_info(id)
+      {:ok, info} = Agents.get_info(AgentTestHelpers.current_space_id(), id)
       assert model_name(info.model) == "qwen3.5-plus"
       assert model_provider(info.model) == "model-studio"
     end
@@ -78,7 +87,7 @@ defmodule Nest.AgentsTest do
 
           assert is_binary(name)
 
-          {:ok, info} = Agents.get_info(name)
+          {:ok, info} = Agents.get_info(AgentTestHelpers.current_space_id(), name)
           assert info.status == :model_missing
           assert model_name(info.model) == "custom-model"
         end)
@@ -91,7 +100,7 @@ defmodule Nest.AgentsTest do
     test "returns agent public info" do
       {_pid, name} = AgentTestHelpers.start_agent(%{name: fresh_name()})
 
-      {:ok, info} = Agents.get_info(name)
+      {:ok, info} = Agents.get_info(AgentTestHelpers.current_space_id(), name)
       assert info.name == name
       assert model_name(info.model) == "qwen3.5-plus"
       assert info.status == :idle
@@ -100,7 +109,8 @@ defmodule Nest.AgentsTest do
     end
 
     test "returns error for non-existent agent" do
-      assert Agents.get_info("nonexistent") == {:error, :not_found}
+      assert Agents.get_info(AgentTestHelpers.current_space_id(), "nonexistent") ==
+               {:error, :not_found}
     end
   end
 
@@ -114,31 +124,41 @@ defmodule Nest.AgentsTest do
       # the underlying reason so `AgentChannel.join/3` returns
       # `{:error, %{"reason" => "agent_unavailable"}}` cleanly.
       Supervisor
-      |> expect(:get_agent, fn _name ->
+      |> expect(:get_agent, fn _space_id, _name ->
         {:error, {:timeout, {GenServer, :call, [Nest.Models, :list, 5000]}}}
       end)
 
       assert {:error, {:timeout, {GenServer, :call, [Nest.Models, :list, 5000]}}} =
-               Agents.get_agent("any-name")
+               Agents.get_agent(AgentTestHelpers.current_space_id(), "any-name")
     end
 
     test "returns {:error, reason} for arbitrary non-{:ok, pid} reasons" do
       Supervisor
-      |> stub(:get_agent, fn _name -> {:error, :gen_server_timeout} end)
+      |> stub(:get_agent, fn _space_id, _name -> {:error, :gen_server_timeout} end)
 
-      assert Agents.get_agent("any-name") == {:error, :gen_server_timeout}
+      assert Agents.get_agent(AgentTestHelpers.current_space_id(), "any-name") ==
+               {:error, :gen_server_timeout}
     end
   end
 
   describe "list_agents/0" do
     test "returns list of agent names" do
       {_pid1, id1} = AgentTestHelpers.start_agent(%{name: fresh_name()})
-      {_pid2, id2} = AgentTestHelpers.start_agent(%{name: fresh_name()})
+      space_id = AgentTestHelpers.current_space_id()
+      id2 = fresh_name()
+
+      {:ok, ^id2} =
+        Agents.create_agent(space_id, %{name: "qwen3.5-plus", provider: "model-studio"},
+          name: id2,
+          vocation_id: AgentTestHelpers.vocation_id_for_test()
+        )
+
+      AgentTestHelpers.ensure_cleanup(id2)
 
       # This file is async; other tests' agents may be in the
       # registry too. Verify our two are present rather than
       # asserting a count.
-      agents = Agents.list_agents()
+      agents = Agents.list_agents_for_space(space_id)
       assert id1 in agents
       assert id2 in agents
     end
@@ -147,9 +167,18 @@ defmodule Nest.AgentsTest do
   describe "list_agents_info/0" do
     test "returns list of agent info" do
       {_pid1, id1} = AgentTestHelpers.start_agent(%{name: fresh_name()})
-      {_pid2, id2} = AgentTestHelpers.start_agent(%{name: fresh_name()})
+      space_id = AgentTestHelpers.current_space_id()
+      id2 = fresh_name()
 
-      agents_info = Agents.list_agents_info()
+      {:ok, ^id2} =
+        Agents.create_agent(space_id, %{name: "qwen3.5-plus", provider: "model-studio"},
+          name: id2,
+          vocation_id: AgentTestHelpers.vocation_id_for_test()
+        )
+
+      AgentTestHelpers.ensure_cleanup(id2)
+
+      agents_info = Agents.list_agents_info_for_space(space_id)
       assert Enum.any?(agents_info, fn info -> info.name == id1 end)
       assert Enum.any?(agents_info, fn info -> info.name == id2 end)
     end
@@ -164,7 +193,16 @@ defmodule Nest.AgentsTest do
       # `:not_found` rather than propagating the `:crash`
       # and aborting the whole listing.
       {_pid1, id1} = AgentTestHelpers.start_agent(%{name: fresh_name()})
-      {_pid2, id2} = AgentTestHelpers.start_agent(%{name: fresh_name()})
+      space_id = AgentTestHelpers.current_space_id()
+      id2 = fresh_name()
+
+      {:ok, ^id2} =
+        Agents.create_agent(space_id, %{name: "qwen3.5-plus", provider: "model-studio"},
+          name: id2,
+          vocation_id: AgentTestHelpers.vocation_id_for_test()
+        )
+
+      AgentTestHelpers.ensure_cleanup(id2)
 
       # Stub `Agent.get_public_info/1` to `exit(:crash)` for
       # every agent — simulates the case where every
@@ -175,7 +213,7 @@ defmodule Nest.AgentsTest do
       Mimic.copy(Nest.Agents.Agent)
       Mimic.stub(Nest.Agents.Agent, :get_public_info, fn _pid -> exit(:crash) end)
 
-      assert Agents.list_agents_info() == []
+      assert Agents.list_agents_info_for_space(space_id) == []
 
       # Negative control: with the stub cleared, both
       # agents show up. This pins the test to the stub —
@@ -186,7 +224,7 @@ defmodule Nest.AgentsTest do
         GenServer.call(pid, :get_public_info)
       end)
 
-      agents_info = Agents.list_agents_info()
+      agents_info = Agents.list_agents_info_for_space(space_id)
       assert Enum.any?(agents_info, fn info -> info.name == id1 end)
       assert Enum.any?(agents_info, fn info -> info.name == id2 end)
     end
@@ -198,11 +236,11 @@ defmodule Nest.AgentsTest do
 
       MockClient.set_response("Hi there!")
 
-      :ok = Agents.chat(name, "Hello, agent!")
+      :ok = Agents.chat(AgentTestHelpers.current_space_id(), name, "Hello, agent!")
 
       assert eventually(
                fn ->
-                 {:ok, info} = Agents.get_info(name)
+                 {:ok, info} = Agents.get_info(AgentTestHelpers.current_space_id(), name)
                  info.message_count == 3
                end,
                timeout: 1000
@@ -210,7 +248,8 @@ defmodule Nest.AgentsTest do
     end
 
     test "returns error for non-existent agent" do
-      assert Agents.chat("nonexistent", "Hello") == {:error, :not_found}
+      assert Agents.chat(AgentTestHelpers.current_space_id(), "nonexistent", "Hello") ==
+               {:error, :not_found}
     end
   end
 
@@ -228,7 +267,7 @@ defmodule Nest.AgentsTest do
       # capture and discard per AGENTS.md.
       log =
         ExUnit.CaptureLog.capture_log(fn ->
-          assert :ok = Agents.retry_compaction(id)
+          assert :ok = Agents.retry_compaction(AgentTestHelpers.current_space_id(), id)
         end)
 
       assert log =~ "retry_compaction ignored"
@@ -236,7 +275,8 @@ defmodule Nest.AgentsTest do
     end
 
     test "returns error for non-existent agent" do
-      assert Agents.retry_compaction("nonexistent") == {:error, :not_found}
+      assert Agents.retry_compaction(AgentTestHelpers.current_space_id(), "nonexistent") ==
+               {:error, :not_found}
     end
   end
 
@@ -249,7 +289,7 @@ defmodule Nest.AgentsTest do
       # capture and discard.
       log =
         ExUnit.CaptureLog.capture_log(fn ->
-          assert :ok = Agents.compaction_loop_detected_ok(id)
+          assert :ok = Agents.compaction_loop_detected_ok(AgentTestHelpers.current_space_id(), id)
         end)
 
       assert log =~ "compaction_loop_detected_ok ignored"
@@ -257,30 +297,11 @@ defmodule Nest.AgentsTest do
     end
 
     test "returns error for non-existent agent" do
-      assert Agents.compaction_loop_detected_ok("nonexistent") == {:error, :not_found}
-    end
-  end
-
-  describe "delete_agent/1" do
-    test "removes agent" do
-      {agent_pid, id} = AgentTestHelpers.start_agent(%{name: fresh_name()})
-
-      # `start_agent/1` links the test pid to the agent. The
-      # link makes the test crash on unexpected agent death,
-      # but `Agents.delete_agent/1` causes an intentional
-      # shutdown — unlink first so the `:shutdown` signal
-      # doesn't propagate here. (`start_agent/1`'s on_exit
-      # also unlinks; unlinking here is redundant for cleanup
-      # but is the only way to keep the test pid alive during
-      # the explicit delete.)
-      Process.unlink(agent_pid)
-      :ok = Agents.delete_agent(id)
-
-      assert Agents.get_info(id) == {:error, :not_found}
-    end
-
-    test "returns error for non-existent agent" do
-      assert Agents.delete_agent("nonexistent") == {:error, :not_found}
+      assert Agents.compaction_loop_detected_ok(
+               AgentTestHelpers.current_space_id(),
+               "nonexistent"
+             ) ==
+               {:error, :not_found}
     end
   end
 
@@ -294,16 +315,16 @@ defmodule Nest.AgentsTest do
               model: %{name: "ghost-model", provider: nil}
             })
 
-          {:ok, info} = Agents.get_info(name)
+          {:ok, info} = Agents.get_info(AgentTestHelpers.current_space_id(), name)
           assert info.status == :model_missing
 
           :ok =
-            Agents.change_model(name, %{
+            Agents.change_model(AgentTestHelpers.current_space_id(), name, %{
               name: "qwen3.5-plus",
               provider: "model-studio"
             })
 
-          {:ok, info} = Agents.get_info(name)
+          {:ok, info} = Agents.get_info(AgentTestHelpers.current_space_id(), name)
           assert info.status == :idle
           assert model_name(info.model) == "qwen3.5-plus"
         end)
@@ -312,7 +333,7 @@ defmodule Nest.AgentsTest do
     end
 
     test "returns :not_found for an unknown agent" do
-      assert Agents.change_model("nope", %{
+      assert Agents.change_model(AgentTestHelpers.current_space_id(), "nope", %{
                name: "qwen3.5-plus",
                provider: "model-studio"
              }) == {:error, :not_found}
@@ -324,7 +345,7 @@ defmodule Nest.AgentsTest do
       Agent
       |> stub(:set_model, fn _pid, _new_model -> {:error, :gen_server_timeout} end)
 
-      assert Agents.change_model(name, %{
+      assert Agents.change_model(AgentTestHelpers.current_space_id(), name, %{
                name: "claude-3-opus-20240229",
                provider: "anthropic-provider"
              }) == {:error, :gen_server_timeout}

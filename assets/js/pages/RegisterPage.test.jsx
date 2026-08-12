@@ -7,7 +7,7 @@
  *    sign-in link)
  *  - The `?token=first-user` magic path hides the
  *    invite-token input and shows the "first admin" copy
- *  - Successful registration navigates to /new_agent
+ *  - Successful registration navigates to /spaces
  *  - Failed registration surfaces the server's error
  *  - Generic (non-ApiError) failures fall back to the
  *    generic "Registration failed" message
@@ -36,7 +36,7 @@ async function renderPage(search = "?token=invite-abc") {
     route: `/register${search}`,
     routes: [
       { path: "/register", element: <RegisterPage /> },
-      { path: "/new_agent", element: <div>New agent page</div> },
+      { path: "/spaces", element: <div>Spaces landing</div> },
     ],
   });
 }
@@ -80,7 +80,7 @@ describe("RegisterPage", () => {
     ).toBeInTheDocument();
   });
 
-  it("submits the form and navigates to /new_agent on success", async () => {
+  it("submits the form and navigates to /spaces on success", async () => {
     register.mockResolvedValueOnce({
       token: "tok",
       user: { id: 1, username: "bob", is_admin: true },
@@ -102,6 +102,8 @@ describe("RegisterPage", () => {
         token: "invite-abc",
       });
     });
+
+    expect(await screen.findByText("Spaces landing")).toBeInTheDocument();
   });
 
   it("surfaces the server's error message on a 4xx response", async () => {

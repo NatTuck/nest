@@ -3,9 +3,9 @@ defmodule Nest.Agents.Agent.Broadcasts do
   PubSub broadcast helpers for the `Agent` GenServer.
 
   All broadcasts go through `Phoenix.PubSub` on the per-agent
-  topic `"agent:<id>"`. Status broadcasts use the wire-format
-  payload produced by `status_payload/1`; chat:message and
-  chat:error are simple key-value maps.
+  topic `"agent:<space_id>:<name>"`. Status broadcasts use the
+  wire-format payload produced by `status_payload/1`;
+  chat:message and chat:error are simple key-value maps.
 
   `error/3` and `error/4` are the centralized place that turns
   a server-side error into a `chat:error` event for the UI.
@@ -28,33 +28,35 @@ defmodule Nest.Agents.Agent.Broadcasts do
   # truncate the user-facing source tag to keep it copy-pastable.
   @log_snippet_bytes 500
 
-  def message(agent_id, message) do
-    Phoenix.PubSub.broadcast(PubSub, "agent:#{agent_id}", {:chat_message, message})
+  defp topic(space_id, name), do: "agent:#{space_id}:#{name}"
+
+  def message(state, message) do
+    Phoenix.PubSub.broadcast(PubSub, topic(state.space_id, state.name), {:chat_message, message})
   end
 
   # Broadcast a `chat:error` event AND log the error on the
   # server. Pass `source` (a "Module.function/arity" string)
   # to append a `[Source: ...]` tag to the user-facing message
   # so the UI shows where the error originated.
-  def error(agent_id, message_index, error_msg, source) do
+  def error(space_id, name, message_index, error_msg, source) do
     tagged = tag_source(error_msg, source)
-    log_error(agent_id, message_index, error_msg, source)
-    broadcast_error(agent_id, message_index, tagged)
+    log_error(space_id, name, message_index, error_msg, source)
+    broadcast_error(space_id, name, message_index, tagged)
   end
 
   # Backward-compat: callers that don't have a source string
   # fall back to the unsourced form (no `[Source: ...]` tag).
   # Internally still logs at error level so server-side
   # observability isn't lost.
-  def error(agent_id, message_index, error_msg) do
-    log_error(agent_id, message_index, error_msg, nil)
-    broadcast_error(agent_id, message_index, error_msg)
+  def error(space_id, name, message_index, error_msg) do
+    log_error(space_id, name, message_index, error_msg, nil)
+    broadcast_error(space_id, name, message_index, error_msg)
   end
 
-  defp broadcast_error(agent_id, message_index, content) do
+  defp broadcast_error(space_id, name, message_index, content) do
     Phoenix.PubSub.broadcast(
       PubSub,
-      "agent:#{agent_id}",
+      topic(space_id, name),
       {:chat_error, %{index: message_index, content: content}}
     )
   end
@@ -71,16 +73,16 @@ defmodule Nest.Agents.Agent.Broadcasts do
   `error/3,4` because the failure context is agent-level
   (`:compaction_failed` status), not connection-level.
   """
-  def compaction_error(agent_id, error_msg, source) do
+  def compaction_error(state, error_msg, source) do
     tagged = tag_source(error_msg, source)
-    log_error(agent_id, nil, error_msg, source)
-    broadcast_compaction_error(agent_id, tagged)
+    log_error(state.space_id, state.name, nil, error_msg, source)
+    broadcast_compaction_error(state.space_id, state.name, tagged)
   end
 
-  defp broadcast_compaction_error(agent_id, content) do
+  defp broadcast_compaction_error(space_id, name, content) do
     Phoenix.PubSub.broadcast(
       PubSub,
-      "agent:#{agent_id}",
+      topic(space_id, name),
       {:chat_error, %{index: nil, content: content, compactionError: true}}
     )
   end
@@ -92,15 +94,28 @@ defmodule Nest.Agents.Agent.Broadcasts do
   compaction-failed Retry button. The marker lets the JS
   channel handler dispatch to the `setCompactionLoop` cache
   action.
+
+  The payload carries the message plus the loop-breaker context
+  so the UI can render "tried X of Y times":
+
+      {:chat_compaction_loop,
+       %{content: "<reason>\\n[Source: Module.fn/arity]",
+         attempt_count: 3, max_attempts: 3}}
+
+  `attempt_count` is the number of consecutive compaction
+  attempts that occurred without progress before the loop-breaker
+  stopped (equal to `max_attempts` when it trips); `max_attempts`
+  is the configured consecutive-compaction limit.
   """
-  def compaction_loop(agent_id, error_msg, source) do
+  def compaction_loop(space_id, name, error_msg, source, attempt_count, max_attempts) do
     tagged = tag_source(error_msg, source)
-    log_error(agent_id, nil, error_msg, source)
+    log_error(space_id, name, nil, error_msg, source)
 
     Phoenix.PubSub.broadcast(
       PubSub,
-      "agent:#{agent_id}",
-      {:chat_compaction_loop, %{content: tagged}}
+      topic(space_id, name),
+      {:chat_compaction_loop,
+       %{content: tagged, attempt_count: attempt_count, max_attempts: max_attempts}}
     )
   end
 
@@ -115,11 +130,11 @@ defmodule Nest.Agents.Agent.Broadcasts do
 
   defp tag_source(error_msg, _source), do: error_msg
 
-  defp log_error(agent_id, message_index, error_msg, source) do
+  defp log_error(space_id, name, message_index, error_msg, source) do
     snippet = truncate_for_log(error_msg)
 
     Logger.error(fn ->
-      "[agent:#{agent_id}] chat:error msg_index=#{message_index} source=#{format_source(source)} :: #{snippet}"
+      "[agent:#{space_id}:#{name}] chat:error msg_index=#{message_index} source=#{format_source(source)} :: #{snippet}"
     end)
   end
 
@@ -136,15 +151,11 @@ defmodule Nest.Agents.Agent.Broadcasts do
 
   defp truncate_for_log(other), do: inspect(other)
 
-  def status(agent_id, %Nest.Agents.Agent{} = state) do
-    Phoenix.PubSub.broadcast(PubSub, "agent:#{agent_id}", {:chat_status, status_payload(state)})
-  end
-
-  def status(agent_id, status) do
+  def status(state) do
     Phoenix.PubSub.broadcast(
       PubSub,
-      "agent:#{agent_id}",
-      {:chat_status, %{status: to_string(status)}}
+      topic(state.space_id, state.name),
+      {:chat_status, status_payload(state)}
     )
   end
 
@@ -152,7 +163,7 @@ defmodule Nest.Agents.Agent.Broadcasts do
   # model could not be resolved at startup. Lives in a dedicated
   # sub-module (`Broadcasts.ModelMissing`) so this file stays
   # under the credo 500-line cap.
-  defdelegate model_missing(agent_id, model, reason),
+  defdelegate model_missing(space_id, name, model, reason),
     to: __MODULE__.ModelMissing,
     as: :broadcast
 
@@ -184,10 +195,10 @@ defmodule Nest.Agents.Agent.Broadcasts do
   # The frontend uses this to update the local history list (so
   # the CompactionMarker component can render) and to clear the
   # message list back to the LLM's view of the world.
-  def compaction(agent_id, {:compaction, marker}, history) do
+  def compaction(state, {:compaction, marker}, history) do
     Phoenix.PubSub.broadcast(
       PubSub,
-      "agent:#{agent_id}",
+      topic(state.space_id, state.name),
       {:chat_compaction,
        %{
          marker: Compaction.to_json(marker),
@@ -196,15 +207,15 @@ defmodule Nest.Agents.Agent.Broadcasts do
     )
   end
 
-  def notification(agent_id, payload) do
-    Phoenix.PubSub.broadcast(PubSub, "agent:#{agent_id}", {:chat_notification, payload})
+  def notification(space_id, name, payload) do
+    Phoenix.PubSub.broadcast(PubSub, topic(space_id, name), {:chat_notification, payload})
   end
 
   # Broadcasts a streaming text delta with character position
   # metadata. The frontend uses `chars_start`/`chars_end` to splice
   # the delta into the assistant message without flicker.
-  def delta_text(agent_id, message_index, content, chars_start) do
-    broadcast_delta(agent_id, %{
+  def delta_text(space_id, name, message_index, content, chars_start) do
+    broadcast_delta(space_id, name, %{
       index: message_index,
       content: content,
       chars_start: chars_start,
@@ -213,8 +224,8 @@ defmodule Nest.Agents.Agent.Broadcasts do
     })
   end
 
-  def delta_thinking(agent_id, message_index, content, chars_start) do
-    broadcast_delta(agent_id, %{
+  def delta_thinking(space_id, name, message_index, content, chars_start) do
+    broadcast_delta(space_id, name, %{
       index: message_index,
       content: content,
       chars_start: chars_start,
@@ -229,15 +240,15 @@ defmodule Nest.Agents.Agent.Broadcasts do
   # the LLM content-block index; the Agent's `tool_index_map`
   # uses it to resolve later `:by_index`-keyed deltas to
   # this concrete id.
-  def delta_tool_use_start(agent_id, message_index, id, name, index) do
-    broadcast_delta(agent_id, %{
+  def delta_tool_use_start(space_id, name, message_index, id, tool_name, index) do
+    broadcast_delta(space_id, name, %{
       index: message_index,
       content: "",
       chars_start: 0,
       chars_end: 0,
       part_type: :tool_use_start,
       tool_call_id: id,
-      tool_call_name: name,
+      tool_call_name: tool_name,
       tool_call_block_index: index
     })
   end
@@ -246,8 +257,8 @@ defmodule Nest.Agents.Agent.Broadcasts do
   # streaming partial can append to the call's `arguments`.
   # `id` is the concrete tool-call id (resolved from
   # `:by_index` upstream).
-  def delta_tool_use_delta(agent_id, message_index, id, index, fragment) do
-    broadcast_delta(agent_id, %{
+  def delta_tool_use_delta(space_id, name, message_index, id, index, fragment) do
+    broadcast_delta(space_id, name, %{
       index: message_index,
       content: fragment,
       chars_start: 0,
@@ -258,8 +269,8 @@ defmodule Nest.Agents.Agent.Broadcasts do
     })
   end
 
-  defp broadcast_delta(agent_id, payload) do
-    Phoenix.PubSub.broadcast(PubSub, "agent:#{agent_id}", {:chat_delta, payload})
+  defp broadcast_delta(space_id, name, payload) do
+    Phoenix.PubSub.broadcast(PubSub, topic(space_id, name), {:chat_delta, payload})
   end
 
   # Wire-format status payload. Always include the current context_limit
@@ -309,13 +320,13 @@ defmodule Nest.Agents.Agent.Broadcasts do
     descendant = state.llm_metrics.descendant_usage
 
     %{
-      status: to_string(state.chat_state.status),
-      currentMode: state.mode,
+      status: to_string(state.live.status),
+      currentMode: state.live.mode,
       model: model_payload(state.model),
       contextLimit: state.llm_metrics.context_limit,
       contextLimitSource: state.llm_metrics.context_limit_source,
-      parentId: state.parent_id,
-      parentName: state.parent_name,
+      parentId: state.tree_position.parent_id,
+      parentName: state.tree_position.parent_name,
       depth: state.depth,
       usage:
         Map.put(

@@ -16,7 +16,7 @@ defmodule Nest.Agents.Agent.Restore do
   `api_logs` list on the runtime message.
 
   The first user/tool api_log gets sequence `0` (formatted as
-  `"<idx>.000"`); `state.chat_state.api_log_sequences` is then
+  `"<idx>.000"`); `state.live.api_log_sequences` is then
   seeded with `%{idx => 1}` for every user/tool index so the
   NEXT live request picks up at `.001` — no id collision with
   the rebuilt `.000`.
@@ -34,7 +34,6 @@ defmodule Nest.Agents.Agent.Restore do
   compaction markers). See `rebuild_request_api_logs/4`.
   """
 
-  alias Nest.Agents.Agent.ChatState
   alias Nest.LLM.ClientConfig
   alias Nest.LLM.RunRequest
   alias Nest.Messages.Compaction, as: CompactionMessage
@@ -110,7 +109,7 @@ defmodule Nest.Agents.Agent.Restore do
 
   @doc """
   Compute the per-message sequence map to seed
-  `chat_state.api_log_sequences` after restore. For every
+  `live.api_log_sequences` after restore. For every
   `:user` and `:tool` index in the preloaded sequence (across
   both history and messages), the next sequence number is `1`,
   matching what `Broadcasts.next_api_log_id/2` returns on the
@@ -136,7 +135,7 @@ defmodule Nest.Agents.Agent.Restore do
   non-empty `api_logs`, it is left alone (forward-compat for
   when we add a `persistence.api_log` flag).
 
-  Also seeds `chat_state.api_log_sequences` with the result of
+  Also seeds `live.api_log_sequences` with the result of
   `initial_sequences_for/1`. Returns the updated agent state.
 
   The caller (`Agent.init/1`) passes the FULL preloaded sequence
@@ -182,8 +181,11 @@ defmodule Nest.Agents.Agent.Restore do
       | chat_state: %{
           state.chat_state
           | history: patch_api_logs(state.chat_state.history, rebuilt_by_index),
-            messages: patch_api_logs(state.chat_state.messages, rebuilt_by_index),
-            api_log_sequences: Map.merge(state.chat_state.api_log_sequences, initial_sequences)
+            messages: patch_api_logs(state.chat_state.messages, rebuilt_by_index)
+        },
+        live: %{
+          state.live
+          | api_log_sequences: Map.merge(state.live.api_log_sequences, initial_sequences)
         }
     }
 
@@ -221,16 +223,15 @@ defmodule Nest.Agents.Agent.Restore do
   end
 
   @doc """
-  Reset `chat_state.api_log_sequences` from the given preloaded
-  list. Useful when the rebuild needs to defer sequence seeding
-  (e.g. test fixtures or a planned `Refresh-from-DB` admin tool).
+  Reset `live.api_log_sequences` from the given preloaded list.
+  Useful when the rebuild needs to defer sequence seeding (e.g.
+  test fixtures or a planned `Refresh-from-DB` admin tool).
 
-  Public for testing and the `:api_log_sequences_updated` callback
-  pathway; the inline `attach_rebuilt_api_logs/3` already merges
-  via `initial_sequences_for/1`.
+  Public for testing; the inline `attach_rebuilt_api_logs/3`
+  already merges via `initial_sequences_for/1`.
   """
-  @spec reset_sequences(ChatState.t(), [Message.t()]) :: ChatState.t()
-  def reset_sequences(%ChatState{} = chat_state, preloaded) do
-    %{chat_state | api_log_sequences: initial_sequences_for(preloaded)}
+  @spec reset_sequences(Nest.Agents.Agent.t(), [Message.t()]) :: Nest.Agents.Agent.t()
+  def reset_sequences(%Nest.Agents.Agent{} = state, preloaded) do
+    %{state | live: %{state.live | api_log_sequences: initial_sequences_for(preloaded)}}
   end
 end

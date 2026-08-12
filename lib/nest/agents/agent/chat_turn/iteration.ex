@@ -60,7 +60,7 @@ defmodule Nest.Agents.Agent.ChatTurn.Iteration do
   @spec notify_max_iterations(State.t()) :: :ok
   def notify_max_iterations(state) do
     if state.iteration > state.max_iterations do
-      Broadcasts.notification(state.ctx.agent_name, %{
+      Broadcasts.notification(state.ctx.space_id, state.ctx.agent_name, %{
         type: "max_iterations",
         message: "Max tool iterations reached"
       })

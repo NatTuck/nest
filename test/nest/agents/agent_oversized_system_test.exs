@@ -79,7 +79,7 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
   # Build a minimal state struct for `Trigger.post_turn/1` tests.
   # `Trigger.post_turn/1` is a regular function that reads only
   # `state.name`, `state.vocation`, `state.workspace_path`,
-  # `state.depth`, `state.llm_metrics`, and `state.chat_state.status`.
+  # `state.depth`, `state.llm_metrics`, and `state.live.status`.
   # Spawning a real Agent is ~100ms overhead per test; building
   # the struct directly is <5ms. The test verifies the in-memory
   # state shape + PubSub broadcast, not the GenServer lifecycle.
@@ -101,7 +101,7 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
         usage_totals: empty_usage_totals(),
         descendant_usage: empty_usage_totals()
       },
-      chat_state: %Nest.Agents.Agent.ChatState{
+      live: %Nest.Agents.Agent.ChatState.Live{
         status: :idle
       }
     }
@@ -127,12 +127,12 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
       # Build a minimal state struct (no Agent process) — `Trigger.post_turn/1`
       # is a regular function that only reads `state.name`,
       # `state.vocation`, `state.workspace_path`, `state.depth`,
-      # `state.llm_metrics`, and `state.chat_state.status`.
+      # `state.llm_metrics`, and `state.live.status`.
       # Spawning a real Agent is ~100ms overhead per test;
       # building the struct directly is <5ms. The test verifies
       # the in-memory state shape, not the GenServer lifecycle.
       state_before = build_minimal_state(vocation)
-      refute state_before.chat_state.status == :context_overflow
+      refute state_before.live.status == :context_overflow
 
       # `Trigger.post_turn/1` → `broadcast_oversized/2` → `Overflow.broadcast/5`
       # → `Broadcasts.error/4` which calls `Logger.error/2`. AGENTS.md
@@ -144,14 +144,14 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
           Trigger.post_turn(state_before)
         end)
 
-      assert state_after.chat_state.status == :context_overflow
+      assert state_after.live.status == :context_overflow
     end
 
     test "the broadcast carries the oversized-system wording" do
       vocation = oversized_vocation()
       state = build_minimal_state(vocation)
 
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.name}")
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.space_id}:#{state.name}")
 
       # Capture the Logger.error that the broadcast path emits; the
       # test asserts the PubSub broadcast content separately, so the
@@ -174,9 +174,9 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
 
       {state_after, _log} = with_log(fn -> Trigger.post_turn(state) end)
 
-      assert state_after.chat_state.status == :context_overflow
+      assert state_after.live.status == :context_overflow
 
-      assert state_after.chat_state.chat_turn_pid == state.chat_state.chat_turn_pid,
+      assert state_after.live.chat_turn_pid == state.live.chat_turn_pid,
              "Trigger.post_turn should not have spawned a chat turn for an oversized system"
     end
   end
@@ -192,8 +192,8 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
       # agent should NOT have transitioned to :context_overflow
       # (whether or not the summary budget check refuses on its
       # own — that's a different code path).
-      assert state_after.chat_state.status != :context_overflow or
-               state_after.chat_state.status == :compacting
+      assert state_after.live.status != :context_overflow or
+               state_after.live.status == :compacting
     end
   end
 
@@ -223,8 +223,8 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
       # case. Capture so the test output stays clean.
       {state_after, _log} = with_log(fn -> Trigger.post_turn(state) end)
 
-      assert state_after.chat_state.status == :compacting,
-             "expected :compacting, got #{inspect(state_after.chat_state.status)}"
+      assert state_after.live.status == :compacting,
+             "expected :compacting, got #{inspect(state_after.live.status)}"
     end
   end
 end

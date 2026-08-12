@@ -1,15 +1,15 @@
 defmodule Nest.Agents.Agent.BroadcastsTest do
   @moduledoc """
   Tests for the centralized `chat:error` broadcast path
-  (`Nest.Agents.Agent.Broadcasts.error/3` and `error/4`).
+  (`Nest.Agents.Agent.Broadcasts.error/4` and `error/5`).
 
   These are the contract:
 
-    * `error/4` is the canonical entry point. It logs the
+    * `error/5` is the canonical entry point. It logs the
       error on the server and broadcasts a `chat:error` event
       whose `content` ends with `[Source: <module>/<n>]` so
       the UI shows where the error originated.
-    * `error/3` (no source) is the backward-compat form. It
+    * `error/4` (no source) is the backward-compat form. It
       still logs at error level and broadcasts the message
       verbatim (no source tag appended).
     * The server log entry always includes `chat:error`,
@@ -25,15 +25,19 @@ defmodule Nest.Agents.Agent.BroadcastsTest do
   alias Nest.PubSub
 
   setup do
+    space_id = System.unique_integer([:positive])
     agent_id = "test-agent-#{System.unique_integer([:positive])}"
-    Phoenix.PubSub.subscribe(PubSub, "agent:#{agent_id}")
-    {:ok, agent_id: agent_id}
+    Phoenix.PubSub.subscribe(PubSub, "agent:#{space_id}:#{agent_id}")
+    {:ok, space_id: space_id, agent_id: agent_id}
   end
 
-  describe "error/4 (canonical form with source)" do
-    test "appends [Source: ...] to the user-facing message", %{agent_id: agent_id} do
+  describe "error/5 (canonical form with source)" do
+    test "appends [Source: ...] to the user-facing message", %{
+      space_id: space_id,
+      agent_id: agent_id
+    } do
       capture_log(fn ->
-        Broadcasts.error(agent_id, 5, "Something broke", "Foo.bar/2")
+        Broadcasts.error(space_id, agent_id, 5, "Something broke", "Foo.bar/2")
 
         assert_receive {:chat_error, %{index: 5, content: content}}, 500
 
@@ -41,10 +45,19 @@ defmodule Nest.Agents.Agent.BroadcastsTest do
       end)
     end
 
-    test "logs the error at error level with structured context", %{agent_id: agent_id} do
+    test "logs the error at error level with structured context", %{
+      space_id: space_id,
+      agent_id: agent_id
+    } do
       log =
         capture_log(fn ->
-          Broadcasts.error(agent_id, 7, "Connection failed", "LLMRunner.handle_failed_response/3")
+          Broadcasts.error(
+            space_id,
+            agent_id,
+            7,
+            "Connection failed",
+            "LLMRunner.handle_failed_response/3"
+          )
         end)
 
       assert log =~ "[error]"
@@ -54,12 +67,15 @@ defmodule Nest.Agents.Agent.BroadcastsTest do
       assert log =~ "Connection failed"
     end
 
-    test "truncates very long messages in the server log", %{agent_id: agent_id} do
+    test "truncates very long messages in the server log", %{
+      space_id: space_id,
+      agent_id: agent_id
+    } do
       long_msg = String.duplicate("a", 1_000)
 
       log =
         capture_log(fn ->
-          Broadcasts.error(agent_id, 1, long_msg, "Foo.bar/2")
+          Broadcasts.error(space_id, agent_id, 1, long_msg, "Foo.bar/2")
         end)
 
       # The user-facing message in the broadcast is NOT truncated
@@ -76,9 +92,12 @@ defmodule Nest.Agents.Agent.BroadcastsTest do
       assert log =~ "...(truncated)"
     end
 
-    test "ignores an empty source string (treats it as no source)", %{agent_id: agent_id} do
+    test "ignores an empty source string (treats it as no source)", %{
+      space_id: space_id,
+      agent_id: agent_id
+    } do
       capture_log(fn ->
-        Broadcasts.error(agent_id, 1, "msg", "")
+        Broadcasts.error(space_id, agent_id, 1, "msg", "")
 
         assert_receive {:chat_error, %{content: content}}, 500
         # Empty source is filtered out by `tag_source/2` — only
@@ -88,19 +107,22 @@ defmodule Nest.Agents.Agent.BroadcastsTest do
     end
   end
 
-  describe "error/3 (backward-compat, no source)" do
-    test "broadcasts the message verbatim (no [Source: ...] tag)", %{agent_id: agent_id} do
+  describe "error/4 (backward-compat, no source)" do
+    test "broadcasts the message verbatim (no [Source: ...] tag)", %{
+      space_id: space_id,
+      agent_id: agent_id
+    } do
       capture_log(fn ->
-        Broadcasts.error(agent_id, 2, "Plain error")
+        Broadcasts.error(space_id, agent_id, 2, "Plain error")
 
         assert_receive {:chat_error, %{index: 2, content: "Plain error"}}, 500
       end)
     end
 
-    test "still logs the error at error level", %{agent_id: agent_id} do
+    test "still logs the error at error level", %{space_id: space_id, agent_id: agent_id} do
       log =
         capture_log(fn ->
-          Broadcasts.error(agent_id, 3, "Server-side issue")
+          Broadcasts.error(space_id, agent_id, 3, "Server-side issue")
         end)
 
       assert log =~ "[error]"
@@ -115,20 +137,23 @@ defmodule Nest.Agents.Agent.BroadcastsTest do
   describe "delta_tool_use_start / delta_tool_use_delta (live tool-call streaming)" do
     # These broadcasts surface Anthropic / OpenAI tool-use events
     # as `chat:delta` events so the JS streaming partial can
-    # render an in-flight `clone_agent` (or any other) tool call
+    # render an in-flight `agents/spawn` (or any other) tool call
     # before the assistant message finalizes. Without this, the
     # user sees only the thinking block until the message lands
     # and the bubble "pops" with a tool call at the end.
 
-    test "delta_tool_use_start carries id, name, and the block index", %{agent_id: agent_id} do
-      Broadcasts.delta_tool_use_start(agent_id, 7, "call_abc", "clone_agent", 0)
+    test "delta_tool_use_start carries id, name, and the block index", %{
+      space_id: space_id,
+      agent_id: agent_id
+    } do
+      Broadcasts.delta_tool_use_start(space_id, agent_id, 7, "call_abc", "agents/spawn", 0)
 
       assert_receive {:chat_delta,
                       %{
                         index: 7,
                         part_type: :tool_use_start,
                         tool_call_id: "call_abc",
-                        tool_call_name: "clone_agent",
+                        tool_call_name: "agents/spawn",
                         tool_call_block_index: 0,
                         content: "",
                         chars_start: 0,
@@ -138,9 +163,10 @@ defmodule Nest.Agents.Agent.BroadcastsTest do
     end
 
     test "delta_tool_use_delta carries the resolved id and the argument fragment", %{
+      space_id: space_id,
       agent_id: agent_id
     } do
-      Broadcasts.delta_tool_use_delta(agent_id, 7, "call_abc", 0, ~s({"instru))
+      Broadcasts.delta_tool_use_delta(space_id, agent_id, 7, "call_abc", 0, ~s({"instru))
 
       assert_receive {:chat_delta,
                       %{

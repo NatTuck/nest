@@ -4,8 +4,7 @@
  * Features:
  * - New Agent button
  * - Tree of active agents (roots at top, children
- *   nested under their parent by name), with delete on
- *   each leaf
+ *   nested under their parent by name)
  * - About link
  * - Current route highlighting
  *
@@ -16,9 +15,9 @@
  * (camelCase wire format) which the helper resolves.
  */
 
+import { useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useStore } from "../store";
-import { deleteAgent } from "../channels";
 
 /**
  * Build a tree from a flat agents list. Each agent's
@@ -53,15 +52,16 @@ function buildAgentTree(agents) {
 
 /**
  * Recursive agent row. Renders the agent's name with the
- * current-agent styling and a delete button (only on
- * leaves — non-leaves have a chevron instead, since
- * deleting a parent would orphan its children).
+ * current-agent styling. Leaves and non-leaves alike render
+ * identically (there's no delete — archiving happens via the
+ * coordinator, and delete is removed in favor of spaces).
  */
-function AgentTreeRow({ node, depth, location, navigate, onDelete }) {
+function AgentTreeRow({ node, depth, location, spaceSlug }) {
   const { agent, children } = node;
-  const isCurrent = location.pathname === `/agent/${agent.name}`;
+  const isCurrent =
+    location.pathname ===
+    `/space/${spaceSlug}/agent/${encodeURIComponent(agent.name)}`;
   const hasChildren = children.length > 0;
-  const isLeaf = !hasChildren;
 
   return (
     <li key={agent.name}>
@@ -73,7 +73,7 @@ function AgentTreeRow({ node, depth, location, navigate, onDelete }) {
         `}
       >
         <Link
-          to={`/agent/${agent.name}`}
+          to={`/space/${spaceSlug}/agent/${encodeURIComponent(agent.name)}`}
           className="flex items-center gap-2 min-w-0 flex-1 px-3 py-2"
           style={{ paddingLeft: `${0.75 + depth * 0.875}rem` }}
         >
@@ -85,43 +85,14 @@ function AgentTreeRow({ node, depth, location, navigate, onDelete }) {
             `}
           />
           <span className="truncate text-sm font-medium">{agent.name}</span>
-          {!isLeaf && (
+          {hasChildren && (
             <span className="text-xs text-gray-400 ml-1">
               ({children.length})
             </span>
           )}
         </Link>
-
-        {isLeaf && (
-          <button
-            type="button"
-            onClick={(e) => onDelete(e, agent.name)}
-            className="
-              opacity-0 group-hover:opacity-100
-              p-1 mr-1 rounded hover:bg-red-100 text-gray-400 hover:text-red-600
-              transition-all duration-200
-            "
-            title={`Delete ${agent.name}`}
-            aria-label={`Delete ${agent.name}`}
-          >
-            <svg
-              className="w-4 h-4"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-              aria-hidden="true"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-              />
-            </svg>
-          </button>
-        )}
       </div>
-      {!isLeaf && (
+      {hasChildren && (
         <ul className="space-y-1">
           {children.map((child) => (
             <AgentTreeRow
@@ -129,8 +100,74 @@ function AgentTreeRow({ node, depth, location, navigate, onDelete }) {
               node={child}
               depth={depth + 1}
               location={location}
-              navigate={navigate}
-              onDelete={onDelete}
+              spaceSlug={spaceSlug}
+            />
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
+
+/**
+ * A single space row: a collapsible header (name + agent count)
+ * that expands to that space's agent tree. Clicking the space
+ * name navigates to its Main View (`/space/:slug`); the chevron
+ * toggles the agent list.
+ */
+function SpaceRow({ space, spaceAgents, location, isSelected }) {
+  const [expanded, setExpanded] = useState(isSelected);
+  const tree = buildAgentTree(spaceAgents);
+
+  return (
+    <li key={space.id}>
+      <div
+        className={`
+          flex items-center justify-between rounded-lg group
+          transition-colors duration-200
+          ${isSelected ? "bg-blue-50 text-blue-700 border border-blue-200" : "text-gray-700 hover:bg-gray-100"}
+        `}
+      >
+        <Link
+          to={`/space/${encodeURIComponent(space.slug)}`}
+          className="flex items-center gap-2 min-w-0 flex-1 px-3 py-2"
+        >
+          <span className="truncate text-sm font-medium">{space.name}</span>
+          <span className="text-xs text-gray-400 ml-1">
+            ({spaceAgents.length})
+          </span>
+        </Link>
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="p-1 mr-1 rounded hover:bg-gray-100 text-gray-400"
+          aria-label={`Toggle ${space.name}`}
+        >
+          <svg
+            className={`w-4 h-4 transition-transform ${expanded ? "rotate-90" : ""}`}
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M9 5l7 7-7 7"
+            />
+          </svg>
+        </button>
+      </div>
+      {expanded && (
+        <ul className="space-y-1 mt-1">
+          {tree.map((node) => (
+            <AgentTreeRow
+              key={node.agent.name}
+              node={node}
+              depth={0}
+              location={location}
+              spaceSlug={space.slug}
             />
           ))}
         </ul>
@@ -144,29 +181,14 @@ function AgentTreeRow({ node, depth, location, navigate, onDelete }) {
  */
 export function Sidebar() {
   const location = useLocation();
-  const navigate = useNavigate();
-  const { agents, brokenAgents } = useStore();
-
-  const handleDeleteAgent = (e, name) => {
-    e.preventDefault();
-    e.stopPropagation();
-
-    deleteAgent(name, (error) => {
-      console.error("Failed to delete agent:", error);
-    });
-    if (location.pathname === `/agent/${name}`) {
-      navigate("/new_agent");
-    }
-  };
+  const { agents, brokenAgents, spaces, currentSpaceId } = useStore();
 
   const isActive = (path) => {
-    if (path === "/new_agent") {
-      return location.pathname === "/new_agent";
+    if (path === "/spaces/new") {
+      return location.pathname === path;
     }
     return location.pathname.startsWith(path);
   };
-
-  const tree = buildAgentTree(agents);
 
   return (
     <aside className="w-64 bg-white border-r border-gray-200 flex flex-col">
@@ -180,12 +202,12 @@ export function Sidebar() {
       <nav className="flex-1 overflow-y-auto p-4">
         {/* New Agent Button */}
         <Link
-          to="/new_agent"
+          to="/spaces/new"
           className={`
             w-full flex items-center gap-2 px-4 py-2 rounded-lg mb-4
             transition-colors duration-200
             ${
-              isActive("/new_agent")
+              isActive("/spaces/new")
                 ? "bg-blue-600 text-white"
                 : "bg-gray-100 text-gray-700 hover:bg-gray-200"
             }
@@ -205,29 +227,28 @@ export function Sidebar() {
               d="M12 4v16m8-8H4"
             />
           </svg>
-          <span>New Agent</span>
+          <span>New Space</span>
         </Link>
 
-        {/* Active Agents Section (rendered as a tree) */}
+        {/* Spaces Section — each space expands to its agent tree */}
         <div className="mb-6">
           <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 px-2">
-            Active Agents
+            Spaces
           </h2>
 
-          {(agents?.length ?? 0) === 0 ? (
+          {(spaces?.length ?? 0) === 0 ? (
             <p className="text-sm text-gray-400 px-2 py-2">
-              No agents yet. Create one!
+              No spaces yet. Create one!
             </p>
           ) : (
             <ul className="space-y-1">
-              {tree.map((node) => (
-                <AgentTreeRow
-                  key={node.agent.name}
-                  node={node}
-                  depth={0}
+              {spaces.map((space) => (
+                <SpaceRow
+                  key={space.id}
+                  space={space}
+                  spaceAgents={agents.filter((a) => a.space_id === space.id)}
                   location={location}
-                  navigate={navigate}
-                  onDelete={handleDeleteAgent}
+                  isSelected={currentSpaceId === space.id}
                 />
               ))}
             </ul>
@@ -280,33 +301,6 @@ export function Sidebar() {
                           {entry.name}
                         </span>
                       </Link>
-
-                      <button
-                        type="button"
-                        onClick={(e) => handleDeleteAgent(e, entry.name)}
-                        className="
-                          opacity-0 group-hover:opacity-100
-                          p-1 mr-1 rounded hover:bg-red-100 text-gray-400 hover:text-red-600
-                          transition-all duration-200
-                        "
-                        title={`Delete ${entry.name}`}
-                        aria-label={`Delete ${entry.name}`}
-                      >
-                        <svg
-                          className="w-4 h-4"
-                          fill="none"
-                          stroke="currentColor"
-                          viewBox="0 0 24 24"
-                          aria-hidden="true"
-                        >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth={2}
-                            d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                          />
-                        </svg>
-                      </button>
                     </div>
                   </li>
                 );

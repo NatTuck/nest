@@ -39,10 +39,10 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
     # no per-test put/delete_env needed.
 
     # Allow Mimic to stub `Nest.Agents.chat/2` in this test so the
-    # parent's `handle_clone_request/3` doesn't actually drive an
+    # parent.s `handle_spawn_request/3` doesn't actually drive an
     # LLM cycle on the spawned child.
     Mimic.copy(Nest.Agents)
-    Mimic.stub(Nest.Agents, :chat, fn _name, _content -> :ok end)
+    Mimic.stub(Nest.Agents, :chat, fn _space_id, _name, _content -> :ok end)
 
     {:ok, vid: upsert_vocation()}
   end
@@ -57,7 +57,11 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
     MockClient.start_link(parent_pid)
 
     {:ok, child_name} =
-      GenServer.call(parent_pid, {:clone_agent_request, self(), "x"}, 5_000)
+      GenServer.call(
+        parent_pid,
+        {:spawn_agent_request, self(), %{query: "x", clone_context: true}},
+        5_000
+      )
 
     # Sanity: the parent registered us under the child's name
     # in pending_children.
@@ -69,17 +73,22 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
 
     # Bookkeeping reset.
     assert new_state.chat_state.pending_children == %{}
-    assert new_state.chat_state.chat_turn_pid == nil
-    assert new_state.chat_state.cancelled == false
-    assert new_state.chat_state.status == :idle
+    assert new_state.live.chat_turn_pid == nil
+    assert new_state.live.cancelled == false
+    assert new_state.live.status == :idle
 
     # The child's GenServer is gone (eventually, via supervisor
     # + ChildRegistry :DOWN cleanup).
-    eventually(fn -> AgentsRegistry.lookup(child_name) == {:error, :not_found} end,
+    eventually(
+      fn ->
+        AgentsRegistry.lookup(AgentTestHelpers.current_space_id(), child_name) ==
+          {:error, :not_found}
+      end,
       timeout: 1_000
     )
 
-    eventually(fn -> ChildRegistry.children_of(parent_name) == [] end,
+    eventually(
+      fn -> ChildRegistry.children_of(AgentTestHelpers.current_space_id(), parent_name) == [] end,
       timeout: 1_000
     )
 
@@ -96,14 +105,18 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
 
     # Spawn child A (the grandchild's parent) from the parent.
     {:ok, child_a_name} =
-      GenServer.call(parent_pid, {:clone_agent_request, self(), "a"}, 5_000)
+      GenServer.call(
+        parent_pid,
+        {:spawn_agent_request, self(), %{query: "a", clone_context: true}},
+        5_000
+      )
 
-    {:ok, child_a_pid} = AgentsRegistry.lookup(child_a_name)
+    {:ok, child_a_pid} = AgentsRegistry.lookup(AgentTestHelpers.current_space_id(), child_a_name)
     MockClient.start_link(child_a_pid)
 
     # Child A inherits the test pid's MockClient and Mimic stubs
     # — propagate them, plus the test pid's sandbox checkout for
-    # the DB writes that `handle_clone_request/3` will do when
+    # the DB writes that `handle_spawn_request/3` will do when
     # spawning child B.
     Mimic.allow(Nest.Agents, self(), child_a_pid)
     Mimic.allow(Nest.LLM.MockClient, self(), child_a_pid)
@@ -112,10 +125,19 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
     # Spawn grandchild B from child A. The grandchild registration
     # goes through ChildRegistry the same way.
     {:ok, child_b_name} =
-      GenServer.call(child_a_pid, {:clone_agent_request, self(), "b"}, 5_000)
+      GenServer.call(
+        child_a_pid,
+        {:spawn_agent_request, self(), %{query: "b", clone_context: true}},
+        5_000
+      )
 
-    assert ChildRegistry.children_of(parent_name) == [child_a_name]
-    assert ChildRegistry.children_of(child_a_name) == [child_b_name]
+    assert ChildRegistry.children_of(AgentTestHelpers.current_space_id(), parent_name) == [
+             child_a_name
+           ]
+
+    assert ChildRegistry.children_of(AgentTestHelpers.current_space_id(), child_a_name) == [
+             child_b_name
+           ]
 
     # Drive chat_stopped on the parent. `stop_pending_children/1`
     # iterates pending_children (which has child_a_name → self),
@@ -129,21 +151,34 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
     _ = :sys.get_state(parent_pid)
 
     # The parent is still alive.
-    assert {:ok, _still_alive_parent} = AgentsRegistry.lookup(parent_name)
+    assert {:ok, _still_alive_parent} =
+             AgentsRegistry.lookup(AgentTestHelpers.current_space_id(), parent_name)
 
-    eventually(fn -> AgentsRegistry.lookup(child_a_name) == {:error, :not_found} end,
+    eventually(
+      fn ->
+        AgentsRegistry.lookup(AgentTestHelpers.current_space_id(), child_a_name) ==
+          {:error, :not_found}
+      end,
       timeout: 1_000
     )
 
-    eventually(fn -> AgentsRegistry.lookup(child_b_name) == {:error, :not_found} end,
+    eventually(
+      fn ->
+        AgentsRegistry.lookup(AgentTestHelpers.current_space_id(), child_b_name) ==
+          {:error, :not_found}
+      end,
       timeout: 1_000
     )
 
-    eventually(fn -> ChildRegistry.children_of(parent_name) == [] end,
+    eventually(
+      fn -> ChildRegistry.children_of(AgentTestHelpers.current_space_id(), parent_name) == [] end,
       timeout: 1_000
     )
 
-    eventually(fn -> ChildRegistry.children_of(child_a_name) == [] end,
+    eventually(
+      fn ->
+        ChildRegistry.children_of(AgentTestHelpers.current_space_id(), child_a_name) == []
+      end,
       timeout: 1_000
     )
 
@@ -160,7 +195,11 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
     MockClient.start_link(parent_pid)
 
     {:ok, child_name} =
-      GenServer.call(parent_pid, {:clone_agent_request, self(), "x"}, 5_000)
+      GenServer.call(
+        parent_pid,
+        {:spawn_agent_request, self(), %{query: "x", clone_context: true}},
+        5_000
+      )
 
     # The child finishes *before* the parent's chat_stopped flush
     # runs. Cast the same shape `chat_idle/1`'s
@@ -201,7 +240,7 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
         name: "SubAgentChatStop Vocation #{System.unique_integer([:positive])}",
         description: "Sub-agent chat-stop cascade test",
         system_prompt: "x",
-        tools: ["clone_agent", "context"],
+        tools: ["agents/spawn", "context"],
         modes: %{
           "chat" => %{
             "description" => "Chat",
@@ -239,8 +278,8 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
   # row cleanup at test exit.
   defp on_exit_cleanup(names) do
     for name <- names do
-      case AgentsRegistry.lookup(name) do
-        {:ok, _pid} -> :ok = Supervisor.stop_agent(name)
+      case AgentsRegistry.lookup(AgentTestHelpers.current_space_id(), name) do
+        {:ok, _pid} -> :ok = Supervisor.stop_agent(AgentTestHelpers.current_space_id(), name)
         _ -> :ok
       end
     end

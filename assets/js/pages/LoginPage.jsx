@@ -2,7 +2,7 @@
  * LoginPage — username + password sign-in form.
  *
  * On success, the API helper stores the auth token in
- * `localStorage` and we route to `/new_agent`. The WS
+ * `localStorage` and we route to `/spaces`. The WS
  * connection is then established when the destination
  * route mounts, and the lobby's `init` payload populates
  * `useAuthStore.currentUser`. On failure we render the
@@ -38,7 +38,7 @@ export function LoginPage() {
 
     try {
       await login(username, password);
-      navigate("/new_agent", { replace: true });
+      navigate("/spaces", { replace: true });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Login failed");
       setSubmitting(false);

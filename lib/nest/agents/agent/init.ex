@@ -16,6 +16,7 @@ defmodule Nest.Agents.Agent.Init do
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Persistence, as: AgentPersistence
   alias Nest.Agents.Agent.SystemPrompt
+  alias Nest.Agents.Agent.TreePosition
   alias Nest.Messages.Part
   alias Nest.Messages.System
   alias Nest.Tools
@@ -45,6 +46,7 @@ defmodule Nest.Agents.Agent.Init do
 
     %Nest.Agents.Agent{
       name: name,
+      space_id: Map.fetch!(attrs, :space_id),
       model: Map.fetch!(attrs, :model),
       client_config: client_config,
       vocation: cached_vocation,
@@ -53,13 +55,15 @@ defmodule Nest.Agents.Agent.Init do
       tmp_path: tmp_path,
       tools: tools,
       llm_metrics: llm_metrics,
-      parent_id: Map.get(attrs, :parent_id),
-      parent_name: Map.get(attrs, :parent_name),
+      tree_position: %TreePosition{
+        parent_id: Map.get(attrs, :parent_id),
+        parent_name: Map.get(attrs, :parent_name)
+      },
       created_by_user_id: Map.get(attrs, :created_by_user_id),
       shared: Map.get(attrs, :shared, false),
       depth: Map.get(attrs, :depth, 0),
-      mode: mode,
-      chat_state: build_chat_state(initial_messages, next_index, initial_api_log_sequences)
+      chat_state: build_chat_state(initial_messages, next_index),
+      live: build_live_state(initial_api_log_sequences, mode)
     }
   end
 
@@ -76,12 +80,24 @@ defmodule Nest.Agents.Agent.Init do
         Map.get(attrs, :vocation),
         Map.get(attrs, :workspace_path),
         {context_limit, context_limit_source},
+        Map.get(attrs, :name, ""),
         Map.get(attrs, :depth, 0)
       )
+
+    tool_names = maybe_exclude_spawn(tool_names, attrs)
 
     {system_prompt, mode, tool_names, cached_vocation,
      build_llm_metrics(context_limit, context_limit_source)}
   end
+
+  # Non-clone agents spawned at max depth must not be able to
+  # spawn children, so `agents/spawn` is dropped from their
+  # tool list. Clones never set `:exclude_spawn` — they must
+  # keep the exact tool list of their parent (hard rule).
+  defp maybe_exclude_spawn(tool_names, %{exclude_spawn: true}),
+    do: Enum.reject(tool_names, &(&1 == "agents/spawn"))
+
+  defp maybe_exclude_spawn(tool_names, _attrs), do: tool_names
 
   @doc """
   Persist the initial system message built by `build_state/2`
@@ -100,6 +116,7 @@ defmodule Nest.Agents.Agent.Init do
     case state.chat_state.messages do
       [{:system, sys_struct} | _] when is_struct(sys_struct, System) ->
         AgentPersistence.append_message(
+          state.space_id,
           state.name,
           {:system, sys_struct},
           state.chat_state.next_message_index
@@ -284,14 +301,20 @@ defmodule Nest.Agents.Agent.Init do
     }
   end
 
-  defp build_chat_state(messages, next_index, api_log_sequences) do
+  defp build_chat_state(messages, next_index) do
     %Nest.Agents.Agent.ChatState{
       messages: messages,
-      next_message_index: next_index,
-      streaming_acc: nil,
-      status: :idle,
-      active_message_index: 0,
-      api_log_sequences: api_log_sequences
+      next_message_index: next_index
+    }
+  end
+
+  # Per-process state always resets to defaults on init/1. The
+  # only non-default seed is the API-log id sequences, which the
+  # restore path precomputes from the loaded message history.
+  defp build_live_state(api_log_sequences, mode) do
+    %Nest.Agents.Agent.ChatState.Live{
+      api_log_sequences: api_log_sequences,
+      mode: mode
     }
   end
 

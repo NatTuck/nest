@@ -19,7 +19,7 @@ defmodule Nest.Agents.AgentTest do
           name: "registered-agent-#{System.unique_integer([:positive])}"
         })
 
-      assert {:ok, _pid} = Registry.lookup(name)
+      assert {:ok, _pid} = Registry.lookup(AgentTestHelpers.current_space_id(), name)
     end
   end
 

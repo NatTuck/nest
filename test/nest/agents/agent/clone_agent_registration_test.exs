@@ -1,10 +1,10 @@
 defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
   @moduledoc """
-  Focused E2E test for the clone_agent wiring that does NOT
+  Focused E2E test for the agents/spawn wiring that does NOT
   drive LLM on the child. We:
     1. Start a parent under the supervisor.
     2. Issue a raw `GenServer.call` to the parent (acting as
-       the tool worker) for `:clone_agent_request`.
+       the tool worker) for `:spawn_agent_request`.
     3. Verify the parent spawns a child, registers it in the
        ChildRegistry, replies with the child's name, and
        remembers the worker pid under that child.
@@ -21,7 +21,7 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
   import Mimic
   import Eventually
 
-  alias Nest.Agents
+  alias Nest.Agents.Agent.Config
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.ChildRegistry
   alias Nest.Agents.Registry, as: AgentsRegistry
@@ -43,12 +43,12 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
 
     # Allow Mimic to stub `Nest.Agents.chat/2` in this test.
     Mimic.copy(Nest.Agents)
-    Mimic.stub(Nest.Agents, :chat, fn _name, _content -> :ok end)
+    Mimic.stub(Nest.Agents, :chat, fn _space_id, _name, _content -> :ok end)
 
     {:ok, vid: upsert_vocation()}
   end
 
-  test "raw :clone_agent_request to the parent spawns, registers, and replies",
+  test "raw :spawn_agent_request to the parent spawns, registers, and replies",
        %{vid: vid} do
     Process.flag(:trap_exit, true)
     {:ok, parent_name, parent_pid, parent_id} = start_parent(vid)
@@ -63,7 +63,7 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
     {:ok, child_name} =
       GenServer.call(
         parent_pid,
-        {:clone_agent_request, self(), "do the thing"},
+        {:spawn_agent_request, self(), %{query: "do the thing", clone_context: true}},
         5_000
       )
 
@@ -80,7 +80,7 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
     # The parent's pending_children contains our pid under
     # the new child's name. (Without this, the parent's
     # worker dispatcher wouldn't know where to forward
-    # `:clone_agent_result`.)
+    # `:spawn_agent_result`.)
     pending_children = GenServer.call(parent_pid, :get_pending_children)
     assert pending_children[child_name] == self()
 
@@ -98,15 +98,41 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
     {:ok, child_name} =
       GenServer.call(
         parent_pid,
-        {:clone_agent_request, self(), "x"},
+        {:spawn_agent_request, self(), %{query: "x", clone_context: true}},
         5_000
       )
 
-    :ok = Agents.delete_agent(parent_name)
+    :ok = Supervisor.stop_agent(AgentTestHelpers.current_space_id(), parent_name)
 
     assert_registry_misses(parent_name)
     assert_registry_misses(child_name)
-    assert ChildRegistry.children_of(parent_name) == []
+    assert ChildRegistry.children_of(AgentTestHelpers.current_space_id(), parent_name) == []
+  end
+
+  test "spawning from an agent at max depth errors (clone keeps the tool, spawn is rejected)",
+       %{vid: vid} do
+    Process.flag(:trap_exit, true)
+    {:ok, parent_name, parent_pid, _parent_id} = start_parent(vid)
+    space_id = AgentTestHelpers.current_space_id()
+    Mimic.allow(MockClient, self(), parent_pid)
+    Mimic.allow(Nest.Agents, self(), parent_pid)
+    :sys.replace_state(parent_pid, &swap_to_mock/1)
+    MockClient.start_link(parent_pid)
+
+    # Force the parent to max depth — a clone at max depth still
+    # has `agents/spawn` in its (inherited) tool list, so the
+    # spawn must be rejected at runtime.
+    max = Config.configured_max_depth()
+    :sys.replace_state(parent_pid, &%{&1 | depth: max})
+
+    assert {:error, :max_depth_reached} =
+             GenServer.call(
+               parent_pid,
+               {:spawn_agent_request, self(), %{query: "x", clone_context: true}},
+               5_000
+             )
+
+    on_exit(fn -> _ = Supervisor.stop_agent(space_id, parent_name) end)
   end
 
   # Helpers
@@ -117,7 +143,7 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
         name: "SubAgentRegistration Vocation #{System.unique_integer([:positive])}",
         description: "Sub-agent raw-registration test",
         system_prompt: "x",
-        tools: ["clone_agent", "context"],
+        tools: ["agents/spawn", "context"],
         modes: %{
           "chat" => %{
             "description" => "Chat",
@@ -145,27 +171,30 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
   end
 
   defp fetch_row!(name) do
-    {:ok, row} = Persistence.fetch_agent_by_name(name)
+    {:ok, row} = Persistence.fetch_agent(AgentTestHelpers.current_space_id(), name)
     row
   end
 
-  # Best-effort cleanup. `Agents.delete_agent/1` would do a
-  # DB write that requires the test pid's sandbox checkout,
-  # but `on_exit` runs in `ExUnit.OnExitHandler` — no
-  # ownership. Use `Supervisor.stop_agent/1` (GenServer only;
+  # Best-effort cleanup. A DB write here would require the
+  # test pid's sandbox checkout, but `on_exit` runs in
+  # `ExUnit.OnExitHandler` — no ownership. Use
+  # `Supervisor.stop_agent/1` (GenServer only;
   # no DB write) and let the DataCase sandbox rollback handle
   # row cleanup at test exit.
   defp on_exit_cleanup(parent_name, child_name) do
     for name <- [parent_name, child_name] do
-      case AgentsRegistry.lookup(name) do
-        {:ok, _pid} -> :ok = Supervisor.stop_agent(name)
+      case AgentsRegistry.lookup(AgentTestHelpers.current_space_id(), name) do
+        {:ok, _pid} -> :ok = Supervisor.stop_agent(AgentTestHelpers.current_space_id(), name)
         _ -> :ok
       end
     end
   end
 
   defp assert_registry_misses(name) do
-    eventually(fn -> AgentsRegistry.lookup(name) == {:error, :not_found} end,
+    eventually(
+      fn ->
+        AgentsRegistry.lookup(AgentTestHelpers.current_space_id(), name) == {:error, :not_found}
+      end,
       timeout: 1_000
     )
   end

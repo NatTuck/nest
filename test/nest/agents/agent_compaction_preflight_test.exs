@@ -114,8 +114,8 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
 
       # The agent stays idle (no chat turn was spawned).
       state_after = :sys.get_state(pid)
-      assert state_after.chat_state.status == :context_overflow
-      assert state_after.chat_state.pending_user_message == nil
+      assert state_after.live.status == :context_overflow
+      assert state_after.live.pending_user_message == nil
 
       # The user message was NOT appended to the conversation.
       assert length(state_after.chat_state.messages) == 1

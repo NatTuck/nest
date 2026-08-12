@@ -108,7 +108,7 @@ defmodule Nest.Tokens.Compactor do
 
     * `context_limit` — the model's context window in tokens.
     * `system_prompt` — the rendered system prompt string
-      (from `SystemPrompt.compose_vocation_config/4`). The
+      (from `SystemPrompt.compose_vocation_config/5`). The
       caller precomputes it; this module does not read
       `state.chat_state.messages[0]` (the rendered string is
       the single source of truth for the system size —

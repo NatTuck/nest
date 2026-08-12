@@ -15,9 +15,10 @@ defmodule NestWeb.AgentChannelTest do
   describe "join/3" do
     test "joins agent channel and returns state with messageCount", %{
       socket: socket,
-      agent_id: id
+      agent_id: id,
+      space_id: space_id
     } do
-      assert socket.topic == "agent:#{id}"
+      assert socket.topic == "agent:#{space_id}:#{id}"
       assert_push "init", payload
       assert payload["name"] == id
       assert payload["model"]["name"] == "qwen3.5-plus"
@@ -87,7 +88,7 @@ defmodule NestWeb.AgentChannelTest do
                subscribe_and_join(
                  connected,
                  NestWeb.AgentChannel,
-                 "agent:nonexistent"
+                 "agent:1:nonexistent"
                )
     end
 
@@ -103,7 +104,7 @@ defmodule NestWeb.AgentChannelTest do
       log =
         ExUnit.CaptureLog.capture_log(fn ->
           Nest.Agents
-          |> expect(:get_agent, fn _name ->
+          |> expect(:get_agent, fn _space_id, _name ->
             {:error, %Nest.ChatModel.ModelNotFoundError{message: "x"}}
           end)
 
@@ -114,16 +115,20 @@ defmodule NestWeb.AgentChannelTest do
                    subscribe_and_join(
                      connected,
                      NestWeb.AgentChannel,
-                     "agent:any-missing"
+                     "agent:1:any-missing"
                    )
         end)
 
-      assert log =~ "agent:any-missing channel join failed"
+      assert log =~ "agent:1:any-missing channel join failed"
     end
   end
 
   describe "init event with message history" do
-    test "init reports messageCount = 2 after one chat turn", %{socket: socket, agent_id: id} do
+    test "init reports messageCount = 2 after one chat turn", %{
+      socket: socket,
+      agent_id: id,
+      space_id: space_id
+    } do
       # The setup's subscribe_and_join already pushed the *first*
       # channel's init (messageCount: 0) into this process's mailbox.
       # Consume it explicitly so the later `assert_push "init"`
@@ -156,7 +161,7 @@ defmodule NestWeb.AgentChannelTest do
       {:ok, connected} = connect(NestWeb.UserSocket, %{"token" => token})
 
       {:ok, _, _new_socket} =
-        subscribe_and_join(connected, NestWeb.AgentChannel, "agent:#{id}")
+        subscribe_and_join(connected, NestWeb.AgentChannel, "agent:#{space_id}:#{id}")
 
       assert_push "init", payload, 2000
       assert payload["messageCount"] == 3
@@ -212,7 +217,7 @@ defmodule NestWeb.AgentChannelTest do
     end
 
     test "chat:status broadcast carries currentMode (sticky mode)", %{socket: socket} do
-      # Sending a chat:message updates the agent's `state.mode`
+      # Sending a chat:message updates the agent's `state.live.mode`
       # to the resolved mode. The status push that transitions
       # to `idle` (the one that unlocks the input) carries the
       # new currentMode so the client can reset the dropdown.
@@ -300,15 +305,20 @@ defmodule NestWeb.AgentChannelTest do
               created_by_user_id: user.id
             })
 
+          space_id = AgentTestHelpers.current_space_id()
           token = Process.get(:agent_test_token)
           {:ok, connected} = connect(NestWeb.UserSocket, %{"token" => token})
 
           {:ok, _, socket} =
-            subscribe_and_join(connected, NestWeb.AgentChannel, "agent:#{name}")
+            subscribe_and_join(
+              connected,
+              NestWeb.AgentChannel,
+              "agent:#{space_id}:#{name}"
+            )
 
           # Subscribe to follow-up status pushes (the agent
           # broadcasts chat:status from the set_model handler).
-          Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{name}")
+          Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{space_id}:#{name}")
 
           ref =
             push(socket, "change_model", %{
@@ -352,11 +362,16 @@ defmodule NestWeb.AgentChannelTest do
               created_by_user_id: user.id
             })
 
+          space_id = AgentTestHelpers.current_space_id()
           token = Process.get(:agent_test_token)
           {:ok, connected} = connect(NestWeb.UserSocket, %{"token" => token})
 
           {:ok, _, socket} =
-            subscribe_and_join(connected, NestWeb.AgentChannel, "agent:#{name}")
+            subscribe_and_join(
+              connected,
+              NestWeb.AgentChannel,
+              "agent:#{space_id}:#{name}"
+            )
 
           ref = push(socket, "change_model", %{"some_other_field" => "x"})
           assert_reply ref, :error, %{"reason" => "invalid_payload"}
@@ -383,11 +398,16 @@ defmodule NestWeb.AgentChannelTest do
               created_by_user_id: user.id
             })
 
+          space_id = AgentTestHelpers.current_space_id()
           token = Process.get(:agent_test_token)
           {:ok, connected} = connect(NestWeb.UserSocket, %{"token" => token})
 
           {:ok, _, socket} =
-            subscribe_and_join(connected, NestWeb.AgentChannel, "agent:#{name}")
+            subscribe_and_join(
+              connected,
+              NestWeb.AgentChannel,
+              "agent:#{space_id}:#{name}"
+            )
 
           ref = push(socket, "chat:message", %{"content" => "hello?"})
           assert_reply ref, :error, %{"reason" => "agent_status_model_missing"}
