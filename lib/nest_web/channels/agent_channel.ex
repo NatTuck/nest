@@ -49,8 +49,13 @@ defmodule NestWeb.AgentChannel do
   end
 
   defp joined_join(space_id, name, agent, current_user, socket) do
-    Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{space_id}:#{name}")
-
+    # NOTE: we deliberately do NOT call `Phoenix.PubSub.subscribe/2`
+    # here. Phoenix.Channel.Server.init_join/3 already subscribes the
+    # channel process to the channel topic on every join. Because
+    # Phoenix.PubSub does not deduplicate subscriptions, an explicit
+    # subscribe here would register this process a SECOND time and
+    # every broadcast (e.g. `chat:delta`) would be delivered twice —
+    # doubling streamed deltas. Let Phoenix own the subscription.
     send(self(), {:after_join, agent})
 
     socket =
@@ -428,16 +433,5 @@ defmodule NestWeb.AgentChannel do
 
   defp format_message(message) do
     Message.to_json(message)
-  end
-
-  # Cleanup: Unsubscribe from PubSub when channel terminates
-  @impl true
-  def terminate(_reason, socket) do
-    with {:ok, space_id} <- Map.fetch(socket.assigns, :space_id),
-         {:ok, name} <- Map.fetch(socket.assigns, :name) do
-      Phoenix.PubSub.unsubscribe(Nest.PubSub, "agent:#{space_id}:#{name}")
-    end
-
-    {:ok, socket}
   end
 end

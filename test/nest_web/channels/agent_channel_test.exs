@@ -121,6 +121,35 @@ defmodule NestWeb.AgentChannelTest do
 
       assert log =~ "agent:1:any-missing channel join failed"
     end
+
+    test "receives a topic broadcast exactly once (no double subscription)", %{
+      agent_id: id,
+      space_id: space_id
+    } do
+      # Phoenix.Channel.Server.init_join/3 already subscribes the
+      # channel process to the channel topic. `joined_join` must not
+      # subscribe again — an explicit `Phoenix.PubSub.subscribe` would
+      # register this process twice and, because Phoenix.PubSub does
+      # not deduplicate, deliver every broadcast twice (doubling
+      # streamed chat deltas). A single broadcast must be pushed once.
+      topic = "agent:#{space_id}:#{id}"
+
+      Phoenix.PubSub.broadcast(
+        Nest.PubSub,
+        topic,
+        {:chat_delta,
+         %{
+           index: 1,
+           content: "x",
+           chars_start: 0,
+           chars_end: 1,
+           part_type: :text
+         }}
+      )
+
+      assert_push "chat:delta", %{"content" => "x"}, 500
+      refute_push "chat:delta", %{"content" => "x"}, 200
+    end
   end
 
   describe "init event with message history" do

@@ -262,6 +262,9 @@ block constructs (`if`, `cond`, `case`, `for`) within tag bodies.
 <!-- phoenix:phoenix-start -->
 ## Phoenix guidelines
 
+- Phoenix PubSub does *not* deduplicate multiple subscriptions to the same
+topic. Two subs means two copies of each message.
+
 - Remember Phoenix router `scope` blocks include an optional alias which is prefixed for all routes within the scope. **Always** be mindful of this when creating routes within a scope to avoid duplicate module prefixes.
 
 - You **never** need to create your own `alias` for route definitions! The `scope` provides the alias, ie:
