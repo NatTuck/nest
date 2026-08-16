@@ -6,7 +6,7 @@ defmodule Nest.Tools.ShellEscape do
   Wraps `path` in single quotes and escapes embedded `'` by
   ending the quote, adding an escaped quote, and resuming the
   quote — the standard portable shell-quoting idiom. Used by
-  the `read_file`, `write_file`, and `edit` tools when they
+  the `file-read`, `file-write`, and `file-edit` tools when they
   build `cat '<path>'` commands.
   """
 

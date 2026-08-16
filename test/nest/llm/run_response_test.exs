@@ -25,10 +25,10 @@ defmodule Nest.LLM.RunResponseTest do
       assert RunResponse.has_tool_calls?(%RunResponse{tool_calls: []}) == false
       assert RunResponse.has_tool_calls?(%RunResponse{}) == false
 
-      call = %ToolCall{id: "c1", name: "shell_cmd", arguments: %{}}
+      call = %ToolCall{id: "c1", name: "shell-cmd", arguments: %{}}
       assert RunResponse.has_tool_calls?(%RunResponse{tool_calls: [call]}) == true
 
-      other = %ToolCall{id: "c2", name: "read_file", arguments: %{}}
+      other = %ToolCall{id: "c2", name: "file-read", arguments: %{}}
       assert RunResponse.has_tool_calls?(%RunResponse{tool_calls: [call, other]}) == true
     end
   end

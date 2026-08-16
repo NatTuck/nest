@@ -64,7 +64,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     # LLM would see after `resolve_mode_and_caps`.
     state = put_pending_user_message(state, {content, effective_mode})
 
-    state = maybe_compact_then_spawn(state, effective_mode)
+    state = handle_preflight(state, effective_mode)
     {:noreply, state}
   end
 
@@ -91,7 +91,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   # response is assembled, which is always at a wire-safe boundary.
   defp maybe_inject_context_pair(state) do
     limit = state.llm_metrics.context_limit
-    if not is_integer(limit) or limit <= 0, do: state, else: do_check(state, limit)
+    do_check(state, limit)
   end
 
   defp do_check(state, limit) do
@@ -284,21 +284,16 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   # back; the Agent's `compaction_done` handler then spawns
   # the ChatTurn via `resume_after_compaction/3` with the
   # compacted messages.
-  defp maybe_compact_then_spawn(state, effective_mode) do
-    # Plan §"In-progress state": compaction is disallowed
-    # while streaming. The pre-flight will re-run on the
-    # next call (which is the next chat turn, since the
-    # in-progress stream is finalizing).
-    if streaming_active?(state.live.streaming_acc) do
-      append_and_spawn(state, effective_mode)
-    else
-      handle_preflight(state, effective_mode)
-    end
-  end
-
+  #
+  # Every chat turn goes through the preflight — there is no
+  # "skip preflight while streaming" shortcut. Incoming chat
+  # turns are already gated away while the agent is streaming
+  # or executing tools (`Agent.Callbacks.chat_or_drop/3`), so
+  # `handle_chat/3` never runs mid-stream; compaction is never
+  # attempted against an in-flight response.
   defp handle_preflight(state, effective_mode) do
     case preflight_decision(messages_with_pending(state), state) do
-      decision when decision in [:fits, :no_limit_known] ->
+      :fits ->
         append_and_spawn(state, effective_mode)
 
       :needs_compaction ->
@@ -412,44 +407,22 @@ defmodule Nest.Agents.Agent.ChatPipeline do
 
   @doc """
   Public for use by the GenServer's `handle_info({:preflight_request, ...})`.
-  Returns one of `:fits`, `:no_limit_known`, or `:needs_compaction`.
+  Returns one of `:fits`, `:needs_compaction`, or `:cannot_compact`.
 
-  When `state.llm_metrics.context_limit` is `nil` (probe hasn't
-  completed or the model isn't in the discovery cache), defers
-  to `PreFlight.check_messages/3` with the response-budget floor
-  rather than calling `Reserve.response_budget/1` — that function
-  has no clause for `nil` and would crash the GenServer. The
-  `nil`-limit path returns `:no_limit_known`, which
-  `handle_preflight/2` treats the same as `:fits`.
+  `context_limit` is guaranteed to be a positive integer — it is
+  resolved eagerly at agent init (with a 128k `:default` floor) and
+  never nil. A non-positive or nil limit matches no clause here and
+  raises, so a request can never be sent with an unknown limit.
   """
   @spec preflight_decision([{atom(), map()}], Nest.Agents.Agent.t()) :: atom()
-  def preflight_decision(messages_for_llm, state) do
-    case state.llm_metrics.context_limit do
-      limit when is_integer(limit) and limit > 0 ->
-        PreFlight.check_messages(
-          messages_for_llm,
-          limit,
-          Reserve.response_budget(limit)
-        )
-
-      _ ->
-        PreFlight.check_messages(messages_for_llm, nil, Reserve.response_budget_floor())
-    end
+  def preflight_decision(messages_for_llm, %{llm_metrics: %{context_limit: limit}})
+      when is_integer(limit) and limit > 0 do
+    PreFlight.check_messages(
+      messages_for_llm,
+      limit,
+      Reserve.response_budget(limit)
+    )
   end
-
-  @doc """
-  Per the plan, compaction is disallowed while streaming. We treat
-  "actively streaming" as `streaming_acc` having any accumulated
-  text or thinking content. A freshly-initialized accumulator (no
-  deltas yet) is NOT considered active — the pre-flight may still
-  compact in that brief window before the LLM's first token.
-  """
-  @spec streaming_active?(term()) :: boolean()
-  def streaming_active?(%Streaming.AssistantAccumulator{} = acc) do
-    acc.text_buffer != [] or acc.thinking_buffer != []
-  end
-
-  def streaming_active?(_), do: false
 
   # Resolves the effective mode and capability map for a chat message.
   #

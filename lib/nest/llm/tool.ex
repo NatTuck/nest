@@ -12,8 +12,8 @@ defmodule Nest.LLM.Tool do
   batch equal to 80% of the remaining usable context window and
   routes results that exceed the cap through a per-tool path:
 
-    * `shell_cmd` → path-and-head summary (full output saved to tmp)
-    * `read_file` → `{:error, "File is X tokens which exceeds your requested limit of Y."}`
+    * `shell-cmd` → path-and-head summary (full output saved to tmp)
+    * `file-read` → `{:error, "File is X tokens which exceeds your requested limit of Y."}`
     * Other tools → keep full (cap unreachable in practice)
 
   The LLM may override the cap on a per-call basis by passing

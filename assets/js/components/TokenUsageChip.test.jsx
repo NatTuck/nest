@@ -2,7 +2,8 @@
  * TokenUsageChip Component Tests
  *
  * Covers:
- * - Hides entirely when contextLimit is null/undefined/zero/negative
+ * - Renders an angry "context limit data missing" state when
+ *   contextLimit is null/undefined/zero/negative
  * - Renders the one-line collapsed view (used/limit + percentage)
  * - Click toggles the expanded view (Last / Session / Est.)
  * - "Last" line omits the "+ N cached" suffix when no cache is in play
@@ -25,32 +26,22 @@ afterEach(() => {
 
 describe("TokenUsageChip", () => {
   describe("visibility", () => {
-    it("renders nothing when contextLimit is null", () => {
+    it.each([
+      ["null", null],
+      ["undefined", undefined],
+      ["zero", 0],
+      ["negative", -1],
+    ])("renders a data-missing warning when contextLimit is %s", (_label, contextLimit) => {
       const { container } = render(
-        <TokenUsageChip usage={{ input_tokens: 100 }} contextLimit={null} />,
+        <TokenUsageChip
+          usage={{ input_tokens: 100 }}
+          contextLimit={contextLimit}
+        />,
       );
-      expect(container.firstChild).toBeNull();
-    });
-
-    it("renders nothing when contextLimit is undefined", () => {
-      const { container } = render(
-        <TokenUsageChip usage={{ input_tokens: 100 }} />,
-      );
-      expect(container.firstChild).toBeNull();
-    });
-
-    it("renders nothing when contextLimit is zero", () => {
-      const { container } = render(
-        <TokenUsageChip usage={{ input_tokens: 100 }} contextLimit={0} />,
-      );
-      expect(container.firstChild).toBeNull();
-    });
-
-    it("renders nothing when contextLimit is negative", () => {
-      const { container } = render(
-        <TokenUsageChip usage={{ input_tokens: 100 }} contextLimit={-1} />,
-      );
-      expect(container.firstChild).toBeNull();
+      const chip = container.querySelector('[data-testid="token-usage-chip"]');
+      expect(chip).toBeInTheDocument();
+      expect(chip).toHaveAttribute("role", "status");
+      expect(chip).toHaveTextContent("Context limit data missing");
     });
   });
 

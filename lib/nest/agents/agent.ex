@@ -5,7 +5,7 @@ defmodule Nest.Agents.Agent.TreePosition do
   the parent doesn't push past the 16-field cap.
 
   `parent_id` is the integer `agents.id` of the agent that
-  spawned this one via `agents/spawn` (with `clone_context`). `nil` for root agents.
+  spawned this one via `agents-spawn` (with `clone_context`). `nil` for root agents.
   `parent_name` is the parent's readable identifier (a
   String), held so the child can dispatch messages to the
   parent's GenServer through `Agents.Registry.via_tuple/2`
@@ -61,7 +61,7 @@ defmodule Nest.Agents.Agent do
     :llm_metrics,
     :created_by_user_id,
     # `depth` is the agent's distance from its tree root (0 =
-    # root). Children inherit `parent.depth + 1`; `agents/spawn`
+    # root). Children inherit `parent.depth + 1`; `agents-spawn`
     # is disabled at `depth >= configured_max_depth()`. Persisted
     # via `agents.depth`.
     depth: 0,
@@ -152,20 +152,23 @@ defmodule Nest.Agents.Agent do
   """
   @spec pre_spawn(map()) :: :ok | {:error, term()}
   def pre_spawn(attrs) do
-    with {:ok, _agent_row} <- Persistence.insert_agent(attrs),
-         {:ok, _msg_row} <- persist_system_message(attrs) do
-      :ok
+    # Refuse an agent without a non-empty system message (validate first).
+    case build_initial_system_message(attrs) do
+      {:ok, system_message} ->
+        with {:ok, _} <- Persistence.insert_agent(attrs),
+             {:ok, _} <- Persistence.insert_message(attrs.space_id, attrs.name, system_message) do
+          :ok
+        end
+
+      {:error, :missing_system_prompt} ->
+        {:error, :missing_system_prompt}
     end
   end
 
-  # Render the system prompt in the calling process (so the
-  # DB write below runs in a pid with DB access) and persist
-  # the row at index 0. No-op when the rendered prompt is
-  # `nil` (defensive — `compose_vocation_config/5` returns nil
-  # when the vocation struct is missing or the prompt is blank).
-  defp persist_system_message(attrs) do
+  # Render the system prompt in the calling process (so the DB write
+  # runs in a pid with DB access); `nil` only when the vocation is missing.
+  defp build_initial_system_message(attrs) do
     name = Map.fetch!(attrs, :name)
-    space_id = Map.fetch!(attrs, :space_id)
     model = Map.fetch!(attrs, :model)
     workspace_path = Map.get(attrs, :workspace_path)
     vocation = Map.get(attrs, :vocation)
@@ -184,20 +187,17 @@ defmodule Nest.Agents.Agent do
 
     case system_prompt do
       text when is_binary(text) and text != "" ->
-        Persistence.insert_message(
-          space_id,
-          name,
-          {:system,
-           %System{
-             index: 0,
-             parts: [%Part.Text{text: text}],
-             timestamp: DateTime.utc_now(),
-             api_logs: []
-           }}
-        )
+        {:ok,
+         {:system,
+          %System{
+            index: 0,
+            parts: [%Part.Text{text: text}],
+            timestamp: DateTime.utc_now(),
+            api_logs: []
+          }}}
 
       _ ->
-        {:ok, :no_system_message}
+        {:error, :missing_system_prompt}
     end
   end
 

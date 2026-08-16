@@ -161,7 +161,7 @@ defmodule Nest.Agents.SupervisorSubagentTest do
         name: "Subagent Supervisor Test Vocation #{System.unique_integer([:positive])}",
         description: "Subagent test default",
         system_prompt: "You are a test agent.",
-        tools: ["context", "agents/spawn"],
+        tools: ["context-check", "context-compact", "agents-spawn"],
         modes: %{
           "chat" => %{
             "description" => "General conversation.",

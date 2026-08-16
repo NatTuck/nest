@@ -39,7 +39,7 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
           name: "Oversized-#{System.unique_integer([:positive])}",
           description: "Oversized system test",
           system_prompt: "Original-small-prompt",
-          tools: ["context"],
+          tools: ["context-check", "context-compact"],
           modes: %{
             "chat" => %{
               "description" => "General conversation.",
@@ -184,7 +184,14 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
   describe "Trigger.start still works for normal (under-budget) vocations" do
     test "does not refuse when the rendered prompt is within 25%" do
       vocation = normal_vocation()
-      state_before = build_minimal_state(vocation)
+
+      # Use a realistic context_limit (above the 8192 response
+      # reserve floor). The 8_000 default used by the oversized
+      # tests is below the reserve floor, which makes `check_messages`
+      # report `:cannot_compact` for ANY message list (reserve alone
+      # exceeds the window) and would wrongly trip the pre-flight
+      # choke point when the Trigger appends its compaction suffix.
+      state_before = build_minimal_state(vocation, 100_000)
 
       {state_after, _log} = with_log(fn -> Trigger.post_turn(state_before) end)
 

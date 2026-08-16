@@ -540,6 +540,44 @@ describe("ChatPage message rendering", () => {
     expect(screen.getByText(/empty system message/i)).toBeInTheDocument();
   });
 
+  it("renders the system message first in a mixed message list (hd(messages) invariant)", () => {
+    // The server guarantees `messages[0].role === "system"`; the
+    // active list must open with the System bubble, before the
+    // first user message, not bury or drop it.
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "idle",
+        messages: [
+          {
+            index: 0,
+            role: "system",
+            parts: [{ kind: "text", text: "Welcome" }],
+          },
+          { index: 1, role: "user", parts: [{ kind: "text", text: "Hello" }] },
+          {
+            index: 2,
+            role: "assistant",
+            parts: [{ kind: "text", text: "Hi there" }],
+          },
+        ],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+
+    renderChat();
+
+    const systemLabel = screen.getByText("System");
+    expect(systemLabel).toBeInTheDocument();
+    expect(screen.getByText("Welcome")).toBeInTheDocument();
+
+    // System bubble precedes the user bubble in DOM order.
+    expect(
+      systemLabel.compareDocumentPosition(screen.getByText("Hello")) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
   it("truncates system messages exceeding 20 lines with an expand button", () => {
     const lines = Array.from({ length: 25 }, (_, i) => `line-${i + 1}`);
     mockAgentsCache = {
@@ -1542,7 +1580,7 @@ describe("ChatPage compaction-frozen state", () => {
 
 describe("ChatPage delegated task placement", () => {
   // Regression coverage for the "delegated task boxes stuck
-  // at the bottom" bug. The card for an `agents/spawn` call
+  // at the bottom" bug. The card for an `agents-spawn` call
   // must render inside the assistant message that issued
   // the call (between the assistant bubble and the tool
   // result bubble), NOT as a single block stacked at the
@@ -1570,7 +1608,7 @@ describe("ChatPage delegated task placement", () => {
             toolCalls: [
               {
                 id: "call-1",
-                name: "agents/spawn",
+                name: "agents-spawn",
                 arguments: { query: "investigate foo" },
               },
             ],
@@ -1581,7 +1619,7 @@ describe("ChatPage delegated task placement", () => {
             toolResults: [
               {
                 tool_call_id: "call-1",
-                name: "agents/spawn",
+                name: "agents-spawn",
                 content: "child says done",
                 is_error: false,
               },
@@ -1648,7 +1686,7 @@ describe("ChatPage think-only streaming message with an in-flight tool call", ()
             {
               kind: "tool_use",
               id: "call_stream_1",
-              name: "shell_cmd",
+              name: "shell-cmd",
               arguments: '{"command":"ls"}',
             },
           ],
@@ -1666,7 +1704,7 @@ describe("ChatPage think-only streaming message with an in-flight tool call", ()
     // The in-flight tool call renders its name as soon as
     // the BEAM broadcasts the start event — no waiting
     // for the assistant message to finalize.
-    expect(screen.getByText("Using tool: shell_cmd")).toBeInTheDocument();
+    expect(screen.getByText("Using tool: shell-cmd")).toBeInTheDocument();
 
     // The arguments are JSON-parsed and rendered as a
     // formatted preview (object path through formatToolCall).
@@ -1694,7 +1732,7 @@ describe("ChatPage think-only streaming message with an in-flight tool call", ()
             {
               kind: "tool_use",
               id: "call_stream_partial",
-              name: "shell_cmd",
+              name: "shell-cmd",
               arguments: '{"command":',
             },
           ],
@@ -1706,7 +1744,7 @@ describe("ChatPage think-only streaming message with an in-flight tool call", ()
 
     renderChat();
 
-    expect(screen.getByText("Using tool: shell_cmd")).toBeInTheDocument();
+    expect(screen.getByText("Using tool: shell-cmd")).toBeInTheDocument();
     // The streaming `<pre>` carries the raw partial buffer
     // — same bytes the BEAM is broadcasting.
     expect(screen.getByTestId("tool-call-streaming-pre").textContent).toBe(
@@ -1742,7 +1780,7 @@ describe("ChatPage think-only streaming message with an in-flight tool call", ()
             {
               kind: "tool_use",
               id: "call_stream_2",
-              name: "agents/spawn",
+              name: "agents-spawn",
               arguments: '{"query":"x"}',
             },
           ],
@@ -1760,11 +1798,11 @@ describe("ChatPage think-only streaming message with an in-flight tool call", ()
     // scroll anchor. The first test already proves the
     // card is rendered with the right contents; this test
     // is a smoke check that confirms the rendering path
-    // doesn't crash on an `agents/spawn` call (which has
+    // doesn't crash on an `agents-spawn` call (which has
     // special delegation rendering on top of the basic
     // tool card).
     renderChat();
-    expect(screen.getByText("Using tool: agents/spawn")).toBeInTheDocument();
+    expect(screen.getByText("Using tool: agents-spawn")).toBeInTheDocument();
   });
 });
 

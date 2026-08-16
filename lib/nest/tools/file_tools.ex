@@ -1,7 +1,7 @@
 defmodule Nest.Tools.FileTools do
   @moduledoc """
-  The file-system-shaping tools: `read_file`, `write_file`,
-  and `edit`.
+  The file-system-shaping tools: `file-read`, `file-write`,
+  and `file-edit`.
 
   Their tool-builder returns a `Nest.LLM.Tool` struct; the
   implementation helpers (`read_file`, `write_file`,
@@ -22,12 +22,12 @@ defmodule Nest.Tools.FileTools do
   @max_read_file_bytes 100 * 1_000_000
 
   @doc """
-  Build the `read_file` `Nest.LLM.Tool` struct.
+  Build the `file-read` `Nest.LLM.Tool` struct.
   """
   @spec read_file_function(String.t() | nil, String.t() | nil) :: Tool.t()
   def read_file_function(workspace_path, tmp_path) do
     %Tool{
-      name: "read_file",
+      name: "file-read",
       description: "Read the contents of a file from the workspace",
       parameters_schema: %{
         "type" => "object",
@@ -47,12 +47,12 @@ defmodule Nest.Tools.FileTools do
   end
 
   @doc """
-  Build the `write_file` `Nest.LLM.Tool` struct.
+  Build the `file-write` `Nest.LLM.Tool` struct.
   """
   @spec write_file_function(String.t() | nil, String.t() | nil) :: Tool.t()
   def write_file_function(workspace_path, tmp_path) do
     %Tool{
-      name: "write_file",
+      name: "file-write",
       description: "Write content to a file in the workspace",
       parameters_schema: %{
         "type" => "object",
@@ -76,14 +76,14 @@ defmodule Nest.Tools.FileTools do
   end
 
   @doc """
-  Build the `edit` `Nest.LLM.Tool` struct. The closure captures
+  Build the `file-edit` `Nest.LLM.Tool` struct. The closure captures
   the workspace + tmp paths and routes through `edit/5`
   for the actual exact-string-replace logic.
   """
   @spec edit_function(String.t() | nil, String.t() | nil) :: Tool.t()
   def edit_function(workspace_path, tmp_path) do
     %Tool{
-      name: "edit",
+      name: "file-edit",
       description:
         "Perform an exact string replacement in a file. Reads the file, " <>
           "replaces the first (or all) occurrence(s) of `old_text` with " <>
@@ -150,8 +150,8 @@ defmodule Nest.Tools.FileTools do
         mb = div(size, 1_000_000)
 
         {:error,
-         "File is #{mb} MB; read_file is capped at 100 MB. " <>
-           "Use inspect_file or shell_cmd with head/tail/sed for partial reads."}
+         "File is #{mb} MB; file-read is capped at 100 MB. " <>
+           "Use file-inspect or shell-cmd with head/tail/sed for partial reads."}
 
       {:ok, _} ->
         read_file_content(full_path)
@@ -179,7 +179,7 @@ defmodule Nest.Tools.FileTools do
       {:ok, content}
     else
       {:error,
-       "File is not valid UTF-8; use shell_cmd with hexdump or xxd for binary inspection."}
+       "File is not valid UTF-8; use shell-cmd with hexdump or xxd for binary inspection."}
     end
   end
 
@@ -199,7 +199,7 @@ defmodule Nest.Tools.FileTools do
 
   defp write_file(path, content, workspace_path, tmp_path, context) do
     caps = caps_from_context(context)
-    Logger.info("Tool write_file: #{path} (workspace: #{workspace_path || "none"})")
+    Logger.info("Tool file-write: #{path} (workspace: #{workspace_path || "none"})")
 
     with {:ok, full_path} <- resolve_full_path(path, workspace_path) do
       case ShellCmd.execute(
@@ -227,7 +227,7 @@ defmodule Nest.Tools.FileTools do
     replace_all = Map.get(args, "replace_all", false)
 
     caps = caps_from_context(context)
-    Logger.info("Tool edit: #{path} (replace_all: #{replace_all})")
+    Logger.info("Tool file-edit: #{path} (replace_all: #{replace_all})")
 
     with {:ok, full_path} <- resolve_full_path(path, workspace_path),
          {:ok, current} <- read_file_via_shell(full_path, workspace_path, tmp_path, caps),

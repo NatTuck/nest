@@ -1,24 +1,24 @@
 defmodule Nest.Tools.InspectFile do
   @moduledoc """
-  The `inspect_file` tool — read-only file metadata for the LLM
+  The `file-inspect` tool — read-only file metadata for the LLM
   to plan its context usage.
 
   Returns file type, size, line count, char count, max line
   length, and an estimated token count. Never returns file
   content, never modifies the file. The LLM should use this
-  before `read_file` to decide whether a full read fits in
-  its context budget, or whether to use `shell_cmd` with
+  before `file-read` to decide whether a full read fits in
+  its context budget, or whether to use `shell-cmd` with
   `head`, `tail`, or `sed -n` for a partial read.
 
   Text vs. binary classification:
     * ASCII or UTF-8 (per `file` output) AND bytes validate as
       UTF-8 (ASCII is a strict subset) -> text stats
     * Anything else (UTF-16, ISO-8859, PNG, ELF, ...) -> binary
-      report with a clear "do not use read_file" hint
+      report with a clear "do not use file-read" hint
     * Empty files -> text with zero stats (no read needed)
 
   Files larger than 100 MB are rejected; the LLM is told to
-  use `shell_cmd` with `wc -l` or `head` for those.
+  use `shell-cmd` with `wc -l` or `head` for those.
 
   Extracted from `Nest.Tools` to keep that module under the
   500-line Credo cap. Shares the path-resolution policy and
@@ -38,19 +38,19 @@ defmodule Nest.Tools.InspectFile do
   @max_bytes 100 * 1_000_000
 
   @doc """
-  Build the `inspect_file` `Nest.LLM.Tool` struct.
+  Build the `file-inspect` `Nest.LLM.Tool` struct.
   """
   @spec build(String.t() | nil, String.t() | nil) :: Tool.t()
   def build(workspace_path, tmp_path) do
     %Tool{
-      name: "inspect_file",
+      name: "file-inspect",
       description:
         "Inspect a file's metadata (type, encoding, size, line count, " <>
           "char count, max line length, estimated tokens) without reading " <>
-          "its contents. Use this before `read_file` to decide whether a " <>
+          "its contents. Use this before `file-read` to decide whether a " <>
           "full read fits in your context budget, or whether to use " <>
-          "`shell_cmd` with `head`, `tail`, or `sed -n` for a partial read. " <>
-          "Files larger than 100 MB are rejected; use `shell_cmd` with " <>
+          "`shell-cmd` with `head`, `tail`, or `sed -n` for a partial read. " <>
+          "Files larger than 100 MB are rejected; use `shell-cmd` with " <>
           "`wc -l` or `head` for those.",
       parameters_schema: %{
         "type" => "object",
@@ -73,7 +73,7 @@ defmodule Nest.Tools.InspectFile do
   def execute(args, workspace_path, tmp_path, context) do
     path = args["path"]
     caps = caps_from_context(context)
-    Logger.info("Tool inspect_file: #{path} (workspace: #{workspace_path || "none"})")
+    Logger.info("Tool file-inspect: #{path} (workspace: #{workspace_path || "none"})")
 
     with {:ok, full_path} <- resolve_full_path(path, workspace_path),
          {:ok, byte_size} <- safe_byte_size(full_path),
@@ -100,8 +100,8 @@ defmodule Nest.Tools.InspectFile do
     cap_mb = div(@max_bytes, 1_000_000)
 
     {:error,
-     "File is #{mb} MB; inspect_file is capped at #{cap_mb} MB. " <>
-       "Use shell_cmd with 'wc -l <path>' or 'head -1 <path>' for partial inspection of #{path}."}
+     "File is #{mb} MB; file-inspect is capped at #{cap_mb} MB. " <>
+       "Use shell-cmd with 'wc -l <path>' or 'head -1 <path>' for partial inspection of #{path}."}
   end
 
   defp check_size_cap(_, _), do: :ok
@@ -198,7 +198,7 @@ defmodule Nest.Tools.InspectFile do
     File: #{path}
     Type: #{type}
     Size: #{size} bytes
-    Encoding: binary (not text-readable; do not use read_file)
+    Encoding: binary (not text-readable; do not use file-read)
     """
   end
 
@@ -207,7 +207,7 @@ defmodule Nest.Tools.InspectFile do
     File: #{path}
     Type: #{type}
     Size: #{size} bytes
-    Encoding: binary (not text-readable; do not use read_file)
+    Encoding: binary (not text-readable; do not use file-read)
     Note: #{note}
     """
   end
@@ -231,7 +231,7 @@ defmodule Nest.Tools.InspectFile do
   # JSON schema fragment for the `max_result_tokens` call arg.
   # The LLM sees this on every tool and learns it can request a
   # specific cap. The BatchSizer treats this as an inline-vs-summary
-  # threshold; `inspect_file`'s output is bounded by construction so
+  # threshold; `file-inspect`'s output is bounded by construction so
   # the cap is unreachable in practice, but the schema entry is kept
   # consistent with the rest of the tool set.
   defp max_result_tokens_schema do
@@ -239,7 +239,7 @@ defmodule Nest.Tools.InspectFile do
       "type" => "integer",
       "description" =>
         "Maximum tokens for the inline result. Defaults to 80% of the " <>
-          "remaining usable context window. For `inspect_file` the cap " <>
+          "remaining usable context window. For `file-inspect` the cap " <>
           "is unreachable in practice (output is bounded)."
     }
   end

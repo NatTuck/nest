@@ -1,7 +1,7 @@
 defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
   @moduledoc """
   Tests for the system prompt's identity line and the
-  (now removal) depth-based `agents/spawn` tool filtering.
+  (now removal) depth-based `agents-spawn` tool filtering.
 
   ## What's covered
 
@@ -29,7 +29,7 @@ defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
         name: "DepthFilter-#{System.unique_integer([:positive])}",
         description: "Depth filter test",
         system_prompt: "Base.",
-        tools: ["agents/spawn", "context"],
+        tools: ["agents-spawn", "context-check", "context-compact"],
         modes: %{
           "chat" => %{
             "description" => "General conversation.",
@@ -56,8 +56,9 @@ defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
       {_prompt, _mode, tools, _vocation} =
         SystemPrompt.compose_vocation_config(vocation, nil, {nil, nil}, "agent", depth)
 
-      assert "agents/spawn" in tools
-      assert "context" in tools
+      assert "agents-spawn" in tools
+      assert "context-check" in tools
+      assert "context-compact" in tools
     end
   end
 
@@ -82,15 +83,15 @@ defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
   test "query/list/archive tools still appear in the tool list", %{vocation: vocation} do
     tools_vocation = %{
       vocation
-      | tools: ["agents/spawn", "agents/query", "agents/list", "agents/archive"]
+      | tools: ["agents-spawn", "agents-query", "agents-list", "agents-archive"]
     }
 
     {_prompt, _mode, tools, _vocation} =
       SystemPrompt.compose_vocation_config(tools_vocation, nil, {nil, nil}, "agent", 0)
 
-    assert "agents/spawn" in tools
-    assert "agents/query" in tools
-    assert "agents/list" in tools
-    assert "agents/archive" in tools
+    assert "agents-spawn" in tools
+    assert "agents-query" in tools
+    assert "agents-list" in tools
+    assert "agents-archive" in tools
   end
 end

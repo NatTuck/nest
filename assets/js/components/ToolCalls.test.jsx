@@ -4,7 +4,7 @@
  * Covers: empty/missing toolCalls, rendering each tool call's
  * name, finalized-JSON preview, and the streaming-aware
  * rendering for partial-JSON args (short buffer / long
- * content / write_file-style long field).
+ * content / file-write-style long field).
  */
 import { describe, it, expect } from "vitest";
 import { render, screen, within } from "@testing-library/react";
@@ -23,19 +23,19 @@ describe("ToolCalls", () => {
 
   it("renders the tool name for each call", () => {
     const toolCalls = [
-      { id: "1", name: "shell_cmd", arguments: { command: "ls" } },
-      { id: "2", name: "read_file", arguments: { path: "/tmp/x" } },
+      { id: "1", name: "shell-cmd", arguments: { command: "ls" } },
+      { id: "2", name: "file-read", arguments: { path: "/tmp/x" } },
     ];
 
     render(<ToolCalls toolCalls={toolCalls} />);
 
-    expect(screen.getByText("Using tool: shell_cmd")).toBeInTheDocument();
-    expect(screen.getByText("Using tool: read_file")).toBeInTheDocument();
+    expect(screen.getByText("Using tool: shell-cmd")).toBeInTheDocument();
+    expect(screen.getByText("Using tool: file-read")).toBeInTheDocument();
   });
 
   it("renders the arguments preview as JSON for finalized (object) args", () => {
     const toolCalls = [
-      { id: "1", name: "shell_cmd", arguments: { command: "ls -la" } },
+      { id: "1", name: "shell-cmd", arguments: { command: "ls -la" } },
     ];
 
     render(<ToolCalls toolCalls={toolCalls} />);
@@ -46,19 +46,19 @@ describe("ToolCalls", () => {
   });
 
   it("skips the arguments preview when arguments is empty", () => {
-    const toolCalls = [{ id: "1", name: "shell_cmd", arguments: {} }];
+    const toolCalls = [{ id: "1", name: "shell-cmd", arguments: {} }];
 
     render(<ToolCalls toolCalls={toolCalls} />);
 
-    expect(screen.getByText("Using tool: shell_cmd")).toBeInTheDocument();
+    expect(screen.getByText("Using tool: shell-cmd")).toBeInTheDocument();
   });
 
   it("skips the arguments preview when arguments is missing", () => {
-    const toolCalls = [{ id: "1", name: "shell_cmd" }];
+    const toolCalls = [{ id: "1", name: "shell-cmd" }];
 
     render(<ToolCalls toolCalls={toolCalls} />);
 
-    expect(screen.getByText("Using tool: shell_cmd")).toBeInTheDocument();
+    expect(screen.getByText("Using tool: shell-cmd")).toBeInTheDocument();
   });
 
   it("renders the partial JSON buffer verbatim when arguments is a short streaming string", () => {
@@ -67,12 +67,12 @@ describe("ToolCalls", () => {
     // must be visible to the user, not silently dropped.
     // The renderer puts it in a `<pre>` monospace block.
     const toolCalls = [
-      { id: "1", name: "shell_cmd", arguments: '{"command":' },
+      { id: "1", name: "shell-cmd", arguments: '{"command":' },
     ];
 
     render(<ToolCalls toolCalls={toolCalls} />);
 
-    expect(screen.getByText("Using tool: shell_cmd")).toBeInTheDocument();
+    expect(screen.getByText("Using tool: shell-cmd")).toBeInTheDocument();
     const pre = screen.getByTestId("tool-call-streaming-pre");
     expect(pre).toBeInTheDocument();
     expect(pre.textContent).toBe('{"command":');
@@ -92,7 +92,7 @@ describe("ToolCalls", () => {
     const toolCalls = [
       {
         id: "1",
-        name: "write_file",
+        name: "file-write",
         arguments: '{"path":"/tmp/x","content":"line1\\nline2',
       },
     ];
@@ -108,7 +108,7 @@ describe("ToolCalls", () => {
   });
 
   it("renders long-content tool calls in the cleaner plaintext path", () => {
-    // The `write_file` test scenario: the `content` field
+    // The `file-write` test scenario: the `content` field
     // crosses the long-field threshold, so the renderer
     // switches to the cleaner plaintext path. The header row
     // shows the `path` field, and the content renders with
@@ -123,7 +123,7 @@ describe("ToolCalls", () => {
     const toolCalls = [
       {
         id: "1",
-        name: "write_file",
+        name: "file-write",
         arguments: JSON.stringify({
           path: "/tmp/foo.txt",
           content: longContent,
@@ -152,7 +152,7 @@ describe("ToolCalls", () => {
     expect(contentNodes.length).toBeGreaterThan(0);
     expect(contentNodes[contentNodes.length - 1].textContent).toBe(longContent);
     // The tool name is still on the row.
-    expect(screen.getByText("Using tool: write_file")).toBeInTheDocument();
+    expect(screen.getByText("Using tool: file-write")).toBeInTheDocument();
     // The non-preview fields (e.g. `mode`) appear in the
     // metadata line below the body.
     expect(within(longBlock).getByText("mode:")).toBeInTheDocument();
@@ -165,7 +165,7 @@ describe("ToolCalls", () => {
     const finalized = render(
       <ToolCalls
         toolCalls={[
-          { id: "a", name: "shell_cmd", arguments: { command: "ls" } },
+          { id: "a", name: "shell-cmd", arguments: { command: "ls" } },
         ]}
       />,
     );
@@ -176,7 +176,7 @@ describe("ToolCalls", () => {
     // Empty-args also lack a buffer (we render the name
     // only — args arrive in the next delta).
     finalized.rerender(
-      <ToolCalls toolCalls={[{ id: "a", name: "shell_cmd", arguments: "" }]} />,
+      <ToolCalls toolCalls={[{ id: "a", name: "shell-cmd", arguments: "" }]} />,
     );
     expect(
       finalized.queryByTestId("streaming-indicator-a"),
@@ -185,7 +185,7 @@ describe("ToolCalls", () => {
     // Streaming string args → the pill shows.
     finalized.rerender(
       <ToolCalls
-        toolCalls={[{ id: "a", name: "shell_cmd", arguments: '{"command":' }]}
+        toolCalls={[{ id: "a", name: "shell-cmd", arguments: '{"command":' }]}
       />,
     );
     expect(

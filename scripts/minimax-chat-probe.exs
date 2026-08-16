@@ -145,9 +145,8 @@ defmodule MiniMaxChatProbe do
 
   defp context_limit_section do
     "\n\nContext limit: #{@context_limit} tokens (resolved from provider_default). " <>
-      "You can check current usage via the `context` tool " <>
-      "(action: \"check\") and trigger compaction via the `context` " <>
-      "tool (action: \"compact\").\n"
+      "You can check current usage via the `context-check` tool and trigger " <>
+      "compaction via the `context-compact` tool.\n"
   end
 
   ## --- tool list (matches Nest's `Tools.get_functions/3` output) --
@@ -157,7 +156,7 @@ defmodule MiniMaxChatProbe do
       %{
         "type" => "function",
         "function" => %{
-          "name" => "read_file",
+          "name" => "file-read",
           "description" => "Read the contents of a file from the workspace",
           "parameters" => %{
             "type" => "object",
@@ -175,14 +174,14 @@ defmodule MiniMaxChatProbe do
       %{
         "type" => "function",
         "function" => %{
-          "name" => "inspect_file",
+          "name" => "file-inspect",
           "description" =>
             "Inspect a file's metadata (type, encoding, size, line count, " <>
               "char count, max line length, estimated tokens) without reading " <>
-              "its contents. Use this before `read_file` to decide whether a " <>
+              "its contents. Use this before `file-read` to decide whether a " <>
               "full read fits in your context budget, or whether to use " <>
-              "`shell_cmd` with `head`, `tail`, or `sed -n` for a partial read. " <>
-              "Files larger than 100 MB are rejected; use `shell_cmd` with " <>
+              "`shell-cmd` with `head`, `tail`, or `sed -n` for a partial read. " <>
+              "Files larger than 100 MB are rejected; use `shell-cmd` with " <>
               "`wc -l` or `head` for those.",
           "parameters" => %{
             "type" => "object",
@@ -200,7 +199,7 @@ defmodule MiniMaxChatProbe do
       %{
         "type" => "function",
         "function" => %{
-          "name" => "write_file",
+          "name" => "file-write",
           "description" => "Write content to a file in the workspace",
           "parameters" => %{
             "type" => "object",
@@ -222,7 +221,7 @@ defmodule MiniMaxChatProbe do
       %{
         "type" => "function",
         "function" => %{
-          "name" => "edit",
+          "name" => "file-edit",
           "description" =>
             "Perform an exact string replacement in a file. Reads the file, " <>
               "replaces the first (or all) occurrence(s) of `old_text` with " <>
@@ -262,7 +261,7 @@ defmodule MiniMaxChatProbe do
       %{
         "type" => "function",
         "function" => %{
-          "name" => "shell_cmd",
+          "name" => "shell-cmd",
           "description" => "Execute a shell command and return output",
           "parameters" => %{
             "type" => "object",
@@ -280,28 +279,36 @@ defmodule MiniMaxChatProbe do
       %{
         "type" => "function",
         "function" => %{
-          "name" => "context",
+          "name" => "context-check",
           "description" =>
-            "Check current context usage (tokens used, limit, message count) " <>
-              "or trigger compaction to free up space.",
+            "Report current context usage: message count, tokens used vs the limit, " <>
+              "percentage used, and usable remaining tokens (after the current messages " <>
+              "and the response reserve).",
+          "parameters" => %{
+            "type" => "object",
+            "properties" => %{"max_result_tokens" => @max_result_tokens_schema},
+            "required" => []
+          }
+        }
+      },
+      %{
+        "type" => "function",
+        "function" => %{
+          "name" => "context-compact",
+          "description" =>
+            "Trigger compaction of the conversation to free up context budget. " <>
+              "Must be the sole tool call in its own iteration.",
           "parameters" => %{
             "type" => "object",
             "properties" => %{
-              "action" => %{
-                "type" => "string",
-                "enum" => ["check", "compact"],
-                "description" =>
-                  "Action to perform. 'check' returns current context stats. " <>
-                    "'compact' triggers compaction to free up context budget."
-              },
               "focus" => %{
                 "type" => "string",
                 "description" =>
-                  "When action is 'compact': what to preserve in the summary. " <>
-                    "Ignored when action is 'check'."
-              },
-              "max_result_tokens" => @max_result_tokens_schema
-            }
+                  "What to preserve in the compaction summary (e.g. recent instructions, " <>
+                    "the current task)."
+              }
+            },
+            "required" => []
           }
         }
       }

@@ -55,24 +55,15 @@ defmodule Nest.Tokens.Reserve do
   @type t :: pos_integer()
 
   @doc """
-  The floor used by the response budget when `context_limit`
-  is unknown (probe hasn't completed or model isn't in the
-  discovery cache). Equals `@response_floor` — single-sourced
-  so callers don't drift from the formula in `response_budget/1`.
-  """
-  @spec response_budget_floor() :: t()
-  def response_budget_floor, do: @response_floor
-
-  @doc """
   The LLM's response budget for `context_limit`, in tokens.
 
   Returns `max(0.20 × context_limit, 8_192)`. Used by all six
   call sites that need this number (see moduledoc).
 
   Raises `FunctionClauseError` for non-positive `context_limit`.
-  Callers with a `nil` limit (probe hasn't completed) should
-  early-return at the call site rather than passing `nil` here,
-  using `response_budget_floor/0` for the degenerate case.
+  `context_limit` is always a positive integer in the agent
+  runtime (resolved eagerly at init with a 128k `:default`
+  floor), so the degenerate `nil` case no longer exists.
   """
   @spec response_budget(pos_integer()) :: t()
   def response_budget(context_limit)

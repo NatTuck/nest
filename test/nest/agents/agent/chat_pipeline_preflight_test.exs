@@ -5,23 +5,20 @@ defmodule Nest.Agents.Agent.ChatPipelinePreflightTest do
   The function is the single decision point between
   `handle_chat/3` and the rest of the chat pipeline: it
   decides whether the pending chat turn fits the model's
-  context window, needs compaction, cannot compact, or has
-  no limit known. It dispatches to
-  `Nest.Tokens.PreFlight.check_messages/3` with a reserve
-  derived from `state.llm_metrics.context_limit`.
+  context window, needs compaction, or cannot compact. It
+  dispatches to `Nest.Tokens.PreFlight.check_messages/3`
+  with a reserve derived from `state.llm_metrics.context_limit`.
 
   These tests build minimal Agent structs by hand and call
   `preflight_decision/2` directly. No GenServer, no DB,
   no Mimic — `async: true` is safe and the tests run in
   microseconds.
 
-  Regression: prior to the nil-safe guard in
-  `preflight_decision/2`, `context_limit: nil` reached
-  `Reserve.response_budget/1`, which has no clause for nil
-  and crashed the GenServer with a `FunctionClauseError`.
-  The first test pins the no-crash behaviour; the second
-  pins the integer-limit path to guard against regressions
-  in the new guard.
+  `context_limit` is never optional: it is always a positive
+  integer in the agent runtime (resolved eagerly at init with
+  a 128k `:default` floor). Passing a nil or non-positive
+  limit matches no clause and raises, rather than proceeding
+  optimistically.
   """
 
   use ExUnit.Case, async: true
@@ -40,26 +37,32 @@ defmodule Nest.Agents.Agent.ChatPipelinePreflightTest do
     {:user, %User{parts: [%Part.Text{text: text}]}}
   end
 
-  describe "preflight_decision/2 with a nil context_limit" do
-    test "returns :no_limit_known instead of crashing on Reserve.response_budget(nil)" do
-      # Models the realistic "all three layers returned nil"
-      # case (no per-model static config, no cache entry, no
-      # provider default). Before the nil-safe guard, this
-      # raised FunctionClauseError from
-      # `Nest.Tokens.Reserve.response_budget(nil)`.
+  describe "preflight_decision/2 with a nil or non-positive context_limit" do
+    test "raises on a nil context_limit instead of proceeding optimistically" do
       state = build_state(%{context_limit: nil, context_limit_source: nil})
       messages = [user_message("hi")]
 
-      assert ChatPipeline.preflight_decision(messages, state) == :no_limit_known
+      assert_raise FunctionClauseError, fn ->
+        ChatPipeline.preflight_decision(messages, state)
+      end
     end
 
-    test "returns :no_limit_known when context_limit_source is :default but limit is nil" do
-      # Belt-and-suspenders: pin that a non-nil source tag
-      # with a nil limit still routes to the no-limit path.
+    test "raises when context_limit_source is :default but limit is nil" do
       state = build_state(%{context_limit: nil, context_limit_source: :default})
       messages = [user_message("hi")]
 
-      assert ChatPipeline.preflight_decision(messages, state) == :no_limit_known
+      assert_raise FunctionClauseError, fn ->
+        ChatPipeline.preflight_decision(messages, state)
+      end
+    end
+
+    test "raises on a non-positive context_limit" do
+      state = build_state(%{context_limit: 0, context_limit_source: :config})
+      messages = [user_message("hi")]
+
+      assert_raise FunctionClauseError, fn ->
+        ChatPipeline.preflight_decision(messages, state)
+      end
     end
   end
 

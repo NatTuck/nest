@@ -115,10 +115,10 @@ defmodule Nest.Tokens.EstimatorTest do
         assistant_parts_msg([
           %Part.Text{text: "Assistant response"},
           %Part.Thinking{thinking: "Internal thought"},
-          %Part.ToolUse{id: "1", name: "shell_cmd", arguments: %{"cmd" => "ls"}}
+          %Part.ToolUse{id: "1", name: "shell-cmd", arguments: %{"cmd" => "ls"}}
         ]),
         tool_msg([
-          %{tool_call_id: "1", name: "shell_cmd", content: "file1\nfile2"}
+          %{tool_call_id: "1", name: "shell-cmd", content: "file1\nfile2"}
         ])
       ]
 
@@ -167,7 +167,7 @@ defmodule Nest.Tokens.EstimatorTest do
         parts: [
           %Part.ToolUse{
             id: "call_1",
-            name: "shell_cmd",
+            name: "shell-cmd",
             arguments: %{"command" => "ls -la /tmp"}
           }
         ]

@@ -12,7 +12,7 @@
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
-import { MemoryRouter, Routes, Route } from "react-router-dom";
+import { MemoryRouter, Routes, Route, useParams } from "react-router-dom";
 
 let mockState = { models: [], blueprints: [], vocations: [] };
 
@@ -34,12 +34,18 @@ vi.mock("../channels", () => ({
 
 import { NewSpacePage, validateNewSpaceForm } from "./NewSpacePage";
 
+function SpaceRoute() {
+  const { spaceSlug } = useParams();
+  return <div>Space {spaceSlug}</div>;
+}
+
 function renderPage() {
   return render(
     <MemoryRouter initialEntries={["/spaces/new"]}>
       <Routes>
         <Route path="/spaces/new" element={<NewSpacePage />} />
         <Route path="/spaces" element={<div>Spaces Landing</div>} />
+        <Route path="/space/:spaceSlug" element={<SpaceRoute />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -312,7 +318,7 @@ describe("NewSpacePage", () => {
     });
   });
 
-  it("navigates to /spaces on success", () => {
+  it("navigates to the new space's page on success", () => {
     renderPage();
 
     fireEvent.change(screen.getByLabelText("Space Name"), {
@@ -328,9 +334,9 @@ describe("NewSpacePage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create Space" }));
 
     const onOk = mocks.createSpace.mock.calls[0][2];
-    act(() => onOk({ space_id: 5, name: "my-project" }));
+    act(() => onOk({ space_id: 5, name: "my-project", slug: "my-project" }));
 
-    expect(screen.getByText("Spaces Landing")).toBeInTheDocument();
+    expect(screen.getByText("Space my-project")).toBeInTheDocument();
     expect(mocks.suggestSpaceName).toHaveBeenCalledTimes(1);
   });
 

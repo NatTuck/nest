@@ -100,7 +100,7 @@ defmodule Nest.LLM.OpenAIClient.DeltaTest do
                   "id" => "call_019f24ccd0c578a0ac24c493",
                   "type" => "function",
                   "function" => %{
-                    "name" => "read_file",
+                    "name" => "file-read",
                     "arguments" => "{\"path\":\"notes/subagents.md\"}"
                   }
                 }
@@ -116,13 +116,13 @@ defmodule Nest.LLM.OpenAIClient.DeltaTest do
       assert {:text, "</think>\n\n"} in events
 
       assert Enum.any?(events, fn
-               {:tool_call_start, %{id: "call_019f24ccd0c578a0ac24c493", name: "read_file"}} ->
+               {:tool_call_start, %{id: "call_019f24ccd0c578a0ac24c493", name: "file-read"}} ->
                  true
 
                _ ->
                  false
              end),
-             "expected a :tool_call_start with the read_file id and name"
+             "expected a :tool_call_start with the file-read id and name"
 
       assert Enum.any?(events, fn
                {:tool_call_delta, %{id: "call_019f24ccd0c578a0ac24c493", arguments_delta: args}} ->
@@ -131,7 +131,7 @@ defmodule Nest.LLM.OpenAIClient.DeltaTest do
                _ ->
                  false
              end),
-             "expected a :tool_call_delta with the read_file path argument"
+             "expected a :tool_call_delta with the file-read path argument"
     end
 
     test "a delta with only tool_calls still emits the tool events (no content)" do
@@ -148,7 +148,7 @@ defmodule Nest.LLM.OpenAIClient.DeltaTest do
                   "index" => 0,
                   "id" => "call_only",
                   "type" => "function",
-                  "function" => %{"name" => "shell_cmd", "arguments" => "{}"}
+                  "function" => %{"name" => "shell-cmd", "arguments" => "{}"}
                 }
               ]
             }
@@ -160,7 +160,7 @@ defmodule Nest.LLM.OpenAIClient.DeltaTest do
       events = run_with_chunk(chunk)
 
       assert Enum.any?(events, fn
-               {:tool_call_start, %{id: "call_only", name: "shell_cmd"}} -> true
+               {:tool_call_start, %{id: "call_only", name: "shell-cmd"}} -> true
                _ -> false
              end)
 
@@ -244,7 +244,7 @@ defmodule Nest.LLM.OpenAIClient.DeltaTest do
                   "index" => 0,
                   "id" => "call_three",
                   "type" => "function",
-                  "function" => %{"name" => "read_file", "arguments" => "{}"}
+                  "function" => %{"name" => "file-read", "arguments" => "{}"}
                 }
               ]
             }
@@ -259,7 +259,7 @@ defmodule Nest.LLM.OpenAIClient.DeltaTest do
       assert {:thinking, "internal"} in events
 
       assert Enum.any?(events, fn
-               {:tool_call_start, %{id: "call_three", name: "read_file"}} -> true
+               {:tool_call_start, %{id: "call_three", name: "file-read"}} -> true
                _ -> false
              end)
     end
@@ -326,7 +326,7 @@ defmodule Nest.LLM.OpenAIClient.DeltaTest do
                   "index" => 0,
                   "id" => "call_x",
                   "type" => "function",
-                  "function" => %{"name" => "read_file", "arguments" => "{}"}
+                  "function" => %{"name" => "file-read", "arguments" => "{}"}
                 }
               ]),
             else: delta

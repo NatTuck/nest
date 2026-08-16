@@ -3,7 +3,7 @@ defmodule Nest.Tokens.PreFlight do
   Pre-flight check: would this LLM call fit in the context window?
 
   Called just before any LLM call (initial chat, after tool
-  results, from the `context` tool). Returns one of:
+  results, from the `context-check` tool). Returns one of:
 
     * `:fits` — the projected total is within the context window
       (with reserve). Proceed.
@@ -15,9 +15,12 @@ defmodule Nest.Tokens.PreFlight do
       the limit, or there's nothing in the conversation history
       to summarize). The caller should reject the user's request
       with a clear error.
-    * `:no_limit_known` — we don't have a context limit for this
-      model (no config, no probe). Skip the check; proceed
-      optimistically.
+
+  `context_limit` is always a positive integer in the agent
+  runtime (resolved eagerly at init with a 128k `:default`
+  floor). Passing `nil` or a non-positive limit matches no
+  clause and raises — a request is never sent with an unknown
+  limit, and `context_limit` is never optional.
 
   ## Math
 
@@ -50,8 +53,9 @@ defmodule Nest.Tokens.PreFlight do
   """
 
   alias Nest.Tokens.ConversationSize
+  alias Nest.Tokens.Reserve
 
-  @type decision :: :fits | :needs_compaction | :cannot_compact | :no_limit_known
+  @type decision :: :fits | :needs_compaction | :cannot_compact
 
   @doc """
   Decide whether a planned LLM call fits in the context.
@@ -60,20 +64,18 @@ defmodule Nest.Tokens.PreFlight do
 
     * `estimated_size` — conservative token count for the
       messages we're about to send (from `Nest.Tokens.Estimator`)
-    * `context_limit` — the model's context window in tokens, or
-      `nil` if unknown
+    * `context_limit` — the model's context window in tokens
+      (a positive integer; `nil`/non-positive raises)
     * `reserve` — tokens to leave free for the LLM's response
       and any subsequent compaction. Default 8,192 (matches
       `Reserve.response_budget/1` at small contexts; pass an
       explicit `Reserve.response_budget(context_limit)` to use
       the scaled value).
 
-  Returns one of `:fits | :needs_compaction | :cannot_compact | :no_limit_known`.
+  Returns one of `:fits | :needs_compaction | :cannot_compact`.
   """
-  @spec check(non_neg_integer(), pos_integer() | nil, pos_integer()) :: decision()
+  @spec check(non_neg_integer(), pos_integer(), pos_integer()) :: decision()
   def check(estimated_size, context_limit, reserve \\ 8_192)
-
-  def check(_estimated_size, nil, _reserve), do: :no_limit_known
 
   def check(estimated_size, context_limit, reserve)
       when is_integer(estimated_size) and estimated_size >= 0 and
@@ -97,13 +99,11 @@ defmodule Nest.Tokens.PreFlight do
   (system prompt alone exceeds the limit, or the head to
   summarize is empty).
   """
-  @spec check_messages([Nest.Messages.Message.t()], pos_integer() | nil, pos_integer()) ::
+  @spec check_messages([Nest.Messages.Message.t()], pos_integer(), pos_integer()) ::
           decision()
-  def check_messages(messages, context_limit, reserve \\ 8_192) do
+  def check_messages(messages, context_limit, reserve \\ 8_192)
+      when is_integer(context_limit) and context_limit > 0 do
     cond do
-      is_nil(context_limit) ->
-        :no_limit_known
-
       fits_with_reserve?(messages, context_limit, reserve) ->
         :fits
 
@@ -161,5 +161,30 @@ defmodule Nest.Tokens.PreFlight do
     |> Enum.find_value(fn {msg, idx} ->
       if match?({:user, _}, msg), do: idx
     end)
+  end
+
+  @doc """
+  Choke-point guard: raise unless the given message list has
+  "passed" the pre-flight decision — i.e. `check_messages/3`
+  returns `:fits` or `:needs_compaction`, NOT `:cannot_compact`.
+
+  Used at the LLM-send and message-append choke points so a
+  conversation is never sent to, or added to, in a state where
+  compaction is impossible. `context_limit` is always a positive
+  integer in the agent runtime (resolved eagerly at init with a
+  128k `:default` floor); a non-positive limit matches no
+  `check_messages/3` clause and raises.
+  """
+  @spec ensure_passed!([Nest.Messages.Message.t()], pos_integer()) :: :ok
+  def ensure_passed!(messages, context_limit) do
+    case check_messages(messages, context_limit, Reserve.response_budget(context_limit)) do
+      :cannot_compact ->
+        raise ArgumentError,
+              "pre-flight decision is :cannot_compact for context_limit=#{context_limit}; " <>
+                "refusing to send/store rather than risk an unrecoverable overflow"
+
+      _ ->
+        :ok
+    end
   end
 end

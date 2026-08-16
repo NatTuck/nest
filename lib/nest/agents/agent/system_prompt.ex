@@ -102,9 +102,9 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   The `context_limit_info` argument is `{context_limit,
   context_limit_source}` from `Init.initial_context_limit/1`.
   Both fields are populated eagerly at startup (DotConfig
-  first, then `Models.context_limit/2` cache) so the rendered
-  prompt is always confident — there is no `:default`
-  placeholder.
+  first, then `Models.context_limit/2` cache, then a 128k
+  `:default` floor), so the rendered prompt is always
+  confident — the context-limit section is never omitted.
 
   The `name` argument is the agent's readable identifier; it
   is rendered into an identity line telling the agent its name
@@ -174,12 +174,13 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   end
 
   # Renders the context-limit section. The limit is always
-  # populated eagerly at startup (no async probe, no
-  # `:default` placeholder); the source describes where the
-  # number came from (`:config` for DotConfig, or the
-  # provider shape that `Nest.Models` resolved from the
-  # `/models` endpoint — `:vllm`, `:openrouter`,
-  # `:llama_cpp`).
+  # populated eagerly at startup (no async probe); the source
+  # describes where the number came from (`:config` for
+  # DotConfig, the provider shape that `Nest.Models` resolved
+  # from the `/models` endpoint — `:vllm`, `:openrouter`,
+  # `:olla`, `:llama_cpp` — or the `:default` 128k floor). The
+  # `{nil, _}` clause is retained defensively for direct callers
+  # that pass a nil limit explicitly.
   defp context_limit_section({nil, _}), do: ""
 
   defp context_limit_section({limit, source}) do

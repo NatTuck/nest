@@ -2,7 +2,7 @@
  * Sorts a tool's argument object for display purposes.
  *
  * The LLM can emit arguments in any order based on its tool schema and
- * reasoning. For tools like `write_file`, this can mean a long `content`
+ * reasoning. For tools like `file-write`, this can mean a long `content`
  * field appears before the short `path` field, pushing the path off the
  * 3-line preview in the chat UI.
  *

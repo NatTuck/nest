@@ -8,7 +8,7 @@ defmodule Nest.LLM.ClientTest do
     test "resolves the by_index id to the real id captured by the matching :tool_call_start" do
       acc =
         Client.new_accumulator()
-        |> Client.accumulate({:tool_call_start, %{id: "toolu_1", name: "shell_cmd", index: 0}})
+        |> Client.accumulate({:tool_call_start, %{id: "toolu_1", name: "shell-cmd", index: 0}})
         |> Client.accumulate(
           {:tool_call_delta, %{id: :by_index, index: 0, arguments_delta: "{\"command\":\"ls\"}"}}
         )

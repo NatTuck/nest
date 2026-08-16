@@ -73,7 +73,7 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
           tool_calls: [
             %{
               id: "call_#{:rand.uniform(100_000)}",
-              name: "shell_cmd",
+              name: "shell-cmd",
               arguments: %{"command" => "echo loop"}
             }
           ]
@@ -131,7 +131,7 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
           tool_calls: [
             %{
               id: "call_#{:rand.uniform(100_000)}",
-              name: "shell_cmd",
+              name: "shell-cmd",
               arguments: %{"command" => "echo loop"}
             }
           ]
@@ -194,7 +194,7 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
           tool_calls: [
             %{
               id: "call_#{:rand.uniform(100_000)}",
-              name: "shell_cmd",
+              name: "shell-cmd",
               arguments: %{"command" => "echo loop"}
             }
           ]

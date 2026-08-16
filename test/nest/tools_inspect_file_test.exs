@@ -18,35 +18,35 @@ defmodule Nest.ToolsInspectFileTest do
 
   describe "get_function/2" do
     test "returns the inspect_file function", %{tmp: dir} do
-      function = Tools.get_function("inspect_file", dir)
+      function = Tools.get_function("file-inspect", dir)
 
       assert %Function{} = function
-      assert function.name == "inspect_file"
+      assert function.name == "file-inspect"
       assert function.description =~ "metadata"
     end
 
     test "inspect_file struct does not carry a per-tool max_result_tokens field; cap is enforced by BatchSizer",
          %{tmp: dir} do
-      function = Tools.get_function("inspect_file", dir)
+      function = Tools.get_function("file-inspect", dir)
       refute Map.has_key?(function, :max_result_tokens)
     end
   end
 
   describe "schema" do
     test "inspect_file's schema requires only path", %{tmp: dir} do
-      schema = Tools.get_function("inspect_file", dir).parameters_schema
+      schema = Tools.get_function("file-inspect", dir).parameters_schema
       assert schema["required"] == ["path"]
     end
 
     test "inspect_file's schema documents path and max_result_tokens", %{tmp: dir} do
-      properties = Tools.get_function("inspect_file", dir).parameters_schema["properties"]
+      properties = Tools.get_function("file-inspect", dir).parameters_schema["properties"]
 
       assert Map.has_key?(properties, "path")
       assert Map.has_key?(properties, "max_result_tokens")
     end
 
     test "inspect_file's max_result_tokens is optional (not in required)", %{tmp: dir} do
-      required = Tools.get_function("inspect_file", dir).parameters_schema["required"]
+      required = Tools.get_function("file-inspect", dir).parameters_schema["required"]
       refute "max_result_tokens" in required
     end
   end
@@ -59,7 +59,7 @@ defmodule Nest.ToolsInspectFileTest do
       path = Path.join(dir, "foo.txt")
       File.write!(path, "line one\nline two\nline three\n")
 
-      function = Tools.get_function("inspect_file", dir)
+      function = Tools.get_function("file-inspect", dir)
       assert {:ok, output} = invoke(function, %{"path" => "foo.txt"})
 
       assert output =~ "File: foo.txt"
@@ -80,7 +80,7 @@ defmodule Nest.ToolsInspectFileTest do
       path = Path.join(dir, "foo.txt")
       File.write!(path, "héllo\n")
 
-      function = Tools.get_function("inspect_file", dir)
+      function = Tools.get_function("file-inspect", dir)
       assert {:ok, output} = invoke(function, %{"path" => "foo.txt"})
 
       assert output =~ "Type:"
@@ -96,7 +96,7 @@ defmodule Nest.ToolsInspectFileTest do
       path = Path.join(dir, "foo.txt")
       File.write!(path, "short\n" <> String.duplicate("x", 200) <> "\nshort again\n")
 
-      function = Tools.get_function("inspect_file", dir)
+      function = Tools.get_function("file-inspect", dir)
       assert {:ok, output} = invoke(function, %{"path" => "foo.txt"})
 
       assert output =~ "Max line length: 200"
@@ -106,7 +106,7 @@ defmodule Nest.ToolsInspectFileTest do
       path = Path.join(dir, "empty.txt")
       File.write!(path, "")
 
-      function = Tools.get_function("inspect_file", dir)
+      function = Tools.get_function("file-inspect", dir)
       assert {:ok, output} = invoke(function, %{"path" => "empty.txt"})
 
       # `file` reports empty files as "empty"; we still treat
@@ -122,7 +122,7 @@ defmodule Nest.ToolsInspectFileTest do
       path = Path.join(dir, "blank.txt")
       File.write!(path, "   \n\n\t\n   \n")
 
-      function = Tools.get_function("inspect_file", dir)
+      function = Tools.get_function("file-inspect", dir)
       assert {:ok, output} = invoke(function, %{"path" => "blank.txt"})
 
       assert output =~ "Non-blank lines: 0"
@@ -136,12 +136,12 @@ defmodule Nest.ToolsInspectFileTest do
       path = Path.join(dir, "image.png")
       File.write!(path, png_header <> String.duplicate(<<0>>, 100))
 
-      function = Tools.get_function("inspect_file", dir)
+      function = Tools.get_function("file-inspect", dir)
       assert {:ok, output} = invoke(function, %{"path" => "image.png"})
 
       assert output =~ "File: image.png"
       assert output =~ "binary"
-      assert output =~ "do not use read_file"
+      assert output =~ "do not use file-read"
       assert output =~ "Size: 108 bytes"
     end
 
@@ -159,17 +159,17 @@ defmodule Nest.ToolsInspectFileTest do
         |> :binary.list_to_bin()
       )
 
-      function = Tools.get_function("inspect_file", dir)
+      function = Tools.get_function("file-inspect", dir)
       assert {:ok, output} = invoke(function, %{"path" => "utf16.txt"})
 
       assert output =~ "binary"
-      assert output =~ "do not use read_file"
+      assert output =~ "do not use file-read"
     end
   end
 
   describe "inspect_file error paths" do
     test "missing file returns a structured error", %{tmp: dir} do
-      function = Tools.get_function("inspect_file", dir)
+      function = Tools.get_function("file-inspect", dir)
       assert {:error, msg} = invoke(function, %{"path" => "missing.txt"})
 
       assert msg =~ "File not found"
@@ -193,7 +193,7 @@ defmodule Nest.ToolsInspectFileTest do
         IO.binwrite(handle, <<0>>)
       end)
 
-      function = Tools.get_function("inspect_file", dir)
+      function = Tools.get_function("file-inspect", dir)
       assert {:error, msg} = invoke(function, %{"path" => "huge.bin"})
 
       assert msg =~ "100 MB"
@@ -204,15 +204,15 @@ defmodule Nest.ToolsInspectFileTest do
 
   describe "inspect_file in get_functions/2" do
     test "inspect_file is included when added to a tool list", %{tmp: dir} do
-      functions = Tools.get_functions(["inspect_file"], dir)
+      functions = Tools.get_functions(["file-inspect"], dir)
       assert length(functions) == 1
-      assert hd(functions).name == "inspect_file"
+      assert hd(functions).name == "file-inspect"
     end
 
     test "inspect_file is filtered out when not in the tool list", %{tmp: dir} do
-      functions = Tools.get_functions(["read_file"], dir)
+      functions = Tools.get_functions(["file-read"], dir)
       names = Enum.map(functions, & &1.name)
-      refute "inspect_file" in names
+      refute "file-inspect" in names
     end
   end
 

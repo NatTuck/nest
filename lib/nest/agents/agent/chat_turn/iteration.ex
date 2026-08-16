@@ -35,7 +35,7 @@ defmodule Nest.Agents.Agent.ChatTurn.Iteration do
       iteration loop is purely mechanical.
     * Compaction fires only at user-turn boundaries
       (`ChatPipeline.handle_chat/3`) or via LLM-driven
-      `context.compact` calls.
+      `context-compact` calls.
 
   The "never send an LLM request whose message list
   predictably overflows" constraint is now satisfied by the
@@ -51,6 +51,7 @@ defmodule Nest.Agents.Agent.ChatTurn.Iteration do
   alias Nest.Messages.Assistant
   alias Nest.Messages.MessageList
   alias Nest.Messages.Part
+  alias Nest.Tokens.PreFlight
 
   @doc """
   Broadcast a `chat_notification` so the UI can show a
@@ -225,13 +226,22 @@ defmodule Nest.Agents.Agent.ChatTurn.Iteration do
   # and sends `{:http_response, response}` or
   # `{:http_error, error}` back to the ChatTurn.
   #
+  # Choke point: every LLM request must carry a known, positive
+  # `context_limit` (resolved eagerly at agent init, never nil)
+  # AND the message list must have "passed" the pre-flight
+  # decision — `PreFlight.ensure_passed!/2` raises if the list
+  # is `:cannot_compact`, so a request is never sent from a
+  # conversation where compaction is impossible.
+  #
   # When we've hit the iteration cap, the next call is
   # the "final" call: `tools: nil, tool_choice: :none` so
   # the LLM sees the tool results and produces a text
   # response. The MockClient honors `tools: nil` by
   # skipping any queued tool responses and returning the
   # next text response.
-  defp spawn_http_worker(state, messages) do
+  defp spawn_http_worker(%{ctx: %{context_limit: limit}} = state, messages)
+       when is_integer(limit) and limit > 0 do
+    PreFlight.ensure_passed!(messages, limit)
     parent = self()
     agent_pid = state.ctx.agent_pid
 
@@ -246,20 +256,32 @@ defmodule Nest.Agents.Agent.ChatTurn.Iteration do
     request_log_index = last_message_index_for_request_log(messages)
     :ok = APILog.request(state, request_log_index, messages)
 
-    {tools, tool_choice} =
-      if state.iteration > state.max_iterations,
-        do: {nil, :none},
-        else: {state.ctx.tools, state.ctx.tool_choice}
-
+    {tools, tool_choice} = tool_config_for_iteration(state)
     state = %{state | ctx: %{state.ctx | tools: tools, tool_choice: tool_choice}}
 
-    task =
-      Task.Supervisor.start_child(
-        Nest.Agents.TaskSupervisor,
-        fn -> HTTPWorker.run(state, parent, messages) end
-      )
+    start_worker_task(state, parent, agent_pid, messages)
+  end
 
-    case task do
+  # At/over the iteration cap, the next call is the "final"
+  # call: `tools: nil, tool_choice: :none` so the LLM sees the
+  # tool results and produces a text response. The MockClient
+  # honors `tools: nil` by skipping any queued tool responses
+  # and returning the next text response.
+  defp tool_config_for_iteration(state) do
+    if state.iteration > state.max_iterations,
+      do: {nil, :none},
+      else: {state.ctx.tools, state.ctx.tool_choice}
+  end
+
+  # Spawn the HTTP worker under `Nest.Agents.TaskSupervisor`
+  # and monitor it. The worker calls `Nest.LLM.Runner.request/2`
+  # with the given `messages` and sends `{:http_response, ...}`
+  # or `{:http_error, ...}` back to the ChatTurn.
+  defp start_worker_task(state, parent, agent_pid, messages) do
+    case Task.Supervisor.start_child(
+           Nest.Agents.TaskSupervisor,
+           fn -> HTTPWorker.run(state, parent, messages) end
+         ) do
       {:ok, pid} ->
         Process.monitor(pid)
         {:noreply, %{state | active_worker: pid, active_worker_kind: :http}}

@@ -290,6 +290,7 @@ defmodule Nest.Agents.Agent.WireInvariantTest do
 
   defp build_state(messages) do
     %Agent{
+      llm_metrics: %Agent.LlmMetrics{context_limit: 100_000, context_limit_source: :config},
       chat_state: %Agent.ChatState{
         messages: messages,
         next_message_index: next_index(messages)
@@ -333,7 +334,7 @@ defmodule Nest.Agents.Agent.WireInvariantTest do
        parts: [
          %Part.ToolUse{
            id: "call_#{index}",
-           name: "shell_cmd",
+           name: "shell-cmd",
            arguments: %{"command" => "echo"}
          }
        ],
@@ -350,7 +351,7 @@ defmodule Nest.Agents.Agent.WireInvariantTest do
        parts: [
          %Part.ToolResult{
            tool_call_id: "call_#{index - 1}",
-           name: "shell_cmd",
+           name: "shell-cmd",
            arguments: %{},
            content: content,
            is_error: false

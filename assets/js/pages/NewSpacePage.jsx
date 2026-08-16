@@ -139,13 +139,13 @@ export function NewSpacePage() {
     createSpace(
       model,
       null,
-      () => {
+      (resp) => {
         // The `space:created` + `agent:created` broadcasts update
-        // the store; land on the spaces index. Regenerate the
+        // the store; land on the new space's page. Regenerate the
         // suggestion so the next new-space form doesn't collide
         // with the name we just used.
         suggestSpaceName();
-        navigate("/spaces");
+        navigate(`/space/${encodeURIComponent(resp.slug)}`);
       },
       (err) => {
         setError(err.message || "Failed to create space");

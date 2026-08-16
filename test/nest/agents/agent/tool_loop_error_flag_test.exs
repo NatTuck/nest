@@ -67,24 +67,24 @@ defmodule Nest.Agents.Agent.ToolLoopErrorFlagTest do
 
   describe "is_error flag for missing required args" do
     test "write_file with empty arguments yields is_error: true in the chat path" do
-      tool = Tools.get_function("write_file", "/tmp")
+      tool = Tools.get_function("file-write", "/tmp")
       ctx = make_ctx([tool])
 
       log =
         capture_log(fn ->
           [%ToolResult{} = result] =
             ToolLoop.execute(ctx, %{}, [
-              %ToolCall{id: "c1", name: "write_file", arguments: %{}}
+              %ToolCall{id: "c1", name: "file-write", arguments: %{}}
             ])
 
           assert result.is_error == true
           assert result.tool_call_id == "c1"
-          assert result.name == "write_file"
+          assert result.name == "file-write"
           assert result.content =~ "Missing required arguments"
         end)
 
       assert log =~ "BatchSizer produced is_error=true tool result"
-      assert log =~ "tool=write_file"
+      assert log =~ "tool=file-write"
     end
   end
 

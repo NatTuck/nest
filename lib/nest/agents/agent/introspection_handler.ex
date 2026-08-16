@@ -23,7 +23,7 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
 
   The `:check_read_policy/2` clause is the synchronous
   pre-call gate used by `BatchSizer.execute_one/2` (in a
-  worker task) before any `write_file` runs. It looks up
+  worker task) before any `file-write` runs. It looks up
   `state.chat_state.read_files[path]` and either returns
   `:ok`, `{:error, :never_read}`, or
   `{:error, :contents_changed}` based on whether the cache
@@ -94,7 +94,7 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
 
   # Test-friendly: returns the `pending_children` map so
   # a test can assert which workers are currently parked
-  # on an `agents/spawn` (with `query`) tool call. Production
+  # on an `agents-spawn` (with `query`) tool call. Production
   # code should use `:get_total_usage` / `get_public_info`
   # instead.
   def handle(:get_pending_children, _from, state) do
@@ -107,13 +107,13 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
      state}
   end
 
-  # Pre-call gate for `write_file`. Looks up the cache entry
+  # Pre-call gate for `file-write`. Looks up the cache entry
   # for `path`; if absent → the agent has not yet called
-  # `read_file` (or the path has been cleared by a post-
+  # `file-read` (or the path has been cleared by a post-
   # compaction reset). If present, re-stat the file at the
   # full path; the on-disk mtime/size must equal the recorded
   # pair — otherwise the file has been modified since the
-  # read or since the last `write_file`. Both error cases map
+  # read or since the last `file-write`. Both error cases map
   # to a stable atom (`:never_read` / `:contents_changed`)
   # the worker translates to user-facing strings.
   #
@@ -141,13 +141,13 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
     ModelHandler.handle(msg, from, state)
   end
 
-  # Pre-call gate for `write_file`. Looks up the cache entry
+  # Pre-call gate for `file-write`. Looks up the cache entry
   # for `path`; if absent → the agent has not yet called
-  # `read_file` (or the path has been cleared by a post-
+  # `file-read` (or the path has been cleared by a post-
   # compaction reset). If present, re-stat the file at the
   # full path; the on-disk mtime/size must equal the recorded
   # pair — otherwise the file has been modified since the
-  # read or since the last `write_file`. Both error cases map
+  # read or since the last `file-write`. Both error cases map
   # to a stable atom (`:never_read` / `:contents_changed`)
   # the worker translates to user-facing strings.
   #
@@ -229,7 +229,7 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
   #
   # No-path is a `BatchSizer` defensive fallback (the
   # `BatchSizer.FilePolicy.check/2` call only fires for
-  # `write_file` tool calls, and only those carry a `path`
+  # `file-write` tool calls, and only those carry a `path`
   # argument). A non-binary `raw_path` short-circuits to
   # `:ok` so the worker doesn't refuse legitimate calls
   # where `tc.arguments["path"]` happens to be missing

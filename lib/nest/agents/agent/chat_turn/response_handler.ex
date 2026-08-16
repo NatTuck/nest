@@ -16,9 +16,9 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
     2. Tool calls + past max iterations → synthesize error
        tool results, recurse with `force_finalize: true`.
     3. Tool calls within budget:
-       a. `context.compact` solo → exit with `:compact_tool`
+       a. `context-compact` solo → exit with `:compact_tool`
           continuation (compaction path).
-       b. `context.compact` mixed with other tools → refuse via
+       b. `context-compact` mixed with other tools → refuse via
           synthetic error tool results (force_finalize).
        c. Regular batch → post-response preflight; spawn the
           tool worker, OR signal `:needs_compaction` with a
@@ -160,19 +160,19 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
 
   # Normal tool calls within budget. Three sub-cases by batch shape:
   #
-  # 1. `context.compact` is the SOLE tool call → Trigger 3. The
+  # 1. `context-compact` is the SOLE tool call → Trigger 3. The
   #    chat turn exits with `{:compact_tool, [tool_call,
   #    synthetic_tool_result], iter, max_iter}` and the Agent
   #    runs the compactor. (No tool worker is ever spawned for
-  #    `context.compact`; the BlockedToolWorker pattern is gone.)
+  #    `context-compact`; the BlockedToolWorker pattern is gone.)
   #
-  # 2. `context.compact` is mixed with other tools → REFUSE with
+  # 2. `context-compact` is mixed with other tools → REFUSE with
   #    a synthetic error tool result appended to messages. The
   #    chat turn forces `finalize: true` and iterates again so
   #    the LLM sees the constraint on the next call. The
   #    regular tool worker is never spawned.
   #
-  # 3. Regular batch (no `context.compact`) → post-response
+  # 3. Regular batch (no `context-compact`) → post-response
   #    preflight; spawn the tool worker, OR build a
   #    `{:tool_call, _, _, _}` continuation and exit (Trigger 2)
   #    so the Agent can run a mid-turn compaction.
@@ -190,7 +190,7 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
   end
 
   defp compact_only?([
-         %Nest.Messages.ToolCall{name: "context", arguments: %{"action" => "compact"}}
+         %Nest.Messages.ToolCall{name: "context-compact"}
        ]),
        do: true
 
@@ -198,12 +198,12 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
 
   defp contains_compact?(tool_calls) do
     Enum.any?(tool_calls, fn
-      %Nest.Messages.ToolCall{name: "context", arguments: %{"action" => "compact"}} -> true
+      %Nest.Messages.ToolCall{name: "context-compact"} -> true
       _ -> false
     end)
   end
 
-  # Trigger 3 path: the LLM emitted `context.compact` as the only
+  # Trigger 3 path: the LLM emitted `context-compact` as the only
   # tool call. Build the continuation, send `:needs_compaction` to
   # the Agent with the continuation payload, and exit cleanly.
   # The Agent runs the compactor, swaps messages, and `compaction_done/3`
@@ -246,9 +246,9 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
     {:stop, :normal, state}
   end
 
-  # `context.compact` is in the batch but not alone. Refuse the
+  # `context-compact` is in the batch but not alone. Refuse the
   # whole batch with synthetic error tool results so the LLM
-  # retries without `context.compact` mixed in. Same shape as
+  # retries without `context-compact` mixed in. Same shape as
   # `handle_overflow_tool_calls/3`: append tool_msg, set
   # `force_finalize: true`, iterate.
   defp refuse_compact_mixed(response, state) do
@@ -264,7 +264,7 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
     {:noreply, state}
   end
 
-  # Build a synthetic tool-result message for the `context.compact`
+  # Build a synthetic tool-result message for the `context-compact`
   # tool. The `tool_call_id` matches the carried
   # `assistant+ToolUse` so the LLM's tool_use/tool_result pair is
   # preserved across the compaction boundary.
@@ -278,7 +278,7 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
        parts: [
          %Part.ToolResult{
            tool_call_id: tool_call.id,
-           name: "context",
+           name: "context-compact",
            arguments: tool_call.arguments,
            content: "Compacted from #{pre_count} token previous context.",
            is_error: false

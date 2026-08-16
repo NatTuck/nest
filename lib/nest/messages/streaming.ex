@@ -281,7 +281,10 @@ defmodule Nest.Messages.Streaming do
          _emitted,
          acc_parts
        ) do
-    text = IO.iodata_to_binary(content)
+    # Segment content is stored in reverse order (each fragment is
+    # prepended for O(1)); reverse here so the text reads in arrival
+    # order. Without this the finalized message is word-reversed.
+    text = content |> Enum.reverse() |> IO.iodata_to_binary()
     {[%Nest.Messages.Part.Text{text: text} | acc_parts], MapSet.new()}
   end
 
@@ -292,7 +295,9 @@ defmodule Nest.Messages.Streaming do
          _emitted,
          acc_parts
        ) do
-    text = IO.iodata_to_binary(content)
+    # See the `:text` clause: segment content is prepended, so reverse
+    # it to keep thinking in arrival order.
+    text = content |> Enum.reverse() |> IO.iodata_to_binary()
     part = %Nest.Messages.Part.Thinking{thinking: text, signature: signature}
     {[part | acc_parts], MapSet.new()}
   end
@@ -332,7 +337,10 @@ defmodule Nest.Messages.Streaming do
     %{
       "index" => acc.index,
       "role" => "assistant",
-      "content" => IO.iodata_to_binary(acc.text_buffer),
+      # `text_buffer` is stored in reverse order (each fragment is
+      # prepended for O(1)); reverse here so the wire content reads in
+      # arrival order rather than word-reversed.
+      "content" => acc.text_buffer |> Enum.reverse() |> IO.iodata_to_binary(),
       "charsEnd" => acc.chars_sent,
       "timestamp" => acc.timestamp,
       # Segments are stored in reverse order (most recent first)
@@ -350,7 +358,9 @@ defmodule Nest.Messages.Streaming do
             %{"type" => "tool_use", "id" => id}
 
           %{type: type, content: content} ->
-            %{"type" => type, "content" => IO.iodata_to_binary(content)}
+            # Each segment's content is also prepend-ordered (see
+            # `update_segments/4`); reverse it before flattening.
+            %{"type" => type, "content" => content |> Enum.reverse() |> IO.iodata_to_binary()}
         end),
       # In-flight tool calls with their partial JSON argument
       # buffers as strings. Used by the JS store's
@@ -366,7 +376,10 @@ defmodule Nest.Messages.Streaming do
           %{
             "id" => partial.id,
             "name" => partial.name,
-            "arguments" => IO.iodata_to_binary(partial.arguments_buffer)
+            # `arguments_buffer` is stored in reverse order (each
+            # fragment is prepended for O(1)); reverse here so the wire
+            # arguments are in arrival order, matching `parse_arguments/1`.
+            "arguments" => partial.arguments_buffer |> Enum.reverse() |> IO.iodata_to_binary()
           }
         end),
       "currentType" => acc.current_block

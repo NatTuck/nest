@@ -70,7 +70,7 @@ defmodule Nest.LLM.OpenAIClientTest do
 
     test "emits tools as the OpenAI function-tool shape" do
       tool = %Tool{
-        name: "shell_cmd",
+        name: "shell-cmd",
         description: "run a command",
         parameters_schema: %{
           "type" => "object",
@@ -86,7 +86,7 @@ defmodule Nest.LLM.OpenAIClientTest do
                %{
                  "type" => "function",
                  "function" => %{
-                   "name" => "shell_cmd",
+                   "name" => "shell-cmd",
                    "description" => "run a command",
                    "parameters" => %{
                      "type" => "object",
@@ -106,7 +106,7 @@ defmodule Nest.LLM.OpenAIClientTest do
              index: 2,
              parts: [
                %Part.Text{text: "calling shell"},
-               %Part.ToolUse{id: "call_1", name: "shell_cmd", arguments: %{"command" => "ls"}}
+               %Part.ToolUse{id: "call_1", name: "shell-cmd", arguments: %{"command" => "ls"}}
              ]
            }}
         ]
@@ -123,7 +123,7 @@ defmodule Nest.LLM.OpenAIClientTest do
                      "id" => "call_1",
                      "type" => "function",
                      "function" => %{
-                       "name" => "shell_cmd",
+                       "name" => "shell-cmd",
                        "arguments" => ~s({"command":"ls"})
                      }
                    }
@@ -139,8 +139,8 @@ defmodule Nest.LLM.OpenAIClientTest do
            %Nest.Messages.Tool{
              index: 3,
              parts: [
-               %Part.ToolResult{tool_call_id: "call_1", name: "shell_cmd", content: "out1"},
-               %Part.ToolResult{tool_call_id: "call_2", name: "read_file", content: "out2"}
+               %Part.ToolResult{tool_call_id: "call_1", name: "shell-cmd", content: "out1"},
+               %Part.ToolResult{tool_call_id: "call_2", name: "file-read", content: "out2"}
              ]
            }}
         ]
@@ -171,8 +171,8 @@ defmodule Nest.LLM.OpenAIClientTest do
             {:auto, "auto"},
             {:none, "none"},
             {:required, "required"},
-            {{:tool, "shell_cmd"},
-             %{"type" => "function", "function" => %{"name" => "shell_cmd"}}}
+            {{:tool, "shell-cmd"},
+             %{"type" => "function", "function" => %{"name" => "shell-cmd"}}}
           ] do
         payload = OpenAIClient.format_request_payload(%RunRequest{tool_choice: choice}, [])
         assert payload["tool_choice"] == expected

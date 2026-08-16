@@ -170,10 +170,10 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   end
 
   # Compaction invalidates the prefix cache, so it's safe to
-  # drop `agents/spawn` for an agent at max depth.
+  # drop `agents-spawn` for an agent at max depth.
   defp exclude_spawn_at_max_depth(tool_names, depth) do
     if depth >= Config.configured_max_depth(),
-      do: Enum.reject(tool_names, &(&1 == "agents/spawn")),
+      do: Enum.reject(tool_names, &(&1 == "agents-spawn")),
       else: tool_names
   end
 

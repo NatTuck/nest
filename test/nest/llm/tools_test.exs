@@ -120,12 +120,12 @@ defmodule Nest.LLM.ToolsTest do
     end
 
     test "returns an error when required args are missing entirely (%{})" do
-      tool = tool_with_schema("write_file", ["path", "content"])
+      tool = tool_with_schema("file-write", ["path", "content"])
 
       assert {:error, msg} =
                Tools.execute_one(
                  [tool],
-                 %ToolCall{id: "c1", name: "write_file", arguments: %{}},
+                 %ToolCall{id: "c1", name: "file-write", arguments: %{}},
                  %{}
                )
 
@@ -135,12 +135,12 @@ defmodule Nest.LLM.ToolsTest do
     end
 
     test "returns an error when only some required args are present" do
-      tool = tool_with_schema("write_file", ["path", "content"])
+      tool = tool_with_schema("file-write", ["path", "content"])
 
       assert {:error, msg} =
                Tools.execute_one(
                  [tool],
-                 %ToolCall{id: "c1", name: "write_file", arguments: %{"path" => "/foo"}},
+                 %ToolCall{id: "c1", name: "file-write", arguments: %{"path" => "/foo"}},
                  %{}
                )
 
@@ -150,14 +150,14 @@ defmodule Nest.LLM.ToolsTest do
     end
 
     test "succeeds when all required args are present" do
-      tool = tool_with_schema("write_file", ["path", "content"])
+      tool = tool_with_schema("file-write", ["path", "content"])
 
       assert {:ok, content} =
                Tools.execute_one(
                  [tool],
                  %ToolCall{
                    id: "c1",
-                   name: "write_file",
+                   name: "file-write",
                    arguments: %{"path" => "/foo", "content" => "x"}
                  },
                  %{}
@@ -198,7 +198,7 @@ defmodule Nest.LLM.ToolsTest do
   describe "execute/3 argument validation" do
     test "wraps a missing-required-args error in a ToolResult with is_error: true" do
       tool = %Tool{
-        name: "write_file",
+        name: "file-write",
         description: "write",
         parameters_schema: %{
           "type" => "object",
@@ -209,7 +209,7 @@ defmodule Nest.LLM.ToolsTest do
       }
 
       results =
-        Tools.execute([tool], [%ToolCall{id: "c1", name: "write_file", arguments: %{}}], %{})
+        Tools.execute([tool], [%ToolCall{id: "c1", name: "file-write", arguments: %{}}], %{})
 
       assert [result] = results
       assert result.is_error == true

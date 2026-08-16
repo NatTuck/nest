@@ -1,6 +1,6 @@
 defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
   @moduledoc """
-  Focused E2E test for the agents/spawn wiring that does NOT
+  Focused E2E test for the agents-spawn wiring that does NOT
   drive LLM on the child. We:
     1. Start a parent under the supervisor.
     2. Issue a raw `GenServer.call` to the parent (acting as
@@ -120,7 +120,7 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
     MockClient.start_link(parent_pid)
 
     # Force the parent to max depth — a clone at max depth still
-    # has `agents/spawn` in its (inherited) tool list, so the
+    # has `agents-spawn` in its (inherited) tool list, so the
     # spawn must be rejected at runtime.
     max = Config.configured_max_depth()
     :sys.replace_state(parent_pid, &%{&1 | depth: max})
@@ -143,7 +143,7 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
         name: "SubAgentRegistration Vocation #{System.unique_integer([:positive])}",
         description: "Sub-agent raw-registration test",
         system_prompt: "x",
-        tools: ["agents/spawn", "context"],
+        tools: ["agents-spawn", "context-check", "context-compact"],
         modes: %{
           "chat" => %{
             "description" => "Chat",

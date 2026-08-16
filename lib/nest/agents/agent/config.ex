@@ -110,7 +110,7 @@ defmodule Nest.Agents.Agent.Config do
   unset.
 
   Used by the spawn path to reject spawns at max depth, by
-  the compaction path to drop `agents/spawn` for a
+  the compaction path to drop `agents-spawn` for a
   max-depth agent, and by `SystemPrompt`'s identity line
   (which reports the agent's depth of this cap).
   """

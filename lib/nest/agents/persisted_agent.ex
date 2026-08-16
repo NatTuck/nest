@@ -21,7 +21,7 @@ defmodule Nest.Agents.PersistedAgent do
   ## Sub-agent tree
 
   `parent_id` is the integer `agents.id` of the agent that
-  spawned this one via the `agents/spawn` tool (with
+  spawned this one via the `agents-spawn` tool (with
   `clone_context`) (nil for roots).
   `depth` is the agent's tree depth (0 for roots; `parent.depth
   + 1` for children). Both columns survive a BEAM restart so the
@@ -101,7 +101,7 @@ defmodule Nest.Agents.PersistedAgent do
     field :shared, :boolean, default: false
 
     # Lifecycle. `archived` marks an agent as stopped + hidden
-    # from `agents/list` and the lobby sidebar. Archived rows
+    # from `agents-list` and the lobby sidebar. Archived rows
     # accumulate over time (fine for now; a cleanup/partitioning
     # story is future work). Archived agents are NOT excluded
     # from persisted message-history / parent-child joins.

@@ -165,10 +165,10 @@ defmodule Nest.Agents.AgentStopTest do
     end
   end
 
-  describe "stop_chat/2 during context tool (compact action)" do
+  describe "stop_chat/2 during context-compact tool" do
     test "the tool-call mid-execution stop unwinds without auto-resume" do
-      # Set up a stream that emits one `context` tool call
-      # with `action: "compact"`. The chat task enters
+      # Set up a stream that emits one `context-compact` tool call.
+      # The chat task enters
       # `request_compaction_from_task` which blocks on a
       # receive. We stop the chat task while it's blocked there.
       MockClient.set_tool_response(%{
@@ -176,8 +176,8 @@ defmodule Nest.Agents.AgentStopTest do
         tool_calls: [
           %{
             id: "call_1",
-            name: "context",
-            arguments: %{"action" => "compact", "focus" => "recent"}
+            name: "context-compact",
+            arguments: %{"focus" => "recent"}
           }
         ]
       })
@@ -213,7 +213,7 @@ defmodule Nest.Agents.AgentStopTest do
       # exit signal on the caller (the monitor fires before the
       # reply is processed). Additionally, by the time we read
       # `chat_turn_pid` the ChatTurn may have already stopped
-      # (the LLM-emitted `context.compact` tool call fires
+      # (the LLM-emitted `context-compact` tool call fires
       # `{:needs_compaction, _}` and immediately stops) — the
       # call then exits with `:noproc`. Both exit reasons are
       # benign for this test's purpose (we're verifying that

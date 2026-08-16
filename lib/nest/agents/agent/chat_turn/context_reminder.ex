@@ -53,7 +53,7 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
   @notice_texts %{
     p25: "Context at 25%.",
     p50: "Context at 50%.",
-    p75: "Context at 75%. Consider compacting via the context tool."
+    p75: "Context at 75%. Consider compacting via the context-compact tool."
   }
 
   @type spec :: %{kind: atom(), attention: String.t(), notice: String.t()}
@@ -172,8 +172,7 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
     effective = max(1, limit - reserve)
 
     "Context usage is now at 75% (~#{used} of ~#{effective} token budget). " <>
-      "Consider compacting via the `context` tool " <>
-      "(action: 'compact') to free up room."
+      "Consider compacting via the `context-compact` tool to free up room."
   end
 
   @doc """

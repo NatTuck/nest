@@ -36,7 +36,7 @@ defmodule Nest.VocationsModesTest do
         name: "Programmer",
         description: "Builds software",
         system_prompt: "You are a programmer.",
-        tools: ["read_file", "write_file"],
+        tools: ["file-read", "file-write"],
         modes: %{
           "build" => %{"caps" => @valid_caps, "description" => "Full build mode"},
           "plan" => %{"caps" => @valid_caps}

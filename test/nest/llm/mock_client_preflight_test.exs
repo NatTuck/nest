@@ -31,13 +31,13 @@ defmodule Nest.LLM.MockClientPreflightTest do
       model: "test",
       messages: [
         {:assistant,
-         %Assistant{parts: [%Part.ToolUse{id: "a", name: "shell_cmd", arguments: %{}}]}},
+         %Assistant{parts: [%Part.ToolUse{id: "a", name: "shell-cmd", arguments: %{}}]}},
         {:tool,
          %Tool{
            parts: [
              %Part.ToolResult{
                tool_call_id: "b",
-               name: "shell_cmd",
+               name: "shell-cmd",
                content: "ok",
                is_error: false
              }

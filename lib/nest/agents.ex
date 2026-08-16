@@ -52,6 +52,13 @@ defmodule Nest.Agents do
       depth: Keyword.get(opts, :depth, 0)
     }
 
+    # `pre_spawn` renders the system prompt from the loaded `vocation`
+    # struct (it needs the struct, not just the id) so the initial
+    # system message row is persisted at index 0. Without this, root
+    # agents were created with no system message in the DB — the
+    # "hd(messages) is always a system message" invariant was broken.
+    attrs = Persistence.build_agent_attrs(attrs)
+
     with :ok <- Agent.pre_spawn(attrs) do
       Supervisor.fetch_or_start_agent(space_id, attrs)
     end

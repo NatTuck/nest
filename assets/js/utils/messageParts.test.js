@@ -61,7 +61,7 @@ describe("textPartsFor", () => {
     ]);
   });
   it("preserves non-text/non-thinking parts (e.g. tool_use) for downstream renderers", () => {
-    const toolUse = { kind: "tool_use", id: "x", name: "shell_cmd" };
+    const toolUse = { kind: "tool_use", id: "x", name: "shell-cmd" };
     expect(textPartsFor({ parts: [toolUse] })).toEqual([toolUse]);
   });
 });
@@ -81,21 +81,21 @@ describe("toolCallsFromParts", () => {
   it("returns the id/name of every tool_use part", () => {
     const result = toolCallsFromParts([
       { kind: "thinking", thinking: "..." },
-      { kind: "tool_use", id: "a", name: "shell_cmd", arguments: {} },
+      { kind: "tool_use", id: "a", name: "shell-cmd", arguments: {} },
       { kind: "text", text: "..." },
-      { kind: "tool_use", id: "b", name: "read_file", arguments: {} },
+      { kind: "tool_use", id: "b", name: "file-read", arguments: {} },
     ]);
     expect(result).toHaveLength(2);
     expect(result[0].id).toBe("a");
-    expect(result[0].name).toBe("shell_cmd");
+    expect(result[0].name).toBe("shell-cmd");
     expect(result[1].id).toBe("b");
-    expect(result[1].name).toBe("read_file");
+    expect(result[1].name).toBe("file-read");
   });
 
   it("passes through object `arguments` (the finalized / DB shape)", () => {
     const args = { command: "ls", path: "/tmp" };
     const result = toolCallsFromParts([
-      { kind: "tool_use", id: "a", name: "shell_cmd", arguments: args },
+      { kind: "tool_use", id: "a", name: "shell-cmd", arguments: args },
     ]);
     expect(result[0].arguments).toBe(args);
   });
@@ -108,7 +108,7 @@ describe("toolCallsFromParts", () => {
       {
         kind: "tool_use",
         id: "a",
-        name: "shell_cmd",
+        name: "shell-cmd",
         arguments: '{"command":',
       },
     ]);
@@ -121,7 +121,7 @@ describe("toolCallsFromParts", () => {
     // renderer treated as "no preview to show"; now we pass
     // through so `formatToolCall` can branch on emptiness.
     const result = toolCallsFromParts([
-      { kind: "tool_use", id: "a", name: "shell_cmd" },
+      { kind: "tool_use", id: "a", name: "shell-cmd" },
     ]);
     expect(result[0].arguments).toBe("");
   });
@@ -138,7 +138,7 @@ describe("formatToolCall", () => {
 
   it("returns kind:object for finalized (parsed) arguments", () => {
     const args = { command: "ls -la" };
-    expect(formatToolCall({ name: "shell_cmd", arguments: args })).toEqual({
+    expect(formatToolCall({ name: "shell-cmd", arguments: args })).toEqual({
       kind: "object",
       value: args,
     });
@@ -148,7 +148,7 @@ describe("formatToolCall", () => {
     // `{"command":` is partial — JSON.parse throws, so we land in
     // the monospace-raw branch.
     const formatted = formatToolCall({
-      name: "shell_cmd",
+      name: "shell-cmd",
       arguments: '{"command":',
     });
     expect(formatted.kind).toBe("stream-short");
@@ -159,7 +159,7 @@ describe("formatToolCall", () => {
     // `{"command":"ls"}` parses cleanly — render the same
     // object-shape row as the finalized version.
     const formatted = formatToolCall({
-      name: "shell_cmd",
+      name: "shell-cmd",
       arguments: '{"command":"ls"}',
     });
     expect(formatted).toEqual({
@@ -171,7 +171,7 @@ describe("formatToolCall", () => {
   it("returns kind:stream-long when a single string field crosses the long-field threshold", () => {
     const longContent = "x".repeat(LONG_FIELD_THRESHOLD + 1);
     const formatted = formatToolCall({
-      name: "write_file",
+      name: "file-write",
       arguments: JSON.stringify({
         path: "/tmp/foo.txt",
         content: longContent,
@@ -194,7 +194,7 @@ describe("formatToolCall", () => {
       metadata: "x".repeat(150),
     });
     const formatted = formatToolCall({
-      name: "shell_cmd",
+      name: "shell-cmd",
       arguments: args,
     });
     expect(formatted.kind).toBe("object");
@@ -206,7 +206,7 @@ describe("formatToolCall", () => {
 
   it("picks the longest string field when multiple cross the threshold", () => {
     const formatted = formatToolCall({
-      name: "write_file",
+      name: "file-write",
       arguments: JSON.stringify({
         content1: "a".repeat(LONG_FIELD_THRESHOLD + 10),
         content2: "b".repeat(LONG_FIELD_THRESHOLD + 200),
@@ -231,7 +231,7 @@ describe("toolResultsFromParts", () => {
       {
         kind: "tool_result",
         toolCallId: "call_1",
-        name: "shell_cmd",
+        name: "shell-cmd",
         content: "ok",
         isError: false,
       },
@@ -239,7 +239,7 @@ describe("toolResultsFromParts", () => {
     expect(result).toEqual([
       {
         tool_call_id: "call_1",
-        name: "shell_cmd",
+        name: "shell-cmd",
         content: "ok",
         is_error: false,
       },

@@ -105,7 +105,7 @@ defmodule Nest.LLM.AnthropicClientTest do
 
     test "emits tools in the Anthropic shape" do
       tool = %LLMTool{
-        name: "shell_cmd",
+        name: "shell-cmd",
         description: "run a command",
         parameters_schema: %{
           "type" => "object",
@@ -118,7 +118,7 @@ defmodule Nest.LLM.AnthropicClientTest do
 
       assert payload["tools"] == [
                %{
-                 "name" => "shell_cmd",
+                 "name" => "shell-cmd",
                  "description" => "run a command",
                  "input_schema" => %{
                    "type" => "object",
@@ -140,7 +140,7 @@ defmodule Nest.LLM.AnthropicClientTest do
                %Part.Thinking{thinking: "let me think...", signature: "sig_abc"},
                %Part.ToolUse{
                  id: "toolu_1",
-                 name: "shell_cmd",
+                 name: "shell-cmd",
                  arguments: %{"command" => "ls"}
                }
              ]
@@ -163,7 +163,7 @@ defmodule Nest.LLM.AnthropicClientTest do
                    %{
                      "type" => "tool_use",
                      "id" => "toolu_1",
-                     "name" => "shell_cmd",
+                     "name" => "shell-cmd",
                      "input" => %{"command" => "ls"}
                    }
                  ]
@@ -179,7 +179,7 @@ defmodule Nest.LLM.AnthropicClientTest do
              index: 2,
              parts: [
                %Part.Text{text: "plain text"},
-               %Part.ToolUse{id: "toolu_1", name: "shell_cmd", arguments: %{}}
+               %Part.ToolUse{id: "toolu_1", name: "shell-cmd", arguments: %{}}
              ]
            }}
         ]
@@ -195,7 +195,7 @@ defmodule Nest.LLM.AnthropicClientTest do
                    %{
                      "type" => "tool_use",
                      "id" => "toolu_1",
-                     "name" => "shell_cmd",
+                     "name" => "shell-cmd",
                      "input" => %{}
                    }
                  ]
@@ -241,7 +241,7 @@ defmodule Nest.LLM.AnthropicClientTest do
           %Part.Thinking{thinking: "let me check", signature: "sig_round_trip_42"},
           %Part.ToolUse{
             id: "toolu_9",
-            name: "shell_cmd",
+            name: "shell-cmd",
             arguments: %{"command" => "ls"}
           }
         ]
@@ -263,7 +263,7 @@ defmodule Nest.LLM.AnthropicClientTest do
                    %{
                      "type" => "tool_use",
                      "id" => "toolu_9",
-                     "name" => "shell_cmd",
+                     "name" => "shell-cmd",
                      "input" => %{"command" => "ls"}
                    }
                  ]
@@ -280,13 +280,13 @@ defmodule Nest.LLM.AnthropicClientTest do
              parts: [
                %Part.ToolResult{
                  tool_call_id: "toolu_1",
-                 name: "shell_cmd",
+                 name: "shell-cmd",
                  content: "out1",
                  is_error: false
                },
                %Part.ToolResult{
                  tool_call_id: "toolu_2",
-                 name: "read_file",
+                 name: "file-read",
                  content: "boom",
                  is_error: true
                }
@@ -323,7 +323,7 @@ defmodule Nest.LLM.AnthropicClientTest do
             {:auto, %{"type" => "auto"}},
             {:none, %{"type" => "none"}},
             {:required, %{"type" => "auto"}},
-            {{:tool, "shell_cmd"}, %{"type" => "tool", "name" => "shell_cmd"}}
+            {{:tool, "shell-cmd"}, %{"type" => "tool", "name" => "shell-cmd"}}
           ] do
         payload = AnthropicClient.format_request_payload(%RunRequest{tool_choice: choice}, [])
         assert payload["tool_choice"] == expected

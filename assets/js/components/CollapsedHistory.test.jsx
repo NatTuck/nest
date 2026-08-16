@@ -312,7 +312,7 @@ describe("CollapsedHistory", () => {
             {
               kind: "tool_use",
               id: "call_1",
-              name: "shell_cmd",
+              name: "shell-cmd",
               arguments: { command: "ls" },
             },
           ],
@@ -321,7 +321,7 @@ describe("CollapsedHistory", () => {
       render(<CollapsedHistory history={history} />);
       // ToolCalls renders the tool name + a JSON preview of
       // the arguments
-      expect(screen.getByText(/Using tool: shell_cmd/)).toBeInTheDocument();
+      expect(screen.getByText(/Using tool: shell-cmd/)).toBeInTheDocument();
       expect(screen.getByText(/"command"/)).toBeInTheDocument();
     });
   });
@@ -338,7 +338,7 @@ describe("CollapsedHistory", () => {
             {
               kind: "tool_result",
               toolCallId: "call_1",
-              name: "shell_cmd",
+              name: "shell-cmd",
               content: "file1.txt\nfile2.txt",
               isError: false,
             },
@@ -347,7 +347,7 @@ describe("CollapsedHistory", () => {
       ]);
       render(<CollapsedHistory history={history} />);
       const bubble = screen.getByTestId("history-message");
-      expect(bubble.textContent).toContain("Success: shell_cmd");
+      expect(bubble.textContent).toContain("Success: shell-cmd");
       expect(bubble.textContent).toContain("file1.txt");
       expect(bubble.textContent).toContain("file2.txt");
     });

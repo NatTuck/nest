@@ -82,7 +82,7 @@ defmodule Nest.Agents.AgentContextLimitTest do
     Agent.terminate(pid)
   end
 
-  test "handles a `nil` cache hit (model not in /models response)" do
+  test "falls back to the 128k default when cache, config, and provider default are all nil" do
     Mimic.expect(Models, :context_limit, fn _provider, _model ->
       nil
     end)
@@ -94,8 +94,8 @@ defmodule Nest.Agents.AgentContextLimitTest do
       })
 
     state = :sys.get_state(pid)
-    assert state.llm_metrics.context_limit == nil
-    assert state.llm_metrics.context_limit_source == nil
+    assert state.llm_metrics.context_limit == 128_000
+    assert state.llm_metrics.context_limit_source == :default
 
     Agent.terminate(pid)
   end

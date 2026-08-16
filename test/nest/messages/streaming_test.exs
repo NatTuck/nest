@@ -70,17 +70,17 @@ defmodule Nest.Messages.StreamingTest do
 
   test "start_tool_call/3 starts a partial tool call" do
     acc = Streaming.new(0)
-    acc = Streaming.start_tool_call(acc, "call_1", "read_file")
+    acc = Streaming.start_tool_call(acc, "call_1", "file-read")
     assert Map.has_key?(acc.tool_calls, "call_1")
     tc = acc.tool_calls["call_1"]
     assert tc.id == "call_1"
-    assert tc.name == "read_file"
+    assert tc.name == "file-read"
     assert tc.complete? == false
   end
 
   test "append_tool_call_args/3 accumulates arguments into the buffer" do
     acc = Streaming.new(0)
-    acc = Streaming.start_tool_call(acc, "call_1", "read_file")
+    acc = Streaming.start_tool_call(acc, "call_1", "file-read")
     acc = Streaming.append_tool_call_args(acc, "call_1", ~s({"path":))
     acc = Streaming.append_tool_call_args(acc, "call_1", ~s("foo.txt"}))
     tc = acc.tool_calls["call_1"]
@@ -94,7 +94,7 @@ defmodule Nest.Messages.StreamingTest do
 
   test "complete_tool_call/2 marks a partial tool call complete" do
     acc = Streaming.new(0)
-    acc = Streaming.start_tool_call(acc, "call_1", "read_file")
+    acc = Streaming.start_tool_call(acc, "call_1", "file-read")
     acc = Streaming.append_tool_call_args(acc, "call_1", ~s({}))
     acc = Streaming.complete_tool_call(acc, "call_1")
     assert acc.tool_calls["call_1"].complete? == true
@@ -109,6 +109,27 @@ defmodule Nest.Messages.StreamingTest do
     assert [%Nest.Messages.Part.Text{text: "answer"}] = parts
   end
 
+  test "finalize/1 assembles multi-fragment text in arrival order (not reversed)" do
+    # Regression for "text is garbled/reversed when Stop is pressed":
+    # the Stop path finalizes via `Streaming.finalize/1`, which must
+    # emit fragments in the order they arrived — not word-reversed.
+    acc = Streaming.new(0)
+    acc = Streaming.append_text(acc, "Hello ")
+    acc = Streaming.append_text(acc, "world")
+    acc = Streaming.append_text(acc, "!")
+
+    assert [%Nest.Messages.Part.Text{text: "Hello world!"}] = Streaming.finalize(acc).parts
+  end
+
+  test "finalize/1 assembles multi-fragment thinking in arrival order (not reversed)" do
+    acc = Streaming.new(0)
+    acc = Streaming.append_thinking(acc, "step one ")
+    acc = Streaming.append_thinking(acc, "step two")
+
+    assert [%Nest.Messages.Part.Thinking{thinking: "step one step two"}] =
+             Streaming.finalize(acc).parts
+  end
+
   test "to_json/1 serializes a text-only accumulator" do
     acc = Streaming.new(3)
     acc = Streaming.append_text(acc, "hello")
@@ -120,6 +141,16 @@ defmodule Nest.Messages.StreamingTest do
     assert is_list(json["segments"])
   end
 
+  test "to_json/1 serializes multi-fragment content in arrival order (not reversed)" do
+    # The `partial` payload feeds a re-seed (init / chat:sync); it must
+    # carry text in arrival order, not word-reversed.
+    acc = Streaming.new(0)
+    acc = Streaming.append_text(acc, "Hello ")
+    acc = Streaming.append_text(acc, "world")
+
+    assert Streaming.to_json(acc)["content"] == "Hello world"
+  end
+
   describe "to_json/1 with in-flight tool calls" do
     # Regression for the "mid-stream join" gap: the `init`
     # partial payload didn't carry in-flight tool calls, so a
@@ -129,13 +160,13 @@ defmodule Nest.Messages.StreamingTest do
     test "includes toolCalls list with partial JSON strings" do
       acc = Streaming.new(2)
       acc = Streaming.append_text(acc, "Let me check")
-      acc = Streaming.start_tool_call(acc, "call_abc", "shell_cmd")
+      acc = Streaming.start_tool_call(acc, "call_abc", "shell-cmd")
       acc = Streaming.append_tool_call_args(acc, "call_abc", ~s({"command":))
       acc = Streaming.append_tool_call_args(acc, "call_abc", ~s("ls"}))
 
       json = Streaming.to_json(acc)
 
-      assert [%{"id" => "call_abc", "name" => "shell_cmd", "arguments" => args}] =
+      assert [%{"id" => "call_abc", "name" => "shell-cmd", "arguments" => args}] =
                json["toolCalls"]
 
       # The `arguments` field is the raw JSON fragment as it
@@ -148,7 +179,7 @@ defmodule Nest.Messages.StreamingTest do
     test "includes a tool_use segment marker for each in-flight tool call" do
       acc = Streaming.new(2)
       acc = Streaming.append_text(acc, "before ")
-      acc = Streaming.start_tool_call(acc, "call_1", "shell_cmd")
+      acc = Streaming.start_tool_call(acc, "call_1", "shell-cmd")
       acc = Streaming.append_text(acc, " after")
 
       json = Streaming.to_json(acc)
@@ -175,7 +206,7 @@ defmodule Nest.Messages.StreamingTest do
     test "currentType reflects the active block after start_tool_call" do
       acc = Streaming.new(0)
       acc = Streaming.append_text(acc, "x")
-      acc = Streaming.start_tool_call(acc, "call_1", "shell_cmd")
+      acc = Streaming.start_tool_call(acc, "call_1", "shell-cmd")
       json = Streaming.to_json(acc)
 
       # `current_block` is `{:tool_use, id}` on the wire; the
@@ -202,7 +233,7 @@ defmodule Nest.Messages.StreamingTest do
 
       log =
         capture_log(fn ->
-          result = Streaming.start_tool_call(acc, :by_index, "shell_cmd")
+          result = Streaming.start_tool_call(acc, :by_index, "shell-cmd")
           assert result == acc
         end)
 
@@ -224,7 +255,7 @@ defmodule Nest.Messages.StreamingTest do
 
     test "append_tool_call_args/3 for an unknown id returns acc unchanged" do
       acc = Streaming.new(0)
-      acc = Streaming.start_tool_call(acc, "call_real", "shell_cmd")
+      acc = Streaming.start_tool_call(acc, "call_real", "shell-cmd")
 
       log =
         capture_log(fn ->
@@ -238,7 +269,7 @@ defmodule Nest.Messages.StreamingTest do
 
     test "append_tool_call_args/3 with a non-binary fragment returns acc unchanged" do
       acc = Streaming.new(0)
-      acc = Streaming.start_tool_call(acc, "call_1", "shell_cmd")
+      acc = Streaming.start_tool_call(acc, "call_1", "shell-cmd")
 
       log =
         capture_log(fn ->

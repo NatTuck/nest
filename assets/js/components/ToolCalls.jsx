@@ -7,7 +7,7 @@
  *     object, or a buffer that hasn't parsed yet): a small
  *     monospace `<pre>` so the user can see arguments streaming
  *     character-by-character.
- *   - long streaming (`write_file` / long-shell-command): a
+ *   - long streaming (`file-write` / long-shell-command): a
  *     path/header row plus a plain-text body block where the
  *     embedded `\n` characters render as real line breaks
  *     (`whitespace-pre-wrap`), so the file body or long command
@@ -86,7 +86,7 @@ export function ToolCalls({ toolCalls }) {
 //   `stream-short`  — partial JSON in a `<pre>` monospace block
 //                     with real newlines preserved (`whitespace-
 //                     pre-wrap`).
-//   `stream-long`   — `write_file` style: a path/header row +
+//   `stream-long`   — `file-write` style: a path/header row +
 //                     the long string field rendered with real
 //                     line breaks, plus any other fields as a
 //                     compact metadata line below.
@@ -115,7 +115,7 @@ function renderArguments(formatted) {
     // Short streaming buffer — render verbatim in a tiny
     // monospace block. Embedded `\n` characters become real
     // line breaks thanks to `whitespace-pre-wrap`, so a
-    // `write_file` body that's small enough to fit the
+    // `file-write` body that's small enough to fit the
     // short-path heuristic reads naturally without the
     // viewer having to mentally unescape the JSON framing.
     return (

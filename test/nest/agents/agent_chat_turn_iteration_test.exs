@@ -60,9 +60,9 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
     # `Agent.pre_spawn/1`), supervisor spawn, sandbox allow
     # (so spawned ChatTurn pids can do DB writes), and
     # MockClient swap. The synthetic tool calls in this
-    # file use `name: "context"`, which the helper's
+    # file use `name: "context-compact"`, which the helper's
     # default "Test Default" vocation includes in its
-    # `tools: ["context"]`. The "build" mode and extra
+    # `tools: ["context-check", "context-compact"]`. The "build" mode and extra
     # tools from the previous bespoke `programmer_vocation_id`
     # were never read by any handler exercised here.
     start_agent()
@@ -82,8 +82,8 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
        parts: [
          %Part.ToolUse{
            id: "call_1",
-           name: "context",
-           arguments: %{"action" => "compact"}
+           name: "context-compact",
+           arguments: %{}
          }
        ],
        api_logs: []
@@ -152,7 +152,7 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
         # The new ChatTurn spawns and runs. With the carried
         # assistant+ToolUse at the tail, the ChatTurn's
         # `pending_tool_calls?/1` returns true and it
-        # executes the carried tool call (context.compact,
+        # executes the carried tool call (context-compact,
         # which BatchSizer strips → empty result); then the
         # next iteration falls through to the LLM and the
         # chat turn finalizes with a chat:status broadcast.
@@ -192,7 +192,7 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
         # ChatTurn to spawn. The new ChatTurn iterates
         # (the carried tool_call triggers
         # `execute_pending_tool_calls`, which yields an
-        # empty BatchSizer run after the context.compact
+        # empty BatchSizer run after the context-compact
         # strip), then falls through to the LLM and
         # finalizes — broadcasting chat:status along the
         # way.
@@ -229,8 +229,8 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
              %Part.Text{text: "I'll check context."},
              %Part.ToolUse{
                id: "call_1",
-               name: "context",
-               arguments: %{"action" => "check"}
+               name: "context-check",
+               arguments: %{}
              }
            ],
            api_logs: []
@@ -313,24 +313,34 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
       #   `put_message_index/2`).
       final_messages = :sys.get_state(pid).chat_state.messages
 
-      assert length(final_messages) == 3,
+      # The resumed ChatTurn immediately executes the carried
+      # `context-check` tool call, which appends a `tool` result (and
+      # then the final text response) to the agent's messages. So
+      # `final_messages` may have grown past 3 by the time we read it —
+      # the exact count races the turn's async tool execution. The
+      # post-swap canonical shape is always the FIRST three entries
+      # (system, summary_user, carried assistant+ToolUse); assert on
+      # those deterministically rather than racing the turn.
+      canonical = Enum.take(final_messages, 3)
+
+      assert length(canonical) == 3,
              "expected [system, summary_user, assistant+ToolUse]; " <>
                "got #{inspect(final_messages)}"
 
-      assert match?({:system, _}, Enum.at(final_messages, 0))
-      assert match?({:user, _}, Enum.at(final_messages, 1))
+      assert match?({:system, _}, Enum.at(canonical, 0))
+      assert match?({:user, _}, Enum.at(canonical, 1))
 
       # The carried-forward trailing assistant message must carry the
       # original ToolUse parts (the renumbering pass in
       # `Compaction.Lifecycle.swap_messages/3` assigns fresh indices
       # to the whole `new_messages` list, so we compare on shape
       # rather than full struct equality).
-      {tail_role, tail_struct} = List.last(final_messages)
+      {tail_role, tail_struct} = List.last(canonical)
       assert tail_role == :assistant
 
       assert Enum.any?(
                tail_struct.parts,
-               &match?(%Part.ToolUse{id: "call_1", name: "context"}, &1)
+               &match?(%Part.ToolUse{id: "call_1", name: "context-check"}, &1)
              )
 
       # The ChatTurn's `entry` is the carried entry itself —

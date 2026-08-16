@@ -240,7 +240,7 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
         name: "SubAgentChatStop Vocation #{System.unique_integer([:positive])}",
         description: "Sub-agent chat-stop cascade test",
         system_prompt: "x",
-        tools: ["agents/spawn", "context"],
+        tools: ["agents-spawn", "context-check", "context-compact"],
         modes: %{
           "chat" => %{
             "description" => "Chat",
@@ -256,7 +256,7 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
     # Use the standard helper to handle row insertion (via
     # pre_spawn), sandbox allow, MockClient swap, and on_exit
     # cleanup. The helper's `vocation_id_for_test/0` creates
-    # a "Test Default" vocation with `tools: ["context"]` —
+    # a "Test Default" vocation with `tools: ["context-check", "context-compact"]` —
     # sufficient for the tool-call shape exercised here. The
     # `vid` argument is unused now but kept for API compatibility
     # with the original `start_parent/1` signature (some tests

@@ -136,7 +136,7 @@ defmodule Nest.Agents.Agent.RecoveryTest do
         name: "Recovery Test Vocation",
         description: "v",
         system_prompt: "x",
-        tools: ["context"],
+        tools: ["context-check", "context-compact"],
         modes: %{}
       })
 

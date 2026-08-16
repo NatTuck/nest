@@ -89,7 +89,7 @@ defmodule Nest.Agents.Agent.Callbacks do
   end
 
   # Sub-agent: a tool worker (running in the chat turn) is
-  # blocked on the tool dispatch and has hit an `agents/spawn`
+  # blocked on the tool dispatch and has hit an `agents-spawn`
   # tool call. `opts` carries `name`, `vocation_id`,
   # `clone_context`, `query`, and `archive`. Spawn the child
   # (fresh or context-cloned), kick off its chat turn with the
@@ -101,7 +101,7 @@ defmodule Nest.Agents.Agent.Callbacks do
     SubAgent.handle_spawn_request(state, task_pid, opts)
   end
 
-  # Sub-agent: a tool worker hit an `agents/archive` call. Stop +
+  # Sub-agent: a tool worker hit an `agents-archive` call. Stop +
   # mark the named agent in this space archived.
   def handle_call({:archive_agent_request, task_pid, name}, _from, state) do
     SubAgent.handle_archive_request(state, task_pid, name)

@@ -18,7 +18,7 @@ defmodule Nest.Blueprints do
     * The seed script provisions three blueprints
 
   Phase 3 will add:
-    * `agents/spawn` enforcing `spawnable_vocation_ids`
+    * `agents-spawn` enforcing `spawnable_vocation_ids`
     * `workspace_template` seeding into the root agent's
       workspace
 
@@ -152,7 +152,7 @@ defmodule Nest.Blueprints do
   Returns `nil` when the blueprint is nil or missing, and the
   (possibly empty) `spawnable_vocation_ids` list otherwise.
 
-  `nil` and `[]` both mean **unrestricted**: `agents/spawn` allows
+  `nil` and `[]` both mean **unrestricted**: `agents-spawn` allows
   any vocation. A non-empty list is a strict whitelist.
 
   `Spaces.spawnable_vocation_ids_for_space/1` is the space-level

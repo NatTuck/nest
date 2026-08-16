@@ -23,8 +23,11 @@
  * `total_input_tokens`. This matches the wire payloads
  * emitted by `Broadcasts.total_usage/2`.
  *
- * Hidden entirely when `contextLimit` is null/undefined (the
- * model has no known limit to fill against).
+ * When `contextLimit` is missing (null/undefined/non-positive)
+ * we render a visibly alarming "context limit data missing"
+ * state rather than hiding the chip entirely, so a broken
+ * context-limit resolution can never silently disappear from
+ * the UI.
  */
 
 import { useState } from "react";
@@ -84,8 +87,9 @@ function totalContextTokens(usage) {
  *   over computing its own sum so the numbers stay drift-
  *   free across renders.
  * @param {number|null|undefined} props.contextLimit
- *   The model's context-window size. When null/undefined, the
- *   chip hides entirely.
+ *   The model's context-window size. When null/undefined/
+ *   non-positive, the chip renders a "data missing" warning
+ *   instead of hiding.
  */
 export function TokenUsageChip({
   usage,
@@ -95,7 +99,32 @@ export function TokenUsageChip({
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
 
-  if (!contextLimit || contextLimit <= 0) return null;
+  if (!contextLimit || contextLimit <= 0) {
+    return (
+      <div
+        data-testid="token-usage-chip"
+        role="status"
+        aria-label="Context limit data missing"
+        className="flex items-center gap-1.5 text-xs font-semibold text-red-400"
+      >
+        <svg
+          className="w-3.5 h-3.5"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={2}
+          viewBox="0 0 24 24"
+          aria-hidden="true"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            d="M12 9v4m0 4h.01M10.29 3.86l-8.18 14.18A2 2 0 003.82 21h16.36a2 2 0 001.73-2.96L13.71 3.86a2 2 0 00-3.42 0z"
+          />
+        </svg>
+        <span>Context limit data missing</span>
+      </div>
+    );
+  }
 
   const used = totalContextTokens(usage);
   const safeUsed = Math.max(0, used);

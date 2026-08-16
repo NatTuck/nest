@@ -29,7 +29,7 @@ defmodule Nest.Agents.Agent.PersistenceTest do
         name: "Agent Persistence Test Default",
         description: "Default for agent persistence tests",
         system_prompt: "You are a helpful test assistant.",
-        tools: ["context"],
+        tools: ["context-check", "context-compact"],
         modes: %{
           "chat" => %{
             "description" => "General conversation.",

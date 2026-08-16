@@ -50,7 +50,7 @@ defmodule Nest.Agents.Agent.ChatState do
   because of the `<=` rule.
 
   The `pending_children` map tracks child agents that this
-  agent has spawned via `agents/spawn` (with a `query`). Keys
+  agent has spawned via `agents-spawn` (with a `query`). Keys
   are child agent IDs (strings), values are the pid of the
   blocked tool task waiting for the child's response. When a
   child completes, its GenServer sends
@@ -63,16 +63,16 @@ defmodule Nest.Agents.Agent.ChatState do
   parent stops + marks them archived (one-shot spawns). Cleared
   alongside `pending_children`.
 
-  The `read_files` map gates the `write_file` tool: every
-  successful `read_file` and `write_file` is recorded here as
+  The `read_files` map gates the `file-write` tool: every
+  successful `file-read` and `file-write` is recorded here as
   `path => %{mtime: DateTime.t(), size: non_neg_integer()}`,
   taken from `File.stat/1` immediately after the tool worker
   returns. `BatchSizer.execute_one/2` consults the `:check_read_policy`
-  introspection clause before any `write_file` runs and refuses
+  introspection clause before any `file-write` runs and refuses
   the call with `"You must read that file before overwriting it."`
   when the path is absent, or `"File contents have changed, re-read that
   file before writing it."` when the recorded `mtime`/`size` no
-  longer matches the on-disk file. Successful `write_file` calls
+  longer matches the on-disk file. Successful `file-write` calls
   overwrite the entry (so a follow-up write to the same path passes
   its own mtime check). Cleared on successful compaction
   (the LLM is summarized and shouldn't carry pre-summary reads forward)

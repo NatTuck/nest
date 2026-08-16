@@ -95,7 +95,7 @@ defmodule Nest.Agents.Agent.NoticePairInjectorTest do
         {:assistant,
          %Assistant{
            index: 0,
-           parts: [%Nest.Messages.Part.ToolUse{id: "call_1", name: "shell_cmd", arguments: %{}}],
+           parts: [%Nest.Messages.Part.ToolUse{id: "call_1", name: "shell-cmd", arguments: %{}}],
            timestamp: nil,
            api_logs: []
          }}
@@ -117,7 +117,7 @@ defmodule Nest.Agents.Agent.NoticePairInjectorTest do
         {:assistant,
          %Assistant{
            index: 0,
-           parts: [%Nest.Messages.Part.ToolUse{id: "call_1", name: "shell_cmd", arguments: %{}}],
+           parts: [%Nest.Messages.Part.ToolUse{id: "call_1", name: "shell-cmd", arguments: %{}}],
            timestamp: nil,
            api_logs: []
          }}
@@ -229,6 +229,7 @@ defmodule Nest.Agents.Agent.NoticePairInjectorTest do
   # Build a minimal Agent state for the in-process tests.
   defp build_state(messages) do
     %Agent{
+      llm_metrics: %Agent.LlmMetrics{context_limit: 100_000, context_limit_source: :config},
       chat_state: %Agent.ChatState{
         messages: messages,
         next_message_index: next_index(messages)

@@ -11,7 +11,7 @@ defmodule Nest.Tokens.Compactor do
 
   Recent-tail preservation (the previous design kept the last
   user message + tool response sequence verbatim) is gone.
-  At small contexts a single `shell_cmd` result can
+  At small contexts a single `shell-cmd` result can
   consume half the window on its own — preserving the recent
   slice verbatim alongside the head summary can blow past
   25% of context in the post-compaction state. The new

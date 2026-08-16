@@ -195,14 +195,14 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
       refute system_prompt =~ "may differ"
     end
 
-    test "no context limit (no configured value and no Models cache hit) omits the section" do
+    test "falls back to the 128k default when no config and no Models cache hit" do
       # MiniMax-M2.5 exists in the test config but has no
       # `context-limit` set, so `configured_context_limit/1`
-      # returns nil. The Models GenServer's cache only
-      # knows about models from the mocked `/models` responses;
-      # without a hit there, the context-limit section is
-      # entirely omitted from the prompt (no `:default`
-      # placeholder, no async probe).
+      # returns nil. The Models GenServer's cache only knows
+      # about models from the mocked `/models` responses;
+      # without a hit there, the context-limit resolution falls
+      # back to the 128k `:default` floor, and the prompt still
+      # renders a context-limit section (sourced from `default`).
       valid_caps = %{
         "net" => false,
         "fs" => %{"read" => ["/"], "write" => []}
@@ -225,8 +225,8 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
 
       system_prompt = get_system_prompt(pid)
 
-      refute system_prompt =~ "Context limit:"
-      refute system_prompt =~ "default"
+      assert system_prompt =~ "Context limit: 128000 tokens"
+      assert system_prompt =~ "resolved from default"
       refute system_prompt =~ "may differ"
     end
   end

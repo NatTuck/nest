@@ -58,7 +58,7 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
           name: "TestSystemRepeat-#{System.unique_integer([:positive])}",
           description: "Default for system-repeat tests",
           system_prompt: "Default system prompt #{System.unique_integer([:positive])}",
-          tools: ["context"],
+          tools: ["context-check", "context-compact"],
           modes: %{
             "chat" => %{
               "description" => "General conversation.",
@@ -362,12 +362,12 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
     end
 
     test "state.tools is rebuilt from the fresh vocation.tools post-compaction" do
-      # Use a vocation with no read_file initially. Then add
-      # read_file in the DB and trigger compaction. After
+      # Use a vocation with no file-read initially. Then add
+      # file-read in the DB and trigger compaction. After
       # compaction the agent's `state.tools` should reflect
       # the new tool list.
-      original_tools = ["context"]
-      fresh_tools = ["context", "read_file"]
+      original_tools = ["context-check", "context-compact"]
+      fresh_tools = ["context-check", "context-compact", "file-read"]
 
       vocation = create_vocation(%{tools: original_tools})
       {pid, _agent_id} = start_with_vocation(vocation)
@@ -383,7 +383,7 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
       assert MapSet.equal?(initial_tool_names, MapSet.new(original_tools)),
              "pre-condition: agent's initial tools mismatch test fixture"
 
-      # Mutate the vocation in the DB to add `read_file`.
+      # Mutate the vocation in the DB to add `file-read`.
       {:ok, _updated_vocation} =
         Vocations.update_vocation(vocation, %{tools: fresh_tools})
 

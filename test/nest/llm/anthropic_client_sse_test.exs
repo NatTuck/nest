@@ -106,7 +106,7 @@ defmodule Nest.LLM.AnthropicClientSSETest do
       data: {"message":{"id":"msg_4","model":"claude-3-opus-20240229","usage":{"input_tokens":1,"output_tokens":1}}}
 
       event: content_block_start
-      data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"shell_cmd","input":{}}}
+      data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"shell-cmd","input":{}}}
 
       event: content_block_delta
       data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"command\\":"}}
@@ -127,7 +127,7 @@ defmodule Nest.LLM.AnthropicClientSSETest do
 
       events = run_with_sse(sse)
 
-      assert {:tool_call_start, %{id: "toolu_1", name: "shell_cmd", index: 0}} in events
+      assert {:tool_call_start, %{id: "toolu_1", name: "shell-cmd", index: 0}} in events
 
       assert {:tool_call_delta, %{id: :by_index, index: 0, arguments_delta: "{\"command\":"}} in events
 

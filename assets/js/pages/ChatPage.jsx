@@ -146,7 +146,7 @@ export function ChatPage() {
   const isAgentBusy = streaming || executingTools;
 
   // Sub-agent identity. `parentName` is the readable id of
-  // the agent that spawned this one via `agents/spawn` (with
+  // the agent that spawned this one via `agents-spawn` (with
   // `clone_context`), or `null` for root agents. Surfaced as
   // a "back to parent" link in the agent header (a child can
   // navigate back to its parent's chat without an extra

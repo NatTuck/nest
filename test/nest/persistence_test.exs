@@ -93,7 +93,7 @@ defmodule Nest.PersistenceTest do
              %Part.Thinking{thinking: "let me think", signature: "sig-abc"},
              %Part.ToolUse{
                id: "call_1",
-               name: "shell_cmd",
+               name: "shell-cmd",
                arguments: %{"command" => "ls"}
              }
            ],
@@ -123,7 +123,7 @@ defmodule Nest.PersistenceTest do
 
       assert [%{"kind" => "text", "text" => "I'll call a tool"}, _thinking, tool_use] = parts
       assert tool_use["kind"] == "tool_use"
-      assert tool_use["name"] == "shell_cmd"
+      assert tool_use["name"] == "shell-cmd"
     end
 
     test "round-trips a tool message with multiple tool results" do
@@ -137,13 +137,13 @@ defmodule Nest.PersistenceTest do
            parts: [
              %Part.ToolResult{
                tool_call_id: "call_1",
-               name: "shell_cmd",
+               name: "shell-cmd",
                content: "ok",
                is_error: false
              },
              %Part.ToolResult{
                tool_call_id: "call_2",
-               name: "read_file",
+               name: "file-read",
                content: "boom",
                is_error: true
              }
@@ -273,7 +273,7 @@ defmodule Nest.PersistenceTest do
       original_parts = [
         %Part.Text{text: "visible"},
         %Part.Thinking{thinking: "hidden", signature: "sig-xyz"},
-        %Part.ToolUse{id: "call_1", name: "shell_cmd", arguments: %{"cmd" => "ls"}}
+        %Part.ToolUse{id: "call_1", name: "shell-cmd", arguments: %{"cmd" => "ls"}}
       ]
 
       original =

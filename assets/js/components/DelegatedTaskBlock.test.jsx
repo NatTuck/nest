@@ -117,13 +117,13 @@ describe("DelegatedTask", () => {
     clearCache();
   });
 
-  it("renders nothing when the message has no agents/spawn calls", () => {
+  it("renders nothing when the message has no agents-spawn calls", () => {
     seedCache({ messages: [] });
 
     const message = {
       index: 1,
       role: "assistant",
-      toolCalls: [{ id: "x", name: "shell_cmd", arguments: { command: "ls" } }],
+      toolCalls: [{ id: "x", name: "shell-cmd", arguments: { command: "ls" } }],
     };
 
     const { container } = render(
@@ -135,7 +135,7 @@ describe("DelegatedTask", () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it("renders a card per agents/spawn call paired with its result", () => {
+  it("renders a card per agents-spawn call paired with its result", () => {
     seedCache({
       messages: [
         {
@@ -144,7 +144,7 @@ describe("DelegatedTask", () => {
           toolResults: [
             {
               tool_call_id: "call-1",
-              name: "agents/spawn",
+              name: "agents-spawn",
               content: "child says X is done",
               is_error: false,
             },
@@ -159,7 +159,7 @@ describe("DelegatedTask", () => {
       toolCalls: [
         {
           id: "call-1",
-          name: "agents/spawn",
+          name: "agents-spawn",
           arguments: { query: "do X" },
         },
       ],
@@ -187,7 +187,7 @@ describe("DelegatedTask", () => {
           tool_results: [
             {
               toolCallId: "call-2",
-              name: "agents/spawn",
+              name: "agents-spawn",
               content: "child says Y is done",
               isError: false,
             },
@@ -202,7 +202,7 @@ describe("DelegatedTask", () => {
       tool_calls: [
         {
           id: "call-2",
-          name: "agents/spawn",
+          name: "agents-spawn",
           arguments: { query: "do Y" },
         },
       ],
@@ -233,7 +233,7 @@ describe("DelegatedTask", () => {
       toolCalls: [
         {
           id: "call-3",
-          name: "agents/spawn",
+          name: "agents-spawn",
           arguments: { query: "do Z" },
         },
       ],
@@ -261,7 +261,7 @@ describe("DelegatedTask", () => {
       toolCalls: [
         {
           id: "call-4",
-          name: "agents/spawn",
+          name: "agents-spawn",
           input: { query: "do W via input" },
         },
       ],
@@ -279,7 +279,7 @@ describe("DelegatedTask", () => {
   });
 
   it("surfaces the partial `instruction` from a streaming JSON buffer", () => {
-    // The agents/spawn tool call is mid-stream: the buffer
+    // The agents-spawn tool call is mid-stream: the buffer
     // is `'{"query":"do X'` (not yet self-balanced).
     // The user should see "do X" — not a blank card.
     seedCache({ messages: [] });
@@ -290,7 +290,7 @@ describe("DelegatedTask", () => {
       toolCalls: [
         {
           id: "call-stream",
-          name: "agents/spawn",
+          name: "agents-spawn",
           arguments: '{"query":"do X',
         },
       ],
@@ -319,7 +319,7 @@ describe("DelegatedTask", () => {
       toolCalls: [
         {
           id: "call-early",
-          name: "agents/spawn",
+          name: "agents-spawn",
           arguments: '{"inst',
         },
       ],
@@ -350,7 +350,7 @@ describe("DelegatedTask", () => {
       toolCalls: [
         {
           id: "call-obj",
-          name: "agents/spawn",
+          name: "agents-spawn",
           arguments: { query: "do V via object" },
         },
       ],
@@ -381,7 +381,7 @@ describe("DelegatedTask", () => {
       toolCalls: [
         {
           id: "call-full-json",
-          name: "agents/spawn",
+          name: "agents-spawn",
           arguments: '{"query":"do Q via parse"}',
         },
       ],
@@ -412,7 +412,7 @@ describe("DelegatedTask", () => {
       toolCalls: [
         {
           id: "call-no-instr",
-          name: "agents/spawn",
+          name: "agents-spawn",
           arguments: { path: "/tmp/x" },
         },
       ],
@@ -443,7 +443,7 @@ describe("DelegatedTask", () => {
       toolCalls: [
         {
           id: "call-numeric",
-          name: "agents/spawn",
+          name: "agents-spawn",
           arguments: 42,
         },
       ],
@@ -468,7 +468,7 @@ describe("DelegatedTask", () => {
       toolCalls: [
         {
           id: "call-null",
-          name: "agents/spawn",
+          name: "agents-spawn",
           arguments: null,
         },
       ],

@@ -132,7 +132,7 @@ defmodule Nest.Agents.PersistedMessageTest do
          %Nest.Messages.Tool{
            index: 2,
            parts: [
-             %Part.ToolResult{tool_call_id: "c1", name: "shell_cmd", content: "ok"}
+             %Part.ToolResult{tool_call_id: "c1", name: "shell-cmd", content: "ok"}
            ]
          }}
 

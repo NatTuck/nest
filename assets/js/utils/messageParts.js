@@ -56,7 +56,7 @@ export function toolCallsFromParts(parts) {
 // Heuristic thresholds used by `formatToolCall` to decide when a
 // streaming argument buffer has crossed from "monospace JSON is
 // fine" into "this is a long content field — render it as a plain
-// text block with real newlines so a `write_file` body or a long
+// text block with real newlines so a `file-write` body or a long
 // shell command reads naturally".
 export const LONG_FIELD_THRESHOLD = 300;
 export const LONG_TOTAL_THRESHOLD = 800;
@@ -74,7 +74,7 @@ export const LONG_TOTAL_THRESHOLD = 800;
 //   * `{kind: "empty"}`     — render only the "Using tool: <name>" line.
 //   * `{kind: "stream-short"}` — monospace buffer in a `<pre>`, newlines
 //     preserved (`whitespace-pre-wrap`). Best for short tool calls.
-//   * `{kind: "stream-long"}` — `write_file`-style / long-command
+//   * `{kind: "stream-long"}` — `file-write`-style / long-command
 //     rendering: a path header + a plain-text body block with real
 //     newlines, plus compact metadata for the remaining fields.
 //   * `{kind: "object"}`    — finalized object; the existing
@@ -152,7 +152,7 @@ export function formatToolCall(call) {
 // Heuristic: pick the parsed-string field whose value length is
 // the largest, provided it crosses the threshold. Returns
 // `{key, value}` or `null`. Used by `formatToolCall` to pick the
-// "long content" preview field for `write_file` bodies and
+// "long content" preview field for `file-write` bodies and
 // long shell commands.
 function findLongStringField(parsed, threshold) {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {

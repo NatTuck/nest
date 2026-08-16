@@ -191,7 +191,7 @@ defmodule Nest.Agents.AgentContextWarningTest do
 
       tool_use = %Nest.Messages.Part.ToolUse{
         id: "call_xyz",
-        name: "shell_cmd",
+        name: "shell-cmd",
         arguments: %{"command" => "sleep 10"}
       }
 

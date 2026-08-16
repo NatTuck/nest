@@ -91,7 +91,7 @@ defmodule Nest.LLM.CrossProviderReplayTest do
         messages: [
           sys(0, "be brief"),
           user(1, "hi"),
-          assistant_with_tool_call(2, "toolu_abc123", "shell_cmd", %{"cmd" => "ls"}),
+          assistant_with_tool_call(2, "toolu_abc123", "shell-cmd", %{"cmd" => "ls"}),
           tool_result(3, "toolu_abc123", "file1\nfile2"),
           assistant_with_thinking(4, "done", "sig_xyz"),
           user(5, "goodbye"),
@@ -109,7 +109,7 @@ defmodule Nest.LLM.CrossProviderReplayTest do
       assert tool_msg["role"] == "assistant"
       [tool_call] = tool_msg["tool_calls"]
       assert tool_call["id"] == "toolu_abc123"
-      assert tool_call["function"]["name"] == "shell_cmd"
+      assert tool_call["function"]["name"] == "shell-cmd"
 
       tool_result_msg = Enum.at(payload["messages"], 3)
       assert tool_result_msg["role"] == "tool"
@@ -144,7 +144,7 @@ defmodule Nest.LLM.CrossProviderReplayTest do
         messages: [
           sys(0, "be brief"),
           user(1, "hi"),
-          assistant_with_tool_call(2, "call_abc123", "shell_cmd", %{"cmd" => "ls"}),
+          assistant_with_tool_call(2, "call_abc123", "shell-cmd", %{"cmd" => "ls"}),
           tool_result(3, "call_abc123", "file1\nfile2"),
           assistant_with_thinking(4, "done", "sig_xyz"),
           user(5, "goodbye"),
@@ -201,7 +201,7 @@ defmodule Nest.LLM.CrossProviderReplayTest do
         messages: [
           sys(0, "x"),
           user(1, "hi"),
-          assistant_with_tool_call(2, "call_AAA", "shell_cmd", %{}),
+          assistant_with_tool_call(2, "call_AAA", "shell-cmd", %{}),
           tool_result(3, "call_BBB", "wrong id")
         ]
       }
@@ -227,11 +227,11 @@ defmodule Nest.LLM.CrossProviderReplayTest do
         messages: [
           sys(0, "you are a helpful assistant"),
           user(1, "first message"),
-          assistant_with_tool_call(2, "id_1", "shell_cmd", %{"command" => "ls"}),
+          assistant_with_tool_call(2, "id_1", "shell-cmd", %{"command" => "ls"}),
           tool_result(3, "id_1", "f1\nf2"),
           assistant_text(4, "here are the files"),
           user(5, "ok thanks"),
-          assistant_with_tool_call(6, "id_2", "read_file", %{"path" => "/etc/hostname"}),
+          assistant_with_tool_call(6, "id_2", "file-read", %{"path" => "/etc/hostname"}),
           tool_result(7, "id_2", "my-host\n"),
           assistant_text(8, "done")
         ],

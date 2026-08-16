@@ -24,12 +24,12 @@ defmodule Nest.ToolsDefensiveDispatchTest do
   alias Nest.Tools
 
   test "write_file returns a structured error when called with no arguments" do
-    tool = Tools.get_function("write_file", "/tmp")
+    tool = Tools.get_function("file-write", "/tmp")
 
     assert {:error, msg} =
              LLMTools.execute_one(
                [tool],
-               %ToolCall{id: "c1", name: "write_file", arguments: %{}},
+               %ToolCall{id: "c1", name: "file-write", arguments: %{}},
                %{caps: %{"fs" => %{"write" => ["/tmp"]}}}
              )
 
@@ -39,14 +39,14 @@ defmodule Nest.ToolsDefensiveDispatchTest do
   end
 
   test "write_file returns a structured error when only some required args are present" do
-    tool = Tools.get_function("write_file", "/tmp")
+    tool = Tools.get_function("file-write", "/tmp")
 
     assert {:error, msg} =
              LLMTools.execute_one(
                [tool],
                %ToolCall{
                  id: "c1",
-                 name: "write_file",
+                 name: "file-write",
                  arguments: %{"path" => "/tmp/foo"}
                },
                %{caps: %{"fs" => %{"write" => ["/tmp"]}}}
@@ -57,12 +57,12 @@ defmodule Nest.ToolsDefensiveDispatchTest do
   end
 
   test "read_file returns a structured error when called with no arguments" do
-    tool = Tools.get_function("read_file", "/tmp")
+    tool = Tools.get_function("file-read", "/tmp")
 
     assert {:error, msg} =
              LLMTools.execute_one(
                [tool],
-               %ToolCall{id: "c1", name: "read_file", arguments: %{}},
+               %ToolCall{id: "c1", name: "file-read", arguments: %{}},
                %{caps: %{"fs" => %{"read" => ["/"]}}}
              )
 
@@ -71,12 +71,12 @@ defmodule Nest.ToolsDefensiveDispatchTest do
   end
 
   test "shell_cmd returns a structured error when called with no arguments" do
-    tool = Tools.get_function("shell_cmd", "/tmp")
+    tool = Tools.get_function("shell-cmd", "/tmp")
 
     assert {:error, msg} =
              LLMTools.execute_one(
                [tool],
-               %ToolCall{id: "c1", name: "shell_cmd", arguments: %{}},
+               %ToolCall{id: "c1", name: "shell-cmd", arguments: %{}},
                %{caps: %{}}
              )
 

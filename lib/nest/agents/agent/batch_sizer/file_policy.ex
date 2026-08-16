@@ -1,11 +1,11 @@
 defmodule Nest.Agents.Agent.BatchSizer.FilePolicy do
   @moduledoc """
-  Read-before-write policy check for the `write_file` tool.
+  Read-before-write policy check for the `file-write` tool.
 
   ## Why this lives here
 
-  LLM tool outputs sometimes include `write_file` calls without
-  a preceding `read_file` of the target path. The downstream
+  LLM tool outputs sometimes include `file-write` calls without
+  a preceding `file-read` of the target path. The downstream
   effect — a silent overwrite of the user's file — is
   surprising; agents that read the file before writing report
   the contents as part of the LLM context, and the policy
@@ -16,13 +16,13 @@ defmodule Nest.Agents.Agent.BatchSizer.FilePolicy do
   agent retries the read or gets a clear "file changed"
   signal:
 
-    * `:never_read`        — no `read_file` result has populated
+    * `:never_read`        — no `file-read` result has populated
       `state.chat_state.read_files[path]` (or the path was
       cleared by a post-compaction reset). User-facing
       message: `"You must read that file before overwriting it."`.
 
-    * `:contents_changed`   — a `read_file` (or successful
-      `write_file`) recorded the file's `{mtime, size}` at
+    * `:contents_changed`   — a `file-read` (or successful
+      `file-write`) recorded the file's `{mtime, size}` at
       access time, but a subsequent on-disk `File.stat/1`
       returns a different pair. User-facing message:
       `"File contents have changed, re-read that file before
@@ -57,7 +57,7 @@ defmodule Nest.Agents.Agent.BatchSizer.FilePolicy do
   @contents_changed_msg "File contents have changed, re-read that file before writing it."
 
   @doc """
-  Pre-call hook for `write_file`. Returns one of:
+  Pre-call hook for `file-write`. Returns one of:
 
     * `:ok` — the call may proceed.
     * `{:error, :never_read}` — caller translates to
@@ -66,13 +66,13 @@ defmodule Nest.Agents.Agent.BatchSizer.FilePolicy do
       `"File contents have changed, re-read that file before
       writing it."`.
 
-  Non-`write_file` calls (or calls with no `path`) pass
+  Non-`file-write` calls (or calls with no `path`) pass
   through as `:ok`. Workers that have no `agent_pid` in
   their `ctx` (defensive — shouldn't happen in production)
   also pass through.
   """
   @spec check(ToolCall.t(), map()) :: :ok | {:error, :never_read | :contents_changed}
-  def check(%ToolCall{name: "write_file"} = tc, ctx) do
+  def check(%ToolCall{name: "file-write"} = tc, ctx) do
     path = path_of(tc)
     do_check(ctx, path)
   end

@@ -30,17 +30,17 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
   # these across the batch plus the current message-list size
   # plus the LLM response budget, and refuses the batch if
   # the total exceeds `context_limit`.
-  def project(%ToolCall{name: "read_file"} = tc, _ctx), do: read_file_projection(tc)
-  def project(%ToolCall{name: "shell_cmd"}, _ctx), do: summary_baseline_size() * @safety_padding
+  def project(%ToolCall{name: "file-read"} = tc, _ctx), do: read_file_projection(tc)
+  def project(%ToolCall{name: "shell-cmd"}, _ctx), do: summary_baseline_size() * @safety_padding
 
-  def project(%ToolCall{name: "write_file"}, _ctx),
+  def project(%ToolCall{name: "file-write"}, _ctx),
     do: estimator_overhead("Successfully wrote N bytes to path.txt")
 
-  def project(%ToolCall{name: "edit"}, _ctx),
+  def project(%ToolCall{name: "file-edit"}, _ctx),
     do: estimator_overhead("Replaced N occurrence(s) in path.txt")
 
-  def project(%ToolCall{name: "inspect_file"}, _ctx) do
-    # inspect_file's largest historical output (~256 tokens of
+  def project(%ToolCall{name: "file-inspect"}, _ctx) do
+    # file-inspect's largest historical output (~256 tokens of
     # stats); metric scale-up by repeating the format's longest line.
     estimator_overhead(
       "File: path/to/file.txt\n" <>
@@ -54,8 +54,11 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
     )
   end
 
-  def project(%ToolCall{name: "context"}, _ctx),
-    do: estimator_overhead("Context: N messages, ~X / Y tokens (Z%)")
+  def project(%ToolCall{name: "context-check"}, _ctx),
+    do:
+      estimator_overhead(
+        "Context: N messages, ~X / Y tokens used (Z%). Usable remaining: ~R tokens."
+      )
 
   # Catch-all for tools the LLM hallucinates or spells
   # incorrectly. These calls never reach execution; they return

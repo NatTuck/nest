@@ -23,7 +23,7 @@ describe("ToolResults", () => {
     const toolResults = [
       {
         tool_call_id: "1",
-        name: "shell_cmd",
+        name: "shell-cmd",
         content: "total 4\ndrwxrwxr-x 1 user user 18 May 29 10:49 .",
         is_error: false,
       },
@@ -31,14 +31,14 @@ describe("ToolResults", () => {
 
     render(<ToolResults toolResults={toolResults} />);
 
-    expect(screen.getByText(/Success: shell_cmd/)).toBeInTheDocument();
+    expect(screen.getByText(/Success: shell-cmd/)).toBeInTheDocument();
   });
 
   it("renders 'Error: <name>' for error results", () => {
     const toolResults = [
       {
         tool_call_id: "1",
-        name: "shell_cmd",
+        name: "shell-cmd",
         content: "command not found",
         is_error: true,
       },
@@ -46,14 +46,14 @@ describe("ToolResults", () => {
 
     render(<ToolResults toolResults={toolResults} />);
 
-    expect(screen.getByText(/Error: shell_cmd/)).toBeInTheDocument();
+    expect(screen.getByText(/Error: shell-cmd/)).toBeInTheDocument();
   });
 
   it("renders the content body for each result", () => {
     const toolResults = [
       {
         tool_call_id: "1",
-        name: "shell_cmd",
+        name: "shell-cmd",
         content: "total 4",
         is_error: false,
       },
@@ -68,7 +68,7 @@ describe("ToolResults", () => {
     const toolResults = [
       {
         tool_call_id: "1",
-        name: "shell_cmd",
+        name: "shell-cmd",
         arguments: { command: "ls" },
         content: "x",
         is_error: false,
@@ -85,7 +85,7 @@ describe("ToolResults", () => {
     const toolResults = [
       {
         tool_call_id: "1",
-        name: "shell_cmd",
+        name: "shell-cmd",
         content: "",
         is_error: false,
       },
@@ -94,7 +94,7 @@ describe("ToolResults", () => {
     const { container } = render(<ToolResults toolResults={toolResults} />);
 
     // The tool name is rendered, but the empty content is not.
-    expect(screen.getByText(/Success: shell_cmd/)).toBeInTheDocument();
+    expect(screen.getByText(/Success: shell-cmd/)).toBeInTheDocument();
     expect(container.querySelector("pre")).toBeNull();
   });
 });

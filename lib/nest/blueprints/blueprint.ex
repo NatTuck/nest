@@ -20,10 +20,10 @@ defmodule Nest.Blueprints.Blueprint do
   * `root_vocation_id` — the root agent's vocation when a
     space is created from this blueprint. Always set.
   * `spawnable_vocation_ids` — whitelist of vocation ids the
-    space's agents are allowed to spawn via the `agents/spawn`
+    space's agents are allowed to spawn via the `agents-spawn`
     tool. `[]` (or `nil`) means **unrestricted** — any
     vocation may be spawned. A non-empty list is a strict
-    whitelist; `agents/spawn` rejects vocations outside it.
+    whitelist; `agents-spawn` rejects vocations outside it.
     A space without a blueprint (or with a missing blueprint)
     is also unrestricted.
   * `workspace_template` — map of initial workspace files.
@@ -122,7 +122,7 @@ defmodule Nest.Blueprints.Blueprint do
     |> String.trim("-")
   end
 
-  # Phase 3 (`agents/spawn`) will check `spawnable_vocation_ids`
+  # Phase 3 (`agents-spawn`) will check `spawnable_vocation_ids`
   # as a whitelist. For Phase 2 the column exists but is
   # unused; this validator just guards the shape (no dupes,
   # all entries integers) so seed data can't ship a malformed

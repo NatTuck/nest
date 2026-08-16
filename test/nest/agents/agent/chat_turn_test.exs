@@ -96,7 +96,7 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
       MockClient.set_tool_response(%{
         text: "Calling a tool",
         tool_calls: [
-          %{id: "call_1", name: "shell_cmd", arguments: %{"command" => "echo hi"}}
+          %{id: "call_1", name: "shell-cmd", arguments: %{"command" => "echo hi"}}
         ]
       })
 
@@ -135,7 +135,7 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
         MockClient.set_tool_response(%{
           text: "loop #{i}",
           tool_calls: [
-            %{id: "call_#{i}", name: "shell_cmd", arguments: %{"command" => "echo loop"}}
+            %{id: "call_#{i}", name: "shell-cmd", arguments: %{"command" => "echo loop"}}
           ]
         })
       end
@@ -214,7 +214,7 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
         MockClient.set_tool_response(%{
           text: "tool call #{i}",
           tool_calls: [
-            %{id: "call_#{i}", name: "shell_cmd", arguments: %{"command" => "echo loop"}}
+            %{id: "call_#{i}", name: "shell-cmd", arguments: %{"command" => "echo loop"}}
           ]
         })
       end

@@ -297,7 +297,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
   # either execute them or signal `:needs_compaction` if the
   # compactor's output is still too big.
   #
-  # `context.compact` is filtered out because it doesn't go through
+  # `context-compact` is filtered out because it doesn't go through
   # BatchSizer — ToolLoop handles it via the GenServer round-trip.
   defp execute_pending_tool_calls(state, messages) do
     [{:assistant, %{parts: parts}} | _] = Enum.reverse(messages)

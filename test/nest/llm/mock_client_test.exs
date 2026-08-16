@@ -73,8 +73,8 @@ defmodule Nest.LLM.MockClientTest do
       MockClient.set_tool_response(%{
         text: "let me run that",
         tool_calls: [
-          %{id: "call_1", name: "shell_cmd", arguments: %{"command" => "ls"}},
-          %{id: "call_2", name: "read_file", arguments: %{"path" => "README.md"}}
+          %{id: "call_1", name: "shell-cmd", arguments: %{"command" => "ls"}},
+          %{id: "call_2", name: "file-read", arguments: %{"path" => "README.md"}}
         ]
       })
 
@@ -83,11 +83,11 @@ defmodule Nest.LLM.MockClientTest do
 
       assert {:text, "let me run that"} = Enum.at(events, 0)
 
-      assert {:tool_call_start, %{id: "call_1", name: "shell_cmd"}} = Enum.at(events, 1)
+      assert {:tool_call_start, %{id: "call_1", name: "shell-cmd"}} = Enum.at(events, 1)
       assert {:tool_call_delta, %{id: "call_1", arguments_delta: delta1}} = Enum.at(events, 2)
       assert Jason.decode!(delta1) == %{"command" => "ls"}
 
-      assert {:tool_call_start, %{id: "call_2", name: "read_file"}} = Enum.at(events, 3)
+      assert {:tool_call_start, %{id: "call_2", name: "file-read"}} = Enum.at(events, 3)
       assert {:tool_call_delta, %{id: "call_2", arguments_delta: delta2}} = Enum.at(events, 4)
       assert Jason.decode!(delta2) == %{"path" => "README.md"}
 
@@ -98,14 +98,14 @@ defmodule Nest.LLM.MockClientTest do
       assert length(response.tool_calls) == 2
       assert response.stop_reason == "tool_calls"
       [first_call, second_call] = response.tool_calls
-      assert first_call.id == "call_1" and first_call.name == "shell_cmd"
-      assert second_call.id == "call_2" and second_call.name == "read_file"
+      assert first_call.id == "call_1" and first_call.name == "shell-cmd"
+      assert second_call.id == "call_2" and second_call.name == "file-read"
     end
 
     test "accepts arguments passed as nil and renders an empty JSON object" do
       MockClient.set_tool_response(%{
         text: "calling",
-        tool_calls: [%{id: "c1", name: "shell_cmd", arguments: nil}]
+        tool_calls: [%{id: "c1", name: "shell-cmd", arguments: nil}]
       })
 
       {:ok, stream} = MockClient.run(%RunRequest{})
@@ -206,7 +206,7 @@ defmodule Nest.LLM.MockClientTest do
 
     test "includes tools as the OpenAI function-tool shape when tools are present" do
       tool = %Tool{
-        name: "shell_cmd",
+        name: "shell-cmd",
         description: "run a shell command",
         parameters_schema: %{
           type: "object",
@@ -222,7 +222,7 @@ defmodule Nest.LLM.MockClientTest do
                %{
                  "type" => "function",
                  "function" => %{
-                   "name" => "shell_cmd",
+                   "name" => "shell-cmd",
                    "description" => "run a shell command",
                    "parameters" => %{
                      type: "object",

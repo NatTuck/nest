@@ -46,6 +46,7 @@ defmodule Nest.Agents.Agent.MessageAppender do
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Persistence, as: AgentPersistence
+  alias Nest.Tokens.PreFlight
 
   @doc """
   `handle_call/3` for the single-message case. Resets the
@@ -110,9 +111,18 @@ defmodule Nest.Agents.Agent.MessageAppender do
   Index comes from `state.chat_state.next_message_index`;
   after stamping, the index is bumped and the message is
   broadcast + persisted. Returns `{stamped_message, new_state}`.
+
+  Choke point: no message is stored from a conversation that
+  has not passed the pre-flight decision. `PreFlight.ensure_passed!/2`
+  raises if `state.chat_state.messages` is `:cannot_compact`, so a
+  message is never appended into an unrecoverable conversation.
+  `state.llm_metrics.context_limit` is resolved eagerly at agent
+  init (never nil); the guard clause below enforces that too.
   """
   @spec append_one(Agent.t(), {atom(), map()}) :: {term(), Agent.t()}
-  def append_one(state, message) do
+  def append_one(%{llm_metrics: %{context_limit: limit}} = state, message)
+      when is_integer(limit) and limit > 0 do
+    PreFlight.ensure_passed!(state.chat_state.messages, limit)
     index = state.chat_state.next_message_index
     stamped = put_message_index(message, index)
 
@@ -157,7 +167,9 @@ defmodule Nest.Agents.Agent.MessageAppender do
   Returns `{stamped_message, new_state}`.
   """
   @spec append_history_one(Agent.t(), {atom(), map()}) :: {term(), Agent.t()}
-  def append_history_one(state, message) do
+  def append_history_one(%{llm_metrics: %{context_limit: limit}} = state, message)
+      when is_integer(limit) and limit > 0 do
+    PreFlight.ensure_passed!(state.chat_state.messages, limit)
     index = state.chat_state.next_message_index
     stamped = put_message_index(message, index)
 

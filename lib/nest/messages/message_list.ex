@@ -33,11 +33,11 @@ defmodule Nest.Messages.MessageList do
 
   @doc """
   If the trailing message is an assistant carrying an
-  `agents/spawn` `Part.ToolUse`, drop it and return the
+  `agents-spawn` `Part.ToolUse`, drop it and return the
   spawn's `query` text. Otherwise return `{messages, nil}`.
 
   Used by the subagent spawn (clone-context) path so a
-  synthetic fork can replace the stripped real `agents/spawn`
+  synthetic fork can replace the stripped real `agents-spawn`
   with properly-paired messages that maintain wire alternation.
   """
   @spec extract_clone_instruction([term()]) :: {[term()], String.t() | nil}
@@ -46,7 +46,7 @@ defmodule Nest.Messages.MessageList do
       {:assistant, %Assistant{parts: parts}} ->
         clone =
           Enum.find(parts, fn
-            %Part.ToolUse{name: "agents/spawn"} -> true
+            %Part.ToolUse{name: "agents-spawn"} -> true
             _ -> false
           end)
 
@@ -62,11 +62,11 @@ defmodule Nest.Messages.MessageList do
   end
 
   @doc """
-  Append a synthetic `agents/spawn` fork to the message list
+  Append a synthetic `agents-spawn` fork to the message list
   so the subagent sees a coherent origin story with proper
   wire alternation:
 
-    * assistant with an `agents/spawn` `Part.ToolUse` (empty arguments)
+    * assistant with an `agents-spawn` `Part.ToolUse` (empty arguments)
     * tool with a `Part.ToolResult` pairing the synthetic id
     * assistant acknowledging the fork
 
@@ -86,7 +86,7 @@ defmodule Nest.Messages.MessageList do
       {:assistant,
        %Assistant{
          index: next_index,
-         parts: [%Part.ToolUse{id: clone_id, name: "agents/spawn", arguments: %{}}],
+         parts: [%Part.ToolUse{id: clone_id, name: "agents-spawn", arguments: %{}}],
          timestamp: DateTime.utc_now(),
          api_logs: []
        }}
@@ -98,7 +98,7 @@ defmodule Nest.Messages.MessageList do
          parts: [
            %Part.ToolResult{
              tool_call_id: clone_id,
-             name: "agents/spawn",
+             name: "agents-spawn",
              content:
                "Subagent spawned successfully. You are now the delegated clone, " <>
                  "named \"#{child_name}\", at depth #{depth}.",

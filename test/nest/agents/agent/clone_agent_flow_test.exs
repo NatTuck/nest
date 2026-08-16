@@ -2,22 +2,22 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
   @moduledoc """
   E2E test that drives the parent's full chat turn through
   `MockClient.run/2` (which is exactly the surface the
-  preflight gates) and confirms the agents/spawn flow
-  produces a properly paired `assistant[agents/spawn] →
+  preflight gates) and confirms the agents-spawn flow
+  produces a properly paired `assistant[agents-spawn] →
   tool[clone_result]` in the parent's messages list.
 
   ## Pipeline under test
 
     1. Parent Agent A starts under the Supervisor with
        `MockClient` (via the per-test `AgentTestHelpers`
-       swap). A's vocation includes the `agents/spawn`
+       swap). A's vocation includes the `agents-spawn`
        tool.
     2. A's MockClient FIFO has (a) `set_tool_response`
-       carrying `agents/spawn(query="compute 2+2", clone_context: true)`,
+       carrying `agents-spawn(query="compute 2+2", clone_context: true)`,
        then (b) `set_response("parent final")`.
     3. `Agent.chat(A, "delegate a thing")` fires the
        chain. A's first MockClient run consumes (a);
-       `ToolLoop.run_agents/spawn/2` calls A's
+       `ToolLoop.run_agents-spawn/2` calls A's
        `:spawn_agent_request` handler.
     4. A's handler spawns Agent B via
        `Supervisor.start_agent_with_parent/2`. The child
@@ -43,7 +43,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
 
     * `Nest.Agents.chat/2` — short-circuit the child's
       chat cycle. The child's `preloaded_messages` carry
-      the parent's `assistant[agents/spawn]` tool_use but
+      the parent's `assistant[agents-spawn]` tool_use but
       no paired tool_result; driving the child's LLM
       cycle would trip our preflight's
       `:unclosed_tool_responses` check. That's a separate
@@ -59,7 +59,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
 
     * 5 message indices in `[0, 1, 2, 3, 4]`.
     * Index 2 is the assistant `tool_use` for
-      `agents/spawn(id="call_clone_1")`.
+      `agents-spawn(id="call_clone_1")`.
     * Index 3 is the `Part.ToolResult` carrying the
       child's text with `tool_call_id: "call_clone_1"` —
       i.e. the result of the call from step 4's
@@ -88,7 +88,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
     {:ok, vid: upsert_spawn_vocation()}
   end
 
-  test "agents/spawn: parent's tool call spawns child, child's response via MockClient comes back as parent's tool result",
+  test "agents-spawn: parent's tool call spawns child, child's response via MockClient comes back as parent's tool result",
        %{vid: vid} do
     {parent_pid, parent_name} =
       AgentTestHelpers.start_agent(%{
@@ -108,7 +108,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
       tool_calls: [
         %{
           id: "call_clone_1",
-          name: "agents/spawn",
+          name: "agents-spawn",
           arguments: %{"query" => "compute 2+2", "clone_context" => true}
         }
       ]
@@ -139,7 +139,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
 
     cast_child_completed_to_parent(parent_name, child_name, "the answer is 4")
 
-    # Full chain: parent-turn-1 (agents/spawn dispatch) +
+    # Full chain: parent-turn-1 (agents-spawn dispatch) +
     # synthesized child completion + parent-turn-2
     # (final text). The context-notice synthetic pair
     # (assistant("Context?") + user(notice)) may add 2
@@ -151,13 +151,13 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
     parent_state = :sys.get_state(parent_pid)
     AgentTestHelpers.assert_unique_message_indices(parent_state)
 
-    # Find the assistant message that carries the agents/spawn
+    # Find the assistant message that carries the agents-spawn
     # tool call (the wire pairing test below depends on this).
     {:assistant, clone_assistant} =
       Enum.find(parent_state.chat_state.messages, fn
         {:assistant, %{parts: parts}} ->
           Enum.any?(parts, fn
-            %Part.ToolUse{name: "agents/spawn"} -> true
+            %Part.ToolUse{name: "agents-spawn"} -> true
             _ -> false
           end)
 
@@ -170,19 +170,19 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
           match?(%Part.ToolUse{}, part),
           do: part
 
-    assert [%Part.ToolUse{id: "call_clone_1", name: "agents/spawn"}] = tool_uses
+    assert [%Part.ToolUse{id: "call_clone_1", name: "agents-spawn"}] = tool_uses
 
-    # Find the tool message with the agents/spawn result.
+    # Find the tool message with the agents-spawn result.
     {:tool, tool_msg} =
       Enum.find(parent_state.chat_state.messages, fn
-        {:tool, %{parts: [%Part.ToolResult{name: "agents/spawn"}]}} -> true
+        {:tool, %{parts: [%Part.ToolResult{name: "agents-spawn"}]}} -> true
         _ -> false
       end)
 
     assert [
              %Part.ToolResult{
                tool_call_id: "call_clone_1",
-               name: "agents/spawn",
+               name: "agents-spawn",
                content: content,
                arguments: %{"query" => "compute 2+2", "clone_context" => true},
                is_error: false
@@ -253,7 +253,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
   # The spawned child's first LLM call would normally land on
   # MockClient too (via `:force_subagent_mock`), but the
   # child's `preloaded_messages` include the parent's
-  # `assistant[agents/spawn]` tool_use with no paired
+  # `assistant[agents-spawn]` tool_use with no paired
   # tool_result — the preflight we just added correctly
   # rejects this as `:unclosed_tool_responses`. Driving the
   # child's actual chat cycle would trigger that preflight
@@ -272,9 +272,9 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
     {:ok, %Vocations.Vocation{id: vid}} =
       Vocations.upsert_vocation(%{
         name: "CloneAgentFlow #{System.unique_integer([:positive])}",
-        description: "End-to-end agents/spawn test",
+        description: "End-to-end agents-spawn test",
         system_prompt: "Delegate work to a subagent when asked.",
-        tools: ["agents/spawn"],
+        tools: ["agents-spawn"],
         modes: %{
           "chat" => %{
             "description" => "Chat",

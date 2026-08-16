@@ -13,14 +13,14 @@ defmodule Nest.LLM.PreflightTest do
 
   defp assistant_tool_use(id),
     do:
-      {:assistant, %Assistant{parts: [%Part.ToolUse{id: id, name: "shell_cmd", arguments: %{}}]}}
+      {:assistant, %Assistant{parts: [%Part.ToolUse{id: id, name: "shell-cmd", arguments: %{}}]}}
 
   defp assistant_tool_uses(ids),
     do:
       {:assistant,
        %Assistant{
          parts:
-           Enum.map(ids, fn id -> %Part.ToolUse{id: id, name: "shell_cmd", arguments: %{}} end)
+           Enum.map(ids, fn id -> %Part.ToolUse{id: id, name: "shell-cmd", arguments: %{}} end)
        }}
 
   defp user_text(text), do: {:user, %User{parts: [%Part.Text{text: text}]}}
@@ -34,7 +34,7 @@ defmodule Nest.LLM.PreflightTest do
          parts: [
            %Part.ToolResult{
              tool_call_id: id,
-             name: "shell_cmd",
+             name: "shell-cmd",
              content: content,
              is_error: false
            }
@@ -44,7 +44,7 @@ defmodule Nest.LLM.PreflightTest do
   defp tool_results(ids) do
     parts =
       Enum.map(ids, fn id ->
-        %Part.ToolResult{tool_call_id: id, name: "shell_cmd", content: "ok"}
+        %Part.ToolResult{tool_call_id: id, name: "shell-cmd", content: "ok"}
       end)
 
     {:tool, %Tool{parts: parts}}

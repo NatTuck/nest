@@ -1,11 +1,11 @@
 defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler.FileAccess do
   @moduledoc """
-  `read_file` / `write_file` cache maintenance for the agent.
+  `file-read` / `file-write` cache maintenance for the agent.
 
   The `read_files` cache (`state.chat_state.read_files`) is the
-  source of truth for the `write_file` "must read first" /
+  source of truth for the `file-write` "must read first" /
   "contents changed" policy. The agent's `LLMStreamHandler`
-  populates it on every `read_file` and `write_file` tool
+  populates it on every `file-read` and `file-write` tool
   result (the path the agent just took). This module holds the
   read-tracking walker so the parent `LLMStreamHandler` stays
   under credo's 500-line cap.
@@ -30,7 +30,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler.FileAccess do
 
   @doc """
   Walk a just-appended tool-result message. For every
-  `read_file` / `write_file` part that succeeded, stat the
+  `file-read` / `file-write` part that succeeded, stat the
   on-disk file and write `path => %{mtime, size}` to
   `state.chat_state.read_files`. The `is_error` flag and the
   empty-string case both skip silently — a failed read/write
@@ -38,21 +38,21 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler.FileAccess do
 
   ## All-or-nothing overwrites
 
-  `Map.put/3` is unconditional: a successful `write_file`
+  `Map.put/3` is unconditional: a successful `file-write`
   ALWAYS overwrites the cache entry for the same path,
   regardless of what was there before. This is the user-facing
-  guarantee that two consecutive `write_file`s from the same
+  guarantee that two consecutive `file-write`s from the same
   agent never trigger a false-positive "contents changed"
   (the second write sees the post-first-write stat, not the
-  post-read stat). Likewise a successful `read_file` after a
-  successful `write_file` overwrites with the latest state.
+  post-read stat). Likewise a successful `file-read` after a
+  successful `file-write` overwrites with the latest state.
 
   ## All-or-nothing reads
 
-  `read_file` is itself all-or-nothing at the tool-closure
+  `file-read` is itself all-or-nothing at the tool-closure
   level (it either returns the full content or an error —
   there's no partial-read silent path), so a single
-  successful `read_file` either populates the cache
+  successful `file-read` either populates the cache
   completely (full file) or doesn't populate at all (failure).
   This module does NOT record for the "read truncated
   because of `max_result_tokens`" case because the BatchSizer
@@ -60,7 +60,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler.FileAccess do
   not a partial content body.
 
   `BatchSizer.FilePolicy` (the gate that runs before every
-  `write_file` tool call) consults the same cache key to
+  `file-write` tool call) consults the same cache key to
   decide whether to refuse the call, so the cache key shape
   here must match the lookup shape there.
   """
@@ -85,7 +85,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler.FileAccess do
          %Part.ToolResult{name: name, is_error: false, arguments: args},
          workspace_path
        )
-       when name in ["read_file", "write_file"] and is_map(args) do
+       when name in ["file-read", "file-write"] and is_map(args) do
     raw_path = args["path"]
 
     with true <- is_binary(raw_path) and raw_path != "",

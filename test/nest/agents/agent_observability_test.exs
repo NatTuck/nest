@@ -65,7 +65,7 @@ defmodule Nest.Agents.AgentObservabilityTest do
       MockClient.set_tool_response(%{
         text: "I'll execute that command",
         tool_calls: [
-          %{id: "call_001", name: "shell_cmd", arguments: %{"command" => "echo test"}}
+          %{id: "call_001", name: "shell-cmd", arguments: %{"command" => "echo test"}}
         ]
       })
 
@@ -117,7 +117,7 @@ defmodule Nest.Agents.AgentObservabilityTest do
       MockClient.set_tool_response(%{
         text: "I'll help",
         tool_calls: [
-          %{id: "call_001", name: "shell_cmd", arguments: %{"command" => "ls"}}
+          %{id: "call_001", name: "shell-cmd", arguments: %{"command" => "ls"}}
         ]
       })
 
@@ -315,7 +315,7 @@ defmodule Nest.Agents.AgentObservabilityTest do
     test "accumulates usage across tool iterations" do
       MockClient.set_stream_events([
         {:text, "Calling tool"},
-        {:tool_call_start, %{id: "call_1", name: "shell_cmd"}},
+        {:tool_call_start, %{id: "call_1", name: "shell-cmd"}},
         {:tool_call_delta, %{id: "call_1", arguments_delta: "{}"}},
         {:usage, %{input_tokens: 1001, output_tokens: 101, total_tokens: 1102}},
         {:finish_reason, "tool_calls"},
@@ -323,7 +323,7 @@ defmodule Nest.Agents.AgentObservabilityTest do
          %{
            response: %RunResponse{
              text: "Calling tool",
-             tool_calls: [%ToolCall{id: "call_1", name: "shell_cmd", arguments: %{}}],
+             tool_calls: [%ToolCall{id: "call_1", name: "shell-cmd", arguments: %{}}],
              stop_reason: "tool_calls"
            }
          }}

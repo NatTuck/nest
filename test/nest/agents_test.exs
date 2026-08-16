@@ -94,6 +94,53 @@ defmodule Nest.AgentsTest do
 
       assert log =~ "could not resolve model"
     end
+
+    test "persists a system message row at index 0 (hd(messages) invariant)" do
+      # Regression: `Agents.create_agent/3` passed only `vocation_id`
+      # to `pre_spawn`, so the initial system message was never
+      # written to the DB — the first row was a user message and the
+      # "hd(messages) is always a system message" invariant was broken
+      # (see `jolly-manatee-root`). The vocation must be loaded and
+      # rendered so the system row is persisted with the real prompt.
+      space_id = AgentTestHelpers.current_space_id()
+      name = fresh_name()
+
+      assert {:ok, ^name} =
+               Agents.create_agent(space_id, %{name: "qwen3.5-plus", provider: "model-studio"},
+                 name: name,
+                 vocation_id: AgentTestHelpers.vocation_id_for_test()
+               )
+
+      AgentTestHelpers.ensure_cleanup(name)
+
+      [system | _] = Nest.Persistence.load_messages(space_id, name)
+
+      assert {:system, system_msg} = system
+      assert system_msg.index == 0
+
+      prompt = Enum.map_join(system_msg.parts, "", & &1.text)
+
+      assert prompt =~ "You are a helpful test assistant."
+    end
+
+    test "refuses to create an agent when no non-empty system prompt can be rendered" do
+      # An agent without a system message must never be created (the
+      # "hd(messages) is a system message" invariant). When the
+      # vocation can't be resolved, `pre_spawn` fails BEFORE inserting
+      # the agent row — so no orphan agent row is left behind.
+      space_id = AgentTestHelpers.current_space_id()
+      name = fresh_name()
+
+      # `:vocation_id` is omitted → no vocation struct → `compose_vocation_config/5`
+      # returns `nil` → creation is refused.
+      assert {:error, :missing_system_prompt} =
+               Agents.create_agent(space_id, %{name: "qwen3.5-plus", provider: "model-studio"},
+                 name: name
+               )
+
+      # No agent row was created (pre_spawn validated before inserting).
+      assert Nest.Persistence.fetch_agent(space_id, name) == {:error, :not_found}
+    end
   end
 
   describe "get_info/1" do

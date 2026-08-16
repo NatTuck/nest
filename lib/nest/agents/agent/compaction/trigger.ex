@@ -16,7 +16,7 @@ defmodule Nest.Agents.Agent.Compaction.Trigger do
     * **Mid-turn (Trigger B/C)**: from
       `Nest.Agents.Agent.ChatTurn` when (a) projected tool
       results would push past `context_limit - reserve`
-      or (b) the LLM emitted `context.compact` as the sole
+      or (b) the LLM emitted `context-compact` as the sole
       tool call. The ChatTurn sends
       `{:needs_compaction, _, carried_entry}` to the
       Agent; this trigger spawns the compactor's chat

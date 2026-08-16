@@ -6,22 +6,22 @@ defmodule Nest.Agents.Agent.ToolLoop do
   Called by `Nest.Agents.Agent.ChatTurn` after a response
   with `tool_calls` is received. Responsibilities:
 
-    * Split the batch by tool — sub-agent tools (`agents/spawn`,
-      `agents/query`, `agents/list`, `agents/archive`) are routed
+    * Split the batch by tool — sub-agent tools (`agents-spawn`,
+      `agents-query`, `agents-list`, `agents-archive`) are routed
       through their `run_*` handlers (synchronous spawn/query/
-      archive through the agent GenServer; `agents/list` reads the
+      archive through the agent GenServer; `agents-list` reads the
       space inline); everything else is delegated to
       `Nest.Agents.Agent.BatchSizer`.
     * Merge the two halves back into input order.
 
-  `context.compact` is no longer routed through this module —
+  `context-compact` is no longer routed through this module —
   the chat turn's response handler detects it ahead of the
   tool worker and exits with a `{:compact_tool, _, _, _}`
   continuation. The blocked-tool-worker pattern (where the
   tool worker awaited the compactor on receive) is gone.
   `context_compact?/1` and `strip_context_compact/1` are
   retained for compatibility with `BatchSizer.preflight/2`,
-  which strips `context.compact` from its preflight input so
+  which strips `context-compact` from its preflight input so
   BatchSizer doesn't try to project a per-tool size for it.
   """
 
@@ -33,15 +33,15 @@ defmodule Nest.Agents.Agent.ToolLoop do
 
   require Logger
 
-  # Default cap for blocking sub-agent waits (`agents/spawn`
-  # with a `query`, and `agents/query`). Agent work can be
+  # Default cap for blocking sub-agent waits (`agents-spawn`
+  # with a `query`, and `agents-query`). Agent work can be
   # slow, so this is generous (5 minutes). Both tools accept a
   # `timeout` argument to override it. The 250ms slice keeps
   # the poll loop responsive to late-arriving broadcasts.
   @default_wait_ms 300_000
   @wait_slice_ms 250
 
-  # Cap for the `agents/list` tool result. A space with many
+  # Cap for the `agents-list` tool result. A space with many
   # agents could produce a huge serialized list; truncating
   # keeps the tool output within a reasonable context cost.
   @list_agents_max_chars 4_000
@@ -62,18 +62,17 @@ defmodule Nest.Agents.Agent.ToolLoop do
   end
 
   @doc """
-  Returns true if `tool_call` is a `context.compact` invocation.
+  Returns true if `tool_call` is a `context-compact` invocation.
   Exposed for `BatchSizer.preflight/2` callers that need to
-  strip `context.compact` from their preflight input.
+  strip `context-compact` from their preflight input.
   """
   @spec context_compact?(ToolCall.t()) :: boolean()
-  def context_compact?(%ToolCall{name: "context", arguments: %{"action" => "compact"}}),
-    do: true
+  def context_compact?(%ToolCall{name: "context-compact"}), do: true
 
   def context_compact?(_), do: false
 
   @doc """
-  Strip `context.compact` calls out of a tool-call list.
+  Strip `context-compact` calls out of a tool-call list.
   Returns every other call unchanged.
   """
   @spec strip_context_compact([ToolCall.t()]) :: [ToolCall.t()]
@@ -90,9 +89,9 @@ defmodule Nest.Agents.Agent.ToolLoop do
   # `tool_use` parts.
   #
   # Sub-agent tool families are split out of the regular batch:
-  # `agents/spawn` (synchronous spawn, optional query-wait +
-  # archive), `agents/query` (block on a peer), `agents/list`
-  # (inline read), and `agents/archive` (stop + mark archived).
+  # `agents-spawn` (synchronous spawn, optional query-wait +
+  # archive), `agents-query` (block on a peer), `agents-list`
+  # (inline read), and `agents-archive` (stop + mark archived).
   # Everything else is delegated to `BatchSizer`.
   defp run_batch(ctx, calls) do
     {sub_calls, regular_calls} = Enum.split_with(calls, &sub_agent_tool?/1)
@@ -112,19 +111,19 @@ defmodule Nest.Agents.Agent.ToolLoop do
   end
 
   defp sub_agent_tool?(%ToolCall{name: name})
-       when name in ["agents/spawn", "agents/query", "agents/list", "agents/archive"],
+       when name in ["agents-spawn", "agents-query", "agents-list", "agents-archive"],
        do: true
 
   defp sub_agent_tool?(_), do: false
 
-  defp run_sub_agent_tool(ctx, %ToolCall{name: "agents/spawn"} = tc), do: run_spawn_agent(ctx, tc)
-  defp run_sub_agent_tool(ctx, %ToolCall{name: "agents/query"} = tc), do: run_query_agent(ctx, tc)
-  defp run_sub_agent_tool(ctx, %ToolCall{name: "agents/list"} = tc), do: run_list_agents(ctx, tc)
+  defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-spawn"} = tc), do: run_spawn_agent(ctx, tc)
+  defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-query"} = tc), do: run_query_agent(ctx, tc)
+  defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-list"} = tc), do: run_list_agents(ctx, tc)
 
-  defp run_sub_agent_tool(ctx, %ToolCall{name: "agents/archive"} = tc),
+  defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-archive"} = tc),
     do: run_archive_agent(ctx, tc)
 
-  # `agents/spawn`: the general sub-agent spawn API. Unifies the
+  # `agents-spawn`: the general sub-agent spawn API. Unifies the
   # old `clone_agent` (via `clone_context`) and `spawn_agent`.
   # Ask the coordinator GenServer to spawn a child (fresh or
   # context-cloned), optionally send it a `query` and block for
@@ -139,7 +138,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
     case GenServer.call(parent_via_tuple, {:spawn_agent_request, self(), opts}, timeout) do
       {:ok, spawned_name} ->
         if query == "" do
-          build_tool_result(tc, "agents/spawn", "Spawned agent #{spawned_name}.")
+          build_tool_result(tc, "agents-spawn", "Spawned agent #{spawned_name}.")
         else
           await_spawn_result(tc, spawned_name, timeout)
         end
@@ -147,14 +146,14 @@ defmodule Nest.Agents.Agent.ToolLoop do
       {:error, reason} ->
         build_tool_result(
           tc,
-          "agents/spawn",
+          "agents-spawn",
           "Could not spawn agent: #{inspect(reason)}",
           true
         )
     end
   end
 
-  # Extract the `agents/spawn` args into an opts map, applying
+  # Extract the `agents-spawn` args into an opts map, applying
   # defaults. Kept separate so `run_spawn_agent/2` stays under
   # the credo ABC cap.
   defp spawn_opts_from_args(tc) do
@@ -174,24 +173,24 @@ defmodule Nest.Agents.Agent.ToolLoop do
   defp await_spawn_result(tc, spawned_name, timeout) do
     receive do
       {:spawn_agent_result, ^spawned_name, response} ->
-        build_tool_result(tc, "agents/spawn", response)
+        build_tool_result(tc, "agents-spawn", response)
 
       {:spawn_agent_error, ^spawned_name, reason} ->
         build_tool_result(
           tc,
-          "agents/spawn",
+          "agents-spawn",
           "Child agent #{spawned_name} failed: #{inspect(reason)}",
           true
         )
     after
       timeout ->
-        Logger.warning("agents/spawn: child #{spawned_name} did not complete within #{timeout}ms")
+        Logger.warning("agents-spawn: child #{spawned_name} did not complete within #{timeout}ms")
 
-        build_tool_result(tc, "agents/spawn", "Child agent did not complete in time.", true)
+        build_tool_result(tc, "agents-spawn", "Child agent did not complete in time.", true)
     end
   end
 
-  # `agents/list`: read the space's live agents and serialize
+  # `agents-list`: read the space's live agents and serialize
   # their name, vocation, status, and depth. Pure read — no
   # GenServer round-trip needed.
   defp run_list_agents(ctx, %ToolCall{} = tc) do
@@ -213,14 +212,14 @@ defmodule Nest.Agents.Agent.ToolLoop do
         listing |> inspect() |> String.slice(0, @list_agents_max_chars)
       end
 
-    build_tool_result(tc, "agents/list", content)
+    build_tool_result(tc, "agents-list", content)
   end
 
-  # `agents/query`: send a chat message to a PEER agent in this
+  # `agents-query`: send a chat message to a PEER agent in this
   # space and block until its turn goes idle, returning the
   # target's final assistant text as the tool result.
   #
-  # Unlike `agents/spawn` (a child the parent tracks in
+  # Unlike `agents-spawn` (a child the parent tracks in
   # `pending_children`), the queried agent is independent and
   # has no relationship to the caller, so there is no
   # `:child_completed` cast to wait on. Instead we subscribe to
@@ -263,22 +262,22 @@ defmodule Nest.Agents.Agent.ToolLoop do
   end
 
   defp build_query_result({:ok, content}, tc, _target),
-    do: build_tool_result(tc, "agents/query", content)
+    do: build_tool_result(tc, "agents-query", content)
 
   defp build_query_result({:error, {:chat, reason}}, tc, target),
     do:
-      build_tool_result(tc, "agents/query", "Could not query #{target}: #{inspect(reason)}", true)
+      build_tool_result(tc, "agents-query", "Could not query #{target}: #{inspect(reason)}", true)
 
   defp build_query_result({:error, {:not_found, reason}}, tc, target),
     do:
       build_tool_result(
         tc,
-        "agents/query",
+        "agents-query",
         "Agent #{target} not found in this space: #{inspect(reason)}",
         true
       )
 
-  # `agents/archive`: stop + mark an existing agent in this
+  # `agents-archive`: stop + mark an existing agent in this
   # space archived. Routes through the parent GenServer so the
   # stop/DB write happens in the same process context as other
   # lifecycle operations.
@@ -288,12 +287,12 @@ defmodule Nest.Agents.Agent.ToolLoop do
 
     case GenServer.call(parent_via_tuple, {:archive_agent_request, self(), target}) do
       {:ok, archived_name} ->
-        build_tool_result(tc, "agents/archive", "Archived agent #{archived_name}.")
+        build_tool_result(tc, "agents-archive", "Archived agent #{archived_name}.")
 
       {:error, reason} ->
         build_tool_result(
           tc,
-          "agents/archive",
+          "agents-archive",
           "Could not archive #{target}: #{inspect(reason)}",
           true
         )
@@ -306,7 +305,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
   end
 
   defp wait_for_idle(_space_id, _target, _pre_count, attempts, attempts, timeout) do
-    Logger.warning("agents/query: target did not go idle within #{timeout}ms")
+    Logger.warning("agents-query: target did not go idle within #{timeout}ms")
     ""
   end
 

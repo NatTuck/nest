@@ -5,7 +5,7 @@ defmodule Nest.Agents.Agent.SubAgent do
   Owns two concerns:
 
     * `handle_spawn_request/3` — a tool worker blocked on an
-      `agents/spawn` tool call asked this agent to spawn a
+      `agents-spawn` tool call asked this agent to spawn a
       child. We delegate to the supervisor (fresh or
       context-cloned), record `{child_name => task_pid}` in
       `state.chat_state.pending_children` when a `query` is
@@ -51,7 +51,7 @@ defmodule Nest.Agents.Agent.SubAgent do
   `child_name` and `parent_id` are provided by the supervisor's
   `spawn_agent_in_space/3`. `exclude_spawn` is set when the
   child is spawned at max depth, so its tool list omits
-  `agents/spawn` (non-clone spawns can be depth-limited safely).
+  `agents-spawn` (non-clone spawns can be depth-limited safely).
 
   Returns the attrs map ready to pass to `start_link/1`.
   """
@@ -114,7 +114,7 @@ defmodule Nest.Agents.Agent.SubAgent do
   #     defaulting to the parent's.
   #
   # An agent at max depth cannot spawn children. For a clone
-  # pre-compaction the `agents/spawn` tool is still present
+  # pre-compaction the `agents-spawn` tool is still present
   # (it must keep the parent's tool list), so the spawn is
   # rejected here at runtime rather than at tool-selection
   # time. Non-clone max-depth spawns already lack the tool.
@@ -167,7 +167,7 @@ defmodule Nest.Agents.Agent.SubAgent do
 
   @doc """
   Stop + mark an existing agent in `state`'s space archived.
-  Used by the `agents/archive` tool. The target may be a peer
+  Used by the `agents-archive` tool. The target may be a peer
   or a child. Returns the GenServer reply tuple.
   """
   @spec handle_archive_request(Agent.t(), pid(), String.t()) :: {:reply, term(), Agent.t()}

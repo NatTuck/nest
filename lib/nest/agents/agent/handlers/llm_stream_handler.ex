@@ -349,11 +349,11 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
 
     # Update the `read_files` cache from this tool result
     # (only on success — a failed read/write shouldn't pin a
-    # stale mtime into the cache). Successful `write_file`
-    # is also recorded here so a follow-up `write_file` from
+    # stale mtime into the cache). Successful `file-write`
+    # is also recorded here so a follow-up `file-write` from
     # the same agent sees the new on-disk state, not the
     # pre-write state. Path resolution goes through the same
-    # workspace-root convention `read_file` uses, so cache
+    # workspace-root convention `file-read` uses, so cache
     # keys match the policy-check keys at write time.
     state = FileAccess.record(stamped, state)
 
@@ -377,7 +377,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   # `Nest.Agents.Agent.Handlers.LLMStreamHandler.FileAccess` so
   # this file stays under credo's 500-line cap. The `tool_results_received/2`
   # handler above calls `FileAccess.record/2` to populate the
-  # cache from each successful `read_file` / `write_file`
+  # cache from each successful `file-read` / `file-write`
   # tool result.
 
   defp llm_usage(usage, state) do

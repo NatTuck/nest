@@ -168,7 +168,7 @@ defmodule Nest.Agents.Agent.ChatTurnStructureTest do
       # removed in favor of:
       #   * `Nest.Agents.Agent.BatchSizer.run/2` — post-execution
       #     preflight + keep-or-summarize for tool results.
-      #   * `ChatPipeline.maybe_compact_then_spawn/4` — Trigger B
+      #   * `ChatPipeline.handle_preflight/2` — Trigger B
       #     (per-handle_chat preflight) at user-turn boundaries.
       #
       # The chat task's iteration loop is purely mechanical; it

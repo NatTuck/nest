@@ -187,7 +187,7 @@ defmodule Nest.Agents.Supervisor do
     end
   end
 
-  # Build a fresh-context child's attrs (with `agents/spawn`
+  # Build a fresh-context child's attrs (with `agents-spawn`
   # excluded when the child is at max depth), pre-spawn, start
   # it, and register it in `ChildRegistry`. Kept separate so
   # `spawn_agent_in_space/3` stays under the credo ABC cap.
@@ -261,7 +261,7 @@ defmodule Nest.Agents.Supervisor do
   @doc """
   Stops an agent by its `{space_id, name}` and marks its DB
   row archived, then recursively does the same for every
-  ChildRegistry descendant. Used by the `agents/archive` tool
+  ChildRegistry descendant. Used by the `agents-archive` tool
   and the `archive` spawn flag, so archiving a parent stops
   AND archives its whole subtree. `:ok` whether or not the
   process was running; the DB rows are still marked archived

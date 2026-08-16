@@ -16,7 +16,7 @@ defmodule Nest.LLM.MockClient do
   script multi-turn tool-call flows in order:
 
       Nest.LLM.MockClient.set_tool_response(%{text: "Calling shell",
-        tool_calls: [%{id: "call_1", name: "shell_cmd",
+        tool_calls: [%{id: "call_1", name: "shell-cmd",
                        arguments: %{"command" => "ls"}}]})
       Nest.LLM.MockClient.set_response("Here is the listing") # 2nd call
       Nest.LLM.MockClient.set_error("connection failed")       # 3rd call

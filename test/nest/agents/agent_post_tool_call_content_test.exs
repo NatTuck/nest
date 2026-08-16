@@ -61,7 +61,7 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
       # First turn: emit a tool call.
       MockClient.set_stream_events([
         {:text, "Let me check the directory"},
-        {:tool_call_start, %{id: "call_1", name: "shell_cmd"}},
+        {:tool_call_start, %{id: "call_1", name: "shell-cmd"}},
         {:tool_call_delta, %{id: "call_1", arguments_delta: "{}"}},
         {:usage, %{input_tokens: 100, output_tokens: 20, total_tokens: 120}},
         {:finish_reason, "tool_calls"},
@@ -69,7 +69,7 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
          %{
            response: %RunResponse{
              text: "Let me check the directory",
-             tool_calls: [%ToolCall{id: "call_1", name: "shell_cmd", arguments: %{}}],
+             tool_calls: [%ToolCall{id: "call_1", name: "shell-cmd", arguments: %{}}],
              stop_reason: "tool_calls"
            }
          }}
@@ -259,14 +259,14 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
       # hidden reasoning rather than the visible text.
       MockClient.set_stream_events([
         {:text, "Calling shell"},
-        {:tool_call_start, %{id: "call_x", name: "shell_cmd"}},
+        {:tool_call_start, %{id: "call_x", name: "shell-cmd"}},
         {:tool_call_delta, %{id: "call_x", arguments_delta: "{}"}},
         {:finish_reason, "tool_calls"},
         {:done,
          %{
            response: %RunResponse{
              text: "Calling shell",
-             tool_calls: [%ToolCall{id: "call_x", name: "shell_cmd", arguments: %{}}],
+             tool_calls: [%ToolCall{id: "call_x", name: "shell-cmd", arguments: %{}}],
              stop_reason: "tool_calls"
            }
          }}
@@ -326,14 +326,14 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
       # hold the reasoning.
       MockClient.set_stream_events([
         {:text, "Calling tool"},
-        {:tool_call_start, %{id: "call_only", name: "shell_cmd"}},
+        {:tool_call_start, %{id: "call_only", name: "shell-cmd"}},
         {:tool_call_delta, %{id: "call_only", arguments_delta: "{}"}},
         {:finish_reason, "tool_calls"},
         {:done,
          %{
            response: %RunResponse{
              text: "Calling tool",
-             tool_calls: [%ToolCall{id: "call_only", name: "shell_cmd", arguments: %{}}],
+             tool_calls: [%ToolCall{id: "call_only", name: "shell-cmd", arguments: %{}}],
              stop_reason: "tool_calls"
            }
          }}
@@ -381,7 +381,7 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
       # BatchSizer's permanent diagnostic fires alongside the
       # normal is_error=true result.
       assert log =~ "BatchSizer produced is_error=true tool result"
-      assert log =~ "tool=shell_cmd"
+      assert log =~ "tool=shell-cmd"
       assert log =~ "Missing required arguments: command"
     end
   end
@@ -402,7 +402,7 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
         {:thinking, "Let me check the directory listing. "},
         {:thinking, "I'll run ls."},
         {:text, "Running ls"},
-        {:tool_call_start, %{id: "call_1", name: "shell_cmd"}},
+        {:tool_call_start, %{id: "call_1", name: "shell-cmd"}},
         {:tool_call_delta, %{id: "call_1", arguments_delta: "{}"}},
         {:usage, %{input_tokens: 100, output_tokens: 20, total_tokens: 120}},
         {:finish_reason, "tool_calls"},
@@ -411,7 +411,7 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
            response: %RunResponse{
              text: "Running ls",
              thinking: "Let me check the directory listing. I'll run ls.",
-             tool_calls: [%ToolCall{id: "call_1", name: "shell_cmd", arguments: %{}}],
+             tool_calls: [%ToolCall{id: "call_1", name: "shell-cmd", arguments: %{}}],
              stop_reason: "tool_calls"
            }
          }}

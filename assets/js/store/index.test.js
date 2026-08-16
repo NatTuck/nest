@@ -1660,14 +1660,14 @@ describe("store", () => {
           {
             kind: "tool_use",
             id: "call_123",
-            name: "shell_cmd",
+            name: "shell-cmd",
             arguments: { command: "ls" },
           },
         ],
         toolCalls: [
           {
             id: "call_123",
-            name: "shell_cmd",
+            name: "shell-cmd",
             arguments: { command: "ls" },
           },
         ],
@@ -1698,7 +1698,7 @@ describe("store", () => {
           {
             kind: "tool_result",
             toolCallId: "call_123",
-            name: "shell_cmd",
+            name: "shell-cmd",
             content: "file1.txt file2.txt",
             isError: false,
           },
@@ -1706,7 +1706,7 @@ describe("store", () => {
         toolResults: [
           {
             tool_call_id: "call_123",
-            name: "shell_cmd",
+            name: "shell-cmd",
             content: "file1.txt file2.txt",
             is_error: false,
           },
@@ -1722,7 +1722,7 @@ describe("store", () => {
           {
             kind: "tool_result",
             toolCallId: "call_123",
-            name: "shell_cmd",
+            name: "shell-cmd",
             content: "",
             isError: false,
           },
@@ -1781,7 +1781,7 @@ describe("store", () => {
         role: "assistant",
         parts: [
           { kind: "text", text: "Running ls" },
-          { kind: "tool_use", id: "call_1", name: "shell_cmd", arguments: {} },
+          { kind: "tool_use", id: "call_1", name: "shell-cmd", arguments: {} },
         ],
       });
 
@@ -1845,7 +1845,7 @@ describe("store", () => {
             kind: "thinking",
             thinking: "Short",
           },
-          { kind: "tool_use", id: "call_1", name: "shell_cmd", arguments: {} },
+          { kind: "tool_use", id: "call_1", name: "shell-cmd", arguments: {} },
         ],
       });
 
@@ -2156,7 +2156,7 @@ describe("store", () => {
         toolCalls: [
           {
             id: "call_123",
-            name: "shell_cmd",
+            name: "shell-cmd",
             arguments: { command: "ls" },
           },
         ],
@@ -2175,7 +2175,7 @@ describe("store", () => {
         index: 1,
         role: "assistant",
         content: "",
-        toolCalls: [{ id: "call_123", name: "shell_cmd", arguments: {} }],
+        toolCalls: [{ id: "call_123", name: "shell-cmd", arguments: {} }],
       });
 
       // Simulate receiving tool result
@@ -2186,7 +2186,7 @@ describe("store", () => {
         toolResults: [
           {
             tool_call_id: "call_123",
-            name: "shell_cmd",
+            name: "shell-cmd",
             content: "output",
             is_error: false,
           },
@@ -2206,7 +2206,7 @@ describe("store", () => {
         index: 1,
         role: "assistant",
         content: "",
-        toolCalls: [{ id: "call_123", name: "shell_cmd", arguments: {} }],
+        toolCalls: [{ id: "call_123", name: "shell-cmd", arguments: {} }],
       });
       useStore.getState().addChatMessage("agent-1", {
         index: 2,
@@ -2215,7 +2215,7 @@ describe("store", () => {
         toolResults: [
           {
             tool_call_id: "call_123",
-            name: "shell_cmd",
+            name: "shell-cmd",
             content: "output",
             is_error: false,
           },
@@ -2768,7 +2768,7 @@ describe("store", () => {
         toolCalls: [
           {
             id: "call_123",
-            name: "shell_cmd",
+            name: "shell-cmd",
             arguments: { command: "ls -la" },
           },
         ],
@@ -2782,7 +2782,7 @@ describe("store", () => {
         toolResults: [
           {
             tool_call_id: "call_123",
-            name: "shell_cmd",
+            name: "shell-cmd",
             content: "total 4\\ndrwxrwxr-x 1 user user 18 May 29 10:49 .",
             is_error: false,
           },
@@ -3674,7 +3674,7 @@ describe("store", () => {
       useStore.getState().addChatDelta("agent-1", {
         messageIndex: 0,
         deltaIndex: 0,
-        content: "shell_cmd",
+        content: "shell-cmd",
         partType: "tool_use",
       });
 
@@ -3736,7 +3736,7 @@ describe("store", () => {
         content: "",
         partType: "tool_use_start",
         toolCallId: "call_abc",
-        toolCallName: "shell_cmd",
+        toolCallName: "shell-cmd",
         toolCallBlockIndex: 0,
       });
 
@@ -3746,7 +3746,7 @@ describe("store", () => {
       );
       expect(toolUsePart).toBeDefined();
       expect(toolUsePart.id).toBe("call_abc");
-      expect(toolUsePart.name).toBe("shell_cmd");
+      expect(toolUsePart.name).toBe("shell-cmd");
       // Arguments start empty — appended by subsequent deltas.
       expect(toolUsePart.arguments).toBe("");
       expect(cache.streaming.currentKind).toBe("tool_use");
@@ -3758,7 +3758,7 @@ describe("store", () => {
         deltaIndex: 0,
         partType: "tool_use_start",
         toolCallId: "call_abc",
-        toolCallName: "shell_cmd",
+        toolCallName: "shell-cmd",
       });
       useStore.getState().addChatDelta("agent-1", {
         messageIndex: 1,
@@ -3788,7 +3788,7 @@ describe("store", () => {
         deltaIndex: 0,
         partType: "tool_use_start",
         toolCallId: "call_abc",
-        toolCallName: "shell_cmd",
+        toolCallName: "shell-cmd",
       });
       useStore.getState().addChatDelta("agent-1", {
         messageIndex: 1,
@@ -3804,7 +3804,7 @@ describe("store", () => {
         deltaIndex: 2,
         partType: "tool_use_start",
         toolCallId: "call_abc",
-        toolCallName: "shell_cmd",
+        toolCallName: "shell-cmd",
       });
 
       const cache = useStore.getState().agentsCache["agent-1"];
@@ -3843,7 +3843,7 @@ describe("store", () => {
         deltaIndex: 1,
         partType: "tool_use_start",
         toolCallId: "call_abc",
-        toolCallName: "shell_cmd",
+        toolCallName: "shell-cmd",
       });
 
       const cache = useStore.getState().agentsCache["agent-1"];
@@ -3928,7 +3928,7 @@ describe("store", () => {
         index: 1,
         partType: "tool_use_start",
         toolCallId: "call_legacy",
-        toolCallName: "shell_cmd",
+        toolCallName: "shell-cmd",
         charsStart: 0,
         charsEnd: 0,
         content: "",
@@ -3941,7 +3941,7 @@ describe("store", () => {
       expect(partial.charsReceived).toBe(12);
       const toolPart = partial.parts.find((p) => p.kind === "tool_use");
       expect(toolPart.id).toBe("call_legacy");
-      expect(toolPart.name).toBe("shell_cmd");
+      expect(toolPart.name).toBe("shell-cmd");
       expect(partial.currentKind).toBe("tool_use");
     });
 
@@ -3950,7 +3950,7 @@ describe("store", () => {
         index: 1,
         partType: "tool_use_start",
         toolCallId: "call_legacy",
-        toolCallName: "shell_cmd",
+        toolCallName: "shell-cmd",
         charsStart: 0,
         charsEnd: 0,
         content: "",
@@ -4085,7 +4085,7 @@ describe("store", () => {
           toolCalls: [
             {
               id: "call_x",
-              name: "shell_cmd",
+              name: "shell-cmd",
               arguments: '{"command":',
             },
           ],
@@ -4099,7 +4099,7 @@ describe("store", () => {
         {
           kind: "tool_use",
           id: "call_x",
-          name: "shell_cmd",
+          name: "shell-cmd",
           arguments: '{"command":',
         },
       ]);

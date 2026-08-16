@@ -82,7 +82,7 @@ defmodule NestWeb.LobbyChannelTest do
           name: "Test Vocation",
           description: "A test vocation",
           system_prompt: "You are a test assistant.",
-          tools: ["read_file"],
+          tools: ["file-read"],
           modes: %{
             "chat" => %{
               "caps" => %{"net" => false, "fs" => %{"read" => ["/"], "write" => []}}
@@ -101,7 +101,7 @@ defmodule NestWeb.LobbyChannelTest do
       assert test_vocation != nil
       assert test_vocation.description == "A test vocation"
       assert test_vocation.system_prompt == "You are a test assistant."
-      assert test_vocation.tools == ["read_file"]
+      assert test_vocation.tools == ["file-read"]
 
       assert test_vocation.modes == %{
                "chat" => %{
@@ -117,7 +117,7 @@ defmodule NestWeb.LobbyChannelTest do
           name: "JSON Test Vocation",
           description: "Testing JSON encoding",
           system_prompt: "System prompt here",
-          tools: ["read_file", "write_file"],
+          tools: ["file-read", "file-write"],
           modes: %{
             "chat" => %{
               "caps" => %{"net" => false, "fs" => %{"read" => ["/"], "write" => []}}
@@ -148,7 +148,7 @@ defmodule NestWeb.LobbyChannelTest do
       assert test_vocation != nil
       assert test_vocation["description"] == "Testing JSON encoding"
       assert test_vocation["system_prompt"] == "System prompt here"
-      assert test_vocation["tools"] == ["read_file", "write_file"]
+      assert test_vocation["tools"] == ["file-read", "file-write"]
 
       assert test_vocation["modes"] == %{
                "chat" => %{
@@ -341,8 +341,16 @@ defmodule NestWeb.LobbyChannelTest do
           "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
         })
 
-      assert_reply ref, :ok, %{"space_id" => space_id, "name" => name}
+      assert_reply ref, :ok, %{"space_id" => space_id, "name" => name, "slug" => slug}, 500
+      # The 500ms timeouts on the create_space `assert_reply` calls in
+      # this file are deliberate: agent creation does real synchronous
+      # work (spawn + context-limit resolution via the singleton
+      # `Nest.Models` GenServer.call and a DotConfig TOML parse + DB
+      # rows) that is serialized across the 64-way parallel channel-test
+      # load, so the default 100ms receive timeout is flaky here.
       assert Regex.match?(~r/^[a-z0-9-]+$/, name)
+      assert Regex.match?(~r/^[a-z0-9-]+$/, slug)
+      assert slug != name
 
       # Register cleanup for the push-created agent so the
       # singleton `Nest.Agents.Supervisor` doesn't carry a
@@ -371,7 +379,7 @@ defmodule NestWeb.LobbyChannelTest do
           "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
         })
 
-      assert_reply ref, :ok, %{"space_id" => space_id, "name" => name}
+      assert_reply ref, :ok, %{"space_id" => space_id, "name" => name, "slug" => _slug}, 500
       AgentTestHelpers.ensure_cleanup(name)
 
       assert {:ok, info} = Agents.get_info(space_id, name)
@@ -415,7 +423,7 @@ defmodule NestWeb.LobbyChannelTest do
           "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
         })
 
-      assert_reply ref, :ok, %{"space_id" => space_id, "name" => name}
+      assert_reply ref, :ok, %{"space_id" => space_id, "name" => name, "slug" => _slug}, 500
       AgentTestHelpers.ensure_cleanup(name)
 
       assert {:ok, info} = Agents.get_info(space_id, name)

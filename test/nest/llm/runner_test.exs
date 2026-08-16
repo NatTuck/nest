@@ -64,7 +64,7 @@ defmodule Nest.LLM.RunnerTest do
       test_pid = self()
 
       events = [
-        {:tool_call_start, %{id: "call_abc", name: "shell_cmd", index: 0}},
+        {:tool_call_start, %{id: "call_abc", name: "shell-cmd", index: 0}},
         {:tool_call_delta, %{id: "call_abc", index: 0, arguments_delta: "{\"command\":"}},
         {:tool_call_delta, %{id: "call_abc", index: 0, arguments_delta: "\"ls\"}"}},
         {:finish_reason, "tool_calls"},
@@ -85,7 +85,7 @@ defmodule Nest.LLM.RunnerTest do
 
       assert {:ok, _} = Runner.consume(events, callbacks)
 
-      assert_received {:tool_call_start_fwd, %{id: "call_abc", name: "shell_cmd"}}
+      assert_received {:tool_call_start_fwd, %{id: "call_abc", name: "shell-cmd"}}
       assert_received {:tool_call_delta_fwd, %{arguments_delta: "{\"command\":"}}
       assert_received {:tool_call_delta_fwd, %{arguments_delta: "\"ls\"}"}}
     end

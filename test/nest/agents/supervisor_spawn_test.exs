@@ -64,7 +64,7 @@ defmodule Nest.Agents.SupervisorSpawnTest do
         name: "SpawnVocation-#{System.unique_integer([:positive])}",
         description: "Spawn test",
         system_prompt: "You are a specialist.",
-        tools: ["context"],
+        tools: ["context-check", "context-compact"],
         modes: %{}
       })
 
@@ -111,7 +111,7 @@ defmodule Nest.Agents.SupervisorSpawnTest do
       assert info.depth == state.depth + 1
     end
 
-    test "fresh spawn at max depth has agents/spawn excluded from its tool list",
+    test "fresh spawn at max depth has agents-spawn excluded from its tool list",
          %{space_id: space_id} do
       max = Config.configured_max_depth()
       vid = fresh_vocation()
@@ -126,7 +126,7 @@ defmodule Nest.Agents.SupervisorSpawnTest do
       {:ok, pid} = Supervisor.get_agent(space_id, name)
       child_state = :sys.get_state(pid)
       assert child_state.depth == max + 1
-      refute Enum.any?(child_state.tools, &(&1.name == "agents/spawn"))
+      refute Enum.any?(child_state.tools, &(&1.name == "agents-spawn"))
     end
 
     test "rejects a duplicate name in the space", %{space_id: space_id} do

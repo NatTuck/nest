@@ -31,9 +31,9 @@ defmodule Nest.Agents.AgentTestHelpers do
 
   require Logger
 
-  # Any vocation that gets any `agents/*` tool gets all of them
+  # Any vocation that gets any `agents-*` tool gets all of them
   # (matching the seed `agents_tools` invariant).
-  @agents_tools ["agents/spawn", "agents/query", "agents/list", "agents/archive"]
+  @agents_tools ["agents-spawn", "agents-query", "agents-list", "agents-archive"]
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Nest.Agents
@@ -264,7 +264,7 @@ defmodule Nest.Agents.AgentTestHelpers do
         name: "Test Default",
         description: "Default vocation for tests",
         system_prompt: "You are a helpful test assistant.",
-        tools: ["context" | @agents_tools],
+        tools: ["context-check", "context-compact" | @agents_tools],
         modes: %{
           "chat" => %{
             "description" => "General conversation.",
@@ -281,8 +281,8 @@ defmodule Nest.Agents.AgentTestHelpers do
 
   @doc """
   Returns a fresh `vocation_id` whose `:tools` list includes the
-  shell/file tools (`shell_cmd`, `read_file`, `write_file`,
-  `edit`) — for tests that exercise the tool-call flow and need
+  shell/file tools (`shell-cmd`, `file-read`, `file-write`,
+  `file-edit`) — for tests that exercise the tool-call flow and need
   the tools to actually be registered on the agent.
 
   Every call creates a new row (`create_vocation`, not
@@ -300,7 +300,14 @@ defmodule Nest.Agents.AgentTestHelpers do
         name: "Test Programmer (#{Elixir.System.unique_integer([:positive])})",
         description: "A coding assistant that can read and write files in a workspace",
         system_prompt: "Test programmer prompt.",
-        tools: ["read_file", "write_file", "edit", "shell_cmd", "context" | @agents_tools],
+        tools: [
+          "file-read",
+          "file-write",
+          "file-edit",
+          "shell-cmd",
+          "context-check",
+          "context-compact" | @agents_tools
+        ],
         # Single mode — keeps the Agent's default mode = "chat"
         # and the chat-message prefix `[mode: chat]` that tests
         # assert on. `Map.keys/1` of a single-entry map returns

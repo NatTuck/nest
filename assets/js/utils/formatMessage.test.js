@@ -107,7 +107,7 @@ describe("messageToMarkdown", () => {
       messageToMarkdown({
         role: "assistant",
         parts: [
-          { kind: "tool_use", id: "call_1", name: "shell_cmd", arguments: {} },
+          { kind: "tool_use", id: "call_1", name: "shell-cmd", arguments: {} },
           { kind: "text", text: "calling tool" },
         ],
       }),

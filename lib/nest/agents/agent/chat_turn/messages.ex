@@ -124,13 +124,13 @@ defmodule Nest.Agents.Agent.ChatTurn.Messages do
   end
 
   @doc """
-  Refuse a batch that mixes `context.compact` with other
+  Refuse a batch that mixes `context-compact` with other
   tool calls. Returns a single `{:tool, _}` message with one
   `Part.ToolResult` per tool call, all `is_error: true` and a
   shared reason. The LLM receives one refusal message in the
   next iteration and is expected to retry without
-  `context.compact` mixed in. Used by `ResponseHandler` when
-  the LLM emits `context.compact` together with non-compact
+  `context-compact` mixed in. Used by `ResponseHandler` when
+  the LLM emits `context-compact` together with non-compact
   tool calls.
 
   `_messages_before` is accepted for symmetry with other
@@ -141,8 +141,8 @@ defmodule Nest.Agents.Agent.ChatTurn.Messages do
           {:tool, Tool.t()}
   def refuse_context_compact_co_batch(tool_calls, _messages_before) do
     reason =
-      "Batch refused: context.compact must be the sole tool in a batch " <>
-        "(current batch contains other tools as well). Call context.compact " <>
+      "Batch refused: context-compact must be the sole tool in a batch " <>
+        "(current batch contains other tools as well). Call context-compact " <>
         "in its own iteration."
 
     error_results =

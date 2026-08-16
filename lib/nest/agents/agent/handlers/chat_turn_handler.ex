@@ -75,7 +75,7 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
   # (the message is in the list, the live partial is no
   # longer valid), and transition to :idle.
   #
-  # If this agent has a parent (an `agents/spawn` with
+  # If this agent has a parent (an `agents-spawn` with
   # `clone_context` spawned it), forward a `:child_completed`
   # cast so the parent can merge our total usage into its
   # `descendant_usage`, forward `:spawn_agent_result` to the

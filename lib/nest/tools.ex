@@ -13,8 +13,10 @@ defmodule Nest.Tools do
 
   require Logger
 
+  alias Nest.Agents.Agent.CapCalculator
   alias Nest.Agents.Agent.Config
   alias Nest.LLM.Tool
+  alias Nest.Tokens.ConversationSize
   alias Nest.Tools.{FileTools, InspectFile, ShellCmd}
 
   @doc """
@@ -33,47 +35,33 @@ defmodule Nest.Tools do
   @spec get_function(String.t(), String.t() | nil, String.t() | nil) :: Tool.t() | nil
   def get_function(name, workspace_path, tmp_path \\ nil) do
     case name do
-      "read_file" ->
-        FileTools.read_file_function(workspace_path, tmp_path)
-
-      "write_file" ->
-        FileTools.write_file_function(workspace_path, tmp_path)
-
-      "edit" ->
-        FileTools.edit_function(workspace_path, tmp_path)
-
-      "inspect_file" ->
-        InspectFile.build(workspace_path, tmp_path)
-
-      "shell_cmd" ->
-        shell_cmd_function(workspace_path, tmp_path)
-
-      "context" ->
-        context_function()
-
-      # `agents/spawn`, `agents/query`, `agents/list`, and
-      # `agents/archive` are intercepted by the ChatTurn /
-      # ToolLoop machinery — the registered tools are stubs
-      # that surface the right schema in the LLM's tool list.
-      # Real execution lives in `Nest.Agents.Agent.ToolLoop`
-      # (spawn/archive route through the agent GenServer; list
-      # reads the space inline; query waits on the target's
-      # PubSub topic).
-      name when name in ["agents/spawn", "agents/query", "agents/list", "agents/archive"] ->
+      name when name in ["agents-spawn", "agents-query", "agents-list", "agents-archive"] ->
         sub_agent_tool_function(name)
 
-      _ ->
-        nil
+      name ->
+        regular_tool_function(name, workspace_path, tmp_path)
     end
   end
 
   # Dispatch the sub-agent tool stubs. Kept as its own function
   # so `get_function/3` stays under the credo cyclomatic-
   # complexity cap.
-  defp sub_agent_tool_function("agents/spawn"), do: spawn_agent_function()
-  defp sub_agent_tool_function("agents/query"), do: query_agent_function()
-  defp sub_agent_tool_function("agents/list"), do: list_agents_function()
-  defp sub_agent_tool_function("agents/archive"), do: archive_agent_function()
+  defp sub_agent_tool_function("agents-spawn"), do: spawn_agent_function()
+  defp sub_agent_tool_function("agents-query"), do: query_agent_function()
+  defp sub_agent_tool_function("agents-list"), do: list_agents_function()
+  defp sub_agent_tool_function("agents-archive"), do: archive_agent_function()
+
+  # Dispatch the workspace, shell, and context tools. Kept as its
+  # own function so `get_function/3` stays under the credo
+  # cyclomatic-complexity cap.
+  defp regular_tool_function("file-read", ws, tmp), do: FileTools.read_file_function(ws, tmp)
+  defp regular_tool_function("file-write", ws, tmp), do: FileTools.write_file_function(ws, tmp)
+  defp regular_tool_function("file-edit", ws, tmp), do: FileTools.edit_function(ws, tmp)
+  defp regular_tool_function("file-inspect", ws, tmp), do: InspectFile.build(ws, tmp)
+  defp regular_tool_function("shell-cmd", ws, tmp), do: shell_cmd_function(ws, tmp)
+  defp regular_tool_function("context-check", _ws, _tmp), do: context_check_function()
+  defp regular_tool_function("context-compact", _ws, _tmp), do: context_compact_function()
+  defp regular_tool_function(_name, _ws, _tmp), do: nil
 
   @doc """
   JSON schema fragment for the `max_result_tokens` call arg.
@@ -81,9 +69,9 @@ defmodule Nest.Tools do
   specific cap. The BatchSizer treats this as an inline-vs-summary
   threshold:
 
-    * `shell_cmd` → if exceeded, write the full output to a
+    * `shell-cmd` → if exceeded, write the full output to a
       tmp file and return a path-and-head summary inline.
-    * `read_file` → if exceeded, return an error result with
+    * `file-read` → if exceeded, return an error result with
       the actual vs. requested token counts.
     * Other tools → bounded output by construction (cap unreachable).
 
@@ -98,15 +86,15 @@ defmodule Nest.Tools do
       "description" =>
         "Maximum tokens for the inline result. Defaults to 80% of the " <>
           "remaining usable context window. Lower this to force a " <>
-          "path-and-head summary (shell_cmd) or an error result " <>
-          "(read_file); the value is clamped to the 80% default if you " <>
+          "path-and-head summary (shell-cmd) or an error result " <>
+          "(file-read); the value is clamped to the 80% default if you " <>
           "ask for more."
     }
   end
 
   defp shell_cmd_function(workspace_path, tmp_path) do
     %Tool{
-      name: "shell_cmd",
+      name: "shell-cmd",
       description: "Execute a shell command and return output",
       parameters_schema: %{
         "type" => "object",
@@ -129,49 +117,85 @@ defmodule Nest.Tools do
     caps = caps_from_context(context)
 
     Logger.info(
-      "Tool shell_cmd: #{command} (workspace: #{workspace_path || "none"}, tmp: #{tmp_path || "none"})"
+      "Tool shell-cmd: #{command} (workspace: #{workspace_path || "none"}, tmp: #{tmp_path || "none"})"
     )
 
     ShellCmd.execute(command, workspace_path, tmp_path, caps)
   end
 
-  # The `context` tool provides visibility into context usage and
-  # can optionally trigger compaction. The actual execution is
-  # intercepted in `ToolLoop` because it needs access to runtime
-  # state (messages, context_limit) that the tool function
-  # doesn't have.
-  defp context_function do
+  # The `context-check` tool reports current context usage. The
+  # function receives the live tool context (messages +
+  # context_limit) via `BatchSizer.do_execute/2`, and computes
+  # real stats using the same math as `CapCalculator`/`BatchSizer`
+  # so the LLM is told the exact budget that will be enforced on
+  # its tool results.
+  defp context_check_function do
     %Tool{
-      name: "context",
+      name: "context-check",
       description:
-        "Check current context usage (tokens used, limit, message count) " <>
-          "or trigger compaction to free up space.",
+        "Report current context usage: message count, tokens used vs the limit, " <>
+          "percentage used, and usable remaining tokens (after the current messages " <>
+          "and the response reserve).",
       parameters_schema: %{
         "type" => "object",
-        "properties" => %{
-          "action" => %{
-            "type" => "string",
-            "enum" => ["check", "compact"],
-            "description" =>
-              "Action to perform. 'check' returns current context stats. " <>
-                "'compact' triggers compaction to free up context budget."
-          },
-          "focus" => %{
-            "type" => "string",
-            "description" =>
-              "When action is 'compact': what to preserve in the summary. " <>
-                "Ignored when action is 'check'."
-          },
-          "max_result_tokens" => max_result_tokens_schema()
-        }
+        "properties" => %{"max_result_tokens" => max_result_tokens_schema()},
+        "required" => []
       },
-      function: fn _args, _context ->
-        {:ok, "Context request received."}
+      function: fn _args, context ->
+        context_check(context)
       end
     }
   end
 
-  # The `agents/spawn` tool: the general sub-agent spawn API.
+  defp context_check(context) do
+    messages = Map.get(context, :messages, [])
+
+    case Map.get(context, :context_limit) do
+      limit when is_integer(limit) and limit > 0 ->
+        used = ConversationSize.size(messages)
+        usable = CapCalculator.usable_remaining(%{context_limit: limit, messages: messages})
+        pct = round(used / limit * 100)
+
+        {:ok,
+         "Context: #{length(messages)} messages, ~#{round(used)} / #{limit} tokens used " <>
+           "(#{pct}%). Usable remaining: ~#{usable} tokens (after current messages + response reserve)."}
+
+      _ ->
+        {:ok, "Context: #{length(messages)} messages (limit unknown)."}
+    end
+  end
+
+  # The `context-compact` tool triggers compaction. It is a
+  # control-flow tool: it is intercepted by the ChatTurn response
+  # handler (which requires it to be the sole call in a batch) and
+  # never actually invoked here, so its `function` is a stub. The
+  # schema surfaces the `focus` argument the LLM can pass to guide
+  # what the compaction summary should preserve.
+  defp context_compact_function do
+    %Tool{
+      name: "context-compact",
+      description:
+        "Trigger compaction of the conversation to free up context budget. " <>
+          "Must be the sole tool call in its own iteration.",
+      parameters_schema: %{
+        "type" => "object",
+        "properties" => %{
+          "focus" => %{
+            "type" => "string",
+            "description" =>
+              "What to preserve in the compaction summary (e.g. recent instructions, " <>
+                "the current task)."
+          }
+        },
+        "required" => []
+      },
+      function: fn _args, _context ->
+        {:ok, "Compaction request received."}
+      end
+    }
+  end
+
+  # The `agents-spawn` tool: the general sub-agent spawn API.
   # Unifies the old `clone_agent` (via `clone_context`) and
   # `spawn_agent`. A child is created in this space and (if
   # `query` is given) immediately asked a task, blocking for its
@@ -191,7 +215,7 @@ defmodule Nest.Tools do
   # blueprint `spawnable_vocation_ids`.
   defp spawn_agent_function do
     %Tool{
-      name: "agents/spawn",
+      name: "agents-spawn",
       description:
         "Create a sub-agent in this space and optionally delegate a task to it. " <>
           "Returns the new agent's name; if `query` is given, additionally blocks " <>
@@ -249,14 +273,14 @@ defmodule Nest.Tools do
     }
   end
 
-  # The `agents/list` tool: enumerate the non-archived agents in
+  # The `agents-list` tool: enumerate the non-archived agents in
   # this space. Returns each agent's name, vocation, status, and
-  # depth. Like `agents/spawn`, the `function` here is a stub —
+  # depth. Like `agents-spawn`, the `function` here is a stub —
   # `ToolLoop` handles it inline by reading the space's running
   # agents.
   defp list_agents_function do
     %Tool{
-      name: "agents/list",
+      name: "agents-list",
       description:
         "List the active sub-agents in this space, with their name, vocation, " <>
           "status, and depth. Use this to discover agents you can delegate to.",
@@ -271,7 +295,7 @@ defmodule Nest.Tools do
     }
   end
 
-  # The `agents/query` tool: send a chat message to a peer
+  # The `agents-query` tool: send a chat message to a peer
   # sub-agent in this space and return its final response.
   # `timeout` caps how long the call blocks (default 5 minutes).
   #
@@ -282,11 +306,11 @@ defmodule Nest.Tools do
   # returning the target's latest assistant text.
   defp query_agent_function do
     %Tool{
-      name: "agents/query",
+      name: "agents-query",
       description:
         "Send a chat message to a sub-agent in this space and wait for its " <>
           "response. Use this to delegate a question to a specialist you have " <>
-          "already spawned (see `agents/spawn` and `agents/list`). Your turn " <>
+          "already spawned (see `agents-spawn` and `agents-list`). Your turn " <>
           "blocks until the target responds.",
       parameters_schema: %{
         "type" => "object",
@@ -314,8 +338,8 @@ defmodule Nest.Tools do
     }
   end
 
-  # The `agents/archive` tool: stop + mark an existing agent in
-  # this space archived. It is then excluded from `agents/list`
+  # The `agents-archive` tool: stop + mark an existing agent in
+  # this space archived. It is then excluded from `agents-list`
   # and the lobby sidebar, and querying it is an error. Use this
   # to clean up long-lived specialists you're done with.
   #
@@ -324,7 +348,7 @@ defmodule Nest.Tools do
   # GenServer to stop and archive the target.
   defp archive_agent_function do
     %Tool{
-      name: "agents/archive",
+      name: "agents-archive",
       description:
         "Stop and archive a sub-agent in this space. The archived agent is no " <>
           "longer listed or queryable. Use this to clean up a specialist you no " <>

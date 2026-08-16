@@ -44,14 +44,14 @@ defmodule Nest.Messages.PartTest do
     end
 
     test "ToolUse" do
-      part = %ToolUse{id: "call_1", name: "read_file", arguments: %{"path" => "foo.ex"}}
+      part = %ToolUse{id: "call_1", name: "file-read", arguments: %{"path" => "foo.ex"}}
       assert Part.from_json(Part.to_json(part)) == part
     end
 
     test "ToolResult with is_error" do
       part = %ToolResult{
         tool_call_id: "call_1",
-        name: "read_file",
+        name: "file-read",
         content: "ok",
         arguments: %{"path" => "foo.ex"},
         is_error: true

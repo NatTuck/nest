@@ -38,9 +38,9 @@ defmodule Nest.Agents.Agent.BatchSizer do
   safety multiplier), so they are conservative upper bounds on
   what the LLM will tokenize.
 
-  ## Phase 3: Keep-or-summarize (shell_cmd only)
+  ## Phase 3: Keep-or-summarize (shell-cmd only)
 
-  For each `shell_cmd` result, decide keep-full or
+  For each `shell-cmd` result, decide keep-full or
   replace-with-summary such that the running total never
   exceeds `context_limit`. Earlier results get keep-full; later
   results get summarized as the budget tightens. Other tools
@@ -54,15 +54,16 @@ defmodule Nest.Agents.Agent.BatchSizer do
   the LLM may only lower the cap (raise it past the 80% default
   is clamped). Per-tool behavior when the cap is exceeded:
 
-    * `shell_cmd` → write full output to tmp, return
+    * `shell-cmd` → write full output to tmp, return
       path-and-head summary inline.
-    * `read_file` → return `{:error, "File is X tokens
+    * `file-read` → return `{:error, "File is X tokens
       which exceeds your requested limit of Y."}`.
     * Other tools → keep full (cap unreachable in practice
       because their outputs are bounded by construction).
 
-  When `ctx.context_limit` is `nil`, no cap is enforced (the
-  degraded-but-hopeful path).
+  When `ctx.context_limit` is `nil` (or non-positive), `preflight`
+  matches no clause and raises — the limit is never optional, and a
+  tool batch is never processed without a known context window.
   """
 
   alias Nest.Agents.Agent.BatchSizer.FilePolicy
@@ -103,36 +104,32 @@ defmodule Nest.Agents.Agent.BatchSizer do
   @doc """
   Project the post-batch message size without running any tool.
   Returns `:fits` or `{:refuse, reason}`.
+
+  `ctx.context_limit` is always a positive integer in the agent
+  runtime; a nil/other value matches no clause and raises, so a
+  tool batch is never processed with an unknown limit.
   """
   @spec preflight([ToolCall.t()], map()) :: :fits | {:refuse, String.t()}
   def preflight([], _ctx), do: :fits
 
-  def preflight(tool_calls, ctx) do
-    case ctx.context_limit do
-      nil ->
-        :fits
+  def preflight(tool_calls, %{context_limit: limit} = ctx)
+      when is_integer(limit) and limit > 0 do
+    current = Estimator.estimate_messages(ctx.messages || [])
 
-      limit when is_integer(limit) and limit > 0 ->
-        current = Estimator.estimate_messages(ctx.messages || [])
+    projected =
+      tool_calls
+      |> Enum.reduce(0, fn tc, acc -> acc + projected_size(tc, ctx) end)
+      |> Kernel.+(Reserve.response_budget(limit))
 
-        projected =
-          tool_calls
-          |> Enum.reduce(0, fn tc, acc -> acc + projected_size(tc, ctx) end)
-          |> Kernel.+(Reserve.response_budget(limit))
+    total = current + projected
 
-        total = current + projected
-
-        if total <= limit do
-          :fits
-        else
-          {:refuse,
-           "Batch refused: projected message list ~#{total} tokens exceeds " <>
-             "limit ~#{limit}. Reformulate (e.g., call context.compact first " <>
-             "or use smaller tools)."}
-        end
-
-      _ ->
-        :fits
+    if total <= limit do
+      :fits
+    else
+      {:refuse,
+       "Batch refused: projected message list ~#{total} tokens exceeds " <>
+         "limit ~#{limit}. Reformulate (e.g., call context-compact first " <>
+         "or use smaller tools)."}
     end
   end
 
@@ -158,14 +155,14 @@ defmodule Nest.Agents.Agent.BatchSizer do
 
   # ---- Phase 2: execute the batch ----
 
-  # Pre-call hook for `write_file`. Refuses the tool call
+  # Pre-call hook for `file-write`. Refuses the tool call
   # with a structured `{:error, reason}` if the agent has
   # not previously read the target path, or if the file on
   # disk no longer matches the recorded `{mtime, size}`.
   # The refusal flows through the same `execute_one/3`
   # error path as a missing-args or sandbox refusal, so the
   # LLM sees a tool result with `is_error: true` and can
-  # retry (after `read_file`). The check + the user-facing
+  # retry (after `file-read`). The check + the user-facing
   # translation live in `FilePolicy` (extracted to keep
   # this module under credo/line-count rules).
   defp execute_one(%ToolCall{} = tc, ctx) do
@@ -179,7 +176,11 @@ defmodule Nest.Agents.Agent.BatchSizer do
   end
 
   defp do_execute(tc, ctx) do
-    case LLMTools.execute_one(ctx.tools, tc, %{caps: ctx.caps}) do
+    case LLMTools.execute_one(ctx.tools, tc, %{
+           caps: ctx.caps,
+           messages: ctx.messages,
+           context_limit: ctx.context_limit
+         }) do
       {:ok, content} ->
         {tc, :ok, ensure_non_empty(content)}
 
@@ -201,14 +202,14 @@ defmodule Nest.Agents.Agent.BatchSizer do
 
   # ---- Phase 3: cook the raw results into final ToolResults ----
   #
-  # For each shell_cmd result, decide keep-full or summarize
+  # For each shell-cmd result, decide keep-full or summarize
   # against the running total. Other tools are kept full.
 
   defp cook(executed, ctx) do
     limit = ctx.context_limit
     base = Estimator.estimate_messages(ctx.messages || [])
     usable = usable_remaining(ctx)
-    reserve = if is_integer(limit), do: Reserve.response_budget(limit), else: 0
+    reserve = Reserve.response_budget(limit)
     initial = %{running: base + reserve, limit: limit, usable: usable}
 
     {cooked, _final_acc} =
@@ -223,7 +224,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
         # want a server-side record so a flake in this code path
         # is observable in the log. is_error=true is the rare path
         # (bwrap failures, preflight refusals, missing tools, tool
-        # function crashes). If this fires for shell_cmd under
+        # function crashes). If this fires for shell-cmd under
         # parallel load, we need to know.
         Logger.error(
           "BatchSizer produced is_error=true tool result: " <>
@@ -243,8 +244,6 @@ defmodule Nest.Agents.Agent.BatchSizer do
     end)
   end
 
-  defp keep_full?(_tc, %{limit: nil}, _full_size), do: true
-
   defp keep_full?(_tc, %{limit: limit, running: running}, full_size),
     do: running + full_size <= limit
 
@@ -259,14 +258,14 @@ defmodule Nest.Agents.Agent.BatchSizer do
   #   1. Compute `full_size` for the actual content.
   #   2. If the cap (`effective_max_result_tokens/2`) is set and
   #      `full_size > cap`, route per-tool:
-  #        * `shell_cmd` → write-to-tmp + path-and-head summary.
-  #        * `read_file`        → return error result with size hint.
-  #        * other tools        → log warning, keep full.
+  #        * `shell-cmd` → write-to-tmp + path-and-head summary.
+  #        * `file-read`  → return error result with size hint.
+  #        * other tools  → log warning, keep full.
   #   3. Otherwise, decide keep-full vs. summarize against the
   #      running batch budget (`keep_full?/3`). The batch budget
   #      should always accommodate `full_size` post-preflight, but
   #      we fall back to the existing summary path for
-  #      `shell_cmd` if it doesn't.
+  #      `shell-cmd` if it doesn't.
   defp apply_one_with_acc({tc, :ok, content}, ctx, acc) do
     full_size = Estimator.estimate(content) + per_message_overhead()
     cap = effective_max_result_tokens(tc, acc.usable)
@@ -292,7 +291,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
       keep_full?(tc, acc, full_size) ->
         {{tc, :ok, content}, advance(acc, full_size)}
 
-      tc.name == "shell_cmd" ->
+      tc.name == "shell-cmd" ->
         {summary, summary_size} = build_summary_with_size(tc, content, ctx, acc)
         {{tc, :ok, summary}, advance(acc, summary_size)}
 
@@ -312,12 +311,12 @@ defmodule Nest.Agents.Agent.BatchSizer do
   # (either the full content via tmp + summary, or an explicit
   # error explaining the rejection) — never a truncated inline
   # version.
-  defp handle_over_cap(%ToolCall{name: "shell_cmd"} = tc, content, _full_size, ctx, acc) do
+  defp handle_over_cap(%ToolCall{name: "shell-cmd"} = tc, content, _full_size, ctx, acc) do
     {summary, summary_size} = build_summary_with_size(tc, content, ctx, acc)
     {{tc, :ok, summary}, advance(acc, summary_size)}
   end
 
-  defp handle_over_cap(%ToolCall{name: "read_file"} = tc, _content, full_size, _ctx, acc) do
+  defp handle_over_cap(%ToolCall{name: "file-read"} = tc, _content, full_size, _ctx, acc) do
     cap = effective_max_result_tokens(tc, acc.usable)
     error = "File is #{full_size} tokens which exceeds your requested limit of #{cap}."
     error_size = Estimator.estimate(error) + per_message_overhead()
@@ -346,7 +345,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
     summary_size = Estimator.estimate(summary) + per_message_overhead()
 
     summary =
-      if not is_nil(limit) and running + summary_size > limit do
+      if running + summary_size > limit do
         truncate_to_fit(summary, max(0, limit - running - per_message_overhead()))
       else
         summary

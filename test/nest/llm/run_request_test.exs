@@ -29,7 +29,7 @@ defmodule Nest.LLM.RunRequestTest do
       user = {:user, %User{index: 1, parts: [%Part.Text{text: "hi"}]}}
 
       tool = %Tool{
-        name: "shell_cmd",
+        name: "shell-cmd",
         description: "run a command",
         parameters_schema: %{type: "object", properties: %{command: %{type: "string"}}},
         function: fn _args, _ctx -> {:ok, "ok"} end
@@ -49,7 +49,7 @@ defmodule Nest.LLM.RunRequestTest do
 
       assert req.messages == [sys, user]
       assert length(req.tools) == 1
-      assert hd(req.tools).name == "shell_cmd"
+      assert hd(req.tools).name == "shell-cmd"
       assert req.model == "gpt-4o"
       assert req.tool_choice == :required
       assert req.temperature == 0.3
@@ -60,7 +60,7 @@ defmodule Nest.LLM.RunRequestTest do
     end
 
     test "tool_choice accepts the four canonical forms" do
-      for choice <- [:auto, :none, :required, {:tool, "shell_cmd"}] do
+      for choice <- [:auto, :none, :required, {:tool, "shell-cmd"}] do
         assert %RunRequest{tool_choice: ^choice} = %RunRequest{tool_choice: choice}
       end
     end

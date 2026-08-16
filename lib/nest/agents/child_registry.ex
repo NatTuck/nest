@@ -1,12 +1,12 @@
 defmodule Nest.Agents.ChildRegistry do
   @moduledoc """
   In-process registry of parent → children relationships for
-  sub-agents spawned through the `agents/spawn` tool (with
+  sub-agents spawned through the `agents-spawn` tool (with
   `clone_context`).
 
   ## Why it exists
 
-  `agents/spawn` produces a tree of GenServers: each spawned
+  `agents-spawn` produces a tree of GenServers: each spawned
   child runs as its own Agent under `Nest.Agents.Supervisor`
   and may itself spawn grandchildren up to a configured
   `max-depth`. When a parent is stopped (user-initiated Stop

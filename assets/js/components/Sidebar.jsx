@@ -115,7 +115,13 @@ function AgentTreeRow({ node, depth, location, spaceSlug }) {
  * name navigates to its Main View (`/space/:slug`); the chevron
  * toggles the agent list.
  */
-function SpaceRow({ space, spaceAgents, location, isSelected }) {
+function SpaceRow({
+  space,
+  spaceAgents,
+  spaceBrokenAgents,
+  location,
+  isSelected,
+}) {
   const [expanded, setExpanded] = useState(isSelected);
   const tree = buildAgentTree(spaceAgents);
 
@@ -170,6 +176,44 @@ function SpaceRow({ space, spaceAgents, location, isSelected }) {
               spaceSlug={space.slug}
             />
           ))}
+          {spaceBrokenAgents.length > 0 && (
+            <li className="pl-3 mt-2">
+              <p className="text-xs font-semibold text-amber-700 uppercase tracking-wider mb-1">
+                Needs Repair
+              </p>
+              <ul className="space-y-1">
+                {spaceBrokenAgents.map((entry) => {
+                  const path = `/space/${space.slug}/agent/${encodeURIComponent(entry.name)}`;
+                  const isCurrent = location.pathname === path;
+                  return (
+                    <li key={entry.name}>
+                      <div
+                        className={`
+                          flex items-center justify-between rounded-lg group
+                          transition-colors duration-200
+                          ${
+                            isCurrent
+                              ? "bg-amber-50 text-amber-800 border border-amber-200"
+                              : "text-gray-700 hover:bg-amber-50"
+                          }
+                        `}
+                      >
+                        <Link
+                          to={path}
+                          className="flex items-center gap-2 min-w-0 flex-1 px-3 py-2"
+                        >
+                          <div className="w-2 h-2 rounded-full flex-shrink-0 bg-amber-500 animate-pulse" />
+                          <span className="truncate text-sm font-medium">
+                            {entry.name}
+                          </span>
+                        </Link>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </li>
+          )}
         </ul>
       )}
     </li>
@@ -247,6 +291,9 @@ export function Sidebar() {
                   key={space.id}
                   space={space}
                   spaceAgents={agents.filter((a) => a.space_id === space.id)}
+                  spaceBrokenAgents={brokenAgents.filter(
+                    (a) => a.space_id === space.id,
+                  )}
                   location={location}
                   isSelected={currentSpaceId === space.id}
                 />
@@ -254,60 +301,6 @@ export function Sidebar() {
             </ul>
           )}
         </div>
-
-        {/* Needs Repair section — surfaces persistent rows whose
-            GenServer is gone (e.g. crashed, or never created in
-            this BEAM session with persistence on). The store
-            keeps them in `state.brokenAgents` from the lobby's
-            `init`/`broken_agents_updated` payloads; the agents
-            list above cannot show them because their GenServer
-            is dead. Clicking a row navigates to the chat page,
-            which triggers the existing :model_missing banner
-            and the "Choose replacement model" CTA. The row
-            disappears from this list once the user picks a
-            replacement (`applyAgentModelUpdate` drops the
-            name from `state.brokenAgents`). */}
-        {brokenAgents.length > 0 && (
-          <div className="mb-6">
-            <h2 className="text-xs font-semibold text-amber-700 uppercase tracking-wider mb-2 px-2 flex items-center gap-2">
-              <span>Needs Repair</span>
-              <span className="text-amber-600 bg-amber-100 px-1.5 py-0.5 rounded-full normal-case font-medium tracking-normal">
-                {brokenAgents.length}
-              </span>
-            </h2>
-
-            <ul className="space-y-1">
-              {brokenAgents.map((entry) => {
-                const isCurrent = location.pathname === `/agent/${entry.name}`;
-                return (
-                  <li key={entry.name}>
-                    <div
-                      className={`
-                        flex items-center justify-between rounded-lg group
-                        transition-colors duration-200
-                        ${
-                          isCurrent
-                            ? "bg-amber-50 text-amber-800 border border-amber-200"
-                            : "text-gray-700 hover:bg-amber-50"
-                        }
-                      `}
-                    >
-                      <Link
-                        to={`/agent/${entry.name}`}
-                        className="flex items-center gap-2 min-w-0 flex-1 px-3 py-2"
-                      >
-                        <div className="w-2 h-2 rounded-full flex-shrink-0 bg-amber-500 animate-pulse" />
-                        <span className="truncate text-sm font-medium">
-                          {entry.name}
-                        </span>
-                      </Link>
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-        )}
 
         {/* About Link */}
         <Link

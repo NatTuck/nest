@@ -8,7 +8,7 @@
  * - Multiple keys sorted by combined length (ascending)
  * - Stable sort for ties (preserves insertion order)
  * - Non-string values (numbers, booleans, nested objects, arrays)
- * - Realistic tool call args (read_file, write_file)
+ * - Realistic tool call args (file-read, file-write)
  */
 
 import { describe, it, expect } from "vitest";
@@ -63,7 +63,7 @@ describe("sortArgumentsForDisplay", () => {
       expect(Object.keys(result)).toEqual(["v", "path", "command"]);
     });
 
-    it("puts a short path before a long content (realistic write_file case)", () => {
+    it("puts a short path before a long content (realistic file-write case)", () => {
       const input = {
         path: "/home/user/file.txt",
         content:
@@ -133,13 +133,13 @@ describe("sortArgumentsForDisplay", () => {
   });
 
   describe("realistic tool call shapes", () => {
-    it("read_file: single key returned as-is", () => {
+    it("file-read: single key returned as-is", () => {
       const input = { path: "/home/user/some-file.md" };
       const result = sortArgumentsForDisplay(input);
       expect(Object.keys(result)).toEqual(["path"]);
     });
 
-    it("shell_cmd: short command first, long arg last", () => {
+    it("shell-cmd: short command first, long arg last", () => {
       const input = {
         command: "find /very/long/path -name '*.md' -type f -exec wc -l {} +",
         verbose: true,

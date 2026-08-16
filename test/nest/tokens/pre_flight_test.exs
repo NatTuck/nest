@@ -3,12 +3,13 @@ defmodule Nest.Tokens.PreFlightTest do
   Tests for `Nest.Tokens.PreFlight`.
 
   Covers:
-  - All four decision outcomes (:fits, :needs_compaction, :cannot_compact, :no_limit_known)
+  - All three decision outcomes (:fits, :needs_compaction, :cannot_compact)
   - Boundary cases (exactly at the limit, one over)
   - Custom reserve values
   - Convenience wrapper with message lists
   - :cannot_compact when the system prompt alone exceeds the limit
   - :cannot_compact when there is no conversation head to summarize
+  - A nil/non-positive context_limit raises (never a silent bypass)
   """
 
   use ExUnit.Case, async: true
@@ -21,9 +22,14 @@ defmodule Nest.Tokens.PreFlightTest do
   alias Nest.Tokens.PreFlight
 
   describe "check/3" do
-    test "no_limit_known when context_limit is nil" do
-      assert PreFlight.check(1000, nil) == :no_limit_known
-      assert PreFlight.check(1000, nil, 5000) == :no_limit_known
+    test "raises on a nil context_limit (limit is never optional)" do
+      assert_raise FunctionClauseError, fn -> PreFlight.check(1000, nil) end
+      assert_raise FunctionClauseError, fn -> PreFlight.check(1000, nil, 5000) end
+    end
+
+    test "raises on a non-positive context_limit" do
+      assert_raise FunctionClauseError, fn -> PreFlight.check(1000, 0) end
+      assert_raise FunctionClauseError, fn -> PreFlight.check(1000, -1) end
     end
 
     test ":fits when projected total is well within the limit" do
@@ -79,9 +85,9 @@ defmodule Nest.Tokens.PreFlightTest do
       assert PreFlight.check_messages(messages, 32_768) == :fits
     end
 
-    test "no_limit_known when context_limit is nil" do
+    test "raises on a nil context_limit (limit is never optional)" do
       messages = [{:user, %User{parts: [%Part.Text{text: "Hello"}]}}]
-      assert PreFlight.check_messages(messages, nil) == :no_limit_known
+      assert_raise FunctionClauseError, fn -> PreFlight.check_messages(messages, nil) end
     end
 
     test "empty message list with reasonable context is :fits" do
@@ -194,6 +200,49 @@ defmodule Nest.Tokens.PreFlightTest do
       limit = projected + 8_192 - 100
 
       assert PreFlight.check_messages(messages, limit, 8_192) == :needs_compaction
+    end
+  end
+
+  describe "ensure_passed!/2" do
+    test "returns :ok when the list fits" do
+      messages = [
+        {:system, %System{parts: [%Part.Text{text: "You are helpful"}]}},
+        {:user, %User{parts: [%Part.Text{text: "Hello"}]}}
+      ]
+
+      assert PreFlight.ensure_passed!(messages, 100_000) == :ok
+    end
+
+    test "returns :ok when compaction is needed but possible (summarizable head)" do
+      sys = {:system, %System{parts: [%Part.Text{text: "You are helpful."}]}}
+      old_user = {:user, %User{parts: [%Part.Text{text: "earlier question"}]}}
+
+      assistant =
+        {:assistant, %Assistant{parts: [%Part.Text{text: String.duplicate("ab ", 4_000)}]}}
+
+      new_user = {:user, %User{parts: [%Part.Text{text: "new question"}]}}
+      messages = [sys, old_user, assistant, new_user]
+
+      projected = Estimator.estimate_messages(messages)
+      limit = projected + 8_192 - 100
+
+      assert PreFlight.ensure_passed!(messages, limit) == :ok
+    end
+
+    test "raises when the system prompt alone overflows (:cannot_compact)" do
+      huge_system_text = String.duplicate("a ", 30_000)
+      sys = {:system, %System{parts: [%Part.Text{text: huge_system_text}]}}
+      user = {:user, %User{parts: [%Part.Text{text: "hi"}]}}
+
+      assert_raise ArgumentError, fn ->
+        PreFlight.ensure_passed!([sys, user], 32_768)
+      end
+    end
+
+    test "raises when the list is :cannot_compact even for an empty list below the reserve floor" do
+      assert_raise ArgumentError, fn ->
+        PreFlight.ensure_passed!([], 8_000)
+      end
     end
   end
 end

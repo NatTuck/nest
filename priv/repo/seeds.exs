@@ -16,25 +16,26 @@
 # We recommend using the bang functions (`insert!`, `update!`
 # and so on) as they will fail if something goes wrong.
 
+alias Nest.Accounts.{Password, User}
 alias Nest.Blueprints
 alias Nest.Vocations
 
-# Any vocation that gets any `agents/*` tool gets all of them
-# (`agents/spawn`, `agents/query`, `agents/list`,
-# `agents/archive`). `agents/spawn` is additionally stripped for
+# Any vocation that gets any `agents-*` tool gets all of them
+# (`agents-spawn`, `agents-query`, `agents-list`,
+# `agents-archive`). `agents-spawn` is additionally stripped for
 # max-depth agents at spawn/compaction time (the others remain).
-agents_tools = ["agents/spawn", "agents/query", "agents/list", "agents/archive"]
+agents_tools = ["agents-spawn", "agents-query", "agents-list", "agents-archive"]
 
 # Default - minimal vocation for agents without a specific role.
 # Used as the fallback for any test or runtime path that needs a
 # vocation but doesn't care which one. Single "chat" mode with the
-# `context` tool only (no filesystem, no network).
+# context tools only (no filesystem, no network).
 {:ok, default_vocation} =
   Vocations.upsert_vocation(%{
     name: "Default",
     description: "A minimal default vocation for agents without a specific role",
     system_prompt: "You are a helpful assistant.",
-    tools: ["context" | agents_tools],
+    tools: ["context-check", "context-compact" | agents_tools],
     modes: %{
       "chat" => %{
         "description" => "General conversation.",
@@ -68,23 +69,24 @@ agents_tools = ["agents/spawn", "agents/query", "agents/list", "agents/archive"]
     You can assume you're running on a typical Linux system and that ripgrep is installed
     as `rg`. 
 
-    The "shell_cmd" tool will automatically save long outputs to a file. Use the 
+    The "shell-cmd" tool will automatically save long outputs to a file. Use the 
     "max_result_tokens" parameter to control when this happens and avoid wasting context
     on large shell command outputs. Use this mechanism instead of throwing away potentially
     useful outputs with head, tail, grep, or similar for commands that cost significant time
     or access remote APIs.
     """,
     tools: [
-      "read_file",
-      "inspect_file",
-      "write_file",
-      "edit",
-      "shell_cmd",
-      "context",
-      "agents/spawn",
-      "agents/query",
-      "agents/list",
-      "agents/archive"
+      "file-read",
+      "file-inspect",
+      "file-write",
+      "file-edit",
+      "shell-cmd",
+      "context-check",
+      "context-compact",
+      "agents-spawn",
+      "agents-query",
+      "agents-list",
+      "agents-archive"
     ],
     modes: %{
       "build" => %{
@@ -116,15 +118,16 @@ agents_tools = ["agents/spawn", "agents/query", "agents/list", "agents/archive"]
 
 all_tools =
   [
-    "read_file",
-    "inspect_file",
-    "write_file",
-    "edit",
-    "shell_cmd",
-    "context"
+    "file-read",
+    "file-inspect",
+    "file-write",
+    "file-edit",
+    "shell-cmd",
+    "context-check",
+    "context-compact"
   ] ++ agents_tools
 
-minimal_tools = ["context" | agents_tools]
+minimal_tools = ["context-check", "context-compact" | agents_tools]
 
 # Chat — general-purpose conversation with no filesystem/network.
 {:ok, chat_vocation} =
@@ -261,3 +264,22 @@ end
     root_vocation_id: grading_vid,
     spawnable_vocation_ids: []
   })
+
+# ---- Default dev user ----
+# Convenience login for local development: `nat` / `bacon4242`,
+# created as an admin. Idempotent — only inserts when the username
+# is absent, so re-running the seed script is safe.
+case Nest.Repo.get_by(User, username: "nat") do
+  nil ->
+    Nest.Repo.insert!(
+      %User{}
+      |> User.registration_changeset(%{
+        username: "nat",
+        password_hash: Password.hash("bacon4242"),
+        is_admin: true
+      })
+    )
+
+  _user ->
+    :ok
+end

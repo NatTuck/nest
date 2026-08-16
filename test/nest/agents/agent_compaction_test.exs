@@ -33,7 +33,7 @@ defmodule Nest.Agents.AgentCompactionTest do
   end
 
   # Build a `{:assistant, %Assistant{}}` with a single
-  # `%Part.ToolUse{name: "context"}` at index `idx`. Tests use
+  # `%Part.ToolUse{name: "context-compact"}` at index `idx`. Tests use
   # this when they need a carried tool_use without pre-seeding
   # `state.chat_state.messages` via `:sys.replace_state`.
   defp compact_tool_call_msg(idx) do
@@ -43,8 +43,8 @@ defmodule Nest.Agents.AgentCompactionTest do
        parts: [
          %Part.ToolUse{
            id: "c1",
-           name: "context",
-           arguments: %{"action" => "compact"}
+           name: "context-compact",
+           arguments: %{}
          }
        ],
        api_logs: []
@@ -65,7 +65,7 @@ defmodule Nest.Agents.AgentCompactionTest do
       MockClient.set_tool_response(%{
         text: "Reading file",
         tool_calls: [
-          %{id: "call_1", name: "shell_cmd", arguments: %{"command" => "echo small"}}
+          %{id: "call_1", name: "shell-cmd", arguments: %{"command" => "echo small"}}
         ]
       })
 
@@ -107,9 +107,9 @@ defmodule Nest.Agents.AgentCompactionTest do
     test "order is preserved when multiple tool calls are returned" do
       MockClient.set_stream_events([
         {:text, "Running two commands"},
-        {:tool_call_start, %{id: "call_1", name: "shell_cmd"}},
+        {:tool_call_start, %{id: "call_1", name: "shell-cmd"}},
         {:tool_call_delta, %{id: "call_1", arguments_delta: "{}"}},
-        {:tool_call_start, %{id: "call_2", name: "shell_cmd"}},
+        {:tool_call_start, %{id: "call_2", name: "shell-cmd"}},
         {:tool_call_delta, %{id: "call_2", arguments_delta: "{}"}},
         {:usage, %{input_tokens: 100, output_tokens: 50, total_tokens: 150}},
         {:finish_reason, "tool_calls"},
@@ -120,12 +120,12 @@ defmodule Nest.Agents.AgentCompactionTest do
              tool_calls: [
                %Nest.Messages.ToolCall{
                  id: "call_1",
-                 name: "shell_cmd",
+                 name: "shell-cmd",
                  arguments: %{"command" => "echo first"}
                },
                %Nest.Messages.ToolCall{
                  id: "call_2",
-                 name: "shell_cmd",
+                 name: "shell-cmd",
                  arguments: %{"command" => "echo second"}
                }
              ],
@@ -276,16 +276,16 @@ defmodule Nest.Agents.AgentCompactionTest do
     end
   end
 
-  describe "context tool compaction flow" do
-    test "context tool with action=compact triggers compaction and returns to idle" do
-      # First LLM call emits the context.compact tool call.
+  describe "context-compact tool flow" do
+    test "context-compact triggers compaction and returns to idle" do
+      # First LLM call emits the context-compact tool call.
       MockClient.set_tool_response(%{
         text: "compacting",
         tool_calls: [
           %{
             id: "call_1",
-            name: "context",
-            arguments: %{"action" => "compact", "focus" => "recent"}
+            name: "context-compact",
+            arguments: %{"focus" => "recent"}
           }
         ]
       })

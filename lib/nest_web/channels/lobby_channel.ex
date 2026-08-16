@@ -122,7 +122,9 @@ defmodule NestWeb.LobbyChannel do
     case Spaces.create_space_with_root_agent(user_id, attrs) do
       {:ok, %Spaces.Space{} = space, agent_name} ->
         broadcast_space_created(socket, space, agent_name, model, vocation_id, attrs)
-        {:reply, {:ok, %{"space_id" => space.id, "name" => agent_name}}, socket}
+
+        {:reply, {:ok, %{"space_id" => space.id, "name" => agent_name, "slug" => space.slug}},
+         socket}
 
       {:error, reason} ->
         Logger.error("Failed to create space: #{inspect(reason)}")

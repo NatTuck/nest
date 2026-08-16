@@ -79,14 +79,14 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
       big_output = String.duplicate("z", 40_000)
 
       tools = [
-        make_tool("shell_cmd", fn _, _ -> {:ok, big_output} end)
+        make_tool("shell-cmd", fn _, _ -> {:ok, big_output} end)
       ]
 
       c = ctx(tools, context_limit: 20_000, tmp_path: dir)
 
       assert [result] =
                BatchSizer.run(
-                 [call("c1", "shell_cmd", %{"command" => "cat foo"})],
+                 [call("c1", "shell-cmd", %{"command" => "cat foo"})],
                  c
                )
 
@@ -105,7 +105,7 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
       output = String.duplicate("q", 1_000)
 
       tools = [
-        make_tool("shell_cmd", fn _, _ -> {:ok, output} end)
+        make_tool("shell-cmd", fn _, _ -> {:ok, output} end)
       ]
 
       c = ctx(tools, context_limit: 100_000, tmp_path: dir)
@@ -113,7 +113,7 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
       assert [result] =
                BatchSizer.run(
                  [
-                   call("c1", "shell_cmd", %{
+                   call("c1", "shell-cmd", %{
                      "command" => "ls",
                      "max_result_tokens" => 100
                    })
@@ -135,7 +135,7 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
       big_output = String.duplicate("r", 40_000)
 
       tools = [
-        make_tool("shell_cmd", fn _, _ -> {:ok, big_output} end)
+        make_tool("shell-cmd", fn _, _ -> {:ok, big_output} end)
       ]
 
       c = ctx(tools, context_limit: 20_000, tmp_path: dir)
@@ -143,7 +143,7 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
       assert [result] =
                BatchSizer.run(
                  [
-                   call("c1", "shell_cmd", %{
+                   call("c1", "shell-cmd", %{
                      "command" => "cat big",
                      "max_result_tokens" => 100_000
                    })
@@ -157,16 +157,16 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
     end
 
     test "output below cap stays inline (no summary)", %{tmp_dir: dir} do
-      tools = [small_tool("shell_cmd")]
+      tools = [small_tool("shell-cmd")]
       c = ctx(tools, context_limit: 100_000, tmp_path: dir)
 
       assert [%ToolResult{content: content, is_error: false}] =
                BatchSizer.run(
-                 [call("c1", "shell_cmd", %{"command" => "ls"})],
+                 [call("c1", "shell-cmd", %{"command" => "ls"})],
                  c
                )
 
-      assert content == "small output for shell_cmd"
+      assert content == "small output for shell-cmd"
       refute content =~ "saved to"
       assert Enum.all?(File.ls!(dir), &(not String.starts_with?(&1, "exec-")))
     end
@@ -177,7 +177,7 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
       file = Path.join(dir, "big.txt")
       File.write!(file, big_content)
 
-      tools = [Tools.get_function("read_file", dir)]
+      tools = [Tools.get_function("file-read", dir)]
       c = ctx(tools, context_limit: 100_000)
 
       log =
@@ -185,7 +185,7 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
           assert [%ToolResult{is_error: true, content: error}] =
                    BatchSizer.run(
                      [
-                       call("c1", "read_file", %{
+                       call("c1", "file-read", %{
                          "path" => "big.txt",
                          "max_result_tokens" => 100
                        })
@@ -202,26 +202,21 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
       # self-documenting and the log doesn't escape to the test
       # output.
       assert log =~ "BatchSizer produced is_error=true tool result"
-      assert log =~ "tool=read_file"
+      assert log =~ "tool=file-read"
     end
 
-    test "no cap when context_limit is nil (degraded-but-hopeful path)" do
+    test "raises when context_limit is nil (limit is never optional)" do
       big_output = String.duplicate("w", 40_000)
 
       tools = [
-        make_tool("shell_cmd", fn _, _ -> {:ok, big_output} end)
+        make_tool("shell-cmd", fn _, _ -> {:ok, big_output} end)
       ]
 
       c = ctx(tools, context_limit: nil)
 
-      assert [%ToolResult{content: content, is_error: false}] =
-               BatchSizer.run(
-                 [call("c1", "shell_cmd", %{"command" => "ls"})],
-                 c
-               )
-
-      assert content == big_output
-      refute content =~ "saved to"
+      assert_raise FunctionClauseError, fn ->
+        BatchSizer.run([call("c1", "shell-cmd", %{"command" => "ls"})], c)
+      end
     end
   end
 end

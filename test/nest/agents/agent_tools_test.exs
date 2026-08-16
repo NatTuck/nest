@@ -36,7 +36,7 @@ defmodule Nest.Agents.AgentToolsTest do
       MockClient.set_tool_response(%{
         text: "I'll run that command for you",
         tool_calls: [
-          %{id: "call_123", name: "shell_cmd", arguments: %{"command" => "ls -la"}}
+          %{id: "call_123", name: "shell-cmd", arguments: %{"command" => "ls -la"}}
         ]
       })
 
@@ -78,7 +78,7 @@ defmodule Nest.Agents.AgentToolsTest do
 
       assert tool_call, "expected tool call with id=call_123"
       assert tool_call.id == "call_123"
-      assert tool_call.name == "shell_cmd"
+      assert tool_call.name == "shell-cmd"
 
       assert_receive {:chat_status, %{status: "executing_tools"}}, 500
       assert_receive {:chat_message, {:tool, tool_msg}}
@@ -102,7 +102,7 @@ defmodule Nest.Agents.AgentToolsTest do
 
       [tool_result] = tool_msg.parts
       assert tool_result.tool_call_id == "call_123"
-      assert tool_result.name == "shell_cmd"
+      assert tool_result.name == "shell-cmd"
       assert tool_result.arguments == %{"command" => "ls -la"}
 
       MockClient.clear()
@@ -112,7 +112,7 @@ defmodule Nest.Agents.AgentToolsTest do
       MockClient.set_tool_response(%{
         text: "I'll run that command",
         tool_calls: [
-          %{id: "call_789", name: "shell_cmd", arguments: %{"command" => "echo hello"}}
+          %{id: "call_789", name: "shell-cmd", arguments: %{"command" => "echo hello"}}
         ]
       })
 
@@ -214,7 +214,7 @@ defmodule Nest.Agents.AgentToolsTest do
       MockClient.set_tool_response(%{
         text: "I'll check the directory",
         tool_calls: [
-          %{id: "call_first", name: "shell_cmd", arguments: %{"command" => "ls"}}
+          %{id: "call_first", name: "shell-cmd", arguments: %{"command" => "ls"}}
         ]
       })
 
@@ -270,7 +270,7 @@ defmodule Nest.Agents.AgentToolsTest do
       MockClient.set_tool_response(%{
         text: "I'll execute that",
         tool_calls: [
-          %{id: "call_api_001", name: "shell_cmd", arguments: %{"command" => "echo test"}}
+          %{id: "call_api_001", name: "shell-cmd", arguments: %{"command" => "echo test"}}
         ]
       })
 
@@ -333,7 +333,7 @@ defmodule Nest.Agents.AgentToolsTest do
           tool_calls: [
             %{
               id: "call_#{:rand.uniform(100_000)}",
-              name: "shell_cmd",
+              name: "shell-cmd",
               arguments: %{"command" => "echo loop"}
             }
           ]
@@ -377,7 +377,7 @@ defmodule Nest.Agents.AgentToolsTest do
           tool_calls: [
             %{
               id: "call_#{:rand.uniform(100_000)}",
-              name: "shell_cmd",
+              name: "shell-cmd",
               arguments: %{"command" => "echo loop"}
             }
           ]
@@ -419,7 +419,7 @@ defmodule Nest.Agents.AgentToolsTest do
           tool_calls: [
             %{
               id: "call_#{:rand.uniform(100_000)}",
-              name: "shell_cmd",
+              name: "shell-cmd",
               arguments: %{"command" => "echo loop"}
             }
           ]
@@ -436,7 +436,7 @@ defmodule Nest.Agents.AgentToolsTest do
         tool_calls: [
           %{
             id: "call_#{:rand.uniform(100_000)}",
-            name: "shell_cmd",
+            name: "shell-cmd",
             arguments: %{"command" => "echo last"}
           }
         ]

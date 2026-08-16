@@ -12,6 +12,8 @@ defmodule Nest.Agents.Agent.Init do
 
   require Logger
 
+  @default_limit 128_000
+
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Persistence, as: AgentPersistence
@@ -91,11 +93,11 @@ defmodule Nest.Agents.Agent.Init do
   end
 
   # Non-clone agents spawned at max depth must not be able to
-  # spawn children, so `agents/spawn` is dropped from their
+  # spawn children, so `agents-spawn` is dropped from their
   # tool list. Clones never set `:exclude_spawn` — they must
   # keep the exact tool list of their parent (hard rule).
   defp maybe_exclude_spawn(tool_names, %{exclude_spawn: true}),
-    do: Enum.reject(tool_names, &(&1 == "agents/spawn"))
+    do: Enum.reject(tool_names, &(&1 == "agents-spawn"))
 
   defp maybe_exclude_spawn(tool_names, _attrs), do: tool_names
 
@@ -229,15 +231,16 @@ defmodule Nest.Agents.Agent.Init do
     2. Auto-discovery cache (`Nest.Models.context_limit/2`)
     3. Provider-wide `default-context-limit` on `[providers.<name>]`
 
-  When none has a value, returns `{nil, nil}` and the system
-  prompt's context-limit section is omitted entirely.
+  When none has a value, falls back to `{@default_limit, :default}` (a
+  conservative 128k floor, matching `Nest.LLM.Discover`) so an agent
+  always has a context limit rather than none at all.
 
   The resolutions are captured as 0-arity closures so each
   lookup only runs when the previous tier missed — calling
   `Nest.Models.context_limit/2` once costs a `GenServer.call`,
   and `DotConfig.load/0` reads + parses TOML.
   """
-  @spec initial_context_limit(map()) :: {non_neg_integer() | nil, atom() | nil}
+  @spec initial_context_limit(map()) :: {non_neg_integer(), atom()}
   def initial_context_limit(model) do
     provider = model[:provider] || model["provider"]
     model_name = model_name(model)
@@ -267,7 +270,7 @@ defmodule Nest.Agents.Agent.Init do
       _ ->
         case provider_default.() do
           limit when is_integer(limit) -> {limit, :provider_default}
-          _ -> {nil, nil}
+          _ -> {@default_limit, :default}
         end
     end
   end

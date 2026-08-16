@@ -67,7 +67,15 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
         "vocation_id" => vocation_id
       })
 
-    assert_reply ref, :ok, %{"space_id" => space_id, "name" => agent_name}
+    # `assert_reply/3` defaults to a 100ms receive timeout, which is
+    # too tight here. Agent creation is genuinely heavy under the
+    # 64-way parallel channel-test load: the transaction spawns the
+    # agent (whose `init/1` resolves context_limit via a GenServer.call
+    # to the singleton `Nest.Models` plus a DotConfig TOML parse) and
+    # writes the space/agent/system-message rows — all serialized
+    # across parallel tests on those singletons. Wait up to 500ms for
+    # the reply rather than racing a flake.
+    assert_reply ref, :ok, %{"space_id" => space_id, "name" => agent_name, "slug" => _slug}, 500
 
     AgentTestHelpers.ensure_cleanup(agent_name)
 
@@ -101,7 +109,7 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
           "vocation_id" => vocation_id
         })
 
-      assert_reply ref, :ok, %{"space_id" => space_id, "name" => name}
+      assert_reply ref, :ok, %{"space_id" => space_id, "name" => name, "slug" => _slug}, 500
 
       AgentTestHelpers.ensure_cleanup(name)
 

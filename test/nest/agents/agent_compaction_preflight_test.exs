@@ -36,7 +36,7 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
         name: "Compaction Preflight Test #{Elixir.System.unique_integer([:positive])}",
         description: "For preflight tests",
         system_prompt: "Test prompt.",
-        tools: ["context"],
+        tools: ["context-check", "context-compact"],
         modes: %{
           "build" => %{
             "description" => "Test mode",
@@ -187,7 +187,7 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
   end
 
   # Build a `{:assistant, %Assistant{}}` with a single
-  # `%Part.ToolUse{name: "context"}` at index `idx`.
+  # `%Part.ToolUse{name: "context-compact"}` at index `idx`.
   defp compact_tool_call_msg(idx) do
     {:assistant,
      %Assistant{
@@ -195,8 +195,8 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
        parts: [
          %Part.ToolUse{
            id: "c1",
-           name: "context",
-           arguments: %{"action" => "compact"}
+           name: "context-compact",
+           arguments: %{}
          }
        ],
        api_logs: []

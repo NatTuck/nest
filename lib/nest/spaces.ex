@@ -179,12 +179,12 @@ defmodule Nest.Spaces do
   Resolve the spawnable-vocation whitelist for a space.
 
   Returns `nil` when the space has no blueprint (or the
-  blueprint is missing) — meaning `agents/spawn` allows any
+  blueprint is missing) — meaning `agents-spawn` allows any
   vocation. Otherwise returns the blueprint's
   `spawnable_vocation_ids` (an empty list also means
   unrestricted; a non-empty list is a strict whitelist).
 
-  `agents/spawn` enforcement lives in
+  `agents-spawn` enforcement lives in
   `Nest.Agents.Supervisor.spawn_agent_in_space/3`, which calls
   this to authorize a requested `vocation_id`.
   """

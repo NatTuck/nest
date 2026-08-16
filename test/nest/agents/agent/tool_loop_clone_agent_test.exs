@@ -1,6 +1,6 @@
 defmodule Nest.Agents.Agent.ToolLoopCloneAgentTest do
   @moduledoc """
-  Tests for `agents/spawn` interception inside
+  Tests for `agents-spawn` interception inside
   `ToolLoop.execute/3`.
 
   The full E2E flow (driving MockClient through the
@@ -9,7 +9,7 @@ defmodule Nest.Agents.Agent.ToolLoopCloneAgentTest do
   `clone_agent_flow_test.exs`. This module exercises the
   interception narrowly:
 
-    * `agents/spawn` tool calls (with a `query`) route
+    * `agents-spawn` tool calls (with a `query`) route
       through the synchronous parent-via-tuple path.
     * The parent's `{:error, _}` reply surfaces as an
       `is_error` ToolResult rather than crashing the
@@ -88,8 +88,8 @@ defmodule Nest.Agents.Agent.ToolLoopCloneAgentTest do
     def handle_info(_, state), do: {:noreply, state}
   end
 
-  describe "agents/spawn routing" do
-    test "a single agents/spawn call with a query produces a synthetic ToolResult with the child's response" do
+  describe "agents-spawn routing" do
+    test "a single agents-spawn call with a query produces a synthetic ToolResult with the child's response" do
       {:ok, _pid} =
         FakeParent.start(
           via: AgentsRegistry.via_tuple(AgentTestHelpers.current_space_id(), "parent-success"),
@@ -104,7 +104,7 @@ defmodule Nest.Agents.Agent.ToolLoopCloneAgentTest do
           [
             %ToolCall{
               id: "call-1",
-              name: "agents/spawn",
+              name: "agents-spawn",
               arguments: %{"query" => "say hi"}
             }
           ]
@@ -113,7 +113,7 @@ defmodule Nest.Agents.Agent.ToolLoopCloneAgentTest do
       assert [
                %ToolResult{
                  tool_call_id: "call-1",
-                 name: "agents/spawn",
+                 name: "agents-spawn",
                  arguments: %{"query" => "say hi"},
                  content: "delegate said hello",
                  is_error: false
@@ -135,13 +135,13 @@ defmodule Nest.Agents.Agent.ToolLoopCloneAgentTest do
           [
             %ToolCall{
               id: "call-1",
-              name: "agents/spawn",
+              name: "agents-spawn",
               arguments: %{"query" => "x"}
             }
           ]
         )
 
-      assert [%ToolResult{tool_call_id: "call-1", name: "agents/spawn", is_error: true}] = results
+      assert [%ToolResult{tool_call_id: "call-1", name: "agents-spawn", is_error: true}] = results
       assert results |> hd() |> Map.get(:content) =~ "max_depth_reached"
     end
   end

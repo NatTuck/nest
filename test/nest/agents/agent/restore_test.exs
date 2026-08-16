@@ -47,7 +47,7 @@ defmodule Nest.Agents.Agent.RestoreTest do
       {:tool,
        %Nest.Messages.Tool{
          index: 4,
-         parts: [%Part.ToolResult{tool_call_id: "c1", name: "shell_cmd", content: "ok"}],
+         parts: [%Part.ToolResult{tool_call_id: "c1", name: "shell-cmd", content: "ok"}],
          api_logs: []
        }},
       {:assistant,
@@ -63,7 +63,7 @@ defmodule Nest.Agents.Agent.RestoreTest do
   defp fixture_state do
     tools = [
       %ToolDef{
-        name: "shell_cmd",
+        name: "shell-cmd",
         description: "run a shell command",
         parameters_schema: %{"type" => "object"},
         function: fn _, _ -> {:ok, "ok"} end
@@ -178,7 +178,7 @@ defmodule Nest.Agents.Agent.RestoreTest do
          %ToolMsg{
            index: 4,
            parts: [
-             %Part.ToolResult{tool_call_id: "c1", name: "shell_cmd", content: "ok"}
+             %Part.ToolResult{tool_call_id: "c1", name: "shell-cmd", content: "ok"}
            ],
            api_logs: []
          }},

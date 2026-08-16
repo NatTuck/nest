@@ -189,7 +189,7 @@ defmodule NestWeb.AgentChannelAdvancedTest do
         tool_calls: [
           %{
             id: "call_shell_001",
-            name: "shell_cmd",
+            name: "shell-cmd",
             arguments: %{"command" => "echo test"}
           }
         ]
@@ -239,7 +239,7 @@ defmodule NestWeb.AgentChannelAdvancedTest do
            parts: [
              %Part.ToolResult{
                tool_call_id: "call_123",
-               name: "shell_cmd",
+               name: "shell-cmd",
                content: "total 4\ndrwxrwxr-x 1 user user 18 May 29 10:49 .",
                arguments: %{"command" => "ls -la"},
                is_error: false
@@ -262,7 +262,7 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       assert is_map(part)
       assert part["kind"] == "tool_result"
       assert part["toolCallId"] == "call_123"
-      assert part["name"] == "shell_cmd"
+      assert part["name"] == "shell-cmd"
       assert part["content"] == "total 4\ndrwxrwxr-x 1 user user 18 May 29 10:49 ."
       assert part["arguments"] == %{"command" => "ls -la"}
       assert part["isError"] == false
@@ -287,7 +287,7 @@ defmodule NestWeb.AgentChannelAdvancedTest do
            parts: [
              %Part.ToolResult{
                tool_call_id: "call_123",
-               name: "shell_cmd",
+               name: "shell-cmd",
                content: "total 4\ndrwxrwxr-x 1 user user 18 May 29 10:49 .",
                arguments: %{"command" => "ls -la"},
                is_error: false
@@ -353,7 +353,7 @@ defmodule NestWeb.AgentChannelAdvancedTest do
                  tool_results: [
                    %{
                      "tool_call_id" => "call_456",
-                     "name" => "shell_cmd",
+                     "name" => "shell-cmd",
                      "content" => "output",
                      "is_error" => false
                    }

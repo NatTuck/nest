@@ -319,7 +319,7 @@ defmodule NestWeb.AgentChannelMessagingTest do
         tool_calls: [
           %{
             id: "call_stream_1",
-            name: "shell_cmd",
+            name: "shell-cmd",
             arguments: %{"command" => "ls"}
           }
         ]
@@ -341,7 +341,7 @@ defmodule NestWeb.AgentChannelMessagingTest do
                      2000
 
       assert p1["toolCallId"] == "call_stream_1"
-      assert p1["toolCallName"] == "shell_cmd"
+      assert p1["toolCallName"] == "shell-cmd"
 
       assert_receive %Phoenix.Socket.Message{
                        event: "chat:delta",
@@ -385,7 +385,7 @@ defmodule NestWeb.AgentChannelMessagingTest do
       assert tool_use_parts != nil,
              "expected an assistant message with a tool_use part"
 
-      assert tool_use_parts["name"] == "shell_cmd"
+      assert tool_use_parts["name"] == "shell-cmd"
       assert tool_use_parts["arguments"] == %{"command" => "ls"}
 
       MockClient.clear()
