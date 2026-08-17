@@ -351,6 +351,15 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
       assert ctx_tail_role == :assistant
       assert Enum.any?(ctx_tail_struct.parts, &match?(%Part.ToolUse{id: "call_1"}, &1))
 
+      # Wait for the resumed turn to fully complete before the test
+      # returns. The carried `context-check` result is appended via
+      # `{:tool_results_received, _}` asynchronously; the idle broadcast
+      # (from `ChatTurnHandler.chat_idle/1`) fires only once that append
+      # and the final LLM response are done. Without this barrier the
+      # agent's in-flight DB write races the test's sandbox-owner exit,
+      # producing the intermittent "owner exited" Postgrex disconnect.
+      assert_receive {:chat_status, %{status: "idle"}}, 500
+
       # Silence the unused-variable warning on `log` — captured so
       # debugging output (if any) lands in the test report.
       _ = log
