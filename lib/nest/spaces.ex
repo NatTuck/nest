@@ -22,15 +22,36 @@ defmodule Nest.Spaces do
   alias Nest.Vocations
 
   @doc """
-  List all spaces visible to the given user.
+  List all non-archived spaces visible to the given user.
 
   A user sees every space they created (`created_by_user_id
   == user.id`). Multi-participant sharing is deferred.
+
+  Archived spaces are excluded here so nothing about them is
+  loaded into the main space list; inspect those via
+  `list_archived_for_user/1`.
   """
   @spec list_for_user(integer()) :: [Space.t()]
   def list_for_user(user_id) do
     from(s in Space,
       where: s.created_by_user_id == ^user_id,
+      where: s.archived == false,
+      order_by: [asc: s.inserted_at]
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  List all archived spaces visible to the given user.
+
+  Owner-only: a user sees the archived spaces they created.
+  This is the query behind the archived-spaces list view.
+  """
+  @spec list_archived_for_user(integer()) :: [Space.t()]
+  def list_archived_for_user(user_id) do
+    from(s in Space,
+      where: s.created_by_user_id == ^user_id,
+      where: s.archived == true,
       order_by: [asc: s.inserted_at]
     )
     |> Repo.all()
@@ -153,6 +174,61 @@ defmodule Nest.Spaces do
         |> Space.changeset(attrs)
         |> Repo.update()
     end
+  end
+
+  @doc """
+  Archive a space, hiding it from the main space list.
+
+  Stops every live agent in the space (via `stop_space_agents/1`,
+  which cascade-walks `ChildRegistry` for descendants) and marks
+  the space row archived. Agent rows are NOT marked archived —
+  they remain intact so unarchiving restores the space cleanly,
+  and agents are rehydrated on demand when the space is reopened.
+
+  The archived space remains inspectable via
+  `list_archived_for_user/1` and reversible via `unarchive_space/1`.
+
+  Returns `:ok` on success, `{:error, :not_found}` if the space
+  doesn't exist.
+  """
+  @spec archive_space(integer()) :: :ok | {:error, :not_found}
+  def archive_space(id) when is_integer(id) do
+    case Repo.get(Space, id) do
+      nil ->
+        {:error, :not_found}
+
+      space ->
+        stop_space_agents(space.id)
+        set_archived(space.id, true)
+    end
+  end
+
+  @doc """
+  Restore an archived space to the main space list.
+
+  Flips the `archived` flag back to `false`. Agents are not
+  eagerly restarted — they're rehydrated on demand by
+  `Supervisor.get_agent/2` when the user next opens the space.
+
+  Returns `:ok` on success, `{:error, :not_found}` if the space
+  doesn't exist.
+  """
+  @spec unarchive_space(integer()) :: :ok | {:error, :not_found}
+  def unarchive_space(id) when is_integer(id) do
+    case Repo.get(Space, id) do
+      nil ->
+        {:error, :not_found}
+
+      space ->
+        set_archived(space.id, false)
+    end
+  end
+
+  defp set_archived(id, archived) do
+    from(s in Space, where: s.id == ^id)
+    |> Repo.update_all(set: [archived: archived, updated_at: Persistence.now()])
+
+    :ok
   end
 
   # Terminate every live agent in the space. `stop_agent/2`

@@ -34,6 +34,11 @@ const initialState = {
   // payload's space struct (id, name, slug, ...). The sidebar
   // renders these as the top level of its tree.
   spaces: [],
+  // The user's archived spaces, from the lobby `init`
+  // `archived_spaces` payload. Archived spaces are hidden from
+  // the main `spaces` list and only surfaced in the sidebar's
+  // archived section.
+  archivedSpaces: [],
   // The currently-selected space id. Client-side state seeded
   // from the first space in the lobby `init` `spaces` payload.
   currentSpaceId: null,
@@ -366,6 +371,9 @@ export const useStore = create(
       agents: [],
       // The user's spaces, from the lobby `init` `spaces` payload.
       spaces: [],
+      // The user's archived spaces, from the lobby `init`
+      // `archived_spaces` payload. Hidden from the main list.
+      archivedSpaces: [],
       // The currently-selected space id. Client-side state seeded
       // from the first space in the lobby `init` `spaces` payload.
       currentSpaceId: null,
@@ -470,12 +478,46 @@ export const useStore = create(
       },
 
       /**
-       * Remove a deleted space (from a future `space:deleted` push).
+       * Set the user's archived spaces list from the lobby `init`
+       * `archived_spaces` payload.
        */
-      removeSpace: (spaceId) => {
-        set((state) => ({
-          spaces: state.spaces.filter((s) => s.id !== spaceId),
-        }));
+      setArchivedSpaces: (archivedSpaces) => {
+        set({ archivedSpaces: archivedSpaces || [] });
+      },
+
+      /**
+       * Move a space into the archived list (from the
+       * `space:archived` push). If the archived space was the
+       * selected space, clear the selection.
+       */
+      archiveSpace: (spaceId) => {
+        set((state) => {
+          const space = state.spaces.find((s) => s.id === spaceId);
+          if (!space) return state;
+          return {
+            spaces: state.spaces.filter((s) => s.id !== spaceId),
+            archivedSpaces: [...state.archivedSpaces, space],
+            currentSpaceId:
+              state.currentSpaceId === spaceId ? null : state.currentSpaceId,
+          };
+        });
+      },
+
+      /**
+       * Restore an archived space to the main list (from the
+       * `space:unarchived` push).
+       */
+      unarchiveSpace: (spaceId) => {
+        set((state) => {
+          const space = state.archivedSpaces.find((s) => s.id === spaceId);
+          if (!space) return state;
+          return {
+            spaces: [...state.spaces, space],
+            archivedSpaces: state.archivedSpaces.filter(
+              (s) => s.id !== spaceId,
+            ),
+          };
+        });
       },
 
       /**

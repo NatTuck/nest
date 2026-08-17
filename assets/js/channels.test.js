@@ -31,6 +31,8 @@ import {
   suggestSpaceName,
   createInvite,
   revokeInvite,
+  archiveSpace,
+  unarchiveSpace,
   clearAgentChannels,
 } from "./channels";
 
@@ -397,6 +399,100 @@ describe("channels", () => {
       });
     });
 
+    it("should move a space into archivedSpaces on space:archived", async () => {
+      setNextJoinResult("lobby", {
+        autoInit: {
+          agents: [],
+          models: [],
+          spaces: [{ id: 1, name: "alpha", slug: "alpha" }],
+        },
+      });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().spaces.length, 1);
+      });
+      // The init handler seeds `currentSpaceId` to the first space.
+      assert.strictEqual(useStore.getState().currentSpaceId, 1);
+
+      simulateServerEvent("lobby", "space:archived", { space_id: 1 });
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().spaces.length, 0);
+        assert.strictEqual(useStore.getState().archivedSpaces.length, 1);
+      });
+      assert.strictEqual(useStore.getState().archivedSpaces[0].id, 1);
+      // Archiving the selected space clears the selection.
+      assert.strictEqual(useStore.getState().currentSpaceId, null);
+    });
+
+    it("should restore a space into the active list on space:unarchived", async () => {
+      setNextJoinResult("lobby", {
+        autoInit: {
+          agents: [],
+          models: [],
+          archived_spaces: [{ id: 1, name: "alpha", slug: "alpha" }],
+        },
+      });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().archivedSpaces.length, 1);
+      });
+
+      simulateServerEvent("lobby", "space:unarchived", { space_id: 1 });
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().archivedSpaces.length, 0);
+        assert.strictEqual(useStore.getState().spaces.length, 1);
+      });
+      assert.strictEqual(useStore.getState().spaces[0].id, 1);
+    });
+
+    it("ignores space:archived / space:unarchived without a space_id", async () => {
+      setNextJoinResult("lobby", {
+        autoInit: {
+          agents: [],
+          models: [],
+          spaces: [{ id: 1, name: "alpha", slug: "alpha" }],
+        },
+      });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().spaces.length, 1);
+      });
+
+      // A malformed payload (no `space_id`) must not crash the
+      // handler or move any space.
+      simulateServerEvent("lobby", "space:archived", {});
+      simulateServerEvent("lobby", "space:unarchived", {});
+      simulateServerEvent("lobby", "space:archived", { space_id: null });
+
+      await vi.waitFor(() => {
+        return true;
+      });
+
+      assert.strictEqual(useStore.getState().spaces.length, 1);
+      assert.strictEqual(useStore.getState().archivedSpaces.length, 0);
+    });
+
+    it("should set archivedSpaces from the init payload", async () => {
+      setNextJoinResult("lobby", {
+        autoInit: {
+          agents: [],
+          models: [],
+          archived_spaces: [{ id: 9, name: "zeta", slug: "zeta" }],
+        },
+      });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().archivedSpaces.length, 1);
+      });
+      assert.strictEqual(useStore.getState().archivedSpaces[0].id, 9);
+    });
+
     it("should update store.models on models_updated event", async () => {
       // Triggered by `rescanModels/0` on the new-agent page (and
       // any future rescan CTA). The lobby rebroadcasts the merged
@@ -560,6 +656,71 @@ describe("channels", () => {
 
       await vi.waitFor(() => {
         assert.strictEqual(captured, "not-called");
+      });
+    });
+  });
+
+  describe("archiveSpace and unarchiveSpace", () => {
+    it("is a no-op when not connected to the lobby", () => {
+      // `lobbyChannel` is null before `joinLobby`; the guard returns
+      // without pushing.
+      archiveSpace(
+        1,
+        () => {},
+        () => {},
+      );
+      unarchiveSpace(
+        1,
+        () => {},
+        () => {},
+      );
+    });
+
+    it("forwards the archive_space ok payload to onOk", async () => {
+      setNextJoinResult("lobby", { autoInit: { agents: [], models: [] } });
+      joinLobby();
+      setNextPushResult("lobby", "archive_space", { ok: {} });
+
+      let captured = "not-called";
+      archiveSpace(5, () => {
+        captured = "called";
+      });
+
+      await vi.waitFor(() => {
+        assert.strictEqual(captured, "called");
+      });
+    });
+
+    it("forwards the unarchive_space error payload to onError", async () => {
+      setNextJoinResult("lobby", { autoInit: { agents: [], models: [] } });
+      joinLobby();
+      setNextPushResult("lobby", "unarchive_space", {
+        error: { reason: "forbidden" },
+      });
+
+      let captured = null;
+      unarchiveSpace(
+        5,
+        () => {},
+        (err) => {
+          captured = err;
+        },
+      );
+
+      await vi.waitFor(() => {
+        assert.strictEqual(captured.reason, "forbidden");
+      });
+    });
+
+    it("is a no-op when unarchiveSpace succeeds without an onOk", async () => {
+      setNextJoinResult("lobby", { autoInit: { agents: [], models: [] } });
+      joinLobby();
+      setNextPushResult("lobby", "unarchive_space", { ok: {} });
+
+      unarchiveSpace(5);
+
+      await vi.waitFor(() => {
+        return true;
       });
     });
   });

@@ -23,12 +23,14 @@ defmodule NestWeb.AgentChannel do
   alias Nest.Agents.PersistedAgent
   alias Nest.Messages.Message
   alias Nest.Messages.Streaming
+  alias Nest.Spaces
 
   @impl true
   def join("agent:" <> rest, _payload, socket) do
     current_user = socket.assigns.current_user
 
     with {:ok, space_id, name} <- parse_topic(rest),
+         :ok <- ensure_space_active(space_id),
          {:ok, agent} <- Agents.get_agent(space_id, name),
          :ok <- authorize_join(space_id, name, current_user) do
       joined_join(space_id, name, agent, current_user, socket)
@@ -41,6 +43,9 @@ defmodule NestWeb.AgentChannel do
 
       {:error, :forbidden} ->
         {:error, %{"reason" => "forbidden"}}
+
+      {:error, :space_archived} ->
+        {:error, %{"reason" => "space_archived"}}
 
       {:error, reason} ->
         Logger.warning("agent:#{rest} channel join failed: #{inspect(reason)}")
@@ -103,6 +108,18 @@ defmodule NestWeb.AgentChannel do
           {:ok, %PersistedAgent{} = row} -> authorize_from(row, current_user)
           {:error, :not_found} -> {:error, :not_found}
         end
+    end
+  end
+
+  # An archived space cannot be joined for chat. Even an owner
+  # must inspect it from the archived-spaces view rather than
+  # talk to its agents, which are stopped on archive. A space
+  # with no row at all falls through to the `get_agent` path,
+  # which surfaces the normal `:not_found`.
+  defp ensure_space_active(space_id) do
+    case Spaces.get_space(space_id) do
+      %Nest.Spaces.Space{archived: true} -> {:error, :space_archived}
+      _ -> :ok
     end
   end
 

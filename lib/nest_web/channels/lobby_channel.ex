@@ -61,6 +61,7 @@ defmodule NestWeb.LobbyChannel do
     user = socket.assigns.current_user
 
     spaces = Spaces.list_for_user(user.id)
+    archived_spaces = Spaces.list_archived_for_user(user.id)
     agents = visible_agents_across_spaces(spaces, user.id)
     vocations = Vocations.list_vocations()
     blueprints = Blueprints.list_blueprints()
@@ -68,6 +69,7 @@ defmodule NestWeb.LobbyChannel do
 
     push(socket, "init", %{
       spaces: spaces,
+      archived_spaces: archived_spaces,
       agents: agents,
       broken_agents: [],
       blueprints: blueprints,
@@ -166,6 +168,50 @@ defmodule NestWeb.LobbyChannel do
   @impl true
   def handle_in("suggest_space_name", _payload, socket) do
     {:reply, {:ok, %{"name" => Spaces.suggest_name()}}, socket}
+  end
+
+  @impl true
+  def handle_in("archive_space", %{"space_id" => space_id}, socket)
+      when is_integer(space_id) do
+    user = socket.assigns.current_user
+
+    case Authz.authorize_space_owner(space_id, user) do
+      {:ok, :owner} ->
+        # The owner check already resolved the space, so archiving
+        # can only succeed here (no `:not_found` possible).
+        _ = Spaces.archive_space(space_id)
+        broadcast_space_archived(socket, space_id)
+        {:reply, {:ok, %{}}, socket}
+
+      {:error, reason} ->
+        {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
+    end
+  end
+
+  def handle_in("archive_space", _payload, socket) do
+    {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
+  end
+
+  @impl true
+  def handle_in("unarchive_space", %{"space_id" => space_id}, socket)
+      when is_integer(space_id) do
+    user = socket.assigns.current_user
+
+    case Authz.authorize_space_owner(space_id, user) do
+      {:ok, :owner} ->
+        # The owner check already resolved the space, so restoring
+        # can only succeed here (no `:not_found` possible).
+        _ = Spaces.unarchive_space(space_id)
+        broadcast_space_unarchived(socket, space_id)
+        {:reply, {:ok, %{}}, socket}
+
+      {:error, reason} ->
+        {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
+    end
+  end
+
+  def handle_in("unarchive_space", _payload, socket) do
+    {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
   end
 
   @impl true
@@ -268,6 +314,14 @@ defmodule NestWeb.LobbyChannel do
 
   defp maybe_vocation_id(%{"blueprint_id" => bid}, _vocation_id) when not is_nil(bid), do: nil
   defp maybe_vocation_id(_payload, vocation_id), do: vocation_id
+
+  defp broadcast_space_archived(socket, space_id) do
+    broadcast(socket, "space:archived", %{"space_id" => space_id})
+  end
+
+  defp broadcast_space_unarchived(socket, space_id) do
+    broadcast(socket, "space:unarchived", %{"space_id" => space_id})
+  end
 
   defp broadcast_space_created(socket, space, agent_name, model, vocation_id, attrs) do
     push(socket, "space:created", %{

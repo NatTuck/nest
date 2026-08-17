@@ -122,6 +122,30 @@ defmodule NestWeb.AgentChannelTest do
       assert log =~ "agent:1:any-missing channel join failed"
     end
 
+    test "returns space_archived when the space has been archived", %{user: user} do
+      # Use a SEPARATE space (not the setup's, which the setup's
+      # channel is already joined to) so archiving it doesn't tear
+      # down the setup's socket. The guard rejects the archived
+      # space before any agent lookup, so the agent name can be
+      # arbitrary.
+      {:ok, %Nest.Spaces.Space{id: space_id}} =
+        Nest.Spaces.create_space(user.id, %{
+          name: "arch-join-#{System.unique_integer([:positive])}"
+        })
+
+      assert :ok = Nest.Spaces.archive_space(space_id)
+
+      token = Process.get(:agent_test_token)
+      {:ok, connected} = connect(NestWeb.UserSocket, %{"token" => token})
+
+      assert {:error, %{"reason" => "space_archived"}} =
+               subscribe_and_join(
+                 connected,
+                 NestWeb.AgentChannel,
+                 "agent:#{space_id}:anything"
+               )
+    end
+
     test "receives a topic broadcast exactly once (no double subscription)", %{
       agent_id: id,
       space_id: space_id

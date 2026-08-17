@@ -16,6 +16,7 @@ import {
   resetMockSocket,
   setNextJoinResult,
   connectSocket,
+  captureNextPush,
 } from "../__mocks__/phoenix";
 
 function withStore(agents) {
@@ -403,5 +404,113 @@ describe("Sidebar Needs Repair rows", () => {
 
     // Space B is collapsed, so its broken agent is not rendered.
     expect(screen.queryByText(/broken-b/i)).toBeNull();
+  });
+});
+
+describe("Sidebar space archiving", () => {
+  it("renders an Archive button on each active space row", async () => {
+    act(() => {
+      useStore.setState({
+        spaces: [{ id: 1, slug: "my-space", name: "My Space" }],
+        archivedSpaces: [],
+        currentSpaceId: 1,
+      });
+    });
+
+    render(
+      <MemoryRouter>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    const button = screen.getByRole("button", { name: /archive my space/i });
+    expect(button).toBeInTheDocument();
+  });
+
+  it("clicking Archive pushes archive_space with the space id", async () => {
+    act(() => {
+      useStore.setState({
+        spaces: [{ id: 7, slug: "my-space", name: "My Space" }],
+        archivedSpaces: [],
+        currentSpaceId: 1,
+      });
+    });
+
+    render(
+      <MemoryRouter>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    const pushPromise = captureNextPush("lobby", "archive_space");
+    act(() => {
+      screen.getByRole("button", { name: /archive my space/i }).click();
+    });
+
+    const payload = await pushPromise;
+    expect(payload).toEqual({ space_id: 7 });
+  });
+
+  it("renders archived spaces in the Archived section", () => {
+    act(() => {
+      useStore.setState({
+        spaces: [{ id: 1, slug: "active", name: "Active Space" }],
+        archivedSpaces: [{ id: 2, slug: "gone", name: "Gone Space" }],
+        currentSpaceId: 1,
+      });
+    });
+
+    render(
+      <MemoryRouter>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText("Archived")).toBeInTheDocument();
+    expect(screen.getByText("Gone Space")).toBeInTheDocument();
+    // The archived space is not in the active list.
+    expect(screen.getByRole("link", { name: /gone space/i })).toBeTruthy();
+  });
+
+  it("does not render the Archived section when there are no archived spaces", () => {
+    act(() => {
+      useStore.setState({
+        spaces: [{ id: 1, slug: "active", name: "Active Space" }],
+        archivedSpaces: [],
+        currentSpaceId: 1,
+      });
+    });
+
+    render(
+      <MemoryRouter>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByText("Archived")).toBeNull();
+  });
+
+  it("clicking Restore pushes unarchive_space with the space id", async () => {
+    act(() => {
+      useStore.setState({
+        spaces: [],
+        archivedSpaces: [{ id: 3, slug: "gone", name: "Gone Space" }],
+        currentSpaceId: null,
+      });
+    });
+
+    render(
+      <MemoryRouter>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    const pushPromise = captureNextPush("lobby", "unarchive_space");
+    act(() => {
+      screen.getByRole("button", { name: /restore gone space/i }).click();
+    });
+
+    const payload = await pushPromise;
+    expect(payload).toEqual({ space_id: 3 });
   });
 });

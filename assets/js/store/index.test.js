@@ -12,6 +12,67 @@ describe("store", () => {
     vi.restoreAllMocks();
   });
 
+  describe("space archiving", () => {
+    const s1 = { id: 1, name: "alpha", slug: "alpha" };
+    const s2 = { id: 2, name: "beta", slug: "beta" };
+
+    it("setSpaces and setArchivedSpaces populate their lists", () => {
+      useStore.getState().setSpaces([s1]);
+      useStore.getState().setArchivedSpaces([s2]);
+
+      expect(useStore.getState().spaces).toEqual([s1]);
+      expect(useStore.getState().archivedSpaces).toEqual([s2]);
+    });
+
+    it("archiveSpace moves a space to archivedSpaces and clears a matching selection", () => {
+      useStore.getState().setSpaces([s1, s2]);
+      useStore.getState().setCurrentSpaceId(s1.id);
+
+      useStore.getState().archiveSpace(s1.id);
+
+      expect(useStore.getState().spaces).toEqual([s2]);
+      expect(useStore.getState().archivedSpaces).toEqual([s1]);
+      expect(useStore.getState().currentSpaceId).toBeNull();
+    });
+
+    it("archiveSpace preserves the selection when it points elsewhere", () => {
+      useStore.getState().setSpaces([s1, s2]);
+      useStore.getState().setCurrentSpaceId(s2.id);
+
+      useStore.getState().archiveSpace(s1.id);
+
+      expect(useStore.getState().currentSpaceId).toBe(s2.id);
+    });
+
+    it("archiveSpace is a no-op for an unknown id", () => {
+      useStore.getState().setSpaces([s1]);
+      useStore.getState().archiveSpace(999);
+
+      expect(useStore.getState().spaces).toEqual([s1]);
+      expect(useStore.getState().archivedSpaces).toEqual([]);
+    });
+
+    it("unarchiveSpace moves a space back to the active list", () => {
+      useStore.getState().setSpaces([s2]);
+      useStore.getState().setArchivedSpaces([s1]);
+
+      useStore.getState().unarchiveSpace(s1.id);
+
+      // Appended to the end of the active list, matching `addSpace`.
+      expect(useStore.getState().spaces).toEqual([s2, s1]);
+      expect(useStore.getState().archivedSpaces).toEqual([]);
+    });
+
+    it("unarchiveSpace is a no-op for an unknown id", () => {
+      useStore.getState().setSpaces([s2]);
+      useStore.getState().setArchivedSpaces([s1]);
+
+      useStore.getState().unarchiveSpace(999);
+
+      expect(useStore.getState().archivedSpaces).toEqual([s1]);
+    });
+  });
+
   describe("operations on non-existent agents", () => {
     it("gracefully handles all operations when agent cache does not exist", () => {
       const initialCache = useStore.getState().agentsCache;

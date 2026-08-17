@@ -29,6 +29,7 @@ defmodule Nest.Spaces.Space do
              :blueprint_id,
              :workspace_path,
              :created_by_user_id,
+             :archived,
              :inserted_at,
              :updated_at
            ]}
@@ -40,6 +41,12 @@ defmodule Nest.Spaces.Space do
     field :blueprint_id, :integer
     field :workspace_path, :string
     field :created_by_user_id, :integer
+
+    # Lifecycle. `archived` soft-hides the space from the main
+    # space list (`Spaces.list_for_user/1`) and stops its agents.
+    # The row and its agents are preserved so the owner can
+    # inspect and unarchive it via the archived-spaces view.
+    field :archived, :boolean, default: false
 
     timestamps(type: :utc_datetime)
   end

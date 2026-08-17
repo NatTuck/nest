@@ -26,21 +26,48 @@ defmodule NestWeb.LobbyChannel.Authz do
 
   alias Nest.Agents
   alias Nest.Agents.PersistedAgent
+  alias Nest.Spaces
 
   @doc "Owner-or-shared check used by `change_model`."
   def authorize_owner_or_shared(space_id, name, current_user) do
-    case fetch_visibility(space_id, name) do
-      {:ok, %{created_by_user_id: id}} when id == current_user.id ->
+    with :ok <- ensure_space_active(space_id) do
+      case fetch_visibility(space_id, name) do
+        {:ok, %{created_by_user_id: id}} when id == current_user.id ->
+          {:ok, :owner}
+
+        {:ok, %{shared: shared}} when shared == true ->
+          {:ok, :shared}
+
+        {:ok, _} ->
+          {:error, :forbidden}
+
+        :error ->
+          {:error, :not_found}
+      end
+    end
+  end
+
+  @doc "Owner-only check for space-level operations (archive/unarchive)."
+  def authorize_space_owner(space_id, current_user) do
+    case Spaces.get_space(space_id) do
+      %Nest.Spaces.Space{created_by_user_id: id} when id == current_user.id ->
         {:ok, :owner}
 
-      {:ok, %{shared: shared}} when shared == true ->
-        {:ok, :shared}
-
-      {:ok, _} ->
+      %Nest.Spaces.Space{} ->
         {:error, :forbidden}
 
-      :error ->
+      _ ->
         {:error, :not_found}
+    end
+  end
+
+  # A space-level mutation must not proceed on an archived
+  # space — its agents are stopped and the space is hidden.
+  defp ensure_space_active(space_id) do
+    case Spaces.get_space(space_id) do
+      %Nest.Spaces.Space{archived: true} -> {:error, :space_archived}
+      %Nest.Spaces.Space{} -> :ok
+      _ -> {:error, :not_found}
     end
   end
 

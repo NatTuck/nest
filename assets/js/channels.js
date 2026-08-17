@@ -79,6 +79,7 @@ export function joinLobby(onOk, onError) {
     store.setModels(payload.models || []);
     store.setVocations(payload.vocations || []);
     store.setSpaces(payload.spaces || []);
+    store.setArchivedSpaces(payload.archived_spaces || []);
     store.setBlueprints(payload.blueprints || []);
     store.setSuggestedName(payload.suggested_name);
     // `currentSpaceId` is client-side state. Seed it to the first
@@ -151,6 +152,25 @@ export function joinLobby(onOk, onError) {
     const store = getStore();
     if (payload?.space) {
       store.addSpace(payload.space);
+    }
+  });
+
+  // Broadcast when a space is archived. The server stops the
+  // space's agents; we move the space into the archived list
+  // (which also clears the selection if it pointed at it).
+  lobbyChannel.on("space:archived", (payload) => {
+    const store = getStore();
+    if (payload?.space_id != null) {
+      store.archiveSpace(payload.space_id);
+    }
+  });
+
+  // Broadcast when an archived space is restored. We move the
+  // space back into the main list.
+  lobbyChannel.on("space:unarchived", (payload) => {
+    const store = getStore();
+    if (payload?.space_id != null) {
+      store.unarchiveSpace(payload.space_id);
     }
   });
 
@@ -650,6 +670,39 @@ export function createSpace(model, vocationId, onOk, onError, opts = {}) {
 
   lobbyChannel
     .push("create_space", payload)
+    .receive("ok", (resp) => {
+      if (onOk) onOk(resp);
+    })
+    .receive("error", (err) => {
+      if (onError) onError(err);
+    });
+}
+
+/**
+ * Archive a space (hide it from the main space list). The server
+ * stops the space's agents; the store moves it into the archived
+ * list on the `space:archived` broadcast.
+ */
+export function archiveSpace(spaceId, onOk, onError) {
+  if (!lobbyChannel) return;
+  lobbyChannel
+    .push("archive_space", { space_id: spaceId })
+    .receive("ok", (resp) => {
+      if (onOk) onOk(resp);
+    })
+    .receive("error", (err) => {
+      if (onError) onError(err);
+    });
+}
+
+/**
+ * Restore an archived space to the main space list. The store
+ * moves it back on the `space:unarchived` broadcast.
+ */
+export function unarchiveSpace(spaceId, onOk, onError) {
+  if (!lobbyChannel) return;
+  lobbyChannel
+    .push("unarchive_space", { space_id: spaceId })
     .receive("ok", (resp) => {
       if (onOk) onOk(resp);
     })

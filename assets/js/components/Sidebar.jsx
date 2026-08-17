@@ -18,6 +18,7 @@
 import { useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useStore } from "../store";
+import { archiveSpace, unarchiveSpace } from "../channels";
 
 /**
  * Build a tree from a flat agents list. Each agent's
@@ -164,6 +165,28 @@ function SpaceRow({
             />
           </svg>
         </button>
+        <button
+          type="button"
+          onClick={() => archiveSpace(space.id)}
+          className="p-1 mr-1 rounded hover:bg-gray-100 text-gray-400 opacity-0 group-hover:opacity-100 transition-opacity"
+          aria-label={`Archive ${space.name}`}
+          title="Archive space"
+        >
+          <svg
+            className="w-4 h-4"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M5 8h14M5 8l1.5 11h11L19 8M9 8V6a2 2 0 012-2h2a2 2 0 012 2v2"
+            />
+          </svg>
+        </button>
       </div>
       {expanded && (
         <ul className="space-y-1 mt-1">
@@ -221,11 +244,50 @@ function SpaceRow({
 }
 
 /**
+ * A single archived space row. Archived spaces are stopped and
+ * hidden from the main list; this row shows the name and a
+ * Restore button that moves it back into the active list.
+ */
+function ArchivedSpaceRow({ space, location }) {
+  const isCurrent = location.pathname === `/space/${space.slug}`;
+
+  return (
+    <li key={space.id}>
+      <div
+        className={`
+          flex items-center justify-between rounded-lg group
+          transition-colors duration-200
+          ${isCurrent ? "bg-gray-200 text-gray-800" : "text-gray-500 hover:bg-gray-100"}
+        `}
+      >
+        <Link
+          to={`/space/${encodeURIComponent(space.slug)}`}
+          className="flex items-center gap-2 min-w-0 flex-1 px-3 py-2"
+        >
+          <div className="w-2 h-2 rounded-full flex-shrink-0 bg-gray-400" />
+          <span className="truncate text-sm font-medium">{space.name}</span>
+        </Link>
+        <button
+          type="button"
+          onClick={() => unarchiveSpace(space.id)}
+          className="mr-1 rounded border border-gray-300 px-2 py-0.5 text-xs text-gray-600 hover:bg-gray-200 opacity-0 group-hover:opacity-100 transition-opacity"
+          aria-label={`Restore ${space.name}`}
+          title="Restore space"
+        >
+          Restore
+        </button>
+      </div>
+    </li>
+  );
+}
+
+/**
  * Sidebar component
  */
 export function Sidebar() {
   const location = useLocation();
-  const { agents, brokenAgents, spaces, currentSpaceId } = useStore();
+  const { agents, brokenAgents, spaces, archivedSpaces, currentSpaceId } =
+    useStore();
 
   const isActive = (path) => {
     if (path === "/spaces/new") {
@@ -301,6 +363,25 @@ export function Sidebar() {
             </ul>
           )}
         </div>
+
+        {/* Archived Spaces Section — stopped + hidden spaces that
+            can be inspected and restored */}
+        {(archivedSpaces?.length ?? 0) > 0 && (
+          <div className="mb-6">
+            <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2 px-2">
+              Archived
+            </h2>
+            <ul className="space-y-1">
+              {archivedSpaces.map((space) => (
+                <ArchivedSpaceRow
+                  key={space.id}
+                  space={space}
+                  location={location}
+                />
+              ))}
+            </ul>
+          </div>
+        )}
 
         {/* About Link */}
         <Link

@@ -240,6 +240,121 @@ defmodule Nest.SpacesTest do
     end
   end
 
+  describe "archive_space/1 and unarchive_space/1" do
+    test "hides an archived space from list_for_user/1 and shows it in list_archived_for_user/1",
+         %{user_id: user_id} do
+      {:ok, %Space{id: space_id}} =
+        Spaces.create_space(user_id, %{name: "arch-1-#{System.unique_integer([:positive])}"})
+
+      assert [%Space{id: ^space_id}] = Spaces.list_for_user(user_id)
+      assert Spaces.list_archived_for_user(user_id) == []
+
+      assert :ok = Spaces.archive_space(space_id)
+
+      assert Spaces.list_for_user(user_id) == []
+      assert [%Space{id: ^space_id}] = Spaces.list_archived_for_user(user_id)
+      assert %Space{id: ^space_id, archived: true} = Spaces.get_space(space_id)
+
+      assert :ok = Spaces.unarchive_space(space_id)
+
+      assert [%Space{id: ^space_id}] = Spaces.list_for_user(user_id)
+      assert Spaces.list_archived_for_user(user_id) == []
+      assert %Space{id: ^space_id, archived: false} = Spaces.get_space(space_id)
+    end
+
+    test "archiving stops the space's running agents but does not mark them archived",
+         %{user_id: user_id} do
+      vid = AgentTestHelpers.vocation_id_for_test()
+
+      {:ok, %Space{id: space_id}} =
+        Spaces.create_space(user_id, %{name: "arch-stop-#{System.unique_integer([:positive])}"})
+
+      model = %{name: "qwen3.5-plus", provider: "model-studio"}
+      agent_a = "arch-agent-a-#{System.unique_integer([:positive])}"
+
+      assert {:ok, ^agent_a} =
+               Agents.create_agent(space_id, model, name: agent_a, vocation_id: vid)
+
+      assert {:ok, pid} = Agents.Registry.lookup(space_id, agent_a)
+      ref = Process.monitor(pid)
+
+      assert :ok = Spaces.archive_space(space_id)
+
+      # The agent process is terminated. Monitor + DOWN is deterministic
+      # (a raw Registry lookup races the teardown/registry cleanup).
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_000
+
+      # Agent row still present and NOT marked archived — unarchive restores it.
+      assert {:ok, %Nest.Agents.PersistedAgent{archived: false}} =
+               Persistence.fetch_agent(space_id, agent_a)
+
+      assert :ok = Spaces.unarchive_space(space_id)
+    end
+
+    test "archiving other users' spaces is not possible via list queries (owner-only listing)",
+         %{user_id: user_id} do
+      {:ok, %Space{id: space_id}} =
+        Spaces.create_space(user_id, %{name: "arch-owner-#{System.unique_integer([:positive])}"})
+
+      assert :ok = Spaces.archive_space(space_id)
+
+      # A different user sees neither the active nor archived space.
+      other_id = user_id + 10_000
+      assert Spaces.list_for_user(other_id) == []
+      assert Spaces.list_archived_for_user(other_id) == []
+    end
+
+    test "returns {:error, :not_found} for a missing space" do
+      assert {:error, :not_found} = Spaces.archive_space(-1)
+      assert {:error, :not_found} = Spaces.unarchive_space(-1)
+    end
+
+    test "archiving is idempotent and unarchiving an active space is a no-op", %{
+      user_id: user_id
+    } do
+      {:ok, %Space{id: space_id}} =
+        Spaces.create_space(user_id, %{name: "arch-idem-#{System.unique_integer([:positive])}"})
+
+      assert :ok = Spaces.archive_space(space_id)
+      assert :ok = Spaces.archive_space(space_id)
+      assert %Space{id: ^space_id, archived: true} = Spaces.get_space(space_id)
+
+      # Unarchiving an already-active space leaves it active.
+      assert :ok = Spaces.unarchive_space(space_id)
+      assert :ok = Spaces.unarchive_space(space_id)
+      assert %Space{id: ^space_id, archived: false} = Spaces.get_space(space_id)
+    end
+
+    test "archiving a space with multiple running agents stops them all", %{user_id: user_id} do
+      vid = AgentTestHelpers.vocation_id_for_test()
+
+      {:ok, %Space{id: space_id}} =
+        Spaces.create_space(user_id, %{name: "arch-multi-#{System.unique_integer([:positive])}"})
+
+      model = %{name: "qwen3.5-plus", provider: "model-studio"}
+
+      agents =
+        for i <- 1..2 do
+          name = "arch-multi-agent-#{i}-#{System.unique_integer([:positive])}"
+          {:ok, ^name} = Agents.create_agent(space_id, model, name: name, vocation_id: vid)
+          name
+        end
+
+      pids =
+        Enum.map(agents, fn name ->
+          {:ok, pid} = Agents.Registry.lookup(space_id, name)
+          ref = Process.monitor(pid)
+          {name, pid, ref}
+        end)
+
+      assert :ok = Spaces.archive_space(space_id)
+
+      for {_name, pid, ref} <- pids do
+        assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_000
+      end
+    end
+  end
+
   describe "suggest_name/0" do
     test "returns a non-empty adjective-animal name" do
       name = Spaces.suggest_name()
