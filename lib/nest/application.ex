@@ -27,6 +27,9 @@ defmodule Nest.Application do
       ChatTurnSupervisor,
       {Task.Supervisor, name: Nest.Agents.TaskSupervisor},
       {Task.Supervisor, name: Nest.Models.TaskSupervisor},
+      # Endpoint probing + cache (started before Models so the model
+      # manager can read probed discovery paths)
+      Nest.EndpointCache,
       # Start model manager (queries auto-providers)
       Nest.Models
     ]

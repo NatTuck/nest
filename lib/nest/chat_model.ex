@@ -7,6 +7,8 @@ defmodule Nest.ChatModel do
   require Logger
 
   alias Nest.DotConfig
+  alias Nest.EndpointCache
+  alias Nest.EndpointProbe
   alias Nest.LLM.AnthropicClient
   alias Nest.LLM.ClientConfig
   alias Nest.LLM.Discover
@@ -98,21 +100,28 @@ defmodule Nest.ChatModel do
 
   @doc """
   Build a client config from a provider struct and a model name.
+
+  When the provider's endpoints have been probed (`Nest.EndpointCache`)
+  the resolved protocol and chat base URL are used; otherwise it falls
+  back to the provider's configured `protocol` and `base_url`, which is
+  exactly the pre-probe behaviour.
   """
   def build_client_config(%DotConfig.Provider{} = provider, model_name) do
-    case provider.protocol do
-      "anthropic" -> build_anthropic_config(provider, model_name)
-      _ -> build_openai_config(provider, model_name)
+    structure = EndpointCache.get(provider) || EndpointProbe.naive_structure(provider)
+
+    case structure.protocol do
+      :anthropic -> build_anthropic_config(provider, model_name, structure)
+      _ -> build_openai_config(provider, model_name, structure)
     end
   end
 
-  defp build_openai_config(provider, model_name) do
+  defp build_openai_config(provider, model_name, structure) do
     api_key = DotConfig.resolve_api_key(provider.api_key)
     actual = ensure_model_name(provider, model_name)
 
     %ClientConfig{
       client: OpenAIClient,
-      base_url: provider.base_url,
+      base_url: structure.chat_base_url,
       api_key: api_key,
       model: actual,
       receive_timeout: receive_timeout_ms(provider),
@@ -121,13 +130,13 @@ defmodule Nest.ChatModel do
     |> wrap_ok()
   end
 
-  defp build_anthropic_config(provider, model_name) do
+  defp build_anthropic_config(provider, model_name, structure) do
     api_key = DotConfig.resolve_api_key(provider.api_key)
     actual = ensure_model_name(provider, model_name)
 
     %ClientConfig{
       client: AnthropicClient,
-      base_url: provider.base_url,
+      base_url: structure.chat_base_url,
       api_key: api_key,
       model: actual,
       receive_timeout: receive_timeout_ms(provider),
@@ -248,18 +257,24 @@ defmodule Nest.ChatModel do
   end
 
   defp fetch_models_body(provider) do
-    # The probe URL is the discovery URL — `GET /models`. When the
-    # provider configures a `probe-base-url`, use it; otherwise
-    # fall back to `base-url`. Providers whose chat and listing
-    # endpoints live at different paths (e.g. Olla-style discovery
-    # vs. an OpenAI-compatible `/olla/proxy/v1/chat/completions`)
-    # need this split.
-    url = (provider.probe_base_url || provider.base_url) <> "/models"
+    # The discovery URL comes from the endpoint cache when probed,
+    # otherwise from config (`probe-base-url` when set, else
+    # `base-url`) with `/models` appended. Providers whose chat and
+    # listing endpoints live at different paths (e.g. Olla-style
+    # discovery vs. an OpenAI-compatible `/olla/proxy/v1/chat/
+    # completions`) benefit from the probed path.
+    structure = EndpointCache.get(provider) || EndpointProbe.naive_structure(provider)
+    url = discovery_url(structure)
     headers = [{"Authorization", "Bearer #{DotConfig.resolve_api_key(provider.api_key)}"}]
 
     case Req.get(url, headers: headers) do
       {:ok, %{status: 200, body: body}} ->
         {:ok, body}
+
+      # A previously-working discovery path now 404s — the provider's
+      # structure likely changed. Invalidate, re-probe, and retry once.
+      {:ok, %{status: 404}} when provider.auto_probe ->
+        probe_and_retry(provider, headers)
 
       {:ok, %{status: status}} ->
         log_list_status(provider, status)
@@ -269,6 +284,25 @@ defmodule Nest.ChatModel do
         log_list_error(provider, reason)
         :error
     end
+  end
+
+  defp probe_and_retry(provider, headers) do
+    case EndpointCache.probe_and_cache(provider) do
+      {:ok, structure} ->
+        case Req.get(discovery_url(structure), headers: headers) do
+          {:ok, %{status: 200, body: body}} -> {:ok, body}
+          {:ok, %{status: status}} -> log_list_status(provider, status)
+          {:error, reason} -> log_list_error(provider, reason)
+        end
+
+      _ ->
+        log_list_status(provider, 404)
+        :error
+    end
+  end
+
+  defp discovery_url(%EndpointProbe.EndpointStructure{} = structure) do
+    structure.discovery_base_url <> structure.models_path
   end
 
   defp list_models_with_limits_from_body(body) do

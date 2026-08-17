@@ -186,3 +186,45 @@ No existing test changes. No app code changes. `mix precommit` must stay green.
 3. **Provider-specific config keys.** Some OpenAI-compatible proxies want `parallel_tool_calls: false` or a custom `reasoning_field` name. Recommend adding optional `provider_opts :: map()` to `DotConfig.Provider` rather than a flag per behavior. Phase 0 doesn't need this; Phase 1 adds the field.
 4. **Mock client test seam.** Should `MockClient` be wired via `Mimic.stub_with` (current pattern) or via a behavior-implementing module that's injected at agent startup? The current pattern is fine; stick with it.
 5. **Backwards compatibility during the migration.** Several sites use `Mimic.stub(LangChain.Chains.LLMChain, :run, fn _ -> ... end)` directly. Phase 4 needs to convert these to `Mimic.stub_with(Nest.LLM.Client, Nest.LLM.MockClient)` and use `set_error/1` instead. The test bodies stay the same; only the stub surface changes.
+
+## Endpoint probing (`Nest.EndpointProbe` / `Nest.EndpointCache`)
+
+Config only carries a `base-url` (plus optional `protocol` / `probe-base-url`
+hints). The probe sequence figures out the rest automatically, so a user
+doesn't have to hand-solve the `/v1` vs `/v1beta/openai` path juggling that
+providers like Gemini and Olla-style proxies force.
+
+**What it determines:**
+- the wire protocol (`:openai`-compatible vs `:anthropic`) — unless an explicit
+  `protocol` is configured, which is trusted outright;
+- the chat base URL (including whether `/v1` is part of it);
+- the model-discovery endpoint (`/models` vs `/v1/models`, and whether it lives
+  at a different base than chat — the thing `probe-base-url` exists for).
+
+**Mechanism.** `EndpointProbe.probe/1` tries a bounded set of candidate bases
+(`base`, `base/v1`, plus the configured `probe-base-url` as a hint) and
+classifies each request by HTTP status: `404`/`405` = path absent (try next);
+any other status (`401`, `400`, `200`, …) = the route exists. It never uses a
+real model id — the probe bodies carry a bogus `__nest_probe__` model so a
+compliant server returns a non-`404` error without completing a chat.
+
+**Caching.** `EndpointCache` (ETS-backed) stores the resolved structure per
+provider so the probe runs at most once. Reads (`get/1`) are lock-free and sit
+on the hot path (`ChatModel.build_client_config/2`); writes go through the
+GenServer. On a cache miss the code falls back to `naive_structure/1`, which is
+exactly the pre-probe behaviour — so a provider that fails to probe behaves
+identically to before.
+
+**Invalidation.** Entries persist until invalidated (no TTL). When a cached
+discovery path starts returning `404`, `ChatModel` calls
+`probe_and_cache/1` (re-probing) and retries once. Providers can opt out of
+probing entirely with `auto-probe = false`.
+
+**Warm-up.** `EndpointCache` probes every `auto_models` provider at startup in
+the background. It is skipped in `Mix.env() == :test` so tests never fire
+background HTTP against real config.
+
+**Manual tool.** `scripts/probe-provider.exs` probes one provider (by name) or
+every provider in config, prints the resolved structure, then lists the models
+discoverable at the resolved endpoint. Useful for figuring out the right
+`base-url` / `protocol` / `probe-base-url` for a provider you're adding.

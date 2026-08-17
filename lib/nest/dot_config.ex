@@ -49,6 +49,14 @@ defmodule Nest.DotConfig do
     Olla-style discovery listing at one path and OpenAI-compatible
     chat at another. Parsed from the optional `probe-base-url`
     TOML key. See `Nest.LLM.Discover` and `Nest.ChatModel`.
+
+    `auto_probe` is the optional flag that enables endpoint probing
+    (`Nest.EndpointProbe` + `Nest.EndpointCache`) for this provider.
+    Defaults to `true`. When enabled, the chat protocol, chat base
+    URL, and discovery `/models` path are auto-detected at startup
+    and re-detected when a cached endpoint starts returning `404`.
+    Set `auto-probe = false` on a provider you'd rather configure
+    fully by hand. Parsed from the optional `auto-probe` TOML key.
     """
     defstruct [
       :name,
@@ -60,7 +68,8 @@ defmodule Nest.DotConfig do
       :models,
       :timeout_seconds,
       :default_context_limit,
-      :probe_base_url
+      :probe_base_url,
+      auto_probe: true
     ]
   end
 
@@ -329,7 +338,8 @@ defmodule Nest.DotConfig do
       timeout_seconds: parse_timeout(Map.get(data, "timeout"), name),
       default_context_limit:
         parse_default_context_limit(Map.get(data, "default-context-limit"), name),
-      probe_base_url: parse_probe_base_url(Map.get(data, "probe-base-url"), name)
+      probe_base_url: parse_probe_base_url(Map.get(data, "probe-base-url"), name),
+      auto_probe: parse_auto_probe(Map.get(data, "auto-probe"), name)
     }
   end
 
@@ -348,6 +358,16 @@ defmodule Nest.DotConfig do
 
   defp parse_probe_base_url(value, provider_name) do
     raise "Provider #{provider_name}: invalid probe-base-url #{inspect(value)}: must be a non-empty string"
+  end
+
+  # Parses the optional `auto-probe` flag (endpoint auto-detection).
+  # Defaults to `true` when absent.
+  defp parse_auto_probe(nil, _provider_name), do: true
+
+  defp parse_auto_probe(value, _provider_name) when is_boolean(value), do: value
+
+  defp parse_auto_probe(value, provider_name) do
+    raise "Provider #{provider_name}: invalid auto-probe #{inspect(value)}: must be a boolean"
   end
 
   # Parses and validates the optional `timeout` (in seconds) for a provider.
