@@ -286,8 +286,15 @@ function ArchivedSpaceRow({ space, location }) {
  */
 export function Sidebar() {
   const location = useLocation();
-  const { agents, brokenAgents, spaces, archivedSpaces, currentSpaceId } =
-    useStore();
+  const {
+    agents,
+    brokenAgents,
+    spaces,
+    archivedSpaces,
+    archivedCollapsed,
+    setArchivedCollapsed,
+    currentSpaceId,
+  } = useStore();
 
   const isActive = (path) => {
     if (path === "/spaces/new") {
@@ -365,21 +372,43 @@ export function Sidebar() {
         </div>
 
         {/* Archived Spaces Section — stopped + hidden spaces that
-            can be inspected and restored */}
+            can be inspected and restored. Collapsed by default. */}
         {(archivedSpaces?.length ?? 0) > 0 && (
           <div className="mb-6">
-            <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2 px-2">
-              Archived
-            </h2>
-            <ul className="space-y-1">
-              {archivedSpaces.map((space) => (
-                <ArchivedSpaceRow
-                  key={space.id}
-                  space={space}
-                  location={location}
+            <button
+              type="button"
+              onClick={() => setArchivedCollapsed(!archivedCollapsed)}
+              className="w-full flex items-center justify-between text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2 px-2 hover:text-gray-600 transition-colors duration-200"
+              aria-expanded={!archivedCollapsed}
+              aria-label="Toggle archived spaces"
+            >
+              <span>Archived</span>
+              <svg
+                className={`w-4 h-4 transition-transform ${archivedCollapsed ? "" : "rotate-90"}`}
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M9 5l7 7-7 7"
                 />
-              ))}
-            </ul>
+              </svg>
+            </button>
+            {!archivedCollapsed && (
+              <ul className="space-y-1">
+                {archivedSpaces.map((space) => (
+                  <ArchivedSpaceRow
+                    key={space.id}
+                    space={space}
+                    location={location}
+                  />
+                ))}
+              </ul>
+            )}
           </div>
         )}
 

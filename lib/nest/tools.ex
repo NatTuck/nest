@@ -25,8 +25,24 @@ defmodule Nest.Tools do
   @spec get_functions([String.t()], String.t() | nil, String.t() | nil) :: [Tool.t()]
   def get_functions(tool_names, workspace_path, tmp_path \\ nil) do
     tool_names
-    |> Enum.map(&get_function(&1, workspace_path, tmp_path))
+    |> Enum.map(&resolve_tool(&1, workspace_path, tmp_path))
     |> Enum.reject(&is_nil/1)
+  end
+
+  # Resolve a single tool name, logging a warning when the name
+  # doesn't correspond to a registered tool (so a vocation that
+  # declares an unknown/legacy tool name silently losing it — and
+  # potentially ending up with an empty tools list — is visible
+  # in the logs instead of surfacing only later as an LLM 400).
+  defp resolve_tool(name, workspace_path, tmp_path) do
+    case get_function(name, workspace_path, tmp_path) do
+      nil ->
+        Logger.warning("Unknown tool #{inspect(name)} not registered; skipped")
+        nil
+
+      tool ->
+        tool
+    end
   end
 
   @doc """

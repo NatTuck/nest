@@ -65,6 +65,10 @@ const initialState = {
   // Inline error from the last invite create/revoke attempt
   // that failed at the server. Cleared on the next attempt.
   invitesError: null,
+  // Whether the sidebar's Archived section is collapsed. Starts
+  // collapsed on every fresh session (it's part of `initialState`,
+  // so `logout`/`_reset` restore it to `true`). Not persisted.
+  archivedCollapsed: true,
 };
 
 /**
@@ -385,6 +389,9 @@ export const useStore = create(
       // the ChatPage's :model_missing banner.
       brokenAgents: [],
       models: [],
+      // Whether the sidebar's Archived section is collapsed.
+      // Defaults to collapsed on every fresh session.
+      archivedCollapsed: true,
 
       /**
        * Agent cache: { [agentId]: AgentCache }
@@ -1826,6 +1833,15 @@ export const useStore = create(
        */
       setInvitesError: (error) => {
         set({ invitesError: error });
+      },
+
+      /**
+       * Set whether the sidebar's Archived section is collapsed.
+       * Defaults to collapsed (`archivedCollapsed: true` in
+       * `initialState`) so it resets on login/logout.
+       */
+      setArchivedCollapsed: (archivedCollapsed) => {
+        set({ archivedCollapsed });
       },
 
       /**

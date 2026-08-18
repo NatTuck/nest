@@ -451,12 +451,13 @@ describe("Sidebar space archiving", () => {
     expect(payload).toEqual({ space_id: 7 });
   });
 
-  it("renders archived spaces in the Archived section", () => {
+  it("renders archived spaces in the Archived section once expanded", () => {
     act(() => {
       useStore.setState({
         spaces: [{ id: 1, slug: "active", name: "Active Space" }],
         archivedSpaces: [{ id: 2, slug: "gone", name: "Gone Space" }],
         currentSpaceId: 1,
+        archivedCollapsed: true,
       });
     });
 
@@ -467,9 +468,75 @@ describe("Sidebar space archiving", () => {
     );
 
     expect(screen.getByText("Archived")).toBeInTheDocument();
+
+    // Collapsed by default — the space rows are hidden until the
+    // header is clicked.
+    expect(screen.queryByText("Gone Space")).toBeNull();
+
+    act(() => {
+      screen.getByRole("button", { name: /toggle archived spaces/i }).click();
+    });
+
     expect(screen.getByText("Gone Space")).toBeInTheDocument();
     // The archived space is not in the active list.
     expect(screen.getByRole("link", { name: /gone space/i })).toBeTruthy();
+  });
+
+  it("archived section is collapsed by default", () => {
+    act(() => {
+      useStore.setState({
+        spaces: [],
+        archivedSpaces: [{ id: 9, slug: "gone", name: "Gone Space" }],
+        currentSpaceId: null,
+        archivedCollapsed: true,
+      });
+    });
+
+    render(
+      <MemoryRouter>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    // Header renders but the space row is hidden until expanded.
+    expect(screen.getByText("Archived")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /toggle archived spaces/i }),
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("Gone Space")).toBeNull();
+  });
+
+  it("clicking the archived header expands then collapses the list", () => {
+    act(() => {
+      useStore.setState({
+        spaces: [],
+        archivedSpaces: [{ id: 9, slug: "gone", name: "Gone Space" }],
+        currentSpaceId: null,
+        archivedCollapsed: true,
+      });
+    });
+
+    render(
+      <MemoryRouter>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    const toggle = screen.getByRole("button", {
+      name: /toggle archived spaces/i,
+    });
+
+    act(() => {
+      toggle.click();
+    });
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("Gone Space")).toBeInTheDocument();
+
+    act(() => {
+      toggle.click();
+    });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("Gone Space")).toBeNull();
   });
 
   it("does not render the Archived section when there are no archived spaces", () => {
@@ -496,6 +563,7 @@ describe("Sidebar space archiving", () => {
         spaces: [],
         archivedSpaces: [{ id: 3, slug: "gone", name: "Gone Space" }],
         currentSpaceId: null,
+        archivedCollapsed: true,
       });
     });
 
@@ -504,6 +572,12 @@ describe("Sidebar space archiving", () => {
         <Sidebar />
       </MemoryRouter>,
     );
+
+    // Expand the collapsed Archived section so the Restore button
+    // is reachable.
+    act(() => {
+      screen.getByRole("button", { name: /toggle archived spaces/i }).click();
+    });
 
     const pushPromise = captureNextPush("lobby", "unarchive_space");
     act(() => {

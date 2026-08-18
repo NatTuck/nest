@@ -11,16 +11,17 @@ defmodule Nest.ToolsTest do
       assert Tools.get_functions([], "/tmp") == []
     end
 
-    test "returns only valid tools, filtering out unknown names" do
-      functions =
-        Tools.get_functions(["file-read", "unknown_tool", "file-write"], "/tmp")
+    test "filters unknown names and logs a warning" do
+      log =
+        capture_log(fn ->
+          functions = Tools.get_functions(["file-read", "unknown_tool", "file-write"], "/tmp")
+          assert length(functions) == 2
+          names = Enum.map(functions, & &1.name)
+          assert "file-read" in names and "file-write" in names
+          refute "unknown_tool" in names
+        end)
 
-      assert length(functions) == 2
-
-      names = Enum.map(functions, & &1.name)
-      assert "file-read" in names
-      assert "file-write" in names
-      refute "unknown_tool" in names
+      assert log =~ "unknown_tool"
     end
 
     test "returns Nest.LLM.Tool structs" do
