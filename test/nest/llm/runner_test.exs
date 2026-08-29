@@ -109,4 +109,24 @@ defmodule Nest.LLM.RunnerTest do
       assert {:ok, _} = Runner.consume(events, callbacks)
     end
   end
+
+  describe "build_request/1" do
+    test "threads the client_config thinking effort into the RunRequest" do
+      cc = %Nest.LLM.ClientConfig{model: "qwen3.5-plus", thinking_effort: :off}
+      ctx = %{client_config: cc, messages: [], tools: [], tool_choice: :auto}
+
+      assert Runner.build_request(ctx).thinking_effort == :off
+    end
+
+    test "leaves thinking_effort nil when the client config has none" do
+      ctx = %{
+        client_config: %Nest.LLM.ClientConfig{model: "qwen3.5-plus"},
+        messages: [],
+        tools: [],
+        tool_choice: :auto
+      }
+
+      assert Runner.build_request(ctx).thinking_effort == nil
+    end
+  end
 end

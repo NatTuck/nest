@@ -57,9 +57,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
 
   @max_consecutive_compactions 3
 
-  @doc """
-  Dispatch entry for `Handlers.handle/2`.
-  """
+  # Dispatch entry for `Handlers.handle/2`.
   @spec handle(term(), Agent.t()) :: GenServer.reply()
   def handle({:compaction_done, summary_text, carried_entry}, state) do
     {:noreply, handle_success(state, summary_text, carried_entry)}
@@ -93,16 +91,9 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
     {:reply, :ok, loop_detected_ok(state)}
   end
 
-  @doc """
-  Run the success path: re-render system + tools, archive
-  pre-swap, append marker to history, append new active
-  messages, broadcast chat:compaction, spawn next.
-
-  `summary_text` is the raw LLM text (may contain
-  `think.../think` markers). `carried_entry` is `nil` for
-  Trigger A (post-turn) or the carried tool entry for
-  Trigger B (mid-turn).
-  """
+  # Run the success path: re-render system + tools, archive pre-swap,
+  # append marker to history, append new active messages, broadcast
+  # chat:compaction, spawn next. `carried_entry` is nil for Trigger A.
   @spec handle_success(Agent.t(), String.t(), Agent.ChatTurn.State.entry() | nil) :: Agent.t()
   def handle_success(state, summary_text, carried_entry) do
     Logger.info(
@@ -349,7 +340,8 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
             state.live
             | status: :idle,
               consecutive_compaction_count: 0,
-              pending_user_message: nil
+              pending_user_message: nil,
+              pending_notice: nil
           }
       }
 
@@ -450,9 +442,17 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   end
 
   defp spawn_next_chat_turn(state, carried_entry) do
-    case carried_entry do
-      nil -> ChatPipeline.resume_with_pending(state)
-      entry -> spawn_with_entry(state, entry)
+    cond do
+      # A workspace change deferred its notice via compaction: append the
+      # pair and stay idle (no LLM request).
+      state.live.pending_notice != nil ->
+        ChatPipeline.resume_pending_notice(state)
+
+      carried_entry == nil ->
+        ChatPipeline.resume_with_pending(state)
+
+      true ->
+        spawn_with_entry(state, carried_entry)
     end
   end
 

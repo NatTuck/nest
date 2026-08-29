@@ -7,7 +7,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import { useShallow } from "zustand/shallow";
 import { useStore } from "../store";
 import {
@@ -17,19 +17,21 @@ import {
   stopMessage,
   retryCompaction,
   compactionLoopOk,
-  changeAgentModel,
+  editAgent,
 } from "../channels";
-import { ChatInput } from "../components/ChatInput";
-import { TokenUsageChip } from "../components/TokenUsageChip";
 import { StatusBanner } from "../components/StatusBanner";
 import { NotificationBanner } from "../components/NotificationBanner";
-import { CompactionMarker } from "../components/CompactionMarker";
-import { StreamingDots } from "../components/StreamingDots";
-import { MessagesList } from "../components/MessagesList";
-import { StreamingMessage } from "../components/StreamingMessage";
-import { AgentModelPicker } from "../components/AgentModelPicker";
+import { ChatHeader } from "../components/ChatHeader";
+import { ChatComposer } from "../components/ChatComposer";
+import { ChatMessages } from "../components/ChatMessages";
+import { ChatTypingIndicator } from "../components/ChatTypingIndicator";
+import { ChatLoading } from "../components/ChatLoading";
+import { AgentEditModal } from "../components/AgentEditModal";
+import { SendErrorBanner } from "../components/SendErrorBanner";
+import { ModelMissingBanner } from "../components/ModelMissingBanner";
 import { useScrollToBottom } from "../hooks/useScrollToBottom";
-import { stripModePrefix } from "../utils/stripModePrefix.js";
+import { buildChatHistory } from "../utils/chatHistory.js";
+import { describeEditError, getStatusLabel } from "../utils/chatErrors.js";
 
 // Stable empty fallbacks so selector return values are
 // reference-stable across renders when the underlying slice
@@ -97,6 +99,7 @@ export function ChatPage() {
     parentName,
     depth,
     model,
+    workspace_path,
     vocation,
     currentMode: currentModeFromCache,
     waitingForResponse,
@@ -119,6 +122,7 @@ export function ChatPage() {
         parentName: cache?.parentName ?? null,
         depth: cache?.depth ?? 0,
         model: cache?.model ?? null,
+        workspace_path: cache?.workspace_path ?? null,
         vocation: cache?.vocation ?? null,
         currentMode: cache?.currentMode ?? null,
         waitingForResponse: cache?.waitingForResponse ?? false,
@@ -130,7 +134,6 @@ export function ChatPage() {
     }),
   );
   const isUnknown = useStore((state) => !state.agentsCache[name]);
-
   // Streaming + busy state. `agentState` is from the shallow
   // bundle above; the derived booleans are just string equality.
   const streaming = agentState === "streaming";
@@ -179,36 +182,10 @@ export function ChatPage() {
   );
 
   // History navigation list for ChatInput's Ctrl/Cmd+Up / Down support.
-  // Pulls user messages from both the active session and the archived
-  // (post-compaction) history, orders them most-recent-first, and
-  // collapses consecutive duplicates so repeated presses of Up don't
-  // dwell on the same message.
-  //
-  // The persisted user message content has a `[mode: <name>]\n` prefix
-  // (see ChatPipeline.build_user_messages/3). We strip it here so the
-  // recovered prompt is the user-visible text, not the LLM-facing wire
-  // form.
-  const history = useMemo(() => {
-    const archived = archivedHistory
-      .filter((m) => m.role === "user" && typeof m.content === "string")
-      .map((m) => ({
-        content: stripModePrefix(m.content, m.mode ?? ""),
-        mode: m.mode ?? null,
-      }));
-    const active = messages
-      .filter((m) => m.role === "user" && typeof m.content === "string")
-      .map((m) => ({
-        content: stripModePrefix(m.content, m.mode ?? ""),
-        mode: m.mode ?? null,
-      }));
-    const ordered = [...archived, ...active];
-    const deduped = [];
-    for (const entry of ordered) {
-      const last = deduped[deduped.length - 1];
-      if (!last || last.content !== entry.content) deduped.push(entry);
-    }
-    return deduped.reverse();
-  }, [messages, archivedHistory]);
+  const history = useMemo(
+    () => buildChatHistory(messages, archivedHistory),
+    [messages, archivedHistory],
+  );
 
   // Keep the dropdown in sync with the agent's current mode.
   //
@@ -243,13 +220,12 @@ export function ChatPage() {
   }, [isAgentBusy, stopping]);
 
   // Determine status label
-  const getStatusLabel = () => {
-    if (status !== "connected") return status;
-    if (streaming) return "Generating response";
-    if (executingTools) return "Executing tools";
-    if (waitingForResponse) return "Waiting for response";
-    return "Ready";
-  };
+  const statusLabel = getStatusLabel(
+    status,
+    streaming,
+    executingTools,
+    waitingForResponse,
+  );
 
   // The hook only uses the `trigger` value as a dependency
   // for its `useEffect` (it doesn't render the text), so we
@@ -332,34 +308,21 @@ export function ChatPage() {
   // (per-agent) both flow through
   // `applyAgentModelUpdate` so the cache and `agents` list
   // reconcile themselves.
-  const handleChangeModel = (newModel) => {
+  const handleSaveAgentEdits = (draft) => {
     setChangeModelError(null);
     setModelPickerOpen(false);
 
-    changeAgentModel(name, spaceId, newModel, undefined, (err) => {
-      setChangeModelError(describeChangeModelError(err?.reason));
-    });
+    editAgent(
+      name,
+      spaceId,
+      draft.model,
+      draft.workspace_path,
+      undefined,
+      (err) => {
+        setChangeModelError(describeEditError(err?.reason));
+      },
+    );
   };
-
-  // Translate the server's error-reason string into a
-  // user-friendly message. Each branch mirrors a `:reply`
-  // reason from `LobbyChannel.handle_in("change_model", …)`.
-  function describeChangeModelError(reason) {
-    switch (reason) {
-      case "agent_busy":
-        return "Agent is busy. Wait for the current chat to finish before changing models.";
-      case "invalid_model":
-        return "That model isn't configured on the server.";
-      case "not_found":
-        return "Agent not found. Refresh the page and try again.";
-      case "invalid_payload":
-        return "Couldn't read the model selection. Try again.";
-      default:
-        return reason
-          ? `Failed to change model: ${reason}`
-          : "Failed to change model.";
-    }
-  }
 
   // Dismiss a chat-task error without re-joining the channel.
   // Useful when the LLM call crashed but the WS channel is
@@ -396,14 +359,7 @@ export function ChatPage() {
 
   // Show initial loading state while we attempt first join
   if (isUnknown) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <div className="flex flex-col items-center gap-4">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600" />
-          <p className="text-gray-600">Loading agent...</p>
-        </div>
-      </div>
-    );
+    return <ChatLoading />;
   }
 
   // Input is disabled when not connected or when the agent is
@@ -414,98 +370,24 @@ export function ChatPage() {
   return (
     <div className="flex flex-col h-full max-w-6xl mx-auto">
       {/* Header */}
-      <div className="border-b border-gray-200 pb-4 mb-4">
-        <div className="flex items-end justify-between gap-4">
-          <div className="min-w-0">
-            <h1 className="text-2xl font-bold text-gray-900">
-              {name}
-              {vocation?.name && (
-                <span className="text-gray-500 font-normal">
-                  ({vocation.name})
-                </span>
-              )}
-            </h1>
-            <p className="text-sm text-gray-500 break-all">
-              <button
-                type="button"
-                onClick={() => setModelPickerOpen(true)}
-                aria-label="Change model"
-                className={`
-                  inline-flex items-center gap-1
-                  px-2 py-0.5 rounded-md
-                  transition-colors duration-150
-                  hover:bg-gray-100
-                  ${
-                    agentState === "model_missing"
-                      ? "bg-amber-100 text-amber-900 hover:bg-amber-200"
-                      : "text-gray-500"
-                  }
-                `}
-              >
-                <span className="font-mono text-xs">
-                  {(() => {
-                    const modelName = model?.name;
-                    const provider = model?.provider;
-                    if (!modelName) return "[missing]";
-                    return provider ? `${provider}: ${modelName}` : modelName;
-                  })()}
-                </span>
-                <svg
-                  className="w-3 h-3 opacity-60"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                  aria-hidden="true"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M19 9l-7 7-7-7"
-                  />
-                </svg>
-              </button>
-              {changeModelError && (
-                <span className="ml-2 text-xs text-red-600">
-                  {changeModelError}
-                </span>
-              )}
-            </p>
-            {parentName && (
-              <p className="text-xs text-gray-500 mt-1">
-                ↑{" "}
-                <Link
-                  to={`/space/${encodeURIComponent(spaceSlug)}/agent/${encodeURIComponent(parentName)}`}
-                  className="text-blue-600 hover:underline"
-                >
-                  back to {parentName}
-                </Link>
-                {depth > 0 && (
-                  <span className="text-gray-400 ml-2">(depth {depth})</span>
-                )}
-              </p>
-            )}
-          </div>
-          <div className="flex flex-col items-end gap-2">
-            <TokenUsageChip
-              usage={usage}
-              descendantUsage={descendantUsage}
-              totalUsage={totalUsage}
-              contextLimit={contextLimit}
-            />
-            <div className="flex items-center gap-2">
-              <div
-                className={`
-                  w-3 h-3 rounded-full
-                  ${status === "connected" ? "bg-green-500" : "bg-gray-300"}
-                  ${streaming ? "animate-pulse" : ""}
-                `}
-              />
-              <span className="text-sm text-gray-400">{getStatusLabel()}</span>
-            </div>
-          </div>
-        </div>
-      </div>
+      <ChatHeader
+        name={name}
+        vocation={vocation}
+        model={model}
+        agentState={agentState}
+        changeModelError={changeModelError}
+        parentName={parentName}
+        depth={depth}
+        spaceSlug={spaceSlug}
+        usage={usage}
+        descendantUsage={descendantUsage}
+        totalUsage={totalUsage}
+        contextLimit={contextLimit}
+        status={status}
+        streaming={streaming}
+        onModelPickerOpen={() => setModelPickerOpen(true)}
+        getStatusLabel={() => statusLabel}
+      />
 
       {/* Status banner — `agentState` carries the agent's GenServer
           state (including `:compacting` / `:compaction_failed`),
@@ -541,34 +423,10 @@ export function ChatPage() {
           `handleChangeModel`, which closes the picker and
           pushes `"change_model"` over the lobby channel. */}
       {agentState === "model_missing" && (
-        <div
-          role="alert"
-          aria-live="polite"
-          className="bg-amber-50 border-l-4 border-amber-500 p-4 mb-4"
-        >
-          <div className="flex items-start justify-between gap-4">
-            <div className="min-w-0">
-              <p className="text-amber-900 font-medium">
-                Model{" "}
-                <span className="font-mono">{model?.name ?? "(unknown)"}</span>{" "}
-                is no longer available
-              </p>
-              <p className="text-amber-800 text-sm mt-1">
-                Your conversation history is preserved. Pick a replacement model
-                to continue — the agent resumes in{" "}
-                <span className="font-mono">idle</span> the moment the new model
-                is set.
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => setModelPickerOpen(true)}
-              className="flex-shrink-0 px-4 py-2 rounded-lg font-medium text-amber-900 bg-amber-200 hover:bg-amber-300 active:bg-amber-400 transition-colors"
-            >
-              Choose replacement model
-            </button>
-          </div>
-        </div>
+        <ModelMissingBanner
+          model={model}
+          onChooseModel={() => setModelPickerOpen(true)}
+        />
       )}
 
       {/* Notification banner */}
@@ -578,150 +436,52 @@ export function ChatPage() {
       />
 
       {/* Send error */}
-      {sendError && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-4">
-          <p className="text-red-700 text-sm">{sendError}</p>
-        </div>
-      )}
+      <SendErrorBanner message={sendError} />
 
       {/* Messages */}
-      <div
-        ref={setScrollContainerEl}
-        className="flex-1 overflow-y-auto space-y-4 mb-4 pr-2"
-      >
-        {/* Compaction marker — the entry point to the agent's
-            archived history. Renders collapsed as a "History"
-            header with a "Last compaction: …" sub-line and a
-            Show/Hide toggle (the toggle's count is the TOTAL
-            archived-message length, not the most recent
-            marker's `archivedCount`); when expanded, the full
-            sequence renders in original index order. Only
-            shown when there are archived messages (history)
-            AND active messages to display — both must exist
-            for the boundary to be meaningful. */}
-        {(messages.length > 0 || partial) && archivedHistory.length > 0 && (
-          <CompactionMarker
-            marker={
-              archivedHistory.findLast
-                ? archivedHistory.findLast((m) => m.role === "compaction")
-                : [...archivedHistory]
-                    .reverse()
-                    .find((m) => m.role === "compaction")
-            }
-            history={archivedHistory}
-            historyCount={archivedHistory.length}
-          />
-        )}
-
-        {messages.length === 0 && !partial ? (
-          <div className="text-center py-12 text-gray-400">
-            <svg
-              className="w-16 h-16 mx-auto mb-4 opacity-50"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-              aria-label="Chat icon"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={1.5}
-                d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
-              />
-            </svg>
-            <p className="text-lg font-medium">Start a conversation</p>
-            <p className="text-sm mt-1">Send a message to begin chatting</p>
-          </div>
-        ) : (
-          <>
-            <MessagesList agentName={name} />
-            <StreamingMessage agentName={name} />
-          </>
-        )}
-
-        <div ref={setMessagesEndEl} />
-      </div>
+      <ChatMessages
+        messages={messages}
+        partial={partial}
+        archivedHistory={archivedHistory}
+        name={name}
+        setScrollContainerEl={setScrollContainerEl}
+        setMessagesEndEl={setMessagesEndEl}
+      />
 
       {/* Typing indicator - shown when waiting or generating */}
-      {(waitingForResponse || streaming || executingTools) && (
-        <div className="flex items-center gap-2 py-2 px-4 mb-2">
-          <span className="text-sm text-gray-500">
-            {streaming
-              ? "Generating response"
-              : executingTools
-                ? "Executing tools"
-                : "Waiting for response"}
-          </span>
-          <div className="flex items-center gap-1">
-            <StreamingDots colorClass="bg-blue-500" ariaLabel="Working" />
-          </div>
-        </div>
-      )}
+      <ChatTypingIndicator
+        waitingForResponse={waitingForResponse}
+        streaming={streaming}
+        executingTools={executingTools}
+      />
 
-      {/* Input area with floating Jump to latest button above it.
-          Positioning the button here (in the column's coordinate space, not
-          inside the scroll container) keeps it visible regardless of which
-          ancestor is the actual scroll region. */}
-      <div className="relative">
-        {hasNewContent && !isAtBottom && (
-          <button
-            type="button"
-            onClick={jumpToBottom}
-            aria-label="Jump to latest messages"
-            className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-10 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-full shadow-lg hover:bg-indigo-700 transition-all duration-200 flex items-center gap-1.5"
-          >
-            <svg
-              className="w-4 h-4"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-              aria-hidden="true"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M19 14l-7 7m0 0l-7-7m7 7V3"
-              />
-            </svg>
-            Jump to latest
-          </button>
-        )}
-
-        <ChatInput
-          value={inputValue}
-          onChange={setInputValue}
-          onSend={handleSendMessage}
-          onStop={handleStopMessage}
-          isBusy={isAgentBusy}
-          stopping={stopping}
-          disabled={isInputDisabled}
-          // Hide the input entirely while the agent is in a
-          // frozen state. The StatusBanner shows the relevant
-          // banner: a Retry button for `:compaction_failed`, an
-          // OK button for `:compaction_loop_detected`, or the
-          // context-too-small message for `:context_overflow`
-          // (no Retry — switching to a larger model is the only
-          // way forward). `:compacting` is intentionally NOT
-          // frozen — the compactor records the suffix + a
-          // synthetic assistant message in the message list, and
-          // the user can watch the chat pane while it runs.
-          frozen={
-            agentState === "compaction_failed" ||
-            agentState === "compaction_loop_detected" ||
-            agentState === "context_overflow"
-          }
-          placeholder={
-            status === "connected"
-              ? "Type a message..."
-              : "Connect to send messages..."
-          }
-          modes={availableModes}
-          mode={currentMode ?? defaultMode}
-          onModeChange={setCurrentMode}
-          history={history}
-        />
-      </div>
+      {/* Input area with floating Jump to latest button */}
+      <ChatComposer
+        inputValue={inputValue}
+        onChange={setInputValue}
+        onSend={handleSendMessage}
+        onStop={handleStopMessage}
+        isBusy={isAgentBusy}
+        stopping={stopping}
+        disabled={isInputDisabled}
+        frozen={
+          agentState === "compaction_failed" ||
+          agentState === "compaction_loop_detected" ||
+          agentState === "context_overflow"
+        }
+        placeholder={
+          status === "connected"
+            ? "Type a message..."
+            : "Connect to send messages..."
+        }
+        modes={availableModes}
+        mode={currentMode ?? defaultMode}
+        onModeChange={setCurrentMode}
+        history={history}
+        hasNewContent={hasNewContent}
+        isAtBottom={isAtBottom}
+        jumpToBottom={jumpToBottom}
+      />
 
       {/* Model picker modal — opens from the header chip
           (any state) or the :model_missing banner (repair
@@ -733,10 +493,13 @@ export function ChatPage() {
           resolve (provider removed, etc.) the server
           replies `agent_busy` or `invalid_model` and we
           surface the message inline below the picker. */}
-      <AgentModelPicker
+      <AgentEditModal
         open={modelPickerOpen}
         onClose={() => setModelPickerOpen(false)}
-        onSelect={handleChangeModel}
+        onSave={handleSaveAgentEdits}
+        model={model}
+        workspace_path={workspace_path}
+        vocation={vocation}
       />
     </div>
   );

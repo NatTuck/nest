@@ -231,6 +231,7 @@ defmodule NestWeb.AgentChannel do
       "space_id" => agent.space_id,
       "model" => agent.model,
       "vocation" => agent.vocation,
+      "workspace_path" => agent.workspace_path,
       "messageCount" => length(agent.messages),
       "history" => Enum.map(agent.history || [], &Message.to_json/1),
       "status" => to_string(agent.status),
@@ -309,10 +310,8 @@ defmodule NestWeb.AgentChannel do
       when is_map(model_params) do
     space_id = socket.assigns.space_id
     name = socket.assigns.name
-    new_name = model_params["name"] || model_params[:name]
-    new_provider = model_params["provider"] || model_params[:provider]
 
-    case Agents.change_model(space_id, name, %{name: new_name, provider: new_provider}) do
+    case Agents.change_model(space_id, name, build_model_map(model_params)) do
       :ok ->
         {:reply, {:ok, %{}}, socket}
 
@@ -450,5 +449,15 @@ defmodule NestWeb.AgentChannel do
 
   defp format_message(message) do
     Message.to_json(message)
+  end
+
+  # Build the model map accepted by `Agents.change_model/3`, preserving
+  # the thinking level alongside name/provider.
+  defp build_model_map(model_params) do
+    %{
+      name: model_params["name"] || model_params[:name],
+      provider: model_params["provider"] || model_params[:provider],
+      thinking_level: model_params["thinking_level"] || model_params[:thinking_level]
+    }
   end
 end

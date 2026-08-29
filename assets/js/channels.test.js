@@ -399,6 +399,35 @@ describe("channels", () => {
       });
     });
 
+    it("applies the workspace update when agent:updated carries a workspace_path", async () => {
+      setNextJoinResult("lobby", {
+        autoInit: {
+          agents: [
+            { name: "agent-1", model: { name: "m" }, workspace_path: null },
+          ],
+          models: [],
+          broken_agents: [],
+        },
+      });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().agents.length, 1);
+      });
+
+      simulateServerEvent("lobby", "agent:updated", {
+        name: "agent-1",
+        workspace_path: "/new/ws",
+      });
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agents[0].workspace_path,
+          "/new/ws",
+        );
+      });
+    });
+
     it("should move a space into archivedSpaces on space:archived", async () => {
       setNextJoinResult("lobby", {
         autoInit: {
@@ -493,6 +522,24 @@ describe("channels", () => {
       assert.strictEqual(useStore.getState().archivedSpaces[0].id, 9);
     });
 
+    it("should set providers from the init payload", async () => {
+      setNextJoinResult("lobby", {
+        autoInit: {
+          agents: [],
+          models: [],
+          providers: [{ name: "acme" }, { name: "pegasus" }],
+        },
+      });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        assert.deepStrictEqual(
+          useStore.getState().providers.map((p) => p.name),
+          ["acme", "pegasus"],
+        );
+      });
+    });
+
     it("should update store.models on models_updated event", async () => {
       // Triggered by `rescanModels/0` on the new-agent page (and
       // any future rescan CTA). The lobby rebroadcasts the merged
@@ -522,6 +569,30 @@ describe("channels", () => {
       await vi.waitFor(() => {
         const names = useStore.getState().models.map((m) => m.name);
         assert.deepStrictEqual(names, ["old-model", "fresh-model"]);
+      });
+    });
+
+    it("should update store.providers on providers_updated event", async () => {
+      // Emitted after a successful `save_providers` push so the GUI's
+      // in-memory provider list reflects the newly persisted set without
+      // a re-fetch.
+      setNextJoinResult("lobby", {
+        autoInit: { agents: [], models: [], providers: [] },
+      });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().providers.length, 0);
+      });
+
+      simulateServerEvent("lobby", "providers_updated", {
+        providers: [{ name: "brand-new" }],
+      });
+
+      await vi.waitFor(() => {
+        assert.deepStrictEqual(useStore.getState().providers, [
+          { name: "brand-new" },
+        ]);
       });
     });
   });
@@ -617,6 +688,84 @@ describe("channels", () => {
         assert.notStrictEqual(captured, null);
       });
       assert.deepStrictEqual(captured, { reason: "x" });
+    });
+  });
+
+  describe("saveProviders", () => {
+    it("pushes the provider list over the lobby channel and calls onOk on success", async () => {
+      const { saveProviders } = await import("./channels");
+      setNextJoinResult("lobby", {
+        autoInit: { agents: [], models: [], providers: [] },
+      });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().providers.length >= 0, true);
+      });
+
+      setNextPushResult("lobby", "save_providers", { ok: {} });
+
+      let okCalled = false;
+      const capturePromise = captureNextPush("lobby", "save_providers");
+      saveProviders([{ name: "acme" }], () => {
+        okCalled = true;
+      });
+
+      const captured = await capturePromise;
+      assert.deepStrictEqual(captured, { providers: [{ name: "acme" }] });
+
+      await vi.waitFor(() => {
+        assert.strictEqual(okCalled, true);
+      });
+    });
+
+    it("invokes onError when not connected to the lobby", async () => {
+      const { saveProviders } = await import("./channels");
+      let errorCalled = false;
+      saveProviders(
+        [],
+        () => {},
+        () => {
+          errorCalled = true;
+        },
+      );
+      assert.strictEqual(errorCalled, true);
+    });
+
+    it("is a no-op when not connected and no onError is provided", async () => {
+      const { saveProviders } = await import("./channels");
+      // Should not throw on the disconnected path.
+      saveProviders([]);
+    });
+
+    it("forwards the server-side error payload to onError", async () => {
+      const { saveProviders } = await import("./channels");
+      setNextJoinResult("lobby", {
+        autoInit: { agents: [], models: [], providers: [] },
+      });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        return true;
+      });
+
+      setNextPushResult("lobby", "save_providers", {
+        error: { reason: "forbidden" },
+      });
+
+      let captured = null;
+      saveProviders(
+        [],
+        () => {},
+        (err) => {
+          captured = err;
+        },
+      );
+
+      await vi.waitFor(() => {
+        assert.notStrictEqual(captured, null);
+      });
+      assert.deepStrictEqual(captured, { reason: "forbidden" });
     });
   });
 
@@ -799,8 +948,94 @@ describe("channels", () => {
       assert.deepStrictEqual(captured, {
         name: "ghost-agent",
         space_id: 1,
-        model: { name: "gpt-4", provider: "openai" },
+        model: { name: "gpt-4", provider: "openai", thinking_level: null },
       });
+      await vi.waitFor(() => {
+        assert.strictEqual(okCalled, true);
+      });
+    });
+  });
+
+  describe("editAgent", () => {
+    it("pushes the model and workspace_path", async () => {
+      const { editAgent } = await import("./channels");
+      setNextJoinResult("lobby", { autoInit: { agents: [], models: [] } });
+      joinLobby();
+      await vi.waitFor(() => true);
+
+      const pushPromise = captureNextPush("lobby", "edit_agent");
+      editAgent(
+        "ghost-agent",
+        1,
+        { name: "gpt-4", provider: "openai", thinking_level: "high" },
+        "/new/workspace",
+      );
+
+      const payload = await pushPromise;
+      assert.deepStrictEqual(payload, {
+        name: "ghost-agent",
+        space_id: 1,
+        model: { name: "gpt-4", provider: "openai", thinking_level: "high" },
+        workspace_path: "/new/workspace",
+      });
+    });
+
+    it("invokes onError when not connected to lobby", async () => {
+      const { editAgent } = await import("./channels");
+      let captured = null;
+      editAgent(
+        "ghost-agent",
+        1,
+        { name: "gpt-4" },
+        null,
+        () => {},
+        (err) => {
+          captured = err;
+        },
+      );
+      assert.notStrictEqual(captured, null);
+      assert.strictEqual(captured.message, "Not connected to lobby");
+    });
+
+    it("forwards the server-side error payload to onError", async () => {
+      const { editAgent } = await import("./channels");
+      setNextJoinResult("lobby", { autoInit: { agents: [], models: [] } });
+      joinLobby();
+      await vi.waitFor(() => true);
+
+      setNextPushResult("lobby", "edit_agent", {
+        error: { reason: "agent_busy" },
+      });
+      let captured = null;
+      editAgent(
+        "ghost-agent",
+        1,
+        { name: "gpt-4", provider: "openai" },
+        "/ws",
+        () => {},
+        (err) => {
+          captured = err;
+        },
+      );
+
+      await vi.waitFor(() => {
+        assert.notStrictEqual(captured, null);
+      });
+      assert.deepStrictEqual(captured, { reason: "agent_busy" });
+    });
+
+    it("invokes onOk on a successful edit", async () => {
+      const { editAgent } = await import("./channels");
+      setNextJoinResult("lobby", { autoInit: { agents: [], models: [] } });
+      joinLobby();
+      await vi.waitFor(() => true);
+
+      setNextPushResult("lobby", "edit_agent", { ok: {} });
+      let okCalled = false;
+      editAgent("ghost-agent", 1, { name: "gpt-4" }, "/ws", () => {
+        okCalled = true;
+      });
+
       await vi.waitFor(() => {
         assert.strictEqual(okCalled, true);
       });
@@ -2328,7 +2563,7 @@ describe("channels", () => {
         setNextJoinResult("agent:1:agent-1", {
           autoInit: {
             id: "agent-1",
-            model: { name: "gpt-4", provider: "openai" },
+            model: { name: "gpt-4", provider: "openai", thinking_level: null },
             messageCount: 1,
             status: "idle",
           },

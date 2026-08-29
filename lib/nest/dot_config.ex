@@ -19,6 +19,20 @@ defmodule Nest.DotConfig do
   # Override with the top-level `max-depth` key in config.toml.
   @default_max_depth 3
 
+  # Supported thinking levels (reasoning effort) a model can be
+  # configured with. `:off` disables thinking; the rest are ascending
+  # effort levels. `:xhigh` is Anthropic-only (OpenAI-compatible
+  # servers map it to `high`). The global default is `:medium`.
+  @thinking_efforts [:off, :low, :medium, :high, :xhigh]
+  @thinking_effort_strings %{
+    "off" => :off,
+    "low" => :low,
+    "medium" => :medium,
+    "high" => :high,
+    "xhigh" => :xhigh
+  }
+  @default_thinking_effort :medium
+
   defmodule Provider do
     @moduledoc """
     Provider configuration struct.
@@ -68,6 +82,7 @@ defmodule Nest.DotConfig do
       :models,
       :timeout_seconds,
       :default_context_limit,
+      :default_thinking_effort,
       :probe_base_url,
       auto_probe: true
     ]
@@ -75,7 +90,13 @@ defmodule Nest.DotConfig do
 
   defmodule Model do
     @moduledoc "Model configuration struct"
-    defstruct [:name, :provider_name, :context_limit, :multi_modal]
+    defstruct [
+      :name,
+      :provider_name,
+      :context_limit,
+      :multi_modal,
+      :thinking_effort
+    ]
   end
 
   @doc """
@@ -95,29 +116,109 @@ defmodule Nest.DotConfig do
   def config_file, do: @config_file
 
   @doc """
+  Returns the full path to local.toml — the user's overlay config edited
+  from the in-app Providers screen. `local.toml` is merged over
+  `config.toml` (local wins per provider); `config.toml` is never
+  modified by the app.
+
+  The path can be overridden for testing via the application env
+  key `:local_config_file`.
+  """
+  def local_file do
+    case Application.get_env(:nest, :local_config_file) do
+      nil -> default_local_file()
+      path -> path
+    end
+  end
+
+  defp default_local_file do
+    if Mix.env() == :test do
+      Path.join([File.cwd!(), "test", "data", "local.toml"])
+    else
+      Path.join(@config_dir, "local.toml")
+    end
+  end
+
+  @doc """
   Loads and parses the config file, returning a map with providers and models.
   In test environment, loads from test/data/config.toml instead of the default location.
+
+  The user's `local.toml` (if present) is merged over `config.toml`:
+  providers/models defined in `local.toml` override the same-named entries
+  in `config.toml`, and top-level scalars from `local.toml` win.
   """
   def load do
-    config_file =
+    base =
       if Mix.env() == :test do
         Path.join([File.cwd!(), "test", "data", "config.toml"])
       else
         @config_file
       end
 
-    load(config_file)
+    merge_loads(load(base), load(local_file()))
+  end
+
+  # Merge the base (config.toml) and overlay (local.toml) parses. Missing
+  # files are treated as empty. Local wins at provider/model and top-level
+  # key granularity.
+  defp merge_loads({:ok, base}, {:ok, local}) do
+    {:ok, merge_configs(base, local)}
+  end
+
+  defp merge_loads({:ok, base}, {:error, _}), do: {:ok, base}
+  defp merge_loads({:error, reason}, _local), do: {:error, reason}
+
+  defp merge_configs(base, local) do
+    # `local.toml` is the authoritative provider list when it defines one
+    # (the app always writes the full set it manages), so a provider
+    # deleted from the GUI actually disappears rather than being
+    # re-added from `config.toml`. Other top-level scalars merge with
+    # local winning per key.
+    providers =
+      if map_size(local.providers) > 0, do: local.providers, else: base.providers
+
+    models =
+      providers
+      |> Map.values()
+      |> Enum.flat_map(fn p ->
+        (p.models || []) |> Enum.map(&%{&1 | provider_name: p.name})
+      end)
+      |> Map.new(fn m -> {m.name, m} end)
+
+    %{
+      base
+      | providers: providers,
+        models: models,
+        max_tool_iterations: local.max_tool_iterations || base.max_tool_iterations,
+        max_depth: local.max_depth || base.max_depth,
+        default_thinking_effort: local.default_thinking_effort || base.default_thinking_effort
+    }
   end
 
   @doc """
-  Loads config from a specific file path
+  Loads config from a specific file path. The parsed result is cached
+  per `{file_path, mtime}` so repeated loads (e.g. per agent spawn) don't
+  re-read + re-parse the file; the cache invalidates automatically when
+  the file's mtime changes.
   """
   def load(file_path) do
+    case cached_config(file_path) do
+      {:ok, config} ->
+        {:ok, config}
+
+      :miss ->
+        do_load(file_path)
+    end
+  end
+
+  defp do_load(file_path) do
     case File.read(file_path) do
       {:ok, content} ->
         case Toml.decode(content) do
           {:ok, config} ->
-            {:ok, parse_config(config)}
+            config = parse_config(config)
+            cache_config(file_path, config)
+            {:ok, config}
 
           {:error, reason} ->
             {:error, "Failed to parse TOML: #{inspect(reason)}"}
@@ -128,6 +229,30 @@ defmodule Nest.DotConfig do
 
       {:error, reason} ->
         {:error, "Failed to read config: #{inspect(reason)}"}
+    end
+  end
+
+  @cache_table :nest_dotconfig_cache
+
+  defp cache_table do
+    case :ets.whereis(@cache_table) do
+      :undefined -> :ets.new(@cache_table, [:named_table, :public, read_concurrency: true])
+      _ -> @cache_table
+    end
+  end
+
+  defp cached_config(path) do
+    with {:ok, %{mtime: mtime}} <- File.stat(path, time: :posix),
+         [{_, config}] <- :ets.lookup(cache_table(), {path, mtime}) do
+      {:ok, config}
+    else
+      _ -> :miss
+    end
+  end
+
+  defp cache_config(path, config) do
+    with {:ok, %{mtime: mtime}} <- File.stat(path, time: :posix) do
+      :ets.insert(cache_table(), {{path, mtime}, config})
     end
   end
 
@@ -191,30 +316,54 @@ defmodule Nest.DotConfig do
   Callers should fall back to `default_max_tool_iterations/0` when this
   returns `nil`.
   """
-  def max_tool_iterations(config) do
-    Map.get(config, :max_tool_iterations)
-  end
+  # Configured `max-tool-iterations` (nil → caller falls back to
+  # `default_max_tool_iterations/0`).
+  def max_tool_iterations(config), do: Map.get(config, :max_tool_iterations)
 
-  @doc """
-  Returns the hardcoded fallback for the `max-tool-iterations` setting,
-  used when config.toml does not specify a value.
-  """
+  # Hardcoded fallback for `max-tool-iterations`.
   def default_max_tool_iterations, do: @default_max_tool_iterations
 
+  # Configured `max-depth` (nil → caller falls back to
+  # `default_max_depth/0`).
+  def max_depth(config), do: Map.get(config, :max_depth)
+
   @doc """
-  Returns the configured `max-depth` value, or `nil` when unset.
-  Callers should fall back to `default_max_depth/0` when this
-  returns `nil`.
+  Returns the hardcoded fallback for the `max-depth` setting.
   """
-  def max_depth(config) do
-    Map.get(config, :max_depth)
+  def default_max_depth, do: @default_max_depth
+
+  # Configured top-level `default-thinking-effort` (nil → caller falls
+  # back to `default_thinking_effort/0`).
+  def default_thinking_effort(config), do: Map.get(config, :default_thinking_effort)
+
+  @doc """
+  Returns the hardcoded fallback thinking level (`:medium`).
+  """
+  def default_thinking_effort, do: @default_thinking_effort
+
+  @doc """
+  Normalize a thinking-effort config value (string or atom) to the
+  canonical atom. Returns `nil` for `nil`. Raises on unknown values so
+  a config typo surfaces at load, not on the first LLM call.
+  """
+  @spec parse_thinking_effort(term()) :: atom() | nil
+  def parse_thinking_effort(nil), do: nil
+  def parse_thinking_effort(value) when value in @thinking_efforts, do: value
+
+  def parse_thinking_effort(value) when is_binary(value),
+    do: Map.get(@thinking_effort_strings, value) || invalid_thinking_effort!(value)
+
+  def parse_thinking_effort(value), do: invalid_thinking_effort!(value)
+
+  defp invalid_thinking_effort!(value) do
+    raise "Invalid thinking-effort #{inspect(value)}: must be one of " <>
+            Enum.map_join(@thinking_efforts, "/", &to_string/1)
   end
 
   @doc """
-  Returns the hardcoded fallback for the `max-depth` setting,
-  used when config.toml does not specify a value.
+  All supported thinking levels, in ascending effort order.
   """
-  def default_max_depth, do: @default_max_depth
+  def thinking_efforts, do: @thinking_efforts
 
   @doc """
   Resolve API key value (handles env var substitution)
@@ -235,22 +384,17 @@ defmodule Nest.DotConfig do
     end
   end
 
-  defp env_var_match?(key_value) do
-    String.starts_with?(key_value, "${") and String.ends_with?(key_value, "}")
-  end
+  defp env_var_match?(key_value),
+    do: String.starts_with?(key_value, "${") and String.ends_with?(key_value, "}")
 
   defp resolve_env_var(key_value) do
-    var_name = key_value |> String.slice(2..-2//1)
-
-    case System.get_env(var_name) do
-      nil -> raise "Environment variable #{var_name} not set"
+    case System.get_env(String.slice(key_value, 2..-2//1)) do
+      nil -> raise "Environment variable #{key_value} not set"
       value -> value
     end
   end
 
-  defp file_match?(key_value) do
-    String.starts_with?(key_value, "file:")
-  end
+  defp file_match?(key_value), do: String.starts_with?(key_value, "file:")
 
   defp resolve_file_key(key_value) do
     path = String.slice(key_value, 5..-1//1)
@@ -288,7 +432,9 @@ defmodule Nest.DotConfig do
       providers: providers,
       models: models,
       max_tool_iterations: parse_max_tool_iterations(Map.get(raw_config, "max-tool-iterations")),
-      max_depth: parse_max_depth(Map.get(raw_config, "max-depth"))
+      max_depth: parse_max_depth(Map.get(raw_config, "max-depth")),
+      default_thinking_effort:
+        parse_thinking_effort(Map.get(raw_config, "default-thinking-effort"))
     }
   end
 
@@ -338,6 +484,7 @@ defmodule Nest.DotConfig do
       timeout_seconds: parse_timeout(Map.get(data, "timeout"), name),
       default_context_limit:
         parse_default_context_limit(Map.get(data, "default-context-limit"), name),
+      default_thinking_effort: parse_thinking_effort(Map.get(data, "default-thinking-effort")),
       probe_base_url: parse_probe_base_url(Map.get(data, "probe-base-url"), name),
       auto_probe: parse_auto_probe(Map.get(data, "auto-probe"), name)
     }
@@ -410,7 +557,8 @@ defmodule Nest.DotConfig do
       name: Map.get(model_data, "name"),
       provider_name: nil,
       context_limit: Map.get(model_data, "context-limit"),
-      multi_modal: multi_modal
+      multi_modal: multi_modal,
+      thinking_effort: parse_thinking_effort(Map.get(model_data, "thinking-effort"))
     }
   end
 end

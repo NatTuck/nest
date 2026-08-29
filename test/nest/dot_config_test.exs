@@ -443,4 +443,56 @@ defmodule Nest.DotConfigTest do
       end
     end
   end
+
+  describe "thinking-effort" do
+    defp write_toml!(toml, label) do
+      path =
+        Path.join(
+          System.tmp_dir!(),
+          "#{label}_#{System.unique_integer([:positive])}.toml"
+        )
+
+      File.write!(path, toml)
+      on_exit(fn -> File.rm(path) end)
+      path
+    end
+
+    test "parses the top-level global default and falls back to :medium" do
+      assert DotConfig.default_thinking_effort() == :medium
+
+      toml = """
+      default-thinking-effort = "low"
+      """
+
+      {:ok, config} = DotConfig.load(write_toml!(toml, "global_thinking"))
+      assert DotConfig.default_thinking_effort(config) == :low
+    end
+
+    test "parses per-provider and per-model thinking-effort" do
+      toml = """
+      [providers.pegasus]
+      base-url = "http://example.com/v1"
+      api-key = "x"
+      default-thinking-effort = "high"
+
+      [[providers.pegasus.models]]
+      name = "pegasus-mini"
+      thinking-effort = "off"
+      """
+
+      {:ok, config} = DotConfig.load(write_toml!(toml, "provider_model_thinking"))
+      assert config.providers["pegasus"].default_thinking_effort == :high
+      assert config.models["pegasus-mini"].thinking_effort == :off
+    end
+
+    test "raises on an unknown thinking-effort value" do
+      toml = """
+      default-thinking-effort = "turbo"
+      """
+
+      assert_raise RuntimeError, ~r/Invalid thinking-effort/, fn ->
+        DotConfig.load(write_toml!(toml, "bad_thinking"))
+      end
+    end
+  end
 end

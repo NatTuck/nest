@@ -78,7 +78,29 @@ defmodule Nest.LLM.OpenAIClient do
     |> Client.maybe_put("top_p", request.top_p)
     |> Client.maybe_put("tools", build_wire_tools(request.tools))
     |> Client.maybe_put("tool_choice", normalize_tool_choice(request.tool_choice))
+    |> maybe_put_thinking(request.thinking_effort)
   end
+
+  # Thinking (reasoning effort) is normalized across providers. For
+  # OpenAI-compatible servers, enabled levels map to `reasoning_effort`;
+  # `:off` disables thinking via `chat_template_kwargs.enable_thinking`
+  # (the mechanism reasoning models on vLLM/Olla/etc. expect). `:xhigh`
+  # isn't defined by OpenAI-compatible servers, so it falls back to
+  # `high`.
+  defp maybe_put_thinking(payload, nil), do: payload
+
+  defp maybe_put_thinking(payload, :off) do
+    Map.put(payload, "chat_template_kwargs", %{"enable_thinking" => false})
+  end
+
+  defp maybe_put_thinking(payload, level) do
+    Map.put(payload, "reasoning_effort", reasoning_effort(level))
+  end
+
+  defp reasoning_effort(:low), do: "low"
+  defp reasoning_effort(:medium), do: "medium"
+  defp reasoning_effort(:high), do: "high"
+  defp reasoning_effort(:xhigh), do: "high"
 
   defp build_payload(request, opts) do
     format_request_payload(request, opts)
@@ -93,15 +115,15 @@ defmodule Nest.LLM.OpenAIClient do
   end
 
   defp message_to_wire({:system, %System{parts: parts}}) do
-    [%{"role" => "system", "content" => Client.text_from_parts(parts)}]
+    [%{"role" => "system", "content" => wire_content(Client.text_from_parts(parts))}]
   end
 
   defp message_to_wire({:user, %User{parts: parts}}) do
-    [%{"role" => "user", "content" => Client.text_from_parts(parts)}]
+    [%{"role" => "user", "content" => wire_content(Client.text_from_parts(parts))}]
   end
 
   defp message_to_wire({:assistant, %Assistant{parts: parts}}) do
-    base = %{"role" => "assistant", "content" => Client.text_from_parts(parts)}
+    base = %{"role" => "assistant", "content" => wire_content(Client.text_from_parts(parts))}
 
     case Client.tool_calls_from_parts(parts) do
       [] -> [base]
@@ -111,9 +133,18 @@ defmodule Nest.LLM.OpenAIClient do
 
   defp message_to_wire({:tool, %Tool{parts: parts}}) do
     Enum.map(parts || [], fn %Part.ToolResult{tool_call_id: id, content: content} ->
-      %{"role" => "tool", "tool_call_id" => id, "content" => content || ""}
+      %{"role" => "tool", "tool_call_id" => id, "content" => wire_content(content)}
     end)
   end
+
+  # The provider requires every message to carry a non-empty
+  # `content` field ("all messages must have non-empty content").
+  # A single space is the neutral placeholder: it satisfies the
+  # invariant without injecting semantic text the model might treat
+  # as real output (e.g. an empty assistant finalized after a stop).
+  defp wire_content(nil), do: " "
+  defp wire_content(""), do: " "
+  defp wire_content(content), do: content
 
   defp tool_call_to_wire(%Part.ToolUse{id: id, name: name, arguments: args}) do
     %{

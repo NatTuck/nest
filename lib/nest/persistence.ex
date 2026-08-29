@@ -402,6 +402,13 @@ defmodule Nest.Persistence do
     as: :update_agent_model
 
   @doc """
+  Update the `workspace_path` column on an agent row.
+  """
+  defdelegate update_agent_workspace(space_id, name, workspace_path),
+    to: Nest.Persistence.AgentAttrs,
+    as: :update_agent_workspace
+
+  @doc """
   List every persisted agent row in `space_id`, ordered by name.
   """
   defdelegate fetch_all_agents_for_space(space_id),

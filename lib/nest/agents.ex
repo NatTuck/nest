@@ -125,6 +125,7 @@ defmodule Nest.Agents do
       name: info.name,
       space_id: info.space_id,
       model: info.model,
+      workspace_path: info.workspace_path,
       vocation: vocation,
       messages: messages,
       history: Agent.get_history(pid),
@@ -148,7 +149,7 @@ defmodule Nest.Agents do
   defp get_vocation_info(vocation_id) do
     case Vocations.get_vocation(vocation_id) do
       nil -> nil
-      v -> %{id: v.id, name: v.name}
+      v -> %{"id" => v.id, "name" => v.name, "modes" => v.modes}
     end
   end
 
@@ -262,6 +263,30 @@ defmodule Nest.Agents do
   def change_model(space_id, name, new_model) when is_map(new_model) do
     case Supervisor.get_agent(space_id, name) do
       {:ok, pid} -> Agent.set_model(pid, new_model)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Change an agent's working directory.
+  """
+  @spec change_workspace(integer(), String.t(), String.t() | nil) :: :ok | {:error, term()}
+  def change_workspace(space_id, name, workspace_path) do
+    case Supervisor.get_agent(space_id, name) do
+      {:ok, pid} -> Agent.set_workspace(pid, workspace_path)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Combined edit: change an agent's model (and thinking level) and
+  working directory in one call.
+  """
+  @spec edit_agent(integer(), String.t(), map(), String.t() | nil) ::
+          :ok | {:error, term()}
+  def edit_agent(space_id, name, new_model, workspace_path) when is_map(new_model) do
+    case Supervisor.get_agent(space_id, name) do
+      {:ok, pid} -> Agent.edit_agent(pid, new_model, workspace_path)
       {:error, reason} -> {:error, reason}
     end
   end

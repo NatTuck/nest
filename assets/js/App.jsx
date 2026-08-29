@@ -50,6 +50,7 @@ import { AboutPage } from "./pages/AboutPage";
 import { LoginPage } from "./pages/LoginPage";
 import { RegisterPage } from "./pages/RegisterPage";
 import { InvitesPage } from "./pages/InvitesPage";
+import { ProvidersPage } from "./pages/ProvidersPage";
 
 /**
  * Transitional route at `/`.
@@ -161,6 +162,7 @@ export function App() {
           <Route path="space/:spaceSlug/agent/:name" element={<ChatPage />} />
           <Route path="about" element={<AboutPage />} />
           <Route path="invites" element={<InvitesPage />} />
+          <Route path="providers" element={<ProvidersPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

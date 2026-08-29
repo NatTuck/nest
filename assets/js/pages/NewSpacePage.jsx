@@ -16,42 +16,15 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useStore } from "../store";
 import { createSpace, rescanModels, suggestSpaceName } from "../channels";
+import { RescanButton } from "../components/RescanButton";
 import { vocationRequiresWorkspace } from "../utils/vocationWorkspace";
+import {
+  resolveThinkingOptions,
+  validateNewSpaceForm,
+} from "../utils/newSpaceForm";
 
-/**
- * Validate the new-space form before firing the lobby push.
- * Returns a user-facing error message or `null` when submittable.
- *
- * @param {object} params
- * @param {string} params.name — the space name input.
- * @param {string} params.selectedBlueprint — the blueprint `<select>` value.
- * @param {string} params.selectedModel — the model `<select>` value.
- * @param {boolean} params.requiresWorkspace — whether the selected
- *   blueprint's root vocation expects a workspace.
- * @param {string} params.workspacePath — the workspace path input.
- * @returns {string | null}
- */
-export function validateNewSpaceForm({
-  name,
-  selectedBlueprint,
-  selectedModel,
-  requiresWorkspace,
-  workspacePath,
-}) {
-  if (!name?.trim()) {
-    return "Please enter a space name";
-  }
-  if (!selectedBlueprint) {
-    return "Please select a blueprint";
-  }
-  if (!selectedModel) {
-    return "Please select a model";
-  }
-  if (requiresWorkspace && !workspacePath?.trim()) {
-    return "Please specify a workspace path";
-  }
-  return null;
-}
+// Re-export so existing imports (`NewSpacePage.test.jsx`) keep working.
+export { validateNewSpaceForm };
 
 /**
  * New Space Page component
@@ -65,6 +38,7 @@ export function NewSpacePage() {
   const [name, setName] = useState("");
   const [selectedBlueprint, setSelectedBlueprint] = useState("");
   const [selectedModel, setSelectedModel] = useState("");
+  const [selectedThinking, setSelectedThinking] = useState("medium");
   const [workspacePath, setWorkspacePath] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const [isRescanning, setIsRescanning] = useState(false);
@@ -90,6 +64,8 @@ export function NewSpacePage() {
     : null;
   const selectedVocationName = selectedVocation?.name;
   const requiresWorkspace = vocationRequiresWorkspace(selectedVocation);
+
+  const thinkingOptions = resolveThinkingOptions(models, selectedModel);
 
   // Reset the rescan spinner when the merged catalog lands. The
   // `rescan_models` push reply is `:ok`; the real catalog arrives
@@ -132,8 +108,11 @@ export function NewSpacePage() {
     setIsCreating(true);
     setError(null);
 
-    const model = models.find((m) => m.name === selectedModel) || {
-      name: selectedModel,
+    const model = {
+      ...(models.find((m) => m.name === selectedModel) || {
+        name: selectedModel,
+      }),
+      thinking_level: selectedThinking,
     };
 
     createSpace(
@@ -243,54 +222,21 @@ export function NewSpacePage() {
             >
               Select Model
             </label>
-            <button
-              type="button"
+            <RescanButton
+              isRescanning={isRescanning}
+              isCreating={isCreating}
               onClick={handleRescanModels}
-              disabled={isRescanning || isCreating}
-              aria-label="Rescan providers"
-              className={`
-                inline-flex items-center gap-2 px-3 py-1.5 rounded-md
-                text-xs font-medium border transition-all
-                ${
-                  isRescanning || isCreating
-                    ? "bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed"
-                    : "bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100 hover:border-amber-300 active:bg-amber-200"
-                }
-              `}
-            >
-              {isRescanning ? (
-                <>
-                  <svg
-                    className="animate-spin h-3.5 w-3.5"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    aria-hidden="true"
-                  >
-                    <circle
-                      className="opacity-25"
-                      cx="12"
-                      cy="12"
-                      r="10"
-                      stroke="currentColor"
-                      strokeWidth="4"
-                    />
-                    <path
-                      className="opacity-75"
-                      fill="currentColor"
-                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                    />
-                  </svg>
-                  Rescanning…
-                </>
-              ) : (
-                "Rescan providers"
-              )}
-            </button>
+            />
           </div>
           <select
             id="space-model-select"
             value={selectedModel}
-            onChange={(e) => setSelectedModel(e.target.value)}
+            onChange={(e) => {
+              setSelectedModel(e.target.value);
+              // Reset the thinking level to the global default on a
+              // model change so a stale choice isn't carried over.
+              setSelectedThinking("medium");
+            }}
             className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
             disabled={isCreating}
           >
@@ -308,8 +254,28 @@ export function NewSpacePage() {
           </select>
         </div>
 
-        {/* Workspace path input (for blueprints whose root vocation
-            expects a workspace) */}
+        {/* Thinking level (for models that support reasoning) */}
+        <div className="mb-6">
+          <label
+            htmlFor="space-thinking-select"
+            className="block text-sm font-medium text-gray-700 mb-2"
+          >
+            Thinking Level
+          </label>
+          <select
+            id="space-thinking-select"
+            value={selectedThinking}
+            onChange={(e) => setSelectedThinking(e.target.value)}
+            className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+            disabled={isCreating}
+          >
+            {thinkingOptions.map((level) => (
+              <option key={level} value={level}>
+                {level}
+              </option>
+            ))}
+          </select>
+        </div>
         {requiresWorkspace && (
           <div className="mb-6">
             <label

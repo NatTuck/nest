@@ -167,6 +167,7 @@ defmodule Nest.Agents.Agent.ChatState.Live do
             chat_turn_pid: nil,
             cancelled: false,
             pending_user_message: nil,
+            pending_notice: nil,
             mid_turn_entry: nil,
             crossed_thresholds: %MapSet{},
             consecutive_compaction_count: 0,

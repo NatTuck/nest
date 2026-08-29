@@ -45,6 +45,7 @@ defmodule Nest.Agents.Agent.ChatTurn.APILog do
       tools: state.ctx.tools,
       tool_choice: state.ctx.tool_choice,
       model: state.ctx.client_config.model,
+      thinking_effort: state.ctx.client_config.thinking_effort,
       stream: true,
       metadata: %{}
     }

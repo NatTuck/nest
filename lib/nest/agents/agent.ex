@@ -306,13 +306,21 @@ defmodule Nest.Agents.Agent do
   def compaction_loop_detected_ok(pid),
     do: GenServer.call(pid, :compaction_loop_detected_ok, :infinity)
 
-  @doc """
-  Change the agent's resolved LLM client (`client_config`)
-  and persisted `model` map. See
-  `Nest.Agents.Agent.IntrospectionHandler` for the handler.
-  """
+  # Change the agent's resolved LLM client + persisted `model` map.
+  # Handler: `IntrospectionHandler` → `ModelHandler`.
   @spec set_model(pid(), map()) :: :ok | {:error, term()}
   def set_model(pid, new_model), do: GenServer.call(pid, {:set_model, new_model}, :infinity)
+
+  # Change the agent's working directory. Handler: `WorkspaceHandler`.
+  @spec set_workspace(pid(), String.t() | nil) :: :ok | {:error, term()}
+  def set_workspace(pid, workspace_path),
+    do: GenServer.call(pid, {:set_workspace, workspace_path}, :infinity)
+
+  # Combined edit: model (and thinking level) + working directory in one
+  # call. Handler: `ModelHandler`.
+  @spec edit_agent(pid(), map(), String.t() | nil) :: :ok | {:error, term()}
+  def edit_agent(pid, model, workspace_path),
+    do: GenServer.call(pid, {:edit_agent, model, workspace_path}, :infinity)
 
   @doc """
   Test-only: returns the pid of the in-flight ChatTurn (or
@@ -326,24 +334,14 @@ defmodule Nest.Agents.Agent do
   """
   defdelegate terminate(pid), to: ClientAPI
 
-  @doc """
-  Returns public information about the agent for the WebSocket
-  protocol. Returns a map with :id, :model, :message_count,
-  :status, :vocation_id, :partial, :parent_id, :parent_name,
-  :depth, :descendant_usage, and :total_usage.
-
-  Re-export of `ClientAPI.get_public_info/1` so existing call
-  sites and `@spec`s continue to work.
-  """
+  # Returns public agent info for the WebSocket protocol (id, model,
+  # message_count, status, vocation_id, partial, parent, usage, ...).
+  # Re-export of `ClientAPI.get_public_info/1`.
   defdelegate get_public_info(pid), to: ClientAPI
 
-  @doc """
-  Returns the combined usage map for the agent: `usage_totals +
-  descendant_usage`, computed field-by-field. Mirrors the
-  JS-side chip rendering for "total tokens used".
-
-  Re-export of `ClientAPI.get_total_usage/1`.
-  """
+  # Returns the combined usage map for the agent: `usage_totals +
+  # descendant_usage`, computed field-by-field. Re-export of
+  # `ClientAPI.get_total_usage/1`.
   defdelegate get_total_usage(pid), to: ClientAPI
 
   @doc """

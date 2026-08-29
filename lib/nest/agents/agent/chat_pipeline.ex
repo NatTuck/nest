@@ -24,6 +24,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   alias Nest.Agents.Agent.Compaction.Trigger
   alias Nest.Agents.Agent.NoticePairInjector
   alias Nest.Agents.Agent.SystemPrompt
+  alias Nest.Agents.Agent.WorkspaceHandler
   alias Nest.Messages.Part
   alias Nest.Messages.Streaming
   alias Nest.Messages.User
@@ -221,6 +222,16 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   @deprecated "Use resume_with_pending/1 instead"
   def resume_after_compaction(state, _content, _mode) do
     resume_with_pending(state)
+  end
+
+  @doc """
+  Resume after a workspace-triggered compaction: append the pending
+  workspace notice pair (no LLM request) and stay idle. No-op when
+  there is no `pending_notice` set.
+  """
+  @spec resume_pending_notice(Nest.Agents.Agent.t()) :: Nest.Agents.Agent.t()
+  def resume_pending_notice(state) do
+    WorkspaceHandler.resume_notice(state)
   end
 
   # Kept for legacy callers (no production path uses this after

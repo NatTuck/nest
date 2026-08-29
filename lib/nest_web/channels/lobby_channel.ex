@@ -30,8 +30,10 @@ defmodule NestWeb.LobbyChannel do
   alias Nest.Spaces
   alias Nest.Vocations
   alias NestWeb.InviteJSON
+  alias NestWeb.LobbyChannel.AgentErrors
   alias NestWeb.LobbyChannel.Authz
   alias NestWeb.LobbyChannel.Invites
+  alias NestWeb.LobbyChannel.Providers
 
   @impl true
   def join("lobby", _payload, socket) do
@@ -75,6 +77,7 @@ defmodule NestWeb.LobbyChannel do
       blueprints: blueprints,
       models: models,
       vocations: vocations,
+      providers: Providers.providers(),
       suggested_name: Spaces.suggest_name(),
       current_user: public_current_user(user),
       invites:
@@ -141,23 +144,32 @@ defmodule NestWeb.LobbyChannel do
         socket
       )
       when is_map(model_params) do
-    user = socket.assigns.current_user
-
-    case Authz.authorize_owner_or_shared(space_id, name, user) do
-      {:ok, :owner} ->
-        do_change_model(space_id, name, model_params, socket)
-
-      {:ok, :shared} ->
-        {:reply, {:error, %{"reason" => "shared_read_only"}}, socket}
-
-      {:error, reason} ->
-        {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
+    case Authz.authorize_owner_or_shared(space_id, name, socket.assigns.current_user) do
+      {:ok, :owner} -> do_change_model(space_id, name, model_params, socket)
+      {:ok, :shared} -> {:reply, {:error, %{"reason" => "shared_read_only"}}, socket}
+      {:error, reason} -> {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
     end
   end
 
-  def handle_in("change_model", _payload, socket) do
-    {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
+  def handle_in("change_model", _payload, socket),
+    do: {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
+
+  @impl true
+  def handle_in(
+        "edit_agent",
+        %{"model" => mp, "name" => name, "space_id" => sid} = payload,
+        s
+      )
+      when is_map(mp) do
+    case Authz.authorize_owner_or_shared(sid, name, s.assigns.current_user) do
+      {:ok, :owner} -> do_edit_agent(sid, s, name, mp, Map.get(payload, "workspace_path"))
+      {:ok, :shared} -> {:reply, {:error, %{"reason" => "shared_read_only"}}, s}
+      {:error, reason} -> {:reply, {:error, %{"reason" => to_string(reason)}}, s}
+    end
   end
+
+  def handle_in("edit_agent", _payload, s),
+    do: {:reply, {:error, %{"reason" => "invalid_payload"}}, s}
 
   @impl true
   def handle_in("rescan_models", _payload, socket) do
@@ -166,9 +178,8 @@ defmodule NestWeb.LobbyChannel do
   end
 
   @impl true
-  def handle_in("suggest_space_name", _payload, socket) do
-    {:reply, {:ok, %{"name" => Spaces.suggest_name()}}, socket}
-  end
+  def handle_in("suggest_space_name", _payload, socket),
+    do: {:reply, {:ok, %{"name" => Spaces.suggest_name()}}, socket}
 
   @impl true
   def handle_in("archive_space", %{"space_id" => space_id}, socket)
@@ -188,9 +199,8 @@ defmodule NestWeb.LobbyChannel do
     end
   end
 
-  def handle_in("archive_space", _payload, socket) do
-    {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
-  end
+  def handle_in("archive_space", _payload, socket),
+    do: {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
 
   @impl true
   def handle_in("unarchive_space", %{"space_id" => space_id}, socket)
@@ -210,18 +220,21 @@ defmodule NestWeb.LobbyChannel do
     end
   end
 
-  def handle_in("unarchive_space", _payload, socket) do
-    {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
-  end
+  def handle_in("unarchive_space", _payload, socket),
+    do: {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
 
   @impl true
-  def handle_in("create_invite", payload, socket) do
-    Invites.create_invite(payload, socket)
-  end
+  def handle_in("create_invite", payload, socket), do: Invites.create_invite(payload, socket)
 
   @impl true
-  def handle_in("revoke_invite", payload, socket) do
-    Invites.revoke_invite(payload, socket)
+  def handle_in("revoke_invite", payload, socket), do: Invites.revoke_invite(payload, socket)
+
+  @impl true
+  def handle_in("save_providers", payload, socket) do
+    case Authz.authorize_admin(socket.assigns.current_user) do
+      {:ok, :admin} -> Providers.save(payload, socket)
+      {:error, _reason} -> {:reply, {:error, %{"reason" => "forbidden"}}, socket}
+    end
   end
 
   # -- Private helpers --
@@ -315,13 +328,11 @@ defmodule NestWeb.LobbyChannel do
   defp maybe_vocation_id(%{"blueprint_id" => bid}, _vocation_id) when not is_nil(bid), do: nil
   defp maybe_vocation_id(_payload, vocation_id), do: vocation_id
 
-  defp broadcast_space_archived(socket, space_id) do
-    broadcast(socket, "space:archived", %{"space_id" => space_id})
-  end
+  defp broadcast_space_archived(socket, space_id),
+    do: broadcast(socket, "space:archived", %{"space_id" => space_id})
 
-  defp broadcast_space_unarchived(socket, space_id) do
-    broadcast(socket, "space:unarchived", %{"space_id" => space_id})
-  end
+  defp broadcast_space_unarchived(socket, space_id),
+    do: broadcast(socket, "space:unarchived", %{"space_id" => space_id})
 
   defp broadcast_space_created(socket, space, agent_name, model, vocation_id, attrs) do
     push(socket, "space:created", %{
@@ -340,9 +351,7 @@ defmodule NestWeb.LobbyChannel do
   end
 
   defp do_change_model(space_id, name, model_params, socket) do
-    payload_model = build_model_map(model_params)
-
-    case Agents.change_model(space_id, name, payload_model) do
+    case Agents.change_model(space_id, name, build_model_map(model_params)) do
       :ok ->
         broadcast(socket, "agent:updated", %{
           "name" => name,
@@ -353,14 +362,32 @@ defmodule NestWeb.LobbyChannel do
         {:reply, {:ok, %{}}, socket}
 
       {:error, reason} ->
-        {:reply, change_model_error_payload(name, reason), socket}
+        {:reply, AgentErrors.change_model_payload(name, reason), socket}
+    end
+  end
+
+  defp do_edit_agent(space_id, s, name, mp, workspace_path) do
+    case Agents.edit_agent(space_id, name, build_model_map(mp), workspace_path) do
+      :ok ->
+        broadcast(s, "agent:updated", %{
+          "name" => name,
+          "model" => mp,
+          "workspace_path" => workspace_path,
+          "space_id" => space_id
+        })
+
+        {:reply, {:ok, %{}}, s}
+
+      {:error, reason} ->
+        {:reply, AgentErrors.edit_payload(name, reason), s}
     end
   end
 
   defp extract_model(model_params) do
     %{
       name: model_params["name"] || model_params[:name],
-      provider: model_params["provider"] || model_params[:provider]
+      provider: model_params["provider"] || model_params[:provider],
+      thinking_level: model_params["thinking_level"] || model_params[:thinking_level]
     }
   end
 
@@ -397,25 +424,9 @@ defmodule NestWeb.LobbyChannel do
   defp build_model_map(model_params) do
     %{
       name: model_params["name"] || model_params[:name],
-      provider: model_params["provider"] || model_params[:provider]
+      provider: model_params["provider"] || model_params[:provider],
+      thinking_level: model_params["thinking_level"] || model_params[:thinking_level]
     }
-  end
-
-  defp change_model_error_payload(_name, :agent_busy) do
-    {:error, %{"reason" => "agent_busy"}}
-  end
-
-  defp change_model_error_payload(_name, {:invalid_model, _reason}) do
-    {:error, %{"reason" => "invalid_model"}}
-  end
-
-  defp change_model_error_payload(_name, :not_found) do
-    {:error, %{"reason" => "not_found"}}
-  end
-
-  defp change_model_error_payload(name, reason) do
-    Logger.error("Failed to change model on agent #{inspect(name)}: #{inspect(reason)}")
-    {:error, %{"reason" => to_string(reason)}}
   end
 
   defp public_current_user(%Nest.Accounts.User{} = user) do

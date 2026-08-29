@@ -185,4 +185,50 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
       assert_reply ref, :error, %{"reason" => "invalid_payload"}
     end
   end
+
+  describe "handle_in(edit_agent)" do
+    test "edits the model and workspace and broadcasts agent:updated", %{socket: socket} do
+      {:ok, space_id, name} = create_test_agent(socket, "qwen3.5-plus")
+
+      ref =
+        push(socket, "edit_agent", %{
+          "name" => name,
+          "space_id" => space_id,
+          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"},
+          "workspace_path" => "/tmp/edited-ws"
+        })
+
+      assert_reply ref, :ok, %{}
+
+      # The `space_id` in the broadcast must come from the payload
+      # (the lobby socket has no `space_id` in its assigns), and the
+      # edited workspace_path must round-trip.
+      assert_broadcast "agent:updated",
+                       %{
+                         "name" => ^name,
+                         "space_id" => ^space_id,
+                         "workspace_path" => "/tmp/edited-ws"
+                       },
+                       200
+    end
+
+    test "returns :invalid_model for an unknown model", %{socket: socket} do
+      {:ok, space_id, name} = create_test_agent(socket, "qwen3.5-plus")
+
+      ref =
+        push(socket, "edit_agent", %{
+          "name" => name,
+          "space_id" => space_id,
+          "model" => %{"name" => "totally-bogus-model"},
+          "workspace_path" => "/tmp/edited-ws"
+        })
+
+      assert_reply ref, :error, %{"reason" => "invalid_model"}
+    end
+
+    test "returns :invalid_payload for a malformed message", %{socket: socket} do
+      ref = push(socket, "edit_agent", %{"name" => "no-model-field"})
+      assert_reply ref, :error, %{"reason" => "invalid_payload"}
+    end
+  end
 end

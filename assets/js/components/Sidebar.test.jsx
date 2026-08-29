@@ -242,6 +242,40 @@ describe("Sidebar tree", () => {
     expect(about.className).toMatch(/bg-blue-50/);
   });
 
+  it("shows the Providers link to admins", () => {
+    act(() => {
+      useStore.setState({
+        currentUser: { id: 1, username: "admin", is_admin: true },
+      });
+    });
+
+    render(
+      <MemoryRouter>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    expect(
+      screen.getByRole("link", { name: /providers/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("hides the Providers link from non-admins", () => {
+    act(() => {
+      useStore.setState({
+        currentUser: { id: 2, username: "bob", is_admin: false },
+      });
+    });
+
+    render(
+      <MemoryRouter>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByRole("link", { name: /providers/i })).toBeNull();
+  });
+
   it("renders gracefully when state.agents is null (defensive)", () => {
     // The lobby initializes `state.agents` to `[]` but a
     // race or stale state could leave it `null`. The sidebar

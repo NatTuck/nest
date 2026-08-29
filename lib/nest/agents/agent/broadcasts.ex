@@ -323,6 +323,7 @@ defmodule Nest.Agents.Agent.Broadcasts do
       status: to_string(state.live.status),
       currentMode: state.live.mode,
       model: model_payload(state.model),
+      workspacePath: state.workspace_path,
       contextLimit: state.llm_metrics.context_limit,
       contextLimitSource: state.llm_metrics.context_limit_source,
       parentId: state.tree_position.parent_id,

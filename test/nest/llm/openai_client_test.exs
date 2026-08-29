@@ -154,6 +154,84 @@ defmodule Nest.LLM.OpenAIClientTest do
              ]
     end
 
+    test "uses a placeholder for a tool-call-only assistant message" do
+      req = %RunRequest{
+        messages: [
+          {:assistant,
+           %Assistant{
+             index: 2,
+             parts: [
+               %Part.ToolUse{id: "call_1", name: "shell-cmd", arguments: %{"command" => "ls"}}
+             ]
+           }}
+        ]
+      }
+
+      payload = OpenAIClient.format_request_payload(req, [])
+
+      assert payload["messages"] == [
+               %{
+                 "role" => "assistant",
+                 "content" => " ",
+                 "tool_calls" => [
+                   %{
+                     "id" => "call_1",
+                     "type" => "function",
+                     "function" => %{"name" => "shell-cmd", "arguments" => ~s({"command":"ls"})}
+                   }
+                 ]
+               }
+             ]
+    end
+
+    test "uses a placeholder for an empty assistant message" do
+      req = %RunRequest{
+        messages: [{:assistant, %Assistant{index: 2, parts: []}}]
+      }
+
+      payload = OpenAIClient.format_request_payload(req, [])
+
+      assert payload["messages"] == [%{"role" => "assistant", "content" => " "}]
+    end
+
+    test "uses a placeholder for empty system and user content" do
+      req = %RunRequest{
+        messages: [
+          {:system, %Nest.Messages.System{index: 0, parts: []}},
+          {:user, %Nest.Messages.User{index: 1, parts: []}}
+        ]
+      }
+
+      payload = OpenAIClient.format_request_payload(req, [])
+
+      assert payload["messages"] == [
+               %{"role" => "system", "content" => " "},
+               %{"role" => "user", "content" => " "}
+             ]
+    end
+
+    test "uses a placeholder for empty tool-result content" do
+      req = %RunRequest{
+        messages: [
+          {:tool,
+           %Nest.Messages.Tool{
+             index: 3,
+             parts: [
+               %Part.ToolResult{tool_call_id: "call_1", name: "shell-cmd", content: ""},
+               %Part.ToolResult{tool_call_id: "call_2", name: "file-read", content: nil}
+             ]
+           }}
+        ]
+      }
+
+      payload = OpenAIClient.format_request_payload(req, [])
+
+      assert payload["messages"] == [
+               %{"role" => "tool", "tool_call_id" => "call_1", "content" => " "},
+               %{"role" => "tool", "tool_call_id" => "call_2", "content" => " "}
+             ]
+    end
+
     test "passes through temperature, max_tokens, top_p when set" do
       payload =
         OpenAIClient.format_request_payload(
@@ -164,6 +242,36 @@ defmodule Nest.LLM.OpenAIClientTest do
       assert payload["temperature"] == 0.3
       assert payload["max_tokens"] == 1024
       assert payload["top_p"] == 0.9
+    end
+
+    test "emits reasoning_effort for enabled thinking levels" do
+      for {level, expected} <- [{:low, "low"}, {:medium, "medium"}, {:high, "high"}] do
+        payload =
+          OpenAIClient.format_request_payload(%RunRequest{thinking_effort: level}, [])
+
+        assert payload["reasoning_effort"] == expected
+        refute Map.has_key?(payload, "chat_template_kwargs")
+      end
+    end
+
+    test "maps :xhigh to high for OpenAI-compatible servers" do
+      payload = OpenAIClient.format_request_payload(%RunRequest{thinking_effort: :xhigh}, [])
+
+      assert payload["reasoning_effort"] == "high"
+    end
+
+    test "disables thinking via chat_template_kwargs for :off" do
+      payload = OpenAIClient.format_request_payload(%RunRequest{thinking_effort: :off}, [])
+
+      assert payload["chat_template_kwargs"] == %{"enable_thinking" => false}
+      refute Map.has_key?(payload, "reasoning_effort")
+    end
+
+    test "emits no thinking fields when thinking_effort is nil" do
+      payload = OpenAIClient.format_request_payload(%RunRequest{thinking_effort: nil}, [])
+
+      refute Map.has_key?(payload, "reasoning_effort")
+      refute Map.has_key?(payload, "chat_template_kwargs")
     end
 
     test "translates tool_choice to the OpenAI shape" do

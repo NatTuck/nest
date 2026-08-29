@@ -307,7 +307,11 @@ describe("NewSpacePage", () => {
     expect(mocks.createSpace).toHaveBeenCalledTimes(1);
     const [model, vocationId, onOk, onError, opts] =
       mocks.createSpace.mock.calls[0];
-    expect(model).toEqual({ name: "gpt-4o", provider: "openai" });
+    expect(model).toEqual({
+      name: "gpt-4o",
+      provider: "openai",
+      thinking_level: "medium",
+    });
     expect(vocationId).toBeNull();
     expect(typeof onOk).toBe("function");
     expect(typeof onError).toBe("function");
@@ -362,7 +366,7 @@ describe("NewSpacePage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create Space" }));
 
     const [model] = mocks.createSpace.mock.calls[0];
-    expect(model).toEqual({ name: "gpt-4" });
+    expect(model).toEqual({ name: "gpt-4", thinking_level: "medium" });
   });
 
   it("falls back to a generic message when the error has no message", () => {

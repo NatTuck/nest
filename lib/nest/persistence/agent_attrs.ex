@@ -41,6 +41,34 @@ defmodule Nest.Persistence.AgentAttrs do
     end
   end
 
+  @spec update_agent_workspace(integer(), String.t(), String.t() | nil) ::
+          :ok | {:error, term()}
+  def update_agent_workspace(space_id, name, workspace_path) do
+    if Application.get_env(:nest, :persistence, %{})[:enabled] != false do
+      do_update_workspace(space_id, name, workspace_path)
+    else
+      :ok
+    end
+  end
+
+  defp do_update_workspace(space_id, name, workspace_path) do
+    case Persistence.fetch_agent(space_id, name) do
+      {:ok, %PersistedAgent{id: agent_id}} ->
+        from(a in PersistedAgent, where: a.id == ^agent_id)
+        |> Repo.update_all(
+          set: [
+            workspace_path: workspace_path,
+            updated_at: Persistence.now()
+          ]
+        )
+
+        :ok
+
+      {:error, :not_found} ->
+        {:error, :not_found}
+    end
+  end
+
   @spec fetch_all_agents_for_space(integer()) :: [PersistedAgent.t()]
   def fetch_all_agents_for_space(space_id) when is_integer(space_id) do
     if Application.get_env(:nest, :persistence, %{})[:enabled] != false do

@@ -31,9 +31,123 @@ defmodule Nest.Agents.Agent.Config do
     model_name = model[:name] || model["name"]
 
     if model_name do
-      ChatModel.new(model: model_name)
+      case ChatModel.new(model: model_name) do
+        {:ok, client_config} ->
+          {:ok, %{client_config | thinking_effort: resolve_thinking_effort(model)}}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
     else
       {:error, :no_model_name}
+    end
+  end
+
+  @doc """
+  Resolve the effective thinking level for an agent, from the
+  model map and config defaults. Precedence:
+
+    1. The explicit per-agent `thinking_level` in the model map
+       (what the user picked in the UI).
+    2. The per-model `thinking-effort` in config.toml.
+    3. The provider's `default-thinking-effort`.
+    4. The global `default-thinking-effort`.
+    5. The hardcoded fallback `:medium`.
+
+  Returns `nil` only when the model map explicitly carries
+  `thinking_level: nil` *and* no config default resolves (an edge
+  case; in practice the fallback makes this `:medium`).
+  """
+  @spec resolve_thinking_effort(map()) :: atom() | nil
+  def resolve_thinking_effort(model) do
+    explicit = model[:thinking_level] || model["thinking_level"]
+
+    if explicit != nil do
+      Nest.DotConfig.parse_thinking_effort(explicit)
+    else
+      case DotConfig.load() do
+        {:ok, config} ->
+          model_effort(config, model_name(model)) ||
+            provider_effort(config, model_provider(model)) ||
+            DotConfig.default_thinking_effort(config) ||
+            DotConfig.default_thinking_effort()
+
+        _ ->
+          DotConfig.default_thinking_effort()
+      end
+    end
+  end
+
+  defp model_effort(_config, nil), do: nil
+
+  defp model_effort(config, model_name) do
+    case DotConfig.get_model(config, model_name) do
+      nil -> nil
+      model -> model.thinking_effort
+    end
+  end
+
+  defp provider_effort(_config, nil), do: nil
+
+  defp provider_effort(config, provider_name) do
+    case DotConfig.get_provider(config, provider_name) do
+      nil -> nil
+      provider -> provider.default_thinking_effort
+    end
+  end
+
+  defp model_name(model), do: model[:name] || model["name"]
+  defp model_provider(model), do: model[:provider] || model["provider"]
+
+  @doc """
+  Look up the per-model `thinking-effort` in DotConfig. Returns
+  `nil` when absent.
+  """
+  @spec configured_thinking_effort(String.t() | nil) :: atom() | nil
+  def configured_thinking_effort(nil), do: nil
+
+  def configured_thinking_effort(model_name) when is_binary(model_name) do
+    case DotConfig.load() do
+      {:ok, config} ->
+        case DotConfig.get_model(config, model_name) do
+          nil -> nil
+          model -> model.thinking_effort
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  @doc """
+  Look up the provider-wide `default-thinking-effort` in DotConfig.
+  Returns `nil` when absent.
+  """
+  @spec configured_provider_default_thinking_effort(String.t() | nil) :: atom() | nil
+  def configured_provider_default_thinking_effort(nil), do: nil
+
+  def configured_provider_default_thinking_effort(provider_name) when is_binary(provider_name) do
+    case DotConfig.load() do
+      {:ok, config} ->
+        case DotConfig.get_provider(config, provider_name) do
+          nil -> nil
+          provider -> provider.default_thinking_effort
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  @doc """
+  Look up the top-level `default-thinking-effort` in DotConfig.
+  Returns `nil` when absent.
+  """
+  @spec configured_global_default_thinking_effort() :: atom() | nil
+  def configured_global_default_thinking_effort do
+    case DotConfig.load() do
+      {:ok, config} -> DotConfig.default_thinking_effort(config)
+      _ -> nil
     end
   end
 

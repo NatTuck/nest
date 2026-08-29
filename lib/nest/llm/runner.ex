@@ -67,6 +67,7 @@ defmodule Nest.LLM.Runner do
       tools: ctx.tools,
       tool_choice: ctx.tool_choice,
       model: ctx.client_config.model,
+      thinking_effort: ctx.client_config.thinking_effort,
       metadata: %{}
     }
   end

@@ -48,7 +48,7 @@ vi.mock("../store", () => {
 
 // Mock channels — ChatPage calls joinAgent/leaveAgent on mount.
 const mocks = vi.hoisted(() => ({
-  changeAgentModel: vi.fn(),
+  editAgent: vi.fn(),
 }));
 import {
   joinAgent,
@@ -65,7 +65,7 @@ vi.mock("../channels", () => ({
   stopMessage: vi.fn(),
   retryCompaction: vi.fn(),
   compactionLoopOk: vi.fn(),
-  changeAgentModel: mocks.changeAgentModel,
+  editAgent: mocks.editAgent,
 }));
 
 // Mock useScrollToBottom (not relevant to these tests).
@@ -73,16 +73,25 @@ vi.mock("../hooks/useScrollToBottom", () => ({
   useScrollToBottom: () => [vi.fn(), null],
 }));
 
-// Mock AgentModelPicker — render nothing but expose the
-// props so tests can drive `open` → `onSelect`
+// Mock EditAgentDialog — render nothing but expose the
+// props so tests can drive `open` → `onSave`
 // transitions directly.
-vi.mock("../components/AgentModelPicker", () => ({
-  AgentModelPicker: ({ open, onSelect, onClose }) =>
+vi.mock("../components/EditAgentDialog", () => ({
+  EditAgentDialog: ({ open, onSave, onClose }) =>
     open ? (
       <div data-testid="mock-model-picker">
         <button
           type="button"
-          onClick={() => onSelect({ name: "gpt-4", provider: "openai" })}
+          onClick={() =>
+            onSave({
+              model: {
+                name: "gpt-4",
+                provider: "openai",
+                thinking_level: "medium",
+              },
+              workspace_path: null,
+            })
+          }
         >
           pick
         </button>
@@ -1827,9 +1836,9 @@ describe("ChatPage model picker (model_missing recovery)", () => {
     expect(screen.getByTestId("mock-model-picker")).toBeInTheDocument();
   });
 
-  it("calls changeAgentModel when the user picks a replacement", () => {
-    mocks.changeAgentModel.mockImplementation(
-      (_name, _spaceId, _model, _onOk, onError) => {
+  it("calls editAgent when the user saves", () => {
+    mocks.editAgent.mockImplementation(
+      (_name, _spaceId, _model, _workspacePath, _onOk, onError) => {
         // Simulate the server error reply so the
         // `setChangeModelError` branch runs end-to-end.
         if (onError) onError({ reason: "agent_busy" });
@@ -1852,10 +1861,11 @@ describe("ChatPage model picker (model_missing recovery)", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: /pick/i }));
 
-    expect(mocks.changeAgentModel).toHaveBeenCalledWith(
+    expect(mocks.editAgent).toHaveBeenCalledWith(
       "test-agent",
       1,
-      { name: "gpt-4", provider: "openai" },
+      { name: "gpt-4", provider: "openai", thinking_level: "medium" },
+      null,
       undefined,
       expect.any(Function),
     );
@@ -1865,5 +1875,39 @@ describe("ChatPage model picker (model_missing recovery)", () => {
     expect(
       screen.getByText(/agent is busy.*wait for the current chat to finish/i),
     ).toBeInTheDocument();
+  });
+
+  it("surfaces each edit-agent error reason inline", () => {
+    const cases = [
+      { reason: "workspace_required", match: /working directory is required/i },
+      { reason: "invalid_model", match: /isn't configured on the server/i },
+      { reason: "context_overflow", match: /too full to record/i },
+      { reason: "not_found", match: /agent not found/i },
+      { reason: "invalid_payload", match: /couldn't read the edit/i },
+      { reason: "boom", match: /failed to edit agent: boom/i },
+    ];
+
+    for (const { reason, match } of cases) {
+      mocks.editAgent.mockImplementation((_n, _s, _m, _w, _ok, onError) => {
+        if (onError) onError({ reason });
+      });
+
+      mockAgentsCache = {
+        "test-agent": {
+          status: "connected",
+          agentState: "model_missing",
+          messages: [],
+          model: { name: "ghost-model" },
+        },
+      };
+
+      const { unmount } = renderChat();
+      fireEvent.click(
+        screen.getByRole("button", { name: /choose replacement model/i }),
+      );
+      fireEvent.click(screen.getByRole("button", { name: /pick/i }));
+      expect(screen.getByText(match)).toBeInTheDocument();
+      unmount();
+    }
   });
 });

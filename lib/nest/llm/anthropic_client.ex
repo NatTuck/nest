@@ -156,6 +156,24 @@ defmodule Nest.LLM.AnthropicClient do
     |> Client.maybe_put("tool_choice", normalize_tool_choice(request.tool_choice))
     |> Client.maybe_put("temperature", request.temperature)
     |> Client.maybe_put("top_p", request.top_p)
+    |> maybe_put_thinking(request.thinking_effort)
+  end
+
+  # Thinking (extended reasoning) is normalized across providers. For
+  # Anthropic, an enabled level sets the `thinking` param with a
+  # budget heuristic per level; `:off` and `nil` omit it (Anthropic
+  # disables thinking by omitting the param). Budget values are a
+  # reasonable heuristic — tune per model via config if needed.
+  @thinking_budgets %{low: 4_000, medium: 8_000, high: 16_000, xhigh: 32_000}
+
+  defp maybe_put_thinking(payload, nil), do: payload
+  defp maybe_put_thinking(payload, :off), do: payload
+
+  defp maybe_put_thinking(payload, level) do
+    Map.put(payload, "thinking", %{
+      "type" => "enabled",
+      "budget_tokens" => Map.fetch!(@thinking_budgets, level)
+    })
   end
 
   # The first `{:system, _}` message in `request.messages` is the
@@ -224,14 +242,20 @@ defmodule Nest.LLM.AnthropicClient do
   # not produced by the agent (the tool role carries them),
   # so this path emits a list of text blocks.
   defp message_to_wire({:user, %User{parts: parts}}) do
-    %{"role" => "user", "content" => Enum.map(parts || [], &user_part_to_wire/1)}
+    %{
+      "role" => "user",
+      "content" => ensure_content_blocks(Enum.map(parts || [], &user_part_to_wire/1))
+    }
   end
 
   # Assistant: rebuild the Anthropic content block array from
   # the parts list, preserving text, thinking (with signature),
   # and tool_use blocks in the correct order.
   defp message_to_wire({:assistant, %Assistant{parts: parts}}) do
-    %{"role" => "assistant", "content" => Enum.map(parts || [], &assistant_part_to_wire/1)}
+    %{
+      "role" => "assistant",
+      "content" => ensure_content_blocks(Enum.map(parts || [], &assistant_part_to_wire/1))
+    }
   end
 
   # Tool results: Anthropic expects them in a user-role message with
@@ -239,6 +263,13 @@ defmodule Nest.LLM.AnthropicClient do
   defp message_to_wire({:tool, %Tool{parts: parts}}) do
     %{"role" => "user", "content" => Enum.map(parts || [], &tool_part_to_wire/1)}
   end
+
+  # Anthropic requires each message's `content` block array to be
+  # non-empty. A message with no parts (e.g. an assistant finalized
+  # empty after a stop) would otherwise serialize as `content: []`.
+  # Insert a neutral text block so the payload stays valid.
+  defp ensure_content_blocks([]), do: [%{"type" => "text", "text" => " "}]
+  defp ensure_content_blocks(blocks), do: blocks
 
   defp user_part_to_wire(%Part.Text{text: text}),
     do: %{"type" => "text", "text" => text}

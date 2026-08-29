@@ -72,6 +72,7 @@ defmodule Nest.MixProject do
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"},
       {:toml, "~> 0.7.0"},
+      {:toml_elixir, "~> 3.1.0"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:excoveralls, "~> 0.18", only: :test, runtime: false},
       {:mimic, "~> 2.3", only: :test},
@@ -108,7 +109,10 @@ defmodule Nest.MixProject do
       "assets.test": [
         "cmd --cd assets '(pnpm vitest run --no-color --coverage --reporter=verbose) 2>&1'"
       ],
-      "assets.check": ["cmd --cd assets pnpm biome check"],
+      "assets.check": [
+        "cmd --cd assets pnpm biome check",
+        "cmd --cd assets node lint-file-size.mjs"
+      ],
       precommit: [
         "compile --warnings-as-errors",
         "deps.unlock --unused",
@@ -116,7 +120,7 @@ defmodule Nest.MixProject do
         "credo",
         # This cannot be increased or removed *EVER*. No exceptions. 
         "cmd timeout 5 mix test",
-        "cmd --cd assets pnpm biome ci",
+        "cmd --cd assets 'pnpm biome ci && node lint-file-size.mjs'",
         "test --cover",
         "assets.test"
       ]

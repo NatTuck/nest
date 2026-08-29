@@ -204,6 +204,7 @@ defmodule Nest.LLM.MockClient do
     }
     |> Client.maybe_put("tools", tools_to_wire(req.tools))
     |> Client.maybe_put("tool_choice", req.tool_choice)
+    |> Client.maybe_put("thinking_effort", req.thinking_effort)
   end
 
   # The agent pid used to scope `set_*` and `run/2` calls. Pulled

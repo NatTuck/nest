@@ -403,6 +403,30 @@ describe("store", () => {
     });
   });
 
+  describe("applyAgentWorkspaceUpdate", () => {
+    it("updates the cache and the agents list", () => {
+      useStore.setState({
+        agents: [{ name: "agent-1", space_id: 1, workspace_path: null }],
+        agentsCache: {
+          "agent-1": { status: "connected", workspace_path: null },
+        },
+      });
+
+      useStore.getState().applyAgentWorkspaceUpdate("agent-1", "/new/ws");
+
+      expect(useStore.getState().agents[0].workspace_path).toBe("/new/ws");
+      expect(useStore.getState().agentsCache["agent-1"].workspace_path).toBe(
+        "/new/ws",
+      );
+    });
+
+    it("is a no-op when the agent is not in the cache", () => {
+      useStore.setState({ agents: [], agentsCache: {} });
+      useStore.getState().applyAgentWorkspaceUpdate("missing", "/x");
+      expect(useStore.getState().agentsCache.missing).toBeUndefined();
+    });
+  });
+
   describe("clearAgentError", () => {
     it("clears the chat-task error and promotes status to connected when agentState is idle", () => {
       // Recovery scenario from the user's report: the LLM call

@@ -220,6 +220,13 @@ defmodule NestWeb.LobbyChannelTest do
       assert payload.invites == []
     end
 
+    test "returns the configured providers in the init payload", %{} do
+      {_socket, payload} = join_lobby()
+
+      assert is_list(payload.providers)
+      assert Enum.any?(payload.providers, &(&1["name"] == "pegasus"))
+    end
+
     test "returns the user's invites (active + used + revoked) sorted newest first", %{} do
       # Mint three invites for the lobby-tester user:
       # one to be redeemed, one to be revoked, one left active.

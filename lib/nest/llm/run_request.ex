@@ -16,6 +16,7 @@ defmodule Nest.LLM.RunRequest do
             temperature: nil,
             max_tokens: nil,
             top_p: nil,
+            thinking_effort: nil,
             stream: true,
             metadata: nil
 
@@ -29,6 +30,7 @@ defmodule Nest.LLM.RunRequest do
           temperature: float() | nil,
           max_tokens: integer() | nil,
           top_p: float() | nil,
+          thinking_effort: atom() | nil,
           stream: boolean(),
           metadata: map() | nil
         }

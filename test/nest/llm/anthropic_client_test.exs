@@ -271,6 +271,18 @@ defmodule Nest.LLM.AnthropicClientTest do
              ]
     end
 
+    test "inserts a placeholder block for an empty assistant message" do
+      payload =
+        AnthropicClient.format_request_payload(
+          %RunRequest{messages: [{:assistant, %Assistant{index: 4, parts: []}}]},
+          []
+        )
+
+      assert payload["messages"] == [
+               %{"role" => "assistant", "content" => [%{"type" => "text", "text" => " "}]}
+             ]
+    end
+
     test "translates tool results to a user-role message with tool_result content blocks" do
       req = %RunRequest{
         messages: [
@@ -327,6 +339,20 @@ defmodule Nest.LLM.AnthropicClientTest do
           ] do
         payload = AnthropicClient.format_request_payload(%RunRequest{tool_choice: choice}, [])
         assert payload["tool_choice"] == expected
+      end
+    end
+
+    test "emits a thinking block for enabled levels with a budget heuristic" do
+      payload =
+        AnthropicClient.format_request_payload(%RunRequest{thinking_effort: :high}, [])
+
+      assert payload["thinking"] == %{"type" => "enabled", "budget_tokens" => 16_000}
+    end
+
+    test "omits the thinking block for :off and nil" do
+      for level <- [:off, nil] do
+        payload = AnthropicClient.format_request_payload(%RunRequest{thinking_effort: level}, [])
+        refute Map.has_key?(payload, "thinking")
       end
     end
 

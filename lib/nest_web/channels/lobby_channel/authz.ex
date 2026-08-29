@@ -61,6 +61,10 @@ defmodule NestWeb.LobbyChannel.Authz do
     end
   end
 
+  @doc "Admin-only check for server-level configuration (providers)."
+  def authorize_admin(%{is_admin: true}), do: {:ok, :admin}
+  def authorize_admin(_current_user), do: {:error, :forbidden}
+
   # A space-level mutation must not proceed on an archived
   # space — its agents are stopped and the space is hidden.
   defp ensure_space_active(space_id) do

@@ -19,7 +19,8 @@ defmodule Nest.LLM.ClientConfig do
             api_key: nil,
             model: nil,
             receive_timeout: nil,
-            probe_base_url: nil
+            probe_base_url: nil,
+            thinking_effort: nil
 
   @type t :: %__MODULE__{
           client: module() | nil,
@@ -27,6 +28,9 @@ defmodule Nest.LLM.ClientConfig do
           api_key: String.t() | nil,
           model: String.t() | nil,
           receive_timeout: non_neg_integer() | nil,
-          probe_base_url: String.t() | nil
+          probe_base_url: String.t() | nil,
+          # Normalized thinking level (:off | :low | :medium | :high |
+          # :xhigh), resolved from the agent's model map + config.
+          thinking_effort: atom() | nil
         }
 end

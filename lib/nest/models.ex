@@ -380,7 +380,8 @@ defmodule Nest.Models do
       %{
         "name" => model.name,
         "provider" => model.provider_name,
-        "context_limit" => effective_context_limit(model, cache, providers)
+        "context_limit" => effective_context_limit(model, cache, providers),
+        "thinking_levels" => thinking_levels()
       }
     end)
   end
@@ -398,9 +399,18 @@ defmodule Nest.Models do
       %{
         "name" => model.name,
         "provider" => model.provider_name,
-        "context_limit" => effective_context_limit(model, cache, providers)
+        "context_limit" => effective_context_limit(model, cache, providers),
+        "thinking_levels" => thinking_levels()
       }
     end)
+  end
+
+  # The thinking levels a model can be configured with. Phase 1
+  # exposes the full supported set for every model; narrowing per
+  # model from provider capability discovery is future work.
+  defp thinking_levels do
+    Nest.DotConfig.thinking_efforts()
+    |> Enum.map(&to_string/1)
   end
 
   defp effective_context_limit(model, cache, providers) do

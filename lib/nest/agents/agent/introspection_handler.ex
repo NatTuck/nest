@@ -36,6 +36,7 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ModelHandler
+  alias Nest.Agents.Agent.WorkspaceHandler
   alias Nest.LLM.Client
   alias Nest.Messages.Streaming
   alias Nest.Tokens.ConversationSize
@@ -141,6 +142,17 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
     ModelHandler.handle(msg, from, state)
   end
 
+  # Forward `{:edit_agent, _, _}` (combined model + workspace edit)
+  # and `{:set_workspace, _}` (standalone workspace change) to
+  # `ModelHandler` / `WorkspaceHandler`.
+  def handle({:edit_agent, _, _} = msg, from, state) do
+    ModelHandler.handle(msg, from, state)
+  end
+
+  def handle({:set_workspace, _path} = msg, from, state) do
+    WorkspaceHandler.handle(msg, from, state)
+  end
+
   # Pre-call gate for `file-write`. Looks up the cache entry
   # for `path`; if absent → the agent has not yet called
   # `file-read` (or the path has been cleared by a post-
@@ -165,6 +177,7 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
       name: state.name,
       space_id: state.space_id,
       model: state.model,
+      workspace_path: state.workspace_path,
       message_count: length(state.chat_state.messages),
       status: state.live.status,
       vocation_id: state.vocation_id,
