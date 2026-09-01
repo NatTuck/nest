@@ -1,15 +1,42 @@
 defmodule Nest.Sandbox do
   @moduledoc """
-  Pure builder for bwrap sandbox arguments from a capability map.
+  The single, authoritative gatekeeper for all agent file access.
 
-  The Sandbox module is intentionally a pure function: it does not run
-  commands, talk to the OS, or hold any state. Callers (e.g. `ShellCmd`)
-  combine `Sandbox.build/3` output with their own execution concerns
-  (stdin, timeout, erlexec, etc.).
+  Everything an agent reads, writes, stats, or executes goes through
+  this module. It has three facets:
+
+  ## Rule helpers (shared single source of truth)
+
+  `readable_roots/1`, `writable_roots/2`, `read_allowed?/2`,
+  `write_allowed?/3`, and `resolve/2` are pure predicates built on
+  `Nest.FSPath` (canonicalization + containment). These are the ONLY
+  place the sandbox rules live: the bwrap argument builder derives its
+  mounts from them, and the read-only host fast-path authorizes from
+  them, so the fast-path can never permit something the mounts deny
+  (and vice-versa).
+
+  ## bwrap argument builder
+
+  `build/3` and `build/4` translate caps into a bwrap command line.
+  Paths are canonicalized (symlinks resolved) for bind *mounts* so a
+  symlink-traversing workspace binds to its real target; `--chdir`
+  stays on the user-provided path so the LLM and tools keep addressing
+  files exactly as the user gave them.
+
+  ## Executors
+
+  `read/3` and `stat/4` are read-only fast-paths: they authorize via
+  the shared helpers and then hit the host filesystem directly, so
+  bwrap is not spawned for pure reads. Because bwrap runs as the same
+  uid with no uid remap and binds paths derived from the same helpers,
+  a host read is byte- and permission-identical to what bwrap would
+  expose. `write/5` and `run/5` always go through bwrap (`ShellCmd`),
+  so write/execute permissions are enforced by the mounts.
 
   ## Caps shape
 
-  Caps are a raw map matching the JSONB shape stored on `Vocation.modes`:
+  Caps are a raw map matching the JSONB shape stored on
+  `Vocation.modes`:
 
       %{
         "net" => boolean(),
@@ -19,78 +46,32 @@ defmodule Nest.Sandbox do
         }
       }
 
-  * `"net"` — when `true`, the sandbox shares the host's network namespace
-    (bwrap receives `--share-net`). When `false`, network is unshared
-    (`--unshare-net`).
-  * `"fs.read"` — must include `"/"` to run any command (bwrap needs
-    `/bin/sh` and its libraries). `"read": ["/"]` produces
-    `--ro-bind / /`. `"read": []` is a build-time error.
-  * `"fs.write"` — the explicit list of paths the sandbox binds
-    read-write. Three kinds of values may appear:
+  * `"net"` — when `true`, the sandbox shares the host's network
+    namespace (`--share-net`); when `false`, network is unshared.
+  * `"fs.read"` — must include `"/"` to run any command. `["/"]`
+    produces `--ro-bind / /`.
+  * `"fs.write"` — the explicit list of paths bound read-write. The
+    `":workspace"` and `"/tmp"` entries are symbolic (resolved to the
+    canonical workspace and the per-agent scratch dir); any other path
+    is bound at its canonical path. Anything not in the write list
+    stays read-only via `--ro-bind / /`.
 
-      * `":workspace"` (symbolic) — resolves at runtime to the
-        agent's actual workspace directory. The sandbox binds
-        `workspace_path` to itself read-write.
-      * `"/tmp"` (symbolic) — the per-agent scratch directory. The
-        sandbox binds the runtime `tmp_path` (e.g.
-        `/tmp/nest-123/agent-456`) at `/tmp` read-write. The literal
-        path inside the sandbox is always `/tmp`, regardless of where
-        the host `tmp_path` actually lives.
-      * Any other path (e.g. `"/data"`, `":extra"`) — bound at the
-        same path inside the sandbox read-write.
+  ## Missing paths
 
-    Anything NOT in the write list stays read-only via the
-    `--ro-bind / /`. So a mode with `write: ["/tmp"]` can write to
-    the per-agent scratch directory but NOT to the workspace — the
-    workspace falls under the read-only bind of `/`.
-
-    The `":workspace"` and `"/tmp"` placeholders are stripped from the
-    write list before binding (they're resolved by their dedicated
-    bind steps), so they won't appear as `--bind /tmp /tmp` or similar
-    redundant directives.
-
-  ## Design notes
-
-  The path `"/tmp"` is symbolic but `/tmp/nest-123/agent-456` is the
-  actual host location. Inside the sandbox, both shell commands and
-  tools see `/tmp` — the bind mount makes the path translation
-  invisible. The same is true for the workspace: the seed stores
-  `":workspace"`, the sandbox resolves it to the agent's actual
-  workspace path (e.g. `/Users/you/projects/foo`), and shell commands
-  see that path at its original location.
+  A non-existent workspace is rejected before bwrap runs (bwrap never
+  creates it). A non-existent `fs.write` path fails at bwrap time as a
+  missing source rather than being created: any operation that would
+  fail on a missing directory fails, it is never auto-created.
   """
 
-  @doc """
-  Build the bwrap argument list for the given caps, workspace, and tmp path.
-
-  Returns `{:ok, args}` with the bwrap argument list, or
-  `{:error, reason}` if the caps map is malformed.
-  """
-  @spec build(map(), String.t(), String.t() | nil) ::
-          {:ok, [String.t()]} | {:error, String.t()}
-  def build(caps, workspace_path, tmp_path) do
-    with :ok <- validate_caps(caps) do
-      args =
-        base_args()
-        |> append_net_flag(caps)
-        |> append_workspace_bind(caps, workspace_path)
-        |> append_write_binds(caps, workspace_path)
-        |> append_tmp_bind(tmp_path)
-        |> append_chdir(workspace_path)
-
-      {:ok, args}
-    end
-  end
+  alias Nest.FSPath
+  alias Nest.Tools.ShellCmd
+  alias Nest.Tools.ShellEscape
 
   @doc """
   The default "build" profile (full host read, workspace + /tmp
   writable, no network). Used by callers that haven't been migrated to
-  pass real caps (and as the fallback in `ShellCmd.execute/5` when
-  no caps are provided).
-
-  This is the "everything writable" baseline. Modes that want fewer
-  permissions pass their own caps (e.g. `plan` mode uses
-  `write: ["/tmp"]` so the workspace stays read-only).
+  pass real caps (and as the fallback in `ShellCmd.execute/5`).
   """
   @spec default_caps() :: map()
   def default_caps do
@@ -104,8 +85,7 @@ defmodule Nest.Sandbox do
   end
 
   @doc """
-  Build bwrap args using `default_caps/0`. Equivalent to
-  `ShellCmd.build_bwrap_args/2`'s historical behavior.
+  Build bwrap args using `default_caps/0`.
   """
   @spec build_default(String.t(), String.t() | nil) :: {:ok, [String.t()]}
   def build_default(workspace_path, tmp_path) do
@@ -114,10 +94,39 @@ defmodule Nest.Sandbox do
   end
 
   @doc """
-  Validates a caps map. Returns `:ok` or `{:error, reason}`.
+  Build the bwrap argument list for the given caps, workspace, and tmp
+  path. The workspace is bound at its canonical (symlink-resolved)
+  path and `--chdir` targets `workspace_path` (the user-provided path).
+  """
+  @spec build(map(), String.t(), String.t() | nil) ::
+          {:ok, [String.t()]} | {:error, String.t()}
+  def build(caps, workspace_path, tmp_path) do
+    build(caps, workspace_path, tmp_path, workspace_path)
+  end
 
-  Exposed publicly so the Vocation changeset can call it, and so tests
-  can assert on specific error messages.
+  @doc """
+  Build bwrap args, binding the workspace (canonicalized) while
+  `--chdir`-ing to `chdir_path`. `chdir_path` lets callers keep the
+  user-facing workspace path while the mount uses the canonical one.
+  """
+  @spec build(map(), String.t(), String.t() | nil, String.t()) ::
+          {:ok, [String.t()]} | {:error, String.t()}
+  def build(caps, workspace_path, tmp_path, chdir_path) do
+    with :ok <- validate_caps(caps) do
+      args =
+        base_args(caps)
+        |> append_net_flag(caps)
+        |> append_workspace_bind(caps, workspace_path)
+        |> append_write_binds(caps, workspace_path)
+        |> append_tmp_bind(tmp_path)
+        |> append_chdir(chdir_path)
+
+      {:ok, args}
+    end
+  end
+
+  @doc """
+  Validates a caps map. Returns `:ok` or `{:error, reason}`.
   """
   @spec validate_caps(map()) :: :ok | {:error, String.t()}
   def validate_caps(%{"net" => net, "fs" => %{"read" => read, "write" => write}})
@@ -137,8 +146,6 @@ defmodule Nest.Sandbox do
     end
   end
 
-  # Malformed `fs` (missing keys or wrong types) — match these before
-  # the generic `fs` map clause so we give a precise error.
   def validate_caps(%{"net" => _, "fs" => %{"read" => _, "write" => write}})
       when not is_list(write) do
     {:error, "caps.fs.write must be a list"}
@@ -173,79 +180,205 @@ defmodule Nest.Sandbox do
     {:error, "invalid caps: #{inspect(caps)}"}
   end
 
-  # Internal helpers (private)
+  # ---- Rule helpers (shared single source of truth) ----
 
-  defp base_args do
+  @doc """
+  The canonical host paths the sandbox exposes read-only (from
+  `caps.fs.read`).
+  """
+  @spec readable_roots(map()) :: [String.t()]
+  def readable_roots(caps) do
+    caps |> read_list() |> Enum.map(&FSPath.canonical/1) |> Enum.uniq()
+  end
+
+  @doc """
+  The canonical host paths the sandbox exposes read-write: the
+  canonical workspace (when `:workspace` is in the write list) plus
+  each extra `fs.write` path, canonicalized and deduplicated. The
+  `"/tmp"` entry is excluded here because it is bound at `/tmp` inside
+  the sandbox, not at a user-facing host path.
+  """
+  @spec writable_roots(map(), String.t() | nil) :: [String.t()]
+  def writable_roots(caps, workspace) do
+    writes = write_list(caps)
+
+    workspace_root =
+      if ":workspace" in writes and is_binary(workspace),
+        do: [FSPath.canonical(workspace)],
+        else: []
+
+    extras =
+      writes |> Enum.reject(&(&1 in [":workspace", "/tmp"])) |> Enum.map(&FSPath.canonical/1)
+
+    (workspace_root ++ extras) |> Enum.uniq()
+  end
+
+  @doc """
+  True when `path` is readable under `caps` — i.e. its canonical path
+  lies beneath a readable root. Produces the same result bwrap's
+  read-only binds would.
+  """
+  @spec read_allowed?(String.t(), map()) :: boolean()
+  def read_allowed?(path, caps) do
+    canonical = FSPath.canonical(path)
+    Enum.any?(readable_roots(caps), &FSPath.under?(&1, canonical))
+  end
+
+  @doc """
+  True when `path` is writable under `caps` — i.e. its canonical path
+  lies beneath a writable root (canonical workspace or an extra write
+  path). Produces the same result bwrap's read-write binds would.
+  """
+  @spec write_allowed?(String.t(), map(), String.t() | nil) :: boolean()
+  def write_allowed?(path, caps, workspace) do
+    canonical = FSPath.canonical(path)
+    Enum.any?(writable_roots(caps, workspace), &FSPath.under?(&1, canonical))
+  end
+
+  @doc """
+  Resolve a tool path against the workspace root (see `Nest.FSPath.resolve/2`).
+  """
+  @spec resolve(String.t(), String.t() | nil) :: {:ok, String.t()} | {:error, String.t()}
+  def resolve(path, workspace), do: FSPath.resolve(path, workspace)
+
+  # ---- Executors ----
+
+  @doc """
+  Read `path` after authorizing it via `read_allowed?/2`. Uses the
+  read-only host fast-path (no bwrap). Returns `{:ok, content}`,
+  `{:error, reason}`, or `{:error, :read_permission_denied}`.
+  """
+  @spec read(String.t(), map(), keyword()) :: {:ok, binary()} | {:error, atom() | term()}
+  def read(path, caps, _opts \\ []) do
+    if read_allowed?(path, caps) do
+      File.read(path)
+    else
+      {:error, :read_permission_denied}
+    end
+  end
+
+  @doc """
+  Stat `path` after authorizing it via `read_allowed?/2`. Uses the
+  read-only host fast-path (no bwrap). `opts` are passed to
+  `File.stat/2` (e.g. `time: :posix`). Returns `{:ok, stat}`,
+  `{:error, reason}`, or `{:error, :read_permission_denied}`.
+  """
+  @spec stat(String.t(), map(), keyword()) :: {:ok, File.Stat.t()} | {:error, atom() | term()}
+  def stat(path, caps, opts \\ []) do
+    if read_allowed?(path, caps) do
+      File.stat(path, opts)
+    else
+      {:error, :read_permission_denied}
+    end
+  end
+
+  @doc """
+  Run `command` inside the bwrap sandbox. Authorizes nothing further
+  itself — the mounts enforce filesystem rules. Delegates to
+  `ShellCmd.execute/5`.
+  """
+  @spec run(String.t(), String.t() | nil, String.t() | nil, map() | nil, keyword()) ::
+          {:ok, String.t()} | {:error, String.t()}
+  def run(command, workspace, tmp_path, caps, opts \\ []) do
+    ShellCmd.execute(command, workspace, tmp_path, caps, opts)
+  end
+
+  @doc """
+  Write `content` to `path` inside the bwrap sandbox. Write
+  permissions are enforced by the bind mounts (which are derived from
+  `writable_roots/2`), so a write outside the permitted paths fails at
+  the kernel level (read-only file system) rather than being
+  pre-authorized here. Returns `{:ok, output}` or `{:error, reason}`.
+  """
+  @spec write(String.t(), binary(), map(), String.t() | nil, String.t() | nil) ::
+          {:ok, String.t()} | {:error, String.t()}
+  def write(path, content, caps, workspace, tmp_path) do
+    ShellCmd.execute(
+      "cat > #{ShellEscape.escape(path)}",
+      workspace,
+      tmp_path,
+      caps,
+      stdin: content
+    )
+  end
+
+  # ---- Internal arg-builder helpers ----
+
+  defp base_args(caps) do
+    read_args =
+      caps
+      |> readable_roots()
+      |> Enum.flat_map(fn root -> ["--ro-bind", root, root] end)
+
+    # Read-only bind of the readable roots. Must come BEFORE
+    # --dev/--proc so the devtmpfs overlays it and /proc/self stays
+    # writable inside the sandbox.
+    # Fresh devtmpfs over the read-only bind. Makes /dev/null,
+    # /dev/zero, etc. writable for shell redirects.
+    # Mount the host's procfs after the read-only root bind so that
+    # /proc/self/<pid>/... files stay writable inside the sandbox.
     [
       # Unshare everything by default; re-share net below if requested.
       "--unshare-all",
       "--die-with-parent",
-      "--new-session",
-      # Read-only bind of the host root. Must come BEFORE --dev /dev
-      # so the devtmpfs overlays it (not the other way around).
-      # This also means paths NOT in caps.fs.write (including the
-      # workspace when ":workspace" is not in the write list) are
-      # read-only.
-      "--ro-bind",
-      "/",
-      "/",
-      # Fresh devtmpfs over the read-only bind. Makes /dev/null,
-      # /dev/zero, etc. writable for shell redirects.
-      "--dev",
-      "/dev",
-      # Mount the host's procfs after the read-only root bind so that
-      # /proc/self/<pid>/... files (e.g. oom_score_adj, comm) stay
-      # writable inside the sandbox. Placing --proc before --ro-bind /
-      # causes the freshly-mounted /proc to inherit the parent's
-      # read-only flag, which surfaces as "Read-only file system" on
-      # anything that writes to /proc/self from inside the sandbox.
-      "--proc",
-      "/proc"
-    ]
+      "--new-session"
+    ] ++
+      read_args ++
+      ["--dev", "/dev"] ++
+      ["--proc", "/proc"]
   end
 
   defp append_net_flag(args, %{"net" => true}), do: args ++ ["--share-net"]
   defp append_net_flag(args, %{"net" => false}), do: args ++ ["--unshare-net"]
 
-  # Bind the workspace read-write ONLY when the mode's caps include
-  # the symbolic ":workspace" entry. Otherwise the workspace stays
-  # read-only via the `--ro-bind / /` above, so writes to it
-  # (e.g. `cat > $WORKSPACE/file`) fail at the kernel level.
-  defp append_workspace_bind(args, %{"fs" => %{"write" => writes}}, workspace_path) do
+  # Bind the canonical workspace read-write ONLY when the mode's caps
+  # include ":workspace". Otherwise the workspace stays read-only via
+  # the `--ro-bind / /`, so writes to it fail at the kernel level.
+  defp append_workspace_bind(args, %{"fs" => %{"write" => writes}}, workspace)
+       when is_binary(workspace) do
     if ":workspace" in writes do
-      args ++ ["--bind", workspace_path, workspace_path]
+      ws = FSPath.canonical(workspace)
+      args ++ ["--bind", ws, ws]
     else
       args
     end
   end
 
-  # Bind the remaining paths in caps.fs.write at their literal paths.
-  # `:workspace` is rejected because append_workspace_bind/3 handles
-  # it. `/tmp` is rejected because append_tmp_bind/2 handles it.
-  # The literal workspace_path is also rejected defensively, in case
-  # someone includes both ":workspace" and the resolved path.
-  defp append_write_binds(args, %{"fs" => %{"write" => writes}}, workspace_path) do
-    already_bound = [":workspace", "/tmp", workspace_path]
+  defp append_workspace_bind(args, _caps, _workspace), do: args
+
+  # Bind the remaining fs.write paths at their canonical paths.
+  # `:workspace`, `/tmp`, and the workspace (raw or canonical) are
+  # rejected because they are handled by dedicated bind steps.
+  defp append_write_binds(args, %{"fs" => %{"write" => writes}}, workspace) do
+    already_bound =
+      [":workspace", "/tmp"] ++
+        if(is_binary(workspace), do: [workspace, FSPath.canonical(workspace)], else: [])
 
     extras =
       writes
       |> Enum.reject(&(&1 in already_bound))
+      |> Enum.map(&FSPath.canonical/1)
+      |> Enum.uniq()
       |> Enum.flat_map(fn path -> ["--bind", path, path] end)
 
     args ++ extras
   end
 
-  # Bind the runtime tmp_path (e.g. /tmp/nest-123/agent-456) at
-  # /tmp inside the sandbox. This is what makes "/tmp" symbolic —
-  # every agent gets its own scratch directory, but the path inside
-  # the sandbox is always /tmp.
+  # Bind the runtime tmp_path (e.g. /tmp/nest-123/agent-456) at /tmp
+  # inside the sandbox. This is what makes "/tmp" symbolic — every
+  # agent gets its own scratch directory, but the path inside the
+  # sandbox is always /tmp.
   defp append_tmp_bind(args, nil), do: args
 
   defp append_tmp_bind(args, tmp_path) do
-    args ++ ["--bind", tmp_path, "/tmp"]
+    args ++ ["--bind", FSPath.canonical(tmp_path), "/tmp"]
   end
 
-  defp append_chdir(args, workspace_path) do
-    args ++ ["--chdir", workspace_path]
+  defp append_chdir(args, chdir_path) do
+    args ++ ["--chdir", chdir_path]
   end
+
+  defp read_list(caps), do: get_in(caps, ["fs", "read"]) || []
+
+  defp write_list(caps), do: get_in(caps, ["fs", "write"]) || []
 end

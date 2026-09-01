@@ -78,6 +78,7 @@ defmodule Nest.Agents.Agent.ChatTurnSpawner do
       context_limit: state.llm_metrics.context_limit,
       messages: messages,
       tmp_path: state.tmp_path,
+      workspace_path: state.workspace_path,
       crossed_thresholds: state.live.crossed_thresholds
     }
 

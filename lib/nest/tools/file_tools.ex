@@ -14,8 +14,7 @@ defmodule Nest.Tools.FileTools do
   require Logger
 
   alias Nest.LLM.Tool
-  alias Nest.Tools.ShellCmd
-  alias Nest.Tools.ShellEscape
+  alias Nest.Sandbox
 
   # Stat-then-cap mirrors `InspectFile`'s 100 MB cap so the
   # BatchSizer's preflight can refuse before doing the read work.
@@ -124,14 +123,16 @@ defmodule Nest.Tools.FileTools do
     }
   end
 
-  # Read the file directly via `File.read/1` (not via `ShellCmd`).
-  # Stat-then-cap mirrors `InspectFile`'s 100 MB cap so the
-  # BatchSizer's preflight can refuse before doing the read work.
+  # Read the file through the sandbox's read-only fast-path. Reads
+  # are authorized via the shared `Nest.Sandbox` rule helpers before
+  # touching the host filesystem.
   # Failed reads return bounded error strings whose sizes are
   # tracked accurately via `Estimator`.
-  defp read_file(path, workspace_path, _tmp_path, _context) do
+  defp read_file(path, workspace_path, _tmp_path, context) do
+    caps = caps_from_context(context)
+
     case resolve_read_path(path, workspace_path) do
-      {:ok, full_path} -> read_after_stat(full_path, path)
+      {:ok, full_path} -> read_after_stat(full_path, path, caps)
       {:error, _} = err -> err
     end
   end
@@ -144,8 +145,8 @@ defmodule Nest.Tools.FileTools do
     end
   end
 
-  defp read_after_stat(full_path, original_path) do
-    case File.stat(full_path) do
+  defp read_after_stat(full_path, original_path, caps) do
+    case Sandbox.stat(full_path, caps) do
       {:ok, %{size: size}} when size > @max_read_file_bytes ->
         mb = div(size, 1_000_000)
 
@@ -154,7 +155,10 @@ defmodule Nest.Tools.FileTools do
            "Use file-inspect or shell-cmd with head/tail/sed for partial reads."}
 
       {:ok, _} ->
-        read_file_content(full_path)
+        read_file_content(full_path, caps)
+
+      {:error, :read_permission_denied} ->
+        {:error, "Not permitted to read file by sandbox caps: #{original_path}"}
 
       {:error, :enoent} ->
         {:error, "File not found: #{original_path}"}
@@ -164,10 +168,13 @@ defmodule Nest.Tools.FileTools do
     end
   end
 
-  defp read_file_content(full_path) do
-    case File.read(full_path) do
+  defp read_file_content(full_path, caps) do
+    case Sandbox.read(full_path, caps) do
       {:ok, content} ->
         validate_utf8(content)
+
+      {:error, :read_permission_denied} ->
+        {:error, "Not permitted to read file by sandbox caps"}
 
       {:error, reason} ->
         {:error, "Read failed: #{inspect(reason)}"}
@@ -202,13 +209,7 @@ defmodule Nest.Tools.FileTools do
     Logger.info("Tool file-write: #{path} (workspace: #{workspace_path || "none"})")
 
     with {:ok, full_path} <- resolve_full_path(path, workspace_path) do
-      case ShellCmd.execute(
-             "cat > #{ShellEscape.escape(full_path)}",
-             workspace_path,
-             tmp_path,
-             caps,
-             stdin: content
-           ) do
+      case Sandbox.write(full_path, content, caps, workspace_path, tmp_path) do
         {:ok, _} -> {:ok, "Successfully wrote #{String.length(content)} bytes to #{path}"}
         {:error, reason} -> {:error, "Failed to write file: #{reason}"}
       end
@@ -230,24 +231,23 @@ defmodule Nest.Tools.FileTools do
     Logger.info("Tool file-edit: #{path} (replace_all: #{replace_all})")
 
     with {:ok, full_path} <- resolve_full_path(path, workspace_path),
-         {:ok, current} <- read_file_via_shell(full_path, workspace_path, tmp_path, caps),
+         {:ok, current} <- read_file_via_shell(full_path, caps),
          {:ok, replacement_count, updated} <-
            compute_replacement(current, old_text, new_text, replace_all) do
-      case ShellCmd.execute(
-             "cat > #{ShellEscape.escape(full_path)}",
-             workspace_path,
-             tmp_path,
-             caps,
-             stdin: updated
-           ) do
+      case Sandbox.write(full_path, updated, caps, workspace_path, tmp_path) do
         {:ok, _} -> {:ok, "Replaced #{replacement_count} occurrence(s) in #{path}"}
         {:error, reason} -> {:error, "Failed to write file: #{reason}"}
       end
     end
   end
 
-  defp read_file_via_shell(full_path, workspace_path, tmp_path, caps) do
-    ShellCmd.execute("cat -- #{ShellEscape.escape(full_path)}", workspace_path, tmp_path, caps)
+  defp read_file_via_shell(full_path, caps) do
+    case Sandbox.read(full_path, caps) do
+      {:ok, content} -> {:ok, content}
+      {:error, :read_permission_denied} -> {:error, "Not permitted to read file by sandbox caps"}
+      {:error, :enoent} -> {:error, "File not found: #{full_path}"}
+      {:error, reason} -> {:error, "Read failed: #{inspect(reason)}"}
+    end
   end
 
   # Returns {:ok, count, new_content} on success, {:error, reason}
@@ -293,5 +293,5 @@ defmodule Nest.Tools.FileTools do
   end
 
   defp caps_from_context(%{caps: caps}) when is_map(caps), do: caps
-  defp caps_from_context(_), do: nil
+  defp caps_from_context(_), do: Nest.Sandbox.default_caps()
 end

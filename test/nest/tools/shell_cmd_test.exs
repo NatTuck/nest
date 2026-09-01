@@ -58,4 +58,39 @@ defmodule Nest.Tools.ShellCmdTest do
     # `true` produces no stdout/stderr.
     assert output == "[Command executed successfully with no output]"
   end
+
+  @tag :bwrap
+  test "a symlinked workspace is bound at its canonical path; read and write work through the symlink" do
+    uniq = System.unique_integer([:positive])
+    base = System.tmp_dir!()
+    real = Path.join(base, "nest_bwrap_#{uniq}_real")
+    link = Path.join(base, "nest_bwrap_#{uniq}_link")
+
+    File.mkdir_p!(real)
+    File.ln_s!(real, link)
+    on_exit(fn -> File.rm_rf([real, link]) end)
+
+    File.write!(Path.join(real, "hello.txt"), "symlink-ok\n")
+
+    # Default caps bind the canonical workspace read-write; --chdir
+    # targets the user's symlinked path. Reading and writing through
+    # the symlink must resolve to the canonical writable mount.
+    assert {:ok, output} = ShellCmd.execute("cat hello.txt", link, nil, nil, [])
+    assert output =~ "symlink-ok"
+
+    assert {:ok, _} = ShellCmd.execute("echo written > out.txt", link, nil, nil, [])
+    assert File.read!(Path.join(real, "out.txt")) =~ "written"
+  end
+
+  test "a missing workspace fails without bwrap creating it" do
+    missing = Path.join(System.tmp_dir!(), "nest_missing_#{System.unique_integer([:positive])}")
+
+    # The workspace is validated before bwrap runs, so a missing
+    # directory surfaces as a failure and is never auto-created.
+    assert_raise RuntimeError, ~r/does not exist/, fn ->
+      ShellCmd.execute("true", missing, nil, nil, [])
+    end
+
+    refute File.exists?(missing)
+  end
 end

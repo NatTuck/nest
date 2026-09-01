@@ -22,6 +22,7 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
   """
 
   alias Nest.Messages.ToolCall
+  alias Nest.Sandbox
   alias Nest.Tokens.Estimator
 
   @safety_padding 1.20
@@ -30,7 +31,7 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
   # these across the batch plus the current message-list size
   # plus the LLM response budget, and refuses the batch if
   # the total exceeds `context_limit`.
-  def project(%ToolCall{name: "file-read"} = tc, _ctx), do: read_file_projection(tc)
+  def project(%ToolCall{name: "file-read"} = tc, ctx), do: read_file_projection(tc, ctx)
   def project(%ToolCall{name: "shell-cmd"}, _ctx), do: summary_baseline_size() * @safety_padding
 
   def project(%ToolCall{name: "file-write"}, _ctx),
@@ -78,17 +79,17 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
   # ---- private helpers ----
 
   # read_file projection: stat-then-cap, then estimate from byte
-  # size. The actual File.read happens in Phase 2; preflight does
-  # the cheaper File.stat so the batch can be refused before doing
-  # the read work. We stat the path verbatim (no workspace
-  # resolution) because preflight runs before any other resolution;
-  # the worst case is "fall back to summary size", which is the
-  # conservative underestimation we'd take on the File.stat-failed
-  # branch anyway.
-  def read_file_projection(%ToolCall{arguments: args} = _tc) do
+  # size. The actual read happens in Phase 2; preflight does the
+  # cheaper stat so the batch can be refused before doing the read
+  # work. The stat goes through `Nest.Sandbox` so the preflight
+  # honors the same caps the read would, and resolves the path
+  # against the workspace (an absolute path is used as-is). Any
+  # failure falls back to the conservative summary size.
+  def read_file_projection(%ToolCall{arguments: args} = _tc, ctx) do
     with %{"path" => path} <- args,
          true <- is_binary(path) and path != "",
-         {:ok, %{size: size}} <- File.stat(path) do
+         {:ok, full_path} <- Sandbox.resolve(path, Map.get(ctx, :workspace_path)),
+         {:ok, %{size: size}} <- Sandbox.stat(full_path, caps_of(ctx)) do
       # Estimate by replicating the byte content into a string
       # of equal size (the `Estimator.estimate/1` path) so the
       # per-byte ratio holds.
@@ -98,10 +99,17 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
     end
   end
 
-  def read_file_projection(_), do: summary_baseline_size() * @safety_padding
+  def read_file_projection(_, _ctx), do: summary_baseline_size() * @safety_padding
 
   def summary_baseline_size do
     estimator_overhead("[error placeholder]")
+  end
+
+  defp caps_of(ctx) do
+    case Map.get(ctx, :caps) do
+      %{} = caps -> caps
+      _ -> Nest.Sandbox.default_caps()
+    end
   end
 
   # Estimate the size of a small fixed-shape error string. The

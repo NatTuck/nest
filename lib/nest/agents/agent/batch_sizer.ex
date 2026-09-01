@@ -407,6 +407,11 @@ defmodule Nest.Agents.Agent.BatchSizer do
     head_text(text, target_tokens)
   end
 
+  # Buffers a shell-cmd overflow result to the agent's private scratch
+  # dir (the same `tmp_path` the sandbox binds read-write at /tmp).
+  # This is intentional internal scratch management (like `TmpSpace`'s
+  # mkdir/rm lifecycle), not user-data access, so it writes on the host
+  # directly rather than routing through the sandbox gatekeeper.
   defp write_to_tmp(full_content, ctx) do
     case Map.get(ctx, :tmp_path) || Map.get(ctx, "tmp_path") do
       nil ->

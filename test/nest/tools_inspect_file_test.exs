@@ -232,7 +232,7 @@ defmodule Nest.ToolsInspectFileTest do
     fun.(args, %{
       caps: %{
         "fs" => %{
-          "read" => ["/tmp", "/", ":workspace"],
+          "read" => ["/"],
           "write" => ["/tmp", "/", ":workspace"]
         },
         "net" => true

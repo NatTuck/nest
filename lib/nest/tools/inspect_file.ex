@@ -31,8 +31,8 @@ defmodule Nest.Tools.InspectFile do
   require Logger
 
   alias Nest.LLM.Tool
+  alias Nest.Sandbox
   alias Nest.Tokens.Estimator
-  alias Nest.Tools.ShellCmd
   alias Nest.Tools.ShellEscape
 
   @max_bytes 100 * 1_000_000
@@ -76,7 +76,7 @@ defmodule Nest.Tools.InspectFile do
     Logger.info("Tool file-inspect: #{path} (workspace: #{workspace_path || "none"})")
 
     with {:ok, full_path} <- resolve_full_path(path, workspace_path),
-         {:ok, byte_size} <- safe_byte_size(full_path),
+         {:ok, byte_size} <- safe_byte_size(full_path, caps),
          :ok <- check_size_cap(byte_size, path),
          {:ok, type_description} <- run_file_type(full_path, workspace_path, tmp_path, caps) do
       if text_type?(type_description) do
@@ -87,9 +87,10 @@ defmodule Nest.Tools.InspectFile do
     end
   end
 
-  defp safe_byte_size(path) do
-    case File.stat(path) do
+  defp safe_byte_size(path, caps) do
+    case Sandbox.stat(path, caps) do
       {:ok, %{size: size}} -> {:ok, size}
+      {:error, :read_permission_denied} -> {:error, "Not permitted to stat file by sandbox caps"}
       {:error, :enoent} -> {:error, "File not found: #{path}"}
       {:error, reason} -> {:error, "Cannot stat file: #{inspect(reason)}"}
     end
@@ -108,10 +109,10 @@ defmodule Nest.Tools.InspectFile do
 
   # Runs `file -- <path>` and returns the type description (the
   # part after "path:"). `file` is in every standard Linux/macOS
-  # install; if it's missing in some sandbox, ShellCmd surfaces
+  # install; if it's missing in some sandbox, Sandbox.run surfaces
   # the error and we propagate.
   defp run_file_type(full_path, workspace_path, tmp_path, caps) do
-    case ShellCmd.execute("file -- #{shell_escape(full_path)}", workspace_path, tmp_path, caps) do
+    case Sandbox.run("file -- #{shell_escape(full_path)}", workspace_path, tmp_path, caps) do
       {:ok, output} -> {:ok, parse_file_type(output)}
       {:error, reason} -> {:error, "Failed to detect file type: #{reason}"}
     end
@@ -149,10 +150,9 @@ defmodule Nest.Tools.InspectFile do
   # `file` says "ASCII text" or "UTF-8" but the bytes don't
   # actually form valid UTF-8 (e.g. a Latin-1 file that snuck
   # past `file`'s heuristics), we fall back to the binary
-  # output with a note. Empty files (size 0) skip the read
-  # entirely — `ShellCmd.execute` would otherwise substitute
-  # the "[Command executed successfully with no output]"
-  # placeholder, which would pollute our char/line counts.
+  # output with a note. Empty files (size 0) skip the read entirely,
+  # so their stats stay zero rather than relying on a read of an
+  # empty file.
   defp text_output(path, _full_path, byte_size, type, _workspace_path, _tmp_path, _caps)
        when byte_size == 0 do
     {:ok, format_text_output(path, type, byte_size, "")}
@@ -259,12 +259,16 @@ defmodule Nest.Tools.InspectFile do
     end
   end
 
-  defp read_file_via_shell(full_path, workspace_path, tmp_path, caps) do
-    ShellCmd.execute("cat -- #{shell_escape(full_path)}", workspace_path, tmp_path, caps)
+  defp read_file_via_shell(full_path, _workspace_path, _tmp_path, caps) do
+    case Sandbox.read(full_path, caps) do
+      {:ok, content} -> {:ok, content}
+      {:error, :read_permission_denied} -> {:error, "Not permitted to read file by sandbox caps"}
+      {:error, reason} -> {:error, "Read failed: #{inspect(reason)}"}
+    end
   end
 
   defp caps_from_context(%{caps: caps}) when is_map(caps), do: caps
-  defp caps_from_context(_), do: nil
+  defp caps_from_context(_), do: Nest.Sandbox.default_caps()
 
   defp shell_escape(path), do: ShellEscape.escape(path)
 end

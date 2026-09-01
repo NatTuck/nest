@@ -16,8 +16,9 @@ defmodule Nest.Tools do
   alias Nest.Agents.Agent.CapCalculator
   alias Nest.Agents.Agent.Config
   alias Nest.LLM.Tool
+  alias Nest.Sandbox
   alias Nest.Tokens.ConversationSize
-  alias Nest.Tools.{FileTools, InspectFile, ShellCmd}
+  alias Nest.Tools.{FileTools, InspectFile}
 
   @doc """
   Returns a list of `Nest.LLM.Tool` structs for the given tool names.
@@ -136,7 +137,7 @@ defmodule Nest.Tools do
       "Tool shell-cmd: #{command} (workspace: #{workspace_path || "none"}, tmp: #{tmp_path || "none"})"
     )
 
-    ShellCmd.execute(command, workspace_path, tmp_path, caps)
+    Sandbox.run(command, workspace_path, tmp_path, caps)
   end
 
   # The `context-check` tool reports current context usage. The
@@ -386,5 +387,5 @@ defmodule Nest.Tools do
   end
 
   defp caps_from_context(%{caps: caps}) when is_map(caps), do: caps
-  defp caps_from_context(_), do: nil
+  defp caps_from_context(_), do: Nest.Sandbox.default_caps()
 end

@@ -3,6 +3,13 @@ defmodule Nest.SandboxTest do
 
   alias Nest.Sandbox
 
+  setup do
+    dir = Path.join(System.tmp_dir!(), "nest_sandbox_test_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf(dir) end)
+    %{tmp: dir}
+  end
+
   describe "default_caps/0" do
     test "returns the all-writable 'build' profile" do
       assert Sandbox.default_caps() == %{
@@ -190,6 +197,78 @@ defmodule Nest.SandboxTest do
     end
   end
 
+  describe "rule helpers (single source of truth)" do
+    test "readable_roots canonicalizes the read list" do
+      assert Sandbox.readable_roots(build_caps(read: ["/"])) == ["/"]
+    end
+
+    test "writable_roots includes canonical workspace + extras, not /tmp" do
+      caps = build_caps(write: [":workspace", "/tmp", "/data"])
+      assert Sandbox.writable_roots(caps, "/workspace") == ["/workspace", "/data"]
+    end
+
+    test "writable_roots omits the workspace when :workspace is absent" do
+      assert Sandbox.writable_roots(build_caps(write: ["/data"]), "/workspace") == ["/data"]
+    end
+
+    test "read_allowed? is true for any path under read='/'", %{tmp: dir} do
+      assert Sandbox.read_allowed?(Path.join(dir, "x.txt"), build_caps())
+    end
+
+    test "write_allowed? honors the :workspace marker", %{tmp: dir} do
+      assert Sandbox.write_allowed?(
+               Path.join(dir, "x.txt"),
+               build_caps(write: [":workspace"]),
+               dir
+             )
+
+      refute Sandbox.write_allowed?(Path.join(dir, "x.txt"), build_caps(write: []), dir)
+    end
+
+    test "write_allowed? resolves symlinks before the containment check", %{tmp: dir} do
+      target = Path.join(dir, "real")
+      File.mkdir_p!(target)
+      link = Path.join(dir, "link")
+      File.ln_s!(target, link)
+
+      in_link = Path.join(link, "x.txt")
+      assert Sandbox.write_allowed?(in_link, build_caps(write: [":workspace"]), link)
+    end
+  end
+
+  describe "equivalence (binds == rule helpers)" do
+    test "the --bind/--ro-bind mounts are derived from writable/readable roots" do
+      caps = build_caps(write: [":workspace", "/tmp", "/data"])
+      {:ok, args} = Sandbox.build(caps, "/workspace", "/tmp/agent-1")
+
+      {ro_targets, bind_targets} = collect_bind_targets(args)
+
+      assert ro_targets == Sandbox.readable_roots(caps)
+      # tmp is bound at /tmp (not a host writable root); the rest match.
+      assert bind_targets -- ["/tmp"] == Sandbox.writable_roots(caps, "/workspace")
+    end
+  end
+
+  describe "symlink workspace (canonical bind, user chdir)" do
+    test "binds the canonical path but chdirs to the user path", %{tmp: dir} do
+      real = Path.join(dir, "real")
+      File.mkdir_p!(real)
+      link = Path.join(dir, "link")
+      File.ln_s!(real, link)
+
+      caps = build_caps(write: [":workspace"])
+      {:ok, args} = Sandbox.build(caps, link, nil)
+
+      # Workspace is bound at its canonical (symlink-resolved) path.
+      assert ["--bind", src, dst] = after_flag(args, "--bind", link)
+      assert src == dst
+      assert src == real
+
+      # But --chdir targets the user-provided symlinked path.
+      assert ["--chdir", ^link] = after_flag(args, "--chdir", link)
+    end
+  end
+
   describe "validate_caps/1" do
     test "valid caps return :ok" do
       assert :ok = Sandbox.validate_caps(build_caps())
@@ -277,5 +356,32 @@ defmodule Nest.SandboxTest do
         "write" => Keyword.get(opts, :write, [])
       }
     }
+  end
+
+  # Collect the destination paths of every --ro-bind and --bind
+  # directive in the arg list, in order, ignoring flags with their own
+  # arguments (--chdir/--dev/--proc) and bare flags.
+  defp collect_bind_targets(args), do: do_collect(args, [], [])
+
+  defp do_collect([], ro, bind), do: {Enum.reverse(ro), Enum.reverse(bind)}
+
+  defp do_collect(["--ro-bind", _src, dst | rest], ro, bind),
+    do: do_collect(rest, [dst | ro], bind)
+
+  defp do_collect(["--bind", _src, dst | rest], ro, bind), do: do_collect(rest, ro, [dst | bind])
+  defp do_collect(["--chdir", _ | rest], ro, bind), do: do_collect(rest, ro, bind)
+  defp do_collect(["--dev", _ | rest], ro, bind), do: do_collect(rest, ro, bind)
+  defp do_collect(["--proc", _ | rest], ro, bind), do: do_collect(rest, ro, bind)
+  defp do_collect(["--share-net" | rest], ro, bind), do: do_collect(rest, ro, bind)
+  defp do_collect(["--unshare-net" | rest], ro, bind), do: do_collect(rest, ro, bind)
+  defp do_collect([_ | rest], ro, bind), do: do_collect(rest, ro, bind)
+
+  # The 2- or 3-arg directive starting at the first occurrence of
+  # `flag` in `args`, or [] when absent.
+  defp after_flag(args, flag, _path) do
+    case Enum.find_index(args, &(&1 == flag)) do
+      nil -> []
+      idx -> Enum.slice(args, idx, 3)
+    end
   end
 end

@@ -25,6 +25,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler.FileAccess do
 
   alias Nest.Agents.Agent
   alias Nest.Messages.Part
+  alias Nest.Sandbox
 
   require Logger
 
@@ -71,7 +72,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler.FileAccess do
     new_read_files =
       Enum.reduce(parts, state.chat_state.read_files, fn part, acc ->
         case part_for_tracking(part, workspace_path) do
-          {:ok, full_path} -> record_stat(acc, full_path)
+          {:ok, full_path} -> record_stat(acc, full_path, state)
           :skip -> acc
         end
       end)
@@ -122,8 +123,8 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler.FileAccess do
     end
   end
 
-  defp record_stat(read_files, full_path) do
-    case File.stat(full_path, time: :posix) do
+  defp record_stat(read_files, full_path, state) do
+    case Sandbox.stat(full_path, Agent.resolve_caps(state), time: :posix) do
       {:ok, %File.Stat{mtime: mtime, size: size}} when is_integer(mtime) ->
         Map.put(read_files, full_path, %{mtime: mtime, size: size})
 

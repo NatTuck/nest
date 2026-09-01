@@ -24,6 +24,7 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   """
 
   alias Nest.Agents.Agent.Config
+  alias Nest.Sandbox
   alias Nest.Tokens.Reserve
   alias Nest.Vocations
 
@@ -135,7 +136,7 @@ defmodule Nest.Agents.Agent.SystemPrompt do
       (vocation.system_prompt || "") <>
         Vocations.mode_catalog(vocation) <>
         build_suffix(workspace_path, context_limit_info, name, depth) <>
-        agents_md_section(workspace_path)
+        agents_md_section(workspace_path, initial_caps(vocation, initial_mode))
 
     {system_prompt, initial_mode, tools, vocation}
   end
@@ -192,15 +193,25 @@ defmodule Nest.Agents.Agent.SystemPrompt do
       "giving a working token budget of ~#{effective} tokens.\n"
   end
 
-  defp agents_md_section(nil), do: ""
+  defp agents_md_section(nil, _caps), do: ""
 
-  defp agents_md_section(workspace_path) do
-    case File.read(Path.join(workspace_path, "AGENTS.md")) do
+  defp agents_md_section(workspace_path, caps) do
+    case Sandbox.read(Path.join(workspace_path, "AGENTS.md"), caps) do
       {:ok, content} ->
         "\n\nHere are AGENTS.md guidelines for this project:\n\n#{content}\n"
 
       _ ->
         ""
+    end
+  end
+
+  # The AGENTS.md read is authorized with the vocation's initial-mode
+  # caps (the mode the agent boots in). With the default read=`/`
+  # profile this allows the read; a read-restricted mode would gate it.
+  defp initial_caps(vocation, mode) do
+    case Vocations.get_caps(vocation, mode) do
+      {:ok, caps} -> caps
+      _ -> Nest.Sandbox.default_caps()
     end
   end
 

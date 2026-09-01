@@ -323,6 +323,25 @@ defmodule Nest.Agents.Agent do
     do: GenServer.call(pid, {:edit_agent, model, workspace_path}, :infinity)
 
   @doc """
+  Resolve the agent's current effective sandbox caps from its state.
+
+  Uses the same `Vocations.get_caps/2` lookup as the chat pipeline so
+  bookkeeping file access (AGENTS.md reads, policy stats) is
+  authorized by the same caps the tools run under. Falls back to the
+  `Nest.Sandbox` default profile when there is no vocation or the
+  mode is unknown.
+  """
+  @spec resolve_caps(t()) :: map()
+  def resolve_caps(%__MODULE__{vocation: %Nest.Vocations.Vocation{} = vocation} = state) do
+    case Nest.Vocations.get_caps(vocation, state.live.mode) do
+      {:ok, caps} -> caps
+      _ -> Nest.Sandbox.default_caps()
+    end
+  end
+
+  def resolve_caps(_), do: Nest.Sandbox.default_caps()
+
+  @doc """
   Test-only: returns the pid of the in-flight ChatTurn (or
   `nil` if the agent is idle). Production code should use
   `stop_chat/2` instead. Re-export of `ClientAPI.get_chat_turn_pid/1`.

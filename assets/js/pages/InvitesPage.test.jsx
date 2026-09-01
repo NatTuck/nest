@@ -62,6 +62,14 @@ function setStore(patch) {
   });
 }
 
+// ISO timestamp n days from now. The status logic compares
+// `expires_at` against the current time, so invite fixtures use
+// relative dates rather than hardcoded ones — otherwise the
+// "active" fixture silently becomes "expired" once the clock
+// passes the literal date (a time-bomb).
+const MS_DAY = 24 * 60 * 60 * 1000;
+const daysFromNow = (n) => new Date(Date.now() + n * MS_DAY).toISOString();
+
 describe("InvitesPage", () => {
   beforeEach(() => {
     createInvite.mockReset();
@@ -100,32 +108,32 @@ describe("InvitesPage", () => {
         {
           id: 1,
           token: "tok-active",
-          inserted_at: "2026-08-01T00:00:00Z",
-          expires_at: "2026-09-01T00:00:00Z",
+          inserted_at: daysFromNow(-30),
+          expires_at: daysFromNow(1),
           used_at: null,
           revoked_at: null,
         },
         {
           id: 2,
           token: "tok-revoked",
-          inserted_at: "2026-08-02T00:00:00Z",
-          expires_at: "2026-09-02T00:00:00Z",
+          inserted_at: daysFromNow(-29),
+          expires_at: daysFromNow(2),
           used_at: null,
-          revoked_at: "2026-08-03T00:00:00Z",
+          revoked_at: daysFromNow(-1),
         },
         {
           id: 3,
           token: "tok-used",
-          inserted_at: "2026-08-04T00:00:00Z",
-          expires_at: "2026-09-04T00:00:00Z",
-          used_at: "2026-08-05T00:00:00Z",
+          inserted_at: daysFromNow(-28),
+          expires_at: daysFromNow(3),
+          used_at: daysFromNow(-2),
           revoked_at: null,
         },
         {
           id: 4,
           token: "tok-expired",
-          inserted_at: "2026-08-06T00:00:00Z",
-          expires_at: "2020-01-01T00:00:00Z",
+          inserted_at: daysFromNow(-40),
+          expires_at: daysFromNow(-1),
           used_at: null,
           revoked_at: null,
         },
@@ -146,16 +154,16 @@ describe("InvitesPage", () => {
         {
           id: 1,
           token: "first-token-abc",
-          inserted_at: "2026-08-01T00:00:00Z",
-          expires_at: "2026-09-01T00:00:00Z",
+          inserted_at: daysFromNow(-30),
+          expires_at: daysFromNow(1),
           used_at: null,
           revoked_at: null,
         },
         {
           id: 2,
           token: "second-token-xyz",
-          inserted_at: "2026-08-02T00:00:00Z",
-          expires_at: "2026-09-02T00:00:00Z",
+          inserted_at: daysFromNow(-29),
+          expires_at: daysFromNow(2),
           used_at: null,
           revoked_at: null,
         },
@@ -200,8 +208,8 @@ describe("InvitesPage", () => {
         {
           id: 42,
           token: "tok-42",
-          inserted_at: "2026-08-01T00:00:00Z",
-          expires_at: "2026-09-01T00:00:00Z",
+          inserted_at: daysFromNow(-30),
+          expires_at: daysFromNow(1),
           used_at: null,
           revoked_at: null,
         },
@@ -221,26 +229,26 @@ describe("InvitesPage", () => {
         {
           id: 1,
           token: "tok-active",
-          inserted_at: "2026-08-01T00:00:00Z",
-          expires_at: "2026-09-01T00:00:00Z",
+          inserted_at: daysFromNow(-30),
+          expires_at: daysFromNow(1),
           used_at: null,
           revoked_at: null,
         },
         {
           id: 2,
           token: "tok-used",
-          inserted_at: "2026-08-02T00:00:00Z",
-          expires_at: "2026-09-02T00:00:00Z",
-          used_at: "2026-08-03T00:00:00Z",
+          inserted_at: daysFromNow(-29),
+          expires_at: daysFromNow(2),
+          used_at: daysFromNow(-1),
           revoked_at: null,
         },
         {
           id: 3,
           token: "tok-revoked",
-          inserted_at: "2026-08-04T00:00:00Z",
-          expires_at: "2026-09-04T00:00:00Z",
+          inserted_at: daysFromNow(-28),
+          expires_at: daysFromNow(3),
           used_at: null,
-          revoked_at: "2026-08-05T00:00:00Z",
+          revoked_at: daysFromNow(-1),
         },
       ],
     });
