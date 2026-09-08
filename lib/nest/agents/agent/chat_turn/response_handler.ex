@@ -32,6 +32,7 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.Agents.Agent.ChatTurn.APILog
+  alias Nest.Agents.Agent.ChatTurn.ContextReminder
   alias Nest.Agents.Agent.ChatTurn.Lifecycle
   alias Nest.Agents.Agent.ChatTurn.Messages
   alias Nest.Agents.Agent.ChatTurn.NoticeInjector
@@ -42,6 +43,22 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
   alias Nest.Tokens.Estimator, as: TokensEstimator
 
   require Logger
+
+  # A model can end a turn having streamed only reasoning
+  # (`reasoning_content`) and no actual reply text. We don't treat
+  # that as a finished answer: inject a user nudge and re-ask, up to
+  # this many times, before giving up and finalizing.
+  @max_empty_retries 2
+
+  # The escalating nudge texts, one per retry. Prior nudges are
+  # detected by exact text match against the message history (they're
+  # real user messages), so the count lives in the conversation rather
+  # than in ChatTurn state.
+  @empty_nudges [
+    "You gave an empty response, which you shouldn't do. What were you saying?",
+    "You did it again — another empty response with no actual text. " <>
+      "Write out your real reply as text now."
+  ]
 
   @doc """
   Build the `:assistant` message from the LLM response,
@@ -135,8 +152,98 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
         handle_normal_tool_calls(response, state)
 
       true ->
-        Lifecycle.finalize_turn(state)
+        finalize_or_reprompt(response, state)
     end
+  end
+
+  # A final response is "silent" when it offers the user no visible
+  # content — no text (blank/whitespace counts) and no refusal.
+  # Reasoning/thinking alone doesn't count as a reply: a model that
+  # ends its turn after thinking with no actual text has dead-ended
+  # the conversation.
+  defp silent_response?(response) do
+    not has_visible_text?(response.text) and not has_visible_text?(response.refusal)
+  end
+
+  defp has_visible_text?(nil), do: false
+  defp has_visible_text?(text) when is_binary(text), do: String.trim(text) != ""
+  defp has_visible_text?(_), do: false
+
+  # Don't silently accept a no-text response as a finished reply.
+  # Append an explicit (angry) user nudge and take another swing,
+  # bounded by `@max_empty_retries`. After the cap, finalize with a
+  # warning — the thinking-only assistant is already visible, we just
+  # couldn't get the model to speak. Prior nudges are counted from the
+  # message history (each is a distinct, exact-matching user message),
+  # so the retry count is conversation state, not ChatTurn state.
+  #
+  # Non-silent responses finalize immediately — no message-history
+  # round-trip is paid on the hot path.
+  defp finalize_or_reprompt(response, state) do
+    if silent_response?(response) do
+      handle_silent_response(state)
+    else
+      Lifecycle.finalize_turn(state)
+    end
+  end
+
+  defp handle_silent_response(state) do
+    nudges = count_prior_nudges(state)
+
+    if nudges < @max_empty_retries do
+      reprompt_or_finalize(state, nudges)
+    else
+      Logger.warning(
+        "Empty assistant response finalized after #{@max_empty_retries} re-prompt(s): " <>
+          "no text or refusal content"
+      )
+
+      Lifecycle.finalize_turn(state)
+    end
+  end
+
+  defp reprompt_or_finalize(state, nudges) do
+    if append_user_nudge(state, Enum.at(@empty_nudges, nudges)) do
+      Process.send(self(), :iterate, [])
+      {:noreply, state}
+    else
+      # Agent unreachable — don't spin; finalize with what we have.
+      Lifecycle.finalize_turn(state)
+    end
+  end
+
+  # How many empty-response nudges are already in the message history.
+  defp count_prior_nudges(state) do
+    messages =
+      try do
+        GenServer.call(state.ctx.agent_pid, :get_messages, 1_000)
+      catch
+        :exit, _ -> []
+      end
+
+    messages
+    |> Enum.count(fn
+      {:user, %{parts: [%Part.Text{text: text}]}} when is_binary(text) ->
+        Enum.any?(@empty_nudges, &(&1 == text))
+
+      _ ->
+        false
+    end)
+  end
+
+  # Append the nudge as a real user message so it's persisted,
+  # broadcast, and sent to the LLM on the next iteration. Returns
+  # `true` on success (agent still alive); `false` if the append
+  # fails or the agent has gone away.
+  defp append_user_nudge(state, text) do
+    user_message = ContextReminder.build_user_notice(text, nil)
+
+    case GenServer.call(state.ctx.agent_pid, {:append_messages, [user_message]}, 5_000) do
+      [_ | _] -> true
+      _ -> false
+    end
+  catch
+    :exit, _ -> false
   end
 
   # True when this ChatTurn is the compactor's own chat turn
