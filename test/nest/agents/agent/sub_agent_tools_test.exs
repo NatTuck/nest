@@ -49,6 +49,13 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
 
     specialist_name = "specialist-#{System.unique_integer([:positive])}"
     specialist_vid = specialist_vocation_id()
+    space_id = AgentTestHelpers.current_space_id()
+
+    # The spawn broadcasts `agent:created` on the lobby topic so the
+    # sidebar can add the child live. Subscribe before the chat so the
+    # broadcast can't slip past us.
+    Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
+    on_exit(fn -> Phoenix.PubSub.unsubscribe(Nest.PubSub, "lobby") end)
 
     MockClient.set_tool_response(%{
       text: "spawning",
@@ -67,8 +74,14 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
 
     assert_receive {:chat_status, %{status: "idle"}}, 500
 
+    # The live-add broadcast carries the space_id the sidebar groups by.
+    assert_receive %Phoenix.Socket.Broadcast{
+                     event: "agent:created",
+                     payload: %{"name" => ^specialist_name, "space_id" => ^space_id}
+                   },
+                   500
+
     # The specialist exists in the space.
-    space_id = AgentTestHelpers.current_space_id()
     assert {:ok, _info} = Nest.Agents.get_info(space_id, specialist_name)
     on_exit(fn -> _ = Supervisor.stop_agent(space_id, specialist_name) end)
 

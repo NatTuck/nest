@@ -328,7 +328,9 @@ defmodule Nest.Agents.Agent.SubAgent do
   # been spawned so the sidebar tree updates live without a
   # page refresh. Uses the Phoenix Endpoint broadcast channel
   # so the message arrives through the standard channel
-  # pipeline (no raw PubSub bypass needed by the lobby).
+  # pipeline (no raw PubSub bypass needed by the lobby). The
+  # `space_id` is required — the frontend groups agents by it
+  # when adding one to the sidebar.
   defp broadcast_subagent_creation(state, child_name) do
     parent_db_id =
       case Persistence.fetch_agent(state.space_id, state.name) do
@@ -338,6 +340,7 @@ defmodule Nest.Agents.Agent.SubAgent do
 
     NestWeb.Endpoint.broadcast("lobby", "agent:created", %{
       "name" => child_name,
+      "space_id" => state.space_id,
       "model" => state.model,
       "status" => "idle",
       "parentId" => parent_db_id,
