@@ -79,6 +79,17 @@ defmodule Nest.Agents.Agent.BatchSizer do
 
   @empty_output_placeholder "[Command executed successfully with no output]"
 
+  # Binary shell output at or below this size is included inline
+  # (as a lossy UTF-8 view) alongside the "saved to <path>" pointer,
+  # so the model sees a tiny binary's contents without opening the
+  # file. Larger binaries return the pointer only — the model can
+  # decide whether to spend context examining the file.
+  @small_binary_max_bytes 256
+
+  # UTF-8 encoding of U+FFFD (REPLACEMENT CHARACTER), used by
+  # `to_valid_utf8/1` for byte sequences that don't decode.
+  @replacement_char <<0xEF, 0xBF, 0xBD>>
+
   @doc """
   Run a batch of tool calls through preflight → execute →
   keep-or-summarize. Returns a list of `ToolResult` structs in
@@ -266,7 +277,28 @@ defmodule Nest.Agents.Agent.BatchSizer do
   #      should always accommodate `full_size` post-preflight, but
   #      we fall back to the existing summary path for
   #      `shell-cmd` if it doesn't.
-  defp apply_one_with_acc({tc, :ok, content}, ctx, acc) do
+  #
+  # A `shell-cmd` result that isn't valid UTF-8 (raw binary from a
+  # command, e.g. `curl` dumping a download to stdout) never goes
+  # inline: it's written to the scratch file and replaced with a
+  # `saved to <path>` pointer so the LLM can decide whether to
+  # inspect the file. When the binary is tiny (<= `@small_binary_max_bytes`),
+  # a lossy UTF-8 view is included inline too.
+  defp apply_one_with_acc({tc, :ok, content} = entry, ctx, acc) do
+    if tc.name == "shell-cmd" and is_binary(content) and not String.valid?(content) do
+      handle_binary_shell(tc, content, ctx, acc)
+    else
+      size_text_result(entry, ctx, acc)
+    end
+  end
+
+  defp apply_one_with_acc({tc, :error, reason}, _ctx, acc) do
+    error_size = Estimator.estimate(reason) + per_message_overhead()
+    {{tc, :error, reason}, advance(acc, error_size)}
+  end
+
+  # The original post-execution sizing path for text tool results.
+  defp size_text_result({tc, :ok, content}, ctx, acc) do
     full_size = Estimator.estimate(content) + per_message_overhead()
     cap = effective_max_result_tokens(tc, acc.usable)
 
@@ -277,10 +309,75 @@ defmodule Nest.Agents.Agent.BatchSizer do
     end
   end
 
-  defp apply_one_with_acc({tc, :error, reason}, _ctx, acc) do
-    error_size = Estimator.estimate(reason) + per_message_overhead()
-    {{tc, :error, reason}, advance(acc, error_size)}
+  # A binary `shell-cmd` result: always write the raw bytes to the
+  # scratch file and return a `saved to <path>` pointer inline. The
+  # model never sees the raw bytes. For tiny binaries a lossy UTF-8
+  # view rides along so the model can read the contents without
+  # opening the file.
+  defp handle_binary_shell(tc, content, ctx, acc) do
+    bytes = byte_size(content)
+    command = Map.get(tc.arguments || %{}, "command", "")
+
+    location =
+      case write_to_tmp(content, ctx) do
+        nil -> "temp file unavailable"
+        path -> "saved to #{path}"
+      end
+
+    pointer = "Command output of '#{command}' (binary, #{bytes} bytes) #{location}."
+
+    inline =
+      if bytes <= @small_binary_max_bytes do
+        body = to_valid_utf8(content)
+
+        if body == "" do
+          pointer
+        else
+          pointer <> "\n\n" <> body
+        end
+      else
+        pointer
+      end
+
+    inline_size = Estimator.estimate(inline) + per_message_overhead()
+
+    if acc.running + inline_size <= acc.limit do
+      {{tc, :ok, inline}, advance(acc, inline_size)}
+    else
+      trimmed = head_text(inline, max(0, acc.limit - acc.running - per_message_overhead()))
+      trimmed_size = Estimator.estimate(trimmed) + per_message_overhead()
+      {{tc, :ok, trimmed}, advance(acc, trimmed_size)}
+    end
   end
+
+  # Lossy UTF-8 coercion: replace every invalid byte sequence with
+  # U+FFFD so the result is a valid string the estimator / message
+  # pipeline can handle. `:unicode.characters_to_binary/3` decodes as
+  # much valid UTF-8 as it can and reports the offending remainder
+  # (as `{:error, converted, rest}` or `{:incomplete, converted, _}`)
+  # instead of raising. We splice in a replacement character for each
+  # invalid byte (dropping it so the recursion always makes progress)
+  # and keep decoding the remainder.
+  defp to_valid_utf8(<<>>), do: ""
+
+  defp to_valid_utf8(bin) do
+    case :unicode.characters_to_binary(bin, :utf8, :utf8) do
+      text when is_binary(text) ->
+        text
+
+      {:error, "", rest} ->
+        # The head byte is invalid: replace it and move past it.
+        @replacement_char <> to_valid_utf8(drop_first_byte(rest))
+
+      {:error, converted, rest} ->
+        converted <> to_valid_utf8(rest)
+
+      {:incomplete, converted, _rest} ->
+        converted <> @replacement_char
+    end
+  end
+
+  defp drop_first_byte(<<_::8, rest::binary>>), do: rest
 
   # Decision for tools whose output fits the inline cap but might
   # overflow the running batch budget. Same per-tool routing as

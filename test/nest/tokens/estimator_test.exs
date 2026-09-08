@@ -59,6 +59,18 @@ defmodule Nest.Tokens.EstimatorTest do
     test "empty string" do
       assert Estimator.raw_count("") == 0
     end
+
+    test "invalid UTF-8 falls back to a byte estimate instead of crashing" do
+      # Gzip magic bytes — the shape that crashed the tool loop when a
+      # shell command dumped a compressed download to stdout.
+      binary = <<0x1F, 0x8B, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00>>
+
+      assert Estimator.raw_count(binary) == div(byte_size(binary) + 3, 4)
+    end
+
+    test "a lone invalid byte falls back without raising" do
+      assert is_integer(Estimator.raw_count(<<0xFF, 0xFE, 0x41>>))
+    end
   end
 
   describe "estimate/1 (string)" do
@@ -74,6 +86,13 @@ defmodule Nest.Tokens.EstimatorTest do
     test "returns at least the per-message overhead for non-binary" do
       assert Estimator.estimate(nil) == 10
       assert Estimator.estimate(123) == 10
+    end
+
+    test "invalid UTF-8 estimates without raising" do
+      binary = <<0x1F, 0x8B, 0x08, 0x00>>
+
+      assert is_integer(Estimator.estimate(binary))
+      assert Estimator.estimate(binary) > 10
     end
 
     test "always overestimates raw count" do

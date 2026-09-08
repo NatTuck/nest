@@ -142,6 +142,15 @@ defmodule NestWeb.AgentChannel do
     {:noreply, socket}
   end
 
+  # When a running ChatTurn processes a `chat:stop`, its
+  # `ChatTurn.Lifecycle.stop_chat/2` acks this channel (the pid that
+  # initiated the stop) with a bare `:stopped`. Nothing needs
+  # forwarding: the `chat:stop` handler already replied `:ok`, and the
+  # client's "Stopping…" state is cleared by the Agent's subsequent
+  # `chat:status: idle` broadcast. We just must not crash on it.
+  @impl true
+  def handle_info(:stopped, socket), do: {:noreply, socket}
+
   # Handle chat messages from PubSub (broadcast by Agent)
   @impl true
   def handle_info({:chat_message, message}, socket) do

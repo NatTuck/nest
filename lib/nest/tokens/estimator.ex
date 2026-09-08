@@ -59,16 +59,43 @@ defmodule Nest.Tokens.Estimator do
 
   Useful for telemetry, display, and tests that want to compare
   against a known baseline.
+
+  Content that isn't valid UTF-8 (e.g. raw binary captured from a
+  command) can't be tokenized — the tiktoken NIF raises
+  `ArgumentError` on it rather than returning an error. We detect
+  that up front and fall back to a byte-based estimate so a binary
+  tool result never crashes the sizing path.
   """
   @spec raw_count(String.t()) :: pos_integer()
   def raw_count(text) when is_binary(text) do
-    case Tiktoken.count_tokens(@tiktoken_model, text) do
-      {:ok, n} -> n
-      {:error, _} -> fallback_estimate(text)
+    if String.valid?(text) do
+      count_tokens(text)
+    else
+      byte_estimate(text)
     end
   end
 
   def raw_count(_), do: 0
+
+  # cl100k_base count, with a heuristic fallback on any tiktoken
+  # failure. The NIF can raise (rather than returning `{:error, _}`)
+  # on inputs it can't handle, so the call is wrapped.
+  defp count_tokens(text) do
+    case Tiktoken.count_tokens(@tiktoken_model, text) do
+      {:ok, n} -> n
+      {:error, _} -> char_estimate(text)
+    end
+  rescue
+    _ -> char_estimate(text)
+  end
+
+  # Invalid-UTF-8 fallback. Byte-based because the standard
+  # `chars / 4` heuristic can't run on an invalid binary
+  # (`String.length/1` raises on one).
+  defp byte_estimate(text), do: div(byte_size(text) + 3, 4)
+
+  # Valid-text fallback when tiktoken fails: chars / 4.
+  defp char_estimate(text), do: div(String.length(text) + 3, 4)
 
   @doc """
   Returns a conservative token count for a string.
@@ -174,13 +201,5 @@ defmodule Nest.Tokens.Estimator do
   # conservative).
   defp apply_safety(n) when is_integer(n) and n >= 0 do
     ceil(n * @safety_multiplier)
-  end
-
-  # Fallback when tiktoken errors out: chars / 4, which is a
-  # reasonable worst-case for English text. This should never
-  # happen in practice (the NIF is always loaded) but keeps us
-  # safe if the dep fails to compile in some environment.
-  defp fallback_estimate(text) when is_binary(text) do
-    div(String.length(text) + 3, 4)
   end
 end

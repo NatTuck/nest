@@ -409,6 +409,74 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
     end
   end
 
+  describe "binary shell-cmd output never goes inline raw" do
+    defp binary_tool(content) do
+      make_tool("shell-cmd", fn _, _ -> {:ok, content} end)
+    end
+
+    defp tmp_dir_for_test do
+      dir =
+        Path.join(System.tmp_dir!(), "nest-tmp-batchsizer-#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(dir)
+
+      on_exit(fn ->
+        if String.contains?(dir, "nest-tmp-batchsizer") do
+          File.rm_rf(dir)
+        end
+      end)
+
+      dir
+    end
+
+    # Pull the scratch-file path out of a `saved to <path>.` pointer.
+    defp saved_path(content) do
+      [_, path] = Regex.run(~r/saved to (\/[^\s]+\.txt)/, content)
+      path
+    end
+
+    test "a small binary is written to the scratch file with an inline lossy view", %{} do
+      # Gzip-magic bytes + an ASCII prefix — small enough to also
+      # include the lossy text view inline.
+      raw = <<"OK", 0x1F, 0x8B, 0x08, 0x00, 0xFF>>
+      dir = tmp_dir_for_test()
+      tools = [binary_tool(raw)]
+      c = ctx(tools, tmp_path: dir)
+
+      assert [%ToolResult{name: "shell-cmd", is_error: false, content: content}] =
+               BatchSizer.run([call("c1", "shell-cmd")], c)
+
+      assert String.valid?(content)
+      assert content =~ "(binary, 7 bytes)"
+      assert content =~ "saved to "
+      assert content =~ "OK"
+      # The lossy view carries the replacement character for 0xFF.
+      assert content =~ <<0xEF, 0xBF, 0xBD>>
+
+      # The scratch file preserves the ORIGINAL raw bytes.
+      assert File.read!(saved_path(content)) == raw
+    end
+
+    test "a large binary returns a pointer only, with the raw bytes saved", %{} do
+      raw = :binary.copy(<<0xFF>>, 300)
+      dir = tmp_dir_for_test()
+      tools = [binary_tool(raw)]
+      c = ctx(tools, tmp_path: dir)
+
+      assert [%ToolResult{name: "shell-cmd", is_error: false, content: content}] =
+               BatchSizer.run([call("c1", "shell-cmd")], c)
+
+      assert String.valid?(content)
+      assert content =~ "(binary, 300 bytes)"
+      assert content =~ "saved to "
+      # No lossy view for large binaries — pointer only.
+      refute content =~ <<0xEF, 0xBF, 0xBD>>
+      refute content =~ <<0xFF>>
+
+      assert File.read!(saved_path(content)) == raw
+    end
+  end
+
   # -- helpers --
 
   # Build a list of ~`target_tokens` tokens' worth of messages
