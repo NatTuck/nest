@@ -161,11 +161,23 @@ defmodule Nest.Agents.Agent.ToolLoop do
         build_tool_result(
           tc,
           "agents-spawn",
-          "Could not spawn agent: #{inspect(reason)}",
+          spawn_error_message(reason),
           true
         )
     end
   end
+
+  # Format a spawn failure for the model. `:vocation_not_spawnable`
+  # carries the whitelisted `{name, id}` vocations so the model can
+  # retry with a valid `vocation_id`.
+  defp spawn_error_message({:vocation_not_spawnable, allowed}) do
+    labels = Enum.map_join(allowed, ", ", fn {name, id} -> "#{name} (id #{id})" end)
+
+    "Could not spawn agent: that vocation is not spawnable in this space. " <>
+      "Allowed vocations: #{labels}. Retry passing one as `vocation_id`."
+  end
+
+  defp spawn_error_message(reason), do: "Could not spawn agent: #{inspect(reason)}"
 
   # Extract the `agents-spawn` args into an opts map, applying
   # defaults. Kept separate so `run_spawn_agent/2` stays under

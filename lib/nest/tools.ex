@@ -247,7 +247,8 @@ defmodule Nest.Tools do
         "Create a sub-agent in this space and optionally delegate a task to it. " <>
           "Returns the new agent's name; if `query` is given, additionally blocks " <>
           "and returns the agent's response. `vocation_id` defaults to your own " <>
-          "vocation — set it to spawn a specialist with a different role. Set " <>
+          "vocation (or the space's sole allowed vocation when your own isn't " <>
+          "allowed) — set it to spawn a specialist with a different role. Set " <>
           "`clone_context` to true to spawn the agent with a copy of this " <>
           "conversation instead of a fresh context. Set `archive` to true (with " <>
           "`query`) to stop and archive the agent after it responds (one-shot). " <>
@@ -268,7 +269,8 @@ defmodule Nest.Tools do
             "type" => "integer",
             "description" =>
               "The vocation id defining the specialist's role and tools. " <>
-                "Defaults to your own vocation when omitted."
+                "Defaults to your own vocation when omitted (or the space's sole " <>
+                "allowed vocation if your own isn't allowed)."
           },
           "clone_context" => %{
             "type" => "boolean",

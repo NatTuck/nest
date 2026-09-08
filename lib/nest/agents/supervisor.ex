@@ -173,7 +173,19 @@ defmodule Nest.Agents.Supervisor do
   The spawn is authorized against the space's blueprint
   `spawnable_vocation_ids` whitelist: an unrestricted space
   (no blueprint, or empty list) allows any `vocation_id`;
-  otherwise `vocation_id` must be whitelisted.
+  otherwise the effective `vocation_id` must be whitelisted.
+
+  `vocation_id` may be `nil` (the `agents-spawn` default when
+  the model omits it). Resolution rules:
+    * an explicit `vocation_id` is used as-is (refused if not
+      whitelisted),
+    * otherwise the parent's vocation is used when the space is
+      unrestricted or the parent's vocation is whitelisted,
+    * otherwise, when the whitelist has exactly one entry, that
+      sole allowed vocation is used (a "Head TA may only spawn
+      Graders" space works without the model knowing the id),
+    * otherwise (multiple allowed vocations, parent's not among
+      them) the spawn is refused as ambiguous.
 
   `name` must be unique within the space (enforced by the
   `(space_id, name)` composite unique index; a collision
@@ -181,17 +193,64 @@ defmodule Nest.Agents.Supervisor do
 
   Returns `{:ok, name}` on success.
   """
-  @spec spawn_agent_in_space(Nest.Agents.Agent.t(), String.t(), integer(), map() | nil) ::
+  @spec spawn_agent_in_space(Nest.Agents.Agent.t(), String.t(), integer() | nil, map() | nil) ::
           {:ok, String.t()} | {:error, term()}
-  def spawn_agent_in_space(parent_state, name, vocation_id, model_override \\ nil)
-      when is_map(parent_state) and is_binary(name) and is_integer(vocation_id) do
-    with :ok <- authorize_spawn(parent_state.space_id, vocation_id),
-         :ok <- ensure_spawn_workspace(parent_state, vocation_id),
+  def spawn_agent_in_space(parent_state, name, vocation_id \\ nil, model_override \\ nil)
+      when is_map(parent_state) and is_binary(name) do
+    with {:ok, resolved} <- resolve_spawn_vocation(parent_state, vocation_id),
+         :ok <- ensure_spawn_workspace(parent_state, resolved),
          {:ok, %PersistedAgent{id: parent_id}} <-
            Persistence.fetch_agent(parent_state.space_id, parent_state.name),
-         :ok <- start_fresh_child(parent_state, name, vocation_id, parent_id, model_override) do
+         :ok <- start_fresh_child(parent_state, name, resolved, parent_id, model_override) do
       {:ok, name}
     end
+  end
+
+  # Resolve the effective `vocation_id` for a fresh spawn, applying
+  # the blueprint whitelist. See `spawn_agent_in_space/4`'s doc for
+  # the resolution rules. Refusals carry the whitelisted vocations
+  # (as `{name, id}` labels) so the caller can tell the model what it
+  # may actually spawn.
+  defp resolve_spawn_vocation(parent_state, requested) do
+    allowed = Spaces.spawnable_vocation_ids_for_space(parent_state.space_id)
+
+    cond do
+      is_integer(requested) and not whitelisted?(allowed, requested) ->
+        {:error, vocation_error(allowed)}
+
+      is_integer(requested) ->
+        {:ok, requested}
+
+      whitelisted?(allowed, parent_state.vocation_id) ->
+        {:ok, parent_state.vocation_id}
+
+      allowed == nil or allowed == [] ->
+        {:ok, parent_state.vocation_id}
+
+      length(allowed) == 1 ->
+        {:ok, hd(allowed)}
+
+      true ->
+        {:error, vocation_error(allowed)}
+    end
+  end
+
+  # `nil`/`[]` from `spawnable_vocation_ids_for_space/1` mean the
+  # space is unrestricted (anything is allowed).
+  defp whitelisted?(nil, _vocation_id), do: true
+  defp whitelisted?([], _vocation_id), do: true
+  defp whitelisted?(allowed, vocation_id), do: vocation_id in allowed
+
+  defp vocation_error(allowed) do
+    {:vocation_not_spawnable, vocation_labels(allowed)}
+  end
+
+  # Resolve the allowed vocation ids to `{name, id}` labels for the
+  # model-facing error message. Missing/deleted ids degrade to an id
+  # placeholder rather than crashing.
+  defp vocation_labels(ids) when is_list(ids) do
+    by_id = Map.new(Vocations.list_vocations(), &{&1.id, &1.name})
+    Enum.map(ids, fn id -> {Map.get(by_id, id, "<vocation #{id}>"), id} end)
   end
 
   # Build a fresh-context child's attrs (with `agents-spawn`
@@ -240,17 +299,6 @@ defmodule Nest.Agents.Supervisor do
         else
           :ok
         end
-    end
-  end
-
-  # Enforce the space's blueprint spawnable-vocation whitelist.
-  # `nil` (no blueprint / missing blueprint) and `[]` both mean
-  # unrestricted; a non-empty list is a strict whitelist.
-  defp authorize_spawn(space_id, vocation_id) do
-    case Spaces.spawnable_vocation_ids_for_space(space_id) do
-      nil -> :ok
-      [] -> :ok
-      ids -> if vocation_id in ids, do: :ok, else: {:error, :vocation_not_spawnable}
     end
   end
 

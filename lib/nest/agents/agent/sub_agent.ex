@@ -122,7 +122,9 @@ defmodule Nest.Agents.Agent.SubAgent do
   #     (synthetic origin-story fork) at depth parent+1, tracked
   #     in ChildRegistry so the parent waits for completion.
   #   * otherwise → fresh-context specialist, `vocation_id`
-  #     defaulting to the parent's.
+  #     resolved by the supervisor against the space's blueprint
+  #     whitelist (defaulting to the parent's, or the space's sole
+  #     allowed vocation when the parent's isn't allowed).
   #
   # An agent at max depth cannot spawn children. For a clone
   # pre-compaction the `agents-spawn` tool is still present
@@ -145,12 +147,14 @@ defmodule Nest.Agents.Agent.SubAgent do
       if Map.get(opts, :clone_context, false) do
         Supervisor.start_agent_with_parent(state, Map.get(opts, :query, ""), model_override)
       else
-        vocation_id = Map.get(opts, :vocation_id) || state.vocation_id
-
+        # The supervisor resolves `vocation_id` against the space's
+        # blueprint whitelist: omitted defaults to the parent's
+        # vocation (or the space's sole allowed vocation when the
+        # parent's isn't allowed).
         Supervisor.spawn_agent_in_space(
           state,
           Map.get(opts, :name, ""),
-          vocation_id,
+          Map.get(opts, :vocation_id),
           model_override
         )
       end

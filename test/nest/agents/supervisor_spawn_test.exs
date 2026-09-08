@@ -14,7 +14,10 @@ defmodule Nest.Agents.SupervisorSpawnTest do
 
     * Unrestricted space (no blueprint) → any vocation spawns.
     * Whitelisted blueprint → allowed vocation spawns, denied
-      vocation returns `{:error, :vocation_not_spawnable}`.
+      vocation returns `{:error, {:vocation_not_spawnable, _}}`.
+    * Omitted `vocation_id` → defaults to the parent's vocation,
+      or auto-defaults to the sole allowed vocation, or is refused
+      as ambiguous when multiple vocations are allowed.
     * Duplicate name → `{:error, :duplicate_name}` (the
       `(space_id, name)` composite unique index).
     * Fresh context → the spawned agent's message count is 1
@@ -199,10 +202,73 @@ defmodule Nest.Agents.SupervisorSpawnTest do
 
       on_exit(fn -> _ = Supervisor.stop_agent(space.id, allowed_name) end)
 
-      assert {:error, :vocation_not_spawnable} =
+      # The refusal carries the whitelisted vocations as {name, id}
+      # labels so the caller can tell the model what it may spawn.
+      assert {:error, {:vocation_not_spawnable, [{_name, ^allowed_vid}]}} =
                Supervisor.spawn_agent_in_space(state, denied_name, denied_vid)
 
       refute Enum.member?(Agents.list_agents_for_space(space.id), denied_name)
+    end
+
+    test "omitting vocation_id auto-defaults to the sole allowed vocation" do
+      allowed_vid = fresh_vocation()
+
+      {:ok, blueprint} =
+        Blueprints.create_blueprint(%{
+          name: "auto-wl-#{System.unique_integer([:positive])}",
+          root_vocation_id: allowed_vid,
+          spawnable_vocation_ids: [allowed_vid]
+        })
+
+      {:ok, space} =
+        Spaces.create_space(nil, %{
+          name: "auto-wl-space-#{System.unique_integer([:positive])}",
+          slug: "auto-wl-space-#{System.unique_integer([:positive])}",
+          blueprint_id: blueprint.id
+        })
+
+      # The coordinator's own vocation (Test Default) is NOT in the
+      # whitelist — exactly the "Head TA may only spawn Graders" shape.
+      state = coordinator_state(space.id)
+      refute state.vocation_id == allowed_vid
+
+      name = "auto-#{System.unique_integer([:positive])}"
+
+      assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name)
+
+      on_exit(fn -> _ = Supervisor.stop_agent(space.id, name) end)
+
+      {:ok, pid} = Supervisor.get_agent(space.id, name)
+      child_state = :sys.get_state(pid)
+      assert child_state.vocation_id == allowed_vid
+    end
+
+    test "omitting vocation_id with multiple allowed vocations is refused as ambiguous" do
+      allowed_a = fresh_vocation()
+      allowed_b = fresh_vocation()
+
+      {:ok, blueprint} =
+        Blueprints.create_blueprint(%{
+          name: "ambig-wl-#{System.unique_integer([:positive])}",
+          root_vocation_id: allowed_a,
+          spawnable_vocation_ids: [allowed_a, allowed_b]
+        })
+
+      {:ok, space} =
+        Spaces.create_space(nil, %{
+          name: "ambig-wl-space-#{System.unique_integer([:positive])}",
+          slug: "ambig-wl-space-#{System.unique_integer([:positive])}",
+          blueprint_id: blueprint.id
+        })
+
+      state = coordinator_state(space.id)
+      name = "ambig-#{System.unique_integer([:positive])}"
+
+      assert {:error, {:vocation_not_spawnable, labels}} =
+               Supervisor.spawn_agent_in_space(state, name)
+
+      ids = Enum.map(labels, &elem(&1, 1))
+      assert Enum.sort(ids) == Enum.sort([allowed_a, allowed_b])
     end
 
     test "an empty spawnable_vocation_ids list is unrestricted" do
