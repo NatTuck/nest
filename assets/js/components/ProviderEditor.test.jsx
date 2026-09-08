@@ -187,6 +187,22 @@ describe("ProviderEditor", () => {
     expect(updated.auto_probe).toBe(false);
   });
 
+  it("toggles expose models in list-models", () => {
+    const onChange = vi.fn();
+    render(
+      <ProviderEditor
+        provider={provider}
+        onChange={onChange}
+        onRemove={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText(/expose models in list-models/i));
+
+    const [updated] = onChange.mock.calls[0];
+    expect(updated.expose_models).toBe(true);
+  });
+
   it("clears default context limit when the input is emptied", () => {
     const onChange = vi.fn();
     render(

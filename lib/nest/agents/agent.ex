@@ -211,11 +211,15 @@ defmodule Nest.Agents.Agent do
     * `child_name` — a freshly-generated unique name
     * `parent_id` — the parent's integer `agents.id`,
       resolved via `Persistence.fetch_agent/2`
+    * `model_override` — an optional `%{name: ..., provider: ...}`
+      map for the child's model; the child inherits the parent's
+      model when it is `nil`
 
   Returns the attrs map ready to pass to `start_link/1`.
   """
-  @spec build_child_attrs(map(), String.t(), String.t(), integer()) :: map()
-  def build_child_attrs(parent_state, _instruction, child_name, parent_id) do
+  @spec build_child_attrs(map(), String.t(), String.t(), integer(), map() | nil) :: map()
+  def build_child_attrs(parent_state, instruction, child_name, parent_id, model_override \\ nil)
+      when is_map(parent_state) and is_binary(instruction) and is_binary(child_name) do
     {stripped, _clone_instruction} =
       parent_state.chat_state.messages
       |> MessageList.extract_clone_instruction()
@@ -231,7 +235,7 @@ defmodule Nest.Agents.Agent do
     %{
       name: child_name,
       space_id: parent_state.space_id,
-      model: parent_state.model,
+      model: model_override || parent_state.model,
       vocation_id: parent_state.vocation_id,
       vocation: parent_state.vocation,
       workspace_path: parent_state.workspace_path,

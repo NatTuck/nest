@@ -24,24 +24,13 @@ describe("store", () => {
       expect(useStore.getState().archivedSpaces).toEqual([s2]);
     });
 
-    it("archiveSpace moves a space to archivedSpaces and clears a matching selection", () => {
+    it("archiveSpace moves a space to archivedSpaces", () => {
       useStore.getState().setSpaces([s1, s2]);
-      useStore.getState().setCurrentSpaceId(s1.id);
 
       useStore.getState().archiveSpace(s1.id);
 
       expect(useStore.getState().spaces).toEqual([s2]);
       expect(useStore.getState().archivedSpaces).toEqual([s1]);
-      expect(useStore.getState().currentSpaceId).toBeNull();
-    });
-
-    it("archiveSpace preserves the selection when it points elsewhere", () => {
-      useStore.getState().setSpaces([s1, s2]);
-      useStore.getState().setCurrentSpaceId(s2.id);
-
-      useStore.getState().archiveSpace(s1.id);
-
-      expect(useStore.getState().currentSpaceId).toBe(s2.id);
     });
 
     it("archiveSpace is a no-op for an unknown id", () => {

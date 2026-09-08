@@ -52,15 +52,26 @@ defmodule Nest.Agents.Agent.SubAgent do
   `spawn_agent_in_space/3`. `exclude_spawn` is set when the
   child is spawned at max depth, so its tool list omits
   `agents-spawn` (non-clone spawns can be depth-limited safely).
+  `model_override` is an optional `%{name: ..., provider: ...}`
+  map for the child's model; the child inherits the parent's
+  model when it is `nil`.
 
   Returns the attrs map ready to pass to `start_link/1`.
   """
-  @spec build_fresh_child_attrs(map(), String.t(), integer(), integer(), boolean()) :: map()
-  def build_fresh_child_attrs(parent_state, child_name, parent_id, vocation_id, exclude_spawn) do
+  @spec build_fresh_child_attrs(map(), String.t(), integer(), integer(), boolean(), map() | nil) ::
+          map()
+  def build_fresh_child_attrs(
+        parent_state,
+        child_name,
+        parent_id,
+        vocation_id,
+        exclude_spawn,
+        model_override \\ nil
+      ) do
     %{
       name: child_name,
       space_id: parent_state.space_id,
-      model: parent_state.model,
+      model: model_override || parent_state.model,
       vocation_id: vocation_id,
       workspace_path: parent_state.workspace_path,
       parent_id: parent_id,
@@ -130,11 +141,40 @@ defmodule Nest.Agents.Agent.SubAgent do
   end
 
   defp do_spawn_child(state, opts) do
-    if Map.get(opts, :clone_context, false) do
-      Supervisor.start_agent_with_parent(state, Map.get(opts, :query, ""))
-    else
-      vocation_id = Map.get(opts, :vocation_id) || state.vocation_id
-      Supervisor.spawn_agent_in_space(state, Map.get(opts, :name, ""), vocation_id)
+    with {:ok, model_override} <- resolve_model_override(Map.get(opts, :model, "")) do
+      if Map.get(opts, :clone_context, false) do
+        Supervisor.start_agent_with_parent(state, Map.get(opts, :query, ""), model_override)
+      else
+        vocation_id = Map.get(opts, :vocation_id) || state.vocation_id
+
+        Supervisor.spawn_agent_in_space(
+          state,
+          Map.get(opts, :name, ""),
+          vocation_id,
+          model_override
+        )
+      end
+    end
+  end
+
+  # Parse the optional `agents-spawn` `model` argument (a
+  # `"provider/name"` string, as returned by `models-list`) into
+  # the child's model map. Splitting on the FIRST slash keeps
+  # model names that themselves contain slashes (e.g.
+  # `"vllm/Qwen/Qwen3.5-122B-A10B-FP8"`) intact. Absent or empty
+  # means inherit the parent's model (`{:ok, nil}`); anything
+  # unparseable is rejected so the spawn fails loudly instead of
+  # silently starting the child on the wrong model.
+  defp resolve_model_override(nil), do: {:ok, nil}
+  defp resolve_model_override(""), do: {:ok, nil}
+
+  defp resolve_model_override(model) when is_binary(model) do
+    case String.split(model, "/", parts: 2) do
+      [provider, name] when provider != "" and name != "" ->
+        {:ok, %{name: name, provider: provider}}
+
+      _ ->
+        {:error, {:invalid_model, model}}
     end
   end
 

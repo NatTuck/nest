@@ -38,6 +38,18 @@ function buildAgentTree(agents) {
 }
 
 /**
+ * True when the current route is this space's overview or one
+ * of its agent chat pages. Mirrors how agent rows and archived
+ * rows derive their "current" styling from the URL: the space's
+ * name links to `/space/:slug`, so the pathname carries the
+ * (encoded) slug for both `/space/:slug` and `/space/:slug/...`.
+ */
+function isSpaceActive(location, space) {
+  const base = `/space/${encodeURIComponent(space.slug)}`;
+  return location.pathname === base || location.pathname.startsWith(`${base}/`);
+}
+
+/**
  * Recursive agent row. Renders the agent's name with the
  * current-agent styling. Leaves and non-leaves alike render
  * identically.
@@ -100,14 +112,9 @@ function AgentTreeRow({ node, depth, location, spaceSlug }) {
  * the space's agent tree, plus archive. Clicking the name navigates to
  * `/space/:slug`; the chevron toggles the agent list.
  */
-export function SpaceRow({
-  space,
-  spaceAgents,
-  spaceBrokenAgents,
-  location,
-  isSelected,
-}) {
-  const [expanded, setExpanded] = useState(isSelected);
+export function SpaceRow({ space, spaceAgents, spaceBrokenAgents, location }) {
+  const selected = isSpaceActive(location, space);
+  const [expanded, setExpanded] = useState(selected);
   const tree = buildAgentTree(spaceAgents);
 
   return (
@@ -116,7 +123,7 @@ export function SpaceRow({
         className={`
           flex items-center justify-between rounded-lg group
           transition-colors duration-200
-          ${isSelected ? "bg-blue-50 text-blue-700 border border-blue-200" : "text-gray-700 hover:bg-gray-100"}
+          ${selected ? "bg-blue-50 text-blue-700 border border-blue-200" : "text-gray-700 hover:bg-gray-100"}
         `}
       >
         <Link

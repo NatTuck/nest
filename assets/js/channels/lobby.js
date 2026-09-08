@@ -35,9 +35,6 @@ export function joinLobby(onOk, onError) {
     store.setArchivedSpaces(payload.archived_spaces || []);
     store.setBlueprints(payload.blueprints || []);
     store.setSuggestedName(payload.suggested_name);
-    if (payload.spaces?.length > 0 && store.currentSpaceId == null) {
-      store.setCurrentSpaceId(payload.spaces[0].id);
-    }
     if (payload.current_user !== undefined) {
       store.setCurrentUser(payload.current_user);
     }

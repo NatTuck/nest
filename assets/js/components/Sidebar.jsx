@@ -32,7 +32,6 @@ export function Sidebar() {
     archivedSpaces,
     archivedCollapsed,
     setArchivedCollapsed,
-    currentSpaceId,
     currentUser,
   } = useStore();
 
@@ -104,7 +103,6 @@ export function Sidebar() {
                     (a) => a.space_id === space.id,
                   )}
                   location={location}
-                  isSelected={currentSpaceId === space.id}
                 />
               ))}
             </ul>

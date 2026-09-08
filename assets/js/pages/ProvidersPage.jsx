@@ -17,7 +17,11 @@ export function ProvidersPage() {
   const providers = useStore((state) => state.providers);
   const isAdmin = useStore((state) => state.currentUser?.is_admin);
 
-  const [draft, setDraft] = useState(providers);
+  // Seed the editable draft immediately so the first render already
+  // carries stable ids (the effect below keeps it in sync with the
+  // store's provider list). Store-seeded providers/models come back
+  // without ids.
+  const [draft, setDraft] = useState(() => assignIds(providers));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
 

@@ -22,9 +22,11 @@ alias Nest.Vocations
 
 # Any vocation that gets any `agents-*` tool gets all of them
 # (`agents-spawn`, `agents-query`, `agents-list`,
-# `agents-archive`). `agents-spawn` is additionally stripped for
-# max-depth agents at spawn/compaction time (the others remain).
-agents_tools = ["agents-spawn", "agents-query", "agents-list", "agents-archive"]
+# `agents-archive`, plus the model-discovery `models-list`).
+# `agents-spawn` is additionally stripped for max-depth agents
+# at spawn/compaction time (the others remain).
+agents_tools =
+  ["agents-spawn", "agents-query", "agents-list", "agents-archive", "models-list"]
 
 # Default - minimal vocation for agents without a specific role.
 # Used as the fallback for any test or runtime path that needs a
@@ -86,7 +88,8 @@ agents_tools = ["agents-spawn", "agents-query", "agents-list", "agents-archive"]
       "agents-spawn",
       "agents-query",
       "agents-list",
-      "agents-archive"
+      "agents-archive",
+      "models-list"
     ],
     modes: %{
       "build" => %{
@@ -147,25 +150,6 @@ minimal_tools = ["context-check", "context-compact" | agents_tools]
     }
   })
 
-# Code Review Coordinator — reviews code, spawns specialist reviewers.
-{:ok, code_review_vocation} =
-  Vocations.upsert_vocation(%{
-    name: "Code Review Coordinator",
-    description: "A coordinator that reviews code and spawns specialist reviewers.",
-    system_prompt:
-      "You are a code review coordinator. Coordinate reviewers and synthesize their findings.",
-    tools: all_tools,
-    modes: %{
-      "chat" => %{
-        "description" => "General conversation.",
-        "caps" => %{
-          "net" => true,
-          "fs" => %{"read" => ["/"], "write" => ["/tmp", ":workspace"]}
-        }
-      }
-    }
-  })
-
 # Game Master — runs a tabletop RPG campaign.
 {:ok, game_master_vocation} =
   Vocations.upsert_vocation(%{
@@ -185,17 +169,63 @@ minimal_tools = ["context-check", "context-compact" | agents_tools]
     }
   })
 
-# Grading Coordinator — grades work and spawns specialist graders.
-{:ok, grading_vocation} =
+# Head TA — coordinates assignment grading and manages Grader agents.
+{:ok, head_ta_vocation} =
   Vocations.upsert_vocation(%{
-    name: "Grading Coordinator",
-    description: "A coordinator that grades submissions and spawns specialist graders.",
-    system_prompt:
-      "You are a grading coordinator. Coordinate graders and synthesize their assessments.",
+    name: "Head TA",
+    description: "Coordinates grading and manages specialist Grader agents.",
+    system_prompt: """
+      You are a Head TA. Your task is to coordinate the grading process
+      according to the instructions in the workspace.
+
+      You have the ability to spawn grader minions both for invesigation and
+      for grading work.
+
+      Make sure procedures are followed and that the intent of the procedures
+      are achieved.
+    """,
     tools: all_tools,
     modes: %{
-      "chat" => %{
-        "description" => "General conversation.",
+      "plan" => %{
+        "description" => "Read-only access to workspace.",
+        "caps" => %{
+          "net" => true,
+          "fs" => %{"read" => ["/"], "write" => ["/tmp"]}
+        }
+      },
+      "act" => %{
+        "description" => "Full workspace access.",
+        "caps" => %{
+          "net" => true,
+          "fs" => %{"read" => ["/"], "write" => ["/tmp", ":workspace"]}
+        }
+      }
+    }
+  })
+
+# Grader — evaluates individual submissions against rubrics.
+{:ok, grader_vocation} =
+  Vocations.upsert_vocation(%{
+    name: "Grader",
+    description: "Evaluates submissions against rubrics and provides detailed feedback.",
+    system_prompt: """
+      You are a Grader. Your task is to help the Head TA complete grading work according
+      to the workspace procedures.
+
+      You may be assigned any of a variety of tasks. Complete them to the best of your
+      ability.
+    """,
+    tools: all_tools,
+    modes: %{
+      "plan" => %{
+        "description" => "Read-only access to workspace.",
+        "caps" => %{
+          "net" => true,
+          "fs" => %{"read" => ["/"], "write" => ["/tmp"]}
+        }
+      },
+      "act" => %{
+        "description" => "Full access to workspace.",
         "caps" => %{
           "net" => true,
           "fs" => %{"read" => ["/"], "write" => ["/tmp", ":workspace"]}
@@ -213,9 +243,9 @@ minimal_tools = ["context-check", "context-compact" | agents_tools]
 
 chat_vid = chat_vocation.id
 programmer_vid = programmer_vocation.id
-code_review_vid = code_review_vocation.id
 game_master_vid = game_master_vocation.id
-grading_vid = grading_vocation.id
+head_ta_vid = head_ta_vocation.id
+grader_vid = grader_vocation.id
 
 # The old "Agent" blueprint (rooted in `Default`) is obsolete —
 # the default set is now the five role blueprints below. Delete it
@@ -243,14 +273,6 @@ end
 
 {:ok, _} =
   Blueprints.upsert_blueprint(%{
-    name: "Code Review",
-    description: "A coordinator that reviews code with specialist sub-agents.",
-    root_vocation_id: code_review_vid,
-    spawnable_vocation_ids: []
-  })
-
-{:ok, _} =
-  Blueprints.upsert_blueprint(%{
     name: "Tabletop RPG",
     description: "A game master that runs a tabletop RPG campaign.",
     root_vocation_id: game_master_vid,
@@ -260,9 +282,17 @@ end
 {:ok, _} =
   Blueprints.upsert_blueprint(%{
     name: "Grading",
-    description: "A coordinator that grades submissions with specialist sub-agents.",
-    root_vocation_id: grading_vid,
-    spawnable_vocation_ids: []
+    description: "Automatic assignment feedback and grading with Head TA coordination.",
+    root_vocation_id: head_ta_vid,
+    spawnable_vocation_ids: [grader_vid],
+    workspace_template: %{
+      "README.md" =>
+        "# Assignment Grading Workspace\n\nPlace submissions in `submissions/` and feedback will be written to `feedback/`.",
+      "rubric.md" =>
+        "# Grading Rubric\n\n## Criteria\n- [ ] Correctness\n- [ ] Code quality\n- [ ] Documentation\n- [ ] Testing",
+      "submissions/" => %{},
+      "feedback/" => %{}
+    }
   })
 
 # ---- Default dev user ----

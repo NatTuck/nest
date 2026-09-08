@@ -52,7 +52,14 @@ defmodule Nest.Tools do
   @spec get_function(String.t(), String.t() | nil, String.t() | nil) :: Tool.t() | nil
   def get_function(name, workspace_path, tmp_path \\ nil) do
     case name do
-      name when name in ["agents-spawn", "agents-query", "agents-list", "agents-archive"] ->
+      name
+      when name in [
+             "agents-spawn",
+             "agents-query",
+             "agents-list",
+             "agents-archive",
+             "models-list"
+           ] ->
         sub_agent_tool_function(name)
 
       name ->
@@ -67,6 +74,9 @@ defmodule Nest.Tools do
   defp sub_agent_tool_function("agents-query"), do: query_agent_function()
   defp sub_agent_tool_function("agents-list"), do: list_agents_function()
   defp sub_agent_tool_function("agents-archive"), do: archive_agent_function()
+
+  # Dispatch the models-list tool.
+  defp sub_agent_tool_function("models-list"), do: models_list_function()
 
   # Dispatch the workspace, shell, and context tools. Kept as its
   # own function so `get_function/3` stays under the credo
@@ -243,7 +253,10 @@ defmodule Nest.Tools do
           "`query`) to stop and archive the agent after it responds (one-shot). " <>
           "Spawned vocations may be restricted by this space's blueprint. " <>
           "Sub-agents can be spawned down to a maximum depth of " <>
-          "#{Config.configured_max_depth()}.",
+          "#{Config.configured_max_depth()}. Set `model` to a " <>
+          "\"provider/model-name\" string (e.g. as returned by `models-list`) " <>
+          "to spawn the child on a specific model; it inherits your own model " <>
+          "when omitted.",
       parameters_schema: %{
         "type" => "object",
         "properties" => %{
@@ -280,6 +293,12 @@ defmodule Nest.Tools do
             "description" =>
               "Maximum milliseconds to block for the response (only used with " <>
                 "`query`). Defaults to 300000 (5 minutes)."
+          },
+          "model" => %{
+            "type" => "string",
+            "description" =>
+              "The model for the new sub-agent as a \"provider/model-name\" string " <>
+                "(see `models-list`). Inherits your own model when omitted."
           }
         },
         "required" => ["name"]
@@ -382,6 +401,39 @@ defmodule Nest.Tools do
       },
       function: fn _args, _context ->
         {:ok, "Archive agent request received."}
+      end
+    }
+  end
+
+  # The `models-list` tool: list available models from providers
+  # that have `expose_models` enabled. Optionally filtered by provider.
+  #
+  # The `function` here is a stub. Real execution lives in
+  # `Nest.Agents.Agent.ToolLoop`, which calls `Models.list/0` and
+  # filters by provider and expose_models flag. The output uses the
+  # `"provider/model-name"` format that `agents-spawn`'s `model`
+  # argument expects.
+  defp models_list_function do
+    %Tool{
+      name: "models-list",
+      description:
+        "List available models from providers that have expose_models enabled, " <>
+          "one \"provider/model-name\" per line. Optionally filter by provider " <>
+          "name. Feed the returned strings to `agents-spawn`'s `model` argument.",
+      parameters_schema: %{
+        "type" => "object",
+        "properties" => %{
+          "provider" => %{
+            "type" => "string",
+            "description" =>
+              "Optional provider name to filter models by. If omitted, returns " <>
+                "models from all providers with expose_models enabled."
+          }
+        },
+        "required" => []
+      },
+      function: fn _args, _context ->
+        {:ok, "Models list request received."}
       end
     }
   end

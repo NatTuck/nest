@@ -33,10 +33,6 @@ export function catalogSetters(set) {
       set({ spaces: spaces || [] });
     },
 
-    setCurrentSpaceId: (currentSpaceId) => {
-      set({ currentSpaceId });
-    },
-
     setBlueprints: (blueprints) => {
       set({ blueprints: blueprints || [] });
     },
@@ -56,8 +52,6 @@ export function catalogSetters(set) {
         return {
           spaces: state.spaces.filter((s) => s.id !== spaceId),
           archivedSpaces: [...state.archivedSpaces, space],
-          currentSpaceId:
-            state.currentSpaceId === spaceId ? null : state.currentSpaceId,
         };
       });
     },

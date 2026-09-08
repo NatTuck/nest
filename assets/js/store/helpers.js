@@ -11,7 +11,6 @@ export const initialState = {
   agents: [],
   spaces: [],
   archivedSpaces: [],
-  currentSpaceId: null,
   blueprints: [],
   models: [],
   vocations: [],

@@ -21,17 +21,17 @@ import {
 
 function withStore(agents) {
   // Agents are grouped under a space row in the sidebar. Seed a
-  // space and make it the current one so its (expanded) agent tree
-  // renders. Default each agent's `space_id` to that space's id.
+  // single space (id 1, slug "my-space") and default each agent's
+  // `space_id` to it. Tests that assert on the agent tree render at
+  // `/space/my-space` so the space row is route-selected (expanded).
   useStore.setState({
     agents: agents.map((a) => ({ ...a, space_id: a.space_id ?? 1 })),
     spaces: [{ id: 1, slug: "my-space", name: "My Space" }],
-    currentSpaceId: 1,
   });
 }
 
 function clearAgents() {
-  useStore.setState({ agents: null, spaces: [], currentSpaceId: null });
+  useStore.setState({ agents: null, spaces: [] });
 }
 
 beforeEach(() => {
@@ -61,7 +61,7 @@ describe("Sidebar tree", () => {
     });
 
     render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={["/space/my-space"]}>
         <Sidebar />
       </MemoryRouter>,
     );
@@ -84,7 +84,7 @@ describe("Sidebar tree", () => {
     });
 
     render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={["/space/my-space"]}>
         <Sidebar />
       </MemoryRouter>,
     );
@@ -103,7 +103,7 @@ describe("Sidebar tree", () => {
     });
 
     render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={["/space/my-space"]}>
         <Sidebar />
       </MemoryRouter>,
     );
@@ -128,7 +128,7 @@ describe("Sidebar tree", () => {
     });
 
     render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={["/space/my-space"]}>
         <Sidebar />
       </MemoryRouter>,
     );
@@ -145,7 +145,7 @@ describe("Sidebar tree", () => {
     });
 
     render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={["/space/my-space"]}>
         <Sidebar />
       </MemoryRouter>,
     );
@@ -175,6 +175,69 @@ describe("Sidebar tree", () => {
     expect(screen.getByText("alpha")).toBeInTheDocument();
   });
 
+  it("highlights the space whose agent is open, not the first space", () => {
+    act(() => {
+      useStore.setState({
+        agents: [
+          {
+            name: "first-agent",
+            space_id: 1,
+            parentId: null,
+            parentName: null,
+            depth: 0,
+          },
+          {
+            name: "bob",
+            space_id: 2,
+            parentId: null,
+            parentName: null,
+            depth: 0,
+          },
+        ],
+        spaces: [
+          { id: 1, slug: "first", name: "First Space" },
+          { id: 2, slug: "second", name: "Second Space" },
+        ],
+      });
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/space/second/agent/bob"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    // The row's highlight class lives on the div wrapping the
+    // space-name link; the link is its direct child.
+    const firstLink = screen.getByRole("link", { name: /first space/i });
+    const secondLink = screen.getByRole("link", { name: /second space/i });
+    expect(firstLink.parentElement.className).not.toMatch(/bg-blue-50/);
+    expect(secondLink.parentElement.className).toMatch(/bg-blue-50/);
+  });
+
+  it("highlights no space row when not inside a space route", () => {
+    act(() => {
+      useStore.setState({
+        agents: [],
+        spaces: [
+          { id: 1, slug: "first", name: "First Space" },
+          { id: 2, slug: "second", name: "Second Space" },
+        ],
+      });
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/spaces"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    const firstLink = screen.getByRole("link", { name: /first space/i });
+    const secondLink = screen.getByRole("link", { name: /second space/i });
+    expect(firstLink.parentElement.className).not.toMatch(/bg-blue-50/);
+    expect(secondLink.parentElement.className).not.toMatch(/bg-blue-50/);
+  });
+
   it("renders a streaming status dot (green pulse) for streaming agents", () => {
     act(() => {
       withStore([
@@ -189,7 +252,7 @@ describe("Sidebar tree", () => {
     });
 
     render(
-      <MemoryRouter initialEntries={["/"]}>
+      <MemoryRouter initialEntries={["/space/my-space"]}>
         <Sidebar />
       </MemoryRouter>,
     );
@@ -216,7 +279,7 @@ describe("Sidebar tree", () => {
     });
 
     render(
-      <MemoryRouter initialEntries={["/"]}>
+      <MemoryRouter initialEntries={["/space/my-space"]}>
         <Sidebar />
       </MemoryRouter>,
     );
@@ -351,7 +414,7 @@ describe("Sidebar Needs Repair rows", () => {
     });
 
     render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={["/space/my-space"]}>
         <Sidebar />
       </MemoryRouter>,
     );
@@ -390,7 +453,7 @@ describe("Sidebar Needs Repair rows", () => {
     });
 
     render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={["/space/my-space"]}>
         <Sidebar />
       </MemoryRouter>,
     );
@@ -408,7 +471,6 @@ describe("Sidebar Needs Repair rows", () => {
         { id: 1, slug: "space-a", name: "Space A" },
         { id: 2, slug: "space-b", name: "Space B" },
       ],
-      currentSpaceId: 1,
       brokenAgents: [
         {
           name: "broken-a",
@@ -426,13 +488,13 @@ describe("Sidebar Needs Repair rows", () => {
     });
 
     render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={["/space/space-a"]}>
         <Sidebar />
       </MemoryRouter>,
     );
 
-    // Space A is the selected/expanded space, so its broken agent
-    // renders with the correct space-scoped path.
+    // Space A is the route-selected/expanded space, so its broken
+    // agent renders with the correct space-scoped path.
     const linkA = screen.getByRole("link", { name: /broken-a/i });
     expect(linkA.getAttribute("href")).toBe("/space/space-a/agent/broken-a");
 
@@ -447,7 +509,6 @@ describe("Sidebar space archiving", () => {
       useStore.setState({
         spaces: [{ id: 1, slug: "my-space", name: "My Space" }],
         archivedSpaces: [],
-        currentSpaceId: 1,
       });
     });
 
@@ -466,7 +527,6 @@ describe("Sidebar space archiving", () => {
       useStore.setState({
         spaces: [{ id: 7, slug: "my-space", name: "My Space" }],
         archivedSpaces: [],
-        currentSpaceId: 1,
       });
     });
 
@@ -490,7 +550,6 @@ describe("Sidebar space archiving", () => {
       useStore.setState({
         spaces: [{ id: 1, slug: "active", name: "Active Space" }],
         archivedSpaces: [{ id: 2, slug: "gone", name: "Gone Space" }],
-        currentSpaceId: 1,
         archivedCollapsed: true,
       });
     });
@@ -521,7 +580,6 @@ describe("Sidebar space archiving", () => {
       useStore.setState({
         spaces: [],
         archivedSpaces: [{ id: 9, slug: "gone", name: "Gone Space" }],
-        currentSpaceId: null,
         archivedCollapsed: true,
       });
     });
@@ -545,7 +603,6 @@ describe("Sidebar space archiving", () => {
       useStore.setState({
         spaces: [],
         archivedSpaces: [{ id: 9, slug: "gone", name: "Gone Space" }],
-        currentSpaceId: null,
         archivedCollapsed: true,
       });
     });
@@ -578,7 +635,6 @@ describe("Sidebar space archiving", () => {
       useStore.setState({
         spaces: [{ id: 1, slug: "active", name: "Active Space" }],
         archivedSpaces: [],
-        currentSpaceId: 1,
       });
     });
 
@@ -596,7 +652,6 @@ describe("Sidebar space archiving", () => {
       useStore.setState({
         spaces: [],
         archivedSpaces: [{ id: 3, slug: "gone", name: "Gone Space" }],
-        currentSpaceId: null,
         archivedCollapsed: true,
       });
     });

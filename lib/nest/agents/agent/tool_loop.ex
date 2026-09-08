@@ -27,9 +27,11 @@ defmodule Nest.Agents.Agent.ToolLoop do
 
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.Agents.Registry
+  alias Nest.DotConfig
   alias Nest.Messages.Part
   alias Nest.Messages.ToolCall
   alias Nest.Messages.ToolResult
+  alias Nest.Models
 
   require Logger
 
@@ -45,6 +47,11 @@ defmodule Nest.Agents.Agent.ToolLoop do
   # agents could produce a huge serialized list; truncating
   # keeps the tool output within a reasonable context cost.
   @list_agents_max_chars 4_000
+
+  # Cap for the `models-list` tool result. A provider set with
+  # many models could produce a large serialized list; truncating
+  # keeps the tool output within a reasonable context cost.
+  @list_models_max_chars 4_000
 
   @doc """
   Run a tool-call batch. Returns a list of `ToolResult`
@@ -111,7 +118,13 @@ defmodule Nest.Agents.Agent.ToolLoop do
   end
 
   defp sub_agent_tool?(%ToolCall{name: name})
-       when name in ["agents-spawn", "agents-query", "agents-list", "agents-archive"],
+       when name in [
+              "agents-spawn",
+              "agents-query",
+              "agents-list",
+              "agents-archive",
+              "models-list"
+            ],
        do: true
 
   defp sub_agent_tool?(_), do: false
@@ -119,6 +132,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-spawn"} = tc), do: run_spawn_agent(ctx, tc)
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-query"} = tc), do: run_query_agent(ctx, tc)
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-list"} = tc), do: run_list_agents(ctx, tc)
+  defp run_sub_agent_tool(_ctx, %ToolCall{name: "models-list"} = tc), do: run_models_list(tc)
 
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-archive"} = tc),
     do: run_archive_agent(ctx, tc)
@@ -161,6 +175,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
       name: extract_string_arg(tc, "name"),
       vocation_id: extract_int_arg(tc, "vocation_id"),
       clone_context: extract_bool_arg(tc, "clone_context", false),
+      model: extract_string_arg(tc, "model"),
       query: extract_string_arg(tc, "query"),
       archive: extract_bool_arg(tc, "archive", false),
       timeout: extract_int_arg(tc, "timeout") || @default_wait_ms
@@ -214,6 +229,63 @@ defmodule Nest.Agents.Agent.ToolLoop do
 
     build_tool_result(tc, "agents-list", content)
   end
+
+  # `models-list`: list models from providers configured with
+  # `expose_models: true`. The optional `provider` argument
+  # narrows the listing to a single provider. Read-only and
+  # inline (no GenServer round-trip), like `agents-list`.
+  defp run_models_list(%ToolCall{} = tc) do
+    provider = extract_string_arg(tc, "provider")
+    content = models_listing(provider)
+    build_tool_result(tc, "models-list", content)
+  end
+
+  # Compose the models-listing text. Returns a friendly message
+  # when no provider exposes its models or nothing matches the
+  # (optional) provider filter.
+  defp models_listing(provider) do
+    case exposed_provider_names() do
+      [] ->
+        "No models are listed: no configured provider has expose-models enabled."
+
+      exposed ->
+        lines =
+          Models.list()
+          |> Enum.filter(&model_exposed?(&1, exposed, provider))
+          |> Enum.map(&format_model_entry/1)
+
+        case lines do
+          [] -> "No models match the request."
+          _ -> lines |> Enum.join("\n") |> String.slice(0, @list_models_max_chars)
+        end
+    end
+  end
+
+  # The provider names configured with `expose_models: true`.
+  defp exposed_provider_names do
+    case DotConfig.load() do
+      {:ok, config} ->
+        config.providers
+        |> Map.values()
+        |> Enum.filter(& &1.expose_models)
+        |> Enum.map(& &1.name)
+
+      _ ->
+        []
+    end
+  end
+
+  # A model entry qualifies when its provider exposes models (and,
+  # when a filter is given, matches it). Entries without a provider
+  # never qualify — the expose flag lives on the provider.
+  defp model_exposed?(%{"provider" => p}, exposed, provider_filter) when is_binary(p) do
+    p in exposed and (provider_filter == "" or p == provider_filter)
+  end
+
+  defp model_exposed?(%{}, _exposed, _provider_filter), do: false
+
+  defp format_model_entry(%{"provider" => provider, "name" => name}),
+    do: "#{provider}/#{name}"
 
   # `agents-query`: send a chat message to a PEER agent in this
   # space and block until its turn goes idle, returning the

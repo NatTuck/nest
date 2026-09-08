@@ -33,7 +33,7 @@ defmodule Nest.Agents.AgentTestHelpers do
 
   # Any vocation that gets any `agents-*` tool gets all of them
   # (matching the seed `agents_tools` invariant).
-  @agents_tools ["agents-spawn", "agents-query", "agents-list", "agents-archive"]
+  @agents_tools ["agents-spawn", "agents-query", "agents-list", "agents-archive", "models-list"]
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Nest.Agents

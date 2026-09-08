@@ -64,7 +64,7 @@ Spaces are created from **Blueprints**, which define the "rules of engagement":
 - **Hierarchies**: Agents can be named using slashes (e.g., `guard_1`, `npc/bard`) to represent logical hierarchy. Since names are per-space, `guard_1` in one space is unrelated to `guard_1` in another.
 
 ### Space Selection
-There is no primary space. Spaces are never auto-created on connect; a user starts with zero spaces and creates one via `Spaces.create_space_with_root_agent/2`. The lobby's `:after_join` loads the user's spaces and the agents across all of them. The frontend's "selected space" (`currentSpaceId`) is client-side state, seeded from the first space in the `init` `spaces` payload for the initial sidebar highlight.
+There is no primary space. Spaces are never auto-created on connect; a user starts with zero spaces and creates one via `Spaces.create_space_with_root_agent/2`. The lobby's `:after_join` loads the user's spaces and the agents across all of them. The sidebar derives the "selected" space **from the current route**: a space row is highlighted (and its agent tree expanded) whenever the URL is that space's `/space/:slug` overview or one of its `/space/:slug/agent/:name` chat pages. On non-space routes (e.g. `/spaces`) no space is highlighted.
 
 ---
 
@@ -313,7 +313,7 @@ A handful of small cleanups surfaced during the closeout review. **F1–F4 all l
 - **[DONE] F1. Restore `parent_name` from the DB on agent restore.** `Persistence.build_attrs_for_start/2` now looks up the parent row's `name` by `parent_id` (same space) and includes it in the returned attrs. Two regression tests in `supervisor_subagent_test.exs` pin the restore path (child carries `parent_name`; root has `parent_name: nil`).
 - **[DONE] F2. Strip stale docstrings.** Updated `broadcasts.ex:6` (`agent:<space_id>:<name>`), `agent.ex` (`fetch_agent/2`), `sub_agent.ex` (`via_tuple(space_id, parent_name)`), `persisted_agent.ex` (reach parent via `fetch_agent/2` by `parent_id`), the `create_spaces` migration (removed the synthetic-default paragraph), and `spaces.ex` `delete_space` (docstring now matches the code: caller is responsible for terminating agents first).
 - **[DONE] F3. Remove the `primary_space_id` fallback.** The `payload["space_id"] || primary_space_id` fallback in `change_model` and `delete_agent` was removed once the JS client always sent `space_id`. The entire primary-space concept was later deleted (see the "No primary space" note above).
-- **[DONE] F4. Unify wire field naming.** Chose **snake_case `space_id`** for all space-id wire fields (`agent:created`, `agent:init`, `chat:status`) and `current_space_id` for the lobby `init` key. Landed in Phase 4. (`current_space_id` was later dropped from the init payload when the primary space was removed; `currentSpaceId` is now client-side state.)
+ - **[DONE] F4. Unify wire field naming.** Chose **snake_case `space_id`** for all space-id wire fields (`agent:created`, `agent:init`, `chat:status`) and `current_space_id` for the lobby `init` key. Landed in Phase 4. (`current_space_id` was later dropped from the init payload when the primary space was removed; `currentSpaceId` is now client-side state. It was later removed entirely — the sidebar derives the selected space from the route.)
 
 ### Phase 2: Blueprints  **[DONE]** (2 items deferred to Phase 3)
 
@@ -376,6 +376,7 @@ A handful of small cleanups surfaced during the closeout review. **F1–F4 all l
    - `spaces` state (list of spaces), `currentSpaceId`, `blueprints`.
    - `setSpaces`/`setCurrentSpaceId`/`setBlueprints`/`addSpace`/`removeSpace`.
    - `addAgent` now carries `space_id`; `_reset`/`logout` clear the new state.
+   - (Later: `currentSpaceId`/`setCurrentSpaceId` were removed entirely. Sidebar selection is now derived from the route, so the store no longer tracks it.)
 2. **[DONE] Sidebar restructuring**:
    - "New Space" button → `/spaces/new`.
    - Spaces section: each space is a `SpaceRow` (collapsible) showing that space's agent tree (reuses `buildAgentTree`).
@@ -394,7 +395,7 @@ A handful of small cleanups surfaced during the closeout review. **F1–F4 all l
    - `space:created` broadcast handled (adds the space to the store).
 5. **[DONE] Main View (`SpaceView`)**: default "space overview" showing the space's agents + status with links to each Agent View. Blueprint-driven `main_view_config` layouts remain a future extension (all seeded blueprints have empty `main_view_config`).
 6. **[DONE] Agent View (`ChatPage`)**: reads `{spaceSlug, name}` from the route, resolves `space_id` from the store, and joins `agent:<space_id>:<name>` (fixing the pre-Phase-4 broken single-name topic). `changeAgentModel`/`deleteAgent` thread `space_id`; parent back-link is `/space/:slug/agent/:parent`.
-7. **[DONE] F4 — wire-field naming unified to snake_case `space_id`**: `agent:created`, `agent:init` (`space_id`), `chat:status` (`space_id`), and the lobby `init` key `current_space_id`. Removed the camelCase `spaceId` variants. (Later, when the primary space was removed, `current_space_id` was dropped from `init`; `currentSpaceId` is now client-side state seeded from the first space.)
+7. **[DONE] F4 — wire-field naming unified to snake_case `space_id`**: `agent:created`, `agent:init` (`space_id`), `chat:status` (`space_id`), and the lobby `init` key `current_space_id`. Removed the camelCase `spaceId` variants. (Later, when the primary space was removed, `current_space_id` was dropped from `init`; `currentSpaceId` was then client-side state seeded from the first space, and was removed entirely once sidebar selection became route-derived.)
 8. **[DONE] Backend**:
    - Lobby `init` payload now includes `blueprints: Blueprints.list_blueprints()` (the blueprint picker's data source).
    - All wire `spaceId` → `space_id`.

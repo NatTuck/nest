@@ -64,6 +64,26 @@ defmodule Nest.ToolsTest do
     end
   end
 
+  describe "sub-agent tools" do
+    test "models-list resolves to a registered tool" do
+      function = Tools.get_function("models-list", "/tmp")
+
+      assert %Function{} = function
+      assert function.name == "models-list"
+      assert function.description =~ "expose_models"
+    end
+
+    test "agents-spawn schema exposes the optional model argument" do
+      function = Tools.get_function("agents-spawn", "/tmp")
+      assert function.name == "agents-spawn"
+
+      props = function.parameters_schema["properties"]
+      assert props["model"]["type"] == "string"
+      assert props["model"]["description"] =~ "provider/model-name"
+      refute "model" in (function.parameters_schema["required"] || [])
+    end
+  end
+
   describe "file-read tool" do
     setup do
       # Project-relative tmp dir under _build/ — gitignored, always writable.

@@ -48,6 +48,7 @@ defmodule Nest.DotConfig.Writer do
     |> maybe_put("default-thinking-effort", effort_to_string(p.default_thinking_effort))
     |> maybe_put("probe-base-url", p.probe_base_url)
     |> maybe_put("auto-probe", p.auto_probe)
+    |> maybe_put("expose-models", p.expose_models)
     |> maybe_put("models", Enum.map(p.models || [], &model_to_map/1))
   end
 

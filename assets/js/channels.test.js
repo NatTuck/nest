@@ -441,8 +441,6 @@ describe("channels", () => {
       await vi.waitFor(() => {
         assert.strictEqual(useStore.getState().spaces.length, 1);
       });
-      // The init handler seeds `currentSpaceId` to the first space.
-      assert.strictEqual(useStore.getState().currentSpaceId, 1);
 
       simulateServerEvent("lobby", "space:archived", { space_id: 1 });
 
@@ -451,8 +449,6 @@ describe("channels", () => {
         assert.strictEqual(useStore.getState().archivedSpaces.length, 1);
       });
       assert.strictEqual(useStore.getState().archivedSpaces[0].id, 1);
-      // Archiving the selected space clears the selection.
-      assert.strictEqual(useStore.getState().currentSpaceId, null);
     });
 
     it("should restore a space into the active list on space:unarchived", async () => {

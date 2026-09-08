@@ -165,6 +165,15 @@ export function ProviderEditor({ provider, onChange, onRemove }) {
           />
           Auto-probe endpoint
         </label>
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={!!provider.expose_models}
+            onChange={(e) => set("expose_models", e.target.checked)}
+            aria-label="Expose models in list-models"
+          />
+          Expose models in list-models
+        </label>
       </div>
 
       <div className="space-y-2">
@@ -183,7 +192,7 @@ export function ProviderEditor({ provider, onChange, onRemove }) {
         </div>
         {(provider.models || []).map((model, idx) => (
           <ProviderModelRow
-            key={model.id}
+            key={model.id ?? idx}
             model={model}
             onChange={(m) => setModel(idx, m)}
             onRemove={() => removeModel(idx)}

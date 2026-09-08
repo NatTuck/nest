@@ -71,6 +71,11 @@ defmodule Nest.DotConfig do
     and re-detected when a cached endpoint starts returning `404`.
     Set `auto-probe = false` on a provider you'd rather configure
     fully by hand. Parsed from the optional `auto-probe` TOML key.
+
+    `expose_models` is the optional flag that makes this provider's
+    models visible in the `models-list` tool output. Defaults to
+    `false`. Set `expose-models = true` on providers whose models
+    should be discoverable by agents via the `models-list` tool.
     """
     defstruct [
       :name,
@@ -84,6 +89,7 @@ defmodule Nest.DotConfig do
       :default_context_limit,
       :default_thinking_effort,
       :probe_base_url,
+      :expose_models,
       auto_probe: true
     ]
   end
@@ -461,18 +467,6 @@ defmodule Nest.DotConfig do
   end
 
   defp parse_provider(name, data) do
-    models =
-      case Map.get(data, "models") do
-        nil ->
-          []
-
-        models_list when is_list(models_list) ->
-          Enum.map(models_list, &parse_model/1)
-
-        _other ->
-          []
-      end
-
     %Provider{
       name: name,
       base_url: Map.get(data, "base-url"),
@@ -480,14 +474,24 @@ defmodule Nest.DotConfig do
       protocol: Map.get(data, "protocol", "openai"),
       auto_models: Map.get(data, "auto-models", false),
       tags: Map.get(data, "tags", []),
-      models: models,
+      models: parse_provider_models(data),
       timeout_seconds: parse_timeout(Map.get(data, "timeout"), name),
       default_context_limit:
         parse_default_context_limit(Map.get(data, "default-context-limit"), name),
       default_thinking_effort: parse_thinking_effort(Map.get(data, "default-thinking-effort")),
       probe_base_url: parse_probe_base_url(Map.get(data, "probe-base-url"), name),
-      auto_probe: parse_auto_probe(Map.get(data, "auto-probe"), name)
+      auto_probe: parse_auto_probe(Map.get(data, "auto-probe"), name),
+      expose_models: parse_expose_models(Map.get(data, "expose-models"), name)
     }
+  end
+
+  # Parses the provider's explicit `models` list, returning `[]`
+  # when the key is absent or malformed.
+  defp parse_provider_models(data) do
+    case Map.get(data, "models") do
+      models_list when is_list(models_list) -> Enum.map(models_list, &parse_model/1)
+      _ -> []
+    end
   end
 
   # Parses the optional `probe-base-url` (a discovery-only URL) for
@@ -515,6 +519,16 @@ defmodule Nest.DotConfig do
 
   defp parse_auto_probe(value, provider_name) do
     raise "Provider #{provider_name}: invalid auto-probe #{inspect(value)}: must be a boolean"
+  end
+
+  # Parses the optional `expose-models` flag (model visibility in models-list).
+  # Defaults to `false` when absent.
+  defp parse_expose_models(nil, _provider_name), do: false
+
+  defp parse_expose_models(value, _provider_name) when is_boolean(value), do: value
+
+  defp parse_expose_models(value, provider_name) do
+    raise "Provider #{provider_name}: invalid expose-models #{inspect(value)}: must be a boolean"
   end
 
   # Parses and validates the optional `timeout` (in seconds) for a provider.

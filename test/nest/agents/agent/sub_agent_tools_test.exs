@@ -96,6 +96,92 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     assert content =~ specialist_name
   end
 
+  test "agents-spawn with a model argument spawns the child on that model", %{vid: vid} do
+    {coordinator_pid, _name} =
+      AgentTestHelpers.start_agent(%{
+        model: %{name: "qwen3.5-plus", provider: "model-studio"},
+        vocation_id: vid
+      })
+
+    specialist_name = "specialist-#{System.unique_integer([:positive])}"
+    specialist_vid = specialist_vocation_id()
+
+    MockClient.set_tool_response(%{
+      text: "spawning",
+      tool_calls: [
+        %{
+          id: "call_spawn_model_1",
+          name: "agents-spawn",
+          arguments: %{
+            "name" => specialist_name,
+            "vocation_id" => specialist_vid,
+            "model" => "pegasus/pegasus-default-only"
+          }
+        }
+      ]
+    })
+
+    MockClient.set_response("coordinator done")
+
+    :ok = Agent.chat(coordinator_pid, "spin up a specialist on pegasus")
+
+    assert_receive {:chat_status, %{status: "idle"}}, 500
+
+    space_id = AgentTestHelpers.current_space_id()
+    {:ok, specialist_pid} = Supervisor.get_agent(space_id, specialist_name)
+    child_state = :sys.get_state(specialist_pid)
+    assert child_state.model == %{name: "pegasus-default-only", provider: "pegasus"}
+
+    on_exit(fn -> _ = Supervisor.stop_agent(space_id, specialist_name) end)
+  end
+
+  test "agents-spawn with an unparseable model argument reports an error", %{vid: vid} do
+    {coordinator_pid, _name} =
+      AgentTestHelpers.start_agent(%{
+        model: %{name: "qwen3.5-plus", provider: "model-studio"},
+        vocation_id: vid
+      })
+
+    MockClient.set_tool_response(%{
+      text: "spawning",
+      tool_calls: [
+        %{
+          id: "call_spawn_bad_model_1",
+          name: "agents-spawn",
+          arguments: %{"name" => "never-spawns", "model" => "not-a-valid-model"}
+        }
+      ]
+    })
+
+    MockClient.set_response("coordinator done")
+
+    :ok = Agent.chat(coordinator_pid, "spin up a specialist on a bad model")
+
+    assert_receive {:chat_status, %{status: "idle"}}, 500
+
+    coordinator_state = :sys.get_state(coordinator_pid)
+    AgentTestHelpers.assert_unique_message_indices(coordinator_state)
+
+    {:tool, tool_msg} =
+      Enum.find(coordinator_state.chat_state.messages, fn
+        {:tool, %{parts: parts}} ->
+          Enum.any?(parts, &match?(%Part.ToolResult{name: "agents-spawn"}, &1))
+
+        _ ->
+          false
+      end)
+
+    assert [
+             %Part.ToolResult{
+               name: "agents-spawn",
+               content: content,
+               is_error: true
+             }
+           ] = tool_msg.parts
+
+    assert content =~ "invalid_model"
+  end
+
   test "agents-list tool returns the space's running agents", %{vid: vid} do
     {coordinator_pid, _name} =
       AgentTestHelpers.start_agent(%{

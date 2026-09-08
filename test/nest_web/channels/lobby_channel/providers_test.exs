@@ -39,7 +39,32 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       pegasus = Enum.find(providers, &(&1["name"] == "pegasus"))
       assert pegasus["base_url"] == "http://pegasus:8080/v1"
       assert pegasus["auto_models"] == true
+      assert pegasus["expose_models"] == false
       assert is_list(pegasus["models"])
+    end
+
+    test "persists expose_models through the writer and re-serializes it" do
+      providers = [
+        %Provider{
+          name: "exposed",
+          base_url: "http://exposed.example/v1",
+          api_key: "k",
+          protocol: "openai",
+          auto_models: false,
+          tags: [],
+          models: [],
+          auto_probe: true,
+          expose_models: true
+        }
+      ]
+
+      assert :ok = Writer.save_providers(providers)
+
+      exposed = Enum.find(Providers.providers(), &(&1["name"] == "exposed"))
+      assert exposed["expose_models"] == true
+
+      local_file = Application.get_env(:nest, :local_config_file)
+      assert File.read!(local_file) =~ "expose-models"
     end
 
     test "reflects a freshly written local.toml" do

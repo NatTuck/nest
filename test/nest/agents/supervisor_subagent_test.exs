@@ -85,6 +85,33 @@ defmodule Nest.Agents.SupervisorSubagentTest do
       space_id = AgentTestHelpers.current_space_id()
       on_exit(fn -> safe_stop(space_id, child_name) end)
     end
+
+    test "clone with a model override gives the child the override model", %{vid: vid} do
+      {:ok, parent_name, parent_pid, _parent_id} = start_root_parent(vid)
+      parent_state = read_parent_state(parent_name, parent_pid)
+      override = %{name: "pegasus-default-only", provider: "pegasus"}
+
+      {:ok, child_name} = Supervisor.start_agent_with_parent(parent_state, "do it", override)
+
+      child_state = :sys.get_state(via_registry(child_name))
+      assert child_state.model == override
+
+      space_id = AgentTestHelpers.current_space_id()
+      on_exit(fn -> safe_stop(space_id, child_name) end)
+    end
+
+    test "clone without a model override inherits the parent's model", %{vid: vid} do
+      {:ok, parent_name, parent_pid, _parent_id} = start_root_parent(vid)
+      parent_state = read_parent_state(parent_name, parent_pid)
+
+      {:ok, child_name} = Supervisor.start_agent_with_parent(parent_state, "do it")
+
+      child_state = :sys.get_state(via_registry(child_name))
+      assert child_state.model == parent_state.model
+
+      space_id = AgentTestHelpers.current_space_id()
+      on_exit(fn -> safe_stop(space_id, child_name) end)
+    end
   end
 
   describe "stop_agent/2" do

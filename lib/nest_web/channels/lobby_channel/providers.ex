@@ -74,6 +74,7 @@ defmodule NestWeb.LobbyChannel.Providers do
       "default_thinking_effort" => effort_to_string(p.default_thinking_effort),
       "probe_base_url" => p.probe_base_url,
       "auto_probe" => p.auto_probe,
+      "expose_models" => p.expose_models,
       "models" => Enum.map(p.models || [], &model_to_map/1)
     }
   end
@@ -100,6 +101,7 @@ defmodule NestWeb.LobbyChannel.Providers do
       default_thinking_effort: parse_effort(m["default_thinking_effort"]),
       probe_base_url: m["probe_base_url"],
       auto_probe: if(is_boolean(m["auto_probe"]), do: m["auto_probe"], else: true),
+      expose_models: if(is_boolean(m["expose_models"]), do: m["expose_models"], else: false),
       models: Enum.map(m["models"] || [], &model_from_map/1)
     }
   end

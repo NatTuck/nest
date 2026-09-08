@@ -111,6 +111,35 @@ defmodule Nest.Agents.SupervisorSpawnTest do
       assert info.depth == state.depth + 1
     end
 
+    test "spawn with a model override gives the child the override model", %{space_id: space_id} do
+      vid = fresh_vocation()
+      name = "model-override-#{System.unique_integer([:positive])}"
+      state = coordinator_state(space_id)
+      override = %{name: "pegasus-default-only", provider: "pegasus"}
+
+      assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name, vid, override)
+
+      on_exit(fn -> _ = Supervisor.stop_agent(space_id, name) end)
+
+      {:ok, pid} = Supervisor.get_agent(space_id, name)
+      child_state = :sys.get_state(pid)
+      assert child_state.model == override
+    end
+
+    test "spawn without a model override inherits the parent's model", %{space_id: space_id} do
+      vid = fresh_vocation()
+      name = "inherit-model-#{System.unique_integer([:positive])}"
+      state = coordinator_state(space_id)
+
+      assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name, vid)
+
+      on_exit(fn -> _ = Supervisor.stop_agent(space_id, name) end)
+
+      {:ok, pid} = Supervisor.get_agent(space_id, name)
+      child_state = :sys.get_state(pid)
+      assert child_state.model == state.model
+    end
+
     test "fresh spawn at max depth has agents-spawn excluded from its tool list",
          %{space_id: space_id} do
       max = Config.configured_max_depth()

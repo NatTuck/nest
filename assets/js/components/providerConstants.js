@@ -38,6 +38,7 @@ export function emptyProvider() {
     default_thinking_effort: null,
     probe_base_url: null,
     auto_probe: true,
+    expose_models: false,
     models: [],
   };
 }
