@@ -346,6 +346,114 @@ defmodule Nest.SandboxTest do
     end
   end
 
+  describe "glob/4" do
+    setup %{tmp: dir} do
+      # Use the canonical (symlink-resolved) root: `glob/4` canonicalizes
+      # its walk base, so the returned paths are canonical. Building the
+      # fixture and the expectations from the same canonical root keeps
+      # the assertions exact on platforms where `/tmp` is a symlink.
+      root = Nest.FSPath.canonical(dir)
+
+      File.mkdir_p!(Path.join(root, "sub"))
+      File.mkdir_p!(Path.join(root, "deep/x"))
+      File.mkdir_p!(Path.join(root, "other"))
+
+      for rel <- [
+            "sub/a.txt",
+            "sub/b.txt",
+            "sub/c.md",
+            "deep/c.txt",
+            "deep/x/c.txt",
+            "other/secret.txt"
+          ] do
+        File.write!(Path.join(root, rel), "x")
+      end
+
+      %{tmp: dir, root: root}
+    end
+
+    test "single star matches within one segment, sorted", %{root: root} do
+      caps = build_caps(read: ["/"])
+      pattern = Path.join(root, "sub/*.txt")
+      expected = [Path.join(root, "sub/a.txt"), Path.join(root, "sub/b.txt")]
+      assert {:ok, ^expected} = Sandbox.glob(pattern, caps, nil)
+    end
+
+    test "star matches names with a dot in them", %{root: root} do
+      caps = build_caps(read: ["/"])
+      pattern = Path.join(root, "sub/*.*")
+
+      expected = [
+        Path.join(root, "sub/a.txt"),
+        Path.join(root, "sub/b.txt"),
+        Path.join(root, "sub/c.md")
+      ]
+
+      assert {:ok, ^expected} = Sandbox.glob(pattern, caps, nil)
+    end
+
+    test "double star crosses directory boundaries (zero-or-more segments)", %{
+      root: root
+    } do
+      caps = build_caps(read: ["/"])
+      pattern = Path.join(root, "**/c.txt")
+      expected = [Path.join(root, "deep/c.txt"), Path.join(root, "deep/x/c.txt")]
+
+      assert {:ok, ^expected} = Sandbox.glob(pattern, caps, nil)
+    end
+
+    test "a literal path with no metacharacters matches exactly", %{root: root} do
+      caps = build_caps(read: ["/"])
+      file = Path.join(root, "sub/a.txt")
+      assert {:ok, [^file]} = Sandbox.glob(file, caps, nil)
+    end
+
+    test "a non-matching pattern returns an empty list", %{root: root} do
+      caps = build_caps(read: ["/"])
+      pattern = Path.join(root, "sub/*.xyz")
+      assert {:ok, []} = Sandbox.glob(pattern, caps, nil)
+    end
+
+    test "a pattern rooted at a nonexistent directory matches nothing", %{root: root} do
+      caps = build_caps(read: ["/"])
+      pattern = Path.join(root, "missing/*.txt")
+      assert {:ok, []} = Sandbox.glob(pattern, caps, nil)
+    end
+
+    test "a relative pattern is resolved against the workspace", %{root: root} do
+      caps = build_caps(read: ["/"])
+      expected = [Path.join(root, "sub/a.txt"), Path.join(root, "sub/b.txt")]
+      assert {:ok, ^expected} = Sandbox.glob("sub/*.txt", caps, root)
+    end
+
+    test "a relative pattern with no workspace is an error" do
+      caps = build_caps(read: ["/"])
+      assert {:error, msg} = Sandbox.glob("sub/*.txt", caps, nil)
+      assert msg =~ "No workspace configured"
+    end
+
+    test "matches are filtered to files readable under the caps", %{root: root} do
+      # Read only the `sub` subtree: files under `deep/` are matched by
+      # the walk but dropped by the read-authorization filter.
+      caps = build_caps(read: [Path.join(root, "sub")])
+      expected = [Path.join(root, "sub/a.txt"), Path.join(root, "sub/b.txt")]
+      assert {:ok, ^expected} = Sandbox.glob("**/*.txt", caps, root)
+    end
+
+    test "an over-broad expansion is rejected with :glob_too_broad", %{root: root} do
+      caps = build_caps(read: ["/"])
+      broad = Path.join(root, "broad")
+      File.mkdir_p!(broad)
+
+      for i <- 0..9 do
+        File.write!(Path.join(broad, "f#{i}.txt"), "x")
+      end
+
+      pattern = Path.join(broad, "*.txt")
+      assert {:error, :glob_too_broad} = Sandbox.glob(pattern, caps, nil, limit: 5)
+    end
+  end
+
   # Helpers
 
   defp build_caps(opts \\ []) do

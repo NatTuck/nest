@@ -58,6 +58,7 @@ defmodule Nest.Tools do
              "agents-query",
              "agents-list",
              "agents-archive",
+             "agents-batch",
              "models-list"
            ] ->
         sub_agent_tool_function(name)
@@ -74,6 +75,7 @@ defmodule Nest.Tools do
   defp sub_agent_tool_function("agents-query"), do: query_agent_function()
   defp sub_agent_tool_function("agents-list"), do: list_agents_function()
   defp sub_agent_tool_function("agents-archive"), do: archive_agent_function()
+  defp sub_agent_tool_function("agents-batch"), do: batch_agent_function()
 
   # Dispatch the models-list tool.
   defp sub_agent_tool_function("models-list"), do: models_list_function()
@@ -436,6 +438,118 @@ defmodule Nest.Tools do
       },
       function: fn _args, _context ->
         {:ok, "Models list request received."}
+      end
+    }
+  end
+
+  # The `agents-batch` tool: the fork-join sub-agent API. The model
+  # makes ONE call that fans a single templated instruction out over a
+  # set of items to concurrent sub-agents, and gets back ONE aggregated
+  # result (a JSON array of each child's final response, in item order).
+  # It never enumerates per-item prompts or tracks child names — that
+  # bookkeeping is the runtime's job.
+  #
+  # Provide `items` (a non-empty list of item strings) OR `glob` (a
+  # pattern expanded to readable files, preferred for large sets).
+  # `template` (optional) is rendered per item with `{item}` /
+  # `{index}`; when omitted the item string itself is the instruction.
+  # `archive` defaults to true (children are cleaned up after
+  # responding). `max_concurrency` is clamped to a configured ceiling.
+  #
+  # The `function` here is a stub. Real execution lives in
+  # `Nest.Agents.Agent.BatchLoop.run/2`, dispatched from
+  # `ToolLoop.run_agents_batch/2`. There is no `required` field — the
+  # items/XOR/glob shape is validated at runtime so a descriptive error
+  # reaches the model.
+  defp batch_agent_function do
+    %Tool{
+      name: "agents-batch",
+      description:
+        "Fan ONE instruction out over a set of items to concurrent sub-agents " <>
+          "and get back ONE aggregated result: a JSON array of each child's " <>
+          "final response string, in item order. Use this instead of many " <>
+          "separate agents-spawn calls when every item gets the same task. " <>
+          "Provide `items` (a non-empty list) OR `glob` (a pattern expanded " <>
+          "to readable files — preferred for large sets, so you never list " <>
+          "files by hand). If `template` is given it is rendered per item " <>
+          "with {item} and {index}; if omitted, each item is the " <>
+          "instruction. `archive` defaults to true. Sub-agents can be " <>
+          "spawned down to a maximum depth of " <>
+          "#{Config.configured_max_depth()}.",
+      parameters_schema: %{
+        "type" => "object",
+        "properties" => %{
+          "template" => %{
+            "type" => "string",
+            "description" =>
+              "Optional instruction template, rendered once per item. Must " <>
+                "contain {item} or {index} when present. Omit to use each " <>
+                "item as its own instruction."
+          },
+          "items" => %{
+            "type" => "array",
+            "items" => %{"type" => "string"},
+            "description" =>
+              "The items to fan out over (each becomes one sub-agent). " <>
+                "Provide this OR `glob`, not both."
+          },
+          "glob" => %{
+            "type" => "string",
+            "description" =>
+              "A glob pattern (e.g. \"tests/**/*_test.exs\") expanded to " <>
+                "readable regular files, one sub-agent per file. Provide " <>
+                "this OR `items`, not both."
+          },
+          "vocation_id" => %{
+            "type" => "integer",
+            "description" =>
+              "Vocation id for every child. Defaults to your own vocation " <>
+                "(or the space's sole allowed vocation)."
+          },
+          "model" => %{
+            "type" => "string",
+            "description" =>
+              "Model for every child as a \"provider/model-name\" string " <>
+                "(see `models-list`). Inherits your own model when omitted."
+          },
+          "timeout" => %{
+            "type" => "integer",
+            "description" =>
+              "Per-item milliseconds before a child is abandoned and its " <>
+                "result marked as an error. Defaults to 300000 (5 minutes)."
+          },
+          "archive" => %{
+            "type" => "boolean",
+            "description" =>
+              "When true (the default), stop and archive each child after " <>
+                "it responds."
+          },
+          "name_prefix" => %{
+            "type" => "string",
+            "description" =>
+              "Optional prefix for the auto-generated child names (for " <>
+                "observability). Children are otherwise auto-named."
+          },
+          "max_concurrency" => %{
+            "type" => "integer",
+            "description" =>
+              "Maximum children to run at once for this call. Clamped to a " <>
+                "configured ceiling."
+          },
+          "on_error" => %{
+            "type" => "string",
+            "enum" => ["collect", "fail_fast"],
+            "description" =>
+              "\"collect\" (default) keeps a failed/timed-out item as an " <>
+                "error marker in its slot and still returns the rest; " <>
+                "\"fail_fast\" stops at the first failure."
+          },
+          "max_result_tokens" => max_result_tokens_schema()
+        },
+        "required" => []
+      },
+      function: fn _args, _context ->
+        {:ok, "Batch agents request received."}
       end
     }
   end

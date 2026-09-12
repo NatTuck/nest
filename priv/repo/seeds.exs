@@ -21,12 +21,12 @@ alias Nest.Blueprints
 alias Nest.Vocations
 
 # Any vocation that gets any `agents-*` tool gets all of them
-# (`agents-spawn`, `agents-query`, `agents-list`,
-# `agents-archive`, plus the model-discovery `models-list`).
-# `agents-spawn` is additionally stripped for max-depth agents
-# at spawn/compaction time (the others remain).
+# (`agents-spawn`, `agents-query`, `agents-list`, `agents-archive`,
+# `agents-batch`, plus the model-discovery `models-list`).
+# `agents-spawn` and `agents-batch` are additionally stripped for
+# max-depth agents at spawn/compaction time (the others remain).
 agents_tools =
-  ["agents-spawn", "agents-query", "agents-list", "agents-archive", "models-list"]
+  ["agents-spawn", "agents-query", "agents-list", "agents-archive", "agents-batch", "models-list"]
 
 # Default - minimal vocation for agents without a specific role.
 # Used as the fallback for any test or runtime path that needs a
@@ -89,6 +89,7 @@ agents_tools =
       "agents-query",
       "agents-list",
       "agents-archive",
+      "agents-batch",
       "models-list"
     ],
     modes: %{

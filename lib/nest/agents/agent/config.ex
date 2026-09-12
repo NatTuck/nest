@@ -241,4 +241,51 @@ defmodule Nest.Agents.Agent.Config do
         DotConfig.default_max_depth()
     end
   end
+
+  # Hard ceiling on how many children a single `agents-batch` call may
+  # run at once. The configured `max-concurrency` (and any per-call
+  # `max_concurrency` override) is clamped to this so a misconfig or a
+  # hostile LLM argument can't fork unbounded children.
+  @max_batch_concurrency_ceiling 16
+
+  @doc """
+  Resolve the configured default concurrency for an `agents-batch`
+  call. Reads the optional top-level `max-concurrency` value from
+  DotConfig; falls back to `DotConfig.default_max_concurrency/0`
+  (4) when unset. The result is clamped to
+  `@max_batch_concurrency_ceiling` (16) — the configured default is a
+  *default*, and the ceiling is the invariant a per-call override is
+  also clamped to.
+  """
+  @spec configured_max_batch_concurrency() :: pos_integer()
+  def configured_max_batch_concurrency, do: clamp_batch_concurrency(nil)
+
+  # Clamp a candidate concurrency to `[1, ceiling]`. `nil` (or a
+  # non-positive / non-integer value) falls back to the configured
+  # default, so callers can pass the raw LLM argument and get a
+  # safe integer back.
+  @spec clamp_batch_concurrency(non_neg_integer() | nil) :: pos_integer()
+  def clamp_batch_concurrency(candidate) do
+    resolved =
+      if is_integer(candidate) and candidate > 0 do
+        candidate
+      else
+        configured_default_concurrency()
+      end
+
+    min(resolved, @max_batch_concurrency_ceiling)
+  end
+
+  # The configured default concurrency: the optional top-level
+  # `max-concurrency` value from DotConfig, falling back to
+  # `DotConfig.default_max_concurrency/0` (4) when unset or unreadable.
+  defp configured_default_concurrency do
+    case DotConfig.load() do
+      {:ok, config} ->
+        DotConfig.max_concurrency(config) || DotConfig.default_max_concurrency()
+
+      _ ->
+        DotConfig.default_max_concurrency()
+    end
+  end
 end

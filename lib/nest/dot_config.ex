@@ -19,6 +19,11 @@ defmodule Nest.DotConfig do
   # Override with the top-level `max-depth` key in config.toml.
   @default_max_depth 3
 
+  # Default maximum number of sub-agents `agents-batch` call runs
+  # concurrently. Override with the top-level `max-concurrency` key in
+  # config.toml.
+  @default_max_concurrency 4
+
   # Supported thinking levels (reasoning effort) a model can be
   # configured with. `:off` disables thinking; the rest are ascending
   # effort levels. `:xhigh` is Anthropic-only (OpenAI-compatible
@@ -197,6 +202,7 @@ defmodule Nest.DotConfig do
         models: models,
         max_tool_iterations: local.max_tool_iterations || base.max_tool_iterations,
         max_depth: local.max_depth || base.max_depth,
+        max_concurrency: local.max_concurrency || base.max_concurrency,
         default_thinking_effort: local.default_thinking_effort || base.default_thinking_effort
     }
   end
@@ -338,6 +344,15 @@ defmodule Nest.DotConfig do
   """
   def default_max_depth, do: @default_max_depth
 
+  # Configured `max-concurrency` (nil → caller falls back to
+  # `default_max_concurrency/0`).
+  def max_concurrency(config), do: Map.get(config, :max_concurrency)
+
+  @doc """
+  Returns the hardcoded fallback for the `max-concurrency` setting.
+  """
+  def default_max_concurrency, do: @default_max_concurrency
+
   # Configured top-level `default-thinking-effort` (nil → caller falls
   # back to `default_thinking_effort/0`).
   def default_thinking_effort(config), do: Map.get(config, :default_thinking_effort)
@@ -439,6 +454,7 @@ defmodule Nest.DotConfig do
       models: models,
       max_tool_iterations: parse_max_tool_iterations(Map.get(raw_config, "max-tool-iterations")),
       max_depth: parse_max_depth(Map.get(raw_config, "max-depth")),
+      max_concurrency: parse_max_concurrency(Map.get(raw_config, "max-concurrency")),
       default_thinking_effort:
         parse_thinking_effort(Map.get(raw_config, "default-thinking-effort"))
     }
@@ -464,6 +480,16 @@ defmodule Nest.DotConfig do
 
   defp parse_max_depth(other) do
     raise "Invalid max-depth #{inspect(other)}: must be a positive integer"
+  end
+
+  # Parses and validates the top-level `max-concurrency` setting.
+  # Returns `nil` when absent. Raises on invalid values.
+  defp parse_max_concurrency(nil), do: nil
+
+  defp parse_max_concurrency(n) when is_integer(n) and n > 0, do: n
+
+  defp parse_max_concurrency(other) do
+    raise "Invalid max-concurrency #{inspect(other)}: must be a positive integer"
   end
 
   defp parse_provider(name, data) do

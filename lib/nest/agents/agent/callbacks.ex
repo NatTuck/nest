@@ -107,6 +107,14 @@ defmodule Nest.Agents.Agent.Callbacks do
     SubAgent.handle_archive_request(state, task_pid, name)
   end
 
+  # Sub-agent: a tool worker running `agents-batch` hit a per-item
+  # deadline. Stop the named child (so it stops consuming resources) and
+  # drop it from the parent's bookkeeping. The worker blocks on the
+  # reply, so this must always reply.
+  def handle_call({:abandon_child, task_pid, name}, _from, state) do
+    SubAgent.handle_abandon_child(state, task_pid, name)
+  end
+
   # User clicked Stop. Synchronously mark the in-flight
   # ChatTurn as cancelled and tell it to do the actual stop
   # work (kill worker, ack the channel, send `:chat_stopped`

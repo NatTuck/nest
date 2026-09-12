@@ -25,6 +25,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
   BatchSizer doesn't try to project a per-tool size for it.
   """
 
+  alias Nest.Agents.Agent.BatchLoop
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.Agents.Registry
   alias Nest.DotConfig
@@ -123,6 +124,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
               "agents-query",
               "agents-list",
               "agents-archive",
+              "agents-batch",
               "models-list"
             ],
        do: true
@@ -133,6 +135,9 @@ defmodule Nest.Agents.Agent.ToolLoop do
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-query"} = tc), do: run_query_agent(ctx, tc)
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-list"} = tc), do: run_list_agents(ctx, tc)
   defp run_sub_agent_tool(_ctx, %ToolCall{name: "models-list"} = tc), do: run_models_list(tc)
+
+  defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-batch"} = tc),
+    do: run_agents_batch(ctx, tc)
 
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-archive"} = tc),
     do: run_archive_agent(ctx, tc)
@@ -380,6 +385,20 @@ defmodule Nest.Agents.Agent.ToolLoop do
           "Could not archive #{target}: #{inspect(reason)}",
           true
         )
+    end
+  end
+
+  # `agents-batch`: fan ONE templated instruction out over a set of
+  # items to concurrent sub-agents and get back a single JSON aggregate
+  # (each child's final response, in item order). Runs synchronously in
+  # this (separate-process) tool worker; the coordinator stays free to
+  # service the children's completions while we block. Whole-call
+  # failures surface as `is_error: true`; per-item failures/timeout are
+  # collected as marker slots inside the aggregate.
+  defp run_agents_batch(ctx, %ToolCall{} = tc) do
+    case BatchLoop.run(ctx, tc) do
+      {:ok, content} -> build_tool_result(tc, "agents-batch", content)
+      {:error, reason} -> build_tool_result(tc, "agents-batch", reason, true)
     end
   end
 

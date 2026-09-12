@@ -57,6 +57,11 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
 
   @max_consecutive_compactions 3
 
+  # Tools that let an agent spawn further sub-agents. Dropped
+  # from the tool list of an agent at max depth when its tools
+  # are re-rendered at compaction.
+  @spawn_tools ~w(agents-spawn agents-batch)
+
   # Dispatch entry for `Handlers.handle/2`.
   @spec handle(term(), Agent.t()) :: GenServer.reply()
   def handle({:compaction_done, summary_text, carried_entry}, state) do
@@ -161,10 +166,11 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   end
 
   # Compaction invalidates the prefix cache, so it's safe to
-  # drop `agents-spawn` for an agent at max depth.
+  # drop `agents-spawn` and `agents-batch` for an agent at
+  # max depth.
   defp exclude_spawn_at_max_depth(tool_names, depth) do
     if depth >= Config.configured_max_depth(),
-      do: Enum.reject(tool_names, &(&1 == "agents-spawn")),
+      do: Enum.reject(tool_names, &(&1 in @spawn_tools)),
       else: tool_names
   end
 

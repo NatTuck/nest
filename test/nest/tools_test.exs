@@ -82,6 +82,23 @@ defmodule Nest.ToolsTest do
       assert props["model"]["description"] =~ "provider/model-name"
       refute "model" in (function.parameters_schema["required"] || [])
     end
+
+    test "agents-batch schema exposes items/glob/template with no required args" do
+      function = Tools.get_function("agents-batch", "/tmp")
+      assert function.name == "agents-batch"
+
+      props = function.parameters_schema["properties"]
+      assert props["items"]["type"] == "array"
+      assert props["glob"]["type"] == "string"
+      assert props["template"]["type"] == "string"
+      assert props["on_error"]["enum"] == ["collect", "fail_fast"]
+
+      # The items/XOR/glob shape is validated at runtime, so nothing is
+      # required at the schema level.
+      assert (function.parameters_schema["required"] || []) == []
+
+      assert function.description =~ "aggregated result"
+    end
   end
 
   describe "file-read tool" do

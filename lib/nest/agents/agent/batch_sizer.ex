@@ -67,6 +67,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
   """
 
   alias Nest.Agents.Agent.BatchSizer.FilePolicy
+  alias Nest.Agents.Agent.BatchSizer.Overflow
   alias Nest.Agents.Agent.BatchSizer.ProjectedSize
   alias Nest.Agents.Agent.CapCalculator
   alias Nest.LLM.Tools, as: LLMTools
@@ -510,24 +511,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
   # mkdir/rm lifecycle), not user-data access, so it writes on the host
   # directly rather than routing through the sandbox gatekeeper.
   defp write_to_tmp(full_content, ctx) do
-    case Map.get(ctx, :tmp_path) || Map.get(ctx, "tmp_path") do
-      nil ->
-        nil
-
-      dir ->
-        path = Path.join(dir, "exec-#{random_token()}.txt")
-
-        try do
-          File.write!(path, full_content)
-          path
-        rescue
-          _ -> nil
-        end
-    end
-  end
-
-  defp random_token do
-    :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)
+    Overflow.write(full_content, ctx, "exec", "txt")
   end
 
   defp refuse_results(tool_calls, reason) do

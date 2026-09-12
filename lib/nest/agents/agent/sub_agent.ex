@@ -225,6 +225,30 @@ defmodule Nest.Agents.Agent.SubAgent do
     end
   end
 
+  # A tool worker (running an `agents-batch`) hit a per-item deadline and
+  # asked us to abandon one of its children. Stop the child's process
+  # (so it stops burning resources) and drop it from our bookkeeping so a
+  # late-arriving `:child_completed` becomes a defensive no-op in
+  # `handle_child_completed/4`. We do NOT archive here — the child never
+  # produced a response, so there is nothing to keep; it is simply
+  # stopped. Replies `:ok` so the worker's blocking `GenServer.call/3`
+  # unblocks.
+  @spec handle_abandon_child(Agent.t(), pid(), String.t()) :: {:reply, :ok, Agent.t()}
+  def handle_abandon_child(state, _task_pid, name) do
+    _ = Supervisor.stop_agent(state.space_id, name)
+
+    new_state = %{
+      state
+      | chat_state: %{
+          state.chat_state
+          | pending_children: Map.delete(state.chat_state.pending_children, name),
+            archiving: MapSet.delete(state.chat_state.archiving, name)
+        }
+    }
+
+    {:reply, :ok, new_state}
+  end
+
   # Test-only: if the `:nest` app env has
   # `:force_subagent_mock` set (by an async test that
   # wants the spawned child's first LLM call to use
@@ -306,7 +330,12 @@ defmodule Nest.Agents.Agent.SubAgent do
             llm_metrics: new_llm_metrics
         }
 
-        maybe_archive_completed_child(new_state, child_name)
+        # Archive against the ORIGINAL state, not `new_state`: `new_state`
+        # already dropped `child_name` from `archiving`, so checking it
+        # there would always be false and the child would never be
+        # archived. The pre-completion set still carries `child_name`
+        # iff it was spawned with `archive: true`.
+        maybe_archive_completed_child(state, child_name)
 
         Broadcasts.status(new_state)
         {:noreply, new_state}
@@ -314,8 +343,7 @@ defmodule Nest.Agents.Agent.SubAgent do
   end
 
   # If the child was spawned with `archive: true`, stop + mark
-  # it archived now that its response has been forwarded. Runs
-  # after the status broadcast so the UI sees the final state.
+  # it archived now that its response has been forwarded.
   defp maybe_archive_completed_child(state, child_name) do
     if MapSet.member?(state.chat_state.archiving, child_name) do
       Nest.Agents.Supervisor.archive_agent(state.space_id, child_name)

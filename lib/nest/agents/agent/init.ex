@@ -14,6 +14,10 @@ defmodule Nest.Agents.Agent.Init do
 
   @default_limit 128_000
 
+  # Tools that let an agent spawn further sub-agents. Dropped
+  # from the tool list of non-clone agents spawned at max depth.
+  @spawn_tools ~w(agents-spawn agents-batch)
+
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Persistence, as: AgentPersistence
@@ -93,11 +97,12 @@ defmodule Nest.Agents.Agent.Init do
   end
 
   # Non-clone agents spawned at max depth must not be able to
-  # spawn children, so `agents-spawn` is dropped from their
-  # tool list. Clones never set `:exclude_spawn` — they must
-  # keep the exact tool list of their parent (hard rule).
+  # spawn children, so `agents-spawn` and `agents-batch` are
+  # dropped from their tool list. Clones never set
+  # `:exclude_spawn` — they must keep the exact tool list of
+  # their parent (hard rule).
   defp maybe_exclude_spawn(tool_names, %{exclude_spawn: true}),
-    do: Enum.reject(tool_names, &(&1 == "agents-spawn"))
+    do: Enum.reject(tool_names, &(&1 in @spawn_tools))
 
   defp maybe_exclude_spawn(tool_names, _attrs), do: tool_names
 
