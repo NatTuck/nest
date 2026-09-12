@@ -13,10 +13,12 @@ defmodule Nest.Agents.Agent.ClientAPITest do
   use Nest.DataCase, async: true
 
   import Mimic
+  import Nest.WireFormatAssertions
 
   alias Nest.Agents.Agent.ClientAPI
   alias Nest.Agents.AgentTestHelpers
   alias Nest.LLM.MockClient
+  alias Nest.Messages.Streaming
 
   setup :verify_on_exit!
 
@@ -51,6 +53,32 @@ defmodule Nest.Agents.Agent.ClientAPITest do
       assert info.name == name
       assert model_name(info.model) == "qwen3.5-plus"
       assert info.status == :idle
+    end
+
+    test "a mid-tool-call partial is JSON-serializable on the wire" do
+      # Regression for the lobby channel crash: `get_public_info/1`
+      # returned a `partial` whose `currentType` was the raw
+      # `{:tool_use, id}` tuple, so the channel's `init` push blew up
+      # in `Jason.encode!`. Channel tests can't catch this because
+      # `Phoenix.ChannelTest` uses `NoopSerializer` (no JSON encoding),
+      # so assert against the real serializer here.
+      {pid, _name} =
+        AgentTestHelpers.start_agent(%{model: %{name: "qwen3.5-plus", provider: "model-studio"}})
+
+      acc =
+        Streaming.new(1)
+        |> Streaming.append_text("checking")
+        |> Streaming.start_tool_call("call_abc", "shell-cmd")
+        |> Streaming.append_tool_call_args("call_abc", ~s({"command":))
+
+      :sys.replace_state(pid, fn state ->
+        %{state | live: %{state.live | streaming_acc: acc}}
+      end)
+
+      info = ClientAPI.get_public_info(pid)
+
+      assert info.partial["currentType"] == ["tool_use", "call_abc"]
+      assert_wire_encodable!(info.partial, "agent partial")
     end
   end
 

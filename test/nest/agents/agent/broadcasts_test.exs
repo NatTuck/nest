@@ -20,6 +20,7 @@ defmodule Nest.Agents.Agent.BroadcastsTest do
   use ExUnit.Case, async: true
 
   import ExUnit.CaptureLog
+  import Nest.WireFormatAssertions
 
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.PubSub
@@ -158,8 +159,10 @@ defmodule Nest.Agents.Agent.BroadcastsTest do
                         content: "",
                         chars_start: 0,
                         chars_end: 0
-                      }},
+                      } = payload},
                      500
+
+      assert_wire_encodable!(payload, "chat:delta tool_use_start")
     end
 
     test "delta_tool_use_delta carries the resolved id and the argument fragment", %{
@@ -177,8 +180,10 @@ defmodule Nest.Agents.Agent.BroadcastsTest do
                         content: ~s({"instru),
                         chars_start: 0,
                         chars_end: 0
-                      }},
+                      } = payload},
                      500
+
+      assert_wire_encodable!(payload, "chat:delta tool_use_delta")
     end
   end
 end

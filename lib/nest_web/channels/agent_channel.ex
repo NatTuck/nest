@@ -283,7 +283,7 @@ defmodule NestWeb.AgentChannel do
     name = socket.assigns.name
     mode = Map.get(payload, "mode")
 
-    case Agents.get_agent(space_id, name) do
+    case Agents.get_info(space_id, name) do
       {:ok, %{status: status}}
       when status in [
              :compacting,
@@ -385,13 +385,13 @@ defmodule NestWeb.AgentChannel do
     space_id = socket.assigns.space_id
     name = socket.assigns.name
 
-    case Agents.get_agent(space_id, name) do
+    case Agents.get_info(space_id, name) do
       {:ok, agent} ->
         reply = %{
           "name" => agent.name,
           "space_id" => agent.space_id,
           "model" => agent.model,
-          "messageCount" => length(agent.messages),
+          "messageCount" => agent.message_count,
           "status" => to_string(agent.status),
           "partial" => build_partial_payload(agent.partial),
           "contextLimit" => agent.context_limit,
@@ -415,7 +415,7 @@ defmodule NestWeb.AgentChannel do
     space_id = socket.assigns.space_id
     name = socket.assigns.name
 
-    case Agents.get_agent(space_id, name) do
+    case Agents.get_agent_sync(space_id, name) do
       {:ok, agent} ->
         new_messages =
           agent.messages
@@ -428,7 +428,7 @@ defmodule NestWeb.AgentChannel do
           "messages" => new_messages,
           "partial" => partial,
           "status" => to_string(agent.status),
-          "messageCount" => length(agent.messages)
+          "messageCount" => agent.message_count
         }
 
         {:reply, {:ok, reply}, socket}
@@ -450,7 +450,14 @@ defmodule NestWeb.AgentChannel do
 
   # Build the partial-message payload if the partial is past
   # the client's last seen index; otherwise return nil.
-  defp partial_payload(%{index: idx} = partial, last_index) when idx > last_index do
+  #
+  # `agent.partial` is the already-serialized `Streaming.to_json/1`
+  # map, so its keys are strings (`%{"index" => idx}`), not atoms.
+  # Matching on `%{index: idx}` here silently failed, so `chat:sync`
+  # always replied `partial: nil`; the client then cleared its
+  # streaming state on every sync, which turned a delta gap into an
+  # endless sync loop (each reply re-created the gap).
+  defp partial_payload(%{"index" => idx} = partial, last_index) when idx > last_index do
     build_partial_payload(partial)
   end
 

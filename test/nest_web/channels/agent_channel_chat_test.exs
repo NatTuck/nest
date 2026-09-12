@@ -13,6 +13,7 @@ defmodule NestWeb.AgentChannelChatTest do
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Supervisor
   alias Nest.LLM.MockClient
+  alias Nest.Messages.Streaming
 
   setup :verify_on_exit!
 
@@ -59,7 +60,7 @@ defmodule NestWeb.AgentChannelChatTest do
       assert_receive {:chat_status, %{status: "idle"}}, 500
     end
 
-    test "returns partial message when streaming", %{socket: socket} do
+    test "returns a nil partial when the agent is not streaming", %{socket: socket} do
       # Sync before any chat - partial should be nil
       ref_sync1 = push(socket, "chat:sync", %{"lastIndex" => -1})
 
@@ -90,6 +91,37 @@ defmodule NestWeb.AgentChannelChatTest do
       assert partial == nil
 
       assert_receive {:chat_status, %{status: "idle"}}, 500
+    end
+
+    test "returns the live partial when streaming", %{
+      socket: socket,
+      agent_id: id,
+      space_id: space_id
+    } do
+      # Regression: `partial_payload/2` matched the accumulator's atom
+      # `:index`, but `agent.partial` is the already-serialized
+      # `Streaming.to_json/1` map (string keys), so `chat:sync` always
+      # replied `partial: nil`. The client then cleared its streaming
+      # state on every sync, turning a delta gap into an endless sync
+      # loop. Seed a live accumulator and assert it round-trips.
+      {:ok, agent_pid} = Supervisor.get_agent(space_id, id)
+
+      acc =
+        Streaming.new(5)
+        |> Streaming.append_text("streaming ")
+
+      :sys.replace_state(agent_pid, fn state ->
+        %{state | live: %{state.live | streaming_acc: acc}}
+      end)
+
+      ref = push(socket, "chat:sync", %{"lastIndex" => 0})
+
+      assert_reply ref, :ok, %{"partial" => partial}
+
+      assert partial["index"] == 5
+      assert partial["role"] == "assistant"
+      assert partial["content"] == "streaming "
+      assert partial["charsEnd"] == 10
     end
   end
 

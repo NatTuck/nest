@@ -156,7 +156,12 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
         # which BatchSizer strips → empty result); then the
         # next iteration falls through to the LLM and the
         # chat turn finalizes with a chat:status broadcast.
-        assert_receive {:chat_status, _payload}, 500
+        #
+        # The first status after the swap is the resumed
+        # `:executing_tools` (a `{:tool_call, ...}` continuation
+        # executes the carried tool calls first). Broadcasting it
+        # is what pulls the UI out of the stale `:compacting`.
+        assert_receive {:chat_status, %{status: "executing_tools"}}, 500
       end)
     end
   end
@@ -195,8 +200,8 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
         # empty BatchSizer run after the context-compact
         # strip), then falls through to the LLM and
         # finalizes — broadcasting chat:status along the
-        # way.
-        assert_receive {:chat_status, _payload}, 500
+        # way. The first is the resumed `:executing_tools`.
+        assert_receive {:chat_status, %{status: "executing_tools"}}, 500
       end)
 
       state_after = :sys.get_state(pid)

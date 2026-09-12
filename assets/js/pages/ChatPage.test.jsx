@@ -1491,8 +1491,12 @@ describe("ChatPage compaction-frozen state", () => {
 
     // Input is visible and usable.
     expect(screen.queryByRole("textbox", { name: /message/i })).not.toBeNull();
-    // No compacting spinner banner.
-    expect(screen.queryByText("Compacting conversation...")).toBeNull();
+    // The header reports the in-progress compaction (not "Ready").
+    expect(screen.getByText("Compacting conversation…")).toBeInTheDocument();
+    // No compaction-failure banner / Retry button while compacting.
+    expect(
+      screen.queryByRole("button", { name: /retry compaction/i }),
+    ).toBeNull();
   });
 
   it("hides the chat input and shows a Retry-compaction button when compaction_failed", () => {

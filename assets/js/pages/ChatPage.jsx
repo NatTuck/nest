@@ -138,6 +138,7 @@ export function ChatPage() {
   // bundle above; the derived booleans are just string equality.
   const streaming = agentState === "streaming";
   const executingTools = agentState === "executing_tools";
+  const compacting = agentState === "compacting";
   // `isAgentBusy` is true whenever the agent is doing work that
   // can be interrupted: streaming an LLM response, or executing
   // a tool call between LLM turns. The "busy" state replaces
@@ -225,6 +226,7 @@ export function ChatPage() {
     streaming,
     executingTools,
     waitingForResponse,
+    compacting,
   );
 
   // The hook only uses the `trigger` value as a dependency

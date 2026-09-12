@@ -1,6 +1,8 @@
 defmodule Nest.Messages.PartTest do
   use ExUnit.Case, async: true
 
+  import Nest.WireFormatAssertions
+
   alias Nest.Messages.Part
   alias Nest.Messages.Part.{Refusal, Text, Thinking, ToolResult, ToolUse}
 
@@ -93,6 +95,29 @@ defmodule Nest.Messages.PartTest do
       assert Map.has_key?(json, "toolCallId")
       assert Map.has_key?(json, "isError")
       refute Map.has_key?(json, "tool_call_id")
+    end
+  end
+
+  describe "wire format" do
+    test "every part variant serializes to JSON-encodable data" do
+      parts = [
+        %Text{text: "hello"},
+        %Thinking{thinking: "hmm", signature: "sig-abc"},
+        %Thinking{thinking: "hmm", signature: nil},
+        %ToolUse{id: "call_1", name: "file-read", arguments: %{"path" => "foo.ex"}},
+        %ToolResult{
+          tool_call_id: "call_1",
+          name: "file-read",
+          content: "ok",
+          arguments: %{"path" => "foo.ex"},
+          is_error: false
+        },
+        %Refusal{refusal: "no"}
+      ]
+
+      for part <- parts do
+        assert_wire_encodable!(Part.to_json(part), "part #{Part.kind(part)}")
+      end
     end
   end
 end
