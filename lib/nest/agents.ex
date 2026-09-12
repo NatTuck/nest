@@ -144,6 +144,30 @@ defmodule Nest.Agents do
     :exit, _reason -> {:error, :not_found}
   end
 
+  @doc """
+  Lightweight agent lookup for channel sync replies.
+
+  Unlike `get_agent/2`, this does NOT resolve the vocation from
+  the database and does NOT fetch history — `chat:sync` uses
+  neither. A client that falls into a sync loop would otherwise
+  turn every frame into a `vocations` round-trip.
+  """
+  @spec get_agent_sync(integer(), String.t()) :: {:ok, map()} | {:error, :not_found}
+  def get_agent_sync(space_id, name) do
+    case Supervisor.get_agent(space_id, name) do
+      {:ok, pid} ->
+        try do
+          info = Agent.get_public_info(pid)
+          {:ok, Map.put(info, :messages, Agent.get_messages(pid))}
+        catch
+          :exit, _reason -> {:error, :not_found}
+        end
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
   defp get_vocation_info(nil), do: nil
 
   defp get_vocation_info(vocation_id) do

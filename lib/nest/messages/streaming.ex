@@ -382,9 +382,17 @@ defmodule Nest.Messages.Streaming do
             "arguments" => partial.arguments_buffer |> Enum.reverse() |> IO.iodata_to_binary()
           }
         end),
-      "currentType" => acc.current_block
+      "currentType" => encode_current_block(acc.current_block)
     }
   end
+
+  # `current_block` can be `{:tool_use, id}`. Jason has no tuple
+  # encoder, so emit the pair as a two-element list — the shape the
+  # JS `normalizePartial` already expects (`["tool_use", id]`).
+  # Atoms (`:text`, `:thinking`) and `nil` pass through unchanged;
+  # Jason encodes atoms as strings.
+  defp encode_current_block({:tool_use, id}), do: ["tool_use", id]
+  defp encode_current_block(other), do: other
 
   @doc """
   Nil-safe wrapper around `to_json/1` for embedding an accumulator

@@ -448,19 +448,36 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   end
 
   defp spawn_next_chat_turn(state, carried_entry) do
-    cond do
-      # A workspace change deferred its notice via compaction: append the
-      # pair and stay idle (no LLM request).
-      state.live.pending_notice != nil ->
-        ChatPipeline.resume_pending_notice(state)
+    state =
+      cond do
+        # A workspace change deferred its notice via compaction: append the
+        # pair and stay idle (no LLM request).
+        state.live.pending_notice != nil ->
+          ChatPipeline.resume_pending_notice(state)
 
-      carried_entry == nil ->
-        ChatPipeline.resume_with_pending(state)
+        carried_entry == nil ->
+          ChatPipeline.resume_with_pending(state)
 
-      true ->
-        spawn_with_entry(state, carried_entry)
-    end
+        true ->
+          state
+          |> put_status(resumed_status(carried_entry))
+          |> spawn_with_entry(carried_entry)
+      end
+
+    # Broadcast the resumed status so the UI leaves the stale
+    # `:compacting` (and the silently-set `:idle`/`:streaming`) and shows
+    # the turn that is actually about to run.
+    Broadcasts.status(state)
+    state
   end
+
+  # The status the resumed turn is about to be in. A `{:tool_call, ...}`
+  # continuation executes the carried tool calls first, so it resumes in
+  # `:executing_tools`; a `{:compact_tool, ...}` continuation calls the
+  # LLM directly, so it resumes in `:streaming`. `resume_with_pending/1`
+  # already sets `:streaming`; `resume_pending_notice/1` stays `:idle`.
+  defp resumed_status({:tool_call, _, _, _}), do: :executing_tools
+  defp resumed_status(_entry), do: :streaming
 
   defp spawn_with_entry(state, entry) do
     {_effective_mode, caps} = ChatPipeline.resolve_mode_and_caps(state.live.mode, state.vocation)

@@ -16,6 +16,8 @@ defmodule Nest.Messages.StreamingTest do
   """
   use ExUnit.Case, async: true
 
+  import Nest.WireFormatAssertions
+
   alias Nest.Messages.Streaming
 
   test "new/1 creates an empty accumulator" do
@@ -203,15 +205,19 @@ defmodule Nest.Messages.StreamingTest do
       assert json["toolCalls"] == []
     end
 
-    test "currentType reflects the active block after start_tool_call" do
+    test "currentType serializes an in-flight tool call as a JSON array" do
       acc = Streaming.new(0)
       acc = Streaming.append_text(acc, "x")
       acc = Streaming.start_tool_call(acc, "call_1", "shell-cmd")
       json = Streaming.to_json(acc)
 
-      # `current_block` is `{:tool_use, id}` on the wire; the
-      # JS checks for this tuple shape (not the bare atom).
-      assert json["currentType"] == {:tool_use, "call_1"}
+      # `current_block` is `{:tool_use, id}` internally. Jason has no
+      # tuple encoder, so `to_json/1` emits a two-element list — the
+      # shape the JS `normalizePartial` reads (`Array.isArray`). This
+      # is the regression guard for the lobby channel crash where a
+      # mid-stream `partial.currentType` tuple reached `Jason.encode!`.
+      assert json["currentType"] == ["tool_use", "call_1"]
+      assert_wire_encodable!(json, "streaming partial")
     end
   end
 

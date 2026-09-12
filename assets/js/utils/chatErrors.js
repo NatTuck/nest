@@ -32,8 +32,10 @@ export function getStatusLabel(
   streaming,
   executingTools,
   waitingForResponse,
+  compacting,
 ) {
   if (status !== "connected") return status;
+  if (compacting) return "Compacting conversation…";
   if (streaming) return "Generating response";
   if (executingTools) return "Executing tools";
   if (waitingForResponse) return "Waiting for response";
