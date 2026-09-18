@@ -463,13 +463,72 @@ describe("NewSpacePage", () => {
     expect(mocks.rescanModels).toHaveBeenCalledTimes(1);
   });
 
-  it("shows a Rescanning spinner while the rescan is in flight", () => {
-    renderPage();
+  it("stays disabled until a models broadcast lands after the click", () => {
+    const { rerender } = renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: "Rescan providers" }));
 
     const button = screen.getByRole("button", { name: "Rescan providers" });
-    fireEvent.click(button);
-
     expect(button).toHaveTextContent(/rescanning/i);
     expect(button).toBeDisabled();
+
+    // A `models` change arriving after the click is the completion
+    // signal: the server has reloaded config and queried every auto
+    // provider. Re-render with a fresh `models` array identity.
+    mockState = { ...mockState, models: [...sampleModels, { name: "new" }] };
+    act(() => {
+      rerender(
+        <MemoryRouter initialEntries={["/spaces/new"]}>
+          <Routes>
+            <Route path="/spaces/new" element={<NewSpacePage />} />
+            <Route path="/spaces" element={<div>Spaces Landing</div>} />
+            <Route path="/space/:spaceSlug" element={<SpaceRoute />} />
+          </Routes>
+        </MemoryRouter>,
+      );
+    });
+
+    const reenabled = screen.getByRole("button", { name: "Rescan providers" });
+    expect(reenabled).not.toBeDisabled();
+    expect(reenabled).toHaveTextContent("Rescan providers");
+  });
+
+  it("does not clear the spinner on a models change that predates the click", () => {
+    const { rerender } = renderPage();
+
+    // A pre-click broadcast (e.g. the lobby `init`) must not be
+    // mistaken for this rescan's completion.
+    mockState = { ...mockState, models: [...sampleModels] };
+    act(() => {
+      rerender(
+        <MemoryRouter initialEntries={["/spaces/new"]}>
+          <Routes>
+            <Route path="/spaces/new" element={<NewSpacePage />} />
+            <Route path="/spaces" element={<div>Spaces Landing</div>} />
+            <Route path="/space/:spaceSlug" element={<SpaceRoute />} />
+          </Routes>
+        </MemoryRouter>,
+      );
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Rescan providers" }));
+
+    const button = screen.getByRole("button", { name: "Rescan providers" });
+    expect(button).toBeDisabled();
+    expect(button).toHaveTextContent(/rescanning/i);
+  });
+
+  it("clears the spinner and shows an error when the rescan push fails", () => {
+    renderPage();
+    mocks.rescanModels.mockImplementation((_onOk, onError) => {
+      onError(new Error("nope"));
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Rescan providers" }));
+
+    expect(
+      screen.getByRole("button", { name: "Rescan providers" }),
+    ).not.toBeDisabled();
+    expect(screen.getByText("nope")).toBeInTheDocument();
   });
 });

@@ -76,7 +76,6 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
 
     # Subscribe before collecting so the first creation can't slip past.
     Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
-    on_exit(fn -> Phoenix.PubSub.unsubscribe(Nest.PubSub, "lobby") end)
 
     # The coordinator spawns children in item order (sequential `pace`),
     # so the creation broadcasts arrive in item order. Collect all three,

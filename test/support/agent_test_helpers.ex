@@ -413,6 +413,16 @@ defmodule Nest.Agents.AgentTestHelpers do
   defp transfer_mock_queue(pid, test_pid) do
     if test_pid && test_pid != pid do
       items = MockClient.take_pending(test_pid)
+
+      # The test-pid queue was started by the test's own `setup`
+      # (`MockClient.start_link/0`). Once its items have been moved to
+      # the agent-pid queue it is never used again, and `MockClient`
+      # starts it with `Agent.start/2` (unlinked, named), so nothing
+      # else stops it. Stop it here — but only when the previous owner
+      # is the test process itself, not an earlier agent whose queue
+      # must stay alive.
+      if test_pid == self(), do: MockClient.stop(test_pid)
+
       MockClient.start_link(pid)
       Enum.each(items, &MockClient.put_pending(pid, &1))
     else
