@@ -7,10 +7,10 @@ importers:
     configDependencies: {}
     packageManagerDependencies:
       '@pnpm/exe':
-        specifier: ^11.1.2
+        specifier: 11.1.2
         version: 11.1.2
       pnpm:
-        specifier: ^11.1.2
+        specifier: 11.1.2
         version: 11.1.2
 
 packages:
