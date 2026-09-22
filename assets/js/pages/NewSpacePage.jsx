@@ -67,24 +67,33 @@ export function NewSpacePage() {
 
   const thinkingOptions = resolveThinkingOptions(models, selectedModel);
 
-  // Reset the rescan spinner when the merged catalog lands. The
-  // `rescan_models` push reply is `:ok`; the real catalog arrives
-  // via the follow-up `models_updated` broadcast which replaces the
-  // whole `models` array in the store.
-  const lastModelsRef = useRef(models);
+  // The `rescan_models` push reply is `:ok` immediately; the real
+  // work (config reload + a `/models` query per auto provider) happens
+  // server-side and lands as one or more `models_updated` broadcasts.
+  // Each broadcast replaces the whole `models` array with a fresh
+  // identity, so clear the spinner on the first `models` change after
+  // the click. `baselineModelsRef` snapshots the array at click time,
+  // so a broadcast that arrived before the click (e.g. the lobby
+  // `init`) doesn't clear the spinner.
+  const awaitingRescanRef = useRef(false);
+  const baselineModelsRef = useRef(null);
 
   useEffect(() => {
-    if (lastModelsRef.current !== models && isRescanning) {
-      lastModelsRef.current = models;
-      setIsRescanning(false);
-    }
-  }, [models, isRescanning]);
+    if (!awaitingRescanRef.current) return;
+    if (models === baselineModelsRef.current) return;
+
+    awaitingRescanRef.current = false;
+    setIsRescanning(false);
+  }, [models]);
 
   const handleRescanModels = () => {
+    awaitingRescanRef.current = true;
+    baselineModelsRef.current = models;
     setIsRescanning(true);
     rescanModels(
       () => {},
       (err) => {
+        awaitingRescanRef.current = false;
         setIsRescanning(false);
         setError(err?.message || "Failed to rescan providers");
       },

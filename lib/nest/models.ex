@@ -16,9 +16,28 @@ defmodule Nest.Models do
     * `reload_static/0` — synchronous `config.toml` reload. Fast,
       no HTTP. Broadcasts `{:models_updated, payload}` immediately
       when no scan is running; if a scan is running, its
-      completion broadcast reflects the new static_config (the
-      merge uses the current state, not the snapshot the Task
-      was started with).
+      partial/final broadcasts reflect the new static_config (the
+      merge uses the current state, not the snapshot the scan
+      captured at start).
+    * `rescan/0` — the user-triggered path. Reloads `config.toml`
+      **without** broadcasting, then starts a scan if idle (joins
+      the in-flight scan otherwise). All broadcasts come from scan
+      progress, so a subscriber that saw no broadcast before
+      calling `rescan/0` knows the next one is genuinely fresh.
+
+  ## Streaming scans
+
+  A scan queries every auto-models provider concurrently. Each
+  provider's result is delivered to the GenServer as it completes,
+  merged into the scan's accumulator, and broadcast immediately.
+  This means subscribers may see several `{:models_updated, _}`
+  broadcasts per scan — one per provider response.
+
+  A 5000ms deadline bounds the wait for the **first**
+  broadcast: if not every provider has answered by then, the
+  partial results are broadcast and the scan stays alive so late
+  answers produce further broadcasts. The deadline timer is not
+  reset by partial results — it is a single cap from scan start.
 
   ## Reads
 
@@ -28,9 +47,9 @@ defmodule Nest.Models do
   ## PubSub
 
   Topic: `"models"`. Subscribers receive `{:models_updated, payload}`
-  on every successful scan completion (payload matches `list/0`'s
-  shape — string-keyed JSON-safe map). `reload_static/0` also
-  broadcasts when no scan is running.
+  on every scan progress event (payload matches `list/0`'s shape —
+  string-keyed JSON-safe map) plus `reload_static/0`'s immediate
+  broadcast when no scan is running.
 
   The standard sub-then-list flow:
 
@@ -58,6 +77,8 @@ defmodule Nest.Models do
 
   @type source :: :vllm | :openrouter | :llama_cpp
 
+  @default_deadline_ms 5_000
+
   def start_link(_opts) do
     GenServer.start_link(__MODULE__, [], name: __MODULE__)
   end
@@ -79,13 +100,30 @@ defmodule Nest.Models do
   Fire-and-forget. Returns `:ok` immediately.
 
   No-op when a scan is already in flight — the in-flight scan's
-  broadcast covers any subscriber that was waiting.
+  broadcasts cover any subscriber that was waiting.
 
   Subscribers (see moduledoc) receive `{:models_updated, payload}`
-  on scan completion.
+  as each provider answers and once more when the scan completes.
   """
   @spec refresh() :: :ok
   def refresh, do: GenServer.cast(__MODULE__, :refresh)
+
+  @doc """
+  Reload `~/.config/nest/config.toml` from disk, then start a scan
+  if none is in flight. Fire-and-forget from the caller's
+  perspective — returns `:ok` immediately.
+
+  Unlike `reload_static/0`, this never broadcasts a config-only
+  payload; the next `{:models_updated, _}` always comes from scan
+  progress. That is what the "rescan providers" button relies on so
+  it stays disabled until providers have actually answered.
+
+  If a scan is already in flight, the config is still reloaded and
+  the in-flight scan's subsequent broadcasts reflect it (the merge
+  uses current state).
+  """
+  @spec rescan() :: :ok
+  def rescan, do: GenServer.call(__MODULE__, :rescan)
 
   @doc """
   Synchronously reload `~/.config/nest/config.toml` from disk and
@@ -95,9 +133,9 @@ defmodule Nest.Models do
 
   When no scan is in flight, broadcasts `{:models_updated, payload}`
   on the `"models"` PubSub topic. When a scan is in flight, its
-  completion broadcast will reflect the new static_config (because
-  the merge uses the current state, not the snapshot the Task was
-  started with).
+  progress broadcasts will reflect the new static_config (because
+  the merge uses the current state, not the snapshot the scan
+  captured at start).
 
   Errors during reload are logged but non-fatal — the previous
   `static_config` is preserved.
@@ -145,8 +183,7 @@ defmodule Nest.Models do
            static_config: config,
            auto_models: %{},
            context_limits: %{},
-           machine: :idle,
-           scan_task_ref: nil
+           scan: nil
          }}
 
       {:error, reason} ->
@@ -157,82 +194,96 @@ defmodule Nest.Models do
            static_config: %{models: %{}},
            auto_models: %{},
            context_limits: %{},
-           machine: :idle,
-           scan_task_ref: nil
+           scan: nil
          }}
     end
   end
 
   @impl true
   def handle_info(:startup_scan, state) do
-    task = start_scan_task(state.static_config)
-    {:noreply, %{state | machine: :scanning, scan_task_ref: task.ref}}
+    {:noreply, start_scan(state)}
   end
 
-  def handle_info({ref, result}, %{scan_task_ref: ref} = state) do
-    # Task completed successfully. Merge uses the *current* static_config
-    # so that if `reload_static/0` updated state.static_config during
-    # this scan, the broadcast reflects the new static info.
-    new_state = %{
-      state
-      | machine: :idle,
-        scan_task_ref: nil,
-        auto_models: result.auto_models,
-        context_limits: result.limits_by_provider
-    }
+  def handle_info({:models_provider_result, name, models, limits}, state) do
+    case state.scan do
+      %{pending: pending} = scan ->
+        if MapSet.member?(pending, name) do
+          scan =
+            scan
+            |> drop_provider(name)
+            |> Map.put(:pending, MapSet.delete(pending, name))
+            |> Map.update!(:auto_models, &Map.merge(&1, models))
+            |> Map.update!(:context_limits, &Map.merge(&1, limits))
 
-    payload = build_model_list(new_state)
-    Phoenix.PubSub.broadcast(Nest.PubSub, "models", {:models_updated, payload})
+          handle_provider_progress(state, scan)
+        else
+          {:noreply, state}
+        end
 
-    {:noreply, new_state}
+      nil ->
+        {:noreply, state}
+    end
   end
 
-  def handle_info({:DOWN, ref, :process, _pid, reason}, %{scan_task_ref: ref} = state) do
-    Logger.warning("Models scan task crashed: #{inspect(reason)}")
-    {:noreply, %{state | machine: :idle, scan_task_ref: nil}}
+  def handle_info({:models_provider_failed, name, reason}, state) do
+    case state.scan do
+      %{pending: pending} = scan ->
+        if MapSet.member?(pending, name) do
+          Logger.warning("Models scan: provider #{name} failed: #{inspect(reason)}")
+
+          scan =
+            scan
+            |> drop_provider(name)
+            |> Map.put(:pending, MapSet.delete(pending, name))
+
+          handle_provider_progress(state, scan)
+        else
+          {:noreply, state}
+        end
+
+      nil ->
+        {:noreply, state}
+    end
+  end
+
+  def handle_info(:models_scan_deadline, state) do
+    case state.scan do
+      nil ->
+        {:noreply, state}
+
+      _scan ->
+        # First-broadcast cap reached with providers still pending.
+        # Broadcast the partial results now and keep the scan alive
+        # so late answers broadcast again.
+        {:noreply, broadcast_scan(state)}
+    end
   end
 
   def handle_info(_other, state), do: {:noreply, state}
 
   @impl true
   def handle_cast(:refresh, state) do
-    case state.machine do
-      :scanning ->
-        # Coalesce silently. PubSub broadcast when current scan
-        # completes covers any subscriber that was waiting.
-        {:noreply, state}
-
-      :idle ->
-        task = start_scan_task(state.static_config)
-        {:noreply, %{state | machine: :scanning, scan_task_ref: task.ref}}
-    end
+    {:noreply, start_scan(state)}
   end
 
   @impl true
-  def handle_call(:reload_static, _from, state) do
-    state =
-      case DotConfig.load() do
-        {:ok, config} ->
-          %{state | static_config: config}
+  def handle_call(:rescan, _from, state) do
+    # Reload config silently (no broadcast) so the next
+    # `models_updated` subscribers see is scan progress, not a
+    # config-only no-op.
+    {:reply, :ok, state |> put_reloaded_static() |> start_scan()}
+  end
 
-        {:error, reason} ->
-          Logger.error("Failed to reload static config: #{inspect(reason)}")
-          state
-      end
+  def handle_call(:reload_static, _from, state) do
+    state = put_reloaded_static(state)
 
     # If no scan is running, broadcast immediately so subscribers
     # see the new static config without waiting for a refresh.
-    # If a scan is running, the in-flight scan's broadcast at
-    # completion will reflect the new static_config (the merge
-    # in handle_info({ref, result}, state) uses the *current*
-    # state.static_config, not the snapshot the Task was started
-    # with).
-    if state.machine == :idle do
-      Phoenix.PubSub.broadcast(
-        Nest.PubSub,
-        "models",
-        {:models_updated, build_model_list(state)}
-      )
+    # If a scan is running, its progress broadcasts reflect the new
+    # static_config (the merge uses the *current* state, not the
+    # snapshot the scan captured at start).
+    if state.scan == nil do
+      broadcast(state)
     end
 
     {:reply, :ok, state}
@@ -250,78 +301,141 @@ defmodule Nest.Models do
   end
 
   def handle_call(:loading?, _from, state) do
-    {:reply, state.machine == :scanning, state}
+    {:reply, state.scan != nil, state}
   end
 
   # Private functions
 
-  # Spawn a scan Task via the dedicated Task.Supervisor. The Task
-  # runs in parallel with the GenServer's mailbox; result is
-  # delivered as `{ref, result}` (Task.async semantics) and a
-  # `:DOWN` if it crashes.
-  defp start_scan_task(static_config) do
-    Task.Supervisor.async(Nest.Models.TaskSupervisor, fn ->
-      do_query_auto_providers(static_config)
+  defp put_reloaded_static(state) do
+    case DotConfig.load() do
+      {:ok, config} ->
+        %{state | static_config: config}
+
+      {:error, reason} ->
+        Logger.error("Failed to reload static config: #{inspect(reason)}")
+        state
+    end
+  end
+
+  # A provider's answer (or failure) has been folded into the scan.
+  # When it was the last pending provider, finish and broadcast the
+  # canonical list; otherwise broadcast the partial progress.
+  defp handle_provider_progress(state, scan) do
+    state = %{state | scan: scan}
+
+    if MapSet.size(scan.pending) == 0 do
+      {:noreply, finish_scan(state)}
+    else
+      {:noreply, broadcast_scan(state)}
+    end
+  end
+
+  # Remove a provider's entries from the scan accumulator. The
+  # accumulator is seeded from the previous scan's completed maps, so
+  # a provider must be cleared before merging its new answer —
+  # otherwise models from a provider that disappeared (or now fails)
+  # would linger forever.
+  defp drop_provider(scan, name) do
+    auto_models =
+      Enum.reject(scan.auto_models, fn {_k, model} -> model.provider_name == name end)
+
+    %{
+      scan
+      | auto_models: Map.new(auto_models),
+        context_limits: Map.delete(scan.context_limits, name)
+    }
+  end
+
+  # Start a scan when idle. When one is already running, no-op so
+  # its in-flight broadcasts cover the caller. The deadline is a
+  # single cap from scan start.
+  defp start_scan(%{scan: scan} = state) when scan != nil, do: state
+
+  defp start_scan(state) do
+    providers = auto_providers(state.static_config)
+    names = MapSet.new(providers, & &1.name)
+    parent = self()
+
+    Task.Supervisor.start_child(Nest.Models.TaskSupervisor, fn ->
+      run_scan(parent, providers)
+    end)
+
+    Process.send_after(self(), :models_scan_deadline, @default_deadline_ms)
+
+    # Seed the accumulator with the previous auto-discovered entries
+    # for the providers this scan will query, so partial broadcasts
+    # keep known models visible. Entries belonging to providers no
+    # longer configured are dropped.
+    auto_models =
+      state.auto_models
+      |> Enum.filter(fn {_k, model} -> MapSet.member?(names, model.provider_name) end)
+      |> Map.new()
+
+    context_limits = Map.take(state.context_limits, MapSet.to_list(names))
+
+    %{
+      state
+      | scan: %{
+          pending: names,
+          auto_models: auto_models,
+          context_limits: context_limits
+        }
+    }
+  end
+
+  defp run_scan(parent, providers) do
+    providers
+    |> Enum.map(&run_provider_query(&1, parent))
+    |> Enum.each(&Task.await(&1, :infinity))
+  end
+
+  defp run_provider_query(provider, parent) do
+    Task.async(fn ->
+      try do
+        {models, limits} = query_provider(provider)
+        send(parent, {:models_provider_result, provider.name, models, limits})
+      rescue
+        e -> send(parent, {:models_provider_failed, provider.name, e})
+      catch
+        kind, reason -> send(parent, {:models_provider_failed, provider.name, {kind, reason}})
+      end
     end)
   end
 
-  # Query every `auto_models` provider, in parallel, with
-  # per-provider try/rescue. Each provider is independent — a
-  # failure is logged and dropped from that scan's results.
-  # Returns always `%{auto_models: ..., limits_by_provider: ...}`
-  # (never raises). The merged view is computed at read time
-  # in `build_model_list/1`.
-  defp do_query_auto_providers(static_config) do
-    static_config
-    |> auto_providers()
-    |> Enum.map(&run_provider_query/1)
-    |> Enum.map(&Task.await(&1, :infinity))
-    |> merge_query_results()
+  # Merge the scan accumulator with current static config and
+  # broadcast. Reads `state.scan` for the accumulator; no-op when
+  # no scan is active.
+  defp broadcast_scan(state) do
+    broadcast(state)
+    state
   end
+
+  defp broadcast(state) do
+    Phoenix.PubSub.broadcast(Nest.PubSub, "models", {:models_updated, build_model_list(state)})
+  end
+
+  # Every provider has answered: fold the accumulator into the
+  # canonical cache, end the scan, and broadcast the final list. The
+  # deadline message becomes a no-op once `scan` is nil.
+  defp finish_scan(%{scan: scan} = state) when scan != nil do
+    state = %{
+      state
+      | scan: nil,
+        auto_models: scan.auto_models,
+        context_limits: scan.context_limits
+    }
+
+    broadcast(state)
+    state
+  end
+
+  defp finish_scan(state), do: state
 
   defp auto_providers(static_config) do
     static_config.providers
     |> Kernel.||(%{})
     |> Map.values()
     |> Enum.filter(& &1.auto_models)
-  end
-
-  defp run_provider_query(provider) do
-    Task.async(fn ->
-      try do
-        query_provider(provider)
-      rescue
-        e -> {:error, provider.name, e}
-      catch
-        kind, reason -> {:error, provider.name, {kind, reason}}
-      end
-    end)
-  end
-
-  defp merge_query_results(results) do
-    {auto_models, limits_by_provider, failures} =
-      Enum.reduce(results, {%{}, %{}, []}, &merge_one_result/2)
-
-    log_provider_failures(failures)
-
-    %{auto_models: auto_models, limits_by_provider: limits_by_provider}
-  end
-
-  defp merge_one_result({models, limits}, {am, al, errs}) do
-    {Map.merge(am, models), Map.merge(al, limits), errs}
-  end
-
-  defp merge_one_result({:error, name, reason}, {am, al, errs}) do
-    {am, al, [{name, reason} | errs]}
-  end
-
-  defp log_provider_failures([]), do: :ok
-
-  defp log_provider_failures(failures) do
-    Logger.warning(
-      "Models scan: #{length(failures)} provider(s) failed: " <>
-        Enum.map_join(failures, ", ", fn {name, _} -> name end)
-    )
   end
 
   # Query a single provider. The two HTTP calls (names + limits)
@@ -370,9 +484,10 @@ defmodule Nest.Models do
   #
   # Computed at read time so a `reload_static/0` takes effect
   # immediately on the next read without forcing a refresh.
-  defp build_model_list(%{auto_models: auto, static_config: %{models: static}} = state) do
-    cache = state.context_limits
-    providers = state.static_config.providers || %{}
+  defp build_model_list(state) do
+    {auto, cache} = scan_view(state)
+    providers = (state.static_config && state.static_config.providers) || %{}
+    static = static_models(state)
 
     Map.merge(auto, static)
     |> Map.values()
@@ -386,24 +501,15 @@ defmodule Nest.Models do
     end)
   end
 
-  defp build_model_list(state) do
-    # Fallback for state shapes where `static_config` doesn't carry
-    # a `:models` map (e.g. the load-failed init/1 path). Returns
-    # just the auto-discovered entries with no static overlay.
-    cache = Map.get(state, :context_limits, %{})
-    providers = (state.static_config && state.static_config.providers) || %{}
+  # While a scan is active, `state.auto_models`/`state.context_limits`
+  # still hold the previous scan's completed values. Read from the
+  # in-flight accumulator so partial results are visible; fall back
+  # to the canonical fields when idle.
+  defp scan_view(%{scan: %{auto_models: auto, context_limits: limits}}), do: {auto, limits}
+  defp scan_view(state), do: {state.auto_models, state.context_limits}
 
-    state.auto_models
-    |> Map.values()
-    |> Enum.map(fn model ->
-      %{
-        "name" => model.name,
-        "provider" => model.provider_name,
-        "context_limit" => effective_context_limit(model, cache, providers),
-        "thinking_levels" => thinking_levels()
-      }
-    end)
-  end
+  defp static_models(%{static_config: %{models: static}}) when is_map(static), do: static
+  defp static_models(_state), do: %{}
 
   # The thinking levels a model can be configured with. Phase 1
   # exposes the full supported set for every model; narrowing per

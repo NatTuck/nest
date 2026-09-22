@@ -45,8 +45,7 @@ defmodule NestWeb.LobbyChannel.Providers do
 
     case Writer.save_providers(structs) do
       :ok ->
-        Models.reload_static()
-        Models.refresh()
+        Models.rescan()
         Phoenix.Channel.broadcast(socket, "providers_updated", %{providers: providers()})
         {:reply, :ok, socket}
 

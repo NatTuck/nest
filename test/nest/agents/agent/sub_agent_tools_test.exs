@@ -55,7 +55,6 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     # sidebar can add the child live. Subscribe before the chat so the
     # broadcast can't slip past us.
     Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
-    on_exit(fn -> Phoenix.PubSub.unsubscribe(Nest.PubSub, "lobby") end)
 
     MockClient.set_tool_response(%{
       text: "spawning",

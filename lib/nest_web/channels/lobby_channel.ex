@@ -56,8 +56,6 @@ defmodule NestWeb.LobbyChannel do
     :exit, _ -> []
   end
 
-  @rescan_budget_ms 5_000
-
   @impl true
   def handle_info(:after_join, socket) do
     user = socket.assigns.current_user
@@ -98,12 +96,6 @@ defmodule NestWeb.LobbyChannel do
   def handle_info({:lobby_broken_agents_loaded, broken}, socket)
       when is_list(broken) do
     push(socket, "broken_agents_updated", %{broken_agents: broken})
-    {:noreply, socket}
-  end
-
-  @impl true
-  def handle_info({:lobby_models_updated, models}, socket) when is_list(models) do
-    broadcast(socket, "models_updated", %{models: models})
     {:noreply, socket}
   end
 
@@ -173,7 +165,13 @@ defmodule NestWeb.LobbyChannel do
 
   @impl true
   def handle_in("rescan_models", _payload, socket) do
-    spawn_rescan(socket)
+    # Fire-and-forget. `Nest.Models` broadcasts
+    # `{:models_updated, payload}` to the "models" topic as each
+    # provider answers and once more when the scan completes; the
+    # `handle_info/2` clause below re-broadcasts each to the client.
+    # The reply is immediate so the channel request never blocks on
+    # provider HTTP.
+    Models.rescan()
     {:reply, :ok, socket}
   end
 
@@ -292,20 +290,6 @@ defmodule NestWeb.LobbyChannel do
 
   defp broken_agent_shared?(%{shared: shared}), do: shared == true
   defp broken_agent_shared?(_), do: false
-
-  defp spawn_rescan(_socket) do
-    parent = self()
-
-    pid =
-      spawn(fn ->
-        Process.flag(:trap_exit, true)
-
-        result = rescan_models_list(@rescan_budget_ms)
-        send(parent, {:lobby_models_updated, result})
-      end)
-
-    Process.unlink(pid)
-  end
 
   defp build_create_space_attrs(payload, model, vocation_id, opts) do
     %{
@@ -445,35 +429,5 @@ defmodule NestWeb.LobbyChannel do
       [] -> nil
       [first | _] -> first.id
     end
-  end
-
-  @doc false
-  def rescan_models_list(
-        budget_ms \\ @rescan_budget_ms,
-        runner \\ &default_rescan_runner/0
-      ) do
-    task = Task.async(runner)
-
-    case Task.yield(task, budget_ms) || Task.shutdown(task, :brutal_kill) do
-      {:ok, models} when is_list(models) -> models
-      _ -> safe_models_list()
-    end
-  rescue
-    _ -> safe_models_list()
-  catch
-    :exit, _ -> safe_models_list()
-  end
-
-  def default_rescan_runner do
-    Models.reload_static()
-    Phoenix.PubSub.subscribe(Nest.PubSub, "models")
-    Models.refresh()
-
-    receive do
-      {:models_updated, _} -> :ok
-    end
-
-    Phoenix.PubSub.unsubscribe(Nest.PubSub, "models")
-    Models.list()
   end
 end

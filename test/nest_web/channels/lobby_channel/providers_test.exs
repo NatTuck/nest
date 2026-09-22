@@ -124,13 +124,12 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
     test "persists the providers to local.toml and broadcasts providers_updated", %{
       socket: socket
     } do
-      # Stub the model cache reloads so they don't broadcast a racy
+      # Stub the model cache rescan so it doesn't broadcast a racy
       # `models_updated` ahead of the handler's `providers_updated`.
       # Global mode is required because the handler runs in the channel
       # process, not the test process.
       Mimic.set_mimic_global()
-      Mimic.expect(Nest.Models, :reload_static, fn -> :ok end)
-      Mimic.expect(Nest.Models, :refresh, fn -> :ok end)
+      Mimic.expect(Nest.Models, :rescan, fn -> :ok end)
 
       local_file = Application.get_env(:nest, :local_config_file)
       refute File.exists?(local_file)
@@ -156,6 +155,7 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
       bob_token = Accounts.AuthToken.sign(bob.id)
 
       {:ok, connected} = connect(NestWeb.UserSocket, %{"token" => bob_token})
+
       {:ok, _, bob_socket} = subscribe_and_join(connected, NestWeb.LobbyChannel, "lobby")
 
       ref = push(bob_socket, "save_providers", %{"providers" => []})
