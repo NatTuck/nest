@@ -12,7 +12,9 @@ Mimic.copy(Nest.Agents)
 Mimic.copy(Nest.Agents.Supervisor)
 Mimic.copy(Phoenix.Channel)
 
-ExUnit.configure(timeout: 5_000)
+# `:hpu` tests exercise real Gaudi hardware and are skipped by default;
+# run them with `mix test --include hpu` on an HPU host.
+ExUnit.configure(timeout: 5_000, exclude: [:hpu])
 ExUnit.start()
 Ecto.Adapters.SQL.Sandbox.mode(Nest.Repo, :manual)
 

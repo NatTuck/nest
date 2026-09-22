@@ -62,9 +62,21 @@ defmodule Nest.Sandbox do
   creates it). A non-existent `fs.write` path fails at bwrap time as a
   missing source rather than being created: any operation that would
   fail on a missing directory fails, it is never auto-created.
+
+  ## Device passthrough
+
+  The fresh `--dev` devtmpfs exposes only generic nodes, so accelerator
+  devices are re-bound with `--dev-bind` when `Nest.Hardware` detects an
+  HPU on the host. HPU access also overlays the driver's log directory
+  (`Nest.Hardware.habana_log_dir/0`) with a writable tmpfs, since the
+  inherited `HABANA_LOGS` points under the read-only root bind. Device
+  passthrough is host-driven, not caps-gated: it applies to every
+  sandbox that spawns bwrap. Pass `device_paths:` in `build/5`'s opts
+  to override detection (tests).
   """
 
   alias Nest.FSPath
+  alias Nest.Hardware
   alias Nest.Tools.ShellCmd
   alias Nest.Tools.ShellEscape
 
@@ -112,9 +124,28 @@ defmodule Nest.Sandbox do
   @spec build(map(), String.t(), String.t() | nil, String.t()) ::
           {:ok, [String.t()]} | {:error, String.t()}
   def build(caps, workspace_path, tmp_path, chdir_path) do
+    build(caps, workspace_path, tmp_path, chdir_path, [])
+  end
+
+  @doc """
+  Build bwrap args with extra options.
+
+  ## Options
+
+    * `:device_paths` - host device paths to pass through with
+      `--dev-bind`. Defaults to `Nest.Hardware.hpu_device_paths/0`.
+      Tests pass an explicit list (or `[]`) to stay host-independent.
+  """
+  @spec build(map(), String.t(), String.t() | nil, String.t(), keyword()) ::
+          {:ok, [String.t()]} | {:error, String.t()}
+  def build(caps, workspace_path, tmp_path, chdir_path, opts) do
+    device_paths = Keyword.get(opts, :device_paths, Hardware.hpu_device_paths())
+
     with :ok <- validate_caps(caps) do
       args =
         base_args(caps)
+        |> append_device_binds(device_paths)
+        |> append_habana_log_tmpfs(device_paths)
         |> append_net_flag(caps)
         |> append_workspace_bind(caps, workspace_path)
         |> append_write_binds(caps, workspace_path)
@@ -537,6 +568,22 @@ defmodule Nest.Sandbox do
       read_args ++
       ["--dev", "/dev"] ++
       ["--proc", "/proc"]
+  end
+
+  # Re-bind detected device nodes after `--dev /dev` (which replaces the
+  # host /dev with a minimal devtmpfs). `--dev-bind` is the only bwrap
+  # flag that permits device-node access.
+  defp append_device_binds(args, device_paths) do
+    args ++ Enum.flat_map(device_paths, fn path -> ["--dev-bind", path, path] end)
+  end
+
+  # Overlay the Habana log directory with a writable tmpfs whenever HPU
+  # devices are passed through. The host's HABANA_LOGS points under the
+  # read-only root bind, and the driver aborts when it can't write there.
+  defp append_habana_log_tmpfs(args, []), do: args
+
+  defp append_habana_log_tmpfs(args, _device_paths) do
+    args ++ ["--tmpfs", Hardware.habana_log_dir()]
   end
 
   defp append_net_flag(args, %{"net" => true}), do: args ++ ["--share-net"]

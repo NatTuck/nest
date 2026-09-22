@@ -30,6 +30,11 @@ config :nest, persistence: [enabled: true]
 # (the third arg of `Application.get_env/3`) by default.
 config :nest, force_subagent_mock: true
 
+# Keep unit tests independent of the host's `/dev`: sandbox arg-building
+# tests inject `device_paths:` explicitly, and the `:hpu`-tagged
+# integration test (excluded by default) overrides this at runtime.
+config :nest, hpu_device_paths: []
+
 # We don't run a server during test. If one is required,
 # you can enable the server option below.
 config :nest, NestWeb.Endpoint,

@@ -1,6 +1,7 @@
 defmodule Nest.SandboxTest do
   use ExUnit.Case, async: true
 
+  alias Nest.Hardware
   alias Nest.Sandbox
 
   setup do
@@ -194,6 +195,45 @@ defmodule Nest.SandboxTest do
       assert ro_bind_idx < proc_idx,
              "expected --ro-bind before --proc (bwrap arg order regression: " <>
                "--proc before --ro-bind makes /proc/self read-only inside the sandbox)"
+    end
+  end
+
+  describe "build/5 device passthrough" do
+    test "binds each device path with --dev-bind and overlays the log dir" do
+      caps = build_caps(write: [":workspace"])
+
+      {:ok, args} =
+        Sandbox.build(caps, "/workspace", nil, "/workspace",
+          device_paths: ["/dev/accel", "/dev/infiniband"]
+        )
+
+      assert ["--dev-bind", "/dev/accel", "/dev/accel"] = after_flag(args, "--dev-bind", nil)
+      assert Enum.count(args, &(&1 == "--dev-bind")) == 2
+
+      log_dir = Hardware.habana_log_dir()
+      assert ["--tmpfs", ^log_dir | _] = after_flag(args, "--tmpfs", nil)
+    end
+
+    test "omits device binds and the log tmpfs when there are no devices" do
+      caps = build_caps(write: [":workspace"])
+      {:ok, args} = Sandbox.build(caps, "/workspace", nil, "/workspace", device_paths: [])
+
+      refute "--dev-bind" in args
+      refute "--tmpfs" in args
+    end
+
+    test "device binds come after --ro-bind and --dev" do
+      caps = build_caps(write: [":workspace"])
+
+      {:ok, args} =
+        Sandbox.build(caps, "/workspace", nil, "/workspace", device_paths: ["/dev/accel"])
+
+      ro_idx = Enum.find_index(args, &(&1 == "--ro-bind"))
+      dev_idx = Enum.find_index(args, &(&1 == "--dev"))
+      bind_idx = Enum.find_index(args, &(&1 == "--dev-bind"))
+
+      assert ro_idx < dev_idx
+      assert dev_idx < bind_idx
     end
   end
 

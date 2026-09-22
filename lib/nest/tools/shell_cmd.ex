@@ -20,6 +20,9 @@ defmodule Nest.Tools.ShellCmd do
   - Filesystem write: Workspace directory (at original path) and /tmp (when tmp_path provided)
   - /dev: Fresh devtmpfs (overlays the read-only host /dev so device files
     like /dev/null are writable inside the sandbox)
+  - Devices: when `Nest.Hardware` detects HPUs on the host, their device
+    nodes are re-bound with `--dev-bind` and the Habana log directory is
+    overlaid with a writable tmpfs (see `Nest.Sandbox`)
   """
 
   require Logger
