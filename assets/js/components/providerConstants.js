@@ -2,6 +2,8 @@
  * Shared constants for the Providers admin screen.
  */
 
+import { nanoid } from "nanoid";
+
 export const THINKING_LEVELS = ["off", "low", "medium", "high", "xhigh"];
 export const PROTOCOLS = ["openai", "anthropic"];
 
@@ -11,7 +13,7 @@ export const PROTOCOLS = ["openai", "anthropic"];
  * stripped from the save payload before it's sent to the server.
  */
 export function makeId() {
-  return crypto.randomUUID();
+  return nanoid();
 }
 
 export function emptyModel() {
