@@ -12,10 +12,11 @@ defmodule Nest.Agents.Agent.Compaction.OverflowTest do
   use ExUnit.Case, async: true
 
   alias Nest.Agents.Agent.Compaction.Overflow
+  alias Nest.TextFixtures
 
   describe "message/2 (limit, system_prompt)" do
     test "includes limit, system prompt size, and reserve size in tokens" do
-      msg = Overflow.message(10_000, String.duplicate("z", 7_000), "start a conversation")
+      msg = Overflow.message(10_000, TextFixtures.big_text(7_000), "start a conversation")
 
       assert msg =~ "Cannot start a conversation:"
       assert msg =~ "context limit (10000)"
@@ -25,7 +26,7 @@ defmodule Nest.Agents.Agent.Compaction.OverflowTest do
     end
 
     test "verb 'compact' produces the compact-pipeline message" do
-      msg = Overflow.message(10_000, String.duplicate("z", 7_000), "compact")
+      msg = Overflow.message(10_000, TextFixtures.big_text(7_000), "compact")
 
       assert msg =~ "Cannot compact:"
       assert msg =~ "context limit (10000)"
@@ -33,7 +34,7 @@ defmodule Nest.Agents.Agent.Compaction.OverflowTest do
     end
 
     test "default verb is 'compact' (matches the trigger's :reserve_exhausted case)" do
-      msg = Overflow.message(10_000, String.duplicate("z", 7_000))
+      msg = Overflow.message(10_000, TextFixtures.big_text(7_000))
 
       assert msg =~ "Cannot compact:"
     end
@@ -67,7 +68,7 @@ defmodule Nest.Agents.Agent.Compaction.OverflowTest do
 
   describe "message/4 reason clauses" do
     test ":system_oversized reports the budget break specifically" do
-      msg = Overflow.message(100_000, String.duplicate("z", 30_000), "compact", :system_oversized)
+      msg = Overflow.message(100_000, TextFixtures.big_text(30_000), "compact", :system_oversized)
 
       assert msg =~ "Cannot compact:"
       assert msg =~ "25% safety budget"
@@ -76,7 +77,7 @@ defmodule Nest.Agents.Agent.Compaction.OverflowTest do
     end
 
     test ":reserve_exhausted reports the model budget break" do
-      msg = Overflow.message(10_000, String.duplicate("z", 7_000), "compact", :reserve_exhausted)
+      msg = Overflow.message(10_000, TextFixtures.big_text(7_000), "compact", :reserve_exhausted)
 
       assert msg =~ "Cannot compact:"
       assert msg =~ "reserved response budget (8192 tokens)"

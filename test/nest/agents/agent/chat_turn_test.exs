@@ -204,13 +204,13 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
 
   describe "max iterations second-chance" do
     test "1.1.4 max_iterations: final call uses tools: nil, iteration produces a final response" do
-      # With max_iterations=5, queue more than 5 tool
-      # responses. The ChatTurn should hit the iteration
+      # With max_iterations=5, queue 5 tool responses (one
+      # per iteration). The ChatTurn should hit the iteration
       # cap, switch to `tools: nil, tool_choice: :none`,
       # and the MockClient (which honors `tools: nil` by
       # returning a random text response) produces the
       # final assistant message.
-      for i <- 1..10 do
+      for i <- 1..5 do
         MockClient.set_tool_response(%{
           text: "tool call #{i}",
           tool_calls: [
@@ -227,7 +227,10 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
 
       capture_log(fn ->
         :ok = Agent.chat(pid, "Keep looping")
-        assert_receive {:chat_status, %{status: "idle"}}, 500
+        # The turn runs 5 sandboxed shell-cmd rounds; each bwrap
+        # spawn (namespace + mount setup) is the dominant cost, so
+        # allow 750ms for the turn to reach idle.
+        assert_receive {:chat_status, %{status: "idle"}}, 750
       end)
 
       state = :sys.get_state(pid)

@@ -18,6 +18,7 @@ defmodule Nest.Tokens.PreFlightTest do
   alias Nest.Messages.Part
   alias Nest.Messages.System
   alias Nest.Messages.User
+  alias Nest.TextFixtures
   alias Nest.Tokens.Estimator
   alias Nest.Tokens.PreFlight
 
@@ -95,13 +96,12 @@ defmodule Nest.Tokens.PreFlightTest do
     end
 
     test "a huge message list triggers :needs_compaction when there is a summarizable head" do
-      # Repeated identical chars compress to ~1 token per ~4 bytes
-      # under BPE, so a huge single user message would be
-      # `:cannot_compact` (the compactor's `:too_short` branch
-      # would no-op it). To trigger `:needs_compaction` we need
-      # a *summarizable head* — older messages between the
-      # system prompt and the current user turn.
-      huge = String.duplicate("a ", 2_000_000)
+      # A huge single user message would be `:cannot_compact`
+      # (the compactor's `:too_short` branch would no-op it). To
+      # trigger `:needs_compaction` we need a *summarizable head* —
+      # older messages between the system prompt and the current
+      # user turn.
+      huge = TextFixtures.big_text(400_000)
       sys = {:system, %System{parts: [%Part.Text{text: "You are helpful."}]}}
       old_user = {:user, %User{parts: [%Part.Text{text: "earlier"}]}}
 
@@ -111,10 +111,9 @@ defmodule Nest.Tokens.PreFlightTest do
       new_user = {:user, %User{parts: [%Part.Text{text: "now"}]}}
       messages = [sys, old_user, assistant, new_user]
 
-      # 4M chars at ~3-4 tokens per char on alternating content,
-      # plus 20% safety, plus 8192 reserve — way over 32k. The
-      # head is summarizable (old_user + assistant), so
-      # `:needs_compaction` is correct.
+      # ~400k bytes at ~4 bytes/token, plus 20% safety, plus the
+      # 8192 reserve — way over 32k. The head is summarizable
+      # (old_user + assistant), so `:needs_compaction` is correct.
       assert PreFlight.check_messages(messages, 32_768) == :needs_compaction
     end
 
@@ -149,7 +148,7 @@ defmodule Nest.Tokens.PreFlightTest do
       # The compactor's `split_messages/1` returns `:too_short`
       # because there's no user anchor at index >= 1 (or no
       # system before the user). Compaction cannot help.
-      huge = String.duplicate("a ", 2_000_000)
+      huge = TextFixtures.big_text(400_000)
       messages = [{:user, %User{parts: [%Part.Text{text: huge}]}}]
       assert PreFlight.check_messages(messages, 32_768) == :cannot_compact
     end

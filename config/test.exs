@@ -9,7 +9,7 @@ config :nest, Nest.Repo,
   username: System.fetch_env!("USER"),
   socket_dir: "/var/run/postgresql",
   database: "nest_test",
-  pool_size: 20,
+  pool_size: 40,
   ownership_timeout: 30_000,
   pool: Ecto.Adapters.SQL.Sandbox
 

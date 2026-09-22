@@ -24,6 +24,7 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.LLM.Tool
   alias Nest.Messages.{Part, ToolCall, ToolResult}
+  alias Nest.TextFixtures
   alias Nest.Tools
 
   # -- helpers --
@@ -42,7 +43,7 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
   end
 
   defp huge_tool(name, size_bytes) do
-    make_tool(name, fn _, _ -> {:ok, String.duplicate("x", size_bytes)} end)
+    make_tool(name, fn _, _ -> {:ok, TextFixtures.big_text(size_bytes)} end)
   end
 
   defp failing_tool(name) do
@@ -190,7 +191,7 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
     end
 
     test "shell_cmd with larger output is summarized with path", %{tmp_dir: dir} do
-      big_output = String.duplicate("y", 50_000)
+      big_output = TextFixtures.big_text(50_000)
 
       tools = [
         make_tool("shell-cmd", fn _, _ -> {:ok, big_output} end)

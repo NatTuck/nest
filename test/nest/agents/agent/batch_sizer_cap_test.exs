@@ -23,6 +23,7 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
   alias Nest.LLM.Tool
   alias Nest.Messages.ToolCall
   alias Nest.Messages.ToolResult
+  alias Nest.TextFixtures
   alias Nest.Tools
 
   defp make_tool(name, fn_) do
@@ -76,7 +77,7 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
 
     test "shell_cmd output exceeding 80% cap routes to summary path", %{tmp_dir: dir} do
       # 40_000 chars ≈ 10_000 tokens → exceeds default_cap of 8_000.
-      big_output = String.duplicate("z", 40_000)
+      big_output = TextFixtures.big_text(40_000)
 
       tools = [
         make_tool("shell-cmd", fn _, _ -> {:ok, big_output} end)
@@ -102,7 +103,7 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
          %{tmp_dir: dir} do
       # Output of ~1_000 chars ≈ 250 tokens → fits default_cap easily,
       # but the override forces a tight cap that the output exceeds.
-      output = String.duplicate("q", 1_000)
+      output = TextFixtures.big_text(1_000)
 
       tools = [
         make_tool("shell-cmd", fn _, _ -> {:ok, output} end)
@@ -132,7 +133,7 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
     test "LLM override above 80% is clamped to 80%", %{tmp_dir: dir} do
       # 40_000 chars ≈ 10_000 tokens → exceeds default_cap of 8_000
       # even though the LLM asked for 100_000 (clamped to 8_000).
-      big_output = String.duplicate("r", 40_000)
+      big_output = TextFixtures.big_text(40_000)
 
       tools = [
         make_tool("shell-cmd", fn _, _ -> {:ok, big_output} end)
@@ -173,7 +174,7 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
 
     test "read_file exceeding cap returns error with token-count hint", %{tmp_dir: dir} do
       # ~5_000 bytes ≈ 1_250 tokens → exceeds the 100-token override.
-      big_content = String.duplicate("v", 5_000)
+      big_content = TextFixtures.big_text(5_000)
       file = Path.join(dir, "big.txt")
       File.write!(file, big_content)
 
@@ -206,7 +207,7 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
     end
 
     test "raises when context_limit is nil (limit is never optional)" do
-      big_output = String.duplicate("w", 40_000)
+      big_output = TextFixtures.big_text(40_000)
 
       tools = [
         make_tool("shell-cmd", fn _, _ -> {:ok, big_output} end)

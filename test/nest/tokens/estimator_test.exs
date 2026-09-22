@@ -106,6 +106,21 @@ defmodule Nest.Tokens.EstimatorTest do
     end
   end
 
+  describe "estimate_bytes/1" do
+    test "scales with byte size and applies the safety margin" do
+      small = Estimator.estimate_bytes(4_000)
+      large = Estimator.estimate_bytes(40_000)
+
+      assert large > small
+      # ~4 bytes/token, +20% safety, +10 per-message overhead.
+      assert large == ceil(div(40_000, 4) * 1.20) + 10
+    end
+
+    test "returns the per-message overhead for zero bytes" do
+      assert Estimator.estimate_bytes(0) == 10
+    end
+  end
+
   describe "estimate_messages/1" do
     test "sums per-message estimates" do
       messages = [

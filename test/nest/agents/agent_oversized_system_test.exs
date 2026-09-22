@@ -20,6 +20,7 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
 
   alias Nest.Agents.Agent.Compaction.Trigger
   alias Nest.LLM.MockClient
+  alias Nest.TextFixtures
   alias Nest.Vocations
 
   import Nest.Agents.AgentTestHelpers, only: [start_agent: 1, vocation_id_for_test: 0]
@@ -59,14 +60,13 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
 
   # A vocation whose rendered prompt is well over 25% of a
   # compact 8_000-token context (2_000-token budget). 24_000
-  # chars of text saturates far past that, but stays small
-  # enough that String.duplicate + SystemPrompt.compose are
-  # fast.
+  # bytes of realistic text saturates far past that and
+  # tokenizes linearly.
   @oversized_budget_chars 24_000
 
   defp oversized_vocation do
     create_vocation(%{
-      system_prompt: String.duplicate("x", @oversized_budget_chars)
+      system_prompt: TextFixtures.big_text(@oversized_budget_chars)
     })
   end
 

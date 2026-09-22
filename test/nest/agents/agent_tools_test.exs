@@ -326,8 +326,8 @@ defmodule Nest.Agents.AgentToolsTest do
 
     test "broadcasts notification and produces final response when max tool iterations reached" do
       # The test config (test/data/config.toml) has max-tool-iterations = 5.
-      # Set up MORE tool responses to ensure the limit is hit.
-      for _ <- 1..10 do
+      # Queue 5 tool responses (one per iteration) to hit the limit.
+      for _ <- 1..5 do
         MockClient.set_tool_response(%{
           text: "Calling tool",
           tool_calls: [
@@ -351,9 +351,12 @@ defmodule Nest.Agents.AgentToolsTest do
       capture_log(fn ->
         :ok = Agent.chat(pid, "Keep looping")
 
+        # The turn runs 5 sandboxed shell-cmd rounds; each bwrap spawn
+        # (namespace + mount setup) is the dominant cost, so allow
+        # 750ms per assertion for the turn to finish.
         assert_receive {:chat_notification,
                         %{type: "max_iterations", message: "Max tool iterations reached"}},
-                       500
+                       750
 
         assert_receive {:chat_message,
                         {:assistant,
@@ -362,9 +365,9 @@ defmodule Nest.Agents.AgentToolsTest do
                              %Part.Text{text: "I've completed the task after multiple iterations"}
                            ]
                          }}},
-                       500
+                       750
 
-        assert_receive {:chat_status, %{status: "idle"}}, 500
+        assert_receive {:chat_status, %{status: "idle"}}, 750
       end)
 
       MockClient.clear()

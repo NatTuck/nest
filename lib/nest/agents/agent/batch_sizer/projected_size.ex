@@ -90,10 +90,10 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
          true <- is_binary(path) and path != "",
          {:ok, full_path} <- Sandbox.resolve(path, Map.get(ctx, :workspace_path)),
          {:ok, %{size: size}} <- Sandbox.stat(full_path, caps_of(ctx)) do
-      # Estimate by replicating the byte content into a string
-      # of equal size (the `Estimator.estimate/1` path) so the
-      # per-byte ratio holds.
-      Estimator.estimate(String.duplicate("a", size))
+      # Estimate from the byte size alone. Synthesizing a same-size
+      # string to feed the tokenizer is wasteful and pathological for
+      # `tiktoken` (quadratic on repeated characters).
+      Estimator.estimate_bytes(size)
     else
       _ -> summary_baseline_size() * @safety_padding
     end

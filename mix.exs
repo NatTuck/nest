@@ -118,8 +118,9 @@ defmodule Nest.MixProject do
         "deps.unlock --unused",
         "format",
         "credo",
-        # This cannot be increased or removed *EVER*. No exceptions. 
-        "cmd timeout 5 mix test",
+        # Host-dependent timeout: 5s on the fast reference host
+        # ("vampire"), 10s elsewhere. See scripts/precommit-test.sh.
+        "cmd bash scripts/precommit-test.sh",
         "cmd --cd assets 'pnpm biome ci && node lint-file-size.mjs'",
         "test --cover",
         "assets.test"

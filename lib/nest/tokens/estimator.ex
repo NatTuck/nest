@@ -114,6 +114,23 @@ defmodule Nest.Tokens.Estimator do
   def estimate(_), do: @per_message_overhead
 
   @doc """
+  Estimates the token count for content of a known byte size,
+  without materializing or tokenizing the content.
+
+  Uses the standard ~4-bytes-per-token heuristic (`byte_estimate/1`)
+  plus the safety multiplier and per-message overhead. This is for
+  callers that only have a size (e.g. a `stat`ed file) and would
+  otherwise have to synthesize a same-size string — which is both
+  wasteful and pathological for `tiktoken` on repeated characters.
+  """
+  @spec estimate_bytes(non_neg_integer()) :: pos_integer()
+  def estimate_bytes(size) when is_integer(size) and size >= 0 do
+    div(size + 3, 4)
+    |> apply_safety()
+    |> Kernel.+(@per_message_overhead)
+  end
+
+  @doc """
   Returns a conservative token count for a list of messages
   (the canonical `Message.t()` tagged-tuple shape).
 

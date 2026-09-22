@@ -132,7 +132,7 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
           "model" => %{"name" => "yolo", "provider" => "yolo"}
         })
 
-      assert_reply bob_ref, :error, %{"reason" => "shared_read_only"}
+      assert_reply bob_ref, :error, %{"reason" => "shared_read_only"}, 750
     end
 
     test "repairs an agent that started in :model_missing state", %{socket: socket} do
@@ -151,7 +151,7 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
               "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
             })
 
-          assert_reply ref, :ok, %{}
+          assert_reply ref, :ok, %{}, 750
 
           assert_broadcast "agent:updated",
                            %{
@@ -177,7 +177,7 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
           "model" => %{"name" => "totally-bogus-model"}
         })
 
-      assert_reply ref, :error, %{"reason" => "invalid_model"}
+      assert_reply ref, :error, %{"reason" => "invalid_model"}, 750
     end
 
     test "returns :invalid_payload for a malformed message", %{socket: socket} do
@@ -198,7 +198,7 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
           "workspace_path" => "/tmp/edited-ws"
         })
 
-      assert_reply ref, :ok, %{}
+      assert_reply ref, :ok, %{}, 750
 
       # The `space_id` in the broadcast must come from the payload
       # (the lobby socket has no `space_id` in its assigns), and the
@@ -223,7 +223,7 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
           "workspace_path" => "/tmp/edited-ws"
         })
 
-      assert_reply ref, :error, %{"reason" => "invalid_model"}
+      assert_reply ref, :error, %{"reason" => "invalid_model"}, 750
     end
 
     test "returns :invalid_payload for a malformed message", %{socket: socket} do

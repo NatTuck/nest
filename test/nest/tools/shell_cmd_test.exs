@@ -66,6 +66,10 @@ defmodule Nest.Tools.ShellCmdTest do
     real = Path.join(base, "nest_bwrap_#{uniq}_real")
     link = Path.join(base, "nest_bwrap_#{uniq}_link")
 
+    # `System.unique_integer/1` restarts per BEAM, so a previously
+    # killed run can leave these paths behind and make `ln_s!` fail.
+    # Clear any stale entries first (guarded by the `nest_bwrap` name).
+    File.rm_rf([real, link])
     File.mkdir_p!(real)
     File.ln_s!(real, link)
     on_exit(fn -> File.rm_rf([real, link]) end)
