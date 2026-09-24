@@ -434,7 +434,7 @@ These are pre-existing structural issues that the Phase 1 refactor didn't fix bu
 **The leak surface.** Every handler that mutates `chat_state` has to know which fields are persistent (reset on `init/1`) and which are not. Every field on the wrong side of the boundary is a bug:
 
 - **`streaming_acc`** — if a restart leaves a non-nil accumulator pointing at a dead ChatTurn, the next `:chat_delta` append corrupts the message.
-- **`crossed_thresholds`** — if a restart preserves the old MapSet, the post-restart conversation never re-fires the 50% / 75% warnings.
+- **`crossed_thresholds`** — the one Live field that is *derived* on restore rather than reset: it is rebuilt from the persisted notice metadata in the active message segment (`Init.seed_from_db/3` + `ContextReminder.announced_thresholds/1`), so a restart does not re-announce 25/50/75. (This supersedes the earlier "a preserved set is a bug" note.)
 - **`pending_children`** — child tools waiting for `:child_completed` are orphaned after a restart; the `:tool_completed` path silently drops `:clone_agent_result` for unknown children.
 - **`consecutive_compaction_count`** — non-zero on restart can trip the loop-breaker immediately.
 

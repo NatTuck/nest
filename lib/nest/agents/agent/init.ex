@@ -19,6 +19,7 @@ defmodule Nest.Agents.Agent.Init do
   @spawn_tools ~w(agents-spawn agents-batch)
 
   alias Nest.Agents.Agent.Broadcasts
+  alias Nest.Agents.Agent.ChatTurn.ContextReminder
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Persistence, as: AgentPersistence
   alias Nest.Agents.Agent.SystemPrompt
@@ -190,7 +191,7 @@ defmodule Nest.Agents.Agent.Init do
       |> Enum.map(fn {_role, %{index: idx}} -> idx end)
       |> Enum.max(fn -> -1 end)
 
-    %{
+    state = %{
       state
       | chat_state: %{
           state.chat_state
@@ -200,6 +201,20 @@ defmodule Nest.Agents.Agent.Init do
             next_message_index: highest_index + 1
         }
     }
+
+    # Rebuild the announced context-threshold set from the persisted
+    # notices in the active segment. Without this a BEAM restart would
+    # reset `crossed_thresholds` and re-announce 25/50/75 on the next
+    # turn. Archived notices (index <= the boundary) are excluded by the
+    # `messages` partition, so a completed compaction still re-arms.
+    put_crossed_thresholds(state)
+  end
+
+  # Stamp `live.crossed_thresholds` from the active message list (see
+  # `ContextReminder.announced_thresholds/1`). Shared by both seed paths.
+  defp put_crossed_thresholds(state) do
+    crossed = ContextReminder.announced_thresholds(state.chat_state.messages)
+    %{state | live: %{state.live | crossed_thresholds: crossed}}
   end
 
   # Defensive prepend: pre-existing rows may have messages

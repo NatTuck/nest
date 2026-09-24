@@ -206,6 +206,7 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminderTest do
       spec = ContextReminder.spec(40_001, @limit, MapSet.new())
       assert spec.kind == :context
       assert spec.attention == "Context?"
+      assert spec.threshold == :p25
       assert spec.notice =~ "25%"
       assert spec.notice =~ "40001"
     end
@@ -214,6 +215,7 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminderTest do
       spec = ContextReminder.spec(80_001, @limit, MapSet.new())
       assert spec.kind == :context
       assert spec.attention == "Context?"
+      assert spec.threshold == :p50
       assert spec.notice =~ "50%"
     end
 
@@ -221,6 +223,7 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminderTest do
       spec = ContextReminder.spec(120_001, @limit, MapSet.new())
       assert spec.kind == :context
       assert spec.attention == "Context?"
+      assert spec.threshold == :p75
       assert spec.notice =~ "75%"
       assert spec.notice =~ "compact"
     end
@@ -249,6 +252,57 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminderTest do
     test "returns nil when limit is zero or negative (defensive)" do
       assert ContextReminder.spec(100, 0, MapSet.new()) == nil
       assert ContextReminder.spec(100, -1, MapSet.new()) == nil
+    end
+  end
+
+  describe "context_metadata/1" do
+    test "stamps a context spec with its threshold name" do
+      spec = ContextReminder.spec(120_001, @limit, MapSet.new())
+      assert ContextReminder.context_metadata(spec) == %{"context_threshold" => "p75"}
+    end
+
+    test "returns nil for non-context specs" do
+      refute ContextReminder.context_metadata(%{kind: :budget, attention: "Tool limit?"})
+    end
+  end
+
+  describe "announced_thresholds/1" do
+    test "collects thresholds from stamped user and assistant notices" do
+      messages = [
+        {:system, %Nest.Messages.System{index: 0, parts: [], api_logs: []}},
+        {:user,
+         %User{
+           index: 1,
+           parts: [%Nest.Messages.Part.Text{text: "Context at 25%."}],
+           metadata: %{"context_threshold" => "p25"},
+           api_logs: []
+         }},
+        {:assistant,
+         %Nest.Messages.Assistant{
+           index: 2,
+           parts: [%Nest.Messages.Part.Text{text: "Context? Okay."}],
+           metadata: %{context_threshold: "p50"},
+           api_logs: []
+         }}
+      ]
+
+      assert ContextReminder.announced_thresholds(messages) == MapSet.new([:p25, :p50])
+    end
+
+    test "ignores unstamped messages, unknown stamps, and non-message entries" do
+      messages = [
+        {:user, %User{index: 1, parts: [], api_logs: []}},
+        {:user,
+         %User{
+           index: 2,
+           parts: [],
+           metadata: %{"context_threshold" => "p99"},
+           api_logs: []
+         }},
+        :not_a_message
+      ]
+
+      assert ContextReminder.announced_thresholds(messages) == MapSet.new()
     end
   end
 end

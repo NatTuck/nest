@@ -12,6 +12,7 @@ defmodule Nest.AgentsTest do
   """
   use Nest.DataCase, async: true
 
+  import Eventually
   import Mimic
 
   alias Nest.Agents
@@ -278,7 +279,7 @@ defmodule Nest.AgentsTest do
 
   describe "chat/2" do
     test "sends message to agent" do
-      {_pid, name} = AgentTestHelpers.start_agent(%{name: fresh_name()})
+      {pid, name} = AgentTestHelpers.start_agent(%{name: fresh_name()})
 
       MockClient.set_response("Hi there!")
 
@@ -286,9 +287,10 @@ defmodule Nest.AgentsTest do
 
       # Fence on the turn's idle (not `message_count`): the count hits
       # 3 when the assistant message is appended, which is before the
-      # turn finalizes. Waiting on idle makes the assertion below
-      # deterministic and leaves the agent done at test end.
-      assert_receive {:chat_status, %{status: "idle"}}, 100
+      # turn finalizes. Poll the agent state rather than waiting on a
+      # fixed 100ms window — a slow scheduler can push the idle
+      # transition past it.
+      assert eventually(fn -> :sys.get_state(pid).live.status == :idle end, timeout: 1_000)
 
       {:ok, info} = Agents.get_info(AgentTestHelpers.current_space_id(), name)
       assert info.message_count == 3

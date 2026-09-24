@@ -130,6 +130,29 @@ export function TokenUsageChip({
   const safeUsed = Math.max(0, used);
   const pct = Math.min(100, (safeUsed / contextLimit) * 100);
 
+  // The context-usage warnings measure against the *working* budget
+  // (window minus the LLM response reserve), not the raw window, so
+  // mirror that basis here. `null` when the server didn't send it.
+  const workingBudget = Number.isFinite(usage?.working_budget)
+    ? usage.working_budget
+    : null;
+  const workingPct =
+    workingBudget && workingBudget > 0
+      ? Math.min(100, (safeUsed / workingBudget) * 100)
+      : null;
+
+  // The forward-looking size the most recent warning compared against
+  // (appended messages + pending user message / predicted tool
+  // results). Only shown while a turn has a projection in flight and
+  // it exceeds the current size.
+  const projected = Number.isFinite(usage?.projected_context_input_tokens)
+    ? usage.projected_context_input_tokens
+    : null;
+  const projectedPct =
+    workingBudget && projected != null && projected > safeUsed
+      ? Math.min(100, (projected / workingBudget) * 100)
+      : null;
+
   // Per-call breakdown for the "Last" line. When no cache is
   // in play we omit the "+ X cached" suffix entirely so the
   // expanded view stays clean.
@@ -190,6 +213,32 @@ export function TokenUsageChip({
         <span className="font-mono tabular-nums w-12 text-right">
           {pct.toFixed(1)}%
         </span>
+        {workingPct != null ? (
+          <span
+            data-testid="token-usage-working-pct"
+            className="font-mono tabular-nums whitespace-nowrap text-zinc-600"
+            title="Context used vs the working budget (window minus the LLM response reserve) — the basis the context warnings use"
+          >
+            w {workingPct.toFixed(1)}%
+          </span>
+        ) : (
+          <span
+            data-testid="token-usage-working-pct"
+            className="font-mono tabular-nums whitespace-nowrap text-red-400"
+            title="Working budget unavailable (server did not send usage.working_budget)"
+          >
+            w n/a
+          </span>
+        )}
+        {projectedPct != null && (
+          <span
+            data-testid="token-usage-projected-pct"
+            className="font-mono tabular-nums whitespace-nowrap text-amber-400"
+            title="Projected context after the pending message / predicted tool results — what a context warning compares"
+          >
+            → {projectedPct.toFixed(1)}%
+          </span>
+        )}
         <svg
           className={`w-3 h-3 text-zinc-500 transition-transform ${
             isExpanded ? "rotate-180" : ""
@@ -216,6 +265,26 @@ export function TokenUsageChip({
             Last: {formatTokens(lastInput)} new
             {showCached && <> + {formatTokens(lastCached)} cached</>}
           </span>
+          <span
+            className={[
+              "font-mono tabular-nums whitespace-nowrap",
+              workingPct == null && "text-red-400",
+            ]}
+            data-testid="token-usage-working-budget"
+          >
+            {workingPct != null
+              ? `Working budget: ${workingPct.toFixed(1)}% of ${formatTokens(workingBudget)}`
+              : "Working budget: [missing]"}
+          </span>
+          {projectedPct != null && (
+            <span
+              className="font-mono tabular-nums whitespace-nowrap text-amber-400"
+              data-testid="token-usage-projected"
+            >
+              Projected: {projectedPct.toFixed(1)}% of{" "}
+              {formatTokens(workingBudget)}
+            </span>
+          )}
           <span className="font-mono tabular-nums whitespace-nowrap">
             Direct: {formatTokens(directInput)} in /{" "}
             {formatTokens(directOutput)} out

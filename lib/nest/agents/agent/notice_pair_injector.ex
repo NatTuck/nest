@@ -64,7 +64,9 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
   @type spec :: %{
           required(:kind) => atom(),
           required(:attention) => String.t(),
-          required(:notice) => String.t()
+          required(:notice) => String.t(),
+          optional(:threshold) => atom(),
+          optional(:ack) => String.t()
         }
 
   @doc """
@@ -138,7 +140,11 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
       {:ok,
        [
          build_attention_assistant(spec.attention),
-         ContextReminder.build_user_notice(spec.notice, nil)
+         ContextReminder.build_user_notice(
+           spec.notice,
+           nil,
+           ContextReminder.context_metadata(spec)
+         )
        ]}
     end
   end
@@ -162,7 +168,14 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
       last_source_role in [:user, :tool] ->
         notice_text = spec.notice
         ack_text = Map.get(spec, :ack, ack_for_kind(spec.kind))
-        {:ok, [build_single_assistant(notice_text <> " " <> ack_text)]}
+
+        {:ok,
+         [
+           build_single_assistant(
+             notice_text <> " " <> ack_text,
+             ContextReminder.context_metadata(spec)
+           )
+         ]}
 
       # Trailing source `:assistant` (no trailing tool_use). The
       # full `[user(notice), assistant(ack)]` pair lands before
@@ -174,7 +187,11 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
 
         {:ok,
          [
-           ContextReminder.build_user_notice(spec.notice, nil),
+           ContextReminder.build_user_notice(
+             spec.notice,
+             nil,
+             ContextReminder.context_metadata(spec)
+           ),
            build_single_assistant(ack_text)
          ]}
     end
@@ -227,22 +244,24 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
     end
   end
 
-  defp build_attention_assistant(text) do
+  defp build_attention_assistant(text, metadata \\ nil) do
     {:assistant,
      %Assistant{
        index: nil,
        timestamp: DateTime.utc_now(),
        parts: [%Part.Text{text: text}],
+       metadata: metadata,
        api_logs: []
      }}
   end
 
-  defp build_single_assistant(text) do
+  defp build_single_assistant(text, metadata \\ nil) do
     {:assistant,
      %Assistant{
        index: nil,
        timestamp: DateTime.utc_now(),
        parts: [%Part.Text{text: text}],
+       metadata: metadata,
        api_logs: []
      }}
   end

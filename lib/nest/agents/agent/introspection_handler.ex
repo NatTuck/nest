@@ -42,7 +42,6 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
   alias Nest.Messages.Message
   alias Nest.Messages.Streaming
   alias Nest.Sandbox
-  alias Nest.Tokens.ConversationSize
   alias Nest.Vocations
 
   @doc """
@@ -252,12 +251,15 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
       # edit/delete rules on the basis of the same numbers.
       created_by_user_id: state.created_by_user_id,
       shared: state.shared,
-      # Direct usage (this agent's own LLM calls).
+      # Direct usage (this agent's own LLM calls), plus the
+      # context-window fields the chip needs (see
+      # `Broadcasts.Usage.context_usage_map/4`).
       usage:
-        Map.put(
+        Broadcasts.Usage.context_usage_map(
           state.llm_metrics.usage_totals,
-          :context_input_tokens,
-          ConversationSize.size(state.chat_state.messages)
+          state.chat_state.messages,
+          state.llm_metrics.context_limit,
+          state.live.context_projection
         ),
       # Cumulative usage from all descendants.
       descendant_usage: state.llm_metrics.descendant_usage,

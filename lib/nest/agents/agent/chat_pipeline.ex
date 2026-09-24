@@ -105,6 +105,11 @@ defmodule Nest.Agents.Agent.ChatPipeline do
       used = ContextReminder.estimate_messages(projected)
       crossed = state.live.crossed_thresholds
 
+      # Record the projected size (messages + the not-yet-appended user
+      # message) before the threshold check so the status payload can
+      # surface the same number a warning compares against.
+      state = %{state | live: %{state.live | context_projection: used}}
+
       case ContextReminder.highest_unannounced(used, limit, crossed) do
         nil ->
           state
@@ -123,7 +128,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   defp inject_notice(state, atom, _crossed) do
     notice = ContextReminder.notice_text(atom)
     ack = ContextReminder.ack_text_for(atom)
-    spec = %{kind: :context, attention: "Context?", notice: notice, ack: ack}
+    spec = %{kind: :context, attention: "Context?", notice: notice, ack: ack, threshold: atom}
 
     case NoticePairInjector.inject_pair_in_process(
            state.chat_state.messages,

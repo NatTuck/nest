@@ -322,10 +322,11 @@ defmodule Nest.Agents.Agent.Broadcasts do
       parentName: state.tree_position.parent_name,
       depth: state.depth,
       usage:
-        Map.put(
+        __MODULE__.Usage.context_usage_map(
           direct,
-          :context_input_tokens,
-          __MODULE__.Usage.context_input_tokens_for(state.chat_state.messages)
+          state.chat_state.messages,
+          state.llm_metrics.context_limit,
+          state.live.context_projection
         ),
       descendantUsage: descendant,
       totalUsage: total_usage(direct, descendant)

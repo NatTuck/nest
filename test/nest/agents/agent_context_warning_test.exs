@@ -111,7 +111,28 @@ defmodule Nest.Agents.AgentContextWarningTest do
     assert count_reminders(state, "Context at 25%") == 1,
            "expected exactly one :p25 reminder across three user messages, " <>
              "got #{count_reminders(state, "Context at 25%")}"
+
+    # The injected notice is stamped with its threshold so the
+    # announced set can be rebuilt after a BEAM restart.
+    assert Enum.any?(state.chat_state.messages, &stamped_notice?/1),
+           "expected the fired reminder to carry context_threshold metadata"
+
+    # The turn went idle, so any forward-looking projection was cleared.
+    assert state.live.context_projection == nil
   end
+
+  test "set_context_projection records the value and ignores non-integers" do
+    {pid, _agent_id} = AgentTestHelpers.start_agent(%{})
+
+    send(pid, {:set_context_projection, 12_345})
+    assert :sys.get_state(pid).live.context_projection == 12_345
+
+    send(pid, {:set_context_projection, "nope"})
+    assert :sys.get_state(pid).live.context_projection == 12_345
+  end
+
+  defp stamped_notice?({_role, %{metadata: %{"context_threshold" => _}}}), do: true
+  defp stamped_notice?(_), do: false
 
   @tag timeout: 30_000
   test "the Agent's crossed_thresholds persists the fired atom across ChatTurns" do

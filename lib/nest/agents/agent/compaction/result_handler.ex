@@ -112,6 +112,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
       |> clear_mid_turn_entry()
       |> put_status(:idle)
       |> reset_crossed_thresholds()
+      |> reset_context_projection()
       |> reset_read_files()
 
     {state, system_prompt} = refresh_vocation_and_tools(state)
@@ -510,6 +511,12 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   # history was summarized.
   defp reset_crossed_thresholds(state) do
     %{state | live: %{state.live | crossed_thresholds: %MapSet{}}}
+  end
+
+  # Drop any in-flight context projection: the pre-compaction message
+  # list it measured no longer exists.
+  defp reset_context_projection(state) do
+    %{state | live: %{state.live | context_projection: nil}}
   end
 
   # Reset the `read_files` cache. Same pattern as
