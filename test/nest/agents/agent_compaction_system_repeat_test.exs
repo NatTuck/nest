@@ -27,7 +27,6 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
   """
   use Nest.DataCase, async: true
 
-  alias Nest.Agents.Agent.ClientAPI
   alias Nest.LLM.AnthropicClient
   alias Nest.LLM.MockClient
   alias Nest.LLM.OpenAIClient
@@ -113,10 +112,13 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
     _ = :sys.get_state(pid)
     state = :sys.get_state(pid)
 
-    # Terminate the agent so the spawned chat turn's
-    # `tool_calls_received` handler doesn't crash during
-    # teardown (purely test-induced noise).
-    ClientAPI.terminate(pid)
+    # The `nil` continuation resumes a post-compaction LLM turn
+    # (`resume_with_pending/1`). Finish it so the agent is idle when
+    # the test ends (the teardown asserts zero in-flight agents), and
+    # so the resumed turn is actually exercised rather than killed
+    # mid-flight. `state` is the compaction-time snapshot, captured
+    # before the resumed turn's assistant message lands.
+    assert_receive {:chat_status, %{status: "idle"}}, 100
 
     state
   end
@@ -289,8 +291,13 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
       state = run_compaction(pid)
       messages = state.chat_state.messages
 
+      # The resumed post-compaction turn (finished inside
+      # `run_compaction/3`) may already have appended its assistant
+      # message at the tail; scope to the compaction-produced prefix
+      # (`[system, summary_user]`) so this assertion doesn't race it.
       actual =
         messages
+        |> Enum.take(2)
         |> Enum.map(fn {_, %{index: idx}} -> idx end)
 
       assert actual == [6, 7],

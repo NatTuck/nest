@@ -12,7 +12,6 @@ defmodule Nest.AgentsTest do
   """
   use Nest.DataCase, async: true
 
-  import Eventually
   import Mimic
 
   alias Nest.Agents
@@ -285,13 +284,14 @@ defmodule Nest.AgentsTest do
 
       :ok = Agents.chat(AgentTestHelpers.current_space_id(), name, "Hello, agent!")
 
-      assert eventually(
-               fn ->
-                 {:ok, info} = Agents.get_info(AgentTestHelpers.current_space_id(), name)
-                 info.message_count == 3
-               end,
-               timeout: 1000
-             )
+      # Fence on the turn's idle (not `message_count`): the count hits
+      # 3 when the assistant message is appended, which is before the
+      # turn finalizes. Waiting on idle makes the assertion below
+      # deterministic and leaves the agent done at test end.
+      assert_receive {:chat_status, %{status: "idle"}}, 100
+
+      {:ok, info} = Agents.get_info(AgentTestHelpers.current_space_id(), name)
+      assert info.message_count == 3
     end
 
     test "returns error for non-existent agent" do

@@ -410,6 +410,11 @@ defmodule NestWeb.AgentChannel do
     end
   end
 
+  # ~64kB soft cap for chat:sync responses — enough headroom for a
+  # reasonable batch of messages without blowing past the WebSocket
+  # frame layer. Always sends at least one message if any remain.
+  @sync_size_limit 65_536
+
   @impl true
   def handle_in("chat:sync", %{"lastIndex" => last_index}, socket) do
     space_id = socket.assigns.space_id
@@ -417,15 +422,17 @@ defmodule NestWeb.AgentChannel do
 
     case Agents.get_agent_sync(space_id, name) do
       {:ok, agent} ->
-        new_messages =
+        serialized =
           agent.messages
           |> Enum.filter(&index_gt?(&1, last_index))
           |> Enum.map(&format_message/1)
 
+        {reply_messages, _} = truncate_by_size(serialized, @sync_size_limit)
+
         partial = partial_payload(agent.partial, last_index)
 
         reply = %{
-          "messages" => new_messages,
+          "messages" => reply_messages,
           "partial" => partial,
           "status" => to_string(agent.status),
           "messageCount" => agent.message_count
@@ -439,6 +446,50 @@ defmodule NestWeb.AgentChannel do
       {:error, reason} ->
         {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
     end
+  end
+
+  @impl true
+  def handle_in("chat:api-logs", %{"index" => index}, socket) do
+    space_id = socket.assigns.space_id
+    name = socket.assigns.name
+
+    case Agents.get_api_logs(space_id, name, index) do
+      {:ok, api_logs} ->
+        {:reply, {:ok, %{"apiLogs" => api_logs}}, socket}
+
+      {:error, reason} ->
+        {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
+    end
+  end
+
+  # Take a prefix of `messages` whose combined JSON wire size is
+  # ≤ `limit` bytes. Always returns at least one element when the
+  # input is non-empty, regardless of its individual size.
+  defp truncate_by_size([first | rest], limit) do
+    first_size = json_wire_size(first)
+
+    take_while_under(rest, limit - first_size, [first], first_size)
+  end
+
+  defp truncate_by_size([], _limit), do: {[], 0}
+
+  defp take_while_under([], _remaining, acc, total), do: {Enum.reverse(acc), total}
+
+  defp take_while_under([next | rest], remaining, acc, total) do
+    next_size = json_wire_size(next)
+
+    if next_size <= remaining do
+      take_while_under(rest, remaining - next_size, [next | acc], total + next_size)
+    else
+      {Enum.reverse(acc), total}
+    end
+  end
+
+  # Estimate of the JSON byte size for a serialised message map.
+  # Uses the external term size of the Jason-encoded binary as a
+  # cheap proxy for the actual wire byte count.
+  defp json_wire_size(map) when is_map(map) do
+    map |> Jason.encode!() |> byte_size()
   end
 
   # Filter helper for `chat:sync`: keep only messages whose

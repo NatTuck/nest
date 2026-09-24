@@ -119,71 +119,77 @@ defmodule NestWeb.AgentChannelAdvancedTest do
   end
 
   describe "API logs in chat:message events" do
-    test "API requests and responses are broadcast with correct message indices in two-round conversation",
+    test "assistant messages carry response API logs; user messages have empty api_logs in two-round conversation",
          %{socket: socket} do
       # === Round 1 ===
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
-      # Each chat:message broadcast is a known message. The user
-      # message is broadcast first (empty api_logs), then
-      # re-broadcast after the request log is attached. Match the
-      # re-broadcast version with non-empty apiLogs.
-      assert_push "chat:message", %{"index" => 1, "role" => "user", "apiLogs" => [user1_log]}, 500
+      # User messages no longer carry request api_logs after finalization
+      # (they're rebuilt on demand when the user expands the API logs widget).
+      assert_push "chat:message", %{"index" => 1, "role" => "user", "apiLogs" => user1_logs}, 500
+      assert user1_logs == []
 
+      # The assistant message is stored complete: the single broadcast
+      # carries its response log.
       assert_push "chat:message",
                   %{"index" => 2, "role" => "assistant", "apiLogs" => [asst1_log]},
                   500
-
-      assert user1_log["type"] == "request"
-      assert user1_log["id"] == "001.000"
-      assert is_map(user1_log["payload"])
 
       assert asst1_log["type"] == "response"
       assert asst1_log["id"] == "002.000"
       assert is_map(asst1_log["payload"])
 
+      # Fence round 1 on its own `idle` before starting round 2, so the
+      # round-2 fence below can't match a stale round-1 idle (which would
+      # let the test exit mid-round-2).
+      assert_push "chat:status", %{status: "idle"}, 500
+
       # === Round 2 ===
       ref2 = push(socket, "chat:message", %{"content" => "How are you?"})
       assert_reply ref2, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 3, "role" => "user", "apiLogs" => [user2_log]}, 500
+      assert_push "chat:message", %{"index" => 3, "role" => "user", "apiLogs" => user2_logs}, 500
+      assert user2_logs == []
 
       assert_push "chat:message",
                   %{"index" => 4, "role" => "assistant", "apiLogs" => [asst2_log]},
                   500
 
-      assert user2_log["type"] == "request"
-      assert user2_log["id"] == "003.000"
-
       assert asst2_log["type"] == "response"
       assert asst2_log["id"] == "004.000"
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert_push "chat:status", %{status: "idle"}, 500
     end
 
-    test "API call payload contains conversation history and tool calls", %{socket: socket} do
+    test "assistant message carries exactly one response log (no request/history payload)",
+         %{socket: socket} do
       ref = push(socket, "chat:message", %{"content" => "First message"})
       assert_reply ref, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 1, "role" => "user", "apiLogs" => [user_req]}, 500
+      assert_push "chat:message", %{"index" => 1, "role" => "user", "apiLogs" => user_logs}, 500
+      assert user_logs == []
 
       assert_push "chat:message",
                   %{"index" => 2, "role" => "assistant", "apiLogs" => [asst_resp]},
                   500
 
-      assert user_req["id"] == "001.000"
-      assert is_map(user_req["payload"])
-      assert user_req["timestamp"] != nil
-
+      assert asst_resp["type"] == "response"
       assert asst_resp["id"] == "002.000"
       assert is_map(asst_resp["payload"])
       assert asst_resp["timestamp"] != nil
 
+      # The response log is the real API response only — it must never
+      # contain the request's message history.
+      refute Map.has_key?(asst_resp["payload"], "messages"),
+             "response log payload must not contain the request message history"
+
       assert_receive {:chat_status, %{status: "idle"}}, 500
     end
 
-    test "tool messages have API request logs from continuation", %{socket: socket} do
+    test "tool messages have empty api_logs; assistant messages carry response logs", %{
+      socket: socket
+    } do
       MockClient.set_tool_response(%{
         text: "I'll run that command",
         tool_calls: [
@@ -200,32 +206,74 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       ref = push(socket, "chat:message", %{"content" => "Run a command"})
       assert_reply ref, :ok, %{}
 
-      # The tool message is re-broadcast after its api_logs are
-      # populated. Match the version with non-empty apiLogs.
-      # The context-notice synthetic pair (assistant("Context?")
-      # + user(notice)) is injected between the tool result and
-      # the final assistant, shifting the tool message's index
-      # from 3 to 5. Use content-based matching: find the tool
-      # message by `role: "tool"` and the final assistant by
-      # text content.
+      # The tool-call assistant is stored complete with its response log.
       assert_push "chat:message",
-                  %{"role" => "tool", "apiLogs" => [tool_req]},
+                  %{"role" => "assistant", "apiLogs" => [asst1_log]},
                   500
+
+      assert asst1_log["type"] == "response"
+
+      # Tool messages no longer carry request api_logs — they're
+      # rebuilt on demand when the user expands the API logs widget.
+      assert_push "chat:message",
+                  %{"role" => "tool", "apiLogs" => tool_logs},
+                  500
+
+      assert tool_logs == []
 
       assert_push "chat:message",
                   %{"role" => "assistant", "parts" => [%{"kind" => "text", "text" => "Done"}]},
                   500
 
-      assert tool_req["type"] == "request"
-      # The api_log id is `<message_index>.<sequence>`. With the
-      # synthetic pair, the tool message index is 5 instead of 3.
-      assert tool_req["id"] == "005.000"
-      assert is_map(tool_req["payload"])
-      assert tool_req["timestamp"] != nil
-
       MockClient.clear()
 
       assert_receive {:chat_status, %{status: "idle"}}, 500
+    end
+  end
+
+  describe "chat:api-logs fetch" do
+    test "returns the stored response log for an assistant message", %{socket: socket} do
+      ref = push(socket, "chat:message", %{"content" => "Hello"})
+      assert_reply ref, :ok, %{}
+
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 500
+      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 500
+
+      logs_ref = push(socket, "chat:api-logs", %{"index" => 2})
+      assert_reply logs_ref, :ok, %{"apiLogs" => [log]}
+
+      assert log["type"] == "response"
+      assert is_map(log["payload"])
+      refute Map.has_key?(log["payload"], "messages")
+    end
+
+    test "rebuilds a synthetic request log for a user message", %{socket: socket} do
+      ref = push(socket, "chat:message", %{"content" => "Hello"})
+      assert_reply ref, :ok, %{}
+
+      assert_push "chat:message", %{"index" => 1, "role" => "user", "apiLogs" => []}, 500
+      assert_receive {:chat_status, %{status: "idle"}}, 500
+
+      logs_ref = push(socket, "chat:api-logs", %{"index" => 1})
+      assert_reply logs_ref, :ok, %{"apiLogs" => [log]}
+
+      assert log["type"] == "request"
+      assert is_map(log["payload"])
+      assert Map.has_key?(log["payload"], "messages")
+    end
+
+    test "returns an error for a message with no logs (never a silent empty list)", %{
+      socket: socket
+    } do
+      # Index 0 is the system message, which never carries logs.
+      logs_ref = push(socket, "chat:api-logs", %{"index" => 0})
+      assert_reply logs_ref, :error, %{"reason" => "no_logs"}
+    end
+
+    test "returns not_found for a missing message index", %{socket: socket} do
+      logs_ref = push(socket, "chat:api-logs", %{"index" => 999})
+      assert_reply logs_ref, :error, %{"reason" => "not_found"}
     end
   end
 

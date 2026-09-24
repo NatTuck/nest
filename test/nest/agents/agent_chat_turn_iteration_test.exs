@@ -138,6 +138,10 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
           %{state | chat_state: %{state.chat_state | messages: messages}}
         end)
 
+        # The final text response for the resumed turn's second LLM
+        # iteration (after the carried tool call executes).
+        MockClient.set_response("done")
+
         # Send compaction_done with the unified
         # `{:tool_call, msg, iter, max}` continuation. The
         # carried `msg` is synthetic — what matters for this
@@ -162,6 +166,9 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
         # executes the carried tool calls first). Broadcasting it
         # is what pulls the UI out of the stale `:compacting`.
         assert_receive {:chat_status, %{status: "executing_tools"}}, 500
+        # Finish the resumed turn so the agent is idle when the
+        # test ends (the teardown asserts zero in-flight agents).
+        assert_receive {:chat_status, %{status: "idle"}}, 100
       end)
     end
   end
@@ -188,6 +195,10 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
       end)
 
       capture_log(fn ->
+        # The final text response for the resumed turn's second LLM
+        # iteration (after the carried tool call executes).
+        MockClient.set_response("done")
+
         send(
           pid,
           {:compaction_done, "Summary", {:tool_call, synthetic_tool_call_msg(), 7, 30}}
@@ -202,6 +213,9 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
         # finalizes — broadcasting chat:status along the
         # way. The first is the resumed `:executing_tools`.
         assert_receive {:chat_status, %{status: "executing_tools"}}, 500
+        # Finish the resumed turn so the agent is idle when the
+        # test ends (the teardown asserts zero in-flight agents).
+        assert_receive {:chat_status, %{status: "idle"}}, 100
       end)
 
       state_after = :sys.get_state(pid)

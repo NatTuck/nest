@@ -1,42 +1,15 @@
 defmodule Nest.Agents.Agent.Broadcasts.ApiLog do
   @moduledoc """
-  `api_log` send helpers extracted from `Nest.Agents.Agent.Broadcasts`
-  so the parent module stays under the credo 500-line cap.
+  Response-log shaping helpers extracted from
+  `Nest.Agents.Agent.Broadcasts` so the parent module stays under
+  the credo 500-line cap.
 
-  These functions append entries to the agent's `{:api_log, ...}`
-  mailbox so the LLMRunner-recorded wire payloads survive
-  server restarts. The `next_api_log_id/2` sequence-number
-  bookkeeping is part of `ApiLogs` state; this module only
-  shapes the messages the runner sends.
+  The response log is stored on the assistant message itself (and
+  therefore persisted with it); these functions only build the id
+  and payload that go into that stored entry.
   """
 
   alias Nest.LLM.RunResponse
-
-  def request(agent_pid, message_index, api_log_id, api_payload) do
-    send(
-      agent_pid,
-      {:api_log, message_index,
-       %{
-         id: api_log_id,
-         timestamp: DateTime.utc_now(),
-         type: :request,
-         payload: api_payload
-       }}
-    )
-  end
-
-  def response(agent_pid, message_index, api_log_id, api_response) do
-    send(
-      agent_pid,
-      {:api_log, message_index,
-       %{
-         id: api_log_id,
-         timestamp: DateTime.utc_now(),
-         type: :response,
-         payload: api_response
-       }}
-    )
-  end
 
   # Sequence-numbered api_log id for a `(message_index,
   # existing_sequences)` pair. The format `<message_index>.<seq>`

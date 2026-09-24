@@ -159,6 +159,11 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
       assert state_after.client_config.client == state_before.client_config.client
       assert state_after.model == state_before.model
       assert state_after.live.status == :streaming
+
+      # The `:streaming` status was fabricated for the refusal check
+      # (there is no real turn). Restore idle so the teardown's
+      # zero-in-flight-agents assertion holds.
+      :sys.replace_state(pid, fn state -> %{state | live: %{state.live | status: :idle}} end)
     end
 
     test "rejects an unknown model with :invalid_model" do

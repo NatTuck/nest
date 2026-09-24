@@ -189,8 +189,10 @@ defmodule Nest.Agents.AgentCompactionTest do
       # it as "Summary of earlier conversation:\n\n…".
       summary_text = "..."
 
-      # `:tool_call` continuation; spawn ChatTurn sits idle waiting
-      # for `:tool_results` — we only care about the broadcast.
+      # `:tool_call` continuation: the resumed post-compaction turn
+      # executes the carried tool call, then calls the LLM. Finish it so
+      # the agent is idle when the test ends (the teardown asserts zero
+      # in-flight agents) instead of killing it mid-turn.
       tool_call_msg = compact_tool_call_msg(3)
 
       :sys.replace_state(pid, fn s ->
@@ -211,7 +213,7 @@ defmodule Nest.Agents.AgentCompactionTest do
       assert length(payload.history) == length(old_messages) + 1
       assert match?(%{"role" => "compaction"}, List.last(payload.history))
 
-      Agent.terminate(pid)
+      assert_receive {:chat_status, %{status: "idle"}}, 100
     end
   end
 

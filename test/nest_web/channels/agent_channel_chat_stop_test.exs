@@ -92,6 +92,10 @@ defmodule NestWeb.AgentChannelChatStopTest do
 
       assert [%{"kind" => "text", "text" => content} | _] = parts
       assert content == "After the stop"
+
+      # Fence the second turn on its own idle before the test exits.
+      assert_push "chat:status", %{status: "idle"}, 2000
+
       # Sanity: agent still queryable after stop.
       assert {:ok, %{name: ^id}} = Agents.get_info(space_id, id)
     end

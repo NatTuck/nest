@@ -1,11 +1,33 @@
 # api_log Persistence Across BEAM Restart
 
-`state.chat_state.messages[i].api_logs` is built up in-memory only.
-After a BEAM restart, every message reloads from the DB with
-`api_logs: []` — the UI's "API Logs" expander is empty for every
-chat, the copy-as-JSON button has nothing to copy, and the
-debugging story for "why did the LLM say that?" requires a network
-tap. This plan makes api_logs survive restarts without O(N²) growth.
+> **Current design (this section supersedes the plan below).**
+>
+> - A **response log** is the actual API response, **stored on the
+>   assistant message**. It is attached *before* the message is
+>   appended, so an assistant message is persisted **complete** — in
+>   memory, in the DB, and in the default UI payload in one store.
+>   A message is never inserted and then patched with its log.
+> - A **request log** is never stored. It is synthetic: rebuilt on
+>   demand from the conversation prefix when the user expands the API
+>   logs widget on a `:user`/`:tool` message (`chat:api-logs` →
+>   `Restore.rebuild_request_api_logs/4`).
+> - The `pending_api_logs` queue and the restore-time
+>   `attach_rebuilt_api_logs/3` step are gone.
+> - The UI never silently drops the widget: a missing response log (or
+>   a failed/empty request-log fetch) renders a visible error indicator.
+>
+> The plan below (selective persistence via a `pending_api_logs` queue
+> and restore-time request rebuilds) is retained for historical
+> context only; it does not describe the current code.
+
+`state.chat_state.messages[i].api_logs` was originally built up
+in-memory only. After a BEAM restart, every message reloaded from
+the DB with `api_logs: []` — the UI's "API Logs" expander was empty
+for every chat, the copy-as-JSON button had nothing to copy, and the
+debugging story for "why did the LLM say that?" required a network
+tap. The design below aimed to make api_logs survive restarts
+without O(N²) growth; the current design (above) fixes the live-path
+persistence gap that this plan left open.
 
 ## Why selective persistence
 

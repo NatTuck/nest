@@ -246,7 +246,8 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
          index: nil,
          timestamp: DateTime.utc_now(),
          parts: [%Part.Text{text: error_msg}],
-         api_logs: triggering_message_api_logs(state)
+         api_logs: [],
+         metadata: %{"error" => true}
        }}
 
     {stamped, state} = Nest.Agents.Agent.__append_message__(state, error_message)
@@ -258,8 +259,6 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
           state.live
           | streaming_acc: nil,
             active_message_index: stamped_index,
-            pending_api_logs:
-              Nest.Agents.Agent.__clear_pending_api_logs__(state, stamped_index).live.pending_api_logs,
             status: :idle,
             tool_index_map: %{}
         }
@@ -284,65 +283,19 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   # stacktrace snippet so the UI shows where the crash
   # happened. The full stacktrace is in the server log
   # (logged by both the chat task and this handler).
-  # The pending api_logs lookup uses the Agent's
-  # `next_message_index` (the value the ChatTurn queried
-  # at the start of the iteration) rather than the
-  # message's `index` field. The ChatTurn builds the
-  # assistant/tool message with `index: nil` and queues
-  # the request api_log at `active_message_index` (which
-  # equals `next_message_index` at the time of the
-  # request). When the Agent stamps the message via
-  # `__append_message__/2`, the message's `index` IS the
-  # same number, but the lookup happens BEFORE the stamp
-  # — so we use `next_message_index` (the pre-stamp value).
   defp tool_calls_received(tool_call_message, state) do
-    pending_logs =
-      Nest.Agents.Agent.__pending_api_logs__(state, state.chat_state.next_message_index)
+    tool_call_message = {:assistant, %{tool_call_message | index: nil}}
 
-    tool_call_message =
-      if pending_logs != [] do
-        {:assistant,
-         %{
-           tool_call_message
-           | api_logs: (tool_call_message.api_logs || []) ++ pending_logs,
-             index: nil
-         }}
-      else
-        {:assistant, %{tool_call_message | index: nil}}
-      end
+    {_stamped, state} = Nest.Agents.Agent.__append_message__(state, tool_call_message)
 
-    {stamped, state} = Nest.Agents.Agent.__append_message__(state, tool_call_message)
-    stamped_index = Nest.Agents.Agent.stamped_index(stamped)
-
-    state = %{
-      state
-      | live: %{
-          state.live
-          | pending_api_logs:
-              Nest.Agents.Agent.__clear_pending_api_logs__(state, stamped_index).live.pending_api_logs,
-            status: :executing_tools
-        }
-    }
+    state = %{state | live: %{state.live | status: :executing_tools}}
 
     Broadcasts.status(state)
     {:noreply, state}
   end
 
   defp tool_results_received(tool_result_message, state) do
-    pending_logs =
-      Nest.Agents.Agent.__pending_api_logs__(state, state.chat_state.next_message_index)
-
-    tool_result_message =
-      if pending_logs != [] do
-        {:tool,
-         %{
-           tool_result_message
-           | api_logs: (tool_result_message.api_logs || []) ++ pending_logs,
-             index: nil
-         }}
-      else
-        {:tool, %{tool_result_message | index: nil}}
-      end
+    tool_result_message = {:tool, %{tool_result_message | index: nil}}
 
     {stamped, state} = Nest.Agents.Agent.__append_message__(state, tool_result_message)
     stamped_index = Nest.Agents.Agent.stamped_index(stamped)
@@ -361,9 +314,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
       state
       | live: %{
           state.live
-          | pending_api_logs:
-              Nest.Agents.Agent.__clear_pending_api_logs__(state, stamped_index).live.pending_api_logs,
-            status: :streaming,
+          | status: :streaming,
             streaming_acc: Streaming.new(stamped_index + 1),
             tool_index_map: %{}
         }
@@ -447,23 +398,4 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   # `{:chat_stopped, _}`, `{:chat_crashed, _, _}`) are
   # routed to `ChatTurnHandler` by the top-level
   # `Handlers` dispatcher.
-
-  # The api_log handler broadcasts the request log at the index
-  # of the message that triggered this LLM call (the user
-  # message on a fresh turn, the tool message on a
-  # continuation). When the stream completes that message
-  # already exists and the api_log gets attached directly via
-  # `append_to_existing_message/3` — so it doesn't sit in
-  # `pending_api_logs` keyed at the new assistant index. The
-  # error path can't read it there.
-  # Read any `api_logs` already attached to that message (the
-  # trailing user/tool message) and carry them over onto the
-  # error assistant message so the API Logs panel surfaces
-  # the request payload alongside the error.
-  defp triggering_message_api_logs(state) do
-    case List.last(state.chat_state.messages) do
-      {_, %{api_logs: logs}} when is_list(logs) -> logs
-      _ -> []
-    end
-  end
 end

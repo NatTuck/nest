@@ -135,7 +135,8 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
                    },
                    5_000
 
-    {:ok, child_pid} = AgentsRegistry.lookup(AgentTestHelpers.current_space_id(), child_name)
+    space_id = AgentTestHelpers.current_space_id()
+    {:ok, child_pid} = AgentsRegistry.lookup(space_id, child_name)
 
     cast_child_completed_to_parent(parent_name, child_name, "the answer is 4")
 

@@ -48,7 +48,6 @@ defmodule Nest.Agents.Agent.Init do
     tools = Tools.get_functions(tool_names, Map.get(attrs, :workspace_path), tmp_path)
 
     {initial_messages, next_index} = initial_messages_with_system(system_prompt)
-    initial_api_log_sequences = Map.get(attrs, :initial_api_log_sequences, %{})
 
     %Nest.Agents.Agent{
       name: name,
@@ -69,7 +68,7 @@ defmodule Nest.Agents.Agent.Init do
       shared: Map.get(attrs, :shared, false),
       depth: Map.get(attrs, :depth, 0),
       chat_state: build_chat_state(initial_messages, next_index),
-      live: build_live_state(initial_api_log_sequences, mode)
+      live: build_live_state(mode)
     }
   end
 
@@ -316,14 +315,9 @@ defmodule Nest.Agents.Agent.Init do
     }
   end
 
-  # Per-process state always resets to defaults on init/1. The
-  # only non-default seed is the API-log id sequences, which the
-  # restore path precomputes from the loaded message history.
-  defp build_live_state(api_log_sequences, mode) do
-    %Nest.Agents.Agent.ChatState.Live{
-      api_log_sequences: api_log_sequences,
-      mode: mode
-    }
+  # Per-process state always resets to defaults on init/1.
+  defp build_live_state(mode) do
+    %Nest.Agents.Agent.ChatState.Live{mode: mode}
   end
 
   defp create_tmp_space(agent_name) do

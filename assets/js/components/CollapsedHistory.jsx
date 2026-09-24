@@ -126,7 +126,15 @@ function MessageBubble({ message }) {
             />
             <ToolCalls toolCalls={toolCallsFromParts(message.parts)} />
             <ToolResults toolResults={toolResultsFromParts(message.parts)} />
-            <ApiLogsBlock apiLogs={message.apiLogs} />
+            <ApiLogsBlock
+              apiLogs={message.apiLogs}
+              messageRole={message.role}
+              expectsResponseLog={
+                message.role === "assistant" &&
+                !message.metadata?.error &&
+                !message.metadata?.stopped_by_user
+              }
+            />
           </>
         )}
       </div>

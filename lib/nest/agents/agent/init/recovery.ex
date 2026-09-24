@@ -21,7 +21,6 @@ defmodule Nest.Agents.Agent.Init.Recovery do
 
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Init
-  alias Nest.Agents.Agent.Restore
   alias Nest.LLM.ClientConfig
   alias Nest.LLM.RecoveryClient
 
@@ -43,13 +42,6 @@ defmodule Nest.Agents.Agent.Init.Recovery do
 
     state =
       Init.seed_from_db(
-        state,
-        Map.get(attrs, :preloaded_messages, []),
-        Map.get(attrs, :last_compaction_index, -1)
-      )
-
-    state =
-      Restore.attach_rebuilt_api_logs(
         state,
         Map.get(attrs, :preloaded_messages, []),
         Map.get(attrs, :last_compaction_index, -1)

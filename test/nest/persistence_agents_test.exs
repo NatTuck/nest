@@ -149,45 +149,6 @@ defmodule Nest.PersistenceAgentsTest do
                )
     end
 
-    test "includes :initial_api_log_sequences for user/tool preloaded messages" do
-      attrs = agent_attrs("seq-#{Elixir.System.unique_integer([:positive])}")
-      {:ok, _} = Persistence.insert_agent(attrs)
-
-      {:ok, _} =
-        Persistence.insert_message(
-          test_space_id(),
-          attrs.name,
-          {:system, %MsgSystem{index: 0, parts: [%Part.Text{text: "sys"}]}}
-        )
-
-      {:ok, _} =
-        Persistence.insert_message(
-          test_space_id(),
-          attrs.name,
-          {:user, %User{index: 1, parts: [%Part.Text{text: "hi"}]}}
-        )
-
-      {:ok, _} =
-        Persistence.insert_message(
-          test_space_id(),
-          attrs.name,
-          {:user, %User{index: 2, parts: [%Part.Text{text: "again"}]}}
-        )
-
-      {:ok, _} =
-        Persistence.insert_message(
-          test_space_id(),
-          attrs.name,
-          {:assistant, %Assistant{index: 3, parts: [%Part.Text{text: "sure"}]}}
-        )
-
-      {:ok, restored} = Persistence.build_attrs_for_start(test_space_id(), attrs.name)
-
-      # `:user` indices 1 and 2 get sequence 1; `:assistant` at 3
-      # does not (populated via DB row instead).
-      assert restored.initial_api_log_sequences == %{1 => 1, 2 => 1}
-    end
-
     test "round-trips assistant api_logs through insert + build_attrs_for_start" do
       attrs = agent_attrs("roundtrip-#{Elixir.System.unique_integer([:positive])}")
       {:ok, _} = Persistence.insert_agent(attrs)

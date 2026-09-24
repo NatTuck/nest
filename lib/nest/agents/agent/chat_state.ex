@@ -163,7 +163,6 @@ defmodule Nest.Agents.Agent.ChatState.Live do
             status: :idle,
             active_message_index: 0,
             api_log_sequences: %{},
-            pending_api_logs: %{},
             chat_turn_pid: nil,
             cancelled: false,
             pending_user_message: nil,

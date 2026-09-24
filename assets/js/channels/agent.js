@@ -36,13 +36,18 @@ function requestSync(agentId, opts = {}) {
   const channel = agentChannels.get(agentId);
   if (!channel) return;
 
-  const previous = syncState.get(agentId) || { inFlight: false };
-  syncState.set(agentId, { ...previous, inFlight: true });
-
   channel.push("chat:sync", { lastIndex }).receive("ok", (resp) => {
+    if (!resp.messages || resp.messages.length === 0) {
+      syncState.delete(agentId);
+      return;
+    }
+
     getStore().syncAgentMessages(agentId, resp);
-    const current = syncState.get(agentId);
-    syncState.set(agentId, { ...current, inFlight: false });
+
+    const updatedCache = getStore().agentsCache[agentId];
+    if (updatedCache) {
+      requestSync(agentId, { lastIndex: updatedCache.lastIndex });
+    }
   });
 }
 

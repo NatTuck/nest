@@ -42,6 +42,11 @@ session if that made sense.
 - We don't hide stuff from the user. If it gets sent to the LLM or the LLM sends
 it back then it's visible in the UI (maybe collapsed, in rare edge cases may be
 just in the API log, but the UI always includes everything that happened).
+- We don't quietly hide UI elements when expected data is missing. If data is missing
+so we can't render a UI element we replace it with an obvious error indicator (or just
+entirely crash with a clear error message to make sure tests can't possibly pass under
+those circumstances). Even optional data should show a clear UI indicator that it's
+missing rather than nothing.
 
 ## Project guidelines
 

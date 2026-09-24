@@ -173,16 +173,8 @@ defmodule Nest.Agents.Agent.Broadcasts do
   defdelegate total_usage(direct, descendant), to: __MODULE__.Usage, as: :total_usage
   defdelegate merge_usage_totals(current, usage), to: __MODULE__.Usage, as: :merge_usage_totals
 
-  # api_log send helpers live in `Broadcasts.ApiLog` for the
+  # api_log shaping helpers live in `Broadcasts.ApiLog` for the
   # same reason.
-  defdelegate api_log(agent_pid, message_index, id, payload),
-    to: __MODULE__.ApiLog,
-    as: :request
-
-  defdelegate api_response(agent_pid, message_index, id, response),
-    to: __MODULE__.ApiLog,
-    as: :response
-
   defdelegate next_api_log_id(message_index, sequences),
     to: __MODULE__.ApiLog,
     as: :next_id

@@ -98,14 +98,11 @@ defmodule Nest.Agents.AgentChatTest do
       refute log =~ "no match of right hand side value"
     end
 
-    test "LLM error assistant message carries the request api_log from the triggering user message" do
-      # Regression for the typhon "request failed, no API log" path.
-      # The request log is broadcast at the user message's index
-      # and (via `append_to_existing_message`) attached directly to
-      # the user message. The new `llm_error` handler copies those
-      # api_logs onto the failed assistant message so the UI's API
-      # Logs panel shows the request payload alongside the error,
-      # instead of an orphaned assistant error with no api_logs.
+    test "user and error assistant messages carry empty api_logs (request logs rebuilt on demand)" do
+      # Request logs are no longer attached to user or tool messages
+      # during the live flow. The assistant message carries response
+      # logs from the external API call. User/tool request logs are
+      # rebuilt on demand when the user expands the API logs widget.
       MockClient.set_error("Connection failed")
 
       {pid, _agent_id} = start_agent()
@@ -115,15 +112,14 @@ defmodule Nest.Agents.AgentChatTest do
         assert_receive {:chat_status, %{status: "idle"}}, 500
       end)
 
-      # The user message is broadcast after the error handler stamps
-      # the error assistant and attaches api_logs. Wait for the
-      # second broadcast (with api_logs attached).
-      assert_receive {:chat_message, {:user, %{api_logs: [_ | _] = user_api_logs}}}, 500
-
+      assert_receive {:chat_message, {:user, %{api_logs: user_api_logs}}}, 500
       assert_receive {:chat_message, {:assistant, %{api_logs: error_assistant_api_logs}}}, 500
 
-      assert error_assistant_api_logs == user_api_logs,
-             "failed assistant message should carry the same api_logs as the triggering user message"
+      assert user_api_logs == [],
+             "user messages should not carry request api_logs after finalization"
+
+      assert error_assistant_api_logs == [],
+             "error assistant messages carry no api_logs (the response log was never recorded)"
     end
 
     test "accumulates delta content from streaming LLM response" do

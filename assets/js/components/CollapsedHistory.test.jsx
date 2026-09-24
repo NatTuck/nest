@@ -367,7 +367,7 @@ describe("CollapsedHistory", () => {
         { role: "assistant", parts: [{ kind: "text", text: "Hi" }], apiLogs },
       ]);
       render(<CollapsedHistory history={history} />);
-      expect(screen.getByText(/API Logs \(1\)/)).toBeInTheDocument();
+      expect(screen.getByText("API Logs (1)")).toBeInTheDocument();
     });
   });
 

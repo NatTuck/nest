@@ -168,6 +168,27 @@ defmodule Nest.Agents do
     end
   end
 
+  @doc """
+  Fetch API logs for a specific message by index. Returns the
+  response logs for assistant and system messages (persisted),
+  or rebuilds request logs for user and tool messages on demand.
+  """
+  @spec get_api_logs(integer(), String.t(), non_neg_integer()) ::
+          {:ok, [map()]} | {:error, term()}
+  def get_api_logs(space_id, name, index) do
+    case Supervisor.get_agent(space_id, name) do
+      {:ok, pid} ->
+        try do
+          Agent.get_api_logs(pid, index)
+        catch
+          :exit, _reason -> {:error, :not_found}
+        end
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
   defp get_vocation_info(nil), do: nil
 
   defp get_vocation_info(vocation_id) do

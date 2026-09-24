@@ -254,7 +254,6 @@ defmodule Nest.Agents.Agent.ChatPipeline do
           | mode: effective_mode,
             status: :streaming,
             active_message_index: stamped_index,
-            pending_api_logs: clear_pending_api_logs(state, stamped_index).live.pending_api_logs,
             streaming_acc: Streaming.new(stamped_index + 1),
             tool_index_map: %{}
         }
@@ -275,15 +274,13 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   # `index: nil` — the Agent stamps the actual index via
   # `__append_message__/2`. The ChatTurn is no longer the
   # authority on which slot the user message occupies.
-  defp build_user_message(state, content, effective_mode) do
-    next_idx = state.chat_state.next_message_index
-
+  defp build_user_message(_state, content, effective_mode) do
     user = %User{
       index: nil,
       timestamp: DateTime.utc_now(),
       parts: [%Part.Text{text: "[mode: #{effective_mode}]\n#{content}"}],
       metadata: %{"mode" => effective_mode},
-      api_logs: get_pending_api_logs(state, next_idx)
+      api_logs: []
     }
 
     {:user, user}
@@ -457,24 +454,5 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     # No vocation struct or vocation_id available: only "chat"
     # is valid.
     {"chat", Nest.Sandbox.default_caps()}
-  end
-
-  # Read any pending api_logs queued for the given message_index.
-  # The pipeline may have been queued before the user message
-  # was actually appended; we read them here so the message
-  # struct carries the api_logs forward.
-  defp get_pending_api_logs(state, message_index) do
-    Map.get(state.live.pending_api_logs, message_index, [])
-  end
-
-  # Clear the pending api_logs queue for the given message_index
-  # after they've been attached to the persisted user message.
-  # Returns the new state (with the cleared map) so the caller
-  # can chain updates.
-  defp clear_pending_api_logs(state, message_index) do
-    pending_api_logs =
-      Map.delete(state.live.pending_api_logs, message_index)
-
-    %{state | live: %{state.live | pending_api_logs: pending_api_logs}}
   end
 end

@@ -78,6 +78,17 @@ defmodule Nest.Agents.Agent.ClientAPI do
   end
 
   @doc """
+  Fetch the API logs for a specific message by index. For assistant
+  and system messages, returns the persisted response logs. For user
+  and tool messages, rebuilds the request log from conversation
+  history on demand.
+  """
+  @spec get_api_logs(pid(), non_neg_integer()) :: {:ok, [map()]} | {:error, term()}
+  def get_api_logs(pid, index) do
+    GenServer.call(pid, {:get_api_logs, index})
+  end
+
+  @doc """
   Returns the archived history (compacted-away messages plus
   `{:compaction, _}` markers between them) for the agent.
 

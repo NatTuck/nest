@@ -56,7 +56,6 @@ defmodule Nest.Persistence do
   require Logger
 
   alias Ecto.Changeset
-  alias Nest.Agents.Agent.Restore
   alias Nest.Agents.PersistedAgent
   alias Nest.Agents.PersistedMessage
   alias Nest.Messages.Compaction
@@ -366,7 +365,6 @@ defmodule Nest.Persistence do
         depth: row.depth || 0,
         created_by_user_id: row.created_by_user_id,
         shared: row.shared == true,
-        initial_api_log_sequences: Restore.initial_sequences_for(preloaded),
         preloaded_messages: preloaded,
         vocation: load_vocation(row.vocation_id)
       }

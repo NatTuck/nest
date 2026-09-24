@@ -45,7 +45,6 @@ defmodule Nest.Agents.Agent.ChatTurn.Iteration do
   """
 
   alias Nest.Agents.Agent.Broadcasts
-  alias Nest.Agents.Agent.ChatTurn.APILog
   alias Nest.Agents.Agent.ChatTurn.HTTPWorker
   alias Nest.Agents.Agent.ChatTurn.State
   alias Nest.Messages.Assistant
@@ -245,17 +244,6 @@ defmodule Nest.Agents.Agent.ChatTurn.Iteration do
     parent = self()
     agent_pid = state.ctx.agent_pid
 
-    # The request log is queued at the last message's
-    # index (the message that triggered this LLM call:
-    # the user message on a fresh turn, the tool message
-    # on a continuation). The Agent's `api_log_handler`
-    # will re-broadcast that message with the request log
-    # attached (the message already exists in the
-    # messages list, so the append-to-existing-message
-    # path fires).
-    request_log_index = last_message_index_for_request_log(messages)
-    :ok = APILog.request(state, request_log_index, messages)
-
     {tools, tool_choice} = tool_config_for_iteration(state)
     state = %{state | ctx: %{state.ctx | tools: tools, tool_choice: tool_choice}}
 
@@ -291,22 +279,6 @@ defmodule Nest.Agents.Agent.ChatTurn.Iteration do
         # and stop cleanly.
         send(agent_pid, {:chat_crashed, :saturated, []})
         {:stop, :normal, state}
-    end
-  end
-
-  # Return the index of the last message in the messages
-  # list. The request api_log is queued at this index so
-  # the message that triggered this LLM call (the user
-  # message on a fresh turn, the tool message on a
-  # continuation) is re-broadcast with the request log
-  # attached.
-  defp last_message_index_for_request_log([]), do: 0
-
-  defp last_message_index_for_request_log(messages) do
-    case List.last(messages) do
-      nil -> 0
-      {_, %{index: idx}} -> idx
-      _ -> 0
     end
   end
 end

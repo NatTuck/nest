@@ -36,8 +36,10 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ModelHandler
+  alias Nest.Agents.Agent.Restore
   alias Nest.Agents.Agent.WorkspaceHandler
   alias Nest.LLM.Client
+  alias Nest.Messages.Message
   alias Nest.Messages.Streaming
   alias Nest.Sandbox
   alias Nest.Tokens.ConversationSize
@@ -69,6 +71,16 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
   # for the next `:stop_chat` message to be processed.
   def handle(:get_messages_with_cancelled, _from, state) do
     {:reply, {state.chat_state.messages, state.live.cancelled}, state}
+  end
+
+  # Fetch the API logs for a specific message.
+  #
+  # Response logs live on the message (assistant/system messages are
+  # persisted with their real response log). User/tool messages never
+  # carry stored request logs — their request log is synthetic and is
+  # rebuilt on demand here.
+  def handle({:get_api_logs, index}, _from, state) do
+    {:reply, api_logs_for(state, index), state}
   end
 
   def handle(:get_crossed_thresholds, _from, state) do
@@ -168,6 +180,36 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
   # `LLMStreamHandler` so the cache keys match the lookup
   # keys. Both treat absolute paths as-is and join relative
   # ones onto the per-agent workspace root.
+  # Fetch the API logs for a specific message. Response logs live on
+  # the message (assistant/system messages are persisted with their real
+  # response log). User/tool messages never carry a stored request log —
+  # theirs is synthetic and rebuilt on demand here.
+  defp api_logs_for(state, index) do
+    messages = state.chat_state.history ++ state.chat_state.messages
+
+    case find_message(messages, index) do
+      nil ->
+        {:error, :not_found}
+
+      {_role, %{api_logs: logs}} when is_list(logs) and logs != [] ->
+        {:ok, Message.format_api_logs(logs)}
+
+      {role, %{index: idx}} when role in [:user, :tool] ->
+        {:ok, rebuild_request_logs(state, messages, idx)}
+
+      _message ->
+        {:error, :no_logs}
+    end
+  end
+
+  defp rebuild_request_logs(state, messages, idx) do
+    preloaded = Enum.reject(messages, &match?({:compaction, _}, &1))
+
+    api_log = Restore.rebuild_request_api_logs(state, preloaded, idx, state.client_config)
+
+    Message.format_api_logs([api_log])
+  end
+
   # Use the cached Vocation struct from state — no DB work
   # in the handler. The struct was loaded by the calling
   # process and passed into init/1 via `:vocation` in attrs.
@@ -235,6 +277,13 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
   end
 
   defp system_prompt_from_messages(_), do: nil
+
+  defp find_message(messages, idx) do
+    Enum.find(messages, fn
+      {_, %{index: i}} -> i == idx
+      _ -> false
+    end)
+  end
 
   # Three-step pipeline (resolve path → stat the on-disk file
   # → match against the cache) split into flat helpers. The

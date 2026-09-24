@@ -35,6 +35,11 @@ defmodule NestWeb.AgentChannelChatTest do
       assert_push "chat:message", %{"index" => 1, "role" => "user"}, 2000
       assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 2000
 
+      # Fence each turn on its own `idle` before starting the next one:
+      # turn 1's idle must be consumed here, or the final idle assertion
+      # would match it and let the test exit mid-turn-2.
+      assert_push "chat:status", %{status: "idle"}, 100
+
       # Sync from current tip: no new messages.
       ref_sync = push(socket, "chat:sync", %{"lastIndex" => 2})
       assert_reply ref_sync, :ok, %{"messages" => [], "partial" => nil, "status" => "idle"}
@@ -44,6 +49,7 @@ defmodule NestWeb.AgentChannelChatTest do
 
       assert_push "chat:message", %{"index" => 3, "role" => "user"}, 2000
       assert_push "chat:message", %{"index" => 4, "role" => "assistant"}, 2000
+      assert_push "chat:status", %{status: "idle"}, 100
 
       # Sync from index 2: messages 3 and 4.
       ref_sync2 = push(socket, "chat:sync", %{"lastIndex" => 2})
@@ -56,8 +62,6 @@ defmodule NestWeb.AgentChannelChatTest do
 
       assert length(messages) == 2
       assert Enum.all?(messages, fn m -> m["index"] > 1 end)
-
-      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
 
     test "returns a nil partial when the agent is not streaming", %{socket: socket} do
@@ -78,6 +82,11 @@ defmodule NestWeb.AgentChannelChatTest do
 
       # Wait for completion
       assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 2000
+
+      # Consume the turn's idle before syncing: otherwise the
+      # `chat:status` push can sit in the socket mailbox ahead of the
+      # `chat:sync` reply and `assert_reply` matches the wrong message.
+      assert_push "chat:status", %{status: "idle"}, 100
 
       # Sync after completion - partial should be nil again
       ref_sync2 = push(socket, "chat:sync", %{"lastIndex" => -1})
@@ -202,6 +211,11 @@ defmodule NestWeb.AgentChannelChatTest do
       assert_push "chat:message", %{"index" => 1, "role" => "user"}, 2000
       assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 2000
 
+      # Fence the turn's idle before asking for status: the assistant
+      # message is appended before the turn finalizes, so without this
+      # the status reply can race and report a non-idle status.
+      assert_push "chat:status", %{status: "idle"}, 100
+
       ref_status = push(socket, "chat:status", %{"lastIndex" => -1})
 
       assert_reply ref_status, :ok, %{
@@ -224,6 +238,10 @@ defmodule NestWeb.AgentChannelChatTest do
 
       # Wait for completion
       assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 2000
+
+      # Fence the turn's idle before asking for status (the assistant
+      # message is appended before the turn finalizes).
+      assert_push "chat:status", %{status: "idle"}, 100
 
       # After completion, status should be back to "idle"
       ref_status = push(socket, "chat:status", %{"lastIndex" => -1})
@@ -257,6 +275,9 @@ defmodule NestWeb.AgentChannelChatTest do
 
       assert_push "chat:message", _payload, 2000
 
+      # Fence the turn's idle before syncing.
+      assert_push "chat:status", %{status: "idle"}, 100
+
       # Sync with lastIndex higher than server's messageCount
       ref_sync = push(socket, "chat:sync", %{"lastIndex" => 999})
 
@@ -286,6 +307,9 @@ defmodule NestWeb.AgentChannelChatTest do
       # Wait for completion (user message first, then assistant)
       assert_push "chat:message", %{"index" => 1, "role" => "user"}, 2000
       assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 2000
+
+      # Fence the turn's idle before syncing.
+      assert_push "chat:status", %{status: "idle"}, 100
 
       # Sync with -1 should return all messages (user + assistant)
       ref_sync = push(socket, "chat:sync", %{"lastIndex" => -1})
@@ -321,6 +345,11 @@ defmodule NestWeb.AgentChannelChatTest do
           assert payload["index"] == 2
           assert is_binary(payload["content"])
           assert payload["content"] =~ "unavailable" or payload["content"] =~ "error"
+
+          # The error assistant append is followed by the agent's
+          # transition back to idle; wait for it so the turn is done
+          # before the test exits.
+          assert_push "chat:status", %{status: "idle"}, 100
         end)
 
       # Verify the error was logged with the correct message
@@ -385,6 +414,10 @@ defmodule NestWeb.AgentChannelChatTest do
               assert_push "chat:error", error_payload, 2000
               assert error_payload["index"] >= 0
               assert is_binary(error_payload["content"])
+
+              # ...then the agent's return to idle, so the turn is done
+              # before the test exits.
+              assert_push "chat:status", %{status: "idle"}, 100
             end)
 
           # Verify the error was logged with the correct message
@@ -410,6 +443,13 @@ defmodule NestWeb.AgentChannelChatTest do
       ref = push(socket, "chat:message", %{"content" => "during compaction"})
 
       assert_reply ref, :error, %{"reason" => "agent_status_compacting"}
+
+      # The `:compacting` status was fabricated for the rejection
+      # check (there is no real turn). Restore idle so the teardown's
+      # zero-in-flight-agents assertion holds.
+      :sys.replace_state(agent_pid, fn state ->
+        %{state | live: %{state.live | status: :idle}}
+      end)
     end
 
     test "rejects chat:message when the agent is :compaction_failed", %{
@@ -468,8 +508,13 @@ defmodule NestWeb.AgentChannelChatTest do
     } do
       {:ok, agent_pid} = Supervisor.get_agent(space_id, id)
 
-      # The retry path resumes `pending_user_message`. Set both the
-      # status and the held message so Trigger B fires.
+      # Retry resumes from `:compaction_failed`. A held user message
+      # without the mid-turn entry it normally accompanies fabricates a
+      # conversation whose post-compaction resume is
+      # `[system, summary_user, user]` — two user roles in a row — which
+      # the wire preflight rejects and the ChatTurn surfaces as a
+      # `chat:error`. This test only pins the *forwarding* (the
+      # `:compacting` transition), so that expected rejection is captured.
       :sys.replace_state(agent_pid, fn state ->
         %{
           state
@@ -481,11 +526,20 @@ defmodule NestWeb.AgentChannelChatTest do
         }
       end)
 
-      ref = push(socket, "chat:retry-compaction", %{})
+      log =
+        capture_log(fn ->
+          ref = push(socket, "chat:retry-compaction", %{})
 
-      assert_reply ref, :ok, %{}
+          assert_reply ref, :ok, %{}
 
-      assert_receive {:chat_status, %{status: "compacting"}}, 500
+          assert_receive {:chat_status, %{status: "compacting"}}, 500
+
+          # Finish the retried compaction so the agent is idle at test
+          # end (the teardown asserts zero in-flight agents).
+          assert_receive {:chat_status, %{status: "idle"}}, 100
+        end)
+
+      assert log =~ "ChatTurn.run_chat_task/1"
     end
 
     test "returns error when agent does not exist", %{socket: _socket} do

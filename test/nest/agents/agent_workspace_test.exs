@@ -134,6 +134,11 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
                  test_model(),
                  "/new/workspace"
                )
+
+      # The `:streaming` status was fabricated for the refusal check
+      # (there is no real turn). Restore idle so the teardown's
+      # zero-in-flight-agents assertion holds.
+      :sys.replace_state(pid, fn state -> %{state | live: %{state.live | status: :idle}} end)
     end
   end
 

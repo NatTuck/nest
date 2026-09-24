@@ -284,11 +284,9 @@ defmodule Nest.Agents.AgentToolsTest do
 
       :ok = Agent.chat(pid, "Run a command")
 
-      # drain loop killed with fire, it can *NEVER EVER* come back.
-      # Assistant messages are broadcast TWICE: once initially (empty
-      # `api_logs`) and once after the LLM turn completes (populated).
-      # Require non-empty `api_logs` on every wait to skip the empty
-      # initial broadcast.
+      # Assistant messages are stored complete with their response log
+      # (the API response). Tool messages never carry request logs —
+      # those are rebuilt on demand when the user expands the widget.
       assert_receive {:chat_message,
                       {:assistant,
                        %{
@@ -297,12 +295,12 @@ defmodule Nest.Agents.AgentToolsTest do
                        } = first_assistant}},
                      500
 
-      _ = first_assistant
+      first_logs = first_assistant.api_logs
 
-      assert_receive {:chat_message, {:tool, %{api_logs: [_ | _]} = tool_msg}},
+      assert_receive {:chat_message, {:tool, %{api_logs: tool_logs}}},
                      500
 
-      tool_logs = tool_msg.api_logs
+      assert tool_logs == [], "Tool message should have empty api_logs"
 
       assert_receive {:chat_message,
                       {:assistant,
@@ -315,8 +313,8 @@ defmodule Nest.Agents.AgentToolsTest do
       assert_receive {:chat_status, %{status: "idle"}}, 500
       final_logs = final_msg.api_logs
 
-      assert Enum.any?(tool_logs, fn log -> log.type == :request end),
-             "Expected API request log in tool message"
+      assert Enum.any?(first_logs, fn log -> log.type == :response end),
+             "Expected API response log in first assistant message"
 
       assert Enum.any?(final_logs, fn log -> log.type == :response end),
              "Expected API response log in final assistant message"

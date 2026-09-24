@@ -32,7 +32,7 @@ defmodule Nest.Agents.AgentObservabilityTest do
   import Nest.Agents.AgentTestHelpers
 
   describe "API logs" do
-    test "every message in simple conversation has API log" do
+    test "user message has empty api_logs; assistant message carries response log from successful API call" do
       {pid, _agent_id} =
         start_agent(%{
           model: %{name: "qwen3.5-plus"},
@@ -41,27 +41,48 @@ defmodule Nest.Agents.AgentObservabilityTest do
 
       :ok = Agent.chat(pid, "Hello")
 
-      # The user message is broadcast twice: first with empty
-      # api_logs, then re-broadcast after the LLM call attaches
-      # the request log. Match the second broadcast (non-empty
-      # api_logs) to capture the externally visible state.
-      assert_receive {:chat_message, {:user, %{index: 1, api_logs: [_ | _]} = user_msg}}, 500
+      # User messages no longer carry request api_logs after finalization
+      # (they're rebuilt on demand when the user expands the API logs widget).
+      assert_receive {:chat_message, {:user, %{api_logs: user_api_logs}}}, 500
+      assert user_api_logs == [], "User message should have empty api_logs"
+
       assert_receive {:chat_status, %{status: "streaming"}}, 500
       assert_receive {:chat_delta, _}, 500
 
-      assert_receive {:chat_message, {:assistant, %{api_logs: [_ | _]} = assistant_msg}},
-                     500
-
+      # The assistant message is stored complete: the response log is
+      # attached before it is appended, so the single broadcast carries it.
+      assert_receive {:chat_message, {:assistant, %{api_logs: [assistant_response]}}}, 500
       assert_receive {:chat_status, %{status: "idle"}}, 500
 
-      user_request = Enum.find(user_msg.api_logs, fn log -> log.type == :request end)
-      assert user_request != nil, "User message should have request log"
+      assert assistant_response.type == :response, "Assistant message should have response log"
 
-      assistant_response = Enum.find(assistant_msg.api_logs, fn log -> log.type == :response end)
-      assert assistant_response != nil, "Assistant message should have response log"
+      refute Map.has_key?(assistant_response.payload, :messages),
+             "response log payload must not contain the request message history"
     end
 
-    test "every message in tool call flow has API log including tool message" do
+    test "assistant response log is persisted with the message and survives a reload" do
+      {pid, agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
+
+      :ok = Agent.chat(pid, "Hello")
+      assert_receive {:chat_status, %{status: "idle"}}, 500
+
+      # Read back through the DB, not the live agent, to prove the
+      # response log was stored with the message rather than only
+      # living in memory.
+      persisted = Nest.Persistence.load_messages(AgentTestHelpers.current_space_id(), agent_id)
+
+      {:assistant, %{api_logs: [log]}} = Enum.find(persisted, &match?({:assistant, _}, &1))
+
+      assert log.type == :response
+      assert is_map(log.payload)
+      refute Map.has_key?(log.payload, "messages")
+    end
+
+    test "assistant messages carry response API logs; user and tool messages have empty api_logs" do
       MockClient.set_tool_response(%{
         text: "I'll execute that command",
         tool_calls: [
@@ -79,41 +100,32 @@ defmodule Nest.Agents.AgentObservabilityTest do
 
       :ok = Agent.chat(pid, "Run a command")
 
-      assert_receive {:chat_message, {:user, %{index: 1, api_logs: [_ | _]} = user_msg}}, 500
+      assert_receive {:chat_message, {:user, %{api_logs: user_api_logs}}}, 500
+      assert user_api_logs == [], "User message should have empty api_logs"
+
       assert_receive {:chat_status, %{status: "streaming"}}, 500
       assert_receive {:chat_delta, _}, 500
 
-      # Indices may shift due to context-notice synthetic pairs;
-      # match by content (presence of api_logs).
-      assert_receive {:chat_message, {:assistant, %{api_logs: [_ | _]} = assistant1}},
-                     500
+      # The tool-call assistant is stored complete with its response log.
+      assert_receive {:chat_message, {:assistant, %{api_logs: [asst1_log]}}}, 500
+      assert asst1_log.type == :response
 
-      assert_receive {:chat_message, {:tool, %{api_logs: [_ | _]} = tool_msg}}, 500
-      assert_receive {:chat_delta, _}, 500
+      assert_receive {:chat_message, {:tool, %{api_logs: tool_api_logs}}}, 500
+      assert tool_api_logs == [], "Tool message should have empty api_logs"
 
-      assert_receive {:chat_message, {:assistant, %{api_logs: [_ | _]} = assistant2}},
-                     500
+      # Wait for the final assistant with a response log
+      asst2 = wait_for_final_assistant_api_logs(5_000)
+      assert asst2 != nil
+      [asst2_log] = asst2
 
       assert_receive {:chat_status, %{status: "idle"}}, 500
 
-      user_request = Enum.find(user_msg.api_logs, fn log -> log.type == :request end)
-      assert user_request != nil, "User message should have request log"
-
-      assistant1_response = Enum.find(assistant1.api_logs, fn log -> log.type == :response end)
-      assert assistant1_response != nil, "Assistant with tool calls should have response log"
-
-      tool_request = Enum.find(tool_msg.api_logs, fn log -> log.type == :request end)
-
-      assert tool_request != nil,
-             "Tool message should have API request log showing tool results were sent to API"
-
-      assistant2_response = Enum.find(assistant2.api_logs, fn log -> log.type == :response end)
-      assert assistant2_response != nil, "Final assistant message should have response log"
+      assert asst2_log.type == :response, "Final assistant message should have response log"
 
       MockClient.clear()
     end
 
-    test "API log IDs follow correct sequencing pattern" do
+    test "assistant messages carry correctly sequenced response API logs" do
       MockClient.set_tool_response(%{
         text: "I'll help",
         tool_calls: [
@@ -131,7 +143,9 @@ defmodule Nest.Agents.AgentObservabilityTest do
 
       :ok = Agent.chat(pid, "List files")
 
-      assert_receive {:chat_message, {:user, %{api_logs: [user_log]}}}, 500
+      assert_receive {:chat_message, {:user, %{api_logs: user_api_logs}}}, 500
+      assert user_api_logs == [], "User message should have empty api_logs"
+
       assert_receive {:chat_status, %{status: "streaming"}}, 500
       assert_receive {:chat_delta, _}, 500
 
@@ -142,9 +156,8 @@ defmodule Nest.Agents.AgentObservabilityTest do
       assert asst1 != nil
       [asst1_log] = asst1.api_logs
 
-      tool_msg = wait_for_tool_with_api_logs(5_000)
-      assert tool_msg != nil
-      [tool_log] = tool_msg.api_logs
+      assert_receive {:chat_message, {:tool, %{api_logs: tool_api_logs}}}, 500
+      assert tool_api_logs == [], "Tool message should have empty api_logs"
 
       asst2 = wait_for_final_assistant_api_logs(5_000)
       assert asst2 != nil
@@ -152,19 +165,11 @@ defmodule Nest.Agents.AgentObservabilityTest do
 
       assert_receive {:chat_status, %{status: "idle"}}, 500
 
-      assert user_log.id == "001.000"
-      assert user_log.type == :request
-
       # The api_log id is `<message_index>.<sequence>`. With
       # the context-notice synthetic pair, the tool-call
       # assistant is at index 4 instead of 2.
       assert asst1_log.id == "004.000"
       assert asst1_log.type == :response
-
-      # The tool message is at index 5 (one extra for the
-      # synthetic pair).
-      assert tool_log.id == "005.000"
-      assert tool_log.type == :request
 
       # The final assistant is at index 6.
       assert asst2_log.id == "006.000"
@@ -425,29 +430,6 @@ defmodule Nest.Agents.AgentObservabilityTest do
           end
       after
         100 -> do_wait_for_assistant_with_tool(deadline)
-      end
-    end
-  end
-
-  # Drain tool messages until one has api_logs populated.
-  defp wait_for_tool_with_api_logs(timeout) do
-    deadline = System.monotonic_time(:millisecond) + timeout
-    do_wait_for_tool_with_api_logs(deadline)
-  end
-
-  defp do_wait_for_tool_with_api_logs(deadline) do
-    if System.monotonic_time(:millisecond) >= deadline do
-      nil
-    else
-      receive do
-        {:chat_message, {:tool, msg}} ->
-          if msg.api_logs != nil and msg.api_logs != [] do
-            msg
-          else
-            do_wait_for_tool_with_api_logs(deadline)
-          end
-      after
-        100 -> do_wait_for_tool_with_api_logs(deadline)
       end
     end
   end

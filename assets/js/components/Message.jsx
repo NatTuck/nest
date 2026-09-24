@@ -152,7 +152,17 @@ function Message({ message, agentName }) {
         <ToolCalls toolCalls={toolCalls} />
         <DelegatedTask message={message} agentName={agentName} />
         <ToolResults toolResults={message.toolResults} />
-        <ApiLogsBlock apiLogs={message.apiLogs} />
+        <ApiLogsBlock
+          apiLogs={message.apiLogs}
+          agentName={agentName}
+          index={message.index}
+          messageRole={message.role}
+          expectsResponseLog={
+            message.role === "assistant" &&
+            !message.metadata?.error &&
+            !message.metadata?.stopped_by_user
+          }
+        />
         {isPartial && (
           <div className="mt-2">
             <StreamingDots

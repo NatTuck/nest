@@ -28,13 +28,11 @@ defmodule Nest.Agents.Agent do
 
   require Logger
 
-  alias Nest.Agents.Agent.ApiLogs
   alias Nest.Agents.Agent.Callbacks
   alias Nest.Agents.Agent.ClientAPI
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Init
   alias Nest.Agents.Agent.MessageAppender
-  alias Nest.Agents.Agent.Restore
   alias Nest.Agents.Agent.SubAgent
   alias Nest.Agents.Agent.SystemPrompt
   alias Nest.Agents.Agent.TmpSpace
@@ -252,8 +250,7 @@ defmodule Nest.Agents.Agent do
       depth: parent_state.depth + 1,
       preloaded_messages: preloaded,
       last_compaction_index: Map.get(parent_state.chat_state, :last_compaction_index, -1),
-      next_message_index: next_index,
-      initial_api_log_sequences: %{}
+      next_message_index: next_index
     }
   end
 
@@ -381,6 +378,12 @@ defmodule Nest.Agents.Agent do
   """
   defdelegate get_history(pid), to: ClientAPI
 
+  @doc """
+  Fetch API logs for a specific message by index. Delegates to the
+  GenServer's introspection handler.
+  """
+  defdelegate get_api_logs(pid, index), to: ClientAPI
+
   # Server Callbacks
 
   @impl true
@@ -427,9 +430,9 @@ defmodule Nest.Agents.Agent do
   end
 
   # Happy-path state construction: build from attrs, hydrate
-  # the persisted message sequence, replay the api_log, then
-  # log a structured start banner. Extracted from `init/1`
-  # so the top-level case statement stays readable.
+  # the persisted message sequence, then log a structured
+  # start banner. Extracted from `init/1` so the top-level
+  # case statement stays readable.
   #
   # Pure: no DB writes here. `start_link/1` pre-persists the
   # agent row and the system message in the calling process
@@ -438,14 +441,7 @@ defmodule Nest.Agents.Agent do
   defp build_active_state(attrs, client_config) do
     state = Init.build_state(attrs, client_config)
 
-    state =
-      Init.seed_from_db(
-        state,
-        Map.get(attrs, :preloaded_messages, []),
-        Map.get(attrs, :last_compaction_index, -1)
-      )
-
-    Restore.attach_rebuilt_api_logs(
+    Init.seed_from_db(
       state,
       Map.get(attrs, :preloaded_messages, []),
       Map.get(attrs, :last_compaction_index, -1)
@@ -495,12 +491,10 @@ defmodule Nest.Agents.Agent do
   end
 
   # Public-for-Handlers: message-construction logic. The
-  # canonical impl lives in `Nest.Agents.Agent.ApiLogs` /
-  # `Nest.Agents.Agent.TmpSpace`; the `__` prefix marks these
-  # as internal. See those modules for why.
+  # canonical impl lives in `Nest.Agents.Agent.TmpSpace`; the
+  # `__` prefix marks these as internal. See that module for
+  # why.
   @doc false
-  defdelegate __pending_api_logs__(state, message_index), to: ApiLogs, as: :get
-  defdelegate __clear_pending_api_logs__(state, message_index), to: ApiLogs, as: :clear
   defdelegate __create_tmp_space__(agent_id), to: TmpSpace, as: :create
 
   @doc false

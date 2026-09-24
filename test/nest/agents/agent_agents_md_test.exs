@@ -158,6 +158,11 @@ defmodule Nest.Agents.AgentAgentsMdTest do
       [{:system, sys_struct}] = Enum.take(final_messages, 1)
       text = AgentTestHelpers.text_from_parts(sys_struct.parts)
       assert text =~ marker
+
+      # The `nil` continuation resumes the post-compaction LLM turn;
+      # finish it so the agent is idle when the test ends (the
+      # teardown asserts zero in-flight agents).
+      assert_receive {:chat_status, %{status: "idle"}}, 100
     end
   end
 

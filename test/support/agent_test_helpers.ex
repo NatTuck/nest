@@ -155,6 +155,12 @@ defmodule Nest.Agents.AgentTestHelpers do
   # Factored out so `start_agent/1` doesn't blow past the credo
   # "function complexity" threshold.
   defp bridge_test_to_agent(agent_pid, space_id, name) do
+    # No registration needed: the per-test teardown `test` wrapper
+    # (`Nest.TestSupport.AgentTestMacro`) discovers every agent whose
+    # space is visible in this test's sandbox transaction via
+    # `Nest.Agents.Registry.list_all/0`, including production-spawned
+    # children, and asserts zero remaining (idle) agents.
+
     # `Process.link/1` makes the test process crash if the agent
     # dies unexpectedly. Tests that intentionally kill the agent
     # must set `Process.flag(:trap_exit, true)` and assert on the

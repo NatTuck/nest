@@ -162,6 +162,8 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
       summary_text = "..."
 
       # `:tool_call` continuation with a carried tool_use at the tail.
+      # The resumed post-compaction turn executes the carried tool call,
+      # then calls the LLM; finish it so the agent is idle at test end.
       tool_call_msg = compact_tool_call_msg(1)
 
       :sys.replace_state(pid, fn s ->
@@ -182,7 +184,7 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
       assert length(payload.history) == 3
       assert match?(%{"role" => "compaction"}, List.last(payload.history))
 
-      Agent.terminate(pid)
+      assert_receive {:chat_status, %{status: "idle"}}, 100
     end
   end
 

@@ -293,7 +293,7 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
            | index: nil,
              timestamp: DateTime.utc_now(),
              parts: assemble_partial_parts(acc, text_part, thinking_part),
-             api_logs: Nest.Agents.Agent.__pending_api_logs__(state, acc.index),
+             api_logs: [],
              metadata: %{"stopped_by_user" => true}
          }}
 
@@ -301,14 +301,12 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
         # No accumulator (stop arrived between turns, or
         # before the first delta). Build a placeholder so
         # the message list is consistent.
-        index = state.live.active_message_index
-
         {:assistant,
          %Assistant{
            index: nil,
            timestamp: DateTime.utc_now(),
            parts: [],
-           api_logs: Nest.Agents.Agent.__pending_api_logs__(state, index),
+           api_logs: [],
            metadata: %{"stopped_by_user" => true}
          }}
     end

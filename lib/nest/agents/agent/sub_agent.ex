@@ -82,8 +82,7 @@ defmodule Nest.Agents.Agent.SubAgent do
       exclude_spawn: exclude_spawn,
       preloaded_messages: [],
       last_compaction_index: -1,
-      next_message_index: 1,
-      initial_api_log_sequences: %{}
+      next_message_index: 1
     }
   end
 

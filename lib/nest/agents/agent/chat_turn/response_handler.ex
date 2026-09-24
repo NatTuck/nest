@@ -79,10 +79,8 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
     send(state.ctx.agent_pid, {:llm_usage, response.usage})
 
     # Build the assistant message and broadcast it via the
-    # Agent's handler — that handler stamps the index and
-    # attaches any pending api_logs.
+    # Agent's handler — that handler stamps the index.
     {role, msg} = Messages.assistant(response)
-    assistant_msg = {role, msg}
 
     # Case 2 injection. Collect notice specs from all trigger
     # sources (context-usage threshold, budget reminder) and
@@ -107,15 +105,19 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
     # The synthetic pair (when injected) shifts the assistant
     # message's index by 2. `active_message_index` was set to
     # the pre-injection expected index; advance it to the
-    # actual index so the api_log below keys to the right
+    # actual index so the stored response log keys to the right
     # message.
     state = %{state | active_message_index: state.active_message_index + 2 * injected}
 
+    # Store the response log on the assistant message before it is
+    # appended, so the message is persisted complete (in memory, in
+    # the DB, and in the default UI payload in one shot).
+    response_log = APILog.store_response_log(state.active_message_index, response)
+    assistant_msg = {role, %{msg | api_logs: [response_log]}}
+
     send(state.ctx.agent_pid, {:tool_calls_received, assistant_msg})
 
-    _ = APILog.response(state, state.active_message_index, response)
-
-    dispatch_response(response, state, chat_turn_pid)
+    dispatch_response(response, state, chat_turn_pid, assistant_msg)
   end
 
   @doc """
@@ -137,7 +139,7 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
   # finalization path sends `{:compaction_done, ...}` instead
   # of `{:chat_idle, _}` (the Agent's `Compaction.ResultHandler`
   # is the next stage).
-  defp dispatch_response(response, state, chat_turn_pid) do
+  defp dispatch_response(response, state, chat_turn_pid, assistant_msg) do
     cond do
       compactor_entry?(state) ->
         Lifecycle.finalize_compaction(state, response)
@@ -149,7 +151,7 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
         handle_overflow_tool_calls(response, state, chat_turn_pid)
 
       RunResponse.has_tool_calls?(response) ->
-        handle_normal_tool_calls(response, state)
+        handle_normal_tool_calls(response, state, assistant_msg)
 
       true ->
         finalize_or_reprompt(response, state)
@@ -283,16 +285,16 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
   #    preflight; spawn the tool worker, OR build a
   #    `{:tool_call, _, _, _}` continuation and exit (Trigger 2)
   #    so the Agent can run a mid-turn compaction.
-  defp handle_normal_tool_calls(response, state) do
+  defp handle_normal_tool_calls(response, state, assistant_msg) do
     cond do
       compact_only?(response.tool_calls) ->
-        handle_compact_only(response, state)
+        handle_compact_only(response, state, assistant_msg)
 
       contains_compact?(response.tool_calls) ->
         refuse_compact_mixed(response, state)
 
       true ->
-        handle_regular_tool_calls(response, state)
+        handle_regular_tool_calls(response, state, assistant_msg)
     end
   end
 
@@ -323,8 +325,7 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
   # counts — the new system prompt carries the catalog entry
   # with the spec text, and the summary user-message replaces the
   # archived content.
-  defp handle_compact_only(response, state) do
-    assistant_msg = extract_assistant_msg(response)
+  defp handle_compact_only(response, state, assistant_msg) do
     tool_call = hd(response.tool_calls)
 
     # `ctx.messages` was captured at spawn time and reflects the
@@ -395,39 +396,19 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
      }}
   end
 
-  # Pulls the just-appended `{:assistant, _}` message out of
-  # the response (it's not yet on the agent — the append happens
-  # via `{:tool_calls_received, _}` in `handle/3` before this
-  # branch fires, so by the time we get here, `state.ctx.messages`
-  # was the pre-handle snapshot; we just rebuild from the
-  # `RunResponse.tool_calls` and the same body the messages
-  # builder produced).
-  #
-  # We rebuild instead of reading `state.ctx.messages` because
-  # `state.ctx.messages` at this point still holds the
-  # pre-append value (the assistant was appended into the agent
-  # via send, which is async). The carry-forward needs the
-  # post-append struct.
-  defp extract_assistant_msg(response) do
-    {role, struct} = Messages.assistant(response)
-    {role, struct}
-  end
-
   # Regular path: preflight on the projected tool results. If
   # they'd push past budget, exit cleanly with a `:tool_call`
   # continuation (Trigger 2); otherwise spawn the tool worker.
-  defp handle_regular_tool_calls(response, state) do
+  #
+  # The `:tool_call` continuation carries the just-built (and
+  # response-logged) assistant message so the copy re-appended after
+  # the mid-turn compaction swap is stored complete, never incomplete.
+  defp handle_regular_tool_calls(response, state, assistant_msg) do
     case post_response_preflight(response.tool_calls, state) do
       :fits ->
         Agent.ChatTurn.spawn_tool_worker(state, response.tool_calls)
 
       {:refuse, _reason} ->
-        # Trigger 2: build the `:tool_call` continuation from the
-        # just-appended assistant message (last in
-        # `state.ctx.messages` was the user; the response's
-        # assistant is the freshly-built one we rebuild here).
-        assistant_msg = extract_assistant_msg(response)
-
         continuation = {
           :tool_call,
           assistant_msg,

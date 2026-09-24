@@ -25,6 +25,12 @@ defmodule Nest.DataCase do
       import Ecto.Changeset
       import Ecto.Query
       import Nest.DataCase
+
+      # Replace ExUnit's bare `test` with one that stops every agent the
+      # test started, in-process, before the test (the sandbox owner)
+      # exits. See `Nest.TestSupport.AgentTestMacro`.
+      import ExUnit.Case, only: [describe: 2]
+      import Nest.TestSupport.AgentTestMacro, only: [test: 1, test: 2, test: 3]
     end
   end
 
