@@ -20,9 +20,11 @@ defmodule Nest.Tools.ShellCmd do
   - Filesystem write: Workspace directory (at original path) and /tmp (when tmp_path provided)
   - /dev: Fresh devtmpfs (overlays the read-only host /dev so device files
     like /dev/null are writable inside the sandbox)
-  - Devices: when `Nest.Hardware` detects HPUs on the host, their device
-    nodes are re-bound with `--dev-bind` and the Habana log directory is
-    overlaid with a writable tmpfs (see `Nest.Sandbox`)
+  - Devices: HPU devices do not work through the namespace split, so when
+    HPUs are detected inside a container with a writable workspace,
+    `Nest.Sandbox` runs the command without bwrap via
+    `execute_direct/5` (see `Nest.Sandbox.Bypass`). Every other command
+    stays fully sandboxed.
   """
 
   require Logger
@@ -68,6 +70,36 @@ defmodule Nest.Tools.ShellCmd do
     Logger.info("Executing sandboxed command in #{workspace}: #{truncate_log(command)}")
 
     case run_with_erlexec(sandboxed_cmd, timeout) do
+      {:ok, exit_code, output} ->
+        handle_exit_result(command, exit_code, output, workspace, tmp_path)
+
+      {:error, reason} ->
+        handle_startup_failure(command, reason, workspace, tmp_path)
+    end
+  end
+
+  @doc """
+  Like `execute/5` but runs the command directly without bwrap.
+  Used when `Nest.Sandbox.Bypass.bypass?/1` returns true (HPU in Docker).
+  """
+  @spec execute_direct(String.t(), String.t() | nil, String.t() | nil, map() | nil, keyword()) ::
+          {:ok, String.t()} | {:error, String.t()}
+  def execute_direct(command, workspace_path, tmp_path \\ nil, _caps \\ nil, opts \\ []) do
+    timeout = Keyword.get(opts, :timeout, @default_timeout_ms)
+    stdin = Keyword.get(opts, :stdin, "")
+
+    workspace = resolve_workspace(workspace_path)
+    if tmp_path, do: File.mkdir_p!(tmp_path)
+
+    final_command = compose_command_with_stdin(command, stdin)
+    shell_escaped = escape_shell(final_command)
+    cmd = "/bin/sh -c '#{shell_escaped}'"
+
+    Logger.info("Executing direct (no sandbox) in #{workspace}: #{truncate_log(command)}")
+
+    # No bwrap to apply `--chdir`, so run the shell in the workspace
+    # directly; relative-path commands must behave the same as sandboxed ones.
+    case run_with_erlexec(cmd, timeout, cd: workspace) do
       {:ok, exit_code, output} ->
         handle_exit_result(command, exit_code, output, workspace, tmp_path)
 
@@ -170,7 +202,7 @@ defmodule Nest.Tools.ShellCmd do
     "#{bwrap_cmd} /bin/sh -c '#{shell_escaped}'"
   end
 
-  defp run_with_erlexec(command, timeout) do
+  defp run_with_erlexec(command, timeout, opts \\ []) do
     # Start erlexec process
     case :exec.run(
            to_charlist(command),
@@ -179,7 +211,7 @@ defmodule Nest.Tools.ShellCmd do
              :stderr,
              :monitor,
              {:kill_timeout, 5000}
-           ]
+           ] ++ opts
          ) do
       {:ok, _pid, os_pid} ->
         # Buffers are IO lists (prepend in O(1)); `combine_output/1`

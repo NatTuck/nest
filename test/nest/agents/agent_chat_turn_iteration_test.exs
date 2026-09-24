@@ -33,6 +33,7 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
 
   use Nest.DataCase, async: true
 
+  import Eventually
   import ExUnit.CaptureLog
   import Mimic
 
@@ -168,7 +169,10 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
         assert_receive {:chat_status, %{status: "executing_tools"}}, 500
         # Finish the resumed turn so the agent is idle when the
         # test ends (the teardown asserts zero in-flight agents).
-        assert_receive {:chat_status, %{status: "idle"}}, 100
+        # Poll the agent's status instead of waiting on the idle
+        # broadcast in a fixed window: the resumed LLM iteration
+        # can land after 100ms under coverage/load.
+        assert eventually(fn -> :sys.get_state(pid).live.status == :idle end, timeout: 1_000)
       end)
     end
   end
@@ -215,7 +219,10 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
         assert_receive {:chat_status, %{status: "executing_tools"}}, 500
         # Finish the resumed turn so the agent is idle when the
         # test ends (the teardown asserts zero in-flight agents).
-        assert_receive {:chat_status, %{status: "idle"}}, 100
+        # Poll the agent's status instead of waiting on the idle
+        # broadcast in a fixed window: the resumed LLM iteration
+        # can land after 100ms under coverage/load.
+        assert eventually(fn -> :sys.get_state(pid).live.status == :idle end, timeout: 1_000)
       end)
 
       state_after = :sys.get_state(pid)

@@ -1,0 +1,30 @@
+#!/bin/sh
+# Forbid `git stash` in this repository.
+#
+# `git stash` cannot be blocked with a pre-command hook (git aliases cannot
+# shadow builtins, and git has no `pre-stash` hook), but every stash operation
+# writes `refs/stash`, which does fire `reference-transaction`. We abort that
+# transaction while it is still "prepared", before any ref changes.
+#
+# This hook is activated by `core.hooksPath=scripts/git-hooks` (set locally by
+# `git config core.hooksPath scripts/git-hooks`). See AGENTS.md: git stash is
+# ABSOLUTELY NEVER allowed in this repo.
+#
+# `git stash apply <sha>` (no ref update) and `git stash list`/`show` still
+# work; only operations that would create, rewrite, or drop `refs/stash` are
+# rejected.
+set -eu
+
+state="$1"
+[ "$state" = "prepared" ] || exit 0
+
+while read -r _old _new ref; do
+  case "$ref" in
+    refs/stash | refs/stash/*)
+      echo "REFUSED: git stash is disabled in this repository (AGENTS.md)." >&2
+      exit 1
+      ;;
+  esac
+done
+
+exit 0

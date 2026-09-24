@@ -8,9 +8,21 @@ defmodule Nest.LLM.OpenAIClient do
   llama.cpp's server. Extends the OpenAI shape with the
   `reasoning_content` delta field emitted by reasoning models
   (Qwen QwQ, DeepSeek R1, llama.cpp with `--reasoning`).
+
+  ## Model-name defaults
+
+  DeepSeek's `flash` models need an explicit `top_p` and `max_tokens`
+  to behave, so `format_request_payload/2` fills them in when the model
+  name matches `deepseek.*flash` (case-insensitive) and the caller
+  didn't set a value. Because every request-rendering path (the live
+  call, the api_log, restored logs, and compaction) goes through this
+  function, the defaults apply uniformly and stay visible in the UI.
   """
 
   @behaviour Nest.LLM.Client
+
+  @deepseek_flash_regex ~r/deepseek.*flash/i
+  @deepseek_flash_defaults %{top_p: 0.95, max_tokens: 32_000}
 
   alias Nest.LLM.Client
   alias Nest.LLM.HttpWorker
@@ -74,12 +86,24 @@ defmodule Nest.LLM.OpenAIClient do
 
     payload
     |> Client.maybe_put("temperature", request.temperature)
-    |> Client.maybe_put("max_tokens", request.max_tokens)
-    |> Client.maybe_put("top_p", request.top_p)
+    |> Client.maybe_put("max_tokens", request.max_tokens || default_max_tokens(request.model))
+    |> Client.maybe_put("top_p", request.top_p || default_top_p(request.model))
     |> Client.maybe_put("tools", build_wire_tools(request.tools))
     |> Client.maybe_put("tool_choice", normalize_tool_choice(request.tool_choice))
     |> maybe_put_thinking(request.thinking_effort)
   end
+
+  # DeepSeek flash models default to a specific top_p / max_tokens when
+  # the caller didn't set one. Non-matching (or non-binary) model names
+  # get no defaults, so the fields stay absent from the payload.
+  defp default_max_tokens(model), do: generation_defaults(model)[:max_tokens]
+  defp default_top_p(model), do: generation_defaults(model)[:top_p]
+
+  defp generation_defaults(model) when is_binary(model) do
+    if Regex.match?(@deepseek_flash_regex, model), do: @deepseek_flash_defaults, else: %{}
+  end
+
+  defp generation_defaults(_model), do: %{}
 
   # Thinking (reasoning effort) is normalized across providers. For
   # OpenAI-compatible servers, enabled levels map to `reasoning_effort`;

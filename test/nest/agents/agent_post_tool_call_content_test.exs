@@ -363,8 +363,6 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
         capture_log(fn ->
           :ok = Agent.chat(pid, "How many?")
 
-          assert_receive {:chat_status, %{status: "idle"}}, 500
-
           # Drain to find the assistant with the expected thinking
           # content. The context-notice synthetic pair may shift the
           # exact index, so match by content.
@@ -372,6 +370,10 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
 
           assert thinking_msg != nil
           assert Enum.any?(thinking_msg.parts, &match?(%Part.Thinking{}, &1))
+
+          # Wait for the final message before asserting the terminal
+          # status; racing a short timeout up front is flaky under load.
+          assert_receive {:chat_status, %{status: "idle"}}, 500
 
           MockClient.clear()
         end)

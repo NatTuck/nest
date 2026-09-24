@@ -350,7 +350,7 @@ defmodule Nest.Vocations do
   #
   # The read/write lists come straight from `caps.fs.read` and
   # `caps.fs.write` — no implicit prepending of "/tmp" or workspace.
-  # `":workspace"` is a symbolic placeholder that `Sandbox.build/2`
+  # `":workspace"` is a symbolic placeholder that `Sandbox.build/3`
   # resolves to the agent's actual workspace path at runtime. We
   # render it as the bare name "workspace" in the catalog so the LLM
   # doesn't see the internal symbol.

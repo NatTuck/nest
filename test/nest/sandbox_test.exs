@@ -1,8 +1,8 @@
 defmodule Nest.SandboxTest do
   use ExUnit.Case, async: true
 
-  alias Nest.Hardware
   alias Nest.Sandbox
+  alias Nest.Sandbox.Bypass
 
   setup do
     dir = Path.join(System.tmp_dir!(), "nest_sandbox_test_#{System.unique_integer([:positive])}")
@@ -23,6 +23,7 @@ defmodule Nest.SandboxTest do
   describe "build_default/2" do
     test "produces args for the build profile (workspace + /tmp writable)" do
       {:ok, args} = Sandbox.build_default("/workspace", "/tmp/agent-1")
+      assert "--unshare-all" in args
       assert "--unshare-net" in args
       assert "--ro-bind" in args
       assert "--bind" in args
@@ -105,11 +106,6 @@ defmodule Nest.SandboxTest do
 
       # Two --bind directives: workspace and tmp
       assert Enum.count(args, &(&1 == "--bind")) == 2
-      caps = build_caps(write: ["/tmp", ":workspace"])
-      {:ok, args} = Sandbox.build(caps, "/workspace", "/tmp/agent-1")
-
-      # Two --bind directives: workspace and tmp
-      assert Enum.count(args, &(&1 == "--bind")) == 2
       # The /tmp in args is the tmp_path bind (NOT a caps-derived bind)
       tmp_indices = args |> Enum.with_index() |> Enum.filter(&match?({"/tmp", _}, &1))
       assert length(tmp_indices) == 1
@@ -176,9 +172,9 @@ defmodule Nest.SandboxTest do
 
   describe "arg ordering (regression)" do
     test "--dev /dev and --proc /proc appear AFTER --ro-bind / /" do
-      # The / ro-bind must come before --dev so the devtmpfs overlays
-      # the read-only bind (not the other way around), and before --proc
-      # so the freshly-mounted /proc does NOT inherit the parent's
+      # The / ro-bind must come before --dev so the devtmpfs overlays the
+      # read-only bind (not the other way around), and before --proc so
+      # the freshly-mounted /proc does NOT inherit the parent's
       # read-only flag. The latter bit is the bwrap flag-order bug that
       # made /proc/self/<pid>/oom_score_adj (and friends) read-only
       # inside the sandbox. See scripts/probe-bwrap-flags.sh for the
@@ -195,45 +191,6 @@ defmodule Nest.SandboxTest do
       assert ro_bind_idx < proc_idx,
              "expected --ro-bind before --proc (bwrap arg order regression: " <>
                "--proc before --ro-bind makes /proc/self read-only inside the sandbox)"
-    end
-  end
-
-  describe "build/5 device passthrough" do
-    test "binds each device path with --dev-bind and overlays the log dir" do
-      caps = build_caps(write: [":workspace"])
-
-      {:ok, args} =
-        Sandbox.build(caps, "/workspace", nil, "/workspace",
-          device_paths: ["/dev/accel", "/dev/infiniband"]
-        )
-
-      assert ["--dev-bind", "/dev/accel", "/dev/accel"] = after_flag(args, "--dev-bind", nil)
-      assert Enum.count(args, &(&1 == "--dev-bind")) == 2
-
-      log_dir = Hardware.habana_log_dir()
-      assert ["--tmpfs", ^log_dir | _] = after_flag(args, "--tmpfs", nil)
-    end
-
-    test "omits device binds and the log tmpfs when there are no devices" do
-      caps = build_caps(write: [":workspace"])
-      {:ok, args} = Sandbox.build(caps, "/workspace", nil, "/workspace", device_paths: [])
-
-      refute "--dev-bind" in args
-      refute "--tmpfs" in args
-    end
-
-    test "device binds come after --ro-bind and --dev" do
-      caps = build_caps(write: [":workspace"])
-
-      {:ok, args} =
-        Sandbox.build(caps, "/workspace", nil, "/workspace", device_paths: ["/dev/accel"])
-
-      ro_idx = Enum.find_index(args, &(&1 == "--ro-bind"))
-      dev_idx = Enum.find_index(args, &(&1 == "--dev"))
-      bind_idx = Enum.find_index(args, &(&1 == "--dev-bind"))
-
-      assert ro_idx < dev_idx
-      assert dev_idx < bind_idx
     end
   end
 
@@ -530,6 +487,26 @@ defmodule Nest.SandboxTest do
     case Enum.find_index(args, &(&1 == flag)) do
       nil -> []
       idx -> Enum.slice(args, idx, 3)
+    end
+  end
+
+  describe "Bypass" do
+    test "bypass?/1 returns false when no HPU devices are detected (test config pins hpu_device_paths: [])" do
+      # Both a writable-workspace (build/act) and a read-only (plan) caps
+      # map must decline the bypass while `hpu_device_paths` is empty.
+      refute Bypass.bypass?(build_caps(write: [":workspace"]))
+      refute Bypass.bypass?(build_caps(write: []))
+    end
+
+    test "bypass?/3 requires a writable workspace, an HPU, and a container" do
+      build = build_caps(write: [":workspace"])
+      plan = build_caps(write: [])
+
+      assert Bypass.bypass?(build, true, true)
+      refute Bypass.bypass?(build, true, false)
+      refute Bypass.bypass?(build, false, true)
+      refute Bypass.bypass?(plan, true, true)
+      refute Bypass.bypass?("not a caps map", true, true)
     end
   end
 end

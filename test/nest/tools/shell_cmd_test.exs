@@ -59,6 +59,21 @@ defmodule Nest.Tools.ShellCmdTest do
     assert output == "[Command executed successfully with no output]"
   end
 
+  test "execute_direct/5 runs without bwrap and cds into the workspace" do
+    # The bypass path used when HPUs are detected in Docker: no bwrap, so
+    # the command runs directly (here via /bin/sh + erlexec). It must
+    # still run from the workspace, matching the sandboxed `--chdir`.
+    workspace = Path.join(System.tmp_dir!(), "nest_direct_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(workspace)
+    on_exit(fn -> File.rm_rf(workspace) end)
+
+    assert {:ok, output} = ShellCmd.execute_direct("echo direct-ok", workspace, nil, nil, [])
+    assert output =~ "direct-ok"
+
+    assert {:ok, _} = ShellCmd.execute_direct("echo rel > rel.txt", workspace, nil, nil, [])
+    assert File.read!(Path.join(workspace, "rel.txt")) =~ "rel"
+  end
+
   @tag :bwrap
   test "a symlinked workspace is bound at its canonical path; read and write work through the symlink" do
     uniq = System.unique_integer([:positive])

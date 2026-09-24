@@ -27,8 +27,28 @@ defmodule Nest.LLM.OpenAIClientTest do
       assert payload["stream_options"] == %{"include_usage" => true}
       assert payload["messages"] == [%{"role" => "user", "content" => "hi"}]
       refute Map.has_key?(payload, "temperature")
+      refute Map.has_key?(payload, "max_tokens")
+      refute Map.has_key?(payload, "top_p")
       refute Map.has_key?(payload, "tools")
       assert payload["tool_choice"] == "auto"
+    end
+
+    test "applies DeepSeek flash top_p/max_tokens defaults when unset" do
+      for model <- ["deepseek-v4-flash", "DeepSeek-V4-Flash-2026", "deepseek-flash"] do
+        payload = OpenAIClient.format_request_payload(%RunRequest{model: model}, [])
+
+        assert payload["top_p"] == 0.95
+        assert payload["max_tokens"] == 32_000
+      end
+    end
+
+    test "does not apply the DeepSeek flash defaults to other models" do
+      for model <- ["deepseek-reasoner", "deepseek-v3", "qwen3.5-plus"] do
+        payload = OpenAIClient.format_request_payload(%RunRequest{model: model}, [])
+
+        refute Map.has_key?(payload, "top_p")
+        refute Map.has_key?(payload, "max_tokens")
+      end
     end
 
     test "maps a leading {:system, _} message in the messages array" do
@@ -233,9 +253,16 @@ defmodule Nest.LLM.OpenAIClientTest do
     end
 
     test "passes through temperature, max_tokens, top_p when set" do
+      # The model matches the DeepSeek-flash default rule, so explicit
+      # values must win over the defaults.
       payload =
         OpenAIClient.format_request_payload(
-          %RunRequest{temperature: 0.3, max_tokens: 1024, top_p: 0.9},
+          %RunRequest{
+            model: "deepseek-v4-flash",
+            temperature: 0.3,
+            max_tokens: 1024,
+            top_p: 0.9
+          },
           []
         )
 

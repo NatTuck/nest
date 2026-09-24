@@ -25,13 +25,15 @@ defmodule Nest.Sandbox do
 
   ## Executors
 
-  `read/3` and `stat/4` are read-only fast-paths: they authorize via
+  `read/3` and `stat/3` are read-only fast-paths: they authorize via
   the shared helpers and then hit the host filesystem directly, so
   bwrap is not spawned for pure reads. Because bwrap runs as the same
   uid with no uid remap and binds paths derived from the same helpers,
   a host read is byte- and permission-identical to what bwrap would
-  expose. `write/5` and `run/5` always go through bwrap (`ShellCmd`),
-  so write/execute permissions are enforced by the mounts.
+  expose. `write/5` and `run/5` go through bwrap (`ShellCmd`), so
+  write/execute permissions are enforced by the mounts — except when
+  the HPU bypass is active, in which case no sandbox is applied at all
+  (see `Nest.Sandbox.Bypass`).
 
   ## Caps shape
 
@@ -63,20 +65,18 @@ defmodule Nest.Sandbox do
   missing source rather than being created: any operation that would
   fail on a missing directory fails, it is never auto-created.
 
-  ## Device passthrough
+  ## Device passthrough / HPU
 
-  The fresh `--dev` devtmpfs exposes only generic nodes, so accelerator
-  devices are re-bound with `--dev-bind` when `Nest.Hardware` detects an
-  HPU on the host. HPU access also overlays the driver's log directory
-  (`Nest.Hardware.habana_log_dir/0`) with a writable tmpfs, since the
-  inherited `HABANA_LOGS` points under the read-only root bind. Device
-  passthrough is host-driven, not caps-gated: it applies to every
-  sandbox that spawns bwrap. Pass `device_paths:` in `build/5`'s opts
-  to override detection (tests).
+  bwrap runs with `--unshare-all` and a fresh `--dev` devtmpfs, so the
+  default sandbox is fully isolated. Habana Gaudi (HPU) devices do not
+  work reliably through that namespace split, so when HPUs are detected
+  inside a container and the mode has a writable workspace, the command
+  is run without bwrap at all (see `Nest.Sandbox.Bypass`). That is the
+  only HPU-specific behavior; every other sandbox is untouched.
   """
 
   alias Nest.FSPath
-  alias Nest.Hardware
+  alias Nest.Sandbox.Bypass
   alias Nest.Tools.ShellCmd
   alias Nest.Tools.ShellEscape
 
@@ -124,28 +124,9 @@ defmodule Nest.Sandbox do
   @spec build(map(), String.t(), String.t() | nil, String.t()) ::
           {:ok, [String.t()]} | {:error, String.t()}
   def build(caps, workspace_path, tmp_path, chdir_path) do
-    build(caps, workspace_path, tmp_path, chdir_path, [])
-  end
-
-  @doc """
-  Build bwrap args with extra options.
-
-  ## Options
-
-    * `:device_paths` - host device paths to pass through with
-      `--dev-bind`. Defaults to `Nest.Hardware.hpu_device_paths/0`.
-      Tests pass an explicit list (or `[]`) to stay host-independent.
-  """
-  @spec build(map(), String.t(), String.t() | nil, String.t(), keyword()) ::
-          {:ok, [String.t()]} | {:error, String.t()}
-  def build(caps, workspace_path, tmp_path, chdir_path, opts) do
-    device_paths = Keyword.get(opts, :device_paths, Hardware.hpu_device_paths())
-
     with :ok <- validate_caps(caps) do
       args =
         base_args(caps)
-        |> append_device_binds(device_paths)
-        |> append_habana_log_tmpfs(device_paths)
         |> append_net_flag(caps)
         |> append_workspace_bind(caps, workspace_path)
         |> append_write_binds(caps, workspace_path)
@@ -517,12 +498,17 @@ defmodule Nest.Sandbox do
   @doc """
   Run `command` inside the bwrap sandbox. Authorizes nothing further
   itself — the mounts enforce filesystem rules. Delegates to
-  `ShellCmd.execute/5`.
+  `ShellCmd.execute/5`, or to `ShellCmd.execute_direct/5` when the
+  bwrap bypass is active (HPU in Docker with a writable workspace).
   """
   @spec run(String.t(), String.t() | nil, String.t() | nil, map() | nil, keyword()) ::
           {:ok, String.t()} | {:error, String.t()}
   def run(command, workspace, tmp_path, caps, opts \\ []) do
-    ShellCmd.execute(command, workspace, tmp_path, caps, opts)
+    if Bypass.bypass?(caps || default_caps()) do
+      ShellCmd.execute_direct(command, workspace, tmp_path, caps, opts)
+    else
+      ShellCmd.execute(command, workspace, tmp_path, caps, opts)
+    end
   end
 
   @doc """
@@ -530,18 +516,30 @@ defmodule Nest.Sandbox do
   permissions are enforced by the bind mounts (which are derived from
   `writable_roots/2`), so a write outside the permitted paths fails at
   the kernel level (read-only file system) rather than being
-  pre-authorized here. Returns `{:ok, output}` or `{:error, reason}`.
+  pre-authorized here. Delegates to `ShellCmd.execute/5`, or to
+  `ShellCmd.execute_direct/5` when the bwrap bypass is active.
+  Returns `{:ok, output}` or `{:error, reason}`.
   """
   @spec write(String.t(), binary(), map(), String.t() | nil, String.t() | nil) ::
           {:ok, String.t()} | {:error, String.t()}
   def write(path, content, caps, workspace, tmp_path) do
-    ShellCmd.execute(
-      "cat > #{ShellEscape.escape(path)}",
-      workspace,
-      tmp_path,
-      caps,
-      stdin: content
-    )
+    if Bypass.bypass?(caps || default_caps()) do
+      ShellCmd.execute_direct(
+        "cat > #{ShellEscape.escape(path)}",
+        workspace,
+        tmp_path,
+        caps,
+        stdin: content
+      )
+    else
+      ShellCmd.execute(
+        "cat > #{ShellEscape.escape(path)}",
+        workspace,
+        tmp_path,
+        caps,
+        stdin: content
+      )
+    end
   end
 
   # ---- Internal arg-builder helpers ----
@@ -568,22 +566,6 @@ defmodule Nest.Sandbox do
       read_args ++
       ["--dev", "/dev"] ++
       ["--proc", "/proc"]
-  end
-
-  # Re-bind detected device nodes after `--dev /dev` (which replaces the
-  # host /dev with a minimal devtmpfs). `--dev-bind` is the only bwrap
-  # flag that permits device-node access.
-  defp append_device_binds(args, device_paths) do
-    args ++ Enum.flat_map(device_paths, fn path -> ["--dev-bind", path, path] end)
-  end
-
-  # Overlay the Habana log directory with a writable tmpfs whenever HPU
-  # devices are passed through. The host's HABANA_LOGS points under the
-  # read-only root bind, and the driver aborts when it can't write there.
-  defp append_habana_log_tmpfs(args, []), do: args
-
-  defp append_habana_log_tmpfs(args, _device_paths) do
-    args ++ ["--tmpfs", Hardware.habana_log_dir()]
   end
 
   defp append_net_flag(args, %{"net" => true}), do: args ++ ["--share-net"]

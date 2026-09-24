@@ -5,8 +5,12 @@ defmodule Nest.Sandbox.Bypass do
   bwrap is skipped when all of these are true:
   1. HPU (Habana Gaudi) devices are detected on the host
   2. The process is inside a Docker container
-  3. The caps include a writable workspace (`:workspace` in
+  3. The caps include a writable workspace (`":workspace"` in
      `caps["fs"]["write"]`) — i.e. a build/act mode, not plan
+
+  When skipped, the command runs with no sandbox enforcement at all:
+  the container itself is the sandbox, so read/write/network caps do
+  not apply. Plan mode (no writable workspace) is never bypassed.
   """
 
   alias Nest.Hardware
@@ -15,11 +19,21 @@ defmodule Nest.Sandbox.Bypass do
   Returns true when bwrap should be bypassed for the given caps.
   """
   @spec bypass?(map()) :: boolean()
-  def bypass?(%{"fs" => %{"write" => writes}} = _caps) do
-    :workspace in writes and hpu_detected?() and inside_docker?()
+  def bypass?(%{"fs" => %{"write" => writes}} = caps) do
+    # Short-circuit on the caps first so plan-mode commands never probe
+    # the host's /dev or container markers.
+    ":workspace" in writes and bypass?(caps, hpu_detected?(), inside_docker?())
   end
 
   def bypass?(_caps), do: false
+
+  @doc false
+  @spec bypass?(map(), boolean(), boolean()) :: boolean()
+  def bypass?(%{"fs" => %{"write" => writes}}, hpu?, docker?) do
+    ":workspace" in writes and hpu? and docker?
+  end
+
+  def bypass?(_caps, _hpu?, _docker?), do: false
 
   defp hpu_detected? do
     Hardware.hpu_device_paths() != []
