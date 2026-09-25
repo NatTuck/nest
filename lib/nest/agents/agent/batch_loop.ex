@@ -168,7 +168,7 @@ defmodule Nest.Agents.Agent.BatchLoop do
       items: items,
       template: template,
       base_opts: build_base_opts(args),
-      name_prefix: Map.get(args, "name_prefix", ""),
+      names: names_for_space(items, Map.get(args, "name_prefix", ""), ctx.space_id),
       timeout_ms: timeout_ms,
       max_concurrency: max_concurrency,
       on_error: Map.get(args, "on_error", "collect"),
@@ -205,7 +205,7 @@ defmodule Nest.Agents.Agent.BatchLoop do
     index = acc.next
     item = Enum.at(acc.items, index)
     instruction = render(acc.template, index, item)
-    name = unique_name(acc.space_id, acc.name_prefix)
+    name = Enum.at(acc.names, index)
 
     case spawn_child(parent, name, Map.put(acc.base_opts, :query, instruction)) do
       {:ok, ^name} ->
@@ -345,15 +345,91 @@ defmodule Nest.Agents.Agent.BatchLoop do
     end
   end
 
-  # A unique name for a batch child, optionally prefixed for
-  # observability. The base comes from the supervisor (unique against
-  # live + persisted names in the space); because spawns are
-  # synchronous (the child is registered before the call returns), each
-  # successive name is unique against all previously-spawned batch
-  # children.
-  defp unique_name(space_id, prefix) do
-    base = Supervisor.generate_unique_name_for_space(space_id)
-    if prefix == "", do: base, else: prefix <> "-" <> base
+  # ---- Child naming ----
+
+  # Names for the batch children, derived from each item so the
+  # sidebar is readable (an "assignment id" becomes the child's
+  # name) instead of a generated adjective-animal pair. The item is
+  # slugified; when the same item appears more than once, each
+  # occurrence gets a `-<n>` suffix (1-based). `name_prefix` is an
+  # optional constant prefix.
+  #
+  #   names_for_items([1, 12, 8, 1, "goat"], "zoo")
+  #   #=> ["zoo-1-1", "zoo-12", "zoo-8", "zoo-1-2", "zoo-goat"]
+  #
+  # Pure (no space/registry access); `run_items/5` then runs the
+  # result through `uniquify/2` so a name never collides with an
+  # existing agent in the space.
+  @doc false
+  @spec names_for_items([term()], String.t()) :: [String.t()]
+  def names_for_items(items, prefix) do
+    slugs =
+      items
+      |> Enum.with_index()
+      |> Enum.map(fn {item, index} -> item_slug(item, index) end)
+
+    counts = Enum.frequencies(slugs)
+
+    {names, _seen} =
+      Enum.map_reduce(slugs, %{}, fn slug, seen ->
+        occurrence = Map.get(seen, slug, 0) + 1
+        name = base_name(prefix, slug, occurrence, Map.fetch!(counts, slug))
+        {name, Map.put(seen, slug, occurrence)}
+      end)
+
+    names
+  end
+
+  # `run_items/5` entry point: derive item names, then make them unique
+  # against the space's live + persisted names.
+  defp names_for_space(items, prefix, space_id) do
+    items
+    |> names_for_items(prefix)
+    |> uniquify(Supervisor.existing_names_for_space(space_id))
+  end
+
+  # Slugify an item. Items can be integers (assignment ids) or
+  # strings (including paths); anything that isn't `[a-z0-9]` becomes a
+  # single `-`. A slug that comes out empty (e.g. all punctuation)
+  # falls back to a deterministic `item-<n>`.
+  defp item_slug(item, index) do
+    slug =
+      item
+      |> to_string()
+      |> String.downcase()
+      |> String.replace(~r/[^a-z0-9]+/u, "-")
+      |> String.trim("-")
+      |> String.slice(0, 64)
+
+    if slug == "", do: "item-#{index + 1}", else: slug
+  end
+
+  defp base_name(prefix, slug, occurrence, total) do
+    base = if prefix == "", do: slug, else: prefix <> "-" <> slug
+    if total > 1, do: base <> "-" <> Integer.to_string(occurrence), else: base
+  end
+
+  # Make each name unique against `existing` (and against the names
+  # already reserved earlier in the same list) by appending `-2`,
+  # `-3`, ... until free.
+  defp uniquify(names, existing) do
+    {result, _used} =
+      Enum.map_reduce(names, existing, fn name, used ->
+        final = unique_variant(name, used, 1)
+        {final, MapSet.put(used, final)}
+      end)
+
+    result
+  end
+
+  defp unique_variant(name, used, n) do
+    candidate = if n == 1, do: name, else: name <> "-" <> Integer.to_string(n)
+
+    if MapSet.member?(used, candidate) do
+      unique_variant(name, used, n + 1)
+    else
+      candidate
+    end
   end
 
   defp abandon_all(parent, pending) do

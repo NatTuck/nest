@@ -6,9 +6,12 @@ defmodule Nest.Agents.VisibilityTest do
   agent + not-alive agent) — these tests target the
   remaining branches: a shared agent visible to a
   non-owner, and an agent whose pid can't be looked up.
+
+  Each test runs in its own freshly created space and its own
+  sandbox transaction, so they can run concurrently.
   """
 
-  use Nest.DataCase, async: false
+  use Nest.DataCase, async: true
 
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Supervisor
@@ -146,5 +149,74 @@ defmodule Nest.Agents.VisibilityTest do
 
     visible = Visibility.list_visible_agents_for(AgentTestHelpers.current_space_id(), alice.id)
     assert Enum.all?(visible, &(&1.name != name))
+  end
+
+  test "list_archived_agents_for/2 returns archived rows with resolved parent_name" do
+    {:ok, alice, :admin} =
+      Accounts.create_user(%{username: "alice", password: "password123"}, "first-user")
+
+    {:ok, _invite, token} = Accounts.create_invite(alice.id)
+
+    {:ok, bob} =
+      Accounts.redeem_invite(token, %{username: "bob", password: "password456"})
+
+    space_id = AgentTestHelpers.current_space_id()
+    suffix = System.unique_integer([:positive])
+    parent_name = "arch-parent-#{suffix}"
+    child_name = "arch-child-#{suffix}"
+    shared_name = "arch-shared-#{suffix}"
+    model = %{name: "qwen3.5-plus", provider: "model-studio"}
+    vid = AgentTestHelpers.vocation_id_for_test()
+
+    {:ok, parent_row} =
+      Nest.Persistence.insert_agent(%{
+        space_id: space_id,
+        name: parent_name,
+        model: model,
+        vocation_id: vid,
+        created_by_user_id: alice.id,
+        shared: false
+      })
+
+    {:ok, _child_row} =
+      Nest.Persistence.insert_agent(%{
+        space_id: space_id,
+        name: child_name,
+        model: model,
+        vocation_id: vid,
+        parent_id: parent_row.id,
+        depth: 1,
+        created_by_user_id: alice.id,
+        shared: false
+      })
+
+    {:ok, _shared_row} =
+      Nest.Persistence.insert_agent(%{
+        space_id: space_id,
+        name: shared_name,
+        model: model,
+        vocation_id: vid,
+        created_by_user_id: alice.id,
+        shared: true
+      })
+
+    for name <- [parent_name, child_name, shared_name] do
+      assert :ok = Nest.Persistence.archive_agent(space_id, name)
+    end
+
+    archived = Visibility.list_archived_agents_for(space_id, alice.id)
+
+    child = Enum.find(archived, &(&1.name == child_name))
+    assert child.archived == true
+    assert child.depth == 1
+    assert child.parent_name == parent_name
+
+    # A private archived agent is invisible to a non-owner; a shared
+    # one is visible.
+    bob_names =
+      Visibility.list_archived_agents_for(space_id, bob.id) |> Enum.map(& &1.name)
+
+    refute child_name in bob_names
+    assert shared_name in bob_names
   end
 end

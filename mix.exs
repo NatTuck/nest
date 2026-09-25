@@ -120,6 +120,7 @@ defmodule Nest.MixProject do
         "credo",
         # Host-dependent timeout: 5s on the fast reference host
         # ("vampire"), 10s elsewhere. See scripts/precommit-test.sh.
+        # Changing this isn't an option, ever, for any reason.
         "cmd bash scripts/precommit-test.sh",
         "cmd --cd assets 'pnpm biome ci && node lint-file-size.mjs'",
         "test --cover",

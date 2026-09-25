@@ -28,8 +28,8 @@ defmodule Nest.Agents.Agent.WireInvariantTest do
       tail.
 
     * **Stop-before-any-delta**: the placeholder assistant
-      message in `build_partial_assistant_message/1` (the
-      `nil` branch) maintains alternation when the user
+      message in `Nest.Messages.Streaming.partial_message/2`
+      (the `nil` branch) maintains alternation when the user
       stops a chat turn before the first delta arrives.
 
   These tests pin each of those scenarios at the unit level.

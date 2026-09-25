@@ -38,6 +38,70 @@ function buildAgentTree(agents) {
 }
 
 /**
+ * Count every archived node in a built subtree (the node itself plus
+ * all of its descendants). Drives the `Archived (N)` group labels.
+ */
+function countArchived(nodes) {
+  return (nodes || []).reduce(
+    (total, node) => total + 1 + countArchived(node.children),
+    0,
+  );
+}
+
+/**
+ * A collapsed-by-default `Archived (N)` group. Rendered at the bottom
+ * of an active parent's children (nests archived children under the
+ * parent) and at the bottom of a space (for archived roots). Expanding
+ * renders the archived subtree through the normal tree rows.
+ */
+function ArchivedGroup({ nodes, depth, location, spaceSlug, toggleLabel }) {
+  const [expanded, setExpanded] = useState(false);
+
+  if (nodes.length === 0) return null;
+
+  return (
+    <li className="mt-2" style={{ paddingLeft: `${0.75 + depth * 0.875}rem` }}>
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex items-center gap-1 text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1 hover:text-gray-600 transition-colors duration-200"
+        aria-expanded={expanded}
+        aria-label={toggleLabel}
+      >
+        <svg
+          className={`w-3 h-3 transition-transform ${expanded ? "rotate-90" : ""}`}
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+          aria-hidden="true"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M9 5l7 7-7 7"
+          />
+        </svg>
+        <span>Archived ({countArchived(nodes)})</span>
+      </button>
+      {expanded && (
+        <ul className="space-y-1">
+          {nodes.map((node) => (
+            <AgentTreeRow
+              key={node.agent.name}
+              node={node}
+              depth={depth}
+              location={location}
+              spaceSlug={spaceSlug}
+            />
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
+
+/**
  * True when the current route is this space's overview or one
  * of its agent chat pages. Mirrors how agent rows and archived
  * rows derive their "current" styling from the URL: the space's
@@ -51,15 +115,30 @@ function isSpaceActive(location, space) {
 
 /**
  * Recursive agent row. Renders the agent's name with the
- * current-agent styling. Leaves and non-leaves alike render
- * identically.
+ * current-agent styling plus a chevron toggle when the node has
+ * children (so a busy parent can be collapsed). Leaves render an
+ * aligned spacer instead of a chevron. Default is expanded.
+ *
+ * Active nodes split their children: active children render inline,
+ * archived children render at the bottom behind a collapsed
+ * `Archived (N)` group (so they stay nested under the active parent).
+ * Inside an archived subtree, descendants are rendered directly.
  */
 function AgentTreeRow({ node, depth, location, spaceSlug }) {
   const { agent, children } = node;
   const isCurrent =
     location.pathname ===
     `/space/${spaceSlug}/agent/${encodeURIComponent(agent.name)}`;
-  const hasChildren = children.length > 0;
+  const isArchived = agent.archived === true;
+  const activeChildren = isArchived
+    ? []
+    : children.filter((child) => child.agent.archived !== true);
+  const archivedChildren = isArchived
+    ? children
+    : children.filter((child) => child.agent.archived === true);
+  const directChildren = isArchived ? children : activeChildren;
+  const hasChildren = activeChildren.length > 0 || archivedChildren.length > 0;
+  const [expanded, setExpanded] = useState(true);
 
   return (
     <li key={agent.name}>
@@ -69,11 +148,37 @@ function AgentTreeRow({ node, depth, location, spaceSlug }) {
           transition-colors duration-200
           ${isCurrent ? "bg-blue-50 text-blue-700 border border-blue-200" : "text-gray-700 hover:bg-gray-100"}
         `}
+        style={{ paddingLeft: `${0.75 + depth * 0.875}rem` }}
       >
+        {hasChildren ? (
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="w-4 h-4 flex items-center justify-center flex-shrink-0 rounded text-gray-400 hover:text-gray-700 transition-colors duration-200"
+            aria-expanded={expanded}
+            aria-label={`Toggle ${agent.name}`}
+          >
+            <svg
+              className={`w-3 h-3 transition-transform ${expanded ? "rotate-90" : ""}`}
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M9 5l7 7-7 7"
+              />
+            </svg>
+          </button>
+        ) : (
+          <span className="w-4 h-4 flex-shrink-0" aria-hidden="true" />
+        )}
         <Link
           to={`/space/${spaceSlug}/agent/${encodeURIComponent(agent.name)}`}
-          className="flex items-center gap-2 min-w-0 flex-1 px-3 py-2"
-          style={{ paddingLeft: `${0.75 + depth * 0.875}rem` }}
+          className="flex items-center gap-2 min-w-0 flex-1 py-2 pr-3"
         >
           <div
             className={`
@@ -83,16 +188,16 @@ function AgentTreeRow({ node, depth, location, spaceSlug }) {
             `}
           />
           <span className="truncate text-sm font-medium">{agent.name}</span>
-          {hasChildren && (
+          {directChildren.length > 0 && (
             <span className="text-xs text-gray-400 ml-1">
-              ({children.length})
+              ({directChildren.length})
             </span>
           )}
         </Link>
       </div>
-      {hasChildren && (
+      {hasChildren && expanded && (
         <ul className="space-y-1">
-          {children.map((child) => (
+          {directChildren.map((child) => (
             <AgentTreeRow
               key={child.agent.name}
               node={child}
@@ -101,6 +206,15 @@ function AgentTreeRow({ node, depth, location, spaceSlug }) {
               spaceSlug={spaceSlug}
             />
           ))}
+          {!isArchived && archivedChildren.length > 0 && (
+            <ArchivedGroup
+              nodes={archivedChildren}
+              depth={depth + 1}
+              location={location}
+              spaceSlug={spaceSlug}
+              toggleLabel={`Toggle archived children of ${agent.name}`}
+            />
+          )}
         </ul>
       )}
     </li>
@@ -112,10 +226,18 @@ function AgentTreeRow({ node, depth, location, spaceSlug }) {
  * the space's agent tree, plus archive. Clicking the name navigates to
  * `/space/:slug`; the chevron toggles the agent list.
  */
-export function SpaceRow({ space, spaceAgents, spaceBrokenAgents, location }) {
+export function SpaceRow({
+  space,
+  spaceAgents,
+  spaceArchivedAgents = [],
+  spaceBrokenAgents,
+  location,
+}) {
   const selected = isSpaceActive(location, space);
   const [expanded, setExpanded] = useState(selected);
-  const tree = buildAgentTree(spaceAgents);
+  const tree = buildAgentTree([...spaceAgents, ...spaceArchivedAgents]);
+  const activeRoots = tree.filter((node) => node.agent.archived !== true);
+  const archivedRoots = tree.filter((node) => node.agent.archived === true);
 
   return (
     <li key={space.id}>
@@ -181,7 +303,7 @@ export function SpaceRow({ space, spaceAgents, spaceBrokenAgents, location }) {
       </div>
       {expanded && (
         <ul className="space-y-1 mt-1">
-          {tree.map((node) => (
+          {activeRoots.map((node) => (
             <AgentTreeRow
               key={node.agent.name}
               node={node}
@@ -228,6 +350,13 @@ export function SpaceRow({ space, spaceAgents, spaceBrokenAgents, location }) {
               </ul>
             </li>
           )}
+          <ArchivedGroup
+            nodes={archivedRoots}
+            depth={0}
+            location={location}
+            spaceSlug={space.slug}
+            toggleLabel={`Toggle archived agents in ${space.name}`}
+          />
         </ul>
       )}
     </li>

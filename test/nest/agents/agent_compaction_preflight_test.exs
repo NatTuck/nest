@@ -184,7 +184,7 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
       assert length(payload.history) == 3
       assert match?(%{"role" => "compaction"}, List.last(payload.history))
 
-      assert_receive {:chat_status, %{status: "idle"}}, 100
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
   end
 

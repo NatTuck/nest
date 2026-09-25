@@ -27,6 +27,7 @@ export function joinLobby(onOk, onError) {
   lobbyChannel.on("init", (payload) => {
     const store = getStore();
     store.setAgents(payload.agents || []);
+    store.setArchivedAgents(payload.archived_agents || []);
     store.setBrokenAgents(payload.broken_agents || []);
     store.setModels(payload.models || []);
     store.setVocations(payload.vocations || []);
@@ -64,6 +65,12 @@ export function joinLobby(onOk, onError) {
 
   lobbyChannel.on("agent:created", (payload) => {
     getStore().addAgent(payload);
+  });
+
+  lobbyChannel.on("agent:archived", (payload) => {
+    if (payload?.name != null && payload?.space_id != null) {
+      getStore().archiveAgent(payload);
+    }
   });
 
   lobbyChannel.on("space:created", (payload) => {

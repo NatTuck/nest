@@ -351,6 +351,56 @@ defmodule Nest.Agents.Agent.SubAgent do
     :ok
   end
 
+  @doc """
+  A child ended its turn without a normal completion (its
+  chat crashed or was stopped). Fail the matching pending slot
+  so the blocked tool worker (an `agents-spawn` / `agents-batch`)
+  fails fast instead of waiting out its timeout. Never archives
+  a failed child — a crashed/stopped child is left in place for
+  inspection. Returns the GenServer reply tuple.
+  """
+  @spec handle_child_failed(Agent.t(), String.t(), term()) :: {:noreply, Agent.t()}
+  def handle_child_failed(state, child_name, reason) do
+    fail_pending_child(state, child_name, reason)
+  end
+
+  @doc """
+  A registered child process died before completing (crash, Stop,
+  external archive, cascade teardown). Same fail-fast handling as
+  `handle_child_failed/3`. Never archives. Returns the GenServer
+  reply tuple.
+  """
+  @spec handle_child_terminated(Agent.t(), String.t(), term()) :: {:noreply, Agent.t()}
+  def handle_child_terminated(state, child_name, reason) do
+    fail_pending_child(state, child_name, reason)
+  end
+
+  # Forward `:spawn_agent_error` to the blocked worker and drop the
+  # child from `pending_children` + `archiving` (without archiving it).
+  # A child that already completed (or was abandoned on timeout) has no
+  # pending entry, so the notification is a defensive no-op.
+  defp fail_pending_child(state, child_name, reason) do
+    case Map.get(state.chat_state.pending_children, child_name) do
+      nil ->
+        {:noreply, state}
+
+      task_pid ->
+        send(task_pid, {:spawn_agent_error, child_name, reason})
+
+        new_state = %{
+          state
+          | chat_state: %{
+              state.chat_state
+              | pending_children: Map.delete(state.chat_state.pending_children, child_name),
+                archiving: MapSet.delete(state.chat_state.archiving, child_name)
+            }
+        }
+
+        Broadcasts.status(new_state)
+        {:noreply, new_state}
+    end
+  end
+
   # Notify all connected lobby clients that a subagent has
   # been spawned so the sidebar tree updates live without a
   # page refresh. Uses the Phoenix Endpoint broadcast channel

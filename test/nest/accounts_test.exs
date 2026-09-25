@@ -5,13 +5,12 @@ defmodule Nest.AccountsTest do
   bootstrap path.
 
   Every test exercises the database (sandboxed by `DataCase`).
-  Async where possible — tests that exercise the
-  `user_count() == 0` bootstrap path need to truncate the
-  users table so they can't run alongside others, hence
-  `async: false` for those few.
+  Each async test gets its own sandbox transaction, so the
+  `user_count() == 0` bootstrap assertions see an isolated,
+  empty table — no serialization is needed.
   """
 
-  use Nest.DataCase, async: false
+  use Nest.DataCase, async: true
 
   alias Nest.Accounts
   alias Nest.Accounts.AuthToken
@@ -20,9 +19,9 @@ defmodule Nest.AccountsTest do
   alias Nest.Repo
 
   setup do
-    # Each test starts from an empty users + invites table so
-    # the bootstrap magic-token path is reliably exercisable
-    # without contaminating other tests.
+    # Belt-and-braces: clear any rows visible to this test's
+    # sandbox transaction so the bootstrap magic-token path is
+    # deterministically exercisable.
     Repo.delete_all(InviteSchema)
     Repo.delete_all(UserSchema)
     :ok

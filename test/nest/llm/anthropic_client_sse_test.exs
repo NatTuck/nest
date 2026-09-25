@@ -308,6 +308,59 @@ defmodule Nest.LLM.AnthropicClientSSETest do
     end
   end
 
+  describe "stream completeness" do
+    test "content with no message_stop or stop_reason is :stream_incomplete" do
+      sse = """
+      event: message_start
+      data: {"message":{"id":"msg_3","model":"claude-3-opus-20240229","usage":{"input_tokens":1,"output_tokens":1}}}
+
+      event: content_block_delta
+      data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}
+
+      """
+
+      events = run_with_sse(sse)
+
+      assert {:text, "Hello"} in events
+      assert {:error, {:stream_incomplete, :no_terminator}} in events
+      refute Enum.any?(events, &match?({:done, _}, &1))
+    end
+
+    test "a stop_reason is enough to complete even without message_stop" do
+      sse = """
+      event: message_start
+      data: {"message":{"id":"msg_4","model":"claude-3-opus-20240229","usage":{"input_tokens":1,"output_tokens":1}}}
+
+      event: message_delta
+      data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}
+
+      """
+
+      events = run_with_sse(sse)
+
+      assert {:done, %{response: %RunResponse{stop_reason: "end_turn"}}} = List.last(events)
+    end
+  end
+
+  describe "idle watchdog" do
+    test "emits {:stream_idle_timeout, ms} and kills the worker when no chunk arrives" do
+      worker =
+        spawn_link(fn ->
+          receive do
+            :never -> :ok
+          end
+        end)
+
+      ref = Process.monitor(worker)
+
+      events =
+        AnthropicClient.consume_sse_from_mailbox(worker: worker, timeout: 50) |> Enum.to_list()
+
+      assert events == [{:error, {:stream_idle_timeout, 50}}]
+      assert_receive {:DOWN, ^ref, :process, ^worker, :killed}
+    end
+  end
+
   # Drive `consume_sse_from_mailbox/0` by sending `{:req_chunk, _}`
   # and `:req_done` messages to the test process from a helper, then
   # collecting the canonical events the stream produces.

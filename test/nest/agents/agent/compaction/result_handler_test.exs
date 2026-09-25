@@ -186,6 +186,45 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandlerTest do
     end
   end
 
+  describe "handle_error/3" do
+    test "a stream idle timeout failure broadcasts a readable reason" do
+      state = %{build_state() | space_id: 99}
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:99:test-agent-loop")
+
+      log =
+        capture_log(fn ->
+          assert {:noreply, new_state} =
+                   ResultHandler.handle(
+                     {:compaction_failed, {:stream_idle_timeout, 300_000}, nil},
+                     state
+                   )
+
+          assert new_state.live.status == :compaction_failed
+          assert_receive {:chat_error, %{content: content, compactionError: true}}
+          assert content =~ "no output from the model for 300s"
+        end)
+
+      assert log =~ "Compaction failed"
+    end
+
+    test "an incomplete-stream failure broadcasts a readable reason" do
+      state = %{build_state() | space_id: 98}
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:98:test-agent-loop")
+
+      capture_log(fn ->
+        assert {:noreply, new_state} =
+                 ResultHandler.handle(
+                   {:compaction_failed, {:stream_incomplete, :no_terminator}, nil},
+                   state
+                 )
+
+        assert new_state.live.status == :compaction_failed
+        assert_receive {:chat_error, %{content: content, compactionError: true}}
+        assert content =~ "the response stream ended unexpectedly"
+      end)
+    end
+  end
+
   describe "retry_compaction/1" do
     # `retry_compaction/1` has two branches: when `mid_turn_entry`
     # is set, it dispatches to `needs_entry/2` (carries the

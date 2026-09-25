@@ -399,25 +399,42 @@ defmodule Nest.LLM.OpenAIClientTest do
 
   describe "synthesized :done when the body has no [DONE] frame" do
     # The OpenAI wire protocol requires the server to send
-    # `data: [DONE]\n\n` at end-of-stream, but providers
-    # sometimes close the connection without it (notably
-    # reasoning-only responses from some OpenAI-compatible
-    # endpoints, where the server's response loop finishes
-    # without emitting a final frame). Without the
-    # synthesis, the `StreamConsumer` returns `response: nil`,
-    # which the dispatcher misclassifies as a user-initiated
-    # stop and routes through `StopHandler` — tagging the
-    # partial with `metadata: %{"stopped_by_user" => true}`
-    # and skipping the response log. The fix synthesizes a
-    # `{:done, _}` event so the stream goes through the normal
-    # `handle_new_response/3` path, which broadcasts the
-    # response log and finalizes with the correct metadata.
+    # `data: [DONE]\n\n` at end-of-stream, but providers sometimes close
+    # without it. We treat the stream as complete when a `finish_reason`
+    # was seen and synthesize the `{:done, _}` ourselves: without it
+    # `StreamConsumer` returns `response: nil`, which the dispatcher
+    # misclassifies as a user-initiated stop. If neither `[DONE]` nor a
+    # `finish_reason` arrived, the connection dropped mid-response and
+    # the client flags `{:stream_incomplete, :no_terminator}` instead.
 
-    test "synthesizes a :done event when the body ends without a [DONE] frame" do
-      # The chunk only has a reasoning delta — no `data: [DONE]`.
-      # This mirrors the MiniMax field report exactly: the
-      # provider streamed thinking content and then closed the
-      # connection.
+    test "synthesizes a :done event when a finish_reason was seen without a [DONE] frame" do
+      # The chunk streams content and a `finish_reason`, then closes
+      # without `data: [DONE]`.
+      delta_frame = %{
+        "choices" => [
+          %{
+            "index" => 0,
+            "delta" => %{"role" => "assistant", "content" => "Hello"},
+            "finish_reason" => "stop"
+          }
+        ]
+      }
+
+      chunk = "data: " <> Jason.encode!(delta_frame) <> "\n\n"
+      events = run_with_chunk(chunk)
+
+      assert {:text, "Hello"} in events
+      assert {:finish_reason, "stop"} in events
+
+      # The synthesized terminal event. Its %RunResponse{} is empty so
+      # `normalize_response/2` populates text/thinking/etc. from the
+      # accumulator.
+      assert {:done, %{response: %RunResponse{text: nil}}} in events
+    end
+
+    test "flags :stream_incomplete when neither [DONE] nor finish_reason arrived" do
+      # Mirrors the MiniMax field report: the provider streamed thinking
+      # content and then closed the connection with no terminator at all.
       delta_frame = %{
         "choices" => [
           %{
@@ -435,10 +452,8 @@ defmodule Nest.LLM.OpenAIClientTest do
       events = run_with_chunk(chunk)
 
       assert {:thinking, "The user wants to know the project layout."} in events
-      # The synthesized terminal event. The carried
-      # %RunResponse{} is empty so `normalize_response/2`
-      # populates text/thinking/etc. from the accumulator.
-      assert {:done, %{response: %RunResponse{}}} in events
+      assert {:error, {:stream_incomplete, :no_terminator}} in events
+      refute Enum.any?(events, &match?({:done, _}, &1))
     end
 
     test "does not synthesize a second :done when the body already had one" do
@@ -472,20 +487,33 @@ defmodule Nest.LLM.OpenAIClientTest do
       assert {:done, %{response: %RunResponse{stop_reason: "stop"}}} in events
     end
 
-    test "the synthesized :done carries an empty RunResponse that normalize_response can populate" do
-      # The synthesized `%RunResponse{}` has no text, thinking,
-      # tool_calls, thinking_signature, or usage. The
-      # chat-task-side `normalize_response/2` is responsible
-      # for merging in the accumulator's values. This test
-      # pins the contract: the synthesized event is empty
-      # *by design* — the merge happens downstream.
-      # empty body — only :req_done, no chunks
-      chunk = ""
-      events = run_with_chunk(chunk)
+    test "an empty body (only :req_done) is :stream_incomplete" do
+      # No chunks at all and no terminator: the connection dropped
+      # before any response arrived. Previously this synthesized a
+      # `:done` with an empty RunResponse, which masqueraded as a
+      # complete (empty) reply.
+      events = run_with_chunk("")
 
-      assert events == [{:done, %{response: %RunResponse{}}}]
-      refute Enum.any?(events, &match?({:text, _}, &1))
-      refute Enum.any?(events, &match?({:thinking, _}, &1))
+      assert events == [{:error, {:stream_incomplete, :no_terminator}}]
+    end
+  end
+
+  describe "idle watchdog" do
+    test "emits {:stream_idle_timeout, ms} and kills the worker when no chunk arrives" do
+      worker =
+        spawn_link(fn ->
+          receive do
+            :never -> :ok
+          end
+        end)
+
+      ref = Process.monitor(worker)
+
+      events =
+        OpenAIClient.consume_sse_from_mailbox(worker: worker, timeout: 50) |> Enum.to_list()
+
+      assert events == [{:error, {:stream_idle_timeout, 50}}]
+      assert_receive {:DOWN, ^ref, :process, ^worker, :killed}
     end
   end
 

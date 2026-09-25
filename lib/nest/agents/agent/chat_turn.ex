@@ -133,7 +133,6 @@ defmodule Nest.Agents.Agent.ChatTurn do
       active_worker: nil,
       active_worker_kind: nil,
       active_message_index: 0,
-      stop_requested: false,
       entry: entry
     }
 
@@ -166,10 +165,12 @@ defmodule Nest.Agents.Agent.ChatTurn do
     end
   end
 
+  # The runner's stream failed (idle timeout, dropped/incomplete
+  # connection, HTTP error). The `on_error` callback already sent
+  # `:llm_error` to the Agent, which finalized the partial and went
+  # idle; we just need to stop this ChatTurn so it doesn't linger
+  # while the Agent is already idle.
   def handle_info({:http_error, _error}, state) do
-    # The on_error callback already broadcast :llm_error to
-    # the Agent and the Agent's llm_error handler transitioned
-    # to :idle. We're done.
     Lifecycle.finalize_turn(state)
   end
 
@@ -190,6 +191,20 @@ defmodule Nest.Agents.Agent.ChatTurn do
 
   def handle_info({:EXIT, pid, reason}, state) do
     Lifecycle.worker_exited(pid, reason, state)
+  end
+
+  # The monitored HTTP/tool worker died without delivering a result
+  # (it is started via `Task.Supervisor.start_child` + `Process.monitor`,
+  # so worker death arrives as `:DOWN`, not `{:EXIT, ...}`). Clearing
+  # `active_worker` first makes the `:normal` case (result already
+  # handled) a plain no-op, while an abnormal death becomes
+  # `chat_crashed` so the Agent leaves `:streaming`/`:executing_tools`.
+  def handle_info({:DOWN, _ref, :process, pid, reason}, state) do
+    if pid == state.active_worker do
+      Lifecycle.worker_exited(pid, reason, %{state | active_worker: nil, active_worker_kind: nil})
+    else
+      {:noreply, state}
+    end
   end
 
   def handle_info(_msg, state), do: {:noreply, state}

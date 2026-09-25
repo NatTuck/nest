@@ -231,6 +231,16 @@ defmodule Nest.Agents do
   end
 
   @doc """
+  Lists public info for the *archived* agents in `space_id` that
+  the given user is allowed to see. Same wire shape as
+  `list_visible_agents_for/2`, plus `archived: true`.
+  """
+  @spec list_archived_agents_for(integer(), integer()) :: list(map())
+  def list_archived_agents_for(space_id, user_id) do
+    Visibility.list_archived_agents_for(space_id, user_id)
+  end
+
+  @doc """
   Gets the messages for an agent by its `{space_id, name}`.
   """
   @spec get_messages(integer(), String.t()) :: {:ok, [map()]} | {:error, :not_found}

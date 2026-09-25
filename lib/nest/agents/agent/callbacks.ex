@@ -23,10 +23,29 @@ defmodule Nest.Agents.Agent.Callbacks do
   alias Nest.Agents.Agent.MessageAppender
   alias Nest.Agents.Agent.SubAgent
 
+  # The bounded delay before `handle_call({:stop_chat, ...})` force-idles
+  # a ChatTurn that never acked. Overridable so tests don't pay the
+  # production 2s.
+  defp stop_fallback_ms, do: Application.get_env(:nest, :stop_fallback_ms, 2_000)
+
   # Sub-agent: child finished its turn. Merge usage, drop the
   # pending-child entry, forward the result, broadcast status.
   def handle_cast({:child_completed, child_name, response, child_total_usage}, state) do
     SubAgent.handle_child_completed(state, child_name, response, child_total_usage)
+  end
+
+  # Sub-agent: child ended its turn without a normal completion
+  # (chat crash or user Stop). Fail the blocked worker's slot
+  # immediately instead of waiting out the per-item timeout.
+  def handle_cast({:child_failed, child_name, reason}, state) do
+    SubAgent.handle_child_failed(state, child_name, reason)
+  end
+
+  # Sub-agent: a registered child process died before completing
+  # (crash, Stop, external archive, cascade teardown). Same
+  # fail-fast handling as `:child_failed`.
+  def handle_cast({:child_terminated, child_name, reason}, state) do
+    SubAgent.handle_child_terminated(state, child_name, reason)
   end
 
   # ChatTurn finished unwinding from a user-initiated stop.
@@ -126,18 +145,29 @@ defmodule Nest.Agents.Agent.Callbacks do
   # where the ChatTurn is itself blocked on
   # `safe_iterate/1`'s `GenServer.call(agent, ...)` — the
   # ChatTurn's `iterate/1` catches the exit and stops cleanly.
+  #
+  # Stop must ALWAYS return the agent to idle within bounded
+  # time. When there is no ChatTurn to ask (already finished, or the
+  # spawn never produced a pid) we force idle immediately. Otherwise we
+  # schedule a bounded `:stop_fallback` so a dead/wedged turn that never
+  # acks is force-idled too.
   def handle_call({:stop_chat, channel_pid}, _from, state) do
     state = %{state | live: %{state.live | cancelled: true}}
 
-    if chat_turn_pid = state.live.chat_turn_pid do
-      try do
-        GenServer.call(chat_turn_pid, {:stop_chat, channel_pid}, 5_000)
-      catch
-        :exit, _ -> :ok
-      end
-    end
+    case state.live.chat_turn_pid do
+      nil ->
+        {:reply, :ok, Handlers.ChatTurnHandler.force_idle(state)}
 
-    {:reply, :ok, state}
+      chat_turn_pid ->
+        try do
+          GenServer.call(chat_turn_pid, {:stop_chat, channel_pid}, 5_000)
+        catch
+          :exit, _ -> :ok
+        end
+
+        Process.send_after(self(), {:stop_fallback, chat_turn_pid}, stop_fallback_ms())
+        {:reply, :ok, state}
+    end
   end
 
   # Synchronous retry/loop-ack handlers. The Agent API exposes
