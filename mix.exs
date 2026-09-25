@@ -80,7 +80,7 @@ defmodule Nest.MixProject do
       {:unique_names_generator, "~> 0.2.0"},
       {:erlexec, "~> 2.0"},
       {:mustache, "~> 0.5"},
-      {:tiktoken, "~> 0.4.2"},
+      {:tokenizers, "~> 0.5"},
       {:exprof, "~> 0.2", only: :test},
       {:comeonin, "~> 5.4"},
       {:argon2_elixir, "~> 4.0"}

@@ -28,3 +28,20 @@ Ecto.Adapters.SQL.Sandbox.mode(Nest.Repo, :manual)
 
 # Start the application for tests
 Application.ensure_all_started(:nest)
+
+# Warm the code server. `interactive` code-loading mode routes every
+# module's FIRST call through the single global code server. Under
+# concurrent async tests, many processes hit lazy module loads (Jason
+# JSONB decoding in Postgrex, app modules) at once and serialize on
+# that one process, which manifests as multi-second stalls. Eagerly
+# loading the hot modules before the suite starts removes the race.
+for mod <- [
+      Jason,
+      Jason.Decoder,
+      Jason.Encoder,
+      Postgrex.Extensions.JSONB,
+      Postgrex.DefaultTypes
+    ],
+    Code.ensure_loaded?(mod) do
+  :ok
+end

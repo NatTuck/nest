@@ -181,7 +181,7 @@ defmodule Nest.Tokens.PreFlightTest do
       #
       # Use a moderately-sized head and a tiny context_limit so
       # the projected total clearly overflows without making
-      # the tiktoken estimate take forever.
+      # the token estimate take forever.
       sys = {:system, %System{parts: [%Part.Text{text: "You are helpful."}]}}
       old_user = {:user, %User{parts: [%Part.Text{text: "earlier question"}]}}
       assistant_text = String.duplicate("ab ", 4_000)

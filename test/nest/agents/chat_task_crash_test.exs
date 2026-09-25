@@ -88,7 +88,7 @@ defmodule Nest.Agents.ChatTaskCrashTest do
         :ok = Agent.chat(pid, "Hello")
 
         # Fence on idle: 500ms accounts for preflight BPE init
-        # (Tiktoken CL100K count_tokens is a DirtyCpu NIF; the
+        # (cl100k count_tokens is a DirtyCpu NIF; the
         # first call on each of BEAM's 32 dirty CPU threads pays
         # a 200-325ms init cost). Once the fence passes, every
         # earlier message in the chat pipeline has already
