@@ -76,7 +76,10 @@ defmodule Nest.Tools.ShellCmdTest do
 
   @tag :bwrap
   test "a symlinked workspace is bound at its canonical path; read and write work through the symlink" do
-    uniq = System.unique_integer([:positive])
+    # Include the OS pid so paths are unique across BEAM runs — a
+    # previously killed run can leave these behind, and
+    # `System.unique_integer/1` restarts per BEAM so it can collide.
+    uniq = "#{System.pid()}_#{System.unique_integer([:positive])}"
     base = System.tmp_dir!()
     real = Path.join(base, "nest_bwrap_#{uniq}_real")
     link = Path.join(base, "nest_bwrap_#{uniq}_link")

@@ -45,9 +45,9 @@ defmodule Nest.LLM.AnthropicClient do
       {"content-type", "application/json"}
     ]
 
-    spawn_link(fn -> http_worker(parent, url, headers, request, opts, timeout) end)
+    worker = spawn_link(fn -> http_worker(parent, url, headers, request, opts, timeout) end)
 
-    {:ok, consume_sse_from_mailbox()}
+    {:ok, consume_sse_from_mailbox(worker: worker, timeout: timeout)}
   end
 
   # The HTTP call and the body iteration both run in the worker
@@ -86,12 +86,13 @@ defmodule Nest.LLM.AnthropicClient do
   #   :req_done             — end of stream
   #
   # The stream terminates with a single `{:done, %{response: _}}`
-  # event carrying the accumulated response state.
+  # event carrying the accumulated response state, or with an
+  # `{:error, _}` event when the connection was dropped or stalled.
   @doc false
-  @spec consume_sse_from_mailbox() :: Enumerable.t()
-  def consume_sse_from_mailbox do
+  @spec consume_sse_from_mailbox(keyword()) :: Enumerable.t()
+  def consume_sse_from_mailbox(opts \\ []) do
     Stream.resource(
-      fn -> {Parser.new(), false, initial_state()} end,
+      fn -> {Parser.new(), false, initial_state(opts)} end,
       &next_chunk_or_halt/1,
       fn _ -> :ok end
     )
@@ -104,40 +105,65 @@ defmodule Nest.LLM.AnthropicClient do
 
   defp receive_chunk_or_done({parser, false, state}) do
     receive do
-      {:req_chunk, chunk} -> handle_req_chunk(parser, chunk, state)
-      :req_done -> handle_req_done(parser, state)
+      {:req_chunk, chunk} ->
+        handle_req_chunk(parser, chunk, state)
+
+      :req_done ->
+        handle_req_done(parser, state)
+
       # The agent may interrupt the chat task mid-stream (user
       # clicked Stop). Halt the stream so `Enum.reduce` exits and
       # the chat task can finalize the partial accumulator.
-      {:stop_chat, from} -> handle_stop_chat(parser, state, from)
+      {:stop_chat, from} ->
+        handle_stop_chat(parser, state, from)
     after
-      60_000 -> timeout_result(parser, state)
+      state.watchdog -> timeout_result(parser, state)
     end
   end
 
   defp handle_req_chunk(parser, chunk, state) do
     {frames, parser} = Parser.feed(parser, chunk)
     {events, state} = frames_to_canonical_events(frames, state)
+
+    state = %{state | error_seen: state.error_seen or Enum.any?(events, &match?({:error, _}, &1))}
     {events, {parser, false, state}}
   end
 
+  # The body ended. A response is complete only when Anthropic sent a
+  # `message_stop` terminator or reported a non-nil `stop_reason`. If it
+  # did neither (and no error was already emitted), the connection was
+  # dropped mid-response: surface `{:stream_incomplete, :no_terminator}`
+  # (the partial accumulator is kept downstream) instead of accepting a
+  # truncated reply as complete.
   defp handle_req_done(parser, state) do
     {events, final_state} = flush_and_finish(parser, state)
 
-    {events ++ [{:done, %{response: build_done_response(final_state)}}],
-     {parser, true, final_state}}
+    error_here? = final_state.error_seen or Enum.any?(events, &match?({:error, _}, &1))
+    complete? = final_state.terminator or not is_nil(final_state.stop_reason)
+
+    events =
+      cond do
+        error_here? -> events
+        complete? -> events ++ [{:done, %{response: build_done_response(final_state)}}]
+        true -> events ++ [{:error, {:stream_incomplete, :no_terminator}}]
+      end
+
+    {events, {parser, true, final_state}}
   end
 
   defp handle_stop_chat(parser, state, from) do
     send(from, :stopped)
+    HttpWorker.kill_worker(state.worker)
     {:halt, {parser, true, state}}
   end
 
+  # The upstream went silent for longer than the provider's
+  # `receive_timeout`. Abandon the socket (kill the worker) and
+  # surface a concrete error so the agent can finalize.
   defp timeout_result(parser, state) do
-    {[
-       {:error, :stream_timeout},
-       {:done, %{response: build_done_response(state)}}
-     ], {parser, true, state}}
+    HttpWorker.kill_worker(state.worker)
+    event = {:error, {:stream_idle_timeout, state.idle_timeout}}
+    {[event], {parser, true, %{state | error_seen: true}}}
   end
 
   defp flush_and_finish(parser, state) do
@@ -318,15 +344,22 @@ defmodule Nest.LLM.AnthropicClient do
   defp part_to_text(%Part.Text{text: text}), do: text
   defp part_to_text(other), do: inspect(other)
 
-  defp initial_state do
+  defp initial_state(opts) do
+    timeout = Keyword.get(opts, :timeout, :infinity)
+
     %{
       model: nil,
       message_id: nil,
       stop_reason: nil,
+      terminator: false,
+      error_seen: false,
       input_tokens: 0,
       output_tokens: 0,
       cache_read_input_tokens: 0,
-      cache_creation_input_tokens: 0
+      cache_creation_input_tokens: 0,
+      worker: Keyword.get(opts, :worker),
+      idle_timeout: timeout,
+      watchdog: HttpWorker.watchdog_ms(timeout)
     }
   end
 
@@ -429,12 +462,26 @@ defmodule Nest.LLM.AnthropicClient do
     {events, state}
   end
 
+  # The canonical end-of-message terminator. Its absence (with no
+  # `stop_reason` either) is how `handle_req_done/2` detects a dropped
+  # connection.
+  defp frame_to_events({:event, "message_stop", _data}, state) do
+    {[], %{state | terminator: true}}
+  end
+
   defp frame_to_events({:event, "error", data}, state) do
     error =
       case Jason.decode(data) do
         {:ok, %{"error" => error_type, "status" => status, "body" => body}}
         when is_integer(status) ->
           {error_type, status, body}
+
+        # Transport failures (connection reset, Finch timeout, etc.)
+        # carry a nil status and the inspected reason in `body`. Tag
+        # them `:transport` so `Runner.format_error/1` renders the
+        # reason instead of the bare SSE error type.
+        {:ok, %{"error" => error_type, "status" => nil, "body" => body}} ->
+          {error_type, :transport, body}
 
         {:ok, %{"error" => error}} ->
           error
@@ -443,7 +490,7 @@ defmodule Nest.LLM.AnthropicClient do
           data
       end
 
-    {[{:error, error}], state}
+    {[{:error, error}], %{state | error_seen: true}}
   end
 
   defp frame_to_events(_other, state), do: {[], state}

@@ -66,6 +66,35 @@ defmodule Nest.LLM.HttpWorker do
     :ok
   end
 
+  # The idle watchdog a client's SSE consumer arms while it waits for the
+  # next `{:req_chunk, _}` from this worker. It fires at the provider's
+  # socket `receive_timeout` (Finch's per-chunk timeout). Whichever fires
+  # first, the consumer surfaces a concrete error and kills the worker;
+  # when Finch wins we get its richer `stream_terminated` reason, and when
+  # the watchdog wins we report `{:stream_idle_timeout, timeout}`. Keeping
+  # the two at the same value (rather than adding a grace) means tests can
+  # drive a tiny timeout without waiting seconds. `:infinity` stays
+  # `:infinity` so a caller can opt out of the watchdog entirely.
+  @spec watchdog_ms(timeout()) :: timeout()
+  def watchdog_ms(:infinity), do: :infinity
+  def watchdog_ms(timeout) when is_integer(timeout), do: timeout
+  def watchdog_ms(_other), do: :infinity
+
+  # Kill a spawned Req worker whose socket read we're abandoning (idle
+  # watchdog or cooperative stop). A linked `:normal` exit does not stop a
+  # process blocked in `Enum.each/2` over a `%Req.Response.Async{}`, so we
+  # must be explicit or the socket lingers until Finch's own timeout.
+  # Unlink first: the worker is `spawn_link`ed to the consumer, and a
+  # hard `:killed` would otherwise propagate back and take the consumer
+  # (the chat-turn worker) down with it.
+  @spec kill_worker(pid() | nil) :: :ok
+  def kill_worker(pid) when is_pid(pid) do
+    Process.unlink(pid)
+    Process.exit(pid, :kill)
+  end
+
+  def kill_worker(_other), do: :ok
+
   # `%Req.Response.Async{}` is enumerable and yields raw
   # chunk bytes via its `fun.(data, acc)` callback — the
   # `:data` / `:trailers` / `:done` framing is consumed
@@ -90,7 +119,7 @@ defmodule Nest.LLM.HttpWorker do
 
         send(
           parent,
-          {:req_chunk, format_chunk.("stream_terminated", to_string(kind), inspect(reason))}
+          {:req_chunk, format_chunk.("stream_terminated", nil, "#{kind}: #{inspect(reason)}")}
         )
 
         send(parent, :req_done)

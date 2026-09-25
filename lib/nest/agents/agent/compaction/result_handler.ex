@@ -36,8 +36,6 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
 
   require Logger
 
-  require Logger
-
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ChatPipeline
@@ -280,7 +278,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
     Broadcasts.status(state)
 
     Broadcasts.compaction_error(
-      state.name,
+      state,
       "Compaction failed: #{format_reason(reason)}. Click Retry to try again.",
       "Nest.Agents.Agent.Compaction.ResultHandler.handle_error/3"
     )
@@ -496,6 +494,15 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   defp format_reason(:llm_returned_empty), do: "LLM returned empty summary"
   defp format_reason(:timeout), do: "request timed out"
   defp format_reason(:transport_error), do: "transport error"
+
+  defp format_reason({:stream_idle_timeout, ms}) when is_integer(ms),
+    do: "no output from the model for #{div(ms, 1_000)}s"
+
+  defp format_reason({:stream_idle_timeout, _ms}), do: "no output from the model"
+
+  defp format_reason({:stream_incomplete, _reason}),
+    do: "the response stream ended unexpectedly (connection dropped)"
+
   defp format_reason({:crash, _kind, _reason}), do: "internal error"
   defp format_reason(reason) when is_binary(reason), do: reason
   defp format_reason(_other), do: "internal error"

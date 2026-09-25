@@ -42,9 +42,9 @@ defmodule Nest.LLM.OpenAIClient do
     timeout = Keyword.get(opts, :receive_timeout, :infinity)
     parent = self()
 
-    spawn_link(fn -> http_worker(parent, url, api_key, request, opts, timeout) end)
+    worker = spawn_link(fn -> http_worker(parent, url, api_key, request, opts, timeout) end)
 
-    {:ok, build_event_stream()}
+    {:ok, consume_sse_from_mailbox(worker: worker, timeout: timeout)}
   end
 
   # The HTTP call and the body iteration both run in the worker
@@ -219,100 +219,132 @@ defmodule Nest.LLM.OpenAIClient do
   # consumer's process and pulls from that mailbox, so the
   # consumer can stop early (e.g. via `Stream.take/2` or the
   # agent's iteration loop) by simply halting this resource.
-  @spec consume_sse_from_mailbox() :: Enumerable.t()
-  def consume_sse_from_mailbox do
-    build_event_stream()
+  @spec consume_sse_from_mailbox(keyword()) :: Enumerable.t()
+  def consume_sse_from_mailbox(opts \\ []) do
+    build_event_stream(opts)
   end
 
-  # The third element of the state tuple tracks whether a
-  # `{:done, _}` event has been emitted by any chunk
-  # processed so far. We need to track this across calls
-  # because the `[DONE]` frame can arrive in a chunk that
-  # `handle_req_chunk_openai/2` already processed — the final
-  # `handle_req_done_openai/1` call only sees whatever was
-  # pending in the SSE parser's buffer, which is empty when
-  # the `[DONE]` frame was already consumed.
-  defp build_event_stream do
+  # The resource state tracks, across chunks: whether a `{:done, _}`
+  # event has been emitted (the `[DONE]` frame can arrive in a chunk that
+  # `handle_req_chunk_openai/2` already processed), whether a
+  # `finish_reason` was seen (some providers close without `[DONE]`), and
+  # whether an error was already emitted (so we never synthesize a clean
+  # `:done` on top of a failure). `worker`/`watchdog` let the idle-timeout
+  # branch kill the socket read when the upstream goes silent.
+  defp build_event_stream(opts) do
+    timeout = Keyword.get(opts, :timeout, :infinity)
+
+    state = %{
+      parser: Parser.new(),
+      halted: false,
+      had_done: false,
+      finish_seen: false,
+      error_seen: false,
+      worker: Keyword.get(opts, :worker),
+      idle_timeout: timeout,
+      watchdog: HttpWorker.watchdog_ms(timeout)
+    }
+
     Stream.resource(
-      fn -> {Parser.new(), false, false} end,
+      fn -> state end,
       fn
-        {_parser, true, _had_done} ->
+        %{halted: true} ->
           {:halt, nil}
 
-        {parser, false, had_done} ->
-          receive_chunk_or_done_openai(parser, had_done)
+        state ->
+          receive_chunk_or_done_openai(state)
       end,
       fn _ -> :ok end
     )
   end
 
-  defp receive_chunk_or_done_openai(parser, had_done) do
+  defp receive_chunk_or_done_openai(state) do
     receive do
-      {:req_chunk, chunk} -> handle_req_chunk_openai(parser, chunk, had_done)
-      :req_done -> handle_req_done_openai(parser, had_done)
+      {:req_chunk, chunk} ->
+        handle_req_chunk_openai(state, chunk)
+
+      :req_done ->
+        handle_req_done_openai(state)
+
       # The agent may interrupt the chat task mid-stream (user
       # clicked Stop). Halt the stream so `Enum.reduce` exits
       # and the chat task can finalize the partial accumulator.
-      {:stop_chat, from} -> handle_stop_chat_openai(parser, from)
+      {:stop_chat, from} ->
+        handle_stop_chat_openai(state, from)
     after
-      60_000 -> {[{:error, :stream_timeout}], {parser, true, had_done}}
+      state.watchdog -> idle_timeout_openai(state)
     end
   end
 
-  defp handle_req_chunk_openai(parser, chunk, had_done) do
-    {frames, parser} = Parser.feed(parser, chunk)
-    events = Enum.flat_map(frames, &frame_to_canonical_event/1)
-    chunk_had_done = Enum.any?(events, &match?({:done, _}, &1))
-    {events, {parser, false, had_done or chunk_had_done}}
+  # The upstream went silent for longer than the provider's
+  # `receive_timeout`. Abandon the socket (kill the worker) and
+  # surface a concrete error so the agent can finalize.
+  defp idle_timeout_openai(state) do
+    HttpWorker.kill_worker(state.worker)
+    event = {:error, {:stream_idle_timeout, state.idle_timeout}}
+    {[event], %{state | halted: true, error_seen: true}}
   end
 
-  defp handle_req_done_openai(parser, had_done) do
-    {frames, _} = Parser.flush(parser)
+  defp handle_req_chunk_openai(state, chunk) do
+    {frames, parser} = Parser.feed(state.parser, chunk)
     events = Enum.flat_map(frames, &frame_to_canonical_event/1)
 
-    # If the upstream body ended without a `data: [DONE]\n\n`
-    # frame, synthesize one. The OpenAI wire protocol requires
-    # the server to send `[DONE]` at end-of-stream, but
-    # providers sometimes close the connection without it
-    # (notably reasoning-only responses from some OpenAI-
-    # compatible endpoints, where the server's response loop
-    # finishes without emitting a final frame). Without this
-    # synthesis, the `StreamConsumer` returns `response: nil`,
-    # which the dispatcher in `LLMRunner` interprets as a
-    # user-initiated stop and routes through the ChatTurn's
-    # `Lifecycle.stop_chat/2` — tagging the partial with
-    # `metadata: %{"stopped_by_user" => true}` and skipping
-    # the response log. Synthesizing the `:done` event here
-    # routes the stream through the normal
-    # `handle_new_response/3` path, which calls
-    # `Broadcasts.api_response/4` (so the response log lands)
-    # and finalizes the partial with the correct metadata.
-    #
-    # We must check `had_done` (set by a previous chunk) AND
-    # the events from this final flush — a `[DONE]` frame
-    # could have been delivered in the last chunk and already
-    # emitted its `{:done, _}` event in `handle_req_chunk_openai/2`.
-    #
-    # The carried `%RunResponse{}` is empty so that
-    # `normalize_response/2`'s second clause
-    # (`%RunResponse{} = response, acc`) merges in text,
-    # thinking, tool_calls, thinking_signature, and usage
-    # from the accumulator. `stop_reason` is whatever was
-    # captured by any `{:finish_reason, _}` event that
-    # arrived before the connection closed.
+    state = %{
+      state
+      | parser: parser,
+        had_done: state.had_done or Enum.any?(events, &match?({:done, _}, &1)),
+        finish_seen: state.finish_seen or Enum.any?(events, &match?({:finish_reason, _}, &1)),
+        error_seen: state.error_seen or Enum.any?(events, &match?({:error, _}, &1))
+    }
+
+    {events, state}
+  end
+
+  # The body ended. If the upstream never sent `data: [DONE]` but did
+  # report a `finish_reason`, synthesize the `:done` so the turn finalizes
+  # normally instead of looking like a user stop. If there is no
+  # terminator at all, the connection was dropped mid-response: surface
+  # `{:stream_incomplete, :no_terminator}` (the partial accumulator is
+  # kept downstream) rather than accepting a truncated reply as complete.
+  #
+  # We must check `had_done`/`finish_seen` from earlier chunks AND the
+  # events from this final flush — a `[DONE]` frame could have been
+  # delivered in the last chunk and already emitted its `{:done, _}`.
+  # A prior `{:error, _}` suppresses the synthesized `:done` entirely.
+  #
+  # The carried `%RunResponse{}` is empty so that `normalize_response/2`'s
+  # second clause (`%RunResponse{} = response, acc`) merges in text,
+  # thinking, tool_calls, thinking_signature, and usage from the
+  # accumulator. `stop_reason` is whatever was captured by any
+  # `{:finish_reason, _}` event that arrived before the connection closed.
+  defp handle_req_done_openai(state) do
+    {frames, _} = Parser.flush(state.parser)
+    events = Enum.flat_map(frames, &frame_to_canonical_event/1)
+
+    done_here? = Enum.any?(events, &match?({:done, _}, &1))
+
+    state = %{
+      state
+      | halted: true,
+        error_seen: state.error_seen or Enum.any?(events, &match?({:error, _}, &1)),
+        finish_seen: state.finish_seen or Enum.any?(events, &match?({:finish_reason, _}, &1))
+    }
+
     events =
-      if had_done or Enum.any?(events, &match?({:done, _}, &1)) do
-        events
-      else
-        events ++ [{:done, %{response: %RunResponse{}}}]
+      cond do
+        state.error_seen -> events
+        state.had_done or done_here? -> events
+        state.finish_seen -> events ++ [{:done, %{response: %RunResponse{}}}]
+        true -> events ++ [{:error, {:stream_incomplete, :no_terminator}}]
       end
 
-    {events, {parser, true, had_done}}
+    {events, state}
   end
 
-  defp handle_stop_chat_openai(parser, from) do
+  defp handle_stop_chat_openai(state, from) do
     send(from, :stopped)
-    {:halt, {parser, true, false}}
+    HttpWorker.kill_worker(state.worker)
+    {:halt, %{state | halted: true}}
   end
 
   defp frame_to_canonical_event({:event, _name, "[DONE]"}) do

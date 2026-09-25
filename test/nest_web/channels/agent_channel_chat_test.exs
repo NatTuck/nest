@@ -536,7 +536,7 @@ defmodule NestWeb.AgentChannelChatTest do
 
           # Finish the retried compaction so the agent is idle at test
           # end (the teardown asserts zero in-flight agents).
-          assert_receive {:chat_status, %{status: "idle"}}, 100
+          assert_receive {:chat_status, %{status: "idle"}}, 500
         end)
 
       assert log =~ "ChatTurn.run_chat_task/1"

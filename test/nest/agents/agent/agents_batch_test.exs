@@ -84,6 +84,10 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     child_names = [child0, child1, child2]
     on_exit(fn -> Enum.each(child_names, fn n -> _ = Supervisor.stop_agent(space_id, n) end) end)
 
+    # Children are named from their item (no prefix here), not by the
+    # adjective-animal generator.
+    assert child_names == ["alpha", "beta", "gamma"]
+
     # Synthesize each child's completion in item order, each with a
     # distinct response, so an order bug would surface.
     for {name, item} <- zip(child_names, ["alpha", "beta", "gamma"]) do
@@ -129,7 +133,78 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     assert_children_archived(space_id, child_names)
   end
 
+  test "a child that dies before responding fails its slot fast and is not archived",
+       %{vid: vid} do
+    {parent_pid, parent_name} =
+      AgentTestHelpers.start_agent(%{
+        model: %{name: "qwen3.5-plus", provider: "model-studio"},
+        vocation_id: vid
+      })
+
+    Mimic.allow(Agents, self(), parent_pid)
+    space_id = AgentTestHelpers.current_space_id()
+
+    MockClient.set_tool_response(%{
+      text: "batching",
+      tool_calls: [
+        %{
+          id: "call_batch_die",
+          name: "agents-batch",
+          arguments: %{"template" => "sum {item}", "items" => ["alpha", "beta", "gamma"]}
+        }
+      ]
+    })
+
+    MockClient.set_response("parent final")
+
+    :ok = Agent.chat(parent_pid, "batch a thing")
+
+    Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
+    [child0, child1, child2] = collect_child_names(parent_name, 3)
+
+    on_exit(fn ->
+      Enum.each([child1, child2], fn n -> _ = Supervisor.stop_agent(space_id, n) end)
+    end)
+
+    # Kill the first child before it completes. ChildRegistry's DOWN
+    # notification reaches the parent, which forwards
+    # `:spawn_agent_error` to the blocked batch worker — so its slot
+    # resolves immediately instead of waiting out the 5-minute timeout.
+    assert :ok = Supervisor.stop_agent(space_id, child0)
+
+    # The other two complete normally.
+    cast_child_completed(parent_pid, child1, "beta-done")
+    cast_child_completed(parent_pid, child2, "gamma-done")
+
+    assert_receive {:chat_status, %{status: "idle"}}, 2_000
+
+    parent_state = :sys.get_state(parent_pid)
+    content = batch_tool_content(parent_state)
+
+    assert [first, "beta-done", "gamma-done"] = Jason.decode!(content)
+    assert String.starts_with?(first, "[error:")
+
+    assert parent_state.chat_state.pending_children == %{}
+
+    # A failed child is never auto-archived (unlike a completed one).
+    {:ok, failed_row} = Nest.Persistence.fetch_agent(space_id, child0)
+    assert failed_row.archived == false
+  end
+
   # ---- helpers ----
+
+  defp batch_tool_content(parent_state) do
+    {:tool, %{parts: [%Part.ToolResult{name: "agents-batch", content: content}]}} =
+      Enum.find(parent_state.chat_state.messages, fn
+        {:tool, %{parts: parts}} ->
+          Enum.any?(parts, &match?(%Part.ToolResult{name: "agents-batch"}, &1))
+
+        _ ->
+          false
+      end)
+
+    content
+  end
 
   # Collect `count` `agent:created` broadcasts for `parent_name`, in the
   # order they arrive (item order). Non-matching broadcasts from

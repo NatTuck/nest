@@ -111,4 +111,20 @@ defmodule Nest.Agents.Agent.BatchLoopTest do
       assert BatchLoop.render("{item} vs {item}", 0, "x") == "x vs x"
     end
   end
+
+  describe "names_for_items/2" do
+    test "derives names from items, suffixing repeated items by occurrence" do
+      assert BatchLoop.names_for_items([1, 12, 8, 1, "goat"], "zoo") ==
+               ["zoo-1-1", "zoo-12", "zoo-8", "zoo-1-2", "zoo-goat"]
+    end
+
+    test "slugifies items and omits the prefix when blank" do
+      assert BatchLoop.names_for_items(["Foo Bar", "a/b", "x_y"], "") ==
+               ["foo-bar", "a-b", "x-y"]
+    end
+
+    test "a slug that sanitizes to empty falls back to item-<n>" do
+      assert BatchLoop.names_for_items(["!!!", "@@@"], "p") == ["p-item-1", "p-item-2"]
+    end
+  end
 end

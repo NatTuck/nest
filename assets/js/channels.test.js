@@ -180,7 +180,15 @@ describe("channels", () => {
       });
 
       assert.deepStrictEqual(useStore.getState().agents, [
-        { name: "agent-1", model: { name: "Test Agent" } },
+        {
+          name: "agent-1",
+          model: { name: "Test Agent" },
+          space_id: null,
+          status: "idle",
+          parentId: null,
+          parentName: null,
+          depth: 0,
+        },
       ]);
     });
 
@@ -302,6 +310,58 @@ describe("channels", () => {
         assert.strictEqual(useStore.getState().agents.length, 1);
       });
       assert.strictEqual(useStore.getState().agents[0].name, "new-agent");
+    });
+
+    it("should move an agent to archivedAgents on agent:archived event", async () => {
+      setNextJoinResult("lobby", {
+        autoInit: {
+          agents: [
+            {
+              name: "sub",
+              space_id: 7,
+              model: { name: "gpt-4" },
+              parentName: "root",
+              depth: 1,
+            },
+          ],
+          archived_agents: [],
+          models: [],
+        },
+      });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().agents.length, 1);
+      });
+
+      simulateServerEvent("lobby", "agent:archived", {
+        space_id: 7,
+        name: "sub",
+      });
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().agents.length, 0);
+        assert.strictEqual(useStore.getState().archivedAgents.length, 1);
+      });
+      assert.strictEqual(useStore.getState().archivedAgents[0].name, "sub");
+    });
+
+    it("should hydrate archivedAgents from the init payload", async () => {
+      setNextJoinResult("lobby", {
+        autoInit: {
+          agents: [],
+          archived_agents: [
+            { name: "old", space_id: 7, archived: true, parent_name: null },
+          ],
+          models: [],
+        },
+      });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().archivedAgents.length, 1);
+      });
+      assert.strictEqual(useStore.getState().archivedAgents[0].name, "old");
     });
 
     it("should update brokenAgents on broken_agents_updated event", async () => {

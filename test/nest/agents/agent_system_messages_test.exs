@@ -73,8 +73,8 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
           tool_calls: [
             %{
               id: "call_#{:rand.uniform(100_000)}",
-              name: "shell-cmd",
-              arguments: %{"command" => "echo loop"}
+              name: "context-check",
+              arguments: %{}
             }
           ]
         })
@@ -131,8 +131,8 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
           tool_calls: [
             %{
               id: "call_#{:rand.uniform(100_000)}",
-              name: "shell-cmd",
-              arguments: %{"command" => "echo loop"}
+              name: "context-check",
+              arguments: %{}
             }
           ]
         })
@@ -194,8 +194,8 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
           tool_calls: [
             %{
               id: "call_#{:rand.uniform(100_000)}",
-              name: "shell-cmd",
-              arguments: %{"command" => "echo loop"}
+              name: "context-check",
+              arguments: %{}
             }
           ]
         })

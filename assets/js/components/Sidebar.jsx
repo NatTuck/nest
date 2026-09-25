@@ -27,6 +27,7 @@ export function Sidebar() {
   const location = useLocation();
   const {
     agents,
+    archivedAgents,
     brokenAgents,
     spaces,
     archivedSpaces,
@@ -99,6 +100,9 @@ export function Sidebar() {
                   key={space.id}
                   space={space}
                   spaceAgents={agents.filter((a) => a.space_id === space.id)}
+                  spaceArchivedAgents={archivedAgents.filter(
+                    (a) => a.space_id === space.id,
+                  )}
                   spaceBrokenAgents={brokenAgents.filter(
                     (a) => a.space_id === space.id,
                   )}

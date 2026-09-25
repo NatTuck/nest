@@ -12,13 +12,15 @@ Mimic.copy(Nest.Agents)
 Mimic.copy(Nest.Agents.Supervisor)
 Mimic.copy(Phoenix.Channel)
 
-# `max_cases` defaults to `schedulers_online * 2`. The suite is DB- and
-# message-passing-bound, and on very-high-core hosts that default
-# oversubscribes enough to make the timing-sensitive `assert_receive`s
-# flaky. Cap it at 32 while preserving the default on small machines.
+# `max_cases` defaults to `schedulers_online * 2`. The suite is
+# DB- and message-passing-bound, and over-subscribing the schedulers
+# (32 cases on a 32-scheduler host) causes enough contention that the
+# timing-sensitive `assert_receive` fences flake. Cap at 24, which is
+# both faster (less contention) and stable on the reference host while
+# preserving the default on small machines.
 ExUnit.configure(
   timeout: 5_000,
-  max_cases: min(System.schedulers_online() * 2, 32)
+  max_cases: min(System.schedulers_online() * 2, 24)
 )
 
 ExUnit.start()

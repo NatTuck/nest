@@ -228,7 +228,7 @@ defmodule Nest.Agents.ChildRegistry do
   end
 
   @impl true
-  def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
+  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
     # Find the child whose monitor matches the ref and
     # remove it. If the ref doesn't match any registered
     # child, the registry has already cleaned up (e.g.
@@ -241,14 +241,43 @@ defmodule Nest.Agents.ChildRegistry do
 
     state =
       case child_key do
-        nil -> state
-        {space_id, child_name} -> unregister_child(space_id, child_name, state)
+        nil ->
+          state
+
+        {space_id, child_name} ->
+          # Tell the parent its child died, *before* unregistering
+          # (unregister deletes the reverse mapping we need). A parent
+          # blocked on this child's response (an `agents-spawn` /
+          # `agents-batch` worker waiting in `pending_children`) can
+          # then fail that slot immediately instead of waiting out the
+          # per-item timeout. A death that follows a normal completion
+          # is ignored by the parent (its pending entry is already
+          # gone).
+          notify_parent_of_death(state, space_id, child_name, reason)
+          unregister_child(space_id, child_name, state)
       end
 
     {:noreply, state}
   end
 
   def handle_info(_other, state), do: {:noreply, state}
+
+  # Cast a `:child_terminated` notification to the parent agent's live
+  # pid. Falls through silently when the parent is already gone (a
+  # cascade teardown where both sides are dying) or the child was
+  # never registered.
+  defp notify_parent_of_death(state, space_id, child_name, reason) do
+    case Map.get(state.child_to_parent, {space_id, child_name}) do
+      {_sid, parent_name} ->
+        case AgentsRegistry.lookup(space_id, parent_name) do
+          {:ok, pid} -> GenServer.cast(pid, {:child_terminated, child_name, reason})
+          {:error, :not_found} -> :ok
+        end
+
+      nil ->
+        :ok
+    end
+  end
 
   # Private helpers
 

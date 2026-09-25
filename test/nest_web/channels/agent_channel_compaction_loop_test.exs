@@ -60,7 +60,12 @@ defmodule NestWeb.AgentChannelCompactionLoopTest do
     end)
 
     ref = push(socket, "chat:message", %{"content" => "trying to send", "mode" => "chat"})
-    assert_reply ref, :error, %{"reason" => "agent_status_compaction_loop_detected"}
+
+    # `assert_reply/3` defaults to a 100ms receive timeout; the reply
+    # requires a channel→Agent cross-process round-trip, which can
+    # exceed that under parallel test load. See the same note in
+    # `lobby_channel_change_model_test.exs`.
+    assert_reply ref, :error, %{"reason" => "agent_status_compaction_loop_detected"}, 1_000
   end
 
   test "chat:loop-detected-ok invokes Agent.compaction_loop_detected_ok and transitions to :idle",
@@ -79,7 +84,7 @@ defmodule NestWeb.AgentChannelCompactionLoopTest do
     end)
 
     ref = push(socket, "chat:loop-detected-ok", %{})
-    assert_reply ref, :ok, %{}
+    assert_reply ref, :ok, %{}, 1_000
 
     # Status should transition back to :idle after the OK click,
     # and the counter resets to 0.

@@ -143,6 +143,29 @@ defmodule Nest.Agents.ChildRegistryTest do
 
       refute child in ChildRegistry.children_of(space_id, parent)
     end
+
+    test "casts :child_terminated to the live parent when a child dies", %{space_id: space_id} do
+      parent = unique_name("parent")
+      child = unique_name("child")
+
+      # Register the test pid itself as the parent so the
+      # registry's `GenServer.cast/2` lands in this process's
+      # mailbox as a raw `{:"$gen_cast", ...}`.
+      {:ok, _} = Registry.register(Nest.Agents.Registry, {space_id, parent}, nil)
+
+      start_supervised!(
+        {Agent, fn -> :ok end},
+        id: {AgentsRegistry, child},
+        start:
+          {Agent, :start_link, [fn -> :ok end, [name: AgentsRegistry.via_tuple(space_id, child)]]}
+      )
+
+      :ok = ChildRegistry.register(space_id, parent, child)
+
+      stop_supervised!({AgentsRegistry, child})
+
+      assert_receive {:"$gen_cast", {:child_terminated, ^child, _reason}}, 1_000
+    end
   end
 
   # Helpers

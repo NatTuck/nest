@@ -43,7 +43,6 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
   alias Nest.Agents.Agent.SubAgent
   alias Nest.Agents.Registry, as: AgentsRegistry
   alias Nest.LLM.Client
-  alias Nest.Messages.Assistant
   alias Nest.Messages.Streaming
 
   require Logger
@@ -67,6 +66,20 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
 
   def handle({:set_crossed_thresholds, set}, state) do
     set_crossed_thresholds(set, state)
+  end
+
+  # Bounded Stop safety net. The Agent scheduled this when the user hit
+  # Stop; if the ChatTurn hasn't reported back by now it is dead or
+  # wedged, so force the agent back to idle.
+  def handle({:stop_fallback, chat_turn_pid}, state) do
+    stop_fallback(chat_turn_pid, state)
+  end
+
+  # The Agent monitors its ChatTurn. A DOWN while that turn is still the
+  # active one means it died without reporting — force idle so the user
+  # is never stuck behind a dead turn.
+  def handle({:DOWN, _ref, :process, pid, reason}, state) do
+    chat_turn_down(pid, reason, state)
   end
 
   # The ChatTurn finished its iteration normally. Clear
@@ -161,8 +174,30 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
   # message with `content: nil` and `metadata.stopped_by_user: true`
   # so the message list is consistent — the user clicked
   # Stop, so the assistant turn exists, just empty.
-  defp chat_stopped(state) do
-    state = state |> SubAgent.stop_pending_children() |> finalize_partial_if_any()
+  defp chat_stopped(state), do: {:noreply, force_idle(state)}
+
+  # Force the agent back to `:idle` from any busy state. Always stops any
+  # pending child queries (the cascade is meaningful even when the agent
+  # itself is already idle — e.g. a `chat_stopped` that arrives between
+  # turns). The partial finalize/broadcast is idempotent: a no-op when
+  # the agent is already idle with no in-flight turn, so the healthy
+  # `:chat_stopped` cast and the bounded `:stop_fallback` can race
+  # without double-finalizing.
+  @doc false
+  @spec force_idle(Nest.Agents.Agent.t()) :: Nest.Agents.Agent.t()
+  def force_idle(state) do
+    state = SubAgent.stop_pending_children(state)
+
+    if state.live.status == :idle and is_nil(state.live.chat_turn_pid) and
+         is_nil(state.live.streaming_acc) do
+      state
+    else
+      finalize_stopped(state)
+    end
+  end
+
+  defp finalize_stopped(state) do
+    state = finalize_partial_if_any(state)
 
     state = %{
       state
@@ -175,7 +210,95 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
     }
 
     Broadcasts.status(state)
-    {:noreply, state}
+    notify_parent_of_failure(state, :stopped)
+    state
+  end
+
+  # Called after `@stop_fallback_ms` when the user stopped. Kill a
+  # still-alive ChatTurn (it never acked) and force idle. Stale tokens
+  # (a new turn started, or the turn already finalized) no-op.
+  defp stop_fallback(chat_turn_pid, state) do
+    if state.live.chat_turn_pid == chat_turn_pid and busy?(state.live.status) do
+      if is_pid(chat_turn_pid) and Process.alive?(chat_turn_pid) do
+        Process.exit(chat_turn_pid, :kill)
+      end
+
+      {:noreply, force_idle(state)}
+    else
+      {:noreply, state}
+    end
+  end
+
+  # The monitored ChatTurn process died. If it is still the active turn,
+  # it exited without reporting (crash), so finalize the partial and
+  # move to idle. An orderly shutdown reason (`:normal` / `:shutdown`) is
+  # silent; anything else is surfaced as a `chat:error`.
+  defp chat_turn_down(pid, reason, state) do
+    if state.live.chat_turn_pid == pid do
+      state = finalize_partial_if_any(state)
+
+      state = %{
+        state
+        | live: %{
+            state.live
+            | status: :idle,
+              chat_turn_pid: nil,
+              cancelled: false,
+              tool_index_map: %{}
+          }
+      }
+
+      if benign_chat_turn_down?(reason) do
+        Broadcasts.status(state)
+      else
+        Logger.error("[agent:#{state.name}] ChatTurn exited unexpectedly: #{inspect(reason)}")
+
+        Broadcasts.error(
+          state.space_id,
+          state.name,
+          state.chat_state.next_message_index,
+          "The agent's chat process stopped unexpectedly (#{inspect(reason)}).",
+          "ChatTurn"
+        )
+
+        Broadcasts.status(state)
+      end
+
+      notify_parent_of_failure(state, {:crashed, inspect(reason)})
+      {:noreply, state}
+    else
+      {:noreply, state}
+    end
+  end
+
+  defp benign_chat_turn_down?(:normal), do: true
+  defp benign_chat_turn_down?(:shutdown), do: true
+  defp benign_chat_turn_down?({:shutdown, _}), do: true
+  defp benign_chat_turn_down?(_), do: false
+
+  # A chat turn is in flight for these statuses. Anything else
+  # (`:idle`, `:model_missing`, `:context_overflow`, ...) is terminal.
+  @busy_statuses [:streaming, :executing_tools, :compacting]
+  defp busy?(status), do: status in @busy_statuses
+
+  @doc """
+  The ChatTurn supervisor refused to start a turn (saturated). The
+  caller has already set `:streaming` and broadcast it, so force idle
+  and surface an error rather than leaving the agent wedged.
+  """
+  @spec spawn_failed(Nest.Agents.Agent.t(), String.t()) :: Nest.Agents.Agent.t()
+  def spawn_failed(state, reason) do
+    state = force_idle(state)
+
+    Broadcasts.error(
+      state.space_id,
+      state.name,
+      state.chat_state.next_message_index,
+      "Could not start chat turn: #{reason}",
+      "ChatTurnSpawner.spawn/4"
+    )
+
+    state
   end
 
   # The HTTP worker raised an unhandled exception
@@ -210,6 +333,7 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
       # broadcast.
       state = %{state | live: %{state.live | status: :idle, chat_turn_pid: nil}}
       Broadcasts.status(state)
+      notify_parent_of_failure(state, crash_reason(exception))
       {:noreply, state}
     else
       Logger.error(fn ->
@@ -227,10 +351,38 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
 
       state = %{state | live: %{state.live | status: :idle, chat_turn_pid: nil}}
       Broadcasts.status(state)
+      notify_parent_of_failure(state, crash_reason(exception))
 
       {:noreply, state}
     end
   end
+
+  # Cast a `:child_failed` notification to the parent when this agent
+  # ends a turn *without* a normal completion (crash or user Stop). The
+  # parent then fails the matching `pending_children` slot immediately
+  # (its worker may be blocked on an `agents-spawn` / `agents-batch`),
+  # instead of waiting for the per-item timeout. Roots (no
+  # `parent_name`) skip the notification.
+  defp notify_parent_of_failure(state, reason) do
+    case state.tree_position.parent_name do
+      nil ->
+        :ok
+
+      parent_name ->
+        GenServer.cast(
+          AgentsRegistry.via_tuple(state.space_id, parent_name),
+          {:child_failed, state.name, reason}
+        )
+    end
+  end
+
+  # A compact, inspect-safe failure reason for the parent's tool
+  # result. `exception` may be a real exception struct or an atom like
+  # `:saturated`, so guard `Exception.message/1`.
+  defp crash_reason(%{__exception__: true} = exception),
+    do: {:crashed, Exception.message(exception)}
+
+  defp crash_reason(other), do: {:crashed, inspect(other)}
 
   # The HTTP worker's `forward_crash` wraps the target
   # process's exit reason in a `%RuntimeError{message:
@@ -272,57 +424,12 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
   # carries `metadata.stopped_by_user: true` so the UI
   # can render a "stopped" indicator.
   defp finalize_partial_if_any(state) do
-    final_message = build_partial_assistant_message(state)
+    final_message =
+      Streaming.partial_message(state.live.streaming_acc, %{"stopped_by_user" => true})
+
     {_stamped, state} = Nest.Agents.Agent.__append_message__(state, final_message)
     %{state | live: %{state.live | streaming_acc: nil, tool_index_map: %{}}}
   end
-
-  defp build_partial_assistant_message(state) do
-    case state.live.streaming_acc do
-      %Streaming.AssistantAccumulator{} = acc ->
-        # Reuse the streaming module's `finalize/1` to assemble
-        # parts in the order the events arrived. The accumulator's
-        # `thinking_signature` is captured automatically.
-        assistant = Streaming.finalize(acc)
-        text_part = text_part_for_text_buffer(acc)
-        thinking_part = thinking_part_for_thinking_buffer(acc)
-
-        {:assistant,
-         %Assistant{
-           assistant
-           | index: nil,
-             timestamp: DateTime.utc_now(),
-             parts: assemble_partial_parts(acc, text_part, thinking_part),
-             api_logs: [],
-             metadata: %{"stopped_by_user" => true}
-         }}
-
-      nil ->
-        # No accumulator (stop arrived between turns, or
-        # before the first delta). Build a placeholder so
-        # the message list is consistent.
-        {:assistant,
-         %Assistant{
-           index: nil,
-           timestamp: DateTime.utc_now(),
-           parts: [],
-           api_logs: [],
-           metadata: %{"stopped_by_user" => true}
-         }}
-    end
-  end
-
-  # When the user stops the chat, finalize the streaming
-  # accumulator as a normal assistant message. The accumulator's
-  # `finalize/1` walks the segments to build the parts list in
-  # order; we extend it here with any leftover buffer content
-  # (defense in depth — the segments are the canonical source).
-  defp assemble_partial_parts(acc, _text_part, _thinking_part) do
-    Streaming.finalize(acc).parts
-  end
-
-  defp text_part_for_text_buffer(_acc), do: nil
-  defp thinking_part_for_thinking_buffer(_acc), do: nil
 
   # Build the user-facing error message. We lead with
   # the exception's message (the part the user is most

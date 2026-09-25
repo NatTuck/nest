@@ -9,6 +9,10 @@
 
 set -u
 
+# This isn't negotiable. Tests on vampire must hit this goal, or
+# whatever we're doing isn't done.
+# If you're failing this, that's unacceptable and your code is
+# shit and needs to be fixed.
 if [ "$(hostname)" = "vampire" ]; then
   timeout 5 mix test
 else

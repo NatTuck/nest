@@ -11,7 +11,7 @@ defmodule NestWeb.LobbyChannel.InvitesTest do
   `Mimic` so we don't need a fully joined socket).
   """
 
-  use Nest.DataCase, async: false
+  use Nest.DataCase, async: true
 
   import Mimic
 
@@ -22,7 +22,6 @@ defmodule NestWeb.LobbyChannel.InvitesTest do
   alias Phoenix.Socket
 
   setup :verify_on_exit!
-  setup :set_mimic_global
 
   setup do
     Repo.delete_all(InviteSchema)

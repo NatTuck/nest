@@ -36,15 +36,20 @@ defmodule Nest.Agents.Agent.ChatTurn.HTTPWorker do
 
   # Dispatch the result of the HTTP call. A clean
   # `{:ok, response}` sends the response to the
-  # ChatTurn; cooperative stops and stream-level errors
-  # are no-ops (the Agent's `llm_error` handler already
-  # ran via the `on_error` callback).
+  # ChatTurn. A stream-level error (`{:error, reason}`)
+  # notifies the ChatTurn so it stops instead of lingering
+  # (the error was already surfaced to the Agent through the
+  # `on_error` callback). A cooperative stop (`{:ok, nil}`)
+  # is a no-op — the ChatTurn is already being stopped.
   defp dispatch_result({:ok, %RunResponse{} = response}, chat_turn_pid) do
     send(chat_turn_pid, {:http_response, response})
   end
 
   defp dispatch_result({:ok, nil}, _chat_turn_pid), do: :ok
-  defp dispatch_result({:error, _reason}, _chat_turn_pid), do: :ok
+
+  defp dispatch_result({:error, reason}, chat_turn_pid) do
+    send(chat_turn_pid, {:http_error, reason})
+  end
 
   # The HTTP worker raised an unhandled exception. Forward
   # the exception + stacktrace to the ChatTurn as a

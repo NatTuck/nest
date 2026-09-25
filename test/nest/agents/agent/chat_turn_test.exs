@@ -135,7 +135,7 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
         MockClient.set_tool_response(%{
           text: "loop #{i}",
           tool_calls: [
-            %{id: "call_#{i}", name: "shell-cmd", arguments: %{"command" => "echo loop"}}
+            %{id: "call_#{i}", name: "context-check", arguments: %{}}
           ]
         })
       end
@@ -214,7 +214,7 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
         MockClient.set_tool_response(%{
           text: "tool call #{i}",
           tool_calls: [
-            %{id: "call_#{i}", name: "shell-cmd", arguments: %{"command" => "echo loop"}}
+            %{id: "call_#{i}", name: "context-check", arguments: %{}}
           ]
         })
       end
@@ -227,9 +227,8 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
 
       capture_log(fn ->
         :ok = Agent.chat(pid, "Keep looping")
-        # The turn runs 5 sandboxed shell-cmd rounds; each bwrap
-        # spawn (namespace + mount setup) is the dominant cost, so
-        # allow 750ms for the turn to reach idle.
+        # The turn runs 5 in-process `context-check` rounds; 750ms is
+        # generous headroom under parallel load.
         assert_receive {:chat_status, %{status: "idle"}}, 750
       end)
 

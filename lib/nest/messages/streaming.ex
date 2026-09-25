@@ -231,6 +231,43 @@ defmodule Nest.Messages.Streaming do
     }
   end
 
+  @doc """
+  Build an `{:assistant, %Assistant{}}` from an in-flight accumulator,
+  tagged with `metadata`. `parts` comes from `finalize/1`; the index is
+  cleared (the Agent stamps it on append) and `api_logs` is empty (a
+  partial/errored turn has no completed response log). A `nil`
+  accumulator (nothing streamed) yields an empty assistant message.
+
+  Used by the stop path (`ChatTurnHandler.finalize_partial_if_any/1`)
+  and the stream-error path (`LLMStreamHandler.llm_error/2`) so both
+  persist whatever the model had streamed before the turn ended.
+  """
+  @spec partial_message(AssistantAccumulator.t() | nil, map()) ::
+          {:assistant, Assistant.t()}
+  def partial_message(nil, metadata) do
+    {:assistant,
+     %Assistant{
+       index: nil,
+       timestamp: DateTime.utc_now(),
+       parts: [],
+       api_logs: [],
+       metadata: metadata
+     }}
+  end
+
+  def partial_message(%AssistantAccumulator{} = acc, metadata) do
+    finalized = finalize(acc)
+
+    {:assistant,
+     %Assistant{
+       finalized
+       | index: nil,
+         timestamp: DateTime.utc_now(),
+         api_logs: [],
+         metadata: metadata
+     }}
+  end
+
   # Walk the segments (which include both text/thinking blocks
   # AND tool-use markers; segments are stored in reverse) and
   # emit a Part in the order the events arrived. When a segment

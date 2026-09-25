@@ -63,6 +63,7 @@ defmodule NestWeb.LobbyChannel do
     spaces = Spaces.list_for_user(user.id)
     archived_spaces = Spaces.list_archived_for_user(user.id)
     agents = visible_agents_across_spaces(spaces, user.id)
+    archived_agents = archived_agents_across_spaces(spaces, user.id)
     vocations = Vocations.list_vocations()
     blueprints = Blueprints.list_blueprints()
     models = safe_models_list()
@@ -71,6 +72,7 @@ defmodule NestWeb.LobbyChannel do
       spaces: spaces,
       archived_spaces: archived_spaces,
       agents: agents,
+      archived_agents: archived_agents,
       broken_agents: [],
       blueprints: blueprints,
       models: models,
@@ -244,6 +246,12 @@ defmodule NestWeb.LobbyChannel do
   defp visible_agents_across_spaces(spaces, user_id) do
     Enum.flat_map(spaces, fn %Spaces.Space{id: space_id} ->
       Agents.list_visible_agents_for(space_id, user_id)
+    end)
+  end
+
+  defp archived_agents_across_spaces(spaces, user_id) do
+    Enum.flat_map(spaces, fn %Spaces.Space{id: space_id} ->
+      Agents.list_archived_agents_for(space_id, user_id)
     end)
   end
 

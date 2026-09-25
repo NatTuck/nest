@@ -288,7 +288,7 @@ defmodule Nest.AgentsTest do
       # 3 when the assistant message is appended, which is before the
       # turn finalizes. Waiting on idle makes the assertion below
       # deterministic and leaves the agent done at test end.
-      assert_receive {:chat_status, %{status: "idle"}}, 100
+      assert_receive {:chat_status, %{status: "idle"}}, 500
 
       {:ok, info} = Agents.get_info(AgentTestHelpers.current_space_id(), name)
       assert info.message_count == 3

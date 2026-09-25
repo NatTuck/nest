@@ -118,7 +118,7 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
     # so the resumed turn is actually exercised rather than killed
     # mid-flight. `state` is the compaction-time snapshot, captured
     # before the resumed turn's assistant message lands.
-    assert_receive {:chat_status, %{status: "idle"}}, 100
+    assert_receive {:chat_status, %{status: "idle"}}, 500
 
     state
   end

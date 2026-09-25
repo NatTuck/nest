@@ -9,25 +9,24 @@ defmodule Nest.Agents.Agent.ChatTurn.Lifecycle do
     * `stop_chat/2` — user clicked Stop. Reply `:stopped`
       to the channel, give the active worker a chance to
       clean up in-flight OS subprocesses (`{:stop_chat, _}`
-      message), kill the worker as a failsafe, notify the
-      Agent via `GenServer.cast`, and stop the ChatTurn.
-      Returns `{:reply, :ok, {:stop, :normal, state}}` so the
-      ChatTurn's `handle_call({:stop_chat, _}, _, _)` can
-      propagate it.
-    * `worker_exited/3` — a worker died. `:normal` and
-      `:killed` are expected exits; the `:killed` case
-      after `stop_requested: true` (the failsafe kill fired
-      because the worker didn't process `{:stop_chat, _}` in
-      time) finalizes the chat as stopped so the Agent
-      doesn't hang. Other reasons become a `{:chat_crashed,
-      _, _}` to the Agent.
+      message), kill the worker as a failsafe, notify
+      the Agent via `GenServer.cast`, and stop the
+      ChatTurn. Returns `{:stop, :normal, :ok, state}` so the
+      ChatTurn's `handle_call({:stop_chat, _}, _, _)` acks the
+      caller and actually terminates.
+    * `worker_exited/3` — a worker died. `:normal` means the
+      result was already delivered; `:shutdown` / `:killed`
+      mean the worker stopped without delivering a result, so
+      the chat is finalized as stopped (quietly idle) rather
+      than hang. Other reasons become a `{:chat_crashed, _, _}`
+      to the Agent.
     * `finalize_turn/1` — end-of-turn. Send `:chat_idle` and
       `:api_log_sequences_updated` to the Agent, then stop.
 
-  Each function returns the GenServer reply tuple
-  (`{:noreply, state}` or `{:stop, :normal, state}` or
-  `{:reply, value, {:stop, :normal, state}}`) so the
-  ChatTurn's `handle_info/2` and `handle_call/3` clauses
+  Each function returns a valid GenServer callback tuple
+  (`{:noreply, state}`, `{:stop, :normal, state}`, or the
+  `handle_call` stop-with-reply `{:stop, :normal, :ok, state}`)
+  so the ChatTurn's `handle_info/2` and `handle_call/3` clauses
   can return them directly.
   """
 
@@ -35,20 +34,23 @@ defmodule Nest.Agents.Agent.ChatTurn.Lifecycle do
   alias Nest.Agents.Agent.ChatTurn.State
 
   @doc """
-  User clicked Stop. Ack the channel with `:stopped`, give
-  the active worker a chance to clean up in-flight
+  User clicked Stop. Ack the channel with `:stopped`, give the
+  active worker a chance to clean up in-flight
   subprocesses (e.g. `:erlexec` bwrap OS processes that the
   BEAM kill alone doesn't reliably reach — bwrap's PID
   namespace isolation can leave the inner command running
   for up to `{:kill_timeout, 5000}`ms in the best case and
   indefinitely in the worst case), kill the worker as a
   failsafe, notify the Agent via `GenServer.cast`, and stop
-  the ChatTurn. Returns `{:reply, :ok, {:stop, :normal,
-  state}}` so the ChatTurn's `handle_call({:stop_chat, _},
-  _, _)` can return it.
+  the ChatTurn. Returns `{:stop, :normal, :ok, state}` — the
+  gen_server `handle_call` stop-with-reply shape, so the
+  caller's `GenServer.call/3` gets `:ok` AND the ChatTurn
+  actually terminates (a nested `{:reply, :ok, {:stop, ...}}`
+  is not a valid callback return: gen_server would treat the
+  nested tuple as the new state and the turn would leak).
   """
   @spec stop_chat(pid(), State.t()) ::
-          {:reply, :ok, {:stop, :normal, State.t()}}
+          {:stop, :normal, :ok, State.t()}
   def stop_chat(channel_pid, state) do
     send(channel_pid, :stopped)
 
@@ -67,8 +69,7 @@ defmodule Nest.Agents.Agent.ChatTurn.Lifecycle do
     state = %{
       state
       | active_worker: nil,
-        active_worker_kind: nil,
-        stop_requested: true
+        active_worker_kind: nil
     }
 
     # Fire-and-forget to the Agent — `cast` is the SMELLS.md
@@ -78,35 +79,42 @@ defmodule Nest.Agents.Agent.ChatTurn.Lifecycle do
     # `:idle`).
     GenServer.cast(state.ctx.agent_pid, {:chat_stopped, self()})
 
-    {:reply, :ok, {:stop, :normal, state}}
+    {:stop, :normal, :ok, state}
   end
 
   @doc """
-  A worker died. `:normal` and `:killed` are expected exits
-  (the stop handler killed the worker, or the tool worker
-  completed normally). When `stop_requested: true` and the
-  reason is `:killed`, the failsafe kill fired because the
-  worker didn't process `{:stop_chat, _}` in time — finalize
-  the chat as stopped so the Agent doesn't hang waiting for
-  a `{:tool_results, _}` that will never arrive. Other
-  reasons are crashes and become a `{:chat_crashed, reason,
-  []}` to the Agent.
+  A worker died. `:normal` means the result was already delivered
+  (the HTTP/tool worker sent its message before exiting), so we just
+  clear the slot. `:shutdown` and `:killed` mean the worker was stopped
+  without delivering a result, so we finalize the chat as stopped
+  (quietly idle the Agent) rather than hang waiting for a result that
+  will never arrive. Other reasons are crashes and become a
+  `{:chat_crashed, reason, []}` to the Agent.
   """
   @spec worker_exited(pid(), term(), State.t()) ::
           {:noreply, State.t()} | {:stop, :normal, State.t()}
-  def worker_exited(_pid, :normal, state), do: {:noreply, state}
+  def worker_exited(_pid, :normal, state), do: clear_worker(state)
 
-  def worker_exited(_pid, :killed, %{stop_requested: true} = state) do
-    GenServer.cast(state.ctx.agent_pid, {:chat_stopped, self()})
-    {:stop, :normal, state}
-  end
+  def worker_exited(_pid, :shutdown, state), do: finalize_stopped_turn(state)
 
-  def worker_exited(_pid, :killed, state), do: {:noreply, state}
+  def worker_exited(_pid, {:shutdown, _}, state), do: finalize_stopped_turn(state)
+
+  def worker_exited(_pid, :killed, state), do: finalize_stopped_turn(state)
 
   def worker_exited(_pid, reason, state) do
     send(state.ctx.agent_pid, {:chat_crashed, reason, []})
     {:stop, :normal, state}
   end
+
+  # Quietly tell the Agent the turn is over so it leaves its busy
+  # status, then stop the ChatTurn.
+  defp finalize_stopped_turn(state) do
+    GenServer.cast(state.ctx.agent_pid, {:chat_stopped, self()})
+    {:stop, :normal, state}
+  end
+
+  defp clear_worker(state),
+    do: {:noreply, %{state | active_worker: nil, active_worker_kind: nil}}
 
   @doc """
   End of turn. Send `:chat_idle` and
