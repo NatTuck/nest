@@ -313,6 +313,11 @@ Size: ~100 lines. Risk: low — pure cleanup.
 
 The one design decision I want to confirm before writing code: **should the ChatTurn have its own copy of the messages list (transferred from the Agent at the start of the turn), or should it always query the Agent for the messages list at the start of each iteration?**
 
+> Scope note: this is an **in-memory ChatTurn snapshot**, not message
+> persistence. It has nothing to do with clone semantics. Persisted messages are
+> **never** copied on clone — clones share their ancestors' rows
+> (`notes/shared-message-structure.md`).
+
 The two options have different performance and complexity trade-offs:
 
 - **ChatTurn has a copy.** Faster (no round-trip per iteration), but the ChatTurn has a copy of state that could drift from the Agent. We'd have to be careful about sync.

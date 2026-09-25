@@ -19,7 +19,7 @@ and a private/shared flag on agents.
 | First user | When the users table is empty, `/` redirects to `/register?token=first-user`. The server resolves `first-user` as a magic token, creates an admin (`is_admin: true`), does **not** consume an `invites` row. Logs the username to stdout. |
 | Shared agents | New `shared` boolean on `agents`. The owner keeps edit/delete rights; everyone (authenticated) can chat with shared agents and see them in the lobby. |
 | Vocation scope | Global, unchanged. Per-user vocations deferred. |
-| Sub-agents | `clone_agent_tool` copies `created_by_user_id` and `shared` from the parent. A private agent always spawns private children; a shared parent may spawn shared children. |
+| Sub-agents | `clone_agent_tool` copies `created_by_user_id` and `shared` **agent attributes** from the parent. A private agent always spawns private children; a shared parent may spawn shared children. This is attribute inheritance only — cloning never copies messages; a clone shares its ancestor's rows (see `notes/shared-message-structure.md`). |
 | Test coverage | Full — every module gets happy + at least one unhappy path. |
 
 ## Out of scope (deferred)
@@ -209,9 +209,11 @@ assets/
     `current_user` is in `socket.assigns` for chat-attribution and logging.
     Tests.
 14. **Sub-agents.** `lib/nest/agents/agent.ex` `build_child_attrs/4` (or
-    the equivalent) copies `created_by_user_id` and `shared` from the parent
-    into the new attrs. The clone path threads user identity, not the
-    session.
+    the equivalent) copies `created_by_user_id` and `shared` **agent attributes**
+    from the parent into the new attrs. This is user-identity inheritance only;
+    it does not copy messages — a clone shares its ancestor's rows
+    (`notes/shared-message-structure.md`). The clone path threads user identity,
+    not the session.
 15. **React side.** Implement in this order:
     - `assets/js/api/client.js` — fetch wrapper that injects
       `Authorization: Bearer <token>` from localStorage.

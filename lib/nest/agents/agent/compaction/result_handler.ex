@@ -109,6 +109,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
 
     state =
       state
+      |> maybe_detach_clone()
       |> clear_mid_turn_entry()
       |> put_status(:idle)
       |> reset_crossed_thresholds()
@@ -138,6 +139,26 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
     Broadcasts.compaction(state, marker, state.chat_state.history)
 
     spawn_next_chat_turn(state, carried_entry)
+  end
+
+  # A clone that reaches its first compaction detaches from its
+  # ancestor prefix: from here on it owns its own sequence (the
+  # shared prefix was summarized away). The live path never
+  # renumbers rows, so the clone's existing own rows keep their
+  # indices and `fork_message_index` is simply cleared.
+  # See `notes/shared-message-structure.md`.
+  defp maybe_detach_clone(%{tree_position: %{fork_message_index: nil}} = state), do: state
+
+  defp maybe_detach_clone(state) do
+    case Agent.Persistence.update_fork_message_index(state.space_id, state.name, nil) do
+      :ok ->
+        %{state | tree_position: %{state.tree_position | fork_message_index: nil}}
+
+      {:error, reason} ->
+        Logger.warning("Failed to detach clone #{state.name} at compaction: #{inspect(reason)}")
+
+        state
+    end
   end
 
   # Re-fetch the vocation from the DB (falling back to the

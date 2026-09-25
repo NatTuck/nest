@@ -63,7 +63,8 @@ defmodule Nest.Agents.Agent.Init do
       llm_metrics: llm_metrics,
       tree_position: %TreePosition{
         parent_id: Map.get(attrs, :parent_id),
-        parent_name: Map.get(attrs, :parent_name)
+        parent_name: Map.get(attrs, :parent_name),
+        fork_message_index: Map.get(attrs, :fork_message_index)
       },
       created_by_user_id: Map.get(attrs, :created_by_user_id),
       shared: Map.get(attrs, :shared, false),

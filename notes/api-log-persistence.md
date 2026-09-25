@@ -324,6 +324,11 @@ A single end-to-end test: drive a chat turn (user → assistant), kill the agent
   is fine because the queue flushes on the next turn.
 - **History rebuild on restore.** Separate follow-up; the
   shape is now ready (`history ++ messages` is the single
-  consistent sequence).
-- **`agents.parent_id`** for subagents. Same single-message-sequence
-  shape enables the clone, but the column + tool live in another PR.
+  consistent sequence). Note: for a **clone**, `history ++ messages` is only
+  the agent's *own* portion — the shared ancestor prefix is resolved through
+  `parent_id` (see `notes/shared-message-structure.md`).
+- **`agents.parent_id`** for subagents. A clone does **not** copy the parent's
+  messages — it shares the ancestor's rows up to its fork boundary and the full
+  sequence is resolved by walking `parent_id`. See the canonical
+  `notes/shared-message-structure.md`. (The earlier framing here — that the
+  single-message-sequence shape "enables the clone" by copy — was wrong.)

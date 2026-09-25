@@ -41,16 +41,14 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
 
   ## What's stubbed
 
-    * `Nest.Agents.chat/2` — short-circuit the child's
-      chat cycle. The child's `preloaded_messages` carry
-      the parent's `assistant[agents-spawn]` tool_use but
-      no paired tool_result; driving the child's LLM
-      cycle would trip our preflight's
-      `:unclosed_tool_responses` check. That's a separate
-      production bug to fix (the spawned child's history
-      should drop unpaired trailing tool_uses). Stubbing
-      lets the test focus on what it actually exercises:
-      the parent's full chat pipeline through MockClient,
+    * `Nest.Agents.chat/2` — short-circuit the child's chat
+      cycle. The child's `preloaded_messages` now correctly
+      carry the parent's `assistant[agents-spawn]` tool_use
+      paired with the child's own "you are the clone" result
+      (see `notes/shared-message-structure.md`), so driving its
+      LLM cycle would be valid; we stub it anyway to keep this
+      test focused on the parent's pipeline. That lets the test
+      assert the parent's full chat pipeline through MockClient,
       plus the round-trip persistence of the parent's
       user/assistant/tool messages and the child's
       `build_attrs_for_start` DB read of `preloaded_messages`.
@@ -251,19 +249,10 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
     GenServer.cast(parent_pid, {:child_completed, child_name, response, usage})
   end
 
-  # The spawned child's first LLM call would normally land on
-  # MockClient too (via `:force_subagent_mock`), but the
-  # child's `preloaded_messages` include the parent's
-  # `assistant[agents-spawn]` tool_use with no paired
-  # tool_result — the preflight we just added correctly
-  # rejects this as `:unclosed_tool_responses`. Driving the
-  # child's actual chat cycle would trigger that preflight
-  # (the test should fail on its own assertions before it ever
-  # gets that far), but it's a production bug to fix
-  # separately. For now we stub `Agents.chat/2` to no-op;
-  # the test still exercises the parent's full chat-turn
-  # pipeline through MockClient.run/2 (including the preflight
-  # in iteration 2, after the synthesized tool result lands).
+  # The child is spawned with a valid, paired origin story (its
+  # own "you are the clone" tool result), but this test exercises
+  # the parent's chat pipeline, not the child's, so `Agents.chat/2`
+  # is stubbed to no-op and the child's GenServer stays idle.
   defp stub_child_chat do
     Mimic.copy(Nest.Agents)
     Mimic.stub(Nest.Agents, :chat, fn _space_id, _name, _content -> :ok end)

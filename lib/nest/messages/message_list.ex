@@ -32,54 +32,68 @@ defmodule Nest.Messages.MessageList do
   end
 
   @doc """
-  If the trailing message is an assistant carrying an
-  `agents-spawn` `Part.ToolUse`, drop it and return the
-  spawn's `query` text. Otherwise return `{messages, nil}`.
+  Append the clone's own fork rows after the shared prefix.
 
-  Used by the subagent spawn (clone-context) path so a
-  synthetic fork can replace the stripped real `agents-spawn`
-  with properly-paired messages that maintain wire alternation.
-  """
-  @spec extract_clone_instruction([term()]) :: {[term()], String.t() | nil}
-  def extract_clone_instruction(messages) do
-    case List.last(messages) do
-      {:assistant, %Assistant{parts: parts}} ->
-        clone =
-          Enum.find(parts, fn
-            %Part.ToolUse{name: "agents-spawn"} -> true
-            _ -> false
-          end)
+  Fork semantics are those of Unix `fork/2`: the child shares the
+  parent's sequence **including the real trailing `agents-spawn`
+  assistant** and gets a different return value at the fork point.
+  The child's own rows answer the shared assistant's `Part.ToolUse`
+  ids — the `agents-spawn` call reports "you are the clone", any
+  sibling tool call is reported as not executed — followed by an
+  assistant acknowledgement that names the clone's identity/depth.
 
-        if clone do
-          {Enum.drop(messages, -1), Map.get(clone.arguments, "query", "")}
-        else
-          {messages, nil}
-        end
+  The first returned message is at `next_index`, so
+  `next_index` is the clone's fork boundary `F` (`F` is the first
+  message the child owns; the shared prefix is everything before
+  it). The child's system row is inherited, never re-written.
 
-      _ ->
-        {messages, nil}
-    end
-  end
-
-  @doc """
-  Append a synthetic `agents-spawn` fork to the message list
-  so the subagent sees a coherent origin story with proper
-  wire alternation:
-
-    * assistant with an `agents-spawn` `Part.ToolUse` (empty arguments)
-    * tool with a `Part.ToolResult` pairing the synthetic id
-    * assistant acknowledging the fork
-
-  The acknowledgement tells the clone its name and spawn
-  depth (its system message is inherited verbatim from the
-  parent, so this user-visible notice is the only place to
-  state the clone's true identity/depth).
+  When the trailing message is not an assistant carrying tool
+  calls (the raw `:spawn_agent_request` path used by tests and the
+  no-prior-turn edge case), the spawn call is synthesized so the
+  child still gets a coherent, wire-valid origin story. In that
+  case the fork begins one row earlier with the synthetic
+  assistant `tool_use`.
 
   Returns `{messages_with_fork, next_index}`.
   """
   @spec build_clone_fork([term()], non_neg_integer(), String.t(), non_neg_integer()) ::
           {[term()], non_neg_integer()}
   def build_clone_fork(messages, next_index, child_name, depth) do
+    case trailing_tool_uses(messages) do
+      [] -> synthesize_clone_fork(messages, next_index, child_name, depth)
+      tool_uses -> answer_clone_fork(messages, next_index, child_name, depth, tool_uses)
+    end
+  end
+
+  # The parent's real spawn `tool_use` ids, taken from the trailing
+  # assistant. Empty when there is no trailing assistant tool call.
+  defp trailing_tool_uses(messages) do
+    case List.last(messages) do
+      {:assistant, %Assistant{parts: parts}} ->
+        for %Part.ToolUse{} = tool_use <- parts || [], do: tool_use
+
+      _ ->
+        []
+    end
+  end
+
+  # Unix-fork path: share the real assistant, own only the results
+  # and the acknowledgement.
+  defp answer_clone_fork(messages, next_index, child_name, depth, tool_uses) do
+    results =
+      Enum.map(tool_uses, fn %Part.ToolUse{} = tool_use ->
+        fork_tool_result(tool_use, child_name, depth)
+      end)
+
+    tool_result = {:tool, %Tool{index: next_index, parts: results, api_logs: []}}
+    ack = clone_ack(next_index + 1, child_name, depth)
+
+    {messages ++ [tool_result, ack], next_index + 2}
+  end
+
+  # Fallback path: no real trailing tool call to share, so the
+  # child owns the synthetic spawn assistant as well.
+  defp synthesize_clone_fork(messages, next_index, child_name, depth) do
     clone_id = "subagent-clone-#{next_index}"
 
     assistant_clone =
@@ -87,7 +101,6 @@ defmodule Nest.Messages.MessageList do
        %Assistant{
          index: next_index,
          parts: [%Part.ToolUse{id: clone_id, name: "agents-spawn", arguments: %{}}],
-         timestamp: DateTime.utc_now(),
          api_logs: []
        }}
 
@@ -99,36 +112,64 @@ defmodule Nest.Messages.MessageList do
            %Part.ToolResult{
              tool_call_id: clone_id,
              name: "agents-spawn",
-             content:
-               "Subagent spawned successfully. You are now the delegated clone, " <>
-                 "named \"#{child_name}\", at depth #{depth}.",
+             content: clone_notice(child_name, depth),
              arguments: %{},
              is_error: false
            }
          ],
-         timestamp: DateTime.utc_now(),
          api_logs: []
        }}
 
-    assistant_ack =
-      {:assistant,
-       %Assistant{
-         index: next_index + 2,
-         parts: [
-           %Part.Text{
-             text:
-               "Understood. I am the clone, named \"#{child_name}\", at depth " <>
-                 "#{depth}. What is my task?"
-           }
-         ],
-         timestamp: DateTime.utc_now(),
-         api_logs: []
-       }}
+    ack = clone_ack(next_index + 2, child_name, depth)
 
-    {
-      messages ++ [assistant_clone, tool_result, assistant_ack],
-      next_index + 3
+    {messages ++ [assistant_clone, tool_result, ack], next_index + 3}
+  end
+
+  # The fork's return value for one `tool_use` in the shared
+  # assistant: the spawn itself reports the clone's identity; any
+  # sibling tool call in the same assistant turn is reported as not
+  # executed (the clone never ran it, and the wire requires every
+  # `tool_use` id to be answered).
+  defp fork_tool_result(%Part.ToolUse{name: "agents-spawn"} = tool_use, child_name, depth) do
+    %Part.ToolResult{
+      tool_call_id: tool_use.id,
+      name: tool_use.name,
+      content: clone_notice(child_name, depth),
+      arguments: tool_use.arguments || %{},
+      is_error: false
     }
+  end
+
+  defp fork_tool_result(%Part.ToolUse{} = tool_use, _child_name, _depth) do
+    %Part.ToolResult{
+      tool_call_id: tool_use.id,
+      name: tool_use.name,
+      content: "Tool call not executed: this agent was forked as a clone before the call ran.",
+      arguments: tool_use.arguments || %{},
+      is_error: true
+    }
+  end
+
+  defp clone_notice(child_name, depth) do
+    "You are now the delegated clone, named \"#{child_name}\", at depth #{depth}."
+  end
+
+  # The clone's acknowledgement: its system message is inherited
+  # verbatim from the root ancestor, so this user-visible notice is
+  # the only place to state its true identity/depth.
+  defp clone_ack(index, child_name, depth) do
+    {:assistant,
+     %Assistant{
+       index: index,
+       parts: [
+         %Part.Text{
+           text:
+             "Understood. I am the clone, named \"#{child_name}\", at depth " <>
+               "#{depth}. What is my task?"
+         }
+       ],
+       api_logs: []
+     }}
   end
 
   @doc """

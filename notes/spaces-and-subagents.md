@@ -1,5 +1,11 @@
 # Spaces and Sub-agents Design Document
 
+> **Data model: see `notes/shared-message-structure.md` (canonical).** A
+> `clone_context: true` spawn **shares** its ancestor's message rows up to the
+> clone point; it must **never** copy them. Where this document says a child
+> "inherits the parent's full context", read that as the shared immutable
+> prefix, not a copy.
+
 ## Overview
 The goal is to move from a simple "Collection of Agents" to "Collaborative Environments" (Spaces). This architecture supports complex, multi-step workflows (like Tabletop RPGs or Grading Systems) where a Coordinator agent manages a group of specialist sub-agents.
 
@@ -102,7 +108,7 @@ The API is unified around a single general `agents/spawn` that absorbs the old `
 - `agents/spawn(name, vocation_id?, clone_context?, query?, archive?, timeout?)`: Creates a new agent within the space.
   - `name` must be unique within the space.
   - `vocation_id` **defaults to the parent's vocation** — generally optional. Required to differ from the parent (for a fresh specialist with a different role).
-  - `clone_context` (boolean, default `false`): when `false`, the child gets a **fresh** context (system prompt only, no parent history). When `true`, the child **inherits the parent's full context** (synthetic fork origin-story; same vocation) — this is the old `clone_agent` behavior.
+  - `clone_context` (boolean, default `false`): when `false`, the child gets a **fresh** context (its own system prompt only, no parent history, owns from index 0). When `true`, the child **shares the parent's message rows** up to the clone point (an immutable shared prefix; never a copy) and owns only its own subsequent rows from the fork boundary (synthetic fork origin-story; same vocation) — this is the old `clone_agent` behavior. See `notes/shared-message-structure.md`.
   - `query` (string, optional): when given, sends it as the child's first instruction and **blocks** for the response; otherwise returns immediately.
   - `archive` (boolean, default `false`): when set **with** `query`, stop + mark the child archived after its response (one-shot). Only meaningful together with `query`.
   - `timeout` (integer ms, optional): caps how long `spawn` blocks on the query response. Defaults to 5 minutes (300,000 ms). Intended to be raised when the task is slow.
@@ -557,7 +563,7 @@ removes `clone_agent` as a separate tool.
   (fresh spawn no longer `depth: 0` + independent). Cascade-stop, descendant
   usage, and sidebar tree behave uniformly.
 - **Vocation defaults to parent**; required only to differ.
-- **`clone_context: true`** reuses the synthetic fork (`MessageList.extract_clone_instruction`/`build_clone_fork`) and same-vocation inheritance (old `build_child_attrs` clone branch).
+- **`clone_context: true`** reuses the fork builder (`MessageList.build_clone_fork/4`) and same-vocation inheritance (old `build_child_attrs` clone branch). The parent's messages are **shared, not copied**, including the real `agents-spawn` assistant; the fork builder produces only the child's own "you are the clone" result + ack. See `notes/shared-message-structure.md`.
 - **`query` present** → block on child completion (`pending_children` + `:child_completed`); returns name + response.
 - **`archive` honored only with `query`** → after response, `Supervisor.stop_agent` + set `archived=true`.
 - **`agents/archive(name)`** → stop + set `archived=true`; querying an archived agent is an error; archived agents excluded from `agents/list` + lobby.

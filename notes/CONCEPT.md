@@ -1,5 +1,13 @@
 # Nest - LLM Agent Flock System
 
+> **SUPERSEDED for persistence/fork semantics.** This is an early whole-system
+> concept document describing a log-file/session architecture that the current
+> Postgres `agents` + `messages` model does not implement. In particular, the
+> "copy conversation history" language in the Forking Mechanism below is
+> **wrong** for the current model: a clone **shares** its ancestors' message
+> rows and never copies them. See the canonical
+> `notes/shared-message-structure.md`.
+
 ## Overview
 
 Nest is a Phoenix-based system for creating, managing, and executing "flocks" of AI agents. It supports complex workflow graphs where each node is an agent instance, with features for real-time introspection, forking, and log-based analysis.
@@ -501,9 +509,10 @@ When user forks at a point:
 
 1. Create new session/execution record
 2. Set `parent_execution_id` and `forked_from_node_id`
-3. Copy conversation history up to fork point
-4. Start new server with copied state
-5. Continue from fork point
+3. Record the fork point (`forked_at_message_index`); the forked agent **shares**
+   the ancestor's messages up to that point — it does **not** copy them
+4. Resolve the shared prefix via the parent chain at load time
+5. Continue from the fork point with the new agent owning only its own rows
 
 ### Log Replay
 
