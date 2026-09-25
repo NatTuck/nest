@@ -47,6 +47,7 @@ defmodule Nest.Agents.Agent.ChatTurn.Iteration do
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ChatTurn.HTTPWorker
   alias Nest.Agents.Agent.ChatTurn.State
+  alias Nest.LLM.Preflight, as: WirePreflight
   alias Nest.Messages.Assistant
   alias Nest.Messages.MessageList
   alias Nest.Messages.Part
@@ -241,6 +242,14 @@ defmodule Nest.Agents.Agent.ChatTurn.Iteration do
   defp spawn_http_worker(%{ctx: %{context_limit: limit}} = state, messages)
        when is_integer(limit) and limit > 0 do
     PreFlight.ensure_passed!(messages, limit)
+
+    case WirePreflight.validate(messages) do
+      :ok -> dispatch_http_worker(state, messages)
+      {:error, violations} -> refuse_invalid_sequence(state, violations)
+    end
+  end
+
+  defp dispatch_http_worker(state, messages) do
     parent = self()
     agent_pid = state.ctx.agent_pid
 
@@ -248,6 +257,18 @@ defmodule Nest.Agents.Agent.ChatTurn.Iteration do
     state = %{state | ctx: %{state.ctx | tools: tools, tool_choice: tool_choice}}
 
     start_worker_task(state, parent, agent_pid, messages)
+  end
+
+  # The sequence handed to the worker is invalid (an orphan `tool_use`
+  # the append-time guard could not prevent — e.g. restored legacy
+  # state). Never send it: surface the rule + offending ids through the
+  # Agent's crash path (`chat:error`) and stop the turn. The live path
+  # is repaired by `MessageAppender`; persisted corruption by the
+  # offline tool (`notes/enforce-mesages-seq-invariants.md`).
+  defp refuse_invalid_sequence(%{ctx: %{agent_pid: agent_pid}} = state, violations) do
+    exception = %RuntimeError{message: WirePreflight.format_violations(violations)}
+    send(agent_pid, {:chat_crashed, exception, []})
+    {:stop, :normal, state}
   end
 
   # At/over the iteration cap, the next call is the "final"

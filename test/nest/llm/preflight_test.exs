@@ -175,4 +175,83 @@ defmodule Nest.LLM.PreflightTest do
              ]
     end
   end
+
+  describe "rules/0" do
+    test "lists every named rule" do
+      assert Preflight.rules() == [
+               :known_roles,
+               :tool_pairing,
+               :no_orphan_tool_results,
+               :alternation,
+               :no_trailing_orphan
+             ]
+    end
+  end
+
+  describe "validate/1" do
+    test "ok: a valid paired sequence" do
+      messages = [
+        system_text("s"),
+        user_text("hi"),
+        assistant_tool_use("a"),
+        tool_result("a"),
+        assistant_text("done")
+      ]
+
+      assert Preflight.validate(messages) == :ok
+    end
+
+    test "known_roles: rejects an unknown role" do
+      assert {:error, violations} = Preflight.validate([{:bogus, %User{}}])
+
+      assert Enum.any?(violations, fn v ->
+               v.rule == :known_roles and v.role == :bogus and v.position == 0
+             end)
+    end
+
+    test "tool_pairing: a tool_use must be answered immediately" do
+      assert {:error, violations} =
+               Preflight.validate([assistant_tool_use("a"), user_text("hi")])
+
+      assert [%{rule: :tool_pairing, expected_ids: ["a"], position: 1}] = violations
+    end
+
+    test "no_orphan_tool_results: a tool result needs a preceding tool_use" do
+      assert {:error, violations} = Preflight.validate([assistant_text("done"), tool_result("a")])
+
+      assert [%{rule: :no_orphan_tool_results, orphan_ids: ["a"], position: 1}] = violations
+    end
+
+    test "alternation: no two consecutive user roles" do
+      assert {:error, violations} = Preflight.validate([user_text("a"), user_text("b")])
+
+      assert [%{rule: :alternation, position: 1}] = violations
+    end
+
+    test "no_trailing_orphan: the list must not end with an unpaired tool_use" do
+      assert {:error, violations} = Preflight.validate([assistant_tool_use("a")])
+
+      assert [%{rule: :no_trailing_orphan, expected_ids: ["a"], position: 1}] = violations
+    end
+
+    test "unions violations across rules (does not stop at the first)" do
+      # A mismatched id pair reports a missing result (tool_pairing)
+      # and an orphan result (no_orphan_tool_results) together.
+      assert {:error, violations} =
+               Preflight.validate([assistant_tool_use("a"), tool_result("b")])
+
+      rules = violations |> Enum.map(& &1.rule) |> Enum.uniq()
+      assert :tool_pairing in rules
+      assert :no_orphan_tool_results in rules
+    end
+
+    test "format_violations/1 names the rule and ids" do
+      {:error, violations} = Preflight.validate([assistant_tool_use("a"), user_text("hi")])
+      text = Preflight.format_violations(violations)
+
+      assert text =~ "wire preflight"
+      assert text =~ "tool_pairing"
+      assert text =~ "a"
+    end
+  end
 end

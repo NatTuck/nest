@@ -3,118 +3,156 @@
 ## Mission
 
 Correct the persisted data model so that cloned agents **share** their
-ancestors' message rows and never duplicate them (strict immutable shared
-structure), and enforce the message-sequence invariants so an invalid sequence
-can neither be created by the live path nor sent to an LLM. Add an offline
-repair tool that is allowed to rewrite persisted sequences.
+ancestors' message rows and never duplicate them, and enforce the
+message-sequence invariants so an invalid sequence can neither be created by
+the live path nor sent to an LLM. Plus an offline repair tool that may rewrite
+persisted sequences.
 
 ## Read first (canonical)
 
 - `notes/shared-message-structure.md` — the data model. **Source of truth.**
   Do not edit it to match the code; fix the code.
-- `notes/enforce-mesages-seq-invariants.md` — the wire invariants, preflight
-  rule list, append-time enforcement, and offline repair tool plan.
+- `notes/enforce-mesages-seq-invariants.md` — wire invariants, preflight rules,
+  append-time enforcement, and the **offline repair tool spec (§5)** /
+  **on-load validation spec (§4)**.
 
-If any code comment or other note contradicts the canonical doc, that other
-source is wrong.
+If any code comment or other note contradicts the canonical doc, that source is
+wrong.
 
-## Fork semantics (corrected)
+## Status: Phases 1, 2, 3 DONE — precommit green (1494 tests)
 
-A clone is a Unix `fork`: it shares the parent's sequence **including the real
-trailing `agents-spawn` assistant `tool_use`**, and gets a different return
-value at the fork point. The child's first own row is a `tool_result` for the
-**same `tool_use` id** ("you are now the delegate"), followed by an assistant
-ack. The child does **not** drop or re-synthesize the spawn call. This is why
-`F_C = parent.next_message_index` (the child's first own row) works with the
-resolver `full(A) = before(full(parent), F_A) ++ own(A)`.
+- **Phase 1 — shared structure.** `agents.fork_message_index` (migration
+  `20260925171617_add_fork_message_index_to_agents`); `build_insert_base/2`
+  also stores `last_compaction_index`. `MessageList.build_clone_fork/4` uses
+  Unix-fork semantics (shares the real `agents-spawn` assistant; the child owns
+  a `tool_result` for the same id + ack). `Agent.pre_spawn/1` writes the system
+  row only for roots/fresh children; clones persist only their own rows.
+  `Persistence.Messages.load_full_messages/2` resolves
+  `before(full(parent), fork) ++ own` via `parent_id`;
+  `build_attrs_for_start/2` uses it and returns `fork_message_index`. Clones
+  detach at first compaction (`ResultHandler.handle_success/3` clears the fork
+  via `Persistence.update_fork_message_index/3`). Tests:
+  `test/nest/agents/agent/shared_message_structure_test.exs`.
+- **Phase 2 — append guard.** `MessageList.pairing_bridge/2` returns the repair
+  messages (an `is_error` tool result per unpaired id, plus an assistant ack for
+  a user incoming). `MessageAppender` routes every live append through
+  `append_with_bridge/2`; `append_history_one/2` is exempt. Tests:
+  `test/nest/agents/agent/append_pairing_bridge_test.exs`.
+- **Phase 3 — preflight + send guard.** `Nest.LLM.Preflight.rules/0` and
+  `validate/1` (tagged violations, unknown roles tolerated);
+  `validate_tool_call_pairing/1` kept for `MockClient`;
+  `format_violations/1`. `Iteration.spawn_http_worker/2` refuses an invalid list
+  via `refuse_invalid_sequence/2` (`{:chat_crashed, ...}` + `{:stop, :normal,
+  _}`). Tests: `test/nest/llm/preflight_test.exs`,
+  `test/nest/agents/agent/chat_turn/send_guard_test.exs`.
 
-## Phase 1 — DONE
+All code changes from Phases 1–3 are **uncommitted** on `main` (working tree).
 
-Implemented:
+---
 
-- `agents.fork_message_index` column (migration
-  `20260925171617_add_fork_message_index_to_agents`) + `PersistedAgent` field;
-  `fork_message_index` stored in `build_insert_base/2`, along with
-  `last_compaction_index` (previously dropped on insert, which broke clone
-  boundary restore).
-- `MessageList.build_clone_fork/4` now answers the shared assistant's
-  `tool_use` ids with the child's own results (real path), or synthesizes a
-  paired fork when there is no trailing tool call (raw test path).
-  `extract_clone_instruction/1` removed.
-- `Agent.build_child_attrs/5` shares the parent's `history ++ messages` up to
-  the fork point and sets `fork_message_index: parent.next_message_index`.
-- `Agent.pre_spawn/1` branches: roots/fresh children write the system row at 0;
-  clones persist **only** their own fork rows and no system row.
-- `Persistence.Messages.load_full_messages/2` recursively resolves the shared
-  prefix via `parent_id`; `build_attrs_for_start/2` uses it and returns
-  `fork_message_index`.
-- Detach on first compaction: `ResultHandler.handle_success/3` clears
-  `fork_message_index` (runtime `TreePosition` + DB) via
-  `Persistence.update_fork_message_index/3`.
-- Tests: `test/nest/agents/agent/shared_message_structure_test.exs` (clone owns
-  only fork rows, full-sequence resolve, restart round-trip, clone-of-clone,
-  detach, fresh child). Full suite green (1476 tests).
+## WHAT'S LEFT — Phase 4: offline repair tool (main remaining work)
 
-## Phase 2 — append-time sequence invariants
+Spec: `notes/enforce-mesages-seq-invariants.md` §5. Build
+`lib/mix/tasks/nest.repair_messages.ex` (`mix nest.repair_messages`).
 
-- `Nest.Messages.MessageList.pairing_bridge(messages, incoming) :: nil |
-  {:tool, Tool.t()}`: if the trailing message is an assistant with unpaired
-  `Part.ToolUse`, build a `{:tool, _}` carrying an `is_error: true`
-  "interrupted" result for every missing id.
-- `Nest.Agents.Agent.MessageAppender.append_one/2` and `handle_batch/2`: append
-  and persist the bridge via the canonical path before any incoming message that
-  would leave a `tool_use` unpaired (notably the next user message). Preserve
-  return contracts; `history` appends are exempt.
-- Tests: orphan + user append inserts the synthetic result and persists it; a
-  matching tool result is not duplicated; batch atomicity.
+### Options
 
-## Phase 3 — preflight rule list
+`--space <id>` / `--agent <space_id> <name>` / `--all`; `--apply` (default is
+**dry-run**); `--verbose`.
 
-- Generalize `Nest.LLM.Preflight` (`lib/nest/llm/preflight.ex`) to an explicit
-  rule list: `:known_roles`, `:tool_pairing`, `:no_orphan_tool_results`,
-  `:alternation`, `:no_trailing_orphan`; `validate/1` runs all rules and returns
-  all violations; keep `validate_tool_call_pairing/1` as a wrapper for
-  `MockClient`.
-- Call `validate/1` in
-  `Nest.Agents.Agent.ChatTurn.Iteration.spawn_http_worker/2`
-  (`lib/nest/agents/agent/chat_turn/iteration.ex`) on the exact list handed to
-  the worker, after `PreFlight.ensure_passed!/2`. On violation: do not call the
-  client; surface a `chat:error`/`{:chat_crashed, ...}` with rule + ids and stop
-  the turn.
-- Tests: one per rule; dispatch of an invalid list does not invoke the client.
+### Algorithm (per agent, root-first over the `parent_id` tree)
 
-## Phase 4 — offline repair tool
+1. Load the resolved sequence with `Persistence.load_full_messages/2` and the
+   owner partition (`own` = `Persistence.load_messages/2`).
+2. Run `Nest.LLM.Preflight.validate/1`. Print every violation (rule, position,
+   ids).
+3. Build a repair plan:
+   - For each assistant `tool_use` missing a paired result, plan an
+     `is_error: true` `{:tool, _}` insert after it, under the **owning**
+     `agent_id` (the agent whose run of rows contains the assistant).
+   - Report stray `tool_result`s with no matching `tool_use` (do not invent an
+     assistant).
+   - Recompute contiguous `message_index` values for the owning agent.
+4. `--apply` in a single `Repo.transaction`:
+   - insert the synthetic rows;
+   - renumber the owning agent's rows with a **two-phase** pass (temporary large
+     offset, then final) to avoid transient collisions on the unique index
+     `messages_agent_id_message_index_index` (`(agent_id, message_index)`);
+   - update `agents.next_message_index`;
+   - shift `agents.last_compaction_index` when an insert lands before the
+     boundary.
 
-- New `mix nest.repair_messages` (`lib/mix/tasks/`), options `--space`,
-  `--agent`, `--all`, `--apply` (default dry-run), `--verbose`.
-- Per agent, root-first over the `parent_id` tree: load the resolved sequence +
-  own partition; run the Phase 3 rules; plan `is_error` tool-result inserts for
-  orphaned `tool_use` at the **owning** agent; recompute contiguous
-  `message_index`.
-- `--apply` in one `Repo.transaction`: insert synthetic rows under the owning
-  `agent_id`; two-phase renumber (temporary offset, then final) to avoid
-  unique-index collisions; update `agents.next_message_index`; shift
-  `agents.last_compaction_index` if an insert precedes the boundary.
-- Clone renumbering: an insert into an ancestor-owned prefix shifts that
-  ancestor's rows and every descendant's `fork_message_index` and own indices at
-  or after the insert point, recursively via `parent_id`. Fresh/detached
-  children (`fork_message_index = NULL`) are unaffected. Idempotent.
-- Verify against `visual-possum-root` (root, no clones): dry-run reports the
-  orphan at 866; `--apply` inserts before 867; restart the agent.
+### Clone renumbering (the `parent_id` / `fork_message_index` part)
 
-## Phase 5 — docs + verification
+- An insert into an ancestor-owned prefix shifts the ancestor's rows and every
+  descendant's `fork_message_index` and own indices at/after the insert point,
+  recursively via `parent_id`.
+- Use the stored `agents.fork_message_index` (do **not** derive from min own
+  index): a fresh child or detached clone has `fork_message_index = NULL` and is
+  unaffected.
+- Idempotent: re-running on a repaired sequence is a no-op.
 
-- Keep `notes/shared-message-structure.md` and
-  `notes/enforce-mesages-seq-invariants.md` in sync.
-- `mix precommit` clean (no warnings, no test log prints). Suite runtime is
-  currently ~9s, above the 5s target; that is the known residual from earlier
-  work, not introduced here.
+### Code seams to use / add
 
-## Open decisions — resolved
+- `Nest.Persistence.Messages`: `load_messages/2`, `load_full_messages/2`,
+  `load_own_messages/1`, `update_next_message_index/3`,
+  `update_fork_message_index/3`. `fetch_agent_by_id/1` is currently private — the
+  task needs a way to fetch an agent row by id and to list all rows
+  (`fetch_all_agents_for_space/1` exists, or add a `list_all_agents/0`).
+- `Nest.Agents.PersistedMessage.to_runtime/1` / `from_runtime/2` for building
+  the synthetic `{:tool, _}`; `insert_message/3` uses `on_conflict: :nothing`
+  (repair must not rely on that for renumbering — use explicit updates).
+- Direct `Repo` queries/updates are fine in the task (it runs outside the
+  sandbox; it needs `mix ecto`/app started — `Nest.Repo`).
 
-1. Fork boundary: `F_C = parent.next_message_index`; child answers the shared
-   spawn `tool_use` (Unix fork). Done.
-2. `fork_message_index` column: added. Done.
-3. Clone compaction: detach on first compaction. Done.
-4. Preflight failure behaviour at send: graceful `chat:error` and stop (Phase 3).
-5. Repair tool scope: tool-pairing only (Phase 4).
+### Tests (Phase 4)
+
+- Fixture mirroring `visual-possum-root`: assistant `tool_use` → user, no
+  result. Dry-run reports; `--apply` inserts + renumbers + bumps counters;
+  re-run is a no-op.
+- Clone fixture: a child with `fork_message_index`; an insert into the parent
+  prefix shifts the child's `fork_message_index` and own indices.
+- Borrow `test/support/persistence_test_helpers.ex` for spaces/vocations, and
+  `Nest.DataCase`.
+
+### Then: repair the real agent
+
+`visual-possum-root` (agent id 1, space 1): index 866 is an assistant
+`tool_use:call_00_YeumRvjanX23oPG1S93n4024` (`shell-cmd`, a ~10-min command);
+index 867 is the next user message. Run
+`mix nest.repair_messages --agent 1 visual-possum-root` (dry-run) → expect the
+orphan at 866; `--apply` inserts the `is_error` result before 867; restart the
+agent. Use the **real** DB, not the test sandbox.
+
+## WHAT'S LEFT — on-load validation (spec §4)
+
+`Persistence.build_attrs_for_start/2` should run `Nest.LLM.Preflight.validate/1`
+on the **resolved** sequence and refuse to start the agent in a sendable state,
+pointing the operator at the repair tool — instead of silently loading a
+corrupt sequence (the send guard in Phase 3 will catch it later, but the goal is
+to detect at load). **Decision needed:** what "refuse to start" means (stop the
+start and surface via the existing broken-agent path, or start in a dedicated
+broken state and block `chat:message`). See `list_broken_agents/0` /
+`Callbacks.build_recovery_state/3` for the existing model-missing pattern.
+
+## Known residuals / notes
+
+- The full suite is ~9s here, above AGENTS.md's 5s target; pre-existing.
+- `mix test --cover` (the precommit coverage stage) is timing-flaky on this
+  loaded box. Proven pre-existing: a baseline worktree at `HEAD` also failed the
+  same stage, and the failing files pass in isolation. Do not bump test
+  timeouts; if it blocks a commit, re-run precommit (it passed cleanly).
+- Phase 1's mandatory "no duplicated rows on clone" and restart round-trip tests
+  are in `shared_message_structure_test.exs`; keep them green.
+- Once Phase 4 lands, update `notes/enforce-mesages-seq-invariants.md` §4/§5 and
+  `notes/shared-message-structure.md` status, then run `mix precommit` and read
+  the **full** output.
+
+## Open decisions resolved (for context)
+
+1. Fork boundary `F_C = parent.next_message_index`; child answers the shared
+   spawn `tool_use` (Unix fork).
+2. `fork_message_index` column added.
+3. Clone compaction: detach on first compaction.
+4. Send-time preflight failure: graceful `chat:error` + stop.
+5. Repair tool scope: tool-pairing only (do not invent assistant messages).

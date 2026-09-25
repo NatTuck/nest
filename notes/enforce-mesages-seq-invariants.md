@@ -80,88 +80,80 @@ it on load. This plan closes all three gaps: **prevent**, **detect**, **repair**
 - **W5 — No trailing orphan.** The list must not end with an assistant whose
   `tool_use` is unanswered.
 
-## 2. Preflight checking
+## 2. Preflight checking — DONE
 
-### 2.1 Generalize `Nest.LLM.Preflight`
+### 2.1 `Nest.LLM.Preflight`
 
-`Nest.LLM.Preflight` already implements pairing + alternation but is used by
-`Nest.LLM.MockClient` only, and its public entry point is mis-named
-(`validate_tool_call_pairing/1` also checks alternation). Replace the ad-hoc
-`walk/4` with an explicit **rule list**:
+`Nest.LLM.Preflight` now exposes the named rule list via `rules/0`:
 
 ```elixir
-@rules [
-  :known_roles,
-  :tool_pairing,
-  :no_orphan_tool_results,
-  :alternation,
-  :no_trailing_orphan
-]
+[:known_roles, :tool_pairing, :no_orphan_tool_results, :alternation, :no_trailing_orphan]
 ```
 
-- Each rule is a function `([Message.t()]) -> [violation]`.
-- `validate/1 :: :ok | {:error, [violation]}` runs every rule and unions the
-  violations (do not stop at the first).
-- Keep `validate_tool_call_pairing/1` as a thin wrapper so `MockClient`'s
-  400-parody and `mock_client_preflight_test.exs` keep working.
-- A `violation` carries `%{rule: atom, position: non_neg_integer,
-  orphan_ids: [...], missing_ids: [...], expected_ids: [...]}`, extending the
-  existing shape with `:rule`.
+- `validate/1 :: :ok | {:error, [violation]}` runs the single-pass walk and
+  unions the violations (does not stop at the first). Unknown roles are
+  reported by `:known_roles`, not crashed on.
+- `validate_tool_call_pairing/1` remains the legacy `kind`-shaped wrapper for
+  `MockClient`'s 400-parody.
+- `format_violations/1` renders `rule: detail` lines for the `chat:error` path.
+- A `violation` carries `%{rule: atom, kind: atom, position: non_neg_integer,
+  orphan_ids: [...], missing_ids: [...], expected_ids: [...]}` (plus `:role` for
+  `:known_roles`). The walk's four legacy kinds map to rules as: missing/
+  mid-list unclosed → `:tool_pairing`, end-of-list unclosed →
+  `:no_trailing_orphan`, orphan result → `:no_orphan_tool_results`, alternation
+  → `:alternation`.
 
-### 2.2 Call site
+### 2.2 Call site — implemented
 
-Call the validator in `Nest.Agents.Agent.ChatTurn.Iteration.spawn_http_worker/2`,
-on the exact `messages` list being handed to the worker, **after**
-`PreFlight.ensure_passed!/2` and before `start_worker_task/4`. This is the
-single choke point for both normal turns and the compactor's turn.
+`Nest.Agents.Agent.ChatTurn.Iteration.spawn_http_worker/2` runs
+`WirePreflight.validate/1` on the exact `messages` list being handed to the
+worker, **after** `PreFlight.ensure_passed!/2` and before
+`dispatch_http_worker/2` (which builds the request and spawns the worker).
 
-On `{:error, violations}`:
+On `{:error, violations}` `refuse_invalid_sequence/2` sends
+`{:chat_crashed, %RuntimeError{}, []}` to the Agent (so `chat_crashed/3`
+broadcasts `chat:error` with the rule + ids) and returns `{:stop, :normal,
+state}`. The client is never called. The live append-time guard (§3) makes this
+unreachable on the live path; it is the last line of defence for restored/legacy
+state. Test: `test/nest/agents/agent/chat_turn/send_guard_test.exs`.
 
-- **Do not** build the request or call the client.
-- Surface the failure through the existing Agent error path (a
-  `{:chat_crashed, exception, stacktrace}` / `chat:error` broadcast) including
-  the rule name and offending ids/positions, and stop the turn.
-- The live append-time guard (§3) should make this unreachable; this is the
-  last line of defence for restored/legacy state.
+### 2.3 Appends are validated too — see §3
 
-### 2.3 Appends are validated too
+`MessageAppender` routes every live append through the pairing repair
+(`pairing_bridge/2`), so an append can no longer create an unpaired `tool_use`.
 
-`MessageAppender.append_one/2` already calls `PreFlight.ensure_passed!/2`.
-Extend the append choke point to also satisfy the pairing invariant (see §3)
-before the append is accepted.
+## 3. Append-time enforcement (prevent) — DONE
 
-## 3. Append-time enforcement (prevent)
+The single writer is `Nest.Agents.Agent.MessageAppender`. Every live
+append flows through it (`append_one/2`, `handle_batch/2`,
+`append_in_process/2`); `history` appends (`append_history_one/2`) are exempt.
 
-The single writer is `Nest.Agents.Agent.MessageAppender` (`append_one/2` and
-`handle_batch/2`). Every live append flows through it.
-
-Add `Nest.Messages.MessageList.pairing_bridge(messages, incoming) :: nil |
-{:tool, Tool.t()}`:
+`Nest.Messages.MessageList.pairing_bridge(messages, incoming) :: [message]`
+returns the repair messages to append before `incoming`:
 
 - If the trailing message is an assistant with `Part.ToolUse` parts, compute
   the ids not answered by `incoming`.
-- `incoming` is a matching `{:tool, _}` → bridge only the missing ids.
-- `incoming` is anything else (notably the next user message) → bridge all
-  unpaired ids.
-- The bridge is a real `{:tool, _}` message carrying, per missing id, a
+- The repair is a real `{:tool, _}` message carrying, per missing id, a
   `%Part.ToolResult{is_error: true, content: "Tool call interrupted before
   completion (repaired)."}`.
+- When `incoming` is a user message (wire role `user`), a synthetic assistant
+  acknowledgement is returned after the tool result, so the appended user
+  message does not create two consecutive `user` wire roles (`tool` is wire
+  role `user`). See `notes/valid-turn-ordering.md`.
+- `incoming` being a complete matching `{:tool, _}` yields `[]` — a matching
+  result is never duplicated.
 
-`MessageAppender` then, before appending a message that would leave an
-assistant `tool_use` unpaired:
-
-1. appends and persists the bridge via the canonical path (stamped, broadcast,
-   visible to the user — never hidden);
-2. appends the requested message.
+`MessageAppender` appends and persists the repair messages via the canonical
+path (stamped, broadcast, visible — never hidden) before the requested message.
 
 Return contracts are preserved: `append_one/2` still returns the requested
 stamped message; `handle_batch/2` returns every stamped message including the
-bridge. `history` appends (compaction markers) are exempt — the invariant is on
-the LLM-facing `messages` sequence.
+repair messages.
 
-This is what makes the `visual-possum-root` failure impossible on the live path:
-the next user message can no longer be appended after an unpaired `tool_use`
-without first writing an `is_error` tool result.
+This is what makes the `visual-possum-root` failure impossible on the live
+path: the next user message can no longer be appended after an unpaired
+`tool_use` without first writing an `is_error` tool result (and the
+alternation-preserving ack).
 
 ## 4. On-load validation (detect)
 

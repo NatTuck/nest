@@ -173,6 +173,88 @@ defmodule Nest.Messages.MessageList do
   end
 
   @doc """
+  Compute the repair messages needed to keep the sequence valid
+  before `incoming` is appended.
+
+  If the trailing message is an assistant carrying `Part.ToolUse`
+  calls, every id the assistant is not already answered by
+  `incoming` (`incoming` may itself be a `{:tool, _}` result covering
+  some ids) must be answered immediately. Returns a list of synthetic
+  messages to append before `incoming`:
+
+    * a `{:tool, _}` carrying one `is_error: true` "interrupted"
+      `Part.ToolResult` per unpaired id; and
+    * when `incoming` is a user message (wire role `user`), a
+      synthetic assistant acknowledgement, so the appended user
+      message does not create two consecutive `user` wire roles.
+
+  Returns `[]` when nothing needs repairing. This is the append-time
+  half of the sequence invariants (`notes/enforce-mesages-seq-invariants.md`);
+  the messages are real, persisted, and visible.
+  """
+  @spec pairing_bridge([term()], term()) :: [term()]
+  def pairing_bridge(messages, incoming) do
+    case List.last(messages) do
+      {:assistant, %Assistant{parts: parts}} ->
+        answered = answered_tool_ids(incoming)
+
+        missing =
+          for %Part.ToolUse{} = tool_use <- parts || [], tool_use.id not in answered, do: tool_use
+
+        build_bridge(missing, incoming)
+
+      _ ->
+        []
+    end
+  end
+
+  defp answered_tool_ids({:tool, %Tool{parts: parts}}) do
+    for %Part.ToolResult{tool_call_id: id} <- parts || [], do: id
+  end
+
+  defp answered_tool_ids(_incoming), do: []
+
+  defp build_bridge([], _incoming), do: []
+
+  defp build_bridge(missing_tool_uses, incoming) do
+    tool = {:tool, %Tool{parts: Enum.map(missing_tool_uses, &interrupted_result/1), api_logs: []}}
+
+    if match?({:user, _}, incoming) do
+      [tool, interrupted_ack()]
+    else
+      [tool]
+    end
+  end
+
+  # We know the tool's name from the assistant's `Part.ToolUse`; keep
+  # it so the repaired result is shaped like a real one.
+  defp interrupted_result(%Part.ToolUse{id: id, name: name}) do
+    %Part.ToolResult{
+      tool_call_id: id,
+      name: name,
+      content: "Tool call interrupted before completion (repaired).",
+      arguments: %{},
+      is_error: true
+    }
+  end
+
+  # Breaks the two-consecutive-user-roles problem the tool result
+  # would otherwise create before the incoming user message.
+  defp interrupted_ack do
+    {:assistant,
+     %Assistant{
+       parts: [
+         %Part.Text{
+           text:
+             "The previous tool call was interrupted before it finished. " <>
+               "I'll continue from here."
+         }
+       ],
+       api_logs: []
+     }}
+  end
+
+  @doc """
   Return the Anthropic wire role of the last non-system,
   non-compaction message. Used to decide whether a synthetic
   assistant bridge is needed before appending a new user message.
