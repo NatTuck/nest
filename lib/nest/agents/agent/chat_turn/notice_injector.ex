@@ -24,6 +24,7 @@ defmodule Nest.Agents.Agent.ChatTurn.NoticeInjector do
   alias Nest.Agents.Agent.ChatTurn.State
   alias Nest.Agents.Agent.NoticePairInjector
   alias Nest.LLM.RunResponse
+  alias Nest.Tokens.ConversationSize
   alias Nest.Tokens.Estimator, as: TokensEstimator
   alias Nest.Tokens.Reserve
 
@@ -98,6 +99,10 @@ defmodule Nest.Agents.Agent.ChatTurn.NoticeInjector do
     if is_integer(limit) and limit > 0 do
       crossed = fetch_crossed_thresholds(state)
       projected = projected_tokens_for_response(response, state)
+
+      # Surface the projected context size to the UI chip: it's the
+      # number the threshold check just compared against.
+      send(state.ctx.agent_pid, {:set_context_projection, projected})
 
       case ContextReminder.highest_unannounced(projected, limit, crossed) do
         nil ->
@@ -181,7 +186,7 @@ defmodule Nest.Agents.Agent.ChatTurn.NoticeInjector do
       tool_calls ->
         case BatchSizer.preflight(tool_calls, ctx) do
           :fits ->
-            TokensEstimator.estimate_messages(messages) +
+            ConversationSize.size(messages) +
               tool_request_size(tool_calls) +
               Reserve.response_budget(state.ctx.context_limit)
 
@@ -192,7 +197,11 @@ defmodule Nest.Agents.Agent.ChatTurn.NoticeInjector do
   end
 
   defp projected_text(messages, response, _limit) do
-    base = TokensEstimator.estimate_messages(messages)
+    # `ConversationSize.size/1` is the same basis the UI chip and the
+    # user-message-time warning use (real API token floor + estimated
+    # suffix), so the threshold percentage the LLM is warned about
+    # matches what the user sees.
+    base = ConversationSize.size(messages)
     text_size = TokensEstimator.estimate(response.text || "")
     base + text_size + 10
   end

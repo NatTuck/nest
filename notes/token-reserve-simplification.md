@@ -131,7 +131,7 @@ place they enter the system.
 ## Knobs remaining after this PR
 
 - `0.20` — reserve share.
-- `0.25` / `0.50` / `0.75` — `ContextReminder` thresholds (informational; `p25` no longer load-bearing for compaction).
+- `0.25` / `0.50` / `0.75` — `ContextReminder` thresholds (informational; `p25` no longer load-bearing for compaction). They measure against the **working budget** (`context_limit - reserve`), so the UI chip shows both the raw window percent (`used / context_limit`) and the working-budget percent (`used / (context_limit - reserve)`), plus a projected percent when a warning compared a forward-looking size. The announced set is rebuilt from persisted notice metadata on restore.
 - `0.80` — `CapCalculator.@inline_share` (per-tool result cap).
 - `1.20` × 2 — `Estimator.@safety_multiplier`, `BatchSizer.@safety_padding`.
 - `10` × 2 — `Estimator.@per_message_overhead`, `Compactor.@digit_count_buffer`.

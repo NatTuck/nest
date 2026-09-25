@@ -33,7 +33,12 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
       The set is cleared on successful compaction in
       `Compaction.ResultHandler.handle_success/3`, so
       warnings re-fire if usage rises again after a
-      compaction.
+      compaction. Rebuilt from persisted notice metadata on
+      restore (`Init.seed_from_db/3`).
+    * `{:set_context_projection, tokens}` — the forward-looking
+      context size the reminder compared against; stored on
+      `live.context_projection` and surfaced on the status
+      payload for the UI chip.
 
   Dispatched by `Nest.Agents.Agent.Handlers` based on the
   message tag.
@@ -68,6 +73,7 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
     set_crossed_thresholds(set, state)
   end
 
+<<<<<<< HEAD
   # Bounded Stop safety net. The Agent scheduled this when the user hit
   # Stop; if the ChatTurn hasn't reported back by now it is dead or
   # wedged, so force the agent back to idle.
@@ -80,6 +86,10 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
   # is never stuck behind a dead turn.
   def handle({:DOWN, _ref, :process, pid, reason}, state) do
     chat_turn_down(pid, reason, state)
+=======
+  def handle({:set_context_projection, tokens}, state) do
+    set_context_projection(tokens, state)
+>>>>>>> 15f1db68ab807121a0eb65d1e4a7e6889d2b5e5f
   end
 
   # The ChatTurn finished its iteration normally. Clear
@@ -102,7 +112,10 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
             streaming_acc: nil,
             chat_turn_pid: nil,
             cancelled: false,
-            tool_index_map: %{}
+            tool_index_map: %{},
+            # The turn is over; any forward-looking context projection
+            # the reminder computed is no longer meaningful.
+            context_projection: nil
         }
     }
 
@@ -401,7 +414,9 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
 
   defp benign_chat_crash?(_), do: false
 
-  # Persist the threshold set the ChatTurn just expanded.
+  # Record the threshold set the ChatTurn just expanded. The set is
+  # remembered in memory and rebuilt from persisted notice metadata on
+  # restore (see `Init.seed_from_db/3`).
   # Defensive: only accept `MapSet`s — the ChatTurn should
   # always send one, but a future bug that sends a list
   # shouldn't silently corrupt the field.
@@ -411,6 +426,19 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
   end
 
   defp set_crossed_thresholds(_other, state), do: {:noreply, state}
+
+  # Store the forward-looking context size the reminder compared
+  # against so the status payload can surface it to the UI
+  # (`usage.projected_context_input_tokens`).
+  defp set_context_projection(tokens, state) when is_integer(tokens) and tokens >= 0 do
+    state = %{state | live: %{state.live | context_projection: tokens}}
+    # Surface it now: the value is cleared when the turn goes idle, so
+    # without a broadcast here the UI might never receive it.
+    Broadcasts.status(state)
+    {:noreply, state}
+  end
+
+  defp set_context_projection(_other, state), do: {:noreply, state}
 
   # Finalize the streaming_acc accumulator (Agent-side)
   # into a normal assistant message and append it via the

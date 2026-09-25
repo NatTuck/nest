@@ -261,6 +261,8 @@ defmodule Nest.Agents.AgentObservabilityTest do
                cache_read_input_tokens: 0,
                cache_creation_input_tokens: 0,
                context_input_tokens: info.usage.context_input_tokens,
+               working_budget: 409_600,
+               projected_context_input_tokens: nil,
                last_output: 0,
                output_tokens: 0,
                total_input_tokens: 0,

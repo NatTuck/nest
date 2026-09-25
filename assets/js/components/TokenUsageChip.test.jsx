@@ -409,6 +409,92 @@ describe("TokenUsageChip", () => {
       expect(details.textContent).toContain("Total:");
     });
   });
+
+  describe("context warning basis", () => {
+    it("shows the working-budget percentage the warnings use", () => {
+      render(
+        <TokenUsageChip
+          usage={{ context_input_tokens: 40000, working_budget: 100000 }}
+          contextLimit={125000}
+        />,
+      );
+      expect(screen.getByTestId("token-usage-working-pct")).toHaveTextContent(
+        "w 40.0%",
+      );
+    });
+
+    it("flags a missing working budget instead of hiding it", () => {
+      render(
+        <TokenUsageChip
+          usage={{ context_input_tokens: 1000 }}
+          contextLimit={100000}
+        />,
+      );
+      expect(screen.getByTestId("token-usage-working-pct")).toHaveTextContent(
+        "w n/a",
+      );
+    });
+
+    it("shows the projected percentage when a projection exceeds current usage", () => {
+      render(
+        <TokenUsageChip
+          usage={{
+            context_input_tokens: 30000,
+            working_budget: 100000,
+            projected_context_input_tokens: 55000,
+          }}
+          contextLimit={125000}
+        />,
+      );
+      expect(screen.getByTestId("token-usage-projected-pct")).toHaveTextContent(
+        "→ 55.0%",
+      );
+    });
+
+    it("does not show a projected marker when none is in flight", () => {
+      render(
+        <TokenUsageChip
+          usage={{ context_input_tokens: 30000, working_budget: 100000 }}
+          contextLimit={125000}
+        />,
+      );
+      expect(screen.queryByTestId("token-usage-projected-pct")).toBeNull();
+    });
+
+    it("shows [missing] in the expanded working-budget line when absent", () => {
+      render(
+        <TokenUsageChip
+          usage={{ context_input_tokens: 1000 }}
+          contextLimit={100000}
+        />,
+      );
+      fireEvent.click(
+        screen.getByRole("button", { name: /toggle token usage details/i }),
+      );
+      expect(
+        screen.getByTestId("token-usage-working-budget"),
+      ).toHaveTextContent("Working budget: [missing]");
+    });
+
+    it("shows the projected line in the expanded details when present", () => {
+      render(
+        <TokenUsageChip
+          usage={{
+            context_input_tokens: 30000,
+            working_budget: 100000,
+            projected_context_input_tokens: 55000,
+          }}
+          contextLimit={125000}
+        />,
+      );
+      fireEvent.click(
+        screen.getByRole("button", { name: /toggle token usage details/i }),
+      );
+      expect(screen.getByTestId("token-usage-projected")).toHaveTextContent(
+        "55.0% of 100,000",
+      );
+    });
+  });
 });
 
 describe("formatTokens", () => {

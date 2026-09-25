@@ -13,6 +13,12 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
   Both sides of the pair carry information — the assistant ack
   primes the model's awareness for the next real response.
 
+  Thresholds measure against the *working* budget
+  (`context_limit - Reserve.response_budget/1`), not the raw
+  window — the same denominator the UI chip shows alongside its
+  raw window percent (see
+  `Nest.Agents.Agent.Broadcasts.Usage.context_usage_map/4`).
+
   Firing rules:
     * Each threshold fires at most once between compactions.
       The "already announced" set lives on
@@ -20,6 +26,10 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
       conversation, not per ChatTurn).
     * Only the highest currently-crossed threshold is announced.
     * When compaction succeeds, the set is cleared.
+    * On restore (`Init.seed_from_db/3`) the set is rebuilt from the
+      `metadata["context_threshold"]` stamps this module puts on the
+      injected notices, so a BEAM restart mid-conversation does not
+      re-announce a threshold.
     * If `context_limit` is unknown (nil), no warning is injected.
 
   Notice specs (the generic mechanism for Case 2 injection):
@@ -56,7 +66,13 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
     p75: "Context at 75%. Consider compacting via the context-compact tool."
   }
 
-  @type spec :: %{kind: atom(), attention: String.t(), notice: String.t()}
+  @type spec :: %{
+          required(:kind) => atom(),
+          required(:attention) => String.t(),
+          required(:notice) => String.t(),
+          optional(:threshold) => atom(),
+          optional(:ack) => String.t()
+        }
 
   @doc """
   Returns the highest threshold atom that is currently
@@ -118,20 +134,74 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
         %{
           kind: :context,
           attention: "Context?",
-          notice: format(atom, used, limit)
+          notice: format(atom, used, limit),
+          threshold: atom
         }
     end
   end
 
   @doc """
+  Metadata stamp for a notice spec, or `nil` when the spec isn't a
+  context-usage threshold.
+
+  `NoticePairInjector` attaches this to the synthetic message that
+  carries the notice so the announced set can be rebuilt after a
+  BEAM restart by scanning the persisted active messages
+  (see `announced_thresholds/1`).
+  """
+  @spec context_metadata(spec()) :: %{String.t() => String.t()} | nil
+  def context_metadata(%{kind: :context, threshold: atom}) when is_atom(atom) do
+    %{"context_threshold" => Atom.to_string(atom)}
+  end
+
+  def context_metadata(_spec), do: nil
+
+  # Every threshold atom, in crossing order. Used to validate the
+  # persisted metadata strings back into atoms without allocating
+  # new atoms from storage.
+  @threshold_atoms [:p25, :p50, :p75]
+
+  @doc """
+  The set of context-usage thresholds already announced in the
+  given active message list.
+
+  The injected notice messages carry a
+  `metadata["context_threshold"]` stamp; scanning the active list
+  (messages with index greater than the compaction boundary)
+  therefore yields exactly the thresholds announced in the
+  current conversation segment. Called on restore so a BEAM
+  restart between turns does not re-announce a threshold.
+
+  Unknown or absent stamps are ignored (no atom creation).
+  """
+  @spec announced_thresholds([term()]) :: MapSet.t(atom())
+  def announced_thresholds(messages) when is_list(messages) do
+    messages
+    |> Enum.flat_map(&message_threshold/1)
+    |> MapSet.new()
+  end
+
+  defp message_threshold({_role, %{metadata: %{} = metadata}}) do
+    case metadata["context_threshold"] || metadata[:context_threshold] do
+      value when is_binary(value) -> List.wrap(find_threshold(value))
+      _ -> []
+    end
+  end
+
+  defp message_threshold(_message), do: []
+
+  defp find_threshold(value), do: Enum.find(@threshold_atoms, &(Atom.to_string(&1) == value))
+
+  @doc """
   Build a `{:user, _}` message from the given notice text.
   """
-  @spec build_user_notice(String.t(), ClientConfig.t() | nil) :: {:user, User.t()}
-  def build_user_notice(text, _client_config) do
+  @spec build_user_notice(String.t(), ClientConfig.t() | nil, map() | nil) :: {:user, User.t()}
+  def build_user_notice(text, _client_config, metadata \\ nil) do
     {:user,
      %User{
        parts: [%Part.Text{text: text}],
        timestamp: DateTime.utc_now(),
+       metadata: metadata,
        api_logs: []
      }}
   end

@@ -10,6 +10,7 @@ defmodule Nest.Agents.Agent.Broadcasts.Usage do
   """
 
   alias Nest.Tokens.ConversationSize
+  alias Nest.Tokens.Reserve
 
   @doc """
   Combine two cumulative usage maps. The accumulation logic and
@@ -170,11 +171,46 @@ defmodule Nest.Agents.Agent.Broadcasts.Usage do
     end
   end
 
-  # Convenience re-export for `Broadcasts.status_payload/1`'s
-  # `context_input_tokens` field, which depends on the message
-  # list. Lives here so the helper is visible alongside the
-  # field shape it derives.
+  # Convenience re-export for the payloads' `context_input_tokens`
+  # field, which depends on the message list. Lives here so the
+  # helper is visible alongside the field shape it derives.
   def context_input_tokens_for(messages) do
     ConversationSize.size(messages)
   end
+
+  @doc """
+  The `usage` map shipped to the UI chip: the running totals plus the
+  context-window fields.
+
+    * `context_input_tokens` — current conversation size
+      (`ConversationSize.size/1`: real API token floor + estimated
+      suffix).
+    * `working_budget` — the denominator the context-usage warnings
+      measure against (`context_limit - Reserve.response_budget/1`),
+      so the chip can show the warning basis alongside the raw window.
+      `nil` when the limit is unknown.
+    * `projected_context_input_tokens` — the forward-looking size the
+      most recent warning compared against (pending message / predicted
+      tool results), or `nil` when none is in flight.
+
+  Shared by the `chat:status` broadcast and the channel `init` payload
+  so the two can't drift.
+  """
+  @spec context_usage_map(map(), [term()], non_neg_integer() | nil, non_neg_integer() | nil) ::
+          map()
+  def context_usage_map(direct, messages, context_limit, projection) do
+    direct
+    |> Map.put(:context_input_tokens, context_input_tokens_for(messages))
+    |> Map.put(:working_budget, working_budget(context_limit))
+    |> Map.put(:projected_context_input_tokens, projection)
+  end
+
+  # Mirrors `ContextReminder`'s `max(1, limit - reserve)` denominator so
+  # the chip's working percent matches the warned percent. `nil` when
+  # there's no usable limit.
+  defp working_budget(limit) when is_integer(limit) and limit > 0 do
+    max(1, limit - Reserve.response_budget(limit))
+  end
+
+  defp working_budget(_limit), do: nil
 end

@@ -31,8 +31,11 @@ defmodule Nest.Agents.Agent.ChatState do
   the append/compaction message handlers; `ChatState.Live` is
   touched by the ChatTurn, streaming, Stop, and compaction-result
   handlers. A field on the wrong side of the boundary (e.g. a
-  non-nil `streaming_acc` or a preserved `crossed_thresholds`
-  surviving a restart) is a bug.
+  non-nil `streaming_acc`) is a bug. `crossed_thresholds` is the
+  one Live field that is *derived* on restore rather than reset:
+  it is rebuilt from the persisted notice metadata so a restart
+  doesn't re-announce thresholds (see
+  `ContextReminder.announced_thresholds/1`).
 
   The `last_compaction_index` field is the runtime mirror of
   the persisted `agents.last_compaction_index` column. It is
@@ -138,6 +141,9 @@ defmodule Nest.Agents.Agent.ChatState.Live do
   to `%MapSet{}` on successful compaction in
   `Compaction.ResultHandler.handle_success/3`, so warnings
   re-fire if usage rises again after the history was summarized.
+  On restore it is rebuilt from the active messages' notice
+  metadata (`Init.seed_from_db/3`), so a BEAM restart mid-
+  conversation does not re-announce a threshold.
 
   The `consecutive_compaction_count` field is the loop-breaker
   counter. Incremented every time a compaction is spawned
@@ -169,6 +175,14 @@ defmodule Nest.Agents.Agent.ChatState.Live do
             pending_notice: nil,
             mid_turn_entry: nil,
             crossed_thresholds: %MapSet{},
+            # The forward-looking context size (in tokens) the most
+            # recent context-warning check projected: appended messages
+            # plus the pending user message and/or predicted tool-result
+            # sizes. Surfaced on the status payload as
+            # `usage.projected_context_input_tokens` so the UI chip can
+            # show the same number the reminder compared against.
+            # `nil` when no projection is in flight.
+            context_projection: nil,
             consecutive_compaction_count: 0,
             tool_index_map: %{},
             # The agent's currently active conversation mode (e.g.

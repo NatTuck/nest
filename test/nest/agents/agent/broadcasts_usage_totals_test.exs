@@ -25,6 +25,31 @@ defmodule Nest.Agents.Agent.Broadcasts.UsageTotalsTest do
   use ExUnit.Case, async: true
 
   alias Nest.Agents.Agent.Broadcasts
+  alias Nest.Agents.Agent.Broadcasts.Usage
+
+  describe "context_usage_map/4" do
+    test "adds the derived context fields to the running totals" do
+      direct = %{input_tokens: 100, total_input_tokens: 500}
+
+      usage = Usage.context_usage_map(direct, [], 512_000, 999)
+
+      assert usage.input_tokens == 100
+      assert usage.total_input_tokens == 500
+      assert usage.context_input_tokens == 0
+      # 512_000 - max(0.20 * 512_000, 8_192) = 512_000 - 102_400
+      assert usage.working_budget == 409_600
+      assert usage.projected_context_input_tokens == 999
+    end
+
+    test "working_budget is nil when the limit is unknown" do
+      assert Usage.context_usage_map(%{}, [], nil, nil).working_budget == nil
+      assert Usage.context_usage_map(%{}, [], 0, nil).working_budget == nil
+    end
+
+    test "working_budget is floored at 1 when the reserve exceeds the limit" do
+      assert Usage.context_usage_map(%{}, [], 100, nil).working_budget == 1
+    end
+  end
 
   describe "empty_usage_totals/0" do
     test "returns the full shape with all fields initialized to 0" do
