@@ -222,6 +222,11 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
       workspace_path: state.workspace_path,
       message_count: length(state.chat_state.messages),
       status: state.live.status,
+      # Populated only in the `:needs_repair` state: the active
+      # sequence's wire violations and the offline repair command the
+      # UI banner shows. Empty/nil for a healthy agent.
+      sequence_violations: state.live.sequence_violations,
+      repair_command: state.live.repair_command,
       vocation_id: state.vocation_id,
       tmp_path: state.tmp_path,
       # Run the streaming accumulator (or nil) through

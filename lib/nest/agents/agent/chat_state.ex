@@ -189,7 +189,13 @@ defmodule Nest.Agents.Agent.ChatState.Live do
             # "chat", "build", "plan"). Reset to the vocation's
             # default on `init/1` and changed at runtime by the
             # mode selector / `change_mode`.
-            mode: "chat"
+            mode: "chat",
+            # Set when `Init.NeedsRepair.block/3` starts the agent in
+            # the `:needs_repair` state: the active persisted sequence
+            # failed wire preflight. Carries the violations and the
+            # offline repair command surfaced to the operator.
+            sequence_violations: [],
+            repair_command: nil
 
   @type mid_turn_entry :: %{entry: Nest.Agents.Agent.ChatTurn.State.entry() | nil}
 end

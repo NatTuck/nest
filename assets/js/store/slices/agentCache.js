@@ -104,6 +104,38 @@ export function agentCacheSetters(set) {
       });
     },
 
+    /**
+     * Drop the cached conversation for an agent and mark it
+     * reconnecting. Used by the `:needs_repair` "Reload agent" flow so
+     * the restarted agent's `init` triggers a full `chat:sync` from
+     * index -1 (the repaired rows may have shifted indices, so a
+     * lastIndex-based incremental sync would miss them).
+     */
+    resetAgentConversation: (id) => {
+      set((state) => {
+        const existing = state.agentsCache[id];
+        if (!existing) return state;
+        return {
+          agentsCache: {
+            ...state.agentsCache,
+            [id]: {
+              ...existing,
+              messages: [],
+              history: [],
+              lastIndex: -1,
+              partial: null,
+              streaming: null,
+              status: "connecting",
+              error: null,
+              agentState: "idle",
+              sequenceViolations: null,
+              repairCommand: null,
+            },
+          },
+        };
+      });
+    },
+
     setAgentError: (id, error) => {
       set((state) => {
         const existing = state.agentsCache[id];

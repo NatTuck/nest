@@ -1,5 +1,12 @@
 # Combined cleanup: content → parts, agent startup, agents schema rename
 
+> **HISTORICAL — persistence model superseded.** This note predates the shared
+> message structure. Its `:preloaded_messages` / `seed_preloaded_messages`
+> discussion describes per-agent loading only; for a clone, the loaded sequence
+> must include the shared ancestor prefix resolved through `parent_id`. See the
+> canonical `notes/shared-message-structure.md`. Do not use this note to justify
+> copying messages on clone.
+
 Three changes land together because they share file edits and the
 schema rename reshapes every place that touches agent identity.
 

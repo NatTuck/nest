@@ -43,6 +43,7 @@ defmodule Nest.Agents.PersistedAgent do
           workspace_path: String.t() | nil,
           next_message_index: non_neg_integer(),
           last_compaction_index: integer(),
+          fork_message_index: integer() | nil,
           parent_id: integer() | nil,
           depth: non_neg_integer(),
           created_by_user_id: integer() | nil,
@@ -81,6 +82,14 @@ defmodule Nest.Agents.PersistedAgent do
     # not by name).
     field :parent_id, :integer
     field :depth, :integer, default: 0
+
+    # Fork boundary for clones: the clone's first own
+    # `message_index`. The clone shares its ancestors' rows below
+    # this index and owns from it up (see
+    # `notes/shared-message-structure.md`). `NULL` means the agent
+    # owns its full sequence from index 0 (a root, a fresh child,
+    # or a clone that detached at compaction).
+    field :fork_message_index, :integer
 
     belongs_to :parent, __MODULE__, foreign_key: :parent_id, define_field: false
 
@@ -136,6 +145,7 @@ defmodule Nest.Agents.PersistedAgent do
       :workspace_path,
       :next_message_index,
       :last_compaction_index,
+      :fork_message_index,
       :parent_id,
       :depth,
       :created_by_user_id,

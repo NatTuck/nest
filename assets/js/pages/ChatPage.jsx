@@ -17,6 +17,7 @@ import {
   stopMessage,
   retryCompaction,
   compactionLoopOk,
+  reloadAgent,
   editAgent,
 } from "../channels";
 import { StatusBanner } from "../components/StatusBanner";
@@ -29,6 +30,7 @@ import { ChatLoading } from "../components/ChatLoading";
 import { AgentEditModal } from "../components/AgentEditModal";
 import { SendErrorBanner } from "../components/SendErrorBanner";
 import { ModelMissingBanner } from "../components/ModelMissingBanner";
+import { NeedsRepairBanner } from "../components/NeedsRepairBanner";
 import { useScrollToBottom } from "../hooks/useScrollToBottom";
 import { buildChatHistory } from "../utils/chatHistory.js";
 import { describeEditError, getStatusLabel } from "../utils/chatErrors.js";
@@ -63,6 +65,9 @@ export function ChatPage() {
   // uniform.
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [changeModelError, setChangeModelError] = useState(null);
+  // Backing state for the `:needs_repair` banner: the last reload push
+  // failure (e.g. the agent could not be restarted).
+  const [reloadError, setReloadError] = useState(null);
   // Tracks the optimistic "stop in flight" state. Flips to `true`
   // immediately when the user clicks Stop, then back to `false`
   // when the next `chat:status` push arrives (which carries the
@@ -107,6 +112,8 @@ export function ChatPage() {
     compactionError,
     compactionLoop,
     notification,
+    sequenceViolations,
+    repairCommand,
   } = useStore(
     useShallow((state) => {
       const cache = state.agentsCache[name];
@@ -130,6 +137,8 @@ export function ChatPage() {
         compactionError: cache?.compactionError ?? null,
         compactionLoop: cache?.compactionLoop ?? null,
         notification: cache?.notification ?? null,
+        sequenceViolations: cache?.sequenceViolations ?? null,
+        repairCommand: cache?.repairCommand ?? null,
       };
     }),
   );
@@ -359,6 +368,16 @@ export function ChatPage() {
     });
   };
 
+  // Restart the agent after an offline `mix nest.repair_messages` run.
+  // The channel rejoins with a reset cache, so the fresh `init` status
+  // (idle when repaired) replaces the `:needs_repair` banner.
+  const handleReloadAgent = () => {
+    setReloadError(null);
+    reloadAgent(name, spaceId, (err) => {
+      setReloadError(err?.reason || err?.message || "Failed to reload agent");
+    });
+  };
+
   // Show initial loading state while we attempt first join
   if (isUnknown) {
     return <ChatLoading />;
@@ -431,6 +450,19 @@ export function ChatPage() {
         />
       )}
 
+      {/* Repair banner — the persisted active sequence failed wire
+          validation at load (status ":needs_repair"). Chat is blocked
+          until the operator runs the offline repair command and
+          reloads the agent. */}
+      {agentState === "needs_repair" && (
+        <NeedsRepairBanner
+          violations={sequenceViolations}
+          repairCommand={repairCommand}
+          onReload={handleReloadAgent}
+          error={reloadError}
+        />
+      )}
+
       {/* Notification banner */}
       <NotificationBanner
         notification={notification}
@@ -469,7 +501,8 @@ export function ChatPage() {
         frozen={
           agentState === "compaction_failed" ||
           agentState === "compaction_loop_detected" ||
-          agentState === "context_overflow"
+          agentState === "context_overflow" ||
+          agentState === "needs_repair"
         }
         placeholder={
           status === "connected"

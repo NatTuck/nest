@@ -58,10 +58,12 @@ defmodule Nest.Persistence do
   alias Ecto.Changeset
   alias Nest.Agents.PersistedAgent
   alias Nest.Agents.PersistedMessage
+  alias Nest.LLM.Preflight
   alias Nest.Messages.Compaction
   alias Nest.Messages.Message
   alias Nest.Persistence.CompactionMarker
   alias Nest.Repo
+  alias Nest.Spaces.Space
   alias Nest.Vocations
 
   @doc """
@@ -142,6 +144,8 @@ defmodule Nest.Persistence do
         vocation_id: Map.get(attrs, :vocation_id),
         workspace_path: Map.get(attrs, :workspace_path),
         next_message_index: Map.get(attrs, :next_message_index, 0),
+        last_compaction_index: Map.get(attrs, :last_compaction_index, -1),
+        fork_message_index: Map.get(attrs, :fork_message_index),
         parent_id: Map.get(attrs, :parent_id),
         depth: Map.get(attrs, :depth, 0),
         created_by_user_id: Map.get(attrs, :created_by_user_id),
@@ -325,11 +329,28 @@ defmodule Nest.Persistence do
     as: :update_next_message_index
 
   @doc """
+  Set (or clear) the `fork_message_index` column on the agent
+  row. Clearing detaches a clone from its ancestor prefix.
+  """
+  defdelegate update_fork_message_index(space_id, name, fork_message_index),
+    to: Nest.Persistence.Messages,
+    as: :update_fork_message_index
+
+  @doc """
   Load every message for an agent.
   """
   defdelegate load_messages(space_id, name),
     to: Nest.Persistence.Messages,
     as: :load_messages
+
+  @doc """
+  Load an agent's full logical sequence (own rows plus the
+  ancestor prefix it shares below its `fork_message_index`),
+  resolved recursively via `parent_id`.
+  """
+  defdelegate load_full_messages(space_id, name),
+    to: Nest.Persistence.Messages,
+    as: :load_full_messages
 
   @doc """
   Read the `last_compaction_index` boundary column.
@@ -349,7 +370,8 @@ defmodule Nest.Persistence do
   def build_attrs_for_start(space_id, agent_name) do
     with {:ok, row} <- fetch_agent(space_id, agent_name),
          {:ok, boundary} <- last_compaction_index(space_id, agent_name) do
-      preloaded = load_messages(space_id, agent_name)
+      preloaded = load_full_messages(space_id, agent_name)
+      violations = sequence_violations(preloaded, boundary)
       parent_name = parent_name_for(row)
 
       attrs = %{
@@ -363,14 +385,47 @@ defmodule Nest.Persistence do
         parent_id: row.parent_id,
         parent_name: parent_name,
         depth: row.depth || 0,
+        fork_message_index: row.fork_message_index,
         created_by_user_id: row.created_by_user_id,
         shared: row.shared == true,
         preloaded_messages: preloaded,
+        sequence_violations: violations,
+        repair_command: repair_command(violations, row.space_id),
         vocation: load_vocation(row.vocation_id)
       }
 
       {:ok, attrs}
     end
+  end
+
+  # Validate the *active* (sendable) slice — the same list the Phase 3
+  # send guard checks — rather than the full resolved sequence, so an
+  # orphan archived below a compaction boundary does not block an agent
+  # whose live messages are fine. Pure: no DB writes.
+  @spec sequence_violations([Message.t()], integer()) :: [Preflight.violation()]
+  defp sequence_violations(preloaded, boundary) do
+    preloaded
+    |> Enum.filter(fn {_role, %{index: idx}} -> idx > boundary end)
+    |> Preflight.validate()
+    |> case do
+      :ok -> []
+      {:error, violations} -> violations
+    end
+  end
+
+  defp repair_command([], _space_id), do: nil
+
+  defp repair_command(_violations, space_id) do
+    case Repo.get(Space, space_id) do
+      %Space{name: name} -> "mix nest.repair_messages --space #{quote_name(name)}"
+      _ -> "mix nest.repair_messages --all"
+    end
+  end
+
+  # Keep the printed command copy-pasteable when a space name contains
+  # shell-special characters (names are normally adjective-animal).
+  defp quote_name(name) do
+    if name =~ ~r/^[A-Za-z0-9._-]+$/, do: name, else: inspect(name)
   end
 
   # Look up the parent agent's name by integer FK. Children
@@ -412,6 +467,13 @@ defmodule Nest.Persistence do
   defdelegate fetch_all_agents_for_space(space_id),
     to: Nest.Persistence.AgentAttrs,
     as: :fetch_all_agents_for_space
+
+  @doc """
+  List every persisted agent row, across all spaces, ordered by id.
+  """
+  defdelegate list_all_agents(),
+    to: Nest.Persistence.AgentAttrs,
+    as: :list_all_agents
 
   @doc """
   Mark the agent row for `{space_id, name}` as archived.

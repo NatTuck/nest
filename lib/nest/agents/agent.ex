@@ -10,9 +10,15 @@ defmodule Nest.Agents.Agent.TreePosition do
   String), held so the child can dispatch messages to the
   parent's GenServer through `Agents.Registry.via_tuple/2`
   without an integer→name lookup at completion time.
+
+  `fork_message_index` is the clone's first own `message_index`.
+  The clone shares its ancestors' rows below it and owns from it
+  up (see `notes/shared-message-structure.md`). `nil` for a root
+  or a fresh child (owns from index 0) and for a clone that has
+  detached at compaction (owns its own rows, no shared prefix).
   """
 
-  defstruct parent_id: nil, parent_name: nil
+  defstruct parent_id: nil, parent_name: nil, fork_message_index: nil
 end
 
 defmodule Nest.Agents.Agent do
@@ -150,6 +156,14 @@ defmodule Nest.Agents.Agent do
   """
   @spec pre_spawn(map()) :: :ok | {:error, term()}
   def pre_spawn(attrs) do
+    case Map.get(attrs, :fork_message_index) do
+      nil -> pre_spawn_with_system(attrs)
+      fork_index -> pre_spawn_clone(attrs, fork_index)
+    end
+  end
+
+  # Root and fresh-child path: own the system row at index 0.
+  defp pre_spawn_with_system(attrs) do
     # Refuse an agent without a non-empty system message (validate first).
     case build_initial_system_message(attrs) do
       {:ok, system_message} ->
@@ -161,6 +175,30 @@ defmodule Nest.Agents.Agent do
       {:error, :missing_system_prompt} ->
         {:error, :missing_system_prompt}
     end
+  end
+
+  # Clone path: persist only the rows the clone owns (indices at or
+  # above its fork boundary). The shared prefix is inherited from the
+  # ancestors and never duplicated (D1/D2), and index 0 belongs to the
+  # root ancestor, so no system row is written (D5).
+  defp pre_spawn_clone(attrs, fork_index) do
+    own_messages =
+      attrs
+      |> Map.get(:preloaded_messages, [])
+      |> Enum.filter(fn {_role, %{index: idx}} -> idx >= fork_index end)
+
+    with {:ok, _} <- Persistence.insert_agent(attrs) do
+      persist_own_messages(attrs, own_messages)
+    end
+  end
+
+  defp persist_own_messages(attrs, messages) do
+    Enum.reduce_while(messages, :ok, fn message, :ok ->
+      case Persistence.insert_message(attrs.space_id, attrs.name, message) do
+        {:ok, _} -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
   end
 
   # Render the system prompt in the calling process (so the DB write
@@ -218,17 +256,16 @@ defmodule Nest.Agents.Agent do
   @spec build_child_attrs(map(), String.t(), String.t(), integer(), map() | nil) :: map()
   def build_child_attrs(parent_state, instruction, child_name, parent_id, model_override \\ nil)
       when is_map(parent_state) and is_binary(instruction) and is_binary(child_name) do
-    {stripped, _clone_instruction} =
-      parent_state.chat_state.messages
-      |> MessageList.extract_clone_instruction()
+    # The clone shares the parent's *full* sequence (history +
+    # active) up to the fork point. `next_message_index` is the
+    # first index the child owns, i.e. its fork boundary `F`; the
+    # shared prefix is everything with a lower index. See
+    # `notes/shared-message-structure.md`.
+    shared_prefix = parent_state.chat_state.history ++ parent_state.chat_state.messages
+    fork_index = parent_state.chat_state.next_message_index
 
     {preloaded, next_index} =
-      MessageList.build_clone_fork(
-        stripped,
-        parent_state.chat_state.next_message_index,
-        child_name,
-        parent_state.depth + 1
-      )
+      MessageList.build_clone_fork(shared_prefix, fork_index, child_name, parent_state.depth + 1)
 
     %{
       name: child_name,
@@ -248,6 +285,9 @@ defmodule Nest.Agents.Agent do
       created_by_user_id: parent_state.created_by_user_id,
       shared: parent_state.shared,
       depth: parent_state.depth + 1,
+      # `nil` for a fresh child (owns from 0); the first owned
+      # index for a clone (shares everything below it).
+      fork_message_index: fork_index,
       preloaded_messages: preloaded,
       last_compaction_index: Map.get(parent_state.chat_state, :last_compaction_index, -1),
       next_message_index: next_index
@@ -405,8 +445,15 @@ defmodule Nest.Agents.Agent do
     case Config.create_client_config(model) do
       {:ok, client_config} ->
         state = build_active_state(attrs, client_config)
-        log_active_start(state)
-        {:ok, state}
+
+        case Map.get(attrs, :sequence_violations, []) do
+          [] ->
+            log_active_start(state)
+            {:ok, state}
+
+          violations ->
+            {:ok, Init.NeedsRepair.block(state, violations, Map.get(attrs, :repair_command))}
+        end
 
       {:error, reason} ->
         # The persisted model no longer resolves to a runtime

@@ -315,6 +315,25 @@ defmodule Nest.Agents.Supervisor do
   end
 
   @doc """
+  Synchronously stop an agent and start it again, re-reading the DB.
+
+  Unlike `stop_agent/2` (which fires `Process.exit/2` and returns
+  before the process is gone), this terminates the child through the
+  `DynamicSupervisor` so the Registry name is free before the restart,
+  then reloads via `fetch_or_start_agent/2`. Used by
+  `Nest.Agents.reload_agent/2` after an offline message repair.
+  """
+  @spec restart_agent(integer(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  def restart_agent(space_id, name) do
+    case Registry.lookup(space_id, name) do
+      {:ok, pid} -> DynamicSupervisor.terminate_child(@supervisor_name, pid)
+      {:error, :not_found} -> :ok
+    end
+
+    fetch_or_start_agent(space_id, %{name: name})
+  end
+
+  @doc """
   Stops an agent by its `{space_id, name}` and marks its DB
   row archived, then recursively does the same for every
   ChildRegistry descendant. Used by the `agents-archive` tool

@@ -87,6 +87,27 @@ defmodule Nest.Agents.Agent.Persistence do
     end
   end
 
+  @doc """
+  Set (or clear, with `nil`) the agent's fork boundary. Clearing
+  detaches a clone from its ancestor prefix at first compaction.
+  """
+  def update_fork_message_index(space_id, agent_id, fork_message_index)
+      when is_integer(fork_message_index) or is_nil(fork_message_index) do
+    if persistence_enabled?() do
+      case Persistence.update_fork_message_index(space_id, agent_id, fork_message_index) do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning("Failed to update fork index for agent #{agent_id}: #{inspect(reason)}")
+
+          {:error, reason}
+      end
+    else
+      :ok
+    end
+  end
+
   defp persistence_enabled? do
     Application.get_env(:nest, :persistence, %{})[:enabled] != false
   end

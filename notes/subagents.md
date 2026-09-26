@@ -1,13 +1,23 @@
 # Sub-Agents and Delegation
 
+> **Data model: see `notes/shared-message-structure.md` (canonical).** A clone
+> **shares** its ancestors' message rows; it must **never** have its own copies
+> of the parent's messages. "Inherits the parent's context" below means exactly
+> this shared structure, not a copy.
+
 ## Core Model
 
-Each agent has a `parent_id` (nil for root agents, parent's ID for children). Agents form a tree. The `clone_agent` tool lets a running agent spawn a child with a copy of the current context plus a new instruction. The parent's chat task blocks until the child completes a full turn, then receives the child's final message content as the tool result.
+Each agent has a `parent_id` (nil for root agents, parent's ID for children). Agents form a tree. The `clone_agent` tool lets a running agent spawn a child that **shares** the parent's messages up to the clone point (an immutable shared prefix, not a copy) plus a new instruction. The parent's chat task blocks until the child completes a full turn, then receives the child's final message content as the tool result.
 
 ## Architecture Decisions
 
 ### Context Inheritance
-Child receives the parent's full message history (system prompt + all messages up to the clone point) plus the instruction as a new user message. Future versions may add selective context options.
+The child's logical sequence is the parent's rows up to the clone point
+**shared by reference** (the same `messages` rows, owned once by the ancestor —
+see `notes/shared-message-structure.md`), followed by the child's own rows at
+and after its fork boundary. The child never inserts copies of the parent's
+messages and never writes a system row at index 0 (index 0 is the root's shared
+system row). Future versions may add selective context options.
 
 ### Blocking Model
 Same pattern as compaction. The parent's chat task sends `{:clone_agent_request, ...}` to the parent GenServer, then blocks on `receive`. The child runs independently. When the child goes idle, its GenServer sends `{:child_completed, child_id, response}` to the parent GenServer, which routes it to the waiting chat task. The parent chat task unblocks and returns the result to the LLM.
@@ -26,7 +36,7 @@ Children can call `clone_agent` themselves. Depth is tracked on the agent state 
 This is the most complex new design area. We now have three distinct token metrics per agent:
 
 ### 1. Context Tokens (per-call)
-What the agent sends to the LLM in a single request. This already exists (`context_limit`, `input_tokens` from usage). The child inherits the parent's context, so the child's first call has a large `input_tokens` value. This is already tracked per-call by the LLM provider and reported via `usage.input_tokens`.
+What the agent sends to the LLM in a single request. This already exists (`context_limit`, `input_tokens` from usage). A clone's first call includes the shared parent prefix, so it has a large `input_tokens` value. This is already tracked per-call by the LLM provider and reported via `usage.input_tokens`.
 
 ### 2. Direct Usage (this agent's own LLM calls)
 The sum of all tokens consumed by this agent's own LLM API calls. This is what `usage_totals` already tracks today — it accumulates `input_tokens`, `output_tokens`, `reasoning_tokens` across the agent's lifetime.

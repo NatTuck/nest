@@ -79,6 +79,21 @@ defmodule Nest.Persistence.AgentAttrs do
     end
   end
 
+  @doc """
+  Every agent row in the database, ordered by `id`.
+
+  Offline tooling (`mix nest.repair_messages --all`) uses this
+  to reach agents across every space in one pass.
+  """
+  @spec list_all_agents() :: [PersistedAgent.t()]
+  def list_all_agents do
+    if Application.get_env(:nest, :persistence, %{})[:enabled] != false do
+      from(a in PersistedAgent, order_by: [asc: a.id]) |> Repo.all()
+    else
+      []
+    end
+  end
+
   @spec archive_agent(integer(), String.t()) :: :ok | {:error, :not_found}
   def archive_agent(space_id, name) do
     if Application.get_env(:nest, :persistence, %{})[:enabled] != false do

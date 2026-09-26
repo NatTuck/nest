@@ -402,7 +402,8 @@ assets/js/pages/ChatPage.jsx     # render marker + collapsed history
   effort.
 - Cost tracking: per-turn cost (input/output tokens × model price)
   is not yet computed.
-- Multi-agent context sharing: how agents in a workflow share
-  context.
+- Multi-agent context sharing: **resolved** — an agent in a space shares an
+  ancestor's messages by reference (no copies); see
+  `notes/shared-message-structure.md`. (This is no longer an open follow-up.)
 - Configurable compaction threshold (currently fixed at 25% of
   context). Could become per-vocation.

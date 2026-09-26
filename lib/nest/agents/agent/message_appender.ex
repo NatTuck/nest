@@ -24,15 +24,25 @@ defmodule Nest.Agents.Agent.MessageAppender do
   `{:append_messages, _}` call means the messages list is
   either fully updated (all stamped) or fully untouched.
 
+  ## Sequence repair (prevent)
+
+  Every live append flows through here, so this is where the
+  append-time half of the sequence invariants lives. Before the
+  requested message lands, `MessageList.pairing_bridge/2` is asked
+  for repair messages: when the tail is an assistant with an
+  unpaired `tool_use`, a synthetic `is_error` tool result (and, for
+  an incoming user message, an assistant acknowledgement so
+  alternation holds) is appended and persisted first. This is what
+  makes the `visual-possum-root` orphan impossible on the live path;
+  see `notes/enforce-mesages-seq-invariants.md`.
+
   ## Loop-breaker reset
 
-  Both variants reset `consecutive_compaction_count` to zero
-  when any appended message is genuine progress (`:user`,
-  `:assistant`, or `:tool`). The batch variant resets once
-  per batch if any message is progress; the counter is
-  preserved otherwise. This keeps the existing single-message
-  contract intact while extending it cleanly to the batch
-  case.
+  Both handlers reset `consecutive_compaction_count` to zero
+  when an appended message is genuine progress (`:user`,
+  `:assistant`, or `:tool`). Repair messages are part of the
+  requested append and do not change the reset decision (which is
+  taken from the caller's requested messages).
 
   ## In-process entry point
 
@@ -46,6 +56,7 @@ defmodule Nest.Agents.Agent.MessageAppender do
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Persistence, as: AgentPersistence
+  alias Nest.Messages.MessageList
   alias Nest.Tokens.PreFlight
 
   @doc """
@@ -55,40 +66,24 @@ defmodule Nest.Agents.Agent.MessageAppender do
   """
   @spec handle_single(Agent.t(), {atom(), map()}) :: {term(), Agent.t()}
   def handle_single(state, message) do
-    state =
-      case message do
-        {:user, _} -> reset_consecutive(state)
-        {:assistant, _} -> reset_consecutive(state)
-        {:tool, _} -> reset_consecutive(state)
-        _ -> state
-      end
-
+    state = if progress_message?(message), do: reset_consecutive(state), else: state
     append_one(state, message)
   end
 
   @doc """
   `handle_call/3` for the batch case. Resets the loop-breaker
-  counter once if any message is genuine progress, then
-  appends each via the in-process `__append_message__/2` twin
-  in input order. Returns the list of stamped messages.
+  counter once if any message is genuine progress, then appends each
+  via `append_with_bridge/2` in input order. Returns every stamped
+  message, including any repair messages.
   """
   @spec handle_batch(Agent.t(), [{atom(), map()}]) :: {[term()], Agent.t()}
   def handle_batch(state, messages) do
     state =
-      if Enum.any?(messages, fn
-           {:user, _} -> true
-           {:assistant, _} -> true
-           {:tool, _} -> true
-           _ -> false
-         end) do
-        reset_consecutive(state)
-      else
-        state
-      end
+      if Enum.any?(messages, &progress_message?/1), do: reset_consecutive(state), else: state
 
-    Enum.reduce(messages, {[], state}, fn msg, {acc, state} ->
-      {stamped, state} = append_one(state, msg)
-      {acc ++ [stamped], state}
+    Enum.reduce(messages, {[], state}, fn message, {acc, state} ->
+      {stamped, state} = append_with_bridge(state, message)
+      {acc ++ stamped, state}
     end)
   end
 
@@ -112,6 +107,10 @@ defmodule Nest.Agents.Agent.MessageAppender do
   after stamping, the index is bumped and the message is
   broadcast + persisted. Returns `{stamped_message, new_state}`.
 
+  Any sequence-repair messages required before this one are
+  appended first (see the moduledoc); this still returns only the
+  requested stamped message.
+
   Choke point: no message is stored from a conversation that
   has not passed the pre-flight decision. `PreFlight.ensure_passed!/2`
   raises if `state.chat_state.messages` is `:cannot_compact`, so a
@@ -120,29 +119,9 @@ defmodule Nest.Agents.Agent.MessageAppender do
   init (never nil); the guard clause below enforces that too.
   """
   @spec append_one(Agent.t(), {atom(), map()}) :: {term(), Agent.t()}
-  def append_one(%{llm_metrics: %{context_limit: limit}} = state, message)
-      when is_integer(limit) and limit > 0 do
-    PreFlight.ensure_passed!(state.chat_state.messages, limit)
-    index = state.chat_state.next_message_index
-    stamped = put_message_index(message, index)
-
-    messages = state.chat_state.messages ++ [stamped]
-
-    state = %{
-      state
-      | chat_state: %{state.chat_state | messages: messages, next_message_index: index + 1}
-    }
-
-    Broadcasts.message(state, stamped)
-
-    AgentPersistence.append_message(
-      state.space_id,
-      state.name,
-      stamped,
-      state.chat_state.next_message_index
-    )
-
-    {stamped, state}
+  def append_one(state, message) do
+    {stamped, state} = append_with_bridge(state, message)
+    {List.last(stamped), state}
   end
 
   @doc """
@@ -162,7 +141,8 @@ defmodule Nest.Agents.Agent.MessageAppender do
   which the caller fires separately via
   `Nest.Agents.Agent.Broadcasts.compaction/3`. Does NOT call
   `reset_consecutive/1` — archiving a marker is not a "progress"
-  signal.
+  signal. History appends are exempt from the sequence repair
+  (the invariant is on the LLM-facing `messages` sequence).
 
   Returns `{stamped_message, new_state}`.
   """
@@ -190,9 +170,52 @@ defmodule Nest.Agents.Agent.MessageAppender do
     {stamped, state}
   end
 
+  # Append the sequence-repair messages (if any) followed by the
+  # requested message, all through one state mutation. Returns
+  # `{[stamped_messages...], new_state}` with the requested message
+  # last.
+  defp append_with_bridge(state, message) do
+    bridge = MessageList.pairing_bridge(state.chat_state.messages, message)
+
+    Enum.reduce(bridge ++ [message], {[], state}, fn msg, {acc, state} ->
+      {stamped, state} = append_stamped(state, msg)
+      {acc ++ [stamped], state}
+    end)
+  end
+
+  # The raw stamp/broadcast/persist step. No sequence repair here —
+  # `append_with_bridge/2` calls this once per message.
+  defp append_stamped(%{llm_metrics: %{context_limit: limit}} = state, message)
+       when is_integer(limit) and limit > 0 do
+    PreFlight.ensure_passed!(state.chat_state.messages, limit)
+    index = state.chat_state.next_message_index
+    stamped = put_message_index(message, index)
+
+    messages = state.chat_state.messages ++ [stamped]
+
+    state = %{
+      state
+      | chat_state: %{state.chat_state | messages: messages, next_message_index: index + 1}
+    }
+
+    Broadcasts.message(state, stamped)
+
+    AgentPersistence.append_message(
+      state.space_id,
+      state.name,
+      stamped,
+      state.chat_state.next_message_index
+    )
+
+    {stamped, state}
+  end
+
   defp put_message_index({role, %{index: _} = msg}, index) do
     {role, %{msg | index: index}}
   end
+
+  defp progress_message?({role, _}) when role in [:user, :assistant, :tool], do: true
+  defp progress_message?(_), do: false
 
   defp reset_consecutive(state) do
     %{state | live: %{state.live | consecutive_compaction_count: 0}}

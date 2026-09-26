@@ -13,6 +13,51 @@ import {
 } from "./state";
 
 /**
+ * Extract the optional fields a `chat:status` / `init` payload carries
+ * beyond the status itself, so `setAgentState` can merge them. Shared
+ * by both handlers so a fresh join and a live status push agree.
+ */
+function statusExtras(payload) {
+  const extra = {};
+
+  if (payload.contextLimit !== undefined) {
+    extra.contextLimit = payload.contextLimit;
+  }
+  if (payload.contextLimitSource !== undefined) {
+    extra.contextLimitSource = payload.contextLimitSource;
+  }
+  if (payload.currentMode !== undefined) {
+    extra.currentMode = payload.currentMode;
+  }
+  if (payload.usage !== undefined) {
+    extra.usage = payload.usage;
+  }
+  if (payload.parentId !== undefined) {
+    extra.parentId = payload.parentId;
+  }
+  if (payload.parentName !== undefined) {
+    extra.parentName = payload.parentName;
+  }
+  if (payload.depth !== undefined) {
+    extra.depth = payload.depth;
+  }
+  if (payload.descendantUsage !== undefined) {
+    extra.descendantUsage = payload.descendantUsage;
+  }
+  if (payload.totalUsage !== undefined) {
+    extra.totalUsage = payload.totalUsage;
+  }
+  if (payload.sequenceViolations !== undefined) {
+    extra.sequenceViolations = payload.sequenceViolations;
+  }
+  if (payload.repairCommand !== undefined) {
+    extra.repairCommand = payload.repairCommand;
+  }
+
+  return extra;
+}
+
+/**
  * Request a `chat:sync` for the agent. Pushes the request
  * and updates the cache from the response. Multiple
  * overlapping calls fire multiple pushes (the response
@@ -85,6 +130,9 @@ export function joinAgent(agentId, spaceId) {
 
   channel.on("init", (payload) => {
     store.setAgentConnected(agentId, payload);
+    if (payload.status === "needs_repair") {
+      store.setAgentState(agentId, "needs_repair", statusExtras(payload));
+    }
     const cache = getStore().agentsCache[agentId];
     if (
       cache &&
@@ -144,37 +192,7 @@ export function joinAgent(agentId, spaceId) {
   });
 
   channel.on("chat:status", (payload) => {
-    const extra = {};
-
-    if (payload.contextLimit !== undefined) {
-      extra.contextLimit = payload.contextLimit;
-    }
-    if (payload.contextLimitSource !== undefined) {
-      extra.contextLimitSource = payload.contextLimitSource;
-    }
-    if (payload.currentMode !== undefined) {
-      extra.currentMode = payload.currentMode;
-    }
-    if (payload.usage !== undefined) {
-      extra.usage = payload.usage;
-    }
-    if (payload.parentId !== undefined) {
-      extra.parentId = payload.parentId;
-    }
-    if (payload.parentName !== undefined) {
-      extra.parentName = payload.parentName;
-    }
-    if (payload.depth !== undefined) {
-      extra.depth = payload.depth;
-    }
-    if (payload.descendantUsage !== undefined) {
-      extra.descendantUsage = payload.descendantUsage;
-    }
-    if (payload.totalUsage !== undefined) {
-      extra.totalUsage = payload.totalUsage;
-    }
-
-    store.setAgentState(agentId, payload.status, extra);
+    store.setAgentState(agentId, payload.status, statusExtras(payload));
 
     if (payload.status === "idle") {
       store.setWaitingForResponse(agentId, false);
@@ -227,6 +245,34 @@ export function leaveAgent(agentId) {
     agentChannels.delete(agentId);
   }
   syncState.delete(agentId);
+}
+
+/**
+ * Restart the agent (backend stop + start) so it re-reads the DB after
+ * an offline `mix nest.repair_messages` run, then rejoin so the fresh
+ * `init` reflects the new status. The cached conversation is reset
+ * first because the repair can renumber rows, so an incremental
+ * `lastIndex` sync would miss shifted messages.
+ */
+export function reloadAgent(agentId, spaceId, onError) {
+  const channel = agentChannels.get(agentId);
+  if (!channel) {
+    if (onError) onError(new Error("Not connected to agent"));
+    return;
+  }
+
+  channel
+    .push("reload_agent", {})
+    .receive("ok", () => {
+      const store = getStore();
+      store.resetAgentConversation(agentId);
+      channel.leave();
+      agentChannels.delete(agentId);
+      joinAgent(agentId, spaceId);
+    })
+    .receive("error", (err) => {
+      if (onError) onError(err);
+    });
 }
 
 /**

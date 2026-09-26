@@ -1,5 +1,11 @@
 # Plan: Persistent Agents
 
+> **HISTORICAL — persistence model superseded.** This note created the
+> `agents` + `messages` schema. It describes per-agent ownership only. The
+> canonical model now has clones **share** an ancestor's rows via `parent_id` —
+> never copy them. See `notes/shared-message-structure.md` before relying on the
+> schema/`archive_and_compact` sections below.
+
 ## Goal
 
 Persist agent identity and full conversation history in Postgres so that

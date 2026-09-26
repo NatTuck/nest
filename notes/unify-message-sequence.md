@@ -1,5 +1,12 @@
 # Unify the Message Sequence
 
+> **SUPERSEDED — see `notes/shared-message-structure.md`.** This note is a
+> historical record of the `last_compaction_index` compaction-boundary change.
+> Its statement below that a clone is an `INSERT ... SELECT` copy is **wrong**:
+> clones share their ancestors' message rows and never copy them
+> (`notes/shared-message-structure.md`). Read the canonical doc before relying
+> on anything in this file about clone/fork semantics.
+
 The `messages` table was append-only at insert time but carried a mutable
 flag (`archived_at`) that the compaction cycle kept flipping. Restore
 worked correctly for the live slice but silently dropped the history
@@ -37,11 +44,13 @@ data-derived boundary on the agent row.
 - **Append-only table** — fits the immutability principle that
   `notes/normalize-system-messages.md` argues for at the message
   level.
-- **Subagent clone semantics** — `notes/subagents.md` describes child
-  agents receiving the parent's full message history. With a single,
-  append-only `messages` table, the clone is a straightforward
-  `INSERT INTO messages SELECT ... WHERE agent_id = $parent_id` with
-  `agent_id` swapped. No special handling for archived vs. active.
+- **Subagent clone semantics** — a clone does **not** copy the parent's
+  messages. It *shares* the ancestor's rows `[0 .. F-1]`, where `F` is the
+  clone's first own `message_index`; only the clone's own rows are inserted.
+  The full sequence is resolved by walking `parent_id`. See the canonical
+  `notes/shared-message-structure.md`. (The original claim here — an
+  `INSERT INTO messages SELECT ... WHERE agent_id = $parent_id` copy — was
+  wrong.)
 
 ## Locked design choices
 
@@ -145,8 +154,9 @@ working verbatim — the partition is just now data-derived.
 
 ## Out of scope
 
-- **`agents.parent_id` column** (subagents). Same shape is ready for
-  the follow-up; the column lives in another PR.
+- **`agents.parent_id` column** (subagents). Done — the column exists. It is
+  the link for the shared message structure (clones share ancestor rows; no
+  copies). See `notes/shared-message-structure.md`.
 - **`api_logs` rebuild on restore** (TODO.md). Mechanical follow-up;
   the rebuild helper walks
   `state.chat_state.history ++ state.chat_state.messages`.

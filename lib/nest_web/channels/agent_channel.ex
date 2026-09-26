@@ -244,6 +244,8 @@ defmodule NestWeb.AgentChannel do
       "messageCount" => length(agent.messages),
       "history" => Enum.map(agent.history || [], &Message.to_json/1),
       "status" => to_string(agent.status),
+      "sequenceViolations" => agent.sequence_violations,
+      "repairCommand" => agent.repair_command,
       "partial" => build_partial_payload(agent.partial),
       "modes" => agent.modes,
       "defaultMode" => agent.default_mode,
@@ -290,7 +292,8 @@ defmodule NestWeb.AgentChannel do
              :compaction_failed,
              :compaction_loop_detected,
              :context_overflow,
-             :model_missing
+             :model_missing,
+             :needs_repair
            ] ->
         {:reply, {:error, %{"reason" => "agent_status_#{status}"}}, socket}
 
@@ -342,6 +345,21 @@ defmodule NestWeb.AgentChannel do
 
   def handle_in("change_model", _payload, socket) do
     {:reply, {:error, %{"reason" => "invalid_payload"}}, socket}
+  end
+
+  # Restart the agent so it re-reads the DB after an offline
+  # `mix nest.repair_messages` run. The next `init` push carries the
+  # new status: `idle` when the repair worked, `needs_repair` otherwise.
+  @impl true
+  def handle_in("reload_agent", _payload, socket) do
+    space_id = socket.assigns.space_id
+    name = socket.assigns.name
+
+    case Agents.reload_agent(space_id, name) do
+      {:ok, _name} -> {:reply, {:ok, %{}}, socket}
+      {:error, :not_found} -> {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
+      {:error, reason} -> {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
+    end
   end
 
   @impl true
