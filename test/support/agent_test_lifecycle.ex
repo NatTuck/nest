@@ -54,13 +54,16 @@ defmodule Nest.Agents.AgentTestLifecycle do
   before `Process.exit/2` so the receive can't miss the
   event even if the pid was already dead at monitor-time
   (returns `:DOWN, :noproc`). `Process.demonitor/1, [:flush]`
-  on timeout cleans up any pending DOWN. Default 100ms
-  matches the project standard for `assert_receive`; the
-  agent's `terminate/2` is filesystem-only and completes
-  well within this window.
+  on timeout cleans up any pending DOWN.
+
+  The timeout is cleanup headroom, not a latency assertion: an
+  agent's `terminate/2` walks its descendant tree and removes its
+  tmp directory, so a busy scheduler can push shutdown past a
+  fixed short window. A genuinely wedged agent still blows the
+  bound (and is then reported by `assert_zero_remaining!/1`).
   """
   @spec wait_for_pid_down(integer(), String.t(), pos_integer()) :: :ok
-  def wait_for_pid_down(space_id, name, timeout \\ 100) do
+  def wait_for_pid_down(space_id, name, timeout \\ 5_000) do
     case Registry.lookup(space_id, name) do
       {:ok, pid} ->
         stop_pid(pid, timeout)
@@ -145,11 +148,12 @@ defmodule Nest.Agents.AgentTestLifecycle do
     end
   end
 
-  defp visible_space_ids(entries) do
-    case entries |> Enum.map(&elem(&1, 0)) |> Enum.uniq() do
-      [] -> []
-      ids -> Repo.all(from(s in Space, where: s.id in ^ids, select: s.id))
-    end
+  # Spaces visible to the current test's sandbox transaction. Other
+  # concurrent tests' spaces are uncommitted, so a plain scan returns
+  # only this test's spaces — no need to build an IN-list from every
+  # live agent's space id (which grows with suite concurrency).
+  defp visible_space_ids(_entries) do
+    Repo.all(from(s in Space, select: s.id))
   end
 
   defp lookup_pid(space_id, name) do
@@ -172,7 +176,7 @@ defmodule Nest.Agents.AgentTestLifecycle do
     :exit, _ -> nil
   end
 
-  defp stop_pid(pid, timeout \\ 100) do
+  defp stop_pid(pid, timeout \\ 5_000) do
     # Unlink first: test-started agents are linked to the test pid so
     # an unexpected crash fails the test. A deliberate `:shutdown`
     # would otherwise propagate to (and kill) the test pid.

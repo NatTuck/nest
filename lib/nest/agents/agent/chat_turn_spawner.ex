@@ -46,6 +46,7 @@ defmodule Nest.Agents.Agent.ChatTurnSpawner do
   """
 
   alias Nest.Agents.Agent.ChatTurnSupervisor
+  alias Nest.Agents.Agent.Handlers.ChatTurnHandler
 
   require Logger
 
@@ -84,12 +85,18 @@ defmodule Nest.Agents.Agent.ChatTurnSpawner do
 
     case ChatTurnSupervisor.start_chat_turn(agent_pid, ctx, entry) do
       {:ok, chat_turn_pid} ->
+        # Monitor the turn so a crash that never reports back is
+        # detected (the Agent's `:DOWN` handler force-idles). Matched by
+        # pid, so no ref bookkeeping is needed.
+        _ = Process.monitor(chat_turn_pid)
         %{state | live: %{state.live | chat_turn_pid: chat_turn_pid}}
 
       _ ->
         Logger.warning("ChatTurnSpawner.spawn: supervisor saturated for agent=#{state.name}")
 
-        %{state | live: %{state.live | chat_turn_pid: nil}}
+        # The caller already set/broadcast `:streaming`. Force idle +
+        # surface an error rather than leaving the agent stuck busy.
+        ChatTurnHandler.spawn_failed(state, "chat turn supervisor saturated")
     end
   end
 end

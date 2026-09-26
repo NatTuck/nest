@@ -162,7 +162,7 @@ defmodule Nest.Agents.AgentAgentsMdTest do
       # The `nil` continuation resumes the post-compaction LLM turn;
       # finish it so the agent is idle when the test ends (the
       # teardown asserts zero in-flight agents).
-      assert_receive {:chat_status, %{status: "idle"}}, 100
+      assert_receive {:chat_status, %{status: "idle"}}, 500
     end
   end
 

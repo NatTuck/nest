@@ -16,9 +16,11 @@ defmodule Nest.Agents.AgentStopTest do
   """
   use Nest.DataCase, async: true
 
+  import ExUnit.CaptureLog
   import Mimic
 
   alias Nest.Agents.Agent
+  alias Nest.Agents.Agent.Handlers.ChatTurnHandler
   alias Nest.LLM.MockClient
   alias Nest.Messages.Assistant
   alias Nest.Messages.Part
@@ -207,13 +209,12 @@ defmodule Nest.Agents.AgentStopTest do
       assert is_pid(chat_turn_pid)
 
       # The ChatTurn's `handle_call({:stop_chat, _})` returns
-      # `{:reply, :ok, {:stop, :normal, state}}` — it sends the
-      # reply AND stops with :normal. GenServer.call in some
-      # OTP versions treats the reply-then-stop as a `:normal`
-      # exit signal on the caller (the monitor fires before the
-      # reply is processed). Additionally, by the time we read
-      # `chat_turn_pid` the ChatTurn may have already stopped
-      # (the LLM-emitted `context-compact` tool call fires
+      # `{:stop, :normal, :ok, state}` — it sends the reply AND stops
+      # with :normal. GenServer.call in some OTP versions treats the
+      # reply-then-stop as a `:normal` exit signal on the caller (the
+      # monitor fires before the reply is processed). Additionally, by
+      # the time we read `chat_turn_pid` the ChatTurn may have already
+      # stopped (the LLM-emitted `context-compact` tool call fires
       # `{:needs_compaction, _}` and immediately stops) — the
       # call then exits with `:noproc`. Both exit reasons are
       # benign for this test's purpose (we're verifying that
@@ -406,6 +407,127 @@ defmodule Nest.Agents.AgentStopTest do
       assert state.live.cancelled == false
 
       assert_receive {:chat_status, %{status: "idle"}}, 2000
+    end
+  end
+
+  describe "stop_chat/2 always reaches idle" do
+    test "a chat_turn_pid that is already dead is force-idled by the bounded fallback" do
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+
+      # The reported wedge: the agent believes a turn is in flight
+      # (`:streaming`) but the ChatTurn process is already gone. Before
+      # the fallback, `stop_chat` called the dead pid, swallowed the
+      # `:noproc` exit, and left the agent busy forever.
+      dead_pid = spawn(fn -> :ok end)
+      ref = Process.monitor(dead_pid)
+      assert_receive {:DOWN, ^ref, :process, ^dead_pid, _}, 500
+
+      :sys.replace_state(pid, fn state ->
+        %{state | live: %{state.live | status: :streaming, chat_turn_pid: dead_pid}}
+      end)
+
+      assert :ok = Agent.stop_chat(pid, self())
+
+      # The 2s fallback forces idle.
+      assert_receive {:chat_status, %{status: "idle"}}, 3_000
+
+      state = :sys.get_state(pid)
+      assert state.live.status == :idle
+      assert state.live.chat_turn_pid == nil
+    end
+
+    test "a nil chat_turn_pid forces idle immediately" do
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+
+      # Busy status with no turn to ask (e.g. the spawn superseded the
+      # turn, or it already finished). Stop must recover synchronously.
+      :sys.replace_state(pid, fn state ->
+        %{state | live: %{state.live | status: :executing_tools, chat_turn_pid: nil}}
+      end)
+
+      assert :ok = Agent.stop_chat(pid, self())
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
+      assert :sys.get_state(pid).live.status == :idle
+    end
+
+    test "spawn_failed forces idle and broadcasts an error" do
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+
+      :sys.replace_state(pid, fn state ->
+        %{state | live: %{state.live | status: :streaming}}
+      end)
+
+      capture_log(fn ->
+        result =
+          ChatTurnHandler.spawn_failed(
+            :sys.get_state(pid),
+            "saturated"
+          )
+
+        assert result.live.status == :idle
+        assert result.live.chat_turn_pid == nil
+        assert_receive {:chat_error, %{content: content}}, 500
+        assert content =~ "saturated"
+
+        # Apply the returned state so teardown sees the agent idle.
+        :sys.replace_state(pid, fn _ -> result end)
+      end)
+    end
+  end
+
+  describe "unexpected ChatTurn death" do
+    test "killing the active ChatTurn mid-stream force-idles the agent via the monitor" do
+      events = for _ <- 1..1000, do: {:text, "x"}
+      MockClient.set_stream_events(events)
+
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+
+      :ok = Agent.chat(pid, "Start")
+      assert_receive {:chat_message, {:user, _}}, 500
+      assert_receive {:chat_delta, _}, 500
+
+      chat_turn_pid = :sys.get_state(pid).live.chat_turn_pid
+      assert is_pid(chat_turn_pid)
+
+      # A crash that never reports (e.g. an exception outside the
+      # worker's own rescue) previously left the agent `:streaming`
+      # forever. The Agent monitors the turn now, so the DOWN is
+      # observed and the agent idles with an error.
+      capture_log(fn ->
+        Process.exit(chat_turn_pid, :kill)
+
+        assert_receive {:chat_error, _}, 500
+        assert_receive {:chat_status, %{status: "idle"}}, 500
+      end)
+
+      state = :sys.get_state(pid)
+      assert state.live.status == :idle
+      assert state.live.chat_turn_pid == nil
+    end
+
+    test "an orderly ChatTurn shutdown mid-stream idles the agent without an error" do
+      events = for _ <- 1..1000, do: {:text, "x"}
+      MockClient.set_stream_events(events)
+
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+
+      :ok = Agent.chat(pid, "Start")
+      assert_receive {:chat_message, {:user, _}}, 500
+      assert_receive {:chat_delta, _}, 500
+
+      chat_turn_pid = :sys.get_state(pid).live.chat_turn_pid
+      assert is_pid(chat_turn_pid)
+
+      # A supervisor/app-teardown style stop exits the ChatTurn with
+      # `:shutdown`. The Agent must leave the busy status (so the UI
+      # isn't stuck) but not surface a `chat:error`.
+      :ok = GenServer.stop(chat_turn_pid, :shutdown)
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
+      refute_received {:chat_error, _}
+
+      assert :sys.get_state(pid).live.status == :idle
     end
   end
 

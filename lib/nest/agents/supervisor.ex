@@ -349,7 +349,25 @@ defmodule Nest.Agents.Supervisor do
     end
 
     _ = stop_one(space_id, name)
-    Persistence.archive_agent(space_id, name)
+    result = Persistence.archive_agent(space_id, name)
+
+    if result == :ok do
+      broadcast_agent_archived(space_id, name)
+    end
+
+    result
+  end
+
+  # Tell every connected lobby client that `name` was archived so the
+  # sidebar can move it into the per-space "Archived" group without a
+  # reload. Broadcast for each agent in the subtree (the recursion
+  # above archives descendants too), matching `SubAgent`'s
+  # `agent:created` notification style.
+  defp broadcast_agent_archived(space_id, name) do
+    NestWeb.Endpoint.broadcast("lobby", "agent:archived", %{
+      "space_id" => space_id,
+      "name" => name
+    })
   end
 
   defp stop_one(space_id, name) do
@@ -410,10 +428,18 @@ defmodule Nest.Agents.Supervisor do
   Generate a unique agent name for a given space.
   """
   def generate_unique_name_for_space(space_id) do
-    existing_names =
-      Registry.list_for_space(space_id) ++ persistence_list_names_for_space(space_id)
+    NameGenerator.generate_unique(existing_names_for_space(space_id))
+  end
 
-    NameGenerator.generate_unique(MapSet.new(existing_names))
+  @doc """
+  Every known agent name in `space_id` — live (Registry) plus
+  persisted (DB) — as a `MapSet`. The single source for "is this
+  name already taken in this space?" checks (`generate_unique_name`
+  and the batch child-namer).
+  """
+  @spec existing_names_for_space(integer()) :: MapSet.t(String.t())
+  def existing_names_for_space(space_id) do
+    MapSet.new(Registry.list_for_space(space_id) ++ persistence_list_names_for_space(space_id))
   end
 
   defp persistence_list_names_for_space(space_id) do

@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { render, screen, act } from "@testing-library/react";
+import { render, screen, act, fireEvent } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
 import { Sidebar } from "./Sidebar";
@@ -26,12 +26,13 @@ function withStore(agents) {
   // `/space/my-space` so the space row is route-selected (expanded).
   useStore.setState({
     agents: agents.map((a) => ({ ...a, space_id: a.space_id ?? 1 })),
+    archivedAgents: [],
     spaces: [{ id: 1, slug: "my-space", name: "My Space" }],
   });
 }
 
 function clearAgents() {
-  useStore.setState({ agents: null, spaces: [] });
+  useStore.setState({ agents: null, archivedAgents: [], spaces: [] });
 }
 
 beforeEach(() => {
@@ -91,6 +92,238 @@ describe("Sidebar tree", () => {
 
     expect(screen.getByText("parent")).toBeInTheDocument();
     expect(screen.getByText("child-of-parent")).toBeInTheDocument();
+  });
+
+  it("collapses and expands the children of any interior node", () => {
+    act(() => {
+      withStore([
+        { name: "root", parentId: null, parentName: null, depth: 0 },
+        { name: "child", parentId: 1, parentName: "root", depth: 1 },
+        { name: "grandchild", parentId: 1, parentName: "child", depth: 2 },
+      ]);
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/space/my-space"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    // Expanded by default.
+    expect(screen.getByText("child")).toBeInTheDocument();
+    expect(screen.getByText("grandchild")).toBeInTheDocument();
+
+    const rootToggle = screen.getByRole("button", { name: "Toggle root" });
+    expect(rootToggle).toHaveAttribute("aria-expanded", "true");
+
+    // Collapsing the root hides its whole subtree.
+    act(() => {
+      fireEvent.click(rootToggle);
+    });
+
+    expect(screen.getByText("root")).toBeInTheDocument();
+    expect(screen.queryByText("child")).not.toBeInTheDocument();
+    expect(screen.queryByText("grandchild")).not.toBeInTheDocument();
+    expect(rootToggle).toHaveAttribute("aria-expanded", "false");
+
+    act(() => {
+      fireEvent.click(rootToggle);
+    });
+
+    // An interior node collapses independently of its parent.
+    const childToggle = screen.getByRole("button", { name: "Toggle child" });
+    act(() => {
+      fireEvent.click(childToggle);
+    });
+
+    expect(screen.getByText("root")).toBeInTheDocument();
+    expect(screen.getByText("child")).toBeInTheDocument();
+    expect(screen.queryByText("grandchild")).not.toBeInTheDocument();
+  });
+
+  it("renders no chevron for leaf nodes", () => {
+    act(() => {
+      withStore([
+        { name: "root", parentId: null, parentName: null, depth: 0 },
+        { name: "leaf", parentId: 1, parentName: "root", depth: 1 },
+      ]);
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/space/my-space"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText("leaf")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Toggle leaf" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders archived agents in a collapsed, nested 'Archived' group", () => {
+    act(() => {
+      useStore.setState({
+        agents: [
+          {
+            name: "active-root",
+            space_id: 1,
+            parentId: null,
+            parentName: null,
+            depth: 0,
+          },
+        ],
+        archivedAgents: [
+          {
+            name: "old-parent",
+            space_id: 1,
+            parentId: null,
+            parentName: null,
+            depth: 0,
+            archived: true,
+          },
+          {
+            name: "old-child",
+            space_id: 1,
+            parentId: 1,
+            parentName: "old-parent",
+            depth: 1,
+            archived: true,
+          },
+        ],
+        spaces: [{ id: 1, slug: "my-space", name: "My Space" }],
+      });
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/space/my-space"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText("active-root")).toBeInTheDocument();
+
+    // Collapsed by default: the archived names are hidden.
+    expect(screen.queryByText("old-parent")).not.toBeInTheDocument();
+    expect(screen.queryByText("old-child")).not.toBeInTheDocument();
+
+    const toggle = screen.getByRole("button", {
+      name: /toggle archived agents/i,
+    });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+
+    act(() => {
+      fireEvent.click(toggle);
+    });
+
+    // Expanded: the archived subtree renders with the same nesting as
+    // before archival.
+    expect(screen.getByText("old-parent")).toBeInTheDocument();
+    expect(screen.getByText("old-child")).toBeInTheDocument();
+  });
+
+  it("nests an archived child under its active parent, collapsed", () => {
+    act(() => {
+      useStore.setState({
+        agents: [
+          {
+            name: "parent",
+            space_id: 1,
+            parentId: null,
+            parentName: null,
+            depth: 0,
+          },
+        ],
+        archivedAgents: [
+          {
+            name: "old-child",
+            space_id: 1,
+            parentId: 1,
+            parentName: "parent",
+            depth: 1,
+            archived: true,
+          },
+        ],
+        spaces: [{ id: 1, slug: "my-space", name: "My Space" }],
+      });
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/space/my-space"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText("parent")).toBeInTheDocument();
+
+    // The archived child stays nested under the active parent and is
+    // hidden behind that parent's collapsed `Archived (1)` group.
+    expect(screen.queryByText("old-child")).not.toBeInTheDocument();
+
+    const toggle = screen.getByRole("button", {
+      name: "Toggle archived children of parent",
+    });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+
+    act(() => {
+      fireEvent.click(toggle);
+    });
+
+    expect(screen.getByText("old-child")).toBeInTheDocument();
+  });
+
+  it("nests archived descendants inside an archived subtree", () => {
+    act(() => {
+      useStore.setState({
+        agents: [],
+        archivedAgents: [
+          {
+            name: "old-root",
+            space_id: 1,
+            parentId: null,
+            parentName: null,
+            depth: 0,
+            archived: true,
+          },
+          {
+            name: "old-mid",
+            space_id: 1,
+            parentId: 1,
+            parentName: "old-root",
+            depth: 1,
+            archived: true,
+          },
+          {
+            name: "old-leaf",
+            space_id: 1,
+            parentId: 2,
+            parentName: "old-mid",
+            depth: 2,
+            archived: true,
+          },
+        ],
+        spaces: [{ id: 1, slug: "my-space", name: "My Space" }],
+      });
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/space/my-space"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByText("old-root")).not.toBeInTheDocument();
+
+    const toggle = screen.getByRole("button", {
+      name: /toggle archived agents/i,
+    });
+    act(() => {
+      fireEvent.click(toggle);
+    });
+
+    expect(screen.getByText("old-root")).toBeInTheDocument();
+    expect(screen.getByText("old-mid")).toBeInTheDocument();
+    expect(screen.getByText("old-leaf")).toBeInTheDocument();
   });
 
   it("shows the child count next to a parent with children", () => {

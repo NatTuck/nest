@@ -7,11 +7,17 @@ defmodule Nest.Application do
 
   alias Nest.Agents.Agent.ChatTurnSupervisor
   alias Nest.Agents.ChildRegistry
+  alias Nest.Tokens.Tokenizer
 
   @impl true
   def start(_type, _args) do
     # Check system dependencies first
     check_system_dependencies!()
+
+    # Load the cl100k_base tokenizer once, before any agent can size
+    # a context window. `:persistent_term` makes the hot-path
+    # `Estimator` reads lock-free.
+    Tokenizer.load()
 
     base_children = [
       NestWeb.Telemetry,

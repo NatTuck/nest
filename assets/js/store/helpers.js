@@ -9,6 +9,7 @@
 export const initialState = {
   isConnected: false,
   agents: [],
+  archivedAgents: [],
   spaces: [],
   archivedSpaces: [],
   blueprints: [],

@@ -11,7 +11,6 @@ defmodule Nest.LLM.OpenAIClient.DeltaTest do
   use ExUnit.Case, async: true
 
   alias Nest.LLM.OpenAIClient
-  alias Nest.LLM.RunResponse
 
   describe "delta without finish_reason (OpenAI-compatible providers)" do
     # Some OpenAI-compatible providers (e.g. MiniMax reasoning,
@@ -167,16 +166,12 @@ defmodule Nest.LLM.OpenAIClient.DeltaTest do
       refute Enum.any?(events, &match?({:text, _}, &1))
     end
 
-    test "a delta with neither content nor reasoning_content and no finish_reason emits only a synthesized :done" do
+    test "a delta with no content and no finish_reason ends the body :stream_incomplete" do
       # e.g. a provider sends a delta with only role/name and no
-      # meaningful content. The translator must not crash on the
-      # missing `finish_reason` key. Since the body has no
-      # `data: [DONE]` frame either, `handle_req_done_openai/1`
-      # synthesizes a `{:done, _}` so the chat task finalizes
-      # the response cleanly via the normal-completion path
-      # (which broadcasts the response log). The accumulated
-      # `text`/`thinking`/etc. are all nil because nothing was
-      # streamed — the synthesized `RunResponse` is empty.
+      # meaningful content, then closes without `data: [DONE]`. The
+      # translator must not crash on the missing `finish_reason` key,
+      # and the client must not synthesize a clean `:done` for a body
+      # that produced no complete response.
       delta_frame = %{
         "choices" => [
           %{
@@ -193,11 +188,7 @@ defmodule Nest.LLM.OpenAIClient.DeltaTest do
       chunk = "data: " <> Jason.encode!(delta_frame) <> "\n\n"
       events = run_with_chunk(chunk)
 
-      # No content/thinking/finish_reason events — the only
-      # output is the synthesized `:done` so the chat task
-      # routes through `handle_new_response/3` instead of
-      # being misclassified as a user-initiated stop.
-      assert events == [{:done, %{response: %RunResponse{}}}]
+      assert events == [{:error, {:stream_incomplete, :no_terminator}}]
     end
 
     test "a delta with both content and reasoning_content emits both events" do

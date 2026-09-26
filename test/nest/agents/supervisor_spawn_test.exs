@@ -298,14 +298,24 @@ defmodule Nest.Agents.SupervisorSpawnTest do
   end
 
   describe "archive_agent/2" do
-    test "stops the process and marks the row archived", %{space_id: space_id} do
+    test "stops the process, marks the row archived, and broadcasts agent:archived", %{
+      space_id: space_id
+    } do
       vid = fresh_vocation()
       name = "archive-me-#{System.unique_integer([:positive])}"
       state = coordinator_state(space_id)
 
       assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name, vid)
 
+      Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
+
       assert :ok = Supervisor.archive_agent(space_id, name)
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "agent:archived",
+                       payload: %{"space_id" => ^space_id, "name" => ^name}
+                     },
+                     1_000
 
       assert eventually(
                fn ->

@@ -75,18 +75,19 @@ defmodule Nest.Agents.Agent.CompactionStreamedTextTest do
     test "in-band error short-circuits to {:error, _} before the response is returned" do
       events = [
         {:text, "partial"},
-        {:error, :stream_timeout},
+        {:error, {:stream_idle_timeout, 300_000}},
         {:done, %{response: %RunResponse{text: nil}}}
       ]
 
       {_acc, _response, error, _sent} = reduce_production_style(events)
-      assert error == :stream_timeout
+      assert error == {:stream_idle_timeout, 300_000}
 
       # `consume_quietly/2`'s `cond` returns `{:error, error}`
       # before the response is unwrapped; this test pins that
       # the decision is not silently producing a response in
       # the error case.
-      assert compactor_consume_quietly_decision(error) == {:error, :stream_timeout}
+      assert compactor_consume_quietly_decision(error) ==
+               {:error, {:stream_idle_timeout, 300_000}}
     end
 
     test "stream that ends without :done returns {:error, :no_response}" do

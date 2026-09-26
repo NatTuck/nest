@@ -527,8 +527,9 @@ defmodule Nest.Tools do
           "name_prefix" => %{
             "type" => "string",
             "description" =>
-              "Optional prefix for the auto-generated child names (for " <>
-                "observability). Children are otherwise auto-named."
+              "Optional constant prefix prepended to each child's name. " <>
+                "Children are named from their item (`<prefix>-<item>`), with " <>
+                "`-1`/`-2` appended when the same item repeats."
           },
           "max_concurrency" => %{
             "type" => "integer",

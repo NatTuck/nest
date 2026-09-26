@@ -18,7 +18,7 @@ defmodule Nest.Agents.Agent.ToolLoopCloneAgentTest do
   Mixed-batch reordering is exercised separately by the
   BatchSizer + tool ordering test in `batch_sizer_test.exs`.
   """
-  use Nest.DataCase, async: false
+  use Nest.DataCase, async: true
 
   alias Nest.Agents.Agent.ToolLoop
   alias Nest.Agents.AgentTestHelpers

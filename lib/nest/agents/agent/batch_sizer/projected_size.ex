@@ -92,7 +92,7 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
          {:ok, %{size: size}} <- Sandbox.stat(full_path, caps_of(ctx)) do
       # Estimate from the byte size alone. Synthesizing a same-size
       # string to feed the tokenizer is wasteful and pathological for
-      # `tiktoken` (quadratic on repeated characters).
+      # BPE tokenization (quadratic on repeated characters).
       Estimator.estimate_bytes(size)
     else
       _ -> summary_baseline_size() * @safety_padding

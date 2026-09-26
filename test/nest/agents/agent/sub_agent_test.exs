@@ -103,6 +103,63 @@ defmodule Nest.Agents.Agent.SubAgentTest do
     end
   end
 
+  describe "handle_child_failed/3 and handle_child_terminated/3" do
+    test "handle_child_failed/3 forwards :spawn_agent_error and never archives" do
+      parent = build_parent_state()
+      task_pid = self()
+      child_name = "failed-child-#{System.unique_integer([:positive])}"
+
+      state =
+        %{
+          parent
+          | chat_state: %{
+              parent.chat_state
+              | pending_children: %{child_name => task_pid},
+                archiving: MapSet.new([child_name])
+            }
+        }
+
+      assert {:noreply, new_state} =
+               SubAgent.handle_child_failed(state, child_name, {:crashed, "boom"})
+
+      assert_receive {:spawn_agent_error, ^child_name, {:crashed, "boom"}}, 200
+
+      # Slot dropped and the child is NOT left queued for archival.
+      assert new_state.chat_state.pending_children == %{}
+      assert new_state.chat_state.archiving == MapSet.new()
+    end
+
+    test "handle_child_terminated/3 forwards :spawn_agent_error and never archives" do
+      parent = build_parent_state()
+      task_pid = self()
+      child_name = "terminated-child-#{System.unique_integer([:positive])}"
+
+      state =
+        %{
+          parent
+          | chat_state: %{
+              parent.chat_state
+              | pending_children: %{child_name => task_pid},
+                archiving: MapSet.new([child_name])
+            }
+        }
+
+      assert {:noreply, new_state} =
+               SubAgent.handle_child_terminated(state, child_name, :shutdown)
+
+      assert_receive {:spawn_agent_error, ^child_name, :shutdown}, 200
+      assert new_state.chat_state.pending_children == %{}
+      assert new_state.chat_state.archiving == MapSet.new()
+    end
+
+    test "a failure for an unknown child is a no-op" do
+      parent = build_parent_state()
+
+      assert {:noreply, ^parent} = SubAgent.handle_child_failed(parent, "ghost", :stopped)
+      assert {:noreply, ^parent} = SubAgent.handle_child_terminated(parent, "ghost", :shutdown)
+    end
+  end
+
   describe "stop_pending_children/1" do
     test "clears pending_children and walks Supervisor.stop_agent for each entry" do
       parent = build_parent_state()

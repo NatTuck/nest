@@ -8,7 +8,7 @@ defmodule NestWeb.LobbyChannel.AuthzTest do
   pid is dead, and the not-found path.
   """
 
-  use Nest.DataCase, async: false
+  use Nest.DataCase, async: true
 
   alias Nest.Accounts
   alias Nest.Accounts.Invite, as: InviteSchema

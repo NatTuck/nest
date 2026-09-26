@@ -238,17 +238,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   # tag so the user can grep the server log for the matching
   # entry.
   defp llm_error(error_msg, state) do
-    _ = state.live.streaming_acc && state.live.streaming_acc.index
-
-    error_message =
-      {:assistant,
-       %Assistant{
-         index: nil,
-         timestamp: DateTime.utc_now(),
-         parts: [%Part.Text{text: error_msg}],
-         api_logs: [],
-         metadata: %{"error" => true}
-       }}
+    error_message = build_error_message(error_msg, state)
 
     {stamped, state} = Nest.Agents.Agent.__append_message__(state, error_message)
     stamped_index = Nest.Agents.Agent.stamped_index(stamped)
@@ -274,6 +264,31 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
 
     Broadcasts.status(state)
     {:noreply, state}
+  end
+
+  # Preserve whatever the model streamed before the failure (a dropped
+  # or stalled connection) and append the error text, so nothing the
+  # model produced is silently lost. Tagged `error` so the UI renders
+  # the failure indicator and doesn't expect a response log. A `nil`
+  # accumulator (nothing streamed) degrades to an error-only message.
+  defp build_error_message(error_msg, state) do
+    error_part = %Part.Text{text: "\n\n" <> error_msg}
+
+    case state.live.streaming_acc do
+      %Streaming.AssistantAccumulator{} = acc ->
+        {:assistant, partial} = Streaming.partial_message(acc, %{"error" => true})
+        {:assistant, %{partial | parts: partial.parts ++ [error_part]}}
+
+      _ ->
+        {:assistant,
+         %Assistant{
+           index: nil,
+           timestamp: DateTime.utc_now(),
+           parts: [error_part],
+           api_logs: [],
+           metadata: %{"error" => true}
+         }}
+    end
   end
 
   # Build the user-facing error message. We lead with the

@@ -244,6 +244,25 @@ defmodule Nest.LLM.Runner do
     "Error: #{type}#{formatted_body}"
   end
 
+  # The upstream went silent past the provider's receive timeout. Lead
+  # with the human-meaningful duration so the user knows it was a stall,
+  # not a model refusal.
+  def format_error({:stream_idle_timeout, ms}) when is_integer(ms) do
+    "Error: no output from the model for #{div(ms, 1_000)}s; request aborted"
+  end
+
+  def format_error({:stream_idle_timeout, _ms}) do
+    "Error: no output from the model; request aborted"
+  end
+
+  # The body ended without a terminator (`[DONE]` / `message_stop` /
+  # `finish_reason`): the connection dropped mid-response. Any partial
+  # text that arrived is preserved alongside this message.
+  def format_error({:stream_incomplete, _reason}) do
+    "Error: the model's response stream ended unexpectedly " <>
+      "(connection dropped before the response completed)"
+  end
+
   def format_error(error), do: "Error: #{inspect(error)}"
 
   @body_truncate_bytes 500

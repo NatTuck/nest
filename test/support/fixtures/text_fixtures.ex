@@ -2,10 +2,10 @@ defmodule Nest.TextFixtures do
   @moduledoc """
   Helpers for building large text fixtures.
 
-  `tiktoken`'s cl100k_base encoder tokenizes long runs of a single
-  character in **quadratic** time (e.g. 50_000 `"y"`s takes ~1.5s,
-  while 50_000 bytes of realistic prose takes ~9ms). Fixtures that
-  just need "a lot of text" must therefore use varied words.
+  `tiktoken`/`tokenizers`' cl100k_base BPE tokenizes long runs of a
+  single character in **quadratic** time (e.g. 50_000 `"y"`s takes
+  ~1.5s, while 50_000 bytes of realistic prose takes ~9ms). Fixtures
+  that just need "a lot of text" must therefore use varied words.
 
   `big_text/1` repeats a realistic sentence to exactly `bytes` bytes,
   which tokenizes linearly at roughly 4 bytes/token.

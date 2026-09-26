@@ -37,11 +37,10 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   # where individual characters are common tokens and
   # BPE expansions can balloon the count. We deliberately
   # don't use `Nest.Tokens.Estimator.estimate/1` here
-  # because that calls the tiktoken NIF, which hangs or
-  # panics on very large inputs (the NIF stack-overflows
-  # on multi-MB strings). The safety check needs an
-  # upper bound, not a precise count, so `chars / 3 +
-  # overhead` is correct AND fast.
+  # because that calls the tokenizer, which is slow and
+  # stack-risky on very large inputs (multi-MB strings).
+  # The safety check needs an upper bound, not a precise
+  # count, so `chars / 3 + overhead` is correct AND fast.
   @safety_chars_per_token 3
   @safety_overhead 10
 

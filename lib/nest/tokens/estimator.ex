@@ -3,9 +3,9 @@ defmodule Nest.Tokens.Estimator do
   Token estimation for the LLM context budget.
 
   Counts tokens for strings, message lists, and tool results using
-  the `tiktoken` library's `cl100k_base` encoding (the encoding used
-  by GPT-3.5/GPT-4 and a reasonable proxy for Anthropic Claude's
-  tokenizer — typically within 5-10% for mixed text).
+  the `cl100k_base` encoding (the encoding used by GPT-3.5/GPT-4 and
+  a reasonable proxy for Anthropic Claude's tokenizer — typically
+  within 5-10% for mixed text).
 
   All public functions return a **conservative upper bound** on token
   count by applying a 20% safety multiplier to the real cl100k_base
@@ -37,6 +37,7 @@ defmodule Nest.Tokens.Estimator do
   alias Nest.Messages.System
   alias Nest.Messages.Tool
   alias Nest.Messages.User
+  alias Nest.Tokens.Tokenizer
 
   # 20% safety multiplier on top of the real cl100k_base count.
   # Applied to every public function in this module.
@@ -48,11 +49,6 @@ defmodule Nest.Tokens.Estimator do
   # misses. We add a flat 10 tokens per message to absorb this.
   @per_message_overhead 10
 
-  # "gpt-4" is the canonical model name that maps to cl100k_base
-  # inside the tiktoken package. We don't have a specific model
-  # in mind — the encoding is what we want.
-  @tiktoken_model "gpt-4"
-
   @doc """
   Returns the **real** token count for a string using cl100k_base.
   No safety multiplier.
@@ -61,10 +57,9 @@ defmodule Nest.Tokens.Estimator do
   against a known baseline.
 
   Content that isn't valid UTF-8 (e.g. raw binary captured from a
-  command) can't be tokenized — the tiktoken NIF raises
-  `ArgumentError` on it rather than returning an error. We detect
-  that up front and fall back to a byte-based estimate so a binary
-  tool result never crashes the sizing path.
+  command) can't be tokenized, so we detect it up front and fall back
+  to a byte-based estimate — a binary tool result never crashes the
+  sizing path.
   """
   @spec raw_count(String.t()) :: pos_integer()
   def raw_count(text) when is_binary(text) do
@@ -77,14 +72,13 @@ defmodule Nest.Tokens.Estimator do
 
   def raw_count(_), do: 0
 
-  # cl100k_base count, with a heuristic fallback on any tiktoken
-  # failure. The NIF can raise (rather than returning `{:error, _}`)
-  # on inputs it can't handle, so the call is wrapped.
+  # cl100k_base count, with a heuristic fallback on any tokenizer
+  # failure. `Nest.Tokens.Tokenizer.count/1` reads a pre-loaded
+  # tokenizer from `:persistent_term`; the only expected failure is
+  # invalid UTF-8, which the caller already filters with
+  # `String.valid?/1`. The rescue stays as a safety net.
   defp count_tokens(text) do
-    case Tiktoken.count_tokens(@tiktoken_model, text) do
-      {:ok, n} -> n
-      {:error, _} -> char_estimate(text)
-    end
+    Tokenizer.count(text)
   rescue
     _ -> char_estimate(text)
   end
@@ -94,7 +88,7 @@ defmodule Nest.Tokens.Estimator do
   # (`String.length/1` raises on one).
   defp byte_estimate(text), do: div(byte_size(text) + 3, 4)
 
-  # Valid-text fallback when tiktoken fails: chars / 4.
+  # Valid-text fallback when tokenization fails: chars / 4.
   defp char_estimate(text), do: div(String.length(text) + 3, 4)
 
   @doc """
@@ -121,7 +115,7 @@ defmodule Nest.Tokens.Estimator do
   plus the safety multiplier and per-message overhead. This is for
   callers that only have a size (e.g. a `stat`ed file) and would
   otherwise have to synthesize a same-size string — which is both
-  wasteful and pathological for `tiktoken` on repeated characters.
+  wasteful and pathological for BPE tokenization on repeated characters.
   """
   @spec estimate_bytes(non_neg_integer()) :: pos_integer()
   def estimate_bytes(size) when is_integer(size) and size >= 0 do

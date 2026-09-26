@@ -6,7 +6,7 @@
 export function catalogSetters(set) {
   return {
     setAgents: (agents) => {
-      set({ agents: agents || [] });
+      set({ agents: (agents || []).map(normalizeAgent) });
     },
 
     setModels: (models) => {
@@ -45,6 +45,10 @@ export function catalogSetters(set) {
       set({ archivedSpaces: archivedSpaces || [] });
     },
 
+    setArchivedAgents: (archivedAgents) => {
+      set({ archivedAgents: (archivedAgents || []).map(normalizeAgent) });
+    },
+
     archiveSpace: (spaceId) => {
       set((state) => {
         const space = state.spaces.find((s) => s.id === spaceId);
@@ -68,20 +72,38 @@ export function catalogSetters(set) {
     },
 
     addAgent: (agent) => {
+      const normalized = normalizeAgent(agent);
       set((state) => ({
         agents: [
-          ...state.agents,
-          {
-            name: agent.name,
-            space_id: agent.space_id ?? agent.spaceId ?? null,
-            model: agent.model,
-            status: agent.status || "idle",
-            parentId: agent.parentId ?? null,
-            parentName: agent.parentName ?? null,
-            depth: agent.depth ?? 0,
-          },
+          ...state.agents.filter(
+            (a) =>
+              !(
+                a.name === normalized.name && a.space_id === normalized.space_id
+              ),
+          ),
+          normalized,
         ],
+        archivedAgents: state.archivedAgents.filter(
+          (a) =>
+            !(a.name === normalized.name && a.space_id === normalized.space_id),
+        ),
       }));
+    },
+
+    archiveAgent: ({ space_id, name }) => {
+      set((state) => {
+        const match = (a) => a.name === name && a.space_id === space_id;
+        const agent = state.agents.find(match);
+        const alreadyArchived = state.archivedAgents.some(match);
+        const archivedAgents =
+          agent && !alreadyArchived
+            ? [...state.archivedAgents, { ...agent, archived: true }]
+            : state.archivedAgents;
+        return {
+          agents: state.agents.filter((a) => !match(a)),
+          archivedAgents,
+        };
+      });
     },
 
     applyAgentModelUpdate: (name, model) => {
@@ -118,5 +140,23 @@ export function catalogSetters(set) {
         return { agents: newAgents, agentsCache: newCache };
       });
     },
+  };
+}
+
+/**
+ * Normalize an agent payload to the shape the sidebar tree reads.
+ * Lobby `init` agents arrive with snake_case keys (`space_id`,
+ * `parent_id`, `parent_name`) while `agent:created` /
+ * `chat:status` payloads are camelCase; the tree needs
+ * `parentName` either way.
+ */
+function normalizeAgent(agent) {
+  return {
+    ...agent,
+    space_id: agent.space_id ?? agent.spaceId ?? null,
+    status: agent.status || "idle",
+    parentId: agent.parentId ?? agent.parent_id ?? null,
+    parentName: agent.parentName ?? agent.parent_name ?? null,
+    depth: agent.depth ?? 0,
   };
 }

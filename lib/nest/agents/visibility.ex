@@ -43,6 +43,69 @@ defmodule Nest.Agents.Visibility do
     |> Enum.uniq_by(& &1.name)
   end
 
+  @doc """
+  Public-info map for every *archived* agent in `space_id` the
+  given user is allowed to see, in the same wire shape as
+  `list_visible_agents_for/2` (plus `archived: true`). Archived
+  agents have no live pid (archiving stops the process), so this
+  is a persisted-rows-only read. `parent_name` is resolved from
+  the parent row (which may itself still be active) so the
+  sidebar can nest an archived subtree exactly as it was before
+  archival.
+  """
+  @spec list_archived_agents_for(integer(), integer()) :: [map()]
+  def list_archived_agents_for(space_id, user_id)
+      when is_integer(space_id) and is_integer(user_id) do
+    names_by_id = agent_names_by_id(space_id)
+
+    from(a in PersistedAgent,
+      where: a.space_id == ^space_id,
+      where: a.created_by_user_id == ^user_id or a.shared == true,
+      where: a.archived == true,
+      order_by: a.name
+    )
+    |> Repo.all()
+    |> Enum.map(&archived_public_info(&1, names_by_id))
+  end
+
+  defp archived_public_info(
+         %PersistedAgent{
+           name: name,
+           space_id: sid,
+           created_by_user_id: owner_id,
+           shared: shared,
+           model: model,
+           parent_id: parent_id,
+           depth: depth
+         },
+         names_by_id
+       ) do
+    %{
+      name: name,
+      space_id: sid,
+      model: model,
+      parent_id: parent_id,
+      parent_name: Map.get(names_by_id, parent_id),
+      depth: depth,
+      created_by_user_id: owner_id,
+      shared: shared == true,
+      status: :idle,
+      archived: true
+    }
+  end
+
+  # `id => name` for every agent row in the space (archived or
+  # not) so a persisted row's `parent_name` can be resolved even
+  # when its parent is not part of the result set.
+  defp agent_names_by_id(space_id) do
+    from(a in PersistedAgent,
+      where: a.space_id == ^space_id,
+      select: {a.id, a.name}
+    )
+    |> Repo.all()
+    |> Map.new()
+  end
+
   defp fetch_from_registry(space_id, name, user_id) do
     case Registry.lookup(space_id, name) do
       {:ok, pid} ->
@@ -76,6 +139,8 @@ defmodule Nest.Agents.Visibility do
   # loader in `Supervisor.get_agent/2` will rehydrate it
   # when the user clicks.
   defp persisted_visible(space_id, user_id) do
+    names_by_id = agent_names_by_id(space_id)
+
     from(a in PersistedAgent,
       where: a.space_id == ^space_id,
       where: a.created_by_user_id == ^user_id or a.shared == true,
@@ -96,6 +161,7 @@ defmodule Nest.Agents.Visibility do
         space_id: sid,
         model: model,
         parent_id: parent_id,
+        parent_name: Map.get(names_by_id, parent_id),
         depth: depth,
         created_by_user_id: owner_id,
         shared: shared == true,
