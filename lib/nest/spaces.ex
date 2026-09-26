@@ -83,6 +83,16 @@ defmodule Nest.Spaces do
   end
 
   @doc """
+  Get a space by its globally-unique name.
+
+  Returns `%Space{}` or `nil`.
+  """
+  @spec get_by_name(String.t()) :: Space.t() | nil
+  def get_by_name(name) when is_binary(name) do
+    Repo.get_by(Space, name: name)
+  end
+
+  @doc """
   Get a space by its ID.
 
   Returns `%Space{}` or `nil`.

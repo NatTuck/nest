@@ -45,7 +45,12 @@ defmodule Nest.Agents.Agent.Callbacks do
   def handle_cast({:chat, content, mode}, state), do: chat_or_drop(state, content, mode)
 
   defp chat_or_drop(state, _content, _mode)
-       when state.live.status in [:streaming, :executing_tools, :model_missing],
+       when state.live.status in [
+              :streaming,
+              :executing_tools,
+              :model_missing,
+              :needs_repair
+            ],
        do: {:noreply, state}
 
   defp chat_or_drop(state, content, mode), do: ChatPipeline.handle_chat(state, content, mode)

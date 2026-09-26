@@ -167,6 +167,12 @@ defmodule Nest.Agents.Agent.Broadcasts do
     to: __MODULE__.ModelMissing,
     as: :broadcast
 
+  # Broadcast a chat:status event for an agent whose persisted active
+  # sequence failed wire preflight at load (status `:needs_repair`).
+  defdelegate needs_repair(space_id, name, violations, repair_command),
+    to: __MODULE__.NeedsRepair,
+    as: :broadcast
+
   # Usage totals helpers live in `Broadcasts.Usage` so this file
   # stays under the credo 500-line cap.
   defdelegate empty_usage_totals(), to: __MODULE__.Usage, as: :empty_usage_totals

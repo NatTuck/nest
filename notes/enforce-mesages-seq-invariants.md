@@ -155,67 +155,98 @@ path: the next user message can no longer be appended after an unpaired
 `tool_use` without first writing an `is_error` tool result (and the
 alternation-preserving ack).
 
-## 4. On-load validation (detect)
+## 4. On-load validation (detect) — DONE
 
-`Persistence.build_attrs_for_start/2` reconstructs the sequence a restarted
-agent will run on. It must:
+`Persistence.build_attrs_for_start/2` validates the **active
+(sendable) slice** — the same list the Phase 3 send guard checks,
+i.e. rows with `message_index > last_compaction_index` — via
+`Nest.LLM.Preflight.validate/1` (pure, no DB writes). On violation it
+attaches `sequence_violations` and a `repair_command`
+(`mix nest.repair_messages --space <name>`) to the start attrs; a
+healthy sequence gets `[]` / `nil`.
 
-1. resolve the full recursive sequence via the shared-structure resolver
-   (`notes/shared-message-structure.md`);
-2. run `Nest.LLM.Preflight.validate/1`;
-3. on violation, refuse to start the agent in a sendable state: surface a clear
-   error and direct the operator at the offline repair tool (§5). Do **not**
-   silently repair in the live path (repairs that insert rows must go through
-   §3 or the offline tool).
+`Agent.init/1` then starts the agent in the `:needs_repair` state
+(mirroring the `:model_missing` recovery path): the process stays
+alive so history is viewable, `live.status = :needs_repair` blocks
+chat in both `Callbacks.chat_or_drop/3` and the agent channel
+(`agent_status_needs_repair`), and `Broadcasts.needs_repair/4` pushes
+a `chat:status` the UI renders as a repair banner. The operator runs
+the offline tool and then reloads the agent (`Agents.reload_agent/2`
+→ `Supervisor.restart_agent/2`), which re-validates; a repaired
+sequence comes back `:idle`.
 
-## 5. Offline repair tool (repair)
+Validating the active slice (not the full resolved sequence) avoids
+blocking an agent whose orphan sits in history below a compaction
+boundary and will never be sent; the offline tool still reports and
+repairs the full resolved sequence.
 
-A new `mix nest.repair_messages` task. Unlike the live path, it **may rewrite
-persisted rows** — that is its purpose.
+## 5. Offline repair tool (repair) — DONE
+
+Implemented as `mix nest.repair_messages`:
+`Mix.Tasks.Nest.RepairMessages` (CLI) → `Nest.Persistence.MessageRepair`
+(orchestration + report) → `Nest.Persistence.MessageRepair.Planner`
+(pure plan) → `Nest.Persistence.MessageRepair.Writer` (single
+transaction). No migration; only `messages.message_index` and
+`agents.{next_message_index,fork_message_index,last_compaction_index}`
+change.
 
 ### 5.1 Options
 
-- `--space <id>` / `--agent <name>` / `--all`
+- `--space <name>` (a whole space, resolved by its globally-unique
+  name) / `--all`
 - `--apply` — actually write. Default is **dry-run** (report only).
 - `--verbose`
 
-### 5.2 Algorithm (per agent, root-first over the `parent_id` tree)
+Exactly one of `--space`/`--all` is required. Numeric ids are not
+accepted; use the space name. Per-agent selection was dropped in
+favour of whole-space repair (spaces are closed trees, so there is
+no cross-space ancestry). A dry run exits non-zero when violations
+are found; `--apply` exits non-zero on residual violations.
 
-1. Load the resolved full sequence and the owner partition
-   (`own(A)` vs shared prefix).
-2. Run the §2 rule list. Print every violation.
-3. Build a repair plan:
-   - For each assistant `tool_use` missing a paired result at the **owning**
-     agent, plan an `is_error: true` `{:tool, _}` insert after it.
-   - For stray `tool_result`s with no matching `tool_use`, report them (do not
-     invent an assistant).
-   - Recompute contiguous `message_index` values for the owning agent's rows.
-4. `--apply` runs in a single `Repo.transaction`:
-   - Insert the synthetic rows under the owning `agent_id`.
-   - Renumber the owning agent's rows with a two-phase pass (temporary large
-     offset, then final values) to avoid transient unique-index collisions.
-   - Update `agents.next_message_index`; shift `agents.last_compaction_index`
-     when an insert lands before the boundary.
-5. **Clone renumbering** (the reason `parent_id` matters):
-   - An insert into a shared prefix owned by ancestor `P` shifts `P`'s own rows
-     and every descendant's fork boundary.
-   - For every descendant `C` (recursively, via `parent_id`), shift
-     `C.fork_message_index` and all `C`-owned indices at or after the insert
-     point by the insertion delta.
-   - Fresh children and detached clones (`fork_message_index = NULL`) are
-     unaffected.
-   - Deterministic: the boundary is the stored `agents.fork_message_index`, not
-     a heuristic.
-6. Idempotent: re-running on a repaired sequence is a no-op.
-7. Dry-run prints the exact inserts and index shifts per agent and exits
-   non-zero if any violations were found.
+### 5.2 Algorithm (whole space, root-first over the `parent_id` tree)
 
-### 5.3 `visual-possum-root`
+1. Load every agent row and its own rows (bulk, keyed by
+   `agent_id`).
+2. Resolve each agent's full sequence with the same
+   `before(full(parent), F_A) ++ own(A)` resolver the live path
+   uses.
+3. Walk the resolved sequence with a pairing/alternation state
+   machine, root-first:
+   - an assistant `tool_use` not answered by its immediate successor
+     gets an `is_error: true` `{:tool, _}` inserted after it (or, if
+     the successor is a partial tool result, that result is rewritten
+     to include the missing ids);
+   - two consecutive `user`/`assistant` wire roles get one
+     opposite-role message inserted between them (assistant ack after
+     an interrupted tool result; a user continuation between two
+     assistant turns);
+   - stray `tool_result`s with no matching `tool_use` are reported,
+     never "fixed" by inventing an assistant.
+4. Every synthetic row is owned by the agent being repaired
+   (anchored before an existing row of that agent), so an ancestor's
+   repair shifts its descendants but never the reverse. Renumber the
+   owner's own rows contiguously; shift every clone
+   (`fork_message_index > insert index`) fork boundary and own
+   indices recursively; shift `last_compaction_index` when an insert
+   lands at or before it.
+5. Re-validate every resolved sequence and record what remains.
+6. Idempotent: a repaired sequence plans no writes. Dry-run prints
+   the exact inserts/renumbering per agent with `--verbose`.
 
-Root agent, no clones: `mix nest.repair_messages --agent visual-possum-root`
-reports the orphan at 866; `--apply` inserts the `is_error` tool result before
-index 867. The agent must be restarted afterwards, since its live state still
-holds the orphan.
+### 5.3 Writer
+
+`Writer.apply/1` runs one `Repo.transaction`: phase 1 offsets the
+changed agents' rows by a large constant, phase 2 sets final indices
+and inserts synthetics (no `on_conflict` reliance), then updates the
+agent counters. Any failure rolls the whole run back.
+
+### 5.4 `visual-possum-root`
+
+`mix nest.repair_messages --space <space-name>` reports the orphan
+at 866; `--apply` inserts the `is_error` tool result (and the
+alternation ack before the following user message). The agent must
+be restarted afterwards, since its live state still holds the
+orphan.
 
 ## 6. Tests
 
@@ -256,9 +287,10 @@ The docs remain the contract; any remaining divergence is a code bug.
    **Done.**
 1. **Shared structure** — implement D1–D9 in spawn/load/compaction; tests.
    **Done.**
-2. **Append enforcement** — §3.
-3. **Preflight rule list + call site** — §2.
-4. **Offline repair tool** — §5.
+2. **Append enforcement** — §3. **Done.**
+3. **Preflight rule list + call site** — §2. **Done.**
+4. **Offline repair tool** — §5. **Done** (also fixes simple alternation
+   violations). §4 (on-load validation) remains.
 
 Phases 2–4 depend on Phase 1 (the repair tool's clone renumbering is only
 meaningful once clones share rows).

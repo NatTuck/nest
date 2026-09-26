@@ -19,7 +19,7 @@ persisted sequences.
 If any code comment or other note contradicts the canonical doc, that source is
 wrong.
 
-## Status: Phases 1, 2, 3 DONE — precommit green (1494 tests)
+## Status: Phases 1–4 + on-load validation DONE — precommit green
 
 - **Phase 1 — shared structure.** `agents.fork_message_index` (migration
   `20260925171617_add_fork_message_index_to_agents`); `build_insert_base/2`
@@ -50,10 +50,19 @@ All code changes from Phases 1–3 are **uncommitted** on `main` (working tree).
 
 ---
 
-## WHAT'S LEFT — Phase 4: offline repair tool (main remaining work)
+## Phase 4: offline repair tool — DONE
 
-Spec: `notes/enforce-mesages-seq-invariants.md` §5. Build
-`lib/mix/tasks/nest.repair_messages.ex` (`mix nest.repair_messages`).
+Shipped as `mix nest.repair_messages`:
+`Mix.Tasks.Nest.RepairMessages` → `Nest.Persistence.MessageRepair` →
+`.Planner` (pure) → `.Writer`. It repairs tool pairing **and simple
+alternation** violations, is idempotent, and targets whole spaces by
+name (`--space <name>`) or everything (`--all`), dry-run by default
+(`--apply` to write). See
+`notes/enforce-mesages-seq-invariants.md` §5 for the final spec.
+
+The original spec below is kept for context; the implemented CLI uses
+`--space <name>` (not `<id>`) and drops the per-agent selector, since
+we repair whole spaces.
 
 ### Options
 
@@ -119,21 +128,25 @@ Spec: `notes/enforce-mesages-seq-invariants.md` §5. Build
 
 `visual-possum-root` (agent id 1, space 1): index 866 is an assistant
 `tool_use:call_00_YeumRvjanX23oPG1S93n4024` (`shell-cmd`, a ~10-min command);
-index 867 is the next user message. Run
-`mix nest.repair_messages --agent 1 visual-possum-root` (dry-run) → expect the
-orphan at 866; `--apply` inserts the `is_error` result before 867; restart the
-agent. Use the **real** DB, not the test sandbox.
+index 867 is the next user message. Look up space 1's name, then run
+`mix nest.repair_messages --space <name>` (dry-run) → expect the orphan at 866
+(plus the alternation ack needed before the user message); `--apply` inserts the
+`is_error` result and the ack; restart the agent. Use the **real** DB, not the
+test sandbox.
 
-## WHAT'S LEFT — on-load validation (spec §4)
+## On-load validation (spec §4) — DONE
 
-`Persistence.build_attrs_for_start/2` should run `Nest.LLM.Preflight.validate/1`
-on the **resolved** sequence and refuse to start the agent in a sendable state,
-pointing the operator at the repair tool — instead of silently loading a
-corrupt sequence (the send guard in Phase 3 will catch it later, but the goal is
-to detect at load). **Decision needed:** what "refuse to start" means (stop the
-start and surface via the existing broken-agent path, or start in a dedicated
-broken state and block `chat:message`). See `list_broken_agents/0` /
-`Callbacks.build_recovery_state/3` for the existing model-missing pattern.
+`Persistence.build_attrs_for_start/2` validates the **active sendable
+slice** and attaches `sequence_violations` + a `repair_command`;
+`Agent.init/1` starts `:needs_repair` (process alive, history
+viewable, chat blocked in the GenServer and the channel) and
+`Broadcasts.needs_repair/4` drives a UI banner. Recovery is an offline
+`mix nest.repair_messages` run plus `Agents.reload_agent/2` (backend:
+`Supervisor.restart_agent/2`), which re-validates and returns `:idle`.
+Deliberately **not** added: a `list_broken_agents/0` sequence check
+(the lobby sidebar only knows about model breakage; sequence issues
+surface when the agent loads). See
+`notes/enforce-mesages-seq-invariants.md` §4.
 
 ## Known residuals / notes
 
@@ -144,9 +157,8 @@ broken state and block `chat:message`). See `list_broken_agents/0` /
   timeouts; if it blocks a commit, re-run precommit (it passed cleanly).
 - Phase 1's mandatory "no duplicated rows on clone" and restart round-trip tests
   are in `shared_message_structure_test.exs`; keep them green.
-- Once Phase 4 lands, update `notes/enforce-mesages-seq-invariants.md` §4/§5 and
-  `notes/shared-message-structure.md` status, then run `mix precommit` and read
-  the **full** output.
+- Phases 4 and §4 landed: `notes/enforce-mesages-seq-invariants.md` §4/§5 are
+  marked DONE. `mix precommit` is green.
 
 ## Open decisions resolved (for context)
 
@@ -155,4 +167,6 @@ broken state and block `chat:message`). See `list_broken_agents/0` /
 2. `fork_message_index` column added.
 3. Clone compaction: detach on first compaction.
 4. Send-time preflight failure: graceful `chat:error` + stop.
-5. Repair tool scope: tool-pairing only (do not invent assistant messages).
+5. Repair tool scope: tool pairing **and simple alternation** (insert one
+   opposite-role message between same-type pairs); do not invent an assistant
+   to justify a stray `tool_result`.

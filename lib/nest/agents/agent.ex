@@ -445,8 +445,15 @@ defmodule Nest.Agents.Agent do
     case Config.create_client_config(model) do
       {:ok, client_config} ->
         state = build_active_state(attrs, client_config)
-        log_active_start(state)
-        {:ok, state}
+
+        case Map.get(attrs, :sequence_violations, []) do
+          [] ->
+            log_active_start(state)
+            {:ok, state}
+
+          violations ->
+            {:ok, Init.NeedsRepair.block(state, violations, Map.get(attrs, :repair_command))}
+        end
 
       {:error, reason} ->
         # The persisted model no longer resolves to a runtime

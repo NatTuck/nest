@@ -119,4 +119,6 @@ sidebar). They differ in `fork_message_index`:
 ## Where this is enforced
 
 See `notes/enforce-mesages-seq-invariants.md` for the append-time guard,
-preflight rule list, and offline repair tool.
+preflight rule list, and offline repair tool. The offline repair tool
+(`mix nest.repair_messages`) is implemented and renumbers clones by shifting
+`fork_message_index` / own indices when it inserts into a shared prefix.

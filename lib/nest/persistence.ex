@@ -58,10 +58,12 @@ defmodule Nest.Persistence do
   alias Ecto.Changeset
   alias Nest.Agents.PersistedAgent
   alias Nest.Agents.PersistedMessage
+  alias Nest.LLM.Preflight
   alias Nest.Messages.Compaction
   alias Nest.Messages.Message
   alias Nest.Persistence.CompactionMarker
   alias Nest.Repo
+  alias Nest.Spaces.Space
   alias Nest.Vocations
 
   @doc """
@@ -369,6 +371,7 @@ defmodule Nest.Persistence do
     with {:ok, row} <- fetch_agent(space_id, agent_name),
          {:ok, boundary} <- last_compaction_index(space_id, agent_name) do
       preloaded = load_full_messages(space_id, agent_name)
+      violations = sequence_violations(preloaded, boundary)
       parent_name = parent_name_for(row)
 
       attrs = %{
@@ -386,11 +389,43 @@ defmodule Nest.Persistence do
         created_by_user_id: row.created_by_user_id,
         shared: row.shared == true,
         preloaded_messages: preloaded,
+        sequence_violations: violations,
+        repair_command: repair_command(violations, row.space_id),
         vocation: load_vocation(row.vocation_id)
       }
 
       {:ok, attrs}
     end
+  end
+
+  # Validate the *active* (sendable) slice — the same list the Phase 3
+  # send guard checks — rather than the full resolved sequence, so an
+  # orphan archived below a compaction boundary does not block an agent
+  # whose live messages are fine. Pure: no DB writes.
+  @spec sequence_violations([Message.t()], integer()) :: [Preflight.violation()]
+  defp sequence_violations(preloaded, boundary) do
+    preloaded
+    |> Enum.filter(fn {_role, %{index: idx}} -> idx > boundary end)
+    |> Preflight.validate()
+    |> case do
+      :ok -> []
+      {:error, violations} -> violations
+    end
+  end
+
+  defp repair_command([], _space_id), do: nil
+
+  defp repair_command(_violations, space_id) do
+    case Repo.get(Space, space_id) do
+      %Space{name: name} -> "mix nest.repair_messages --space #{quote_name(name)}"
+      _ -> "mix nest.repair_messages --all"
+    end
+  end
+
+  # Keep the printed command copy-pasteable when a space name contains
+  # shell-special characters (names are normally adjective-animal).
+  defp quote_name(name) do
+    if name =~ ~r/^[A-Za-z0-9._-]+$/, do: name, else: inspect(name)
   end
 
   # Look up the parent agent's name by integer FK. Children
@@ -432,6 +467,13 @@ defmodule Nest.Persistence do
   defdelegate fetch_all_agents_for_space(space_id),
     to: Nest.Persistence.AgentAttrs,
     as: :fetch_all_agents_for_space
+
+  @doc """
+  List every persisted agent row, across all spaces, ordered by id.
+  """
+  defdelegate list_all_agents(),
+    to: Nest.Persistence.AgentAttrs,
+    as: :list_all_agents
 
   @doc """
   Mark the agent row for `{space_id, name}` as archived.

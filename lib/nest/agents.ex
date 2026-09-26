@@ -136,7 +136,9 @@ defmodule Nest.Agents do
       current_mode: info.current_mode,
       context_limit: info.context_limit,
       context_limit_source: info.context_limit_source,
-      usage: info.usage
+      usage: info.usage,
+      sequence_violations: info.sequence_violations,
+      repair_command: info.repair_command
     }
 
     {:ok, agent}
@@ -310,6 +312,22 @@ defmodule Nest.Agents do
       {:ok, pid} -> Agent.set_model(pid, new_model)
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  @doc """
+  Stop and restart an agent so it re-reads its persisted messages.
+
+  Used after an offline `mix nest.repair_messages` run: the running
+  process still holds the pre-repair sequence, so the operator (or
+  the UI's repair banner) reloads it. The next `init/1` re-runs the
+  on-load validation, so the agent comes back `:idle` when the
+  sequence is now valid and `:needs_repair` otherwise.
+
+  Returns `{:ok, name}` on a successful restart or `{:error, reason}`.
+  """
+  @spec reload_agent(integer(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  def reload_agent(space_id, name) do
+    Supervisor.restart_agent(space_id, name)
   end
 
   @doc """

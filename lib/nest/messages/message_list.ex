@@ -9,6 +9,7 @@ defmodule Nest.Messages.MessageList do
   alias Nest.Messages.Assistant
   alias Nest.Messages.Part
   alias Nest.Messages.Tool
+  alias Nest.Messages.User
 
   @doc """
   Drop the trailing message if it's an assistant message
@@ -201,34 +202,45 @@ defmodule Nest.Messages.MessageList do
         missing =
           for %Part.ToolUse{} = tool_use <- parts || [], tool_use.id not in answered, do: tool_use
 
-        build_bridge(missing, incoming)
+        repair_messages(missing, incoming)
 
       _ ->
         []
     end
   end
 
-  defp answered_tool_ids({:tool, %Tool{parts: parts}}) do
-    for %Part.ToolResult{tool_call_id: id} <- parts || [], do: id
-  end
+  @doc """
+  Build the repair messages for a set of unpaired `Part.ToolUse`
+  structs followed by `incoming`.
 
-  defp answered_tool_ids(_incoming), do: []
+  Returns a `{:tool, _}` carrying one `is_error: true` result per
+  missing `tool_use`, plus an assistant acknowledgement when
+  `incoming` is a user message (wire role `user`). Returns `[]`
+  when there is nothing to repair. Shared by the live append
+  bridge (`pairing_bridge/2`) and the offline repair tool so the
+  synthetic shape and wording stay identical.
+  """
+  @spec repair_messages([Part.ToolUse.t()], term()) :: [term()]
+  def repair_messages([], _incoming), do: []
 
-  defp build_bridge([], _incoming), do: []
-
-  defp build_bridge(missing_tool_uses, incoming) do
-    tool = {:tool, %Tool{parts: Enum.map(missing_tool_uses, &interrupted_result/1), api_logs: []}}
+  def repair_messages(missing_tool_uses, incoming) do
+    tool =
+      {:tool, %Tool{parts: Enum.map(missing_tool_uses, &unpaired_tool_result/1), api_logs: []}}
 
     if match?({:user, _}, incoming) do
-      [tool, interrupted_ack()]
+      [tool, repair_ack()]
     else
       [tool]
     end
   end
 
-  # We know the tool's name from the assistant's `Part.ToolUse`; keep
-  # it so the repaired result is shaped like a real one.
-  defp interrupted_result(%Part.ToolUse{id: id, name: name}) do
+  @doc """
+  The `is_error: true` result answering an interrupted
+  `Part.ToolUse`. The tool name is preserved so the repaired
+  result is shaped like a real one.
+  """
+  @spec unpaired_tool_result(Part.ToolUse.t()) :: Part.ToolResult.t()
+  def unpaired_tool_result(%Part.ToolUse{id: id, name: name}) do
     %Part.ToolResult{
       tool_call_id: id,
       name: name,
@@ -238,9 +250,13 @@ defmodule Nest.Messages.MessageList do
     }
   end
 
-  # Breaks the two-consecutive-user-roles problem the tool result
-  # would otherwise create before the incoming user message.
-  defp interrupted_ack do
+  @doc """
+  The synthetic assistant acknowledgement inserted after a repair
+  tool result when the next message is a user turn, so the wire
+  does not carry two consecutive `user` roles.
+  """
+  @spec repair_ack() :: term()
+  def repair_ack do
     {:assistant,
      %Assistant{
        parts: [
@@ -253,6 +269,30 @@ defmodule Nest.Messages.MessageList do
        api_logs: []
      }}
   end
+
+  @doc """
+  The synthetic user message inserted between two consecutive
+  assistant wire roles, so the sequence alternates again.
+  """
+  @spec continuation_prompt() :: term()
+  def continuation_prompt do
+    {:user,
+     %User{
+       parts: [
+         %Part.Text{
+           text:
+             "An earlier assistant turn did not complete cleanly. " <>
+               "Please continue from here."
+         }
+       ]
+     }}
+  end
+
+  defp answered_tool_ids({:tool, %Tool{parts: parts}}) do
+    for %Part.ToolResult{tool_call_id: id} <- parts || [], do: id
+  end
+
+  defp answered_tool_ids(_incoming), do: []
 
   @doc """
   Return the Anthropic wire role of the last non-system,

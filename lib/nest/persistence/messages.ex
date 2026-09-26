@@ -59,6 +59,23 @@ defmodule Nest.Persistence.Messages do
     |> Enum.map(&PersistedMessage.to_runtime/1)
   end
 
+  @doc """
+  Bulk-load the *schema* rows for a set of agents, grouped by
+  `agent_id` and ordered by `message_index`. Unlike
+  `load_own_messages/1`, this keeps the `%PersistedMessage{}`
+  rows (with their primary keys) so the offline repair tool can
+  renumber and rewrite them.
+  """
+  @spec load_rows_by_agent([integer()]) :: %{integer() => [PersistedMessage.t()]}
+  def load_rows_by_agent(agent_ids) when is_list(agent_ids) do
+    from(m in PersistedMessage,
+      where: m.agent_id in ^agent_ids,
+      order_by: [asc: m.agent_id, asc: m.message_index]
+    )
+    |> Repo.all()
+    |> Enum.group_by(& &1.agent_id)
+  end
+
   defp resolve_full(%PersistedAgent{} = row, seen) do
     own = load_own_messages(row.id)
 
