@@ -25,7 +25,8 @@ future, and stop.
 ### LLM Calls
 
 - Once we have an active conversation, we *NEVER* make changes that would
-disrupt prefix caching, except on compaction.
+disrupt prefix caching, except on compaction or user-initiated model change
+(including enabling / disabling thinking).
 - Specifically, that means our main system message is fixed once set and does
 not change except potentially on compaction.
 - The main system message explains things that will always be true for the

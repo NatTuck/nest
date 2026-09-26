@@ -3,7 +3,6 @@ defmodule Nest.SandboxTest do
 
   alias Nest.Hardware
   alias Nest.Sandbox
-  alias Nest.Sandbox.Bypass
 
   setup do
     dir = Path.join(System.tmp_dir!(), "nest_sandbox_test_#{System.unique_integer([:positive])}")
@@ -193,47 +192,6 @@ defmodule Nest.SandboxTest do
       assert "--dev" in args
       refute "--dev-bind" in args
       refute Hardware.habana_log_dir() in args
-    end
-  end
-
-  describe "build_bypass/2" do
-    test "binds the host root and /dev read-write, overlays tmp_path at /tmp, and chdirs" do
-      {:ok, args} = Sandbox.build_bypass("/workspace", "/tmp/agent-1")
-
-      # The host root is bound RW (NOT ro-bind) and the host's /dev is
-      # re-bound so device files stay usable. Nothing is unshared and no
-      # fresh devtmpfs is mounted, so HPU devices/network/IPC are the
-      # container's.
-      assert [
-               "--die-with-parent",
-               "--new-session",
-               "--bind",
-               "/",
-               "/",
-               "--dev-bind",
-               "/dev",
-               "/dev"
-             ] = Enum.take(args, 8)
-
-      refute Enum.any?(args, &String.starts_with?(&1, "--unshare"))
-      refute "--ro-bind" in args
-      refute "--dev" in args
-      refute "--proc" in args
-
-      # tmp_path is overlaid at /tmp, matching the sandboxed path.
-      tmp_idx = Enum.find_index(args, &(&1 == "/tmp"))
-      assert Enum.at(args, tmp_idx - 2) == "--bind"
-      assert Enum.at(args, tmp_idx - 1) == "/tmp/agent-1"
-
-      # The command runs from the workspace via bwrap's --chdir.
-      assert Enum.take(args, -2) == ["--chdir", "/workspace"]
-    end
-
-    test "tmp_path=nil produces no /tmp bind" do
-      {:ok, args} = Sandbox.build_bypass("/workspace", nil)
-
-      refute "/tmp" in args
-      assert Enum.take(args, -2) == ["--chdir", "/workspace"]
     end
   end
 
@@ -554,26 +512,6 @@ defmodule Nest.SandboxTest do
     case Enum.find_index(args, &(&1 == flag)) do
       nil -> []
       idx -> Enum.slice(args, idx, 3)
-    end
-  end
-
-  describe "Bypass" do
-    test "bypass?/1 returns false when no HPU devices are detected (test config pins hpu_device_paths: [])" do
-      # Both a writable-workspace (build/act) and a read-only (plan) caps
-      # map must decline the bypass while `hpu_device_paths` is empty.
-      refute Bypass.bypass?(build_caps(write: [":workspace"]))
-      refute Bypass.bypass?(build_caps(write: []))
-    end
-
-    test "bypass?/3 requires a writable workspace, an HPU, and a container" do
-      build = build_caps(write: [":workspace"])
-      plan = build_caps(write: [])
-
-      assert Bypass.bypass?(build, true, true)
-      refute Bypass.bypass?(build, true, false)
-      refute Bypass.bypass?(build, false, true)
-      refute Bypass.bypass?(plan, true, true)
-      refute Bypass.bypass?("not a caps map", true, true)
     end
   end
 end

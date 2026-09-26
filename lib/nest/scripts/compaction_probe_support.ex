@@ -163,6 +163,7 @@ defmodule Nest.Scripts.CompactionProbeSupport do
         tools: nil,
         tool_choice: :none,
         model: client_config.model,
+        thinking_effort: client_config.thinking_effort,
         stream: true,
         metadata: %{}
       }

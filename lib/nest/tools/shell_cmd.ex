@@ -18,15 +18,11 @@ defmodule Nest.Tools.ShellCmd do
   - Network: Disabled
   - Filesystem read: Entire host (read-only)
   - Filesystem write: Workspace directory (at original path) and /tmp (when tmp_path provided)
-  - /dev: Fresh devtmpfs (overlays the read-only host /dev so device files
-    like /dev/null are writable inside the sandbox)
-  - Devices: HPU devices do not work through the namespace split, so when
-    HPUs are detected inside a container with a writable workspace,
-    `Nest.Sandbox` runs the command under a minimal bwrap mount via
-    `execute_bypass/5` (see `Nest.Sandbox.Bypass`). That mount unshares
-    nothing and re-binds the host's `/dev`, so HPU devices stay
-    available; only `tmp_path` is overlaid at `/tmp`. Every other
-    command stays fully sandboxed.
+  - /dev: A fresh devtmpfs on a non-HPU host (overlays the read-only
+    host /dev so device files like /dev/null are writable inside the
+    sandbox). On an HPU host the host's `/dev` is re-bound with
+    `--dev-bind` and the Habana log dir is bound read-write, so
+    accelerator nodes are visible (see `Nest.Sandbox`).
   """
 
   require Logger
@@ -72,39 +68,6 @@ defmodule Nest.Tools.ShellCmd do
     Logger.info("Executing sandboxed command in #{workspace}: #{truncate_log(command)}")
 
     case run_with_erlexec(sandboxed_cmd, timeout) do
-      {:ok, exit_code, output} ->
-        handle_exit_result(command, exit_code, output, workspace, tmp_path)
-
-      {:error, reason} ->
-        handle_startup_failure(command, reason, workspace, tmp_path)
-    end
-  end
-
-  @doc """
-  Like `execute/5` but for the HPU bypass: bwrap binds the host root
-  read-write and only overlays `tmp_path` at `/tmp`. No namespaces are
-  unshared and the host's `/dev` is re-bound as-is, so HPU devices,
-  network, and IPC are the container's while `/tmp` matches the
-  sandboxed path. Used when `Nest.Sandbox.Bypass.bypass?/1` is true
-  (HPU in Docker).
-  """
-  @spec execute_bypass(String.t(), String.t() | nil, String.t() | nil, map() | nil, keyword()) ::
-          {:ok, String.t()} | {:error, String.t()}
-  def execute_bypass(command, workspace_path, tmp_path \\ nil, _caps \\ nil, opts \\ []) do
-    timeout = Keyword.get(opts, :timeout, @default_timeout_ms)
-    stdin = Keyword.get(opts, :stdin, "")
-
-    workspace = resolve_workspace(workspace_path)
-    if tmp_path, do: File.mkdir_p!(tmp_path)
-
-    final_command = compose_command_with_stdin(command, stdin)
-    {:ok, bwrap_args} = Sandbox.build_bypass(workspace, tmp_path)
-    cmd = build_bwrap_command(final_command, bwrap_args)
-
-    Logger.info("Executing bypass (minimal bwrap) in #{workspace}: #{truncate_log(command)}")
-
-    # bwrap's `--chdir` is the working dir; no erlexec `cd` needed.
-    case run_with_erlexec(cmd, timeout) do
       {:ok, exit_code, output} ->
         handle_exit_result(command, exit_code, output, workspace, tmp_path)
 

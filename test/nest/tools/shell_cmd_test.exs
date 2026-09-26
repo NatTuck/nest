@@ -60,42 +60,6 @@ defmodule Nest.Tools.ShellCmdTest do
   end
 
   @tag :bwrap
-  test "execute_bypass/5 remaps /tmp to tmp_path and cds into the workspace" do
-    # The bypass path used when HPUs are detected in Docker: bwrap binds
-    # the host root read-write, re-binds /dev, and overlays tmp_path at
-    # /tmp. The command must run from the workspace and see its own
-    # scratch dir as /tmp.
-    #
-    # The workspace must live outside /tmp: binding tmp_path over /tmp
-    # would otherwise shadow a workspace nested under it. Use _build/tmp,
-    # which is project-relative and always writable.
-    uniq = System.unique_integer([:positive])
-    workspace = Path.join([File.cwd!(), "_build", "tmp", "nest_bypass_ws_#{uniq}"])
-    tmp_path = Path.join(System.tmp_dir!(), "nest_bypass_tmp_#{uniq}")
-    scratch = "nest_bypass_scratch_#{uniq}.txt"
-    File.mkdir_p!(workspace)
-    on_exit(fn -> File.rm_rf([workspace, tmp_path]) end)
-
-    assert {:ok, output} = ShellCmd.execute_bypass("echo bypass-ok", workspace, tmp_path, nil, [])
-    assert output =~ "bypass-ok"
-
-    assert {:ok, _} = ShellCmd.execute_bypass("echo rel > rel.txt", workspace, tmp_path, nil, [])
-    assert File.read!(Path.join(workspace, "rel.txt")) =~ "rel"
-
-    assert {:ok, _} =
-             ShellCmd.execute_bypass(
-               "echo scratch > /tmp/#{scratch}",
-               workspace,
-               tmp_path,
-               nil,
-               []
-             )
-
-    assert File.read!(Path.join(tmp_path, scratch)) =~ "scratch"
-    refute File.exists?(Path.join("/tmp", scratch))
-  end
-
-  @tag :bwrap
   test "a symlinked workspace is bound at its canonical path; read and write work through the symlink" do
     # Include the OS pid so paths are unique across BEAM runs — a
     # previously killed run can leave these behind, and

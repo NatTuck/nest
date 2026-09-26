@@ -131,6 +131,7 @@ defmodule Nest.LLM.AnthropicClientTest do
 
     test "rebuilds assistant content blocks preserving text, thinking + signature, and tool_use order" do
       req = %RunRequest{
+        thinking_effort: :medium,
         messages: [
           {:assistant,
            %Assistant{
@@ -203,27 +204,78 @@ defmodule Nest.LLM.AnthropicClientTest do
              ]
     end
 
-    test "emits thinking block without signature when the assistant has no signature in metadata" do
+    test "excludes an unsigned thinking block even when thinking is enabled" do
       req = %RunRequest{
+        thinking_effort: :high,
         messages: [
           {:assistant,
            %Assistant{
              index: 2,
-             parts: [%Part.Thinking{thinking: "just thinking", signature: nil}]
+             parts: [
+               %Part.Text{text: "visible text"},
+               %Part.Thinking{thinking: "just thinking", signature: nil},
+               %Part.ToolUse{id: "toolu_1", name: "shell-cmd", arguments: %{}}
+             ]
            }}
         ]
       }
 
       payload = AnthropicClient.format_request_payload(req, [])
 
+      assert payload["thinking"] == %{"type" => "enabled", "budget_tokens" => 16_000}
+
       assert payload["messages"] == [
                %{
                  "role" => "assistant",
                  "content" => [
-                   %{"type" => "thinking", "thinking" => "just thinking"}
+                   %{"type" => "text", "text" => "visible text"},
+                   %{
+                     "type" => "tool_use",
+                     "id" => "toolu_1",
+                     "name" => "shell-cmd",
+                     "input" => %{}
+                   }
                  ]
                }
              ]
+    end
+
+    test "excludes historical signed thinking blocks when thinking is off" do
+      for level <- [:off, nil] do
+        req = %RunRequest{
+          thinking_effort: level,
+          messages: [
+            {:assistant,
+             %Assistant{
+               index: 2,
+               parts: [
+                 %Part.Text{text: "visible text"},
+                 %Part.Thinking{thinking: "let me think", signature: "sig_abc"},
+                 %Part.ToolUse{id: "toolu_1", name: "shell-cmd", arguments: %{}}
+               ]
+             }}
+          ]
+        }
+
+        payload = AnthropicClient.format_request_payload(req, [])
+
+        refute Map.has_key?(payload, "thinking")
+
+        assert payload["messages"] == [
+                 %{
+                   "role" => "assistant",
+                   "content" => [
+                     %{"type" => "text", "text" => "visible text"},
+                     %{
+                       "type" => "tool_use",
+                       "id" => "toolu_1",
+                       "name" => "shell-cmd",
+                       "input" => %{}
+                     }
+                   ]
+                 }
+               ]
+      end
     end
 
     test "round-trips a stored Assistant through AnthropicClient.format_request_payload/2" do
@@ -248,7 +300,10 @@ defmodule Nest.LLM.AnthropicClientTest do
       }
 
       payload =
-        AnthropicClient.format_request_payload(%RunRequest{messages: [{:assistant, stored}]}, [])
+        AnthropicClient.format_request_payload(
+          %RunRequest{thinking_effort: :medium, messages: [{:assistant, stored}]},
+          []
+        )
 
       assert payload["messages"] == [
                %{

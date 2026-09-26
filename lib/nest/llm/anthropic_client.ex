@@ -14,6 +14,11 @@ defmodule Nest.LLM.AnthropicClient do
   `content_block_start.signature` or `signature_delta` and exposes
   it on the canonical `{:thinking_signature, _}` event so the
   accumulator can preserve it in the assistant turn for replay.
+
+  Historical thinking blocks are request-only. They are never removed
+  from the recorded history, but they are excluded from a request when
+  thinking is disabled for that request or when the block carries no
+  signature to echo back.
   """
 
   @behaviour Nest.LLM.Client
@@ -225,10 +230,12 @@ defmodule Nest.LLM.AnthropicClient do
   end
 
   defp build_base_payload(request, conversation_messages) do
+    thinking? = thinking_enabled?(request.thinking_effort)
+
     %{
       "model" => request.model,
       "max_tokens" => request.max_tokens || @max_tokens_default,
-      "messages" => Enum.map(conversation_messages, &message_to_wire/1),
+      "messages" => Enum.map(conversation_messages, &message_to_wire(&1, thinking?)),
       "stream" => true
     }
   end
@@ -259,7 +266,7 @@ defmodule Nest.LLM.AnthropicClient do
   # system message was extracted by `format_request_payload/2`
   # and is in the top-level `"system"` field; this clause only
   # fires for any reminder at a later position.
-  defp message_to_wire({:system, %System{parts: parts}}) do
+  defp message_to_wire({:system, %System{parts: parts}}, _thinking?) do
     %{"role" => "system", "content" => system_text_from_parts(parts)}
   end
 
@@ -267,7 +274,7 @@ defmodule Nest.LLM.AnthropicClient do
   # `text` content block; tool results on the user role are
   # not produced by the agent (the tool role carries them),
   # so this path emits a list of text blocks.
-  defp message_to_wire({:user, %User{parts: parts}}) do
+  defp message_to_wire({:user, %User{parts: parts}}, _thinking?) do
     %{
       "role" => "user",
       "content" => ensure_content_blocks(Enum.map(parts || [], &user_part_to_wire/1))
@@ -276,19 +283,42 @@ defmodule Nest.LLM.AnthropicClient do
 
   # Assistant: rebuild the Anthropic content block array from
   # the parts list, preserving text, thinking (with signature),
-  # and tool_use blocks in the correct order.
-  defp message_to_wire({:assistant, %Assistant{parts: parts}}) do
-    %{
-      "role" => "assistant",
-      "content" => ensure_content_blocks(Enum.map(parts || [], &assistant_part_to_wire/1))
-    }
+  # and tool_use blocks in the correct order. Historical
+  # thinking blocks are request-only: the recorded history is
+  # never mutated, but a thinking block is omitted from the wire
+  # when thinking is disabled for this request, or when it has
+  # no signature (unsigned reasoning — e.g. history that
+  # originated from an OpenAI-compatible model — cannot be
+  # replayed because Anthropic validates the signature).
+  defp message_to_wire({:assistant, %Assistant{parts: parts}}, thinking?) do
+    blocks =
+      parts
+      |> excluded_thinking(thinking?)
+      |> Enum.map(&assistant_part_to_wire/1)
+
+    %{"role" => "assistant", "content" => ensure_content_blocks(blocks)}
   end
 
   # Tool results: Anthropic expects them in a user-role message with
   # `tool_result` content blocks (not a dedicated tool role).
-  defp message_to_wire({:tool, %Tool{parts: parts}}) do
+  defp message_to_wire({:tool, %Tool{parts: parts}}, _thinking?) do
     %{"role" => "user", "content" => Enum.map(parts || [], &tool_part_to_wire/1)}
   end
+
+  # Thinking is "off" for `nil` and `:off` (matching
+  # `maybe_put_thinking/2`, which omits the top-level `thinking`
+  # param for both).
+  defp thinking_enabled?(effort), do: effort not in [nil, :off]
+
+  defp excluded_thinking(parts, thinking?) do
+    Enum.reject(parts || [], &exclude_thinking?(&1, thinking?))
+  end
+
+  defp exclude_thinking?(%Part.Thinking{signature: signature}, thinking?) do
+    not thinking? or is_nil(signature)
+  end
+
+  defp exclude_thinking?(_part, _thinking?), do: false
 
   # Anthropic requires each message's `content` block array to be
   # non-empty. A message with no parts (e.g. an assistant finalized
@@ -307,8 +337,7 @@ defmodule Nest.LLM.AnthropicClient do
 
   defp assistant_part_to_wire(%Part.Thinking{thinking: text, signature: signature})
        when text != "" and not is_nil(text) do
-    block = %{"type" => "thinking", "thinking" => text}
-    if signature, do: Map.put(block, "signature", signature), else: block
+    %{"type" => "thinking", "thinking" => text, "signature" => signature}
   end
 
   defp assistant_part_to_wire(%Part.ToolUse{id: id, name: name, arguments: args}) do

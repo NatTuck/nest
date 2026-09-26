@@ -36,7 +36,7 @@ config :nest, force_subagent_mock: true
 config :nest, stop_fallback_ms: 100
 
 # Keep unit tests independent of the host's `/dev`: pin HPU detection to
-# none so `Nest.Sandbox.Bypass.bypass?/1` never trips, while
+# none so the sandbox always takes the non-HPU path, while
 # `hardware_test.exs` exercises detection against a `dev_root` fixture.
 config :nest, hpu_device_paths: []
 

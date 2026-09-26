@@ -6,8 +6,8 @@ import Config
 # instances can run side-by-side without colliding.
 dev_inst =
   case File.cwd!() |> Path.basename() do
-    "nest" -> %{port: 4000, database: "nest_dev"}
-    _ -> %{port: 4002, database: "nest_dev2"}
+    "nest" -> %{port: 4040, database: "nest_dev"}
+    _ -> %{port: 4042, database: "nest_dev2"}
   end
 
 # Configure Phoenix.Copy for static assets

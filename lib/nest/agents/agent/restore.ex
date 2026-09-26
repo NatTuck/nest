@@ -43,8 +43,11 @@ defmodule Nest.Agents.Agent.Restore do
 
   `tool_choice: :auto` matches the agent's standard chat
   config (vocation changes mid-conversation aren't supported
-  elsewhere). `stream: true, metadata: %{}` mirror the live
-  request defaults. The `opts` arg to
+  elsewhere). `thinking_effort` comes from the agent's
+  `client_config` so the rebuilt wire format matches the live
+  request (the wire format excludes historical thinking blocks
+  when thinking is off). `stream: true, metadata: %{}` mirror
+  the live request defaults. The `opts` arg to
   `format_request_payload/2` is left empty: the wire format
   doesn't carry `base_url`/`api_key`, which are http concerns.
   """
@@ -79,6 +82,7 @@ defmodule Nest.Agents.Agent.Restore do
       tools: state.tools,
       tool_choice: :auto,
       model: client_config.model,
+      thinking_effort: client_config.thinking_effort,
       stream: true,
       metadata: %{}
     }

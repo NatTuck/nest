@@ -19,11 +19,16 @@ defmodule Nest.LLM.CrossProviderReplayTest do
     3. OpenAI-compatible providers preserve `tool_call_id`
        verbatim (the same opaque string format works for
        both protocols); no encoding step.
-    4. OpenAI drops `Thinking` parts on the wire
-       (`text_from_parts/1` filters to `%Part.Text{}` only);
-       Anthropic renders them with their `signature`. Prior
-       thinking content is therefore invisible to an OpenAI
-       target — acceptable but documented.
+    4. Both clients treat historical `Thinking` parts as
+       request-only. OpenAI drops them on the wire
+       (`text_from_parts/1` filters to `%Part.Text{}` only).
+       Anthropic renders only signed thinking, and only when
+       thinking is enabled for the request; unsigned thinking
+       (e.g. history that originated from an OpenAI-compatible
+       reasoning model) is never replayed. Prior thinking
+       content is therefore invisible to an OpenAI target, and
+       to Anthropic unless Anthropic produced it with thinking
+       on.
 
   These tests build a mixed-history `RunRequest`, render it
   through each client, and walk the resulting JSON to confirm
@@ -141,12 +146,13 @@ defmodule Nest.LLM.CrossProviderReplayTest do
     test "tool_use / tool_result use the same id strings and history alternates" do
       req = %RunRequest{
         model: "claude-3-opus-20240229",
+        thinking_effort: :high,
         messages: [
           sys(0, "be brief"),
           user(1, "hi"),
           assistant_with_tool_call(2, "call_abc123", "shell-cmd", %{"cmd" => "ls"}),
           tool_result(3, "call_abc123", "file1\nfile2"),
-          assistant_with_thinking(4, "done", "sig_xyz"),
+          assistant_with_thinking(4, "done", nil),
           user(5, "goodbye"),
           assistant_text(6, "bye")
         ],
@@ -170,18 +176,13 @@ defmodule Nest.LLM.CrossProviderReplayTest do
       assert tool_result_block["type"] == "tool_result"
       assert tool_result_block["tool_use_id"] == "call_abc123"
 
-      # Thinking signature is preserved on the wire (Anthropic's
-      # native rendering — the new model can rebuild its own
-      # reasoning context from `signature`).
+      # The OpenAI-origin thinking block has no signature, so
+      # Anthropic cannot replay it — it is dropped even though
+      # thinking is enabled for this request. The visible text
+      # survives verbatim.
       assistant_at_4 = Enum.at(payload["messages"], 3)
       assert assistant_at_4["role"] == "assistant"
-
-      has_thinking_block =
-        Enum.any?(assistant_at_4["content"], fn block ->
-          block["type"] == "thinking"
-        end)
-
-      assert has_thinking_block
+      assert assistant_at_4["content"] == [%{"type" => "text", "text" => "done"}]
 
       # Final alternation: assistant → user → assistant.
       assert Enum.at(payload["messages"], 4)["role"] == "user"

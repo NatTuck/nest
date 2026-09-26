@@ -67,7 +67,8 @@ defmodule Nest.Agents.Agent.RestoreTest do
       base_url: "https://test/api",
       api_key: "test-key",
       receive_timeout: 5_000,
-      model: "test-model"
+      model: "test-model",
+      thinking_effort: :high
     }
 
     %Nest.Agents.Agent{
@@ -114,6 +115,7 @@ defmodule Nest.Agents.Agent.RestoreTest do
         tools: state.tools,
         tool_choice: :auto,
         model: state.client_config.model,
+        thinking_effort: state.client_config.thinking_effort,
         stream: true,
         metadata: %{}
       }
