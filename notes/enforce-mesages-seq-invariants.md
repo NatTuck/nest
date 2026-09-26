@@ -290,7 +290,8 @@ The docs remain the contract; any remaining divergence is a code bug.
 2. **Append enforcement** — §3. **Done.**
 3. **Preflight rule list + call site** — §2. **Done.**
 4. **Offline repair tool** — §5. **Done** (also fixes simple alternation
-   violations). §4 (on-load validation) remains.
+   violations).
+5. **On-load validation** — §4. **Done.**
 
 Phases 2–4 depend on Phase 1 (the repair tool's clone renumbering is only
 meaningful once clones share rows).
