@@ -5,9 +5,9 @@
  * behaviour introduced by sub-agent delegation.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, act, fireEvent } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Routes, Route } from "react-router-dom";
 
 import { Sidebar } from "./Sidebar";
 import { useStore } from "../store";
@@ -908,5 +908,64 @@ describe("Sidebar space archiving", () => {
 
     const payload = await pushPromise;
     expect(payload).toEqual({ space_id: 3 });
+  });
+});
+
+describe("Sidebar logout", () => {
+  beforeEach(() => {
+    useStore.getState()._reset();
+  });
+
+  function renderSidebar() {
+    return render(
+      <MemoryRouter initialEntries={["/spaces"]}>
+        <Routes>
+          <Route path="/spaces" element={<Sidebar />} />
+          <Route path="/login" element={<div>LOGIN PAGE</div>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+  }
+
+  it("disconnects the socket, resets the store, and navigates to /login on logout", () => {
+    const disconnect = vi.fn();
+    window.__nest_socket = { disconnect };
+    useStore.setState({
+      currentUser: { id: 1, username: "admin", is_admin: true },
+    });
+
+    renderSidebar();
+    act(() => {
+      screen.getByRole("button", { name: /logout/i }).click();
+    });
+
+    expect(disconnect).toHaveBeenCalledTimes(1);
+    expect(useStore.getState().currentUser).toBeNull();
+    expect(screen.getByText("LOGIN PAGE")).toBeInTheDocument();
+
+    delete window.__nest_socket;
+  });
+
+  it("logs out even when the socket is missing or lacks a disconnect method", () => {
+    // A socket object without a `disconnect` method.
+    window.__nest_socket = {};
+    useStore.setState({ currentUser: { id: 2, username: "bob" } });
+    const first = renderSidebar();
+    act(() => {
+      screen.getByRole("button", { name: /logout/i }).click();
+    });
+    expect(useStore.getState().currentUser).toBeNull();
+    first.unmount();
+
+    // No socket at all.
+    delete window.__nest_socket;
+    useStore.setState({ currentUser: { id: 3, username: "carol" } });
+    renderSidebar();
+    act(() => {
+      screen.getByRole("button", { name: /logout/i }).click();
+    });
+    expect(useStore.getState().currentUser).toBeNull();
+
+    delete window.__nest_socket;
   });
 });
