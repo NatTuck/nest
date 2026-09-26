@@ -1,11 +1,12 @@
 defmodule Nest.Hardware do
   @moduledoc """
-  Host hardware detection for the sandbox HPU bypass.
+  Host hardware detection for the sandbox's HPU support.
 
   `hpu_device_paths/0` detects Habana Gaudi (HPU) devices on the host
-  and returns their paths. Used by `Nest.Sandbox.Bypass` to decide
-  whether to skip bwrap entirely (HPU passthrough through bwrap did not
-  work reliably). Nothing else in the sandbox consults this.
+  and returns their paths. `Nest.Sandbox` uses this to expose the host's
+  `/dev` with `--dev-bind` (instead of a fresh minimal devtmpfs) and to
+  overlay `habana_log_dir/0` read-write, since the driver logs there and
+  the directory is read-only under the sandbox's root `--ro-bind`.
 
   Detection is directory-oriented on purpose:
 
@@ -19,6 +20,8 @@ defmodule Nest.Hardware do
   tests independent of the host's `/dev`; pass a `dev_root` to
   `hpu_device_paths/1` to exercise detection against a fixture tree.
   """
+
+  @default_log_dir "/var/log/habana_logs"
 
   @doc """
   The host device paths whose presence means an HPU is available.
@@ -51,6 +54,25 @@ defmodule Nest.Hardware do
       (hpu ++ infiniband_paths(dev_root)) |> Enum.uniq() |> Enum.sort()
     end
   end
+
+  @doc """
+  The directory the Habana driver writes its logs to.
+
+  Defaults to `#{@default_log_dir}` when `HABANA_LOGS` is unset or
+  empty; otherwise the expanded value of `HABANA_LOGS`.
+  """
+  @spec habana_log_dir() :: String.t()
+  def habana_log_dir do
+    habana_log_dir(System.get_env("HABANA_LOGS"))
+  end
+
+  @doc """
+  Normalize a raw `HABANA_LOGS` value (exposed for tests).
+  """
+  @spec habana_log_dir(String.t() | nil) :: String.t()
+  def habana_log_dir(nil), do: @default_log_dir
+  def habana_log_dir(""), do: @default_log_dir
+  def habana_log_dir(path), do: Path.expand(path)
 
   defp accel_path(dev_root) do
     dir = Path.join(dev_root, "accel")

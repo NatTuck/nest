@@ -1,6 +1,7 @@
 defmodule Nest.SandboxTest do
   use ExUnit.Case, async: true
 
+  alias Nest.Hardware
   alias Nest.Sandbox
   alias Nest.Sandbox.Bypass
 
@@ -167,6 +168,72 @@ defmodule Nest.SandboxTest do
       {_, idx} = hd(tmp_indices)
       assert Enum.at(args, idx - 2) == "--bind"
       assert Enum.at(args, idx - 1) == "/tmp/agent-1"
+    end
+  end
+
+  describe "build/5 HPU passthrough" do
+    test "binds host /dev and the Habana log dir read-write when HPUs are present" do
+      caps = build_caps(write: [":workspace"])
+      log_dir = Hardware.habana_log_dir()
+      {:ok, args} = Sandbox.build(caps, "/workspace", nil, "/workspace", ["/dev/accel"])
+
+      # No fresh devtmpfs; the host /dev is bound so accelerator nodes
+      # are present and usable.
+      refute "--dev" in args
+      assert Enum.chunk_every(args, 3, 1) |> Enum.member?(["--dev-bind", "/dev", "/dev"])
+
+      # The Habana log dir is overlaid read-write after the root ro-bind.
+      assert Enum.chunk_every(args, 3, 1) |> Enum.member?(["--bind", log_dir, log_dir])
+    end
+
+    test "uses a fresh --dev devtmpfs and no Habana bind without HPUs" do
+      caps = build_caps(write: [":workspace"])
+      {:ok, args} = Sandbox.build(caps, "/workspace", nil, "/workspace", [])
+
+      assert "--dev" in args
+      refute "--dev-bind" in args
+      refute Hardware.habana_log_dir() in args
+    end
+  end
+
+  describe "build_bypass/2" do
+    test "binds the host root and /dev read-write, overlays tmp_path at /tmp, and chdirs" do
+      {:ok, args} = Sandbox.build_bypass("/workspace", "/tmp/agent-1")
+
+      # The host root is bound RW (NOT ro-bind) and the host's /dev is
+      # re-bound so device files stay usable. Nothing is unshared and no
+      # fresh devtmpfs is mounted, so HPU devices/network/IPC are the
+      # container's.
+      assert [
+               "--die-with-parent",
+               "--new-session",
+               "--bind",
+               "/",
+               "/",
+               "--dev-bind",
+               "/dev",
+               "/dev"
+             ] = Enum.take(args, 8)
+
+      refute Enum.any?(args, &String.starts_with?(&1, "--unshare"))
+      refute "--ro-bind" in args
+      refute "--dev" in args
+      refute "--proc" in args
+
+      # tmp_path is overlaid at /tmp, matching the sandboxed path.
+      tmp_idx = Enum.find_index(args, &(&1 == "/tmp"))
+      assert Enum.at(args, tmp_idx - 2) == "--bind"
+      assert Enum.at(args, tmp_idx - 1) == "/tmp/agent-1"
+
+      # The command runs from the workspace via bwrap's --chdir.
+      assert Enum.take(args, -2) == ["--chdir", "/workspace"]
+    end
+
+    test "tmp_path=nil produces no /tmp bind" do
+      {:ok, args} = Sandbox.build_bypass("/workspace", nil)
+
+      refute "/tmp" in args
+      assert Enum.take(args, -2) == ["--chdir", "/workspace"]
     end
   end
 

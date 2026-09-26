@@ -32,8 +32,11 @@ defmodule Nest.Sandbox do
   a host read is byte- and permission-identical to what bwrap would
   expose. `write/5` and `run/5` go through bwrap (`ShellCmd`), so
   write/execute permissions are enforced by the mounts — except when
-  the HPU bypass is active, in which case no sandbox is applied at all
-  (see `Nest.Sandbox.Bypass`).
+  the HPU bypass is active. In that case the command still runs under
+  a minimal bwrap mount (`build_bypass/2`): the host root is bound
+  read-write and only the per-agent scratch dir is overlaid at `/tmp`,
+  so HPU devices, network, and IPC are the container's (see
+  `Nest.Sandbox.Bypass`).
 
   ## Caps shape
 
@@ -67,15 +70,16 @@ defmodule Nest.Sandbox do
 
   ## Device passthrough / HPU
 
-  bwrap runs with `--unshare-all` and a fresh `--dev` devtmpfs, so the
-  default sandbox is fully isolated. Habana Gaudi (HPU) devices do not
-  work reliably through that namespace split, so when HPUs are detected
-  inside a container and the mode has a writable workspace, the command
-  is run without bwrap at all (see `Nest.Sandbox.Bypass`). That is the
-  only HPU-specific behavior; every other sandbox is untouched.
+  bwrap runs with `--unshare-all` and a fresh `--dev` devtmpfs by
+  default. On a host with Habana Gaudi (HPU) devices, the sandbox
+  instead binds the host's `/dev` with `--dev-bind` (a fresh devtmpfs
+  has no accelerator nodes) and overlays `Hardware.habana_log_dir/0`
+  read-write (the driver logs there and the path is read-only under the
+  root `--ro-bind / /`). Everything else about the sandbox is unchanged.
   """
 
   alias Nest.FSPath
+  alias Nest.Hardware
   alias Nest.Sandbox.Bypass
   alias Nest.Tools.ShellCmd
   alias Nest.Tools.ShellEscape
@@ -120,13 +124,33 @@ defmodule Nest.Sandbox do
   Build bwrap args, binding the workspace (canonicalized) while
   `--chdir`-ing to `chdir_path`. `chdir_path` lets callers keep the
   user-facing workspace path while the mount uses the canonical one.
+
+  Detects the host's HPU devices via `Nest.Hardware` and delegates to
+  `build/5`.
   """
   @spec build(map(), String.t(), String.t() | nil, String.t()) ::
           {:ok, [String.t()]} | {:error, String.t()}
   def build(caps, workspace_path, tmp_path, chdir_path) do
+    build(caps, workspace_path, tmp_path, chdir_path, Hardware.hpu_device_paths())
+  end
+
+  @doc """
+  Build bwrap args with an explicit HPU device-path list.
+
+  When `hpu_device_paths` is non-empty, the host's `/dev` is bound with
+  `--dev-bind` (a fresh `--dev` devtmpfs has no accelerator nodes) and
+  `Hardware.habana_log_dir/0` is overlaid read-write (the driver logs
+  there, and it is read-only under the root `--ro-bind / /`). Otherwise
+  the default fresh `--dev` devtmpfs is used. The argument is threaded
+  explicitly so tests can exercise both branches without mutating the
+  global `:hpu_device_paths` config.
+  """
+  @spec build(map(), String.t(), String.t() | nil, String.t(), [String.t()]) ::
+          {:ok, [String.t()]} | {:error, String.t()}
+  def build(caps, workspace_path, tmp_path, chdir_path, hpu_device_paths) do
     with :ok <- validate_caps(caps) do
       args =
-        base_args(caps)
+        base_args(caps, hpu_device_paths)
         |> append_net_flag(caps)
         |> append_workspace_bind(caps, workspace_path)
         |> append_write_binds(caps, workspace_path)
@@ -135,6 +159,26 @@ defmodule Nest.Sandbox do
 
       {:ok, args}
     end
+  end
+
+  @doc """
+  Build the bwrap argument list for the HPU bypass path.
+
+  Unlike `build/4`, nothing is unshared or replaced: the host root is
+  bound read-write (so the container's network, IPC, `/proc`, `/sys`,
+  and device nodes stay visible) and the host's `/dev` is re-bound so
+  device files remain usable. Only `tmp_path` is overlaid at `/tmp`,
+  giving the bypassed command the same private scratch dir the
+  sandboxed path provides while leaving HPU devices untouched.
+  """
+  @spec build_bypass(String.t(), String.t() | nil) :: {:ok, [String.t()]}
+  def build_bypass(workspace_path, tmp_path) do
+    args =
+      ["--die-with-parent", "--new-session", "--bind", "/", "/", "--dev-bind", "/dev", "/dev"]
+      |> append_tmp_bind(tmp_path)
+      |> append_chdir(workspace_path)
+
+    {:ok, args}
   end
 
   @doc """
@@ -498,14 +542,14 @@ defmodule Nest.Sandbox do
   @doc """
   Run `command` inside the bwrap sandbox. Authorizes nothing further
   itself — the mounts enforce filesystem rules. Delegates to
-  `ShellCmd.execute/5`, or to `ShellCmd.execute_direct/5` when the
+  `ShellCmd.execute/5`, or to `ShellCmd.execute_bypass/5` when the
   bwrap bypass is active (HPU in Docker with a writable workspace).
   """
   @spec run(String.t(), String.t() | nil, String.t() | nil, map() | nil, keyword()) ::
           {:ok, String.t()} | {:error, String.t()}
   def run(command, workspace, tmp_path, caps, opts \\ []) do
     if Bypass.bypass?(caps || default_caps()) do
-      ShellCmd.execute_direct(command, workspace, tmp_path, caps, opts)
+      ShellCmd.execute_bypass(command, workspace, tmp_path, caps, opts)
     else
       ShellCmd.execute(command, workspace, tmp_path, caps, opts)
     end
@@ -517,14 +561,14 @@ defmodule Nest.Sandbox do
   `writable_roots/2`), so a write outside the permitted paths fails at
   the kernel level (read-only file system) rather than being
   pre-authorized here. Delegates to `ShellCmd.execute/5`, or to
-  `ShellCmd.execute_direct/5` when the bwrap bypass is active.
+  `ShellCmd.execute_bypass/5` when the bwrap bypass is active.
   Returns `{:ok, output}` or `{:error, reason}`.
   """
   @spec write(String.t(), binary(), map(), String.t() | nil, String.t() | nil) ::
           {:ok, String.t()} | {:error, String.t()}
   def write(path, content, caps, workspace, tmp_path) do
     if Bypass.bypass?(caps || default_caps()) do
-      ShellCmd.execute_direct(
+      ShellCmd.execute_bypass(
         "cat > #{ShellEscape.escape(path)}",
         workspace,
         tmp_path,
@@ -544,17 +588,20 @@ defmodule Nest.Sandbox do
 
   # ---- Internal arg-builder helpers ----
 
-  defp base_args(caps) do
+  defp base_args(caps, hpu_device_paths) do
     read_args =
       caps
       |> readable_roots()
       |> Enum.flat_map(fn root -> ["--ro-bind", root, root] end)
 
+    hpu_args = hpu_args(hpu_device_paths)
+
     # Read-only bind of the readable roots. Must come BEFORE
     # --dev/--proc so the devtmpfs overlays it and /proc/self stays
     # writable inside the sandbox.
     # Fresh devtmpfs over the read-only bind. Makes /dev/null,
-    # /dev/zero, etc. writable for shell redirects.
+    # /dev/zero, etc. writable for shell redirects. On an HPU host the
+    # host's /dev is bound instead so accelerator nodes are present.
     # Mount the host's procfs after the read-only root bind so that
     # /proc/self/<pid>/... files stay writable inside the sandbox.
     [
@@ -564,8 +611,19 @@ defmodule Nest.Sandbox do
       "--new-session"
     ] ++
       read_args ++
-      ["--dev", "/dev"] ++
+      hpu_args ++
       ["--proc", "/proc"]
+  end
+
+  # HPU hosts get the host's device nodes and a writable Habana log dir.
+  # The log dir must be overlaid after the `--ro-bind / /` (which mounts
+  # it read-only); `--dev-bind` is required because `--ro-bind` mounts
+  # with nodev, making device nodes under the bound root unusable.
+  defp hpu_args([]), do: ["--dev", "/dev"]
+
+  defp hpu_args(_hpu_device_paths) do
+    log_dir = Hardware.habana_log_dir()
+    ["--bind", log_dir, log_dir, "--dev-bind", "/dev", "/dev"]
   end
 
   defp append_net_flag(args, %{"net" => true}), do: args ++ ["--share-net"]

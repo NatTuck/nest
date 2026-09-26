@@ -8,9 +8,13 @@ defmodule Nest.Sandbox.Bypass do
   3. The caps include a writable workspace (`":workspace"` in
      `caps["fs"]["write"]`) — i.e. a build/act mode, not plan
 
-  When skipped, the command runs with no sandbox enforcement at all:
-  the container itself is the sandbox, so read/write/network caps do
-  not apply. Plan mode (no writable workspace) is never bypassed.
+  When skipped, the command runs under a minimal bwrap mount instead
+  (`Nest.Sandbox.build_bypass/2`): the host root is bound read-write
+  and the host's `/dev` re-bound, so nothing is unshared and HPU
+  devices, network, and IPC are the container's; only the per-agent
+  scratch dir is overlaid at `/tmp`. Read/write/network caps do not
+  apply — the container itself is the sandbox. Plan mode (no writable
+  workspace) is never bypassed.
   """
 
   alias Nest.Hardware
@@ -20,9 +24,9 @@ defmodule Nest.Sandbox.Bypass do
   """
   @spec bypass?(map()) :: boolean()
   def bypass?(%{"fs" => %{"write" => writes}} = caps) do
-    # Short-circuit on the caps first so plan-mode commands never probe
-    # the host's /dev or container markers.
-    ":workspace" in writes and bypass?(caps, hpu_detected?(), inside_docker?())
+    # TEMP: forced off to test the full bwrap sandbox on HPU.
+    # Revert by deleting the leading `false and`.
+    false and ":workspace" in writes and bypass?(caps, hpu_detected?(), inside_docker?())
   end
 
   def bypass?(_caps), do: false

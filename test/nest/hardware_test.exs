@@ -52,4 +52,16 @@ defmodule Nest.HardwareTest do
       assert Hardware.hpu_device_paths(root) == []
     end
   end
+
+  describe "habana_log_dir/1" do
+    test "uses the default when unset or empty" do
+      assert Hardware.habana_log_dir(nil) == "/var/log/habana_logs"
+      assert Hardware.habana_log_dir("") == "/var/log/habana_logs"
+    end
+
+    test "expands a configured HABANA_LOGS path" do
+      assert Hardware.habana_log_dir("/var/log/habana_logs/") == "/var/log/habana_logs"
+      assert Hardware.habana_log_dir("/custom/logs") == "/custom/logs"
+    end
+  end
 end

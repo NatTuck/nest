@@ -24,10 +24,13 @@ isolation (`--unshare-all` plus a fresh `--dev` devtmpfs).
 is inside a container (`/.dockerenv`, `/run/.containerenv`, or a
 containerd/podman cgroup/mountinfo marker), and the mode has a writable
 workspace (build/act, not plan), `Sandbox.run/5` and `Sandbox.write/5`
-route to `ShellCmd.execute_direct/5`, which runs the command without
-bwrap and with no sandbox enforcement at all. The command still runs
-from the workspace.
+route to `ShellCmd.execute_bypass/5`. That runs the command under a
+minimal bwrap mount (`Nest.Sandbox.build_bypass/2`): the host root is
+bound read-write and the host's `/dev` re-bound, so nothing is unshared,
+no fresh devtmpfs is mounted, and HPU devices, network, and IPC are the
+container's. Only the per-agent scratch dir is overlaid at `/tmp`, so
+build mode sees the same private temp dir plan mode's sandbox provides.
 
-This avoids the HPU-vs-namespace problem entirely: if you're in a
-container with HPUs, the sandbox is the container itself, not a nested
-bwrap. Every other command keeps the full bwrap sandbox.
+This avoids the HPU-vs-namespace problem (the full sandbox's
+`--unshare-all` + fresh `--dev`) while keeping `/tmp` consistent across
+modes. Every other command keeps the full bwrap sandbox.
