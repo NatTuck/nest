@@ -535,7 +535,7 @@ defmodule Nest.Tools do
             "type" => "integer",
             "description" =>
               "Maximum children to run at once for this call. Clamped to a " <>
-                "configured ceiling."
+                "configured ceiling. The default is typically fine."
           },
           "on_error" => %{
             "type" => "string",
