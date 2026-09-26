@@ -21,23 +21,29 @@ defmodule Nest.Models do
       captured at start).
     * `rescan/0` — the user-triggered path. Reloads `config.toml`
       **without** broadcasting, then starts a scan if idle (joins
-      the in-flight scan otherwise). All broadcasts come from scan
-      progress, so a subscriber that saw no broadcast before
-      calling `rescan/0` knows the next one is genuinely fresh.
+      the in-flight scan otherwise) and returns the scan id. A
+      per-provider `{:models_updated, _}` is a *partial*: the only
+      signal that a rescan is finished is the scan's terminal
+      `{:models_scan_complete, %{scan_id: id, ...}}` broadcast.
 
   ## Streaming scans
 
   A scan queries every auto-models provider concurrently. Each
   provider's result is delivered to the GenServer as it completes,
-  merged into the scan's accumulator, and broadcast immediately.
-  This means subscribers may see several `{:models_updated, _}`
-  broadcasts per scan — one per provider response.
+  merged into the scan's accumulator, and broadcast immediately as
+  `{:models_updated, payload}`. This means subscribers may see
+  several `{:models_updated, _}` broadcasts per scan — one per
+  provider response.
 
-  A 5000ms deadline bounds the wait for the **first**
-  broadcast: if not every provider has answered by then, the
-  partial results are broadcast and the scan stays alive so late
-  answers produce further broadcasts. The deadline timer is not
-  reset by partial results — it is a single cap from scan start.
+  Every scan ends with **exactly one** terminal broadcast,
+  `{:models_scan_complete, %{scan_id: id, models: payload}}`:
+  emitted when the last pending provider answers, or when the
+  5000ms deadline fires with providers still pending. The scan
+  stays alive after the deadline so late answers still produce
+  `models_updated`, but no second completion is emitted. The
+  deadline timer is cancelled when a scan finishes (or is
+  replaced), so a stale timer can never announce completion for a
+  later scan.
 
   ## Reads
 
@@ -49,14 +55,17 @@ defmodule Nest.Models do
   Topic: `"models"`. Subscribers receive `{:models_updated, payload}`
   on every scan progress event (payload matches `list/0`'s shape —
   string-keyed JSON-safe map) plus `reload_static/0`'s immediate
-  broadcast when no scan is running.
+  broadcast when no scan is running. Each scan also emits exactly
+  one terminal `{:models_scan_complete, %{scan_id: id, models: payload}}`
+  (see "Streaming scans").
 
   The standard sub-then-list flow:
 
       Phoenix.PubSub.subscribe(Nest.PubSub, "models")
       current = Models.list()              # catch-up read
       receive do
-        {:models_updated, payload} -> ...  # future updates
+        {:models_updated, payload} -> ...        # future partial updates
+        {:models_scan_complete, %{}} -> ...      # scan finished
       end
 
   ## Partial failure
@@ -110,19 +119,21 @@ defmodule Nest.Models do
 
   @doc """
   Reload `~/.config/nest/config.toml` from disk, then start a scan
-  if none is in flight. Fire-and-forget from the caller's
-  perspective — returns `:ok` immediately.
+  if none is in flight. Returns the id of the scan that will cover
+  this request (a fresh scan, or the in-flight scan it joined).
 
   Unlike `reload_static/0`, this never broadcasts a config-only
   payload; the next `{:models_updated, _}` always comes from scan
-  progress. That is what the "rescan providers" button relies on so
-  it stays disabled until providers have actually answered.
+  progress. The authoritative "this rescan finished" signal is the
+  scan's `{:models_scan_complete, %{scan_id: ^id, ...}}` broadcast,
+  which is what the "rescan providers" button relies on so it stays
+  disabled until every provider has actually answered.
 
   If a scan is already in flight, the config is still reloaded and
   the in-flight scan's subsequent broadcasts reflect it (the merge
   uses current state).
   """
-  @spec rescan() :: :ok
+  @spec rescan() :: pos_integer()
   def rescan, do: GenServer.call(__MODULE__, :rescan)
 
   @doc """
@@ -183,7 +194,8 @@ defmodule Nest.Models do
            static_config: config,
            auto_models: %{},
            context_limits: %{},
-           scan: nil
+           scan: nil,
+           last_scan_id: nil
          }}
 
       {:error, reason} ->
@@ -194,7 +206,8 @@ defmodule Nest.Models do
            static_config: %{models: %{}},
            auto_models: %{},
            context_limits: %{},
-           scan: nil
+           scan: nil,
+           last_scan_id: nil
          }}
     end
   end
@@ -251,11 +264,17 @@ defmodule Nest.Models do
       nil ->
         {:noreply, state}
 
-      _scan ->
+      %{deadline_fired: true} ->
+        {:noreply, state}
+
+      scan ->
         # First-broadcast cap reached with providers still pending.
-        # Broadcast the partial results now and keep the scan alive
-        # so late answers broadcast again.
-        {:noreply, broadcast_scan(state)}
+        # Broadcast the partial results and announce this scan's one
+        # terminal completion now. The scan stays alive so late
+        # answers still produce `models_updated`, but no second
+        # completion is emitted.
+        state = %{state | scan: %{scan | deadline_fired: true, timer: nil}}
+        {:noreply, announce_complete(state, scan.id)}
     end
   end
 
@@ -271,7 +290,8 @@ defmodule Nest.Models do
     # Reload config silently (no broadcast) so the next
     # `models_updated` subscribers see is scan progress, not a
     # config-only no-op.
-    {:reply, :ok, state |> put_reloaded_static() |> start_scan()}
+    state = state |> put_reloaded_static() |> start_scan()
+    {:reply, current_scan_id(state), state}
   end
 
   def handle_call(:reload_static, _from, state) do
@@ -318,13 +338,13 @@ defmodule Nest.Models do
   end
 
   # A provider's answer (or failure) has been folded into the scan.
-  # When it was the last pending provider, finish and broadcast the
+  # When it was the last pending provider, finalize and broadcast the
   # canonical list; otherwise broadcast the partial progress.
   defp handle_provider_progress(state, scan) do
     state = %{state | scan: scan}
 
     if MapSet.size(scan.pending) == 0 do
-      {:noreply, finish_scan(state)}
+      {:noreply, finalize_scan(state)}
     else
       {:noreply, broadcast_scan(state)}
     end
@@ -346,21 +366,23 @@ defmodule Nest.Models do
     }
   end
 
-  # Start a scan when idle. When one is already running, no-op so
-  # its in-flight broadcasts cover the caller. The deadline is a
-  # single cap from scan start.
-  defp start_scan(%{scan: scan} = state) when scan != nil, do: state
+  # Start a scan unless one is already running and still within its
+  # deadline. An in-flight scan covers the caller. A scan whose
+  # deadline already fired is replaced so an explicit rescan is never
+  # a permanent no-op.
+  defp start_scan(%{scan: %{deadline_fired: false}} = state), do: state
 
-  defp start_scan(state) do
+  defp start_scan(%{scan: %{timer: timer}} = state) when is_reference(timer) do
+    Process.cancel_timer(timer)
+    do_start_scan(state)
+  end
+
+  defp start_scan(state), do: do_start_scan(state)
+
+  defp do_start_scan(state) do
     providers = auto_providers(state.static_config)
     names = MapSet.new(providers, & &1.name)
-    parent = self()
-
-    Task.Supervisor.start_child(Nest.Models.TaskSupervisor, fn ->
-      run_scan(parent, providers)
-    end)
-
-    Process.send_after(self(), :models_scan_deadline, @default_deadline_ms)
+    scan_id = System.unique_integer([:positive])
 
     # Seed the accumulator with the previous auto-discovered entries
     # for the providers this scan will query, so partial broadcasts
@@ -373,14 +395,33 @@ defmodule Nest.Models do
 
     context_limits = Map.take(state.context_limits, MapSet.to_list(names))
 
-    %{
-      state
-      | scan: %{
-          pending: names,
-          auto_models: auto_models,
-          context_limits: context_limits
-        }
+    scan = %{
+      id: scan_id,
+      pending: names,
+      auto_models: auto_models,
+      context_limits: context_limits,
+      timer: nil,
+      deadline_fired: false
     }
+
+    state = %{state | scan: scan, last_scan_id: scan_id}
+
+    if MapSet.size(names) == 0 do
+      # No auto-providers: finish on the same tick instead of leaving
+      # `scan` live until the deadline (which would make every later
+      # `start_scan` a no-op).
+      finalize_scan(state)
+    else
+      parent = self()
+
+      Task.Supervisor.start_child(Nest.Models.TaskSupervisor, fn ->
+        run_scan(parent, providers)
+      end)
+
+      timer = Process.send_after(self(), :models_scan_deadline, @default_deadline_ms)
+
+      %{state | scan: %{scan | timer: timer}}
+    end
   end
 
   defp run_scan(parent, providers) do
@@ -402,22 +443,47 @@ defmodule Nest.Models do
     end)
   end
 
-  # Merge the scan accumulator with current static config and
-  # broadcast. Reads `state.scan` for the accumulator; no-op when
-  # no scan is active.
+  # Broadcast the in-flight scan accumulator (partial results). The
+  # accumulator is the previous scan's completed maps seeded with the
+  # providers this scan will query, so partial broadcasts never blank
+  # the catalog.
   defp broadcast_scan(state) do
     broadcast(state)
     state
   end
 
   defp broadcast(state) do
-    Phoenix.PubSub.broadcast(Nest.PubSub, "models", {:models_updated, build_model_list(state)})
+    broadcast_payload(build_model_list(state))
   end
 
-  # Every provider has answered: fold the accumulator into the
-  # canonical cache, end the scan, and broadcast the final list. The
-  # deadline message becomes a no-op once `scan` is nil.
-  defp finish_scan(%{scan: scan} = state) when scan != nil do
+  defp broadcast_payload(payload) do
+    Phoenix.PubSub.broadcast(Nest.PubSub, "models", {:models_updated, payload})
+  end
+
+  # Broadcast the current list and this scan's single terminal
+  # completion event. Called when the last provider answers, when a
+  # scan has no providers, or when the deadline fires.
+  defp announce_complete(state, scan_id) do
+    payload = build_model_list(state)
+    broadcast_payload(payload)
+
+    Phoenix.PubSub.broadcast(
+      Nest.PubSub,
+      "models",
+      {:models_scan_complete, %{scan_id: scan_id, models: payload}}
+    )
+
+    state
+  end
+
+  # Every provider has answered (or the scan had no providers): fold
+  # the accumulator into the canonical cache, cancel the deadline
+  # timer, and end the scan. Emits the completion event unless the
+  # deadline already did. The deadline message becomes a no-op once
+  # `scan` is nil.
+  defp finalize_scan(%{scan: scan} = state) when scan != nil do
+    if is_reference(scan.timer), do: Process.cancel_timer(scan.timer)
+
     state = %{
       state
       | scan: nil,
@@ -425,11 +491,23 @@ defmodule Nest.Models do
         context_limits: scan.context_limits
     }
 
-    broadcast(state)
-    state
+    if scan.deadline_fired do
+      # The deadline already emitted this scan's completion; surface
+      # the late final list only.
+      broadcast(state)
+      state
+    else
+      announce_complete(state, scan.id)
+    end
   end
 
-  defp finish_scan(state), do: state
+  defp finalize_scan(state), do: state
+
+  # The id of the scan that will cover a caller right now: the
+  # in-flight scan's id, or the most recently started scan's id once
+  # a zero-provider scan has already finalized.
+  defp current_scan_id(%{scan: %{id: id}}), do: id
+  defp current_scan_id(%{last_scan_id: id}), do: id
 
   defp auto_providers(static_config) do
     static_config.providers

@@ -100,4 +100,59 @@ defmodule Nest.Tools.ShellCmdTest do
 
     refute File.exists?(missing)
   end
+
+  # The point of staging a script: the shell reads a file, so nothing in the
+  # command text has to survive as one quoted argv element.
+  test "a multi-line command runs unescaped: quotes, dollars and pipes survive" do
+    command = """
+    greeting='hello "world" ${UNSET_VAR}'
+    echo "$greeting" | tr a-z A-Z
+    """
+
+    assert {:ok, output} = ShellCmd.execute(command, "/tmp", nil, nil, [])
+    assert output =~ ~s{HELLO "WORLD" }
+  end
+
+  test "stdin is delivered over a pipe, and an absent stdin gives an immediate EOF" do
+    assert {:ok, output} = ShellCmd.execute("wc -c", "/tmp", nil, nil, stdin: "abcde")
+    assert String.trim(output) == "5"
+
+    assert {:ok, output} = ShellCmd.execute("wc -c", "/tmp", nil, nil, [])
+    assert String.trim(output) == "0"
+  end
+
+  test "the script is staged under the tmp dir (visible as /tmp) and removed after" do
+    tmp = Path.join(System.tmp_dir!(), "nest_stage_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(tmp)
+    on_exit(fn -> File.rm_rf(tmp) end)
+
+    # $0 is the staged script, as seen from inside the sandbox. `basename` is
+    # enough to prove it lived under the bound /tmp.
+    assert {:ok, output} = ShellCmd.execute(~s{basename "$0"}, "/tmp", tmp, nil, [])
+    assert output =~ ".nest-cmd-"
+
+    # The transcript is temporary either way: the caller gets the output.
+    assert {:ok, _} = ShellCmd.execute("echo bye", "/tmp", tmp, nil, [])
+    assert Path.wildcard(Path.join(tmp, ".nest-cmd-*.sh")) == []
+  end
+
+  test "there is no set -e, and the exit code of the last statement is what is reported" do
+    assert {:ok, output} = ShellCmd.execute("false\necho survived", "/tmp", nil, nil, [])
+    assert output =~ "survived"
+
+    assert {:error, output} = ShellCmd.execute("echo before\nexit 3", "/tmp", nil, nil, [])
+    assert output =~ "before"
+    assert output =~ "Exit code 3"
+  end
+
+  test "large stdin streams over the pipe and never hits an ARG_MAX ceiling" do
+    tmp = Path.join(System.tmp_dir!(), "nest_big_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(tmp)
+    on_exit(fn -> File.rm_rf(tmp) end)
+
+    payload = :binary.copy("abcdefgh", 400_000)
+
+    assert {:ok, _} = ShellCmd.execute("cat > big.bin", tmp, nil, nil, stdin: payload)
+    assert File.stat!(Path.join(tmp, "big.bin")).size == byte_size(payload)
+  end
 end

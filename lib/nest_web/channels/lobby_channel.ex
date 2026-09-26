@@ -107,6 +107,20 @@ defmodule NestWeb.LobbyChannel do
     {:noreply, socket}
   end
 
+  # Terminal event for a scan. Answer every push waiting on that scan.
+  # The catalog itself already went out via `models_updated`, so there
+  # is no separate client push here.
+  @impl true
+  def handle_info({:models_scan_complete, %{scan_id: scan_id}}, socket) do
+    pending = Map.get(socket.assigns, :pending_rescan, [])
+
+    {matching, rest} = Enum.split_with(pending, fn {id, _ref} -> id == scan_id end)
+
+    Enum.each(matching, fn {_id, ref} -> reply(ref, {:ok, %{"scan_id" => scan_id}}) end)
+
+    {:noreply, assign(socket, :pending_rescan, rest)}
+  end
+
   # All `handle_in` clauses grouped together so the compiler
   # is happy with the multi-head pattern matching.
   @impl true
@@ -167,14 +181,17 @@ defmodule NestWeb.LobbyChannel do
 
   @impl true
   def handle_in("rescan_models", _payload, socket) do
-    # Fire-and-forget. `Nest.Models` broadcasts
-    # `{:models_updated, payload}` to the "models" topic as each
-    # provider answers and once more when the scan completes; the
-    # `handle_info/2` clause below re-broadcasts each to the client.
-    # The reply is immediate so the channel request never blocks on
-    # provider HTTP.
-    Models.rescan()
-    {:reply, :ok, socket}
+    # `Nest.Models` broadcasts one `models_updated` per provider as it
+    # answers, then a single `models_scan_complete` when the scan is
+    # genuinely done (all providers answered, or the deadline fired).
+    # We hold each push open and reply only on that terminal event so
+    # the client's "rescanning" state tracks the whole scan rather
+    # than the first partial. The channel process is never blocked:
+    # `socket_ref/1` + `reply/2` answer later from `handle_info/2`.
+    scan_id = Models.rescan()
+    pending = Map.get(socket.assigns, :pending_rescan, [])
+
+    {:noreply, assign(socket, :pending_rescan, [{scan_id, socket_ref(socket)} | pending])}
   end
 
   @impl true

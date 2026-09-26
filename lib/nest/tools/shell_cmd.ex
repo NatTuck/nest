@@ -37,7 +37,7 @@ defmodule Nest.Tools.ShellCmd do
   ## Options
 
     * `:timeout` - Maximum execution time in milliseconds (default: #{@default_timeout_ms})
-    * `:stdin` - Binary data to send to stdin via base64 encoding (default: "")
+    * `:stdin` - Binary data to send to the command's stdin over a real pipe (no base64) (default: "")
 
   ## Returns
 
@@ -56,24 +56,35 @@ defmodule Nest.Tools.ShellCmd do
           {:ok, String.t()} | {:error, String.t()}
   def execute(command, workspace_path, tmp_path \\ nil, caps \\ nil, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, @default_timeout_ms)
-    stdin = Keyword.get(opts, :stdin, "")
+    stdin = normalize_stdin(Keyword.get(opts, :stdin))
 
     workspace = resolve_workspace(workspace_path)
 
     if tmp_path, do: File.mkdir_p!(tmp_path)
 
-    final_command = compose_command_with_stdin(command, stdin)
-    sandboxed_cmd = build_sandboxed_command(final_command, workspace, tmp_path, caps)
+    {script, script_path} = stage_script(command, tmp_path)
+    sandboxed_cmd = build_sandboxed_command(script_path, workspace, tmp_path, caps)
 
-    Logger.info("Executing sandboxed command in #{workspace}: #{truncate_log(command)}")
+    Logger.info(
+      "Executing sandboxed script #{script_path} in #{workspace}: #{truncate_log(command)}"
+    )
 
-    case run_with_erlexec(sandboxed_cmd, timeout) do
+    exec_staged(script, sandboxed_cmd, timeout, stdin, command, {workspace, tmp_path})
+  end
+
+  # Run the staged script and remove it afterwards: it is only a transcript of
+  # the command, and all the caller keeps is the output, so it goes on every
+  # path - success, failure, timeout or crash.
+  defp exec_staged(script, sandboxed_cmd, timeout, stdin, command, {workspace, tmp_path}) do
+    case run_with_erlexec(sandboxed_cmd, timeout, stdin) do
       {:ok, exit_code, output} ->
         handle_exit_result(command, exit_code, output, workspace, tmp_path)
 
       {:error, reason} ->
         handle_startup_failure(command, reason, workspace, tmp_path)
     end
+  after
+    File.rm(script)
   end
 
   defp handle_exit_result(_command, 0, "", _workspace, _tmp_path) do
@@ -116,18 +127,30 @@ defmodule Nest.Tools.ShellCmd do
     )
   end
 
-  # If stdin is provided, embed it via base64 to avoid stdin
-  # redirection issues. The base64 blob is single-quoted and
-  # any embedded single quotes are escaped with the standard
-  # `'\''` shell idiom so the receiving shell sees a clean
-  # literal.
-  defp compose_command_with_stdin(command, ""), do: command
-
-  defp compose_command_with_stdin(command, stdin) do
-    encoded = Base.encode64(stdin)
-    escaped = String.replace(encoded, "'", "'\\''")
-    "printf '%s' '#{escaped}' | base64 -d | #{command}"
+  # Write the command to a script file and run it with bash. With a tmp dir
+  # (the usual case) the script lives in the directory the sandbox binds at
+  # /tmp, so it is referenced as /tmp/<name> inside; without one it goes to the
+  # host tmp dir and is read through the read-only root bind. Nest writes it as
+  # the same uid the sandbox runs as, so both sides see the same file.
+  defp stage_script(command, nil) do
+    path = Path.join(System.tmp_dir!(), script_name())
+    File.write!(path, command)
+    {path, path}
   end
+
+  defp stage_script(command, tmp_path) do
+    host = Path.join(tmp_path, script_name())
+    File.write!(host, command)
+    {host, Path.join("/tmp", Path.basename(host))}
+  end
+
+  defp script_name do
+    ".nest-cmd-#{System.unique_integer([:positive])}.sh"
+  end
+
+  defp normalize_stdin(nil), do: nil
+  defp normalize_stdin(""), do: nil
+  defp normalize_stdin(data), do: data
 
   @doc """
   Builds the bwrap arguments for the sandbox.
@@ -168,24 +191,30 @@ defmodule Nest.Tools.ShellCmd do
     build_bwrap_command(command, bwrap_args)
   end
 
-  defp build_bwrap_command(command, bwrap_args) do
+  # Run the staged script with bash. Passing a file to the shell is what
+  # removes the escaping layer: the command text never has to survive as one
+  # quoted argv element.
+  defp build_bwrap_command(script, bwrap_args) do
     bwrap_cmd = Enum.join(["bwrap" | bwrap_args], " ")
-    shell_escaped = escape_shell(command)
-    "#{bwrap_cmd} /bin/sh -c '#{shell_escaped}'"
+    "#{bwrap_cmd} /bin/bash '#{escape_shell(script)}'"
   end
 
-  defp run_with_erlexec(command, timeout) do
-    # Start erlexec process
+  defp run_with_erlexec(command, timeout, stdin) do
+    stdin_opt = if stdin, do: :stdin, else: {:stdin, :null}
+
     case :exec.run(
            to_charlist(command),
            [
              :stdout,
              :stderr,
              :monitor,
+             stdin_opt,
              {:kill_timeout, 5000}
            ]
          ) do
       {:ok, _pid, os_pid} ->
+        send_stdin(os_pid, stdin)
+
         # Buffers are IO lists (prepend in O(1)); `combine_output/1`
         # flattens to a single binary at the end.
         collect_output(os_pid, timeout, %{stdout: [], stderr: [], exit_code: nil})
@@ -193,6 +222,22 @@ defmodule Nest.Tools.ShellCmd do
       {:error, reason} ->
         {:error, "Failed to start process: #{inspect(reason)}"}
     end
+  end
+
+  # Feed staged stdin to the child, then close the pipe. A write to a process
+  # that has already exited (or that never reads stdin) is not something the
+  # caller cares about: the exit and the output are the result, so this
+  # must never raise.
+  defp send_stdin(_os_pid, nil), do: :ok
+
+  defp send_stdin(os_pid, data) do
+    try do
+      :exec.send(os_pid, data)
+    catch
+      _kind, _reason -> :ok
+    end
+
+    :exec.send(os_pid, :eof)
   end
 
   defp collect_output(os_pid, timeout, acc) do
@@ -234,12 +279,23 @@ defmodule Nest.Tools.ShellCmd do
     {:ok, 130, output}
   end
 
-  defp handle_down(acc, :normal), do: {:ok, acc.exit_code || 0, combine_output(acc)}
-
   defp handle_down(acc, reason) do
-    exit_code = if is_integer(reason), do: reason, else: 1
-    {:ok, exit_code, combine_output(acc)}
+    {:ok, exit_status(reason), combine_output(acc)}
   end
+
+  # erlexec reports the wait status the OS recorded: `:normal` for status 0 and
+  # `{:exit_status, raw}` otherwise (a signal death included, so a killed
+  # command is not a clean exit). `:exec.status/1` decodes the raw value.
+  defp exit_status(:normal), do: 0
+  defp exit_status({:exit_status, raw}), do: decode_status(:exec.status(raw))
+  defp exit_status(raw) when is_integer(raw), do: raw
+  defp exit_status(_other), do: 1
+
+  defp decode_status({:status, code}), do: code
+
+  # 128 + signo is the conventional shell spelling of a signal death.
+  defp decode_status({:signal, signo, _core}) when is_integer(signo), do: 128 + signo
+  defp decode_status({:signal, _name, _core}), do: 1
 
   defp handle_timeout(os_pid, timeout, acc) do
     :exec.stop(os_pid)

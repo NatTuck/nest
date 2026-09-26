@@ -124,7 +124,15 @@ defmodule Nest.Tools do
   defp shell_cmd_function(workspace_path, tmp_path) do
     %Tool{
       name: "shell-cmd",
-      description: "Execute a shell command and return output",
+      description:
+        "Execute a shell command and return its output. The command is written " <>
+          "to a temporary script and run with bash, so it may span several " <>
+          "lines, use heredocs, quotes and metacharacters freely, and run " <>
+          "multiple statements in one call. Note there is no implicit `set -e`: " <>
+          "a statement that exits non-zero still reports its output and later " <>
+          "statements still run, so guard steps explicitly (for example " <>
+          "`cmd || exit 1`, or put your own `set -e` on the first line) when a " <>
+          "failure must stop the rest.",
       parameters_schema: %{
         "type" => "object",
         "properties" => %{

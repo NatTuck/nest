@@ -200,7 +200,9 @@ defmodule Nest.ToolsTest do
 
       # bwrap's non-zero exit is a deliberate diagnostic.
       assert log =~ "ShellCmd.execute: bwrap exited non-zero"
-      assert log =~ "Directory nonexistent"
+
+      # The wording is the shell's: dash says "Directory nonexistent", bash says "No such file or directory".
+      assert log =~ "Directory nonexistent" or log =~ "No such file"
     end
 
     test "overwrites existing files", %{workspace: workspace} do

@@ -67,33 +67,18 @@ export function NewSpacePage() {
 
   const thinkingOptions = resolveThinkingOptions(models, selectedModel);
 
-  // The `rescan_models` push reply is `:ok` immediately; the real
-  // work (config reload + a `/models` query per auto provider) happens
-  // server-side and lands as one or more `models_updated` broadcasts.
-  // Each broadcast replaces the whole `models` array with a fresh
-  // identity, so clear the spinner on the first `models` change after
-  // the click. `baselineModelsRef` snapshots the array at click time,
-  // so a broadcast that arrived before the click (e.g. the lobby
-  // `init`) doesn't clear the spinner.
-  const awaitingRescanRef = useRef(false);
-  const baselineModelsRef = useRef(null);
-
-  useEffect(() => {
-    if (!awaitingRescanRef.current) return;
-    if (models === baselineModelsRef.current) return;
-
-    awaitingRescanRef.current = false;
-    setIsRescanning(false);
-  }, [models]);
-
+  // The server holds the `rescan_models` push open until the scan is
+  // genuinely complete (every auto-provider answered, or its deadline
+  // fired) and only then replies. Per-provider `models_updated`
+  // partials are NOT completion and must never clear the spinner.
   const handleRescanModels = () => {
-    awaitingRescanRef.current = true;
-    baselineModelsRef.current = models;
     setIsRescanning(true);
+    setError(null);
     rescanModels(
-      () => {},
+      () => {
+        setIsRescanning(false);
+      },
       (err) => {
-        awaitingRescanRef.current = false;
         setIsRescanning(false);
         setError(err?.message || "Failed to rescan providers");
       },

@@ -10,6 +10,10 @@ defmodule Nest.ModelsRescanTest do
   each provider's answer is merged, the last answer finishes the
   scan, and a provider's stale entries are dropped before its new
   answer is merged.
+
+  The end-to-end "a partial is not completion, and completion fires
+  exactly once" contract is covered by
+  `test/nest/models_rescan_completion_test.exs`.
   """
   use ExUnit.Case, async: true
 
@@ -23,12 +27,20 @@ defmodule Nest.ModelsRescanTest do
       static_config: %{models: %{}, providers: %{}},
       auto_models: %{},
       context_limits: %{},
-      scan: scan
+      scan: scan,
+      last_scan_id: nil
     }
   end
 
-  defp scan(pending, auto_models \\ %{}, context_limits \\ %{}) do
-    %{pending: MapSet.new(pending), auto_models: auto_models, context_limits: context_limits}
+  defp scan(pending, auto_models \\ %{}, context_limits \\ %{}, opts \\ []) do
+    %{
+      id: Keyword.get(opts, :id, 1),
+      pending: MapSet.new(pending),
+      auto_models: auto_models,
+      context_limits: context_limits,
+      timer: Keyword.get(opts, :timer),
+      deadline_fired: Keyword.get(opts, :deadline_fired, false)
+    }
   end
 
   defp model(name, provider) do
@@ -109,6 +121,52 @@ defmodule Nest.ModelsRescanTest do
       # "old" (same provider) is gone; "keep" (another provider) survives.
       assert Map.keys(state.auto_models) |> Enum.sort() == ["keep", "new"]
       assert state.context_limits == %{"a" => %{"new" => :limit}}
+    end
+  end
+
+  describe "scan deadline" do
+    test "finalizing a scan cancels its deadline timer" do
+      timer = Process.send_after(self(), :deadline_should_be_cancelled, 60_000)
+      state = state(scan(["a"], %{}, %{}, timer: timer))
+
+      state =
+        handle_result(state, "a", %{"m" => model("m", "a")}, %{"a" => %{}})
+
+      assert state.scan == nil
+      assert Process.read_timer(timer) == false
+      refute_received :deadline_should_be_cancelled
+    end
+
+    test "the deadline marks completion without ending the scan" do
+      timer = Process.send_after(self(), :deadline_should_be_cancelled, 60_000)
+      state = state(scan(["a"], %{}, %{}, timer: timer))
+
+      assert {:noreply, next} = Models.handle_info(:models_scan_deadline, state)
+
+      # The scan stays alive to accept late provider answers, and is
+      # marked so a late finalize won't announce a second completion.
+      assert next.scan != nil
+      assert next.scan.deadline_fired == true
+
+      # The timer already fired in production; cancel the synthetic
+      # one so it can't leak into a later test.
+      Process.cancel_timer(timer)
+    end
+
+    test "a late provider result after the deadline finalizes the scan" do
+      state = state(scan(["a"], %{}, %{}, deadline_fired: true))
+
+      state =
+        handle_result(state, "a", %{"m" => model("m", "a")}, %{"a" => %{}})
+
+      assert state.scan == nil
+      assert Map.keys(state.auto_models) == ["m"]
+    end
+
+    test "a deadline with no active scan is a no-op" do
+      idle = state(nil)
+
+      assert {:noreply, ^idle} = Models.handle_info(:models_scan_deadline, idle)
     end
   end
 
