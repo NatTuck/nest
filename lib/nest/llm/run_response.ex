@@ -45,4 +45,16 @@ defmodule Nest.LLM.RunResponse do
   def has_tool_calls?(%__MODULE__{tool_calls: calls}) when is_list(calls) do
     calls != []
   end
+
+  # The stop reasons that mean the model was cut off by the output
+  # token limit rather than finishing. Anthropic reports `"max_tokens"`;
+  # the OpenAI wire (`finish_reason`) reports `"length"`. Either way the
+  # reply is incomplete and the agent should continue it.
+  @truncation_reasons ["max_tokens", "length"]
+
+  @doc """
+  True when the response was truncated by the output token limit.
+  """
+  @spec truncated?(t()) :: boolean()
+  def truncated?(%__MODULE__{stop_reason: reason}), do: reason in @truncation_reasons
 end

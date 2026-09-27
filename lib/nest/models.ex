@@ -187,7 +187,14 @@ defmodule Nest.Models do
         # Deferred startup pattern — `send(self(), :startup_scan)` so
         # the supervisor's startup isn't blocked by HTTP. The first
         # scan will populate `auto_models` and `context_limits`.
-        send(self(), :startup_scan)
+        #
+        # Never in tests: tests stub `Req` and drive scans explicitly
+        # via `refresh/0` / `rescan/0`, and shouldn't spawn background
+        # HTTP against the real config providers (mirroring
+        # `Nest.EndpointCache.init/1`).
+        if Mix.env() != :test do
+          send(self(), :startup_scan)
+        end
 
         {:ok,
          %{

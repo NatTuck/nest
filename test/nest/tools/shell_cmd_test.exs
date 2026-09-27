@@ -140,9 +140,17 @@ defmodule Nest.Tools.ShellCmdTest do
     assert {:ok, output} = ShellCmd.execute("false\necho survived", "/tmp", nil, nil, [])
     assert output =~ "survived"
 
-    assert {:error, output} = ShellCmd.execute("echo before\nexit 3", "/tmp", nil, nil, [])
-    assert output =~ "before"
-    assert output =~ "Exit code 3"
+    # A non-zero exit is a deliberate diagnostic — capture it so it
+    # doesn't escape into the test log.
+    log =
+      capture_log(fn ->
+        assert {:error, output} = ShellCmd.execute("echo before\nexit 3", "/tmp", nil, nil, [])
+        assert output =~ "before"
+        assert output =~ "Exit code 3"
+      end)
+
+    assert log =~ "ShellCmd.execute: bwrap exited non-zero"
+    assert log =~ "exit_code=3"
   end
 
   test "large stdin streams over the pipe and never hits an ARG_MAX ceiling" do

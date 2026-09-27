@@ -44,10 +44,13 @@ defmodule Nest.ModelsRescanCompletionTest do
       Models.refresh()
 
       # The fast provider answers while slow is still gated: this is a
-      # partial, not completion.
+      # partial, not completion. The scan is still live (slow pending),
+      # so completion cannot have fired.
       assert_receive {:models_updated, partial}, 1_000
       assert Enum.any?(partial, &(&1["name"] == "fast-1"))
-      refute_receive {:models_scan_complete, _}, 200
+      assert %{scan: %{pending: pending}} = :sys.get_state(Models)
+      assert MapSet.member?(pending, "slow")
+      refute_receive {:models_scan_complete, _}, 0
 
       release("slow")
 
@@ -56,8 +59,10 @@ defmodule Nest.ModelsRescanCompletionTest do
       assert Enum.any?(models, &(&1["name"] == "fast-1"))
       assert Enum.any?(models, &(&1["name"] == "slow-1"))
 
-      # Exactly one completion for this scan.
-      refute_receive {:models_scan_complete, _}, 100
+      # Exactly one completion: the scan is cleared, and no duplicate
+      # was delivered alongside the one we consumed.
+      assert :sys.get_state(Models).scan == nil
+      refute_receive {:models_scan_complete, _}, 0
     end
 
     test "a refresh while a scan is in flight joins it instead of starting another" do
@@ -70,13 +75,17 @@ defmodule Nest.ModelsRescanCompletionTest do
       Models.refresh()
 
       assert_receive {:models_updated, _partial}, 1_000
-      refute_receive {:models_scan_complete, _}, 200
+      assert %{scan: %{pending: pending}} = :sys.get_state(Models)
+      assert MapSet.member?(pending, "slow")
+      refute_receive {:models_scan_complete, _}, 0
 
       release("slow")
 
       assert_receive {:models_scan_complete, _}, 1_000
-      # The coalesced refresh did not start a second scan.
-      refute_receive {:models_scan_complete, _}, 100
+      # The coalesced refresh did not start a second scan: the scan is
+      # cleared and only the one completion was delivered.
+      assert :sys.get_state(Models).scan == nil
+      refute_receive {:models_scan_complete, _}, 0
     end
 
     test "the deadline emits completion once and late answers do not re-complete" do
@@ -105,13 +114,19 @@ defmodule Nest.ModelsRescanCompletionTest do
       assert Enum.any?(models, &(&1["name"] == "fast-1"))
       refute Enum.any?(models, &(&1["name"] == "slow-1"))
 
+      # The deadline announced completion but left the scan live for
+      # late answers.
+      assert %{scan: %{deadline_fired: true}} = :sys.get_state(Models)
+
       release("slow")
 
       # The late final list still arrives...
       assert_receive {:models_updated, late}, 1_000
       assert Enum.any?(late, &(&1["name"] == "slow-1"))
-      # ...without a second completion.
-      refute_receive {:models_scan_complete, _}, 100
+      # ...and the late answer clears the scan without a second
+      # completion.
+      assert :sys.get_state(Models).scan == nil
+      refute_receive {:models_scan_complete, _}, 0
     end
 
     test "a scan with no auto-providers completes immediately and later rescans still run" do

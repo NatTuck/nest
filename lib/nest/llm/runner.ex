@@ -210,7 +210,8 @@ defmodule Nest.LLM.Runner do
         text: response.text || finalized.text,
         thinking: response.thinking || finalized.thinking,
         thinking_signature: response.thinking_signature || finalized.thinking_signature,
-        usage: response.usage || finalized.usage
+        usage: response.usage || finalized.usage,
+        stop_reason: finalized.stop_reason || response.stop_reason
     }
   end
 

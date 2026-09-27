@@ -32,4 +32,18 @@ defmodule Nest.LLM.RunResponseTest do
       assert RunResponse.has_tool_calls?(%RunResponse{tool_calls: [call, other]}) == true
     end
   end
+
+  describe "truncated?/1" do
+    test "is true for Anthropic's max_tokens and OpenAI's length" do
+      assert RunResponse.truncated?(%RunResponse{stop_reason: "max_tokens"}) == true
+      assert RunResponse.truncated?(%RunResponse{stop_reason: "length"}) == true
+    end
+
+    test "is false for normal and nil stop reasons" do
+      assert RunResponse.truncated?(%RunResponse{stop_reason: "stop"}) == false
+      assert RunResponse.truncated?(%RunResponse{stop_reason: "tool_calls"}) == false
+      assert RunResponse.truncated?(%RunResponse{stop_reason: nil}) == false
+      assert RunResponse.truncated?(%RunResponse{}) == false
+    end
+  end
 end

@@ -24,7 +24,13 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
           tool worker, OR signal `:needs_compaction` with a
           `:tool_call` continuation so the Agent runs
           mid-turn compaction.
-    4. Final text response → finalize.
+    4. Final text response:
+       a. Truncated by the output token limit → append a "keep going"
+          user nudge and re-ask (bounded), so a cut-off reply is
+          continued rather than accepted.
+       b. No visible text/refusal (thinking-only) → append an empty-
+          response nudge and re-ask (bounded).
+       c. Otherwise → finalize.
   - `extract_tool_calls_from_parts/1` — public helper used
     by the live response path (here).
   """
@@ -59,6 +65,15 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
     "You did it again — another empty response with no actual text. " <>
       "Write out your real reply as text now."
   ]
+
+  # A response cut off by the output token limit (Anthropic
+  # `max_tokens`, OpenAI `length`) is not a finished answer. Send a
+  # continuation nudge and re-ask, up to this many times, before giving
+  # up and finalizing.
+  @max_truncation_retries 2
+
+  @truncation_nudge "Keep going. Your previous response hit the output token limit — " <>
+                      "continue exactly where you left off, and don't repeat what you already wrote."
 
   @doc """
   Build the `:assistant` message from the LLM response,
@@ -182,10 +197,10 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
   # Non-silent responses finalize immediately — no message-history
   # round-trip is paid on the hot path.
   defp finalize_or_reprompt(response, state) do
-    if silent_response?(response) do
-      handle_silent_response(state)
-    else
-      Lifecycle.finalize_turn(state)
+    cond do
+      RunResponse.truncated?(response) -> handle_truncated_response(state)
+      silent_response?(response) -> handle_silent_response(state)
+      true -> Lifecycle.finalize_turn(state)
     end
   end
 
@@ -193,7 +208,7 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
     nudges = count_prior_nudges(state)
 
     if nudges < @max_empty_retries do
-      reprompt_or_finalize(state, nudges)
+      reprompt_or_finalize(state, Enum.at(@empty_nudges, nudges))
     else
       Logger.warning(
         "Empty assistant response finalized after #{@max_empty_retries} re-prompt(s): " <>
@@ -204,8 +219,26 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
     end
   end
 
-  defp reprompt_or_finalize(state, nudges) do
-    if append_user_nudge(state, Enum.at(@empty_nudges, nudges)) do
+  # Don't accept a truncated response as a finished reply. Append a real
+  # user nudge asking the model to continue and take another swing,
+  # bounded by `@max_truncation_retries`. Prior nudges are counted from
+  # the message history (each is an exact-matching user message), so the
+  # retry count is conversation state, not ChatTurn state.
+  defp handle_truncated_response(state) do
+    if count_prior_messages(state, [@truncation_nudge]) < @max_truncation_retries do
+      reprompt_or_finalize(state, @truncation_nudge)
+    else
+      Logger.warning(
+        "Truncated assistant response finalized after #{@max_truncation_retries} " <>
+          "keep-going re-prompt(s)"
+      )
+
+      Lifecycle.finalize_turn(state)
+    end
+  end
+
+  defp reprompt_or_finalize(state, nudge_text) do
+    if append_user_nudge(state, nudge_text) do
       Process.send(self(), :iterate, [])
       {:noreply, state}
     else
@@ -215,7 +248,11 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
   end
 
   # How many empty-response nudges are already in the message history.
-  defp count_prior_nudges(state) do
+  defp count_prior_nudges(state), do: count_prior_messages(state, @empty_nudges)
+
+  # How many of the given exact-text user messages are already in the
+  # message history.
+  defp count_prior_messages(state, texts) do
     messages =
       try do
         GenServer.call(state.ctx.agent_pid, :get_messages, 1_000)
@@ -226,7 +263,7 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
     messages
     |> Enum.count(fn
       {:user, %{parts: [%Part.Text{text: text}]}} when is_binary(text) ->
-        Enum.any?(@empty_nudges, &(&1 == text))
+        text in texts
 
       _ ->
         false

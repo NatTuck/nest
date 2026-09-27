@@ -2,6 +2,15 @@ defmodule Nest.LLM.RunnerTest do
   use ExUnit.Case, async: true
 
   alias Nest.LLM.Runner
+  alias Nest.LLM.RunResponse
+
+  defp text_callbacks do
+    %{
+      on_text: fn _text, sent -> sent end,
+      on_thinking: fn _text, sent -> sent end,
+      should_stop: fn _ -> false end
+    }
+  end
 
   describe "format_error/1" do
     test "renders an integer-status http_error with a body on its own line" do
@@ -107,6 +116,27 @@ defmodule Nest.LLM.RunnerTest do
       }
 
       assert {:ok, _} = Runner.consume(events, callbacks)
+    end
+  end
+
+  describe "consume/2 preserves the stop reason" do
+    test "the accumulator's stop_reason wins over an empty done response" do
+      events = [
+        {:text, "partial"},
+        {:finish_reason, "max_tokens"},
+        {:done, %{response: %RunResponse{}}}
+      ]
+
+      assert {:ok, response} = Runner.consume(events, text_callbacks())
+      assert response.stop_reason == "max_tokens"
+      assert response.text == "partial"
+    end
+
+    test "falls back to the done response's stop_reason when the accumulator has none" do
+      events = [{:done, %{response: %RunResponse{stop_reason: "stop"}}}]
+
+      assert {:ok, response} = Runner.consume(events, text_callbacks())
+      assert response.stop_reason == "stop"
     end
   end
 

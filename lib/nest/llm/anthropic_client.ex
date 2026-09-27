@@ -24,6 +24,7 @@ defmodule Nest.LLM.AnthropicClient do
   @behaviour Nest.LLM.Client
 
   alias Nest.LLM.Client
+  alias Nest.LLM.GenerationDefaults
   alias Nest.LLM.HttpWorker
   alias Nest.LLM.RunRequest
   alias Nest.LLM.RunResponse
@@ -35,7 +36,12 @@ defmodule Nest.LLM.AnthropicClient do
   alias Nest.Messages.User
 
   @anthropic_version "2023-06-01"
-  @max_tokens_default 4096
+  @max_tokens_default 32_000
+
+  # Anthropic's minimum extended-thinking budget. We never request less
+  # than this; if capping the budget to half the output allowance would
+  # fall below it, we omit thinking entirely.
+  @min_thinking_budget 1_024
 
   @impl Nest.LLM.Client
   def run(%RunRequest{} = request, opts) do
@@ -180,31 +186,45 @@ defmodule Nest.LLM.AnthropicClient do
   def format_request_payload(%RunRequest{} = request, _opts) do
     {initial_system, conversation_messages} = split_initial_system(request.messages)
 
+    max_tokens =
+      request.max_tokens || GenerationDefaults.default_max_tokens(request.model) ||
+        @max_tokens_default
+
     request
-    |> build_base_payload(conversation_messages)
+    |> build_base_payload(conversation_messages, max_tokens)
     |> Client.maybe_put("system", initial_system)
     |> Client.maybe_put("tools", build_wire_tools(request.tools))
     |> Client.maybe_put("tool_choice", normalize_tool_choice(request.tool_choice))
     |> Client.maybe_put("temperature", request.temperature)
-    |> Client.maybe_put("top_p", request.top_p)
-    |> maybe_put_thinking(request.thinking_effort)
+    |> Client.maybe_put(
+      "top_p",
+      request.top_p || GenerationDefaults.default_top_p(request.model)
+    )
+    |> maybe_put_thinking(request.thinking_effort, max_tokens)
   end
 
   # Thinking (extended reasoning) is normalized across providers. For
   # Anthropic, an enabled level sets the `thinking` param with a
   # budget heuristic per level; `:off` and `nil` omit it (Anthropic
-  # disables thinking by omitting the param). Budget values are a
-  # reasonable heuristic — tune per model via config if needed.
+  # disables thinking by omitting the param). The requested budget is
+  # capped at half the output allowance so thinking can never consume
+  # the whole reply; when that cap falls below Anthropic's minimum we
+  # omit thinking rather than send an invalid budget.
   @thinking_budgets %{low: 4_000, medium: 8_000, high: 16_000, xhigh: 32_000}
 
-  defp maybe_put_thinking(payload, nil), do: payload
-  defp maybe_put_thinking(payload, :off), do: payload
+  defp maybe_put_thinking(payload, nil, _max_tokens), do: payload
+  defp maybe_put_thinking(payload, :off, _max_tokens), do: payload
 
-  defp maybe_put_thinking(payload, level) do
-    Map.put(payload, "thinking", %{
-      "type" => "enabled",
-      "budget_tokens" => Map.fetch!(@thinking_budgets, level)
-    })
+  defp maybe_put_thinking(payload, level, max_tokens) do
+    case thinking_budget(level, max_tokens) do
+      nil -> payload
+      budget -> Map.put(payload, "thinking", %{"type" => "enabled", "budget_tokens" => budget})
+    end
+  end
+
+  defp thinking_budget(level, max_tokens) do
+    budget = min(Map.fetch!(@thinking_budgets, level), div(max_tokens, 2))
+    if budget >= @min_thinking_budget, do: budget, else: nil
   end
 
   # The first `{:system, _}` message in `request.messages` is the
@@ -229,12 +249,12 @@ defmodule Nest.LLM.AnthropicClient do
     Client.text_from_parts(parts)
   end
 
-  defp build_base_payload(request, conversation_messages) do
+  defp build_base_payload(request, conversation_messages, max_tokens) do
     thinking? = thinking_enabled?(request.thinking_effort)
 
     %{
       "model" => request.model,
-      "max_tokens" => request.max_tokens || @max_tokens_default,
+      "max_tokens" => max_tokens,
       "messages" => Enum.map(conversation_messages, &message_to_wire(&1, thinking?)),
       "stream" => true
     }

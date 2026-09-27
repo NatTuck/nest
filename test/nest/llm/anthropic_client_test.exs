@@ -28,7 +28,7 @@ defmodule Nest.LLM.AnthropicClientTest do
 
       assert payload["model"] == "claude-3-opus-20240229"
       assert payload["stream"] == true
-      assert payload["max_tokens"] == 4096
+      assert payload["max_tokens"] == 32_000
 
       assert payload["messages"] == [
                %{"role" => "user", "content" => [%{"type" => "text", "text" => "hi"}]}
@@ -402,6 +402,46 @@ defmodule Nest.LLM.AnthropicClientTest do
         AnthropicClient.format_request_payload(%RunRequest{thinking_effort: :high}, [])
 
       assert payload["thinking"] == %{"type" => "enabled", "budget_tokens" => 16_000}
+    end
+
+    test "caps the thinking budget at half the output allowance" do
+      payload =
+        AnthropicClient.format_request_payload(
+          %RunRequest{thinking_effort: :high, max_tokens: 12_000},
+          []
+        )
+
+      # high is 16k, but half of max_tokens (12k) is 6k.
+      assert payload["thinking"] == %{"type" => "enabled", "budget_tokens" => 6_000}
+    end
+
+    test "caps :xhigh at half the default output allowance" do
+      payload =
+        AnthropicClient.format_request_payload(%RunRequest{thinking_effort: :xhigh}, [])
+
+      assert payload["thinking"] == %{"type" => "enabled", "budget_tokens" => 16_000}
+    end
+
+    test "omits thinking when half the output allowance is below the minimum budget" do
+      payload =
+        AnthropicClient.format_request_payload(
+          %RunRequest{thinking_effort: :medium, max_tokens: 1_500},
+          []
+        )
+
+      assert payload["max_tokens"] == 1_500
+      refute Map.has_key?(payload, "thinking")
+    end
+
+    test "applies DeepSeek Flash model defaults over the Anthropic protocol" do
+      payload =
+        AnthropicClient.format_request_payload(
+          %RunRequest{model: "deepseek-v4-flash", messages: [user_msg("hi")]},
+          []
+        )
+
+      assert payload["max_tokens"] == 32_000
+      assert payload["top_p"] == 0.95
     end
 
     test "omits the thinking block for :off and nil" do
