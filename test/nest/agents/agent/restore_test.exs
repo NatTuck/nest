@@ -155,6 +155,16 @@ defmodule Nest.Agents.Agent.RestoreTest do
       assert rebuilt.payload["tool_choice"] == :auto
     end
 
+    test "a tool-less agent rebuilds with no tools and tool_choice :none" do
+      state = %{fixture_state() | tools: []}
+      messages = fixture_messages()
+
+      rebuilt = Restore.rebuild_request_api_logs(state, messages, 1, state.client_config)
+
+      refute Map.has_key?(rebuilt.payload, "tools")
+      assert rebuilt.payload["tool_choice"] == :none
+    end
+
     # Regression: the `entire-ox` BEAM-restart crash. The
     # preloaded sequence carried `{:compaction, _}` tuples
     # mid-stream, and `OpenAIClient.message_to_wire/1` has no

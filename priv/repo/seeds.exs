@@ -32,7 +32,7 @@ agents_tools =
 # Used as the fallback for any test or runtime path that needs a
 # vocation but doesn't care which one. Single "chat" mode with the
 # context tools only (no filesystem, no network).
-{:ok, default_vocation} =
+{:ok, _default_vocation} =
   Vocations.upsert_vocation(%{
     name: "Default",
     description: "A minimal default vocation for agents without a specific role",
@@ -117,7 +117,7 @@ agents_tools =
 
 # ---- Role vocations ----
 # Beyond the minimal `Default` fallback, every root vocation gets
-# the full toolset. `Chat` is deliberately minimal (conversation
+# the full toolset. `Chat` is deliberately tool-less (conversation
 # only), matching the old default-agent behavior.
 
 all_tools =
@@ -131,15 +131,13 @@ all_tools =
     "context-compact"
   ] ++ agents_tools
 
-minimal_tools = ["context-check", "context-compact" | agents_tools]
-
-# Chat — general-purpose conversation with no filesystem/network.
+# Chat — general-purpose conversation with no tools at all.
 {:ok, chat_vocation} =
   Vocations.upsert_vocation(%{
     name: "Chat",
     description: "A general-purpose conversational agent.",
     system_prompt: "You are a helpful assistant.",
-    tools: minimal_tools,
+    tools: [],
     modes: %{
       "chat" => %{
         "description" => "General conversation.",

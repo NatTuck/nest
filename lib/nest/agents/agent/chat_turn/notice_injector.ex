@@ -86,7 +86,8 @@ defmodule Nest.Agents.Agent.ChatTurn.NoticeInjector do
     else
       crossed = fetch_crossed_thresholds(state)
       projected = projected_tokens_for_response(response, state)
-      ContextReminder.spec(projected, limit, crossed)
+      compact? = ContextReminder.compact_available?(state.ctx.tools)
+      ContextReminder.spec(projected, limit, crossed, compact?)
     end
   end
 

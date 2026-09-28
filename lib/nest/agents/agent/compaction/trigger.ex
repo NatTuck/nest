@@ -203,7 +203,9 @@ defmodule Nest.Agents.Agent.Compaction.Trigger do
     {_effective_mode, caps} =
       ChatPipeline.resolve_mode_and_caps(
         Map.get(next_state, :mode),
-        Map.get(next_state, :vocation)
+        Map.get(next_state, :vocation),
+        Map.get(next_state, :workspace_path),
+        Map.get(next_state, :tmp_path)
       )
 
     ChatTurnSpawner.spawn(

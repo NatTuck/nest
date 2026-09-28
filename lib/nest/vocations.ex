@@ -267,14 +267,23 @@ defmodule Nest.Vocations do
 
   Returns an empty string when the vocation has no modes (or has nil
   modes). The catalog is sorted alphabetically by mode name.
+
+  `tools` is the vocation's resolved tool-name list. When it is empty
+  the agent cannot call tools, so the per-mode sandbox capabilities
+  and the tool-error guidance are omitted (they would describe
+  behavior the agent can't exercise). The `compact` entry — the sole
+  source of the compaction contract — is always rendered, since
+  automatic compaction still runs for a tool-less agent.
   """
-  @spec mode_catalog(Vocation.t() | nil) :: String.t()
-  def mode_catalog(nil), do: ""
+  @spec mode_catalog(Vocation.t() | nil, [String.t()]) :: String.t()
+  def mode_catalog(vocation, tools)
 
-  def mode_catalog(%Vocation{modes: nil}), do: ""
-  def mode_catalog(%Vocation{modes: modes}) when map_size(modes) == 0, do: ""
+  def mode_catalog(nil, _tools), do: ""
 
-  def mode_catalog(%Vocation{modes: modes}) do
+  def mode_catalog(%Vocation{modes: nil}, _tools), do: ""
+  def mode_catalog(%Vocation{modes: modes}, _tools) when map_size(modes) == 0, do: ""
+
+  def mode_catalog(%Vocation{modes: modes}, tools) do
     # `compact` is always rendered into the catalog alongside the
     # vocation's user-configured modes. It's the only place in the
     # agent's initial system prompt that explains the summarization
@@ -285,19 +294,29 @@ defmodule Nest.Vocations do
     # `compact` is NOT user-selectable in the UI — that channel
     # flows through `list_modes/1` which still reads `vocation.modes`
     # unchanged. We only inject here for the catalog render.
+    tool_capable? = tools != []
     all_modes = Map.put(modes, "compact", %{"description" => compact_description()})
 
     catalog =
       all_modes
       |> Enum.sort_by(fn {name, _} -> name end)
-      |> Enum.map_join("\n", &format_mode_line/1)
+      |> Enum.map_join("\n", &format_mode_line(&1, tool_capable?))
 
     "\n\n[Available modes]\n\n" <>
-      "The user picks a mode per message via the UI. Pay close attention to [mode: ...] prefixes\n" <>
+      mode_catalog_intro(tool_capable?) <>
+      "#{catalog}\n"
+  end
+
+  defp mode_catalog_intro(true) do
+    "The user picks a mode per message via the UI. Pay close attention to [mode: ...] prefixes\n" <>
       "on user messages to determine the current mode. Modes apply until the next user message.\n" <>
       "Each mode changes the sandbox profile (filesystem permissions, network access).\n" <>
-      "If you run into unexpected errors in tool calls, double check your current mode.\n\n" <>
-      "#{catalog}\n"
+      "If you run into unexpected errors in tool calls, double check your current mode.\n\n"
+  end
+
+  defp mode_catalog_intro(false) do
+    "The user picks a mode per message via the UI. Pay close attention to [mode: ...] prefixes\n" <>
+      "on user messages to determine the current mode. Modes apply until the next user message.\n\n"
   end
 
   @doc """
@@ -320,28 +339,34 @@ defmodule Nest.Vocations do
       "enough that the conversation can continue from the summary alone."
   end
 
-  # Render one mode as a single catalog line. Three shapes:
+  # Render one mode as a single catalog line. For a tool-capable
+  # agent, three shapes:
   #   * mode has a "caps" key + description → `- name: <caps sentences>. <description>`
   #   * mode has a "caps" key, no description → `- name: <caps sentences>.`
   #   * mode has NO "caps" key (e.g. `compact`) + description → `- name: <description>.`
   #   * mode has NO "caps" key, no description → `- name.`
-  defp format_mode_line({name, mode_def}) do
+  # A tool-less agent gets only the description (caps describe tool
+  # sandboxing it can never exercise), so:
+  #   * description → `- name: <description>.`
+  #   * no description → `- name.`
+  defp format_mode_line({name, mode_def}, tool_capable?) do
     description = Map.get(mode_def, "description", "")
 
-    if Map.has_key?(mode_def, "caps") do
-      caps_text = caps_sentences(Map.get(mode_def, "caps"))
+    cond do
+      tool_capable? and Map.has_key?(mode_def, "caps") ->
+        caps_text = caps_sentences(Map.get(mode_def, "caps"))
 
-      if description == "" do
-        "- #{name}: #{caps_text}."
-      else
-        "- #{name}: #{caps_text}. #{description}"
-      end
-    else
-      if description == "" do
+        if description == "" do
+          "- #{name}: #{caps_text}."
+        else
+          "- #{name}: #{caps_text}. #{description}"
+        end
+
+      description == "" ->
         "- #{name}."
-      else
+
+      true ->
         "- #{name}: #{description}."
-      end
     end
   end
 

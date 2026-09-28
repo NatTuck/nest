@@ -3,6 +3,7 @@ defmodule Nest.LLM.RunnerTest do
 
   alias Nest.LLM.Runner
   alias Nest.LLM.RunResponse
+  alias Nest.LLM.Tool
 
   defp text_callbacks do
     %{
@@ -157,6 +158,30 @@ defmodule Nest.LLM.RunnerTest do
       }
 
       assert Runner.build_request(ctx).thinking_effort == nil
+    end
+
+    test "forces tool_choice :none when there are no tools" do
+      ctx = %{
+        client_config: %Nest.LLM.ClientConfig{model: "qwen3.5-plus"},
+        messages: [],
+        tools: [],
+        tool_choice: :auto
+      }
+
+      assert Runner.build_request(ctx).tool_choice == :none
+    end
+
+    test "honors the caller's tool_choice when tools are present" do
+      tool = %Tool{name: "shell-cmd", description: "run", parameters_schema: %{}}
+
+      ctx = %{
+        client_config: %Nest.LLM.ClientConfig{model: "qwen3.5-plus"},
+        messages: [],
+        tools: [tool],
+        tool_choice: :auto
+      }
+
+      assert Runner.build_request(ctx).tool_choice == :auto
     end
   end
 end

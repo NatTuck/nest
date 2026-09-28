@@ -42,7 +42,8 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     # Resolve mode: explicit > agent's current mode > "chat"
     mode = requested_mode || state.live.mode
     # Validate mode against the vocation; fall back to default if invalid.
-    {effective_mode, _caps} = resolve_mode_and_caps(mode, state.vocation)
+    {effective_mode, _caps} =
+      resolve_mode_and_caps(mode, state.vocation, state.workspace_path, state.tmp_path)
 
     # Clear the `cancelled` flag from any previous stop so the
     # pre-flight compaction that may run for this turn can
@@ -126,8 +127,9 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   end
 
   defp inject_notice(state, atom, _crossed) do
-    notice = ContextReminder.notice_text(atom)
-    ack = ContextReminder.ack_text_for(atom)
+    compact? = ContextReminder.compact_available?(state.tools)
+    notice = ContextReminder.notice_text(atom, compact?)
+    ack = ContextReminder.ack_text_for(atom, compact?)
     spec = %{kind: :context, attention: "Context?", notice: notice, ack: ack, threshold: atom}
 
     case NoticePairInjector.inject_pair_in_process(
@@ -217,7 +219,9 @@ defmodule Nest.Agents.Agent.ChatPipeline do
         state.live.active_message_index
       )
 
-    {_effective_mode, caps} = resolve_mode_and_caps(state.live.mode, state.vocation)
+    {_effective_mode, caps} =
+      resolve_mode_and_caps(state.live.mode, state.vocation, state.workspace_path, state.tmp_path)
+
     ChatTurnSpawner.spawn(state, state.chat_state.messages, {:user_message, stamped_user}, caps)
   end
 
@@ -414,7 +418,10 @@ defmodule Nest.Agents.Agent.ChatPipeline do
       )
 
     Broadcasts.status(state)
-    {_effective_mode, caps} = resolve_mode_and_caps(state.live.mode, state.vocation)
+
+    {_effective_mode, caps} =
+      resolve_mode_and_caps(state.live.mode, state.vocation, state.workspace_path, state.tmp_path)
+
     ChatTurnSpawner.spawn(state, state.chat_state.messages, {:user_message, stamped_user}, caps)
   end
 
@@ -444,20 +451,27 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   # the vocation has no modes). This matches the LLM-visible
   # `[mode: X]` prefix: we always emit a valid mode to the LLM.
   @doc false
-  def resolve_mode_and_caps(mode, %Nest.Vocations.Vocation{} = vocation) do
+  def resolve_mode_and_caps(mode, %Nest.Vocations.Vocation{} = vocation, workspace, tmp_path) do
     modes = Vocations.list_modes(vocation)
 
-    if mode in modes do
-      {mode, elem(Vocations.get_caps(vocation, mode), 1)}
-    else
-      default = Vocations.default_mode(vocation)
-      {default, elem(Vocations.get_caps(vocation, default), 1)}
-    end
+    {resolved, caps} =
+      if mode in modes do
+        {mode, elem(Vocations.get_caps(vocation, mode), 1)}
+      else
+        default = Vocations.default_mode(vocation)
+        {default, elem(Vocations.get_caps(vocation, default), 1)}
+      end
+
+    {resolved, Nest.ProjectConfig.apply_or_default(caps, workspace, tmp_path)}
   end
 
-  def resolve_mode_and_caps(_mode, _no_vocation_or_id) do
+  def resolve_mode_and_caps(_mode, _no_vocation_or_id, workspace, tmp_path) do
     # No vocation struct or vocation_id available: only "chat"
     # is valid.
-    {"chat", Nest.Sandbox.default_caps()}
+    {"chat", chat_caps(workspace, tmp_path)}
+  end
+
+  defp chat_caps(workspace, tmp_path) do
+    Nest.ProjectConfig.apply_or_default(Nest.Sandbox.default_caps(), workspace, tmp_path)
   end
 end

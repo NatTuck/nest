@@ -12,7 +12,7 @@ defmodule Nest.VocationsModesTest do
     * `get_caps/2` lookup (with the default-caps fallback)
     * `list_modes/1` (sorted, with chat fallback)
     * `default_mode/1` (first sorted, with chat fallback)
-    * `mode_catalog/1` (the LLM-facing mode description string)
+    * `mode_catalog/2` (the LLM-facing mode description string)
   """
 
   use Nest.DataCase, async: true
@@ -188,7 +188,7 @@ defmodule Nest.VocationsModesTest do
     end
   end
 
-  describe "mode_catalog/1" do
+  describe "mode_catalog/2" do
     test "builds a sorted catalog with caps-derived paths followed by the description" do
       vocation = %Vocation{
         name: "Programmer",
@@ -204,7 +204,7 @@ defmodule Nest.VocationsModesTest do
         }
       }
 
-      catalog = Vocations.mode_catalog(vocation)
+      catalog = Vocations.mode_catalog(vocation, ["shell-cmd"])
 
       assert catalog =~ "\n\n[Available modes]\n"
 
@@ -226,10 +226,32 @@ defmodule Nest.VocationsModesTest do
         }
       }
 
-      catalog = Vocations.mode_catalog(vocation)
+      catalog = Vocations.mode_catalog(vocation, ["shell-cmd"])
 
       refute catalog =~ "Read and write workspace"
       assert catalog =~ "plan: Read only \"/\". Read and write /tmp."
+    end
+
+    test "a tool-less vocation omits caps and tool guidance but keeps descriptions + compact" do
+      vocation = %Vocation{
+        name: "Chat",
+        modes: %{
+          "chat" => %{
+            "description" => "General conversation.",
+            "caps" => @valid_caps
+          }
+        }
+      }
+
+      catalog = Vocations.mode_catalog(vocation, [])
+
+      assert catalog =~ "\n\n[Available modes]\n"
+      assert catalog =~ "- chat: General conversation."
+      assert catalog =~ Vocations.compact_description()
+      refute catalog =~ "Read only"
+      refute catalog =~ "Read and write"
+      refute catalog =~ "Network disabled"
+      refute catalog =~ "errors in tool calls"
     end
   end
 end

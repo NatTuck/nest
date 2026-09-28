@@ -500,7 +500,14 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   defp resumed_status(_entry), do: :streaming
 
   defp spawn_with_entry(state, entry) do
-    {_effective_mode, caps} = ChatPipeline.resolve_mode_and_caps(state.live.mode, state.vocation)
+    {_effective_mode, caps} =
+      ChatPipeline.resolve_mode_and_caps(
+        state.live.mode,
+        state.vocation,
+        state.workspace_path,
+        state.tmp_path
+      )
+
     ChatTurnSpawner.spawn(state, state.chat_state.messages, entry, caps)
   end
 

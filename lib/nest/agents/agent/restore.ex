@@ -27,7 +27,7 @@ defmodule Nest.Agents.Agent.Restore do
   """
 
   alias Nest.LLM.ClientConfig
-  alias Nest.LLM.RunRequest
+  alias Nest.LLM.Runner
   alias Nest.Messages.Message
 
   @doc """
@@ -41,15 +41,16 @@ defmodule Nest.Agents.Agent.Restore do
 
   ## RunRequest defaults
 
-  `tool_choice: :auto` matches the agent's standard chat
-  config (vocation changes mid-conversation aren't supported
-  elsewhere). `thinking_effort` comes from the agent's
-  `client_config` so the rebuilt wire format matches the live
-  request (the wire format excludes historical thinking blocks
-  when thinking is off). `stream: true, metadata: %{}` mirror
-  the live request defaults. The `opts` arg to
-  `format_request_payload/2` is left empty: the wire format
-  doesn't carry `base_url`/`api_key`, which are http concerns.
+  The request is built through `Nest.LLM.Runner.build_request/1`, the
+  same funnel the live path uses, so the rebuilt wire format matches
+  what was actually sent — including the derived `tool_choice`
+  (`:auto` when the agent has tools, `:none` when it has none).
+  `thinking_effort` comes from the agent's `client_config` so the
+  rebuilt wire format matches the live request (the wire format
+  excludes historical thinking blocks when thinking is off).
+  `stream: true, metadata: %{}` mirror the live request defaults. The
+  `opts` arg to `format_request_payload/2` is left empty: the wire
+  format doesn't carry `base_url`/`api_key`, which are http concerns.
   """
   @spec rebuild_request_api_logs(
           Nest.Agents.Agent.t(),
@@ -77,15 +78,13 @@ defmodule Nest.Agents.Agent.Restore do
       |> Enum.take(message_index + 1)
       |> Enum.reject(&match?({:compaction, _}, &1))
 
-    request = %RunRequest{
-      messages: slice,
-      tools: state.tools,
-      tool_choice: :auto,
-      model: client_config.model,
-      thinking_effort: client_config.thinking_effort,
-      stream: true,
-      metadata: %{}
-    }
+    request =
+      Runner.build_request(%{
+        messages: slice,
+        tools: state.tools,
+        tool_choice: :auto,
+        client_config: client_config
+      })
 
     # Wire format only — `opts` is for http concerns (base_url,
     # api_key) and intentionally omitted. The wire format the

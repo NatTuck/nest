@@ -39,7 +39,7 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
           name: "TestSysPrompt-#{System.unique_integer([:positive])}",
           description: "Test",
           system_prompt: "Base prompt.",
-          tools: [],
+          tools: ["shell-cmd"],
           modes: %{
             "build" => %{
               "description" => "You're clear to edit the project in the workspace.",
@@ -84,7 +84,7 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
           name: "TestNoWorkspace-#{System.unique_integer([:positive])}",
           description: "Test",
           system_prompt: "Chat only.",
-          tools: [],
+          tools: ["shell-cmd"],
           modes: %{
             "chat" => %{
               "description" => "General conversation.",
@@ -103,6 +103,45 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
 
       assert system_prompt =~ "Chat only."
       refute system_prompt =~ "Workspace and tool working directory"
+    end
+
+    test "a tool-less vocation gets no tool sections or caps, but keeps compact guidance" do
+      valid_caps = %{
+        "net" => false,
+        "fs" => %{"read" => ["/"], "write" => []}
+      }
+
+      {:ok, vocation} =
+        Vocations.create_vocation(%{
+          name: "TestNoTools-#{System.unique_integer([:positive])}",
+          description: "Test",
+          system_prompt: "Tool-less.",
+          tools: [],
+          modes: %{
+            "chat" => %{
+              "description" => "General conversation.",
+              "caps" => valid_caps
+            }
+          }
+        })
+
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: vocation.id,
+          workspace_path: "/tmp/test-notools-#{System.unique_integer([:positive])}"
+        })
+
+      system_prompt = get_system_prompt(pid)
+
+      assert system_prompt =~ "Tool-less."
+      assert system_prompt =~ "- chat: General conversation."
+      assert system_prompt =~ Vocations.compact_description()
+      refute system_prompt =~ "Workspace and tool working directory"
+      refute system_prompt =~ "Tool call budget"
+      refute system_prompt =~ "errors in tool calls"
+      refute system_prompt =~ "Network disabled"
+      refute system_prompt =~ ~s(Read only "/")
     end
 
     test "compact-mode body lives once in the [Available modes] list" do

@@ -16,7 +16,7 @@ defmodule Nest.Agents.Agent.ChatTurn.BudgetReminder do
 
   `spec/1` returns a `%{kind, attention, notice}` map when the
   budget fires, or `nil` otherwise. See
-  `ContextReminder.spec/3` for the parallel context-usage
+  `ContextReminder.spec/4` for the parallel context-usage
   mechanism and `ResponseHandler.collect_case2_specs/2` for
   how specs are collected and injected.
   """

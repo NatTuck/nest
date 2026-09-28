@@ -133,19 +133,28 @@ defmodule Nest.Agents.Agent.SystemPrompt do
 
     system_prompt =
       (vocation.system_prompt || "") <>
-        Vocations.mode_catalog(vocation) <>
-        build_suffix(workspace_path, context_limit_info, name, depth) <>
-        agents_md_section(workspace_path, initial_caps(vocation, initial_mode))
+        Vocations.mode_catalog(vocation, tools) <>
+        build_suffix(workspace_path, context_limit_info, name, depth, tools) <>
+        agents_md_section(workspace_path, initial_caps(vocation, initial_mode)) <>
+        Nest.ProjectConfig.section(workspace_path)
 
     {system_prompt, initial_mode, tools, vocation}
   end
 
-  defp build_suffix(workspace_path, context_limit_info, name, depth) do
+  defp build_suffix(workspace_path, context_limit_info, name, depth, tools) do
     identity_section(name, depth) <>
-      workspace_section(workspace_path) <>
-      tool_call_limit_section() <>
+      tool_sections(tools, workspace_path) <>
       context_limit_section(context_limit_info)
   end
+
+  # Every prompt section that only makes sense when the agent can call
+  # tools: the workspace/tool working directory and the tool-call
+  # budget. Gathered here so a tool-less vocation (e.g. Chat) gets a
+  # prompt with no dangling tool references.
+  defp tool_sections([], _workspace_path), do: ""
+
+  defp tool_sections(_tools, workspace_path),
+    do: workspace_section(workspace_path) <> tool_call_limit_section()
 
   # Tell the agent its name and spawn depth. Non-clones and
   # clones at/after compaction get this in the system message.

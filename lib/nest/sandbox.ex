@@ -147,12 +147,16 @@ defmodule Nest.Sandbox do
           {:ok, [String.t()]} | {:error, String.t()}
   def build(caps, workspace_path, tmp_path, chdir_path, hpu_device_paths) do
     with :ok <- validate_caps(caps) do
+      Nest.ProjectConfig.ensure_dirs(caps)
+
       args =
         base_args(caps, hpu_device_paths)
         |> append_net_flag(caps)
         |> append_workspace_bind(caps, workspace_path)
         |> append_write_binds(caps, workspace_path)
         |> append_tmp_bind(tmp_path)
+        |> append_project_binds(caps)
+        |> append_protected_binds(caps)
         |> append_chdir(chdir_path)
 
       {:ok, args}
@@ -244,7 +248,12 @@ defmodule Nest.Sandbox do
     extras =
       writes |> Enum.reject(&(&1 in [":workspace", "/tmp"])) |> Enum.map(&FSPath.canonical/1)
 
-    (workspace_root ++ extras) |> Enum.uniq()
+    project = caps |> project_list() |> Enum.map(& &1["dest"])
+    protected = caps |> protected_list() |> Enum.map(& &1["path"])
+
+    (workspace_root ++ extras ++ project)
+    |> Enum.reject(&(&1 in protected))
+    |> Enum.uniq()
   end
 
   @doc """
@@ -255,7 +264,13 @@ defmodule Nest.Sandbox do
   @spec read_allowed?(String.t(), map()) :: boolean()
   def read_allowed?(path, caps) do
     canonical = FSPath.canonical(path)
-    Enum.any?(readable_roots(caps), &FSPath.under?(&1, canonical))
+
+    roots =
+      readable_roots(caps) ++
+        Enum.map(project_list(caps), & &1["dest"]) ++
+        Enum.map(protected_list(caps), & &1["path"])
+
+    Enum.any?(roots, &FSPath.under?(&1, canonical))
   end
 
   @doc """
@@ -266,7 +281,9 @@ defmodule Nest.Sandbox do
   @spec write_allowed?(String.t(), map(), String.t() | nil) :: boolean()
   def write_allowed?(path, caps, workspace) do
     canonical = FSPath.canonical(path)
-    Enum.any?(writable_roots(caps, workspace), &FSPath.under?(&1, canonical))
+
+    not protected?(canonical, caps) and
+      Enum.any?(writable_roots(caps, workspace), &FSPath.under?(&1, canonical))
   end
 
   @doc """
@@ -285,7 +302,7 @@ defmodule Nest.Sandbox do
   @spec read(String.t(), map(), keyword()) :: {:ok, binary()} | {:error, atom() | term()}
   def read(path, caps, _opts \\ []) do
     if read_allowed?(path, caps) do
-      File.read(path)
+      File.read(Nest.ProjectConfig.read_source(path, caps))
     else
       {:error, :read_permission_denied}
     end
@@ -300,7 +317,7 @@ defmodule Nest.Sandbox do
   @spec stat(String.t(), map(), keyword()) :: {:ok, File.Stat.t()} | {:error, atom() | term()}
   def stat(path, caps, opts \\ []) do
     if read_allowed?(path, caps) do
-      File.stat(path, opts)
+      File.stat(Nest.ProjectConfig.read_source(path, caps), opts)
     else
       {:error, :read_permission_denied}
     end
@@ -606,22 +623,53 @@ defmodule Nest.Sandbox do
 
   defp append_workspace_bind(args, _caps, _workspace), do: args
 
+  # Bind each project mount at its declared path.
+  defp append_project_binds(args, caps) do
+    binds =
+      caps
+      |> project_list()
+      |> Enum.filter(&is_binary(&1["source"]))
+      |> Enum.flat_map(fn %{"dest" => dest, "source" => source} ->
+        ["--bind", source, dest]
+      end)
+
+    args ++ binds
+  end
+
+  # Force the `.nest` file read-only AFTER the workspace bind so the
+  # overlay wins. When `.nest` is absent the source is `/dev/null`, so
+  # the path is a read-only empty file an agent can't replace.
+  defp append_protected_binds(args, caps) do
+    binds =
+      caps
+      |> protected_list()
+      |> Enum.flat_map(fn %{"path" => path, "source" => source} ->
+        ["--ro-bind", source, path]
+      end)
+
+    args ++ binds
+  end
+
   # Bind the remaining fs.write paths at their canonical paths.
-  # `:workspace`, `/tmp`, and the workspace (raw or canonical) are
-  # rejected because they are handled by dedicated bind steps.
-  defp append_write_binds(args, %{"fs" => %{"write" => writes}}, workspace) do
-    already_bound =
-      [":workspace", "/tmp"] ++
-        if(is_binary(workspace), do: [workspace, FSPath.canonical(workspace)], else: [])
+  defp append_write_binds(args, %{"fs" => %{"write" => writes}} = caps, workspace) do
+    bound = already_bound(caps, workspace)
 
     extras =
       writes
-      |> Enum.reject(&(&1 in already_bound))
+      |> Enum.reject(&(&1 in bound))
       |> Enum.map(&FSPath.canonical/1)
       |> Enum.uniq()
       |> Enum.flat_map(fn path -> ["--bind", path, path] end)
 
     args ++ extras
+  end
+
+  # Paths already covered by a dedicated bind step.
+  defp already_bound(caps, workspace) do
+    [":workspace", "/tmp"] ++
+      if(is_binary(workspace), do: [workspace, FSPath.canonical(workspace)], else: []) ++
+      Enum.map(project_list(caps), & &1["dest"]) ++
+      Enum.map(protected_list(caps), & &1["path"])
   end
 
   # Bind the runtime tmp_path (e.g. /tmp/nest-123/agent-456) at /tmp
@@ -641,4 +689,12 @@ defmodule Nest.Sandbox do
   defp read_list(caps), do: get_in(caps, ["fs", "read"]) || []
 
   defp write_list(caps), do: get_in(caps, ["fs", "write"]) || []
+
+  defp project_list(caps), do: get_in(caps, ["fs", "project"]) || []
+
+  defp protected_list(caps), do: get_in(caps, ["fs", "protected"]) || []
+
+  defp protected?(canonical, caps) do
+    Enum.any?(protected_list(caps), fn p -> FSPath.under?(p["path"], canonical) end)
+  end
 end

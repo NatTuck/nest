@@ -56,15 +56,18 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
 
   @ack_texts %{
     p25: "Okay, that's plenty of space.",
-    p50: "Okay, I should consider conserving tokens.",
-    p75: "Okay, no more expensive tool calls and I should consider explicitly compacting."
+    p50: "Okay, I should consider conserving tokens."
   }
 
   @notice_texts %{
     p25: "Context at 25%.",
-    p50: "Context at 50%.",
-    p75: "Context at 75%. Consider compacting via the context-compact tool."
+    p50: "Context at 50%."
   }
+
+  @p75_notice_compact "Context at 75%. Consider compacting via the context-compact tool."
+  @p75_notice_plain "Context at 75%."
+  @p75_ack_compact "Okay, no more expensive tool calls and I should consider explicitly compacting."
+  @p75_ack_plain "Okay, I should conserve context."
 
   @type spec :: %{
           required(:kind) => atom(),
@@ -101,20 +104,40 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
   Notice text for a threshold atom. Returns a short
   sentence the callers can attach to a tool response or
   use as the user side of a synthetic pair.
+
+  `compact?` (default `true`) controls whether the p75 notice
+  recommends the `context-compact` tool. Pass `false` when the
+  agent has no such tool (see `compact_available?/1`) so the
+  prompt never suggests a tool the model cannot call.
   """
-  @spec notice_text(atom()) :: String.t()
-  def notice_text(atom) do
-    Map.fetch!(@notice_texts, atom)
-  end
+  @spec notice_text(atom(), boolean()) :: String.t()
+  def notice_text(atom, compact? \\ true)
+
+  def notice_text(:p75, true), do: @p75_notice_compact
+  def notice_text(:p75, false), do: @p75_notice_plain
+  def notice_text(atom, _compact?), do: Map.fetch!(@notice_texts, atom)
 
   @doc """
   Assistant ack text that pairs with a given notice.
   Primes the model's awareness for the next response.
+
+  `compact?` mirrors `notice_text/2`: when false, the p75 ack
+  omits the compaction recommendation.
   """
-  @spec ack_text_for(atom()) :: String.t()
-  def ack_text_for(atom) do
-    Map.fetch!(@ack_texts, atom)
-  end
+  @spec ack_text_for(atom(), boolean()) :: String.t()
+  def ack_text_for(atom, compact? \\ true)
+
+  def ack_text_for(:p75, true), do: @p75_ack_compact
+  def ack_text_for(:p75, false), do: @p75_ack_plain
+  def ack_text_for(atom, _compact?), do: Map.fetch!(@ack_texts, atom)
+
+  @doc """
+  Whether the agent owns the `context-compact` tool — i.e. can
+  trigger compaction itself. Used to decide whether the p75
+  context-usage reminder may recommend that tool.
+  """
+  @spec compact_available?([Nest.LLM.Tool.t()] | nil) :: boolean()
+  def compact_available?(tools), do: Enum.any?(tools || [], &(&1.name == "context-compact"))
 
   @doc """
   Build a complete notice spec for a context-usage threshold
@@ -124,8 +147,8 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
   message is a context-usage reminder, distinguishing it
   from other notice types (e.g. tool-call budget).
   """
-  @spec spec(non_neg_integer(), pos_integer(), MapSet.t(atom())) :: spec() | nil
-  def spec(used, limit, crossed) do
+  @spec spec(non_neg_integer(), pos_integer(), MapSet.t(atom()), boolean()) :: spec() | nil
+  def spec(used, limit, crossed, compact? \\ true) do
     case highest_unannounced(used, limit, crossed) do
       nil ->
         nil
@@ -134,7 +157,7 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
         %{
           kind: :context,
           attention: "Context?",
-          notice: format(atom, used, limit),
+          notice: format(atom, used, limit, compact?),
           threshold: atom
         }
     end
@@ -209,7 +232,7 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
   @doc """
   Build the reminder message for the given threshold atom.
   Kept for test compatibility and callers that need the
-  legacy `{:system, _}` format. Prefer `notice_text/1`
+  legacy `{:system, _}` format. Prefer `notice_text/2`
   for new call sites.
   """
   @spec build_message(atom(), non_neg_integer(), pos_integer(), ClientConfig.t() | nil) ::
@@ -224,25 +247,27 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
     do: build_message(atom, used, limit, %ClientConfig{})
 
   @doc false
-  @spec format(atom(), non_neg_integer(), pos_integer()) :: String.t()
-  def format(:p25, used, limit) do
-    reserve = Reserve.response_budget(limit)
-    effective = max(1, limit - reserve)
-    "Context usage is now at 25% (~#{used} of ~#{effective} token budget)."
+  @spec format(atom(), non_neg_integer(), pos_integer(), boolean()) :: String.t()
+  def format(atom, used, limit, compact? \\ true)
+
+  def format(:p25, used, limit, _compact?), do: percentage_text(25, used, limit)
+
+  def format(:p50, used, limit, _compact?), do: percentage_text(50, used, limit)
+
+  def format(:p75, used, limit, compact?) do
+    base = percentage_text(75, used, limit)
+
+    if compact? do
+      base <> " Consider compacting via the `context-compact` tool to free up room."
+    else
+      base
+    end
   end
 
-  def format(:p50, used, limit) do
+  defp percentage_text(pct, used, limit) do
     reserve = Reserve.response_budget(limit)
     effective = max(1, limit - reserve)
-    "Context usage is now at 50% (~#{used} of ~#{effective} token budget)."
-  end
-
-  def format(:p75, used, limit) do
-    reserve = Reserve.response_budget(limit)
-    effective = max(1, limit - reserve)
-
-    "Context usage is now at 75% (~#{used} of ~#{effective} token budget). " <>
-      "Consider compacting via the `context-compact` tool to free up room."
+    "Context usage is now at #{pct}% (~#{used} of ~#{effective} token budget)."
   end
 
   @doc """

@@ -65,12 +65,21 @@ defmodule Nest.LLM.Runner do
       # shapes them for its wire protocol.
       messages: ctx.messages,
       tools: ctx.tools,
-      tool_choice: ctx.tool_choice,
+      tool_choice: tool_choice_for(ctx.tools, ctx.tool_choice),
       model: ctx.client_config.model,
       thinking_effort: ctx.client_config.thinking_effort,
       metadata: %{}
     }
   end
+
+  # A request with no tools must not carry `tool_choice: :auto`: some
+  # models read that as "you may still generate tool-call syntax" and
+  # emit raw tool-call XML even though no tools were defined (see the
+  # max-iterations fix in `notes/fix-real-api-calls.md`). Force `:none`
+  # whenever the tool list is empty, matching the compactor and
+  # max-iteration calls; otherwise honor the caller's choice.
+  defp tool_choice_for(tools, _choice) when tools in [nil, []], do: :none
+  defp tool_choice_for(_tools, choice), do: choice
 
   @doc """
   Build the opts list passed to the provider client. The

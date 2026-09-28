@@ -3,7 +3,7 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminderTest do
   Tests for the mid-iteration context-usage reminder logic.
 
   These are unit tests of `ContextReminder.highest_unannounced/3`,
-  `ContextReminder.format/3`, and `ContextReminder.build_message/3`.
+  `ContextReminder.format/4`, and `ContextReminder.build_message/3`.
   The ChatTurn wiring (call to `inject_context_warning/2`
   in `iterate/1`, set persisted to the Agent via
   `{:set_crossed_thresholds, set}`, set cleared on successful
@@ -116,6 +116,14 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminderTest do
       assert text =~ "compact"
     end
 
+    test ":p75 with compact? false omits the tool recommendation" do
+      text = ContextReminder.format(:p75, 120_000, @limit, false)
+      assert text =~ "75%"
+      assert text =~ "120000"
+      assert text =~ "#{@working_budget}"
+      refute text =~ "compact"
+    end
+
     test "format text uses the spec'd shape ('~used of ~effective token budget')" do
       used = 1234
       expected_effective = @working_budget
@@ -174,6 +182,21 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminderTest do
     test "returns short notice for :p75 with compact recommendation" do
       assert ContextReminder.notice_text(:p75) =~ "compact"
     end
+
+    test "returns a compact-free p75 notice when compaction isn't available" do
+      assert ContextReminder.notice_text(:p75, false) == "Context at 75%."
+    end
+  end
+
+  describe "compact_available?/1" do
+    test "is true only when the context-compact tool is present" do
+      compact = %Nest.LLM.Tool{name: "context-compact"}
+
+      assert ContextReminder.compact_available?([compact])
+      refute ContextReminder.compact_available?([%Nest.LLM.Tool{name: "shell-cmd"}])
+      refute ContextReminder.compact_available?([])
+      refute ContextReminder.compact_available?(nil)
+    end
   end
 
   describe "ack_text_for/1" do
@@ -187,6 +210,10 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminderTest do
 
     test "returns ack for :p75 with compact recommendation" do
       assert ContextReminder.ack_text_for(:p75) =~ "compact"
+    end
+
+    test "returns a compact-free p75 ack when compaction isn't available" do
+      refute ContextReminder.ack_text_for(:p75, false) =~ "compact"
     end
   end
 
@@ -226,6 +253,13 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminderTest do
       assert spec.threshold == :p75
       assert spec.notice =~ "75%"
       assert spec.notice =~ "compact"
+    end
+
+    test "p75 spec notice omits compaction when compact? is false" do
+      spec = ContextReminder.spec(120_001, @limit, MapSet.new(), false)
+      assert spec.threshold == :p75
+      assert spec.notice =~ "75%"
+      refute spec.notice =~ "compact"
     end
 
     test "returns nil when the only crossed threshold was already announced (no higher threshold crossed)" do

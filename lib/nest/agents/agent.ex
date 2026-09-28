@@ -374,10 +374,21 @@ defmodule Nest.Agents.Agent do
   """
   @spec resolve_caps(t()) :: map()
   def resolve_caps(%__MODULE__{vocation: %Nest.Vocations.Vocation{} = vocation} = state) do
-    case Nest.Vocations.get_caps(vocation, state.live.mode) do
-      {:ok, caps} -> caps
-      _ -> Nest.Sandbox.default_caps()
-    end
+    caps =
+      case Nest.Vocations.get_caps(vocation, state.live.mode) do
+        {:ok, caps} -> caps
+        _ -> Nest.Sandbox.default_caps()
+      end
+
+    Nest.ProjectConfig.apply_or_default(caps, state.workspace_path, state.tmp_path)
+  end
+
+  def resolve_caps(%__MODULE__{} = state) do
+    Nest.ProjectConfig.apply_or_default(
+      Nest.Sandbox.default_caps(),
+      state.workspace_path,
+      state.tmp_path
+    )
   end
 
   def resolve_caps(_), do: Nest.Sandbox.default_caps()
