@@ -9,7 +9,7 @@ defmodule Nest.Agents.Agent.Compaction.Marker do
 
   Persistence and in-memory placement flow through the
   canonical paths:
-    * `MessageAppender.append_history_one/2` stamps the
+    * `MessageAppender.append_marker/2` stamps the
       marker at `state.chat_state.next_message_index`,
       appends to `history`, bumps `next_message_index`,
       and persists via `Persistence.insert_message/2`'s

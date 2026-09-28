@@ -92,7 +92,7 @@ defmodule Nest.Persistence.Messages do
   end
 
   # The parent to inherit a shared prefix from, or `:none` for a
-  # root, a fresh child, a detached clone, a cycle, or a missing
+  # root, a fresh child, a cycle, or a missing
   # parent row.
   defp shared_parent(%PersistedAgent{parent_id: parent_id, fork_message_index: fork}, seen)
        when is_integer(parent_id) and is_integer(fork) do
@@ -148,8 +148,9 @@ defmodule Nest.Persistence.Messages do
   end
 
   @doc """
-  Set (or clear, with `nil`) an agent's fork boundary. Used by the
-  clone detach path at first compaction (see
+  Set (or clear, with `nil`) an agent's fork boundary. Clearing is
+  only meaningful for repair: the live path never clears it, since a
+  clone keeps its fork pointer for life (see
   `notes/shared-message-structure.md`).
   """
   @spec update_fork_message_index(integer(), String.t(), non_neg_integer() | nil) ::

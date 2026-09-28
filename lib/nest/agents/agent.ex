@@ -14,8 +14,8 @@ defmodule Nest.Agents.Agent.TreePosition do
   `fork_message_index` is the clone's first own `message_index`.
   The clone shares its ancestors' rows below it and owns from it
   up (see `notes/shared-message-structure.md`). `nil` for a root
-  or a fresh child (owns from index 0) and for a clone that has
-  detached at compaction (owns its own rows, no shared prefix).
+  or a fresh child (owns from index 0); a clone keeps an integer
+  fork index for life.
   """
 
   defstruct parent_id: nil, parent_name: nil, fork_message_index: nil

@@ -50,8 +50,8 @@ scoped by `agent_id`, so `R:6` and `C:6` are different rows.
   `min(message_index for own(A))`. It is stored explicitly as
   `agents.fork_message_index` so fresh-vs-clone is unambiguous even
   before a clone has written its own rows. For a root or a fresh
-  child this is `0` (and the column is `NULL`); for a detached clone
-  it is `NULL` (see below).
+  child this is `0` (and the column is `NULL`). A clone keeps an integer fork
+  index for life (D9) - nothing clears it.
 - `before(list, k)` — the elements of `list` whose `message_index < k`.
 
 ## Resolver
@@ -62,7 +62,7 @@ full(A) = (A.fork_message_index ? before(full(parent(A)), F_A) : []) ++ own(A)
 
 Resolve recursively up the `parent_id` chain. Depth is bounded by
 `max_depth`, so this is a short walk. `fork_message_index = NULL` means "no
-shared prefix": a root, a fresh child, or a detached clone.
+shared prefix": a root or a fresh child.
 
 `fork_message_index` is set to the parent's `next_message_index` at spawn, which
 is exactly the index of the clone's first own row (the `tool_result`).
@@ -84,13 +84,14 @@ is exactly the index of the clone's first own row (the `tool_result`).
   different rows at the same index; that is expected.
 - **D8** The live path only appends. Only the offline repair tool
   (`notes/enforce-mesages-seq-invariants.md`) may rewrite/renumber rows.
-- **D9** A clone **detaches** from its shared prefix at its first compaction:
-  the prefix has been summarized away, so `fork_message_index` is cleared to
-  `NULL` and the clone's own rows become its full sequence. Detach never
-  renumbers rows (D8): the own rows keep their indices and the post-compaction
-  active list starts with the rebuilt system.
+- **D9** A clone keeps its fork pointer for life. Compaction moves the
+  visibility boundary (`last_compaction_index`); it does not end ownership of
+  the shared prefix. Once a clone compacts, its whole shared prefix lies in its
+  archived slice (`index <= boundary`), which is where the UI and the resolver
+  expect it. `fork_message_index: NULL` therefore means "root or fresh child",
+  and nothing else.
 
-## Fresh children vs clones vs detached
+## Fresh children vs clones
 
 All have `parent_id` set (the tree is unified for lifecycle, usage, and the
 sidebar). They differ in `fork_message_index`:
@@ -98,10 +99,8 @@ sidebar). They differ in `fork_message_index`:
 - Fresh child: owns its own system row at index 0, `fork_message_index = NULL`,
   shares nothing.
 - Clone: no own system row, `fork_message_index > 0`, shares the ancestor prefix
-  below it.
-- Detached clone: no shared prefix anymore, `fork_message_index = NULL`; its own
-  rows (which may start above 0) are its full sequence and the post-compaction
-  active list begins with a rebuilt system row.
+  below it - and keeps that pointer for life: compaction moves the visibility
+  boundary, not ownership (D9).
 
 ## Non-goals / explicitly wrong
 
