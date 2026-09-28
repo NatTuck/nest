@@ -15,7 +15,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
        carried entry's messages onto the end.
     4. Move pre-swap `messages` to `history` (in-memory).
     5. Append the marker to `history` via
-       `MessageAppender.append_history_one/2`.
+       `MessageAppender.append_marker/2`.
     6. Append the post-swap active list via
        `Agent.__append_messages__/2`.
     7. Broadcast `chat:compaction` and spawn the next chat
@@ -49,6 +49,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   alias Nest.Messages.System
   alias Nest.Messages.ThinkTags
   alias Nest.Messages.User
+  alias Nest.Persistence
   alias Nest.Tokens.Estimator
   alias Nest.Vocations
   alias Nest.Vocations.Vocation
@@ -107,7 +108,6 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
 
     state =
       state
-      |> maybe_detach_clone()
       |> clear_mid_turn_entry()
       |> put_status(:idle)
       |> reset_crossed_thresholds()
@@ -134,29 +134,9 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
     state = archive_pre_swap(state, archived_messages)
     state = apply_post_swap(state, marker, new_messages)
 
-    Broadcasts.compaction(state, marker, state.chat_state.history)
+    Broadcasts.compaction(state, marker, Persistence.load_history(state.space_id, state.name))
 
     spawn_next_chat_turn(state, carried_entry)
-  end
-
-  # A clone that reaches its first compaction detaches from its
-  # ancestor prefix: from here on it owns its own sequence (the
-  # shared prefix was summarized away). The live path never
-  # renumbers rows, so the clone's existing own rows keep their
-  # indices and `fork_message_index` is simply cleared.
-  # See `notes/shared-message-structure.md`.
-  defp maybe_detach_clone(%{tree_position: %{fork_message_index: nil}} = state), do: state
-
-  defp maybe_detach_clone(state) do
-    case Agent.Persistence.update_fork_message_index(state.space_id, state.name, nil) do
-      :ok ->
-        %{state | tree_position: %{state.tree_position | fork_message_index: nil}}
-
-      {:error, reason} ->
-        Logger.warning("Failed to detach clone #{state.name} at compaction: #{inspect(reason)}")
-
-        state
-    end
   end
 
   # Re-fetch the vocation from the DB (falling back to the
@@ -266,23 +246,22 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   end
 
   # Place post-swap entries via the canonical append path: the
-  # marker to `history` (`append_history_one/2`, no broadcast),
+  # marker via `append_marker/2` (no broadcast),
   # new messages to `messages` (`__append_messages__/2`).
   defp apply_post_swap(state, marker, new_messages) do
-    {_marker, state} = MessageAppender.append_history_one(state, marker)
+    {_marker, state} = MessageAppender.append_marker(state, marker)
     {_stamped, state} = Agent.__append_messages__(state, new_messages)
     state
   end
 
-  # Move pre-swap `messages` to `history` (their DB rows already
-  # exist at pre-swap indices).
-  defp archive_pre_swap(state, archived_messages) do
+  # Drop the pre-swap `messages` from memory (their DB rows already
+  # exist at their pre-swap indices; the archive is derived on demand.
+  defp archive_pre_swap(state, _archived_messages) do
     %{
       state
       | chat_state: %{
           state.chat_state
-          | messages: [],
-            history: (state.chat_state.history || []) ++ archived_messages
+          | messages: []
         }
     }
   end

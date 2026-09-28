@@ -256,12 +256,12 @@ defmodule Nest.Agents.Agent do
   @spec build_child_attrs(map(), String.t(), String.t(), integer(), map() | nil) :: map()
   def build_child_attrs(parent_state, instruction, child_name, parent_id, model_override \\ nil)
       when is_map(parent_state) and is_binary(instruction) and is_binary(child_name) do
-    # The clone shares the parent's *full* sequence (history +
-    # active) up to the fork point. `next_message_index` is the
-    # first index the child owns, i.e. its fork boundary `F`; the
-    # shared prefix is everything with a lower index. See
-    # `notes/shared-message-structure.md`.
-    shared_prefix = parent_state.chat_state.history ++ parent_state.chat_state.messages
+    # The clone starts from the parent LLM-facing context: the visible
+    # `messages` only. The archived slice is not part of any context - it is
+    # derived on demand (`Persistence.load_history/2`) and it contains the
+    # non-LLM-visible `{:compaction, _}` marker row, which is exactly how a
+    # marker used to end up in a child context.
+    shared_prefix = parent_state.chat_state.messages
     fork_index = parent_state.chat_state.next_message_index
 
     {preloaded, next_index} =
@@ -289,6 +289,9 @@ defmodule Nest.Agents.Agent do
       # index for a clone (shares everything below it).
       fork_message_index: fork_index,
       preloaded_messages: preloaded,
+      # The child inherits the shared sequence boundary: below `F`
+      # belong to ancestors, and the partition must file the ancestor
+      # marker (and everything it archived) as archived here too.
       last_compaction_index: Map.get(parent_state.chat_state, :last_compaction_index, -1),
       next_message_index: next_index
     }
@@ -423,17 +426,11 @@ defmodule Nest.Agents.Agent do
   defdelegate get_messages(pid), to: ClientAPI
 
   @doc """
-  Returns the archived history for the agent.
-
-  Re-export of `ClientAPI.get_history/1`.
+  Fetch API logs for a specific message by index, given the agent's
+  derived archive (`Persistence.load_history/2`, resolved by the
+  caller so the agent process never reads the DB for display).
   """
-  defdelegate get_history(pid), to: ClientAPI
-
-  @doc """
-  Fetch API logs for a specific message by index. Delegates to the
-  GenServer's introspection handler.
-  """
-  defdelegate get_api_logs(pid, index), to: ClientAPI
+  defdelegate get_api_logs(pid, index, history), to: ClientAPI
 
   # Server Callbacks
 

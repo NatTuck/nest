@@ -107,7 +107,6 @@ defmodule Nest.Agents.Agent.SharedMessageStructureTest do
         depth: 1,
         chat_state: %Agent.ChatState{
           messages: child_messages,
-          history: [],
           next_message_index: 7,
           last_compaction_index: -1
         }
@@ -142,16 +141,18 @@ defmodule Nest.Agents.Agent.SharedMessageStructureTest do
       assert :ok = Preflight.validate_tool_call_pairing(grandchild_full)
     end
 
-    test "detached clone resolves to its own rows only" do
+    # A clone keeps its fork pointer for life: compaction moves the
+    # visibility boundary, it does not end ownership of the shared
+    # prefix (`fork_message_index: nil` now means "root or fresh child").
+    test "a clone shares its ancestor prefix, and the pointer is permanent" do
       {parent_state, child_name} = spawn_clone_fixture()
 
-      assert :ok =
-               Persistence.update_fork_message_index(parent_state.space_id, child_name, nil)
-
-      {:ok, %PersistedAgent{fork_message_index: nil}} =
+      {:ok, %PersistedAgent{fork_message_index: fork}} =
         Persistence.fetch_agent(parent_state.space_id, child_name)
 
-      assert Persistence.load_full_messages(parent_state.space_id, child_name) ==
+      assert is_integer(fork)
+
+      assert Persistence.load_full_messages(parent_state.space_id, child_name) !=
                Persistence.load_messages(parent_state.space_id, child_name)
     end
   end
@@ -230,7 +231,6 @@ defmodule Nest.Agents.Agent.SharedMessageStructureTest do
       depth: Keyword.fetch!(opts, :depth),
       chat_state: %Agent.ChatState{
         messages: messages,
-        history: [],
         next_message_index: Keyword.fetch!(opts, :next_index),
         last_compaction_index: -1
       }

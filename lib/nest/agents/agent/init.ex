@@ -182,9 +182,9 @@ defmodule Nest.Agents.Agent.Init do
   end
 
   defp do_seed(state, preloaded, last_compaction_index) do
-    {history, messages} =
-      Enum.split_with(preloaded, fn {_role, %{index: idx}} ->
-        idx <= last_compaction_index
+    messages =
+      Enum.filter(preloaded, fn {_role, %{index: idx}} ->
+        idx > last_compaction_index
       end)
 
     highest_index =
@@ -197,7 +197,6 @@ defmodule Nest.Agents.Agent.Init do
       | chat_state: %{
           state.chat_state
           | messages: messages,
-            history: history,
             last_compaction_index: last_compaction_index,
             next_message_index: highest_index + 1
         }

@@ -39,17 +39,17 @@ defmodule Nest.Agents.Agent.ChatState do
 
   The `last_compaction_index` field is the runtime mirror of
   the persisted `agents.last_compaction_index` column. It is
-  the boundary that decides which rows from the persisted
-  message sequence land in `:history` and which land in
-  `:messages`:
+  the boundary above which rows from the persisted message
+  sequence are LLM-facing. Rows at or below it are the archived
+  slice, which is *derived on demand* (`Nest.Persistence.History`)
+  and never held in state:
 
       messages = rows where message_index > last_compaction_index
-      history  = rows where message_index <= last_compaction_index
 
   Default `-1` means "no compaction has happened; the entire
   sequence, including the system prompt at index 0, is in
   `:messages`". After the first compaction the value is the
-  marker's `message_index`; the marker itself sits in `:history`
+  marker's `message_index`; the marker itself sits below the boundary
   because of the `<=` rule.
 
   The `pending_children` map tracks child agents that this
@@ -82,7 +82,6 @@ defmodule Nest.Agents.Agent.ChatState do
   and on agent restart.
   """
   defstruct messages: [],
-            history: [],
             last_compaction_index: -1,
             next_message_index: 0,
             pending_children: %{},

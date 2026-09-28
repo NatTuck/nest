@@ -76,7 +76,7 @@ defmodule Nest.Agents.Agent.RestoreTest do
       model: %{name: "test-model", provider: "test"},
       client_config: client_config,
       tools: tools,
-      chat_state: %ChatState{messages: fixture_messages(), history: []},
+      chat_state: %ChatState{messages: fixture_messages()},
       live: %ChatState.Live{api_log_sequences: %{}}
     }
   end

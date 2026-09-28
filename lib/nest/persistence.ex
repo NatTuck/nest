@@ -353,6 +353,14 @@ defmodule Nest.Persistence do
     as: :load_full_messages
 
   @doc """
+  Archived slice of the sequence: rows at or below the compaction
+  boundary (the marker row included). Derived on demand - display/audit only.
+  """
+  defdelegate load_history(space_id, name),
+    to: Nest.Persistence.History,
+    as: :load
+
+  @doc """
   Read the `last_compaction_index` boundary column.
   """
   defdelegate last_compaction_index(space_id, name),

@@ -78,8 +78,8 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
   # persisted with their real response log). User/tool messages never
   # carry stored request logs — their request log is synthetic and is
   # rebuilt on demand here.
-  def handle({:get_api_logs, index}, _from, state) do
-    {:reply, api_logs_for(state, index), state}
+  def handle({:get_api_logs, index, history}, _from, state) do
+    {:reply, api_logs_for(state, index, history), state}
   end
 
   def handle(:get_crossed_thresholds, _from, state) do
@@ -88,10 +88,6 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
 
   def handle(:get_next_index, _from, state) do
     {:reply, state.chat_state.next_message_index, state}
-  end
-
-  def handle(:get_history, _from, state) do
-    {:reply, state.chat_state.history || [], state}
   end
 
   # Test-only introspection: returns the assembled system
@@ -183,8 +179,8 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
   # the message (assistant/system messages are persisted with their real
   # response log). User/tool messages never carry a stored request log —
   # theirs is synthetic and rebuilt on demand here.
-  defp api_logs_for(state, index) do
-    messages = state.chat_state.history ++ state.chat_state.messages
+  defp api_logs_for(state, index, history) do
+    messages = history ++ state.chat_state.messages
 
     case find_message(messages, index) do
       nil ->
