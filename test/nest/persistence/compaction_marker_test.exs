@@ -11,7 +11,7 @@ defmodule Nest.Persistence.CompactionMarkerTest do
     the column unset (legacy callers and pre-migration rows).
   - The `agents.last_compaction_index` boundary bump commits
     atomically with the marker INSERT (one transaction).
-  - `record/5` returns `:not_found` when the row insert fails
+  - `record/6` returns `:not_found` when the row insert fails
     (the `Repo.rollback` path).
 
   Persistence is enabled in this test process via the `:nest,
@@ -29,13 +29,13 @@ defmodule Nest.Persistence.CompactionMarkerTest do
   alias Nest.Persistence.CompactionMarker
   alias PersistedMessage, as: PersistedMessageSchema
 
-  describe "record/5 — token stats" do
+  describe "record/6 — token stats" do
     test "writes both token-stat columns when both values are integers" do
       attrs = agent_attrs("cm-stats-#{Elixir.System.unique_integer([:positive])}")
       {:ok, %PersistedAgent{id: agent_id}} = insert_agent(attrs)
 
       assert {:ok, %PersistedMessage{} = marker} =
-               CompactionMarker.record(agent_id, 5, 3, 18_432, 4_096)
+               CompactionMarker.record(agent_id, 5, 3, 1, 18_432, 4_096)
 
       assert marker.compaction_tokens_compacted == 18_432
       assert marker.compaction_tokens_compacted_to == 4_096
@@ -46,7 +46,7 @@ defmodule Nest.Persistence.CompactionMarkerTest do
       {:ok, %PersistedAgent{id: agent_id}} = insert_agent(attrs)
 
       assert {:ok, %PersistedMessage{} = marker} =
-               CompactionMarker.record(agent_id, 5, 3, nil, 4_096)
+               CompactionMarker.record(agent_id, 5, 3, 1, nil, 4_096)
 
       assert marker.compaction_tokens_compacted == nil
       assert marker.compaction_tokens_compacted_to == 4_096
@@ -57,7 +57,7 @@ defmodule Nest.Persistence.CompactionMarkerTest do
       {:ok, %PersistedAgent{id: agent_id}} = insert_agent(attrs)
 
       assert {:ok, %PersistedMessage{} = marker} =
-               CompactionMarker.record(agent_id, 5, 3, 18_432, nil)
+               CompactionMarker.record(agent_id, 5, 3, 1, 18_432, nil)
 
       assert marker.compaction_tokens_compacted == 18_432
       assert marker.compaction_tokens_compacted_to == nil
@@ -68,14 +68,14 @@ defmodule Nest.Persistence.CompactionMarkerTest do
       {:ok, %PersistedAgent{id: agent_id}} = insert_agent(attrs)
 
       assert {:ok, %PersistedMessage{} = marker} =
-               CompactionMarker.record(agent_id, 5, 3, nil, nil)
+               CompactionMarker.record(agent_id, 5, 3, 1, nil, nil)
 
       assert marker.compaction_tokens_compacted == nil
       assert marker.compaction_tokens_compacted_to == nil
     end
   end
 
-  describe "record/5 — transaction atomicity" do
+  describe "record/6 — transaction atomicity" do
     test "rolls back the last_compaction_index bump when marker INSERT fails on collision" do
       attrs = agent_attrs("cm-rollback-#{Elixir.System.unique_integer([:positive])}")
       {:ok, %PersistedAgent{id: agent_id}} = insert_agent(attrs)
@@ -92,7 +92,7 @@ defmodule Nest.Persistence.CompactionMarkerTest do
       |> Nest.Repo.insert!()
 
       assert {:error, _reason} =
-               CompactionMarker.record(agent_id, 5, 0, 100, 50)
+               CompactionMarker.record(agent_id, 5, 0, 1, 100, 50)
 
       # Rollback: the boundary column must still be -1.
       agent_row = Nest.Repo.one!(from(a in PersistedAgent, where: a.id == ^agent_id))
@@ -103,7 +103,7 @@ defmodule Nest.Persistence.CompactionMarkerTest do
       attrs = agent_attrs("cm-bump-#{Elixir.System.unique_integer([:positive])}")
       {:ok, %PersistedAgent{id: agent_id}} = insert_agent(attrs)
 
-      assert {:ok, _marker} = CompactionMarker.record(agent_id, 12, 5, 200, 80)
+      assert {:ok, _marker} = CompactionMarker.record(agent_id, 12, 5, 1, 200, 80)
 
       agent_row = Nest.Repo.one!(from(a in PersistedAgent, where: a.id == ^agent_id))
       assert agent_row.last_compaction_index == 12

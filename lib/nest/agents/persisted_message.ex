@@ -89,6 +89,7 @@ defmodule Nest.Agents.PersistedMessage do
           metadata: map() | nil,
           inserted_at: DateTime.t() | nil,
           compaction_archived_count: non_neg_integer() | nil,
+          compaction_count: non_neg_integer() | nil,
           compaction_occurred_at: DateTime.t() | nil,
           compaction_tokens_compacted: non_neg_integer() | nil,
           compaction_tokens_compacted_to: non_neg_integer() | nil
@@ -105,6 +106,7 @@ defmodule Nest.Agents.PersistedMessage do
     field :content, :map
     field :metadata, :map
     field :compaction_archived_count, :integer
+    field :compaction_count, :integer
     field :compaction_occurred_at, :utc_datetime
     # Token-count stats for the compaction boundary the
     # marker represents. Both nullable: nil for non-compaction
@@ -132,6 +134,7 @@ defmodule Nest.Agents.PersistedMessage do
         :content,
         :metadata,
         :compaction_archived_count,
+        :compaction_count,
         :compaction_occurred_at,
         :compaction_tokens_compacted,
         :compaction_tokens_compacted_to
@@ -170,6 +173,7 @@ defmodule Nest.Agents.PersistedMessage do
       :compaction ->
         base
         |> Map.put(:compaction_archived_count, struct.archived_count)
+        |> Map.put(:compaction_count, struct.compaction_count)
         |> Map.put(:compaction_occurred_at, struct.occurred_at)
         |> maybe_put_compaction_tokens(struct)
 

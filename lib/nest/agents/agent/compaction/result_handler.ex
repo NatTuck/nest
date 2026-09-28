@@ -210,7 +210,13 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
     tokens_compacted_to = Estimator.estimate_messages(new_messages)
 
     marker =
-      Marker.build_marker(marker_index, archived_count, tokens_compacted, tokens_compacted_to)
+      Marker.build_marker(
+        marker_index,
+        archived_count,
+        state.chat_state.compaction_count + 1,
+        tokens_compacted,
+        tokens_compacted_to
+      )
 
     {new_messages, marker}
   end

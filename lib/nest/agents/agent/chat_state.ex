@@ -83,6 +83,7 @@ defmodule Nest.Agents.Agent.ChatState do
   """
   defstruct messages: [],
             last_compaction_index: -1,
+            compaction_count: 0,
             next_message_index: 0,
             pending_children: %{},
             archiving: %MapSet{},

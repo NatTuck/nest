@@ -31,6 +31,7 @@ defmodule Nest.Messages.Compaction do
   defstruct [
     :index,
     :archived_count,
+    :compaction_count,
     :tokens_compacted,
     :tokens_compacted_to,
     :occurred_at,
@@ -40,6 +41,7 @@ defmodule Nest.Messages.Compaction do
   @type t :: %__MODULE__{
           index: non_neg_integer(),
           archived_count: non_neg_integer(),
+          compaction_count: non_neg_integer() | nil,
           tokens_compacted: non_neg_integer() | nil,
           tokens_compacted_to: non_neg_integer() | nil,
           occurred_at: DateTime.t() | nil,
@@ -55,6 +57,7 @@ defmodule Nest.Messages.Compaction do
       "index" => marker.index,
       "role" => "compaction",
       "archivedCount" => marker.archived_count,
+      "compactionCount" => marker.compaction_count,
       "tokensCompacted" => marker.tokens_compacted,
       "tokensCompactedTo" => marker.tokens_compacted_to,
       "occurredAt" => format_timestamp(marker.occurred_at),

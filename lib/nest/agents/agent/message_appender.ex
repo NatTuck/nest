@@ -158,6 +158,7 @@ defmodule Nest.Agents.Agent.MessageAppender do
       | chat_state: %{
           state.chat_state
           | last_compaction_index: index,
+            compaction_count: state.chat_state.compaction_count + 1,
             next_message_index: index + 1
         }
     }

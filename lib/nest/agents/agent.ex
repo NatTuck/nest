@@ -293,6 +293,7 @@ defmodule Nest.Agents.Agent do
       # belong to ancestors, and the partition must file the ancestor
       # marker (and everything it archived) as archived here too.
       last_compaction_index: Map.get(parent_state.chat_state, :last_compaction_index, -1),
+      compaction_count: Map.get(parent_state.chat_state, :compaction_count, 0),
       next_message_index: next_index
     }
   end

@@ -28,11 +28,18 @@ defmodule Nest.Agents.Agent.Compaction.Marker do
   to history. `tokens_compacted` / `tokens_compacted_to` are
   the pre/post totals (may be nil for legacy callers).
   """
-  def build_marker(marker_index, archived_count, tokens_compacted, tokens_compacted_to) do
+  def build_marker(
+        marker_index,
+        archived_count,
+        compaction_count,
+        tokens_compacted,
+        tokens_compacted_to
+      ) do
     {:compaction,
      %Nest.Messages.Compaction{
        index: marker_index,
        archived_count: archived_count,
+       compaction_count: compaction_count,
        tokens_compacted: tokens_compacted,
        tokens_compacted_to: tokens_compacted_to,
        occurred_at: DateTime.utc_now(),

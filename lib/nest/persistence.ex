@@ -259,6 +259,7 @@ defmodule Nest.Persistence do
           agent_id,
           marker.index,
           marker.archived_count,
+          marker.compaction_count,
           marker.tokens_compacted,
           marker.tokens_compacted_to
         )
@@ -315,6 +316,7 @@ defmodule Nest.Persistence do
           agent_id,
           marker_index,
           archived_count,
+          nil,
           tokens_compacted,
           tokens_compacted_to
         )

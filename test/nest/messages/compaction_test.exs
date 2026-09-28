@@ -34,6 +34,7 @@ defmodule Nest.Messages.CompactionTest do
                "index" => 5,
                "role" => "compaction",
                "archivedCount" => 3,
+               "compactionCount" => nil,
                "tokensCompacted" => nil,
                "tokensCompactedTo" => nil,
                "occurredAt" => nil,

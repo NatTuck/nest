@@ -467,6 +467,20 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
       assert agent_row.last_compaction_index == marker_index,
              "expected last_compaction_index = #{marker_index} (the marker index); " <>
                "got #{agent_row.last_compaction_index}"
+
+      # The compaction count is tracked in state (that is what the collapsed
+      # history card renders) and persisted on the marker row, so a restart
+      # recovers it without loading the archive.
+      assert state.chat_state.compaction_count == 1
+
+      marker_row =
+        Nest.Repo.one!(
+          from(m in Nest.Agents.PersistedMessage,
+            where: m.agent_id == ^agent_row.id and m.message_index == ^marker_index
+          )
+        )
+
+      assert marker_row.compaction_count == 1
     end
   end
 

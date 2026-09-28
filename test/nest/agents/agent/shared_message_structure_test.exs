@@ -177,6 +177,7 @@ defmodule Nest.Agents.Agent.SharedMessageStructureTest do
              "a clone preload must never carry a non-LLM-visible marker"
 
       assert attrs.last_compaction_index == 4
+      assert attrs.compaction_count == compacted.chat_state.compaction_count
     end
   end
 

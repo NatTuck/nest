@@ -187,6 +187,14 @@ defmodule Nest.Agents.Agent.Init do
         idx > last_compaction_index
       end)
 
+    # Count of compaction boundaries at or below the current one, so the
+    # collapsed history card can be rendered without loading the archive.
+    compaction_count =
+      Enum.count(preloaded, fn
+        {:compaction, %{index: idx}} -> idx <= last_compaction_index
+        _ -> false
+      end)
+
     highest_index =
       preloaded
       |> Enum.map(fn {_role, %{index: idx}} -> idx end)
@@ -198,6 +206,7 @@ defmodule Nest.Agents.Agent.Init do
           state.chat_state
           | messages: messages,
             last_compaction_index: last_compaction_index,
+            compaction_count: compaction_count,
             next_message_index: highest_index + 1
         }
     }
