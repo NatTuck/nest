@@ -157,6 +157,29 @@ defmodule Nest.Agents.Agent.SharedMessageStructureTest do
     end
   end
 
+  describe "clone preload" do
+    test "never carries a compaction marker, and inherits the boundary" do
+      {parent_state, _child_name} = spawn_clone_fixture()
+
+      {:ok, %PersistedAgent{id: parent_id}} =
+        Persistence.fetch_agent(parent_state.space_id, parent_state.name)
+
+      # A parent that has compacted: its boundary sits above the rows it
+      # still shows the LLM.
+      compacted = %{
+        parent_state
+        | chat_state: %{parent_state.chat_state | last_compaction_index: 4}
+      }
+
+      attrs = Agent.build_child_attrs(compacted, "task", unique_name("preload"), parent_id)
+
+      refute Enum.any?(attrs.preloaded_messages, &match?({:compaction, _}, &1)),
+             "a clone preload must never carry a non-LLM-visible marker"
+
+      assert attrs.last_compaction_index == 4
+    end
+  end
+
   describe "fresh child" do
     test "owns a system row at index 0 and shares nothing" do
       parent_attrs = agent_attrs(unique_name("fresh-parent"))
