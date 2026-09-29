@@ -285,6 +285,55 @@ defmodule Nest.LLM.AnthropicClientSSETest do
     end
   end
 
+  describe "chunk boundary handling" do
+    test "named events survive being split at every byte offset" do
+      sse = """
+      event: message_start
+      data: {"message":{"id":"msg_split","model":"x","usage":{"input_tokens":1,"output_tokens":1}}}
+
+      event: content_block_start
+      data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"shell-cmd","input":{}}}
+
+      event: content_block_delta
+      data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"command\\":"}}
+
+      event: content_block_delta
+      data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\\"ls -la\\"}"}}
+
+      event: content_block_stop
+      data: {"type":"content_block_stop","index":0}
+
+      event: message_delta
+      data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}
+
+      event: message_stop
+      data: {"type":"message_stop"}
+
+      """
+
+      expected = run_with_chunks([sse])
+
+      assert {:tool_call_start, %{id: "toolu_1", name: "shell-cmd", index: 0}} in expected
+
+      assert {:tool_call_delta, %{id: :by_index, index: 0, arguments_delta: "{\"command\":"}} in expected
+
+      assert {:tool_call_delta, %{id: :by_index, index: 0, arguments_delta: "\"ls -la\"}"}} in expected
+
+      size = byte_size(sse)
+
+      for split <- 0..size do
+        left = binary_part(sse, 0, split)
+        right = binary_part(sse, split, size - split)
+
+        assert run_with_chunks([left, right]) == expected,
+               "canonical events changed when the stream was split at byte #{split}"
+      end
+
+      byte_by_byte = for <<byte <- sse>>, do: <<byte>>
+      assert run_with_chunks(byte_by_byte) == expected
+    end
+  end
+
   describe "error handling" do
     test "parses synthetic http_error chunk into {:error, _} event" do
       error_chunk =
@@ -364,18 +413,19 @@ defmodule Nest.LLM.AnthropicClientSSETest do
   # Drive `consume_sse_from_mailbox/0` by sending `{:req_chunk, _}`
   # and `:req_done` messages to the test process from a helper, then
   # collecting the canonical events the stream produces.
-  defp run_with_sse(sse) do
+  defp run_with_sse(sse), do: run_with_chunks([sse])
+
+  defp run_with_chunks(chunks) do
     parent = self()
 
     # The helper sends chunks then signals done. The consumer's
     # Stream.resource runs in `parent` (the test process) and
     # receives these messages from its own mailbox.
     spawn_link(fn ->
-      send(parent, {:req_chunk, sse})
+      Enum.each(chunks, &send(parent, {:req_chunk, &1}))
       send(parent, :req_done)
     end)
 
-    events = AnthropicClient.consume_sse_from_mailbox() |> Enum.to_list()
-    events
+    AnthropicClient.consume_sse_from_mailbox() |> Enum.to_list()
   end
 end

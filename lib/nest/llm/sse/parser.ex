@@ -94,7 +94,16 @@ defmodule Nest.LLM.SSE.Parser do
             do: "",
             else: :binary.part(buffer, rest_start, rest_len)
 
-        {String.split(complete, "\n"), rest}
+        # `complete` always ends in `\n`, so `String.split/2` yields a
+        # trailing `""` that is *not* a line from the stream. Dropping
+        # it is essential: a chunk boundary that lands right after a
+        # line's `\n` would otherwise feed that artifact "" to
+        # `process_lines/2` as if it were a blank separator line, which
+        # dispatches (and clears) a pending `event:` name before its
+        # `data:` line arrives. That produced `{:event, nil, data}`
+        # frames for Anthropic named events, silently dropping them.
+        lines = complete |> String.split("\n") |> Enum.drop(-1)
+        {lines, rest}
     end
   end
 

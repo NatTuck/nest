@@ -60,14 +60,49 @@ defmodule Nest.LLM.SSE.ParserTest do
              ]
     end
 
-    test "handles a blank line that spans chunks" do
+    test "buffers a data line whose terminating blank line spans chunks" do
       parser = Parser.new()
 
-      {frames1, parser} = Parser.feed(parser, "data: hello\n")
-      assert frames1 == [{:event, nil, "hello"}]
+      assert {[], parser} = Parser.feed(parser, "data: hello\n")
+      assert {frames, _parser} = Parser.feed(parser, "\n")
+      assert frames == [{:event, nil, "hello"}]
+    end
 
-      {frames2, _parser} = Parser.feed(parser, "data: world\n\n")
-      assert frames2 == [{:event, nil, "world"}]
+    test "preserves a named event across every possible chunk boundary" do
+      stream =
+        Enum.map_join(1..6, "", fn i ->
+          "event: content_block_delta\n" <>
+            "data: {\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"frag#{i}\"}}\n\n"
+        end)
+
+      parse = fn chunks ->
+        {frames, parser} =
+          Enum.reduce(chunks, {[], Parser.new()}, fn chunk, {acc, p} ->
+            {fs, p2} = Parser.feed(p, chunk)
+            {acc ++ fs, p2}
+          end)
+
+        {tail, _} = Parser.flush(parser)
+        frames ++ tail
+      end
+
+      expected = parse.([stream])
+
+      assert Enum.all?(expected, &match?({:event, "content_block_delta", _}, &1))
+      assert length(expected) == 6
+
+      size = byte_size(stream)
+
+      for split <- 0..size do
+        left = binary_part(stream, 0, split)
+        right = binary_part(stream, split, size - split)
+
+        assert parse.([left, right]) == expected,
+               "frames changed when the stream was split at byte #{split}"
+      end
+
+      byte_by_byte = for <<byte <- stream>>, do: <<byte>>
+      assert parse.(byte_by_byte) == expected
     end
   end
 
