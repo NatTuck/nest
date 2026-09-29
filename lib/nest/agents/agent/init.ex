@@ -160,28 +160,39 @@ defmodule Nest.Agents.Agent.Init do
   to keep the partition invariant (`history ++ messages ==
   full sequence in order`).
   """
-  @spec seed_from_db(Nest.Agents.Agent.t(), [Nest.Messages.Message.t()], integer()) ::
-          Nest.Agents.Agent.t()
-  def seed_from_db(state, [], _last_compaction_index), do: state
+  @spec seed_from_db(
+          Nest.Agents.Agent.t(),
+          [Nest.Messages.Message.t()],
+          integer(),
+          non_neg_integer()
+        ) :: Nest.Agents.Agent.t()
+  def seed_from_db(state, preloaded, last_compaction_index, inherited_compaction_count \\ 0)
 
-  def seed_from_db(state, preloaded, last_compaction_index) do
-    seed_with_system_if_needed(state, preloaded, last_compaction_index)
+  def seed_from_db(state, [], _last_compaction_index, _inherited_compaction_count), do: state
+
+  def seed_from_db(state, preloaded, last_compaction_index, inherited_compaction_count) do
+    seed_with_system_if_needed(
+      state,
+      preloaded,
+      last_compaction_index,
+      inherited_compaction_count
+    )
   end
 
   # When the in-memory system message is already at position 0
   # of the preloaded list, partition it as-is into history
   # and messages.
-  defp seed_with_system_if_needed(state, preloaded, last_compaction_index) do
+  defp seed_with_system_if_needed(state, preloaded, last_compaction_index, inherited_count) do
     has_system? = Enum.any?(preloaded, &match?({:system, _}, &1))
 
     if has_system? do
-      do_seed(state, preloaded, last_compaction_index)
+      do_seed(state, preloaded, last_compaction_index, inherited_count)
     else
-      prepend_system(state, preloaded, last_compaction_index)
+      prepend_system(state, preloaded, last_compaction_index, inherited_count)
     end
   end
 
-  defp do_seed(state, preloaded, last_compaction_index) do
+  defp do_seed(state, preloaded, last_compaction_index, inherited_count) do
     messages =
       Enum.filter(preloaded, fn {_role, %{index: idx}} ->
         idx > last_compaction_index
@@ -189,11 +200,18 @@ defmodule Nest.Agents.Agent.Init do
 
     # Count of compaction boundaries at or below the current one, so the
     # collapsed history card can be rendered without loading the archive.
+    # A clone's preload is its parent's *visible* messages only (the
+    # ancestor marker rows live in the shared prefix, not in the preload),
+    # so it cannot see the compactions it inherited; `inherited_count`
+    # carries that lower bound from spawn.
     compaction_count =
-      Enum.count(preloaded, fn
-        {:compaction, %{index: idx}} -> idx <= last_compaction_index
-        _ -> false
-      end)
+      max(
+        Enum.count(preloaded, fn
+          {:compaction, %{index: idx}} -> idx <= last_compaction_index
+          _ -> false
+        end),
+        inherited_count
+      )
 
     highest_index =
       preloaded
@@ -230,7 +248,7 @@ defmodule Nest.Agents.Agent.Init do
   # but no persisted system row. Shift the preloaded list
   # up by one and seed the in-memory system message at
   # position 0 so the system prompt survives BEAM restart.
-  defp prepend_system(state, preloaded, last_compaction_index) do
+  defp prepend_system(state, preloaded, last_compaction_index, inherited_count) do
     [system | _] = state.chat_state.messages
 
     shifted =
@@ -242,7 +260,7 @@ defmodule Nest.Agents.Agent.Init do
     # the partition needs to shift the boundary up by one as
     # well — the rows the caller persisted are now at their
     # original index + 1.
-    do_seed(state, [system | shifted], last_compaction_index + 1)
+    do_seed(state, [system | shifted], last_compaction_index + 1, inherited_count)
   end
 
   @doc """

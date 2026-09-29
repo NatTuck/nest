@@ -3374,11 +3374,38 @@ describe("store", () => {
       );
     });
 
+    it("setAgentHistoryError records and clears the card error, and a slice load clears it", () => {
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", { messageCount: 0 });
+
+      useStore.getState().setAgentHistoryError("agent-1", "invalid_role");
+      expect(useStore.getState().agentsCache["agent-1"].historyError).toBe(
+        "invalid_role",
+      );
+
+      useStore.getState().setAgentHistoryError("agent-1", null);
+      expect(
+        useStore.getState().agentsCache["agent-1"].historyError,
+      ).toBeNull();
+
+      // A successful page load clears any prior error.
+      useStore.getState().setAgentHistoryError("agent-1", "boom");
+      useStore
+        .getState()
+        .setAgentHistorySlice("agent-1", [
+          { index: 0, role: "user", content: "old" },
+        ]);
+      expect(
+        useStore.getState().agentsCache["agent-1"].historyError,
+      ).toBeNull();
+    });
+
     it("the lazy-archive setters are no-ops for an unknown agent", () => {
       const before = useStore.getState().agentsCache;
       useStore.getState().setAgentHistorySlice("missing", []);
       useStore.getState().setAgentHistoryPrompts("missing", []);
       useStore.getState().setAgentCompactionMarker("missing", MARKER);
+      useStore.getState().setAgentHistoryError("missing", "boom");
       expect(useStore.getState().agentsCache).toBe(before);
     });
   });

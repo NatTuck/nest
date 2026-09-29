@@ -416,7 +416,12 @@ defmodule NestWeb.AgentChannel do
           "contextLimit" => agent.context_limit,
           "contextLimitSource" => source_to_string(agent.context_limit_source),
           "currentMode" => agent.current_mode,
-          "usage" => agent.usage
+          "usage" => agent.usage,
+          # The archive boundary travels on every status reply so a
+          # reconnect that missed a `chat:compaction` broadcast can still
+          # reconcile the collapsed-history card (see `setAgentConnected`).
+          "lastCompactionIndex" => agent.last_compaction_index,
+          "compactionCount" => agent.compaction_count
         }
 
         {:reply, {:ok, reply}, socket}

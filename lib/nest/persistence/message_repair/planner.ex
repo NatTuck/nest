@@ -242,6 +242,12 @@ defmodule Nest.Persistence.MessageRepair.Planner do
         item = {:existing, {:tool, merged}, owner, row, row.message_index}
         {emit(items, item), %{state | need: nil, last: :user}, rewrites, true}
 
+      # A non-owned (shared-prefix) tool row that answers only some of the
+      # pending uses: the owner's own pass already merges its remaining
+      # results, so the child sees a complete prefix. Clear `need` without
+      # emitting a repair rather than synthesizing a second result under
+      # the ancestor (see `a partially answered shared-prefix tool batch`
+      # in the planner tests).
       answered? ->
         {items, %{state | need: nil}, rewrites, false}
 

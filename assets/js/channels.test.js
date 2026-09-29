@@ -1348,6 +1348,45 @@ describe("channels", () => {
       });
     });
 
+    it("updates the archive boundary from the rejoin (chat:status) reply", async () => {
+      setNextJoinResult("agent:1:agent-1", {
+        autoInit: {
+          id: "agent-1",
+          model: { name: "gpt-4" },
+          messageCount: 0,
+          status: "idle",
+          lastCompactionIndex: -1,
+          compactionCount: 0,
+        },
+      });
+      joinAgent("agent-1", 1);
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      // A compaction was missed while disconnected: the status reply
+      // carries the new boundary, so the stale projections are dropped
+      // and the marker re-fetched.
+      setNextPushResult("agent:1:agent-1", "chat:status", {
+        ok: {
+          model: { name: "gpt-4" },
+          messageCount: 0,
+          lastCompactionIndex: 7,
+          compactionCount: 1,
+        },
+      });
+      joinAgent("agent-1", 1);
+
+      await vi.waitFor(() => {
+        const cache = useStore.getState().agentsCache["agent-1"];
+        assert.strictEqual(cache.lastCompactionIndex, 7);
+        assert.strictEqual(cache.compactionCount, 1);
+      });
+    });
+
     it("triggers a chat:sync from the rejoin (chat:status) handler when messageCount > cached messages length", async () => {
       // Re-join path: `joinAgent` re-uses the existing
       // channel and sends `chat:status`. The response
@@ -2465,6 +2504,34 @@ describe("channels", () => {
           history.map((m) => m.index),
           [0, 1, 3, 4],
         );
+      });
+    });
+
+    it("records an error when the full-slice fetch fails, cleared by a successful retry", async () => {
+      await joinAndWait();
+
+      setNextPushResult("agent:1:agent-1", "chat:history", {
+        error: { reason: "invalid_role" },
+      });
+      requestHistory("agent-1");
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"].historyError,
+          "invalid_role",
+        );
+      });
+
+      // A retry that succeeds clears the error and lands the page.
+      setNextPushResult("agent:1:agent-1", "chat:history", {
+        ok: { messages: [{ index: 0, role: "user", content: "a" }] },
+      });
+      requestHistory("agent-1");
+
+      await vi.waitFor(() => {
+        const cache = useStore.getState().agentsCache["agent-1"];
+        assert.strictEqual(cache.historyError, null);
+        assert.strictEqual(cache.history.length, 1);
       });
     });
 

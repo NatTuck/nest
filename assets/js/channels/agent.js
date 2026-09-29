@@ -53,6 +53,12 @@ function statusExtras(payload) {
   if (payload.repairCommand !== undefined) {
     extra.repairCommand = payload.repairCommand;
   }
+  if (payload.lastCompactionIndex !== undefined) {
+    extra.lastCompactionIndex = payload.lastCompactionIndex;
+  }
+  if (payload.compactionCount !== undefined) {
+    extra.compactionCount = payload.compactionCount;
+  }
 
   return extra;
 }
@@ -121,21 +127,39 @@ export function requestHistory(agentId, opts = {}) {
   if (typeof opts.limit === "number") payload.limit = opts.limit;
   if (opts.role) payload.role = opts.role;
 
-  channel.push("chat:history", payload).receive("ok", (resp) => {
-    const rows = Array.isArray(resp?.messages) ? resp.messages : [];
-    const store = getStore();
+  // Only the full-slice fetch drives the expanded card, so only its
+  // failures set the card-visible error; the marker/prompt refetches
+  // failing would be a different (invisible) problem.
+  const isSlice = !opts.role;
 
-    if (opts.role === "compaction") {
-      store.setAgentCompactionMarker(
-        agentId,
-        rows.length > 0 ? rows[rows.length - 1] : null,
-      );
-    } else if (opts.role === "user") {
-      store.setAgentHistoryPrompts(agentId, rows);
-    } else {
-      store.setAgentHistorySlice(agentId, rows);
-    }
-  });
+  channel
+    .push("chat:history", payload)
+    .receive("ok", (resp) => {
+      const rows = Array.isArray(resp?.messages) ? resp.messages : [];
+      const store = getStore();
+
+      if (opts.role === "compaction") {
+        store.setAgentCompactionMarker(
+          agentId,
+          rows.length > 0 ? rows[rows.length - 1] : null,
+        );
+      } else if (opts.role === "user") {
+        store.setAgentHistoryPrompts(agentId, rows);
+      } else {
+        store.setAgentHistorySlice(agentId, rows);
+      }
+    })
+    .receive("error", (resp) => {
+      if (isSlice) {
+        getStore().setAgentHistoryError(
+          agentId,
+          resp?.reason ?? "history_fetch_failed",
+        );
+      }
+    })
+    .receive("timeout", () => {
+      if (isSlice) getStore().setAgentHistoryError(agentId, "history_timeout");
+    });
 }
 
 /**

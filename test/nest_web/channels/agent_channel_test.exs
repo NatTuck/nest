@@ -336,15 +336,20 @@ defmodule NestWeb.AgentChannelTest do
   end
 
   describe "handle_in(chat:status)" do
-    test "reply includes currentMode so the client can re-sync after a reconnect",
+    test "reply includes currentMode + archive boundary so the client can re-sync after a reconnect",
          %{socket: socket} do
       ref = push(socket, "chat:status", %{})
       assert_reply ref, :ok, payload
 
-      # currentModel must be present so the client can re-sync
+      # currentMode must be present so the client can re-sync
       # the dropdown on reconnect / re-fetch. For a vocation-less
       # agent the default is "chat".
       assert payload["currentMode"] == "chat"
+
+      # The archive boundary travels too, so a reconnect that missed a
+      # `chat:compaction` broadcast can still reconcile the card.
+      assert payload["lastCompactionIndex"] == -1
+      assert payload["compactionCount"] == 0
     end
   end
 

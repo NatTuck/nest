@@ -171,6 +171,18 @@ defmodule Nest.Persistence.AgentCompaction.Planner do
   @spec orphan_from(t()) :: non_neg_integer()
   def orphan_from(%__MODULE__{slice: slice}), do: index(List.last(slice)) + 1
 
+  @doc """
+  Approximate token count for a list of messages, using the same
+  byte-based heuristic as the chunker (`size_message/1`). Never touches
+  the tokenizer, so it is safe on the multi-megabyte histories this
+  recovery tool exists to handle; the writer stores the result in the
+  marker's `tokens_compacted` stats.
+  """
+  @spec estimate_tokens([Message.t()]) :: non_neg_integer()
+  def estimate_tokens(messages) when is_list(messages) do
+    Enum.reduce(messages, 0, fn message, acc -> acc + size_message(message) end)
+  end
+
   # --- active slice / orphan detection ---
 
   defp active_prefix(%PersistedAgent{} = agent, full) do

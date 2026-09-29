@@ -496,7 +496,8 @@ defmodule Nest.Agents.Agent do
     Init.seed_from_db(
       state,
       Map.get(attrs, :preloaded_messages, []),
-      Map.get(attrs, :last_compaction_index, -1)
+      Map.get(attrs, :last_compaction_index, -1),
+      Map.get(attrs, :compaction_count, 0)
     )
   end
 

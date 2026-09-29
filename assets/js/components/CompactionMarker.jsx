@@ -149,6 +149,7 @@ export function CompactionMarker({
   marker,
   history,
   historyCount,
+  historyError,
   onLoadHistory,
   onLoadOlder,
 }) {
@@ -246,7 +247,12 @@ export function CompactionMarker({
 
       {isExpanded && (
         <div className="px-4 pt-2">
-          <CollapsedHistory history={history} onLoadOlder={onLoadOlder} />
+          <CollapsedHistory
+            history={history}
+            error={historyError}
+            onLoadOlder={onLoadOlder}
+            onRetry={onLoadHistory}
+          />
         </div>
       )}
 

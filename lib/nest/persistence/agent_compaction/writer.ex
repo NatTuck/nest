@@ -22,7 +22,6 @@ defmodule Nest.Persistence.AgentCompaction.Writer do
   alias Nest.Persistence
   alias Nest.Persistence.AgentCompaction.Planner
   alias Nest.Repo
-  alias Nest.Tokens.Estimator
 
   @doc """
   Apply `plan` with `summary`. Returns `:ok`, or `{:error, reason}`
@@ -60,8 +59,8 @@ defmodule Nest.Persistence.AgentCompaction.Writer do
       index: plan.marker_index,
       archived_count: plan.archived_count,
       compaction_count: plan.compaction_count,
-      tokens_compacted: Estimator.estimate_messages(plan.slice),
-      tokens_compacted_to: Estimator.estimate_messages(new_messages),
+      tokens_compacted: Planner.estimate_tokens(plan.slice),
+      tokens_compacted_to: Planner.estimate_tokens(new_messages),
       occurred_at: now,
       metadata: nil
     }

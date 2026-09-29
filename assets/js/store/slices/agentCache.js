@@ -20,6 +20,7 @@ export function agentCacheSetters(set) {
                   messages: [],
                   history: [],
                   historyPrompts: [],
+                  historyError: null,
                   lastCompactionMarker: null,
                   lastCompactionIndex: -1,
                   compactionCount: 0,
@@ -79,6 +80,9 @@ export function agentCacheSetters(set) {
               historyPrompts: archiveStale
                 ? []
                 : (existing?.historyPrompts ?? []),
+              historyError: archiveStale
+                ? null
+                : (existing?.historyError ?? null),
               lastCompactionMarker: archiveStale
                 ? null
                 : (existing?.lastCompactionMarker ?? null),
@@ -149,6 +153,7 @@ export function agentCacheSetters(set) {
               messages: [],
               history: [],
               historyPrompts: [],
+              historyError: null,
               lastCompactionMarker: null,
               lastCompactionIndex: -1,
               compactionCount: 0,
@@ -178,6 +183,7 @@ export function agentCacheSetters(set) {
                   messages: [],
                   history: [],
                   historyPrompts: [],
+                  historyError: null,
                   lastCompactionMarker: null,
                   lastCompactionIndex: -1,
                   compactionCount: 0,
@@ -348,6 +354,7 @@ export function agentCacheSetters(set) {
               messages: nextMessages,
               history: [],
               historyPrompts: [],
+              historyError: null,
               lastCompactionMarker: null,
               lastCompactionIndex:
                 typeof boundary === "number"
@@ -392,7 +399,24 @@ export function agentCacheSetters(set) {
         return {
           agentsCache: {
             ...state.agentsCache,
-            [id]: { ...cache, history },
+            [id]: { ...cache, history, historyError: null },
+          },
+        };
+      });
+    },
+
+    /**
+     * Record a failed `chat:history` fetch so the expanded card can show
+     * an explicit error instead of an endless "Loading…" placeholder.
+     */
+    setAgentHistoryError: (id, error) => {
+      set((state) => {
+        const cache = state.agentsCache[id];
+        if (!cache) return state;
+        return {
+          agentsCache: {
+            ...state.agentsCache,
+            [id]: { ...cache, historyError: error ?? null },
           },
         };
       });

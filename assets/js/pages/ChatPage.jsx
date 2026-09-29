@@ -201,6 +201,9 @@ export function ChatPage() {
   const lastCompactionMarker = useStore(
     (state) => state.agentsCache[name]?.lastCompactionMarker ?? null,
   );
+  const historyError = useStore(
+    (state) => state.agentsCache[name]?.historyError ?? null,
+  );
 
   // History navigation list for ChatInput's Ctrl/Cmd+Up / Down support.
   const history = useMemo(
@@ -503,6 +506,7 @@ export function ChatPage() {
         archivedHistory={archivedHistory}
         lastCompactionIndex={lastCompactionIndex}
         lastCompactionMarker={lastCompactionMarker}
+        historyError={historyError}
         onLoadHistory={loadHistoryPage}
         onLoadOlder={loadOlderHistory}
         name={name}

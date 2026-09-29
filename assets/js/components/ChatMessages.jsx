@@ -18,6 +18,7 @@ export function ChatMessages({
   archivedHistory,
   lastCompactionIndex,
   lastCompactionMarker,
+  historyError,
   onLoadHistory,
   onLoadOlder,
   name,
@@ -38,6 +39,7 @@ export function ChatMessages({
           marker={lastCompactionMarker}
           history={archivedHistory}
           historyCount={lastCompactionIndex + 1}
+          historyError={historyError}
           onLoadHistory={onLoadHistory}
           onLoadOlder={onLoadOlder}
         />

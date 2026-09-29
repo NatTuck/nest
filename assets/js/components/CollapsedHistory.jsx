@@ -142,19 +142,36 @@ function MessageBubble({ message }) {
   );
 }
 
-export function CollapsedHistory({ history, onLoadOlder }) {
-  // Empty while the first page is in flight (or if it failed). Show
-  // an explicit placeholder rather than a silent blank: the card is
-  // already expanded, so "nothing here" would be a lie.
+export function CollapsedHistory({ history, error, onLoadOlder, onRetry }) {
+  // Empty while the first page is in flight — or after a failed fetch.
+  // Neither is "there is no history", so show an explicit state rather
+  // than a silent blank.
   if (!history || history.length === 0) {
     return (
       <div
         data-testid="collapsed-history"
         className="max-h-96 overflow-y-auto p-2 bg-amber-50/30 rounded-md border border-amber-200/40"
       >
-        <div className="text-xs text-amber-700/80 p-2">
-          Loading archived messages…
-        </div>
+        {error ? (
+          <div
+            data-testid="collapsed-history-error"
+            className="flex items-center justify-between gap-2 text-xs text-red-700 p-2"
+          >
+            <span>Couldn't load archived messages: {error}</span>
+            <button
+              type="button"
+              onClick={onRetry}
+              data-testid="collapsed-history-retry"
+              className="font-medium text-red-700 hover:text-red-800 underline"
+            >
+              Retry
+            </button>
+          </div>
+        ) : (
+          <div className="text-xs text-amber-700/80 p-2">
+            Loading archived messages…
+          </div>
+        )}
       </div>
     );
   }

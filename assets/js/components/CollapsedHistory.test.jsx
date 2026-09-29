@@ -59,6 +59,26 @@ describe("CollapsedHistory", () => {
         "Loading archived messages…",
       );
     });
+
+    it("renders an error indicator with a retry when the page fetch failed", () => {
+      const onRetry = vi.fn();
+      render(
+        <CollapsedHistory
+          history={[]}
+          error="invalid_role"
+          onRetry={onRetry}
+        />,
+      );
+
+      const error = screen.getByTestId("collapsed-history-error");
+      expect(error).toHaveTextContent("invalid_role");
+      expect(
+        screen.queryByText("Loading archived messages…"),
+      ).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId("collapsed-history-retry"));
+      expect(onRetry).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe("paging older", () => {
