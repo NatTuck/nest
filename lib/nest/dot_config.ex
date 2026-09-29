@@ -248,9 +248,18 @@ defmodule Nest.DotConfig do
 
   defp cache_table do
     case :ets.whereis(@cache_table) do
-      :undefined -> :ets.new(@cache_table, [:named_table, :public, read_concurrency: true])
+      :undefined -> new_cache_table()
       _ -> @cache_table
     end
+  end
+
+  # Two processes can race the `whereis` check during app start (the
+  # Models scan and the endpoint probe both load config concurrently),
+  # so the loser of the `:ets.new` race adopts the winner's table.
+  defp new_cache_table do
+    :ets.new(@cache_table, [:named_table, :public, read_concurrency: true])
+  rescue
+    ArgumentError -> @cache_table
   end
 
   defp cached_config(path) do

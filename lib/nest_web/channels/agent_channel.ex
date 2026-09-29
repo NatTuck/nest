@@ -242,6 +242,8 @@ defmodule NestWeb.AgentChannel do
       "vocation" => agent.vocation,
       "workspace_path" => agent.workspace_path,
       "messageCount" => length(agent.messages),
+      "lastCompactionIndex" => agent.last_compaction_index,
+      "compactionCount" => agent.compaction_count,
       "history" => Enum.map(agent.history || [], &Message.to_json/1),
       "status" => to_string(agent.status),
       "sequenceViolations" => agent.sequence_violations,

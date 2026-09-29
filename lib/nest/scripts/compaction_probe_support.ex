@@ -1,14 +1,10 @@
 defmodule Nest.Scripts.CompactionProbeSupport do
   @moduledoc """
-  Shared helpers for the compaction scripts:
+  Shared helpers for `scripts/compaction_probe.exs` — a diagnostic
+  probe that replays the compactor's summarization call against the
+  real LLM without committing anything to the database.
 
-    * `scripts/compact_agent_history.exs` — DB-level recovery for
-      an agent whose in-process state is stuck mid-compaction.
-    * `scripts/compaction_probe.exs` — diagnostic probe that
-      replays the compactor's summarization call against the
-      real LLM without committing anything to the database.
-
-  Both scripts need to:
+  The probe needs to:
 
     1. Resolve a provider block from `~/.config/nest/config.toml`
        and build a `Nest.LLM.ClientConfig`.
@@ -26,6 +22,9 @@ defmodule Nest.Scripts.CompactionProbeSupport do
   exact same code path the live compactor uses. If the probe
   reports the LLM returning an empty summary, the production
   compactor will see the same empty string.
+
+  The offline recovery path (`mix nest.compact_agent`) deliberately
+  does not use this module — it is its own, independent implementation.
   """
 
   alias Nest.ChatModel

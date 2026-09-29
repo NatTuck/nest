@@ -217,6 +217,12 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
       model: state.model,
       workspace_path: state.workspace_path,
       message_count: length(state.chat_state.messages),
+      # The two numbers the collapsed history card renders: where the
+      # active messages start, and how many compactions have happened.
+      # Both are O(1) state - the archive itself is never loaded for
+      # this (see `Nest.Persistence.History`).
+      last_compaction_index: state.chat_state.last_compaction_index,
+      compaction_count: state.chat_state.compaction_count,
       status: state.live.status,
       # Populated only in the `:needs_repair` state: the active
       # sequence's wire violations and the offline repair command the

@@ -215,30 +215,38 @@ defmodule Nest.Persistence.MessageRepair.Planner do
          {:tool, %Tool{} = tool} = _msg,
          owner,
          row,
-         _index,
-         %{agent_id: aid} = _ctx,
+         index,
+         ctx,
          items,
          state,
          rewrites
-       )
-       when owner == aid do
-    resolve_partial_tool(tool, owner, row, items, state, rewrites)
+       ) do
+    resolve_tool(tool, owner, row, index, ctx, items, state, rewrites)
   end
 
   defp resolve_pairing(_msg, owner, row, index, ctx, items, state, rewrites) do
     emit_unpaired_tool(owner, row, index, ctx, items, state, rewrites)
   end
 
-  defp resolve_partial_tool(tool, owner, row, items, state, rewrites) do
+  defp resolve_tool(tool, owner, row, index, ctx, items, state, rewrites) do
     missing = missing_tool_uses(tool, state.need)
+    answered? = missing != state.need
 
-    if missing == [] do
-      {items, %{state | need: nil}, rewrites, false}
-    else
-      merged = merge_tool(tool, missing)
-      rewrites = Map.put(rewrites, row.id, %{agent_id: owner, runtime: {:tool, merged}})
-      item = {:existing, {:tool, merged}, owner, row, row.message_index}
-      {emit(items, item), %{state | need: nil, last: :user}, rewrites, true}
+    cond do
+      missing == [] ->
+        {items, %{state | need: nil}, rewrites, false}
+
+      owner == ctx.agent_id ->
+        merged = merge_tool(tool, missing)
+        rewrites = Map.put(rewrites, row.id, %{agent_id: owner, runtime: {:tool, merged}})
+        item = {:existing, {:tool, merged}, owner, row, row.message_index}
+        {emit(items, item), %{state | need: nil, last: :user}, rewrites, true}
+
+      answered? ->
+        {items, %{state | need: nil}, rewrites, false}
+
+      true ->
+        emit_unpaired_tool(owner, row, index, ctx, items, state, rewrites)
     end
   end
 

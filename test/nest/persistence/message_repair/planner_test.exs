@@ -115,6 +115,34 @@ defmodule Nest.Persistence.MessageRepair.PlannerTest do
       assert plan.residual_violations == %{}
     end
 
+    test "a shared prefix tool pair is not absorbed into the child's own rows" do
+      parent_rows = [
+        row(1, 1, system(0)),
+        row(2, 1, user(1)),
+        row(3, 1, assistant_tool(2, "call_1")),
+        row(4, 1, tool_result(3, "call_1")),
+        row(5, 1, assistant_text(4))
+      ]
+
+      child_rows = [row(6, 2, user(5)), row(7, 2, user(6))]
+
+      plan =
+        plan(
+          [agent(1, next: 5), agent(2, parent: 1, fork: 5, next: 7)],
+          %{1 => parent_rows, 2 => child_rows}
+        )
+
+      assert [{2, 6}] = insert_indices(plan)
+      assert [%{runtime: {:assistant, %Assistant{}}}] = plan.inserts
+      assert plan.changed_agents == MapSet.new([2])
+      refute Map.has_key?(plan.agent_updates, 1)
+      assert plan.agent_updates[2].next_message_index == 8
+
+      child_ids = for r <- plan.renumbers, r.agent_id == 2, do: r.id
+      assert Enum.sort(child_ids) == [6, 7]
+      assert plan.residual_violations == %{}
+    end
+
     test "a fresh child (no fork) is unaffected by a parent insert" do
       parent_rows = [row(1, 1, user(0)), row(2, 1, user(1))]
 
