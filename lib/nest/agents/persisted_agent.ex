@@ -87,8 +87,7 @@ defmodule Nest.Agents.PersistedAgent do
     # `message_index`. The clone shares its ancestors' rows below
     # this index and owns from it up (see
     # `notes/shared-message-structure.md`). `NULL` means the agent
-    # owns its full sequence from index 0 (a root, a fresh child,
-    # or a clone that detached at compaction).
+    # owns its full sequence from index 0 (a root or a fresh child).
     field :fork_message_index, :integer
 
     belongs_to :parent, __MODULE__, foreign_key: :parent_id, define_field: false

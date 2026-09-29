@@ -18,11 +18,8 @@ defmodule Nest.PersistenceTest do
   `Nest.PersistenceAgentsTest` to keep each file under
   credo's 500-line limit.
 
-  Persistence is enabled in this test process via the `:nest,
-  :persistence` app env (test-only override), so the `Agent`
-  GenServer — which normally has persistence disabled via the
-  runtime check — can write through to the DB and the
-  `:append_message` smoke test exercises the live path.
+  The `:append_message` smoke test exercises the live persistence
+  path.
   """
 
   use Nest.DataCase, async: true

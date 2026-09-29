@@ -149,6 +149,28 @@ defmodule Nest.ModelsTest do
     end
   end
 
+  describe "scan completion broadcast" do
+    test "a scan emits its terminal {:models_scan_complete, _} exactly once after models_updated" do
+      Phoenix.PubSub.subscribe(Nest.PubSub, "models")
+
+      # `rescan/0` returns the id of the scan that covers this request,
+      # so the terminal event can be matched to *this* scan even if the
+      # setup's own completion is still sitting in the mailbox.
+      scan_id = Models.rescan()
+
+      assert_receive {:models_updated, _payload}, 1_000
+
+      assert_receive {:models_scan_complete, %{scan_id: ^scan_id, models: models}}, 1_000
+      assert is_integer(scan_id)
+      assert Enum.any?(models, &(&1["name"] == "MiniMax-M3"))
+
+      # Exactly one terminal event per scan.
+      refute_receive {:models_scan_complete, %{scan_id: ^scan_id}}, 0
+
+      Phoenix.PubSub.unsubscribe(Nest.PubSub, "models")
+    end
+  end
+
   describe "reload_static/0" do
     test "re-reads ~/.config/nest/config.toml" do
       # The default `Models.refresh/0` keeps the static config

@@ -6,7 +6,7 @@
  * for the agent in the URL, if any exists.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { useParams } from "react-router-dom";
 import { useShallow } from "zustand/shallow";
 import { useStore } from "../store";
@@ -19,6 +19,7 @@ import {
   compactionLoopOk,
   reloadAgent,
   editAgent,
+  requestHistory,
 } from "../channels";
 import { StatusBanner } from "../components/StatusBanner";
 import { NotificationBanner } from "../components/NotificationBanner";
@@ -183,19 +184,45 @@ export function ChatPage() {
     (state) => state.agentsCache[name]?.messages ?? EMPTY_MESSAGES,
   );
   const partial = useStore((state) => state.agentsCache[name]?.partial ?? null);
-  // `archivedHistory` is the raw cache slice — used by the
-  // `CompactionMarker` to render the boundary. Distinct
-  // from the `history` variable below, which is the user-
-  // facing memoized list of past prompts.
+  // The archive is paged in lazily. `archivedHistory` holds the pages
+  // loaded so far (empty until the card is expanded), `historyPrompts`
+  // the recent user prompts behind the Ctrl/Cmd+Up recall list, and
+  // `lastCompactionIndex` / `lastCompactionMarker` the boundary and
+  // latest marker fetched at connect time.
   const archivedHistory = useStore(
     (state) => state.agentsCache[name]?.history ?? EMPTY_HISTORY,
+  );
+  const historyPrompts = useStore(
+    (state) => state.agentsCache[name]?.historyPrompts ?? EMPTY_HISTORY,
+  );
+  const lastCompactionIndex = useStore(
+    (state) => state.agentsCache[name]?.lastCompactionIndex ?? -1,
+  );
+  const lastCompactionMarker = useStore(
+    (state) => state.agentsCache[name]?.lastCompactionMarker ?? null,
+  );
+  const historyError = useStore(
+    (state) => state.agentsCache[name]?.historyError ?? null,
   );
 
   // History navigation list for ChatInput's Ctrl/Cmd+Up / Down support.
   const history = useMemo(
-    () => buildChatHistory(messages, archivedHistory),
-    [messages, archivedHistory],
+    () => buildChatHistory(messages, historyPrompts),
+    [messages, historyPrompts],
   );
+
+  // Lazy archive loaders. The first expand asks for the newest page;
+  // "Load older" pages back from the oldest loaded index. Both merge
+  // into the cache, so the components stay presentational.
+  const loadHistoryPage = useCallback(() => {
+    requestHistory(name);
+  }, [name]);
+
+  const loadOlderHistory = useCallback(() => {
+    const oldest = archivedHistory[0];
+    if (!oldest || typeof oldest.index !== "number") return;
+    requestHistory(name, { before: oldest.index });
+  }, [name, archivedHistory]);
 
   // Keep the dropdown in sync with the agent's current mode.
   //
@@ -477,6 +504,11 @@ export function ChatPage() {
         messages={messages}
         partial={partial}
         archivedHistory={archivedHistory}
+        lastCompactionIndex={lastCompactionIndex}
+        lastCompactionMarker={lastCompactionMarker}
+        historyError={historyError}
+        onLoadHistory={loadHistoryPage}
+        onLoadOlder={loadOlderHistory}
         name={name}
         setScrollContainerEl={setScrollContainerEl}
         setMessagesEndEl={setMessagesEndEl}

@@ -53,6 +53,12 @@ function statusExtras(payload) {
   if (payload.repairCommand !== undefined) {
     extra.repairCommand = payload.repairCommand;
   }
+  if (payload.lastCompactionIndex !== undefined) {
+    extra.lastCompactionIndex = payload.lastCompactionIndex;
+  }
+  if (payload.compactionCount !== undefined) {
+    extra.compactionCount = payload.compactionCount;
+  }
 
   return extra;
 }
@@ -64,10 +70,11 @@ function statusExtras(payload) {
  * merge is idempotent).
  *
  * Callers may pass `{lastIndex: number}` to override the
- * lower bound (e.g. the chat:compaction handler passes
- * `marker.index` so the sync pulls only the new active
- * messages). When `lastIndex` is omitted, the agent's
- * `cache.lastIndex` is used.
+ * lower bound. The chat:compaction handler passes
+ * `marker.index`, the archived boundary: every row at or below
+ * it moved into the archive, so the first row of the post-swap
+ * active list is `marker.index + 1`. When `lastIndex` is
+ * omitted, the agent's `cache.lastIndex` is used.
  */
 function requestSync(agentId, opts = {}) {
   const cache = getStore().agentsCache[agentId];
@@ -97,6 +104,79 @@ function requestSync(agentId, opts = {}) {
 }
 
 /**
+ * Fetch a page of the agent's archive over `chat:history`. The
+ * `role` selects which projection the reply lands in:
+ *
+ *   * `"compaction"` (with `limit: 1`) → the latest marker goes to
+ *     `setAgentCompactionMarker`;
+ *   * `"user"` → the recent prompts behind the recall list go to
+ *     `setAgentHistoryPrompts`;
+ *   * omitted → the page is merged into the expanded card via
+ *     `setAgentHistorySlice`. Paging back uses
+ *     `{before: firstLoadedIndex}`; the server returns ascending
+ *     rows and an empty page once index 0 is passed.
+ *
+ * A no-op when the channel isn't connected.
+ */
+export function requestHistory(agentId, opts = {}) {
+  const channel = agentChannels.get(agentId);
+  if (!channel) return;
+
+  const payload = {};
+  if (typeof opts.before === "number") payload.before = opts.before;
+  if (typeof opts.limit === "number") payload.limit = opts.limit;
+  if (opts.role) payload.role = opts.role;
+
+  // Only the full-slice fetch drives the expanded card, so only its
+  // failures set the card-visible error; the marker/prompt refetches
+  // failing would be a different (invisible) problem.
+  const isSlice = !opts.role;
+
+  channel
+    .push("chat:history", payload)
+    .receive("ok", (resp) => {
+      const rows = Array.isArray(resp?.messages) ? resp.messages : [];
+      const store = getStore();
+
+      if (opts.role === "compaction") {
+        store.setAgentCompactionMarker(
+          agentId,
+          rows.length > 0 ? rows[rows.length - 1] : null,
+        );
+      } else if (opts.role === "user") {
+        store.setAgentHistoryPrompts(agentId, rows);
+      } else {
+        store.setAgentHistorySlice(agentId, rows);
+      }
+    })
+    .receive("error", (resp) => {
+      if (isSlice) {
+        getStore().setAgentHistoryError(
+          agentId,
+          resp?.reason ?? "history_fetch_failed",
+        );
+      }
+    })
+    .receive("timeout", () => {
+      if (isSlice) getStore().setAgentHistoryError(agentId, "history_timeout");
+    });
+}
+
+/**
+ * Fire the two small archive projections an agent with a compaction
+ * boundary needs up front (the latest marker and the recent user
+ * prompts). The full slice is only fetched on expand. No-op when the
+ * agent has never compacted.
+ */
+function loadArchiveProjections(agentId) {
+  const cache = getStore().agentsCache[agentId];
+  const lastCompactionIndex = cache?.lastCompactionIndex ?? -1;
+  if (lastCompactionIndex < 0) return;
+  requestHistory(agentId, { role: "compaction", limit: 1 });
+  requestHistory(agentId, { role: "user", limit: 20 });
+}
+
+/**
  * Join agent channel.
  *
  * The backend topic is `agent:<space_id>:<name>`, so the
@@ -119,6 +199,9 @@ export function joinAgent(agentId, spaceId) {
       ) {
         requestSync(agentId);
       }
+      // The status reply carries no boundary fields, so the marker /
+      // prompt fetches key off the boundary preserved on the cache.
+      loadArchiveProjections(agentId);
     });
     return;
   }
@@ -141,14 +224,19 @@ export function joinAgent(agentId, spaceId) {
     ) {
       requestSync(agentId);
     }
+    // The init payload carries the boundary but not the archive; the
+    // marker + recall prompts are fetched lazily.
+    loadArchiveProjections(agentId);
   });
 
   channel.on("chat:compaction", (payload) => {
-    const history = Array.isArray(payload?.history) ? payload.history : [];
     const marker = payload?.marker ?? null;
-    store.setAgentHistory(agentId, history, marker);
+    store.setAgentCompaction(agentId, marker);
     if (marker && typeof marker.index === "number") {
       requestSync(agentId, { lastIndex: marker.index });
+      // The archive just grew, and the pre-swap user prompts moved
+      // out of cache.messages, so both projections are stale.
+      loadArchiveProjections(agentId);
     }
   });
 

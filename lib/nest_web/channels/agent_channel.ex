@@ -199,10 +199,10 @@ defmodule NestWeb.AgentChannel do
   end
 
   # Handle a `chat:compaction` event from PubSub (broadcast
-  # by `Broadcasts.compaction/3` after a successful
-  # `record_compaction` DB write). The payload carries
-  # the marker and the full archived history; the JS side
-  # uses it to render the compaction divider in the UI.
+  # by `Broadcasts.compaction/2` after a successful
+  # `record_compaction` DB write). The payload carries the
+  # marker only; the JS side uses it to render the compaction
+  # divider and re-fetches the archive projections it shows.
   @impl true
   def handle_info({:chat_compaction, payload}, socket) do
     push(socket, "chat:compaction", payload)
@@ -242,7 +242,8 @@ defmodule NestWeb.AgentChannel do
       "vocation" => agent.vocation,
       "workspace_path" => agent.workspace_path,
       "messageCount" => length(agent.messages),
-      "history" => Enum.map(agent.history || [], &Message.to_json/1),
+      "lastCompactionIndex" => agent.last_compaction_index,
+      "compactionCount" => agent.compaction_count,
       "status" => to_string(agent.status),
       "sequenceViolations" => agent.sequence_violations,
       "repairCommand" => agent.repair_command,
@@ -415,7 +416,12 @@ defmodule NestWeb.AgentChannel do
           "contextLimit" => agent.context_limit,
           "contextLimitSource" => source_to_string(agent.context_limit_source),
           "currentMode" => agent.current_mode,
-          "usage" => agent.usage
+          "usage" => agent.usage,
+          # The archive boundary travels on every status reply so a
+          # reconnect that missed a `chat:compaction` broadcast can still
+          # reconcile the collapsed-history card (see `setAgentConnected`).
+          "lastCompactionIndex" => agent.last_compaction_index,
+          "compactionCount" => agent.compaction_count
         }
 
         {:reply, {:ok, reply}, socket}
@@ -479,6 +485,71 @@ defmodule NestWeb.AgentChannel do
         {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
     end
   end
+
+  # Bounds for a single `chat:history` page. The archive holds the
+  # whole summarized prefix (thousands of rows for a long-lived agent),
+  # so it is only ever read a page at a time; the ceiling keeps a
+  # misbehaving client from asking for the lot.
+  @history_default_limit 50
+  @history_max_limit 200
+  @history_roles ~w(system user assistant tool compaction)
+
+  # A page of the agent's archived (pre-compaction) history.
+  #
+  # The archive is never part of the join payload: for a long-lived
+  # agent it is the whole summarized prefix — thousands of rows and
+  # megabytes of tool output. The client asks for the rows it is about
+  # to render (the collapsed-history card pages through them) and for
+  # the two small projections it needs up front (the latest compaction
+  # marker, and the user prompts behind the Ctrl/Cmd+Up recall list).
+  #
+  # This is a pure read against the caller's process, exactly like
+  # `chat:api-logs`: the archive lives in the DB, never in agent state,
+  # so resolving it here cannot block a live turn.
+  @impl true
+  def handle_in("chat:history", payload, socket) do
+    case history_opts(payload) do
+      {:ok, opts} ->
+        rows =
+          Nest.Persistence.load_history_slice(
+            socket.assigns.space_id,
+            socket.assigns.name,
+            opts
+          )
+
+        {:reply, {:ok, %{"messages" => Enum.map(rows, &Message.to_json/1)}}, socket}
+
+      {:error, reason} ->
+        {:reply, {:error, %{"reason" => reason}}, socket}
+    end
+  end
+
+  # `before` walks backwards through the archive (`nil` starts at the
+  # boundary), `limit` bounds one page, and `role` selects a
+  # projection — the recall list wants only `user` rows, the card wants
+  # every role.
+  defp history_opts(payload) do
+    with {:ok, before} <- parse_history_before(payload["before"]),
+         {:ok, limit} <- parse_history_limit(payload["limit"]),
+         {:ok, roles} <- parse_history_role(payload["role"]) do
+      {:ok, [before: before, limit: limit, roles: roles]}
+    end
+  end
+
+  defp parse_history_before(nil), do: {:ok, nil}
+  defp parse_history_before(n) when is_integer(n) and n >= 0, do: {:ok, n}
+  defp parse_history_before(_other), do: {:error, "invalid_before"}
+
+  defp parse_history_limit(nil), do: {:ok, @history_default_limit}
+
+  defp parse_history_limit(n) when is_integer(n) and n > 0,
+    do: {:ok, min(n, @history_max_limit)}
+
+  defp parse_history_limit(_other), do: {:error, "invalid_limit"}
+
+  defp parse_history_role(nil), do: {:ok, nil}
+  defp parse_history_role(role) when role in @history_roles, do: {:ok, [role]}
+  defp parse_history_role(_other), do: {:error, "invalid_role"}
 
   # Take a prefix of `messages` whose combined JSON wire size is
   # ≤ `limit` bytes. Always returns at least one element when the

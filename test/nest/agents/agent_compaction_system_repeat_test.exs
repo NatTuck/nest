@@ -443,9 +443,9 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
                "post-swap entry at index #{idx} has no DB row"
       end
 
-      # The marker is the LAST entry in `history`. The marker
-      # index in memory must match a DB row at that index.
-      assert {:compaction, %{index: marker_index}} = List.last(state.chat_state.history)
+      # The marker *is* the boundary now (no in-memory archive):
+      # it must have a DB row at that index.
+      marker_index = state.chat_state.last_compaction_index
 
       assert MapSet.member?(row_indices, marker_index),
              "marker at index #{marker_index} has no DB row"
@@ -457,9 +457,9 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
 
       state = run_compaction(pid)
 
-      # Read the marker_index from the post-state (it's now
-      # the index of the marker in history).
-      assert {:compaction, %{index: marker_index}} = List.last(state.chat_state.history)
+      # The boundary in the post-state. There is no in-memory archive,
+      # so this *is* the marker index
+      marker_index = state.chat_state.last_compaction_index
 
       agent_row =
         Nest.Repo.one!(from(a in Nest.Agents.PersistedAgent, where: a.name == ^agent_id))
@@ -467,6 +467,20 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
       assert agent_row.last_compaction_index == marker_index,
              "expected last_compaction_index = #{marker_index} (the marker index); " <>
                "got #{agent_row.last_compaction_index}"
+
+      # The compaction count is tracked in state (that is what the collapsed
+      # history card renders) and persisted on the marker row, so a restart
+      # recovers it without loading the archive.
+      assert state.chat_state.compaction_count == 1
+
+      marker_row =
+        Nest.Repo.one!(
+          from(m in Nest.Agents.PersistedMessage,
+            where: m.agent_id == ^agent_row.id and m.message_index == ^marker_index
+          )
+        )
+
+      assert marker_row.compaction_count == 1
     end
   end
 

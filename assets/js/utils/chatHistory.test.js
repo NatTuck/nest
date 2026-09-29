@@ -55,6 +55,33 @@ describe("buildChatHistory", () => {
     ]);
   });
 
+  it("derives prompt text from parts for wire-format archived rows", () => {
+    // `chat:history` returns archived user rows in the wire format
+    // (`parts`, no flat `content`), so the helper must read through
+    // `messageText` for the recall list to include them.
+    const result = buildChatHistory(
+      [
+        {
+          role: "user",
+          parts: [{ kind: "text", text: "[mode: build]\nactive" }],
+          mode: "build",
+        },
+      ],
+      [
+        {
+          role: "user",
+          parts: [{ kind: "text", text: "[mode: plan]\narchived" }],
+          mode: "plan",
+        },
+      ],
+    );
+
+    expect(result).toEqual([
+      { content: "active", mode: "build" },
+      { content: "archived", mode: "plan" },
+    ]);
+  });
+
   it("tolerates missing inputs and defaults a missing mode to null", () => {
     expect(buildChatHistory()).toEqual([]);
     expect(buildChatHistory(null, null)).toEqual([]);

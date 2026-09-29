@@ -1,172 +1,157 @@
-# Continue: strict shared message structure + sequence invariants
+# CONTINUE — lazy archive (branch `clone-history-cleanup`)
 
-## Mission
+Handoff for the **nest** repo. The root `notes/continue.md` is the DeepSeek V4
+handoff — leave it alone.
 
-Correct the persisted data model so that cloned agents **share** their
-ancestors' message rows and never duplicate them, and enforce the
-message-sequence invariants so an invalid sequence can neither be created by
-the live path nor sent to an LLM. Plus an offline repair tool that may rewrite
-persisted sequences.
+## State
 
-## Read first (canonical)
+Branch `clone-history-cleanup`, based on `origin/main` = `b5728b7`, **6 commits
+ahead, unpushed**, tip `65517f1` (a merge; it only brought in the SSE
+event-name-drop fix, 4 files, orthogonal).
 
-- `notes/shared-message-structure.md` — the data model. **Source of truth.**
-  Do not edit it to match the code; fix the code.
-- `notes/enforce-mesages-seq-invariants.md` — wire invariants, preflight rules,
-  append-time enforcement, and the **offline repair tool spec (§5)** /
-  **on-load validation spec (§4)**.
+**The lazy-archive work (steps 2b + 2c) and the `:persistence_enabled` flag
+removal (step 3) are now complete in the working tree, uncommitted.** It
+compiles and `mix precommit` runs fully green:
 
-If any code comment or other note contradicts the canonical doc, that source is
-wrong.
+- `notes/test-runs/precommit-final.log` — credo no issues, format clean,
+  **1649 Elixir tests / 0 failures**, **1063 JS tests / 0 failures**, Elixir
+  coverage 82.8% / JS 96.39%, no file over the size cap.
+- Baseline before this work: `notes/test-runs/precommit-tip-baseline.log`
+  (1636 Elixir tests).
 
-## Status: Phases 1–4 + on-load validation DONE — precommit green
+## What landed (server, step 2b)
 
-- **Phase 1 — shared structure.** `agents.fork_message_index` (migration
-  `20260925171617_add_fork_message_index_to_agents`); `build_insert_base/2`
-  also stores `last_compaction_index`. `MessageList.build_clone_fork/4` uses
-  Unix-fork semantics (shares the real `agents-spawn` assistant; the child owns
-  a `tool_result` for the same id + ack). `Agent.pre_spawn/1` writes the system
-  row only for roots/fresh children; clones persist only their own rows.
-  `Persistence.Messages.load_full_messages/2` resolves
-  `before(full(parent), fork) ++ own` via `parent_id`;
-  `build_attrs_for_start/2` uses it and returns `fork_message_index`. Clones
-  detach at first compaction (`ResultHandler.handle_success/3` clears the fork
-  via `Persistence.update_fork_message_index/3`). Tests:
-  `test/nest/agents/agent/shared_message_structure_test.exs`.
-- **Phase 2 — append guard.** `MessageList.pairing_bridge/2` returns the repair
-  messages (an `is_error` tool result per unpaired id, plus an assistant ack for
-  a user incoming). `MessageAppender` routes every live append through
-  `append_with_bridge/2`; `append_history_one/2` is exempt. Tests:
-  `test/nest/agents/agent/append_pairing_bridge_test.exs`.
-- **Phase 3 — preflight + send guard.** `Nest.LLM.Preflight.rules/0` and
-  `validate/1` (tagged violations, unknown roles tolerated);
-  `validate_tool_call_pairing/1` kept for `MockClient`;
-  `format_violations/1`. `Iteration.spawn_http_worker/2` refuses an invalid list
-  via `refuse_invalid_sequence/2` (`{:chat_crashed, ...}` + `{:stop, :normal,
-  _}`). Tests: `test/nest/llm/preflight_test.exs`,
-  `test/nest/agents/agent/chat_turn/send_guard_test.exs`.
+| file | change |
+|---|---|
+| `lib/nest/persistence/messages.ex` | new `load_slice/3` paged shared-prefix walk; `load_full_messages/2` delegates with `cap: :all, limit: :all`; `resolve_full/2` deleted |
+| `lib/nest/persistence/history.ex` | `load/2` = `load_slice/3` with `limit: :all` (boundary-bounded, for `get_api_logs`); new `load_slice/3` (paged, role-filterable, `before`-exclusive) |
+| `lib/nest/persistence.ex` | `load_history_slice/3` delegate |
+| `lib/nest/agents.ex` | `build_agent_data/1` no longer loads (or ships) `history` — the join path does **no** archive read |
+| `lib/nest/agents/agent/broadcasts.ex` | `compaction/3` → `compaction/2`; `:chat_compaction` carries the marker only |
+| `lib/nest/agents/agent/compaction/result_handler.ex` | `Broadcasts.compaction(state, marker)` — the last in-agent DB read is gone |
+| `lib/nest/agents/persisted_message.ex` | `to_runtime/1` copies `compaction_count` so a lazily-fetched marker agrees with the live broadcast |
+| `lib/nest_web/channels/agent_channel.ex` | `build_init_payload/1` ships no `"history"`; new `handle_in("chat:history", ...)` + `history_opts/1` parsers + `@history_default_limit 50` / `@history_max_limit 200` / `@history_roles` |
 
-All code changes from Phases 1–3 are **uncommitted** on `main` (working tree).
+The archive is never read at join. `chat:history` (channel process, pure DB
+read, same shape as `chat:api-logs`) is the only reader; `load/2` stays for
+`get_api_logs/3` (click-driven audit, out of scope).
 
----
+## What landed (JS, step 2c)
 
-## Phase 4: offline repair tool — DONE
+- `store/slices/agentCache.js`:
+  - `setAgentConnected` reads `lastCompactionIndex` / `compactionCount`
+    (`?? existing ?? -1/0`), and drops `history` / `historyPrompts` /
+    `lastCompactionMarker` when `compactionCount` changes.
+  - `setAgentCompaction(id, marker)` replaces `setAgentHistory`; clears the
+    stale projections and filters `messages` to `index > marker.index`.
+  - new `setAgentCompactionMarker`, `setAgentHistorySlice` (merge pages, dedupe
+    by index, ascending), `setAgentHistoryPrompts`.
+  - `resetAgentConversation` resets the new fields.
+- `store/slices/agentCacheStreaming.js`: dropped the dead `history` merge from
+  `syncAgentMessages`.
+- `channels/agent.js`: `loadArchiveProjections/1` (marker `{role: "compaction",
+  limit: 1}` + 20 `{role: "user"}` prompts) fires after connect/rejoin and after
+  `chat:compaction`; new exported `requestHistory(agentId, opts)`; init handler
+  and rejoin `chat:status` both trigger it; `chat:compaction` no longer reads
+  `payload.history`.
+- Components: `ChatMessages` sources the marker from `lastCompactionMarker` and
+  gates the card on `lastCompactionIndex`; `CompactionMarker` no longer bails on
+  an empty `history` and lazy-loads on first expand; `CollapsedHistory` shows an
+  explicit "Loading archived messages…" placeholder and a "Load older" button
+  when the oldest loaded row isn't index 0; `ChatPage` builds the recall list
+  from `historyPrompts` and owns `loadHistoryPage` / `loadOlderHistory`.
+- `utils/chatHistory.js`: now extracts prompt text via `messageText` (part of
+  the fix below) instead of requiring a flat `content`.
 
-Shipped as `mix nest.repair_messages`:
-`Mix.Tasks.Nest.RepairMessages` → `Nest.Persistence.MessageRepair` →
-`.Planner` (pure) → `.Writer`. It repairs tool pairing **and simple
-alternation** violations, is idempotent, and targets whole spaces by
-name (`--space <name>`) or everything (`--all`), dry-run by default
-(`--apply` to write). See
-`notes/enforce-mesages-seq-invariants.md` §5 for the final spec.
+**One fix beyond the note:** archived rows from `chat:history` are wire format
+(`parts`, no flat `content`), but `buildChatHistory` filtered on
+`typeof m.content === "string"`, so the archived recall prompts would have been
+silently dropped. It now reads through `messageText` (prefers `parts`, falls
+back to legacy `content`), with a test for wire-format archived rows.
 
-The original spec below is kept for context; the implemented CLI uses
-`--space <name>` (not `<id>`) and drops the per-agent selector, since
-we repair whole spaces.
+## What landed (step 3 — the `:persistence_enabled` flag is gone)
 
-### Options
+The defensive `Application.get_env(:nest, :persistence, %{})[:enabled] != false`
+gate is deleted everywhere persistence is now unconditional:
 
-`--space <id>` / `--agent <space_id> <name>` / `--all`; `--apply` (default is
-**dry-run**); `--verbose`.
+- `lib/nest/persistence/agent_attrs.ex` — the five gates gone; the
+  `do_update` / `do_update_workspace` / `do_archive` indirection inlined.
+- `lib/nest/agents/agent/persistence.ex` — gates gone (module shrunk to the
+  two public wrappers).
+- `lib/nest/agents/supervisor.ex` — `persistence_enabled?/0`,
+  `do_fetch_or_start_with_persistence/2`, `do_fetch_or_start_no_persistence/2`,
+  and `do_on_demand_load_with_persistence/2` deleted; the persisted path is the
+  only path, and `persistence_list_names_for_space/1` uses an implicit `try`.
+- `lib/nest/agents/agent.ex` — `init/1` always calls `do_init/1`;
+  `{:stop, :non_persistence_not_implemented}` and `persistence_enabled?/0`
+  deleted.
+- `config/test.exs` — the `config :nest, persistence: [enabled: true]` line and
+  its comment removed.
+- stale test/doc comments updated (`agent_persistence_test.exs`,
+  `persisted_message_test.exs`, `persistence_test.exs`,
+  `persistence_agents_test.exs`, `persistence/compaction_marker_test.exs`,
+  `supervisor_persistence_test.exs`).
 
-### Algorithm (per agent, root-first over the `parent_id` tree)
+Note the handoff's Step-3 scope list omitted `agent_attrs.ex`, which was also
+gated.
 
-1. Load the resolved sequence with `Persistence.load_full_messages/2` and the
-   owner partition (`own` = `Persistence.load_messages/2`).
-2. Run `Nest.LLM.Preflight.validate/1`. Print every violation (rule, position,
-   ids).
-3. Build a repair plan:
-   - For each assistant `tool_use` missing a paired result, plan an
-     `is_error: true` `{:tool, _}` insert after it, under the **owning**
-     `agent_id` (the agent whose run of rows contains the assistant).
-   - Report stray `tool_result`s with no matching `tool_use` (do not invent an
-     assistant).
-   - Recompute contiguous `message_index` values for the owning agent.
-4. `--apply` in a single `Repo.transaction`:
-   - insert the synthetic rows;
-   - renumber the owning agent's rows with a **two-phase** pass (temporary large
-     offset, then final) to avoid transient collisions on the unique index
-     `messages_agent_id_message_index_index` (`(agent_id, message_index)`);
-   - update `agents.next_message_index`;
-   - shift `agents.last_compaction_index` when an insert lands before the
-     boundary.
+## Remaining work
 
-### Clone renumbering (the `parent_id` / `fork_message_index` part)
+### E. Finish
 
-- An insert into an ancestor-owned prefix shifts the ancestor's rows and every
-  descendant's `fork_message_index` and own indices at/after the insert point,
-  recursively via `parent_id`.
-- Use the stored `agents.fork_message_index` (do **not** derive from min own
-  index): a fresh child or detached clone has `fork_message_index = NULL` and is
-  unaffected.
-- Idempotent: re-running on a repaired sequence is a no-op.
+- (done) `mix precommit`, read the whole log, saved to
+  `notes/test-runs/precommit-final.log`.
+- (done) Refreshed this note.
+- (done) Max-iterations test cleanup (see below) —
+  `notes/test-runs/precommit-flake-fix.log` is green in *both* runs
+  (1654 tests / 0 failures, seeds 674267 and 98599).
+- Push `clone-history-cleanup` and commit the work (lazy archive + step 3
+  + the test cleanup).
 
-### Code seams to use / add
+## Max-iterations test cleanup (the flaky 1.1.4)
 
-- `Nest.Persistence.Messages`: `load_messages/2`, `load_full_messages/2`,
-  `load_own_messages/1`, `update_next_message_index/3`,
-  `update_fork_message_index/3`. `fetch_agent_by_id/1` is currently private — the
-  task needs a way to fetch an agent row by id and to list all rows
-  (`fetch_all_agents_for_space/1` exists, or add a `list_all_agents/0`).
-- `Nest.Agents.PersistedMessage.to_runtime/1` / `from_runtime/2` for building
-  the synthetic `{:tool, _}`; `insert_message/3` uses `on_conflict: :nothing`
-  (repair must not rely on that for renumbering — use explicit updates).
-- Direct `Repo` queries/updates are fine in the task (it runs outside the
-  sandbox; it needs `mix ecto`/app started — `Nest.Repo`).
+`chat_turn_test.exs:206` (1.1.4) fenced 750 ms on `chat_status: idle`
+after six sequential LLM rounds; the failing run's mailbox dump showed it
+still streaming round 5 (`index: 14`, `call_5`) when the fence expired.
+It was also unable to observe its own subject (nothing looked at the
+request's `tools`) and inherited its cap from `test/data/config.toml`.
 
-### Tests (Phase 4)
+Three tests were converted to the **resumed-turn seam** — the production
+`{:compaction_done, summary, carried_entry}` message, already used by
+`agent_chat_turn_iteration_test.exs` — which seeds a turn with an
+explicit `iter`/`max`, so a turn can start *at* the cap. No timeout
+changed, no `async: false`, no Mimic, no mock changes.
 
-- Fixture mirroring `visual-possum-root`: assistant `tool_use` → user, no
-  result. Dry-run reports; `--apply` inserts + renumbers + bumps counters;
-  re-run is a no-op.
-- Clone fixture: a child with `fork_message_index`; an insert into the parent
-  prefix shifts the child's `fork_message_index` and own indices.
-- Borrow `test/support/persistence_test_helpers.ex` for spaces/vocations, and
-  `Nest.DataCase`.
+| test | was | now |
+|---|---|---|
+| `chat_turn_test.exs` 1.1.4 | 6 LLM rounds | 1 |
+| `agent_tools_max_iterations_test.exs` | 6 | 1 |
+| `agent_tools_second_chance_test.exs` | 7 | 2 |
 
-### Then: repair the real agent
+- New `test/nest/agents/agent/chat_turn/iteration_test.exs` asserts
+  `Iteration.tool_config_for_iteration/1` directly (now public): tools
+  pass through below the cap, `{nil, :none}` past it. That is the only
+  assertion that actually pins `tools: nil`.
+- `agent_tools_second_chance_test.exs` **was not testing the second
+  chance at all**: its 6th scripted response was a `{:tool, _}` entry,
+  and `MockClient.take_head(queue, nil)` skips leading `{:tool, _}`
+  entries on a `tools: nil` call, so the turn finalized on the obedient
+  path and `handle_overflow_tool_calls` never ran. The overflow round is
+  now scripted with `set_stream_events/1` (events are not skipped), and
+  the test asserts the synthetic `"Maximum tool iterations reached"`
+  tool results are present — `synthetic_error_tool_results/1` has exactly
+  one caller, so that assertion proves the path ran.
+- Coverage note: no test now drives a *user-initiated* chat all the way
+  to the cap (the entry tag is the only difference; `agent_tools_iterations_test.exs`
+  still covers user chats counting rounds and refuting the notification).
 
-`visual-possum-root` (agent id 1, space 1): index 866 is an assistant
-`tool_use:call_00_YeumRvjanX23oPG1S93n4024` (`shell-cmd`, a ~10-min command);
-index 867 is the next user message. Look up space 1's name, then run
-`mix nest.repair_messages --space <name>` (dry-run) → expect the orphan at 866
-(plus the alternation ack needed before the user message); `--apply` inserts the
-`is_error` result and the ack; restart the agent. Use the **real** DB, not the
-test sandbox.
 
-## On-load validation (spec §4) — DONE
+## Notes / hazards
 
-`Persistence.build_attrs_for_start/2` validates the **active sendable
-slice** and attaches `sequence_violations` + a `repair_command`;
-`Agent.init/1` starts `:needs_repair` (process alive, history
-viewable, chat blocked in the GenServer and the channel) and
-`Broadcasts.needs_repair/4` drives a UI banner. Recovery is an offline
-`mix nest.repair_messages` run plus `Agents.reload_agent/2` (backend:
-`Supervisor.restart_agent/2`), which re-validates and returns `:idle`.
-Deliberately **not** added: a `list_broken_agents/0` sequence check
-(the lobby sidebar only knows about model breakage; sequence issues
-surface when the agent loads). See
-`notes/enforce-mesages-seq-invariants.md` §4.
-
-## Known residuals / notes
-
-- The full suite is ~9s here, above AGENTS.md's 5s target; pre-existing.
-- `mix test --cover` (the precommit coverage stage) is timing-flaky on this
-  loaded box. Proven pre-existing: a baseline worktree at `HEAD` also failed the
-  same stage, and the failing files pass in isolation. Do not bump test
-  timeouts; if it blocks a commit, re-run precommit (it passed cleanly).
-- Phase 1's mandatory "no duplicated rows on clone" and restart round-trip tests
-  are in `shared_message_structure_test.exs`; keep them green.
-- Phases 4 and §4 landed: `notes/enforce-mesages-seq-invariants.md` §4/§5 are
-  marked DONE. `mix precommit` is green.
-
-## Open decisions resolved (for context)
-
-1. Fork boundary `F_C = parent.next_message_index`; child answers the shared
-   spawn `tool_use` (Unix fork).
-2. `fork_message_index` column added.
-3. Clone compaction: detach on first compaction.
-4. Send-time preflight failure: graceful `chat:error` + stop.
-5. Repair tool scope: tool pairing **and simple alternation** (insert one
-   opposite-role message between same-type pairs); do not invent an assistant
-   to justify a stray `tool_result`.
+- `mix precommit` output is ~155 KB, mostly vitest's per-test lines; read it in
+  full (never head/tail/grep a test run).
+- Known unrelated flake: `test/nest/agents/agent_tools_test.exs:86` (100 ms
+  budget vs a ~60 ms bwrap spawn).
+- Also outstanding from `TODO.md`, unrelated: browser lag at ~100k context
+  (this change is the bulk of it), rejecting invalid summaries, nested bwrap in
+  tests.

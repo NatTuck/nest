@@ -18,6 +18,12 @@ export function agentCacheSetters(set) {
               ? { ...existing, status: "connecting", error: null }
               : {
                   messages: [],
+                  history: [],
+                  historyPrompts: [],
+                  historyError: null,
+                  lastCompactionMarker: null,
+                  lastCompactionIndex: -1,
+                  compactionCount: 0,
                   streaming: null,
                   partial: null,
                   lastIndex: -1,
@@ -51,13 +57,37 @@ export function agentCacheSetters(set) {
           : payload.partial
             ? normalizePartial(payload.partial)
             : null;
+        // The archive projections are keyed to a compaction count: a
+        // higher count means the agent compacted while we were away, so
+        // the cached slice/prompts/marker describe a boundary that no
+        // longer exists. Drop them and let the channel refetch.
+        // `chat:status` (the rejoin path) carries neither field, so the
+        // `?? existing` fallback is what preserves them across a plain
+        // reconnect.
+        const lastCompactionIndex =
+          payload.lastCompactionIndex ?? existing?.lastCompactionIndex ?? -1;
+        const compactionCount =
+          payload.compactionCount ?? existing?.compactionCount ?? 0;
+        const archiveStale =
+          existing != null && existing.compactionCount !== compactionCount;
 
         return {
           agentsCache: {
             ...state.agentsCache,
             [id]: {
               messages: finalMessages,
-              history: payload.history ?? existing?.history ?? [],
+              history: archiveStale ? [] : (existing?.history ?? []),
+              historyPrompts: archiveStale
+                ? []
+                : (existing?.historyPrompts ?? []),
+              historyError: archiveStale
+                ? null
+                : (existing?.historyError ?? null),
+              lastCompactionMarker: archiveStale
+                ? null
+                : (existing?.lastCompactionMarker ?? null),
+              lastCompactionIndex,
+              compactionCount,
               streaming: streaming,
               partial: streaming,
               lastIndex,
@@ -122,6 +152,11 @@ export function agentCacheSetters(set) {
               ...existing,
               messages: [],
               history: [],
+              historyPrompts: [],
+              historyError: null,
+              lastCompactionMarker: null,
+              lastCompactionIndex: -1,
+              compactionCount: 0,
               lastIndex: -1,
               partial: null,
               streaming: null,
@@ -146,6 +181,12 @@ export function agentCacheSetters(set) {
               ? { ...existing, status: "error", error }
               : {
                   messages: [],
+                  history: [],
+                  historyPrompts: [],
+                  historyError: null,
+                  lastCompactionMarker: null,
+                  lastCompactionIndex: -1,
+                  compactionCount: 0,
                   streaming: null,
                   partial: null,
                   lastIndex: -1,
@@ -288,16 +329,19 @@ export function agentCacheSetters(set) {
       });
     },
 
-    setAgentHistory: (id, history, marker) => {
-      if (!Array.isArray(history)) return;
+    /**
+     * Apply a `chat:compaction` marker. The archive is not shipped with
+     * the broadcast, so any cached slice / prompt list / marker now
+     * describes the pre-compaction boundary: clear them and let the
+     * channel refetch. Keeps the active list from the post-swap
+     * boundary (everything at or below `marker.index` was archived).
+     */
+    setAgentCompaction: (id, marker) => {
+      if (!marker) return;
       set((state) => {
         const cache = state.agentsCache[id];
         if (!cache) return state;
-        const nextHistory =
-          marker && !history.some((m) => m.role === "compaction")
-            ? [...history, marker]
-            : history;
-        const boundary = marker?.index;
+        const boundary = marker.index;
         const nextMessages =
           typeof boundary === "number"
             ? cache.messages.filter((m) => m.index > boundary)
@@ -305,7 +349,88 @@ export function agentCacheSetters(set) {
         return {
           agentsCache: {
             ...state.agentsCache,
-            [id]: { ...cache, history: nextHistory, messages: nextMessages },
+            [id]: {
+              ...cache,
+              messages: nextMessages,
+              history: [],
+              historyPrompts: [],
+              historyError: null,
+              lastCompactionMarker: null,
+              lastCompactionIndex:
+                typeof boundary === "number"
+                  ? boundary
+                  : (cache.lastCompactionIndex ?? -1),
+              compactionCount: marker.compactionCount ?? cache.compactionCount,
+            },
+          },
+        };
+      });
+    },
+
+    setAgentCompactionMarker: (id, marker) => {
+      set((state) => {
+        const cache = state.agentsCache[id];
+        if (!cache) return state;
+        return {
+          agentsCache: {
+            ...state.agentsCache,
+            [id]: { ...cache, lastCompactionMarker: marker ?? null },
+          },
+        };
+      });
+    },
+
+    /**
+     * Merge a page of archived rows into the cache, deduping by index
+     * and keeping ascending order. Pages arrive newest-first (the
+     * client pages back with `before`), so a plain concat would leave
+     * the "Load older" boundary wrong.
+     */
+    setAgentHistorySlice: (id, rows) => {
+      if (!Array.isArray(rows)) return;
+      set((state) => {
+        const cache = state.agentsCache[id];
+        if (!cache) return state;
+        const byIndex = new Map();
+        for (const row of [...(cache.history ?? []), ...rows]) {
+          if (row && typeof row.index === "number") byIndex.set(row.index, row);
+        }
+        const history = [...byIndex.values()].sort((a, b) => a.index - b.index);
+        return {
+          agentsCache: {
+            ...state.agentsCache,
+            [id]: { ...cache, history, historyError: null },
+          },
+        };
+      });
+    },
+
+    /**
+     * Record a failed `chat:history` fetch so the expanded card can show
+     * an explicit error instead of an endless "Loading…" placeholder.
+     */
+    setAgentHistoryError: (id, error) => {
+      set((state) => {
+        const cache = state.agentsCache[id];
+        if (!cache) return state;
+        return {
+          agentsCache: {
+            ...state.agentsCache,
+            [id]: { ...cache, historyError: error ?? null },
+          },
+        };
+      });
+    },
+
+    setAgentHistoryPrompts: (id, rows) => {
+      if (!Array.isArray(rows)) return;
+      set((state) => {
+        const cache = state.agentsCache[id];
+        if (!cache) return state;
+        return {
+          agentsCache: {
+            ...state.agentsCache,
+            [id]: { ...cache, historyPrompts: rows },
           },
         };
       });

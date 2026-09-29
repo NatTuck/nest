@@ -48,11 +48,19 @@ defmodule Nest.Persistence.CompactionMarker do
           non_neg_integer(),
           non_neg_integer(),
           non_neg_integer() | nil,
+          non_neg_integer() | nil,
           non_neg_integer() | nil
         ) ::
           {:ok, PersistedMessage.t()} | {:error, term()}
         when agent_id: integer()
-  def record(agent_id, marker_index, archived_count, tokens_compacted, tokens_compacted_to) do
+  def record(
+        agent_id,
+        marker_index,
+        archived_count,
+        compaction_count,
+        tokens_compacted,
+        tokens_compacted_to
+      ) do
     now = Persistence.now()
 
     Repo.transaction(fn ->
@@ -60,6 +68,7 @@ defmodule Nest.Persistence.CompactionMarker do
         agent_id,
         marker_index,
         archived_count,
+        compaction_count,
         tokens_compacted,
         tokens_compacted_to,
         now
@@ -78,6 +87,7 @@ defmodule Nest.Persistence.CompactionMarker do
          agent_id,
          marker_index,
          archived_count,
+         compaction_count,
          tokens_compacted,
          tokens_compacted_to,
          now
@@ -89,6 +99,7 @@ defmodule Nest.Persistence.CompactionMarker do
       content: %{"parts" => []},
       inserted_at: now,
       compaction_archived_count: archived_count,
+      compaction_count: compaction_count,
       compaction_occurred_at: now
     }
 

@@ -75,7 +75,6 @@ export function agentCacheStreamingSetters(set, get) {
             [id]: {
               ...cache,
               messages: mergedMessages,
-              history: payload.history ?? cache.history ?? [],
               streaming: streaming,
               partial: streaming,
               status: cache.status,

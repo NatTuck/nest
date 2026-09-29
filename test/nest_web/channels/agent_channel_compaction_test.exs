@@ -9,11 +9,13 @@ defmodule NestWeb.AgentChannelCompactionTest do
   channel crashed with `FunctionClauseError` on every
   compaction, even when the DB write succeeded. The
   PubSub broadcast is sent by
-  `Nest.Agents.Agent.Broadcasts.compaction/3` after
+  `Nest.Agents.Agent.Broadcasts.compaction/2` after
   `CompactionLifecycle.persist_and_broadcast/5` confirms
-  the DB write; the JS side (`assets/js/channels.js:146`)
+  the DB write; the JS side (`assets/js/channels/agent.js`)
   subscribes to the `chat:compaction` event and uses it to
-  render the compaction divider.
+  render the compaction divider. The payload carries the
+  marker only — the archive is fetched lazily over
+  `chat:history`.
   """
   use NestWeb.ChannelCase, async: true
   use NestWeb.AgentChannelTestHelpers
@@ -32,17 +34,14 @@ defmodule NestWeb.AgentChannelCompactionTest do
     # with `FunctionClauseError` on this broadcast (no
     # `handle_info({:chat_compaction, _}, _)` clause).
     # Top-level keys are atoms (mirroring
-    # `Broadcasts.compaction/3`'s payload shape); inner
+    # `Broadcasts.compaction/2`'s payload shape); inner
     # fields are strings (from `Message.to_json/1`).
     Phoenix.PubSub.broadcast(
       Nest.PubSub,
       "agent:#{space_id}:#{agent_id}",
       {:chat_compaction,
        %{
-         marker: %{"index" => 5, "role" => "compaction", "archivedCount" => 3},
-         history: [
-           %{"index" => 0, "role" => "user", "content" => "old"}
-         ]
+         marker: %{"index" => 5, "role" => "compaction", "archivedCount" => 3}
        }}
     )
 
@@ -51,7 +50,6 @@ defmodule NestWeb.AgentChannelCompactionTest do
     assert payload.marker["index"] == 5
     assert payload.marker["role"] == "compaction"
     assert payload.marker["archivedCount"] == 3
-    assert length(payload.history) == 1
-    assert hd(payload.history)["role"] == "user"
+    refute Map.has_key?(payload, :history)
   end
 end

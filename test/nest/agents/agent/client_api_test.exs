@@ -97,12 +97,14 @@ defmodule Nest.Agents.Agent.ClientAPITest do
     end
   end
 
-  describe "get_history/1" do
-    test "returns an empty list when no compaction has run" do
-      {pid, _name} =
+  describe "archived history (derived)" do
+    test "is empty when no compaction has run" do
+      {pid, name} =
         AgentTestHelpers.start_agent(%{model: %{name: "qwen3.5-plus", provider: "model-studio"}})
 
-      assert ClientAPI.get_history(pid) == []
+      space_id = Nest.Agents.Agent.get_public_info(pid).space_id
+
+      assert Nest.Persistence.load_history(space_id, name) == []
     end
   end
 

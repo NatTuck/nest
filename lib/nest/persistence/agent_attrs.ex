@@ -16,14 +16,6 @@ defmodule Nest.Persistence.AgentAttrs do
 
   @spec update_agent_model(integer(), String.t(), map()) :: :ok | {:error, term()}
   def update_agent_model(space_id, name, model_map) when is_map(model_map) do
-    if Application.get_env(:nest, :persistence, %{})[:enabled] != false do
-      do_update(space_id, name, model_map)
-    else
-      :ok
-    end
-  end
-
-  defp do_update(space_id, name, model_map) do
     case Persistence.fetch_agent(space_id, name) do
       {:ok, %PersistedAgent{id: agent_id}} ->
         from(a in PersistedAgent, where: a.id == ^agent_id)
@@ -44,14 +36,6 @@ defmodule Nest.Persistence.AgentAttrs do
   @spec update_agent_workspace(integer(), String.t(), String.t() | nil) ::
           :ok | {:error, term()}
   def update_agent_workspace(space_id, name, workspace_path) do
-    if Application.get_env(:nest, :persistence, %{})[:enabled] != false do
-      do_update_workspace(space_id, name, workspace_path)
-    else
-      :ok
-    end
-  end
-
-  defp do_update_workspace(space_id, name, workspace_path) do
     case Persistence.fetch_agent(space_id, name) do
       {:ok, %PersistedAgent{id: agent_id}} ->
         from(a in PersistedAgent, where: a.id == ^agent_id)
@@ -71,12 +55,8 @@ defmodule Nest.Persistence.AgentAttrs do
 
   @spec fetch_all_agents_for_space(integer()) :: [PersistedAgent.t()]
   def fetch_all_agents_for_space(space_id) when is_integer(space_id) do
-    if Application.get_env(:nest, :persistence, %{})[:enabled] != false do
-      from(a in PersistedAgent, where: a.space_id == ^space_id, order_by: a.name)
-      |> Repo.all()
-    else
-      []
-    end
+    from(a in PersistedAgent, where: a.space_id == ^space_id, order_by: a.name)
+    |> Repo.all()
   end
 
   @doc """
@@ -87,23 +67,11 @@ defmodule Nest.Persistence.AgentAttrs do
   """
   @spec list_all_agents() :: [PersistedAgent.t()]
   def list_all_agents do
-    if Application.get_env(:nest, :persistence, %{})[:enabled] != false do
-      from(a in PersistedAgent, order_by: [asc: a.id]) |> Repo.all()
-    else
-      []
-    end
+    from(a in PersistedAgent, order_by: [asc: a.id]) |> Repo.all()
   end
 
   @spec archive_agent(integer(), String.t()) :: :ok | {:error, :not_found}
   def archive_agent(space_id, name) do
-    if Application.get_env(:nest, :persistence, %{})[:enabled] != false do
-      do_archive(space_id, name)
-    else
-      :ok
-    end
-  end
-
-  defp do_archive(space_id, name) do
     case Persistence.fetch_agent(space_id, name) do
       {:ok, %PersistedAgent{id: agent_id}} ->
         from(a in PersistedAgent, where: a.id == ^agent_id)

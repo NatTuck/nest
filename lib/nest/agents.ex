@@ -128,7 +128,8 @@ defmodule Nest.Agents do
       workspace_path: info.workspace_path,
       vocation: vocation,
       messages: messages,
-      history: Agent.get_history(pid),
+      last_compaction_index: info.last_compaction_index,
+      compaction_count: info.compaction_count,
       status: info.status,
       partial: info.partial,
       modes: info.modes,
@@ -181,7 +182,7 @@ defmodule Nest.Agents do
     case Supervisor.get_agent(space_id, name) do
       {:ok, pid} ->
         try do
-          Agent.get_api_logs(pid, index)
+          Agent.get_api_logs(pid, index, Nest.Persistence.load_history(space_id, name))
         catch
           :exit, _reason -> {:error, :not_found}
         end

@@ -11,9 +11,6 @@ defmodule Nest.PersistenceAgentsTest do
   - `list_agent_names/0`
   - `build_attrs_for_start/1` returns attrs that flow into
     `Agent.start_link`, including `:last_compaction_index`
-
-  Persistence is enabled for this test process via the
-  `:nest, :persistence` app env.
   """
 
   use Nest.DataCase, async: true
@@ -245,6 +242,50 @@ defmodule Nest.PersistenceAgentsTest do
       assert "#{base}-a" in all
       assert "#{base}-b" in all
       assert "#{base}-c" in all
+    end
+  end
+
+  describe "update_agent_workspace/3" do
+    test "replaces the workspace_path column" do
+      attrs = agent_attrs("update-ws-#{Elixir.System.unique_integer([:positive])}")
+      {:ok, _} = Persistence.insert_agent(attrs)
+
+      assert :ok = Persistence.update_agent_workspace(test_space_id(), attrs.name, "/tmp/ws")
+
+      {:ok, %PersistedAgent{workspace_path: ws}} =
+        Persistence.fetch_agent(test_space_id(), attrs.name)
+
+      assert ws == "/tmp/ws"
+    end
+
+    test "clears the workspace_path with nil" do
+      attrs = agent_attrs("clear-ws-#{Elixir.System.unique_integer([:positive])}")
+      {:ok, _} = Persistence.insert_agent(attrs)
+      :ok = Persistence.update_agent_workspace(test_space_id(), attrs.name, "/tmp/ws")
+
+      assert :ok = Persistence.update_agent_workspace(test_space_id(), attrs.name, nil)
+
+      {:ok, %PersistedAgent{workspace_path: ws}} =
+        Persistence.fetch_agent(test_space_id(), attrs.name)
+
+      assert ws == nil
+    end
+
+    test "returns :not_found when the agent row is absent" do
+      assert {:error, :not_found} =
+               Persistence.update_agent_workspace(test_space_id(), "missing-ws", "/tmp/x")
+    end
+  end
+
+  describe "list_all_agents/0" do
+    test "returns every agent row ordered by id" do
+      attrs = agent_attrs("list-all-#{Elixir.System.unique_integer([:positive])}")
+      {:ok, %PersistedAgent{id: id}} = Persistence.insert_agent(attrs)
+
+      ids = Persistence.list_all_agents() |> Enum.map(& &1.id)
+
+      assert ids == Enum.sort(ids)
+      assert id in ids
     end
   end
 end

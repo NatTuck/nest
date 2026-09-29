@@ -83,7 +83,7 @@ defmodule Nest.Agents.AgentToolsTest do
       assert tool_call.name == "shell-cmd"
 
       assert_receive {:chat_status, %{status: "executing_tools"}}, 500
-      assert_receive {:chat_message, {:tool, tool_msg}}
+      assert_receive {:chat_message, {:tool, tool_msg}}, 500
       assert [%Part.ToolResult{}] = tool_msg.parts
 
       assert_receive {:chat_status, %{status: "streaming"}}, 500

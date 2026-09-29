@@ -4,12 +4,8 @@ defmodule Nest.Agents.Agent.PersistenceTest do
   wrapper around `Nest.Persistence` that the Agent's `init/1`
   and `__append_message__/2` paths use.
 
-  Persistence is always enabled (see `config/test.exs`), so the
-  wrapper always forwards to the real `Persistence.insert_message/2` /
-  `update_next_message_index/2` calls. The wrapper's no-op
-  disabled-path is defensive code (returns `:ok` immediately
-  when the `:persistence_enabled` flag is false), not exercised
-  by tests.
+  The wrapper forwards to the real `Persistence.insert_message/2` /
+  `update_next_message_index/2` calls.
   """
   use Nest.DataCase, async: true
 

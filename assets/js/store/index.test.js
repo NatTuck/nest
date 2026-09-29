@@ -3208,227 +3208,258 @@ describe("store", () => {
     });
   });
 
-  describe("compaction history", () => {
-    it("setAgentConnected stores history from the init payload", () => {
+  describe("compaction history (lazy archive)", () => {
+    const MARKER = {
+      index: 10,
+      role: "compaction",
+      archivedCount: 10,
+      compactionCount: 3,
+      tokensCompacted: 100,
+      tokensCompactedTo: 20,
+      occurredAt: "2024-01-01T00:00:00Z",
+      apiLogs: [],
+    };
+
+    it("setAgentConnected stores the boundary and starts with empty projections", () => {
       useStore.getState().setAgentConnecting("agent-1");
       useStore.getState().setAgentConnected("agent-1", {
         model: { name: "gpt-4" },
         messageCount: 0,
-        history: [
-          {
-            index: 0,
-            role: "compaction",
-            archivedCount: 5,
-            occurredAt: "2024-01-01T00:00:00Z",
-            apiLogs: [],
-          },
-        ],
+        lastCompactionIndex: 10,
+        compactionCount: 3,
       });
 
       const cache = useStore.getState().agentsCache["agent-1"];
-      expect(cache.history).toEqual([
-        {
-          index: 0,
-          role: "compaction",
-          archivedCount: 5,
-          occurredAt: "2024-01-01T00:00:00Z",
-          apiLogs: [],
-        },
-      ]);
+      expect(cache.lastCompactionIndex).toBe(10);
+      expect(cache.compactionCount).toBe(3);
+      expect(cache.history).toEqual([]);
+      expect(cache.historyPrompts).toEqual([]);
+      expect(cache.lastCompactionMarker).toBeNull();
     });
 
-    it("setAgentConnected initializes history to [] when omitted", () => {
+    it("setAgentConnected defaults the boundary to -1 / 0 when the payload omits them", () => {
       useStore.getState().setAgentConnecting("agent-1");
       useStore.getState().setAgentConnected("agent-1", {
         model: { name: "gpt-4" },
         messageCount: 0,
       });
 
-      expect(useStore.getState().agentsCache["agent-1"].history).toEqual([]);
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.lastCompactionIndex).toBe(-1);
+      expect(cache.compactionCount).toBe(0);
     });
 
-    it("syncAgentMessages preserves history when payload has none", () => {
+    it("setAgentConnected drops stale projections when compactionCount grows", () => {
       useStore.getState().setAgentConnecting("agent-1");
       useStore.getState().setAgentConnected("agent-1", {
-        model: { name: "gpt-4" },
         messageCount: 0,
-        history: [{ index: 0, role: "compaction", archivedCount: 5 }],
+        lastCompactionIndex: 5,
+        compactionCount: 1,
       });
+      useStore
+        .getState()
+        .setAgentHistorySlice("agent-1", [
+          { index: 0, role: "user", content: "old" },
+        ]);
+      useStore
+        .getState()
+        .setAgentHistoryPrompts("agent-1", [
+          { index: 0, role: "user", content: "old" },
+        ]);
+      useStore.getState().setAgentCompactionMarker("agent-1", MARKER);
+
+      useStore.getState().setAgentConnected("agent-1", {
+        messageCount: 0,
+        lastCompactionIndex: 12,
+        compactionCount: 2,
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.lastCompactionIndex).toBe(12);
+      expect(cache.compactionCount).toBe(2);
+      expect(cache.history).toEqual([]);
+      expect(cache.historyPrompts).toEqual([]);
+      expect(cache.lastCompactionMarker).toBeNull();
+    });
+
+    it("setAgentConnected preserves projections when compactionCount is unchanged (rejoin)", () => {
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        messageCount: 0,
+        lastCompactionIndex: 5,
+        compactionCount: 1,
+      });
+      useStore
+        .getState()
+        .setAgentHistorySlice("agent-1", [
+          { index: 0, role: "user", content: "old" },
+        ]);
+      useStore.getState().setAgentCompactionMarker("agent-1", MARKER);
+
+      // The rejoin path (`chat:status`) carries neither field.
+      useStore.getState().setAgentConnected("agent-1", {
+        messageCount: 0,
+        status: "idle",
+      });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.lastCompactionIndex).toBe(5);
+      expect(cache.compactionCount).toBe(1);
+      expect(cache.history).toHaveLength(1);
+      expect(cache.lastCompactionMarker).toEqual(MARKER);
+    });
+
+    it("syncAgentMessages neither replaces nor drops the archive projections", () => {
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", {
+        messageCount: 0,
+        lastCompactionIndex: 5,
+        compactionCount: 1,
+      });
+      useStore
+        .getState()
+        .setAgentHistorySlice("agent-1", [
+          { index: 0, role: "user", content: "old" },
+        ]);
 
       useStore.getState().syncAgentMessages("agent-1", {
         messages: [{ index: 0, role: "user", content: "Hi" }],
         messageCount: 1,
       });
 
-      expect(useStore.getState().agentsCache["agent-1"].history).toEqual([
-        { index: 0, role: "compaction", archivedCount: 5 },
-      ]);
-    });
-
-    it("syncAgentMessages replaces history when payload provides new", () => {
-      useStore.getState().setAgentConnecting("agent-1");
-      useStore.getState().setAgentConnected("agent-1", {
-        model: { name: "gpt-4" },
-        messageCount: 0,
-        history: [{ index: 0, role: "compaction", archivedCount: 5 }],
-      });
-
-      useStore.getState().syncAgentMessages("agent-1", {
-        messages: [],
-        history: [
-          { index: 0, role: "compaction", archivedCount: 5 },
-          { index: 1, role: "user", content: "Old message" },
-          { index: 2, role: "compaction", archivedCount: 3 },
-        ],
-        messageCount: 0,
-      });
-
       const cache = useStore.getState().agentsCache["agent-1"];
-      expect(cache.history).toHaveLength(3);
-      expect(cache.history[0].role).toBe("compaction");
-      expect(cache.history[2].role).toBe("compaction");
+      expect(cache.history).toEqual([
+        { index: 0, role: "user", content: "old" },
+      ]);
+      expect(cache.messages).toHaveLength(1);
     });
-  });
 
-  describe("setAgentHistory (chat:compaction handler)", () => {
-    it("replaces history with the broadcast's history list", () => {
+    it("setAgentHistorySlice merges pages, dedupes by index, and keeps ascending order", () => {
       useStore.getState().setAgentConnecting("agent-1");
-      useStore.getState().setAgentConnected("agent-1", {
-        model: { name: "gpt-4" },
-        messageCount: 0,
-        history: [{ index: 0, role: "compaction", archivedCount: 1 }],
-      });
+      useStore.getState().setAgentConnected("agent-1", { messageCount: 0 });
 
-      useStore.getState().setAgentHistory("agent-1", [
-        { index: 0, role: "user", content: "Old A" },
-        { index: 1, role: "assistant", content: "Old B" },
-        { index: 2, role: "compaction", archivedCount: 2 },
+      // Newest page first (5..9), then an older page (0..4) that
+      // re-includes index 9 to prove dedupe.
+      useStore.getState().setAgentHistorySlice("agent-1", [
+        { index: 5, role: "user", content: "e" },
+        { index: 6, role: "assistant", content: "f" },
+        { index: 9, role: "compaction", archivedCount: 9 },
+      ]);
+      useStore.getState().setAgentHistorySlice("agent-1", [
+        { index: 0, role: "system", content: "s" },
+        { index: 9, role: "compaction", archivedCount: 9 },
       ]);
 
-      const cache = useStore.getState().agentsCache["agent-1"];
-      expect(cache.history).toHaveLength(3);
-      expect(cache.history[0].content).toBe("Old A");
-      expect(cache.history[2].role).toBe("compaction");
+      const history = useStore.getState().agentsCache["agent-1"].history;
+      expect(history.map((m) => m.index)).toEqual([0, 5, 6, 9]);
     });
 
-    it("appends the explicit marker when history has no compaction role", () => {
+    it("setAgentHistoryPrompts replaces the stored prompt list", () => {
       useStore.getState().setAgentConnecting("agent-1");
-      useStore.getState().setAgentConnected("agent-1", {
-        model: { name: "gpt-4" },
-        messageCount: 0,
-        history: [],
-      });
+      useStore.getState().setAgentConnected("agent-1", { messageCount: 0 });
 
       useStore
         .getState()
-        .setAgentHistory(
-          "agent-1",
-          [{ index: 0, role: "user", content: "old" }],
-          { index: 1, role: "compaction", archivedCount: 1 },
-        );
+        .setAgentHistoryPrompts("agent-1", [
+          { index: 1, role: "user", content: "first" },
+        ]);
+      useStore
+        .getState()
+        .setAgentHistoryPrompts("agent-1", [
+          { index: 7, role: "user", content: "second" },
+        ]);
 
-      const cache = useStore.getState().agentsCache["agent-1"];
-      expect(cache.history).toHaveLength(2);
-      expect(cache.history[1].role).toBe("compaction");
+      expect(useStore.getState().agentsCache["agent-1"].historyPrompts).toEqual(
+        [{ index: 7, role: "user", content: "second" }],
+      );
     });
 
-    it("does not duplicate the marker when history already has one", () => {
+    it("setAgentHistoryError records and clears the card error, and a slice load clears it", () => {
       useStore.getState().setAgentConnecting("agent-1");
-      useStore.getState().setAgentConnected("agent-1", {
-        model: { name: "gpt-4" },
-        messageCount: 0,
-        history: [],
-      });
+      useStore.getState().setAgentConnected("agent-1", { messageCount: 0 });
 
-      useStore.getState().setAgentHistory(
-        "agent-1",
-        [
-          { index: 0, role: "user", content: "old" },
-          { index: 1, role: "compaction", archivedCount: 1 },
-        ],
-        { index: 1, role: "compaction", archivedCount: 1 },
+      useStore.getState().setAgentHistoryError("agent-1", "invalid_role");
+      expect(useStore.getState().agentsCache["agent-1"].historyError).toBe(
+        "invalid_role",
       );
 
-      const cache = useStore.getState().agentsCache["agent-1"];
-      const compactionCount = cache.history.filter(
-        (m) => m.role === "compaction",
-      ).length;
-      expect(compactionCount).toBe(1);
+      useStore.getState().setAgentHistoryError("agent-1", null);
+      expect(
+        useStore.getState().agentsCache["agent-1"].historyError,
+      ).toBeNull();
+
+      // A successful page load clears any prior error.
+      useStore.getState().setAgentHistoryError("agent-1", "boom");
+      useStore
+        .getState()
+        .setAgentHistorySlice("agent-1", [
+          { index: 0, role: "user", content: "old" },
+        ]);
+      expect(
+        useStore.getState().agentsCache["agent-1"].historyError,
+      ).toBeNull();
     });
 
-    it("ignores non-array history payloads", () => {
-      useStore.getState().setAgentConnecting("agent-1");
-      useStore.getState().setAgentConnected("agent-1", {
-        model: { name: "gpt-4" },
-        messageCount: 0,
-        history: [{ index: 0, role: "user", content: "kept" }],
-      });
-
-      const before = useStore.getState().agentsCache["agent-1"];
-      useStore.getState().setAgentHistory("agent-1", null, null);
-      const after = useStore.getState().agentsCache["agent-1"];
-
-      expect(after).toBe(before);
-    });
-
-    it("is a no-op for an unknown agent", () => {
+    it("the lazy-archive setters are no-ops for an unknown agent", () => {
       const before = useStore.getState().agentsCache;
-      useStore.getState().setAgentHistory("missing", [], null);
+      useStore.getState().setAgentHistorySlice("missing", []);
+      useStore.getState().setAgentHistoryPrompts("missing", []);
+      useStore.getState().setAgentCompactionMarker("missing", MARKER);
+      useStore.getState().setAgentHistoryError("missing", "boom");
       expect(useStore.getState().agentsCache).toBe(before);
     });
+  });
 
-    it("filters cache.messages to drop messages with index <= marker.index (post-compaction boundary)", () => {
-      // Before the fix, cache.messages kept the pre-swap list
-      // after a compaction, so the same messages appeared in
-      // both the history pane and the active area. The fix
-      // filters cache.messages down to the post-swap list
-      // (everything strictly greater than marker.index).
+  describe("setAgentCompaction (chat:compaction handler)", () => {
+    it("clears stale projections and drops messages with index <= marker.index", () => {
+      // The archive is not shipped with the broadcast, so the cached
+      // slice / prompts / marker describe the pre-compaction boundary:
+      // they must be cleared. The post-swap active list keeps only
+      // indices greater than the boundary.
       useStore.getState().setAgentConnecting("agent-1");
       useStore.getState().setAgentConnected("agent-1", {
         model: { name: "gpt-4" },
         messageCount: 6,
-        history: [],
         messages: [
           { index: 0, role: "system", content: "system" },
           { index: 1, role: "user", content: "A" },
-          { index: 2, role: "assistant", content: "B" },
-          { index: 3, role: "user", content: "C" },
-          { index: 4, role: "assistant", content: "D" },
-          { index: 5, role: "user", content: "E" },
+          { index: 5, role: "user", content: "C" },
+          { index: 6, role: "user", content: "D" },
+          { index: 7, role: "user", content: "E" },
         ],
       });
+      useStore
+        .getState()
+        .setAgentHistorySlice("agent-1", [
+          { index: 0, role: "user", content: "old" },
+        ]);
+      useStore
+        .getState()
+        .setAgentHistoryPrompts("agent-1", [
+          { index: 0, role: "user", content: "old" },
+        ]);
+      useStore.getState().setAgentCompactionMarker("agent-1", { index: 0 });
 
-      // Compaction: marker at index 6, archives indices 0-6
-      // (system + 5 user/assistant turns). After the swap,
-      // the active list starts at 7.
-      useStore.getState().setAgentHistory(
-        "agent-1",
-        [
-          { index: 0, role: "system", content: "system" },
-          { index: 1, role: "user", content: "A" },
-          { index: 2, role: "assistant", content: "B" },
-          { index: 3, role: "user", content: "C" },
-          { index: 4, role: "assistant", content: "D" },
-          { index: 5, role: "user", content: "E" },
-          { index: 6, role: "compaction", archivedCount: 6 },
-        ],
-        { index: 6, role: "compaction", archivedCount: 6 },
-      );
+      useStore.getState().setAgentCompaction("agent-1", {
+        index: 6,
+        role: "compaction",
+        archivedCount: 6,
+        compactionCount: 1,
+      });
 
       const cache = useStore.getState().agentsCache["agent-1"];
-
-      // All pre-swap messages (indices 0-6) are gone from
-      // cache.messages — they live in cache.history now.
-      expect(cache.messages).toEqual([]);
-      // The history has all 7 archived rows in order.
-      expect(cache.history).toHaveLength(7);
+      expect(cache.messages.map((m) => m.index)).toEqual([7]);
+      expect(cache.lastCompactionIndex).toBe(6);
+      expect(cache.compactionCount).toBe(1);
+      expect(cache.history).toEqual([]);
+      expect(cache.historyPrompts).toEqual([]);
+      expect(cache.lastCompactionMarker).toBeNull();
     });
 
     it("preserves cache.messages with index > marker.index (post-swap segment)", () => {
-      // The boundary is `index <= marker.index` — the
-      // post-swap active list (indices > marker.index) is
-      // preserved, since the sync that follows the compaction
-      // is what fills those slots with the new active list.
+      // The boundary is `index <= marker.index` — the post-swap active
+      // list (indices > marker.index) is preserved, since the sync that
+      // follows the compaction fills those slots with the new list.
       useStore.getState().setAgentConnecting("agent-1");
       useStore.getState().setAgentConnected("agent-1", {
         model: { name: "gpt-4" },
@@ -3442,18 +3473,11 @@ describe("store", () => {
         ],
       });
 
-      // Marker at index 6 archives indices 0-6. The active
-      // list should keep indices 7 and 8.
-      useStore.getState().setAgentHistory(
-        "agent-1",
-        [
-          { index: 0, role: "system", content: "system" },
-          { index: 1, role: "user", content: "A" },
-          { index: 5, role: "user", content: "B" },
-          { index: 6, role: "compaction", archivedCount: 3 },
-        ],
-        { index: 6, role: "compaction", archivedCount: 3 },
-      );
+      useStore.getState().setAgentCompaction("agent-1", {
+        index: 6,
+        role: "compaction",
+        archivedCount: 3,
+      });
 
       const cache = useStore.getState().agentsCache["agent-1"];
       expect(cache.messages).toHaveLength(2);
@@ -3462,9 +3486,8 @@ describe("store", () => {
     });
 
     it("does not filter cache.messages when the marker has no index", () => {
-      // Defensive: if the marker is malformed (no `index`),
-      // don't drop the active list — the channel will still
-      // try to sync and the user gets a sensible UI.
+      // Defensive: if the marker is malformed (no `index`), don't drop
+      // the active list — the channel will still sync.
       useStore.getState().setAgentConnecting("agent-1");
       useStore.getState().setAgentConnected("agent-1", {
         model: { name: "gpt-4" },
@@ -3472,16 +3495,28 @@ describe("store", () => {
         messages: [{ index: 0, role: "user", content: "kept" }],
       });
 
-      useStore.getState().setAgentHistory(
-        "agent-1",
-        [{ index: 0, role: "user", content: "old" }],
-        // marker without an `index` field
-        { role: "compaction", archivedCount: 1 },
-      );
+      useStore.getState().setAgentCompaction("agent-1", {
+        role: "compaction",
+        archivedCount: 1,
+      });
 
       const cache = useStore.getState().agentsCache["agent-1"];
       expect(cache.messages).toHaveLength(1);
       expect(cache.messages[0].index).toBe(0);
+      expect(cache.lastCompactionIndex).toBe(-1);
+    });
+
+    it("is a no-op for a null marker or an unknown agent", () => {
+      const beforeCache = useStore.getState().agentsCache;
+      useStore.getState().setAgentCompaction("missing", { index: 6 });
+      useStore.getState().setAgentCompaction("missing", null);
+      expect(useStore.getState().agentsCache).toBe(beforeCache);
+
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentConnected("agent-1", { messageCount: 0 });
+      const before = useStore.getState().agentsCache["agent-1"];
+      useStore.getState().setAgentCompaction("agent-1", null);
+      expect(useStore.getState().agentsCache["agent-1"]).toBe(before);
     });
   });
 

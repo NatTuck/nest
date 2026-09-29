@@ -83,20 +83,8 @@ defmodule Nest.Agents.Agent.ClientAPI do
   and tool messages, rebuilds the request log from conversation
   history on demand.
   """
-  @spec get_api_logs(pid(), non_neg_integer()) :: {:ok, [map()]} | {:error, term()}
-  def get_api_logs(pid, index) do
-    GenServer.call(pid, {:get_api_logs, index})
-  end
-
-  @doc """
-  Returns the archived history (compacted-away messages plus
-  `{:compaction, _}` markers between them) for the agent.
-
-  The full sequence visible to the UI is `get_history(agent) ++
-  get_messages(agent)`.
-  """
-  @spec get_history(pid()) :: [Nest.Messages.Message.t()]
-  def get_history(pid) do
-    GenServer.call(pid, :get_history)
+  @spec get_api_logs(pid(), non_neg_integer(), list()) :: {:ok, [map()]} | {:error, term()}
+  def get_api_logs(pid, index, history) do
+    GenServer.call(pid, {:get_api_logs, index, history})
   end
 end

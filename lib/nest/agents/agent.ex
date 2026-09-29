@@ -14,8 +14,8 @@ defmodule Nest.Agents.Agent.TreePosition do
   `fork_message_index` is the clone's first own `message_index`.
   The clone shares its ancestors' rows below it and owns from it
   up (see `notes/shared-message-structure.md`). `nil` for a root
-  or a fresh child (owns from index 0) and for a clone that has
-  detached at compaction (owns its own rows, no shared prefix).
+  or a fresh child (owns from index 0); a clone keeps an integer
+  fork index for life.
   """
 
   defstruct parent_id: nil, parent_name: nil, fork_message_index: nil
@@ -256,12 +256,12 @@ defmodule Nest.Agents.Agent do
   @spec build_child_attrs(map(), String.t(), String.t(), integer(), map() | nil) :: map()
   def build_child_attrs(parent_state, instruction, child_name, parent_id, model_override \\ nil)
       when is_map(parent_state) and is_binary(instruction) and is_binary(child_name) do
-    # The clone shares the parent's *full* sequence (history +
-    # active) up to the fork point. `next_message_index` is the
-    # first index the child owns, i.e. its fork boundary `F`; the
-    # shared prefix is everything with a lower index. See
-    # `notes/shared-message-structure.md`.
-    shared_prefix = parent_state.chat_state.history ++ parent_state.chat_state.messages
+    # The clone starts from the parent LLM-facing context: the visible
+    # `messages` only. The archived slice is not part of any context - it is
+    # derived on demand (`Persistence.load_history/2`) and it contains the
+    # non-LLM-visible `{:compaction, _}` marker row, which is exactly how a
+    # marker used to end up in a child context.
+    shared_prefix = parent_state.chat_state.messages
     fork_index = parent_state.chat_state.next_message_index
 
     {preloaded, next_index} =
@@ -289,7 +289,11 @@ defmodule Nest.Agents.Agent do
       # index for a clone (shares everything below it).
       fork_message_index: fork_index,
       preloaded_messages: preloaded,
+      # The child inherits the shared sequence boundary: below `F`
+      # belong to ancestors, and the partition must file the ancestor
+      # marker (and everything it archived) as archived here too.
       last_compaction_index: Map.get(parent_state.chat_state, :last_compaction_index, -1),
+      compaction_count: Map.get(parent_state.chat_state, :compaction_count, 0),
       next_message_index: next_index
     }
   end
@@ -423,17 +427,11 @@ defmodule Nest.Agents.Agent do
   defdelegate get_messages(pid), to: ClientAPI
 
   @doc """
-  Returns the archived history for the agent.
-
-  Re-export of `ClientAPI.get_history/1`.
+  Fetch API logs for a specific message by index, given the agent's
+  derived archive (`Persistence.load_history/2`, resolved by the
+  caller so the agent process never reads the DB for display).
   """
-  defdelegate get_history(pid), to: ClientAPI
-
-  @doc """
-  Fetch API logs for a specific message by index. Delegates to the
-  GenServer's introspection handler.
-  """
-  defdelegate get_api_logs(pid, index), to: ClientAPI
+  defdelegate get_api_logs(pid, index, history), to: ClientAPI
 
   # Server Callbacks
 
@@ -442,11 +440,7 @@ defmodule Nest.Agents.Agent do
     # Trap exits to ensure cleanup runs when agent is stopped
     Process.flag(:trap_exit, true)
 
-    if persistence_enabled?() do
-      do_init(attrs)
-    else
-      {:stop, :non_persistence_not_implemented}
-    end
+    do_init(attrs)
   end
 
   defp do_init(attrs) do
@@ -502,7 +496,8 @@ defmodule Nest.Agents.Agent do
     Init.seed_from_db(
       state,
       Map.get(attrs, :preloaded_messages, []),
-      Map.get(attrs, :last_compaction_index, -1)
+      Map.get(attrs, :last_compaction_index, -1),
+      Map.get(attrs, :compaction_count, 0)
     )
   end
 
@@ -543,10 +538,6 @@ defmodule Nest.Agents.Agent do
   # Delegates to `Nest.Agents.Agent.TmpSpace.cleanup/1` so this
   # module doesn't carry the boilerplate.
   defp cleanup_tmp(agent_id), do: TmpSpace.cleanup(agent_id)
-
-  defp persistence_enabled? do
-    Application.get_env(:nest, :persistence, %{})[:enabled] != false
-  end
 
   # Public-for-Handlers: message-construction logic. The
   # canonical impl lives in `Nest.Agents.Agent.TmpSpace`; the

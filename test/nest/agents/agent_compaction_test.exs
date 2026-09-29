@@ -210,8 +210,9 @@ defmodule Nest.Agents.AgentCompactionTest do
       assert_receive {:chat_compaction, payload}
       assert payload.marker["role"] == "compaction"
       assert payload.marker["archivedCount"] == 4
-      assert length(payload.history) == length(old_messages) + 1
-      assert match?(%{"role" => "compaction"}, List.last(payload.history))
+      # The archive is no longer pushed with the marker; the client
+      # fetches it lazily over `chat:history`.
+      refute Map.has_key?(payload, :history)
 
       assert_receive {:chat_status, %{status: "idle"}}, 500
     end
@@ -323,7 +324,7 @@ defmodule Nest.Agents.AgentCompactionTest do
 
       state = :sys.get_state(pid)
       messages = state.chat_state.messages
-      history = state.chat_state.history
+      history = Nest.Persistence.load_history(state.space_id, state.name)
 
       # Post-compaction shape (compactor is a chat turn, compactor
       # re-renders the system message per AGENTS.md exception).

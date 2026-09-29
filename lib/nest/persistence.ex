@@ -259,6 +259,7 @@ defmodule Nest.Persistence do
           agent_id,
           marker.index,
           marker.archived_count,
+          marker.compaction_count,
           marker.tokens_compacted,
           marker.tokens_compacted_to
         )
@@ -315,6 +316,7 @@ defmodule Nest.Persistence do
           agent_id,
           marker_index,
           archived_count,
+          nil,
           tokens_compacted,
           tokens_compacted_to
         )
@@ -351,6 +353,23 @@ defmodule Nest.Persistence do
   defdelegate load_full_messages(space_id, name),
     to: Nest.Persistence.Messages,
     as: :load_full_messages
+
+  @doc """
+  Archived slice of the sequence: rows at or below the compaction
+  boundary (the marker row included). Derived on demand - display/audit only.
+  """
+  defdelegate load_history(space_id, name),
+    to: Nest.Persistence.History,
+    as: :load
+
+  @doc """
+  One page of the archived slice: the most recent `:limit` rows at or
+  below the compaction boundary, before `:before` (exclusive), and
+  restricted to `:roles` when given. See `Nest.Persistence.History`.
+  """
+  defdelegate load_history_slice(space_id, name, opts),
+    to: Nest.Persistence.History,
+    as: :load_slice
 
   @doc """
   Read the `last_compaction_index` boundary column.

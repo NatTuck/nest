@@ -13,13 +13,12 @@ defmodule Nest.Agents.SupervisorPersistenceTest do
       → Agents.get_agent(name)
       → Supervisor.get_agent(name)
       → Supervisor.fetch_or_start_agent(%{name: name})    # only :name
-      → do_fetch_or_start_with_persistence/1
       → safe_fetch_for_start(name) → {:error, :not_found}
       → do_insert_and_start(%{name: name}, 1)              # no :model
       → Persistence.insert_agent(%{name: name})
       → Map.fetch!(attrs, :model)                          # KeyError
 
-  The fix returns `:not_found` from `do_fetch_or_start_with_persistence/1`
+  The fix returns `:not_found` from `fetch_or_start_agent/2`
   when an explicit name has no DB row, instead of falling through
   to `do_insert_and_start/2` with a partial attrs map.
   """

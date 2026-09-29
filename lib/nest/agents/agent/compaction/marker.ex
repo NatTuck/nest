@@ -9,13 +9,13 @@ defmodule Nest.Agents.Agent.Compaction.Marker do
 
   Persistence and in-memory placement flow through the
   canonical paths:
-    * `MessageAppender.append_history_one/2` stamps the
+    * `MessageAppender.append_marker/2` stamps the
       marker at `state.chat_state.next_message_index`,
       appends to `history`, bumps `next_message_index`,
       and persists via `Persistence.insert_message/2`'s
       compaction clause.
-    * `Nest.Agents.Agent.Broadcasts.compaction/3` carries
-      the `chat:compaction` event with the marker + history.
+    * `Nest.Agents.Agent.Broadcasts.compaction/2` carries
+      the `chat:compaction` event with the marker.
   """
 
   @doc """
@@ -28,11 +28,18 @@ defmodule Nest.Agents.Agent.Compaction.Marker do
   to history. `tokens_compacted` / `tokens_compacted_to` are
   the pre/post totals (may be nil for legacy callers).
   """
-  def build_marker(marker_index, archived_count, tokens_compacted, tokens_compacted_to) do
+  def build_marker(
+        marker_index,
+        archived_count,
+        compaction_count,
+        tokens_compacted,
+        tokens_compacted_to
+      ) do
     {:compaction,
      %Nest.Messages.Compaction{
        index: marker_index,
        archived_count: archived_count,
+       compaction_count: compaction_count,
        tokens_compacted: tokens_compacted,
        tokens_compacted_to: tokens_compacted_to,
        occurred_at: DateTime.utc_now(),

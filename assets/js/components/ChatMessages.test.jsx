@@ -39,6 +39,10 @@ function messagesArea(overrides = {}) {
     messages: [],
     partial: null,
     archivedHistory: [],
+    lastCompactionIndex: -1,
+    lastCompactionMarker: null,
+    onLoadHistory: vi.fn(),
+    onLoadOlder: vi.fn(),
     name: "alpha",
     setScrollContainerEl: vi.fn(),
     setMessagesEndEl: vi.fn(),
@@ -71,45 +75,30 @@ describe("ChatMessages", () => {
     expect(screen.getByTestId("streaming-message")).toBeInTheDocument();
   });
 
-  it("renders the compaction marker only when there is active content and archived history", () => {
-    const archived = [
-      { role: "compaction", index: 5 },
-      { role: "user", index: 6 },
-    ];
+  it("renders the compaction marker from the boundary + marker, not the loaded history", () => {
+    const marker = { role: "compaction", index: 5, archivedCount: 3 };
     const { rerender } = render(
-      messagesArea({ messages: [{ index: 0 }], archivedHistory: archived }),
+      messagesArea({
+        messages: [{ index: 0 }],
+        lastCompactionIndex: 5,
+        lastCompactionMarker: marker,
+      }),
     );
 
-    const marker = screen.getByTestId("compaction-marker");
-    expect(marker).toHaveAttribute("data-marker-index", "5");
-    expect(marker).toHaveAttribute("data-history-count", "2");
+    // `hasArchive` is driven by `lastCompactionIndex`, so the card shows
+    // even though no page has been loaded yet (`archivedHistory` = []).
+    const card = screen.getByTestId("compaction-marker");
+    expect(card).toHaveAttribute("data-marker-index", "5");
+    expect(card).toHaveAttribute("data-history-count", "6");
 
-    // No archived history → no marker.
-    rerender(messagesArea({ messages: [{ index: 0 }], archivedHistory: [] }));
+    // No boundary → no marker.
+    rerender(messagesArea({ messages: [{ index: 0 }] }));
     expect(screen.queryByTestId("compaction-marker")).toBeNull();
 
-    // No active content (empty state) → no marker even with history.
-    rerender(messagesArea({ archivedHistory: archived }));
+    // No active content (empty state) → no marker even with an archive.
+    rerender(
+      messagesArea({ lastCompactionIndex: 5, lastCompactionMarker: marker }),
+    );
     expect(screen.queryByTestId("compaction-marker")).toBeNull();
-  });
-
-  it("falls back to reversing the history when Array.prototype.findLast is unavailable", () => {
-    // Shadow the prototype method with an own `undefined` property so the
-    // component takes its compatibility fallback without mutating the
-    // shared Array prototype.
-    const archived = [
-      { role: "user", index: 6 },
-      { role: "compaction", index: 5 },
-    ];
-    archived.findLast = undefined;
-
-    render(
-      messagesArea({ messages: [{ index: 0 }], archivedHistory: archived }),
-    );
-
-    expect(screen.getByTestId("compaction-marker")).toHaveAttribute(
-      "data-marker-index",
-      "5",
-    );
   });
 });

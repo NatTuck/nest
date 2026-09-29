@@ -1,19 +1,25 @@
 defmodule Nest.ModelsRescanTest do
   @moduledoc """
-  Tests for the streaming scan accumulator in `Nest.Models`.
+  Tests for the streaming scan state machine in `Nest.Models`.
 
-  These drive `Nest.Models.handle_info/2` directly with a
-  hand-built state. No timers, no HTTP, no running singleton and no
-  global stubs — the deadline/HTTP path is deliberately not
-  exercised here because the 5s wall clock can't be observed under
-  the suite's 5s cap. What matters is the accumulator contract:
-  each provider's answer is merged, the last answer finishes the
-  scan, and a provider's stale entries are dropped before its new
-  answer is merged.
+  These drive `Nest.Models.handle_info/2` and `handle_cast/2`
+  directly with a hand-built state. No timers, no HTTP, no running
+  singleton, no provider tasks and no PubSub subscription: the
+  contract lives in the state the GenServer transitions through.
+  Broadcasts are a thin side effect of the same transitions and are
+  covered by `Nest.ModelsTest` (the real `{:models_updated, _}` from a
+  scan) and `NestWeb.LobbyChannelRescanModelsTest` (consumption of the
+  terminal `{:models_scan_complete, _}`).
 
-  The end-to-end "a partial is not completion, and completion fires
-  exactly once" contract is covered by
-  `test/nest/models_rescan_completion_test.exs`.
+    * each provider's answer is merged and the last answer finishes
+      the scan;
+    * a provider's stale entries are dropped before its new answer is
+      merged;
+    * a refresh while a live scan is in flight joins it, and a scan
+      whose deadline already fired is replaced;
+    * a scan with no auto-providers finalizes immediately instead of
+      leaving the scan live forever (which makes every later refresh a
+      no-op).
   """
   use ExUnit.Case, async: true
 
@@ -167,6 +173,42 @@ defmodule Nest.ModelsRescanTest do
       idle = state(nil)
 
       assert {:noreply, ^idle} = Models.handle_info(:models_scan_deadline, idle)
+    end
+  end
+
+  describe "scan start" do
+    test "a refresh while a scan is live joins it instead of starting another" do
+      live = state(scan(["a"], %{}, %{}, id: 7))
+
+      assert {:noreply, next} = Models.handle_cast(:refresh, live)
+      assert next.scan.id == 7
+      assert next.last_scan_id == nil
+
+      # The joined scan still finalizes exactly as normal.
+      done = handle_result(next, "a", %{"m" => model("m", "a")}, %{"a" => %{}})
+      assert done.scan == nil
+      assert Map.keys(done.auto_models) == ["m"]
+    end
+
+    test "a refresh after the deadline fired starts a fresh scan" do
+      fired = state(scan(["a"], %{}, %{}, id: 7, deadline_fired: true))
+
+      assert {:noreply, next} = Models.handle_cast(:refresh, fired)
+
+      # No auto-providers, so the fresh scan finalizes on the same tick.
+      assert next.scan == nil
+      assert next.last_scan_id != nil
+      assert next.last_scan_id != 7
+    end
+
+    test "a scan with no auto-providers completes immediately and later refreshes still run" do
+      assert {:noreply, first} = Models.handle_cast(:refresh, state(nil))
+      assert first.scan == nil
+      assert is_integer(first.last_scan_id)
+
+      assert {:noreply, second} = Models.handle_cast(:refresh, first)
+      assert second.scan == nil
+      assert second.last_scan_id != first.last_scan_id
     end
   end
 
