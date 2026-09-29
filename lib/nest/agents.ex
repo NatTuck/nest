@@ -130,7 +130,6 @@ defmodule Nest.Agents do
       messages: messages,
       last_compaction_index: info.last_compaction_index,
       compaction_count: info.compaction_count,
-      history: Persistence.load_history(info.space_id, info.name),
       status: info.status,
       partial: info.partial,
       modes: info.modes,

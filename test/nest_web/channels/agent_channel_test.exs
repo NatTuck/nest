@@ -9,6 +9,10 @@ defmodule NestWeb.AgentChannelTest do
   import Mimic
 
   alias Nest.Agents.AgentTestHelpers
+  alias Nest.Messages.Assistant
+  alias Nest.Messages.Part
+  alias Nest.Messages.User
+  alias Nest.Persistence
 
   setup :verify_on_exit!
 
@@ -36,6 +40,16 @@ defmodule NestWeb.AgentChannelTest do
       assert payload["modes"] == ["chat"]
       assert payload["defaultMode"] == "chat"
       assert payload["currentMode"] == "chat"
+    end
+
+    test "init carries the compaction boundary numbers but NOT the archive", %{socket: _socket} do
+      assert_push "init", payload
+
+      # The archive is fetched lazily over `chat:history`; only the
+      # boundary numbers ride the join payload.
+      assert payload["lastCompactionIndex"] == -1
+      assert payload["compactionCount"] == 0
+      refute Map.has_key?(payload, "history")
     end
 
     test "init includes contextLimit, contextLimitSource, and usage", %{socket: _socket} do
@@ -332,6 +346,71 @@ defmodule NestWeb.AgentChannelTest do
       # agent the default is "chat".
       assert payload["currentMode"] == "chat"
     end
+  end
+
+  describe "handle_in(chat:history)" do
+    test "returns a page of the archive and honours the role filter", %{
+      socket: socket,
+      agent_id: name,
+      space_id: space_id
+    } do
+      seed_archive(space_id, name)
+
+      ref = push(socket, "chat:history", %{"limit" => 2})
+      assert_reply ref, :ok, %{"messages" => page}
+      # Ascending order; the newest page sits at the boundary.
+      assert Enum.map(page, & &1["index"]) == [2, 3]
+
+      ref = push(socket, "chat:history", %{"role" => "user"})
+      assert_reply ref, :ok, %{"messages" => users}
+      assert Enum.map(users, & &1["index"]) == [1]
+      assert Enum.all?(users, &(&1["role"] == "user"))
+    end
+
+    test "walks back with before and returns [] past index 0", %{
+      socket: socket,
+      agent_id: name,
+      space_id: space_id
+    } do
+      seed_archive(space_id, name)
+
+      ref = push(socket, "chat:history", %{"before" => 2, "limit" => 2})
+      assert_reply ref, :ok, %{"messages" => page}
+      assert Enum.map(page, & &1["index"]) == [0, 1]
+
+      ref = push(socket, "chat:history", %{"before" => 0})
+      assert_reply ref, :ok, %{"messages" => []}
+    end
+
+    test "rejects invalid before / limit / role", %{socket: socket} do
+      ref = push(socket, "chat:history", %{"before" => -1})
+      assert_reply ref, :error, %{"reason" => "invalid_before"}
+
+      ref = push(socket, "chat:history", %{"limit" => 0})
+      assert_reply ref, :error, %{"reason" => "invalid_limit"}
+
+      ref = push(socket, "chat:history", %{"role" => "bogus"})
+      assert_reply ref, :error, %{"reason" => "invalid_role"}
+    end
+
+    test "returns [] for a never-compacted agent", %{socket: socket} do
+      ref = push(socket, "chat:history", %{})
+      assert_reply ref, :ok, %{"messages" => []}
+    end
+  end
+
+  # Seed a small archive: system at 0, a user at 1, an assistant at 2,
+  # then a compaction boundary (and marker row) at 3. The agent already
+  # owns the system row.
+  defp seed_archive(space_id, name) do
+    for message <- [
+          {:user, %User{index: 1, parts: [%Part.Text{text: "archived question"}]}},
+          {:assistant, %Assistant{index: 2, parts: [%Part.Text{text: "archived answer"}]}}
+        ] do
+      {:ok, _} = Persistence.insert_message(space_id, name, message)
+    end
+
+    {:ok, _} = Persistence.record_compaction(space_id, name, 3, 3)
   end
 
   describe "handle_in(change_model)" do

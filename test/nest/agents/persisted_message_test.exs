@@ -14,9 +14,6 @@ defmodule Nest.Agents.PersistedMessageTest do
     restore by `Nest.Agents.Agent.Restore` to avoid O(n²)
     storage cost.
   - Legacy rows without `"apiLogs"` read back as `api_logs: []`.
-
-  `async: false` because `:persistence_enabled` is toggled on
-  in the setup block (mirrors `test/nest/persistence_test.exs`).
   """
 
   use Nest.DataCase, async: true
@@ -224,6 +221,27 @@ defmodule Nest.Agents.PersistedMessageTest do
 
       refute Map.has_key?(base, :compaction_tokens_compacted)
       refute Map.has_key?(base, :compaction_tokens_compacted_to)
+    end
+
+    test "round-trips compaction_count through insert_message/2 + to_runtime/1" do
+      attrs = agent_attrs("cc-#{Elixir.System.unique_integer([:positive])}")
+      {:ok, _} = Persistence.insert_agent(attrs)
+
+      marker =
+        {:compaction,
+         %Compaction{
+           index: 5,
+           archived_count: 4,
+           compaction_count: 7,
+           occurred_at: DateTime.utc_now(),
+           metadata: nil
+         }}
+
+      assert {:ok, row} = Persistence.insert_message(test_space_id(), attrs.name, marker)
+      assert row.compaction_count == 7
+
+      assert {:compaction, %Compaction{compaction_count: 7}} =
+               PersistedMessage.to_runtime(row)
     end
 
     test "to_runtime reads nil stats on a legacy compaction row" do

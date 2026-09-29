@@ -179,13 +179,8 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
       assert payload.marker["role"] == "compaction"
       assert payload.marker["archivedCount"] == 2
       assert payload.marker["index"] == 2
-      assert is_list(payload.history)
-
-      # The payload history is the persisted archive (derived on demand):
-      # the spawned system row plus the marker. `old_messages` above were
-      # injected into memory only, so they are not part of it.
-      assert length(payload.history) == 2
-      assert match?(%{"role" => "compaction"}, List.last(payload.history))
+      # The archive is fetched lazily over `chat:history`, not pushed.
+      refute Map.has_key?(payload, :history)
 
       assert_receive {:chat_status, %{status: "idle"}}, 500
     end

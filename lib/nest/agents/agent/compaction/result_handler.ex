@@ -49,7 +49,6 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   alias Nest.Messages.System
   alias Nest.Messages.ThinkTags
   alias Nest.Messages.User
-  alias Nest.Persistence
   alias Nest.Tokens.Estimator
   alias Nest.Vocations
   alias Nest.Vocations.Vocation
@@ -134,7 +133,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
     state = archive_pre_swap(state, archived_messages)
     state = apply_post_swap(state, marker, new_messages)
 
-    Broadcasts.compaction(state, marker, Persistence.load_history(state.space_id, state.name))
+    Broadcasts.compaction(state, marker)
 
     spawn_next_chat_turn(state, carried_entry)
   end

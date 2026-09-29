@@ -58,14 +58,6 @@ defmodule Nest.Agents.Supervisor do
   """
   @spec fetch_or_start_agent(integer(), map()) :: {:ok, String.t()} | {:error, term()}
   def fetch_or_start_agent(space_id, attrs) do
-    if persistence_enabled?() do
-      do_fetch_or_start_with_persistence(space_id, attrs)
-    else
-      do_fetch_or_start_no_persistence(space_id, attrs)
-    end
-  end
-
-  defp do_fetch_or_start_with_persistence(space_id, attrs) do
     case Map.get(attrs, :name) do
       nil ->
         {:error, :not_found}
@@ -93,19 +85,6 @@ defmodule Nest.Agents.Supervisor do
     end
   end
 
-  defp do_fetch_or_start_no_persistence(space_id, attrs) do
-    name = Map.get(attrs, :name) || generate_unique_name_for_space(space_id)
-
-    case Registry.lookup(space_id, name) do
-      {:ok, _pid} ->
-        {:ok, name}
-
-      {:error, :not_found} ->
-        attrs = attrs |> Map.put(:name, name) |> Persistence.build_agent_attrs()
-        start_under_supervisor(attrs, name)
-    end
-  end
-
   defp start_under_supervisor(attrs, name) do
     case DynamicSupervisor.start_child(@supervisor_name, {Agent, attrs}) do
       {:ok, _pid} -> {:ok, name}
@@ -126,10 +105,6 @@ defmodule Nest.Agents.Supervisor do
       {:error, {:already_started, pid}} -> {:ok, pid}
       {:error, reason} -> {:error, reason}
     end
-  end
-
-  defp persistence_enabled? do
-    Application.get_env(:nest, :persistence, %{})[:enabled] != false
   end
 
   @doc """
@@ -400,14 +375,6 @@ defmodule Nest.Agents.Supervisor do
   end
 
   defp on_demand_load(space_id, name) do
-    if persistence_enabled?() do
-      do_on_demand_load_with_persistence(space_id, name)
-    else
-      {:error, :not_found}
-    end
-  end
-
-  defp do_on_demand_load_with_persistence(space_id, name) do
     case fetch_or_start_agent(space_id, %{name: name}) do
       {:ok, ^name} -> Registry.lookup(space_id, name)
       {:ok, _other} -> {:error, :name_collision}
@@ -443,16 +410,10 @@ defmodule Nest.Agents.Supervisor do
   end
 
   defp persistence_list_names_for_space(space_id) do
-    if persistence_enabled?() do
-      try do
-        Persistence.list_agent_names_for_space(space_id)
-      rescue
-        _ -> []
-      catch
-        _, _ -> []
-      end
-    else
-      []
-    end
+    Persistence.list_agent_names_for_space(space_id)
+  rescue
+    _ -> []
+  catch
+    _, _ -> []
   end
 end

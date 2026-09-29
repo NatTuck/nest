@@ -271,12 +271,19 @@ defmodule Nest.Agents.Agent.ChatTurn.Iteration do
     {:stop, :normal, state}
   end
 
-  # At/over the iteration cap, the next call is the "final"
-  # call: `tools: nil, tool_choice: :none` so the LLM sees the
-  # tool results and produces a text response. The MockClient
-  # honors `tools: nil` by skipping any queued tool responses
-  # and returning the next text response.
-  defp tool_config_for_iteration(state) do
+  @doc """
+  The `{tools, tool_choice}` pair for the next request.
+
+  At/over the iteration cap this is the "final" call: `tools: nil,
+  tool_choice: :none`, so the LLM sees the tool results and produces a
+  text response instead of asking for another round. Below the cap the
+  turn's own tools and tool choice pass through unchanged.
+
+  The MockClient honors `tools: nil` by skipping any queued tool
+  responses and returning the next text response.
+  """
+  @spec tool_config_for_iteration(State.t()) :: {list() | nil, :auto | :none}
+  def tool_config_for_iteration(state) do
     if state.iteration > state.max_iterations,
       do: {nil, :none},
       else: {state.ctx.tools, state.ctx.tool_choice}

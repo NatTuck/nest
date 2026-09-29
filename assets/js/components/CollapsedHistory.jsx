@@ -142,10 +142,28 @@ function MessageBubble({ message }) {
   );
 }
 
-export function CollapsedHistory({ history }) {
+export function CollapsedHistory({ history, onLoadOlder }) {
+  // Empty while the first page is in flight (or if it failed). Show
+  // an explicit placeholder rather than a silent blank: the card is
+  // already expanded, so "nothing here" would be a lie.
   if (!history || history.length === 0) {
-    return null;
+    return (
+      <div
+        data-testid="collapsed-history"
+        className="max-h-96 overflow-y-auto p-2 bg-amber-50/30 rounded-md border border-amber-200/40"
+      >
+        <div className="text-xs text-amber-700/80 p-2">
+          Loading archived messages…
+        </div>
+      </div>
+    );
   }
+
+  // The archive is paged (newest page first). If the oldest loaded row
+  // isn't index 0 there is more below it, so offer to walk back rather
+  // than silently showing a truncated prefix.
+  const hasOlder =
+    typeof history[0]?.index === "number" && history[0].index > 0;
 
   // Render the full sequence in original index order. Each
   // entry is either a regular message (system / user /
@@ -157,6 +175,16 @@ export function CollapsedHistory({ history }) {
       data-testid="collapsed-history"
       className="space-y-2 max-h-96 overflow-y-auto p-2 bg-amber-50/30 rounded-md border border-amber-200/40"
     >
+      {hasOlder && (
+        <button
+          type="button"
+          onClick={onLoadOlder}
+          data-testid="collapsed-history-load-older"
+          className="w-full text-xs font-medium text-amber-700 hover:text-amber-800 py-1"
+        >
+          Load older messages
+        </button>
+      )}
       {history.map((m, i) =>
         m?.role === "compaction" ? (
           <CompactionMarkerBox key={m.index ?? `marker-${i}`} marker={m} />

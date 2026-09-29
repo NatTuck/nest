@@ -17,7 +17,7 @@
  * - Singular vs plural wording
  */
 
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { CompactionMarker } from "./CompactionMarker";
 
@@ -68,14 +68,43 @@ describe("CompactionMarker", () => {
       expect(container.firstChild).toBeNull();
     });
 
-    it("renders nothing when history is empty", () => {
-      const { container } = render(
+    it("renders the card when the archive has not been loaded yet (empty history)", () => {
+      // An empty `history` is the normal pre-expand state now that the
+      // archive is lazy: the card must still render its header/toggle.
+      const onLoadHistory = vi.fn();
+      render(
         <CompactionMarker
           marker={{ index: 5, role: "compaction", archivedCount: 3 }}
           history={[]}
+          historyCount={6}
+          onLoadHistory={onLoadHistory}
         />,
       );
-      expect(container.firstChild).toBeNull();
+
+      expect(screen.getByTestId("compaction-marker")).toBeInTheDocument();
+      // The page isn't fetched until the user expands.
+      expect(onLoadHistory).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByTestId("compaction-marker-toggle"));
+      expect(onLoadHistory).toHaveBeenCalledTimes(1);
+      // The empty page renders the explicit placeholder, not a blank.
+      expect(screen.getByTestId("collapsed-history")).toHaveTextContent(
+        "Loading archived messages…",
+      );
+    });
+
+    it("does not re-fetch on expand when a page is already loaded", () => {
+      const onLoadHistory = vi.fn();
+      render(
+        <CompactionMarker
+          marker={{ index: 5, role: "compaction", archivedCount: 3 }}
+          history={buildHistory(3)}
+          onLoadHistory={onLoadHistory}
+        />,
+      );
+
+      fireEvent.click(screen.getByTestId("compaction-marker-toggle"));
+      expect(onLoadHistory).not.toHaveBeenCalled();
     });
   });
 

@@ -20,7 +20,6 @@ defmodule Nest.Agents.Agent.Broadcasts do
   require Logger
 
   alias Nest.Messages.Compaction
-  alias Nest.Messages.Message
   alias Nest.PubSub
 
   # The chunk of the error message that we include in the
@@ -190,18 +189,15 @@ defmodule Nest.Agents.Agent.Broadcasts do
     as: :response_from_run
 
   # Broadcasts a chat:compaction event after record_compaction.
-  # The frontend uses this to update the local history list (so
-  # the CompactionMarker component can render) and to clear the
-  # message list back to the LLM's view of the world.
-  def compaction(state, {:compaction, marker}, history) do
+  # The payload carries the marker only: the archive is never pushed
+  # (a long-lived agent's is megabytes), so the frontend re-derives
+  # the projections it renders via `chat:history`. The marker gives
+  # it the new boundary and the running compaction count.
+  def compaction(state, {:compaction, marker}) do
     Phoenix.PubSub.broadcast(
       PubSub,
       topic(state.space_id, state.name),
-      {:chat_compaction,
-       %{
-         marker: Compaction.to_json(marker),
-         history: Enum.map(history || [], &Message.to_json/1)
-       }}
+      {:chat_compaction, %{marker: Compaction.to_json(marker)}}
     )
   end
 

@@ -440,11 +440,7 @@ defmodule Nest.Agents.Agent do
     # Trap exits to ensure cleanup runs when agent is stopped
     Process.flag(:trap_exit, true)
 
-    if persistence_enabled?() do
-      do_init(attrs)
-    else
-      {:stop, :non_persistence_not_implemented}
-    end
+    do_init(attrs)
   end
 
   defp do_init(attrs) do
@@ -541,10 +537,6 @@ defmodule Nest.Agents.Agent do
   # Delegates to `Nest.Agents.Agent.TmpSpace.cleanup/1` so this
   # module doesn't carry the boilerplate.
   defp cleanup_tmp(agent_id), do: TmpSpace.cleanup(agent_id)
-
-  defp persistence_enabled? do
-    Application.get_env(:nest, :persistence, %{})[:enabled] != false
-  end
 
   # Public-for-Handlers: message-construction logic. The
   # canonical impl lives in `Nest.Agents.Agent.TmpSpace`; the

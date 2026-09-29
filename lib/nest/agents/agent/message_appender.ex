@@ -137,9 +137,9 @@ defmodule Nest.Agents.Agent.MessageAppender do
   and bumps `agents.last_compaction_index` in one transaction.
 
   Does NOT broadcast `chat:message` — the marker's broadcast
-  path is `chat:compaction` (carries the marker + the archived),
-  which the caller fires separately via
-  `Nest.Agents.Agent.Broadcasts.compaction/3`. Does NOT call
+  path is `chat:compaction` (marker only), which the caller
+  fires separately via
+  `Nest.Agents.Agent.Broadcasts.compaction/2`. Does NOT call
   `reset_consecutive/1` — archiving a marker is not a "progress"
   signal. Marker appends are exempt from the sequence repair
   (the invariant is on the LLM-facing `messages` sequence).

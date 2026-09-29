@@ -363,6 +363,15 @@ defmodule Nest.Persistence do
     as: :load
 
   @doc """
+  One page of the archived slice: the most recent `:limit` rows at or
+  below the compaction boundary, before `:before` (exclusive), and
+  restricted to `:roles` when given. See `Nest.Persistence.History`.
+  """
+  defdelegate load_history_slice(space_id, name, opts),
+    to: Nest.Persistence.History,
+    as: :load_slice
+
+  @doc """
   Read the `last_compaction_index` boundary column.
   """
   defdelegate last_compaction_index(space_id, name),

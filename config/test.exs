@@ -13,14 +13,6 @@ config :nest, Nest.Repo,
   ownership_timeout: 30_000,
   pool: Ecto.Adapters.SQL.Sandbox
 
-# Agent persistence is required: `Agent.init/1` rejects
-# spawn attempts with `{:error, :non_persistence_not_implemented}`
-# when this flag is `false`. Tests that exercise persistence
-# (the Agent test suite) must therefore run with a DataCase
-# sandbox. `Nest.Persistence` exercises its own connection
-# setup in `persistence_test.exs`.
-config :nest, persistence: [enabled: true]
-
 # Subagent tests need freshly-spawned children to land on
 # `MockClient` rather than the real HTTP client. The default-
 # on lets tests stay free of `Application.put_env` mutations,

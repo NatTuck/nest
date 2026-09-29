@@ -22,8 +22,8 @@
  * - Interleaved messages + markers render in original order
  */
 
-import { describe, it, expect, afterEach } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
+import { describe, it, expect, afterEach, vi } from "vitest";
+import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { CollapsedHistory } from "./CollapsedHistory";
 
 afterEach(() => cleanup());
@@ -39,19 +39,52 @@ function buildHistory(items) {
 
 describe("CollapsedHistory", () => {
   describe("empty states", () => {
-    it("renders nothing when history is null", () => {
-      const { container } = render(<CollapsedHistory history={null} />);
-      expect(container.firstChild).toBeNull();
+    it("renders an explicit placeholder when no page has loaded yet", () => {
+      // The parent only renders CollapsedHistory after expanding the
+      // card, so an empty history means a page is in flight. A blank
+      // would read as "no archived messages", which is a lie.
+      render(<CollapsedHistory history={null} />);
+      expect(screen.getByTestId("collapsed-history")).toHaveTextContent(
+        "Loading archived messages…",
+      );
     });
 
-    it("renders nothing when history is undefined", () => {
-      const { container } = render(<CollapsedHistory />);
-      expect(container.firstChild).toBeNull();
+    it("renders the placeholder for undefined and empty arrays", () => {
+      const { rerender } = render(<CollapsedHistory />);
+      expect(screen.getByTestId("collapsed-history")).toHaveTextContent(
+        "Loading archived messages…",
+      );
+      rerender(<CollapsedHistory history={[]} />);
+      expect(screen.getByTestId("collapsed-history")).toHaveTextContent(
+        "Loading archived messages…",
+      );
+    });
+  });
+
+  describe("paging older", () => {
+    it("offers Load older when the oldest loaded row is not index 0", () => {
+      const history = buildHistory([
+        { role: "user", parts: [{ kind: "text", text: "a" }] },
+        { role: "assistant", parts: [{ kind: "text", text: "b" }] },
+      ]).map((m, i) => ({ ...m, index: i + 5 }));
+      const onLoadOlder = vi.fn();
+
+      render(<CollapsedHistory history={history} onLoadOlder={onLoadOlder} />);
+
+      fireEvent.click(screen.getByTestId("collapsed-history-load-older"));
+      expect(onLoadOlder).toHaveBeenCalledTimes(1);
     });
 
-    it("renders nothing when history is an empty array", () => {
-      const { container } = render(<CollapsedHistory history={[]} />);
-      expect(container.firstChild).toBeNull();
+    it("hides Load older once index 0 is loaded", () => {
+      const history = buildHistory([
+        { role: "user", parts: [{ kind: "text", text: "a" }] },
+      ]);
+
+      render(<CollapsedHistory history={history} onLoadOlder={vi.fn()} />);
+
+      expect(
+        screen.queryByTestId("collapsed-history-load-older"),
+      ).not.toBeInTheDocument();
     });
   });
 

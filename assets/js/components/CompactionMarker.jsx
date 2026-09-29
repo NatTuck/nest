@@ -145,16 +145,30 @@ export function CompactionMarkerBox({ marker }) {
   );
 }
 
-export function CompactionMarker({ marker, history, historyCount }) {
+export function CompactionMarker({
+  marker,
+  history,
+  historyCount,
+  onLoadHistory,
+  onLoadOlder,
+}) {
   const [isExpanded, setIsExpanded] = useState(false);
 
   if (!marker?.archivedCount || marker.archivedCount <= 0) {
     return null;
   }
 
-  if (!history || history.length === 0) {
-    return null;
-  }
+  // The archive is fetched lazily: on first expand we ask for the
+  // most recent page, and `history` grows as the user pages back.
+  // Bailing out on an empty `history` (as before) would hide the card
+  // in its normal pre-expand state.
+  const handleToggle = () => {
+    const next = !isExpanded;
+    setIsExpanded(next);
+    if (next && (!history || history.length === 0)) {
+      onLoadHistory?.();
+    }
+  };
 
   // The Show/Hide toggle reports the TOTAL history length, not
   // the most-recent marker's `archivedCount` — after multiple
@@ -162,7 +176,7 @@ export function CompactionMarker({ marker, history, historyCount }) {
   // the user is about to see every archived message in the
   // expansion.
   const count =
-    typeof historyCount === "number" ? historyCount : history.length;
+    typeof historyCount === "number" ? historyCount : (history?.length ?? 0);
   const label = isExpanded
     ? "Hide archived messages"
     : `Show ${count} archived message${count === 1 ? "" : "s"}`;
@@ -232,7 +246,7 @@ export function CompactionMarker({ marker, history, historyCount }) {
 
       {isExpanded && (
         <div className="px-4 pt-2">
-          <CollapsedHistory history={history} />
+          <CollapsedHistory history={history} onLoadOlder={onLoadOlder} />
         </div>
       )}
 
@@ -242,7 +256,7 @@ export function CompactionMarker({ marker, history, historyCount }) {
       <div className="flex justify-end px-4 pb-2 mt-2">
         <button
           type="button"
-          onClick={() => setIsExpanded((v) => !v)}
+          onClick={handleToggle}
           aria-expanded={isExpanded}
           aria-label={label}
           data-testid="compaction-marker-toggle"

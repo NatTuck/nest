@@ -53,6 +53,28 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
     end)
   end
 
+  # The carried assistant+ToolUse handed to a resumed turn via
+  # `{:compaction_done, "…", {:tool_call, msg, iter, max}}`. The resumed
+  # turn executes it first (Trigger 2), then makes its next LLM call with
+  # the carried iteration count — so seeding a turn at the cap makes its
+  # first LLM call the final `tools: nil` one. `context-check` (rather
+  # than `context-compact`) keeps that execution from triggering a
+  # compaction of its own.
+  defp carried_tool_call_msg do
+    {:assistant,
+     %Assistant{
+       index: 0,
+       parts: [
+         %Part.ToolUse{
+           id: "call_cap",
+           name: "context-check",
+           arguments: %{}
+         }
+       ],
+       api_logs: []
+     }}
+  end
+
   describe "single-iteration turn" do
     test "1.1.1 appends user + assistant, transitions to idle" do
       MockClient.set_response("Hello back")
@@ -204,20 +226,19 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
 
   describe "max iterations second-chance" do
     test "1.1.4 max_iterations: final call uses tools: nil, iteration produces a final response" do
-      # With max_iterations=5, queue 5 tool responses (one
-      # per iteration). The ChatTurn should hit the iteration
-      # cap, switch to `tools: nil, tool_choice: :none`,
-      # and the MockClient (which honors `tools: nil` by
-      # returning a random text response) produces the
-      # final assistant message.
-      for i <- 1..5 do
-        MockClient.set_tool_response(%{
-          text: "tool call #{i}",
-          tool_calls: [
-            %{id: "call_#{i}", name: "context-check", arguments: %{}}
-          ]
-        })
-      end
+      # The cap is 5 (test/data/config.toml). Rather than burn five real
+      # tool rounds to walk the iteration counter up to it, resume a turn
+      # that is already at the cap: the carried
+      # `{:tool_call, msg, iter, max}` continuation preserves both
+      # counters (`ChatTurn.State.entry`), so the resumed turn's next LLM
+      # call is the final `tools: nil` call. One LLM round instead of six,
+      # same contract.
+      #
+      # The `tools: nil` decision itself is asserted directly in
+      # `chat_turn/iteration_test.exs`. What this test pins is the
+      # observable end of it: the final call's text lands as the final
+      # assistant message and the turn ends idle.
+      MockClient.set_response("Final answer at the cap")
 
       {pid, _agent_id} =
         start_agent(%{
@@ -226,35 +247,30 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
         })
 
       capture_log(fn ->
-        :ok = Agent.chat(pid, "Keep looping")
-        # The turn runs 5 in-process `context-check` rounds; 750ms is
-        # generous headroom under parallel load.
+        send(pid, {:compaction_done, "Summary", {:tool_call, carried_tool_call_msg(), 5, 5}})
+
+        # Fires only once the iteration counter is past the cap, so this
+        # is what proves the carried count took effect and the call that
+        # follows really is the final one.
+        assert_receive {:chat_notification, %{type: "max_iterations"}}, 750
+
         assert_receive {:chat_status, %{status: "idle"}}, 750
       end)
 
       state = :sys.get_state(pid)
 
-      # The agent goes to :idle after the iteration
-      # completes.
+      # The agent goes to :idle after the final call.
       assert state.live.status == :idle
       assert state.live.chat_turn_pid == nil
 
-      # The conversation has the user message + multiple
-      # tool iterations + a final assistant message.
-      # The exact count depends on how the MockClient
-      # behaves with `tools: nil` (it skips queued tool
-      # responses and returns a random text), but we
-      # expect AT LEAST 3 tool pairs (6 messages) and a
-      # final assistant.
-      assistant_count =
-        Enum.count(state.chat_state.messages, fn
-          {:assistant, _} -> true
-          _ -> false
-        end)
+      assert Enum.any?(state.chat_state.messages, fn
+               {:assistant, %Assistant{parts: parts}} ->
+                 Enum.any?(parts, &match?(%Part.Text{text: "Final answer at the cap"}, &1))
 
-      assert assistant_count >= 1, "expected at least one assistant message"
-
-      AgentTestHelpers.assert_unique_message_indices(state)
+               _ ->
+                 false
+             end),
+             "expected the final call's text to land as the final assistant message"
     end
   end
 

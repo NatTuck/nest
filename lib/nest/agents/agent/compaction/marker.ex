@@ -14,8 +14,8 @@ defmodule Nest.Agents.Agent.Compaction.Marker do
       appends to `history`, bumps `next_message_index`,
       and persists via `Persistence.insert_message/2`'s
       compaction clause.
-    * `Nest.Agents.Agent.Broadcasts.compaction/3` carries
-      the `chat:compaction` event with the marker + history.
+    * `Nest.Agents.Agent.Broadcasts.compaction/2` carries
+      the `chat:compaction` event with the marker.
   """
 
   @doc """

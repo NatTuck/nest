@@ -23,6 +23,7 @@ import {
   leaveLobby,
   joinAgent,
   leaveAgent,
+  requestHistory,
   sendMessage,
   stopMessage,
   retryCompaction,
@@ -1386,6 +1387,45 @@ describe("channels", () => {
       // since the cache has no messages yet.
       assert.deepStrictEqual(pushPayload, { lastIndex: -1 });
     });
+
+    it("fetches the compaction marker for an agent with a boundary at join", async () => {
+      setNextJoinResult("agent:1:agent-1", {
+        autoInit: {
+          id: "agent-1",
+          model: { name: "gpt-4" },
+          messageCount: 0,
+          status: "idle",
+          lastCompactionIndex: 4,
+          compactionCount: 2,
+        },
+      });
+
+      const historyPush = captureNextPush("agent:1:agent-1", "chat:history");
+      joinAgent("agent-1", 1);
+
+      const payload = await historyPush;
+      assert.deepStrictEqual(payload, { role: "compaction", limit: 1 });
+    });
+
+    it("does not fetch the archive for a never-compacted agent", async () => {
+      setNextJoinResult("agent:1:agent-1", {
+        autoInit: {
+          id: "agent-1",
+          model: { name: "gpt-4" },
+          messageCount: 0,
+          status: "idle",
+          lastCompactionIndex: -1,
+          compactionCount: 0,
+        },
+      });
+
+      const historyPush = captureNextPush("agent:1:agent-1", "chat:history");
+      joinAgent("agent-1", 1);
+      const timeout = new Promise((resolve) =>
+        setTimeout(() => resolve("timeout"), 40),
+      );
+      assert.strictEqual(await Promise.race([historyPush, timeout]), "timeout");
+    });
   });
 
   describe("defensive error paths", () => {
@@ -2254,13 +2294,19 @@ describe("channels", () => {
   });
 
   describe("agent chat:compaction events", () => {
-    it("should replace history with the broadcast's history list", async () => {
+    it("stores the marker boundary, drops stale projections, and refetches the marker", async () => {
       useStore.getState().setAgentConnected("agent-1", {
         model: { name: "gpt-4" },
         messageCount: 0,
         status: "idle",
-        history: [{ index: 0, role: "compaction", archivedCount: 1 }],
+        lastCompactionIndex: 2,
+        compactionCount: 1,
       });
+      useStore
+        .getState()
+        .setAgentHistorySlice("agent-1", [
+          { index: 0, role: "user", content: "old", apiLogs: [] },
+        ]);
 
       joinAgent("agent-1", 1);
 
@@ -2271,46 +2317,162 @@ describe("channels", () => {
         );
       });
 
-      simulateServerEvent("agent:1:agent-1", "chat:compaction", {
-        marker: {
-          index: 5,
-          role: "compaction",
-          archivedCount: 3,
-          apiLogs: [],
-        },
-        history: [
-          { index: 0, role: "user", content: "old A", apiLogs: [] },
-          { index: 1, role: "assistant", content: "old B", apiLogs: [] },
-          { index: 2, role: "user", content: "old C", apiLogs: [] },
-          { index: 5, role: "compaction", archivedCount: 3, apiLogs: [] },
-        ],
+      // The broadcast carries the marker only; the client refetches the
+      // marker projection over chat:history.
+      const marker = {
+        index: 5,
+        role: "compaction",
+        archivedCount: 3,
+        compactionCount: 2,
+        apiLogs: [],
+      };
+      setNextPushResult("agent:1:agent-1", "chat:history", {
+        ok: { messages: [marker] },
       });
+      simulateServerEvent("agent:1:agent-1", "chat:compaction", { marker });
 
       await vi.waitFor(() => {
         const cache = useStore.getState().agentsCache["agent-1"];
-        assert.strictEqual(cache?.history?.length, 4);
-        const last = cache.history[cache.history.length - 1];
-        assert.strictEqual(last.role, "compaction");
-        assert.strictEqual(last.archivedCount, 3);
+        assert.strictEqual(cache?.lastCompactionIndex, 5);
+        assert.strictEqual(cache?.compactionCount, 2);
+        // The stale slice is dropped; the lazy refetch lands the marker.
+        assert.deepStrictEqual(cache?.history, []);
+        assert.strictEqual(cache?.lastCompactionMarker?.index, 5);
       });
     });
 
-    it("should ignore chat:compaction events before joining the channel", async () => {
-      useStore.getState().setAgentConnected("agent-1", {
-        model: { name: "gpt-4" },
-        messageCount: 0,
-        status: "idle",
-        history: [{ index: 0, role: "user", content: "kept", apiLogs: [] }],
+    it("fires the projection refetches when a compaction arrives", async () => {
+      joinAgent("agent-1", 1);
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
       });
 
-      // No joinAgent() call here. The event has nowhere to land.
-      // We just verify the store hasn't been clobbered.
-      const before = useStore.getState().agentsCache["agent-1"];
+      const historyPush = captureNextPush("agent:1:agent-1", "chat:history");
+      simulateServerEvent("agent:1:agent-1", "chat:compaction", {
+        marker: { index: 5, role: "compaction", archivedCount: 3 },
+      });
 
-      // Dispatching to a non-existent channel is a no-op in our
-      // simulator. We confirm the cache is unchanged.
-      assert.strictEqual(before.history.length, 1);
-      assert.strictEqual(before.history[0].content, "kept");
+      const payload = await historyPush;
+      assert.deepStrictEqual(payload, { role: "compaction", limit: 1 });
+    });
+  });
+
+  describe("chat:history lazy fetch", () => {
+    async function joinAndWait() {
+      setNextJoinResult("agent:1:agent-1", {
+        autoInit: {
+          id: "agent-1",
+          model: { name: "gpt-4" },
+          messageCount: 0,
+          status: "idle",
+        },
+      });
+      joinAgent("agent-1", 1);
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+    }
+
+    it("merges the latest marker and the user prompts into their projections", async () => {
+      await joinAndWait();
+
+      setNextPushResult("agent:1:agent-1", "chat:history", {
+        ok: {
+          messages: [
+            {
+              index: 9,
+              role: "compaction",
+              archivedCount: 9,
+              compactionCount: 3,
+            },
+          ],
+        },
+      });
+      requestHistory("agent-1", { role: "compaction", limit: 1 });
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"].lastCompactionMarker
+            ?.index,
+          9,
+        );
+      });
+
+      setNextPushResult("agent:1:agent-1", "chat:history", {
+        ok: {
+          messages: [
+            { index: 1, role: "user", content: "first" },
+            { index: 5, role: "user", content: "second" },
+          ],
+        },
+      });
+      requestHistory("agent-1", { role: "user", limit: 20 });
+
+      await vi.waitFor(() => {
+        const prompts =
+          useStore.getState().agentsCache["agent-1"].historyPrompts;
+        assert.deepStrictEqual(
+          prompts.map((m) => m.content),
+          ["first", "second"],
+        );
+      });
+    });
+
+    it("merges a page into the archive slice and pages older with before", async () => {
+      await joinAndWait();
+
+      setNextPushResult("agent:1:agent-1", "chat:history", {
+        ok: {
+          messages: [
+            { index: 3, role: "user", content: "c" },
+            { index: 4, role: "assistant", content: "d" },
+          ],
+        },
+      });
+      requestHistory("agent-1");
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"].history.length,
+          2,
+        );
+      });
+
+      const olderPush = captureNextPush("agent:1:agent-1", "chat:history");
+      requestHistory("agent-1", { before: 3 });
+      assert.deepStrictEqual(await olderPush, { before: 3 });
+
+      setNextPushResult("agent:1:agent-1", "chat:history", {
+        ok: {
+          messages: [
+            { index: 0, role: "system", content: "s" },
+            { index: 1, role: "user", content: "a" },
+          ],
+        },
+      });
+      requestHistory("agent-1", { before: 3 });
+
+      await vi.waitFor(() => {
+        const history = useStore.getState().agentsCache["agent-1"].history;
+        assert.deepStrictEqual(
+          history.map((m) => m.index),
+          [0, 1, 3, 4],
+        );
+      });
+    });
+
+    it("is a no-op when the channel is not connected", () => {
+      // No joinAgent: there is no channel to push on.
+      requestHistory("agent-1");
+      requestHistory("agent-1", { role: "user", limit: 20 });
+      assert.strictEqual(useStore.getState().agentsCache["agent-1"], undefined);
     });
   });
 
@@ -3287,10 +3449,6 @@ describe("channels", () => {
           role: "compaction",
           archivedCount: 6,
         },
-        history: [
-          { index: 0, role: "system", content: "system" },
-          { index: 6, role: "compaction", archivedCount: 6 },
-        ],
       });
 
       const pushPayload = await pushPromise;
@@ -3345,10 +3503,6 @@ describe("channels", () => {
 
       simulateServerEvent("agent:1:agent-1", "chat:compaction", {
         marker: { index: 6, role: "compaction", archivedCount: 6 },
-        history: [
-          { index: 0, role: "system", content: "system" },
-          { index: 6, role: "compaction", archivedCount: 6 },
-        ],
       });
 
       await vi.waitFor(() => {
@@ -3468,7 +3622,6 @@ describe("channels", () => {
       // with lastIndex=5
       simulateServerEvent("agent:1:agent-1", "chat:compaction", {
         marker: { index: 5, role: "compaction", archivedCount: 5 },
-        history: [{ index: 5, role: "compaction", archivedCount: 5 }],
       });
 
       const push1 = await push1Promise;
@@ -3482,7 +3635,6 @@ describe("channels", () => {
 
       simulateServerEvent("agent:1:agent-1", "chat:compaction", {
         marker: { index: 9, role: "compaction", archivedCount: 4 },
-        history: [{ index: 9, role: "compaction", archivedCount: 4 }],
       });
 
       const push2 = await push2Promise;
@@ -3503,7 +3655,6 @@ describe("channels", () => {
 
       simulateServerEvent("agent:1:agent-1", "chat:compaction", {
         marker: { index: 5, role: "compaction", archivedCount: 5 },
-        history: [{ index: 5, role: "compaction", archivedCount: 5 }],
       });
 
       const push1 = await push1Promise;
@@ -3533,7 +3684,6 @@ describe("channels", () => {
 
       simulateServerEvent("agent:1:agent-1", "chat:compaction", {
         marker: { index: 7, role: "compaction", archivedCount: 3 },
-        history: [{ index: 7, role: "compaction", archivedCount: 3 }],
       });
 
       const push2 = await push2Promise;

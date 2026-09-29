@@ -9,7 +9,6 @@ defmodule Nest.Agents.AgentToolsMaxIterationsTest do
 
   import ExUnit.CaptureLog
 
-  alias Nest.Agents.Agent
   alias Nest.LLM.MockClient
   alias Nest.Messages.Part
 
@@ -27,21 +26,11 @@ defmodule Nest.Agents.AgentToolsMaxIterationsTest do
 
   describe "max tool iterations" do
     test "broadcasts notification and produces final response when max tool iterations reached" do
-      # The test config (test/data/config.toml) has max-tool-iterations = 5.
-      # Queue 5 tool responses (one per iteration) to hit the limit.
-      for _ <- 1..5 do
-        MockClient.set_tool_response(%{
-          text: "Calling tool",
-          tool_calls: [
-            %{
-              id: "call_#{:rand.uniform(100_000)}",
-              name: "context-check",
-              arguments: %{}
-            }
-          ]
-        })
-      end
-
+      # The cap is 5 (test/data/config.toml). Resuming a turn that is
+      # already at the cap exercises the same path as looping a user chat
+      # up to it, in one LLM round instead of six: the carried
+      # `{:tool_call, msg, iter, max}` continuation preserves both
+      # counters, so the turn is over the cap before its first LLM call.
       MockClient.set_response("I've completed the task after multiple iterations")
 
       {pid, _agent_id} =
@@ -51,7 +40,7 @@ defmodule Nest.Agents.AgentToolsMaxIterationsTest do
         })
 
       capture_log(fn ->
-        :ok = Agent.chat(pid, "Keep looping")
+        send(pid, {:compaction_done, "Summary", {:tool_call, carried_tool_call_msg(), 5, 5}})
 
         assert_receive {:chat_notification,
                         %{type: "max_iterations", message: "Max tool iterations reached"}},
@@ -71,5 +60,27 @@ defmodule Nest.Agents.AgentToolsMaxIterationsTest do
 
       MockClient.clear()
     end
+  end
+
+  # The carried assistant+ToolUse handed to a resumed turn via
+  # `{:compaction_done, "…", {:tool_call, msg, iter, max}}`. The resumed
+  # turn executes it first (Trigger 2), then makes its next LLM call with
+  # the carried iteration count — so seeding a turn at the cap makes that
+  # call the final `tools: nil` one. `context-check` (rather than
+  # `context-compact`) keeps the execution from triggering a compaction
+  # of its own.
+  defp carried_tool_call_msg do
+    {:assistant,
+     %Nest.Messages.Assistant{
+       index: 0,
+       parts: [
+         %Part.ToolUse{
+           id: "call_cap",
+           name: "context-check",
+           arguments: %{}
+         }
+       ],
+       api_logs: []
+     }}
   end
 end

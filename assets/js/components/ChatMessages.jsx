@@ -1,6 +1,11 @@
 /**
  * The scrollable message area: compaction marker, empty state,
  * `MessagesList` + `StreamingMessage`. Extracted from `ChatPage`.
+ *
+ * The archive is never shipped whole, so the compaction marker comes
+ * from the cache (the lazily-fetched `lastCompactionMarker`) rather
+ * than from a history list: `archivedHistory` is empty until the user
+ * expands the card, and only holds the pages loaded so far.
  */
 
 import { CompactionMarker } from "./CompactionMarker";
@@ -11,25 +16,30 @@ export function ChatMessages({
   messages,
   partial,
   archivedHistory,
+  lastCompactionIndex,
+  lastCompactionMarker,
+  onLoadHistory,
+  onLoadOlder,
   name,
   setScrollContainerEl,
   setMessagesEndEl,
 }) {
   const hasActive = messages.length > 0 || partial;
-  const marker = archivedHistory.findLast
-    ? archivedHistory.findLast((m) => m.role === "compaction")
-    : [...archivedHistory].reverse().find((m) => m.role === "compaction");
+  const hasArchive =
+    typeof lastCompactionIndex === "number" && lastCompactionIndex >= 0;
 
   return (
     <div
       ref={setScrollContainerEl}
       className="flex-1 overflow-y-auto space-y-4 mb-4 pr-2"
     >
-      {hasActive && archivedHistory.length > 0 && (
+      {hasActive && hasArchive && (
         <CompactionMarker
-          marker={marker}
+          marker={lastCompactionMarker}
           history={archivedHistory}
-          historyCount={archivedHistory.length}
+          historyCount={lastCompactionIndex + 1}
+          onLoadHistory={onLoadHistory}
+          onLoadOlder={onLoadOlder}
         />
       )}
 

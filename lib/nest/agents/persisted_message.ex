@@ -318,6 +318,7 @@ defmodule Nest.Agents.PersistedMessage do
         role: "compaction",
         message_index: index,
         compaction_archived_count: count,
+        compaction_count: compaction_count,
         compaction_occurred_at: occurred_at,
         compaction_tokens_compacted: tokens_compacted,
         compaction_tokens_compacted_to: tokens_compacted_to
@@ -326,6 +327,7 @@ defmodule Nest.Agents.PersistedMessage do
      %Compaction{
        index: index,
        archived_count: count || 0,
+       compaction_count: compaction_count,
        tokens_compacted: tokens_compacted,
        tokens_compacted_to: tokens_compacted_to,
        occurred_at: occurred_at,

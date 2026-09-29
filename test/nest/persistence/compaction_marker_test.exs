@@ -13,10 +13,6 @@ defmodule Nest.Persistence.CompactionMarkerTest do
     atomically with the marker INSERT (one transaction).
   - `record/6` returns `:not_found` when the row insert fails
     (the `Repo.rollback` path).
-
-  Persistence is enabled in this test process via the `:nest,
-  :persistence` app env (test-only override) so the writes
-  commit to the sandboxed connection.
   """
 
   use Nest.DataCase, async: true
