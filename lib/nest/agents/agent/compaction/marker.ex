@@ -24,7 +24,7 @@ defmodule Nest.Agents.Agent.Compaction.Marker do
   `marker_index` is consumed from `state.chat_state.next_message_index`
   before this is called — that's the slot the marker occupies
   in the combined `history ++ messages` index sequence.
-  `archived_count` is the number of pre-swap messages moved
+  `archived_count` is the number of pre-compaction messages moved
   to history. `tokens_compacted` / `tokens_compacted_to` are
   the pre/post totals (may be nil for legacy callers).
   """

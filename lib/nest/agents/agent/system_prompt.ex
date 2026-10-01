@@ -194,7 +194,7 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   defp context_limit_section({nil, _}), do: ""
 
   defp context_limit_section({limit, source}) do
-    reserve = Reserve.response_budget(limit)
+    reserve = Reserve.compaction_reserve(limit)
     effective = max(1, limit - reserve)
 
     "\n\nContext limit: #{limit} tokens (resolved from #{source}). " <>

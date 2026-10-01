@@ -27,12 +27,15 @@ defmodule Nest.Agents.Agent.ToolLoop do
 
   alias Nest.Agents.Agent.BatchLoop
   alias Nest.Agents.Agent.BatchSizer
+  alias Nest.Agents.Agent.BatchSizer.Overflow
+  alias Nest.Agents.Agent.CapCalculator
   alias Nest.Agents.Registry
   alias Nest.DotConfig
   alias Nest.Messages.Part
   alias Nest.Messages.ToolCall
   alias Nest.Messages.ToolResult
   alias Nest.Models
+  alias Nest.Tokens.Estimator
 
   require Logger
 
@@ -104,18 +107,24 @@ defmodule Nest.Agents.Agent.ToolLoop do
   defp run_batch(ctx, calls) do
     {sub_calls, regular_calls} = Enum.split_with(calls, &sub_agent_tool?/1)
 
-    regular_results =
-      if regular_calls == [],
-        do: %{},
-        else: BatchSizer.run(regular_calls, ctx) |> Map.new(fn tr -> {tr.tool_call_id, tr} end)
+    regular_entries = BatchSizer.execute(regular_calls, ctx)
 
-    sub_results =
-      Enum.map(sub_calls, fn tc -> {tc.id, run_sub_agent_tool(ctx, tc)} end)
-      |> Map.new()
+    sub_entries =
+      Enum.map(sub_calls, fn tc ->
+        %ToolResult{content: content, is_error: is_error} = run_sub_agent_tool(ctx, tc)
+        {tc, if(is_error, do: :error, else: :ok), content}
+      end)
 
-    Enum.map(calls, fn %ToolCall{id: id} ->
-      Map.fetch!(regular_results |> Map.merge(sub_results), id)
-    end)
+    # One authoritative budget pass over the whole batch so regular and
+    # sub-agent results share a single running total. Without this a mixed
+    # batch could exceed the context window even though each half fits.
+    by_id =
+      (regular_entries ++ sub_entries)
+      |> Map.new(fn {tc, kind, content} -> {tc.id, {tc, kind, content}} end)
+
+    entries = Enum.map(calls, fn tc -> Map.fetch!(by_id, tc.id) end)
+
+    BatchSizer.cook(entries, ctx)
   end
 
   defp sub_agent_tool?(%ToolCall{name: name})
@@ -159,7 +168,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
         if query == "" do
           build_tool_result(tc, "agents-spawn", "Spawned agent #{spawned_name}.")
         else
-          await_spawn_result(tc, spawned_name, timeout)
+          await_spawn_result(ctx, tc, spawned_name, timeout)
         end
 
       {:error, reason} ->
@@ -202,10 +211,10 @@ defmodule Nest.Agents.Agent.ToolLoop do
   # After a successful spawn with a `query`, block until the
   # child completes (or times out), returning the child's final
   # response as the tool result.
-  defp await_spawn_result(tc, spawned_name, timeout) do
+  defp await_spawn_result(ctx, tc, spawned_name, timeout) do
     receive do
       {:spawn_agent_result, ^spawned_name, response} ->
-        build_tool_result(tc, "agents-spawn", response)
+        build_tool_result(tc, "agents-spawn", bound_content(response, tc, ctx))
 
       {:spawn_agent_error, ^spawned_name, reason} ->
         build_tool_result(
@@ -324,7 +333,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
     timeout = extract_int_arg(tc, "timeout") || @default_wait_ms
 
     query_peer(ctx.space_id, target, prompt, timeout)
-    |> build_query_result(tc, target)
+    |> build_query_result(tc, target, ctx)
   end
 
   # Send a chat to a peer and block for its response. Returns
@@ -350,14 +359,14 @@ defmodule Nest.Agents.Agent.ToolLoop do
     end
   end
 
-  defp build_query_result({:ok, content}, tc, _target),
-    do: build_tool_result(tc, "agents-query", content)
+  defp build_query_result({:ok, content}, tc, _target, ctx),
+    do: build_tool_result(tc, "agents-query", bound_content(content, tc, ctx))
 
-  defp build_query_result({:error, {:chat, reason}}, tc, target),
+  defp build_query_result({:error, {:chat, reason}}, tc, target, _ctx),
     do:
       build_tool_result(tc, "agents-query", "Could not query #{target}: #{inspect(reason)}", true)
 
-  defp build_query_result({:error, {:not_found, reason}}, tc, target),
+  defp build_query_result({:error, {:not_found, reason}}, tc, target, _ctx),
     do:
       build_tool_result(
         tc,
@@ -482,6 +491,31 @@ defmodule Nest.Agents.Agent.ToolLoop do
   end
 
   defp extract_bool_arg(_tc, _key, default), do: default
+
+  # Bound an unbounded sub-agent result to the per-call inline cap. Sub-agent
+  # tools bypass `BatchSizer`, so this is where their results get an
+  # in-budget substitute: if the response exceeds `max_result_tokens`, the
+  # full text is written to the agent scratch dir and a pointer + head is
+  # returned inline. `ToolLoop.run_batch/2` then cooks the whole batch
+  # (`BatchSizer.cook/2`) so mixed regular + sub batches stay in budget.
+  defp bound_content(content, %ToolCall{} = tc, %{context_limit: limit, messages: _} = ctx)
+       when is_integer(limit) and limit > 0 do
+    usable = CapCalculator.usable_remaining(ctx)
+
+    if usable > 0 and
+         Estimator.estimate(content) > CapCalculator.effective_max_result_tokens(tc, usable) do
+      budget = CapCalculator.effective_max_result_tokens(tc, usable)
+      Overflow.substitute(content, ctx, sub_label(tc), budget, "agents")
+    else
+      content
+    end
+  end
+
+  defp bound_content(content, _tc, _ctx), do: content
+
+  defp sub_label(%ToolCall{name: "agents-query"}), do: "Response from agents-query"
+  defp sub_label(%ToolCall{name: "agents-spawn"}), do: "Response from agents-spawn"
+  defp sub_label(%ToolCall{name: name}), do: "Output of #{name}"
 
   defp build_tool_result(%ToolCall{} = tc, name, content, is_error \\ false) do
     %ToolResult{

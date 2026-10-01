@@ -31,8 +31,8 @@ defmodule Nest.Tokens.PreFlight do
                       : :needs_compaction)
                   : :fits
 
-  The `reserve` is the LLM's response budget. It comes from
-  `Nest.Tokens.Reserve.response_budget/1` which encodes
+  The `reserve` is the LLM's compaction reserve. It comes from
+  `Nest.Tokens.Reserve.compaction_reserve/1` which encodes
   `max(0.20 × context_limit, 8_192)`. When callers don't pass
   an explicit reserve, `check/3` and `check_messages/3`
   default to a flat 8,192 floor — matches `Reserve` at small
@@ -68,8 +68,8 @@ defmodule Nest.Tokens.PreFlight do
       (a positive integer; `nil`/non-positive raises)
     * `reserve` — tokens to leave free for the LLM's response
       and any subsequent compaction. Default 8,192 (matches
-      `Reserve.response_budget/1` at small contexts; pass an
-      explicit `Reserve.response_budget(context_limit)` to use
+      `Reserve.compaction_reserve/1` at small contexts; pass an
+      explicit `Reserve.compaction_reserve(context_limit)` to use
       the scaled value).
 
   Returns one of `:fits | :needs_compaction | :cannot_compact`.
@@ -177,7 +177,7 @@ defmodule Nest.Tokens.PreFlight do
   """
   @spec ensure_passed!([Nest.Messages.Message.t()], pos_integer()) :: :ok
   def ensure_passed!(messages, context_limit) do
-    case check_messages(messages, context_limit, Reserve.response_budget(context_limit)) do
+    case check_messages(messages, context_limit, Reserve.compaction_reserve(context_limit)) do
       :cannot_compact ->
         raise ArgumentError,
               "pre-flight decision is :cannot_compact for context_limit=#{context_limit}; " <>

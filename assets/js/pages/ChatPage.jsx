@@ -22,6 +22,7 @@ import {
   requestHistory,
   killShellJob,
   fetchShellLog,
+  refreshShellJobs,
 } from "../channels";
 import { StatusBanner } from "../components/StatusBanner";
 import { NotificationBanner } from "../components/NotificationBanner";
@@ -509,6 +510,7 @@ export function ChatPage() {
         jobs={jobs}
         onKill={(id) => killShellJob(name, id)}
         onOpenLog={(id) => fetchShellLog(name, id)}
+        onRefresh={() => refreshShellJobs(name)}
       />
 
       {/* Messages */}

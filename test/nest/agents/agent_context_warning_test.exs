@@ -175,7 +175,7 @@ defmodule Nest.Agents.AgentContextWarningTest do
       }
     end)
 
-    send(pid, {:compaction_done, "Summary", nil})
+    AgentTestHelpers.send_compaction_done(pid, "Summary", nil)
 
     # The handler resets the set BEFORE spawning the next ChatTurn.
     # The next ChatTurn runs an iteration (against the short seeded

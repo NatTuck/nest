@@ -14,7 +14,7 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
   primes the model's awareness for the next real response.
 
   Thresholds measure against the *working* budget
-  (`context_limit - Reserve.response_budget/1`), not the raw
+  (`context_limit - Reserve.compaction_reserve/1`), not the raw
   window — the same denominator the UI chip shows alongside its
   raw window percent (see
   `Nest.Agents.Agent.Broadcasts.Usage.context_usage_map/4`).
@@ -87,7 +87,7 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
   def highest_unannounced(_used, limit, _crossed) when limit <= 0, do: nil
 
   def highest_unannounced(used, limit, crossed) do
-    reserve = Reserve.response_budget(limit)
+    reserve = Reserve.compaction_reserve(limit)
     effective = max(1, limit - reserve)
     ratio = used / effective
 
@@ -265,7 +265,7 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
   end
 
   defp percentage_text(pct, used, limit) do
-    reserve = Reserve.response_budget(limit)
+    reserve = Reserve.compaction_reserve(limit)
     effective = max(1, limit - reserve)
     "Context usage is now at #{pct}% (~#{used} of ~#{effective} token budget)."
   end

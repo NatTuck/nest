@@ -12,8 +12,8 @@ defmodule Nest.Agents.Agent.BatchSizer do
 
   Compute each tool call's projected output size using its
   per-tool policy. Sum the projections plus the current
-  `state.chat_state.messages` size plus the LLM response budget
-  (`Nest.Tokens.Reserve.response_budget/1`). If the sum
+  `state.chat_state.messages` size plus the LLM compaction reserve
+  (`Nest.Tokens.Reserve.compaction_reserve/1`). If the sum
   exceeds `context_limit`, the entire batch is refused with
   per-call synthetic errors and no tools execute.
 
@@ -38,13 +38,14 @@ defmodule Nest.Agents.Agent.BatchSizer do
   safety multiplier), so they are conservative upper bounds on
   what the LLM will tokenize.
 
-  ## Phase 3: Keep-or-summarize (shell-cmd only)
+  ## Phase 3: Keep-or-substitute (all tools)
 
-  For each `shell-cmd` result, decide keep-full or
-  replace-with-summary such that the running total never
-  exceeds `context_limit`. Earlier results get keep-full; later
-  results get summarized as the budget tightens. Other tools
-  are always kept full.
+  For each result, decide keep-full or replace-with-substitute such that
+  the running total never exceeds `context_limit`. Earlier results get
+  keep-full; later results get substituted as the budget tightens. An
+  over-budget result is ALWAYS substituted — never kept full. The
+  substitute writes the full output to the agent's scratch dir and
+  returns a pointer + head of bounded size.
 
   ## Tool-result cap (`max_result_tokens`)
 
@@ -54,12 +55,15 @@ defmodule Nest.Agents.Agent.BatchSizer do
   the LLM may only lower the cap (raise it past the 80% default
   is clamped). Per-tool behavior when the cap is exceeded:
 
-    * `shell-cmd` → write full output to tmp, return
-      path-and-head summary inline.
     * `file-read` → return `{:error, "File is X tokens
       which exceeds your requested limit of Y."}`.
-    * Other tools → keep full (cap unreachable in practice
-      because their outputs are bounded by construction).
+    * Every other tool → write full output to tmp, return
+      path-and-head substitute inline.
+
+  `ToolLoop` runs `execute/2` for the regular tools, then cooks the
+  merged regular + sub-agent entries once via `cook/2`, so the budget
+  pass covers the whole batch and the invariant holds across tool
+  families.
 
   When `ctx.context_limit` is `nil` (or non-positive), `preflight`
   matches no clause and raises — the limit is never optional, and a
@@ -73,6 +77,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
   alias Nest.LLM.Tools, as: LLMTools
   alias Nest.Messages.ToolCall
   alias Nest.Messages.ToolResult
+  alias Nest.Tokens.Budget
   alias Nest.Tokens.Estimator
   alias Nest.Tokens.Reserve
 
@@ -87,15 +92,17 @@ defmodule Nest.Agents.Agent.BatchSizer do
   # decide whether to spend context examining the file.
   @small_binary_max_bytes 256
 
-  # UTF-8 encoding of U+FFFD (REPLACEMENT CHARACTER), used by
-  # `to_valid_utf8/1` for byte sequences that don't decode.
-  @replacement_char <<0xEF, 0xBF, 0xBD>>
+  @type entry :: {ToolCall.t(), :ok | :error, String.t()}
 
   @doc """
   Run a batch of tool calls through preflight → execute →
-  keep-or-summarize. Returns a list of `ToolResult` structs in
+  keep-or-substitute. Returns a list of `ToolResult` structs in
   input order, ready for the chat task to append as a single
   `{:tool, _}` message.
+
+  Equivalent to `execute/2` followed by `cook/2`. Callers that need to
+  merge results from other executors (e.g. `ToolLoop`'s sub-agent tools)
+  should use those two directly so the whole batch is cooked once.
 
   The `ctx` map carries `messages`, `context_limit`, `tools`,
   `caps`, `agent_pid`, `tmp_path` (per-agent temp directory for
@@ -103,13 +110,24 @@ defmodule Nest.Agents.Agent.BatchSizer do
   """
   @spec run([ToolCall.t()], map()) :: [ToolResult.t()]
   def run(tool_calls, ctx) when is_list(tool_calls) and is_map(ctx) do
-    case preflight(tool_calls, ctx) do
-      {:refuse, reason} ->
-        refuse_results(tool_calls, reason)
+    tool_calls |> execute(ctx) |> cook(ctx)
+  end
 
-      :fits ->
-        executed = Enum.map(tool_calls, &execute_one(&1, ctx))
-        cook(executed, ctx)
+  @doc """
+  Preflight + execute a batch, returning raw `entry`s **without** cooking.
+
+  On a preflight refusal the entries are `{:error, reason}` for every call
+  (and the refusal is logged). Callers that will merge results from other
+  executors must pass the combined, input-ordered entry list to `cook/2`
+  so the whole batch shares one running budget.
+  """
+  @spec execute([ToolCall.t()], map()) :: [entry()]
+  def execute([], _ctx), do: []
+
+  def execute(tool_calls, ctx) do
+    case preflight(tool_calls, ctx) do
+      {:refuse, reason} -> refuse_entries(tool_calls, reason)
+      :fits -> Enum.map(tool_calls, &execute_one(&1, ctx))
     end
   end
 
@@ -126,12 +144,12 @@ defmodule Nest.Agents.Agent.BatchSizer do
 
   def preflight(tool_calls, %{context_limit: limit} = ctx)
       when is_integer(limit) and limit > 0 do
-    current = Estimator.estimate_messages(ctx.messages || [])
+    current = Budget.size(ctx.messages || [])
 
     projected =
       tool_calls
       |> Enum.reduce(0, fn tc, acc -> acc + projected_size(tc, ctx) end)
-      |> Kernel.+(Reserve.response_budget(limit))
+      |> Kernel.+(Reserve.compaction_reserve(limit))
 
     total = current + projected
 
@@ -191,7 +209,16 @@ defmodule Nest.Agents.Agent.BatchSizer do
     case LLMTools.execute_one(ctx.tools, tc, %{
            caps: ctx.caps,
            messages: ctx.messages,
-           context_limit: ctx.context_limit
+           context_limit: ctx.context_limit,
+           # Per-call identity. Tools that manage per-agent resources
+           # (`shell-cmd background`, `shell-list`/`wait`/`kill`) need the
+           # real `{space_id, agent_name}` and the Agent pid; without these
+           # they default to `{nil, nil}` / `:unknown` and operate on the
+           # wrong (or no) agent. See `Nest.Tools.agent_key/1`.
+           agent_pid: Map.get(ctx, :agent_pid),
+           agent_name: Map.get(ctx, :agent_name),
+           space_id: Map.get(ctx, :space_id),
+           tmp_path: Map.get(ctx, :tmp_path)
          }) do
       {:ok, content} ->
         {tc, :ok, ensure_non_empty(content)}
@@ -214,23 +241,46 @@ defmodule Nest.Agents.Agent.BatchSizer do
 
   # ---- Phase 3: cook the raw results into final ToolResults ----
   #
-  # For each shell-cmd result, decide keep-full or summarize
-  # against the running total. Other tools are kept full.
+  # Walk the results in input order, deciding keep-full or substitute
+  # against the running total. An over-budget result is ALWAYS
+  # substituted (`handle_over_cap`/`offload`), never kept full.
 
-  defp cook(executed, ctx) do
+  @doc """
+  Turn raw `entry`s into `ToolResult`s, applying the keep-or-substitute
+  pass over the whole (input-ordered) list.
+
+  This is the single budget pass. `run/2` uses it for a standalone batch,
+  and `ToolLoop` uses it once over the merged regular + sub-agent entries
+  so the entire batch shares one running total. Errors are logged here
+  (once). When `ctx` has no positive `context_limit` (test callers), the
+  entries are returned as `ToolResult`s unchanged, without error logging.
+  """
+  @spec cook([entry()], map()) :: [ToolResult.t()]
+  def cook(entries, %{context_limit: limit, messages: _} = ctx)
+      when is_integer(limit) and limit > 0 do
+    entries |> reduce_entries(ctx) |> finalize(true)
+  end
+
+  def cook(entries, _ctx), do: finalize(entries, false)
+
+  defp reduce_entries(entries, ctx) do
     limit = ctx.context_limit
-    base = Estimator.estimate_messages(ctx.messages || [])
+    base = Budget.size(ctx.messages || [])
     usable = usable_remaining(ctx)
-    reserve = Reserve.response_budget(limit)
+    reserve = Reserve.compaction_reserve(limit)
     initial = %{running: base + reserve, limit: limit, usable: usable}
 
     {cooked, _final_acc} =
-      Enum.map_reduce(executed, initial, fn entry, acc ->
+      Enum.map_reduce(entries, initial, fn entry, acc ->
         apply_one_with_acc(entry, ctx, acc)
       end)
 
+    cooked
+  end
+
+  defp finalize(cooked, log_errors?) do
     Enum.map(cooked, fn {tc, kind, content} ->
-      if kind == :error do
+      if log_errors? and kind == :error do
         # Permanent diagnostic. The LLM is going to see this error
         # as a tool result and decide what to do next, but we also
         # want a server-side record so a flake in this code path
@@ -279,14 +329,14 @@ defmodule Nest.Agents.Agent.BatchSizer do
   #      we fall back to the existing summary path for
   #      `shell-cmd` if it doesn't.
   #
-  # A `shell-cmd` result that isn't valid UTF-8 (raw binary from a
-  # command, e.g. `curl` dumping a download to stdout) never goes
-  # inline: it's written to the scratch file and replaced with a
-  # `saved to <path>` pointer so the LLM can decide whether to
-  # inspect the file. When the binary is tiny (<= `@small_binary_max_bytes`),
-  # a lossy UTF-8 view is included inline too.
+  # A tool result that isn't valid UTF-8 (raw binary, e.g. `curl`
+  # dumping a download to stdout) never goes inline raw: it's written
+  # to the scratch file and replaced with a `saved to <path>` pointer
+  # so the LLM can decide whether to inspect the file. When the binary
+  # is tiny (<= `@small_binary_max_bytes`), a lossy UTF-8 view is
+  # included inline too.
   defp apply_one_with_acc({tc, :ok, content} = entry, ctx, acc) do
-    if tc.name == "shell-cmd" and is_binary(content) and not String.valid?(content) do
+    if is_binary(content) and not String.valid?(content) do
       handle_binary_shell(tc, content, ctx, acc)
     else
       size_text_result(entry, ctx, acc)
@@ -310,26 +360,24 @@ defmodule Nest.Agents.Agent.BatchSizer do
     end
   end
 
-  # A binary `shell-cmd` result: always write the raw bytes to the
-  # scratch file and return a `saved to <path>` pointer inline. The
-  # model never sees the raw bytes. For tiny binaries a lossy UTF-8
-  # view rides along so the model can read the contents without
-  # opening the file.
+  # A binary tool result: always write the raw bytes to the scratch file
+  # and return a `saved to <path>` pointer inline. The model never sees
+  # the raw bytes. For tiny binaries a lossy UTF-8 view rides along so
+  # the model can read the contents without opening the file.
   defp handle_binary_shell(tc, content, ctx, acc) do
     bytes = byte_size(content)
-    command = Map.get(tc.arguments || %{}, "command", "")
 
     location =
-      case write_to_tmp(content, ctx) do
+      case Overflow.write(content, ctx, write_prefix(tc.name), "txt") do
         nil -> "temp file unavailable"
         path -> "saved to #{path}"
       end
 
-    pointer = "Command output of '#{command}' (binary, #{bytes} bytes) #{location}."
+    pointer = "#{output_label(tc)} (binary, #{bytes} bytes) #{location}."
 
     inline =
       if bytes <= @small_binary_max_bytes do
-        body = to_valid_utf8(content)
+        body = Overflow.to_valid_utf8(content)
 
         if body == "" do
           pointer
@@ -345,75 +393,31 @@ defmodule Nest.Agents.Agent.BatchSizer do
     if acc.running + inline_size <= acc.limit do
       {{tc, :ok, inline}, advance(acc, inline_size)}
     else
-      trimmed = head_text(inline, max(0, acc.limit - acc.running - per_message_overhead()))
+      budget = max(0, acc.limit - acc.running - per_message_overhead())
+      trimmed = Overflow.head_text(inline, budget)
       trimmed_size = Estimator.estimate(trimmed) + per_message_overhead()
       {{tc, :ok, trimmed}, advance(acc, trimmed_size)}
     end
   end
 
-  # Lossy UTF-8 coercion: replace every invalid byte sequence with
-  # U+FFFD so the result is a valid string the estimator / message
-  # pipeline can handle. `:unicode.characters_to_binary/3` decodes as
-  # much valid UTF-8 as it can and reports the offending remainder
-  # (as `{:error, converted, rest}` or `{:incomplete, converted, _}`)
-  # instead of raising. We splice in a replacement character for each
-  # invalid byte (dropping it so the recursion always makes progress)
-  # and keep decoding the remainder.
-  defp to_valid_utf8(<<>>), do: ""
-
-  defp to_valid_utf8(bin) do
-    case :unicode.characters_to_binary(bin, :utf8, :utf8) do
-      text when is_binary(text) ->
-        text
-
-      {:error, "", rest} ->
-        # The head byte is invalid: replace it and move past it.
-        @replacement_char <> to_valid_utf8(drop_first_byte(rest))
-
-      {:error, converted, rest} ->
-        converted <> to_valid_utf8(rest)
-
-      {:incomplete, converted, _rest} ->
-        converted <> @replacement_char
-    end
-  end
-
-  defp drop_first_byte(<<_::8, rest::binary>>), do: rest
-
   # Decision for tools whose output fits the inline cap but might
-  # overflow the running batch budget. Same per-tool routing as
+  # overflow the running batch budget. Same routing as
   # `handle_over_cap/5`, but the trigger is the batch budget rather
   # than the inline cap.
   defp fit_in_batch_budget(tc, content, full_size, ctx, acc) do
-    cond do
-      keep_full?(tc, acc, full_size) ->
-        {{tc, :ok, content}, advance(acc, full_size)}
-
-      tc.name == "shell-cmd" ->
-        {summary, summary_size} = build_summary_with_size(tc, content, ctx, acc)
-        {{tc, :ok, summary}, advance(acc, summary_size)}
-
-      true ->
-        Logger.warning(
-          "BatchSizer: #{tc.name} overflowed post-execution budget; keeping full anyway"
-        )
-
-        {{tc, :ok, content}, advance(acc, full_size)}
+    if keep_full?(tc, acc, full_size) do
+      {{tc, :ok, content}, advance(acc, full_size)}
+    else
+      offload(tc, content, ctx, acc)
     end
   end
 
-  # Per-tool routing when the inline cap is exceeded.
-  # The cap was set by `effective_max_result_tokens/2` — the LLM
-  # either asked for it (via `max_result_tokens`) or got the 80%
-  # default. In either case, the LLM gets a *complete* answer
-  # (either the full content via tmp + summary, or an explicit
-  # error explaining the rejection) — never a truncated inline
-  # version.
-  defp handle_over_cap(%ToolCall{name: "shell-cmd"} = tc, content, _full_size, ctx, acc) do
-    {summary, summary_size} = build_summary_with_size(tc, content, ctx, acc)
-    {{tc, :ok, summary}, advance(acc, summary_size)}
-  end
-
+  # Per-tool routing when the inline cap is exceeded. The cap was set by
+  # `effective_max_result_tokens/2` — the LLM either asked for it (via
+  # `max_result_tokens`) or got the 80% default. `file-read` returns an
+  # explicit error (its caller asked for a size check); every other tool
+  # is substituted with an in-budget pointer + head. We never keep an
+  # over-budget result inline.
   defp handle_over_cap(%ToolCall{name: "file-read"} = tc, _content, full_size, _ctx, acc) do
     cap = effective_max_result_tokens(tc, acc.usable)
     error = "File is #{full_size} tokens which exceeds your requested limit of #{cap}."
@@ -421,100 +425,45 @@ defmodule Nest.Agents.Agent.BatchSizer do
     {{tc, :error, error}, advance(acc, error_size)}
   end
 
-  defp handle_over_cap(%ToolCall{name: name} = tc, content, full_size, _ctx, acc) do
-    Logger.warning("BatchSizer: #{name} exceeded max_result_tokens cap; keeping full anyway")
-    {{tc, :ok, content}, advance(acc, full_size)}
+  defp handle_over_cap(tc, content, _full_size, ctx, acc) do
+    offload(tc, content, ctx, acc)
   end
 
-  # Build the deterministic summary template + return its
-  # measured size. No hardcoded token constants — the path,
-  # command, and head are all measured via `Estimator`.
-  #
-  # If the assembled summary would still overflow the running
-  # budget (shouldn't happen given the preflight's 20% padding,
-  # but defends against pathological cases), truncate to fit.
-  defp build_summary_with_size(%ToolCall{} = tc, full_content, ctx, %{
-         running: running,
-         limit: limit
-       }) do
-    path = write_to_tmp(full_content, ctx) || "(temp file unavailable)"
-    summary = build_summary_inner(tc, full_content, path)
+  # Replace an oversized result with an in-budget pointer + head. The
+  # block is sized to the remaining batch budget, so it always fits.
+  # This is the ONLY path for an over-budget result — keeping the full
+  # content inline would violate the budget invariant.
+  defp offload(tc, content, ctx, acc) do
+    budget = max(0, acc.limit - acc.running - per_message_overhead())
 
-    summary_size = Estimator.estimate(summary) + per_message_overhead()
+    inline =
+      Overflow.substitute(content, ctx, output_label(tc), budget, write_prefix(tc.name))
 
-    summary =
-      if running + summary_size > limit do
-        truncate_to_fit(summary, max(0, limit - running - per_message_overhead()))
-      else
-        summary
-      end
-
-    summary_size = Estimator.estimate(summary) + per_message_overhead()
-    {summary, summary_size}
+    inline_size = Estimator.estimate(inline) + per_message_overhead()
+    {{tc, :ok, inline}, advance(acc, inline_size)}
   end
 
-  # Inner: builds the template structure.
-  defp build_summary_inner(%ToolCall{} = tc, full_content, path) do
-    command = Map.get(tc.arguments || %{}, "command", "")
-    token_count = Estimator.estimate(full_content)
+  # Human-readable label for a substituted result, naming the tool and
+  # (when present) its identifying argument.
+  defp output_label(%ToolCall{name: "shell-cmd", arguments: args}),
+    do: "Command output of '#{arg(args, "command")}'"
 
-    line1 = "Command output of '#{command}' (#{token_count} tokens) saved to #{path}."
+  defp output_label(%ToolCall{name: "shell-wait", arguments: args}),
+    do: "Output of shell-wait #{arg(args, "id")}"
 
-    head_budget = summary_head_budget(line1)
-    head = head_text(full_content, head_budget)
+  defp output_label(%ToolCall{name: name}), do: "Output of #{name}"
 
-    case head do
-      "" -> line1
-      h -> line1 <> "\n\n" <> h
-    end
-  end
+  defp arg(args, key) when is_map(args), do: Map.get(args, key, "")
+  defp arg(_args, _key), do: ""
 
-  # Walk the output line-by-line and take as many whole lines as
-  # fit within the budget. Budget derived from line1's size plus
-  # some headroom — no hardcoded constants.
-  defp summary_head_budget(line1) do
-    line1_tokens = Estimator.estimate(line1)
-    # Roughly 4× line1 size for head is a reasonable upper bound
-    # that's still under the preflight's per-call padding.
-    max(line1_tokens * 4, line1_tokens + 50)
-  end
+  # Scratch-file prefix. Shell results keep the historical "exec" prefix
+  # (the docs/model refer to it); everything else is named after the tool.
+  defp write_prefix("shell-cmd"), do: "exec"
+  defp write_prefix("shell-wait"), do: "exec"
+  defp write_prefix("shell-list"), do: "exec"
+  defp write_prefix(name), do: String.replace(name, ~r/[^A-Za-z0-9_-]/, "_")
 
-  defp head_text("", _budget), do: ""
-
-  defp head_text(_content, budget) when budget <= 0, do: ""
-
-  defp head_text(content, budget) do
-    content
-    |> String.split("\n")
-    |> Enum.reduce_while({"", 0}, fn line, {acc, used} ->
-      line_tokens = Estimator.estimate(line)
-
-      if used + line_tokens <= budget do
-        {:cont, {acc <> line <> "\n", used + line_tokens}}
-      else
-        {:halt, {acc, used}}
-      end
-    end)
-    |> elem(0)
-    |> String.trim_trailing()
-  end
-
-  defp truncate_to_fit(_text, target_tokens) when target_tokens <= 0, do: ""
-
-  defp truncate_to_fit(text, target_tokens) do
-    head_text(text, target_tokens)
-  end
-
-  # Buffers a shell-cmd overflow result to the agent's private scratch
-  # dir (the same `tmp_path` the sandbox binds read-write at /tmp).
-  # This is intentional internal scratch management (like `TmpSpace`'s
-  # mkdir/rm lifecycle), not user-data access, so it writes on the host
-  # directly rather than routing through the sandbox gatekeeper.
-  defp write_to_tmp(full_content, ctx) do
-    Overflow.write(full_content, ctx, "exec", "txt")
-  end
-
-  defp refuse_results(tool_calls, reason) do
+  defp refuse_entries(tool_calls, reason) do
     # Permanent diagnostic. Preflight refused the batch (projected
     # token total exceeds the context window). The LLM will see
     # this as the tool result's content with is_error=true. Fires
@@ -524,15 +473,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
         "tool_calls=#{length(tool_calls)} reason=#{inspect(reason)}"
     )
 
-    Enum.map(tool_calls, fn tc ->
-      %ToolResult{
-        tool_call_id: tc.id,
-        name: tc.name,
-        arguments: tc.arguments,
-        content: reason,
-        is_error: true
-      }
-    end)
+    Enum.map(tool_calls, fn tc -> {tc, :error, reason} end)
   end
 
   # ---- helpers ----

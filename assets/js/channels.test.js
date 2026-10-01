@@ -30,6 +30,7 @@ import {
   compactionLoopOk,
   killShellJob,
   fetchShellLog,
+  refreshShellJobs,
   createSpace,
   suggestSpaceName,
   createInvite,
@@ -2638,44 +2639,79 @@ describe("channels", () => {
       });
     });
 
-    it("killShellJob pushes shell:kill with the id", async () => {
+    it("killShellJob pushes shell:kill with the id and resolves", async () => {
       await connectedAgent();
       const capture = captureNextPush("agent:1:agent-1", "shell:kill");
 
-      killShellJob("agent-1", "job-7");
+      await killShellJob("agent-1", "job-7");
 
       const payload = await capture;
       assert.deepStrictEqual(payload, { id: "job-7" });
     });
 
-    it("killShellJob surfaces server errors and tolerates a missing callback", async () => {
+    it("killShellJob rejects and still calls the optional onError", async () => {
       await connectedAgent();
       setNextPushResult("agent:1:agent-1", "shell:kill", {
         error: { reason: "job_not_found" },
       });
 
       let errorReason = null;
-      killShellJob("agent-1", "job-7", (err) => {
-        errorReason = err?.reason;
-      });
 
-      await vi.waitFor(() => {
-        assert.strictEqual(errorReason, "job_not_found");
-      });
+      await assert.rejects(
+        () =>
+          killShellJob("agent-1", "job-7", (err) => {
+            errorReason = err?.reason;
+          }),
+        (err) => err.reason === "job_not_found",
+      );
 
-      // No callback: the error receive is a no-op.
-      setNextPushResult("agent:1:agent-1", "shell:kill", {
-        error: { reason: "job_not_found" },
-      });
-      killShellJob("agent-1", "job-7");
+      assert.strictEqual(errorReason, "job_not_found");
     });
 
-    it("killShellJob reports not connected", () => {
+    it("killShellJob rejects when not connected", async () => {
       let message = null;
-      killShellJob("missing-agent", "job-1", (err) => {
-        message = err.message;
-      });
+
+      await assert.rejects(
+        () =>
+          killShellJob("missing-agent", "job-1", (err) => {
+            message = err.message;
+          }),
+        /Not connected to agent/,
+      );
+
       assert.strictEqual(message, "Not connected to agent");
+    });
+
+    it("refreshShellJobs updates the store from shell:list", async () => {
+      await connectedAgent();
+      setNextPushResult("agent:1:agent-1", "shell:list", {
+        ok: { jobs: [{ id: "job-3", status: "running" }] },
+      });
+
+      const jobs = await refreshShellJobs("agent-1");
+      assert.strictEqual(jobs.length, 1);
+      assert.strictEqual(jobs[0].id, "job-3");
+      assert.strictEqual(
+        useStore.getState().agentsCache["agent-1"].jobs[0].id,
+        "job-3",
+      );
+    });
+
+    it("refreshShellJobs rejects on server error and when disconnected", async () => {
+      await connectedAgent();
+      setNextPushResult("agent:1:agent-1", "shell:list", {
+        error: { reason: "boom" },
+      });
+
+      await assert.rejects(
+        () => refreshShellJobs("agent-1"),
+        (err) => err.reason === "boom",
+      );
+
+      await assert.rejects(
+        () => refreshShellJobs("missing-agent"),
+        /Not connected to agent/,
+      );
     });
 
     it("fetchShellLog resolves with the log content", async () => {

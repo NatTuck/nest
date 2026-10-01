@@ -40,7 +40,7 @@ defmodule Nest.Agents.AgentToolsMaxIterationsTest do
         })
 
       capture_log(fn ->
-        send(pid, {:compaction_done, "Summary", {:tool_call, carried_tool_call_msg(), 5, 5}})
+        send_compaction_done(pid, "Summary", {:tool_call, carried_tool_call_msg(), 5, 5})
 
         assert_receive {:chat_notification,
                         %{type: "max_iterations", message: "Max tool iterations reached"}},

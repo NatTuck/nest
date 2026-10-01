@@ -24,6 +24,7 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
   alias Nest.Messages.ToolCall
   alias Nest.Messages.ToolResult
   alias Nest.TextFixtures
+  alias Nest.Tokens.Estimator
   alias Nest.Tools
 
   defp make_tool(name, fn_) do
@@ -218,6 +219,74 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
       assert_raise FunctionClauseError, fn ->
         BatchSizer.run([call("c1", "shell-cmd", %{"command" => "ls"})], c)
       end
+    end
+  end
+
+  describe "over-budget substitute for every tool (never keep full)" do
+    setup do
+      tmp_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "batchsizer-sub-#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(tmp_dir)
+      on_exit(fn -> File.rm_rf!(tmp_dir) end)
+      {:ok, tmp_dir: tmp_dir}
+    end
+
+    test "non-shell tools over the cap are substituted, not kept full", %{tmp_dir: dir} do
+      big_output = TextFixtures.big_text(40_000)
+
+      for name <- ["shell-wait", "shell-list", "file-inspect", "some-tool"] do
+        tools = [make_tool(name, fn _, _ -> {:ok, big_output} end)]
+        c = ctx(tools, context_limit: 20_000, tmp_path: dir)
+
+        assert [%ToolResult{is_error: false, content: content}] =
+                 BatchSizer.run([call("c1", name, %{"id" => "job-1"})], c)
+
+        assert content =~ "saved to", "#{name} was not substituted"
+        assert Estimator.estimate(content) < 20_000, "#{name} result exceeded the budget"
+      end
+    end
+
+    test "shell-wait substitute names the job", %{tmp_dir: dir} do
+      big_output = TextFixtures.big_text(40_000)
+      tools = [make_tool("shell-wait", fn _, _ -> {:ok, big_output} end)]
+      c = ctx(tools, context_limit: 20_000, tmp_path: dir)
+
+      assert [%ToolResult{content: content}] =
+               BatchSizer.run([call("c1", "shell-wait", %{"id" => "job-7"})], c)
+
+      assert content =~ "Output of shell-wait job-7"
+      assert content =~ "saved to"
+    end
+
+    test "a small bounded tool stays inline", %{tmp_dir: dir} do
+      tools = [make_tool("shell-kill", fn _, _ -> {:ok, "Killed background job job-1."} end)]
+      c = ctx(tools, context_limit: 100_000, tmp_path: dir)
+
+      assert [%ToolResult{content: "Killed background job job-1.", is_error: false}] =
+               BatchSizer.run([call("c1", "shell-kill", %{"id" => "job-1"})], c)
+    end
+
+    test "cook bounds a mixed regular + sub-agent batch as a whole", %{tmp_dir: dir} do
+      big = TextFixtures.big_text(30_000)
+
+      entries = [
+        {call("c1", "shell-cmd", %{"command" => "cat big"}), :ok, big},
+        {call("c2", "agents-query", %{"name" => "peer"}), :ok, big}
+      ]
+
+      c = ctx([], context_limit: 20_000, tmp_path: dir)
+      results = BatchSizer.cook(entries, c)
+
+      total =
+        Enum.reduce(results, 0, fn r, acc -> acc + Estimator.estimate(r.content) + 10 end)
+
+      assert total < 20_000
+      assert Enum.any?(results, &(&1.content =~ "saved to"))
+      assert Enum.map(results, & &1.name) == ["shell-cmd", "agents-query"]
     end
   end
 end

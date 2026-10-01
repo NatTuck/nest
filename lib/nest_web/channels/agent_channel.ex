@@ -411,8 +411,9 @@ defmodule NestWeb.AgentChannel do
   end
 
   # Fetch the agent's current background shell jobs. The same list is
-  # pushed as `shell:jobs` whenever it changes; this lets a freshly
-  # joined (or reconnected) client request it on demand.
+  # pushed as `shell:jobs` whenever it changes; this lets the UI's
+  # "Refresh" action (or a freshly joined/reconnected client) request it
+  # on demand.
   @impl true
   def handle_in("shell:list", _payload, socket) do
     jobs = ShellJobs.list({socket.assigns.space_id, socket.assigns.name})

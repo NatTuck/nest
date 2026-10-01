@@ -68,6 +68,7 @@ defmodule Nest.LLM.Runner do
       tool_choice: tool_choice_for(ctx.tools, ctx.tool_choice),
       model: ctx.client_config.model,
       thinking_effort: ctx.client_config.thinking_effort,
+      max_tokens: Map.get(ctx, :max_tokens),
       metadata: %{}
     }
   end

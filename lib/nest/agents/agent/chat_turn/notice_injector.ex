@@ -24,9 +24,12 @@ defmodule Nest.Agents.Agent.ChatTurn.NoticeInjector do
   alias Nest.Agents.Agent.ChatTurn.State
   alias Nest.Agents.Agent.NoticePairInjector
   alias Nest.LLM.RunResponse
+  alias Nest.Tokens.Budget
   alias Nest.Tokens.ConversationSize
   alias Nest.Tokens.Estimator, as: TokensEstimator
   alias Nest.Tokens.Reserve
+
+  require Logger
 
   @doc """
   Collect notice specs from all trigger sources.
@@ -145,10 +148,39 @@ defmodule Nest.Agents.Agent.ChatTurn.NoticeInjector do
     # breaks Anthropic's pairing invariant. We silently skip in
     # that case; the next safe boundary (the next iteration's
     # response handler) will retry.
-    case NoticePairInjector.inject_pair(state.ctx.agent_pid, spec, :agent_user) do
-      {:ok, _shape, _stamped} -> state
-      :deferred -> state
-      :agent_dead -> state
+    if notice_over_budget?(spec, state) do
+      Logger.warning(
+        "NoticeInjector: skipping #{spec.kind} notice; no room within the compaction reserve"
+      )
+
+      state
+    else
+      case NoticePairInjector.inject_pair(state.ctx.agent_pid, spec, :agent_user) do
+        {:ok, _shape, _stamped} -> state
+        :deferred -> state
+        :agent_dead -> state
+      end
+    end
+  end
+
+  # Synthetic notices are ordinary content: they must never spend the
+  # compaction reserve. Skip a notice whose pair would not fit in the
+  # remaining content budget.
+  defp notice_over_budget?(spec, state) do
+    limit = state.ctx.context_limit
+
+    if is_integer(limit) and limit > 0 do
+      {messages, _} =
+        try do
+          GenServer.call(state.ctx.agent_pid, :get_messages_with_cancelled, 1_000)
+        catch
+          :exit, _ -> {state.ctx.messages || [], false}
+        end
+
+      pair_size = TokensEstimator.estimate(spec.attention) + TokensEstimator.estimate(spec.notice)
+      Budget.remaining(messages, limit) < pair_size
+    else
+      false
     end
   end
 
@@ -189,7 +221,7 @@ defmodule Nest.Agents.Agent.ChatTurn.NoticeInjector do
           :fits ->
             ConversationSize.size(messages) +
               tool_request_size(tool_calls) +
-              Reserve.response_budget(state.ctx.context_limit)
+              Reserve.compaction_reserve(state.ctx.context_limit)
 
           {:refuse, _reason} ->
             state.ctx.context_limit

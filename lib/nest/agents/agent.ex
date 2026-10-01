@@ -546,6 +546,10 @@ defmodule Nest.Agents.Agent do
 
   defp stop_shell_jobs(state) do
     ShellJobs.stop_all({state.space_id, state.name})
+  catch
+    # The manager may be down/restarting during a crash teardown; that
+    # must not turn agent shutdown into a raise.
+    :exit, _ -> :ok
   end
 
   # Public-for-Handlers: message-construction logic. The

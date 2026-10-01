@@ -122,10 +122,13 @@ defmodule Nest.ProjectConfigTest do
       assert merged["shell"] == %{"background" => 3}
     end
 
-    test "does not merge the shell cap in a read-only mode", %{dir: dir} do
+    test "also merges the shell cap in a read-only mode", %{dir: dir} do
       write_nest(dir, "[shell]\nbackground = 3\n")
       caps = caps([])
-      assert {:ok, ^caps} = ProjectConfig.effective_caps(caps, dir, "/tmp/agent")
+      assert {:ok, merged} = ProjectConfig.effective_caps(caps, dir, "/tmp/agent")
+      assert merged["shell"] == %{"background" => 3}
+      # Mounts remain gated: no project/protected keys in a read-only mode.
+      assert merged["fs"] == caps["fs"]
     end
 
     test "a tmp mount sources from the agent tmp", %{dir: dir} do

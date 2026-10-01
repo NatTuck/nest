@@ -4,7 +4,7 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
   the BatchSizer's preflight phase. Each clause returns the
   estimated token count for the tool result if the call
   succeeds; the BatchSizer sums these projections plus the
-  current message-list size plus the LLM response budget
+  current message-list size plus the LLM compaction reserve
   and refuses the batch if the total exceeds
   `context_limit`.
 
@@ -27,9 +27,13 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
 
   @safety_padding 1.20
 
+  # `agents-list` / `models-list` are hard-sliced to this many chars in
+  # `Nest.Agents.Agent.ToolLoop`; their projection is bounded by it.
+  @max_list_chars 4_000
+
   # Per-tool projections. The `BatchSizer.preflight/2` sums
   # these across the batch plus the current message-list size
-  # plus the LLM response budget, and refuses the batch if
+  # plus the LLM compaction reserve, and refuses the batch if
   # the total exceeds `context_limit`.
   def project(%ToolCall{name: "file-read"} = tc, ctx), do: read_file_projection(tc, ctx)
   def project(%ToolCall{name: "shell-cmd"}, _ctx), do: summary_baseline_size() * @safety_padding
@@ -61,6 +65,33 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
         "Context: N messages, ~X / Y tokens used (Z%). Usable remaining: ~R tokens."
       )
 
+  # Shell job tools. `shell-cmd` is above; `shell-wait`/`shell-list` can
+  # carry a job's whole log or an arbitrary command string, so they
+  # project at the substitute minimum (they are offloaded when over
+  # budget). `shell-kill` is a fixed one-liner.
+  def project(%ToolCall{name: "shell-wait"}, _ctx), do: summary_baseline_size() * @safety_padding
+  def project(%ToolCall{name: "shell-list"}, _ctx), do: summary_baseline_size() * @safety_padding
+
+  def project(%ToolCall{name: "shell-kill"}, _ctx),
+    do: estimator_overhead("Killed background job job-N (exit code N).")
+
+  # Sub-agent tools. The response-bearing ones project at the substitute
+  # minimum; the listing tools are hard-sliced to `@max_list_chars`.
+  def project(%ToolCall{name: "agents-spawn"}, _ctx),
+    do: summary_baseline_size() * @safety_padding
+
+  def project(%ToolCall{name: "agents-query"}, _ctx),
+    do: summary_baseline_size() * @safety_padding
+
+  def project(%ToolCall{name: "agents-batch"}, _ctx),
+    do: summary_baseline_size() * @safety_padding
+
+  def project(%ToolCall{name: name}, _ctx) when name in ["agents-list", "models-list"],
+    do: Estimator.estimate_bytes(@max_list_chars)
+
+  def project(%ToolCall{name: "agents-archive"}, _ctx),
+    do: estimator_overhead("Archived agent clever-raven.")
+
   # Catch-all for tools the LLM hallucinates or spells
   # incorrectly. These calls never reach execution; they return
   # small error strings ("Unknown tool: X", "Tool X not
@@ -75,6 +106,21 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
   def project(%ToolCall{name: name}, _ctx) do
     estimator_overhead("Unknown tool '#{name}'. Use one of the registered tools.")
   end
+
+  # The set of tool names with an explicit projection above. Kept as a
+  # single list so a test can assert every registered tool is projected
+  # (a new registered tool with only the catch-all is the bug this
+  # guards against). `context-compact` is excluded: it is stripped from
+  # preflight and never reaches this module.
+  @projected_tools ~w(
+    file-read shell-cmd file-write file-edit file-inspect context-check
+    shell-wait shell-list shell-kill
+    agents-spawn agents-query agents-batch agents-list models-list agents-archive
+  )
+
+  @doc false
+  @spec projected?(String.t()) :: boolean()
+  def projected?(name), do: name in @projected_tools
 
   # ---- private helpers ----
 

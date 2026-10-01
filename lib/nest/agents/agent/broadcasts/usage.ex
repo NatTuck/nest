@@ -186,7 +186,7 @@ defmodule Nest.Agents.Agent.Broadcasts.Usage do
       (`ConversationSize.size/1`: real API token floor + estimated
       suffix).
     * `working_budget` — the denominator the context-usage warnings
-      measure against (`context_limit - Reserve.response_budget/1`),
+      measure against (`context_limit - Reserve.compaction_reserve/1`),
       so the chip can show the warning basis alongside the raw window.
       `nil` when the limit is unknown.
     * `projected_context_input_tokens` — the forward-looking size the
@@ -209,7 +209,7 @@ defmodule Nest.Agents.Agent.Broadcasts.Usage do
   # the chip's working percent matches the warned percent. `nil` when
   # there's no usable limit.
   defp working_budget(limit) when is_integer(limit) and limit > 0 do
-    max(1, limit - Reserve.response_budget(limit))
+    max(1, limit - Reserve.compaction_reserve(limit))
   end
 
   defp working_budget(_limit), do: nil

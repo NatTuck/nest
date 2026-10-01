@@ -35,6 +35,9 @@ defmodule Nest.Sandbox.ShellJobs do
   @name __MODULE__
   @default_max_jobs 1
   @max_finished_per_agent 50
+  # How long after a kill to force a terminal state if the exec port's
+  # DOWN never arrives (SIGKILL + monitor should make it prompt).
+  @kill_finalize_ms 5_000
 
   @type job_id :: String.t()
   @type agent_key :: {term(), term()}
@@ -105,6 +108,15 @@ defmodule Nest.Sandbox.ShellJobs do
   def subscribe(agent_key, job_id, pid),
     do: GenServer.call(@name, {:subscribe, agent_key, job_id, pid})
 
+  @doc """
+  Remove `pid` from `job_id`'s waiter list. Used when a caller abandons a
+  wait (timeout or `:stop_chat`) so a later exit doesn't send it a stray
+  `{:shell_job_exit, ...}` message. Idempotent.
+  """
+  @spec unsubscribe(agent_key(), job_id(), pid()) :: :ok
+  def unsubscribe(agent_key, job_id, pid),
+    do: GenServer.call(@name, {:unsubscribe, agent_key, job_id, pid})
+
   @doc "Kill a running job. Its exit code is reported once the process dies."
   @spec kill(agent_key(), job_id()) :: :ok | {:error, :not_found}
   def kill(agent_key, job_id), do: GenServer.call(@name, {:kill, agent_key, job_id})
@@ -140,7 +152,7 @@ defmodule Nest.Sandbox.ShellJobs do
       state.jobs
       |> Map.values()
       |> Enum.filter(&(&1.agent_key == agent_key))
-      |> Enum.sort_by(& &1.id)
+      |> Enum.sort_by(& &1.started_at, DateTime)
       |> Enum.map(&to_info/1)
 
     {:reply, jobs, state}
@@ -175,11 +187,26 @@ defmodule Nest.Sandbox.ShellJobs do
     end
   end
 
+  def handle_call({:unsubscribe, _agent_key, job_id, pid}, _from, state) do
+    {:reply, :ok, remove_waiter(state, job_id, pid)}
+  end
+
   def handle_call({:kill, agent_key, job_id}, _from, state) do
     case fetch_job(state, agent_key, job_id) do
       {:ok, %{status: :running} = job} ->
         stop_os_process(job)
-        {:reply, :ok, put_job(state, %{job | killed: true})}
+
+        # The exec port should send a DOWN that finishes the job. If it
+        # never arrives, `@kill_finalize_ms` later forces a terminal
+        # state so the job can't be stuck "running, killed" forever.
+        Process.send_after(self(), {:kill_finalize, job_id}, @kill_finalize_ms)
+
+        state =
+          state
+          |> put_job(%{job | killed: true})
+          |> broadcast(agent_key)
+
+        {:reply, :ok, state}
 
       {:ok, _exited} ->
         {:reply, :ok, state}
@@ -205,6 +232,18 @@ defmodule Nest.Sandbox.ShellJobs do
       job = job_by_erl_pid(state, pid) -> {:noreply, finish_job(job, reason, state)}
       agent_key = agent_key_by_monitor(state, pid) -> {:noreply, drop_agent(agent_key, state)}
       true -> {:noreply, state}
+    end
+  end
+
+  # Fallback terminal state for a killed job whose exec-port DOWN never
+  # arrived. A no-op once the job has already finished.
+  def handle_info({:kill_finalize, job_id}, state) do
+    case Map.get(state.jobs, job_id) do
+      %{status: :running, killed: true} = job ->
+        {:noreply, finish_job(job, {:killed, 137}, state)}
+
+      _ ->
+        {:noreply, state}
     end
   end
 
@@ -253,7 +292,11 @@ defmodule Nest.Sandbox.ShellJobs do
 
       {:ok, job, log_path}
     else
-      {:error, reason} -> {:error, start_error(reason)}
+      {:error, reason} ->
+        # Don't leave the empty log file (or partial dir) behind when the
+        # process never started.
+        File.rm(log_path)
+        {:error, start_error(reason)}
     end
   end
 
@@ -295,6 +338,7 @@ defmodule Nest.Sandbox.ShellJobs do
   end
 
   defp exit_code(:normal), do: 0
+  defp exit_code({:killed, code}), do: code
   defp exit_code(reason), do: ShellCmd.exit_code(reason)
 
   # ---- Agent tracking ----
@@ -358,6 +402,21 @@ defmodule Nest.Sandbox.ShellJobs do
     update_in(state.waiters, &Map.delete(&1, job_id))
   end
 
+  # Drop a single waiter without notifying it. Removes the job's key
+  # entirely once its list empties.
+  defp remove_waiter(state, job_id, pid) do
+    case Map.get(state.waiters, job_id) do
+      nil ->
+        state
+
+      pids ->
+        case List.delete(pids, pid) do
+          [] -> %{state | waiters: Map.delete(state.waiters, job_id)}
+          remaining -> %{state | waiters: Map.put(state.waiters, job_id, remaining)}
+        end
+    end
+  end
+
   # ---- Retention / cleanup ----
 
   defp remove_script(%{script_path: nil}), do: :ok
@@ -412,8 +471,15 @@ defmodule Nest.Sandbox.ShellJobs do
   defp job_by_erl_pid(state, pid),
     do: Enum.find_value(state.jobs, fn {_id, j} -> j.erl_pid == pid && j end)
 
-  defp job_by_os_pid(state, os_pid),
-    do: Enum.find_value(state.jobs, fn {_id, j} -> j.os_pid == os_pid && j end)
+  # Prefer a running job with this OS pid; fall back to a finished one so
+  # trailing output still lands in its log. PID reuse across a running and
+  # a retained finished job can't misroute output this way.
+  defp job_by_os_pid(state, os_pid) do
+    jobs = Enum.map(state.jobs, fn {_id, j} -> j end)
+
+    Enum.find(jobs, fn j -> j.status == :running and j.os_pid == os_pid end) ||
+      Enum.find(jobs, fn j -> j.os_pid == os_pid end)
+  end
 
   defp agent_key_by_monitor(state, pid) do
     Enum.find_value(state.agents, fn {key, %{pid: p}} -> p == pid && key end)

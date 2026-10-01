@@ -22,6 +22,7 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ChatPipeline
   alias Nest.Agents.Agent.Compaction.Trigger
+  alias Nest.Agents.Agent.ToolFilter
   alias Nest.Messages.Assistant
   alias Nest.Messages.Part
   alias Nest.Messages.User
@@ -148,7 +149,10 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
 
   defp tool_names(state) do
     tools = if state.vocation, do: state.vocation.tools, else: []
-    Groups.expand(tools || [])
+
+    (tools || [])
+    |> Groups.expand()
+    |> ToolFilter.exclude_spawn_at_max_depth(state.depth)
   end
 
   defp normalize(nil), do: nil

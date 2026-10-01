@@ -142,6 +142,24 @@ defmodule Nest.Agents.AgentTestHelpers do
     {agent_pid, name}
   end
 
+  @doc """
+  Send a compaction commit to an agent using the current
+  `{:compaction_done, summary_text, staged, summary_assistant, carried_entry}`
+  contract. Direct-injection tests bypass `Trigger`/`ResponseHandler`, so
+  they pass an empty staged request and a summary assistant built from
+  `summary_text`.
+  """
+  def send_compaction_done(agent_pid, summary_text, carried_entry) do
+    summary_assistant =
+      {:assistant,
+       %Nest.Messages.Assistant{
+         parts: [%Part.Text{text: summary_text}],
+         api_logs: []
+       }}
+
+    send(agent_pid, {:compaction_done, summary_text, [], summary_assistant, carried_entry})
+  end
+
   # Hand the test process ownership links to the freshly-spawned
   # agent pid: DB sandbox checkout, Mimic stubs, MockClient swap,
   # PubSub subscription, mock-queue transfer, on_exit cleanup.

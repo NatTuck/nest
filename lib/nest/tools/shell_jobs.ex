@@ -94,9 +94,12 @@ defmodule Nest.Tools.ShellJobs do
             wait_result(id, code, output)
 
           {:stop_chat, _from} ->
+            ShellJobs.unsubscribe(key, id, self())
             {:ok, "Stopped waiting; background job #{id} is still running."}
         after
-          timeout -> {:ok, "Timed out waiting for background job #{id}; it is still running."}
+          timeout ->
+            ShellJobs.unsubscribe(key, id, self())
+            {:ok, "Timed out waiting for background job #{id}; it is still running."}
         end
     end
   end
@@ -119,7 +122,9 @@ defmodule Nest.Tools.ShellJobs do
     receive do
       {:shell_job_exit, ^id, code} -> {:ok, "Killed background job #{id} (exit code #{code})."}
     after
-      @kill_wait_ms -> {:ok, "Killed background job #{id}."}
+      @kill_wait_ms ->
+        ShellJobs.unsubscribe(key, id, self())
+        {:ok, "Killed background job #{id}."}
     end
   end
 
@@ -145,7 +150,7 @@ defmodule Nest.Tools.ShellJobs do
   defp status_suffix(_job), do: ""
 
   defp agent_key(context) do
-    {Map.get(context, :space_id, :unknown), Map.get(context, :agent_name, :unknown)}
+    Nest.Tools.agent_key(context)
   end
 
   defp max_timeout(n) when is_integer(n) and n > 0, do: n

@@ -28,7 +28,9 @@ defmodule Nest.ProjectConfig do
   The optional `[shell]` table raises the per-agent ceiling on
   concurrent background shell jobs (`shell-cmd` with `background: true`;
   see `Nest.Sandbox.ShellJobs`). It defaults to 1, and 0 disables
-  background jobs.
+  background jobs. Unlike mounts, the `[shell]` cap is **not** gated on
+  a writable workspace: it is not a filesystem grant, so it applies in
+  every mode.
 
   ## Gating
 
@@ -231,23 +233,30 @@ defmodule Nest.ProjectConfig do
     end
   end
 
+  # The `[shell]` background cap applies in every mode: it is not a
+  # filesystem grant, so a read-only mode can still lower it (including
+  # to 0 to disable background jobs) or raise it.
+  defp merge(caps, config, workspace, tmp_path) do
+    caps
+    |> put_shell(config)
+    |> maybe_put_project_mounts(workspace, tmp_path, config)
+  end
+
   # Project mounts are additive write capabilities, so they only make
   # sense in modes that can already write the project. Other modes are
   # returned untouched (a read-only mode must stay read-only).
-  defp merge(caps, config, workspace, tmp_path) do
+  defp maybe_put_project_mounts(caps, workspace, tmp_path, config) do
     if is_binary(workspace) and workspace_writable?(caps) do
       caps
       |> put_in(["fs", "project"], resolve_mounts(mounts(config), tmp_path))
       |> put_in(["fs", "protected"], protected_entries(workspace))
-      |> put_shell(config)
     else
       caps
     end
   end
 
   # The `[shell]` cap is an additive grant (raising the per-agent
-  # background-job ceiling), so it follows the same writable-mode gate
-  # as mounts.
+  # background-job ceiling).
   defp put_shell(caps, %{"shell" => %{"background" => n}}) do
     shell = caps |> Map.get("shell", %{}) |> Map.put("background", n)
     Map.put(caps, "shell", shell)

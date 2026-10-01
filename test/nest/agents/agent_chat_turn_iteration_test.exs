@@ -149,10 +149,7 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
         # test is that the new ChatTurn spawns and runs,
         # producing a chat:status broadcast the test can
         # observe.
-        send(
-          pid,
-          {:compaction_done, "Summary", {:tool_call, synthetic_tool_call_msg(), 25, 30}}
-        )
+        send_compaction_done(pid, "Summary", {:tool_call, synthetic_tool_call_msg(), 25, 30})
 
         # The new ChatTurn spawns and runs. With the carried
         # assistant+ToolUse at the tail, the ChatTurn's
@@ -203,10 +200,7 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
         # iteration (after the carried tool call executes).
         MockClient.set_response("done")
 
-        send(
-          pid,
-          {:compaction_done, "Summary", {:tool_call, synthetic_tool_call_msg(), 7, 30}}
-        )
+        send_compaction_done(pid, "Summary", {:tool_call, synthetic_tool_call_msg(), 7, 30})
 
         # Wait for the compactor to finish and the new
         # ChatTurn to spawn. The new ChatTurn iterates
@@ -294,9 +288,10 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
           # `ChatTurn.State.continuation/0` shape — bypasses the
           # legacy `normalize_continuation/2` translate so the test
           # is hermetic against any change in that dispatch table.
-          send(
+          send_compaction_done(
             pid,
-            {:compaction_done, summary_text, {:tool_call, assistant_with_tool_use, 3, 30}}
+            summary_text,
+            {:tool_call, assistant_with_tool_use, 3, 30}
           )
 
           # Drain the agent's mailbox before inspecting state. The
@@ -344,7 +339,7 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
       # then the final text response) to the agent's messages. So
       # `final_messages` may have grown past 3 by the time we read it —
       # the exact count races the turn's async tool execution. The
-      # post-swap canonical shape is always the FIRST three entries
+      # post-compaction canonical shape is always the FIRST three entries
       # (system, summary_user, carried assistant+ToolUse); assert on
       # those deterministically rather than racing the turn.
       canonical = Enum.take(final_messages, 3)

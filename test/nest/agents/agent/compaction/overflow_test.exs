@@ -21,7 +21,7 @@ defmodule Nest.Agents.Agent.Compaction.OverflowTest do
       assert msg =~ "Cannot start a conversation:"
       assert msg =~ "context limit (10000)"
       assert msg =~ "system prompt"
-      assert msg =~ "reserved response budget (8192 tokens)"
+      assert msg =~ "compaction reserve (8192 tokens)"
       assert msg =~ "Use a model with a larger context window"
     end
 
@@ -30,7 +30,7 @@ defmodule Nest.Agents.Agent.Compaction.OverflowTest do
 
       assert msg =~ "Cannot compact:"
       assert msg =~ "context limit (10000)"
-      assert msg =~ "reserved response budget (8192 tokens)"
+      assert msg =~ "compaction reserve (8192 tokens)"
     end
 
     test "default verb is 'compact' (matches the trigger's :reserve_exhausted case)" do
@@ -73,14 +73,14 @@ defmodule Nest.Agents.Agent.Compaction.OverflowTest do
       assert msg =~ "Cannot compact:"
       assert msg =~ "25% safety budget"
       assert msg =~ "100000-token context window"
-      refute msg =~ "reserved response budget"
+      refute msg =~ "compaction reserve"
     end
 
     test ":reserve_exhausted reports the model budget break" do
       msg = Overflow.message(10_000, TextFixtures.big_text(7_000), "compact", :reserve_exhausted)
 
       assert msg =~ "Cannot compact:"
-      assert msg =~ "reserved response budget (8192 tokens)"
+      assert msg =~ "compaction reserve (8192 tokens)"
       refute msg =~ "25% safety budget"
     end
   end

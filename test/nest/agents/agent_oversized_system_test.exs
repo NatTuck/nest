@@ -164,7 +164,7 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
       assert msg =~ "25% safety budget"
       assert msg =~ "8000-token context"
 
-      refute msg =~ "reserved response budget",
+      refute msg =~ "compaction reserve",
              "oversized path should not use the reserve_exhausted wording"
     end
 

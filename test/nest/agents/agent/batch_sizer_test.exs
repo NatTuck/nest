@@ -22,10 +22,12 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
   import ExUnit.CaptureLog
 
   alias Nest.Agents.Agent.BatchSizer
+  alias Nest.Agents.Agent.BatchSizer.ProjectedSize
   alias Nest.LLM.Tool
   alias Nest.Messages.{Part, ToolCall, ToolResult}
   alias Nest.TextFixtures
   alias Nest.Tools
+  alias Nest.Tools.Groups
 
   # -- helpers --
 
@@ -475,6 +477,51 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       refute content =~ <<0xFF>>
 
       assert File.read!(saved_path(content)) == raw
+    end
+  end
+
+  describe "tool context carries agent identity" do
+    test "forwards space_id/agent_name/agent_pid into the tool function" do
+      parent = self()
+
+      tool =
+        make_tool("identity-probe", fn _args, context ->
+          {:ok,
+           inspect(%{
+             key: Nest.Tools.agent_key(context),
+             pid: context[:agent_pid] == parent
+           })}
+        end)
+
+      c = %{
+        tools: [tool],
+        caps: %{"fs" => %{"read" => ["/"], "write" => ["/tmp"]}, "net" => false},
+        context_limit: 100_000,
+        messages: [],
+        tmp_path: nil,
+        agent_pid: parent,
+        agent_name: "clever-raven",
+        space_id: 42
+      }
+
+      assert [%ToolResult{content: content}] =
+               BatchSizer.run([call("c1", "identity-probe")], c)
+
+      assert content == inspect(%{key: {42, "clever-raven"}, pid: true})
+    end
+  end
+
+  describe "ProjectedSize coverage" do
+    test "every registered tool has an explicit projection" do
+      registered =
+        Groups.all()
+        |> Groups.expand()
+        |> Enum.reject(&(&1 == "context-compact"))
+
+      missing = Enum.reject(registered, &ProjectedSize.projected?/1)
+
+      assert missing == [],
+             "registered tools with only the catch-all projection: #{inspect(missing)}"
     end
   end
 

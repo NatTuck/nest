@@ -137,26 +137,29 @@ defmodule Nest.Agents.Agent.ChatTurn.Lifecycle do
   messages, and broadcasts the new active message list.
 
   `carried_entry` is the third element of the
-  `{:compaction, _, carried_entry}` entry — `nil` for
+  `{:compaction, staged, carried_entry}` entry — `nil` for
   Trigger A (post-turn) or the carried
   `{:tool_call, _, _, _}` / `{:compact_tool, _, _, _}` for
   Trigger B (mid-turn). The carried entry is what
   `Compaction.ResultHandler` uses to spawn the next
   ChatTurn (the tool call sequence resumes).
 
+  `staged` (the second element) is the staged compaction request — an
+  assistant bridge when needed plus the `[mode: compact]` suffix — and
+  `summary_assistant` is the summary as a `{:assistant, Assistant.t()}`
+  tuple. Neither is persisted yet; `ResultHandler` writes them only when the
+  compaction commits.
+
   Returns `{:stop, :normal, state}`.
   """
-  @spec finalize_compaction(State.t(), Nest.LLM.RunResponse.t()) :: {:stop, :normal, State.t()}
-  def finalize_compaction(state, response) do
-    # The entry is `{:compaction, _system_msg, carried_entry}`.
-    # The system message was for the LLM (the suffix); the
-    # third element is the carried entry to thread into
-    # the post-compaction ChatTurn spawn.
-    {_, _system_msg, carried_entry} = state.entry
+  @spec finalize_compaction(State.t(), Nest.LLM.RunResponse.t(), tuple()) ::
+          {:stop, :normal, State.t()}
+  def finalize_compaction(state, response, summary_assistant) do
+    {_, staged, carried_entry} = state.entry
 
     send(
       state.ctx.agent_pid,
-      {:compaction_done, response.text || "", carried_entry}
+      {:compaction_done, response.text || "", staged, summary_assistant, carried_entry}
     )
 
     send(state.ctx.agent_pid, {:api_log_sequences_updated, APILog.read_sequences()})

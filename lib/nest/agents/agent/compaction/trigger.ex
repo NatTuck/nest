@@ -42,6 +42,9 @@ defmodule Nest.Agents.Agent.Compaction.Trigger do
   alias Nest.Agents.Agent.Compaction.Overflow
   alias Nest.Agents.Agent.Compaction.ResultHandler
   alias Nest.Agents.Agent.SystemPrompt
+  alias Nest.Messages.Assistant
+  alias Nest.Messages.MessageList
+  alias Nest.Messages.Part
   alias Nest.Messages.Streaming
   alias Nest.Tokens.Compactor, as: TokensCompactor
 
@@ -135,13 +138,39 @@ defmodule Nest.Agents.Agent.Compaction.Trigger do
                nil
              ) do
           {:ok, _n, rendered_suffix} ->
-            spawn_compaction_chat_turn(state, carried_entry, rendered_suffix)
+            staged = stage_request(messages, rendered_suffix)
+            spawn_compaction_chat_turn(state, carried_entry, staged)
 
           {:error, :reserve_exhausted} ->
             broadcast_reserve_exhausted(state, system_prompt)
             state
         end
     end
+  end
+
+  # Build the compaction request additions that are staged (not persisted)
+  # until the compaction commits: an assistant bridge when the persisted
+  # wire tail is a user/tool role (so appending the user suffix does not
+  # create two consecutive user roles), followed by the `[mode: compact]`
+  # suffix. Both are persisted together with the summary on success.
+  defp stage_request(messages, suffix) do
+    base = MessageList.drop_trailing_unpaired_tool_call(messages)
+
+    if MessageList.last_wire_role(base) == :user do
+      [synthetic_assistant_bridge(), suffix]
+    else
+      [suffix]
+    end
+  end
+
+  # The request-only alternation bridge, now staged and persisted on commit.
+  defp synthetic_assistant_bridge do
+    {:assistant,
+     %Assistant{
+       parts: [%Part.Text{text: "Let me pause to summarize."}],
+       timestamp: DateTime.utc_now(),
+       api_logs: []
+     }}
   end
 
   # Render the system prompt. Production path: compose from
@@ -177,28 +206,22 @@ defmodule Nest.Agents.Agent.Compaction.Trigger do
     end)
   end
 
-  # Append the suffix to the messages list and spawn
-  # the compactor's chat turn. Extracted to avoid a
-  # type-inference problem with `__append_message__/2`'s
-  # return tuple.
-  defp spawn_compaction_chat_turn(state, carried_entry, suffix_message) do
-    # `__append_message__/2` returns `{stamped, next_state}`.
-    # `stamped` is a `{role, struct}` tuple; the struct's
-    # `:index` field was stamped with the agent's
-    # `next_message_index`.
-    {stamped, next_state} = Agent.__append_message__(state, suffix_message)
-    {_role, stamped_struct} = stamped
-    stamped_index = Map.get(stamped_struct, :index, 0)
+  # Spawn the compactor's chat turn with a *staged* request. Nothing from
+  # the request (assistant bridge + `[mode: compact]` suffix) is persisted
+  # here: the staged list is carried in the entry and written by
+  # `ResultHandler` only on success. A failed compaction leaves no rows.
+  #
+  # The summary assistant will be persisted at
+  # `next_message_index + length(staged)` once the staged request lands, so
+  # we key the streaming accumulator (and, in `ChatTurn.safe_iterate/1`,
+  # the ChatTurn's `active_message_index`) to that provisional index.
+  defp spawn_compaction_chat_turn(state, carried_entry, staged) do
+    provisional_index = state.chat_state.next_message_index + length(staged)
 
-    # Set up `streaming_acc` so the compactor's
-    # LLM stream deltas flow through the same
-    # path as a regular chat turn.
-    next_state =
-      Map.put(
-        next_state,
-        :live,
-        Map.put(next_state.live, :streaming_acc, Streaming.new(stamped_index + 1))
-      )
+    next_state = %{
+      state
+      | live: %{state.live | streaming_acc: Streaming.new(provisional_index)}
+    }
 
     {_effective_mode, caps} =
       ChatPipeline.resolve_mode_and_caps(
@@ -210,8 +233,8 @@ defmodule Nest.Agents.Agent.Compaction.Trigger do
 
     ChatTurnSpawner.spawn(
       next_state,
-      Map.get(next_state, :chat_state).messages,
-      {:compaction, nil, carried_entry},
+      next_state.chat_state.messages,
+      {:compaction, staged, carried_entry},
       caps
     )
   end

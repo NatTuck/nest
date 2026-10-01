@@ -124,6 +124,22 @@ defmodule Nest.Tools do
     }
   end
 
+  @doc """
+  The `{space_id, agent_name}` ownership key for the calling agent.
+
+  Tools that manage per-agent resources (background shell jobs) read
+  this from the per-call context. The context is supplied by
+  `Nest.Agents.Agent.BatchSizer`, which forwards the ChatTurn's
+  identity; both the writer (`shell-cmd`) and the readers
+  (`shell-list`/`shell-wait`/`shell-kill`) must derive it the same way.
+  `:unknown` is the defensive fallback for callers without an identity
+  (e.g. direct unit tests).
+  """
+  @spec agent_key(map()) :: {term(), term()}
+  def agent_key(context) when is_map(context) do
+    {Map.get(context, :space_id, :unknown), Map.get(context, :agent_name, :unknown)}
+  end
+
   defp shell_cmd_function(workspace_path, tmp_path) do
     %Tool{
       name: "shell-cmd",
@@ -171,7 +187,7 @@ defmodule Nest.Tools do
 
     opts = [
       background: args["background"] == true,
-      agent_key: {Map.get(context, :space_id), Map.get(context, :agent_name)},
+      agent_key: agent_key(context),
       agent_pid: Map.get(context, :agent_pid)
     ]
 
@@ -329,7 +345,8 @@ defmodule Nest.Tools do
             "description" =>
               "The model for the new sub-agent as a \"provider/model-name\" string " <>
                 "(see `models-list`). Inherits your own model when omitted."
-          }
+          },
+          "max_result_tokens" => max_result_tokens_schema()
         },
         "required" => ["name"]
       },
@@ -352,7 +369,7 @@ defmodule Nest.Tools do
           "status, and depth. Use this to discover agents you can delegate to.",
       parameters_schema: %{
         "type" => "object",
-        "properties" => %{},
+        "properties" => %{"max_result_tokens" => max_result_tokens_schema()},
         "required" => []
       },
       function: fn _args, _context ->
@@ -394,7 +411,8 @@ defmodule Nest.Tools do
             "description" =>
               "Maximum milliseconds to block for the response. Defaults to " <>
                 "300000 (5 minutes)."
-          }
+          },
+          "max_result_tokens" => max_result_tokens_schema()
         },
         "required" => ["name", "prompt"]
       },
@@ -458,7 +476,8 @@ defmodule Nest.Tools do
             "description" =>
               "Optional provider name to filter models by. If omitted, returns " <>
                 "models from all providers with expose_models enabled."
-          }
+          },
+          "max_result_tokens" => max_result_tokens_schema()
         },
         "required" => []
       },

@@ -107,8 +107,8 @@ defmodule Nest.Agents.Agent.ChatState.Live do
   stop handler reads it to send a `{:stop_chat, _}` signal.
 
   The `cancelled` field is a sticky flag set when the user
-  clicks Stop. It guards the `compaction_done` /
-  `chat_continuation` branch so an in-flight compaction result
+  clicks Stop. It guards the compaction resume
+  so an in-flight compaction result
   does not auto-resume a new chat turn after the user has
   already stopped.
 
@@ -117,9 +117,8 @@ defmodule Nest.Agents.Agent.ChatState.Live do
   fires. `handle_chat/3` stores the message here and runs the
   preflight; if preflight fits, the field is consumed by
   `handle_chat/3`'s append path. If preflight needs compaction,
-  the field is preserved across the compaction; on success, the
-  compaction handler's `chat_continuation` branch appends it
-  via `ChatPipeline.resume_with_pending/1`. On failure, the
+  the field is preserved across the compaction; on success,
+  `ChatPipeline.resume_with_pending/1` appends it. On failure, the
   field stays set so `chat:retry-compaction` can re-attach it
   to the next compaction attempt.
 

@@ -149,6 +149,8 @@ defmodule Nest.Tools.ShellCmd do
         handle_exit_result(command, code, output, workspace, tmp_path)
     after
       grace ->
+        ShellJobs.unsubscribe(agent_key, job_id, self())
+
         {:ok,
          "Started background job #{job_id} (log: #{log_path}). " <>
            "Use shell-list, shell-wait, or shell-kill to manage it."}

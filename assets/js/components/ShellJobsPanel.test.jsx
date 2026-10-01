@@ -103,4 +103,66 @@ describe("ShellJobsPanel", () => {
 
     await waitFor(() => expect(screen.getByText("boom")).toBeInTheDocument());
   });
+
+  it("shows an error when a kill fails", async () => {
+    const onKill = vi.fn().mockRejectedValue(new Error("kaboom"));
+
+    render(
+      <ShellJobsPanel
+        jobs={[runningJob]}
+        onKill={onKill}
+        onOpenLog={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Kill" }));
+
+    await waitFor(() => expect(screen.getByText("kaboom")).toBeInTheDocument());
+  });
+
+  it("calls onRefresh and surfaces its failure", async () => {
+    const onRefresh = vi.fn().mockRejectedValue(new Error("nope"));
+
+    render(
+      <ShellJobsPanel
+        jobs={[runningJob]}
+        onKill={() => {}}
+        onOpenLog={() => {}}
+        onRefresh={onRefresh}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+
+    await waitFor(() => expect(screen.getByText("nope")).toBeInTheDocument());
+    expect(onRefresh).toHaveBeenCalled();
+  });
+
+  it("clears the open log when its job disappears", async () => {
+    const onOpenLog = vi.fn().mockResolvedValue("hello output\n");
+    const jobA = { ...runningJob, id: "job-a" };
+    const jobB = { ...runningJob, id: "job-b" };
+
+    const { rerender } = render(
+      <ShellJobsPanel jobs={[jobA]} onKill={() => {}} onOpenLog={onOpenLog} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "View log" }));
+    await waitFor(() =>
+      expect(screen.getByText("hello output")).toBeInTheDocument(),
+    );
+
+    // job-a is gone; then job-a returns. The stale viewer must not reopen.
+    rerender(
+      <ShellJobsPanel jobs={[jobB]} onKill={() => {}} onOpenLog={onOpenLog} />,
+    );
+    rerender(
+      <ShellJobsPanel jobs={[jobA]} onKill={() => {}} onOpenLog={onOpenLog} />,
+    );
+
+    expect(screen.queryByText("hello output")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "View log" }),
+    ).toBeInTheDocument();
+  });
 });

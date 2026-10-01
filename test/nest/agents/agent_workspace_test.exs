@@ -15,6 +15,7 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Nest.Agents
+  alias Nest.Agents.Agent.Config
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Supervisor
   alias Nest.Persistence
@@ -157,6 +158,49 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
       assert state.workspace_path == "/new/workspace"
       assert {:assistant, %{parts: parts}} = List.last(state.chat_state.messages)
       assert Enum.any?(parts, &(&1.text == "Workspace directory change confirmed."))
+    end
+
+    test "reapplies the max-depth spawn exclusion when tools are rebuilt" do
+      {:ok, vocation} =
+        Nest.Vocations.create_vocation(%{
+          name: "WS Spawn (#{System.unique_integer([:positive])})",
+          description: "spawn tools",
+          system_prompt: "spawn prompt",
+          tools: ["agents", "file"],
+          modes: %{
+            "build" => %{
+              "description" => "writes workspace",
+              "caps" => %{
+                "net" => false,
+                "fs" => %{"read" => ["/"], "write" => ["/tmp", ":workspace"]}
+              }
+            }
+          }
+        })
+
+      {pid, _name} =
+        persist_and_start!(%{
+          name: "ws-spawn-#{System.unique_integer([:positive])}",
+          model: %{name: "qwen3.5-plus", provider: "model-studio"},
+          workspace_path: "/old/workspace",
+          vocation_id: vocation.id
+        })
+
+      space_id = AgentTestHelpers.current_space_id()
+
+      # Below max depth the spawn tools survive the rebuild.
+      :ok = Agents.change_workspace(space_id, agent_name(pid), "/new/workspace")
+      assert Enum.any?(:sys.get_state(pid).tools, &(&1.name == "agents-spawn"))
+
+      # At max depth they are dropped, matching Init/compaction.
+      max = Config.configured_max_depth()
+      :sys.replace_state(pid, fn state -> %{state | depth: max} end)
+
+      :ok = Agents.change_workspace(space_id, agent_name(pid), "/newer/workspace")
+
+      tools = :sys.get_state(pid).tools
+      refute Enum.any?(tools, &(&1.name in ["agents-spawn", "agents-batch"]))
+      assert Enum.any?(tools, &(&1.name == "file-read"))
     end
   end
 

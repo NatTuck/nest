@@ -1,6 +1,8 @@
 defmodule Nest.Tools.ShellJobsTest do
   use ExUnit.Case, async: true
 
+  alias Nest.Agents.Agent.BatchSizer
+  alias Nest.Messages.{ToolCall, ToolResult}
   alias Nest.Sandbox.ShellJobs
   alias Nest.Tools
   alias Nest.Tools.ShellCmd
@@ -76,6 +78,21 @@ defmodule Nest.Tools.ShellJobsTest do
 
     assert text =~ "Stopped waiting"
     assert [%{id: ^id, status: :running}] = ShellJobs.list(key)
+    refute self() in Map.get(:sys.get_state(ShellJobs).waiters, id, [])
+  end
+
+  test "shell-wait timeout unsubscribes the caller", %{key: key, tmp: tmp, context: context} do
+    id = start_job!("sleep 30", tmp, key)
+
+    assert {:ok, text} =
+             invoke(
+               Tools.get_function("shell-wait", nil, nil),
+               %{"id" => id, "timeout" => 10},
+               context
+             )
+
+    assert text =~ "Timed out"
+    refute self() in Map.get(:sys.get_state(ShellJobs).waiters, id, [])
   end
 
   test "shell-kill stops a running job", %{key: key, tmp: tmp, context: context} do
@@ -94,5 +111,37 @@ defmodule Nest.Tools.ShellJobsTest do
 
     assert {:error, _} =
              invoke(Tools.get_function("shell-kill", nil, nil), %{"id" => "job-999"}, context)
+  end
+
+  test "shell-cmd background via BatchSizer is keyed to the calling agent", %{
+    key: {space_id, name},
+    tmp: tmp
+  } do
+    tool = Tools.get_function("shell-cmd", "/tmp", tmp)
+
+    ctx = %{
+      tools: [tool],
+      caps: nil,
+      context_limit: 100_000,
+      messages: [],
+      tmp_path: tmp,
+      agent_pid: self(),
+      agent_name: name,
+      space_id: space_id
+    }
+
+    tc = %ToolCall{
+      id: "c1",
+      name: "shell-cmd",
+      arguments: %{"command" => "sleep 30", "background" => true}
+    }
+
+    assert [%ToolResult{content: content}] = BatchSizer.run([tc], ctx)
+    assert content =~ "Started background job"
+
+    # The job is owned by the real key, not {nil, nil} / {:unknown, :unknown}.
+    assert [%{id: _}] = ShellJobs.list({space_id, name})
+    assert ShellJobs.list({nil, nil}) == []
+    assert ShellJobs.list({:unknown, :unknown}) == []
   end
 end
