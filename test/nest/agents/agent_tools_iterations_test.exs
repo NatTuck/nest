@@ -21,6 +21,7 @@ defmodule Nest.Agents.AgentToolsIterationsTest do
     :ok
   end
 
+  import Eventually
   import Nest.Agents.AgentTestHelpers
 
   describe "iterations below the cap" do
@@ -48,8 +49,17 @@ defmodule Nest.Agents.AgentToolsIterationsTest do
 
       :ok = Agent.chat(pid, "Brief loop")
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
-      refute_receive {:chat_notification, %{type: "max_iterations"}}, 500
+      # Wait for the turn to actually finish by polling the agent's status
+      # rather than a fixed wall-clock window: this turn drives three
+      # sequential LLM calls plus tool execution through the GenServer/DB
+      # pipeline under 24-way async concurrency, so a 500ms receive is not a
+      # deterministic bound.
+      assert eventually(fn -> :sys.get_state(pid).live.status == :idle end, timeout: 1_000)
+
+      # Below the cap, `max_iterations` is never broadcast. If it ever were,
+      # it would be emitted before idle, so this non-blocking check is
+      # deterministic.
+      refute_received {:chat_notification, %{type: "max_iterations"}}
 
       MockClient.clear()
     end

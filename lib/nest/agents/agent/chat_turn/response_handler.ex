@@ -338,20 +338,13 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
       not RunResponse.has_tool_calls?(response) and
       not RunResponse.truncated?(response) and
       not silent_response?(response) and
-      over_budget?(state, assistant_msg)
+      over_budget?(assistant_msg, state.ctx.context_limit)
   end
 
-  defp over_budget?(state, assistant_msg) do
-    messages =
-      try do
-        {msgs, _} = GenServer.call(state.ctx.agent_pid, :get_messages_with_cancelled, 1_000)
-        msgs
-      catch
-        :exit, _ -> []
-      end
-
-    not Budget.fits?(messages ++ [assistant_msg], state.ctx.context_limit)
-  end
+  # The reply's own `usage` (input + cache + output) is the real size of the
+  # context including it, so we can decide without a round-trip to the Agent
+  # (the reply is the newest anchored message).
+  defp over_budget?(assistant_msg, limit), do: not Budget.fits?([assistant_msg], limit)
 
   defp defer_response(state, assistant_msg) do
     continuation = {:assistant_response, assistant_msg, state.iteration, state.max_iterations}

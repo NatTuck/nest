@@ -51,10 +51,14 @@ defmodule Nest.Agents.Agent.ChatTurn.NoticeInjector do
   """
   @spec collect_case2_specs(RunResponse.t(), State.t()) :: [ContextReminder.spec()]
   def collect_case2_specs(response, state) do
+    collect_specs(response, state, nil)
+  end
+
+  defp collect_specs(response, state, messages) do
     budget =
       if state.pending_notice, do: BudgetReminder.spec_from_pending(state.pending_notice)
 
-    context = compute_context_spec(response, state)
+    context = compute_context_spec(response, state, messages)
 
     [budget, context] |> Enum.reject(&is_nil/1)
   end
@@ -66,8 +70,11 @@ defmodule Nest.Agents.Agent.ChatTurn.NoticeInjector do
   """
   @spec inject_all(RunResponse.t(), State.t()) :: {non_neg_integer(), State.t()}
   def inject_all(response, state) do
-    specs = collect_case2_specs(response, state)
-    state = inject_specs(specs, state)
+    # Fetch the current messages once and reuse them for the projection and
+    # the budget guard, so notice injection adds no extra Agent round-trips.
+    {messages, _cancelled} = fetch_messages(state)
+    specs = collect_specs(response, state, messages)
+    state = inject_specs(specs, state, messages)
 
     state =
       if Enum.any?(specs, &(&1.kind == :budget)) do
@@ -76,19 +83,19 @@ defmodule Nest.Agents.Agent.ChatTurn.NoticeInjector do
         state
       end
 
-    _ = update_crossed_thresholds_for_context(response, state)
+    _ = update_crossed_thresholds_for_context(response, state, messages)
 
     {length(specs), state}
   end
 
-  defp compute_context_spec(response, state) do
+  defp compute_context_spec(response, state, messages) do
     limit = state.ctx.context_limit
 
     if not is_integer(limit) or limit <= 0 do
       nil
     else
       crossed = fetch_crossed_thresholds(state)
-      projected = projected_tokens_for_response(response, state)
+      projected = projected_tokens_for_response(response, state, messages)
       compact? = ContextReminder.compact_available?(state.ctx.tools)
       ContextReminder.spec(projected, limit, crossed, compact?)
     end
@@ -97,12 +104,12 @@ defmodule Nest.Agents.Agent.ChatTurn.NoticeInjector do
   # Update the Agent's `crossed_thresholds` set after a context
   # spec has been injected. Called from `inject_all/2` so the
   # threshold doesn't re-fire on subsequent iterations.
-  defp update_crossed_thresholds_for_context(response, state) do
+  defp update_crossed_thresholds_for_context(response, state, messages) do
     limit = state.ctx.context_limit
 
     if is_integer(limit) and limit > 0 do
       crossed = fetch_crossed_thresholds(state)
-      projected = projected_tokens_for_response(response, state)
+      projected = projected_tokens_for_response(response, state, messages)
 
       # Surface the projected context size to the UI chip: it's the
       # number the threshold check just compared against.
@@ -122,14 +129,14 @@ defmodule Nest.Agents.Agent.ChatTurn.NoticeInjector do
     end
   end
 
-  defp inject_specs([], state), do: state
+  defp inject_specs([], state, _messages), do: state
 
-  defp inject_specs([spec | rest], state) do
-    state = inject_one_spec(spec, state)
-    inject_specs(rest, state)
+  defp inject_specs([spec | rest], state, messages) do
+    state = inject_one_spec(spec, state, messages)
+    inject_specs(rest, state, messages)
   end
 
-  defp inject_one_spec(spec, state) do
+  defp inject_one_spec(spec, state, messages) do
     # Use the unified `NoticePairInjector.inject_pair/3` so the
     # `[assistant(attention), user(notice)]` pair lands atomically
     # via a single `{:append_messages, _}` GenServer.call. If the
@@ -148,7 +155,7 @@ defmodule Nest.Agents.Agent.ChatTurn.NoticeInjector do
     # breaks Anthropic's pairing invariant. We silently skip in
     # that case; the next safe boundary (the next iteration's
     # response handler) will retry.
-    if notice_over_budget?(spec, state) do
+    if notice_over_budget?(spec, state, messages) do
       Logger.warning(
         "NoticeInjector: skipping #{spec.kind} notice; no room within the compaction reserve"
       )
@@ -166,17 +173,10 @@ defmodule Nest.Agents.Agent.ChatTurn.NoticeInjector do
   # Synthetic notices are ordinary content: they must never spend the
   # compaction reserve. Skip a notice whose pair would not fit in the
   # remaining content budget.
-  defp notice_over_budget?(spec, state) do
+  defp notice_over_budget?(spec, state, messages) do
     limit = state.ctx.context_limit
 
     if is_integer(limit) and limit > 0 do
-      {messages, _} =
-        try do
-          GenServer.call(state.ctx.agent_pid, :get_messages_with_cancelled, 1_000)
-        catch
-          :exit, _ -> {state.ctx.messages || [], false}
-        end
-
       pair_size = TokensEstimator.estimate(spec.attention) + TokensEstimator.estimate(spec.notice)
       Budget.remaining(messages, limit) < pair_size
     else
@@ -199,14 +199,23 @@ defmodule Nest.Agents.Agent.ChatTurn.NoticeInjector do
     :exit, _ -> state.ctx.crossed_thresholds || MapSet.new()
   end
 
-  defp projected_tokens_for_response(response, state) do
-    {messages, _cancelled} =
-      try do
-        GenServer.call(state.ctx.agent_pid, :get_messages_with_cancelled, 1_000)
-      catch
-        :exit, _ -> {state.ctx.messages || [], false}
-      end
+  # Best-effort: the Agent may have shut down between the LLM call and the
+  # response handler running. Fall back to the ChatTurn's spawn-time snapshot.
+  defp fetch_messages(state) do
+    GenServer.call(state.ctx.agent_pid, :get_messages_with_cancelled, 1_000)
+  catch
+    :exit, _ -> {state.ctx.messages || [], false}
+  end
 
+  # `nil` messages means "fetch the current list lazily" (the public
+  # `collect_case2_specs/2` path); `inject_all/2` passes the already-fetched
+  # list so notice injection adds no extra Agent round-trips.
+  defp projected_tokens_for_response(response, state, nil) do
+    {messages, _cancelled} = fetch_messages(state)
+    projected_tokens_for_response(response, state, messages)
+  end
+
+  defp projected_tokens_for_response(response, state, messages) do
     ctx = %{state.ctx | messages: messages}
 
     case response.tool_calls do
