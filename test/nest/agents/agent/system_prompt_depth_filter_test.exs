@@ -29,7 +29,7 @@ defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
         name: "DepthFilter-#{System.unique_integer([:positive])}",
         description: "Depth filter test",
         system_prompt: "Base.",
-        tools: ["agents-spawn", "context-check", "context-compact"],
+        tools: ["context", "agents"],
         modes: %{
           "chat" => %{
             "description" => "General conversation.",
@@ -83,7 +83,7 @@ defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
   test "query/list/archive tools still appear in the tool list", %{vocation: vocation} do
     tools_vocation = %{
       vocation
-      | tools: ["agents-spawn", "agents-query", "agents-list", "agents-archive"]
+      | tools: ["agents"]
     }
 
     {_prompt, _mode, tools, _vocation} =

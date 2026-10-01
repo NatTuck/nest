@@ -23,6 +23,7 @@ defmodule NestWeb.AgentChannel do
   alias Nest.Agents.PersistedAgent
   alias Nest.Messages.Message
   alias Nest.Messages.Streaming
+  alias Nest.Sandbox.ShellJobs
   alias Nest.Spaces
 
   @impl true
@@ -227,6 +228,15 @@ defmodule NestWeb.AgentChannel do
     {:noreply, socket}
   end
 
+  # Handle a background shell-job update from PubSub (broadcast by
+  # `Nest.Sandbox.ShellJobs` on start/exit/kill). The payload is the
+  # agent's full current job list.
+  @impl true
+  def handle_info({:shell_jobs, payload}, socket) do
+    push(socket, "shell:jobs", payload)
+    {:noreply, socket}
+  end
+
   # Handle API log metadata from PubSub (deprecated - now included with messages)
   @impl true
   def handle_info({:api_log, _api_log}, socket) do
@@ -253,7 +263,8 @@ defmodule NestWeb.AgentChannel do
       "currentMode" => agent.current_mode,
       "contextLimit" => agent.context_limit,
       "contextLimitSource" => source_to_string(agent.context_limit_source),
-      "usage" => agent.usage
+      "usage" => agent.usage,
+      "shellJobs" => ShellJobs.list({agent.space_id, agent.name})
     }
   end
 
@@ -396,6 +407,34 @@ defmodule NestWeb.AgentChannel do
       :ok -> {:reply, {:ok, %{}}, socket}
       {:error, :not_found} -> {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
       {:error, reason} -> {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
+    end
+  end
+
+  # Fetch the agent's current background shell jobs. The same list is
+  # pushed as `shell:jobs` whenever it changes; this lets a freshly
+  # joined (or reconnected) client request it on demand.
+  @impl true
+  def handle_in("shell:list", _payload, socket) do
+    jobs = ShellJobs.list({socket.assigns.space_id, socket.assigns.name})
+    {:reply, {:ok, %{"jobs" => jobs}}, socket}
+  end
+
+  # Kill a background shell job from the UI. Scoped to this agent, so a
+  # client can't touch another agent's jobs.
+  @impl true
+  def handle_in("shell:kill", %{"id" => id}, socket) do
+    case ShellJobs.kill({socket.assigns.space_id, socket.assigns.name}, id) do
+      :ok -> {:reply, {:ok, %{}}, socket}
+      {:error, :not_found} -> {:reply, {:error, %{"reason" => "job_not_found"}}, socket}
+    end
+  end
+
+  # Fetch a job's captured log output for the UI's log viewer.
+  @impl true
+  def handle_in("shell:log", %{"id" => id}, socket) do
+    case ShellJobs.output({socket.assigns.space_id, socket.assigns.name}, id) do
+      {:ok, content} -> {:reply, {:ok, %{"content" => content}}, socket}
+      {:error, :not_found} -> {:reply, {:error, %{"reason" => "job_not_found"}}, socket}
     end
   end
 

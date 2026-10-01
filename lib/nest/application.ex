@@ -7,6 +7,7 @@ defmodule Nest.Application do
 
   alias Nest.Agents.Agent.ChatTurnSupervisor
   alias Nest.Agents.ChildRegistry
+  alias Nest.Sandbox.ShellJobs
   alias Nest.Tokens.Tokenizer
 
   @impl true
@@ -33,6 +34,8 @@ defmodule Nest.Application do
       ChatTurnSupervisor,
       {Task.Supervisor, name: Nest.Agents.TaskSupervisor},
       {Task.Supervisor, name: Nest.Models.TaskSupervisor},
+      # Background shell-job manager (per-agent `shell-cmd background`)
+      ShellJobs.child_spec(),
       # Endpoint probing + cache (started before Models so the model
       # manager can read probed discovery paths)
       Nest.EndpointCache,

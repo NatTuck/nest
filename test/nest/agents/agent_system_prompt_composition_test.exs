@@ -39,7 +39,7 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
           name: "TestSysPrompt-#{System.unique_integer([:positive])}",
           description: "Test",
           system_prompt: "Base prompt.",
-          tools: ["shell-cmd"],
+          tools: ["shell"],
           modes: %{
             "build" => %{
               "description" => "You're clear to edit the project in the workspace.",
@@ -84,7 +84,7 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
           name: "TestNoWorkspace-#{System.unique_integer([:positive])}",
           description: "Test",
           system_prompt: "Chat only.",
-          tools: ["shell-cmd"],
+          tools: ["shell"],
           modes: %{
             "chat" => %{
               "description" => "General conversation.",

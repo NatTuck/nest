@@ -13,6 +13,8 @@ defmodule NestWeb.AgentChannelTest do
   alias Nest.Messages.Part
   alias Nest.Messages.User
   alias Nest.Persistence
+  alias Nest.Sandbox.ShellJobs
+  alias Nest.Tools.ShellCmd
 
   setup :verify_on_exit!
 
@@ -350,6 +352,58 @@ defmodule NestWeb.AgentChannelTest do
       # `chat:compaction` broadcast can still reconcile the card.
       assert payload["lastCompactionIndex"] == -1
       assert payload["compactionCount"] == 0
+    end
+  end
+
+  describe "background shell jobs" do
+    test "init payload includes an empty shellJobs list", %{socket: _socket} do
+      assert_push "init", payload
+      assert payload["shellJobs"] == []
+    end
+
+    test "shell:list / shell:log / shell:kill operate on this agent's jobs", %{
+      socket: socket,
+      agent_id: name,
+      space_id: space_id
+    } do
+      key = {space_id, name}
+
+      tmp =
+        Path.join(System.tmp_dir!(), "nest_channel_jobs_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(tmp)
+
+      on_exit(fn ->
+        ShellJobs.stop_all(key)
+        File.rm_rf(tmp)
+      end)
+
+      assert {:ok, _} =
+               ShellCmd.execute("sleep 30", "/tmp", tmp, nil,
+                 background: true,
+                 agent_key: key,
+                 grace_ms: 0
+               )
+
+      # Starting a job broadcasts the new list to the channel. PubSub
+      # payloads keep their atom keys on the test socket.
+      assert_push "shell:jobs", %{jobs: [job]}, 1_000
+      assert job.status == :running
+
+      ref = push(socket, "shell:list", %{})
+      assert_reply ref, :ok, %{"jobs" => [listed]}
+      assert listed.id == job.id
+
+      log_ref = push(socket, "shell:log", %{"id" => job.id})
+      assert_reply log_ref, :ok, %{"content" => _}
+
+      kill_ref = push(socket, "shell:kill", %{"id" => job.id})
+      assert_reply kill_ref, :ok, %{}
+    end
+
+    test "shell:kill rejects an unknown id", %{socket: socket} do
+      ref = push(socket, "shell:kill", %{"id" => "job-999"})
+      assert_reply ref, :error, %{"reason" => "job_not_found"}
     end
   end
 

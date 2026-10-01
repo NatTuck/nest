@@ -67,7 +67,7 @@ defmodule Nest.Agents.SupervisorSpawnTest do
         name: "SpawnVocation-#{System.unique_integer([:positive])}",
         description: "Spawn test",
         system_prompt: "You are a specialist.",
-        tools: ["context-check", "context-compact"],
+        tools: ["context"],
         modes: %{}
       })
 

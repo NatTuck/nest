@@ -51,6 +51,7 @@ defmodule Nest.Agents.Agent do
   alias Nest.Messages.Tool
   alias Nest.Messages.User
   alias Nest.Persistence
+  alias Nest.Sandbox.ShellJobs
 
   defstruct [
     :name,
@@ -516,6 +517,10 @@ defmodule Nest.Agents.Agent do
     # specialists are left running.
     SubAgent.cascade_terminate(state)
 
+    # Stop background shell jobs before their tmp log dir is removed, so
+    # a running job can't recreate files under a just-deleted directory.
+    stop_shell_jobs(state)
+
     # Cleanup /tmp per design specification
     cleanup_tmp(state.name)
 
@@ -538,6 +543,10 @@ defmodule Nest.Agents.Agent do
   # Delegates to `Nest.Agents.Agent.TmpSpace.cleanup/1` so this
   # module doesn't carry the boilerplate.
   defp cleanup_tmp(agent_id), do: TmpSpace.cleanup(agent_id)
+
+  defp stop_shell_jobs(state) do
+    ShellJobs.stop_all({state.space_id, state.name})
+  end
 
   # Public-for-Handlers: message-construction logic. The
   # canonical impl lives in `Nest.Agents.Agent.TmpSpace`; the

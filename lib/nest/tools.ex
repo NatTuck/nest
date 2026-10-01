@@ -18,7 +18,7 @@ defmodule Nest.Tools do
   alias Nest.LLM.Tool
   alias Nest.Sandbox
   alias Nest.Tokens.ConversationSize
-  alias Nest.Tools.{FileTools, InspectFile}
+  alias Nest.Tools.{FileTools, InspectFile, ShellJobs}
 
   @doc """
   Returns a list of `Nest.LLM.Tool` structs for the given tool names.
@@ -88,6 +88,9 @@ defmodule Nest.Tools do
   defp regular_tool_function("file-edit", ws, tmp), do: FileTools.edit_function(ws, tmp)
   defp regular_tool_function("file-inspect", ws, tmp), do: InspectFile.build(ws, tmp)
   defp regular_tool_function("shell-cmd", ws, tmp), do: shell_cmd_function(ws, tmp)
+  defp regular_tool_function("shell-list", _ws, _tmp), do: ShellJobs.list_function()
+  defp regular_tool_function("shell-wait", _ws, _tmp), do: ShellJobs.wait_function()
+  defp regular_tool_function("shell-kill", _ws, _tmp), do: ShellJobs.kill_function()
   defp regular_tool_function("context-check", _ws, _tmp), do: context_check_function()
   defp regular_tool_function("context-compact", _ws, _tmp), do: context_compact_function()
   defp regular_tool_function(_name, _ws, _tmp), do: nil
@@ -140,24 +143,39 @@ defmodule Nest.Tools do
             "type" => "string",
             "description" => "Shell command to execute"
           },
+          "background" => %{
+            "type" => "boolean",
+            "description" =>
+              "When true, start the command as a background job and return a job id " <>
+                "immediately instead of waiting for output. Manage it with shell-list, " <>
+                "shell-wait, and shell-kill. Limited to a small number of concurrent " <>
+                "jobs per agent."
+          },
           "max_result_tokens" => max_result_tokens_schema()
         },
         "required" => ["command"]
       },
-      function: fn %{"command" => command}, context ->
-        shell_cmd(command, workspace_path, tmp_path, context)
+      function: fn args, context ->
+        shell_cmd(args, workspace_path, tmp_path, context)
       end
     }
   end
 
-  defp shell_cmd(command, workspace_path, tmp_path, context) do
+  defp shell_cmd(%{"command" => command} = args, workspace_path, tmp_path, context) do
+    context = context || %{}
     caps = caps_from_context(context)
 
     Logger.info(
-      "Tool shell-cmd: #{command} (workspace: #{workspace_path || "none"}, tmp: #{tmp_path || "none"})"
+      "Tool shell-cmd: #{command} (workspace: #{workspace_path || "none"}, tmp: #{tmp_path || "none"}, background: #{args["background"] == true})"
     )
 
-    Sandbox.run(command, workspace_path, tmp_path, caps)
+    opts = [
+      background: args["background"] == true,
+      agent_key: {Map.get(context, :space_id), Map.get(context, :agent_name)},
+      agent_pid: Map.get(context, :agent_pid)
+    ]
+
+    Sandbox.run(command, workspace_path, tmp_path, caps, opts)
   end
 
   # The `context-check` tool reports current context usage. The

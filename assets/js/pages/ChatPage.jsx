@@ -20,6 +20,8 @@ import {
   reloadAgent,
   editAgent,
   requestHistory,
+  killShellJob,
+  fetchShellLog,
 } from "../channels";
 import { StatusBanner } from "../components/StatusBanner";
 import { NotificationBanner } from "../components/NotificationBanner";
@@ -32,6 +34,7 @@ import { AgentEditModal } from "../components/AgentEditModal";
 import { SendErrorBanner } from "../components/SendErrorBanner";
 import { ModelMissingBanner } from "../components/ModelMissingBanner";
 import { NeedsRepairBanner } from "../components/NeedsRepairBanner";
+import { ShellJobsPanel } from "../components/ShellJobsPanel";
 import { useScrollToBottom } from "../hooks/useScrollToBottom";
 import { buildChatHistory } from "../utils/chatHistory.js";
 import { describeEditError, getStatusLabel } from "../utils/chatErrors.js";
@@ -43,6 +46,7 @@ import { describeEditError, getStatusLabel } from "../utils/chatErrors.js";
 const EMPTY_MESSAGES = [];
 const EMPTY_HISTORY = [];
 const EMPTY_MODES = ["chat"];
+const EMPTY_JOBS = [];
 
 /**
  * Chat Page component
@@ -184,6 +188,7 @@ export function ChatPage() {
     (state) => state.agentsCache[name]?.messages ?? EMPTY_MESSAGES,
   );
   const partial = useStore((state) => state.agentsCache[name]?.partial ?? null);
+  const jobs = useStore((state) => state.agentsCache[name]?.jobs ?? EMPTY_JOBS);
   // The archive is paged in lazily. `archivedHistory` holds the pages
   // loaded so far (empty until the card is expanded), `historyPrompts`
   // the recent user prompts behind the Ctrl/Cmd+Up recall list, and
@@ -498,6 +503,13 @@ export function ChatPage() {
 
       {/* Send error */}
       <SendErrorBanner message={sendError} />
+
+      {/* Background shell jobs (nothing renders when there are none) */}
+      <ShellJobsPanel
+        jobs={jobs}
+        onKill={(id) => killShellJob(name, id)}
+        onOpenLog={(id) => fetchShellLog(name, id)}
+      />
 
       {/* Messages */}
       <ChatMessages

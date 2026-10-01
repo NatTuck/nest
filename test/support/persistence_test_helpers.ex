@@ -49,7 +49,7 @@ defmodule Nest.PersistenceTestHelpers do
             name: "Persistence Test Default",
             description: "Default for persistence tests",
             system_prompt: "You are a helpful test assistant.",
-            tools: ["context-check", "context-compact"],
+            tools: ["context"],
             modes: %{
               "chat" => %{
                 "description" => "General conversation.",

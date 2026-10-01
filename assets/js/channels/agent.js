@@ -291,6 +291,10 @@ export function joinAgent(agentId, spaceId) {
     store.setNotification(agentId, payload);
   });
 
+  channel.on("shell:jobs", (payload) => {
+    store.setAgentJobs(agentId, payload?.jobs ?? []);
+  });
+
   channel.onClose(() => {
     if (joinFailedAgents.has(agentId)) {
       joinFailedAgents.delete(agentId);
@@ -437,5 +441,41 @@ export function compactionLoopOk(agentId, onError) {
 
   channel.push("chat:loop-detected-ok", {}).receive("error", (err) => {
     if (onError) onError(err);
+  });
+}
+
+/**
+ * Kill one of the agent's background shell jobs. A no-op when the
+ * channel isn't connected. `onError` receives the server error.
+ */
+export function killShellJob(agentId, id, onError) {
+  const channel = agentChannels.get(agentId);
+  if (!channel) {
+    if (onError) onError(new Error("Not connected to agent"));
+    return;
+  }
+
+  channel.push("shell:kill", { id }).receive("error", (err) => {
+    if (onError) onError(err);
+  });
+}
+
+/**
+ * Fetch a background job's captured log over `shell:log`. Resolves with
+ * the log text, or rejects with the server error. A no-op (rejects)
+ * when the channel isn't connected.
+ */
+export function fetchShellLog(agentId, id) {
+  return new Promise((resolve, reject) => {
+    const channel = agentChannels.get(agentId);
+    if (!channel) {
+      reject(new Error("Not connected to agent"));
+      return;
+    }
+
+    channel
+      .push("shell:log", { id })
+      .receive("ok", (resp) => resolve(resp?.content ?? ""))
+      .receive("error", (err) => reject(err));
   });
 }

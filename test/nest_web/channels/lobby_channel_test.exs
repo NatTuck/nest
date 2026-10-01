@@ -82,7 +82,7 @@ defmodule NestWeb.LobbyChannelTest do
           name: "Test Vocation",
           description: "A test vocation",
           system_prompt: "You are a test assistant.",
-          tools: ["file-read"],
+          tools: ["file"],
           modes: %{
             "chat" => %{
               "caps" => %{"net" => false, "fs" => %{"read" => ["/"], "write" => []}}
@@ -101,7 +101,7 @@ defmodule NestWeb.LobbyChannelTest do
       assert test_vocation != nil
       assert test_vocation.description == "A test vocation"
       assert test_vocation.system_prompt == "You are a test assistant."
-      assert test_vocation.tools == ["file-read"]
+      assert test_vocation.tools == ["file"]
 
       assert test_vocation.modes == %{
                "chat" => %{
@@ -117,7 +117,7 @@ defmodule NestWeb.LobbyChannelTest do
           name: "JSON Test Vocation",
           description: "Testing JSON encoding",
           system_prompt: "System prompt here",
-          tools: ["file-read", "file-write"],
+          tools: ["file"],
           modes: %{
             "chat" => %{
               "caps" => %{"net" => false, "fs" => %{"read" => ["/"], "write" => []}}
@@ -148,7 +148,7 @@ defmodule NestWeb.LobbyChannelTest do
       assert test_vocation != nil
       assert test_vocation["description"] == "Testing JSON encoding"
       assert test_vocation["system_prompt"] == "System prompt here"
-      assert test_vocation["tools"] == ["file-read", "file-write"]
+      assert test_vocation["tools"] == ["file"]
 
       assert test_vocation["modes"] == %{
                "chat" => %{

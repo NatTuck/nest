@@ -57,7 +57,7 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
           name: "TestSystemRepeat-#{System.unique_integer([:positive])}",
           description: "Default for system-repeat tests",
           system_prompt: "Default system prompt #{System.unique_integer([:positive])}",
-          tools: ["context-check", "context-compact"],
+          tools: ["context"],
           modes: %{
             "chat" => %{
               "description" => "General conversation.",
@@ -374,9 +374,17 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
       # compaction the agent's `state.tools` should reflect
       # the new tool list.
       original_tools = ["context-check", "context-compact"]
-      fresh_tools = ["context-check", "context-compact", "file-read"]
 
-      vocation = create_vocation(%{tools: original_tools})
+      fresh_tools = [
+        "context-check",
+        "context-compact",
+        "file-read",
+        "file-write",
+        "file-edit",
+        "file-inspect"
+      ]
+
+      vocation = create_vocation(%{tools: ["context"]})
       {pid, _agent_id} = start_with_vocation(vocation)
 
       # Initial state has only the original tools.
@@ -392,7 +400,7 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
 
       # Mutate the vocation in the DB to add `file-read`.
       {:ok, _updated_vocation} =
-        Vocations.update_vocation(vocation, %{tools: fresh_tools})
+        Vocations.update_vocation(vocation, %{tools: ["context", "file"]})
 
       # Trigger a compaction.
       state_after = run_compaction(pid)

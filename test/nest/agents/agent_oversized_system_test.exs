@@ -40,7 +40,7 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
           name: "Oversized-#{System.unique_integer([:positive])}",
           description: "Oversized system test",
           system_prompt: "Original-small-prompt",
-          tools: ["context-check", "context-compact"],
+          tools: ["context"],
           modes: %{
             "chat" => %{
               "description" => "General conversation.",

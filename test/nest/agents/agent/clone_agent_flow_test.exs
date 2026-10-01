@@ -264,7 +264,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
         name: "CloneAgentFlow #{System.unique_integer([:positive])}",
         description: "End-to-end agents-spawn test",
         system_prompt: "Delegate work to a subagent when asked.",
-        tools: ["agents-spawn"],
+        tools: ["agents"],
         modes: %{
           "chat" => %{
             "description" => "Chat",

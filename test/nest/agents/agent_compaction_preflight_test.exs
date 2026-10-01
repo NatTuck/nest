@@ -36,7 +36,7 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
         name: "Compaction Preflight Test #{Elixir.System.unique_integer([:positive])}",
         description: "For preflight tests",
         system_prompt: "Test prompt.",
-        tools: ["context-check", "context-compact"],
+        tools: ["context"],
         modes: %{
           "build" => %{
             "description" => "Test mode",

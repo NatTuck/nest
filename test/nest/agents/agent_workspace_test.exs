@@ -49,7 +49,7 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
         name: "WS Test (#{System.unique_integer([:positive])})",
         description: "writes to workspace",
         system_prompt: "workspace prompt",
-        tools: ["file-read", "file-write", "shell-cmd", "context-check", "context-compact"],
+        tools: ["file", "shell", "context"],
         modes: %{
           "build" => %{
             "description" => "writes workspace",
