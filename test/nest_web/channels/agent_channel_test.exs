@@ -387,7 +387,7 @@ defmodule NestWeb.AgentChannelTest do
 
       # Starting a job broadcasts the new list to the channel. PubSub
       # payloads keep their atom keys on the test socket.
-      assert_push "shell:jobs", %{jobs: [job]}, 1_000
+      assert_push "shell:jobs", %{jobs: [job]}, 500
       assert job.status == :running
 
       ref = push(socket, "shell:list", %{})
@@ -404,6 +404,47 @@ defmodule NestWeb.AgentChannelTest do
     test "shell:kill rejects an unknown id", %{socket: socket} do
       ref = push(socket, "shell:kill", %{"id" => "job-999"})
       assert_reply ref, :error, %{"reason" => "job_not_found"}
+    end
+
+    test "shell:log bounds an oversized, non-text log to a single frame", %{
+      socket: socket,
+      agent_id: name,
+      space_id: space_id
+    } do
+      key = {space_id, name}
+
+      tmp =
+        Path.join(System.tmp_dir!(), "nest_channel_log_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(tmp)
+
+      on_exit(fn ->
+        ShellJobs.stop_all(key)
+        File.rm_rf(tmp)
+      end)
+
+      assert {:ok, _} =
+               ShellCmd.execute("sleep 30", "/tmp", tmp, nil,
+                 background: true,
+                 agent_key: key,
+                 grace_ms: 0
+               )
+
+      assert_push "shell:jobs", %{jobs: [job]}, 500
+
+      # Fill the job's on-disk log well past the frame cap, with an
+      # invalid byte inside the kept head (raw binary output must not
+      # crash the JSON encode).
+      oversized = :binary.copy("x", 1_000) <> <<0xFF>> <> :binary.copy("y", 100_000)
+      File.write!(job.log_path, oversized, [:append])
+
+      ref = push(socket, "shell:log", %{"id" => job.id})
+      assert_reply ref, :ok, %{"content" => content}
+
+      assert byte_size(content) < byte_size(oversized)
+      assert content =~ "log truncated"
+      assert content =~ "non-text output omitted"
+      assert String.starts_with?(content, "xxxx")
     end
   end
 

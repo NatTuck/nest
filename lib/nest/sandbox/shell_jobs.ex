@@ -25,6 +25,16 @@ defmodule Nest.Sandbox.ShellJobs do
   When an agent topic is known, the manager broadcasts
   `{:shell_jobs, %{jobs: [...]}}` on `"agent:<space_id>:<name>"` when a
   job starts, exits, or is killed, so the UI can render the running set.
+
+  ## Blocking
+
+  This GenServer never blocks for an unknown amount of time. Every
+  callback does bounded, local work: `:exec.run`/`:exec.kill` are
+  synchronous OS calls, and the only file I/O is `File.write` of a
+  streamed chunk and `File.read` of a job's log (proportional to that
+  log's size; logs are not capped on disk by design). It never waits on
+  an agent, an LLM, or another process, so a `GenServer.call/3` to it is
+  ordinary synchronous communication, not a blocking hand-off.
   """
 
   use GenServer

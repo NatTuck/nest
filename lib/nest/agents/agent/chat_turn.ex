@@ -332,12 +332,17 @@ defmodule Nest.Agents.Agent.ChatTurn do
         spawn_tool_worker(state, tool_calls)
 
       {:refuse, _reason} ->
-        # Compactor didn't reduce enough. Trigger another compaction.
-        send(
-          state.ctx.agent_pid,
-          {:needs_compaction, self(), state.iteration, state.max_iterations}
-        )
+        # Compactor didn't reduce enough. Ask the Agent to compact again,
+        # carrying the trailing assistant+ToolUse so the sequence resumes
+        # afterwards. The continuation is the unified
+        # `ChatTurn.State.continuation/0` shape carried inside the 3-tuple
+        # `:needs_compaction` message — matching every emitter in
+        # `ResponseHandler`; a bare iteration/max tuple matches no handler
+        # and would silently stall the turn.
+        continuation =
+          {:tool_call, List.last(messages), state.iteration, state.max_iterations}
 
+        send(state.ctx.agent_pid, {:needs_compaction, self(), continuation})
         {:stop, :normal, state}
     end
   end

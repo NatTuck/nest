@@ -431,11 +431,21 @@ defmodule NestWeb.AgentChannel do
   end
 
   # Fetch a job's captured log output for the UI's log viewer.
+  #
+  # Background-job logs are uncapped on disk (a job may produce output
+  # for as long as it runs), but a single websocket frame must stay
+  # bounded: the reply carries only the head of the log, with an
+  # explicit truncation marker when there is more.
+  @shell_log_max_bytes 65_536
+
   @impl true
   def handle_in("shell:log", %{"id" => id}, socket) do
     case ShellJobs.output({socket.assigns.space_id, socket.assigns.name}, id) do
-      {:ok, content} -> {:reply, {:ok, %{"content" => content}}, socket}
-      {:error, :not_found} -> {:reply, {:error, %{"reason" => "job_not_found"}}, socket}
+      {:ok, content} ->
+        {:reply, {:ok, %{"content" => bounded_shell_log(content)}}, socket}
+
+      {:error, :not_found} ->
+        {:reply, {:error, %{"reason" => "job_not_found"}}, socket}
     end
   end
 
@@ -655,5 +665,32 @@ defmodule NestWeb.AgentChannel do
       provider: model_params["provider"] || model_params[:provider],
       thinking_level: model_params["thinking_level"] || model_params[:thinking_level]
     }
+  end
+
+  # A bounded, JSON-safe view of a job's log. Shell output can be raw
+  # binary (invalid UTF-8), which `Jason` refuses to encode, so coerce
+  # to valid UTF-8 as well as trimming to `@shell_log_max_bytes`.
+  defp bounded_shell_log(content) when byte_size(content) <= @shell_log_max_bytes do
+    valid_utf8(content)
+  end
+
+  defp bounded_shell_log(content) do
+    total = byte_size(content)
+    head = binary_part(content, 0, @shell_log_max_bytes)
+
+    valid_utf8(head) <>
+      "\n... [log truncated: showing first #{@shell_log_max_bytes} of #{total} bytes]"
+  end
+
+  # Decode as much valid UTF-8 as possible. `:unicode.characters_to_binary/3`
+  # reports the undecodable remainder rather than raising; an invalid byte
+  # mid-stream (raw binary output) drops the rest, which is flagged so the
+  # omission is visible rather than silent.
+  defp valid_utf8(bin) do
+    case :unicode.characters_to_binary(bin, :utf8, :utf8) do
+      text when is_binary(text) -> text
+      {:error, converted, _rest} -> converted <> "\n... [non-text output omitted]"
+      {:incomplete, converted, _rest} -> converted
+    end
   end
 end

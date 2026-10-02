@@ -39,7 +39,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
 
     assert :ok = ShellJobs.kill(key, id)
     assert :ok = ShellJobs.subscribe(key, id, self())
-    assert_receive {:shell_job_exit, ^id, _code}, 5_000
+    assert_receive {:shell_job_exit, ^id, _code}, 500
     assert [%{id: ^id, status: :exited, killed: true}] = ShellJobs.list(key)
   end
 
@@ -51,13 +51,13 @@ defmodule Nest.Sandbox.ShellJobsTest do
 
     assert :ok = ShellJobs.kill(key, id)
     assert :ok = ShellJobs.subscribe(key, id, self())
-    assert_receive {:shell_job_exit, ^id, _code}, 5_000
+    assert_receive {:shell_job_exit, ^id, _code}, 500
 
     assert {:ok, _} = start_background("sleep 30", tmp, key)
   end
 
   test "a command that exits within the grace window returns its output", %{key: key, tmp: tmp} do
-    assert {:ok, output} = start_background("echo hello", tmp, key, grace_ms: 2_000)
+    assert {:ok, output} = start_background("echo hello", tmp, key, grace_ms: 500)
     assert output == "hello\n"
   end
 
@@ -65,7 +65,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
     id = start_running!("sleep 0.2; echo late", tmp, key)
 
     assert :ok = ShellJobs.subscribe(key, id, self())
-    assert_receive {:shell_job_exit, ^id, 0}, 5_000
+    assert_receive {:shell_job_exit, ^id, 0}, 500
     assert {:ok, "late\n"} = ShellJobs.output(key, id)
   end
 
@@ -99,9 +99,9 @@ defmodule Nest.Sandbox.ShellJobsTest do
 
     ref = Process.monitor(agent)
     Process.exit(agent, :kill)
-    assert_receive {:DOWN, ^ref, :process, ^agent, :killed}, 1_000
+    assert_receive {:DOWN, ^ref, :process, ^agent, :killed}, 500
 
-    assert eventually(fn -> ShellJobs.list(key) == [] end, timeout: 2_000)
+    assert eventually(fn -> ShellJobs.list(key) == [] end, timeout: 500)
   end
 
   test "unknown job ids report :not_found", %{key: key} do
@@ -115,10 +115,24 @@ defmodule Nest.Sandbox.ShellJobsTest do
     id = start_running!("sleep 30", tmp, key)
 
     assert :ok = ShellJobs.subscribe(key, id, self())
-    assert self() in Map.get(:sys.get_state(ShellJobs).waiters, id, [])
-
     assert :ok = ShellJobs.unsubscribe(key, id, self())
-    assert Map.get(:sys.get_state(ShellJobs).waiters, id, []) == []
+
+    # Synchronize on the job's exit through a separate observer, then
+    # assert the unsubscribed caller received no stray exit message.
+    parent = self()
+
+    observer =
+      spawn(fn ->
+        receive do
+          {:shell_job_exit, ^id, code} -> send(parent, {:observed_exit, id, code})
+        end
+      end)
+
+    assert :ok = ShellJobs.subscribe(key, id, observer)
+    assert :ok = ShellJobs.kill(key, id)
+
+    assert_receive {:observed_exit, ^id, _code}, 500
+    refute_received {:shell_job_exit, ^id, _code}
 
     # Idempotent: a second unsubscribe (or one for an unknown job) is a no-op.
     assert :ok = ShellJobs.unsubscribe(key, id, self())

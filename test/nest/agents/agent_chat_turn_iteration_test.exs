@@ -387,6 +387,83 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
     end
   end
 
+  describe "mid-turn re-compaction of a still-refused tool batch" do
+    # Regression: the resumed ChatTurn used to emit a stale 4-tuple
+    # `{:needs_compaction, pid, iteration, max_iterations}` that no
+    # handler matched, so a compactor that still couldn't make room
+    # stalled the turn silently. It must emit the unified 3-tuple
+    # continuation (like every other emitter) so the Agent re-enters
+    # `:compacting`.
+    test "a still-refused batch asks the Agent to compact again" do
+      {pid, _name} = start_test_agent()
+
+      # A tool-result projection big enough to refuse the batch on its
+      # own: the `file-read` projection stats the file (~1 MiB), which
+      # estimates to well over the 128k context limit. The file is only
+      # stat'ed, never tokenized, so its contents are irrelevant.
+      big =
+        Path.join(
+          System.tmp_dir!(),
+          "nest_iter_big_#{System.unique_integer([:positive])}.bin"
+        )
+
+      File.write!(big, :binary.copy(<<0>>, 1_048_576))
+      on_exit(fn -> File.rm(big) end)
+
+      carried =
+        {:assistant,
+         %Assistant{
+           index: 0,
+           parts: [
+             %Part.ToolUse{
+               id: "call_big",
+               name: "file-read",
+               arguments: %{"path" => big}
+             }
+           ],
+           api_logs: []
+         }}
+
+      :sys.replace_state(pid, fn state ->
+        messages = [
+          {:system,
+           %Nest.Messages.System{
+             index: 0,
+             parts: [%Part.Text{text: "System"}],
+             api_logs: []
+           }},
+          {:user, %User{index: 1, parts: [%Part.Text{text: "Do the thing"}], api_logs: []}},
+          carried
+        ]
+
+        # Pin the context limit so the 1 MiB `file-read` projection
+        # (~314k tokens) overflows it and the batch is refused. The loop
+        # breaker is already at its limit, so the re-compaction request
+        # surfaces as an observable status transition instead of spawning
+        # another compactor.
+        %{
+          state
+          | chat_state: %{state.chat_state | messages: messages},
+            live: %{state.live | consecutive_compaction_count: 3},
+            llm_metrics: %{state.llm_metrics | context_limit: 128_000}
+        }
+      end)
+
+      capture_log(fn ->
+        send_compaction_done(pid, "Summary", {:tool_call, carried, 5, 30})
+
+        # The resumed ChatTurn re-preflights, refuses, and (with the
+        # fix) emits the 3-tuple `:needs_compaction`, which routes to
+        # `ResultHandler.needs_entry/2` → `:compacting`. Without the fix
+        # the 4-tuple is unroutable, so no `:compacting` ever arrives.
+        assert_receive {:chat_status, %{status: "compacting"}}, 500
+
+        # The loop breaker then trips rather than spawning a compactor.
+        assert_receive {:chat_status, %{status: "compaction_loop_detected"}}, 500
+      end)
+    end
+  end
+
   # Regression coverage for the "25% context warning fires on every
   # user message past 25%" bug lives in
   # `Nest.Agents.AgentContextWarningTest`.

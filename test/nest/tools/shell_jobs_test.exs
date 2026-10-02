@@ -32,6 +32,26 @@ defmodule Nest.Tools.ShellJobsTest do
 
   defp invoke(tool, args, context), do: tool.function.(args, context)
 
+  # The tool's caller must not be left registered for the job's exit.
+  # Verify by killing the job and confirming only an explicit observer
+  # receives the exit broadcast.
+  defp refute_subscribed(key, id) do
+    parent = self()
+
+    observer =
+      spawn(fn ->
+        receive do
+          {:shell_job_exit, ^id, code} -> send(parent, {:observed_exit, id, code})
+        end
+      end)
+
+    assert :ok = ShellJobs.subscribe(key, id, observer)
+    assert :ok = ShellJobs.kill(key, id)
+
+    assert_receive {:observed_exit, ^id, _code}, 500
+    refute_received {:shell_job_exit, ^id, _code}
+  end
+
   test "shell-list reports the agent's jobs", %{key: key, tmp: tmp, context: context} do
     assert {:ok, "No background jobs."} =
              invoke(Tools.get_function("shell-list", nil, nil), %{}, context)
@@ -53,7 +73,7 @@ defmodule Nest.Tools.ShellJobsTest do
     assert {:ok, text} =
              invoke(
                Tools.get_function("shell-wait", nil, nil),
-               %{"id" => id, "timeout" => 5_000},
+               %{"id" => id, "timeout" => 500},
                context
              )
 
@@ -72,13 +92,13 @@ defmodule Nest.Tools.ShellJobsTest do
     assert {:ok, text} =
              invoke(
                Tools.get_function("shell-wait", nil, nil),
-               %{"id" => id, "timeout" => 5_000},
+               %{"id" => id, "timeout" => 500},
                context
              )
 
     assert text =~ "Stopped waiting"
     assert [%{id: ^id, status: :running}] = ShellJobs.list(key)
-    refute self() in Map.get(:sys.get_state(ShellJobs).waiters, id, [])
+    refute_subscribed(key, id)
   end
 
   test "shell-wait timeout unsubscribes the caller", %{key: key, tmp: tmp, context: context} do
@@ -92,7 +112,7 @@ defmodule Nest.Tools.ShellJobsTest do
              )
 
     assert text =~ "Timed out"
-    refute self() in Map.get(:sys.get_state(ShellJobs).waiters, id, [])
+    refute_subscribed(key, id)
   end
 
   test "shell-kill stops a running job", %{key: key, tmp: tmp, context: context} do
