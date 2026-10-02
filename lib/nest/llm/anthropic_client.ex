@@ -47,7 +47,7 @@ defmodule Nest.LLM.AnthropicClient do
   def run(%RunRequest{} = request, opts) do
     url = normalize_endpoint(opts[:base_url], "/v1/messages")
     api_key = Keyword.fetch!(opts, :api_key)
-    timeout = Keyword.get(opts, :receive_timeout, :infinity)
+    timeout = Client.receive_timeout(opts)
     parent = self()
 
     headers = [
@@ -72,17 +72,21 @@ defmodule Nest.LLM.AnthropicClient do
   # `Nest.LLM.HttpWorker.handle_response/4`; this function only
   # owns the Anthropic-specific Req options.
   defp http_worker(parent, url, headers, request, opts, timeout) do
+    ctx = HttpWorker.context(url, request.model, request.messages, opts)
+
     result =
-      Req.post(url,
-        headers: headers,
-        json: format_request_payload(request, opts),
-        receive_timeout: timeout,
-        into: :self,
-        http_errors: :return,
-        max_retries: 0
+      Req.post(
+        url,
+        [
+          headers: headers,
+          json: format_request_payload(request, opts),
+          receive_timeout: timeout,
+          into: :self,
+          http_errors: :return
+        ] ++ HttpWorker.retry_opts(opts)
       )
 
-    HttpWorker.handle_response(result, parent, "AnthropicClient", &format_error_chunk/3)
+    HttpWorker.handle_response(result, parent, "AnthropicClient", &format_error_chunk/3, ctx)
   end
 
   defp format_error_chunk(kind, status, body) do

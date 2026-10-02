@@ -43,6 +43,33 @@ defmodule Nest.LLM.Client do
           | {:headers, [{String.t(), String.t()}]}
           | {atom(), any()}
 
+  # Applied when a provider's config leaves `receive_timeout` unset. It bounds a
+  # *silent* connection: with `:infinity` both the socket read and the SSE idle
+  # watchdog are unbounded, so a connection dropped without a FIN/RST hangs the
+  # turn forever — and no retry can fire, because a retry needs a failure to
+  # react to. 10 minutes is well past any legitimate first-token latency we have
+  # seen (a ~350k-token prefill is the slow case) while still being finite.
+  @default_receive_timeout_ms 600_000
+
+  @doc "The receive timeout used when a provider config does not set one."
+  @spec default_receive_timeout_ms() :: pos_integer()
+  def default_receive_timeout_ms, do: @default_receive_timeout_ms
+
+  @doc """
+  Resolve the receive timeout from call opts.
+
+  An explicit integer — or `:infinity`, to opt out — wins. A missing or `nil`
+  value, which is what an unset `ClientConfig.receive_timeout` produces, falls
+  back to `default_receive_timeout_ms/0`.
+  """
+  @spec receive_timeout(keyword()) :: pos_integer() | :infinity
+  def receive_timeout(opts) do
+    case Keyword.get(opts, :receive_timeout) do
+      nil -> @default_receive_timeout_ms
+      value -> value
+    end
+  end
+
   @doc """
   Run a streaming completion.
 

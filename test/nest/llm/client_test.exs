@@ -122,6 +122,25 @@ defmodule Nest.LLM.ClientTest do
     end
   end
 
+  describe "receive_timeout/1" do
+    test "falls back to a finite default when the provider leaves it unset" do
+      # `ClientConfig.receive_timeout` defaults to nil, which used to become
+      # `:infinity` — unbounded socket read *and* unbounded SSE idle watchdog,
+      # so a silently dropped connection hung the turn forever and no retry
+      # could fire.
+      assert Client.receive_timeout(receive_timeout: nil) ==
+               Client.default_receive_timeout_ms()
+
+      assert Client.receive_timeout([]) == Client.default_receive_timeout_ms()
+      assert Client.default_receive_timeout_ms() == 600_000
+    end
+
+    test "an explicit value wins, including :infinity to opt out" do
+      assert Client.receive_timeout(receive_timeout: 5_000) == 5_000
+      assert Client.receive_timeout(receive_timeout: :infinity) == :infinity
+    end
+  end
+
   defp run_with_chunks(chunks) do
     parent = self()
 

@@ -19,6 +19,64 @@ defmodule Nest.LLM.HttpWorker do
 
   require Logger
 
+  # Retry policy for a streaming LLM request.
+  #
+  # Req retries only when the *request* fails — connect, send, or
+  # receive-headers — and never after the response body has started, because
+  # `into: :self` hands the body to us once the step chain returns. So a retry
+  # can never duplicate or corrupt streamed text; a mid-stream failure is
+  # reported as `stream_terminated` instead (see `drain_stream/5`).
+  #
+  # `:transient` rather than Req's `:safe_transient` default is required: the
+  # default retries only safe/idempotent methods, and a chat completion is a
+  # POST. Req's transient set is transport errors (`:closed`, `:econnrefused`,
+  # `:timeout`) plus 408/429/5xx. A retried POST can in principle produce a
+  # second generation if the first attempt did reach the provider: that is a
+  # cost risk, not a correctness one, and it is the price of not losing a whole
+  # turn to a stale pooled connection.
+  @retry_opts [retry: :transient, max_retries: 2, retry_log_level: :info]
+
+  @doc """
+  Req options for the retry policy, with a caller override.
+
+  Callers may pass `retry_opts: [...]` in their own opts to override any part of
+  the policy. Tests use it to set `retry_delay: fn _ -> 0 end`, so exercising a
+  retry does not have to sleep.
+  """
+  @spec retry_opts(keyword()) :: keyword()
+  def retry_opts(opts) do
+    Keyword.merge(@retry_opts, Keyword.get(opts, :retry_opts, []))
+  end
+
+  @doc """
+  Build the context carried into a failure description.
+
+  Failure messages are what an agent — and the human reading the transcript —
+  sees, so they name the endpoint, the model and the request size, count the
+  retries that were available, and time the attempt. `started_at` is read here,
+  before the request is issued, so the elapsed time reported on failure covers
+  the whole attempt, retries included.
+  """
+  @spec context(String.t() | nil, String.t() | nil, list() | nil, keyword()) :: map()
+  def context(url, model, messages, opts) do
+    %{
+      host: host_of(url),
+      model: model,
+      messages: length(messages || []),
+      retries: Keyword.get(retry_opts(opts), :max_retries),
+      started_at: System.monotonic_time(:millisecond)
+    }
+  end
+
+  defp host_of(nil), do: nil
+
+  defp host_of(url) do
+    case URI.parse(url) do
+      %URI{host: host} -> host
+      _ -> nil
+    end
+  end
+
   @doc """
   Handle a `Req.post` result and forward its body to `parent`
   via the `{:req_chunk, _}` / `:req_done` protocol.
@@ -42,28 +100,40 @@ defmodule Nest.LLM.HttpWorker do
           Req.Response.t() | {:error, term()},
           pid(),
           String.t(),
-          (String.t(), term(), term() -> String.t())
+          (String.t(), term(), term() -> String.t()),
+          map()
         ) :: :ok
-  def handle_response(result, parent, client_label, format_chunk) do
+  def handle_response(result, parent, client_label, format_chunk, ctx \\ %{}) do
     case result do
       {:ok, %Req.Response{status: 200, body: %Req.Response.Async{} = async_body}} ->
-        drain_stream(async_body, parent, client_label, format_chunk)
+        drain_stream(async_body, parent, client_label, format_chunk, ctx)
 
       {:ok, %Req.Response{status: status, body: %Req.Response.Async{} = async_body}} ->
-        body = drain_async_error(async_body)
-        send(parent, {:req_chunk, format_chunk.("http_error", status, body)})
-        send(parent, :req_done)
+        emit_http_error(parent, format_chunk, status, drain_async_error(async_body), ctx)
 
       {:ok, %Req.Response{status: status, body: body}} ->
-        send(parent, {:req_chunk, format_chunk.("http_error", status, body)})
-        send(parent, :req_done)
+        emit_http_error(parent, format_chunk, status, body, ctx)
 
       {:error, reason} ->
-        send(parent, {:req_chunk, format_chunk.("request_failed", nil, inspect(reason))})
-        send(parent, :req_done)
+        emit_transport_error(parent, format_chunk, reason, ctx)
     end
 
     :ok
+  end
+
+  # One error chunk plus the terminator, so each branch above stays a single
+  # call (and `handle_response/5` stays inside credo's complexity budget).
+  defp emit_http_error(parent, format_chunk, status, body, ctx) do
+    send_error(parent, format_chunk, "http_error", status, describe_http_error(status, body, ctx))
+  end
+
+  defp emit_transport_error(parent, format_chunk, reason, ctx) do
+    send_error(parent, format_chunk, "request_failed", nil, describe_transport(reason, ctx))
+  end
+
+  defp send_error(parent, format_chunk, kind, status, rendered) do
+    send(parent, {:req_chunk, format_chunk.(kind, status, rendered)})
+    send(parent, :req_done)
   end
 
   # The idle watchdog a client's SSE consumer arms while it waits for the
@@ -103,12 +173,18 @@ defmodule Nest.LLM.HttpWorker do
   # underlying stream signals `:done` (or raises if the
   # transport is torn down mid-read), so we send `:req_done`
   # immediately after the iteration completes.
-  defp drain_stream(async_body, parent, client_label, format_chunk) do
+  defp drain_stream(async_body, parent, client_label, format_chunk, ctx) do
+    # Bytes already forwarded, so a mid-stream failure can report how far the
+    # response got. `:counters` rather than a reducer accumulator because the
+    # value has to survive the `catch` that unwinds the iteration.
+    bytes = :counters.new(1, [])
+
     # `catch kind, reason` (not `rescue`) is intentional: transport
     # failures mid-stream surface as `:exit` (not just exceptions).
     # credo:disable-for-next-line Credo.Check.Readability.PreferImplicitTry
     try do
       Enum.each(async_body, fn chunk ->
+        :counters.add(bytes, 1, byte_size(chunk))
         send(parent, {:req_chunk, chunk})
       end)
 
@@ -119,7 +195,12 @@ defmodule Nest.LLM.HttpWorker do
 
         send(
           parent,
-          {:req_chunk, format_chunk.("stream_terminated", nil, "#{kind}: #{inspect(reason)}")}
+          {:req_chunk,
+           format_chunk.(
+             "stream_terminated",
+             nil,
+             describe_stream_failure(kind, reason, :counters.get(bytes, 1), ctx)
+           )}
         )
 
         send(parent, :req_done)
@@ -134,5 +215,84 @@ defmodule Nest.LLM.HttpWorker do
     async_body
     |> Enum.reduce([], fn chunk, acc -> [acc, chunk] end)
     |> IO.iodata_to_binary()
+  end
+
+  # ---- Failure descriptions ------------------------------------------------
+
+  # These become the text an agent — and the human reading the transcript — sees.
+  # Before this they were only the inspected `Req` reason, which said *what*
+  # failed but not *where*, *how far* it got, or *how many attempts* were spent.
+
+  defp describe_transport(reason, ctx) do
+    join_lines([transport_phrase(reason), context_line(ctx), inspect(reason)])
+  end
+
+  defp describe_stream_failure(kind, reason, bytes, ctx) do
+    join_lines([
+      "the response stream ended mid-flight after #{bytes} bytes " <>
+        "(#{kind}: #{inspect(reason)})",
+      context_line(ctx)
+    ])
+  end
+
+  defp describe_http_error(status, body, ctx) do
+    join_lines(["the provider returned HTTP #{status}", text(body), context_line(ctx)])
+  end
+
+  # One plain-English line for the transport reasons Req treats as transient, so
+  # the reader does not have to decode a Mint reason atom.
+  defp transport_phrase(%Req.TransportError{reason: :closed}),
+    do: "the provider closed the connection before responding"
+
+  defp transport_phrase(%Req.TransportError{reason: :econnrefused}),
+    do: "could not connect to the provider"
+
+  defp transport_phrase(%Req.TransportError{reason: :timeout}),
+    do: "the provider did not respond within the receive timeout"
+
+  defp transport_phrase(%Req.TransportError{reason: reason}),
+    do: "the request to the provider failed (#{inspect(reason)})"
+
+  defp transport_phrase(reason), do: "the request to the provider failed: #{inspect(reason)}"
+
+  defp context_line(ctx) when map_size(ctx) == 0, do: nil
+
+  defp context_line(ctx) do
+    [
+      field("host", ctx[:host]),
+      field("model", ctx[:model]),
+      field("messages", ctx[:messages]),
+      field("retries", ctx[:retries]),
+      field("elapsed", elapsed_field(ctx))
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" ")
+  end
+
+  defp field(_name, nil), do: nil
+  defp field(name, value), do: "#{name}=#{value}"
+
+  defp elapsed_field(ctx) do
+    case elapsed_ms(ctx) do
+      nil -> nil
+      ms -> "#{ms}ms"
+    end
+  end
+
+  defp elapsed_ms(%{started_at: t0}) when is_integer(t0),
+    do: System.monotonic_time(:millisecond) - t0
+
+  defp elapsed_ms(_ctx), do: nil
+
+  # A body that is already text stays as-is; anything else (a decoded JSON map,
+  # say) is inspected so the SSE chunk always carries a string.
+  defp text(body) when is_binary(body), do: body
+  defp text(nil), do: nil
+  defp text(body), do: inspect(body)
+
+  defp join_lines(lines) do
+    lines
+    |> Enum.reject(&(&1 in [nil, ""]))
+    |> Enum.join("\n")
   end
 end

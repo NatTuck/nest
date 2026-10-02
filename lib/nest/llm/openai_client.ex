@@ -36,7 +36,7 @@ defmodule Nest.LLM.OpenAIClient do
   def run(%RunRequest{} = request, opts) do
     url = normalize_endpoint(opts[:base_url], "/chat/completions")
     api_key = Keyword.fetch!(opts, :api_key)
-    timeout = Keyword.get(opts, :receive_timeout, :infinity)
+    timeout = Client.receive_timeout(opts)
     parent = self()
 
     worker = spawn_link(fn -> http_worker(parent, url, api_key, request, opts, timeout) end)
@@ -55,17 +55,21 @@ defmodule Nest.LLM.OpenAIClient do
   # `Nest.LLM.HttpWorker.handle_response/4`; this function only
   # owns the OpenAI-specific Req options.
   defp http_worker(parent, url, api_key, request, opts, timeout) do
+    ctx = HttpWorker.context(url, request.model, request.messages, opts)
+
     result =
-      Req.post(url,
-        auth: {:bearer, api_key},
-        json: build_payload(request, opts),
-        receive_timeout: timeout,
-        into: :self,
-        http_errors: :return,
-        max_retries: 0
+      Req.post(
+        url,
+        [
+          auth: {:bearer, api_key},
+          json: build_payload(request, opts),
+          receive_timeout: timeout,
+          into: :self,
+          http_errors: :return
+        ] ++ HttpWorker.retry_opts(opts)
       )
 
-    HttpWorker.handle_response(result, parent, "OpenAIClient", &format_error_chunk/3)
+    HttpWorker.handle_response(result, parent, "OpenAIClient", &format_error_chunk/3, ctx)
   end
 
   defp format_error_chunk(kind, status, body) do
