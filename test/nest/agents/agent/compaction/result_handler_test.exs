@@ -225,6 +225,27 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandlerTest do
     end
   end
 
+  describe "handle_success/5" do
+    test "an empty (or think-only) summary fails compaction instead of committing" do
+      state = %{build_state() | space_id: 97}
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:97:test-agent-loop")
+
+      summary_assistant = {:assistant, %Nest.Messages.Assistant{parts: [], api_logs: []}}
+
+      for empty <- ["", "   \n", "<think>only thinking</think>"] do
+        log =
+          capture_log(fn ->
+            new_state = ResultHandler.handle_success(state, empty, [], summary_assistant, nil)
+            assert new_state.live.status == :compaction_failed
+            assert_receive {:chat_error, %{content: content, compactionError: true}}
+            assert content =~ "empty summary"
+          end)
+
+        assert log =~ "Compaction failed"
+      end
+    end
+  end
+
   describe "retry_compaction/1" do
     # `retry_compaction/1` has two branches: when `mid_turn_entry`
     # is set, it dispatches to `needs_entry/2` (carries the

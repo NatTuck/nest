@@ -2,31 +2,33 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   @moduledoc """
   Handle the compactor's chat-turn result. When the
   ChatTurn finishes successfully it sends
-  `{:compaction_done, summary_text, carried_entry}` to the
-  Agent; this module owns the swap:
+  `{:compaction_done, summary_text, staged, summary_assistant,
+  carried_entry}` to the Agent; this module commits the
+  compaction:
 
-    1. Strip `think.../think` markers from the summary.
+    1. Strip `think.../think` markers from the summary and
+       validate it (empty -> retryable failure).
     2. Re-fetch the vocation from the DB and re-render the
        system prompt + tools. Per AGENTS.md the system
        message may change at compaction (the prefix cache
        is invalidated by the compaction itself).
-    3. Build the fresh system message + the "Summary of
+    3. Persist the staged compaction request (bridge +
+       suffix) and the summary assistant — exactly the
+       messages that were sent to produce the summary.
+    4. Build the fresh system message + the "Summary of
        earlier conversation:" user message; thread the
        carried entry's messages onto the end.
-    4. Move pre-swap `messages` to `history` (in-memory).
-    5. Append the marker to `history` via
-       `MessageAppender.append_marker/2`.
-    6. Append the post-swap active list via
+    5. Append the marker via `MessageAppender.append_marker/2`.
+    6. Append the post-compaction active list via
        `Agent.__append_messages__/2`.
     7. Broadcast `chat:compaction` and spawn the next chat
        turn.
 
-  Every entry added to `(history ++ messages)` flows through
-  the canonical message append path, which always persists
-  a row at the assigned index. That makes the invariant
-  "if it's in `(history ++ messages)`, it's in the `messages`
-  table at its `message_index`" structural — bypasses
-  surface as test failures.
+  Every message gets a message index exactly once, when it
+  is committed through the canonical append path. A failed
+  compaction persists nothing (the staged request and
+  summary are discarded); the only sent-but-not-persisted
+  sequence is a failed compaction attempt.
 
   On failure the compactor's chat turn crashed or returned
   an error: `handle_error/3` flips the agent to
@@ -42,28 +44,24 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   alias Nest.Agents.Agent.ChatTurnSpawner
   alias Nest.Agents.Agent.Compaction.Marker
   alias Nest.Agents.Agent.Compaction.Trigger
-  alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.MessageAppender
   alias Nest.Agents.Agent.SystemPrompt
+  alias Nest.Agents.Agent.ToolFilter
   alias Nest.Messages.Part
   alias Nest.Messages.System
   alias Nest.Messages.ThinkTags
   alias Nest.Messages.User
+  alias Nest.Tokens.Compactor, as: TokensCompactor
   alias Nest.Tokens.Estimator
   alias Nest.Vocations
   alias Nest.Vocations.Vocation
 
   @max_consecutive_compactions 3
 
-  # Tools that let an agent spawn further sub-agents. Dropped
-  # from the tool list of an agent at max depth when its tools
-  # are re-rendered at compaction.
-  @spawn_tools ~w(agents-spawn agents-batch)
-
   # Dispatch entry for `Handlers.handle/2`.
   @spec handle(term(), Agent.t()) :: GenServer.reply()
-  def handle({:compaction_done, summary_text, carried_entry}, state) do
-    {:noreply, handle_success(state, summary_text, carried_entry)}
+  def handle({:compaction_done, summary_text, staged, summary_assistant, carried_entry}, state) do
+    {:noreply, handle_success(state, summary_text, staged, summary_assistant, carried_entry)}
   end
 
   def handle({:compaction_failed, reason, carried_entry}, state) do
@@ -94,11 +92,36 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
     {:reply, :ok, loop_detected_ok(state)}
   end
 
-  # Run the success path: re-render system + tools, archive pre-swap,
-  # append marker to history, append new active messages, broadcast
-  # chat:compaction, spawn next. `carried_entry` is nil for Trigger A.
-  @spec handle_success(Agent.t(), String.t(), Agent.ChatTurn.State.entry() | nil) :: Agent.t()
-  def handle_success(state, summary_text, carried_entry) do
+  # Run the success path: re-render system + tools, persist the staged
+  # compaction request + summary, append the marker, append the new active
+  # segment, broadcast chat:compaction, spawn next. `carried_entry` is nil
+  # for Trigger A.
+  #
+  # Choke point: a missing summary is a hard bug (every marker must be
+  # bracketed by the summary it produced). We validate with the shared
+  # `Compactor.validate_summary/1` and, on an empty/think-only response,
+  # route to the retryable `:compaction_failed` path instead of committing
+  # an empty summary.
+  @spec handle_success(
+          Agent.t(),
+          String.t(),
+          [tuple()],
+          tuple(),
+          Agent.ChatTurn.State.entry() | nil
+        ) :: Agent.t()
+  def handle_success(state, summary_text, staged, summary_assistant, carried_entry) do
+    summary_text = ThinkTags.strip(summary_text)
+
+    case TokensCompactor.validate_summary(summary_text) do
+      :ok ->
+        commit_success(state, summary_text, staged, summary_assistant, carried_entry)
+
+      {:error, reason} ->
+        handle_error(state, reason, carried_entry)
+    end
+  end
+
+  defp commit_success(state, summary_text, staged, summary_assistant, carried_entry) do
     Logger.info(
       "Compaction complete: agent=#{state.name} from=#{length(state.chat_state.messages)} " <>
         "summary_chars=#{String.length(summary_text)} " <>
@@ -114,14 +137,19 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
       |> reset_read_files()
 
     {state, system_prompt} = refresh_vocation_and_tools(state)
-    summary_text = ThinkTags.strip(summary_text)
+
+    # Persist the staged compaction request (bridge + suffix) and the summary
+    # assistant. They land before the marker, so the archived slice is exactly
+    # the sequence that was sent to produce the summary. A failed compaction
+    # never reaches here, so nothing from it is persisted.
+    {_stamped, state} = Agent.__append_messages__(state, staged ++ [summary_assistant])
 
     marker_index = state.chat_state.next_message_index
     archived_messages = state.chat_state.messages || []
     archived_count = length(archived_messages)
 
     {new_messages, marker} =
-      build_post_swap_messages(
+      build_active_segment(
         state,
         summary_text,
         carried_entry,
@@ -130,8 +158,8 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
         system_prompt
       )
 
-    state = archive_pre_swap(state, archived_messages)
-    state = apply_post_swap(state, marker, new_messages)
+    state = archive_active_segment(state, archived_messages)
+    state = commit_compaction(state, marker, new_messages)
 
     Broadcasts.compaction(state, marker)
 
@@ -144,7 +172,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   # + tools. Per AGENTS.md, the system message may change at
   # compaction (the prefix cache is invalidated by the
   # compaction itself). Returns the rendered `system_prompt`
-  # string so the post-swap builder can decide whether to
+  # string so the post-compaction builder can decide whether to
   # prepend it.
   defp refresh_vocation_and_tools(state) do
     fresh_vocation = fetch_fresh_vocation(state)
@@ -158,27 +186,18 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
         state.depth
       )
 
-    tool_names = exclude_spawn_at_max_depth(tool_names, state.depth)
+    tool_names = ToolFilter.exclude_spawn_at_max_depth(tool_names, state.depth)
     tools = Nest.Tools.get_functions(tool_names, state.workspace_path, state.tmp_path)
 
     {%{state | vocation: fresh_vocation, tools: tools}, system_prompt}
   end
 
-  # Compaction invalidates the prefix cache, so it's safe to
-  # drop `agents-spawn` and `agents-batch` for an agent at
-  # max depth.
-  defp exclude_spawn_at_max_depth(tool_names, depth) do
-    if depth >= Config.configured_max_depth(),
-      do: Enum.reject(tool_names, &(&1 in @spawn_tools)),
-      else: tool_names
-  end
-
-  # Build the post-swap message sequence: prepended fresh
+  # Build the post-compaction message sequence: prepended fresh
   # system (when a vocation is present AND the rendered
   # prompt fits the 25% safety budget), summary_user, and
   # the carried entry's messages. Build the marker with
   # token-count stats. Pure — doesn't mutate state.
-  defp build_post_swap_messages(
+  defp build_active_segment(
          state,
          summary_text,
          carried_entry,
@@ -220,7 +239,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
     {new_messages, marker}
   end
 
-  # Build the post-swap `{:system, _}` message — only when
+  # Build the post-compaction `{:system, _}` message — only when
   # there's a vocation-derived prompt AND it fits the 25%
   # safety budget. Over-budget prompts are dropped with a
   # warning (the Trigger preflight already refused in that
@@ -232,7 +251,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
 
       not SystemPrompt.within_size_budget?(system_prompt, context_limit) ->
         Logger.warning(
-          "Compaction post-swap dropping rebuilt system: rendered prompt exceeds " <>
+          "Compaction post-compaction dropping rebuilt system: rendered prompt exceeds " <>
             "25% safety budget for context_limit=#{context_limit}"
         )
 
@@ -250,18 +269,18 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
     end
   end
 
-  # Place post-swap entries via the canonical append path: the
+  # Place post-compaction entries via the canonical append path: the
   # marker via `append_marker/2` (no broadcast),
   # new messages to `messages` (`__append_messages__/2`).
-  defp apply_post_swap(state, marker, new_messages) do
+  defp commit_compaction(state, marker, new_messages) do
     {_marker, state} = MessageAppender.append_marker(state, marker)
     {_stamped, state} = Agent.__append_messages__(state, new_messages)
     state
   end
 
-  # Drop the pre-swap `messages` from memory (their DB rows already
-  # exist at their pre-swap indices; the archive is derived on demand.
-  defp archive_pre_swap(state, _archived_messages) do
+  # Drop the pre-compaction `messages` from memory (their DB rows already
+  # exist at their pre-compaction indices; the archive is derived on demand.
+  defp archive_active_segment(state, _archived_messages) do
     %{
       state
       | chat_state: %{
@@ -280,6 +299,8 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   def handle_error(state, reason, carried_entry) do
     Logger.warning("Compaction failed: agent=#{state.name} reason=#{inspect(reason)}")
 
+    # The staged compaction request/response are discarded (never persisted);
+    # this only flips status and surfaces the error.
     state = put_status(state, :compaction_failed)
     Broadcasts.status(state)
 
@@ -289,10 +310,13 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
       "Nest.Agents.Agent.Compaction.ResultHandler.handle_error/3"
     )
 
-    if carried_entry do
-      spawn_with_entry(state, carried_entry)
-    else
-      state
+    cond do
+      # A deferred reply is terminal and not part of the failed compaction
+      # sequence: leave it in `mid_turn_entry` so Retry re-attempts the
+      # compaction, then commits the reply. Do not spawn a turn.
+      match?({:assistant_response, _, _, _}, carried_entry) -> state
+      carried_entry != nil -> spawn_with_entry(state, carried_entry)
+      true -> state
     end
   end
 
@@ -405,7 +429,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
     %{state | live: %{state.live | status: status}}
   end
 
-  # Append the carried entry's messages to the post-swap active
+  # Append the carried entry's messages to the post-compaction active
   # list. `:user_message` carries a bare `User.t()` (wrapped here);
   # `:tool_call` and `:compact_tool` already carry wrapped
   # messages.
@@ -417,6 +441,9 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
 
   defp append_entry_tail(new_messages, {:compact_tool, [a, b], _, _}),
     do: new_messages ++ [a, b]
+
+  defp append_entry_tail(new_messages, {:assistant_response, msg, _, _}),
+    do: new_messages ++ [msg]
 
   defp append_entry_tail(new_messages, _other), do: new_messages
 
@@ -459,6 +486,11 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
         state.live.pending_notice != nil ->
           ChatPipeline.resume_pending_notice(state)
 
+        # A deferred reply is terminal: it was already appended by the commit
+        # (`append_entry_tail/2`), and there is nothing left to ask the LLM.
+        match?({:assistant_response, _, _, _}, carried_entry) ->
+          put_status(state, :idle)
+
         carried_entry == nil ->
           ChatPipeline.resume_with_pending(state)
 
@@ -497,7 +529,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
 
   defp format_reason(:reserve_exhausted),
     do:
-      "system prompt + compaction request consume the LLM's full response budget — " <>
+      "system prompt + compaction request consume the LLM's full compaction reserve — " <>
         "use a smaller system prompt or change model"
 
   defp format_reason(:consecutive_compaction_threshold),
@@ -524,6 +556,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   defp carried_entry_tag({:user_message, _}), do: :user_message
   defp carried_entry_tag({:tool_call, _, _, _}), do: :tool_call
   defp carried_entry_tag({:compact_tool, _, _, _}), do: :compact_tool
+  defp carried_entry_tag({:assistant_response, _, _, _}), do: :assistant_response
 
   # Reset the "already announced" threshold set so the next
   # ChatTurn re-fires warnings if usage rises again after the

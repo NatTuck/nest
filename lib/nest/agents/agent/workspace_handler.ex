@@ -22,11 +22,13 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ChatPipeline
   alias Nest.Agents.Agent.Compaction.Trigger
+  alias Nest.Agents.Agent.ToolFilter
   alias Nest.Messages.Assistant
   alias Nest.Messages.Part
   alias Nest.Messages.User
   alias Nest.Persistence
   alias Nest.Tools
+  alias Nest.Tools.Groups
 
   @doc """
   Standalone workspace change. Dispatched from `IntrospectionHandler`.
@@ -146,7 +148,11 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
   end
 
   defp tool_names(state) do
-    (state.vocation && state.vocation.tools) || []
+    tools = if state.vocation, do: state.vocation.tools, else: []
+
+    (tools || [])
+    |> Groups.expand()
+    |> ToolFilter.exclude_spawn_at_max_depth(state.depth)
   end
 
   defp normalize(nil), do: nil

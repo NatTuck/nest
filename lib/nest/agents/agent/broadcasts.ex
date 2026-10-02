@@ -277,9 +277,8 @@ defmodule Nest.Agents.Agent.Broadcasts do
   # broadcast time (via `ConversationSize.size/1`) rather than from
   # the cumulative usage_totals map. The latter only knows about
   # the most recent LLM call's per-call fields; the former walks
-  # the messages and uses the last known `tokens` value (which
-  # `LLMStreamHandler.mark_last_message_tokens/2` populates) as a
-  # floor, then estimates the suffix. This means the chip's
+  # the messages, anchors on the newest assistant's `usage`, then
+  # estimates the suffix. This means the chip's
   # numerator reflects the current message list even when no LLM
   # call has happened yet (the suffix is fully estimated) and
   # transitions to API-reported values as the LLM responds.

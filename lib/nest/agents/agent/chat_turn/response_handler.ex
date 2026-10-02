@@ -46,6 +46,7 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
   alias Nest.LLM.RunResponse
   alias Nest.Messages.Part
   alias Nest.Messages.Tool
+  alias Nest.Tokens.Budget
   alias Nest.Tokens.Estimator, as: TokensEstimator
 
   require Logger
@@ -130,9 +131,11 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
     response_log = APILog.store_response_log(state.active_message_index, response)
     assistant_msg = {role, %{msg | api_logs: [response_log]}}
 
-    send(state.ctx.agent_pid, {:tool_calls_received, assistant_msg})
-
-    dispatch_response(response, state, chat_turn_pid, assistant_msg)
+    if defer_response?(response, state, assistant_msg) do
+      defer_response(state, assistant_msg)
+    else
+      dispatch_response(response, state, chat_turn_pid, assistant_msg)
+    end
   end
 
   @doc """
@@ -157,20 +160,31 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
   defp dispatch_response(response, state, chat_turn_pid, assistant_msg) do
     cond do
       compactor_entry?(state) ->
-        Lifecycle.finalize_compaction(state, response)
+        Lifecycle.finalize_compaction(state, response, assistant_msg)
 
       state.force_finalize ->
+        # The message is the provider's actual response; persist it before
+        # ending the turn.
+        persist_assistant(state, assistant_msg)
         Lifecycle.finalize_turn(state)
 
       RunResponse.has_tool_calls?(response) and state.iteration > state.max_iterations ->
-        handle_overflow_tool_calls(response, state, chat_turn_pid)
+        handle_overflow_tool_calls(response, state, chat_turn_pid, assistant_msg)
 
       RunResponse.has_tool_calls?(response) ->
         handle_normal_tool_calls(response, state, assistant_msg)
 
       true ->
+        persist_assistant(state, assistant_msg)
         finalize_or_reprompt(response, state)
     end
+  end
+
+  # Persist the assistant message through the Agent's canonical append path.
+  # Tool-call responses are persisted only once their batch is confirmed to
+  # fit (see `handle_regular_tool_calls/3`); a deferred batch never persists.
+  defp persist_assistant(state, assistant_msg) do
+    send(state.ctx.agent_pid, {:tool_calls_received, assistant_msg})
   end
 
   # A final response is "silent" when it offers the user no visible
@@ -275,14 +289,38 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
   # `true` on success (agent still alive); `false` if the append
   # fails or the agent has gone away.
   defp append_user_nudge(state, text) do
-    user_message = ContextReminder.build_user_notice(text, nil)
+    if nudge_over_budget?(state, text) do
+      false
+    else
+      user_message = ContextReminder.build_user_notice(text, nil)
 
-    case GenServer.call(state.ctx.agent_pid, {:append_messages, [user_message]}, 5_000) do
-      [_ | _] -> true
-      _ -> false
+      case GenServer.call(state.ctx.agent_pid, {:append_messages, [user_message]}, 5_000) do
+        [_ | _] -> true
+        _ -> false
+      end
     end
   catch
     :exit, _ -> false
+  end
+
+  # A re-prompt nudge is ordinary content and must not spend the
+  # compaction reserve; when there is no room, finalize instead.
+  defp nudge_over_budget?(state, text) do
+    limit = state.ctx.context_limit
+
+    if is_integer(limit) and limit > 0 do
+      messages =
+        try do
+          {msgs, _} = GenServer.call(state.ctx.agent_pid, :get_messages_with_cancelled, 1_000)
+          msgs
+        catch
+          :exit, _ -> []
+        end
+
+      Budget.remaining(messages, limit) < TokensEstimator.estimate(text)
+    else
+      false
+    end
   end
 
   # True when this ChatTurn is the compactor's own chat turn
@@ -291,12 +329,42 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
   defp compactor_entry?(%State{entry: {:compaction, _, _}}), do: true
   defp compactor_entry?(_), do: false
 
+  # Defer a completed final reply when adding it would spend the compaction
+  # reserve. Truncated and silent responses are left to the re-prompt paths
+  # (a nudge, not a deferral).
+  defp defer_response?(response, state, assistant_msg) do
+    not compactor_entry?(state) and
+      not state.force_finalize and
+      not RunResponse.has_tool_calls?(response) and
+      not RunResponse.truncated?(response) and
+      not silent_response?(response) and
+      over_budget?(assistant_msg, state.ctx.context_limit)
+  end
+
+  # The reply's own `usage` (input + cache + output) is the real size of the
+  # context including it, so we can decide without a round-trip to the Agent
+  # (the reply is the newest anchored message).
+  defp over_budget?(assistant_msg, limit), do: not Budget.fits?([assistant_msg], limit)
+
+  defp defer_response(state, assistant_msg) do
+    continuation = {:assistant_response, assistant_msg, state.iteration, state.max_iterations}
+    send(state.ctx.agent_pid, {:needs_compaction, self(), continuation})
+
+    Logger.info(
+      "ChatTurn: emitting :needs_compaction with :assistant_response continuation " <>
+        "(iter=#{state.iteration}, max=#{state.max_iterations})"
+    )
+
+    {:stop, :normal, state}
+  end
+
   # Past max iterations, LLM still emitted tool calls (the
   # `tools: nil` was supposed to prevent this but some
   # providers ignore it). Synthesize error tool results,
   # recurse with `force_finalize: true` so the next call
   # always finalizes regardless of what the LLM does.
-  defp handle_overflow_tool_calls(response, state, chat_turn_pid) do
+  defp handle_overflow_tool_calls(response, state, chat_turn_pid, assistant_msg) do
+    persist_assistant(state, assistant_msg)
     tool_msg = Messages.synthetic_error_tool_results(response)
     _stamped_tool = GenServer.call(state.ctx.agent_pid, {:append_message, tool_msg})
     state = %{state | force_finalize: true}
@@ -328,7 +396,7 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
         handle_compact_only(response, state, assistant_msg)
 
       contains_compact?(response.tool_calls) ->
-        refuse_compact_mixed(response, state)
+        refuse_compact_mixed(response, state, assistant_msg)
 
       true ->
         handle_regular_tool_calls(response, state, assistant_msg)
@@ -352,13 +420,13 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
   # Trigger 3 path: the LLM emitted `context-compact` as the only
   # tool call. Build the continuation, send `:needs_compaction` to
   # the Agent with the continuation payload, and exit cleanly.
-  # The Agent runs the compactor, swaps messages, and `compaction_done/3`
+  # The Agent runs the compactor, commits the compaction, and `compaction_done/3`
   # spawns a fresh ChatTurn via `ChatTurnSpawner.spawn/4`.
   #
   # The synthetic tool result is built here at the trigger site (we
-  # still have live `state.chat_state.messages` pre-swap) using
-  # `length(state.chat_state.messages)`-estimated pre-swap token
-  # count for the message string. We don't need exact post-swap
+  # still have live `state.chat_state.messages` pre-compaction) using
+  # `length(state.chat_state.messages)`-estimated pre-compaction token
+  # count for the message string. We don't need exact post-compaction
   # counts — the new system prompt carries the catalog entry
   # with the spec text, and the summary user-message replaces the
   # archived content.
@@ -366,9 +434,9 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
     tool_call = hd(response.tool_calls)
 
     # `ctx.messages` was captured at spawn time and reflects the
-    # pre-swap message list — exactly what we want for the
+    # pre-compaction message list — exactly what we want for the
     # "compacted from N tokens" approximation. The actual
-    # post-swap token count depends on the compactor's output,
+    # post-compaction token count depends on the compactor's output,
     # which isn't available here at the trigger site.
     pre_count = TokensEstimator.estimate_messages(state.ctx.messages || [])
 
@@ -396,7 +464,9 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
   # retries without `context-compact` mixed in. Same shape as
   # `handle_overflow_tool_calls/3`: append tool_msg, set
   # `force_finalize: true`, iterate.
-  defp refuse_compact_mixed(response, state) do
+  defp refuse_compact_mixed(response, state, assistant_msg) do
+    persist_assistant(state, assistant_msg)
+
     tool_msg =
       Messages.refuse_context_compact_co_batch(
         response.tool_calls,
@@ -439,10 +509,11 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
   #
   # The `:tool_call` continuation carries the just-built (and
   # response-logged) assistant message so the copy re-appended after
-  # the mid-turn compaction swap is stored complete, never incomplete.
+  # the mid-turn compaction commit is stored complete, never incomplete.
   defp handle_regular_tool_calls(response, state, assistant_msg) do
-    case post_response_preflight(response.tool_calls, state) do
+    case post_response_preflight(response.tool_calls, state, assistant_msg) do
       :fits ->
+        persist_assistant(state, assistant_msg)
         Agent.ChatTurn.spawn_tool_worker(state, response.tool_calls)
 
       {:refuse, _reason} ->
@@ -470,9 +541,12 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
   # messages list (post-LLM-response, pre-tool-execution) is what
   # the BatchSizer checks; the same projection the chat pipeline
   # uses at user-turn boundaries.
-  defp post_response_preflight(tool_calls, state) do
+  defp post_response_preflight(tool_calls, state, assistant_msg) do
     {messages, _} = GenServer.call(state.ctx.agent_pid, :get_messages_with_cancelled)
-    ctx = %{state.ctx | messages: messages}
+    # The assistant message is confirmed-then-persisted, so it is not in the
+    # Agent's list yet; include it so the projection reflects what would be
+    # sent.
+    ctx = %{state.ctx | messages: messages ++ [assistant_msg]}
     BatchSizer.preflight(tool_calls, ctx)
   end
 end

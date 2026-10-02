@@ -14,14 +14,14 @@ defmodule Nest.Agents.Agent.Compaction.Overflow do
     * `:reserve_exhausted` — the compactor's summary
       budget computation (in
       `Nest.Agents.Agent.Compaction.Trigger`) finds the
-      system + suffix would overflow the LLM's response
-      budget. The agent stays in its current status (no
+      system + suffix would overflow the compaction reserve.
+      The agent stays in its current status (no
       spawn) and the user is told why compaction can't
       proceed.
 
   Both paths share the same message structure (model
-  context limit, system prompt size in tokens, reserved
-  response budget in tokens) and the same broadcast shape
+  context limit, system prompt size in tokens, compaction
+  reserve in tokens) and the same broadcast shape
   (`Broadcasts.error/4` with a `nil` index). Centralizing
   them here prevents the two paths from drifting apart
   (the pre-refactor code had three copies of the message
@@ -35,7 +35,7 @@ defmodule Nest.Agents.Agent.Compaction.Overflow do
   precompute it and pass it in; `Overflow` does NOT look at
   `state.chat_state.messages[0]`. This avoids the trap where
   `messages[0]` is non-system (e.g. a legacy conversation, or
-  a transient state after a partial compaction swap where
+  a transient state after a partial compaction commit where
   the rebuilt system was dropped) and a fallback inflated the
   size to the whole conversation.
   """
@@ -54,7 +54,7 @@ defmodule Nest.Agents.Agent.Compaction.Overflow do
 
     * `:reserve_exhausted` (default) — the compactor's
       summary budget computation found the system + suffix
-      would overflow the LLM's response budget.
+      would overflow the compaction reserve.
 
     * `:system_oversized` — the rendered system prompt
       exceeds the `#max_fraction_of_context` safety budget
@@ -69,7 +69,7 @@ defmodule Nest.Agents.Agent.Compaction.Overflow do
       when is_integer(limit) and limit > 0 do
     sys_size = system_size(system_prompt)
 
-    "Cannot #{verb}: model context limit (#{limit}) cannot fit the system prompt (~#{sys_size} tokens) + reserved response budget (#{Reserve.response_budget(limit)} tokens). Use a model with a larger context window, or clear conversation history."
+    "Cannot #{verb}: model context limit (#{limit}) cannot fit the system prompt (~#{sys_size} tokens) + compaction reserve (#{Reserve.compaction_reserve(limit)} tokens). Use a model with a larger context window, or clear conversation history."
   end
 
   def message(limit, system_prompt, verb, :system_oversized)

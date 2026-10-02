@@ -301,9 +301,18 @@ defmodule Nest.Agents.Agent.FilePolicyTest do
       # `reset_read_files` step. We invoke it via the same
       # `Compaction.ResultHandler` entry point the ChatTurn
       # would call on a successful compaction.
+      summary_assistant =
+        {:assistant,
+         %Nest.Messages.Assistant{
+           parts: [%Nest.Messages.Part.Text{text: "summary text"}],
+           api_logs: []
+         }}
+
       ResultHandler.handle_success(
         :sys.get_state(pid),
         "summary text",
+        [],
+        summary_assistant,
         nil
       )
       |> tap(fn _ -> :ok end)

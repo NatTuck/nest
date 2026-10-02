@@ -31,16 +31,9 @@ defmodule Nest.Agents.AgentTestHelpers do
 
   require Logger
 
-  # Any vocation that gets any `agents-*` tool gets all of them
-  # (matching the seed `agents_tools` invariant).
-  @agents_tools [
-    "agents-spawn",
-    "agents-query",
-    "agents-list",
-    "agents-archive",
-    "agents-batch",
-    "models-list"
-  ]
+  # Test vocations grant capabilities by group. `agents` bundles
+  # spawn/query/list/archive/batch plus `models-list`.
+  @tool_groups ["file", "shell", "context", "agents"]
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Nest.Agents
@@ -147,6 +140,24 @@ defmodule Nest.Agents.AgentTestHelpers do
     bridge_test_to_agent(agent_pid, space_id, name)
 
     {agent_pid, name}
+  end
+
+  @doc """
+  Send a compaction commit to an agent using the current
+  `{:compaction_done, summary_text, staged, summary_assistant, carried_entry}`
+  contract. Direct-injection tests bypass `Trigger`/`ResponseHandler`, so
+  they pass an empty staged request and a summary assistant built from
+  `summary_text`.
+  """
+  def send_compaction_done(agent_pid, summary_text, carried_entry) do
+    summary_assistant =
+      {:assistant,
+       %Nest.Messages.Assistant{
+         parts: [%Part.Text{text: summary_text}],
+         api_logs: []
+       }}
+
+    send(agent_pid, {:compaction_done, summary_text, [], summary_assistant, carried_entry})
   end
 
   # Hand the test process ownership links to the freshly-spawned
@@ -277,7 +288,7 @@ defmodule Nest.Agents.AgentTestHelpers do
         name: "Test Default",
         description: "Default vocation for tests",
         system_prompt: "You are a helpful test assistant.",
-        tools: ["context-check", "context-compact" | @agents_tools],
+        tools: ["context", "agents"],
         modes: %{
           "chat" => %{
             "description" => "General conversation.",
@@ -313,14 +324,7 @@ defmodule Nest.Agents.AgentTestHelpers do
         name: "Test Programmer (#{Elixir.System.unique_integer([:positive])})",
         description: "A coding assistant that can read and write files in a workspace",
         system_prompt: "Test programmer prompt.",
-        tools: [
-          "file-read",
-          "file-write",
-          "file-edit",
-          "shell-cmd",
-          "context-check",
-          "context-compact" | @agents_tools
-        ],
+        tools: @tool_groups,
         # Single mode — keeps the Agent's default mode = "chat"
         # and the chat-message prefix `[mode: chat]` that tests
         # assert on. `Map.keys/1` of a single-entry map returns

@@ -10,8 +10,11 @@ defmodule Nest.ProjectConfig do
       mode   = "rw" # "rw" | "tmp"
       create = true      # default false
 
-  Each entry declares a `path` (absolute, `~`-expanded, or relative to
-  the project root) and a `mode`:
+      [shell]
+      background = 3     # max concurrent background shell jobs per agent
+
+  Each `[[mount]]` entry declares a `path` (absolute, `~`-expanded, or
+  relative to the project root) and a `mode`:
 
     * `"rw"` — bind the host path read-write at its own path.
     * `"tmp"` — bind a directory under the agent's per-agent `/tmp`
@@ -21,6 +24,13 @@ defmodule Nest.ProjectConfig do
 
   `create = true` makes Nest `mkdir_p` the path before mounting, so a
   project can declare a scratch path whose parents don't exist yet.
+
+  The optional `[shell]` table raises the per-agent ceiling on
+  concurrent background shell jobs (`shell-cmd` with `background: true`;
+  see `Nest.Sandbox.ShellJobs`). It defaults to 1, and 0 disables
+  background jobs. Unlike mounts, the `[shell]` cap is **not** gated on
+  a writable workspace: it is not a filesystem grant, so it applies in
+  every mode.
 
   ## Gating
 
@@ -48,13 +58,19 @@ defmodule Nest.ProjectConfig do
   @typedoc "A project mount with its host path expanded."
   @type mount :: map()
 
+  @typedoc "The `[shell]` sandbox settings from `.nest`."
+  @type shell :: %{optional(String.t()) => non_neg_integer()}
+
+  @typedoc "The parsed `.nest` file: mounts plus optional `[shell]` settings."
+  @type config :: %{optional(String.t()) => [mount()] | shell() | nil}
+
   @doc """
   Load and parse `<workspace>/.nest`, cached by `{path, mtime}`.
 
-  Returns `{:ok, mounts}` (with `[]` when there is no file) or
-  `{:error, reason}` when the file exists but is malformed.
+  Returns `{:ok, config}` (`%{"mounts" => []}` when there is no file)
+  or `{:error, reason}` when the file exists but is malformed.
   """
-  @spec load(String.t() | nil) :: {:ok, [mount()]} | {:error, String.t()}
+  @spec load(String.t() | nil) :: {:ok, config()} | {:error, String.t()}
   def load(workspace) when is_binary(workspace) do
     path = Path.join(workspace, @file_name)
 
@@ -69,7 +85,7 @@ defmodule Nest.ProjectConfig do
     end
   end
 
-  def load(nil), do: {:ok, []}
+  def load(nil), do: {:ok, %{"mounts" => []}}
 
   # Read + parse + validate, logging a malformed file exactly once per
   # mtime (the result is cached, so `load/1` doesn't re-log).
@@ -77,7 +93,7 @@ defmodule Nest.ProjectConfig do
     result =
       case File.read(path) do
         {:ok, content} -> parse(content, workspace)
-        {:error, :enoent} -> {:ok, []}
+        {:error, :enoent} -> {:ok, %{"mounts" => []}}
         {:error, reason} -> {:error, "could not read .nest: #{inspect(reason)}"}
       end
 
@@ -98,10 +114,23 @@ defmodule Nest.ProjectConfig do
 
   defp validate(raw, workspace) do
     with {:ok, mounts} <- validate_mounts(Map.get(raw, "mount", []), workspace),
-         :ok <- reject_duplicates(mounts) do
-      {:ok, mounts}
+         :ok <- reject_duplicates(mounts),
+         {:ok, shell} <- validate_shell(Map.get(raw, "shell")) do
+      config = %{"mounts" => mounts}
+      {:ok, if(shell, do: Map.put(config, "shell", shell), else: config)}
     end
   end
+
+  defp validate_shell(nil), do: {:ok, nil}
+
+  defp validate_shell(raw) when is_map(raw) do
+    case Map.get(raw, "background", 1) do
+      n when is_integer(n) and n >= 0 -> {:ok, %{"background" => n}}
+      _ -> {:error, "shell background must be a non-negative integer"}
+    end
+  end
+
+  defp validate_shell(_raw), do: {:error, "shell must be a table"}
 
   defp validate_mounts(mounts, workspace) when is_list(mounts) do
     ws = FSPath.canonical(workspace)
@@ -186,8 +215,8 @@ defmodule Nest.ProjectConfig do
   @spec effective_caps(map(), String.t() | nil, String.t() | nil) ::
           {:ok, map()} | {:error, String.t()}
   def effective_caps(caps, workspace, tmp_path) do
-    with {:ok, mounts} <- load(workspace) do
-      {:ok, merge(caps, mounts, workspace, tmp_path)}
+    with {:ok, config} <- load(workspace) do
+      {:ok, merge(caps, config, workspace, tmp_path)}
     end
   end
 
@@ -204,18 +233,42 @@ defmodule Nest.ProjectConfig do
     end
   end
 
+  # The `[shell]` background cap applies in every mode: it is not a
+  # filesystem grant, so a read-only mode can still lower it (including
+  # to 0 to disable background jobs) or raise it.
+  defp merge(caps, config, workspace, tmp_path) do
+    caps
+    |> put_shell(config)
+    |> maybe_put_project_mounts(workspace, tmp_path, config)
+  end
+
   # Project mounts are additive write capabilities, so they only make
   # sense in modes that can already write the project. Other modes are
   # returned untouched (a read-only mode must stay read-only).
-  defp merge(caps, mounts, workspace, tmp_path) do
+  defp maybe_put_project_mounts(caps, workspace, tmp_path, config) do
     if is_binary(workspace) and workspace_writable?(caps) do
       caps
-      |> put_in(["fs", "project"], resolve_mounts(mounts, tmp_path))
+      |> put_in(["fs", "project"], resolve_mounts(mounts(config), tmp_path))
       |> put_in(["fs", "protected"], protected_entries(workspace))
     else
       caps
     end
   end
+
+  # The `[shell]` cap is an additive grant (raising the per-agent
+  # background-job ceiling).
+  defp put_shell(caps, %{"shell" => %{"background" => n}}) do
+    shell = caps |> Map.get("shell", %{}) |> Map.put("background", n)
+    Map.put(caps, "shell", shell)
+  end
+
+  defp put_shell(caps, _config), do: caps
+
+  defp mounts(%{"mounts" => mounts}), do: mounts
+  defp mounts(_config), do: []
+
+  defp shell(%{"shell" => shell}), do: shell
+  defp shell(_config), do: nil
 
   defp workspace_writable?(caps), do: ":workspace" in (get_in(caps, ["fs", "write"]) || [])
 
@@ -336,20 +389,27 @@ defmodule Nest.ProjectConfig do
   @spec section(String.t() | nil) :: String.t()
   def section(workspace) do
     case load(workspace) do
-      {:ok, []} -> ""
-      {:ok, mounts} -> render_section(mounts)
+      {:ok, config} -> if empty_config?(config), do: "", else: render_section(config)
       {:error, reason} -> error_section(reason)
     end
   end
 
-  defp render_section(mounts) do
-    lines = Enum.map_join(mounts, "\n", &render_mount/1)
+  defp empty_config?(config), do: mounts(config) == [] and shell(config) == nil
+
+  defp render_section(config) do
+    lines = Enum.map(mounts(config), &render_mount/1) ++ shell_lines(config)
 
     "\n\n[Project sandbox config]\n\n" <>
-      "This project has a `.nest` file granting extra sandbox mounts " <>
+      "This project has a `.nest` file granting extra sandbox settings " <>
       "(only in modes that can write the project):\n\n" <>
-      lines <> "\n\nThe `.nest` file itself is mounted read-only.\n"
+      Enum.join(lines, "\n") <> "\n\nThe `.nest` file itself is mounted read-only.\n"
   end
+
+  defp shell_lines(%{"shell" => %{"background" => n}}) do
+    ["- at most #{n} background shell job(s) per agent"]
+  end
+
+  defp shell_lines(_config), do: []
 
   defp render_mount(%{"dest" => dest, "mode" => "rw"}),
     do: "- read-write access to #{dest}"

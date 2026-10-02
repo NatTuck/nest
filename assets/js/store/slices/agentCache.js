@@ -114,6 +114,7 @@ export function agentCacheSetters(set) {
               descendantUsage:
                 payload.descendantUsage ?? existing?.descendantUsage ?? null,
               totalUsage: payload.totalUsage ?? existing?.totalUsage ?? null,
+              jobs: payload.shellJobs ?? existing?.jobs ?? [],
               waitingForResponse: false,
             },
           },
@@ -431,6 +432,23 @@ export function agentCacheSetters(set) {
           agentsCache: {
             ...state.agentsCache,
             [id]: { ...cache, historyPrompts: rows },
+          },
+        };
+      });
+    },
+
+    /**
+     * Replace the agent's background shell-job list (pushed as
+     * `shell:jobs` from the channel, or read from the join payload).
+     */
+    setAgentJobs: (id, jobs) => {
+      set((state) => {
+        const cache = state.agentsCache[id];
+        if (!cache) return state;
+        return {
+          agentsCache: {
+            ...state.agentsCache,
+            [id]: { ...cache, jobs: jobs ?? [] },
           },
         };
       });

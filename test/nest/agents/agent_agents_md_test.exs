@@ -147,7 +147,7 @@ defmodule Nest.Agents.AgentAgentsMdTest do
         %{state | chat_state: %{state.chat_state | messages: messages}}
       end)
 
-      send(pid, {:compaction_done, "Summary text.", nil})
+      send_compaction_done(pid, "Summary text.", nil)
       _ = :sys.get_state(pid)
 
       final_messages = :sys.get_state(pid).chat_state.messages

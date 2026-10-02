@@ -36,16 +36,16 @@ defmodule Nest.ProjectConfigTest do
 
   describe "load/1" do
     test "returns [] when there is no .nest", %{dir: dir} do
-      assert {:ok, []} = ProjectConfig.load(dir)
+      assert {:ok, %{"mounts" => []}} = ProjectConfig.load(dir)
     end
 
     test "returns [] for a nil workspace" do
-      assert {:ok, []} = ProjectConfig.load(nil)
+      assert {:ok, %{"mounts" => []}} = ProjectConfig.load(nil)
     end
 
     test "parses an rw mount and expands ~", %{dir: dir} do
       write_nest(dir, "[[mount]]\npath = \"~/data/x\"\nmode = \"rw\"\n")
-      assert {:ok, [mount]} = ProjectConfig.load(dir)
+      assert {:ok, %{"mounts" => [mount]}} = ProjectConfig.load(dir)
       assert mount["mode"] == "rw"
       assert mount["create"] == false
       assert mount["dest"] == Path.expand("~/data/x")
@@ -53,14 +53,24 @@ defmodule Nest.ProjectConfigTest do
 
     test "expands a relative path against the workspace", %{dir: dir} do
       write_nest(dir, "[[mount]]\npath = \"scratch\"\nmode = \"tmp\"\n")
-      assert {:ok, [mount]} = ProjectConfig.load(dir)
+      assert {:ok, %{"mounts" => [mount]}} = ProjectConfig.load(dir)
       assert mount["dest"] == Path.join(dir, "scratch")
     end
 
     test "parses create = true", %{dir: dir} do
       write_nest(dir, "[[mount]]\npath = \"~/data/y\"\nmode = \"rw\"\ncreate = true\n")
-      assert {:ok, [mount]} = ProjectConfig.load(dir)
+      assert {:ok, %{"mounts" => [mount]}} = ProjectConfig.load(dir)
       assert mount["create"] == true
+    end
+
+    test "parses [shell] background with a default of 1", %{dir: dir} do
+      write_nest(dir, "[shell]\n")
+      assert {:ok, config} = ProjectConfig.load(dir)
+      assert config["shell"] == %{"background" => 1}
+
+      write_nest(dir, "[shell]\nbackground = 4\n")
+      ProjectConfig.clear_cache()
+      assert {:ok, %{"shell" => %{"background" => 4}}} = ProjectConfig.load(dir)
     end
   end
 
@@ -71,7 +81,10 @@ defmodule Nest.ProjectConfigTest do
         {"[[mount]]\npath = \"~/x\"\nmode = \"bogus\"\n", "mode"},
         {"[[mount]]\nmode = \"rw\"\n", "path"},
         {"[[mount]]\npath = \"/\"\nmode = \"rw\"\n", "must not be /"},
-        {"mount = 3\n", "array of tables"}
+        {"mount = 3\n", "array of tables"},
+        {"[shell]\nbackground = -1\n", "non-negative integer"},
+        {"[shell]\nbackground = \"x\"\n", "non-negative integer"},
+        {"shell = 3\n", "shell must be a table"}
       ]
 
       Enum.each(cases, fn {body, needle} -> expect_error(dir, body, needle) end)
@@ -101,6 +114,21 @@ defmodule Nest.ProjectConfigTest do
       assert [%{"path" => nest, "source" => nest_src}] = merged["fs"]["protected"]
       assert nest == Path.join(dir, ".nest")
       assert nest_src == nest
+    end
+
+    test "merges the shell background cap in a writable mode", %{dir: dir} do
+      write_nest(dir, "[shell]\nbackground = 3\n")
+      assert {:ok, merged} = ProjectConfig.effective_caps(caps(), dir, "/tmp/agent")
+      assert merged["shell"] == %{"background" => 3}
+    end
+
+    test "also merges the shell cap in a read-only mode", %{dir: dir} do
+      write_nest(dir, "[shell]\nbackground = 3\n")
+      caps = caps([])
+      assert {:ok, merged} = ProjectConfig.effective_caps(caps, dir, "/tmp/agent")
+      assert merged["shell"] == %{"background" => 3}
+      # Mounts remain gated: no project/protected keys in a read-only mode.
+      assert merged["fs"] == caps["fs"]
     end
 
     test "a tmp mount sources from the agent tmp", %{dir: dir} do
@@ -136,6 +164,11 @@ defmodule Nest.ProjectConfigTest do
       write_nest(dir, "[[mount]]\npath = \"~/x\"\nmode = \"rw\"\n")
       assert ProjectConfig.section(dir) =~ "Project sandbox config"
       assert ProjectConfig.section(dir) =~ Path.expand("~/x")
+    end
+
+    test "describes the shell background cap", %{dir: dir} do
+      write_nest(dir, "[shell]\nbackground = 3\n")
+      assert ProjectConfig.section(dir) =~ "at most 3 background shell job(s)"
     end
 
     test "renders a visible error for a malformed file", %{dir: dir} do

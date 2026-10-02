@@ -18,7 +18,7 @@ defmodule Nest.Tools do
   alias Nest.LLM.Tool
   alias Nest.Sandbox
   alias Nest.Tokens.ConversationSize
-  alias Nest.Tools.{FileTools, InspectFile}
+  alias Nest.Tools.{FileTools, InspectFile, ShellJobs}
 
   @doc """
   Returns a list of `Nest.LLM.Tool` structs for the given tool names.
@@ -88,6 +88,9 @@ defmodule Nest.Tools do
   defp regular_tool_function("file-edit", ws, tmp), do: FileTools.edit_function(ws, tmp)
   defp regular_tool_function("file-inspect", ws, tmp), do: InspectFile.build(ws, tmp)
   defp regular_tool_function("shell-cmd", ws, tmp), do: shell_cmd_function(ws, tmp)
+  defp regular_tool_function("shell-list", _ws, _tmp), do: ShellJobs.list_function()
+  defp regular_tool_function("shell-wait", _ws, _tmp), do: ShellJobs.wait_function()
+  defp regular_tool_function("shell-kill", _ws, _tmp), do: ShellJobs.kill_function()
   defp regular_tool_function("context-check", _ws, _tmp), do: context_check_function()
   defp regular_tool_function("context-compact", _ws, _tmp), do: context_compact_function()
   defp regular_tool_function(_name, _ws, _tmp), do: nil
@@ -121,6 +124,22 @@ defmodule Nest.Tools do
     }
   end
 
+  @doc """
+  The `{space_id, agent_name}` ownership key for the calling agent.
+
+  Tools that manage per-agent resources (background shell jobs) read
+  this from the per-call context. The context is supplied by
+  `Nest.Agents.Agent.BatchSizer`, which forwards the ChatTurn's
+  identity; both the writer (`shell-cmd`) and the readers
+  (`shell-list`/`shell-wait`/`shell-kill`) must derive it the same way.
+  `:unknown` is the defensive fallback for callers without an identity
+  (e.g. direct unit tests).
+  """
+  @spec agent_key(map()) :: {term(), term()}
+  def agent_key(context) when is_map(context) do
+    {Map.get(context, :space_id, :unknown), Map.get(context, :agent_name, :unknown)}
+  end
+
   defp shell_cmd_function(workspace_path, tmp_path) do
     %Tool{
       name: "shell-cmd",
@@ -140,24 +159,39 @@ defmodule Nest.Tools do
             "type" => "string",
             "description" => "Shell command to execute"
           },
+          "background" => %{
+            "type" => "boolean",
+            "description" =>
+              "When true, start the command as a background job and return a job id " <>
+                "immediately instead of waiting for output. Manage it with shell-list, " <>
+                "shell-wait, and shell-kill. Limited to a small number of concurrent " <>
+                "jobs per agent."
+          },
           "max_result_tokens" => max_result_tokens_schema()
         },
         "required" => ["command"]
       },
-      function: fn %{"command" => command}, context ->
-        shell_cmd(command, workspace_path, tmp_path, context)
+      function: fn args, context ->
+        shell_cmd(args, workspace_path, tmp_path, context)
       end
     }
   end
 
-  defp shell_cmd(command, workspace_path, tmp_path, context) do
+  defp shell_cmd(%{"command" => command} = args, workspace_path, tmp_path, context) do
+    context = context || %{}
     caps = caps_from_context(context)
 
     Logger.info(
-      "Tool shell-cmd: #{command} (workspace: #{workspace_path || "none"}, tmp: #{tmp_path || "none"})"
+      "Tool shell-cmd: #{command} (workspace: #{workspace_path || "none"}, tmp: #{tmp_path || "none"}, background: #{args["background"] == true})"
     )
 
-    Sandbox.run(command, workspace_path, tmp_path, caps)
+    opts = [
+      background: args["background"] == true,
+      agent_key: agent_key(context),
+      agent_pid: Map.get(context, :agent_pid)
+    ]
+
+    Sandbox.run(command, workspace_path, tmp_path, caps, opts)
   end
 
   # The `context-check` tool reports current context usage. The
@@ -311,7 +345,8 @@ defmodule Nest.Tools do
             "description" =>
               "The model for the new sub-agent as a \"provider/model-name\" string " <>
                 "(see `models-list`). Inherits your own model when omitted."
-          }
+          },
+          "max_result_tokens" => max_result_tokens_schema()
         },
         "required" => ["name"]
       },
@@ -334,7 +369,7 @@ defmodule Nest.Tools do
           "status, and depth. Use this to discover agents you can delegate to.",
       parameters_schema: %{
         "type" => "object",
-        "properties" => %{},
+        "properties" => %{"max_result_tokens" => max_result_tokens_schema()},
         "required" => []
       },
       function: fn _args, _context ->
@@ -376,7 +411,8 @@ defmodule Nest.Tools do
             "description" =>
               "Maximum milliseconds to block for the response. Defaults to " <>
                 "300000 (5 minutes)."
-          }
+          },
+          "max_result_tokens" => max_result_tokens_schema()
         },
         "required" => ["name", "prompt"]
       },
@@ -440,7 +476,8 @@ defmodule Nest.Tools do
             "description" =>
               "Optional provider name to filter models by. If omitted, returns " <>
                 "models from all providers with expose_models enabled."
-          }
+          },
+          "max_result_tokens" => max_result_tokens_schema()
         },
         "required" => []
       },

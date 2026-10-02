@@ -9,8 +9,19 @@ non-negotiable rules:
 1. **No truncations** — the LLM never sees a partially-degraded tool
    result. Either the full content or a summary pointing to a file.
 2. **No overflows** — the BatchSizer's preflight guarantees space for the
-   minimum size of every tool call in the batch *before* any tool runs.
-   The BatchSizer knows there's enough room.
+   minimum size of every tool call in the batch *before* any tool runs,
+   and the keep-or-substitute pass never leaves an over-budget result
+   inline.
+
+> **Status note (this file predates the `shell-*`/sub-agent tools).**
+> The invariant is now enforced for *every* tool, not just `shell-cmd`:
+> an over-budget result is always replaced by a path-and-head substitute
+> (full output written to the agent scratch dir), via
+> `Nest.Agents.Agent.BatchSizer.Overflow.substitute/5`. `ToolLoop` reruns
+> the pass over the whole batch (regular + sub-agent results) with
+> `BatchSizer.cook/2`. Tool names below are the historical
+> `execute_command`/`read_file`; the current names are `shell-cmd` and
+> `file-read`.
 
 The cap is computed as **80% of the remaining usable context window**,
 computed once at the start of each batch. The LLM can lower it (ask for a
@@ -41,11 +52,36 @@ for `execute_command` (see `lib/nest/agents/agent/batch_sizer.ex:113-115`)
 — that 20% padding is the "minimum space we know we'll need even in the
 worst case" reserve.
 
-The cap (80% of remaining usable) is therefore the **inline-vs-summary
+The cap (80% of remaining usable) is therefore the **inline-vs-substitute
 threshold**, not a sizing guarantee. If a tool's output exceeds the cap
-at runtime, the BatchSizer routes it through the summary path — which
+at runtime, the BatchSizer routes it through the substitute path — which
 keeps the inline cost bounded. The output is never truncated to a
-partial inline form.
+partial inline form, and (since the catch-all fix) is never kept full
+over budget either.
+
+### Current invariant
+
+For every admitted batch, after the single keep-or-substitute pass
+(`BatchSizer.cook/2` over the whole input-ordered batch):
+
+```
+messages + reserve + Σ inline_final(tool_i)  ≤  context_limit
+```
+
+This is what prevents overflow. Every result that does not fit the
+remaining running budget is replaced by a path-and-head substitute sized
+to fit, so no single result and no batch can overflow — regardless of
+whether an individual result was kept full above its projection.
+
+`ProjectedSize` projections are **lower bounds**, not upper bounds: they
+are each tool's minimum substitutable size (so preflight admits the batch
+with room for substitutes). A tool can be kept full above its projection
+(e.g. `shell-cmd` under the cap, or a token-dense `file-read` under the
+byte heuristic), and that is fine because the running pass re-checks the
+actual size. What must never happen — and no longer does — is keeping a
+result that does not fit. `ProjectedSize.projected?/1` is asserted against
+the registered tool set in `test/nest/agents/agent/batch_sizer_test.exs`
+so a new tool cannot be added with only the catch-all.
 
 ## Formula
 
@@ -79,14 +115,14 @@ branch is unreachable in practice.
 
 | Tool | Action when `content_size > effective_cap` |
 |---|---|
-| `execute_command` | Write full content to `<tmp>/exec-<rand>.txt`. Return `Command output of '<cmd>' (<N> tokens) saved to <path>.\n\n<head>` (existing `build_summary_with_size/4`). |
-| `read_file` | Return `{:error, "File is X tokens which exceeds your requested limit of Y."}`. The LLM gets a structured error and can retry with a higher `max_result_tokens` or use `inspect_file` / `shell_cmd head/tail`. |
-| `write_file` | Bounded output (`"Successfully wrote N bytes to <path>"`). Cap-exceeded is unreachable in practice. Falls through to the existing `keep full anyway` log. |
-| `edit` | Bounded output (`"Replaced N occurrence(s) in <path>"`). Same as `write_file`. |
-| `context` | Bounded output. Same as `write_file`. |
+| `shell-cmd` / `shell-wait` / `shell-list` | Write full content to `<tmp>/exec-<rand>.txt`. Return `<label> (<N> tokens) saved to <path>.\n\n<head>` (`Overflow.substitute/5`). |
+| `file-read` | Return `{:error, "File is X tokens which exceeds your requested limit of Y."}`. The LLM gets a structured error and can retry with a higher `max_result_tokens` or use `file-inspect` / `shell-cmd head/tail`. |
+| `agents-spawn` (with query) / `agents-query` | Write full response to `<tmp>/agents-<rand>.txt`. Return `<label> (<N> tokens) saved to <path>.\n\n<head>`. |
+| `agents-batch` | `BatchLoop` offloads the JSON aggregate via `Overflow.substitute/5`. |
+| Bounded tools (`file-write`, `file-edit`, `file-inspect`, `context-check`, `shell-kill`, `agents-archive`, `agents-list`, `models-list`) | Fixed/derived output; cap-exceeded is unreachable. If it somehow happens they are substituted too — never kept full. |
 
-Only `execute_command` and `read_file` need explicit cap-exceeded paths.
-The other three tools have bounded outputs by construction.
+Every substitutable tool has an in-budget fallback. There is no
+"keep full anyway" path.
 
 ## Decision tree in `apply_one_with_acc/3`
 
@@ -97,17 +133,20 @@ For each tool result, in batch order:
 
 2. If effective_cap && content_size > cap + per_message_overhead():
      # Cap exceeded → route per-tool (see table above)
-     For execute_command: write-to-tmp + path-and-head summary
-     For read_file:        return error ToolResult with is_error: true
-     For other tools:      log warning, keep full
+     For read_file:   return error ToolResult with is_error: true
+     For other tools: write-to-tmp + path-and-head substitute
 
 3. Else (content fits the inline cap):
      If keep_full?(tc, acc, content_size):
        Return full content
-     Else (rare — batch budget overflow post-preflight):
-       For execute_command: write-to-tmp + path-and-head summary
-       For other tools:      log warning, keep full
+     Else (batch budget overflow post-preflight):
+       Write-to-tmp + path-and-head substitute (every tool)
 ```
+
+Both over-budget branches substitute; nothing is ever kept full over
+budget. `ToolLoop.run_batch/2` runs `BatchSizer.execute/2` for the
+regular tools, merges the sub-agent entries in input order, and calls
+`BatchSizer.cook/2` once, so the running total covers the whole batch.
 
 The cap check (step 2) is the **primary gate**. The batch-budget check
 (step 3) is a secondary defense for cases where multiple tools in the

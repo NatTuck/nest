@@ -246,7 +246,7 @@ defmodule Nest.Persistence.AgentCompaction.Planner do
 
   defp choose_system(ctx) do
     limit = ctx.agent_context_limit
-    reserve = Reserve.response_budget(limit)
+    reserve = Reserve.compaction_reserve(limit)
     rendered = ctx.system_prompt
 
     rendered_candidate =
@@ -262,7 +262,7 @@ defmodule Nest.Persistence.AgentCompaction.Planner do
 
   defp chunk_budget(ctx, system_text, summary_budget) do
     limit = ctx.summarizer_context_limit
-    reserve = Reserve.response_budget(limit)
+    reserve = Reserve.compaction_reserve(limit)
 
     budget = limit - reserve - size_text(system_text) - summary_budget - @instruction_overhead
 

@@ -57,7 +57,7 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
           name: "TestSystemRepeat-#{System.unique_integer([:positive])}",
           description: "Default for system-repeat tests",
           system_prompt: "Default system prompt #{System.unique_integer([:positive])}",
-          tools: ["context-check", "context-compact"],
+          tools: ["context"],
           modes: %{
             "chat" => %{
               "description" => "General conversation.",
@@ -105,10 +105,10 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
   # `next_message_index` past the highest so the marker lands
   # at a non-colliding slot, then trigger the compaction.
   defp run_compaction(pid, summary_text \\ "Test summary.", messages \\ default_messages()) do
-    seed_pre_swap_messages(pid, messages)
+    seed_pre_compaction_messages(pid, messages)
     consume_pre_seed_broadcasts(messages)
 
-    send(pid, {:compaction_done, summary_text, nil})
+    send_compaction_done(pid, summary_text, nil)
     _ = :sys.get_state(pid)
     state = :sys.get_state(pid)
 
@@ -128,7 +128,7 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
   # index so the compaction marker lands at a non-colliding
   # slot. Then append each via the canonical `append_message`
   # GenServer call so DB rows mirror the in-memory state.
-  defp seed_pre_swap_messages(pid, messages) do
+  defp seed_pre_compaction_messages(pid, messages) do
     highest_index =
       messages
       |> Enum.map(&message_index/1)
@@ -300,9 +300,13 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
         |> Enum.take(2)
         |> Enum.map(fn {_, %{index: idx}} -> idx end)
 
-      assert actual == [6, 7],
-             "expected consecutive indices [6, 7] for [system, summary_user] " <>
-               "(marker at 5 + 1, +2); got #{inspect(actual)}"
+      # The commit first appends the staged compaction response (the
+      # summary assistant) at the pre-seeded next index (5), then the
+      # marker at 6, then the new active segment at 7, 8.
+      assert actual == [7, 8],
+             "expected consecutive indices [7, 8] for [system, summary_user] " <>
+               "(summary at 5, marker at 6, system at 7, summary_user at 8); " <>
+               "got #{inspect(actual)}"
     end
   end
 
@@ -374,9 +378,17 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
       # compaction the agent's `state.tools` should reflect
       # the new tool list.
       original_tools = ["context-check", "context-compact"]
-      fresh_tools = ["context-check", "context-compact", "file-read"]
 
-      vocation = create_vocation(%{tools: original_tools})
+      fresh_tools = [
+        "context-check",
+        "context-compact",
+        "file-read",
+        "file-write",
+        "file-edit",
+        "file-inspect"
+      ]
+
+      vocation = create_vocation(%{tools: ["context"]})
       {pid, _agent_id} = start_with_vocation(vocation)
 
       # Initial state has only the original tools.
@@ -392,7 +404,7 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
 
       # Mutate the vocation in the DB to add `file-read`.
       {:ok, _updated_vocation} =
-        Vocations.update_vocation(vocation, %{tools: fresh_tools})
+        Vocations.update_vocation(vocation, %{tools: ["context", "file"]})
 
       # Trigger a compaction.
       state_after = run_compaction(pid)
@@ -411,8 +423,8 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
   end
 
   describe "state-vs-DB invariant" do
-    test "every post-swap entry added by the compaction has a row at its assigned index" do
-      # Pins the invariant for the post-swap additions. The
+    test "every post-compaction entry added by the compaction has a row at its assigned index" do
+      # Pins the invariant for the post-compaction additions. The
       # canonical append path (`__append_messages__/2` for
       # new_messages and `MessageAppender.append_history_one/2`
       # for the marker) assigns each entry an index and persists
@@ -440,7 +452,7 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
       # `MessageAppender.append_one/2`.
       for {_role, %{index: idx}} <- state.chat_state.messages do
         assert MapSet.member?(row_indices, idx),
-               "post-swap entry at index #{idx} has no DB row"
+               "post-compaction entry at index #{idx} has no DB row"
       end
 
       # The marker *is* the boundary now (no in-memory archive):

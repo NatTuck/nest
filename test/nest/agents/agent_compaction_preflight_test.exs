@@ -10,7 +10,7 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
 
   import Mimic
 
-  import Nest.Agents.AgentTestHelpers, only: [start_agent: 1]
+  import Nest.Agents.AgentTestHelpers, only: [start_agent: 1, send_compaction_done: 3]
 
   alias Nest.Agents.Agent
   alias Nest.LLM.MockClient
@@ -36,7 +36,7 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
         name: "Compaction Preflight Test #{Elixir.System.unique_integer([:positive])}",
         description: "For preflight tests",
         system_prompt: "Test prompt.",
-        tools: ["context-check", "context-compact"],
+        tools: ["context"],
         modes: %{
           "build" => %{
             "description" => "Test mode",
@@ -106,7 +106,7 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
           refute Map.get(payload, :compactionError) == true
           assert payload.content =~ "context limit (10000)"
           assert payload.content =~ "system prompt"
-          assert payload.content =~ "reserved response budget (8192 tokens)"
+          assert payload.content =~ "compaction reserve (8192 tokens)"
         end)
 
       # The handler logs at info or warning level for debugging.
@@ -170,15 +170,17 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
         %{s | chat_state: %{s.chat_state | messages: old_messages, next_message_index: 2}}
       end)
 
-      send(pid, {:compaction_done, summary_text, {:tool_call, tool_call_msg, 3, 30}})
+      send_compaction_done(pid, summary_text, {:tool_call, tool_call_msg, 3, 30})
 
       _ = :sys.get_state(pid)
 
       assert_receive {:chat_compaction, payload}
 
       assert payload.marker["role"] == "compaction"
-      assert payload.marker["archivedCount"] == 2
-      assert payload.marker["index"] == 2
+      # The two pre-seeded messages plus the committed summary assistant
+      # (staged at index 2), so the marker lands at 3.
+      assert payload.marker["archivedCount"] == 3
+      assert payload.marker["index"] == 3
       # The archive is fetched lazily over `chat:history`, not pushed.
       refute Map.has_key?(payload, :history)
 

@@ -195,11 +195,26 @@ defmodule Nest.Agents.AgentCompactionTest do
       # in-flight agents) instead of killing it mid-turn.
       tool_call_msg = compact_tool_call_msg(3)
 
+      # Replace the active list and point the counter past the in-memory
+      # indices so the commit's appends don't collide with the persisted
+      # system row.
       :sys.replace_state(pid, fn s ->
-        %{s | chat_state: %{s.chat_state | messages: old_messages}}
+        %{s | chat_state: %{s.chat_state | messages: old_messages, next_message_index: 4}}
       end)
 
-      send(pid, {:compaction_done, summary_text, {:tool_call, tool_call_msg, 3, 30}})
+      suffix =
+        {:user,
+         %User{index: nil, parts: [%Part.Text{text: "[mode: compact] summarize"}], api_logs: []}}
+
+      summary_assistant =
+        {:assistant,
+         %Assistant{index: nil, parts: [%Part.Text{text: summary_text}], api_logs: []}}
+
+      send(
+        pid,
+        {:compaction_done, summary_text, [suffix], summary_assistant,
+         {:tool_call, tool_call_msg, 3, 30}}
+      )
 
       # `:sys.get_state/1` queues behind `:compaction_done` and
       # returns only after the broadcast has fired (broadcast is
@@ -209,7 +224,7 @@ defmodule Nest.Agents.AgentCompactionTest do
 
       assert_receive {:chat_compaction, payload}
       assert payload.marker["role"] == "compaction"
-      assert payload.marker["archivedCount"] == 4
+      assert payload.marker["archivedCount"] == 6
       # The archive is no longer pushed with the marker; the client
       # fetches it lazily over `chat:history`.
       refute Map.has_key?(payload, :history)
@@ -333,7 +348,7 @@ defmodule Nest.Agents.AgentCompactionTest do
       #             tool_result, [mode: compact] suffix, compactor_assistant,
       #             marker]
       # Messages: [new_system_fresh, summary_user, post_chat_assistant]
-      #             (the carried tool_call was executed by the post-swap
+      #             (the carried tool_call was executed by the post-compaction
       #              chat turn, so it's consumed and replaced with the
       #              final assistant response)
       #
@@ -371,7 +386,7 @@ defmodule Nest.Agents.AgentCompactionTest do
       assert sys_text =~ "Test programmer prompt.",
              "expected fresh system message to contain the rendered system prompt"
 
-      # The carried tool_call was executed by the post-swap
+      # The carried tool_call was executed by the post-compaction
       # chat turn (Trigger 2 mid-turn resume), so the
       # tool_call + tool_result are consumed and replaced
       # with the final assistant response. Assert the tail
@@ -387,13 +402,13 @@ defmodule Nest.Agents.AgentCompactionTest do
              "expected chat:compaction marker in history with archived_count > 0"
 
       # The original system message is now in history
-      # (the swap archives the pre-swap active list, which
+      # (the swap archives the pre-compaction active list, which
       # included the original system message at index 0).
       assert Enum.any?(history, &match?({:system, _}, &1)),
              "expected the original system message in history"
 
       # The suffix + compactor's assistant response are in
-      # history (they were the pre-swap active messages).
+      # history (they were the pre-compaction active messages).
       assert Enum.any?(history, fn
                {:system, %{parts: [%Part.Text{text: t}]}} when is_binary(t) ->
                  String.starts_with?(t, "[mode: compact]")
@@ -409,6 +424,19 @@ defmodule Nest.Agents.AgentCompactionTest do
       # Trigger user message archived during the swap.
       assert Enum.any?(history, &match?({:user, _}, &1)),
              "expected the trigger user message archived into history"
+
+      # Exactly once: the staged `[mode: compact]` suffix is committed once
+      # (it is not persisted before the compaction and never re-appended).
+      suffix_count =
+        Enum.count(history, fn
+          {_, %{parts: [%Part.Text{text: t}]}} when is_binary(t) ->
+            String.starts_with?(t, "[mode: compact]")
+
+          _ ->
+            false
+        end)
+
+      assert suffix_count == 1, "expected exactly one [mode: compact] suffix; got #{suffix_count}"
 
       Agent.terminate(pid)
     end

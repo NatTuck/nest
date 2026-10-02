@@ -29,7 +29,7 @@ defmodule Nest.Tokens.Compactor do
   message list (via the canonical append path, same as a regular
   chat-turn assistant response) and uses the summary text to
   derive a "Summary of earlier conversation" user message after
-  the swap. The compactor does not wrap, rename, or otherwise
+  the commit. The compactor does not wrap, rename, or otherwise
   reshape the response.
 
   The LLM call is set up by the caller. It sends a request whose
@@ -72,6 +72,7 @@ defmodule Nest.Tokens.Compactor do
   alias Nest.Messages.Part
   alias Nest.Messages.ThinkTags
   alias Nest.Scripts.CompactionProbeSupport
+  alias Nest.Tokens.Budget
   alias Nest.Tokens.Estimator
   alias Nest.Tokens.Reserve
 
@@ -151,7 +152,7 @@ defmodule Nest.Tokens.Compactor do
         ) :: summary_budget()
   def compute_summary_budget(context_limit, system_prompt, current_messages, optional_guidance)
       when is_integer(context_limit) and context_limit > 0 and is_list(current_messages) do
-    reserve = Reserve.response_budget(context_limit)
+    reserve = Reserve.compaction_reserve(context_limit)
     system_size = Overflow.system_size(system_prompt)
 
     placeholder = render_suffix(1, optional_guidance)
@@ -161,7 +162,7 @@ defmodule Nest.Tokens.Compactor do
     n_headroom = max(0, reserve - system_size - suffix_size)
 
     n_call_fits =
-      max(0, context_limit - Estimator.estimate_messages(current_messages) - suffix_size)
+      max(0, context_limit - Budget.size(current_messages) - suffix_size)
 
     n = min(n_headroom, n_call_fits)
 
@@ -198,7 +199,7 @@ defmodule Nest.Tokens.Compactor do
     * `{:ok, :passthrough}` — the input was too short to compact
       (`:too_short`: empty / system-only / system + single user /
       no head to summarize). No LLM call was made; the caller
-      skips the swap and just spawns the next chat turn.
+      skips the commit and just spawns the next chat turn.
     * `{:error, :llm_returned_empty}` — the LLM call returned
       an empty string for the summary. The compactor does not
       synthesize a placeholder summary; it surfaces the failure.
@@ -216,8 +217,7 @@ defmodule Nest.Tokens.Compactor do
       {:ok, _system} ->
         with {:ok, response} <- llm_call_fn.(messages, 0, nil),
              %RunResponse{text: text} = response,
-             :ok <- require_summary(text),
-             :ok <- require_non_empty_summary(text) do
+             :ok <- validate_summary(text) do
           {:ok, text || "", response}
         end
     end
@@ -228,7 +228,7 @@ defmodule Nest.Tokens.Compactor do
   # to summarize), or any shape that doesn't lead with a system
   # message. Asking the LLM to summarize the bare system prompt
   # produces a meaningless call, so signal :passthrough and let
-  # the caller skip the swap.
+  # the caller skip the commit.
   defp split_messages([]), do: :too_short
   defp split_messages([_only]), do: :too_short
   defp split_messages([{:system, _}, {:user, _}]), do: :too_short
@@ -239,24 +239,28 @@ defmodule Nest.Tokens.Compactor do
 
   defp split_messages(_other), do: :too_short
 
-  defp require_summary(""), do: {:error, :llm_returned_empty}
-  defp require_summary(_text), do: :ok
+  @doc """
+  Validate a compactor summary: it must be non-empty after stripping
+  `<think>...</think>` blocks and trimming whitespace.
 
-  # Stripped-and-trimmed guard: rejects LLM responses whose
-  # visible content is empty or whitespace-only. Covers:
-  #   * LLM emitted only `<think>...</think>` blocks (no
-  #     visible summary) — common when the model's response
-  #     gets truncated mid-thinking by token budget.
-  #   * Whitespace-only responses (`"   "`, `"\n\n"`).
-  #
-  # Without this, `ThinkTags.strip/1` (applied later by the
-  # regenerator when building the summary_user) collapses
-  # those responses to `""` and the user sees the
-  # `Summary of earlier conversation:` header followed by
-  # nothing. Failing here lets the agent surface a retryable
-  # `:llm_returned_empty` (same shape as the bare-empty case
-  # — both mean "the LLM produced no visible summary").
-  defp require_non_empty_summary(text) do
+  This is the single summary contract, shared by `compact/3` and the live
+  compaction commit (`Nest.Agents.Agent.Compaction.ResultHandler`). A missing
+  summary is a hard bug: every compaction marker must be bracketed by the
+  summary it produced (see `notes/compaction-reserve-plan.md`). An empty or
+  think-only response returns `{:error, :llm_returned_empty}` so the caller
+  can surface a retryable compaction failure instead of committing an empty
+  summary.
+
+  Covers:
+    * LLM emitted only `<think>...</think>` blocks (no visible summary) —
+      common when the response is truncated mid-thinking by the token budget.
+    * Whitespace-only responses (`"   "`, `"\\n\\n"`).
+  """
+  @spec validate_summary(String.t() | nil) :: :ok | {:error, :llm_returned_empty}
+  def validate_summary(nil), do: {:error, :llm_returned_empty}
+  def validate_summary(""), do: {:error, :llm_returned_empty}
+
+  def validate_summary(text) when is_binary(text) do
     if String.trim(ThinkTags.strip(text)) == "" do
       {:error, :llm_returned_empty}
     else

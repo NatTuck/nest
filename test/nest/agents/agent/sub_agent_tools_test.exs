@@ -308,7 +308,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
         name: "SubAgentTools #{System.unique_integer([:positive])}",
         description: "Coordinator with sub-agent tools",
         system_prompt: "Coordinate specialists in this space.",
-        tools: ["agents-spawn", "agents-list", "agents-query", "context-check", "context-compact"],
+        tools: ["context", "agents"],
         modes: %{
           "chat" => %{
             "description" => "Chat",
@@ -327,7 +327,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
         name: "Specialist #{System.unique_integer([:positive])}",
         description: "A specialist",
         system_prompt: "You are a specialist.",
-        tools: ["context-check", "context-compact"],
+        tools: ["context"],
         modes: %{}
       })
 

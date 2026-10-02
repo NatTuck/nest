@@ -1,16 +1,23 @@
 defmodule Nest.Agents.Agent.BatchSizer.Overflow do
   @moduledoc """
-  Shared "write an oversized result to the agent's scratch dir"
-  helper. Both `BatchSizer` (shell-cmd / file-read overflow) and
-  `BatchLoop` (an `agents-batch` aggregate that exceeds its inline
-  cap) write their full content to a scratch file and return a
-  short pointer + head summary inline.
+  Shared "write an oversized result to the agent's scratch dir" helpers.
 
-  The scratch dir is `ctx.tmp_path` — the same per-agent directory
-  the sandbox binds read-write at `/tmp`. Writing on the host
-  directly (rather than through the sandbox gatekeeper) is
-  intentional internal scratch management, mirroring `BatchSizer`.
+  `write/4` saves the full bytes; `substitute/5` turns an oversized result
+  into an in-budget inline block (a pointer + head) and is the single
+  summarization path used by `BatchSizer` (regular tools), `BatchLoop`
+  (`agents-batch`), and `ToolLoop` (sub-agent tools).
+
+  The scratch dir is `ctx.tmp_path` — the same per-agent directory the
+  sandbox binds read-write at `/tmp`. Writing on the host directly (rather
+  than through the sandbox gatekeeper) is intentional internal scratch
+  management, mirroring `BatchSizer`.
   """
+
+  alias Nest.Tokens.Estimator
+
+  # UTF-8 encoding of U+FFFD (REPLACEMENT CHARACTER), used by
+  # `to_valid_utf8/1` for byte sequences that don't decode.
+  @replacement_char <<0xEF, 0xBF, 0xBD>>
 
   @doc """
   Write `content` to a scratch file under `ctx.tmp_path` and return
@@ -36,6 +43,115 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
         end
     end
   end
+
+  @doc """
+  Build an in-budget inline substitute for an oversized tool result.
+
+  Writes the full `content` to the agent's scratch dir and returns:
+
+      <label> (<N> tokens) saved to <path>.
+
+      <leading whole lines that fit the head budget>
+
+  truncated (line-aligned) so `Estimator.estimate/1` of the result is at
+  most `budget` tokens. The result is always valid UTF-8 and always fits;
+  callers must not inline the full `content` instead.
+
+  `label` names the result for the model (e.g. `"Command output of 'ls'"`).
+  `prefix` names the scratch file (see `write/4`). `content` is expected
+  to be valid UTF-8 — binary results take `handle_binary_shell/4` instead.
+  """
+  @spec substitute(binary(), map(), String.t(), non_neg_integer(), String.t()) :: String.t()
+  def substitute(content, ctx, label, budget, prefix) do
+    size = Estimator.estimate(content)
+
+    location =
+      case write(content, ctx, prefix, "txt") do
+        nil -> "temp file unavailable"
+        path -> "saved to #{path}"
+      end
+
+    header = "#{label} (#{size} tokens) #{location}."
+
+    block =
+      case head_text(content, head_budget(header)) do
+        "" -> header
+        head -> header <> "\n\n" <> head
+      end
+
+    truncate_to_fit(block, budget)
+  end
+
+  # Head budget: ~4× the header, with a floor so a very short header
+  # still yields a usable preview.
+  defp head_budget(header) do
+    header_tokens = Estimator.estimate(header)
+    max(header_tokens * 4, header_tokens + 50)
+  end
+
+  @doc """
+  Take as many leading whole lines of `content` as fit `budget` tokens.
+
+  Whole lines only (never mid-line). `Estimator.estimate/1` includes a
+  per-line overhead, matching the rest of the sizing path.
+  """
+  @spec head_text(String.t(), integer()) :: String.t()
+  def head_text("", _budget), do: ""
+  def head_text(_content, budget) when budget <= 0, do: ""
+
+  def head_text(content, budget) do
+    content
+    |> String.split("\n")
+    |> Enum.reduce_while({"", 0}, fn line, {acc, used} ->
+      line_tokens = Estimator.estimate(line)
+
+      if used + line_tokens <= budget do
+        {:cont, {acc <> line <> "\n", used + line_tokens}}
+      else
+        {:halt, {acc, used}}
+      end
+    end)
+    |> elem(0)
+    |> String.trim_trailing()
+  end
+
+  @doc """
+  Trim `text` to at most `target_tokens` by taking leading whole lines.
+  """
+  @spec truncate_to_fit(String.t(), integer()) :: String.t()
+  def truncate_to_fit(_text, target_tokens) when target_tokens <= 0, do: ""
+  def truncate_to_fit(text, target_tokens), do: head_text(text, target_tokens)
+
+  @doc """
+  Lossy UTF-8 coercion: replace every invalid byte sequence with U+FFFD so
+  the result is a valid string the estimator / message pipeline can handle.
+  `:unicode.characters_to_binary/3` decodes as much valid UTF-8 as it can
+  and reports the offending remainder (as `{:error, converted, rest}` or
+  `{:incomplete, converted, _}`) instead of raising. We splice in a
+  replacement character for each invalid byte (dropping it so the
+  recursion always makes progress) and keep decoding the remainder.
+  """
+  @spec to_valid_utf8(binary()) :: String.t()
+  def to_valid_utf8(<<>>), do: ""
+
+  def to_valid_utf8(bin) do
+    case :unicode.characters_to_binary(bin, :utf8, :utf8) do
+      text when is_binary(text) ->
+        text
+
+      {:error, "", rest} ->
+        # The head byte is invalid: replace it and move past it.
+        @replacement_char <> to_valid_utf8(drop_first_byte(rest))
+
+      {:error, converted, rest} ->
+        converted <> to_valid_utf8(rest)
+
+      {:incomplete, converted, _rest} ->
+        converted <> @replacement_char
+    end
+  end
+
+  defp drop_first_byte(<<_::8, rest::binary>>), do: rest
 
   defp token do
     :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)

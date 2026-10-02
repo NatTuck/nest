@@ -40,7 +40,7 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
           name: "Oversized-#{System.unique_integer([:positive])}",
           description: "Oversized system test",
           system_prompt: "Original-small-prompt",
-          tools: ["context-check", "context-compact"],
+          tools: ["context"],
           modes: %{
             "chat" => %{
               "description" => "General conversation.",
@@ -164,7 +164,7 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
       assert msg =~ "25% safety budget"
       assert msg =~ "8000-token context"
 
-      refute msg =~ "reserved response budget",
+      refute msg =~ "compaction reserve",
              "oversized path should not use the reserve_exhausted wording"
     end
 

@@ -28,8 +28,10 @@ defmodule Nest.Tools.ShellCmd do
   require Logger
 
   alias Nest.Sandbox
+  alias Nest.Sandbox.ShellJobs
 
   @default_timeout_ms 60_000
+  @default_grace_ms 200
 
   @doc """
   Executes a shell command in a sandboxed environment.
@@ -38,6 +40,12 @@ defmodule Nest.Tools.ShellCmd do
 
     * `:timeout` - Maximum execution time in milliseconds (default: #{@default_timeout_ms})
     * `:stdin` - Binary data to send to the command's stdin over a real pipe (no base64) (default: "")
+    * `:background` - when `true`, start the command as a background job
+      owned by `Nest.Sandbox.ShellJobs` and return a job handle instead of
+      waiting. Requires a `tmp_path` (the log lives under it). Additional
+      opts: `:agent_key` (`{space_id, agent_name}`), `:agent_pid`, and
+      `:grace_ms` (how long to wait for an immediate exit before reporting
+      the job as running).
 
   ## Returns
 
@@ -65,11 +73,15 @@ defmodule Nest.Tools.ShellCmd do
     {script, script_path} = stage_script(command, tmp_path)
     sandboxed_cmd = build_sandboxed_command(script_path, workspace, tmp_path, caps)
 
-    Logger.info(
-      "Executing sandboxed script #{script_path} in #{workspace}: #{truncate_log(command)}"
-    )
+    if Keyword.get(opts, :background, false) do
+      run_background(command, script, script_path, sandboxed_cmd, workspace, tmp_path, caps, opts)
+    else
+      Logger.info(
+        "Executing sandboxed script #{script_path} in #{workspace}: #{truncate_log(command)}"
+      )
 
-    exec_staged(script, sandboxed_cmd, timeout, stdin, command, {workspace, tmp_path})
+      exec_staged(script, sandboxed_cmd, timeout, stdin, command, {workspace, tmp_path})
+    end
   end
 
   # Run the staged script and remove it afterwards: it is only a transcript of
@@ -85,6 +97,75 @@ defmodule Nest.Tools.ShellCmd do
     end
   after
     File.rm(script)
+  end
+
+  # Start the command as a background job and either report an immediate
+  # exit (within the grace window) as a normal result, or hand the caller a
+  # job handle. The job's script is removed by `ShellJobs` when the job ends.
+  defp run_background(
+         command,
+         script,
+         script_path,
+         sandboxed_cmd,
+         workspace,
+         tmp_path,
+         caps,
+         opts
+       ) do
+    if is_nil(tmp_path) do
+      File.rm(script)
+      {:error, "Background jobs require a tmp directory"}
+    else
+      grace = Keyword.get(opts, :grace_ms, @default_grace_ms)
+      agent_key = Keyword.get(opts, :agent_key, {:unknown, :unknown})
+
+      Logger.info("Starting background shell job in #{workspace}: #{truncate_log(command)}")
+
+      case ShellJobs.start_job(%{
+             agent_key: agent_key,
+             agent_pid: Keyword.get(opts, :agent_pid),
+             command: command,
+             bwrap: sandboxed_cmd,
+             script_path: script_path,
+             tmp_path: tmp_path,
+             max_jobs: background_cap(caps)
+           }) do
+        {:ok, job_id, log_path} ->
+          await_background_start(job_id, log_path, grace, agent_key, command, workspace, tmp_path)
+
+        {:error, reason} ->
+          File.rm(script)
+          {:error, reason}
+      end
+    end
+  end
+
+  defp await_background_start(job_id, log_path, grace, agent_key, command, workspace, tmp_path) do
+    ShellJobs.subscribe(agent_key, job_id, self())
+
+    receive do
+      {:shell_job_exit, ^job_id, code} ->
+        {:ok, output} = ShellJobs.output(agent_key, job_id)
+        handle_exit_result(command, code, output, workspace, tmp_path)
+    after
+      grace ->
+        ShellJobs.unsubscribe(agent_key, job_id, self())
+
+        {:ok,
+         "Started background job #{job_id} (log: #{log_path}). " <>
+           "Use shell-list, shell-wait, or shell-kill to manage it."}
+    end
+  end
+
+  # The per-agent background-job ceiling: `caps.shell.background` when set,
+  # otherwise the always-on default of 1.
+  defp background_cap(nil), do: 1
+
+  defp background_cap(caps) do
+    case get_in(caps, ["shell", "background"]) do
+      n when is_integer(n) and n >= 0 -> n
+      _ -> 1
+    end
   end
 
   defp handle_exit_result(_command, 0, "", _workspace, _tmp_path) do
@@ -280,16 +361,20 @@ defmodule Nest.Tools.ShellCmd do
   end
 
   defp handle_down(acc, reason) do
-    {:ok, exit_status(reason), combine_output(acc)}
+    {:ok, exit_code(reason), combine_output(acc)}
   end
 
+  @doc false
   # erlexec reports the wait status the OS recorded: `:normal` for status 0 and
   # `{:exit_status, raw}` otherwise (a signal death included, so a killed
   # command is not a clean exit). `:exec.status/1` decodes the raw value.
-  defp exit_status(:normal), do: 0
-  defp exit_status({:exit_status, raw}), do: decode_status(:exec.status(raw))
-  defp exit_status(raw) when is_integer(raw), do: raw
-  defp exit_status(_other), do: 1
+  # Shared with `Nest.Sandbox.ShellJobs`, which decodes the same `:DOWN`
+  # reason for background jobs.
+  @spec exit_code(term()) :: integer()
+  def exit_code(:normal), do: 0
+  def exit_code({:exit_status, raw}), do: decode_status(:exec.status(raw))
+  def exit_code(raw) when is_integer(raw), do: raw
+  def exit_code(_other), do: 1
 
   defp decode_status({:status, code}), do: code
 

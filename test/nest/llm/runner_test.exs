@@ -160,6 +160,20 @@ defmodule Nest.LLM.RunnerTest do
       assert Runner.build_request(ctx).thinking_effort == nil
     end
 
+    test "spreads ctx.max_tokens into the RunRequest" do
+      cc = %Nest.LLM.ClientConfig{model: "qwen3.5-plus"}
+      ctx = %{client_config: cc, messages: [], tools: [], tool_choice: :auto, max_tokens: 4_321}
+
+      assert Runner.build_request(ctx).max_tokens == 4_321
+    end
+
+    test "leaves max_tokens nil when ctx has none" do
+      cc = %Nest.LLM.ClientConfig{model: "qwen3.5-plus"}
+      ctx = %{client_config: cc, messages: [], tools: [], tool_choice: :auto}
+
+      assert Runner.build_request(ctx).max_tokens == nil
+    end
+
     test "forces tool_choice :none when there are no tools" do
       ctx = %{
         client_config: %Nest.LLM.ClientConfig{model: "qwen3.5-plus"},

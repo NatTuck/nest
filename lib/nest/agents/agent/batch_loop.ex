@@ -65,10 +65,6 @@ defmodule Nest.Agents.Agent.BatchLoop do
   # Marker prefix for a failed / timed-out item's slot.
   @error_prefix "[error: "
 
-  # Head size (chars) shown inline when the aggregate is offloaded to
-  # the scratch dir.
-  @offload_head_chars 200
-
   @doc """
   Run an `agents-batch` tool call. Returns `{:ok, content}` (the JSON
   aggregate, or an offload pointer + head when it exceeds the inline
@@ -473,11 +469,8 @@ defmodule Nest.Agents.Agent.BatchLoop do
 
     if usable > 0 and
          Estimator.estimate(json) > CapCalculator.effective_max_result_tokens(tc, usable) do
-      path = Overflow.write(json, ctx, "agents-batch", "json") || "(scratch unavailable)"
-      head = String.slice(json, 0, @offload_head_chars)
-
-      "Batch of #{count} results (~#{Estimator.estimate(json)} tokens) saved to #{path}. " <>
-        "Head: #{head}"
+      cap = CapCalculator.effective_max_result_tokens(tc, usable)
+      Overflow.substitute(json, ctx, "Batch of #{count} results", cap, "agents-batch")
     else
       json
     end

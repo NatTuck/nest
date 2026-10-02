@@ -56,7 +56,7 @@ defmodule Nest.Agents.AgentToolsSecondChanceTest do
         })
 
       capture_log(fn ->
-        send(pid, {:compaction_done, "Summary", {:tool_call, carried_tool_call_msg(), 5, 5}})
+        send_compaction_done(pid, "Summary", {:tool_call, carried_tool_call_msg(), 5, 5})
 
         # The max-iterations notification fires once.
         assert_receive {:chat_notification,

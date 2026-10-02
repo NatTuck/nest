@@ -43,7 +43,8 @@ defmodule Nest.Sandbox do
         "fs" => %{
           "read" => [String.t()],
           "write" => [String.t()]
-        }
+        },
+        "shell" => %{"background" => non_neg_integer()}
       }
 
   * `"net"` — when `true`, the sandbox shares the host's network
@@ -55,6 +56,10 @@ defmodule Nest.Sandbox do
     canonical workspace and the per-agent scratch dir); any other path
     is bound at its canonical path. Anything not in the write list
     stays read-only via `--ro-bind / /`.
+  * `"shell.background"` (optional) — the per-agent ceiling on
+    concurrent background shell jobs (default 1; 0 disables). Set by a
+    project's `.nest` `[shell] background`. Enforced by
+    `Nest.Sandbox.ShellJobs`, not by the mounts.
 
   ## Missing paths
 
@@ -75,6 +80,7 @@ defmodule Nest.Sandbox do
 
   alias Nest.FSPath
   alias Nest.Hardware
+  alias Nest.Sandbox.Caps
   alias Nest.Tools.ShellCmd
   alias Nest.Tools.ShellEscape
 
@@ -167,56 +173,7 @@ defmodule Nest.Sandbox do
   Validates a caps map. Returns `:ok` or `{:error, reason}`.
   """
   @spec validate_caps(map()) :: :ok | {:error, String.t()}
-  def validate_caps(%{"net" => net, "fs" => %{"read" => read, "write" => write}})
-      when is_boolean(net) and is_list(read) and is_list(write) do
-    cond do
-      "/" not in read ->
-        {:error, "caps.fs.read must include \"/\" (bwrap needs /bin/sh)"}
-
-      not Enum.all?(read, &is_binary/1) ->
-        {:error, "caps.fs.read entries must be strings"}
-
-      not Enum.all?(write, &is_binary/1) ->
-        {:error, "caps.fs.write entries must be strings"}
-
-      true ->
-        :ok
-    end
-  end
-
-  def validate_caps(%{"net" => _, "fs" => %{"read" => _, "write" => write}})
-      when not is_list(write) do
-    {:error, "caps.fs.write must be a list"}
-  end
-
-  def validate_caps(%{"net" => _, "fs" => %{"read" => read, "write" => _}})
-      when not is_list(read) do
-    {:error, "caps.fs.read must be a list"}
-  end
-
-  def validate_caps(%{"net" => _, "fs" => %{"read" => _}}) do
-    {:error, "caps.fs.write must be a list"}
-  end
-
-  def validate_caps(%{"net" => _, "fs" => %{"write" => _}}) do
-    {:error, "caps.fs.read must be a list"}
-  end
-
-  def validate_caps(%{"net" => _, "fs" => _}) do
-    {:error, "caps.fs must be a map with \"read\" (list) and \"write\" (list) keys"}
-  end
-
-  def validate_caps(%{"net" => _}) do
-    {:error, "caps.fs is required"}
-  end
-
-  def validate_caps(%{"fs" => _}) do
-    {:error, "caps.net is required"}
-  end
-
-  def validate_caps(caps) do
-    {:error, "invalid caps: #{inspect(caps)}"}
-  end
+  defdelegate validate_caps(caps), to: Caps, as: :validate
 
   # ---- Rule helpers (shared single source of truth) ----
 

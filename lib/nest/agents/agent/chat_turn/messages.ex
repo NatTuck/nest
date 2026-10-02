@@ -135,7 +135,7 @@ defmodule Nest.Agents.Agent.ChatTurn.Messages do
 
   `_messages_before` is accepted for symmetry with other
   message builders (it would be used for richer refusal text
-  that referenced the pre-swap state); currently unused.
+  that referenced the pre-compaction state); currently unused.
   """
   @spec refuse_context_compact_co_batch([Nest.Messages.ToolCall.t()], [tuple()]) ::
           {:tool, Tool.t()}

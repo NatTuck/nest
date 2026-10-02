@@ -47,11 +47,13 @@ defmodule Nest.Agents.Agent.ChatTurn.Iteration do
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ChatTurn.HTTPWorker
   alias Nest.Agents.Agent.ChatTurn.State
+  alias Nest.LLM.GenerationDefaults
   alias Nest.LLM.Preflight, as: WirePreflight
-  alias Nest.Messages.Assistant
   alias Nest.Messages.MessageList
-  alias Nest.Messages.Part
+  alias Nest.Tokens.Budget
   alias Nest.Tokens.PreFlight
+
+  require Logger
 
   @doc """
   Broadcast a `chat_notification` so the UI can show a
@@ -91,134 +93,61 @@ defmodule Nest.Agents.Agent.ChatTurn.Iteration do
   @spec dispatch_batch(State.t(), list()) ::
           {:noreply, State.t()} | {:stop, :normal, State.t()}
   def dispatch_batch(state, messages) do
+    state = put_max_tokens(state, ordinary_max_tokens(state))
     spawn_http_worker(state, messages)
   end
 
   @doc """
-  Compactor's own chat turn: dispatch the LLM call with
-  `tools: nil, tool_choice: :none` (no tool calls in a
-  summarization request). No context-warning injection
-  (this is a one-shot call, not a long conversation),
-  no budget reminder (iteration cap is irrelevant). The
-  HTTP worker streams the response, the ChatTurn routes
-  deltas to the Agent (via `:delta_received`), and the
-  `ResponseHandler.handle/3` path appends the assistant
-  message via the canonical `__append_message__/2` path.
-  On `chat_idle`, `finalize_compaction/1` sends
-  `{:compaction_done, summary_text, carried_entry}` to
-  the Agent instead of the normal `{:chat_idle, _}`.
+  Compactor's own chat turn: dispatch the LLM call with `tools: nil,
+  tool_choice: :none` (no tool calls in a summarization request). No
+  context-warning injection (this is a one-shot call) and no budget
+  reminder (the iteration cap is irrelevant).
 
-  The request log is queued at the suffix's index (the
-  message that triggered this LLM call). The Agent's
-  `api_log_handler` re-broadcasts the suffix with the
-  request log attached (it already exists in the
-  messages list).
+  The request is the persisted active messages followed by the *staged*
+  compaction additions carried in the entry (`{:compaction, staged, _}`):
+  an assistant bridge when the tail wire role is a user role, plus the
+  `[mode: compact]` suffix. The staged messages are NOT in
+  `state.chat_state.messages`; they are persisted only when the compaction
+  commits (`ResultHandler`), so a failed compaction leaves no rows and the
+  persisted sequence always reflects exactly what was sent.
 
-  Two exceptions to "messages don't change" apply
-  here (same as the previous compactor's private LLM
-  call):
-
-    1. Strip everything from the first `[mode: compact]`
-       system message forward (on retry, exclude prior
-       failed attempts from the LLM call's input — they
-       stay in `state.chat_state.messages` for the user
-       to inspect in the chat UI).
-    2. Drop trailing unsatisfied tool calls (orphan
-       `Part.ToolUse` — Anthropic rejects unpaired
-       `tool_use` with `(2013) tool call result does not
-       follow tool call`). The orphan stays in
-       `state.chat_state.messages`; the next chat turn
-       re-sends it with the eventual `tool_result`.
+  Trailing unsatisfied tool calls are dropped from the request as a defense
+  (Anthropic rejects an unpaired `tool_use`); with confirm-then-persist this
+  should never fire on the live path.
   """
   @spec dispatch_compaction(State.t(), list()) ::
           {:noreply, State.t()} | {:stop, :normal, State.t()}
   def dispatch_compaction(state, messages) do
     state = %{state | ctx: %{state.ctx | tools: nil, tool_choice: :none}}
+    {_, staged, _} = state.entry
 
-    {suffix, messages_without_suffix} = pop_compaction_suffix_from_end(messages)
-
-    messages =
-      messages_without_suffix
-      |> strip_prior_compaction_attempts()
+    request =
+      messages
       |> MessageList.drop_trailing_unpaired_tool_call()
-      |> build_compaction_request(suffix)
+      |> Kernel.++(staged)
 
-    spawn_http_worker(state, messages)
+    state = put_max_tokens(state, compactor_max_tokens(state, request))
+    spawn_http_worker(state, request)
   end
 
-  # Build the compactor's LLM request. If the last wire role
-  # before the suffix is `:user`, prepend a synthetic assistant
-  # bridge so the suffix (a `{:user, _}`) maintains valid
-  # `assistant → user` alternation. The bridge is request-only
-  # (visible in the compactor's API log, not the Agent's messages).
-  defp build_compaction_request(messages, suffix) do
-    messages =
-      if MessageList.last_wire_role(messages) == :user do
-        messages ++ [synthetic_assistant_bridge()]
-      else
-        messages
-      end
+  # `max_tokens` is required on the Anthropic wire (the client substitutes a
+  # default). We send the lower of the conservative remaining window and the
+  # model/provider default so the request is always valid and the reply can
+  # use the full room without the provider rejecting the call.
+  defp put_max_tokens(state, value), do: %{state | ctx: Map.put(state.ctx, :max_tokens, value)}
 
-    if suffix, do: messages ++ [suffix], else: messages
+  defp ordinary_max_tokens(%{ctx: %{context_limit: limit}} = state) do
+    max(1, min(sane_default(state), round(0.20 * limit)))
   end
 
-  defp synthetic_assistant_bridge do
-    {:assistant,
-     %Assistant{
-       parts: [%Part.Text{text: "Let me pause to summarize."}],
-       timestamp: DateTime.utc_now(),
-       api_logs: []
-     }}
+  defp compactor_max_tokens(%{ctx: %{context_limit: limit}} = state, input) do
+    max(1, min(limit - Budget.size(input), sane_default(state)))
   end
 
-  # Pop the compaction suffix (a message whose text starts with
-  # `[mode: compact]`) from the end of the messages list. Returns
-  # `{suffix, rest}` or `{nil, messages}` if not found.
-  defp pop_compaction_suffix_from_end(messages) do
-    rev = Enum.reverse(messages)
+  defp sane_default(%{ctx: %{client_config: %{model: model}}}),
+    do: GenerationDefaults.default_max_tokens(model) || 32_000
 
-    case Enum.find_index(rev, &compaction_suffix_message?/1) do
-      nil ->
-        {nil, messages}
-
-      idx_from_end ->
-        remove_idx = length(messages) - 1 - idx_from_end
-        {Enum.at(messages, remove_idx), List.delete_at(messages, remove_idx)}
-    end
-  end
-
-  defp compaction_suffix_message?({:system, %Nest.Messages.System{parts: parts}}),
-    do: compaction_suffix?(parts)
-
-  defp compaction_suffix_message?({:user, %Nest.Messages.User{parts: parts}}),
-    do: compaction_suffix?(parts)
-
-  defp compaction_suffix_message?(_), do: false
-
-  defp compaction_suffix?(parts) do
-    Enum.any?(parts, fn
-      %Part.Text{text: text} -> String.starts_with?(text, "[mode: compact]")
-      _ -> false
-    end)
-  end
-
-  defp first_compaction_suffix_index(messages) do
-    Enum.find_index(messages, fn
-      {:system, %Nest.Messages.System{parts: parts}} -> compaction_suffix?(parts)
-      {:user, %Nest.Messages.User{parts: parts}} -> compaction_suffix?(parts)
-      _ -> false
-    end)
-  end
-
-  # Strip everything from the first `[mode: compact]`
-  # message forward. On retry, exclude prior failed
-  # compaction attempts from the LLM call's input.
-  defp strip_prior_compaction_attempts(messages) do
-    case first_compaction_suffix_index(messages) do
-      nil -> messages
-      idx -> Enum.take(messages, idx)
-    end
-  end
+  defp sane_default(_), do: 32_000
 
   # Spawn the HTTP worker as a Task under
   # `Nest.Agents.TaskSupervisor`. The worker calls
@@ -243,10 +172,38 @@ defmodule Nest.Agents.Agent.ChatTurn.Iteration do
        when is_integer(limit) and limit > 0 do
     PreFlight.ensure_passed!(messages, limit)
 
-    case WirePreflight.validate(messages) do
-      :ok -> dispatch_http_worker(state, messages)
-      {:error, violations} -> refuse_invalid_sequence(state, violations)
+    # Tripwire: an ordinary turn must never send a context that would spend
+    # the compaction reserve. Reaching here means an upstream gate (deferral
+    # / confirm-then-persist / synthetic accounting) is wrong. The compactor
+    # turn is exempt — its input is allowed to fill the whole window (see
+    # `notes/compaction-reserve-plan.md`).
+    if ordinary_turn?(state) and not Budget.fits?(messages, limit) do
+      refuse_over_budget(state, messages, limit)
+    else
+      case WirePreflight.validate(messages) do
+        :ok -> dispatch_http_worker(state, messages)
+        {:error, violations} -> refuse_invalid_sequence(state, violations)
+      end
     end
+  end
+
+  defp ordinary_turn?(state), do: not match?({:compaction, _, _}, state.entry)
+
+  # Never send a request whose list would spend the compaction reserve.
+  # Surface the invariant violation through the Agent's crash path
+  # (`chat:error`) and stop the turn.
+  defp refuse_over_budget(%{ctx: %{agent_pid: agent_pid}} = state, messages, limit) do
+    size = Budget.size(messages)
+
+    exception = %RuntimeError{
+      message:
+        "refusing to send an over-budget LLM request: " <>
+          "size=#{size} + reserve > context_limit=#{limit}"
+    }
+
+    Logger.error(exception.message)
+    send(agent_pid, {:chat_crashed, exception, []})
+    {:stop, :normal, state}
   end
 
   defp dispatch_http_worker(state, messages) do

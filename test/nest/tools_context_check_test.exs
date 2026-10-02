@@ -9,11 +9,15 @@ defmodule Nest.ToolsContextCheckTest do
 
       messages = [
         {:system, %Nest.Messages.System{parts: []}},
-        {:user, %Nest.Messages.User{tokens: 5_000, parts: []}}
+        {:assistant,
+         %Nest.Messages.Assistant{
+           parts: [],
+           usage: %{input_tokens: 5_000, output_tokens: 0}
+         }}
       ]
 
       # reserve = max(8192, 0.20 * 100000) = 20000
-      # used = 5000 (real floor from the user message's tokens)
+      # used = 5000 (real floor from the assistant's usage anchor)
       # usable = 100000 - 5000 - 20000 = 75000
       assert {:ok, content} =
                function.function.(%{}, %{messages: messages, context_limit: 100_000})

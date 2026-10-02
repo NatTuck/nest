@@ -21,7 +21,7 @@ defmodule Nest.Agents.Agent.ChatTurn.State do
   #     user's idle pipeline input). The user message has
   #     already been appended to `state.chat_state.messages`
   #     by the spawner (the pipeline appends; the trigger
-  #     appends after the swap; the chat turn in
+  #     appends after the commit; the chat turn in
   #     both cases reads it from `state.chat_state.messages`).
   #     The ChatTurn's first action is to call the LLM.
   #
@@ -41,29 +41,27 @@ defmodule Nest.Agents.Agent.ChatTurn.State do
   #     (last message is a `{:tool, _}`, not a tool_call).
   #     Iteration count preserved.
   #
-  #   * `{:compaction, term(), entry_or_nil}` — compactor's
-  #     own chat turn. The `[mode: compact]` suffix is at
-  #     the tail of `state.chat_state.messages`. The
-  #     ChatTurn's first action is to call the LLM with
-  #     `tools: nil, tool_choice: :none`. When the LLM
+  #   * `{:compaction, staged, entry_or_nil}` — compactor's
+  #     own chat turn. `staged` is the compaction request
+  #     additions (an assistant bridge when needed plus the
+  #     `[mode: compact]` suffix) that are NOT yet in
+  #     `state.chat_state.messages`; they are persisted only on
+  #     commit. The ChatTurn's first action is to call the LLM
+  #     with `tools: nil, tool_choice: :none`. When the LLM
   #     returns, the ChatTurn sends `{:compaction_done,
-  #     summary_text, carried_entry}` to the Agent — NOT
-  #     the normal `{:chat_idle, _}`. The middle slot is
-  #     reserved (currently `nil` from the Trigger —
-  #     `lifecycle.ex`'s finalize destructure discards it).
-  #     The third element is `nil` for Trigger A (post-turn)
-  #     and the carried `{:tool_call, _, _, _}` /
+  #     summary_text, staged, summary_assistant, carried_entry}`
+  #     to the Agent — NOT the normal `{:chat_idle, _}`. The
+  #     third element is `nil` for Trigger A (post-turn) and
+  #     the carried `{:tool_call, _, _, _}` /
   #     `{:compact_tool, _, _, _}` for Trigger B (mid-turn
-  #     resume). Only 1/4 of the entry shapes are true
-  #     continuations (the third element of the compactor
-  #     entry, when non-nil).
+  #     resume).
   #
   # The entry is the contract — no
   # `state.chat_state.messages`-tail inspection happens after
   # the spawner hands the messages off. The carried content
   # is placed in the active messages list at the trigger
-  # site (where the swap hasn't happened yet) and carried
-  # forward through the compactor's swap by the
+  # site (where the commit hasn't happened yet) and carried
+  # forward through the compactor's commit by the
   # `append_continuation_tail/2` helper in `CompactionHandler`.
   defstruct ctx: nil,
             iteration: 0,
@@ -80,5 +78,6 @@ defmodule Nest.Agents.Agent.ChatTurn.State do
           {:user_message, Nest.Messages.User.t()}
           | {:tool_call, Nest.Messages.Assistant.t(), non_neg_integer(), pos_integer()}
           | {:compact_tool, tool_pair, non_neg_integer(), pos_integer()}
-          | {:compaction, term(), entry() | nil}
+          | {:assistant_response, Nest.Messages.Assistant.t(), non_neg_integer(), pos_integer()}
+          | {:compaction, [tuple()], entry() | nil}
 end

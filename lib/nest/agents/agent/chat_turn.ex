@@ -240,10 +240,19 @@ defmodule Nest.Agents.Agent.ChatTurn do
 
     {messages, cancelled} = GenServer.call(state.ctx.agent_pid, :get_messages_with_cancelled)
     next_index = GenServer.call(state.ctx.agent_pid, :get_next_index)
-    state = %{state | active_message_index: next_index}
+    state = %{state | active_message_index: active_index(state, next_index)}
 
     iteration_branch(state, messages, cancelled)
   end
+
+  # The index the next assistant message will be stamped with. For the
+  # compactor's own turn the staged request (bridge + `[mode: compact]`
+  # suffix) is persisted before the summary, so the summary's provisional
+  # index is offset by the staged length (see `Trigger`).
+  defp active_index(%{entry: {:compaction, staged, _}}, next_index),
+    do: next_index + length(staged)
+
+  defp active_index(_state, next_index), do: next_index
 
   # The branching logic for `safe_iterate/1`'s three cases.
   # Extracted into its own function to keep `safe_iterate`'s
@@ -268,7 +277,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
   #
   # The messages list is correctly shaped by construction (the
   # entry structure carries it through the compactor's
-  # swap). No post-resume defensive checks.
+  # commit). No post-resume defensive checks.
   defp iteration_branch(state, messages, cancelled) do
     cond do
       cancelled ->
@@ -323,12 +332,17 @@ defmodule Nest.Agents.Agent.ChatTurn do
         spawn_tool_worker(state, tool_calls)
 
       {:refuse, _reason} ->
-        # Compactor didn't reduce enough. Trigger another compaction.
-        send(
-          state.ctx.agent_pid,
-          {:needs_compaction, self(), state.iteration, state.max_iterations}
-        )
+        # Compactor didn't reduce enough. Ask the Agent to compact again,
+        # carrying the trailing assistant+ToolUse so the sequence resumes
+        # afterwards. The continuation is the unified
+        # `ChatTurn.State.continuation/0` shape carried inside the 3-tuple
+        # `:needs_compaction` message — matching every emitter in
+        # `ResponseHandler`; a bare iteration/max tuple matches no handler
+        # and would silently stall the turn.
+        continuation =
+          {:tool_call, List.last(messages), state.iteration, state.max_iterations}
 
+        send(state.ctx.agent_pid, {:needs_compaction, self(), continuation})
         {:stop, :normal, state}
     end
   end

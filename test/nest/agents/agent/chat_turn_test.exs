@@ -247,7 +247,7 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
         })
 
       capture_log(fn ->
-        send(pid, {:compaction_done, "Summary", {:tool_call, carried_tool_call_msg(), 5, 5}})
+        send_compaction_done(pid, "Summary", {:tool_call, carried_tool_call_msg(), 5, 5})
 
         # Fires only once the iteration counter is past the cap, so this
         # is what proves the carried count took effect and the call that

@@ -48,8 +48,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     # Clear the `cancelled` flag from any previous stop so the
     # pre-flight compaction that may run for this turn can
     # actually resume the chat task (the guard in
-    # `compaction_done` would otherwise discard the
-    # `chat_continuation`).
+    # `compaction_done` would otherwise discard the resume).
     state = clear_cancelled(state)
 
     # Store the user message in `pending_user_message` instead
@@ -59,7 +58,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     # consumes the pending field via
     # `append_pending_user_message/1`. If preflight needs
     # compaction, the field stays set across the compaction;
-    # the compaction handler's `chat_continuation` branch
+    # `ChatPipeline.resume_with_pending/1`
     # appends it after compaction succeeds. We store the
     # post-resolution `effective_mode` so the message struct's
     # `[mode: ...]` prefix and `metadata.mode` match what the
@@ -426,7 +425,8 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   end
 
   @doc """
-  Public for use by the GenServer's `handle_info({:preflight_request, ...})`.
+  The user-turn preflight decision, used by `handle_preflight/2` (and
+  callers that need the same fit/compaction decision).
   Returns one of `:fits`, `:needs_compaction`, or `:cannot_compact`.
 
   `context_limit` is guaranteed to be a positive integer — it is
@@ -440,7 +440,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     PreFlight.check_messages(
       messages_for_llm,
       limit,
-      Reserve.response_budget(limit)
+      Reserve.compaction_reserve(limit)
     )
   end
 

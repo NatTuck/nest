@@ -271,7 +271,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
         name: "AgentsBatch #{System.unique_integer([:positive])}",
         description: "End-to-end agents-batch test",
         system_prompt: "Batch work over items.",
-        tools: ["agents-batch", "context-check", "context-compact"],
+        tools: ["context", "agents"],
         modes: %{
           "chat" => %{
             "description" => "Chat",

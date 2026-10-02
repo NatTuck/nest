@@ -20,13 +20,12 @@ alias Nest.Accounts.{Password, User}
 alias Nest.Blueprints
 alias Nest.Vocations
 
-# Any vocation that gets any `agents-*` tool gets all of them
-# (`agents-spawn`, `agents-query`, `agents-list`, `agents-archive`,
-# `agents-batch`, plus the model-discovery `models-list`).
-# `agents-spawn` and `agents-batch` are additionally stripped for
-# max-depth agents at spawn/compaction time (the others remain).
-agents_tools =
-  ["agents-spawn", "agents-query", "agents-list", "agents-archive", "agents-batch", "models-list"]
+# Tool capabilities are granted by group. `agents` bundles
+# spawn/query/list/archive/batch plus the model-discovery
+# `models-list`. `agents-spawn` and `agents-batch` are additionally
+# stripped for max-depth agents at spawn/compaction time (the others
+# remain).
+all_groups = ["file", "shell", "context", "agents"]
 
 # Default - minimal vocation for agents without a specific role.
 # Used as the fallback for any test or runtime path that needs a
@@ -37,7 +36,7 @@ agents_tools =
     name: "Default",
     description: "A minimal default vocation for agents without a specific role",
     system_prompt: "You are a helpful assistant.",
-    tools: ["context-check", "context-compact" | agents_tools],
+    tools: ["context", "agents"],
     modes: %{
       "chat" => %{
         "description" => "General conversation.",
@@ -77,21 +76,7 @@ agents_tools =
     useful outputs with head, tail, grep, or similar for commands that cost significant time
     or access remote APIs.
     """,
-    tools: [
-      "file-read",
-      "file-inspect",
-      "file-write",
-      "file-edit",
-      "shell-cmd",
-      "context-check",
-      "context-compact",
-      "agents-spawn",
-      "agents-query",
-      "agents-list",
-      "agents-archive",
-      "agents-batch",
-      "models-list"
-    ],
+    tools: all_groups,
     modes: %{
       "build" => %{
         "description" => """
@@ -120,17 +105,6 @@ agents_tools =
 # the full toolset. `Chat` is deliberately tool-less (conversation
 # only), matching the old default-agent behavior.
 
-all_tools =
-  [
-    "file-read",
-    "file-inspect",
-    "file-write",
-    "file-edit",
-    "shell-cmd",
-    "context-check",
-    "context-compact"
-  ] ++ agents_tools
-
 # Chat — general-purpose conversation with no tools at all.
 {:ok, chat_vocation} =
   Vocations.upsert_vocation(%{
@@ -156,7 +130,7 @@ all_tools =
     description: "A game master that runs tabletop RPG campaigns.",
     system_prompt:
       "You are a tabletop RPG game master. Narrate the world, run NPCs, and arbitrate the rules.",
-    tools: all_tools,
+    tools: all_groups,
     modes: %{
       "chat" => %{
         "description" => "General conversation.",
@@ -183,7 +157,7 @@ all_tools =
       Make sure procedures are followed and that the intent of the procedures
       are achieved.
     """,
-    tools: all_tools,
+    tools: all_groups,
     modes: %{
       "plan" => %{
         "description" => "Read-only access to workspace.",
@@ -214,7 +188,7 @@ all_tools =
       You may be assigned any of a variety of tasks. Complete them to the best of your
       ability.
     """,
-    tools: all_tools,
+    tools: all_groups,
     modes: %{
       "plan" => %{
         "description" => "Read-only access to workspace.",

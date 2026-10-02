@@ -26,6 +26,7 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   alias Nest.Agents.Agent.Config
   alias Nest.Sandbox
   alias Nest.Tokens.Reserve
+  alias Nest.Tools.Groups
   alias Nest.Vocations
 
   @max_fraction_of_context 0.25
@@ -129,7 +130,7 @@ defmodule Nest.Agents.Agent.SystemPrompt do
 
   def compose_vocation_config(vocation, workspace_path, context_limit_info, name, depth) do
     initial_mode = get_initial_mode(vocation.modes)
-    tools = vocation.tools || []
+    tools = Groups.expand(vocation.tools || [])
 
     system_prompt =
       (vocation.system_prompt || "") <>
@@ -193,7 +194,7 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   defp context_limit_section({nil, _}), do: ""
 
   defp context_limit_section({limit, source}) do
-    reserve = Reserve.response_budget(limit)
+    reserve = Reserve.compaction_reserve(limit)
     effective = max(1, limit - reserve)
 
     "\n\nContext limit: #{limit} tokens (resolved from #{source}). " <>

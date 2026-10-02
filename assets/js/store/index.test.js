@@ -163,6 +163,24 @@ describe("store", () => {
       expect(useStore.getState().agentsCache["agent-1"].lastIndex).toBe(-1);
     });
 
+    it("adopts shellJobs from the init payload, defaulting to []", () => {
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore
+        .getState()
+        .setAgentConnected("agent-1", { model: { name: "gpt-4" } });
+      expect(useStore.getState().agentsCache["agent-1"].jobs).toEqual([]);
+
+      const jobs = [{ id: "job-1", status: "running" }];
+      useStore.getState().setAgentJobs("agent-1", jobs);
+      expect(useStore.getState().agentsCache["agent-1"].jobs).toBe(jobs);
+    });
+
+    it("setAgentJobs defaults to [] when given null", () => {
+      useStore.getState().setAgentConnecting("agent-1");
+      useStore.getState().setAgentJobs("agent-1", null);
+      expect(useStore.getState().agentsCache["agent-1"].jobs).toEqual([]);
+    });
+
     it("uses payload model when provided", () => {
       useStore.getState().setAgentConnecting("agent-1");
       useStore.getState().setAgentConnected("agent-1", {
