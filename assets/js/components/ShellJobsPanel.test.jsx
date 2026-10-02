@@ -41,6 +41,21 @@ describe("ShellJobsPanel", () => {
     expect(screen.getByText("job-1")).toBeInTheDocument();
   });
 
+  it("hides the title but keeps Refresh when embedded in a tab", () => {
+    render(
+      <ShellJobsPanel
+        jobs={[runningJob]}
+        onKill={() => {}}
+        onOpenLog={() => {}}
+        showTitle={false}
+      />,
+    );
+
+    expect(screen.queryByText("Background jobs (1)")).toBeNull();
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeInTheDocument();
+    expect(screen.getByText("sleep 30")).toBeInTheDocument();
+  });
+
   it("calls onKill for a running job", () => {
     const onKill = vi.fn();
 

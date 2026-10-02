@@ -11,6 +11,14 @@ defmodule Nest.Sandbox.ShellJobs do
   so its PID/mount/net isolation is identical to a foreground call. It
   survives only because the manager outlives the tool call.
 
+  A job's log has two names. The manager reads and writes the host path
+  (`<tmp_path>/shell-jobs/<id>.log`); the sandbox sees the same file at
+  `/tmp/shell-jobs/<id>.log`, because the agent's tmp dir is bound at
+  `/tmp` inside it. Everything an agent is told — the "started" message,
+  `shell-list`, the `shell:jobs` broadcast — uses the sandbox path, since
+  that is the only one that resolves inside a `shell-cmd`. A host path
+  handed to an agent is unusable (and leaks the harness's layout).
+
   ## Limits and lifetime
 
   At most `caps["shell"]["background"]` jobs (default 1) may run
@@ -48,6 +56,10 @@ defmodule Nest.Sandbox.ShellJobs do
   # How long after a kill to force a terminal state if the exec port's
   # DOWN never arrives (SIGKILL + monitor should make it prompt).
   @kill_finalize_ms 5_000
+  # Where the agent's tmp dir is mounted inside the sandbox, and the
+  # subdirectory the job logs live in beneath it.
+  @sandbox_tmp "/tmp"
+  @log_subdir "shell-jobs"
 
   @type job_id :: String.t()
   @type agent_key :: {term(), term()}
@@ -58,6 +70,8 @@ defmodule Nest.Sandbox.ShellJobs do
           status: :running | :exited,
           exit_code: integer() | nil,
           killed: boolean(),
+          # The path inside the sandbox (`/tmp/shell-jobs/<id>.log`), not
+          # the host path the manager writes the log to.
           log_path: String.t(),
           started_at: DateTime.t()
         }
@@ -86,10 +100,12 @@ defmodule Nest.Sandbox.ShellJobs do
     * `:command` — the original command (for display)
     * `:bwrap` — the full bwrap command line to run
     * `:script_path` — the staged script to remove once the job ends
-    * `:tmp_path` — where the log lives
+    * `:tmp_path` — the host dir the log lives under (the sandbox sees it
+      at `#{@sandbox_tmp}`)
     * `:max_jobs` — the per-agent ceiling (default #{@default_max_jobs})
 
-  Returns `{:ok, job_id, log_path}` or `{:error, reason}`.
+  Returns `{:ok, job_id, log_path}`, where `log_path` is the path inside
+  the sandbox, or `{:error, reason}`.
   """
   @spec start_job(map()) :: {:ok, job_id(), String.t()} | {:error, String.t()}
   def start_job(attrs), do: GenServer.call(@name, {:start_job, attrs}, 30_000)
@@ -280,8 +296,9 @@ defmodule Nest.Sandbox.ShellJobs do
   defp launch(attrs, agent_key, state) do
     job_id = "job-#{state.next_id}"
     tmp_path = Map.fetch!(attrs, :tmp_path)
-    log_dir = Path.join(tmp_path, "shell-jobs")
+    log_dir = Path.join(tmp_path, @log_subdir)
     log_path = Path.join(log_dir, "#{job_id}.log")
+    sandbox_log_path = Path.join([@sandbox_tmp, @log_subdir, "#{job_id}.log"])
 
     with :ok <- File.mkdir_p(log_dir),
          :ok <- File.write(log_path, ""),
@@ -292,6 +309,7 @@ defmodule Nest.Sandbox.ShellJobs do
         command: Map.fetch!(attrs, :command),
         script_path: Map.get(attrs, :script_path),
         log_path: log_path,
+        sandbox_log_path: sandbox_log_path,
         erl_pid: erl_pid,
         os_pid: os_pid,
         status: :running,
@@ -300,7 +318,7 @@ defmodule Nest.Sandbox.ShellJobs do
         started_at: DateTime.utc_now()
       }
 
-      {:ok, job, log_path}
+      {:ok, job, sandbox_log_path}
     else
       {:error, reason} ->
         # Don't leave the empty log file (or partial dir) behind when the
@@ -511,7 +529,11 @@ defmodule Nest.Sandbox.ShellJobs do
       status: if(job.status == :running, do: :running, else: :exited),
       exit_code: job.exit_code,
       killed: job.killed,
-      log_path: job.log_path,
+      # The path the sandbox sees, not the host path the manager writes:
+      # it is what `shell-list` shows the agent and what the UI receives.
+      # `Map.get` (not `job.sandbox_log_path`) so jobs already in a live
+      # manager's state from before this field existed still render.
+      log_path: Map.get(job, :sandbox_log_path, job.log_path),
       started_at: job.started_at
     }
   end

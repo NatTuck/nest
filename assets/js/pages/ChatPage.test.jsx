@@ -181,6 +181,63 @@ describe("ChatPage chat header", () => {
   });
 });
 
+describe("ChatPage background jobs tab", () => {
+  const job = {
+    id: "job-1",
+    command: "sleep 30",
+    status: "running",
+    exit_code: null,
+    killed: false,
+    log_path: "/tmp/shell-jobs/job-1.log",
+  };
+
+  beforeEach(() => {
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "idle",
+        messages: [],
+        model: { name: "qwen3.5-plus", provider: "model-studio" },
+        jobs: [job],
+      },
+    };
+  });
+
+  it("shows the conversation first and keeps the jobs out of it", () => {
+    renderChat();
+
+    expect(screen.getByRole("tab", { name: "Chat" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(
+      screen.getByRole("tab", { name: "Background jobs (1)" }),
+    ).toBeInTheDocument();
+    // The panel is not in the message flow, so the command is not
+    // rendered until its tab is selected.
+    expect(screen.queryByText("sleep 30")).toBeNull();
+    expect(screen.getByText("Start a conversation")).toBeInTheDocument();
+  });
+
+  it("swaps the message list for the jobs panel when its tab is selected", () => {
+    renderChat();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Background jobs (1)" }));
+
+    expect(screen.getByText("sleep 30")).toBeInTheDocument();
+    expect(screen.queryByText("Start a conversation")).toBeNull();
+  });
+
+  it("shows an empty state on the jobs tab when there are no jobs", () => {
+    mockAgentsCache["test-agent"].jobs = [];
+    renderChat();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Background jobs (0)" }));
+
+    expect(screen.getByText("No background jobs.")).toBeInTheDocument();
+  });
+});
+
 describe("ChatPage stop button", () => {
   beforeEach(() => {
     mockAgentsCache = {};

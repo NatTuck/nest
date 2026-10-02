@@ -43,6 +43,18 @@ defmodule Nest.Sandbox.ShellJobsTest do
     assert [%{id: ^id, status: :exited, killed: true}] = ShellJobs.list(key)
   end
 
+  test "reports the log path the sandbox sees, not the host path", %{key: key, tmp: tmp} do
+    assert {:ok, message} = start_background("sleep 30", tmp, key)
+    assert [%{id: id, log_path: log_path}] = ShellJobs.list(key)
+
+    assert log_path == "/tmp/shell-jobs/#{id}.log"
+    assert message =~ "(log: #{log_path})"
+
+    # The manager still writes the log under the host tmp dir, which the
+    # sandbox sees as /tmp.
+    assert File.exists?(Path.join([tmp, "shell-jobs", "#{id}.log"]))
+  end
+
   test "enforces the per-agent cap and frees a slot on exit", %{key: key, tmp: tmp} do
     id = start_running!("sleep 30", tmp, key)
 

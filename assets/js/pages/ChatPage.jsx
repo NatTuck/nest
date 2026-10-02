@@ -31,6 +31,7 @@ import { ChatComposer } from "../components/ChatComposer";
 import { ChatMessages } from "../components/ChatMessages";
 import { ChatTypingIndicator } from "../components/ChatTypingIndicator";
 import { ChatLoading } from "../components/ChatLoading";
+import { ChatTabs, CHAT_TAB, JOBS_TAB } from "../components/ChatTabs";
 import { AgentEditModal } from "../components/AgentEditModal";
 import { SendErrorBanner } from "../components/SendErrorBanner";
 import { ModelMissingBanner } from "../components/ModelMissingBanner";
@@ -60,6 +61,10 @@ export function ChatPage() {
   const spaceId = spaces.find((s) => s.slug === spaceSlug)?.id ?? null;
   const [scrollContainerEl, setScrollContainerEl] = useState(null);
   const [messagesEndEl, setMessagesEndEl] = useState(null);
+  // Which chat-page view is showing: the conversation or the agent's
+  // background shell jobs. They are separate tabs so a long job list
+  // cannot push the message list off screen.
+  const [tab, setTab] = useState(CHAT_TAB);
   const [inputValue, setInputValue] = useState("");
   const [sendError, setSendError] = useState(null);
   const [currentMode, setCurrentMode] = useState(null);
@@ -505,64 +510,82 @@ export function ChatPage() {
       {/* Send error */}
       <SendErrorBanner message={sendError} />
 
-      {/* Background shell jobs (nothing renders when there are none) */}
-      <ShellJobsPanel
-        jobs={jobs}
-        onKill={(id) => killShellJob(name, id)}
-        onOpenLog={(id) => fetchShellLog(name, id)}
-        onRefresh={() => refreshShellJobs(name)}
-      />
+      {/* The conversation and the agent's background shell jobs are
+          separate views: the jobs panel used to render inline above the
+          message list, where a handful of jobs pushed the conversation
+          off screen. */}
+      <ChatTabs active={tab} onSelect={setTab} jobCount={jobs.length} />
 
-      {/* Messages */}
-      <ChatMessages
-        messages={messages}
-        partial={partial}
-        archivedHistory={archivedHistory}
-        lastCompactionIndex={lastCompactionIndex}
-        lastCompactionMarker={lastCompactionMarker}
-        historyError={historyError}
-        onLoadHistory={loadHistoryPage}
-        onLoadOlder={loadOlderHistory}
-        name={name}
-        setScrollContainerEl={setScrollContainerEl}
-        setMessagesEndEl={setMessagesEndEl}
-      />
+      {tab === JOBS_TAB ? (
+        <div className="mb-4 flex-1 overflow-y-auto">
+          {jobs.length === 0 ? (
+            <p className="py-12 text-center text-sm text-gray-400">
+              No background jobs.
+            </p>
+          ) : (
+            <ShellJobsPanel
+              jobs={jobs}
+              onKill={(id) => killShellJob(name, id)}
+              onOpenLog={(id) => fetchShellLog(name, id)}
+              onRefresh={() => refreshShellJobs(name)}
+              showTitle={false}
+            />
+          )}
+        </div>
+      ) : (
+        <>
+          {/* Messages */}
+          <ChatMessages
+            messages={messages}
+            partial={partial}
+            archivedHistory={archivedHistory}
+            lastCompactionIndex={lastCompactionIndex}
+            lastCompactionMarker={lastCompactionMarker}
+            historyError={historyError}
+            onLoadHistory={loadHistoryPage}
+            onLoadOlder={loadOlderHistory}
+            name={name}
+            setScrollContainerEl={setScrollContainerEl}
+            setMessagesEndEl={setMessagesEndEl}
+          />
 
-      {/* Typing indicator - shown when waiting or generating */}
-      <ChatTypingIndicator
-        waitingForResponse={waitingForResponse}
-        streaming={streaming}
-        executingTools={executingTools}
-      />
+          {/* Typing indicator - shown when waiting or generating */}
+          <ChatTypingIndicator
+            waitingForResponse={waitingForResponse}
+            streaming={streaming}
+            executingTools={executingTools}
+          />
 
-      {/* Input area with floating Jump to latest button */}
-      <ChatComposer
-        inputValue={inputValue}
-        onChange={setInputValue}
-        onSend={handleSendMessage}
-        onStop={handleStopMessage}
-        isBusy={isAgentBusy}
-        stopping={stopping}
-        disabled={isInputDisabled}
-        frozen={
-          agentState === "compaction_failed" ||
-          agentState === "compaction_loop_detected" ||
-          agentState === "context_overflow" ||
-          agentState === "needs_repair"
-        }
-        placeholder={
-          status === "connected"
-            ? "Type a message..."
-            : "Connect to send messages..."
-        }
-        modes={availableModes}
-        mode={currentMode ?? defaultMode}
-        onModeChange={setCurrentMode}
-        history={history}
-        hasNewContent={hasNewContent}
-        isAtBottom={isAtBottom}
-        jumpToBottom={jumpToBottom}
-      />
+          {/* Input area with floating Jump to latest button */}
+          <ChatComposer
+            inputValue={inputValue}
+            onChange={setInputValue}
+            onSend={handleSendMessage}
+            onStop={handleStopMessage}
+            isBusy={isAgentBusy}
+            stopping={stopping}
+            disabled={isInputDisabled}
+            frozen={
+              agentState === "compaction_failed" ||
+              agentState === "compaction_loop_detected" ||
+              agentState === "context_overflow" ||
+              agentState === "needs_repair"
+            }
+            placeholder={
+              status === "connected"
+                ? "Type a message..."
+                : "Connect to send messages..."
+            }
+            modes={availableModes}
+            mode={currentMode ?? defaultMode}
+            onModeChange={setCurrentMode}
+            history={history}
+            hasNewContent={hasNewContent}
+            isAtBottom={isAtBottom}
+            jumpToBottom={jumpToBottom}
+          />
+        </>
+      )}
 
       {/* Model picker modal — opens from the header chip
           (any state) or the :model_missing banner (repair

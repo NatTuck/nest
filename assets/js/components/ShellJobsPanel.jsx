@@ -5,6 +5,10 @@
  * `shell:jobs` channel event / init payload), with kill and refresh
  * actions and an expandable log viewer. Renders nothing when there are
  * no jobs (there is nothing the agent did to show).
+ *
+ * `showTitle` is turned off when the panel is embedded in the chat
+ * page's jobs tab, where the tab label already carries the title and
+ * the job count; the refresh action stays.
  */
 
 import { useEffect, useState } from "react";
@@ -26,6 +30,7 @@ export function ShellJobsPanel({
   onKill,
   onOpenLog,
   onRefresh = () => {},
+  showTitle = true,
 }) {
   const [openId, setOpenId] = useState(null);
   const [log, setLog] = useState(null);
@@ -77,10 +82,16 @@ export function ShellJobsPanel({
 
   return (
     <div className="mb-4 rounded-lg border border-gray-200 bg-gray-50">
-      <div className="flex items-center justify-between px-3 py-2">
-        <span className="text-sm font-medium text-gray-700">
-          Background jobs ({jobs.length})
-        </span>
+      <div
+        className={`flex items-center px-3 py-2 ${
+          showTitle ? "justify-between" : "justify-end"
+        }`}
+      >
+        {showTitle && (
+          <span className="text-sm font-medium text-gray-700">
+            Background jobs ({jobs.length})
+          </span>
+        )}
         <button
           type="button"
           onClick={handleRefresh}

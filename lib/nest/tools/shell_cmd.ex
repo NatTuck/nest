@@ -42,7 +42,9 @@ defmodule Nest.Tools.ShellCmd do
     * `:stdin` - Binary data to send to the command's stdin over a real pipe (no base64) (default: "")
     * `:background` - when `true`, start the command as a background job
       owned by `Nest.Sandbox.ShellJobs` and return a job handle instead of
-      waiting. Requires a `tmp_path` (the log lives under it). Additional
+      waiting. Requires a `tmp_path` (the log lives under it on the host;
+      the path reported to the agent is the sandbox's
+      `/tmp/shell-jobs/<id>.log`). Additional
       opts: `:agent_key` (`{space_id, agent_name}`), `:agent_pid`, and
       `:grace_ms` (how long to wait for an immediate exit before reporting
       the job as running).

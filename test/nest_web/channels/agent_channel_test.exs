@@ -434,9 +434,10 @@ defmodule NestWeb.AgentChannelTest do
 
       # Fill the job's on-disk log well past the frame cap, with an
       # invalid byte inside the kept head (raw binary output must not
-      # crash the JSON encode).
+      # crash the JSON encode). The pushed `log_path` is the path inside
+      # the sandbox (`/tmp/...`), so append to the host file directly.
       oversized = :binary.copy("x", 1_000) <> <<0xFF>> <> :binary.copy("y", 100_000)
-      File.write!(job.log_path, oversized, [:append])
+      File.write!(Path.join([tmp, "shell-jobs", "#{job.id}.log"]), oversized, [:append])
 
       ref = push(socket, "shell:log", %{"id" => job.id})
       assert_reply ref, :ok, %{"content" => content}

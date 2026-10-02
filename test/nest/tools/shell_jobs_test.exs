@@ -160,7 +160,13 @@ defmodule Nest.Tools.ShellJobsTest do
     assert content =~ "Started background job"
 
     # The job is owned by the real key, not {nil, nil} / {:unknown, :unknown}.
-    assert [%{id: _}] = ShellJobs.list({space_id, name})
+    assert [%{id: id, log_path: log_path}] = ShellJobs.list({space_id, name})
+
+    # The agent is told the path it can actually read from inside the
+    # sandbox, not the host path the manager writes.
+    assert log_path == "/tmp/shell-jobs/#{id}.log"
+    assert content =~ "(log: #{log_path})"
+
     assert ShellJobs.list({nil, nil}) == []
     assert ShellJobs.list({:unknown, :unknown}) == []
   end
