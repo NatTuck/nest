@@ -13,6 +13,8 @@ defmodule NestWeb.AgentChannelChatTest do
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Supervisor
   alias Nest.LLM.MockClient
+  alias Nest.LLM.Preflight
+  alias Nest.Messages.Part
   alias Nest.Messages.Streaming
 
   setup :verify_on_exit!
@@ -512,11 +514,13 @@ defmodule NestWeb.AgentChannelChatTest do
 
       # Retry resumes from `:compaction_failed`. A held user message
       # without the mid-turn entry it normally accompanies fabricates a
-      # conversation whose post-compaction resume is
-      # `[system, summary_user, user]` — two user roles in a row — which
-      # the wire preflight rejects and the ChatTurn surfaces as a
-      # `chat:error`. This test only pins the *forwarding* (the
-      # `:compacting` transition), so that expected rejection is captured.
+      # post-compaction resume of `[system, summary_user, user]` — two
+      # user roles in a row. The append-time pairing bridge now inserts
+      # the assistant acknowledgement before the held user message, so
+      # the resume is wire-valid and the turn runs to completion instead
+      # of being refused by the send guard. This test pins the
+      # *forwarding* (the `:compacting` transition) and that the resume
+      # completes.
       :sys.replace_state(agent_pid, fn state ->
         %{
           state
@@ -528,20 +532,34 @@ defmodule NestWeb.AgentChannelChatTest do
         }
       end)
 
-      log =
-        capture_log(fn ->
-          ref = push(socket, "chat:retry-compaction", %{})
+      # The send guard used to reject this resume at error level; with the
+      # append-time bridge repairing it, no warning/error is expected.
+      capture_log(fn ->
+        ref = push(socket, "chat:retry-compaction", %{})
 
-          assert_reply ref, :ok, %{}
+        assert_reply ref, :ok, %{}
 
-          assert_receive {:chat_status, %{status: "compacting"}}, 500
+        assert_receive {:chat_status, %{status: "compacting"}}, 500
 
-          # Finish the retried compaction so the agent is idle at test
-          # end (the teardown asserts zero in-flight agents).
-          assert_receive {:chat_status, %{status: "idle"}}, 500
-        end)
+        # Finish the retried compaction so the agent is idle at test
+        # end (the teardown asserts zero in-flight agents).
+        assert_receive {:chat_status, %{status: "idle"}}, 500
+      end)
 
-      assert log =~ "ChatTurn.run_chat_task/1"
+      # The held user message was appended after the compaction summary
+      # (wire role `user`); the bridge inserted an assistant ack so the
+      # resumed list is wire-valid and the turn actually ran.
+      messages = :sys.get_state(agent_pid).chat_state.messages
+
+      assert :ok = Preflight.validate(messages)
+
+      assert Enum.any?(messages, fn
+               {:user, %{parts: parts}} ->
+                 Enum.any?(parts || [], &match?(%Part.Text{text: "[mode: chat]\nHello"}, &1))
+
+               _ ->
+                 false
+             end)
     end
 
     test "returns error when agent does not exist", %{socket: _socket} do

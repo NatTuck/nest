@@ -177,6 +177,13 @@ defmodule Nest.Messages.MessageList do
       synthetic assistant acknowledgement, so the appended user
       message does not create two consecutive `user` wire roles.
 
+  A trailing message whose wire role is already `user` followed by an
+  `incoming` user message would be two consecutive `user` roles. That
+  tail is either a `{:tool, _}` result (wire role `user`) or a
+  `{:user, _}` whose turn was interrupted before any assistant response
+  was committed. In both cases the bridge returns the assistant
+  acknowledgement alone to restore alternation.
+
   Returns `[]` when nothing needs repairing. This is the append-time
   half of the sequence invariants (`notes/enforce-mesages-seq-invariants.md`);
   the messages are real, persisted, and visible.
@@ -191,6 +198,9 @@ defmodule Nest.Messages.MessageList do
           for %Part.ToolUse{} = tool_use <- parts || [], tool_use.id not in answered, do: tool_use
 
         repair_messages(missing, incoming)
+
+      {wire_user, _} when wire_user in [:user, :tool] ->
+        if match?({:user, _}, incoming), do: [repair_ack()], else: []
 
       _ ->
         []

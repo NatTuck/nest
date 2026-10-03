@@ -108,14 +108,15 @@ defmodule Nest.Agents.Agent.NeedsRepairTest do
                    {:tool,
                     %Tool{
                       parts: [%Part.ToolResult{tool_call_id: "call_1", is_error: true}]
-                    }}
-                 ] = Enum.take(healed.chat_state.messages, -1)
+                    }},
+                   {:assistant, %Assistant{}}
+                 ] = Enum.take(healed.chat_state.messages, -2)
         end)
 
       assert log =~ "interrupted tool call"
 
       # Persisted, so a subsequent load has nothing left to recover.
-      assert [:system, :user, :assistant, :tool] =
+      assert [:system, :user, :assistant, :tool, :assistant] =
                Persistence.load_messages(space_id, name) |> Enum.map(&elem(&1, 0))
 
       assert {:ok, again} = Persistence.build_attrs_for_start(space_id, name)

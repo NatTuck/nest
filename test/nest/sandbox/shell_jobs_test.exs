@@ -33,6 +33,10 @@ defmodule Nest.Sandbox.ShellJobsTest do
     id
   end
 
+  # The manager owns the waiter list, so read it directly instead of
+  # racing an OS kill against a fixed receive timeout.
+  defp waiters(id), do: Map.get(:sys.get_state(ShellJobs).waiters, id, [])
+
   test "starts a job running, lists it, and kills it", %{key: key, tmp: tmp} do
     id = start_running!("sleep 30", tmp, key)
     assert [%{id: ^id, status: :running, command: "sleep 30"}] = ShellJobs.list(key)
@@ -127,24 +131,10 @@ defmodule Nest.Sandbox.ShellJobsTest do
     id = start_running!("sleep 30", tmp, key)
 
     assert :ok = ShellJobs.subscribe(key, id, self())
+    assert self() in waiters(id)
+
     assert :ok = ShellJobs.unsubscribe(key, id, self())
-
-    # Synchronize on the job's exit through a separate observer, then
-    # assert the unsubscribed caller received no stray exit message.
-    parent = self()
-
-    observer =
-      spawn(fn ->
-        receive do
-          {:shell_job_exit, ^id, code} -> send(parent, {:observed_exit, id, code})
-        end
-      end)
-
-    assert :ok = ShellJobs.subscribe(key, id, observer)
-    assert :ok = ShellJobs.kill(key, id)
-
-    assert_receive {:observed_exit, ^id, _code}, 500
-    refute_received {:shell_job_exit, ^id, _code}
+    refute self() in waiters(id)
 
     # Idempotent: a second unsubscribe (or one for an unknown job) is a no-op.
     assert :ok = ShellJobs.unsubscribe(key, id, self())

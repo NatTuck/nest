@@ -28,12 +28,27 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
   alias Nest.Persistence
 
   describe "MessageList.pairing_bridge/2" do
-    test "no repair when the tail is not an assistant tool call" do
-      assert [] = MessageList.pairing_bridge([user(0)], user(1))
+    test "no repair when the tail needs no alternation help" do
       assert [] = MessageList.pairing_bridge([], user(0))
+      assert [] = MessageList.pairing_bridge([user(0)], assistant_text(1))
+    end
 
+    test "paired tool result + incoming user → assistant ack (tool is wire user)" do
       paired = [assistant_tool_use(0, "call_1"), tool_result(1, "call_1")]
-      assert [] = MessageList.pairing_bridge(paired, user(2))
+
+      assert [{:assistant, %Assistant{parts: [%Part.Text{text: text}]}}] =
+               MessageList.pairing_bridge(paired, user(2))
+
+      assert text =~ "interrupted"
+    end
+
+    test "trailing user + incoming user → assistant ack (interrupted before a response)" do
+      messages = [assistant_text(0), user(1)]
+
+      assert [{:assistant, %Assistant{parts: [%Part.Text{text: text}]}}] =
+               MessageList.pairing_bridge(messages, user(2))
+
+      assert text =~ "interrupted"
     end
 
     test "orphan tool_use + incoming user → tool result + assistant ack" do
@@ -143,6 +158,37 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
                :assistant,
                :user
              ]
+    end
+
+    test "adds an assistant ack before a user message appended after a wire-user tail" do
+      cases = [
+        {[system(0), user(1), assistant_tool_use(2, "call_1"), tool_result(3, "call_1")],
+         :tool_result},
+        {[system(0), user(1)], :interrupted_user}
+      ]
+
+      for {initial, label} <- cases do
+        name = unique_name("append-wire-user-#{label}")
+        {:ok, _} = Persistence.insert_agent(agent_attrs(name))
+        insert_messages(name, initial)
+
+        state = state(name, initial)
+        {stamped_user, state} = MessageAppender.append_one(state, user("next question"))
+
+        assert {:user, %User{}} = stamped_user
+
+        assert Enum.map(state.chat_state.messages, &role/1) ==
+                 Enum.map(initial, &role/1) ++ [:assistant, :user],
+               "in-memory roles for #{label}"
+
+        assert :ok = Preflight.validate(state.chat_state.messages)
+
+        persisted = Persistence.load_messages(test_space_id(), name)
+
+        assert Enum.map(persisted, &role/1) ==
+                 Enum.map(initial, &role/1) ++ [:assistant, :user],
+               "persisted roles for #{label}"
+      end
     end
 
     test "does not add messages when the tool result is complete" do

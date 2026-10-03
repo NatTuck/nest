@@ -140,6 +140,12 @@ returns the repair messages to append before `incoming`:
   acknowledgement is returned after the tool result, so the appended user
   message does not create two consecutive `user` wire roles (`tool` is wire
   role `user`). See `notes/valid-turn-ordering.md`.
+- When the tail's wire role is already `user` — a `{:tool, _}` result, or a
+  `{:user, _}` whose turn was interrupted before any assistant response was
+  committed — and `incoming` is a user message, the assistant acknowledgement
+  is returned alone. The tool-result tail is left by a healed or
+  offline-repaired interrupted tool call; the user tail is a crash after the
+  user message but before any assistant delta.
 - `incoming` being a complete matching `{:tool, _}` yields `[]` — a matching
   result is never duplicated.
 
@@ -179,10 +185,12 @@ corruption.
 `Agent.init/1` then:
 
 - **interrupted call** → `Init.InterruptedToolCall.heal/2` appends the
-  canonical `is_error` result (`MessageList.interrupted_tool_result/1`)
-  through the append path, logs a warning, and comes up `:idle` without
-  spending an LLM call. The next user turn resumes from the error
-  result;
+  canonical `is_error` result (`MessageList.interrupted_tool_result/1`) plus
+  the assistant acknowledgement (`MessageList.repair_ack/0`) through the
+  append path, logs a warning, and comes up `:idle` without spending an LLM
+  call. The tail is left on an `assistant` rather than a `tool` (wire role
+  `user`), so the next user turn appends cleanly; it resumes from the
+  acknowledgement;
 - **real violations** → `:needs_repair` (mirroring `:model_missing`):
   the process stays alive so history is viewable, `live.status =
   :needs_repair` blocks chat in `Callbacks.chat_or_drop/3` and the

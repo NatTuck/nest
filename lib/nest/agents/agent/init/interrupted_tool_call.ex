@@ -6,11 +6,13 @@ defmodule Nest.Agents.Agent.Init.InterruptedToolCall do
   §4).
 
   The run-time owner is gone, so there is nothing to continue: the heal
-  answers the call with the canonical `is_error` result, and the agent
-  comes up `:idle` without spending an LLM call. The next user turn
-  resumes from the error result. Unlike `Init.NeedsRepair`, this is not a
-  blocking state — an interrupted tool call is a valid outcome, not
-  corruption.
+  answers the call with the canonical `is_error` result, then appends the
+  assistant acknowledgement the append-time bridge would otherwise add
+  later. This leaves the tail on an `assistant` rather than a `tool`
+  (wire role `user`), so the next user turn appends cleanly. The agent
+  comes up `:idle` without spending an LLM call. Unlike
+  `Init.NeedsRepair`, this is not a blocking state — an interrupted tool
+  call is a valid outcome, not corruption.
   """
 
   require Logger
@@ -30,7 +32,7 @@ defmodule Nest.Agents.Agent.Init.InterruptedToolCall do
         state
 
       tool_msg ->
-        append_or_keep(state, tool_msg)
+        append_or_keep(state, [tool_msg, MessageList.repair_ack()])
     end
   end
 
@@ -38,8 +40,8 @@ defmodule Nest.Agents.Agent.Init.InterruptedToolCall do
   # already `:cannot_compact`. In that pathological case, leave the state
   # untouched and log; the send guard still refuses to send the invalid
   # tail, so we degrade safely rather than crash-loop the Agent.
-  defp append_or_keep(state, tool_msg) do
-    {_stamped, state} = Nest.Agents.Agent.__append_message__(state, tool_msg)
+  defp append_or_keep(state, messages) do
+    {_stamped, state} = Nest.Agents.Agent.__append_messages__(state, messages)
     state
   rescue
     error ->
