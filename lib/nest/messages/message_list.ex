@@ -60,21 +60,9 @@ defmodule Nest.Messages.MessageList do
   @spec build_clone_fork([term()], non_neg_integer(), String.t(), non_neg_integer()) ::
           {[term()], non_neg_integer()}
   def build_clone_fork(messages, next_index, child_name, depth) do
-    case trailing_tool_uses(messages) do
+    case unpaired_tail_tool_uses(messages) do
       [] -> synthesize_clone_fork(messages, next_index, child_name, depth)
       tool_uses -> answer_clone_fork(messages, next_index, child_name, depth, tool_uses)
-    end
-  end
-
-  # The parent's real spawn `tool_use` ids, taken from the trailing
-  # assistant. Empty when there is no trailing assistant tool call.
-  defp trailing_tool_uses(messages) do
-    case List.last(messages) do
-      {:assistant, %Assistant{parts: parts}} ->
-        for %Part.ToolUse{} = tool_use <- parts || [], do: tool_use
-
-      _ ->
-        []
     end
   end
 
@@ -207,6 +195,42 @@ defmodule Nest.Messages.MessageList do
       _ ->
         []
     end
+  end
+
+  @doc """
+  The `Part.ToolUse` structs on the trailing assistant message, or `[]`
+  when the list does not end on an assistant tool call.
+
+  At the tail every returned `tool_use` is unanswered by construction:
+  the message that would carry its result is itself a `{:tool, _}` and
+  each `{:tool, _}` is immediately preceded by the assistant it answers.
+  Shared by the fork path, the load-time interrupted-turn heal, and the
+  run-time tool-worker recovery.
+  """
+  @spec unpaired_tail_tool_uses([term()]) :: [Part.ToolUse.t()]
+  def unpaired_tail_tool_uses(messages) do
+    case List.last(messages) do
+      {:assistant, %Assistant{parts: parts}} ->
+        for %Part.ToolUse{} = tool_use <- parts || [], do: tool_use
+
+      _ ->
+        []
+    end
+  end
+
+  @doc """
+  A `{:tool, _}` answering every given `tool_use` with the canonical
+  `is_error: true` "interrupted" result, or `nil` for an empty list.
+
+  Used when a turn ends without producing a result: the load path heals
+  the persisted tail before going `:idle`, and the run-time path feeds
+  the error back to the model so the turn can continue.
+  """
+  @spec interrupted_tool_result([Part.ToolUse.t()]) :: {:tool, Tool.t()} | nil
+  def interrupted_tool_result([]), do: nil
+
+  def interrupted_tool_result(tool_uses) do
+    List.first(repair_messages(tool_uses, :no_incoming))
   end
 
   @doc """

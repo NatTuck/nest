@@ -2117,6 +2117,28 @@ describe("store", () => {
       expect(useStore.getState().agentsCache["agent-1"].lastIndex).toBe(1);
     });
 
+    it("does not fold a tool_use-only assistant into an earlier empty-text assistant", () => {
+      useStore.getState().addChatMessage("agent-1", {
+        index: 0,
+        role: "assistant",
+        parts: [
+          { kind: "tool_use", id: "call_a", name: "shell-cmd", arguments: {} },
+        ],
+      });
+
+      useStore.getState().addChatMessage("agent-1", {
+        index: 1,
+        role: "assistant",
+        parts: [
+          { kind: "tool_use", id: "call_b", name: "shell-cmd", arguments: {} },
+        ],
+      });
+
+      const messages = useStore.getState().agentsCache["agent-1"].messages;
+      expect(messages.map((m) => m.index)).toEqual([0, 1]);
+      expect(messages[1].parts[0].id).toBe("call_b");
+    });
+
     it("does not reconcile with a message whose content differs", () => {
       useStore.getState().addUserMessage("agent-1", "Hello");
       expect(useStore.getState().agentsCache["agent-1"].messages).toHaveLength(

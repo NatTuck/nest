@@ -31,7 +31,14 @@ defmodule NestWeb.AgentChannelNeedsRepairTest do
         created_by_user_id: user.id
       })
 
-    for message <- [system(0), user(1, "run"), assistant_tool(2, "call_1")] do
+    # A tool_use answered by a following user turn is real corruption
+    # (`:tool_pairing`), not the recoverable lone trailing orphan.
+    for message <- [
+          system(0),
+          user(1, "run"),
+          assistant_tool(2, "call_1"),
+          user(3, "still there?")
+        ] do
       {:ok, _} = Persistence.insert_message(space_id, name, message)
     end
 
@@ -54,7 +61,7 @@ defmodule NestWeb.AgentChannelNeedsRepairTest do
 
     assert_push "init", init
     assert init["status"] == "needs_repair"
-    assert [%{rule: :no_trailing_orphan}] = init["sequenceViolations"]
+    assert [%{rule: :tool_pairing}] = init["sequenceViolations"]
     assert init["repairCommand"] =~ "mix nest.repair_messages --space "
 
     ref = push(socket, "chat:message", %{"content" => "hello?"})

@@ -32,6 +32,26 @@ defmodule Nest.Agents.Agent.ChatTurn.Lifecycle do
 
   alias Nest.Agents.Agent.ChatTurn.APILog
   alias Nest.Agents.Agent.ChatTurn.State
+  alias Nest.Messages.MessageList
+
+  require Logger
+
+  @doc """
+  Read the Agent's `cancelled` flag. 100ms timeout prevents deadlock if
+  the Agent is itself blocked (e.g. on the `GenServer.call({:stop_chat,
+  _})` chain). On timeout, defaults to `false`; `safe_iterate/1` makes
+  the same call without a timeout on the next iteration, so the flag is
+  eventually observed.
+  """
+  @spec cancelled?(State.t()) :: boolean()
+  def cancelled?(state) do
+    {_messages, cancelled} =
+      GenServer.call(state.ctx.agent_pid, :get_messages_with_cancelled, 100)
+
+    cancelled
+  catch
+    :exit, _ -> false
+  end
 
   @doc """
   User clicked Stop. Ack the channel with `:stopped`, give the
@@ -83,27 +103,45 @@ defmodule Nest.Agents.Agent.ChatTurn.Lifecycle do
   end
 
   @doc """
-  A worker died. `:normal` means the result was already delivered
-  (the HTTP/tool worker sent its message before exiting), so we just
-  clear the slot. `:shutdown` and `:killed` mean the worker was stopped
-  without delivering a result, so we finalize the chat as stopped
-  (quietly idle the Agent) rather than hang waiting for a result that
-  will never arrive. Other reasons are crashes and become a
-  `{:chat_crashed, reason, []}` to the Agent.
+  A worker died.
+
+  A tool worker that dies without delivering a result leaves the tail on
+  an unanswered assistant `tool_use`. If the turn was not cancelled, the
+  recovery is to answer the call with the canonical `is_error` result and
+  **continue** the turn (the model sees the error and can react) rather
+  than idling on a broken sequence. A cancelled turn (user Stop) still
+  ends: the Agent's stop path appends the placeholder and the append-time
+  bridge answers the call durably.
+
+  Everything else keeps the old behavior: `:normal` means the result was
+  already delivered so we just clear the slot; `:shutdown`/`:killed`
+  without a pending tool call finalize quietly; any other reason becomes
+  a `{:chat_crashed, _, _}` to the Agent.
   """
   @spec worker_exited(pid(), term(), State.t()) ::
           {:noreply, State.t()} | {:stop, :normal, State.t()}
-  def worker_exited(_pid, :normal, state), do: clear_worker(state)
-
-  def worker_exited(_pid, :shutdown, state), do: finalize_stopped_turn(state)
-
-  def worker_exited(_pid, {:shutdown, _}, state), do: finalize_stopped_turn(state)
-
-  def worker_exited(_pid, :killed, state), do: finalize_stopped_turn(state)
-
   def worker_exited(_pid, reason, state) do
-    send(state.ctx.agent_pid, {:chat_crashed, reason, []})
-    {:stop, :normal, state}
+    tool_uses =
+      if state.active_worker_kind == :tools do
+        pending_tool_uses(state)
+      else
+        []
+      end
+
+    cond do
+      tool_uses != [] and not cancelled?(state) ->
+        recover_interrupted_tool(state, tool_uses)
+
+      reason == :normal ->
+        clear_worker(state)
+
+      reason in [:shutdown, :killed] or match?({:shutdown, _}, reason) ->
+        finalize_stopped_turn(state)
+
+      true ->
+        send(state.ctx.agent_pid, {:chat_crashed, reason, []})
+        {:stop, :normal, state}
+    end
   end
 
   # Quietly tell the Agent the turn is over so it leaves its busy
@@ -115,6 +153,45 @@ defmodule Nest.Agents.Agent.ChatTurn.Lifecycle do
 
   defp clear_worker(state),
     do: {:noreply, %{state | active_worker: nil, active_worker_kind: nil}}
+
+  # The unanswered `tool_use`s on the Agent's trailing assistant message,
+  # or `[]` when the turn's tool worker already delivered (or there is no
+  # pending call). Read from the Agent because the ChatTurn does not keep
+  # the response message in its own state.
+  defp pending_tool_uses(state) do
+    messages =
+      try do
+        GenServer.call(state.ctx.agent_pid, :get_messages, 1_000)
+      catch
+        :exit, _ -> []
+      end
+
+    MessageList.unpaired_tail_tool_uses(messages)
+  end
+
+  # Answer the interrupted tool call with an error result and iterate, so
+  # the model can decide what to do (retry, try something else, or give
+  # up). The append goes through the canonical path (persisted, broadcast,
+  # visible); the bridge no-ops because the incoming result answers every
+  # pending id.
+  defp recover_interrupted_tool(state, tool_uses) do
+    state = %{state | active_worker: nil, active_worker_kind: nil}
+
+    case MessageList.interrupted_tool_result(tool_uses) do
+      nil ->
+        finalize_stopped_turn(state)
+
+      tool_msg ->
+        Logger.warning(
+          "Chat turn for agent #{state.ctx.agent_name} lost its tool worker without a result; " <>
+            "answering #{length(tool_uses)} tool_use id(s) with an error result and continuing."
+        )
+
+        GenServer.call(state.ctx.agent_pid, {:append_message, tool_msg})
+        Process.send(self(), :iterate, [])
+        {:noreply, state}
+    end
+  end
 
   @doc """
   End of turn. Send `:chat_idle` and

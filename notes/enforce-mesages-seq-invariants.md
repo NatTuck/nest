@@ -155,30 +155,78 @@ path: the next user message can no longer be appended after an unpaired
 `tool_use` without first writing an `is_error` tool result (and the
 alternation-preserving ack).
 
-## 4. On-load validation (detect) — DONE
+## 4. On-load validation (detect + classify) — DONE
 
-`Persistence.build_attrs_for_start/2` validates the **active
-(sendable) slice** — the same list the Phase 3 send guard checks,
-i.e. rows with `message_index > last_compaction_index` — via
-`Nest.LLM.Preflight.validate/1` (pure, no DB writes). On violation it
-attaches `sequence_violations` and a `repair_command`
-(`mix nest.repair_messages --space <name>`) to the start attrs; a
-healthy sequence gets `[]` / `nil`.
+Wire validity is a *send-time* property: a request is invalid only if
+the exact list handed to the provider fails `Preflight`. The persisted
+sequence is allowed to end on an owned, in-flight assistant `tool_use`
+while a live turn is actually running that tool. At `init` there is no
+live owner, so a lone trailing orphan is an **interrupted turn**, not
+corruption.
 
-`Agent.init/1` then starts the agent in the `:needs_repair` state
-(mirroring the `:model_missing` recovery path): the process stays
-alive so history is viewable, `live.status = :needs_repair` blocks
-chat in both `Callbacks.chat_or_drop/3` and the agent channel
-(`agent_status_needs_repair`), and `Broadcasts.needs_repair/4` pushes
-a `chat:status` the UI renders as a repair banner. The operator runs
-the offline tool and then reloads the agent (`Agents.reload_agent/2`
-→ `Supervisor.restart_agent/2`), which re-validates; a repaired
-sequence comes back `:idle`.
+`Persistence.build_attrs_for_start/2` classifies the **active
+(sendable) slice** — rows with `message_index > last_compaction_index`
+— via `Nest.LLM.Preflight.validate/1` (pure, no DB writes):
+
+- clean → `sequence_violations: []`, `interrupted_tool_call: nil`;
+- a *single* trailing `:no_trailing_orphan` → `sequence_violations: []`
+  and `interrupted_tool_call: [%Part.ToolUse{}, ...]`;
+- anything else (mid-list unpaired, orphan results, alternation, …) →
+  `sequence_violations` plus a `repair_command`
+  (`mix nest.repair_messages --space <name>`), `interrupted_tool_call:
+  nil`.
+
+`Agent.init/1` then:
+
+- **interrupted call** → `Init.InterruptedToolCall.heal/2` appends the
+  canonical `is_error` result (`MessageList.interrupted_tool_result/1`)
+  through the append path, logs a warning, and comes up `:idle` without
+  spending an LLM call. The next user turn resumes from the error
+  result;
+- **real violations** → `:needs_repair` (mirroring `:model_missing`):
+  the process stays alive so history is viewable, `live.status =
+  :needs_repair` blocks chat in `Callbacks.chat_or_drop/3` and the
+  agent channel (`agent_status_needs_repair`), and
+  `Broadcasts.needs_repair/4` pushes the repair banner. The operator
+  runs the offline tool and reloads (`Agents.reload_agent/2`), which
+  re-validates.
 
 Validating the active slice (not the full resolved sequence) avoids
 blocking an agent whose orphan sits in history below a compaction
 boundary and will never be sent; the offline tool still reports and
 repairs the full resolved sequence.
+
+## 4b. Run-time recovery (answer and continue) — DONE
+
+A tool worker that dies without delivering a result (killed, shutdown,
+crash, or a result lost to a failed commit) would otherwise leave the
+turn idling on an unanswered `tool_use`. `Lifecycle.worker_exited/3`
+now reads the Agent's tail:
+
+- tool worker, tail is an unanswered assistant `tool_use`, turn **not**
+  cancelled → append the canonical `is_error` result and `:iterate`
+  again, so the model sees the failure and can retry or move on;
+- turn **cancelled** (user Stop) → stop as before; the Agent's
+  `finalize_partial_if_any/1` append triggers `pairing_bridge/2`, which
+  leaves a durable error result, then idles;
+- HTTP worker / no pending call → unchanged (`:normal` clears,
+  `:shutdown`/`:killed` finalize quietly, anything else
+  `chat_crashed`).
+
+The append-time bridge (§3) still covers every *other* end-of-turn
+path (stop, crash handlers) by answering the orphan before the
+placeholder lands. A hard BEAM/container kill runs no handler at all;
+that case is what §4's load-time heal cleans up.
+
+## 4c. Persist before broadcast — DONE
+
+`MessageAppender.append_stamped/2` persists the row, then broadcasts
+it. Previously it broadcast first, so a kill or failed commit between
+the two could leave the UI showing a row the DB never wrote — the
+validator would then correctly flag a tail orphan while the UI looked
+complete. Persisting first makes the DB authoritative; a client that is
+ahead (phantom) or merged is reconciled by the channel (full re-sync
+from `-1` on any `messageCount` mismatch or `needs_repair`).
 
 ## 5. Offline repair tool (repair) — DONE
 

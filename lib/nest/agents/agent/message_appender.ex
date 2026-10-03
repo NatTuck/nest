@@ -105,7 +105,10 @@ defmodule Nest.Agents.Agent.MessageAppender do
   Stamp and append a single message to the in-memory state.
   Index comes from `state.chat_state.next_message_index`;
   after stamping, the index is bumped and the message is
-  broadcast + persisted. Returns `{stamped_message, new_state}`.
+  persisted, then broadcast. Persisting first means the UI can
+  never show a row the DB did not commit; a failed persist
+  crashes the Agent before the broadcast runs. Returns
+  `{stamped_message, new_state}`.
 
   Any sequence-repair messages required before this one are
   appended first (see the moduledoc); this still returns only the
@@ -201,14 +204,14 @@ defmodule Nest.Agents.Agent.MessageAppender do
       | chat_state: %{state.chat_state | messages: messages, next_message_index: index + 1}
     }
 
-    Broadcasts.message(state, stamped)
-
     AgentPersistence.append_message(
       state.space_id,
       state.name,
       stamped,
       state.chat_state.next_message_index
     )
+
+    Broadcasts.message(state, stamped)
 
     {stamped, state}
   end

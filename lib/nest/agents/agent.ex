@@ -454,6 +454,7 @@ defmodule Nest.Agents.Agent do
 
         case Map.get(attrs, :sequence_violations, []) do
           [] ->
+            state = maybe_heal_interrupted_tool_call(state, attrs)
             log_active_start(state)
             {:ok, state}
 
@@ -500,6 +501,17 @@ defmodule Nest.Agents.Agent do
       Map.get(attrs, :last_compaction_index, -1),
       Map.get(attrs, :compaction_count, 0)
     )
+  end
+
+  # A lone trailing assistant `tool_use` with no result is a turn that
+  # died mid-tool; the run-time owner is gone, so heal it before coming
+  # up idle (see `Init.InterruptedToolCall`). Real corruption has already
+  # routed to `Init.NeedsRepair` and never reaches here.
+  defp maybe_heal_interrupted_tool_call(state, attrs) do
+    case Map.get(attrs, :interrupted_tool_call) do
+      nil -> state
+      tool_uses -> Init.InterruptedToolCall.heal(state, tool_uses)
+    end
   end
 
   defp log_active_start(state) do

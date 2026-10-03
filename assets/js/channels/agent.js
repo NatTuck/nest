@@ -64,6 +64,34 @@ function statusExtras(payload) {
 }
 
 /**
+ * Reconcile the cache with a fresh `init` / `chat:status` payload.
+ *
+ * A `needs_repair` agent, or any `messageCount` that disagrees with the
+ * cache in *either* direction, means the cached active list can't be
+ * trusted: an incremental `lastIndex` sync is defeated by a stale or
+ * phantom index (a broadcast row the DB never committed, or a merge that
+ * folded a message away). Drop the cache and rebuild from `-1` instead.
+ */
+function reconcileAgentCache(store, agentId, payload) {
+  if (payload.status === "needs_repair") {
+    store.resetAgentMessages(agentId);
+    store.setAgentState(agentId, "needs_repair", statusExtras(payload));
+    requestSync(agentId, { lastIndex: -1 });
+    return;
+  }
+
+  const cache = getStore().agentsCache[agentId];
+  const cached = cache?.messages?.length ?? 0;
+  if (
+    typeof payload.messageCount === "number" &&
+    payload.messageCount !== cached
+  ) {
+    store.resetAgentMessages(agentId);
+    requestSync(agentId, { lastIndex: -1 });
+  }
+}
+
+/**
  * Request a `chat:sync` for the agent. Pushes the request
  * and updates the cache from the response. Multiple
  * overlapping calls fire multiple pushes (the response
@@ -191,14 +219,7 @@ export function joinAgent(agentId, spaceId) {
   if (existingChannel) {
     existingChannel.push("chat:status", {}).receive("ok", (payload) => {
       store.setAgentConnected(agentId, payload);
-      const cache = getStore().agentsCache[agentId];
-      if (
-        cache &&
-        typeof payload.messageCount === "number" &&
-        payload.messageCount > (cache.messages?.length ?? 0)
-      ) {
-        requestSync(agentId);
-      }
+      reconcileAgentCache(store, agentId, payload);
       // The status reply carries no boundary fields, so the marker /
       // prompt fetches key off the boundary preserved on the cache.
       loadArchiveProjections(agentId);
@@ -213,17 +234,7 @@ export function joinAgent(agentId, spaceId) {
 
   channel.on("init", (payload) => {
     store.setAgentConnected(agentId, payload);
-    if (payload.status === "needs_repair") {
-      store.setAgentState(agentId, "needs_repair", statusExtras(payload));
-    }
-    const cache = getStore().agentsCache[agentId];
-    if (
-      cache &&
-      typeof payload.messageCount === "number" &&
-      payload.messageCount > (cache.messages?.length ?? 0)
-    ) {
-      requestSync(agentId);
-    }
+    reconcileAgentCache(store, agentId, payload);
     // The init payload carries the boundary but not the archive; the
     // marker + recall prompts are fetched lazily.
     loadArchiveProjections(agentId);
@@ -280,6 +291,13 @@ export function joinAgent(agentId, spaceId) {
   });
 
   channel.on("chat:status", (payload) => {
+    if (payload.status === "needs_repair") {
+      store.resetAgentMessages(agentId);
+      store.setAgentState(agentId, "needs_repair", statusExtras(payload));
+      requestSync(agentId, { lastIndex: -1 });
+      return;
+    }
+
     store.setAgentState(agentId, payload.status, statusExtras(payload));
 
     if (payload.status === "idle") {

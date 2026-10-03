@@ -172,6 +172,32 @@ export function agentCacheSetters(set) {
       });
     },
 
+    /**
+     * Drop the cached active messages so the next `chat:sync` rebuilds
+     * them from `-1`. Unlike `resetAgentConversation`, connection state
+     * and status are left intact — used when the client cache is known
+     * to disagree with the server (a `messageCount` mismatch, or a
+     * `needs_repair` reload while the channel is still joined).
+     */
+    resetAgentMessages: (id) => {
+      set((state) => {
+        const existing = state.agentsCache[id];
+        if (!existing) return state;
+        return {
+          agentsCache: {
+            ...state.agentsCache,
+            [id]: {
+              ...existing,
+              messages: [],
+              lastIndex: -1,
+              partial: null,
+              streaming: null,
+            },
+          },
+        };
+      });
+    },
+
     setAgentError: (id, error) => {
       set((state) => {
         const existing = state.agentsCache[id];

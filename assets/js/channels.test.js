@@ -1178,6 +1178,7 @@ describe("channels", () => {
       setNextPushResult("agent:1:agent-1", "chat:sync", {
         ok: {
           messages: [
+            { index: 0, role: "user", content: "Hello" },
             { index: 1, role: "assistant", content: "Response 1" },
             { index: 2, role: "user", content: "Question" },
             { index: 3, role: "assistant", content: "Response 2" },
@@ -1200,15 +1201,12 @@ describe("channels", () => {
       });
     });
 
-    it("triggers a chat:sync from the init handler when messageCount > cached messages length (the new requestSync path)", async () => {
-      // This test directly exercises the
-      // `requestSync(agentId)` call inside the init
-      // handler (channels.js). The init event arrives
-      // with messageCount=2 and 1 message in the
-      // payload; the init handler's check
-      // `2 > cache.messages.length(1)` is true, so the
-      // sync fires. The sync uses `cache.lastIndex` (= 0)
-      // as the lower bound.
+    it("triggers a full chat:sync from the init handler when messageCount disagrees with the cache", async () => {
+      // The init event arrives with messageCount=2 and 1 message
+      // in the payload. `2 !== cache.messages.length(1)`, so the
+      // cache can't be trusted: it is dropped and a full sync is
+      // requested from -1 rather than an incremental lastIndex
+      // sync a stale/merged index would defeat.
       setNextJoinResult("agent:1:agent-1", {
         autoInit: {
           id: "agent-1",
@@ -1223,7 +1221,7 @@ describe("channels", () => {
       joinAgent("agent-1", 1);
 
       const pushPayload = await pushPromise;
-      assert.deepStrictEqual(pushPayload, { lastIndex: 0 });
+      assert.deepStrictEqual(pushPayload, { lastIndex: -1 });
     });
 
     it("should set agent status to error on join error", async () => {
@@ -1428,6 +1426,53 @@ describe("channels", () => {
       // Sync uses cache.lastIndex (-1) as the lower bound
       // since the cache has no messages yet.
       assert.deepStrictEqual(pushPayload, { lastIndex: -1 });
+    });
+
+    it("full-syncs from the rejoin (chat:status) handler when the cache is ahead of the server", async () => {
+      setNextJoinResult("agent:1:agent-1", {
+        autoInit: {
+          id: "agent-1",
+          model: { name: "gpt-4" },
+          messageCount: 0,
+          status: "idle",
+        },
+      });
+      joinAgent("agent-1", 1);
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      // Seed a phantom row the DB never committed (a broadcast that
+      // raced a failed/killed persist) so the client is a message
+      // ahead of the server.
+      useStore.getState().syncAgentMessages("agent-1", {
+        messages: [
+          { index: 0, role: "user", content: "Hello" },
+          { index: 1, role: "assistant", content: "phantom" },
+        ],
+      });
+      assert.strictEqual(
+        useStore.getState().agentsCache["agent-1"].messages.length,
+        2,
+      );
+
+      setNextPushResult("agent:1:agent-1", "chat:status", {
+        ok: { model: { name: "gpt-4" }, messageCount: 1 },
+      });
+      setNextPushResult("agent:1:agent-1", "chat:sync", {
+        ok: { messages: [{ index: 0, role: "user", content: "Hello" }] },
+      });
+
+      joinAgent("agent-1", 1);
+
+      await vi.waitFor(() => {
+        const cache = useStore.getState().agentsCache["agent-1"];
+        assert.strictEqual(cache.messages.length, 1);
+        assert.strictEqual(cache.messages[0].content, "Hello");
+      });
     });
 
     it("fetches the compaction marker for an agent with a boundary at join", async () => {
@@ -2125,6 +2170,53 @@ describe("channels", () => {
       await vi.waitFor(() => {
         const cache = useStore.getState().agentsCache["agent-1"];
         assert.strictEqual(cache?.agentState, "idle");
+      });
+    });
+
+    it("resets and full-syncs the cache when chat:status reports needs_repair", async () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 1,
+        status: "idle",
+        messages: [{ index: 0, role: "user", content: "Hello" }],
+      });
+
+      joinAgent("agent-1", 1);
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      // The persisted sequence failed validation. An incremental sync
+      // keyed on a stale lastIndex can't see a repaired row, so the
+      // cache is dropped and rebuilt from -1.
+      setNextPushResult("agent:1:agent-1", "chat:sync", {
+        ok: {
+          messages: [
+            { index: 0, role: "user", content: "Hello" },
+            { index: 1, role: "assistant", content: "tool_use" },
+          ],
+        },
+      });
+
+      simulateServerEvent("agent:1:agent-1", "chat:status", {
+        status: "needs_repair",
+        sequenceViolations: [{ rule: "no_trailing_orphan" }],
+        repairCommand: "mix nest.repair_messages --space s",
+      });
+
+      await vi.waitFor(() => {
+        const cache = useStore.getState().agentsCache["agent-1"];
+        assert.strictEqual(cache?.agentState, "needs_repair");
+        assert.strictEqual(
+          cache?.repairCommand,
+          "mix nest.repair_messages --space s",
+        );
+        assert.deepStrictEqual(cache?.sequenceViolations, [
+          { rule: "no_trailing_orphan" },
+        ]);
       });
     });
 

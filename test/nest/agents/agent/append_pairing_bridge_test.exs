@@ -67,6 +67,38 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
     end
   end
 
+  describe "MessageList interrupted-tool helpers" do
+    test "unpaired_tail_tool_uses/1 reads only a trailing assistant tool call" do
+      assert [%Part.ToolUse{id: "a"}, %Part.ToolUse{id: "b"}] =
+               MessageList.unpaired_tail_tool_uses([
+                 user(0),
+                 assistant_tool_uses(1, ["a", "b"])
+               ])
+
+      assert MessageList.unpaired_tail_tool_uses([user(0), assistant_text(1)]) == []
+
+      assert MessageList.unpaired_tail_tool_uses([
+               assistant_tool_use(0, "a"),
+               tool_result(1, "a")
+             ]) == []
+
+      assert MessageList.unpaired_tail_tool_uses([]) == []
+    end
+
+    test "interrupted_tool_result/1 answers every id with an error result" do
+      assert {:tool, %Tool{parts: [a, b]}} =
+               MessageList.interrupted_tool_result([
+                 %Part.ToolUse{id: "a", name: "shell-cmd", arguments: %{}},
+                 %Part.ToolUse{id: "b", name: "file-read", arguments: %{}}
+               ])
+
+      assert %Part.ToolResult{tool_call_id: "a", name: "shell-cmd", is_error: true} = a
+      assert %Part.ToolResult{tool_call_id: "b", name: "file-read", is_error: true} = b
+
+      assert MessageList.interrupted_tool_result([]) == nil
+    end
+  end
+
   describe "MessageAppender.append_one/2" do
     test "repairs an orphan before a user message and persists the repair" do
       name = unique_name("append-orphan")
@@ -162,6 +194,35 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
                4,
                5
              ]
+    end
+  end
+
+  describe "MessageAppender append ordering" do
+    test "persists before broadcasting so the UI never sees an uncommitted row" do
+      name = unique_name("append-order")
+      test_pid = self()
+
+      Mimic.stub(Nest.Persistence, :insert_message, fn _space, _agent, _message ->
+        send(test_pid, :persisted)
+        {:ok, :row}
+      end)
+
+      Mimic.stub(Nest.Persistence, :update_next_message_index, fn _space, _agent, _index ->
+        :ok
+      end)
+
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{test_space_id()}:#{name}")
+
+      state = state(name, [system(0), user(1)])
+      {_stamped, _state} = MessageAppender.append_one(state, assistant_text(nil))
+
+      {:messages, messages} = Process.info(self(), :messages)
+      persisted_at = Enum.find_index(messages, &(&1 == :persisted))
+      broadcast_at = Enum.find_index(messages, &match?({:chat_message, _}, &1))
+
+      assert is_integer(persisted_at)
+      assert is_integer(broadcast_at)
+      assert persisted_at < broadcast_at
     end
   end
 

@@ -61,6 +61,7 @@ defmodule Nest.Persistence do
   alias Nest.LLM.Preflight
   alias Nest.Messages.Compaction
   alias Nest.Messages.Message
+  alias Nest.Messages.MessageList
   alias Nest.Persistence.CompactionMarker
   alias Nest.Repo
   alias Nest.Spaces.Space
@@ -390,45 +391,80 @@ defmodule Nest.Persistence do
     with {:ok, row} <- fetch_agent(space_id, agent_name),
          {:ok, boundary} <- last_compaction_index(space_id, agent_name) do
       preloaded = load_full_messages(space_id, agent_name)
-      violations = sequence_violations(preloaded, boundary)
-      parent_name = parent_name_for(row)
+      {violations, interrupted_tool_call} = classify_sequence(preloaded, boundary)
 
-      attrs = %{
-        space_id: row.space_id,
-        name: row.name,
-        model: row.model,
-        vocation_id: row.vocation_id,
-        workspace_path: row.workspace_path,
-        next_message_index: row.next_message_index,
-        last_compaction_index: boundary,
-        parent_id: row.parent_id,
-        parent_name: parent_name,
-        depth: row.depth || 0,
-        fork_message_index: row.fork_message_index,
-        created_by_user_id: row.created_by_user_id,
-        shared: row.shared == true,
-        preloaded_messages: preloaded,
-        sequence_violations: violations,
-        repair_command: repair_command(violations, row.space_id),
-        vocation: load_vocation(row.vocation_id)
-      }
+      attrs =
+        start_attrs(
+          row,
+          boundary,
+          preloaded,
+          violations,
+          interrupted_tool_call,
+          parent_name_for(row)
+        )
 
       {:ok, attrs}
     end
   end
 
-  # Validate the *active* (sendable) slice — the same list the Phase 3
-  # send guard checks — rather than the full resolved sequence, so an
-  # orphan archived below a compaction boundary does not block an agent
-  # whose live messages are fine. Pure: no DB writes.
-  @spec sequence_violations([Message.t()], integer()) :: [Preflight.violation()]
-  defp sequence_violations(preloaded, boundary) do
-    preloaded
-    |> Enum.filter(fn {_role, %{index: idx}} -> idx > boundary end)
-    |> Preflight.validate()
-    |> case do
-      :ok -> []
-      {:error, violations} -> violations
+  # The `Agent.start_link/1` attrs map. Extracted from
+  # `build_attrs_for_start/2` so the load path stays under credo's ABC
+  # cap (the map literal is the bulk of the assignments).
+  defp start_attrs(row, boundary, preloaded, violations, interrupted_tool_call, parent_name) do
+    %{
+      space_id: row.space_id,
+      name: row.name,
+      model: row.model,
+      vocation_id: row.vocation_id,
+      workspace_path: row.workspace_path,
+      next_message_index: row.next_message_index,
+      last_compaction_index: boundary,
+      parent_id: row.parent_id,
+      parent_name: parent_name,
+      depth: row.depth || 0,
+      fork_message_index: row.fork_message_index,
+      created_by_user_id: row.created_by_user_id,
+      shared: row.shared == true,
+      preloaded_messages: preloaded,
+      sequence_violations: violations,
+      interrupted_tool_call: interrupted_tool_call,
+      repair_command: repair_command(violations, row.space_id),
+      vocation: load_vocation(row.vocation_id)
+    }
+  end
+
+  # Classify the *active* (sendable) slice — the same list the send guard
+  # checks — rather than the full resolved sequence, so an orphan archived
+  # below a compaction boundary does not block an agent whose live
+  # messages are fine. Pure: no DB writes.
+  #
+  # A lone trailing assistant `tool_use` with no result is a turn that
+  # died mid-tool, not corruption: the run-time owner is gone, so it is
+  # recoverable at load (answer it with an error result and idle). Every
+  # other violation blocks the agent in `:needs_repair` for the offline
+  # repair tool. Returns `{violations, interrupted_tool_uses | nil}`.
+  @spec classify_sequence([Message.t()], integer()) ::
+          {[Preflight.violation()], [Nest.Messages.Part.ToolUse.t()] | nil}
+  defp classify_sequence(preloaded, boundary) do
+    active = Enum.filter(preloaded, fn {_role, %{index: idx}} -> idx > boundary end)
+
+    case Preflight.validate(active) do
+      :ok ->
+        {[], nil}
+
+      {:error, [%{rule: :no_trailing_orphan, expected_ids: expected_ids} = violation]} ->
+        tool_uses =
+          active
+          |> MessageList.unpaired_tail_tool_uses()
+          |> Enum.filter(&(&1.id in expected_ids))
+
+        case tool_uses do
+          [] -> {[violation], nil}
+          uses -> {[], uses}
+        end
+
+      {:error, violations} ->
+        {violations, nil}
     end
   end
 

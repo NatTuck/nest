@@ -45,7 +45,13 @@ export function addChatMessage(set, get, id, message) {
 
     matchedIndex = cache.messages.findIndex((m) => m.index === message.index);
 
-    if (matchedIndex === -1) {
+    // The content fallback exists only to reconcile the local optimistic
+    // echo of the user's own message with the server-stamped copy (whose
+    // index can differ, e.g. after a notice pair). It must stay user-only:
+    // a tool_use-only assistant has no text, so matching assistants on
+    // empty content would fold a new trailing tool call into an older
+    // bubble and hide a real message from the timeline.
+    if (matchedIndex === -1 && message.role === "user") {
       const recentThresholdMs = 30_000;
       const now = Date.now();
       const incomingContent = messageText(message);

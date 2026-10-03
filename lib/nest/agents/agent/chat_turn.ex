@@ -157,7 +157,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
     # `false` and we proceed; the cancelled flag is also
     # picked up by `safe_iterate/1`'s same call (without a
     # timeout) on the next iteration.
-    if cancelled?(state) do
+    if Lifecycle.cancelled?(state) do
       GenServer.cast(state.ctx.agent_pid, {:chat_stopped, self()})
       {:stop, :normal, state}
     else
@@ -195,13 +195,14 @@ defmodule Nest.Agents.Agent.ChatTurn do
 
   # The monitored HTTP/tool worker died without delivering a result
   # (it is started via `Task.Supervisor.start_child` + `Process.monitor`,
-  # so worker death arrives as `:DOWN`, not `{:EXIT, ...}`). Clearing
-  # `active_worker` first makes the `:normal` case (result already
-  # handled) a plain no-op, while an abnormal death becomes
-  # `chat_crashed` so the Agent leaves `:streaming`/`:executing_tools`.
+  # so worker death arrives as `:DOWN`, not `{:EXIT, ...}`). The
+  # `active_worker_kind` is left on the state so `worker_exited/3` can
+  # tell a tool death (recover and continue the turn) from an HTTP death
+  # (crash/idle). A `:normal` exit whose result was already handled sees
+  # `active_worker: nil` here and takes the no-op branch.
   def handle_info({:DOWN, _ref, :process, pid, reason}, state) do
     if pid == state.active_worker do
-      Lifecycle.worker_exited(pid, reason, %{state | active_worker: nil, active_worker_kind: nil})
+      Lifecycle.worker_exited(pid, reason, state)
     else
       {:noreply, state}
     end
@@ -401,7 +402,7 @@ defmodule Nest.Agents.Agent.ChatTurn do
   defp handle_tool_results(results, state) do
     state = %{state | active_worker: nil, active_worker_kind: nil}
 
-    if cancelled?(state) do
+    if Lifecycle.cancelled?(state) do
       GenServer.cast(state.ctx.agent_pid, {:chat_stopped, self()})
       {:stop, :normal, state}
     else
@@ -412,21 +413,6 @@ defmodule Nest.Agents.Agent.ChatTurn do
       Process.send(self(), :iterate, [])
       {:noreply, state}
     end
-  end
-
-  # Synchronous cancelled-flag read from the Agent. 100ms
-  # timeout prevents deadlock if the Agent is itself blocked
-  # (e.g. on the `GenServer.call({:stop_chat, _})` chain).
-  # On timeout, defaults to `false` — `safe_iterate/1` makes
-  # the same call without a timeout on the next iteration,
-  # so the flag is eventually observed.
-  defp cancelled?(state) do
-    {_messages, cancelled} =
-      GenServer.call(state.ctx.agent_pid, :get_messages_with_cancelled, 100)
-
-    cancelled
-  catch
-    :exit, _ -> false
   end
 
   # Spawn the tool worker as a Task. The worker calls
