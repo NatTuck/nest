@@ -30,6 +30,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
   """
   use Nest.DataCase, async: true
 
+  import ExUnit.CaptureLog
   import Mimic
 
   alias Nest.Agents
@@ -49,30 +50,13 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
 
   test "agents-batch fans one templated instruction over items and returns an ordered aggregate",
        %{vid: vid} do
-    {parent_pid, parent_name} =
-      AgentTestHelpers.start_agent(%{
-        model: %{name: "qwen3.5-plus", provider: "model-studio"},
-        vocation_id: vid
-      })
-
-    # The stub is scoped per-source-process; allow the coordinator pid.
-    Mimic.allow(Agents, self(), parent_pid)
+    {parent_pid, parent_name} = start_batch_parent(vid)
     space_id = AgentTestHelpers.current_space_id()
 
-    MockClient.set_tool_response(%{
-      text: "batching",
-      tool_calls: [
-        %{
-          id: "call_batch_1",
-          name: "agents-batch",
-          arguments: %{"template" => "sum {item}", "items" => ["alpha", "beta", "gamma"]}
-        }
-      ]
+    run_batch(parent_pid, "call_batch_1", %{
+      "template" => "sum {item}",
+      "items" => ["alpha", "beta", "gamma"]
     })
-
-    MockClient.set_response("parent final")
-
-    :ok = Agent.chat(parent_pid, "batch a thing")
 
     # Subscribe before collecting so the first creation can't slip past.
     Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
@@ -135,29 +119,13 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
 
   test "a child that dies before responding fails its slot fast and is not archived",
        %{vid: vid} do
-    {parent_pid, parent_name} =
-      AgentTestHelpers.start_agent(%{
-        model: %{name: "qwen3.5-plus", provider: "model-studio"},
-        vocation_id: vid
-      })
-
-    Mimic.allow(Agents, self(), parent_pid)
+    {parent_pid, parent_name} = start_batch_parent(vid)
     space_id = AgentTestHelpers.current_space_id()
 
-    MockClient.set_tool_response(%{
-      text: "batching",
-      tool_calls: [
-        %{
-          id: "call_batch_die",
-          name: "agents-batch",
-          arguments: %{"template" => "sum {item}", "items" => ["alpha", "beta", "gamma"]}
-        }
-      ]
+    run_batch(parent_pid, "call_batch_die", %{
+      "template" => "sum {item}",
+      "items" => ["alpha", "beta", "gamma"]
     })
-
-    MockClient.set_response("parent final")
-
-    :ok = Agent.chat(parent_pid, "batch a thing")
 
     Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
     [child0, child1, child2] = collect_child_names(parent_name, 3)
@@ -191,10 +159,87 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     assert failed_row.archived == false
   end
 
+  test "items still pending past their deadline time out into marker slots", %{vid: vid} do
+    {parent_pid, parent_name} = start_batch_parent(vid)
+
+    run_batch(parent_pid, "call_batch_timeout", %{
+      "template" => "sum {item}",
+      "items" => ["alpha", "beta"],
+      "timeout" => 1
+    })
+
+    Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
+    [_child0, _child1] = collect_child_names(parent_name, 2)
+
+    assert_receive {:chat_status, %{status: "idle"}}, 2_000
+
+    parent_state = :sys.get_state(parent_pid)
+
+    assert [first, second] = parent_state |> batch_tool_content() |> Jason.decode!()
+    assert first =~ "timed out after 1ms"
+    assert second =~ "timed out after 1ms"
+    assert parent_state.chat_state.pending_children == %{}
+  end
+
+  test "a timed-out item fails the whole call under fail_fast", %{vid: vid} do
+    {parent_pid, parent_name} = start_batch_parent(vid)
+
+    log =
+      capture_log(fn ->
+        run_batch(parent_pid, "call_batch_fail_fast", %{
+          "template" => "sum {item}",
+          "items" => ["alpha"],
+          "timeout" => 1,
+          "on_error" => "fail_fast"
+        })
+
+        Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
+        [_child0] = collect_child_names(parent_name, 1)
+
+        assert_receive {:chat_status, %{status: "idle"}}, 2_000
+      end)
+
+    assert log =~ "BatchSizer produced is_error=true tool result"
+    assert log =~ "tool=agents-batch"
+
+    parent_state = :sys.get_state(parent_pid)
+
+    assert %Part.ToolResult{name: "agents-batch", is_error: true, content: content} =
+             batch_tool_result(parent_state)
+
+    assert content =~ "timed out after 1ms"
+    assert parent_state.chat_state.pending_children == %{}
+  end
+
   # ---- helpers ----
 
-  defp batch_tool_content(parent_state) do
-    {:tool, %{parts: [%Part.ToolResult{name: "agents-batch", content: content}]}} =
+  # Start a parent agent whose `Agents.chat/3` is stubbed (children don't
+  # run a real chat cycle) and allow the coordinator to call the stub.
+  defp start_batch_parent(vid) do
+    {parent_pid, parent_name} =
+      AgentTestHelpers.start_agent(%{
+        model: %{name: "qwen3.5-plus", provider: "model-studio"},
+        vocation_id: vid
+      })
+
+    Mimic.allow(Agents, self(), parent_pid)
+    {parent_pid, parent_name}
+  end
+
+  # Queue a tool call as the model's first response and a final text
+  # response, then kick off the parent's chat turn.
+  defp run_batch(parent_pid, id, args) do
+    MockClient.set_tool_response(%{
+      text: "batching",
+      tool_calls: [%{id: id, name: "agents-batch", arguments: args}]
+    })
+
+    MockClient.set_response("parent final")
+    :ok = Agent.chat(parent_pid, "batch a thing")
+  end
+
+  defp batch_tool_result(parent_state) do
+    {:tool, %{parts: [%Part.ToolResult{name: "agents-batch"} = result]}} =
       Enum.find(parent_state.chat_state.messages, fn
         {:tool, %{parts: parts}} ->
           Enum.any?(parts, &match?(%Part.ToolResult{name: "agents-batch"}, &1))
@@ -203,8 +248,10 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
           false
       end)
 
-    content
+    result
   end
+
+  defp batch_tool_content(parent_state), do: batch_tool_result(parent_state).content
 
   # Collect `count` `agent:created` broadcasts for `parent_name`, in the
   # order they arrive (item order). Non-matching broadcasts from

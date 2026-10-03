@@ -294,7 +294,9 @@ defmodule Nest.Agents.Agent.BatchLoop do
     now = System.monotonic_time(:millisecond)
 
     {timed_out, remaining} =
-      Enum.split_with(acc.pending, fn {_name, {_index, deadline}} -> deadline <= now end)
+      acc.pending
+      |> Enum.split_with(fn {_name, {_index, deadline}} -> deadline <= now end)
+      |> then(fn {timed_out, remaining} -> {Map.new(timed_out), Map.new(remaining)} end)
 
     acc = %{
       acc
