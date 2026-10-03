@@ -165,14 +165,16 @@ defmodule Nest.Agents.AgentObservabilityTest do
 
       assert_receive {:chat_status, %{status: "idle"}}, 500
 
-      # The api_log id is `<message_index>.<sequence>`. With
-      # the context-notice synthetic pair, the tool-call
-      # assistant is at index 4 instead of 2.
-      assert asst1_log.id == "004.000"
+      # The api_log id is `<message_index>.<sequence>`. At this low
+      # usage no context-notice pair fires, so the tool-call
+      # assistant keeps index 2. (The synthetic-pair index shift is
+      # covered by `agent_system_messages_test.exs`, which forces a
+      # real threshold crossing.)
+      assert asst1_log.id == "002.000"
       assert asst1_log.type == :response
 
-      # The final assistant is at index 6.
-      assert asst2_log.id == "006.000"
+      # The final assistant is at index 4.
+      assert asst2_log.id == "004.000"
       assert asst2_log.type == :response
 
       MockClient.clear()

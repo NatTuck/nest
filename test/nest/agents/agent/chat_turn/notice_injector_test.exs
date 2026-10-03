@@ -102,4 +102,58 @@ defmodule Nest.Agents.Agent.ChatTurn.NoticeInjectorTest do
       assert only.kind == :budget
     end
   end
+
+  describe "collect_case2_specs/2 tool-call projection" do
+    alias Nest.LLM.RunResponse
+    alias Nest.Messages.Assistant
+    alias Nest.Messages.Part
+    alias Nest.Messages.ToolCall
+
+    test "uses the canonical BatchSizer content size, without adding the reserve again" do
+      # `context_limit: 100_000` -> reserve 20_000, working budget 80_000.
+      # An assistant anchor of 32_000 is 40% of the working budget, so a
+      # tool response should cross only :p25. The pre-fix formula added
+      # the reserve to the numerator ((32_000 + 20_000) / 80_000 = 65%)
+      # and fired :p50.
+      messages = [
+        {:assistant,
+         %Assistant{
+           index: 1,
+           parts: [%Part.Text{text: "x"}],
+           usage: %{input_tokens: 32_000, output_tokens: 0}
+         }}
+      ]
+
+      pid = start_supervised!({Task, fn -> stub_loop(messages) end})
+
+      state = %State{
+        ctx: %{agent_pid: pid, context_limit: 100_000, tools: [], messages: messages}
+      }
+
+      response = %RunResponse{
+        tool_calls: [%ToolCall{id: "c1", name: "shell-cmd", arguments: %{}}]
+      }
+
+      [spec] = NoticeInjector.collect_case2_specs(response, state)
+
+      assert spec.kind == :context
+      assert spec.threshold == :p25
+      refute spec.notice =~ "50%"
+    end
+
+    defp stub_loop(messages) do
+      receive do
+        {:"$gen_call", from, :get_messages_with_cancelled} ->
+          GenServer.reply(from, {messages, false})
+          stub_loop(messages)
+
+        {:"$gen_call", from, :get_crossed_thresholds} ->
+          GenServer.reply(from, MapSet.new())
+          stub_loop(messages)
+
+        _other ->
+          stub_loop(messages)
+      end
+    end
+  end
 end

@@ -27,7 +27,6 @@ defmodule Nest.Agents.Agent.ChatTurn.NoticeInjector do
   alias Nest.Tokens.Budget
   alias Nest.Tokens.ConversationSize
   alias Nest.Tokens.Estimator, as: TokensEstimator
-  alias Nest.Tokens.Reserve
 
   require Logger
 
@@ -228,9 +227,10 @@ defmodule Nest.Agents.Agent.ChatTurn.NoticeInjector do
       tool_calls ->
         case BatchSizer.preflight(tool_calls, ctx) do
           :fits ->
-            ConversationSize.size(messages) +
-              tool_request_size(tool_calls) +
-              Reserve.compaction_reserve(state.ctx.context_limit)
+            # Same projection `preflight/2` just checked: content size plus
+            # predicted tool results, no reserve. The threshold divides by
+            # `L - C`, so adding `C` here would double-count it.
+            BatchSizer.projected_content_size(tool_calls, ctx)
 
           {:refuse, _reason} ->
             state.ctx.context_limit
@@ -246,13 +246,5 @@ defmodule Nest.Agents.Agent.ChatTurn.NoticeInjector do
     base = ConversationSize.size(messages)
     text_size = TokensEstimator.estimate(response.text || "")
     base + text_size + 10
-  end
-
-  defp tool_request_size(tool_calls) do
-    tool_calls
-    |> Enum.map(fn tc ->
-      TokensEstimator.estimate(Jason.encode!(tc.arguments || %{})) + 20
-    end)
-    |> Enum.sum()
   end
 end

@@ -144,14 +144,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
 
   def preflight(tool_calls, %{context_limit: limit} = ctx)
       when is_integer(limit) and limit > 0 do
-    current = Budget.size(ctx.messages || [])
-
-    projected =
-      tool_calls
-      |> Enum.reduce(0, fn tc, acc -> acc + projected_size(tc, ctx) end)
-      |> Kernel.+(Reserve.compaction_reserve(limit))
-
-    total = current + projected
+    total = projected_content_size(tool_calls, ctx) + Reserve.compaction_reserve(limit)
 
     if total <= limit do
       :fits
@@ -161,6 +154,26 @@ defmodule Nest.Agents.Agent.BatchSizer do
          "limit ~#{limit}. Reformulate (e.g., call context-compact first " <>
          "or use smaller tools)."}
     end
+  end
+
+  @doc """
+  Forward-looking content size after a batch's tool results, **excluding**
+  the compaction reserve:
+
+      Budget.size(ctx.messages) + sum(ProjectedSize.project(tc, ctx))
+
+  This is the canonical projection: `preflight/2` adds `C` and compares
+  against `L`, while the context-usage reminder compares it against
+  `L - C`. Both are the same predicate (`size + C <= L`), so they must
+  share this one function rather than each re-deriving a projection.
+  """
+  @spec projected_content_size([ToolCall.t()], map()) :: non_neg_integer()
+  def projected_content_size(tool_calls, ctx) do
+    projected = Enum.reduce(tool_calls, 0, fn tc, acc -> acc + projected_size(tc, ctx) end)
+
+    # `ProjectedSize.project/2` applies a float safety padding; round up so
+    # the result is an integer token count (ceil keeps it conservative).
+    Budget.size(ctx.messages || []) + ceil(projected)
   end
 
   @doc """

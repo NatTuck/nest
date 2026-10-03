@@ -94,6 +94,41 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
     end
   end
 
+  describe "projected_content_size/2" do
+    alias Nest.Messages.User
+    alias Nest.Tokens.Budget
+    alias Nest.Tokens.Reserve
+
+    test "is Budget.size(messages) plus every tool's projection, with no reserve" do
+      messages = [{:user, %User{index: 0, parts: [%Part.Text{text: "hello"}], api_logs: []}}]
+      c = ctx([], context_limit: 100_000, messages: messages)
+      calls = [call("c1", "shell-cmd"), call("c2", "file-write")]
+
+      projections =
+        Enum.map(calls, &ProjectedSize.project(&1, c)) |> Enum.sum()
+
+      expected = Budget.size(messages) + ceil(projections)
+
+      assert BatchSizer.projected_content_size(calls, c) == expected
+    end
+
+    test "preflight compares projected_content_size/2 plus the reserve against the limit" do
+      calls = [call("c1", "shell-cmd")]
+
+      # Content is tiny, but the 8_192 reserve floor does not fit in a
+      # 100-token window: content alone would fit, content + reserve does
+      # not, and `preflight/2` is what adds the reserve.
+      c = ctx([], context_limit: 100)
+      content = BatchSizer.projected_content_size(calls, c)
+
+      assert content < 100
+      assert content + Reserve.compaction_reserve(100) > 100
+      assert {:refuse, _} = BatchSizer.preflight(calls, c)
+
+      assert :fits = BatchSizer.preflight(calls, ctx([], context_limit: 100_000))
+    end
+  end
+
   describe "Phase 2: execute" do
     test "runs each tool in batch order and returns raw results" do
       tools = [small_tool("alpha"), small_tool("beta")]

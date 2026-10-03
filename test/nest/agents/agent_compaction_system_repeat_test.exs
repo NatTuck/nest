@@ -34,6 +34,7 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
   alias Nest.Messages.Assistant
   alias Nest.Messages.Part
   alias Nest.Messages.User
+  alias Nest.Tokens.ConversationSize
   alias Nest.Vocations
 
   setup do
@@ -351,6 +352,80 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
       [first | _] = payload["messages"]
       assert first["role"] == "system"
       assert first["content"] =~ "OpenAI-test-prompt-XYZ"
+    end
+  end
+
+  describe "carried-entry context sizing" do
+    test "a carried pre-compaction assistant does not anchor the post-compaction size" do
+      # Regression: the assistant carried across the compaction boundary
+      # keeps the provider `usage` it was built with, and that usage
+      # describes the pre-compaction context. If it survives as an anchor,
+      # `ConversationSize` reports the old (large) size and the threshold
+      # reminders re-fire immediately after compacting. Per
+      # `notes/continue.md`, there is no usable anchor after a compaction.
+      vocation = create_vocation(%{})
+      {pid, _agent_id} = start_with_vocation(vocation)
+
+      stale_usage = %{
+        input_tokens: 500_000,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+        output_tokens: 100
+      }
+
+      carried_assistant =
+        {:assistant,
+         %Assistant{
+           index: nil,
+           parts: [%Part.ToolUse{id: "call_compact", name: "context-compact", arguments: %{}}],
+           usage: stale_usage,
+           api_logs: []
+         }}
+
+      synthetic_result =
+        {:tool,
+         %Nest.Messages.Tool{
+           index: nil,
+           parts: [
+             %Part.ToolResult{
+               tool_call_id: "call_compact",
+               name: "context-compact",
+               arguments: %{},
+               content: "Compacted.",
+               is_error: false
+             }
+           ],
+           api_logs: []
+         }}
+
+      seed_pre_compaction_messages(pid, default_messages())
+      consume_pre_seed_broadcasts(default_messages())
+
+      send_compaction_done(
+        pid,
+        "Test summary.",
+        {:compact_tool, [carried_assistant, synthetic_result], 1, 5}
+      )
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
+      state = :sys.get_state(pid)
+      active = state.chat_state.messages
+
+      carried =
+        Enum.find_value(active, fn
+          {:assistant, %Assistant{parts: parts} = assistant} ->
+            if Enum.any?(parts, &match?(%Part.ToolUse{id: "call_compact"}, &1)),
+              do: assistant
+
+          _ ->
+            nil
+        end)
+
+      assert carried, "expected the carried compact assistant in the active segment"
+      assert carried.usage == nil, "carried assistant kept its stale pre-compaction usage"
+
+      assert ConversationSize.size(active) < 100_000,
+             "post-compaction size is anchored on the 500k pre-compaction usage"
     end
   end
 

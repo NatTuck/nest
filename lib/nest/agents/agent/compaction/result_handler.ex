@@ -47,6 +47,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   alias Nest.Agents.Agent.MessageAppender
   alias Nest.Agents.Agent.SystemPrompt
   alias Nest.Agents.Agent.ToolFilter
+  alias Nest.Messages.Assistant
   alias Nest.Messages.Part
   alias Nest.Messages.System
   alias Nest.Messages.ThinkTags
@@ -223,6 +224,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
         nil -> append_entry_tail([summary_user], carried_entry)
         sys -> [sys | append_entry_tail([summary_user], carried_entry)]
       end
+      |> Enum.map(&drop_pre_compaction_usage/1)
 
     tokens_compacted = Estimator.estimate_messages(archived_messages)
     tokens_compacted_to = Estimator.estimate_messages(new_messages)
@@ -446,6 +448,21 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
     do: new_messages ++ [msg]
 
   defp append_entry_tail(new_messages, _other), do: new_messages
+
+  # A carried assistant was produced against the pre-compaction context,
+  # so its provider-reported `usage` no longer describes the active
+  # segment: the summary replaced the messages it measured. Leaving that
+  # anchor in place makes `ConversationSize` report the old (large) size
+  # and re-trigger compaction immediately. Per `notes/continue.md`, there
+  # is no usable anchor after a compaction — the size is estimator-only
+  # until the next real reply provides a fresh `usage`. The response's
+  # `usage` is still visible in the message's `api_logs`, so dropping the
+  # struct field hides nothing.
+  defp drop_pre_compaction_usage({:assistant, %Assistant{} = assistant}) do
+    {:assistant, %{assistant | usage: nil}}
+  end
+
+  defp drop_pre_compaction_usage(message), do: message
 
   # Look up the freshest vocation from the DB; on nil/error
   # fall back to the cached `state.vocation` (always populated
