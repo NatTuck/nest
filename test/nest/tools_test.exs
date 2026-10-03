@@ -145,6 +145,20 @@ defmodule Nest.ToolsTest do
       assert {:error, "No workspace configured for this agent"} =
                function.function.(%{"path" => "test.txt"}, nil)
     end
+
+    test "returns a non-text error for NUL and invalid UTF-8", %{workspace: workspace} do
+      # NUL is valid UTF-8, so it needs the explicit binary check.
+      File.write!(Path.join(workspace, "nul.bin"), "text" <> <<0>> <> "more")
+      File.write!(Path.join(workspace, "invalid.bin"), <<0xFF, 0xFE>>)
+
+      function = Tools.get_function("file-read", workspace)
+
+      for name <- ["nul.bin", "invalid.bin"] do
+        assert {:error, error_msg} = function.function.(%{"path" => name}, nil)
+        assert error_msg =~ "non-text"
+        assert error_msg =~ "file-inspect"
+      end
+    end
   end
 
   describe "file-write tool" do

@@ -138,6 +138,36 @@ defmodule Nest.Agents.PersistedMessageTest do
     end
   end
 
+  describe "NUL / invalid-UTF-8 sanitization on write" do
+    test "insert_message replaces NUL and invalid UTF-8 in tool content" do
+      attrs = agent_attrs("nul-#{Elixir.System.unique_integer([:positive])}")
+      {:ok, _} = Persistence.insert_agent(attrs)
+
+      message =
+        {:tool,
+         %Nest.Messages.Tool{
+           index: 2,
+           parts: [
+             %Part.ToolResult{
+               tool_call_id: "c1",
+               name: "shell-cmd",
+               content: "head" <> <<0>> <> "tail" <> <<0xFF>>,
+               is_error: false
+             }
+           ]
+         }}
+
+      assert {:ok, row} = Persistence.insert_message(test_space_id(), attrs.name, message)
+
+      assert [%{"content" => "head\uFFFDtail\uFFFD"}] = row.content["parts"]
+
+      assert {:tool, %Nest.Messages.Tool{parts: [%Part.ToolResult{content: content}]}} =
+               PersistedMessage.to_runtime(row)
+
+      assert content == "head\uFFFDtail\uFFFD"
+    end
+  end
+
   describe "to_runtime/1 backward compat" do
     test "assistant row without apiLogs key in content reads back as api_logs: []" do
       attrs = agent_attrs("legacy-#{Elixir.System.unique_integer([:positive])}")

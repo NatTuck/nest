@@ -76,6 +76,7 @@ defmodule Nest.Agents.PersistedMessage do
   alias Nest.Messages.Compaction
   alias Nest.Messages.Message
   alias Nest.Messages.Part
+  alias Nest.Messages.Sanitize
   alias Nest.Messages.System
   alias Nest.Messages.Tool
   alias Nest.Messages.User
@@ -160,7 +161,13 @@ defmodule Nest.Agents.PersistedMessage do
   The `message_index` column must be unique per agent.
   """
   @spec from_runtime(integer(), Message.t()) :: map()
-  def from_runtime(agent_id, {role, struct}) do
+  def from_runtime(agent_id, message) do
+    # Defense in depth for writes that bypass `MessageAppender` (the
+    # initial system row, clone rows): jsonb cannot hold NUL or
+    # invalid UTF-8. Idempotent for messages the appender already
+    # sanitized.
+    {role, struct} = Sanitize.message(message)
+
     base = %{
       agent_id: agent_id,
       message_index: struct.index,

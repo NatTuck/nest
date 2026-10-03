@@ -57,6 +57,7 @@ defmodule Nest.Agents.Agent.MessageAppender do
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Persistence, as: AgentPersistence
   alias Nest.Messages.MessageList
+  alias Nest.Messages.Sanitize
   alias Nest.Tokens.PreFlight
 
   @doc """
@@ -193,6 +194,12 @@ defmodule Nest.Agents.Agent.MessageAppender do
   # `append_with_bridge/2` calls this once per message.
   defp append_stamped(%{llm_metrics: %{context_limit: limit}} = state, message)
        when is_integer(limit) and limit > 0 do
+    # NUL and invalid UTF-8 (raw shell/file bytes) cannot be stored in
+    # jsonb and would crash the insert. Sanitize once here so the
+    # in-memory message, the row, the broadcast, and the next provider
+    # request all carry the same text.
+    message = Sanitize.message(message)
+
     PreFlight.ensure_passed!(state.chat_state.messages, limit)
     index = state.chat_state.next_message_index
     stamped = put_message_index(message, index)

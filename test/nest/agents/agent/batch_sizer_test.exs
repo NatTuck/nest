@@ -485,7 +485,7 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
                BatchSizer.run([call("c1", "shell-cmd")], c)
 
       assert String.valid?(content)
-      assert content =~ "(binary, 7 bytes)"
+      assert content =~ "(non-text binary output, 7 bytes)"
       assert content =~ "saved to "
       assert content =~ "OK"
       # The lossy view carries the replacement character for 0xFF.
@@ -505,12 +505,35 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
                BatchSizer.run([call("c1", "shell-cmd")], c)
 
       assert String.valid?(content)
-      assert content =~ "(binary, 300 bytes)"
+      assert content =~ "(non-text binary output, 300 bytes)"
       assert content =~ "saved to "
       # No lossy view for large binaries — pointer only.
       refute content =~ <<0xEF, 0xBF, 0xBD>>
       refute content =~ <<0xFF>>
 
+      assert File.read!(saved_path(content)) == raw
+    end
+
+    test "valid UTF-8 containing NUL is treated as non-text output", %{} do
+      # NUL is valid UTF-8, so `String.valid?/1` alone would keep this
+      # inline; Postgres jsonb cannot store it. It must take the binary
+      # path and never reach the message/persistence layer raw.
+      raw = "hl-smi:\n" <> <<"GPU ", 0, 0, "0">> <> "\n"
+      dir = tmp_dir_for_test()
+      tools = [binary_tool(raw)]
+      c = ctx(tools, tmp_path: dir)
+
+      assert [%ToolResult{name: "shell-cmd", is_error: false, content: content}] =
+               BatchSizer.run([call("c1", "shell-cmd")], c)
+
+      assert String.valid?(content)
+      refute String.contains?(content, <<0>>)
+      assert content =~ "(non-text binary output, #{byte_size(raw)} bytes)"
+      assert content =~ "saved to "
+      # The inline lossy view replaces the NULs with U+FFFD.
+      assert content =~ <<0xEF, 0xBF, 0xBD>>
+
+      # The scratch file preserves the ORIGINAL raw bytes (including NUL).
       assert File.read!(saved_path(content)) == raw
     end
   end

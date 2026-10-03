@@ -59,7 +59,8 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
 
   `label` names the result for the model (e.g. `"Command output of 'ls'"`).
   `prefix` names the scratch file (see `write/4`). `content` is expected
-  to be valid UTF-8 — binary results take `handle_binary_shell/4` instead.
+  to be storable text — non-text results (invalid UTF-8 or NUL) take
+  `handle_binary_shell/4` instead.
   """
   @spec substitute(binary(), map(), String.t(), non_neg_integer(), String.t()) :: String.t()
   def substitute(content, ctx, label, budget, prefix) do
@@ -123,8 +124,11 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
   def truncate_to_fit(text, target_tokens), do: head_text(text, target_tokens)
 
   @doc """
-  Lossy UTF-8 coercion: replace every invalid byte sequence with U+FFFD so
-  the result is a valid string the estimator / message pipeline can handle.
+  Lossy UTF-8 coercion: replace every invalid byte sequence, and every
+  NUL (`U+0000`), with U+FFFD so the result is a string the estimator /
+  message pipeline / database can handle. NUL is valid UTF-8 but Postgres
+  `text`/`jsonb` rejects it, so it must be replaced too.
+
   `:unicode.characters_to_binary/3` decodes as much valid UTF-8 as it can
   and reports the offending remainder (as `{:error, converted, rest}` or
   `{:incomplete, converted, _}`) instead of raising. We splice in a
@@ -132,19 +136,25 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
   recursion always makes progress) and keep decoding the remainder.
   """
   @spec to_valid_utf8(binary()) :: String.t()
-  def to_valid_utf8(<<>>), do: ""
-
   def to_valid_utf8(bin) do
+    bin
+    |> coerce_utf8()
+    |> String.replace(<<0>>, @replacement_char)
+  end
+
+  defp coerce_utf8(<<>>), do: ""
+
+  defp coerce_utf8(bin) do
     case :unicode.characters_to_binary(bin, :utf8, :utf8) do
       text when is_binary(text) ->
         text
 
       {:error, "", rest} ->
         # The head byte is invalid: replace it and move past it.
-        @replacement_char <> to_valid_utf8(drop_first_byte(rest))
+        @replacement_char <> coerce_utf8(drop_first_byte(rest))
 
       {:error, converted, rest} ->
-        converted <> to_valid_utf8(rest)
+        converted <> coerce_utf8(rest)
 
       {:incomplete, converted, _rest} ->
         converted <> @replacement_char

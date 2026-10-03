@@ -14,6 +14,7 @@ defmodule Nest.Tools.FileTools do
   require Logger
 
   alias Nest.LLM.Tool
+  alias Nest.Messages.Sanitize
   alias Nest.Sandbox
 
   # Stat-then-cap mirrors `InspectFile`'s 100 MB cap so the
@@ -182,11 +183,12 @@ defmodule Nest.Tools.FileTools do
   end
 
   defp validate_utf8(content) do
-    if String.valid?(content) do
+    if Sanitize.text?(content) do
       {:ok, content}
     else
       {:error,
-       "File is not valid UTF-8; use shell-cmd with hexdump or xxd for binary inspection."}
+       "File is non-text (invalid UTF-8 or binary data); file-read only returns text. " <>
+         "Use file-inspect for metadata, or shell-cmd with hexdump/xxd for binary inspection."}
     end
   end
 

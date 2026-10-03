@@ -66,6 +66,40 @@ defmodule Nest.Agents.AgentAgentsMdTest do
       MockClient.clear()
     end
 
+    test "sanitizes NUL and invalid UTF-8 in AGENTS.md" do
+      vocation = create_vocation()
+
+      workspace_path =
+        Path.join(System.tmp_dir!(), "nest-tmp-agents-md-#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(workspace_path)
+      on_exit(fn -> safe_rm_rf(workspace_path) end)
+
+      File.write!(
+        Path.join(workspace_path, "AGENTS.md"),
+        "before" <> <<0>> <> "middle" <> <<0xFF>> <> "after"
+      )
+
+      MockClient.set_response("OK")
+
+      {pid, _agent_id} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          workspace_path: workspace_path,
+          vocation_id: vocation.id
+        })
+
+      system_prompt = get_system_prompt(pid)
+      assert is_binary(system_prompt)
+      assert String.valid?(system_prompt)
+      refute String.contains?(system_prompt, <<0>>)
+
+      replacement = <<0xEF, 0xBF, 0xBD>>
+      assert system_prompt =~ "before" <> replacement <> "middle" <> replacement <> "after"
+
+      MockClient.clear()
+    end
+
     test "omits AGENTS.md section when workspace has no such file" do
       vocation = create_vocation()
       workspace_path = Path.join([File.cwd!(), "test", "data", "empty_workspace"])

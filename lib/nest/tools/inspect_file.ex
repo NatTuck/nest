@@ -11,8 +11,8 @@ defmodule Nest.Tools.InspectFile do
   `head`, `tail`, or `sed -n` for a partial read.
 
   Text vs. binary classification:
-    * ASCII or UTF-8 (per `file` output) AND bytes validate as
-      UTF-8 (ASCII is a strict subset) -> text stats
+    * ASCII or UTF-8 (per `file` output) AND bytes are storable
+      text (valid UTF-8 without NUL) -> text stats
     * Anything else (UTF-16, ISO-8859, PNG, ELF, ...) -> binary
       report with a clear "do not use file-read" hint
     * Empty files -> text with zero stats (no read needed)
@@ -31,6 +31,7 @@ defmodule Nest.Tools.InspectFile do
   require Logger
 
   alias Nest.LLM.Tool
+  alias Nest.Messages.Sanitize
   alias Nest.Sandbox
   alias Nest.Tokens.Estimator
   alias Nest.Tools.ShellEscape
@@ -161,7 +162,7 @@ defmodule Nest.Tools.InspectFile do
   defp text_output(path, full_path, byte_size, type, workspace_path, tmp_path, caps) do
     case read_file_via_shell(full_path, workspace_path, tmp_path, caps) do
       {:ok, content} ->
-        if String.valid?(content) do
+        if Sanitize.text?(content) do
           {:ok, format_text_output(path, type, byte_size, content)}
         else
           {:ok,
@@ -169,7 +170,7 @@ defmodule Nest.Tools.InspectFile do
              path,
              type,
              byte_size,
-             "claimed text but bytes are not valid UTF-8"
+             "claimed text but bytes are not text (invalid UTF-8 or binary data)"
            )}
         end
 

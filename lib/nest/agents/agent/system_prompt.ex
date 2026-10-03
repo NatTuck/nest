@@ -24,6 +24,7 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   """
 
   alias Nest.Agents.Agent.Config
+  alias Nest.Messages.Sanitize
   alias Nest.Sandbox
   alias Nest.Tokens.Reserve
   alias Nest.Tools.Groups
@@ -207,7 +208,10 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   defp agents_md_section(workspace_path, caps) do
     case Sandbox.read(Path.join(workspace_path, "AGENTS.md"), caps) do
       {:ok, content} ->
-        "\n\nHere are AGENTS.md guidelines for this project:\n\n#{content}\n"
+        # The file is arbitrary user bytes: NUL / invalid UTF-8 cannot be
+        # stored in the system message's jsonb row. Replace them rather
+        # than crash the Agent.
+        "\n\nHere are AGENTS.md guidelines for this project:\n\n#{Sanitize.text(content)}\n"
 
       _ ->
         ""

@@ -206,6 +206,22 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
       assert Enum.map(Persistence.load_messages(test_space_id(), name), &index/1) == [0, 1, 2, 3]
     end
 
+    test "sanitizes NUL/invalid UTF-8 before the message reaches state and the DB" do
+      name = unique_name("append-sanitize")
+      {:ok, _} = Persistence.insert_agent(agent_attrs(name))
+
+      initial = [system(0), user(1)]
+      insert_messages(name, initial)
+
+      state = state(name, initial)
+      {stamped, state} = MessageAppender.append_one(state, user("before" <> <<0>> <> "after"))
+
+      assert {:user, %User{parts: [%Part.Text{text: "before\uFFFDafter"}]}} = stamped
+
+      assert {:user, %User{parts: [%Part.Text{text: "before\uFFFDafter"}]}} =
+               List.last(state.chat_state.messages)
+    end
+
     test "handle_batch returns repair messages plus the requested ones" do
       name = unique_name("append-batch")
       {:ok, _} = Persistence.insert_agent(agent_attrs(name))

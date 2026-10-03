@@ -75,6 +75,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
   alias Nest.Agents.Agent.BatchSizer.ProjectedSize
   alias Nest.Agents.Agent.CapCalculator
   alias Nest.LLM.Tools, as: LLMTools
+  alias Nest.Messages.Sanitize
   alias Nest.Messages.ToolCall
   alias Nest.Messages.ToolResult
   alias Nest.Tokens.Budget
@@ -342,14 +343,16 @@ defmodule Nest.Agents.Agent.BatchSizer do
   #      we fall back to the existing summary path for
   #      `shell-cmd` if it doesn't.
   #
-  # A tool result that isn't valid UTF-8 (raw binary, e.g. `curl`
-  # dumping a download to stdout) never goes inline raw: it's written
-  # to the scratch file and replaced with a `saved to <path>` pointer
-  # so the LLM can decide whether to inspect the file. When the binary
-  # is tiny (<= `@small_binary_max_bytes`), a lossy UTF-8 view is
-  # included inline too.
+  # A tool result that isn't storable text (invalid UTF-8, or valid
+  # UTF-8 containing NUL — e.g. `curl` dumping a download to stdout, or
+  # a hardware tool's NUL-padded output) never goes inline raw: it's
+  # written to the scratch file and replaced with a non-text `saved to
+  # <path>` pointer so the LLM is told the result is binary and can
+  # decide whether to inspect the file. When the binary is tiny
+  # (<= `@small_binary_max_bytes`), a lossy UTF-8 view is included
+  # inline too.
   defp apply_one_with_acc({tc, :ok, content} = entry, ctx, acc) do
-    if is_binary(content) and not String.valid?(content) do
+    if is_binary(content) and not Sanitize.text?(content) do
       handle_binary_shell(tc, content, ctx, acc)
     else
       size_text_result(entry, ctx, acc)
@@ -373,10 +376,12 @@ defmodule Nest.Agents.Agent.BatchSizer do
     end
   end
 
-  # A binary tool result: always write the raw bytes to the scratch file
-  # and return a `saved to <path>` pointer inline. The model never sees
-  # the raw bytes. For tiny binaries a lossy UTF-8 view rides along so
-  # the model can read the contents without opening the file.
+  # A non-text tool result: always write the raw bytes to the scratch
+  # file and return a `saved to <path>` pointer inline that tells the
+  # model the output is non-text/binary. The model never sees the raw
+  # bytes inline (except the lossy view below). For tiny binaries a
+  # lossy UTF-8 view rides along so the model can read the contents
+  # without opening the file.
   defp handle_binary_shell(tc, content, ctx, acc) do
     bytes = byte_size(content)
 
@@ -386,7 +391,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
         path -> "saved to #{path}"
       end
 
-    pointer = "#{output_label(tc)} (binary, #{bytes} bytes) #{location}."
+    pointer = "#{output_label(tc)} (non-text binary output, #{bytes} bytes) #{location}."
 
     inline =
       if bytes <= @small_binary_max_bytes do
