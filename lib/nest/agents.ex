@@ -140,6 +140,7 @@ defmodule Nest.Agents do
       usage: info.usage,
       sequence_violations: info.sequence_violations,
       repair_command: info.repair_command,
+      vocation_slug: info.vocation_slug,
       pending_messages: info.pending_messages,
       pending_message_count: info.pending_message_count
     }
@@ -199,7 +200,7 @@ defmodule Nest.Agents do
   defp get_vocation_info(vocation_id) do
     case Vocations.get_vocation(vocation_id) do
       nil -> nil
-      v -> %{"id" => v.id, "name" => v.name, "modes" => v.modes}
+      v -> %{"id" => v.id, "name" => v.name, "slug" => v.slug, "modes" => v.modes}
     end
   end
 

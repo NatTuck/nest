@@ -44,7 +44,7 @@ defmodule Nest.Agents.Agent.SubAgent do
 
   @doc """
   Build a fresh-context child agent's attrs from a parent
-  state and a chosen `vocation_id`. Unlike the clone path
+  state and a chosen vocation. Unlike the clone path
   (which forks the parent's message history), the fresh child
   starts from a system-prompt-only context.
 
@@ -90,7 +90,7 @@ defmodule Nest.Agents.Agent.SubAgent do
   Spawn a child of `state` and remember the `task_pid` so the
   eventual completion can be forwarded. Unifies the old
   `clone_agent` (via `clone_context: true`) and the fresh
-  `spawn_agent`. `opts` carries `name`, `vocation_id`,
+  `spawn_agent`. `opts` carries `name`, `vocation` (slug),
   `clone_context`, `query`, and `archive`.
 
   Returns the GenServer reply tuple.
@@ -120,7 +120,7 @@ defmodule Nest.Agents.Agent.SubAgent do
   #   * `clone_context: true` → fork the parent's message history
   #     (synthetic origin-story fork) at depth parent+1, tracked
   #     in ChildRegistry so the parent waits for completion.
-  #   * otherwise → fresh-context specialist, `vocation_id`
+  #   * otherwise → fresh-context specialist, `vocation` (slug)
   #     resolved by the supervisor against the space's blueprint
   #     whitelist (defaulting to the parent's, or the space's sole
   #     allowed vocation when the parent's isn't allowed).
@@ -146,14 +146,14 @@ defmodule Nest.Agents.Agent.SubAgent do
       if Map.get(opts, :clone_context, false) do
         Supervisor.start_agent_with_parent(state, Map.get(opts, :query, ""), model_override)
       else
-        # The supervisor resolves `vocation_id` against the space's
-        # blueprint whitelist: omitted defaults to the parent's
-        # vocation (or the space's sole allowed vocation when the
-        # parent's isn't allowed).
+        # The supervisor resolves `vocation` (a slug) against the
+        # space's blueprint whitelist: omitted defaults to the
+        # parent's vocation (or the space's sole allowed vocation when
+        # the parent's isn't allowed).
         Supervisor.spawn_agent_in_space(
           state,
           Map.get(opts, :name, ""),
-          Map.get(opts, :vocation_id),
+          Map.get(opts, :vocation),
           model_override
         )
       end

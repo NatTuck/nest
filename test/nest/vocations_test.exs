@@ -34,10 +34,43 @@ defmodule Nest.VocationsTest do
 
       assert {:ok, %Vocation{} = vocation} = Vocations.create_vocation(valid_attrs)
       assert vocation.name == "some name"
+      assert vocation.slug == "some-name"
       assert vocation.description == "some description"
       assert vocation.modes == %{}
       assert vocation.tools == []
       assert vocation.system_prompt == "some system_prompt"
+    end
+
+    test "create_vocation/1 rejects a duplicate derived slug" do
+      attrs = %{
+        name: "Slug Dup #{System.unique_integer([:positive])}",
+        description: "d",
+        system_prompt: "s",
+        tools: [],
+        modes: %{}
+      }
+
+      assert {:ok, %Vocation{} = first} = Vocations.create_vocation(attrs)
+
+      assert {:error, changeset} = Vocations.create_vocation(attrs)
+      assert "has already been taken" in errors_on(changeset).slug
+
+      # The explicit-slug path is validated the same way.
+      other =
+        Map.merge(attrs, %{
+          name: "Other Name #{System.unique_integer([:positive])}",
+          slug: first.slug
+        })
+
+      assert {:error, changeset} = Vocations.create_vocation(other)
+      assert "has already been taken" in errors_on(changeset).slug
+    end
+
+    test "get_by_slug/1 returns the vocation by slug" do
+      vocation = vocation_fixture()
+
+      assert Vocations.get_by_slug(vocation.slug).id == vocation.id
+      assert Vocations.get_by_slug("no-such-slug") == nil
     end
 
     test "create_vocation/1 with invalid data returns error changeset" do

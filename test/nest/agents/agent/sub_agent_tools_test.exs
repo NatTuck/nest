@@ -50,7 +50,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
       })
 
     specialist_name = "specialist-#{System.unique_integer([:positive])}"
-    specialist_vid = specialist_vocation_id()
+    specialist_slug = specialist_vocation_slug()
     space_id = AgentTestHelpers.current_space_id()
 
     # The spawn broadcasts `agent:created` on the lobby topic so the
@@ -64,7 +64,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
         %{
           id: "call_spawn_1",
           name: "agents-spawn",
-          arguments: %{"name" => specialist_name, "vocation_id" => specialist_vid}
+          arguments: %{"name" => specialist_name, "vocation" => specialist_slug}
         }
       ]
     })
@@ -118,7 +118,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
       })
 
     specialist_name = "specialist-#{System.unique_integer([:positive])}"
-    specialist_vid = specialist_vocation_id()
+    specialist_slug = specialist_vocation_slug()
 
     MockClient.set_tool_response(%{
       text: "spawning",
@@ -128,7 +128,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
           name: "agents-spawn",
           arguments: %{
             "name" => specialist_name,
-            "vocation_id" => specialist_vid,
+            "vocation" => specialist_slug,
             "model" => "pegasus/pegasus-default-only"
           }
         }
@@ -211,11 +211,11 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
 
     # Pre-seed a specialist so `agents-list` has something to show.
     specialist_name = "listed-#{System.unique_integer([:positive])}"
-    specialist_vid = specialist_vocation_id()
+    specialist_slug = specialist_vocation_slug()
     state = coordinator_state(space_id)
 
     assert {:ok, ^specialist_name} =
-             Supervisor.spawn_agent_in_space(state, specialist_name, specialist_vid)
+             Supervisor.spawn_agent_in_space(state, specialist_name, specialist_slug)
 
     on_exit(fn -> _ = Supervisor.stop_agent(space_id, specialist_name) end)
 
@@ -438,9 +438,9 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     vid
   end
 
-  # A distinct vocation for the spawned specialist.
-  defp specialist_vocation_id do
-    {:ok, %Vocations.Vocation{id: vid}} =
+  # A distinct vocation for the spawned specialist. Returns its slug.
+  defp specialist_vocation_slug do
+    {:ok, %Vocations.Vocation{slug: slug}} =
       Vocations.upsert_vocation(%{
         name: "Specialist #{System.unique_integer([:positive])}",
         description: "A specialist",
@@ -449,7 +449,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
         modes: %{}
       })
 
-    vid
+    slug
   end
 
   # Spawn an independent specialist into `space_id` (via the same
@@ -466,10 +466,10 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
   #     message-append DB writes would raise
   #     `DBConnection.OwnershipError`.
   defp start_mocked_specialist(space_id, name, response) do
-    vid = specialist_vocation_id()
+    vocation_slug = specialist_vocation_slug()
     state = coordinator_state(space_id)
 
-    assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name, vid)
+    assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name, vocation_slug)
 
     {:ok, pid} = Nest.Agents.Registry.lookup(space_id, name)
     Sandbox.allow(Nest.Repo, self(), pid)

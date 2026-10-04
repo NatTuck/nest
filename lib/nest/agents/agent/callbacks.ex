@@ -115,7 +115,7 @@ defmodule Nest.Agents.Agent.Callbacks do
 
   # Sub-agent: a tool worker (running in the chat turn) is
   # blocked on the tool dispatch and has hit an `agents-spawn`
-  # tool call. `opts` carries `name`, `vocation_id`,
+  # tool call. `opts` carries `name`, `vocation` (slug),
   # `clone_context`, `query`, and `archive`. Spawn the child
   # (fresh or context-cloned), kick off its chat turn with the
   # `query` (if any), remember the worker's pid so we can

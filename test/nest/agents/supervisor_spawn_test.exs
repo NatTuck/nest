@@ -3,7 +3,7 @@ defmodule Nest.Agents.SupervisorSpawnTest do
   Tests for `Supervisor.spawn_agent_in_space/3` — the entry
   point that creates a fresh-context sub-agent in a space,
   authorized against the space's blueprint
-  `spawnable_vocation_ids` whitelist.
+  `spawnable_vocations` whitelist.
 
   `spawn_agent_in_space/3` requires a real parent agent (it
   reads `name`, `depth`, and resolves the parent's DB row for
@@ -15,7 +15,7 @@ defmodule Nest.Agents.SupervisorSpawnTest do
     * Unrestricted space (no blueprint) → any vocation spawns.
     * Whitelisted blueprint → allowed vocation spawns, denied
       vocation returns `{:error, {:vocation_not_spawnable, _}}`.
-    * Omitted `vocation_id` → defaults to the parent's vocation,
+    * Omitted `vocation` → defaults to the parent's vocation,
       or auto-defaults to the sole allowed vocation, or is refused
       as ambiguous when multiple vocations are allowed.
     * Duplicate name → `{:error, :duplicate_name}` (the
@@ -62,7 +62,7 @@ defmodule Nest.Agents.SupervisorSpawnTest do
   defp test_model, do: %{name: "qwen3.5-plus", provider: "model-studio"}
 
   defp fresh_vocation do
-    {:ok, %Vocations.Vocation{id: vid}} =
+    {:ok, vocation} =
       Vocations.upsert_vocation(%{
         name: "SpawnVocation-#{System.unique_integer([:positive])}",
         description: "Spawn test",
@@ -71,29 +71,29 @@ defmodule Nest.Agents.SupervisorSpawnTest do
         modes: %{}
       })
 
-    vid
+    vocation
   end
 
   describe "spawn_agent_in_space/3 in an unrestricted space" do
     test "spawns an independent specialist with any vocation", %{space_id: space_id} do
-      vid = fresh_vocation()
+      vocation = fresh_vocation()
       name = "specialist-#{System.unique_integer([:positive])}"
       state = coordinator_state(space_id)
 
-      assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name, vid)
+      assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name, vocation.slug)
 
       on_exit(fn -> _ = Supervisor.stop_agent(space_id, name) end)
 
       assert {:ok, info} = Agents.get_info(space_id, name)
-      assert info.vocation_id == vid
+      assert info.vocation_id == vocation.id
     end
 
     test "spawned agent has fresh context (system prompt only)", %{space_id: space_id} do
-      vid = fresh_vocation()
+      vocation = fresh_vocation()
       name = "fresh-#{System.unique_integer([:positive])}"
       state = coordinator_state(space_id)
 
-      assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name, vid)
+      assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name, vocation.slug)
 
       on_exit(fn -> _ = Supervisor.stop_agent(space_id, name) end)
 
@@ -102,11 +102,11 @@ defmodule Nest.Agents.SupervisorSpawnTest do
     end
 
     test "fresh spawn gets depth = parent.depth + 1", %{space_id: space_id} do
-      vid = fresh_vocation()
+      vocation = fresh_vocation()
       name = "depth-#{System.unique_integer([:positive])}"
       state = coordinator_state(space_id)
 
-      assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name, vid)
+      assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name, vocation.slug)
 
       on_exit(fn -> _ = Supervisor.stop_agent(space_id, name) end)
 
@@ -115,12 +115,13 @@ defmodule Nest.Agents.SupervisorSpawnTest do
     end
 
     test "spawn with a model override gives the child the override model", %{space_id: space_id} do
-      vid = fresh_vocation()
+      vocation = fresh_vocation()
       name = "model-override-#{System.unique_integer([:positive])}"
       state = coordinator_state(space_id)
       override = %{name: "pegasus-default-only", provider: "pegasus"}
 
-      assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name, vid, override)
+      assert {:ok, ^name} =
+               Supervisor.spawn_agent_in_space(state, name, vocation.slug, override)
 
       on_exit(fn -> _ = Supervisor.stop_agent(space_id, name) end)
 
@@ -130,11 +131,11 @@ defmodule Nest.Agents.SupervisorSpawnTest do
     end
 
     test "spawn without a model override inherits the parent's model", %{space_id: space_id} do
-      vid = fresh_vocation()
+      vocation = fresh_vocation()
       name = "inherit-model-#{System.unique_integer([:positive])}"
       state = coordinator_state(space_id)
 
-      assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name, vid)
+      assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name, vocation.slug)
 
       on_exit(fn -> _ = Supervisor.stop_agent(space_id, name) end)
 
@@ -146,12 +147,12 @@ defmodule Nest.Agents.SupervisorSpawnTest do
     test "fresh spawn at max depth has agents-spawn excluded from its tool list",
          %{space_id: space_id} do
       max = Config.configured_max_depth()
-      vid = fresh_vocation()
+      vocation = fresh_vocation()
       name = "maxdepth-#{System.unique_integer([:positive])}"
       state = coordinator_state(space_id)
       state = %{state | depth: max}
 
-      assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name, vid)
+      assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name, vocation.slug)
 
       on_exit(fn -> _ = Supervisor.stop_agent(space_id, name) end)
 
@@ -162,28 +163,37 @@ defmodule Nest.Agents.SupervisorSpawnTest do
     end
 
     test "rejects a duplicate name in the space", %{space_id: space_id} do
-      vid = fresh_vocation()
+      vocation = fresh_vocation()
       name = "dup-#{System.unique_integer([:positive])}"
       state = coordinator_state(space_id)
 
-      assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name, vid)
+      assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name, vocation.slug)
 
-      assert {:error, :duplicate_name} = Supervisor.spawn_agent_in_space(state, name, vid)
+      assert {:error, :duplicate_name} =
+               Supervisor.spawn_agent_in_space(state, name, vocation.slug)
 
       on_exit(fn -> _ = Supervisor.stop_agent(space_id, name) end)
+    end
+
+    test "an unknown vocation slug is rejected" do
+      name = "unknown-voc-#{System.unique_integer([:positive])}"
+      state = coordinator_state(AgentTestHelpers.current_space_id())
+
+      assert {:error, {:vocation_not_found, "does-not-exist"}} =
+               Supervisor.spawn_agent_in_space(state, name, "does-not-exist")
     end
   end
 
   describe "spawn_agent_in_space/3 whitelist enforcement" do
     test "allows a whitelisted vocation and denies a non-whitelisted one" do
-      allowed_vid = fresh_vocation()
-      denied_vid = fresh_vocation()
+      allowed = fresh_vocation()
+      denied = fresh_vocation()
 
       {:ok, blueprint} =
         Blueprints.create_blueprint(%{
           name: "whitelist-#{System.unique_integer([:positive])}",
-          root_vocation_id: allowed_vid,
-          spawnable_vocation_ids: [allowed_vid]
+          root_vocation: allowed.slug,
+          spawnable_vocations: [allowed.slug]
         })
 
       {:ok, space} =
@@ -198,26 +208,27 @@ defmodule Nest.Agents.SupervisorSpawnTest do
       denied_name = "denied-#{System.unique_integer([:positive])}"
 
       assert {:ok, ^allowed_name} =
-               Supervisor.spawn_agent_in_space(state, allowed_name, allowed_vid)
+               Supervisor.spawn_agent_in_space(state, allowed_name, allowed.slug)
 
       on_exit(fn -> _ = Supervisor.stop_agent(space.id, allowed_name) end)
 
-      # The refusal carries the whitelisted vocations as {name, id}
+      # The refusal carries the whitelisted vocations as {name, slug}
       # labels so the caller can tell the model what it may spawn.
-      assert {:error, {:vocation_not_spawnable, [{_name, ^allowed_vid}]}} =
-               Supervisor.spawn_agent_in_space(state, denied_name, denied_vid)
+      assert {:error, {:vocation_not_spawnable, [{_name, allowed_slug}]}} =
+               Supervisor.spawn_agent_in_space(state, denied_name, denied.slug)
 
+      assert allowed_slug == allowed.slug
       refute Enum.member?(Agents.list_agents_for_space(space.id), denied_name)
     end
 
-    test "omitting vocation_id auto-defaults to the sole allowed vocation" do
-      allowed_vid = fresh_vocation()
+    test "omitting vocation auto-defaults to the sole allowed vocation" do
+      allowed = fresh_vocation()
 
       {:ok, blueprint} =
         Blueprints.create_blueprint(%{
           name: "auto-wl-#{System.unique_integer([:positive])}",
-          root_vocation_id: allowed_vid,
-          spawnable_vocation_ids: [allowed_vid]
+          root_vocation: allowed.slug,
+          spawnable_vocations: [allowed.slug]
         })
 
       {:ok, space} =
@@ -230,7 +241,7 @@ defmodule Nest.Agents.SupervisorSpawnTest do
       # The coordinator's own vocation (Test Default) is NOT in the
       # whitelist — exactly the "Head TA may only spawn Graders" shape.
       state = coordinator_state(space.id)
-      refute state.vocation_id == allowed_vid
+      refute state.vocation_id == allowed.id
 
       name = "auto-#{System.unique_integer([:positive])}"
 
@@ -240,18 +251,18 @@ defmodule Nest.Agents.SupervisorSpawnTest do
 
       {:ok, pid} = Supervisor.get_agent(space.id, name)
       child_state = :sys.get_state(pid)
-      assert child_state.vocation_id == allowed_vid
+      assert child_state.vocation_id == allowed.id
     end
 
-    test "omitting vocation_id with multiple allowed vocations is refused as ambiguous" do
+    test "omitting vocation with multiple allowed vocations is refused as ambiguous" do
       allowed_a = fresh_vocation()
       allowed_b = fresh_vocation()
 
       {:ok, blueprint} =
         Blueprints.create_blueprint(%{
           name: "ambig-wl-#{System.unique_integer([:positive])}",
-          root_vocation_id: allowed_a,
-          spawnable_vocation_ids: [allowed_a, allowed_b]
+          root_vocation: allowed_a.slug,
+          spawnable_vocations: [allowed_a.slug, allowed_b.slug]
         })
 
       {:ok, space} =
@@ -267,18 +278,18 @@ defmodule Nest.Agents.SupervisorSpawnTest do
       assert {:error, {:vocation_not_spawnable, labels}} =
                Supervisor.spawn_agent_in_space(state, name)
 
-      ids = Enum.map(labels, &elem(&1, 1))
-      assert Enum.sort(ids) == Enum.sort([allowed_a, allowed_b])
+      slugs = Enum.map(labels, &elem(&1, 1))
+      assert Enum.sort(slugs) == Enum.sort([allowed_a.slug, allowed_b.slug])
     end
 
-    test "an empty spawnable_vocation_ids list is unrestricted" do
-      vid = fresh_vocation()
+    test "an empty spawnable_vocations list is unrestricted" do
+      vocation = fresh_vocation()
 
       {:ok, blueprint} =
         Blueprints.create_blueprint(%{
           name: "empty-wl-#{System.unique_integer([:positive])}",
-          root_vocation_id: vid,
-          spawnable_vocation_ids: []
+          root_vocation: vocation.slug,
+          spawnable_vocations: []
         })
 
       {:ok, space} =
@@ -291,7 +302,7 @@ defmodule Nest.Agents.SupervisorSpawnTest do
       name = "any-#{System.unique_integer([:positive])}"
       state = coordinator_state(space.id)
 
-      assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name, vid)
+      assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name, vocation.slug)
 
       on_exit(fn -> _ = Supervisor.stop_agent(space.id, name) end)
     end
@@ -301,11 +312,11 @@ defmodule Nest.Agents.SupervisorSpawnTest do
     test "stops the process, marks the row archived, and broadcasts agent:archived", %{
       space_id: space_id
     } do
-      vid = fresh_vocation()
+      vocation = fresh_vocation()
       name = "archive-me-#{System.unique_integer([:positive])}"
       state = coordinator_state(space_id)
 
-      assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name, vid)
+      assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name, vocation.slug)
 
       Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
 

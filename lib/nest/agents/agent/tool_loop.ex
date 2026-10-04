@@ -184,13 +184,18 @@ defmodule Nest.Agents.Agent.ToolLoop do
   end
 
   # Format a spawn failure for the model. `:vocation_not_spawnable`
-  # carries the whitelisted `{name, id}` vocations so the model can
-  # retry with a valid `vocation_id`.
+  # carries the whitelisted `{name, slug}` vocations so the model can
+  # retry with a valid `vocation` slug.
   defp spawn_error_message({:vocation_not_spawnable, allowed}) do
-    labels = Enum.map_join(allowed, ", ", fn {name, id} -> "#{name} (id #{id})" end)
+    labels = Enum.map_join(allowed, ", ", fn {name, slug} -> "#{name} (#{slug})" end)
 
     "Could not spawn agent: that vocation is not spawnable in this space. " <>
-      "Allowed vocations: #{labels}. Retry passing one as `vocation_id`."
+      "Allowed vocations: #{labels}. Retry passing one as `vocation`."
+  end
+
+  defp spawn_error_message({:vocation_not_found, slug}) do
+    "Could not spawn agent: no vocation with slug #{inspect(slug)} exists. " <>
+      "Retry with a valid `vocation` slug."
   end
 
   defp spawn_error_message(reason), do: "Could not spawn agent: #{inspect(reason)}"
@@ -201,7 +206,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
   defp spawn_opts_from_args(tc) do
     %{
       name: extract_string_arg(tc, "name"),
-      vocation_id: extract_int_arg(tc, "vocation_id"),
+      vocation: extract_string_arg(tc, "vocation"),
       clone_context: extract_bool_arg(tc, "clone_context", false),
       model: extract_string_arg(tc, "model"),
       query: extract_string_arg(tc, "query"),
@@ -242,7 +247,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
       |> Enum.map(fn info ->
         %{
           name: info.name,
-          vocation_id: info.vocation_id,
+          vocation: info.vocation_slug,
           status: info.status,
           depth: info.depth
         }

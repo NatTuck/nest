@@ -230,6 +230,7 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
         sequence_violations: state.live.repair.violations,
         repair_command: state.live.repair.command,
         vocation_id: state.vocation_id,
+        vocation_slug: state.vocation && state.vocation.slug,
         tmp_path: state.tmp_path,
         # Run the streaming accumulator (or nil) through
         # `Streaming.to_json_safe/1` so `get_public_info/1`

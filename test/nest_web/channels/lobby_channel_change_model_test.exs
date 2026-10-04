@@ -41,7 +41,7 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
 
   # `create_test_agent` mirrors the helper in
   # `NestWeb.LobbyChannelTest` — pushed via the channel so
-  # the channel's `default_vocation_id/0` fallback applies
+  # the channel's `default_vocation_slug/0` fallback applies
   # (a direct `Agents.create_agent/3` would skip it and trip
   # the NOT NULL constraint on `agents.vocation_id`). Marks
   # the agent `shared: true` so the change_model handler
@@ -53,18 +53,18 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
         else: %{"name" => model_name}
 
     # Insert a default vocation so the channel's
-    # `default_vocation_id/0` fallback returns a real id.
+    # `default_vocation_slug/0` fallback returns a real id.
     # The original `NestWeb.LobbyChannelTest` does this in
     # its setup; we mirror it here because this file has its
     # own setup.
-    vocation_id = AgentTestHelpers.vocation_id_for_test()
+    vocation = AgentTestHelpers.vocation_slug_for_test()
 
     ref =
       push(socket, "create_space", %{
         "name" => "test-space-#{System.unique_integer([:positive])}",
         "model" => model_attrs,
         "shared" => true,
-        "vocation_id" => vocation_id
+        "vocation" => vocation
       })
 
     # `assert_reply/3` defaults to a 100ms receive timeout, which is
@@ -99,14 +99,14 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
       {:ok, bob} = Accounts.redeem_invite(token, %{username: "bob", password: "password456"})
 
       # Alice shares the setup-time agent with Bob.
-      vocation_id = AgentTestHelpers.vocation_id_for_test()
+      vocation = AgentTestHelpers.vocation_slug_for_test()
 
       ref =
         push(socket, "create_space", %{
           "name" => "test-space-#{System.unique_integer([:positive])}",
           "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"},
           "shared" => true,
-          "vocation_id" => vocation_id
+          "vocation" => vocation
         })
 
       assert_reply ref, :ok, %{"space_id" => space_id, "name" => name, "slug" => _slug}, 500

@@ -21,6 +21,8 @@ defmodule Nest.Spaces.Space do
   use Ecto.Schema
   import Ecto.Changeset
 
+  alias Nest.Slug
+
   @derive {Jason.Encoder,
            only: [
              :id,
@@ -84,18 +86,11 @@ defmodule Nest.Spaces.Space do
       _ ->
         case fetch_change(changeset, :name) do
           {:ok, name} when is_binary(name) ->
-            put_change(changeset, :slug, generate_slug(name))
+            put_change(changeset, :slug, Slug.from_name(name))
 
           _ ->
             changeset
         end
     end
-  end
-
-  defp generate_slug(name) do
-    name
-    |> String.downcase()
-    |> String.replace(~r/[^a-z0-9]+/, "-")
-    |> String.trim("-")
   end
 end

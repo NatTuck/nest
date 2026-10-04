@@ -15,7 +15,7 @@ defmodule Nest.Agents.Agent.BatchLoop do
     error. When absent, each item *is* the child's instruction.
   * `items` (a non-empty list) XOR `glob` (expanded via
     `Sandbox.glob/4` to readable regular files).
-  * `vocation_id` / `model` (optional) — per child, inherit parent
+  * `vocation` (slug) / `model` (optional) — per child, inherit parent
     when omitted.
   * `timeout` — PER-ITEM ms (default 5 min). A child still running at
     its deadline is abandoned and its slot becomes an `"[error: ...]"`
@@ -448,7 +448,7 @@ defmodule Nest.Agents.Agent.BatchLoop do
   defp build_base_opts(args) do
     %{
       name: "",
-      vocation_id: int_arg(args, "vocation_id"),
+      vocation: Map.get(args, "vocation"),
       clone_context: false,
       model: Map.get(args, "model", ""),
       query: "",
@@ -498,13 +498,16 @@ defmodule Nest.Agents.Agent.BatchLoop do
   defp error_message(reason), do: inspect(reason)
 
   # Format a spawn failure for the model. `:vocation_not_spawnable`
-  # carries the whitelisted `{name, id}` vocations; other reasons
+  # carries the whitelisted `{name, slug}` vocations; other reasons
   # (max depth, duplicate name, workspace required) are rendered
   # directly.
   defp spawn_error_message({:vocation_not_spawnable, allowed}) do
-    labels = Enum.map_join(allowed, ", ", fn {name, id} -> "#{name} (id #{id})" end)
+    labels = Enum.map_join(allowed, ", ", fn {name, slug} -> "#{name} (#{slug})" end)
     "Could not spawn batch children: vocation not allowed in this space. Allowed: #{labels}."
   end
+
+  defp spawn_error_message({:vocation_not_found, slug}),
+    do: "Could not spawn batch children: no vocation with slug #{inspect(slug)} exists."
 
   defp spawn_error_message(:max_depth_reached),
     do: "Could not spawn batch children: max delegation depth reached."

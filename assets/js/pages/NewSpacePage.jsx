@@ -60,7 +60,7 @@ export function NewSpacePage() {
     (b) => b.id.toString() === selectedBlueprint,
   );
   const selectedVocation = selectedBlueprintData
-    ? vocations.find((v) => v.id === selectedBlueprintData.root_vocation_id)
+    ? vocations.find((v) => v.slug === selectedBlueprintData.root_vocation)
     : null;
   const selectedVocationName = selectedVocation?.name;
   const requiresWorkspace = vocationRequiresWorkspace(selectedVocation);

@@ -3257,7 +3257,7 @@ describe("channels", () => {
       });
     });
 
-    it("should include vocation_id in payload when provided", async () => {
+    it("should include vocation slug in payload when provided", async () => {
       setNextPushResult("lobby", "create_space", {
         ok: { space_id: 1, name: "new-agent" },
       });
@@ -3268,7 +3268,7 @@ describe("channels", () => {
       });
 
       let okCalled = false;
-      createSpace("gpt-4", 42, (_resp) => {
+      createSpace("gpt-4", "programmer", (_resp) => {
         okCalled = true;
       });
 
@@ -3277,10 +3277,10 @@ describe("channels", () => {
       });
     });
 
-    it("should omit vocation_id from payload when null", async () => {
-      // Pin the falsy branch of `if (vocationId)` in createSpace.
-      // All other createSpace tests pass a non-null vocationId, so
-      // the omit-path is otherwise untested.
+    it("should omit vocation from payload when null", async () => {
+      // Pin the falsy branch of `if (vocationSlug)` in createSpace.
+      // All other createSpace tests pass a non-null slug, so the
+      // omit-path is otherwise untested.
       const capturePromise = captureNextPush("lobby", "create_space");
       setNextPushResult("lobby", "create_space", {
         ok: { space_id: 1, name: "new-agent" },
@@ -3295,9 +3295,9 @@ describe("channels", () => {
 
       const captured = await capturePromise;
       assert.strictEqual(
-        Object.hasOwn(captured, "vocation_id"),
+        Object.hasOwn(captured, "vocation"),
         false,
-        "vocation_id must be omitted when null",
+        "vocation must be omitted when null",
       );
     });
 
