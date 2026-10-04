@@ -46,7 +46,11 @@ defmodule Nest.Persistence.MessageRepair do
   end
 
   defp maybe_apply(plan, opts) do
-    if Keyword.get(opts, :apply, false), do: Writer.apply(plan), else: :ok
+    cond do
+      not Keyword.get(opts, :apply, false) -> :ok
+      residual?(plan) -> :ok
+      true -> Writer.apply(plan)
+    end
   end
 
   defp load_agents({:space, name}) do
@@ -90,6 +94,7 @@ defmodule Nest.Persistence.MessageRepair do
 
   defp summary(plan, agents) do
     "Repair plan: #{length(plan.inserts)} insert(s), #{length(plan.rewrites)} rewrite(s), " <>
+      "#{length(plan.deletes)} delete(s), " <>
       "#{map_size(plan.original_violations)} agent(s) with violations across " <>
       "#{map_size(agents)} agent(s)."
   end
@@ -109,11 +114,12 @@ defmodule Nest.Persistence.MessageRepair do
 
   defp plan_section(plan, agents) do
     inserts = plan.inserts |> Enum.group_by(& &1.agent_id) |> insert_lines(agents)
+    deletes = plan.deletes |> Enum.group_by(& &1.agent_id) |> delete_lines(agents)
 
     updates =
       plan.agent_updates |> Map.keys() |> Enum.sort() |> Enum.map(&update_line(&1, agents))
 
-    Enum.join(["Planned writes" | inserts ++ updates], "\n")
+    Enum.join(["Planned writes" | inserts ++ deletes ++ updates], "\n")
   end
 
   defp insert_lines(grouped, agents) do
@@ -121,6 +127,14 @@ defmodule Nest.Persistence.MessageRepair do
     |> Enum.sort_by(fn {id, _} -> id end)
     |> Enum.flat_map(fn {id, rows} ->
       [agent_label(id, agents) <> " inserts at #{inspect(Enum.map(rows, & &1.index))}"]
+    end)
+  end
+
+  defp delete_lines(grouped, agents) do
+    grouped
+    |> Enum.sort_by(fn {id, _} -> id end)
+    |> Enum.flat_map(fn {id, rows} ->
+      [agent_label(id, agents) <> " deletes at #{inspect(Enum.map(rows, & &1.index))}"]
     end)
   end
 

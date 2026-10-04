@@ -6,8 +6,9 @@ defmodule Nest.Persistence.MessageRepair.Writer do
   The write is two-phase per changed agent to avoid transient
   collisions on the `(agent_id, message_index)` unique index: every
   row of a changed agent is first moved to a large temporary offset,
-  then every row is given its final index (and synthetic rows are
-  inserted). The whole run rolls back on any failure.
+  then orphan rows are deleted, every surviving row is given its final
+  index, and synthetic rows are inserted. The whole run rolls back on
+  any failure.
   """
 
   import Ecto.Query, warn: false
@@ -25,21 +26,35 @@ defmodule Nest.Persistence.MessageRepair.Writer do
   """
   @spec apply(Planner.t()) :: :ok | {:error, term()}
   def apply(%Planner{} = plan) do
-    Repo.transaction(fn ->
-      Enum.each(plan.changed_agents, &offset_agent/1)
-      run!(renumber(plan.renumbers))
-      run!(rewrite(plan.rewrites))
-      run!(insert_synthetics(plan.inserts))
-      run!(update_agents(plan.agent_updates))
-    end)
-    |> case do
-      {:ok, _} -> :ok
-      {:error, reason} -> {:error, reason}
+    if map_size(plan.residual_violations) > 0 do
+      {:error, :residual_violations}
+    else
+      Repo.transaction(fn ->
+        Enum.each(plan.changed_agents, &offset_agent/1)
+        run!(delete_rows(plan.deletes))
+        run!(renumber(plan.renumbers))
+        run!(rewrite(plan.rewrites))
+        run!(insert_synthetics(plan.inserts))
+        run!(update_agents(plan.agent_updates))
+      end)
+      |> case do
+        {:ok, _} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
     end
   end
 
   defp run!(:ok), do: :ok
   defp run!({:error, reason}), do: Repo.rollback(reason)
+
+  defp delete_rows(rows) do
+    Enum.reduce_while(rows, :ok, fn %{id: id}, :ok ->
+      case Repo.delete_all(from(m in PersistedMessage, where: m.id == ^id)) do
+        {_count, _} -> {:cont, :ok}
+        other -> {:halt, {:error, {:delete_failed, id, other}}}
+      end
+    end)
+  end
 
   defp offset_agent(agent_id) do
     query = from(m in PersistedMessage, where: m.agent_id == ^agent_id)

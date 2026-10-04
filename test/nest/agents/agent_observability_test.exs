@@ -351,10 +351,9 @@ defmodule Nest.Agents.AgentObservabilityTest do
           vocation_id: programmer_vocation_id_for_test()
         })
 
-      :ok = Agent.chat(pid, "Run a command")
-
       log =
         capture_log(fn ->
+          :ok = Agent.chat(pid, "Run a command")
           assert_receive {:chat_status, %{status: "idle"}}, 500
         end)
 

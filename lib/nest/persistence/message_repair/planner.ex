@@ -12,11 +12,18 @@ defmodule Nest.Persistence.MessageRepair.Planner do
       immediate successor gets an `is_error: true` tool result
       inserted after it (or its following partial tool result is
       rewritten to include the missing results);
+    * **orphan results** — a `{:tool, _}` whose result ids were already
+      answered by an earlier tool row is a duplicate: its real payload
+      replaces an earlier synthetic `is_error` result for the same id
+      (when there is one), then the orphan row is deleted. An orphan
+      that matches no earlier result is deleted too — it can never be
+      paired without inventing an assistant;
     * **alternation** — two consecutive `user`/`assistant` wire
       roles get one opposite-role message inserted between them;
     * **renumbering** — the affected owner's own rows are made
-      contiguous, and every clone sharing the changed prefix shifts
-      its `fork_message_index` and own indices recursively.
+      contiguous (inserts add rows, deletes remove them), and every
+      clone sharing the changed prefix shifts its
+      `fork_message_index` and own indices recursively.
 
   Synthetic rows are always owned by the agent being repaired, so
   an ancestor's repair shifts its descendants but never the other
@@ -50,6 +57,7 @@ defmodule Nest.Persistence.MessageRepair.Planner do
 
   defstruct inserts: [],
             rewrites: [],
+            deletes: [],
             renumbers: [],
             agent_updates: %{},
             original_violations: %{},
@@ -59,6 +67,7 @@ defmodule Nest.Persistence.MessageRepair.Planner do
   @type t :: %__MODULE__{
           inserts: [map()],
           rewrites: [map()],
+          deletes: [map()],
           renumbers: [map()],
           agent_updates: %{integer() => map()},
           original_violations: %{integer() => [Preflight.violation()]},
@@ -92,6 +101,7 @@ defmodule Nest.Persistence.MessageRepair.Planner do
       roots: root_ids(agents, known),
       inserts: [],
       rewrites: %{},
+      deletes: [],
       changed: MapSet.new()
     }
   end
@@ -138,8 +148,8 @@ defmodule Nest.Persistence.MessageRepair.Planner do
   defp process_agent(model, id) do
     full = resolve_full(model, id)
     ctx = %{agent_id: id, first_own: first_own_index(model, id), append: append_index(model, id)}
-    {items, rewrites} = correct_sequence(full, ctx)
-    apply_correction(model, id, items, rewrites)
+    {items, corr} = correct_sequence(full, ctx)
+    apply_correction(model, id, items, corr)
   end
 
   # --- resolution ---
@@ -181,66 +191,92 @@ defmodule Nest.Persistence.MessageRepair.Planner do
   # --- corrected sequence walk ---
 
   defp correct_sequence(full, ctx) do
-    {items, state, rewrites} =
-      Enum.reduce(full, {[], new_state(), %{}}, fn item, {items, state, rewrites} ->
-        step(item, ctx, items, state, rewrites)
+    {items, state, corr} =
+      Enum.reduce(full, {[], new_state(), new_corr()}, fn item, {items, state, corr} ->
+        step(item, ctx, items, state, corr)
       end)
 
-    {items, rewrites} = flush_pending(items, state, ctx, rewrites)
-    {Enum.reverse(items), rewrites}
+    {items, corr} = flush_pending(items, state, ctx, corr)
+    {Enum.reverse(items), corr}
   end
 
   defp new_state, do: %{need: nil, last: nil}
 
-  defp step({msg, owner, row, index}, ctx, items, state, rewrites) do
-    {items, state, rewrites, consumed?} =
-      resolve_pairing(msg, owner, row, index, ctx, items, state, rewrites)
+  defp new_corr, do: %{rewrites: %{}, deletes: %{}}
+
+  defp put_rewrite(corr, row, agent_id, runtime) do
+    %{corr | rewrites: Map.put(corr.rewrites, row.id, %{agent_id: agent_id, runtime: runtime})}
+  end
+
+  defp put_delete(corr, row, agent_id, index) do
+    %{corr | deletes: Map.put(corr.deletes, row.id, %{agent_id: agent_id, index: index})}
+  end
+
+  defp step({msg, owner, row, index}, ctx, items, state, corr) do
+    {items, state, corr, consumed?} =
+      resolve_pairing(msg, owner, row, index, ctx, items, state, corr)
 
     if consumed? do
-      {items, state, rewrites}
+      {items, state, corr}
     else
       {items, state} =
         maybe_alternation(items, state, wire_role(msg), anchor(owner, row, index, ctx))
 
       items = emit(items, {:existing, msg, owner, row, index})
-      {items, advance(state, msg), rewrites}
+      {items, advance(state, msg), corr}
     end
   end
 
-  defp resolve_pairing(_msg, _owner, _row, _index, _ctx, items, %{need: nil} = state, rewrites) do
-    {items, state, rewrites, false}
+  # A `{:tool, _}` with no pending `tool_use`: it can never be paired. Consume
+  # it as a repair — fold a later real payload into an earlier synthetic error
+  # result for the same id when possible, then delete the orphan row.
+  defp resolve_pairing(
+         {:tool, %Tool{} = tool},
+         owner,
+         row,
+         index,
+         ctx,
+         items,
+         %{need: nil} = state,
+         corr
+       ) do
+    resolve_orphan_tool(tool, owner, row, index, ctx, items, state, corr)
+  end
+
+  defp resolve_pairing(_msg, _owner, _row, _index, _ctx, items, %{need: nil} = state, corr) do
+    {items, state, corr, false}
   end
 
   defp resolve_pairing(
-         {:tool, %Tool{} = tool} = _msg,
+         {:tool, %Tool{} = tool},
          owner,
          row,
          index,
          ctx,
          items,
          state,
-         rewrites
+         corr
        ) do
-    resolve_tool(tool, owner, row, index, ctx, items, state, rewrites)
+    resolve_tool(tool, owner, row, index, ctx, items, state, corr)
   end
 
-  defp resolve_pairing(_msg, owner, row, index, ctx, items, state, rewrites) do
-    emit_unpaired_tool(owner, row, index, ctx, items, state, rewrites)
+  defp resolve_pairing(_msg, owner, row, index, ctx, items, state, corr) do
+    emit_unpaired_tool(owner, row, index, ctx, items, state, corr)
   end
 
-  defp resolve_tool(tool, owner, row, index, ctx, items, state, rewrites) do
+  defp resolve_tool(tool, owner, row, index, ctx, items, state, corr) do
     missing = missing_tool_uses(tool, state.need)
     answered? = missing != state.need
 
     cond do
       missing == [] ->
-        {items, %{state | need: nil}, rewrites, false}
+        {items, %{state | need: nil}, corr, false}
 
       owner == ctx.agent_id ->
         merged = merge_tool(tool, missing)
-        rewrites = Map.put(rewrites, row.id, %{agent_id: owner, runtime: {:tool, merged}})
+        corr = put_rewrite(corr, row, owner, {:tool, merged})
         item = {:existing, {:tool, merged}, owner, row, row.message_index}
-        {emit(items, item), %{state | need: nil, last: :user}, rewrites, true}
+        {emit(items, item), %{state | need: nil, last: :user}, corr, true}
 
       # A non-owned (shared-prefix) tool row that answers only some of the
       # pending uses: the owner's own pass already merges its remaining
@@ -249,17 +285,117 @@ defmodule Nest.Persistence.MessageRepair.Planner do
       # the ancestor (see `a partially answered shared-prefix tool batch`
       # in the planner tests).
       answered? ->
-        {items, %{state | need: nil}, rewrites, false}
+        {items, %{state | need: nil}, corr, false}
 
       true ->
-        emit_unpaired_tool(owner, row, index, ctx, items, state, rewrites)
+        emit_unpaired_tool(owner, row, index, ctx, items, state, corr)
     end
   end
 
-  defp emit_unpaired_tool(owner, row, index, ctx, items, state, rewrites) do
+  defp emit_unpaired_tool(owner, row, index, ctx, items, state, corr) do
     results = Enum.map(state.need, &MessageList.unpaired_tool_result/1)
     synth = %{type: :tool, results: results, anchor: anchor(owner, row, index, ctx)}
-    {emit(items, {:synthetic, synth}), %{state | need: nil, last: :user}, rewrites, false}
+    {emit(items, {:synthetic, synth}), %{state | need: nil, last: :user}, corr, false}
+  end
+
+  # --- orphan tool results ---
+
+  defp resolve_orphan_tool(tool, owner, row, index, ctx, items, state, corr) do
+    {items, corr} = consolidate_orphan(items, tool_result_ids(tool), tool, ctx.agent_id, corr)
+
+    corr =
+      if owner == ctx.agent_id do
+        put_delete(corr, row, owner, index)
+      else
+        corr
+      end
+
+    {items, state, corr, true}
+  end
+
+  # Fold an orphan's real payload into the most recent tool message that
+  # already answered a matching id, but only when that earlier result is a
+  # synthetic `is_error` result (the later real result is strictly better).
+  # A synthetic still in the emitted list is patched in place; an existing
+  # row is rewritten. No match (or no error to replace) leaves the orphan a
+  # plain delete.
+  defp consolidate_orphan(items, ids, orphan, agent_id, corr) do
+    case find_answer(items, ids) do
+      {:existing, {:tool, %Tool{} = answer}, ^agent_id, row, _idx} ->
+        merged = %Tool{
+          answer
+          | parts: merge_real_results(answer.parts || [], orphan.parts || [], ids)
+        }
+
+        if merged == answer do
+          {items, corr}
+        else
+          corr = put_rewrite(corr, row, agent_id, {:tool, merged})
+          {replace_existing(items, row.id, {:tool, merged}), corr}
+        end
+
+      {:synthetic, %{type: :tool, results: results} = synth} ->
+        patched = %{synth | results: merge_real_results(results, orphan.parts || [], ids)}
+        {replace_synthetic(items, synth, patched), corr}
+
+      _ ->
+        {items, corr}
+    end
+  end
+
+  defp find_answer(items, ids) do
+    Enum.find(items, fn
+      {:existing, {:tool, %Tool{parts: parts}}, _owner, _row, _idx} ->
+        answers_ids?(parts || [], ids)
+
+      {:synthetic, %{type: :tool, results: results}} ->
+        answers_ids?(results, ids)
+
+      _ ->
+        false
+    end)
+  end
+
+  defp answers_ids?(parts, ids) do
+    Enum.any?(parts, fn
+      %Part.ToolResult{tool_call_id: id} -> id in ids
+      _ -> false
+    end)
+  end
+
+  defp merge_real_results(parts, orphan_parts, ids) do
+    Enum.map(parts, fn
+      %Part.ToolResult{tool_call_id: id, is_error: true} = error ->
+        if id in ids, do: real_result(orphan_parts, id) || error, else: error
+
+      part ->
+        part
+    end)
+  end
+
+  defp real_result(parts, id) do
+    Enum.find(parts, fn
+      %Part.ToolResult{tool_call_id: ^id, is_error: false} = result -> result
+      _ -> false
+    end)
+  end
+
+  defp replace_existing(items, row_id, runtime) do
+    Enum.map(items, fn
+      {:existing, _msg, owner, %{id: ^row_id} = row, idx} -> {:existing, runtime, owner, row, idx}
+      other -> other
+    end)
+  end
+
+  defp replace_synthetic(items, old, new) do
+    Enum.map(items, fn
+      {:synthetic, ^old} -> {:synthetic, new}
+      other -> other
+    end)
+  end
+
+  defp tool_result_ids(%Tool{parts: parts}) do
+    for %Part.ToolResult{tool_call_id: id} <- parts || [], do: id
   end
 
   defp missing_tool_uses(tool, need) do
@@ -274,12 +410,12 @@ defmodule Nest.Persistence.MessageRepair.Planner do
     }
   end
 
-  defp flush_pending(items, %{need: nil}, _ctx, rewrites), do: {items, rewrites}
+  defp flush_pending(items, %{need: nil}, _ctx, corr), do: {items, corr}
 
-  defp flush_pending(items, %{need: need}, ctx, rewrites) do
+  defp flush_pending(items, %{need: need}, ctx, corr) do
     results = Enum.map(need, &MessageList.unpaired_tool_result/1)
     synth = %{type: :tool, results: results, anchor: ctx.append}
-    {emit(items, {:synthetic, synth}), rewrites}
+    {emit(items, {:synthetic, synth}), corr}
   end
 
   defp maybe_alternation(items, %{last: role} = state, role, anchor)
@@ -323,10 +459,11 @@ defmodule Nest.Persistence.MessageRepair.Planner do
 
   # --- applying a correction to the model ---
 
-  defp apply_correction(model, agent_id, items, rewrites) do
+  defp apply_correction(model, agent_id, items, corr) do
     {_prefix, own_items} = split_own(items, agent_id)
 
-    if Enum.any?(own_items, &synthetic?/1) or map_size(rewrites) > 0 do
+    if Enum.any?(own_items, &synthetic?/1) or map_size(corr.rewrites) > 0 or
+         map_size(corr.deletes) > 0 do
       first_own = first_own_index(model, agent_id)
       {entries, inserts} = build_entries(own_items, agent_id, first_own)
       model = put_corrected(model, agent_id, entries, first_own)
@@ -334,15 +471,23 @@ defmodule Nest.Persistence.MessageRepair.Planner do
       model = %{
         model
         | inserts: model.inserts ++ inserts,
-          rewrites: Map.merge(model.rewrites, rewrites)
+          rewrites: Map.merge(model.rewrites, corr.rewrites),
+          deletes: model.deletes ++ delete_entries(corr.deletes)
       }
 
       model = %{model | changed: MapSet.put(model.changed, agent_id)}
-      shift_descendants(model, agent_id, anchors(own_items))
+      shift_descendants(model, agent_id, anchors(own_items), delete_anchors(corr.deletes))
     else
       model
     end
   end
+
+  defp delete_entries(deletes) do
+    for {id, %{agent_id: agent_id, index: index}} <- deletes,
+        do: %{id: id, agent_id: agent_id, index: index}
+  end
+
+  defp delete_anchors(deletes), do: for({_id, %{index: index}} <- deletes, do: index)
 
   defp split_own(items, agent_id) do
     Enum.split_while(items, fn
@@ -417,21 +562,25 @@ defmodule Nest.Persistence.MessageRepair.Planner do
 
   # --- recursive descendant shifts ---
 
-  defp shift_descendants(model, parent_id, synth_anchors) do
+  defp shift_descendants(model, parent_id, synth_anchors, delete_anchors) do
     model
     |> Map.get(:children, %{})
     |> Map.get(parent_id, [])
-    |> Enum.reduce(model, fn child_id, acc -> shift_child(acc, child_id, synth_anchors) end)
+    |> Enum.reduce(model, fn child_id, acc ->
+      shift_child(acc, child_id, synth_anchors, delete_anchors)
+    end)
   end
 
-  defp shift_child(model, child_id, synth_anchors) do
+  defp shift_child(model, child_id, synth_anchors, delete_anchors) do
     case model.by_id[child_id].row.fork_message_index do
       nil ->
         model
 
       fork ->
-        delta = Enum.count(synth_anchors, fn anchor -> anchor < fork end)
-        if delta > 0, do: shift_subtree(model, child_id, delta), else: model
+        inserts = Enum.count(synth_anchors, fn anchor -> anchor < fork end)
+        deletes = Enum.count(delete_anchors, fn anchor -> anchor < fork end)
+        delta = inserts - deletes
+        if delta != 0, do: shift_subtree(model, child_id, delta), else: model
     end
   end
 
@@ -501,6 +650,7 @@ defmodule Nest.Persistence.MessageRepair.Planner do
         Enum.map(model.rewrites, fn {row_id, %{agent_id: aid, runtime: rt}} ->
           %{id: row_id, agent_id: aid, runtime: rt}
         end),
+      deletes: model.deletes,
       renumbers: renumbers,
       agent_updates: Map.new(changed, fn id -> {id, update_map(model.by_id[id].row)} end),
       original_violations: originals,

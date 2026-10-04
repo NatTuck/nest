@@ -65,6 +65,61 @@ defmodule Nest.Persistence.MessageRepair.PlannerTest do
     end
   end
 
+  describe "orphan tool results" do
+    test "a duplicate real result replaces an earlier interrupted error and is deleted" do
+      plan =
+        plan([agent(1, next: 4)], %{
+          1 => [
+            row(1, 1, assistant_tool(0, "a")),
+            row(2, 1, tool_error(1, "a")),
+            row(3, 1, assistant_text(2)),
+            row(4, 1, tool_result(3, "a"))
+          ]
+        })
+
+      assert [%{id: 2, agent_id: 1}] = plan.rewrites
+      assert [%{id: 4, agent_id: 1, index: 3}] = plan.deletes
+      assert plan.inserts == []
+      assert plan.residual_violations == %{}
+
+      {:tool, %Tool{parts: [result]}} = hd(plan.rewrites).runtime
+      assert %Part.ToolResult{tool_call_id: "a", is_error: false, content: "ok"} = result
+    end
+
+    test "a duplicate error result after a real result is deleted without a rewrite" do
+      plan =
+        plan([agent(1, next: 4)], %{
+          1 => [
+            row(1, 1, assistant_tool(0, "a")),
+            row(2, 1, tool_result(1, "a")),
+            row(3, 1, assistant_text(2)),
+            row(4, 1, tool_error(3, "a"))
+          ]
+        })
+
+      assert plan.rewrites == []
+      assert [%{id: 4, index: 3}] = Enum.map(plan.deletes, &Map.take(&1, [:id, :index]))
+      assert plan.residual_violations == %{}
+    end
+
+    test "an orphan with no earlier answer is deleted, not answered with an invented assistant" do
+      plan =
+        plan([agent(1, next: 4)], %{
+          1 => [
+            row(1, 1, system(0)),
+            row(2, 1, user(1)),
+            row(3, 1, assistant_text(2)),
+            row(4, 1, tool_result(3, "x"))
+          ]
+        })
+
+      assert plan.rewrites == []
+      assert plan.inserts == []
+      assert [%{id: 4, index: 3}] = Enum.map(plan.deletes, &Map.take(&1, [:id, :index]))
+      assert plan.residual_violations == %{}
+    end
+  end
+
   describe "alternation repairs" do
     test "two consecutive user messages get an assistant between them" do
       plan =
@@ -183,6 +238,31 @@ defmodule Nest.Persistence.MessageRepair.PlannerTest do
       refute MapSet.member?(plan.changed_agents, 2)
       refute Map.has_key?(plan.agent_updates, 2)
     end
+
+    test "a parent delete below the fork pulls the child fork and own indices down" do
+      parent_rows = [
+        row(1, 1, system(0)),
+        row(2, 1, user(1)),
+        row(3, 1, assistant_text(2)),
+        row(4, 1, tool_result(3, "x")),
+        row(5, 1, user(4))
+      ]
+
+      child_rows = [row(6, 2, assistant_text(5))]
+
+      plan =
+        plan(
+          [agent(1, next: 5), agent(2, parent: 1, fork: 5, next: 6)],
+          %{1 => parent_rows, 2 => child_rows}
+        )
+
+      assert [%{id: 4, agent_id: 1, index: 3}] = plan.deletes
+      assert plan.agent_updates[1].next_message_index == 4
+      assert plan.agent_updates[2].fork_message_index == 4
+      assert plan.agent_updates[2].next_message_index == 5
+      assert Enum.any?(plan.renumbers, &(&1.id == 6 and &1.index == 4))
+      assert plan.residual_violations == %{}
+    end
   end
 
   test "a healthy sequence plans no writes" do
@@ -250,6 +330,22 @@ defmodule Nest.Persistence.MessageRepair.PlannerTest do
        index: index,
        parts: [
          %Part.ToolResult{tool_call_id: id, name: "shell-cmd", content: "ok", is_error: false}
+       ],
+       api_logs: []
+     }}
+  end
+
+  defp tool_error(index, id) do
+    {:tool,
+     %Tool{
+       index: index,
+       parts: [
+         %Part.ToolResult{
+           tool_call_id: id,
+           name: "shell-cmd",
+           content: "Tool call interrupted before completion (repaired).",
+           is_error: true
+         }
        ],
        api_logs: []
      }}

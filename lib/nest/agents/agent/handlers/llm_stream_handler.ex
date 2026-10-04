@@ -31,6 +31,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   alias Nest.Agents.Agent.Handlers.LLMStreamHandler.FileAccess
   alias Nest.Agents.Agent.Inbox
   alias Nest.Messages.Assistant
+  alias Nest.Messages.MessageList
   alias Nest.Messages.Part
   alias Nest.Messages.Streaming
   alias Nest.Messages.Tool
@@ -313,6 +314,23 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   defp tool_results_received(tool_result_message, state) do
     tool_result_message = {:tool, %{tool_result_message | index: nil}}
 
+    if answers_pending_tool_use?(state.chat_state.messages, tool_result_message) do
+      append_tool_result(tool_result_message, state)
+    else
+      # Stale/duplicate result: the tool worker's result was delivered after
+      # the turn was finalized (stop/crash) and the abandoned `tool_use` was
+      # already answered by the terminal recovery. Appending it would land an
+      # orphan `tool_result` in an otherwise-closed sequence. Drop it.
+      Logger.warning(
+        "[agent:#{state.name}] ignoring a tool result that does not answer the trailing " <>
+          "tool_use (status=#{state.live.status}); dropping stale/duplicate result"
+      )
+
+      {:noreply, state}
+    end
+  end
+
+  defp append_tool_result(tool_result_message, state) do
     {stamped, state} = Nest.Agents.Agent.__append_message__(state, tool_result_message)
     stamped_index = Nest.Agents.Agent.stamped_index(stamped)
 
@@ -338,6 +356,22 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
 
     Broadcasts.status(state)
     {:noreply, state}
+  end
+
+  # A tool result may only be appended when the current tail is an assistant
+  # `tool_use` whose ids it answers. This is the invariant that keeps a late
+  # `{:tool_results_received, _}` (sent asynchronously by a ChatTurn that has
+  # since been finalized) from appending an orphan result.
+  defp answers_pending_tool_use?(messages, {:tool, %Tool{parts: parts}}) do
+    pending = MessageList.unpaired_tail_tool_uses(messages)
+    pending != [] and Enum.any?(pending, fn %Part.ToolUse{id: id} -> answers_id?(parts, id) end)
+  end
+
+  defp answers_id?(parts, id) do
+    Enum.any?(parts || [], fn
+      %Part.ToolResult{tool_call_id: ^id} -> true
+      _ -> false
+    end)
   end
 
   # The `read_files` cache update moved to

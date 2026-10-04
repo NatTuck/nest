@@ -238,6 +238,16 @@ caller of `pairing_bridge/2` outside the offline tool. A hard
 BEAM/container kill runs no handler at all; that case is what §4's
 load-time heal cleans up.
 
+A tool worker's result is delivered to the Agent asynchronously
+(`{:tool_results_received, _}`). If the turn is finalized first (stop,
+crash, or a lost worker) the abandoned `tool_use` has already been
+answered by the terminal recovery, and the late real result would land
+as an **orphan** `tool_result`. `LLMStreamHandler.tool_results_received/2`
+now refuses to append a result whose ids do not answer the trailing
+assistant `tool_use`: the stale/duplicate result is dropped with a
+warning. (The offline tool in §5 then cleans up rows corrupted by older
+builds.)
+
 ## 4c. Persist before broadcast — DONE
 
 `MessageAppender.append_stamped/2` persists the row, then broadcasts
@@ -288,15 +298,21 @@ are found; `--apply` exits non-zero on residual violations.
      opposite-role message inserted between them (assistant ack after
      an interrupted tool result; a user continuation between two
      assistant turns);
-   - stray `tool_result`s with no matching `tool_use` are reported,
-     never "fixed" by inventing an assistant.
+   - a stray `tool_result` (a `{:tool, _}` with no pending
+     `tool_use`) is **deleted**. When its real payload duplicates an
+     earlier synthetic `is_error` result for the same id, the
+     synthetic result is first rewritten with the real payload (the
+     later real result is strictly better); an orphan matching no
+     earlier result is deleted outright. An assistant is never
+     invented to pair a stray result.
 4. Every synthetic row is owned by the agent being repaired
    (anchored before an existing row of that agent), so an ancestor's
    repair shifts its descendants but never the reverse. Renumber the
    owner's own rows contiguously; shift every clone
    (`fork_message_index > insert index`) fork boundary and own
-   indices recursively; shift `last_compaction_index` when an insert
-   lands at or before it.
+   indices recursively; a delete below a clone's fork pulls its fork
+   boundary and own indices down. Shift `last_compaction_index` when
+   an insert lands at or before it.
 5. Re-validate every resolved sequence and record what remains.
 6. Idempotent: a repaired sequence plans no writes. Dry-run prints
    the exact inserts/renumbering per agent with `--verbose`.
@@ -304,9 +320,14 @@ are found; `--apply` exits non-zero on residual violations.
 ### 5.3 Writer
 
 `Writer.apply/1` runs one `Repo.transaction`: phase 1 offsets the
-changed agents' rows by a large constant, phase 2 sets final indices
-and inserts synthetics (no `on_conflict` reliance), then updates the
-agent counters. Any failure rolls the whole run back.
+changed agents' rows by a large constant, phase 2 deletes orphan
+rows, sets final indices, and inserts synthetics (no `on_conflict`
+reliance), then updates the agent counters. Any failure rolls the
+whole run back. A plan whose `residual_violations` is non-empty is
+**refused** (returns `{:error, :residual_violations}`); a partially
+repairing write must never land (an earlier revision wrote the
+alternation ack of an otherwise-orphaned duplicate result, which
+made the next run's shape worse).
 
 ### 5.4 `visual-possum-root`
 
@@ -330,6 +351,15 @@ orphan.
   `tool_use` → user): dry-run reports; `--apply` inserts + renumbers + bumps
   counters; idempotent; a clone fixture asserts the child's fork boundary and
   own indices shift with the parent.
+- **Orphan/duplicate results** — a real result after a synthetic interrupted
+  error replaces it and is deleted; an error duplicate after a real result is
+  deleted without a rewrite; an unmatched orphan is deleted (no invented
+  assistant); `{:tool}, {:tool}` no longer grows an alternation ack; a parent
+  delete pulls a clone's fork/own indices down. A plan with residual violations
+  is never written.
+- **Late tool result** — `LLMStreamHandler.tool_results_received/2` drops a
+  result whose ids do not answer the trailing `tool_use` (after a stop or a
+  crash finalized the turn), with a warning; the row is not persisted.
 - **Restore** — a persisted orphan refuses to start in a sendable state and
   names the repair tool.
 

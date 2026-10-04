@@ -43,6 +43,7 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
   alias Nest.Agents.Agent.ChatTurn.Messages
   alias Nest.Agents.Agent.ChatTurn.NoticeInjector
   alias Nest.Agents.Agent.ChatTurn.State
+  alias Nest.Agents.Agent.Machine.Turn
   alias Nest.LLM.RunResponse
   alias Nest.Messages.Assistant
   alias Nest.Messages.Part
@@ -159,23 +160,35 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
   # of `{:chat_idle, _}` (the Agent's `Compaction.ResultHandler`
   # is the next stage).
   defp dispatch_response(response, state, chat_turn_pid, assistant_msg) do
-    cond do
-      compactor_entry?(state) ->
+    decision =
+      Turn.classify_response(%{
+        compactor?: compactor_entry?(state),
+        force_finalize: state.force_finalize,
+        has_tool_calls: RunResponse.has_tool_calls?(response),
+        iteration: state.iteration,
+        max_iterations: state.max_iterations,
+        empty_assistant?: empty_assistant?(assistant_msg),
+        truncated?: RunResponse.truncated?(response),
+        silent?: silent_response?(response)
+      })
+
+    case decision do
+      :compaction ->
         Lifecycle.finalize_compaction(state, response, assistant_msg)
 
-      state.force_finalize ->
+      :force_finalize ->
         # The message is the provider's actual response; persist it before
         # ending the turn.
         persist_assistant(state, assistant_msg)
         Lifecycle.finalize_turn(state)
 
-      RunResponse.has_tool_calls?(response) and state.iteration > state.max_iterations ->
+      :overflow_tool_calls ->
         handle_overflow_tool_calls(response, state, chat_turn_pid, assistant_msg)
 
-      RunResponse.has_tool_calls?(response) ->
+      :normal_tool_calls ->
         handle_normal_tool_calls(response, state, assistant_msg)
 
-      empty_assistant?(assistant_msg) ->
+      :empty_assistant ->
         # A provider response with no text, thinking, refusal, or tool
         # call at all would persist a zero-part assistant message. Never
         # do that: surface it as a non-empty error and end the turn.
@@ -186,9 +199,17 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
 
         Lifecycle.finalize_turn(state)
 
-      true ->
+      :truncated ->
         persist_assistant(state, assistant_msg)
-        finalize_or_reprompt(response, state)
+        handle_truncated_response(state)
+
+      :silent ->
+        persist_assistant(state, assistant_msg)
+        handle_silent_response(state)
+
+      :finalize ->
+        persist_assistant(state, assistant_msg)
+        Lifecycle.finalize_turn(state)
     end
   end
 
@@ -221,17 +242,6 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
   # couldn't get the model to speak. Prior nudges are counted from the
   # message history (each is a distinct, exact-matching user message),
   # so the retry count is conversation state, not ChatTurn state.
-  #
-  # Non-silent responses finalize immediately — no message-history
-  # round-trip is paid on the hot path.
-  defp finalize_or_reprompt(response, state) do
-    cond do
-      RunResponse.truncated?(response) -> handle_truncated_response(state)
-      silent_response?(response) -> handle_silent_response(state)
-      true -> Lifecycle.finalize_turn(state)
-    end
-  end
-
   defp handle_silent_response(state) do
     nudges = count_prior_nudges(state)
 

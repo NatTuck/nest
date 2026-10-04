@@ -5,12 +5,14 @@ defmodule Mix.Tasks.Nest.RepairMessages do
 
   @moduledoc """
   Repairs persisted message sequences that the live path left in an
-  invalid state (an unanswered assistant `tool_use`, or two
-  consecutive same-role wire messages), by inserting synthetic
-  `is_error` tool results / acknowledgements and renumbering the
+  invalid state (an unanswered assistant `tool_use`, two
+  consecutive same-role wire messages, or an orphan/duplicate
+  `tool_result`), by inserting synthetic `is_error` tool results /
+  acknowledgements and deleting orphan result rows, renumbering the
   affected rows (including shifted clones).
 
-  Default is a dry run. Pass `--apply` to write.
+  Default is a dry run. Pass `--apply` to write. A plan that still has
+  violations after correction is reported but never written.
 
       mix nest.repair_messages --space clever-raven
       mix nest.repair_messages --space clever-raven --apply
@@ -96,6 +98,6 @@ defmodule Mix.Tasks.Nest.RepairMessages do
   defp exit_status(plan, true), do: MessageRepair.residual?(plan)
   defp exit_status(plan, false), do: MessageRepair.violations?(plan)
 
-  defp exit_message(true), do: "repair applied, but residual violations remain (see report above)"
+  defp exit_message(true), do: "residual violations remain; refusing to apply (see report above)"
   defp exit_message(false), do: "violations found; re-run with --apply to repair"
 end

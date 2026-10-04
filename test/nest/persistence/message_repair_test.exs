@@ -20,6 +20,8 @@ defmodule Nest.Persistence.MessageRepairTest do
   alias Nest.Messages.User
   alias Nest.Persistence
   alias Nest.Persistence.MessageRepair
+  alias Nest.Persistence.MessageRepair.Planner
+  alias Nest.Persistence.MessageRepair.Writer
   alias Nest.Spaces
 
   describe "visual-possum root orphan" do
@@ -76,6 +78,48 @@ defmodule Nest.Persistence.MessageRepairTest do
       full = Persistence.load_full_messages(space_id, name)
       assert roles(full) == [:system, :user, :assistant, :user]
       assert :ok = Preflight.validate(full)
+    end
+  end
+
+  describe "orphan/duplicate tool results" do
+    test "a real result after an interrupted synthetic error replaces it and is deleted" do
+      space_id = test_space_id()
+      name = unique_name("orphan")
+      {:ok, _} = Persistence.insert_agent(agent_attrs(name))
+
+      insert_messages(space_id, name, [
+        system(0),
+        user(1, "go"),
+        assistant_tool(2, "call_x"),
+        tool_error(3, "call_x"),
+        assistant_text(4),
+        tool_result(5, "call_x")
+      ])
+
+      {:ok, plan, agents} = MessageRepair.run(:all, apply: false)
+      assert MessageRepair.violations?(plan)
+      refute MessageRepair.residual?(plan)
+      assert [%{index: 5}] = plan.deletes
+      assert MessageRepair.format_report(plan, agents, true) =~ "deletes at [5]"
+
+      assert {:ok, applied, _agents} = MessageRepair.run(:all, apply: true)
+      refute MessageRepair.residual?(applied)
+
+      full = Persistence.load_full_messages(space_id, name)
+      assert :ok = Preflight.validate(full)
+      assert length(full) == 5
+
+      assert {:tool, %Tool{parts: [%Part.ToolResult{tool_call_id: "call_x", is_error: false}]}} =
+               Enum.at(full, 3)
+
+      assert {:ok, again, _agents} = MessageRepair.run(:all, apply: false)
+      refute MessageRepair.violations?(again)
+      assert again.inserts == [] and again.deletes == []
+    end
+
+    test "a plan with residual violations is never written" do
+      plan = %Planner{residual_violations: %{1 => [%{rule: :known_roles}]}}
+      assert {:error, :residual_violations} = Writer.apply(plan)
     end
   end
 
@@ -201,6 +245,22 @@ defmodule Nest.Persistence.MessageRepairTest do
        index: index,
        parts: [
          %Part.ToolResult{tool_call_id: id, name: "shell-cmd", content: "ok", is_error: false}
+       ],
+       api_logs: []
+     }}
+  end
+
+  defp tool_error(index, id) do
+    {:tool,
+     %Tool{
+       index: index,
+       parts: [
+         %Part.ToolResult{
+           tool_call_id: id,
+           name: "shell-cmd",
+           content: "Tool call interrupted before completion (repaired).",
+           is_error: true
+         }
        ],
        api_logs: []
      }}
