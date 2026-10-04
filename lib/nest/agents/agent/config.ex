@@ -242,6 +242,28 @@ defmodule Nest.Agents.Agent.Config do
     end
   end
 
+  @doc """
+  Resolve the inline token cap for the combined async inbox message
+  (`agents-send`). Reads the optional top-level
+  `max-async-message-tokens` value from DotConfig; falls back to
+  `DotConfig.default_max_async_message_tokens/0` (8000) when unset.
+
+  When the combined queued messages exceed this, `Inbox.drain/1`
+  offloads the full text to the agent's scratch dir and tells the agent
+  how many messages there were and where they were saved.
+  """
+  @spec configured_async_message_max_tokens() :: pos_integer()
+  def configured_async_message_max_tokens do
+    case DotConfig.load() do
+      {:ok, config} ->
+        DotConfig.max_async_message_tokens(config) ||
+          DotConfig.default_max_async_message_tokens()
+
+      _ ->
+        DotConfig.default_max_async_message_tokens()
+    end
+  end
+
   # Hard ceiling on how many children a single `agents-batch` call may
   # run at once. The configured `max-concurrency` (and any per-call
   # `max_concurrency` override) is clamped to this so a misconfig or a

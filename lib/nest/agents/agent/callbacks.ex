@@ -18,6 +18,7 @@ defmodule Nest.Agents.Agent.Callbacks do
   alias Nest.Agents.Agent.ChatPipeline
   alias Nest.Agents.Agent.Compaction.ResultHandler
   alias Nest.Agents.Agent.Handlers
+  alias Nest.Agents.Agent.Inbox
   alias Nest.Agents.Agent.Init
   alias Nest.Agents.Agent.IntrospectionHandler
   alias Nest.Agents.Agent.MessageAppender
@@ -129,6 +130,14 @@ defmodule Nest.Agents.Agent.Callbacks do
   # mark the named agent in this space archived.
   def handle_call({:archive_agent_request, task_pid, name}, _from, state) do
     SubAgent.handle_archive_request(state, task_pid, name)
+  end
+
+  # Async agent-to-agent delivery (`agents-send`). The caller (a tool
+  # worker in another agent) hands us a message; we either start a turn
+  # (idle), queue it (busy), or refuse (broken state). See
+  # `Nest.Agents.Agent.Inbox`.
+  def handle_call({:deliver_async, sender, content}, _from, state) do
+    Inbox.handle_delivery(state, sender, content)
   end
 
   # Sub-agent: a tool worker running `agents-batch` hit a per-item

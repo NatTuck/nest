@@ -139,7 +139,9 @@ defmodule Nest.Agents do
       context_limit_source: info.context_limit_source,
       usage: info.usage,
       sequence_violations: info.sequence_violations,
-      repair_command: info.repair_command
+      repair_command: info.repair_command,
+      pending_messages: info.pending_messages,
+      pending_message_count: info.pending_message_count
     }
 
     {:ok, agent}
@@ -269,6 +271,23 @@ defmodule Nest.Agents do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  @doc """
+  Asynchronously deliver `content` from `from_name` to the agent
+  `{space_id, name}` (`agents-send`).
+
+  Returns `{:ok, :delivered}` when the target was idle and a turn
+  started, `{:ok, :queued}` when it was busy, or `{:error, reason}` when
+  the target is missing or in a broken state.
+  """
+  @spec send_message(integer(), String.t(), String.t(), String.t()) ::
+          {:ok, :delivered | :queued} | {:error, term()}
+  def send_message(space_id, from_name, name, content) do
+    case Supervisor.get_agent(space_id, name) do
+      {:ok, pid} -> Agent.deliver_message(pid, from_name, content)
+      {:error, _} = err -> err
     end
   end
 

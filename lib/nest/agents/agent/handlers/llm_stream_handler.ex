@@ -29,6 +29,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
 
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Handlers.LLMStreamHandler.FileAccess
+  alias Nest.Agents.Agent.Inbox
   alias Nest.Messages.Assistant
   alias Nest.Messages.Part
   alias Nest.Messages.Streaming
@@ -263,7 +264,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
     )
 
     Broadcasts.status(state)
-    {:noreply, state}
+    {:noreply, Inbox.drain_if_idle(state)}
   end
 
   # Preserve whatever the model streamed before the failure (a dropped

@@ -316,6 +316,20 @@ defmodule Nest.Agents.Agent do
   end
 
   @doc """
+  Deliver an async agent-to-agent message (`agents-send`) to this agent.
+
+  Returns `{:ok, :delivered}` when the agent was idle and a turn
+  started, `{:ok, :queued}` when the agent was busy (or the turn could
+  not start), or `{:error, reason}` when the agent is in a broken state
+  or the inbox is full. Does not block on a response.
+  """
+  @spec deliver_message(pid(), String.t(), String.t()) ::
+          {:ok, :delivered | :queued} | {:error, term()}
+  def deliver_message(pid, sender, content) do
+    GenServer.call(pid, {:deliver_async, sender, content}, 5_000)
+  end
+
+  @doc """
   Signal the in-flight chat task (if any) to stop. `from` is the
   channel pid that initiated the stop (used so the ChatTurn
   can ack `:stopped` to it). Blocks until the Agent's

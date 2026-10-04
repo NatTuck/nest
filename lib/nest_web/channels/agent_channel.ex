@@ -25,6 +25,7 @@ defmodule NestWeb.AgentChannel do
   alias Nest.Messages.Streaming
   alias Nest.Sandbox.ShellJobs
   alias Nest.Spaces
+  alias NestWeb.AgentChannel.ShellLog
 
   @impl true
   def join("agent:" <> rest, _payload, socket) do
@@ -237,6 +238,15 @@ defmodule NestWeb.AgentChannel do
     {:noreply, socket}
   end
 
+  # Handle an async-inbox update from PubSub (broadcast by
+  # `Nest.Agents.Agent.Inbox` on every `agents-send` queue change and on
+  # drain). The payload carries the full serialized message list.
+  @impl true
+  def handle_info({:chat_inbox, payload}, socket) do
+    push(socket, "chat:inbox", payload)
+    {:noreply, socket}
+  end
+
   # Handle API log metadata from PubSub (deprecated - now included with messages)
   @impl true
   def handle_info({:api_log, _api_log}, socket) do
@@ -264,6 +274,8 @@ defmodule NestWeb.AgentChannel do
       "contextLimit" => agent.context_limit,
       "contextLimitSource" => source_to_string(agent.context_limit_source),
       "usage" => agent.usage,
+      "inbox" => agent.pending_messages,
+      "pendingMessageCount" => agent.pending_message_count,
       "shellJobs" => ShellJobs.list({agent.space_id, agent.name})
     }
   end
@@ -430,19 +442,13 @@ defmodule NestWeb.AgentChannel do
     end
   end
 
-  # Fetch a job's captured log output for the UI's log viewer.
-  #
-  # Background-job logs are uncapped on disk (a job may produce output
-  # for as long as it runs), but a single websocket frame must stay
-  # bounded: the reply carries only the head of the log, with an
-  # explicit truncation marker when there is more.
-  @shell_log_max_bytes 65_536
-
+  # Fetch a job's captured log output for the UI's log viewer. The reply
+  # is bounded to the head of the log; see `NestWeb.AgentChannel.ShellLog`.
   @impl true
   def handle_in("shell:log", %{"id" => id}, socket) do
     case ShellJobs.output({socket.assigns.space_id, socket.assigns.name}, id) do
       {:ok, content} ->
-        {:reply, {:ok, %{"content" => bounded_shell_log(content)}}, socket}
+        {:reply, {:ok, %{"content" => ShellLog.bounded(content)}}, socket}
 
       {:error, :not_found} ->
         {:reply, {:error, %{"reason" => "job_not_found"}}, socket}
@@ -467,6 +473,7 @@ defmodule NestWeb.AgentChannel do
           "contextLimitSource" => source_to_string(agent.context_limit_source),
           "currentMode" => agent.current_mode,
           "usage" => agent.usage,
+          "pendingMessageCount" => agent.pending_message_count,
           # The archive boundary travels on every status reply so a
           # reconnect that missed a `chat:compaction` broadcast can still
           # reconcile the collapsed-history card (see `setAgentConnected`).
@@ -488,6 +495,26 @@ defmodule NestWeb.AgentChannel do
   # reasonable batch of messages without blowing past the WebSocket
   # frame layer. Always sends at least one message if any remain.
   @sync_size_limit 65_536
+
+  # Fetch the agent's current async inbox (queued `agents-send`
+  # messages). The full list is also pushed as `chat:inbox` whenever it
+  # changes; this lets a freshly joined/reconnected client request it on
+  # demand.
+  @impl true
+  def handle_in("chat:inbox", _payload, socket) do
+    case Agents.get_info(socket.assigns.space_id, socket.assigns.name) do
+      {:ok, agent} ->
+        {:reply,
+         {:ok, %{"messages" => agent.pending_messages, "count" => agent.pending_message_count}},
+         socket}
+
+      {:error, :not_found} ->
+        {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
+
+      {:error, reason} ->
+        {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
+    end
+  end
 
   @impl true
   def handle_in("chat:sync", %{"lastIndex" => last_index}, socket) do
@@ -665,32 +692,5 @@ defmodule NestWeb.AgentChannel do
       provider: model_params["provider"] || model_params[:provider],
       thinking_level: model_params["thinking_level"] || model_params[:thinking_level]
     }
-  end
-
-  # A bounded, JSON-safe view of a job's log. Shell output can be raw
-  # binary (invalid UTF-8), which `Jason` refuses to encode, so coerce
-  # to valid UTF-8 as well as trimming to `@shell_log_max_bytes`.
-  defp bounded_shell_log(content) when byte_size(content) <= @shell_log_max_bytes do
-    valid_utf8(content)
-  end
-
-  defp bounded_shell_log(content) do
-    total = byte_size(content)
-    head = binary_part(content, 0, @shell_log_max_bytes)
-
-    valid_utf8(head) <>
-      "\n... [log truncated: showing first #{@shell_log_max_bytes} of #{total} bytes]"
-  end
-
-  # Decode as much valid UTF-8 as possible. `:unicode.characters_to_binary/3`
-  # reports the undecodable remainder rather than raising; an invalid byte
-  # mid-stream (raw binary output) drops the rest, which is flagged so the
-  # omission is visible rather than silent.
-  defp valid_utf8(bin) do
-    case :unicode.characters_to_binary(bin, :utf8, :utf8) do
-      text when is_binary(text) -> text
-      {:error, converted, _rest} -> converted <> "\n... [non-text output omitted]"
-      {:incomplete, converted, _rest} -> converted
-    end
   end
 end

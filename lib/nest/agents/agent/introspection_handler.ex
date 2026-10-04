@@ -35,6 +35,7 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
 
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Broadcasts
+  alias Nest.Agents.Agent.Inbox
   alias Nest.Agents.Agent.ModelHandler
   alias Nest.Agents.Agent.Restore
   alias Nest.Agents.Agent.WorkspaceHandler
@@ -209,55 +210,68 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
   # in the handler. The struct was loaded by the calling
   # process and passed into init/1 via `:vocation` in attrs.
   defp build_public_info(state) do
-    vocation = state.vocation
+    public_info =
+      %{
+        name: state.name,
+        space_id: state.space_id,
+        model: state.model,
+        workspace_path: state.workspace_path,
+        message_count: length(state.chat_state.messages),
+        # The two numbers the collapsed history card renders: where the
+        # active messages start, and how many compactions have happened.
+        # Both are O(1) state - the archive itself is never loaded for
+        # this (see `Nest.Persistence.History`).
+        last_compaction_index: state.chat_state.last_compaction_index,
+        compaction_count: state.chat_state.compaction_count,
+        status: state.live.status,
+        # Populated only in the `:needs_repair` state: the active
+        # sequence's wire violations and the offline repair command the
+        # UI banner shows. Empty/nil for a healthy agent.
+        sequence_violations: state.live.repair.violations,
+        repair_command: state.live.repair.command,
+        vocation_id: state.vocation_id,
+        tmp_path: state.tmp_path,
+        # Run the streaming accumulator (or nil) through
+        # `Streaming.to_json_safe/1` so `get_public_info/1`
+        # is JSON-encodable end-to-end. Lobby and AgentChannel
+        # both consume this map and Phoenix.Channel.push/3
+        # encodes it as JSON before the WS frame hits the wire;
+        # a raw `%AssistantAccumulator{}` struct trips
+        # `Protocol.UndefinedError` at `Jason.encode/1` time.
+        partial: Streaming.to_json_safe(state.live.streaming_acc),
+        modes: Vocations.list_modes(state.vocation),
+        default_mode: Vocations.default_mode(state.vocation),
+        current_mode: state.live.mode,
+        context_limit: state.llm_metrics.context_limit,
+        context_limit_source: state.llm_metrics.context_limit_source,
+        # Sub-agent identity: the integer `agents.id` of the
+        # agent that spawned this one (nil for roots), plus
+        # the parent's readable name (so the UI's "back to
+        # parent" link can navigate without an extra lookup),
+        # plus the depth (0 for roots).
+        parent_id: state.tree_position.parent_id,
+        parent_name: state.tree_position.parent_name,
+        depth: state.depth,
+        # Multi-user identity. Exposed so the lobby can render
+        # ownership + visibility badges without an extra DB
+        # round-trip and so the agent channel can enforce
+        # edit/delete rules on the basis of the same numbers.
+        created_by_user_id: state.created_by_user_id,
+        shared: state.shared
+      }
+      |> Map.merge(runtime_fields(state))
 
-    public_info = %{
-      name: state.name,
-      space_id: state.space_id,
-      model: state.model,
-      workspace_path: state.workspace_path,
-      message_count: length(state.chat_state.messages),
-      # The two numbers the collapsed history card renders: where the
-      # active messages start, and how many compactions have happened.
-      # Both are O(1) state - the archive itself is never loaded for
-      # this (see `Nest.Persistence.History`).
-      last_compaction_index: state.chat_state.last_compaction_index,
-      compaction_count: state.chat_state.compaction_count,
-      status: state.live.status,
-      # Populated only in the `:needs_repair` state: the active
-      # sequence's wire violations and the offline repair command the
-      # UI banner shows. Empty/nil for a healthy agent.
-      sequence_violations: state.live.sequence_violations,
-      repair_command: state.live.repair_command,
-      vocation_id: state.vocation_id,
-      tmp_path: state.tmp_path,
-      # Run the streaming accumulator (or nil) through
-      # `Streaming.to_json_safe/1` so `get_public_info/1`
-      # is JSON-encodable end-to-end. Lobby and AgentChannel
-      # both consume this map and Phoenix.Channel.push/3
-      # encodes it as JSON before the WS frame hits the wire;
-      # a raw `%AssistantAccumulator{}` struct trips
-      # `Protocol.UndefinedError` at `Jason.encode/1` time.
-      partial: Streaming.to_json_safe(state.live.streaming_acc),
-      modes: Vocations.list_modes(vocation),
-      default_mode: Vocations.default_mode(vocation),
-      current_mode: state.live.mode,
-      context_limit: state.llm_metrics.context_limit,
-      context_limit_source: state.llm_metrics.context_limit_source,
-      # Sub-agent identity: the integer `agents.id` of the
-      # agent that spawned this one (nil for roots), plus
-      # the parent's readable name (so the UI's "back to
-      # parent" link can navigate without an extra lookup),
-      # plus the depth (0 for roots).
-      parent_id: state.tree_position.parent_id,
-      parent_name: state.tree_position.parent_name,
-      depth: state.depth,
-      # Multi-user identity. Exposed so the lobby can render
-      # ownership + visibility badges without an extra DB
-      # round-trip and so the agent channel can enforce
-      # edit/delete rules on the basis of the same numbers.
-      created_by_user_id: state.created_by_user_id,
-      shared: state.shared,
+    {:reply, public_info, state}
+  end
+
+  # The per-broadcast derived fields (async inbox + usage). Split from
+  # `build_public_info/1` to keep both under the credo ABC cap.
+  defp runtime_fields(state) do
+    %{
+      # Queued async agent-to-agent messages (`agents-send`): the full
+      # list for the UI viewer plus a count. See `Inbox`.
+      pending_messages: Inbox.serialize(state.live.inbox),
+      pending_message_count: length(state.live.inbox),
       # Direct usage (this agent's own LLM calls), plus the
       # context-window fields the chip needs (see
       # `Broadcasts.Usage.context_usage_map/4`).
@@ -277,8 +291,6 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
           state.llm_metrics.descendant_usage
         )
     }
-
-    {:reply, public_info, state}
   end
 
   defp system_prompt_from_messages([{:system, %{parts: parts}} | _]) when is_list(parts) do

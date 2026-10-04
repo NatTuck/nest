@@ -99,6 +99,16 @@ defmodule Nest.ToolsTest do
 
       assert function.description =~ "aggregated result"
     end
+
+    test "agents-send schema requires name and message" do
+      function = Tools.get_function("agents-send", "/tmp")
+      assert function.name == "agents-send"
+
+      assert function.parameters_schema["required"] == ["name", "message"]
+      assert function.parameters_schema["properties"]["name"]["type"] == "string"
+      assert function.parameters_schema["properties"]["message"]["type"] == "string"
+      assert function.description =~ "without waiting"
+    end
   end
 
   describe "file-read tool" do

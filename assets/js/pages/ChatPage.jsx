@@ -23,6 +23,7 @@ import {
   killShellJob,
   fetchShellLog,
   refreshShellJobs,
+  requestInbox,
 } from "../channels";
 import { StatusBanner } from "../components/StatusBanner";
 import { NotificationBanner } from "../components/NotificationBanner";
@@ -31,6 +32,7 @@ import { ChatComposer } from "../components/ChatComposer";
 import { ChatMessages } from "../components/ChatMessages";
 import { ChatTypingIndicator } from "../components/ChatTypingIndicator";
 import { ChatLoading } from "../components/ChatLoading";
+import { InboxPanel } from "../components/InboxPanel";
 import { ChatTabs, CHAT_TAB, JOBS_TAB } from "../components/ChatTabs";
 import { AgentEditModal } from "../components/AgentEditModal";
 import { SendErrorBanner } from "../components/SendErrorBanner";
@@ -555,6 +557,9 @@ export function ChatPage() {
             streaming={streaming}
             executingTools={executingTools}
           />
+
+          {/* Async agent-to-agent messages queued while the agent is busy. */}
+          <InboxPanel name={name} onFetch={() => requestInbox(name)} />
 
           {/* Input area with floating Jump to latest button */}
           <ChatComposer

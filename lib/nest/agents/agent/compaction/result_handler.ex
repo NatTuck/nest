@@ -44,6 +44,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   alias Nest.Agents.Agent.ChatTurnSpawner
   alias Nest.Agents.Agent.Compaction.Marker
   alias Nest.Agents.Agent.Compaction.Trigger
+  alias Nest.Agents.Agent.Inbox
   alias Nest.Agents.Agent.MessageAppender
   alias Nest.Agents.Agent.SystemPrompt
   alias Nest.Agents.Agent.ToolFilter
@@ -382,7 +383,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
       }
 
       Broadcasts.status(state)
-      state
+      Inbox.drain_if_idle(state)
     end
   end
 
@@ -521,7 +522,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
     # `:compacting` (and the silently-set `:idle`/`:streaming`) and shows
     # the turn that is actually about to run.
     Broadcasts.status(state)
-    state
+    Inbox.drain_if_idle(state)
   end
 
   # The status the resumed turn is about to be in. A `{:tool_call, ...}`

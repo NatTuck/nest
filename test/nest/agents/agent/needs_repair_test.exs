@@ -138,8 +138,8 @@ defmodule Nest.Agents.Agent.NeedsRepairTest do
           state = :sys.get_state(pid)
 
           assert state.live.status == :needs_repair
-          assert state.live.sequence_violations == attrs.sequence_violations
-          assert state.live.repair_command == attrs.repair_command
+          assert state.live.repair.violations == attrs.sequence_violations
+          assert state.live.repair.command == attrs.repair_command
 
           # The cast is dropped in `chat_or_drop/3`, so the active
           # message list is untouched.

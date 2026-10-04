@@ -234,6 +234,7 @@ export function joinAgent(agentId, spaceId) {
 
   channel.on("init", (payload) => {
     store.setAgentConnected(agentId, payload);
+    store.setAgentInbox(agentId, payload.inbox ?? []);
     reconcileAgentCache(store, agentId, payload);
     // The init payload carries the boundary but not the archive; the
     // marker + recall prompts are fetched lazily.
@@ -313,6 +314,12 @@ export function joinAgent(agentId, spaceId) {
     store.setAgentJobs(agentId, payload?.jobs ?? []);
   });
 
+  // Async agent-to-agent inbox: the full queued-message list changes
+  // when a peer sends (`agents-send`) or when the agent drains it.
+  channel.on("chat:inbox", (payload) => {
+    store.setAgentInbox(agentId, payload?.messages ?? []);
+  });
+
   channel.onClose(() => {
     if (joinFailedAgents.has(agentId)) {
       joinFailedAgents.delete(agentId);
@@ -383,6 +390,21 @@ export function reloadAgent(agentId, spaceId, onError) {
     .receive("error", (err) => {
       if (onError) onError(err);
     });
+}
+
+/**
+ * Refresh an agent's async inbox (`agents-send` queue) over
+ * `chat:inbox`. Used by the inbox panel when it opens with fewer cached
+ * entries than the status count (a `chat:inbox` broadcast may have been
+ * missed). A no-op when the channel isn't connected.
+ */
+export function requestInbox(agentId) {
+  const channel = agentChannels.get(agentId);
+  if (!channel) return;
+
+  channel.push("chat:inbox", {}).receive("ok", (resp) => {
+    getStore().setAgentInbox(agentId, resp?.messages ?? []);
+  });
 }
 
 /**

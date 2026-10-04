@@ -59,6 +59,7 @@ defmodule Nest.Tools do
              "agents-list",
              "agents-archive",
              "agents-batch",
+             "agents-send",
              "models-list"
            ] ->
         sub_agent_tool_function(name)
@@ -76,6 +77,7 @@ defmodule Nest.Tools do
   defp sub_agent_tool_function("agents-list"), do: list_agents_function()
   defp sub_agent_tool_function("agents-archive"), do: archive_agent_function()
   defp sub_agent_tool_function("agents-batch"), do: batch_agent_function()
+  defp sub_agent_tool_function("agents-send"), do: send_agent_function()
 
   # Dispatch the models-list tool.
   defp sub_agent_tool_function("models-list"), do: models_list_function()
@@ -418,6 +420,48 @@ defmodule Nest.Tools do
       },
       function: fn _args, _context ->
         {:ok, "Query agent request received."}
+      end
+    }
+  end
+
+  # The `agents-send` tool: asynchronously send a message to another
+  # agent in this space. Unlike `agents-query`, it does not wait for a
+  # response. If the target is idle the message becomes its next user
+  # message (starting a turn); if the target is busy the message is
+  # queued, and all queued messages are combined into one user message
+  # when the target next goes idle (offloaded to a scratch file when
+  # over the configured `max-async-message-tokens` cap).
+  #
+  # The `function` here is a stub. Real execution lives in
+  # `Nest.Agents.Agent.ToolLoop.run_send_agent/2`, which looks up the
+  # target agent and hands the message to its GenServer via
+  # `Agent.deliver_message/3`.
+  defp send_agent_function do
+    %Tool{
+      name: "agents-send",
+      description:
+        "Send a message to another agent in this space without waiting for a " <>
+          "reply. If that agent is idle the message becomes its next user " <>
+          "message; if it is busy the message is queued and delivered together " <>
+          "with any other queued messages once it finishes its current turn. " <>
+          "Use this to hand off work or share information with a peer or " <>
+          "sub-agent; use `agents-query` when you need the response now.",
+      parameters_schema: %{
+        "type" => "object",
+        "properties" => %{
+          "name" => %{
+            "type" => "string",
+            "description" => "The name of the agent to message."
+          },
+          "message" => %{
+            "type" => "string",
+            "description" => "The message to deliver to that agent."
+          }
+        },
+        "required" => ["name", "message"]
+      },
+      function: fn _args, _context ->
+        {:ok, "Send message request received."}
       end
     }
   end

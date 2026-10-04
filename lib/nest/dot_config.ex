@@ -24,6 +24,13 @@ defmodule Nest.DotConfig do
   # config.toml.
   @default_max_concurrency 4
 
+  # Default inline token cap for the combined async inbox message
+  # (`agents-send`). When the combined queued messages exceed this, the
+  # full text is written to the agent's scratch dir and the agent is
+  # told the message count and the file path instead. Override with the
+  # top-level `max-async-message-tokens` key in config.toml.
+  @default_max_async_message_tokens 8_000
+
   # Supported thinking levels (reasoning effort) a model can be
   # configured with. `:off` disables thinking; the rest are ascending
   # effort levels. `:xhigh` is Anthropic-only (OpenAI-compatible
@@ -203,6 +210,7 @@ defmodule Nest.DotConfig do
         max_tool_iterations: local.max_tool_iterations || base.max_tool_iterations,
         max_depth: local.max_depth || base.max_depth,
         max_concurrency: local.max_concurrency || base.max_concurrency,
+        max_async_message_tokens: local.max_async_message_tokens || base.max_async_message_tokens,
         default_thinking_effort: local.default_thinking_effort || base.default_thinking_effort
     }
   end
@@ -362,6 +370,16 @@ defmodule Nest.DotConfig do
   """
   def default_max_concurrency, do: @default_max_concurrency
 
+  # Configured `max-async-message-tokens` (nil → caller falls back to
+  # `default_max_async_message_tokens/0`).
+  def max_async_message_tokens(config), do: Map.get(config, :max_async_message_tokens)
+
+  @doc """
+  Returns the hardcoded fallback for the `max-async-message-tokens`
+  setting (8000).
+  """
+  def default_max_async_message_tokens, do: @default_max_async_message_tokens
+
   # Configured top-level `default-thinking-effort` (nil → caller falls
   # back to `default_thinking_effort/0`).
   def default_thinking_effort(config), do: Map.get(config, :default_thinking_effort)
@@ -458,12 +476,22 @@ defmodule Nest.DotConfig do
       end)
       |> Map.new()
 
+    Map.merge(
+      %{providers: providers, models: models},
+      parse_settings(raw_config)
+    )
+  end
+
+  # Parse the top-level scalar settings. Kept separate from
+  # `parse_config/1` so the provider/model construction and the scalar
+  # parsing each stay under the credo ABC cap.
+  defp parse_settings(raw_config) do
     %{
-      providers: providers,
-      models: models,
       max_tool_iterations: parse_max_tool_iterations(Map.get(raw_config, "max-tool-iterations")),
       max_depth: parse_max_depth(Map.get(raw_config, "max-depth")),
       max_concurrency: parse_max_concurrency(Map.get(raw_config, "max-concurrency")),
+      max_async_message_tokens:
+        parse_max_async_message_tokens(Map.get(raw_config, "max-async-message-tokens")),
       default_thinking_effort:
         parse_thinking_effort(Map.get(raw_config, "default-thinking-effort"))
     }
@@ -499,6 +527,16 @@ defmodule Nest.DotConfig do
 
   defp parse_max_concurrency(other) do
     raise "Invalid max-concurrency #{inspect(other)}: must be a positive integer"
+  end
+
+  # Parses and validates the top-level `max-async-message-tokens`
+  # setting. Returns `nil` when absent. Raises on invalid values.
+  defp parse_max_async_message_tokens(nil), do: nil
+
+  defp parse_max_async_message_tokens(n) when is_integer(n) and n > 0, do: n
+
+  defp parse_max_async_message_tokens(other) do
+    raise "Invalid max-async-message-tokens #{inspect(other)}: must be a positive integer"
   end
 
   defp parse_provider(name, data) do
