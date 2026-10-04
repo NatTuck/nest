@@ -56,21 +56,22 @@ const sampleBlueprints = [
     id: 1,
     name: "Chat",
     description: "A conversational space.",
-    root_vocation_id: 10,
+    root_vocation: "chat",
   },
   {
     id: 2,
     name: "Grading",
     description: "A grading space.",
-    root_vocation_id: 20,
+    root_vocation: "grading-coordinator",
   },
 ];
 
 const sampleVocations = [
-  { id: 10, name: "Chat" },
+  { id: 10, name: "Chat", slug: "chat" },
   {
     id: 20,
     name: "Grading Coordinator",
+    slug: "grading-coordinator",
     modes: {
       chat: {
         caps: { net: true, fs: { read: ["/"], write: ["/tmp", ":workspace"] } },

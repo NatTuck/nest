@@ -2,8 +2,8 @@ defmodule Nest.SpacesTest do
   @moduledoc """
   Tests for `Nest.Spaces` — focused on the Phase 2 contract
   that `create_space_with_root_agent/2` resolves the root
-  agent's `vocation_id` from the supplied `blueprint_id`
-  when the caller doesn't pass an explicit `vocation_id:`.
+  agent's vocation from the supplied `blueprint_id`
+  when the caller doesn't pass an explicit `vocation:`.
 
   Earlier Phase 1 work covered `create_space/2` and
   `delete_space/1`. These tests cover the Phase 2 surface
@@ -35,11 +35,11 @@ defmodule Nest.SpacesTest do
   end
 
   describe "create_space_with_root_agent/2 with blueprints" do
-    test "uses the blueprint's root_vocation_id when caller omits vocation_id", %{
+    test "uses the blueprint's root_vocation when caller omits vocation", %{
       user_id: user_id
     } do
       vocation = VocationsFixtures.vocation_fixture()
-      blueprint = BlueprintsFixtures.blueprint_fixture(%{root_vocation_id: vocation.id})
+      blueprint = BlueprintsFixtures.blueprint_fixture(%{root_vocation: vocation.slug})
 
       attrs = %{
         name: "phase2-#{System.unique_integer([:positive])}",
@@ -61,17 +61,18 @@ defmodule Nest.SpacesTest do
       assert info.vocation_id == vocation.id
     end
 
-    test "explicit vocation_id wins over the blueprint's root_vocation_id", %{user_id: user_id} do
+    test "explicit vocation wins over the blueprint's root_vocation", %{user_id: user_id} do
       blueprint_vocation = VocationsFixtures.vocation_fixture()
       explicit_vocation = VocationsFixtures.vocation_fixture()
 
-      blueprint = BlueprintsFixtures.blueprint_fixture(%{root_vocation_id: blueprint_vocation.id})
+      blueprint =
+        BlueprintsFixtures.blueprint_fixture(%{root_vocation: blueprint_vocation.slug})
 
       attrs = %{
         name: "phase2-override-#{System.unique_integer([:positive])}",
         slug: "phase2-override-#{System.unique_integer([:positive])}",
         blueprint_id: blueprint.id,
-        vocation_id: explicit_vocation.id,
+        vocation: explicit_vocation.slug,
         model: %{name: "qwen3.5-plus", provider: "model-studio"}
       }
 
@@ -96,15 +97,15 @@ defmodule Nest.SpacesTest do
                Spaces.create_space_with_root_agent(user_id, attrs)
     end
 
-    test "without a blueprint_id, uses the explicit vocation_id", %{user_id: user_id} do
+    test "without a blueprint_id, uses the explicit vocation", %{user_id: user_id} do
       # Phase 1 contract: a caller without a blueprint supplies
-      # `vocation_id` directly; `Agents.create_agent/3` does not
+      # `vocation` (a slug) directly; `Agents.create_agent/3` does not
       # fall back to the first available vocation on its own.
       vocation = VocationsFixtures.vocation_fixture()
 
       attrs = %{
         name: "no-blueprint-#{System.unique_integer([:positive])}",
-        vocation_id: vocation.id,
+        vocation: vocation.slug,
         model: %{name: "qwen3.5-plus", provider: "model-studio"}
       }
 

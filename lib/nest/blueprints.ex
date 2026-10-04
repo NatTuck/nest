@@ -13,12 +13,12 @@ defmodule Nest.Blueprints do
   Phase 2 (this module) ships:
     * The `blueprints` table + schema + CRUD
     * `Nest.Spaces.create_space_with_root_agent/2` reads
-      the blueprint's `root_vocation_id` when a `blueprint_id`
+      the blueprint's `root_vocation` when a `blueprint_id`
       is supplied
-    * The seed script provisions three blueprints
+    * The seed script provisions the blueprints
 
-  Phase 3 will add:
-    * `agents-spawn` enforcing `spawnable_vocation_ids`
+  Phase 3 adds:
+    * `agents-spawn` enforcing `spawnable_vocations`
     * `workspace_template` seeding into the root agent's
       workspace
 
@@ -65,10 +65,10 @@ defmodule Nest.Blueprints do
   ## Parameters
 
   * `attrs` — map with `:name` (required), `:slug`
-    (optional; derived from `:name`), `:root_vocation_id`
-    (required), `:description`, `:spawnable_vocation_ids`,
-    `:workspace_template`, `:main_view_config` (all
-    optional).
+    (optional; derived from `:name`), `:root_vocation`
+    (required vocation slug), `:description`,
+    `:spawnable_vocations`, `:workspace_template`,
+    `:main_view_config` (all optional).
 
   ## Returns
 
@@ -126,22 +126,21 @@ defmodule Nest.Blueprints do
   end
 
   @doc """
-  Resolve a blueprint by id, returning the integer
-  `root_vocation_id` or `nil` when the blueprint is nil
-  or missing.
+  Resolve a blueprint by id, returning the root vocation
+  **slug** or `nil` when the blueprint is nil or missing.
 
   `Nest.Spaces.create_space_with_root_agent/2` uses this
   to translate a caller-supplied `blueprint_id` into the
   root agent's vocation. Returning `nil` (not raising) on
-  missing matches `Vocations.get_vocation/1`'s contract.
+  missing matches `Vocations.get_by_slug/1`'s contract.
   """
-  @spec root_vocation_id_for(integer() | nil) :: integer() | nil
-  def root_vocation_id_for(nil), do: nil
+  @spec root_vocation_slug_for(integer() | nil) :: String.t() | nil
+  def root_vocation_slug_for(nil), do: nil
 
-  def root_vocation_id_for(blueprint_id) when is_integer(blueprint_id) do
+  def root_vocation_slug_for(blueprint_id) when is_integer(blueprint_id) do
     case get_blueprint(blueprint_id) do
       nil -> nil
-      %Blueprint{root_vocation_id: vid} -> vid
+      %Blueprint{root_vocation: slug} -> slug
     end
   end
 
@@ -150,21 +149,21 @@ defmodule Nest.Blueprints do
   `blueprint_id`.
 
   Returns `nil` when the blueprint is nil or missing, and the
-  (possibly empty) `spawnable_vocation_ids` list otherwise.
+  (possibly empty) `spawnable_vocations` slug list otherwise.
 
   `nil` and `[]` both mean **unrestricted**: `agents-spawn` allows
   any vocation. A non-empty list is a strict whitelist.
 
-  `Spaces.spawnable_vocation_ids_for_space/1` is the space-level
+  `Spaces.spawnable_vocations_for_space/1` is the space-level
   convenience that first resolves the space's `blueprint_id`.
   """
-  @spec spawnable_vocation_ids(integer() | nil) :: [integer()] | nil
-  def spawnable_vocation_ids(nil), do: nil
+  @spec spawnable_vocations(integer() | nil) :: [String.t()] | nil
+  def spawnable_vocations(nil), do: nil
 
-  def spawnable_vocation_ids(blueprint_id) when is_integer(blueprint_id) do
+  def spawnable_vocations(blueprint_id) when is_integer(blueprint_id) do
     case get_blueprint(blueprint_id) do
       nil -> nil
-      %Blueprint{spawnable_vocation_ids: ids} -> ids || []
+      %Blueprint{spawnable_vocations: slugs} -> slugs || []
     end
   end
 end

@@ -54,7 +54,7 @@ all_groups = ["file", "shell", "context", "agents"]
 #              and access the network (for fetching docs, packages, etc.)
 #   - "plan":  read-only; explore the workspace without making changes
 # Network is enabled in both modes.
-{:ok, programmer_vocation} =
+{:ok, _} =
   Vocations.upsert_vocation(%{
     name: "Programmer",
     description: "A coding assistant that can read and write files in a workspace",
@@ -106,7 +106,7 @@ all_groups = ["file", "shell", "context", "agents"]
 # only), matching the old default-agent behavior.
 
 # Chat — general-purpose conversation with no tools at all.
-{:ok, chat_vocation} =
+{:ok, _} =
   Vocations.upsert_vocation(%{
     name: "Chat",
     description: "A general-purpose conversational agent.",
@@ -124,7 +124,7 @@ all_groups = ["file", "shell", "context", "agents"]
   })
 
 # Game Master — runs a tabletop RPG campaign.
-{:ok, game_master_vocation} =
+{:ok, _} =
   Vocations.upsert_vocation(%{
     name: "Game Master",
     description: "A game master that runs tabletop RPG campaigns.",
@@ -143,7 +143,7 @@ all_groups = ["file", "shell", "context", "agents"]
   })
 
 # Head TA — coordinates assignment grading and manages Grader agents.
-{:ok, head_ta_vocation} =
+{:ok, _} =
   Vocations.upsert_vocation(%{
     name: "Head TA",
     description: "Coordinates grading and manages specialist Grader agents.",
@@ -177,7 +177,7 @@ all_groups = ["file", "shell", "context", "agents"]
   })
 
 # Grader — evaluates individual submissions against rubrics.
-{:ok, grader_vocation} =
+{:ok, _} =
   Vocations.upsert_vocation(%{
     name: "Grader",
     description: "Evaluates submissions against rubrics and provides detailed feedback.",
@@ -207,21 +207,102 @@ all_groups = ["file", "shell", "context", "agents"]
     }
   })
 
+# Team Lead — coordinates a small engineering team: plans the work,
+# delegates implementation to Programmer minions and reviews to Code
+# Reviewer minions, then reviews and integrates their output.
+{:ok, _team_lead_vocation} =
+  Vocations.upsert_vocation(%{
+    name: "Team Lead",
+    description:
+      "Coordinates programmer and code-reviewer minions to deliver software tasks in a shared workspace.",
+    system_prompt: """
+    You are the team lead for a small software engineering team working in a
+    shared workspace. You own the outcome end to end.
+
+    Your job:
+    1. Understand the request and explore the workspace before planning.
+    2. Break the work into small, well-scoped tasks with explicit files,
+       acceptance criteria, and a way to verify each one.
+    3. Delegate implementation to Programmer minions and reviews to Code
+       Reviewer minions. Spawn them with `agents-spawn`, passing
+       `vocation: "programmer"` or `vocation: "code-reviewer"` and a `query`
+       that states exactly what to do. Use `agents-batch` to fan one templated
+       task out over many items when appropriate.
+    4. Use `agents-query` (or `agents-spawn` with a `query`) when you need a
+       result before continuing; use `agents-send` to hand off work you don't
+       need to block on.
+    5. Review the results yourself, run the tests, and fix integration issues.
+       Your leverage is delegation and review, so don't do all of the
+       implementation yourself.
+    6. Report progress and the final result to the user clearly, including
+       what changed and how it was verified.
+    """,
+    tools: all_groups,
+    modes: %{
+      "build" => %{
+        "description" => "Full workspace access for reviewing and integrating changes.",
+        "caps" => %{
+          "net" => true,
+          "fs" => %{"read" => ["/"], "write" => ["/tmp", ":workspace"]}
+        }
+      },
+      "plan" => %{
+        "description" => "Read-only workspace access for planning and inspection.",
+        "caps" => %{
+          "net" => true,
+          "fs" => %{"read" => ["/"], "write" => ["/tmp"]}
+        }
+      }
+    }
+  })
+
+# Code Reviewer — inspects work in the shared workspace and reports
+# precise, actionable findings.
+{:ok, _code_reviewer_vocation} =
+  Vocations.upsert_vocation(%{
+    name: "Code Reviewer",
+    description: "Reviews code and tests in a shared workspace and reports actionable findings.",
+    system_prompt: """
+    You are a code reviewer. Inspect the work in the shared workspace — files,
+    diffs, and tests — and report concrete, actionable findings.
+
+    Focus on correctness and edge cases, missing or weak tests, error handling,
+    clarity and maintainability, security, and consistency with the project's
+    conventions (including any AGENTS.md).
+
+    Run the relevant build, tests, and linters to verify your claims when
+    possible. Report precise issues with file paths and line references and
+    propose minimal fixes. Apply a fix yourself only when it is small and
+    tightly scoped, and explain what you changed.
+    """,
+    tools: all_groups,
+    modes: %{
+      "build" => %{
+        "description" => "Full workspace access so you can run tests and apply small fixes.",
+        "caps" => %{
+          "net" => true,
+          "fs" => %{"read" => ["/"], "write" => ["/tmp", ":workspace"]}
+        }
+      },
+      "plan" => %{
+        "description" => "Read-only workspace access for inspection.",
+        "caps" => %{
+          "net" => true,
+          "fs" => %{"read" => ["/"], "write" => ["/tmp"]}
+        }
+      }
+    }
+  })
+
 # ---- Blueprints ----
-# Each blueprint pins a root vocation (so the space's first
-# agent starts with the right role) and lists vocations the
-# space's agents are allowed to spawn. `spawnable_vocation_ids: []`
+# Each blueprint pins a root vocation by slug (so the space's first
+# agent starts with the right role) and lists the vocation slugs the
+# space's agents are allowed to spawn. `spawnable_vocations: []`
 # means unrestricted. `workspace_template` and `main_view_config`
 # ship as empty maps for now.
 
-chat_vid = chat_vocation.id
-programmer_vid = programmer_vocation.id
-game_master_vid = game_master_vocation.id
-head_ta_vid = head_ta_vocation.id
-grader_vid = grader_vocation.id
-
 # The old "Agent" blueprint (rooted in `Default`) is obsolete —
-# the default set is now the five role blueprints below. Delete it
+# the default set is now the role blueprints below. Delete it
 # so it no longer appears in the picker.
 case Blueprints.get_by_slug("agent") do
   nil -> :ok
@@ -232,32 +313,32 @@ end
   Blueprints.upsert_blueprint(%{
     name: "Chat",
     description: "A single-agent conversational space.",
-    root_vocation_id: chat_vid,
-    spawnable_vocation_ids: []
+    root_vocation: "chat",
+    spawnable_vocations: []
   })
 
 {:ok, _} =
   Blueprints.upsert_blueprint(%{
     name: "Coding",
     description: "A coding agent that reads and writes a workspace.",
-    root_vocation_id: programmer_vid,
-    spawnable_vocation_ids: []
+    root_vocation: "programmer",
+    spawnable_vocations: []
   })
 
 {:ok, _} =
   Blueprints.upsert_blueprint(%{
     name: "Tabletop RPG",
     description: "A game master that runs a tabletop RPG campaign.",
-    root_vocation_id: game_master_vid,
-    spawnable_vocation_ids: []
+    root_vocation: "game-master",
+    spawnable_vocations: []
   })
 
 {:ok, _} =
   Blueprints.upsert_blueprint(%{
     name: "Grading",
     description: "Automatic assignment feedback and grading with Head TA coordination.",
-    root_vocation_id: head_ta_vid,
-    spawnable_vocation_ids: [grader_vid],
+    root_vocation: "head-ta",
+    spawnable_vocations: ["grader"],
     workspace_template: %{
       "README.md" =>
         "# Assignment Grading Workspace\n\nPlace submissions in `submissions/` and feedback will be written to `feedback/`.",
@@ -266,6 +347,16 @@ end
       "submissions/" => %{},
       "feedback/" => %{}
     }
+  })
+
+# Team Lead coordinates Programmer and Code Reviewer minions.
+{:ok, _} =
+  Blueprints.upsert_blueprint(%{
+    name: "Coding Team",
+    description:
+      "A team lead that coordinates programmer and code-reviewer minions in a shared coding workspace.",
+    root_vocation: "team-lead",
+    spawnable_vocations: ["programmer", "code-reviewer"]
   })
 
 # ---- Default dev user ----

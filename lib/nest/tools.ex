@@ -59,6 +59,7 @@ defmodule Nest.Tools do
              "agents-list",
              "agents-archive",
              "agents-batch",
+             "agents-send",
              "models-list"
            ] ->
         sub_agent_tool_function(name)
@@ -76,6 +77,7 @@ defmodule Nest.Tools do
   defp sub_agent_tool_function("agents-list"), do: list_agents_function()
   defp sub_agent_tool_function("agents-archive"), do: archive_agent_function()
   defp sub_agent_tool_function("agents-batch"), do: batch_agent_function()
+  defp sub_agent_tool_function("agents-send"), do: send_agent_function()
 
   # Dispatch the models-list tool.
   defp sub_agent_tool_function("models-list"), do: models_list_function()
@@ -270,7 +272,7 @@ defmodule Nest.Tools do
   # Unifies the old `clone_agent` (via `clone_context`) and
   # `spawn_agent`. A child is created in this space and (if
   # `query` is given) immediately asked a task, blocking for its
-  # response. `vocation_id` defaults to the parent's vocation;
+  # response. `vocation` (a slug) defaults to the parent's vocation;
   # it's only needed to differ. `clone_context: true` inherits
   # the parent's full context (the old `clone_agent` behavior).
   # `archive` (only meaningful with `query`) stops + marks the
@@ -283,14 +285,15 @@ defmodule Nest.Tools do
   # sends a `:spawn_agent_request` to the coordinator GenServer,
   # and returns the child's name (and, if `query` was given, its
   # response). Spawning is whitelist-checked against the space's
-  # blueprint `spawnable_vocation_ids`.
+  # blueprint `spawnable_vocations`.
   defp spawn_agent_function do
     %Tool{
       name: "agents-spawn",
       description:
         "Create a sub-agent in this space and optionally delegate a task to it. " <>
           "Returns the new agent's name; if `query` is given, additionally blocks " <>
-          "and returns the agent's response. `vocation_id` defaults to your own " <>
+          "and returns the agent's response. `vocation` (a slug like " <>
+          "\"programmer\") defaults to your own " <>
           "vocation (or the space's sole allowed vocation when your own isn't " <>
           "allowed) — set it to spawn a specialist with a different role. Set " <>
           "`clone_context` to true to spawn the agent with a copy of this " <>
@@ -309,12 +312,13 @@ defmodule Nest.Tools do
             "type" => "string",
             "description" => "The unique name of the new sub-agent within this space."
           },
-          "vocation_id" => %{
-            "type" => "integer",
+          "vocation" => %{
+            "type" => "string",
             "description" =>
-              "The vocation id defining the specialist's role and tools. " <>
-                "Defaults to your own vocation when omitted (or the space's sole " <>
-                "allowed vocation if your own isn't allowed)."
+              "The vocation slug defining the specialist's role and tools " <>
+                "(for example \"programmer\"). Defaults to your own " <>
+                "vocation when omitted (or the space's sole allowed vocation if " <>
+                "your own isn't allowed)."
           },
           "clone_context" => %{
             "type" => "boolean",
@@ -418,6 +422,48 @@ defmodule Nest.Tools do
       },
       function: fn _args, _context ->
         {:ok, "Query agent request received."}
+      end
+    }
+  end
+
+  # The `agents-send` tool: asynchronously send a message to another
+  # agent in this space. Unlike `agents-query`, it does not wait for a
+  # response. If the target is idle the message becomes its next user
+  # message (starting a turn); if the target is busy the message is
+  # queued, and all queued messages are combined into one user message
+  # when the target next goes idle (offloaded to a scratch file when
+  # over the configured `max-async-message-tokens` cap).
+  #
+  # The `function` here is a stub. Real execution lives in
+  # `Nest.Agents.Agent.ToolLoop.run_send_agent/2`, which looks up the
+  # target agent and hands the message to its GenServer via
+  # `Agent.deliver_message/3`.
+  defp send_agent_function do
+    %Tool{
+      name: "agents-send",
+      description:
+        "Send a message to another agent in this space without waiting for a " <>
+          "reply. If that agent is idle the message becomes its next user " <>
+          "message; if it is busy the message is queued and delivered together " <>
+          "with any other queued messages once it finishes its current turn. " <>
+          "Use this to hand off work or share information with a peer or " <>
+          "sub-agent; use `agents-query` when you need the response now.",
+      parameters_schema: %{
+        "type" => "object",
+        "properties" => %{
+          "name" => %{
+            "type" => "string",
+            "description" => "The name of the agent to message."
+          },
+          "message" => %{
+            "type" => "string",
+            "description" => "The message to deliver to that agent."
+          }
+        },
+        "required" => ["name", "message"]
+      },
+      function: fn _args, _context ->
+        {:ok, "Send message request received."}
       end
     }
   end
@@ -545,11 +591,11 @@ defmodule Nest.Tools do
                 "readable regular files, one sub-agent per file. Provide " <>
                 "this OR `items`, not both."
           },
-          "vocation_id" => %{
-            "type" => "integer",
+          "vocation" => %{
+            "type" => "string",
             "description" =>
-              "Vocation id for every child. Defaults to your own vocation " <>
-                "(or the space's sole allowed vocation)."
+              "Vocation slug for every child (e.g. \"programmer\"). Defaults to " <>
+                "your own vocation (or the space's sole allowed vocation)."
           },
           "model" => %{
             "type" => "string",

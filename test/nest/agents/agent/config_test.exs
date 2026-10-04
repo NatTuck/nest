@@ -132,4 +132,28 @@ defmodule Nest.Agents.Agent.ConfigTest do
       assert cc.thinking_effort == :high
     end
   end
+
+  describe "configured_async_message_max_tokens/0" do
+    test "returns the configured value when DotConfig has one" do
+      Mimic.stub(Nest.DotConfig, :load, fn ->
+        {:ok, %{providers: %{}, models: %{}, max_async_message_tokens: 1_234}}
+      end)
+
+      assert Agent.Config.configured_async_message_max_tokens() == 1_234
+    end
+
+    test "returns the hardcoded default of 8000 when unset" do
+      Mimic.stub(Nest.DotConfig, :load, fn ->
+        {:ok, %{providers: %{}, models: %{}, max_async_message_tokens: nil}}
+      end)
+
+      assert Agent.Config.configured_async_message_max_tokens() == 8_000
+    end
+
+    test "returns the default when DotConfig.load/0 errors" do
+      Mimic.stub(Nest.DotConfig, :load, fn -> {:error, "no config file"} end)
+
+      assert Agent.Config.configured_async_message_max_tokens() == 8_000
+    end
+  end
 end

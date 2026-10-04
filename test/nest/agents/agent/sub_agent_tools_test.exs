@@ -28,6 +28,8 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
 
   use Nest.DataCase, async: true
 
+  import ExUnit.CaptureLog
+
   alias Ecto.Adapters.SQL.Sandbox
   alias Nest.Agents.Agent
   alias Nest.Agents.AgentTestHelpers
@@ -48,7 +50,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
       })
 
     specialist_name = "specialist-#{System.unique_integer([:positive])}"
-    specialist_vid = specialist_vocation_id()
+    specialist_slug = specialist_vocation_slug()
     space_id = AgentTestHelpers.current_space_id()
 
     # The spawn broadcasts `agent:created` on the lobby topic so the
@@ -62,7 +64,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
         %{
           id: "call_spawn_1",
           name: "agents-spawn",
-          arguments: %{"name" => specialist_name, "vocation_id" => specialist_vid}
+          arguments: %{"name" => specialist_name, "vocation" => specialist_slug}
         }
       ]
     })
@@ -116,7 +118,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
       })
 
     specialist_name = "specialist-#{System.unique_integer([:positive])}"
-    specialist_vid = specialist_vocation_id()
+    specialist_slug = specialist_vocation_slug()
 
     MockClient.set_tool_response(%{
       text: "spawning",
@@ -126,7 +128,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
           name: "agents-spawn",
           arguments: %{
             "name" => specialist_name,
-            "vocation_id" => specialist_vid,
+            "vocation" => specialist_slug,
             "model" => "pegasus/pegasus-default-only"
           }
         }
@@ -167,9 +169,13 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
 
     MockClient.set_response("coordinator done")
 
-    :ok = Agent.chat(coordinator_pid, "spin up a specialist on a bad model")
+    log =
+      capture_log(fn ->
+        :ok = Agent.chat(coordinator_pid, "spin up a specialist on a bad model")
+        assert_receive {:chat_status, %{status: "idle"}}, 500
+      end)
 
-    assert_receive {:chat_status, %{status: "idle"}}, 500
+    assert log =~ "is_error=true tool result"
 
     coordinator_state = :sys.get_state(coordinator_pid)
     AgentTestHelpers.assert_unique_message_indices(coordinator_state)
@@ -205,11 +211,11 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
 
     # Pre-seed a specialist so `agents-list` has something to show.
     specialist_name = "listed-#{System.unique_integer([:positive])}"
-    specialist_vid = specialist_vocation_id()
+    specialist_slug = specialist_vocation_slug()
     state = coordinator_state(space_id)
 
     assert {:ok, ^specialist_name} =
-             Supervisor.spawn_agent_in_space(state, specialist_name, specialist_vid)
+             Supervisor.spawn_agent_in_space(state, specialist_name, specialist_slug)
 
     on_exit(fn -> _ = Supervisor.stop_agent(space_id, specialist_name) end)
 
@@ -301,6 +307,118 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     assert content =~ "the specialist answer"
   end
 
+  test "agents-send tool delivers a message to a peer asynchronously", %{vid: vid} do
+    {coordinator_pid, coordinator_name} =
+      AgentTestHelpers.start_agent(%{
+        model: %{name: "qwen3.5-plus", provider: "model-studio"},
+        vocation_id: vid
+      })
+
+    space_id = AgentTestHelpers.current_space_id()
+
+    specialist_name = "specialist-#{System.unique_integer([:positive])}"
+    start_mocked_specialist(space_id, specialist_name, "the specialist answer")
+
+    MockClient.set_tool_response(%{
+      text: "sending",
+      tool_calls: [
+        %{
+          id: "call_send_1",
+          name: "agents-send",
+          arguments: %{"name" => specialist_name, "message" => "please review this"}
+        }
+      ]
+    })
+
+    MockClient.set_response("coordinator done")
+
+    :ok = Agent.chat(coordinator_pid, "hand this off")
+
+    assert_receive {:chat_status, %{status: "idle"}}, 500
+
+    coordinator_state = :sys.get_state(coordinator_pid)
+
+    {:tool, tool_msg} =
+      Enum.find(coordinator_state.chat_state.messages, fn
+        {:tool, %{parts: parts}} ->
+          Enum.any?(parts, &match?(%Part.ToolResult{name: "agents-send"}, &1))
+
+        _ ->
+          false
+      end)
+
+    assert [%Part.ToolResult{name: "agents-send", content: content, is_error: false}] =
+             tool_msg.parts
+
+    assert content =~ "Message delivered to #{specialist_name}"
+
+    {:ok, specialist_pid} = Nest.Agents.Registry.lookup(space_id, specialist_name)
+    specialist_state = :sys.get_state(specialist_pid)
+
+    assert Enum.any?(specialist_state.chat_state.messages, fn
+             {:user, %{parts: parts}} ->
+               Enum.any?(parts, fn
+                 %Part.Text{text: text} ->
+                   text =~ coordinator_name and text =~ "please review this"
+
+                 _ ->
+                   false
+               end)
+
+             _ ->
+               false
+           end)
+
+    assert Eventually.eventually(fn -> :sys.get_state(specialist_pid).live.status == :idle end,
+             timeout: 500
+           )
+  end
+
+  test "agents-send to a missing agent reports an error", %{vid: vid} do
+    {coordinator_pid, _name} =
+      AgentTestHelpers.start_agent(%{
+        model: %{name: "qwen3.5-plus", provider: "model-studio"},
+        vocation_id: vid
+      })
+
+    MockClient.set_tool_response(%{
+      text: "sending",
+      tool_calls: [
+        %{
+          id: "call_send_missing_1",
+          name: "agents-send",
+          arguments: %{"name" => "ghost-agent", "message" => "anyone home?"}
+        }
+      ]
+    })
+
+    MockClient.set_response("coordinator done")
+
+    log =
+      capture_log(fn ->
+        :ok = Agent.chat(coordinator_pid, "try to send")
+        assert_receive {:chat_status, %{status: "idle"}}, 500
+      end)
+
+    assert log =~ "is_error=true tool result"
+
+    coordinator_state = :sys.get_state(coordinator_pid)
+
+    {:tool, tool_msg} =
+      Enum.find(coordinator_state.chat_state.messages, fn
+        {:tool, %{parts: parts}} ->
+          Enum.any?(parts, &match?(%Part.ToolResult{name: "agents-send"}, &1))
+
+        _ ->
+          false
+      end)
+
+    assert [%Part.ToolResult{name: "agents-send", content: content, is_error: true}] =
+             tool_msg.parts
+
+    assert content =~ "not found"
+  end
+
   # The coordinator's vocation exposes the sub-agent tools.
   defp upsert_tools_vocation do
     {:ok, %Vocations.Vocation{id: vid}} =
@@ -320,9 +438,9 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     vid
   end
 
-  # A distinct vocation for the spawned specialist.
-  defp specialist_vocation_id do
-    {:ok, %Vocations.Vocation{id: vid}} =
+  # A distinct vocation for the spawned specialist. Returns its slug.
+  defp specialist_vocation_slug do
+    {:ok, %Vocations.Vocation{slug: slug}} =
       Vocations.upsert_vocation(%{
         name: "Specialist #{System.unique_integer([:positive])}",
         description: "A specialist",
@@ -331,7 +449,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
         modes: %{}
       })
 
-    vid
+    slug
   end
 
   # Spawn an independent specialist into `space_id` (via the same
@@ -348,10 +466,10 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
   #     message-append DB writes would raise
   #     `DBConnection.OwnershipError`.
   defp start_mocked_specialist(space_id, name, response) do
-    vid = specialist_vocation_id()
+    vocation_slug = specialist_vocation_slug()
     state = coordinator_state(space_id)
 
-    assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name, vid)
+    assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name, vocation_slug)
 
     {:ok, pid} = Nest.Agents.Registry.lookup(space_id, name)
     Sandbox.allow(Nest.Repo, self(), pid)

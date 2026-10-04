@@ -4380,4 +4380,44 @@ describe("store", () => {
       expect(useStore.getState().agentsCache).toEqual({});
     });
   });
+
+  describe("setAgentInbox", () => {
+    it("stores the queued messages and derives the count", () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        messageCount: 0,
+        status: "idle",
+      });
+
+      const inbox = [
+        { from: "alice", content: "hi", timestamp: "t1" },
+        { from: "bob", content: "yo", timestamp: "t2" },
+      ];
+
+      useStore.getState().setAgentInbox("agent-1", inbox);
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.inbox).toEqual(inbox);
+      expect(cache.pendingMessageCount).toBe(2);
+    });
+
+    it("treats a non-array as empty", () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        messageCount: 0,
+        status: "idle",
+      });
+
+      useStore.getState().setAgentInbox("agent-1", null);
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.inbox).toEqual([]);
+      expect(cache.pendingMessageCount).toBe(0);
+    });
+
+    it("is a no-op for a non-existent agent", () => {
+      const initialCache = useStore.getState().agentsCache;
+      useStore.getState().setAgentInbox("ghost", []);
+
+      expect(useStore.getState().agentsCache).toBe(initialCache);
+    });
+  });
 });

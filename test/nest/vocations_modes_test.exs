@@ -33,7 +33,7 @@ defmodule Nest.VocationsModesTest do
   describe "modes changeset validation" do
     test "valid modes with caps pass validation" do
       attrs = %{
-        name: "Programmer",
+        name: "Programmer #{System.unique_integer([:positive])}",
         description: "Builds software",
         system_prompt: "You are a programmer.",
         tools: ["file"],
@@ -49,7 +49,7 @@ defmodule Nest.VocationsModesTest do
 
     test "nil modes pass validation (legacy vocations)" do
       attrs = %{
-        name: "Chatty",
+        name: "Chatty #{System.unique_integer([:positive])}",
         description: "Just chat",
         system_prompt: "You chat.",
         modes: nil
@@ -60,7 +60,7 @@ defmodule Nest.VocationsModesTest do
 
     test "empty modes pass validation" do
       attrs = %{
-        name: "Chatty",
+        name: "Chatty #{System.unique_integer([:positive])}",
         description: "Just chat",
         system_prompt: "You chat.",
         modes: %{}
@@ -71,7 +71,7 @@ defmodule Nest.VocationsModesTest do
 
     test "mode missing caps returns changeset error" do
       attrs = %{
-        name: "Bad",
+        name: "Bad #{System.unique_integer([:positive])}",
         description: "Bad",
         system_prompt: "Bad",
         modes: %{"build" => %{"description" => "no caps here"}}
@@ -83,7 +83,7 @@ defmodule Nest.VocationsModesTest do
 
     test "mode with invalid caps returns changeset error" do
       attrs = %{
-        name: "Bad",
+        name: "Bad #{System.unique_integer([:positive])}",
         description: "Bad",
         system_prompt: "Bad",
         modes: %{
@@ -99,7 +99,7 @@ defmodule Nest.VocationsModesTest do
 
     test "mode that is not a map returns changeset error" do
       attrs = %{
-        name: "Bad",
+        name: "Bad #{System.unique_integer([:positive])}",
         description: "Bad",
         system_prompt: "Bad",
         modes: %{"build" => "not a map"}
@@ -191,7 +191,7 @@ defmodule Nest.VocationsModesTest do
   describe "mode_catalog/2" do
     test "builds a sorted catalog with caps-derived paths followed by the description" do
       vocation = %Vocation{
-        name: "Programmer",
+        name: "Programmer #{System.unique_integer([:positive])}",
         modes: %{
           "build" => %{
             "description" => "You're clear to edit the project in the workspace.",
@@ -217,7 +217,7 @@ defmodule Nest.VocationsModesTest do
 
     test "plan mode without :workspace does NOT say workspace is writable" do
       vocation = %Vocation{
-        name: "Programmer",
+        name: "Programmer #{System.unique_integer([:positive])}",
         modes: %{
           "plan" => %{
             "description" => "Read-only planning.",

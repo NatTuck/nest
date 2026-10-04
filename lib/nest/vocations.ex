@@ -55,6 +55,16 @@ defmodule Nest.Vocations do
   def get_vocation(id), do: Repo.get(Vocation, id)
 
   @doc """
+  Gets a single vocation by its globally-unique slug.
+
+  Returns `nil` if the Vocation does not exist.
+  """
+  @spec get_by_slug(String.t()) :: Vocation.t() | nil
+  def get_by_slug(slug) when is_binary(slug) do
+    Repo.get_by(Vocation, slug: slug)
+  end
+
+  @doc """
   Creates a vocation.
 
   ## Examples
@@ -109,38 +119,26 @@ defmodule Nest.Vocations do
   end
 
   @doc """
-  Insert-or-update a vocation by `:name`.
+  Insert-or-update a vocation by its derived `slug`.
 
-  Looks up the row by `name`; if found, updates it in place
-  (preserving `id` so any FK references like
-  `agents.vocation_id` stay valid); if not found, inserts a
-  new row. The result shape mirrors `create_vocation/1` and
-  `update_vocation/2`: `{:ok, %Vocation{}}` on success,
-  `{:error, %Ecto.Changeset{}}` on validation failure.
+  A true Postgres upsert (`INSERT ... ON CONFLICT (slug) DO UPDATE`),
+  so concurrent callers (seeds, parallel tests) can't deadlock on a
+  select-then-insert race. `id` is preserved across a re-upsert, so FK
+  references like `agents.vocation_id` stay valid.
 
-  Used by `priv/repo/seeds.exs` so re-running seeds updates
-  the existing rows (system prompts, modes, tools) in place
-  rather than failing on duplicate names or creating a second
-  row. Single-process at seed time, so the lookup-then-write
-  race window is acceptable; a concurrent caller would need a
-  real unique index on `name` to be safe.
+  Used by `priv/repo/seeds.exs` so re-running seeds updates the
+  existing rows (system prompts, modes, tools) in place rather than
+  failing or creating a second row.
   """
-  def upsert_vocation(attrs) do
-    name = attrs[:name] || attrs["name"]
-
-    if name do
-      case Repo.get_by(Vocation, name: name) do
-        nil -> create_vocation(attrs)
-        %Vocation{} = existing -> update_vocation(existing, attrs)
-      end
-    else
-      # No name → no lookup possible; the changeset will reject
-      # the missing required field and return the validation
-      # error to the caller. Ecto's `get_by/2` would raise on
-      # `name: nil`, so we short-circuit before it gets that
-      # far.
-      create_vocation(attrs)
-    end
+  @spec upsert_vocation(map()) :: {:ok, Vocation.t()} | {:error, Ecto.Changeset.t()}
+  def upsert_vocation(attrs) when is_map(attrs) do
+    %Vocation{}
+    |> Vocation.changeset(attrs)
+    |> Repo.insert(
+      on_conflict: {:replace, [:name, :description, :system_prompt, :tools, :modes, :updated_at]},
+      conflict_target: :slug,
+      returning: true
+    )
   end
 
   @doc """

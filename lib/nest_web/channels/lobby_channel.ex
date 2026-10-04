@@ -128,13 +128,13 @@ defmodule NestWeb.LobbyChannel do
     user_id = socket.assigns.user_id
     model = extract_model(Map.get(payload, "model") || %{})
     opts = build_create_opts_from_payload(payload, user_id)
-    vocation_id = Keyword.fetch!(opts, :vocation_id)
+    vocation = Keyword.fetch!(opts, :vocation)
 
-    attrs = build_create_space_attrs(payload, model, vocation_id, opts)
+    attrs = build_create_space_attrs(payload, model, vocation, opts)
 
     case Spaces.create_space_with_root_agent(user_id, attrs) do
       {:ok, %Spaces.Space{} = space, agent_name} ->
-        broadcast_space_created(socket, space, agent_name, model, vocation_id, attrs)
+        broadcast_space_created(socket, space, agent_name, model, vocation, attrs)
 
         {:reply, {:ok, %{"space_id" => space.id, "name" => agent_name, "slug" => space.slug}},
          socket}
@@ -316,26 +316,26 @@ defmodule NestWeb.LobbyChannel do
   defp broken_agent_shared?(%{shared: shared}), do: shared == true
   defp broken_agent_shared?(_), do: false
 
-  defp build_create_space_attrs(payload, model, vocation_id, opts) do
+  defp build_create_space_attrs(payload, model, vocation, opts) do
     %{
       name: payload["name"],
       slug: payload["slug"],
       blueprint_id: payload["blueprint_id"],
       model: model,
       # When the client picks a blueprint, the blueprint's
-      # `root_vocation_id` should drive the root agent's
+      # `root_vocation` should drive the root agent's
       # vocation, so we don't forward the lobby's default
-      # `vocation_id` fallback. Without a blueprint we keep
+      # `vocation` fallback. Without a blueprint we keep
       # the default-vocation behavior.
-      vocation_id: maybe_vocation_id(payload, vocation_id),
+      vocation: maybe_vocation(payload, vocation),
       workspace_path: Keyword.get(opts, :workspace_path),
       agent_name: payload["agent_name"],
       shared: payload["shared"] == true
     }
   end
 
-  defp maybe_vocation_id(%{"blueprint_id" => bid}, _vocation_id) when not is_nil(bid), do: nil
-  defp maybe_vocation_id(_payload, vocation_id), do: vocation_id
+  defp maybe_vocation(%{"blueprint_id" => bid}, _vocation) when not is_nil(bid), do: nil
+  defp maybe_vocation(_payload, vocation), do: vocation
 
   defp broadcast_space_archived(socket, space_id),
     do: broadcast(socket, "space:archived", %{"space_id" => space_id})
@@ -343,7 +343,7 @@ defmodule NestWeb.LobbyChannel do
   defp broadcast_space_unarchived(socket, space_id),
     do: broadcast(socket, "space:unarchived", %{"space_id" => space_id})
 
-  defp broadcast_space_created(socket, space, agent_name, model, vocation_id, attrs) do
+  defp broadcast_space_created(socket, space, agent_name, model, vocation, attrs) do
     push(socket, "space:created", %{
       "space" => space,
       "agentName" => agent_name
@@ -354,7 +354,7 @@ defmodule NestWeb.LobbyChannel do
       space.id,
       agent_name,
       model,
-      vocation_id,
+      vocation,
       attrs.workspace_path
     )
   end
@@ -404,7 +404,7 @@ defmodule NestWeb.LobbyChannel do
     base_opts =
       build_create_opts(
         payload,
-        payload["vocation_id"] || default_vocation_id(),
+        payload["vocation"] || default_vocation_slug(),
         payload["workspace_path"]
       )
 
@@ -413,19 +413,19 @@ defmodule NestWeb.LobbyChannel do
     |> Keyword.put(:shared, payload["shared"] == true)
   end
 
-  defp build_create_opts(payload, vocation_id, workspace_path) do
+  defp build_create_opts(payload, vocation, workspace_path) do
     []
     |> maybe_add_opt(:name, payload["name"])
-    |> maybe_add_opt(:vocation_id, vocation_id)
+    |> maybe_add_opt(:vocation, vocation)
     |> maybe_add_opt(:workspace_path, workspace_path)
   end
 
-  defp broadcast_agent_created(socket, space_id, name, model, vocation_id, workspace_path) do
+  defp broadcast_agent_created(socket, space_id, name, model, vocation, workspace_path) do
     broadcast(socket, "agent:created", %{
       "name" => name,
       "space_id" => space_id,
       "model" => %{"name" => model.name, "provider" => model.provider},
-      "vocation_id" => vocation_id,
+      "vocation" => vocation,
       "workspace_path" => workspace_path
     })
   end
@@ -449,10 +449,10 @@ defmodule NestWeb.LobbyChannel do
   defp maybe_add_opt(opts, _key, nil), do: opts
   defp maybe_add_opt(opts, key, value), do: Keyword.put(opts, key, value)
 
-  defp default_vocation_id do
+  defp default_vocation_slug do
     case Vocations.list_vocations() do
       [] -> nil
-      [first | _] -> first.id
+      [first | _] -> first.slug
     end
   end
 end

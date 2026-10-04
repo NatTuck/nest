@@ -7,17 +7,16 @@ defmodule Nest.BlueprintsFixtures do
   alias Nest.VocationsFixtures
 
   @doc """
-  Generate a blueprint. The blueprint's `root_vocation_id`
+  Generate a blueprint. The blueprint's `root_vocation` (slug)
   defaults to a fresh `Default`-style vocation, so callers
   don't have to worry about FK setup. Override with
-  `:root_vocation_id` to point at a specific vocation row.
+  `:root_vocation` to point at a specific vocation slug.
   """
   def blueprint_fixture(attrs \\ %{}) do
-    {:ok, vocation} =
-      Map.get(attrs, :root_vocation_id)
-      |> case do
-        nil -> {:ok, VocationsFixtures.vocation_fixture()}
-        _vid -> {:ok, nil}
+    root_vocation =
+      case Map.get(attrs, :root_vocation) do
+        nil -> VocationsFixtures.vocation_fixture().slug
+        slug -> slug
       end
 
     {:ok, blueprint} =
@@ -25,8 +24,8 @@ defmodule Nest.BlueprintsFixtures do
       |> Enum.into(%{
         description: "some description",
         name: "blueprint-#{System.unique_integer([:positive])}",
-        root_vocation_id: vocation && vocation.id,
-        spawnable_vocation_ids: []
+        root_vocation: root_vocation,
+        spawnable_vocations: []
       })
       |> Nest.Blueprints.create_blueprint()
 

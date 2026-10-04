@@ -13,13 +13,13 @@ defmodule Nest.BlueprintsTest do
       valid_attrs = %{
         name: "blueprint-#{System.unique_integer([:positive])}",
         description: "Test blueprint",
-        root_vocation_id: vocation.id,
-        spawnable_vocation_ids: []
+        root_vocation: vocation.slug,
+        spawnable_vocations: []
       }
 
       assert {:ok, %Blueprint{} = blueprint} = Blueprints.create_blueprint(valid_attrs)
       assert blueprint.name == valid_attrs.name
-      assert blueprint.root_vocation_id == vocation.id
+      assert blueprint.root_vocation == vocation.slug
       # `slug` is auto-generated from `:name` when omitted
       assert is_binary(blueprint.slug) and blueprint.slug != ""
     end
@@ -31,16 +31,16 @@ defmodule Nest.BlueprintsTest do
       {:ok, %Blueprint{slug: slug}} =
         Blueprints.create_blueprint(%{
           name: name,
-          root_vocation_id: vocation.id
+          root_vocation: vocation.slug
         })
 
       assert slug == suffix(name)
     end
 
-    test "create_blueprint/1 rejects missing root_vocation_id" do
+    test "create_blueprint/1 rejects missing root_vocation" do
       attrs = %{name: "no-root-#{System.unique_integer([:positive])}"}
       assert {:error, %Ecto.Changeset{} = cs} = Blueprints.create_blueprint(attrs)
-      assert "can't be blank" in errors_on(cs).root_vocation_id
+      assert "can't be blank" in errors_on(cs).root_vocation
     end
 
     test "create_blueprint/1 rejects duplicate name" do
@@ -50,42 +50,42 @@ defmodule Nest.BlueprintsTest do
       assert {:ok, _} =
                Blueprints.create_blueprint(%{
                  name: name,
-                 root_vocation_id: vocation.id
+                 root_vocation: vocation.slug
                })
 
       assert {:error, cs} =
                Blueprints.create_blueprint(%{
                  name: name,
-                 root_vocation_id: vocation.id
+                 root_vocation: vocation.slug
                })
 
       assert "has already been taken" in errors_on(cs).name
     end
 
-    test "create_blueprint/1 rejects spawnable_vocation_ids with non-integers" do
+    test "create_blueprint/1 rejects spawnable_vocations with non-strings" do
       vocation = VocationsFixtures.vocation_fixture()
 
       assert {:error, cs} =
                Blueprints.create_blueprint(%{
                  name: "bad-spawnable-#{System.unique_integer([:positive])}",
-                 root_vocation_id: vocation.id,
-                 spawnable_vocation_ids: ["not-an-int"]
+                 root_vocation: vocation.slug,
+                 spawnable_vocations: [123]
                })
 
-      assert errors_on(cs).spawnable_vocation_ids != []
+      assert errors_on(cs).spawnable_vocations != []
     end
 
-    test "create_blueprint/1 rejects duplicate spawnable_vocation_ids" do
+    test "create_blueprint/1 rejects duplicate spawnable_vocations" do
       vocation = VocationsFixtures.vocation_fixture()
 
       assert {:error, cs} =
                Blueprints.create_blueprint(%{
                  name: "dup-spawnable-#{System.unique_integer([:positive])}",
-                 root_vocation_id: vocation.id,
-                 spawnable_vocation_ids: [vocation.id, vocation.id]
+                 root_vocation: vocation.slug,
+                 spawnable_vocations: [vocation.slug, vocation.slug]
                })
 
-      assert errors_on(cs).spawnable_vocation_ids != []
+      assert errors_on(cs).spawnable_vocations != []
     end
 
     test "get_blueprint/1 returns nil for missing id" do
@@ -99,7 +99,7 @@ defmodule Nest.BlueprintsTest do
       {:ok, %Blueprint{} = blueprint} =
         Blueprints.create_blueprint(%{
           name: name,
-          root_vocation_id: vocation.id
+          root_vocation: vocation.slug
         })
 
       assert Blueprints.get_by_slug(blueprint.slug).id == blueprint.id
@@ -130,14 +130,14 @@ defmodule Nest.BlueprintsTest do
         Blueprints.upsert_blueprint(%{
           name: name,
           description: "first",
-          root_vocation_id: vocation.id
+          root_vocation: vocation.slug
         })
 
       {:ok, %Blueprint{id: same_id} = second} =
         Blueprints.upsert_blueprint(%{
           name: name,
           description: "second",
-          root_vocation_id: vocation.id
+          root_vocation: vocation.slug
         })
 
       assert id == same_id
@@ -151,29 +151,27 @@ defmodule Nest.BlueprintsTest do
     end
   end
 
-  describe "root_vocation_id_for/1" do
+  describe "root_vocation_slug_for/1" do
     test "returns nil when blueprint id is nil" do
-      assert Blueprints.root_vocation_id_for(nil) == nil
+      assert Blueprints.root_vocation_slug_for(nil) == nil
     end
 
-    test "returns the root_vocation_id for a valid blueprint id" do
+    test "returns the root_vocation slug for a valid blueprint id" do
       vocation = VocationsFixtures.vocation_fixture()
-      blueprint = BlueprintsFixtures.blueprint_fixture(%{root_vocation_id: vocation.id})
+      blueprint = BlueprintsFixtures.blueprint_fixture(%{root_vocation: vocation.slug})
 
-      assert Blueprints.root_vocation_id_for(blueprint.id) == vocation.id
+      assert Blueprints.root_vocation_slug_for(blueprint.id) == vocation.slug
     end
 
     test "returns nil for a missing blueprint id" do
-      assert Blueprints.root_vocation_id_for(-1) == nil
+      assert Blueprints.root_vocation_slug_for(-1) == nil
     end
   end
 
   # Helpers
 
   # Strip the suffix portion of a slug for assertion in the
-  # slug-from-name test. `VocationsFixtures.vocation_fixture/0`
-  # produces names like "some name" or "Test Default" so
-  # pre-computed slugs are predictable.
+  # slug-from-name test.
   defp suffix(name) do
     name
     |> String.downcase()

@@ -267,18 +267,18 @@ defmodule Nest.Spaces do
   Returns `nil` when the space has no blueprint (or the
   blueprint is missing) — meaning `agents-spawn` allows any
   vocation. Otherwise returns the blueprint's
-  `spawnable_vocation_ids` (an empty list also means
+  `spawnable_vocations` slug list (an empty list also means
   unrestricted; a non-empty list is a strict whitelist).
 
   `agents-spawn` enforcement lives in
   `Nest.Agents.Supervisor.spawn_agent_in_space/3`, which calls
-  this to authorize a requested `vocation_id`.
+  this to authorize a requested vocation slug.
   """
-  @spec spawnable_vocation_ids_for_space(integer()) :: [integer()] | nil
-  def spawnable_vocation_ids_for_space(space_id) when is_integer(space_id) do
+  @spec spawnable_vocations_for_space(integer()) :: [String.t()] | nil
+  def spawnable_vocations_for_space(space_id) when is_integer(space_id) do
     case get_space(space_id) do
       %Space{blueprint_id: nil} -> nil
-      %Space{blueprint_id: bid} -> Blueprints.spawnable_vocation_ids(bid)
+      %Space{blueprint_id: bid} -> Blueprints.spawnable_vocations(bid)
       _ -> nil
     end
   end
@@ -294,11 +294,11 @@ defmodule Nest.Spaces do
     * `:slug` — URL-safe identifier (optional; derived from `:name`)
     * `:blueprint_id` — optional FK. When supplied, the
       root agent's vocation is pulled from the blueprint's
-      `root_vocation_id` unless `:vocation_id` is also
-      supplied (the explicit `:vocation_id` wins).
+      `root_vocation` slug unless `:vocation` is also
+      supplied (the explicit `:vocation` wins).
     * `:model` — root agent's model map (required; same shape
       as `Agents.create_agent/3`'s `model` arg)
-    * `:vocation_id` — root agent's vocation id (optional;
+    * `:vocation` — root agent's vocation **slug** (optional;
       derived from blueprint when omitted)
     * `:workspace_path` — optional root agent workspace path
     * `:agent_name` — root agent's name (optional; defaults
@@ -370,32 +370,39 @@ defmodule Nest.Spaces do
 
   # Vocation resolution order:
   #
-  #   1. Explicit `vocation_id:` in attrs (caller override).
-  #   2. The blueprint's `root_vocation_id` (Phase 2 contract).
+  #   1. Explicit `vocation:` slug in attrs (caller override).
+  #   2. The blueprint's `root_vocation` slug (Phase 2 contract).
   #   3. Neither → `{:error, :missing_vocation}`. `create_space_with_root_agent`
   #      requires a vocation; `Agents.create_agent/3` does NOT
   #      fall back to the first available vocation (that fallback
-  #      lives only in the lobby's `default_vocation_id/0`).
+  #      lives only in the lobby's `default_vocation_slug/0`).
   #
   # Returns `{:error, :blueprint_missing}` when `:blueprint_id`
   # is set but no row with that id exists — surfacing the error
   # rather than silently falling back to a default vocation.
   defp resolve_root_vocation(attrs) do
-    case Map.get(attrs, :vocation_id) do
-      vid when is_integer(vid) ->
-        {:ok, vid}
+    case Map.get(attrs, :vocation) do
+      slug when is_binary(slug) ->
+        resolve_vocation_slug(slug)
 
       _ ->
         resolve_blueprint_vocation(Map.get(attrs, :blueprint_id))
     end
   end
 
+  defp resolve_vocation_slug(slug) do
+    case Vocations.get_by_slug(slug) do
+      nil -> {:error, {:vocation_not_found, slug}}
+      %Vocations.Vocation{id: id} -> {:ok, id}
+    end
+  end
+
   defp resolve_blueprint_vocation(nil), do: {:error, :missing_vocation}
 
   defp resolve_blueprint_vocation(bid) when is_integer(bid) do
-    case Blueprints.root_vocation_id_for(bid) do
+    case Blueprints.root_vocation_slug_for(bid) do
       nil -> {:error, :blueprint_missing}
-      vid -> {:ok, vid}
+      slug -> resolve_vocation_slug(slug)
     end
   end
 

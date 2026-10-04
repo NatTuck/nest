@@ -17,9 +17,9 @@ defmodule Nest.Blueprints.Blueprint do
 
   ## Shape
 
-  * `root_vocation_id` — the root agent's vocation when a
-    space is created from this blueprint. Always set.
-  * `spawnable_vocation_ids` — whitelist of vocation ids the
+  * `root_vocation` — the **slug** of the root agent's vocation
+    when a space is created from this blueprint. Always set.
+  * `spawnable_vocations` — whitelist of vocation **slugs** the
     space's agents are allowed to spawn via the `agents-spawn`
     tool. `[]` (or `nil`) means **unrestricted** — any
     vocation may be spawned. A non-empty list is a strict
@@ -27,8 +27,7 @@ defmodule Nest.Blueprints.Blueprint do
     A space without a blueprint (or with a missing blueprint)
     is also unrestricted.
   * `workspace_template` — map of initial workspace files.
-    Seeded by `Spaces.create_space_with_root_agent/2` when
-    the blueprint is non-nil.
+    Seeding is deferred; the column exists for future use.
   * `main_view_config` — map consumed by the Phase 4 Main
     View component to pick the layout. Empty by default.
   """
@@ -36,14 +35,16 @@ defmodule Nest.Blueprints.Blueprint do
   use Ecto.Schema
   import Ecto.Changeset
 
+  alias Nest.Slug
+
   @derive {Jason.Encoder,
            only: [
              :id,
              :name,
              :slug,
              :description,
-             :root_vocation_id,
-             :spawnable_vocation_ids,
+             :root_vocation,
+             :spawnable_vocations,
              :workspace_template,
              :main_view_config,
              :inserted_at,
@@ -55,8 +56,8 @@ defmodule Nest.Blueprints.Blueprint do
     field :name, :string
     field :slug, :string
     field :description, :string
-    field :root_vocation_id, :integer
-    field :spawnable_vocation_ids, {:array, :integer}, default: []
+    field :root_vocation, :string
+    field :spawnable_vocations, {:array, :string}, default: []
     field :workspace_template, :map, default: %{}
     field :main_view_config, :map, default: %{}
 
@@ -68,8 +69,8 @@ defmodule Nest.Blueprints.Blueprint do
           name: String.t() | nil,
           slug: String.t() | nil,
           description: String.t() | nil,
-          root_vocation_id: integer() | nil,
-          spawnable_vocation_ids: [integer()],
+          root_vocation: String.t() | nil,
+          spawnable_vocations: [String.t()],
           workspace_template: map(),
           main_view_config: map(),
           inserted_at: DateTime.t() | nil,
@@ -83,12 +84,12 @@ defmodule Nest.Blueprints.Blueprint do
       :name,
       :slug,
       :description,
-      :root_vocation_id,
-      :spawnable_vocation_ids,
+      :root_vocation,
+      :spawnable_vocations,
       :workspace_template,
       :main_view_config
     ])
-    |> validate_required([:name, :root_vocation_id])
+    |> validate_required([:name, :root_vocation])
     |> maybe_generate_slug()
     |> validate_required([:slug])
     |> unique_constraint(:name)
@@ -107,7 +108,7 @@ defmodule Nest.Blueprints.Blueprint do
       _ ->
         case fetch_change(changeset, :name) do
           {:ok, name} when is_binary(name) ->
-            put_change(changeset, :slug, generate_slug(name))
+            put_change(changeset, :slug, Slug.from_name(name))
 
           _ ->
             changeset
@@ -115,32 +116,27 @@ defmodule Nest.Blueprints.Blueprint do
     end
   end
 
-  defp generate_slug(name) do
-    name
-    |> String.downcase()
-    |> String.replace(~r/[^a-z0-9]+/, "-")
-    |> String.trim("-")
-  end
-
-  # Phase 3 (`agents-spawn`) will check `spawnable_vocation_ids`
-  # as a whitelist. For Phase 2 the column exists but is
-  # unused; this validator just guards the shape (no dupes,
-  # all entries integers) so seed data can't ship a malformed
-  # list that would crash Phase 3 when it reads it.
+  # Guards the spawnable-vocation whitelist shape (no dupes, all
+  # entries non-empty strings) so seed data can't ship a malformed
+  # list that would crash `agents-spawn` when it reads it.
   defp validate_spawnable_vocations(changeset) do
-    case get_field(changeset, :spawnable_vocation_ids) do
+    case get_field(changeset, :spawnable_vocations) do
       nil ->
         changeset
 
-      ids when is_list(ids) ->
-        if Enum.all?(ids, &is_integer/1) and length(Enum.uniq(ids)) == length(ids) do
+      slugs when is_list(slugs) ->
+        valid? =
+          Enum.all?(slugs, &(is_binary(&1) and &1 != "")) and
+            length(Enum.uniq(slugs)) == length(slugs)
+
+        if valid? do
           changeset
         else
-          add_error(changeset, :spawnable_vocation_ids, "must be unique integers")
+          add_error(changeset, :spawnable_vocations, "must be unique non-empty strings")
         end
 
       _other ->
-        add_error(changeset, :spawnable_vocation_ids, "must be a list of integers")
+        add_error(changeset, :spawnable_vocations, "must be a list of strings")
     end
   end
 end

@@ -17,6 +17,7 @@ defmodule Nest.Agents.Agent.ModelHandler do
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Config
+  alias Nest.Agents.Agent.Inbox
   alias Nest.Agents.Agent.Init
   alias Nest.Agents.Agent.WorkspaceHandler
   alias Nest.Persistence
@@ -76,7 +77,7 @@ defmodule Nest.Agents.Agent.ModelHandler do
           state = apply_new_model(state, new_model, client_config)
           {state, _workspace_reply} = WorkspaceHandler.apply_workspace(state, workspace_path)
           Broadcasts.status(state)
-          {:reply, :ok, state}
+          {:reply, :ok, Inbox.drain_if_idle(state)}
         else
           {:error, reason} -> {:reply, {:error, reason}, state}
         end
@@ -113,7 +114,7 @@ defmodule Nest.Agents.Agent.ModelHandler do
           :ok ->
             new_state = apply_new_model(state, new_model, client_config)
             Broadcasts.status(new_state)
-            {:reply, :ok, new_state}
+            {:reply, :ok, Inbox.drain_if_idle(new_state)}
         end
     end
   end

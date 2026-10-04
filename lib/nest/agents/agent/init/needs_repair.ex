@@ -25,8 +25,7 @@ defmodule Nest.Agents.Agent.Init.NeedsRepair do
       | live: %{
           state.live
           | status: :needs_repair,
-            sequence_violations: violations,
-            repair_command: repair_command
+            repair: %{violations: violations, command: repair_command}
         }
     }
 

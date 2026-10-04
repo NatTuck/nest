@@ -283,24 +283,51 @@ defmodule Nest.Agents.AgentTestHelpers do
   no-ceremony way to get a valid id.
   """
   def vocation_id_for_test do
-    {:ok, %Vocations.Vocation{id: vid}} =
-      Vocations.upsert_vocation(%{
-        name: "Test Default",
-        description: "Default vocation for tests",
-        system_prompt: "You are a helpful test assistant.",
-        tools: ["context", "agents"],
-        modes: %{
-          "chat" => %{
-            "description" => "General conversation.",
-            "caps" => %{
-              "net" => false,
-              "fs" => %{"read" => ["/"], "write" => ["/tmp"]}
-            }
-          }
-        }
-      })
+    {id, _slug} = ensure_test_default_vocation()
+    id
+  end
 
-    vid
+  @doc """
+  The slug of the per-test default vocation created by
+  `vocation_id_for_test/0`. Ensures the row exists as a side effect, for
+  tests that pass a vocation slug (e.g. the lobby `create_space`
+  payload).
+  """
+  def vocation_slug_for_test do
+    {_id, slug} = ensure_test_default_vocation()
+    slug
+  end
+
+  # Create (once per test process) a uniquely-named default vocation and
+  # cache `{id, slug}` in the process dict. A unique name → unique slug
+  # avoids the cross-test lock contention a shared fixed-slug row would
+  # cause under parallel `async: true` runs.
+  defp ensure_test_default_vocation do
+    case Process.get(:nest_test_default_vocation) do
+      {id, slug} ->
+        {id, slug}
+
+      nil ->
+        {:ok, %Vocations.Vocation{id: id, slug: slug}} =
+          Vocations.create_vocation(%{
+            name: "Test Default #{System.unique_integer([:positive])}",
+            description: "Default vocation for tests",
+            system_prompt: "You are a helpful test assistant.",
+            tools: ["context", "agents"],
+            modes: %{
+              "chat" => %{
+                "description" => "General conversation.",
+                "caps" => %{
+                  "net" => false,
+                  "fs" => %{"read" => ["/"], "write" => ["/tmp"]}
+                }
+              }
+            }
+          })
+
+        Process.put(:nest_test_default_vocation, {id, slug})
+        {id, slug}
+    end
   end
 
   @doc """

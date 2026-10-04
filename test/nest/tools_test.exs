@@ -73,11 +73,15 @@ defmodule Nest.ToolsTest do
       assert function.description =~ "expose_models"
     end
 
-    test "agents-spawn schema exposes the optional model argument" do
+    test "agents-spawn schema exposes the optional vocation slug and model arguments" do
       function = Tools.get_function("agents-spawn", "/tmp")
       assert function.name == "agents-spawn"
 
       props = function.parameters_schema["properties"]
+      assert props["vocation"]["type"] == "string"
+      assert props["vocation"]["description"] =~ "vocation slug"
+      refute "vocation" in (function.parameters_schema["required"] || [])
+
       assert props["model"]["type"] == "string"
       assert props["model"]["description"] =~ "provider/model-name"
       refute "model" in (function.parameters_schema["required"] || [])
@@ -98,6 +102,16 @@ defmodule Nest.ToolsTest do
       assert (function.parameters_schema["required"] || []) == []
 
       assert function.description =~ "aggregated result"
+    end
+
+    test "agents-send schema requires name and message" do
+      function = Tools.get_function("agents-send", "/tmp")
+      assert function.name == "agents-send"
+
+      assert function.parameters_schema["required"] == ["name", "message"]
+      assert function.parameters_schema["properties"]["name"]["type"] == "string"
+      assert function.parameters_schema["properties"]["message"]["type"] == "string"
+      assert function.description =~ "without waiting"
     end
   end
 

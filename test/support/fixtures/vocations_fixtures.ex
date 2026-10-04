@@ -13,7 +13,9 @@ defmodule Nest.VocationsFixtures do
       |> Enum.into(%{
         description: "some description",
         modes: %{},
-        name: "some name",
+        # Unique default name → unique derived slug. Several tests create
+        # two vocations in one test, and `vocations.slug` is unique.
+        name: "some name #{System.unique_integer([:positive])}",
         system_prompt: "some system_prompt",
         tools: []
       })

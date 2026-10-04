@@ -115,6 +115,11 @@ export function agentCacheSetters(set) {
                 payload.descendantUsage ?? existing?.descendantUsage ?? null,
               totalUsage: payload.totalUsage ?? existing?.totalUsage ?? null,
               jobs: payload.shellJobs ?? existing?.jobs ?? [],
+              inbox: payload.inbox ?? existing?.inbox ?? [],
+              pendingMessageCount:
+                payload.pendingMessageCount ??
+                existing?.pendingMessageCount ??
+                (payload.inbox ?? existing?.inbox ?? []).length,
               waitingForResponse: false,
             },
           },

@@ -28,7 +28,7 @@ defmodule NestWeb.LobbyChannelTest do
       Nest.Persistence.delete_agent(space_id, name)
     end
 
-    # The channel handler's `default_vocation_id/0` falls back
+    # The channel handler's `default_vocation_slug/0` falls back
     # to the first available vocation. We don't delete the
     # table before upserting: `Vocations.upsert_vocation/1` is
     # idempotent (name-keyed), so calling it directly leaves
@@ -401,9 +401,9 @@ defmodule NestWeb.LobbyChannelTest do
 
     test "blueprint_id drives the root agent's vocation over the default" do
       # Phase 2: when the client picks a blueprint, the lobby must
-      # NOT forward its default `vocation_id` fallback, so the
+      # NOT forward its default `vocation` fallback, so the
       # root agent's vocation comes from the blueprint's
-      # `root_vocation_id`.
+      # `root_vocation`.
       vocation =
         Vocations.upsert_vocation(%{
           name: "lobby-blueprint-voc-#{System.unique_integer([:positive])}",
@@ -417,7 +417,7 @@ defmodule NestWeb.LobbyChannelTest do
       blueprint =
         Blueprints.upsert_blueprint(%{
           name: "lobby-blueprint-#{System.unique_integer([:positive])}",
-          root_vocation_id: vocation.id
+          root_vocation: vocation.slug
         })
         |> elem(1)
 

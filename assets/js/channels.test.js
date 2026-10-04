@@ -31,6 +31,7 @@ import {
   killShellJob,
   fetchShellLog,
   refreshShellJobs,
+  requestInbox,
   createSpace,
   suggestSpaceName,
   createInvite,
@@ -3256,7 +3257,7 @@ describe("channels", () => {
       });
     });
 
-    it("should include vocation_id in payload when provided", async () => {
+    it("should include vocation slug in payload when provided", async () => {
       setNextPushResult("lobby", "create_space", {
         ok: { space_id: 1, name: "new-agent" },
       });
@@ -3267,7 +3268,7 @@ describe("channels", () => {
       });
 
       let okCalled = false;
-      createSpace("gpt-4", 42, (_resp) => {
+      createSpace("gpt-4", "programmer", (_resp) => {
         okCalled = true;
       });
 
@@ -3276,10 +3277,10 @@ describe("channels", () => {
       });
     });
 
-    it("should omit vocation_id from payload when null", async () => {
-      // Pin the falsy branch of `if (vocationId)` in createSpace.
-      // All other createSpace tests pass a non-null vocationId, so
-      // the omit-path is otherwise untested.
+    it("should omit vocation from payload when null", async () => {
+      // Pin the falsy branch of `if (vocationSlug)` in createSpace.
+      // All other createSpace tests pass a non-null slug, so the
+      // omit-path is otherwise untested.
       const capturePromise = captureNextPush("lobby", "create_space");
       setNextPushResult("lobby", "create_space", {
         ok: { space_id: 1, name: "new-agent" },
@@ -3294,9 +3295,9 @@ describe("channels", () => {
 
       const captured = await capturePromise;
       assert.strictEqual(
-        Object.hasOwn(captured, "vocation_id"),
+        Object.hasOwn(captured, "vocation"),
         false,
-        "vocation_id must be omitted when null",
+        "vocation must be omitted when null",
       );
     });
 
@@ -4051,6 +4052,103 @@ describe("channels", () => {
           "compaction isn't reducing the conversation",
         );
       });
+    });
+  });
+
+  describe("agent chat:inbox events", () => {
+    async function connectedAgent() {
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+        status: "idle",
+      });
+      joinAgent("agent-1", 1);
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+    }
+
+    it("chat:inbox replaces the queued message list", async () => {
+      await connectedAgent();
+
+      simulateServerEvent("agent:1:agent-1", "chat:inbox", {
+        messages: [{ from: "alice", content: "review this", timestamp: "t1" }],
+        count: 1,
+      });
+
+      await vi.waitFor(() => {
+        const cache = useStore.getState().agentsCache["agent-1"];
+        assert.strictEqual(cache.inbox.length, 1);
+        assert.strictEqual(cache.inbox[0].from, "alice");
+        assert.strictEqual(cache.pendingMessageCount, 1);
+      });
+    });
+
+    it("a drain (empty chat:inbox) clears the list", async () => {
+      await connectedAgent();
+
+      simulateServerEvent("agent:1:agent-1", "chat:inbox", {
+        messages: [{ from: "alice", content: "review this", timestamp: "t1" }],
+        count: 1,
+      });
+      simulateServerEvent("agent:1:agent-1", "chat:inbox", {
+        messages: [],
+        count: 0,
+      });
+
+      await vi.waitFor(() => {
+        const cache = useStore.getState().agentsCache["agent-1"];
+        assert.deepStrictEqual(cache.inbox, []);
+        assert.strictEqual(cache.pendingMessageCount, 0);
+      });
+    });
+
+    it("init populates the inbox from the join payload", async () => {
+      joinAgent("agent-1", 1);
+
+      simulateServerEvent("agent:1:agent-1", "init", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+        status: "idle",
+        inbox: [{ from: "bob", content: "hi", timestamp: "t1" }],
+        pendingMessageCount: 1,
+      });
+
+      await vi.waitFor(() => {
+        const cache = useStore.getState().agentsCache["agent-1"];
+        assert.strictEqual(cache.inbox.length, 1);
+        assert.strictEqual(cache.inbox[0].from, "bob");
+      });
+    });
+
+    it("requestInbox fetches and stores the list", async () => {
+      await connectedAgent();
+
+      setNextPushResult("agent:1:agent-1", "chat:inbox", {
+        ok: {
+          messages: [{ from: "carol", content: "ping", timestamp: "t2" }],
+          count: 1,
+        },
+      });
+
+      requestInbox("agent-1");
+
+      await vi.waitFor(() => {
+        const cache = useStore.getState().agentsCache["agent-1"];
+        assert.strictEqual(cache.inbox.length, 1);
+        assert.strictEqual(cache.inbox[0].from, "carol");
+      });
+    });
+
+    it("requestInbox is a no-op when the channel isn't connected", () => {
+      requestInbox("missing-agent");
+      assert.strictEqual(
+        useStore.getState().agentsCache["missing-agent"],
+        undefined,
+      );
     });
   });
 });

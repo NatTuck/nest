@@ -163,6 +163,21 @@ defmodule Nest.Agents.Agent.ChatState.Live do
   the `tool_use_start` handler in `LLMStreamHandler`, reset to
   `%{}` when the streaming accumulator resets (start of a new
   LLM iteration).
+
+  The `inbox` field holds async agent-to-agent messages that
+  arrived while the agent was busy (`agents-send`). Each entry is
+  `%{from: name, content: text, timestamp: DateTime.t()}`, in
+  arrival order. When the agent next goes idle the entries are
+  combined into a single user message (offloaded to the agent tmp
+  dir when over `max-async-message-tokens`) and drained by
+  `Nest.Agents.Agent.Inbox`. In-memory only: a BEAM restart drops
+  undrained messages.
+
+  The `repair` map (`%{violations: [...], command: ...}`) carries
+  the `:needs_repair` payload while a restored agent's active
+  sequence fails wire preflight. It is grouped here, rather than
+  as two top-level fields, to keep this struct under the credo
+  16-field cap.
   """
   defstruct streaming_acc: nil,
             status: :idle,
@@ -193,8 +208,11 @@ defmodule Nest.Agents.Agent.ChatState.Live do
             # the `:needs_repair` state: the active persisted sequence
             # failed wire preflight. Carries the violations and the
             # offline repair command surfaced to the operator.
-            sequence_violations: [],
-            repair_command: nil
+            repair: %{violations: [], command: nil},
+            # Async agent-to-agent messages queued while busy. See the
+            # moduledoc. Entries are `%{from: name, content: text,
+            # timestamp: DateTime.t()}` in arrival order.
+            inbox: []
 
   @type mid_turn_entry :: %{entry: Nest.Agents.Agent.ChatTurn.State.entry() | nil}
 end

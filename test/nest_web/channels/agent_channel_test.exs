@@ -355,10 +355,33 @@ defmodule NestWeb.AgentChannelTest do
     end
   end
 
+  describe "chat:inbox" do
+    test "handle_in replies with the inbox and forwards the broadcast", %{
+      socket: socket,
+      space_id: space_id,
+      agent_id: name
+    } do
+      ref = push(socket, "chat:inbox", %{})
+      assert_reply ref, :ok, %{"messages" => [], "count" => 0}
+
+      Phoenix.PubSub.broadcast(
+        Nest.PubSub,
+        "agent:#{space_id}:#{name}",
+        {:chat_inbox, %{messages: [%{"from" => "peer", "content" => "hi"}], count: 1}}
+      )
+
+      assert_push "chat:inbox", payload
+      assert payload.count == 1
+      assert [%{"from" => "peer", "content" => "hi"}] = payload.messages
+    end
+  end
+
   describe "background shell jobs" do
-    test "init payload includes an empty shellJobs list", %{socket: _socket} do
+    test "init payload includes an empty shellJobs list and async inbox", %{socket: _socket} do
       assert_push "init", payload
       assert payload["shellJobs"] == []
+      assert payload["inbox"] == []
+      assert payload["pendingMessageCount"] == 0
     end
 
     test "shell:list / shell:log / shell:kill operate on this agent's jobs", %{

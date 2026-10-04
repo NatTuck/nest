@@ -133,14 +133,14 @@ export function leaveLobby() {
 /**
  * Create a new space (with its root agent) via the lobby.
  */
-export function createSpace(model, vocationId, onOk, onError, opts = {}) {
+export function createSpace(model, vocationSlug, onOk, onError, opts = {}) {
   if (!lobbyChannel) {
     if (onError) onError(new Error("Not connected to lobby"));
     return;
   }
 
   const payload = { model };
-  if (vocationId) payload.vocation_id = vocationId;
+  if (vocationSlug) payload.vocation = vocationSlug;
   if (opts.name) payload.name = opts.name;
   if (opts.slug) payload.slug = opts.slug;
   if (opts.blueprint_id) payload.blueprint_id = opts.blueprint_id;

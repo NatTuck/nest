@@ -45,6 +45,7 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
   """
 
   alias Nest.Agents.Agent.Broadcasts
+  alias Nest.Agents.Agent.Inbox
   alias Nest.Agents.Agent.SubAgent
   alias Nest.Agents.Registry, as: AgentsRegistry
   alias Nest.LLM.Client
@@ -120,12 +121,20 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
 
     Broadcasts.status(state)
 
-    case state.tree_position.parent_name do
-      nil ->
-        {:noreply, state}
+    state = maybe_notify_parent_on_idle(state)
 
-      parent_name ->
-        notify_parent_on_idle(parent_name, state)
+    # A naturally completed turn is the primary moment async inbox
+    # messages drain: combine everything queued while we were busy into
+    # the next user message. Runs after the parent notification so a
+    # blocked `agents-spawn`/`agents-query` worker sees the completion
+    # first.
+    {:noreply, Inbox.drain_if_idle(state)}
+  end
+
+  defp maybe_notify_parent_on_idle(state) do
+    case state.tree_position.parent_name do
+      nil -> state
+      parent_name -> notify_parent_on_idle(parent_name, state)
     end
   end
 
@@ -156,7 +165,7 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
       {:child_completed, state.name, response, total_usage}
     )
 
-    {:noreply, state}
+    state
   end
 
   # Concatenate the text parts of the last assistant
@@ -346,7 +355,7 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
       state = %{state | live: %{state.live | status: :idle, chat_turn_pid: nil}}
       Broadcasts.status(state)
       notify_parent_of_failure(state, crash_reason(exception))
-      {:noreply, state}
+      {:noreply, Inbox.drain_if_idle(state)}
     else
       Logger.error(fn ->
         "[agent:#{state.name}] chat_crashed msg_index=#{state.chat_state.next_message_index} ::\n" <>
@@ -365,7 +374,7 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
       Broadcasts.status(state)
       notify_parent_of_failure(state, crash_reason(exception))
 
-      {:noreply, state}
+      {:noreply, Inbox.drain_if_idle(state)}
     end
   end
 

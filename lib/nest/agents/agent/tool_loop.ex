@@ -134,6 +134,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
               "agents-list",
               "agents-archive",
               "agents-batch",
+              "agents-send",
               "models-list"
             ],
        do: true
@@ -142,6 +143,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
 
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-spawn"} = tc), do: run_spawn_agent(ctx, tc)
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-query"} = tc), do: run_query_agent(ctx, tc)
+  defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-send"} = tc), do: run_send_agent(ctx, tc)
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-list"} = tc), do: run_list_agents(ctx, tc)
   defp run_sub_agent_tool(_ctx, %ToolCall{name: "models-list"} = tc), do: run_models_list(tc)
 
@@ -182,13 +184,18 @@ defmodule Nest.Agents.Agent.ToolLoop do
   end
 
   # Format a spawn failure for the model. `:vocation_not_spawnable`
-  # carries the whitelisted `{name, id}` vocations so the model can
-  # retry with a valid `vocation_id`.
+  # carries the whitelisted `{name, slug}` vocations so the model can
+  # retry with a valid `vocation` slug.
   defp spawn_error_message({:vocation_not_spawnable, allowed}) do
-    labels = Enum.map_join(allowed, ", ", fn {name, id} -> "#{name} (id #{id})" end)
+    labels = Enum.map_join(allowed, ", ", fn {name, slug} -> "#{name} (#{slug})" end)
 
     "Could not spawn agent: that vocation is not spawnable in this space. " <>
-      "Allowed vocations: #{labels}. Retry passing one as `vocation_id`."
+      "Allowed vocations: #{labels}. Retry passing one as `vocation`."
+  end
+
+  defp spawn_error_message({:vocation_not_found, slug}) do
+    "Could not spawn agent: no vocation with slug #{inspect(slug)} exists. " <>
+      "Retry with a valid `vocation` slug."
   end
 
   defp spawn_error_message(reason), do: "Could not spawn agent: #{inspect(reason)}"
@@ -199,7 +206,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
   defp spawn_opts_from_args(tc) do
     %{
       name: extract_string_arg(tc, "name"),
-      vocation_id: extract_int_arg(tc, "vocation_id"),
+      vocation: extract_string_arg(tc, "vocation"),
       clone_context: extract_bool_arg(tc, "clone_context", false),
       model: extract_string_arg(tc, "model"),
       query: extract_string_arg(tc, "query"),
@@ -240,7 +247,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
       |> Enum.map(fn info ->
         %{
           name: info.name,
-          vocation_id: info.vocation_id,
+          vocation: info.vocation_slug,
           status: info.status,
           depth: info.depth
         }
@@ -374,6 +381,53 @@ defmodule Nest.Agents.Agent.ToolLoop do
         "Agent #{target} not found in this space: #{inspect(reason)}",
         true
       )
+
+  # `agents-send`: asynchronously deliver a message to another agent in
+  # this space. Unlike `agents-query`, it never waits for a turn: the
+  # target either starts one (idle) or queues the message (busy). The
+  # call goes straight to the target's GenServer so two agents messaging
+  # each other cannot deadlock through the sender's mailbox.
+  defp run_send_agent(ctx, %ToolCall{} = tc) do
+    target = extract_string_arg(tc, "name")
+    message = extract_string_arg(tc, "message")
+
+    cond do
+      target == "" ->
+        build_tool_result(tc, "agents-send", "Missing required argument: name.", true)
+
+      message == "" ->
+        build_tool_result(tc, "agents-send", "Missing required argument: message.", true)
+
+      true ->
+        deliver_to_target(ctx, tc, target, message)
+    end
+  end
+
+  defp deliver_to_target(ctx, tc, target, message) do
+    case Nest.Agents.send_message(ctx.space_id, ctx.agent_name, target, message) do
+      {:ok, :delivered} ->
+        build_tool_result(tc, "agents-send", "Message delivered to #{target}.")
+
+      {:ok, :queued} ->
+        build_tool_result(tc, "agents-send", "Message queued for #{target} (busy).")
+
+      {:error, :not_found} ->
+        build_tool_result(tc, "agents-send", "Agent #{target} not found in this space.", true)
+
+      {:error, reason} ->
+        build_tool_result(tc, "agents-send", send_error_message(target, reason), true)
+    end
+  end
+
+  defp send_error_message(target, :inbox_full) do
+    "Could not send to #{target}: its inbox is full."
+  end
+
+  defp send_error_message(target, {:status, status}) do
+    "Could not send to #{target}: it is in a #{status} state."
+  end
+
+  defp send_error_message(target, reason), do: "Could not send to #{target}: #{inspect(reason)}"
 
   # `agents-archive`: stop + mark an existing agent in this
   # space archived. Routes through the parent GenServer so the

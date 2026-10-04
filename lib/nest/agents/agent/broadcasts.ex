@@ -205,6 +205,18 @@ defmodule Nest.Agents.Agent.Broadcasts do
     Phoenix.PubSub.broadcast(PubSub, topic(space_id, name), {:chat_notification, payload})
   end
 
+  # Broadcasts the agent's current async inbox (queued `agents-send`
+  # messages) so the UI can show and count them. Fired on every queue
+  # change and on drain (an empty list clears the panel). `messages` is
+  # the already-serialized list (`Inbox.serialize/1`).
+  def inbox(state, messages) do
+    Phoenix.PubSub.broadcast(
+      PubSub,
+      topic(state.space_id, state.name),
+      {:chat_inbox, %{messages: messages, count: length(messages)}}
+    )
+  end
+
   # Broadcasts a streaming text delta with character position
   # metadata. The frontend uses `chars_start`/`chars_end` to splice
   # the delta into the assistant message without flicker.
