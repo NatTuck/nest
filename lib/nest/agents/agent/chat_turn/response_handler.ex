@@ -44,6 +44,7 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
   alias Nest.Agents.Agent.ChatTurn.NoticeInjector
   alias Nest.Agents.Agent.ChatTurn.State
   alias Nest.LLM.RunResponse
+  alias Nest.Messages.Assistant
   alias Nest.Messages.Part
   alias Nest.Messages.Tool
   alias Nest.Tokens.Budget
@@ -174,11 +175,24 @@ defmodule Nest.Agents.Agent.ChatTurn.ResponseHandler do
       RunResponse.has_tool_calls?(response) ->
         handle_normal_tool_calls(response, state, assistant_msg)
 
+      empty_assistant?(assistant_msg) ->
+        # A provider response with no text, thinking, refusal, or tool
+        # call at all would persist a zero-part assistant message. Never
+        # do that: surface it as a non-empty error and end the turn.
+        send(
+          state.ctx.agent_pid,
+          {:llm_error, "The model returned a response with no content."}
+        )
+
+        Lifecycle.finalize_turn(state)
+
       true ->
         persist_assistant(state, assistant_msg)
         finalize_or_reprompt(response, state)
     end
   end
+
+  defp empty_assistant?({:assistant, %Assistant{parts: parts}}), do: parts == []
 
   # Persist the assistant message through the Agent's canonical append path.
   # Tool-call responses are persisted only once their batch is confirmed to

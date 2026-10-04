@@ -27,10 +27,10 @@ defmodule Nest.Agents.Agent.WireInvariantTest do
       finalizes — no LLM call is made with assistant at the
       tail.
 
-    * **Stop-before-any-delta**: the placeholder assistant
-      message in `Nest.Messages.Streaming.partial_message/2`
-      (the `nil` branch) maintains alternation when the user
-      stops a chat turn before the first delta arrives.
+    * **Stop-before-any-delta**: `ChatTurnHandler.finalize_partial_if_any/2`
+      closes the turn with a non-empty recovery (`MessageList.pairing_bridge/2`)
+      when the user stops before the first delta arrives. No empty message
+      is ever persisted, and the list stays alternation-valid.
 
   These tests pin each of those scenarios at the unit level.
   """

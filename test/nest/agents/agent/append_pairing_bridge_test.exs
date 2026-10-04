@@ -259,6 +259,54 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
     end
   end
 
+  describe "MessageAppender live path (a turn owns the sequence)" do
+    test "the real tool result lands alone — no synthetic repair" do
+      name = unique_name("live-tool-result")
+      {:ok, _} = Persistence.insert_agent(agent_attrs(name))
+
+      initial = [system(0), user(1), assistant_tool_use(2, "call_1")]
+      insert_messages(name, initial)
+
+      state = state(name, initial) |> live(:executing_tools)
+
+      {stamped, state} = MessageAppender.append_one(state, tool_result(nil, "call_1"))
+
+      assert {:tool, %Tool{index: 3, parts: [%Part.ToolResult{tool_call_id: "call_1"}]}} = stamped
+
+      assert Enum.map(state.chat_state.messages, &role/1) == [:system, :user, :assistant, :tool]
+
+      assert Enum.map(Persistence.load_messages(test_space_id(), name), &index/1) == [0, 1, 2, 3]
+    end
+
+    test "appending anything but the tool result while a live tool_use is pending raises" do
+      name = unique_name("live-orphan-append")
+      {:ok, _} = Persistence.insert_agent(agent_attrs(name))
+
+      initial = [system(0), user(1), assistant_tool_use(2, "call_1")]
+      insert_messages(name, initial)
+
+      state = state(name, initial) |> live(:executing_tools)
+
+      assert_raise ArgumentError, ~r/live tool_use/, fn ->
+        MessageAppender.append_one(state, user("sneaky user"))
+      end
+    end
+
+    test "appending a second consecutive assistant while streaming raises" do
+      name = unique_name("live-alternation")
+      {:ok, _} = Persistence.insert_agent(agent_attrs(name))
+
+      initial = [system(0), user(1), assistant_text(2)]
+      insert_messages(name, initial)
+
+      state = state(name, initial) |> live(:streaming)
+
+      assert_raise ArgumentError, ~r/second consecutive assistant/, fn ->
+        MessageAppender.append_one(state, assistant_text(nil))
+      end
+    end
+  end
+
   describe "MessageAppender append ordering" do
     test "persists before broadcasting so the UI never sees an uncommitted row" do
       name = unique_name("append-order")
@@ -297,6 +345,10 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
       llm_metrics: %Agent.LlmMetrics{context_limit: 100_000, context_limit_source: :config},
       chat_state: %Agent.ChatState{messages: messages, next_message_index: next_index(messages)}
     }
+  end
+
+  defp live(state, status) do
+    %{state | live: %Agent.ChatState.Live{status: status, chat_turn_pid: self()}}
   end
 
   defp insert_messages(name, messages) do

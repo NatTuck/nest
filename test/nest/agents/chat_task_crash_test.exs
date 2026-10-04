@@ -254,4 +254,34 @@ defmodule Nest.Agents.ChatTaskCrashTest do
       assert state.live.chat_turn_pid == nil
     end
   end
+
+  describe "contentless provider response" do
+    test "never persists an empty assistant message", %{} do
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+
+      MockClient.set_response("")
+
+      capture_log(fn ->
+        :ok = Agent.chat(pid, "Hello")
+
+        assert_receive {:chat_status, %{status: "idle"}}, 1000
+        assert_received {:chat_error, %{content: content}}
+        assert content =~ "no content"
+      end)
+
+      state = :sys.get_state(pid)
+
+      # No message in the list is empty.
+      refute Enum.any?(state.chat_state.messages, fn
+               {_role, %{parts: []}} -> true
+               _ -> false
+             end)
+
+      # The turn still produced a non-empty assistant error message.
+      assert Enum.any?(state.chat_state.messages, fn
+               {:assistant, %Assistant{parts: [_ | _]}} -> true
+               _ -> false
+             end)
+    end
+  end
 end

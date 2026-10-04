@@ -49,6 +49,8 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
   alias Nest.Agents.Agent.SubAgent
   alias Nest.Agents.Registry, as: AgentsRegistry
   alias Nest.LLM.Client
+  alias Nest.Messages.Assistant
+  alias Nest.Messages.MessageList
   alias Nest.Messages.Streaming
 
   require Logger
@@ -58,12 +60,24 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
   GenServer's reply tuple.
   """
   @spec handle(term(), Nest.Agents.Agent.t()) :: GenServer.reply()
-  def handle({:chat_idle, _chat_turn_pid}, state) do
-    chat_idle(state)
+  def handle({:chat_idle, chat_turn_pid}, state) do
+    if stale_turn_event?(chat_turn_pid, state) do
+      {:noreply, state}
+    else
+      chat_idle(state)
+    end
   end
 
-  def handle({:chat_stopped, _chat_turn_pid}, state) do
-    chat_stopped(state)
+  def handle({:chat_stopped, chat_turn_pid}, state) do
+    # A user Stop must always win, even if the compactor (or a resume)
+    # reassigned `chat_turn_pid` after the stop was requested — that is
+    # what `cancelled` records. A `chat_stopped` from a superseded turn
+    # with no outstanding cancel is stale and ignored.
+    if state.live.cancelled or not stale_turn_event?(chat_turn_pid, state) do
+      chat_stopped(state)
+    else
+      {:noreply, state}
+    end
   end
 
   def handle({:chat_crashed, exception, stacktrace}, state) do
@@ -90,6 +104,16 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
 
   def handle({:set_context_projection, tokens}, state) do
     set_context_projection(tokens, state)
+  end
+
+  # A lifecycle event from a superseded ChatTurn — a real pid that is not
+  # the turn now owning the sequence. Such an event must be ignored,
+  # otherwise it silently force-idles the live turn: skipping its LLM
+  # call and fabricating a terminal message. Non-pid senders (tests, an
+  # untracked turn) are not stale.
+  defp stale_turn_event?(chat_turn_pid, state) do
+    is_pid(chat_turn_pid) and is_pid(state.live.chat_turn_pid) and
+      state.live.chat_turn_pid != chat_turn_pid
   end
 
   # The ChatTurn finished its iteration normally. Clear
@@ -190,12 +214,11 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
   # message tagged with `metadata.stopped_by_user: true`,
   # transition to :idle, and clear bookkeeping.
   #
-  # If the streaming_acc accumulator is `nil` (no deltas
-  # arrived before the stop), we still append a placeholder
-  # message with `content: nil` and `metadata.stopped_by_user: true`
-  # so the message list is consistent — the user clicked
-  # Stop, so the assistant turn exists, just empty.
-  defp chat_stopped(state), do: {:noreply, force_idle(state)}
+  # If the streaming_acc accumulator is `nil` (no deltas arrived before
+  # the stop), no assistant message is inserted at all: empty messages
+  # are never persisted. The terminal sequence is closed with a
+  # non-empty recovery instead (see `finalize_partial_if_any/2`).
+  defp chat_stopped(state), do: {:noreply, force_idle(state, stopped_metadata())}
 
   # Force the agent back to `:idle` from any busy state. Always stops any
   # pending child queries (the cascade is meaningful even when the agent
@@ -205,20 +228,20 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
   # `:chat_stopped` cast and the bounded `:stop_fallback` can race
   # without double-finalizing.
   @doc false
-  @spec force_idle(Nest.Agents.Agent.t()) :: Nest.Agents.Agent.t()
-  def force_idle(state) do
+  @spec force_idle(Nest.Agents.Agent.t(), map()) :: Nest.Agents.Agent.t()
+  def force_idle(state, metadata \\ stopped_metadata()) do
     state = SubAgent.stop_pending_children(state)
 
     if state.live.status == :idle and is_nil(state.live.chat_turn_pid) and
          is_nil(state.live.streaming_acc) do
       state
     else
-      finalize_stopped(state)
+      finalize_stopped(state, metadata)
     end
   end
 
-  defp finalize_stopped(state) do
-    state = finalize_partial_if_any(state)
+  defp finalize_stopped(state, metadata) do
+    state = finalize_partial_if_any(state, metadata)
 
     state = %{
       state
@@ -244,7 +267,7 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
         Process.exit(chat_turn_pid, :kill)
       end
 
-      {:noreply, force_idle(state)}
+      {:noreply, force_idle(state, stopped_metadata())}
     else
       {:noreply, state}
     end
@@ -256,7 +279,7 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
   # silent; anything else is surfaced as a `chat:error`.
   defp chat_turn_down(pid, reason, state) do
     if state.live.chat_turn_pid == pid do
-      state = finalize_partial_if_any(state)
+      state = finalize_partial_if_any(state, error_metadata())
 
       state = %{
         state
@@ -309,7 +332,7 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
   """
   @spec spawn_failed(Nest.Agents.Agent.t(), String.t()) :: Nest.Agents.Agent.t()
   def spawn_failed(state, reason) do
-    state = force_idle(state)
+    state = force_idle(state, error_metadata())
 
     Broadcasts.error(
       state.space_id,
@@ -341,7 +364,7 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
   # Enumerable ... Got value: nil` from deep in the
   # call chain.
   defp chat_crashed(exception, stacktrace, state) do
-    state = finalize_partial_if_any(state)
+    state = finalize_partial_if_any(state, error_metadata())
 
     error_msg = format_chat_task_error(exception, stacktrace)
 
@@ -448,24 +471,73 @@ defmodule Nest.Agents.Agent.Handlers.ChatTurnHandler do
 
   defp set_context_projection(_other, state), do: {:noreply, state}
 
-  # Finalize the streaming_acc accumulator (Agent-side)
-  # into a normal assistant message and append it via the
-  # canonical path. Returns the new state.
+  # Close out a turn that ended without a normal completion (stop, crash,
+  # ChatTurn death, saturation). Never persists an empty message:
   #
-  # Always appends a message — even if the streaming_acc
-  # accumulator is `nil` (no deltas arrived) or empty
-  # (zero text/thinking).
-  # The user clicked Stop during a turn, so the assistant
-  # turn exists; we just record it as empty. The message
-  # carries `metadata.stopped_by_user: true` so the UI
-  # can render a "stopped" indicator.
-  defp finalize_partial_if_any(state) do
-    final_message =
-      Streaming.partial_message(state.live.streaming_acc, %{"stopped_by_user" => true})
+  #   * if the turn streamed visible content, that partial is the
+  #     terminal assistant message;
+  #   * otherwise the terminal sequence is closed with a non-empty
+  #     recovery (`pairing_bridge/2` answers a live-but-abandoned
+  #     `tool_use` and/or acknowledges a dangling user tail) so the next
+  #     send is wire-valid.
+  #
+  # `metadata` tags the recovery with the real cause (`stopped_by_user`,
+  # `error`) so the UI can render the right indicator.
+  defp finalize_partial_if_any(state, metadata) do
+    state
+    |> terminal_messages(metadata)
+    |> Enum.reduce(state, fn message, acc ->
+      {_stamped, acc} = Nest.Agents.Agent.__append_message__(acc, message)
+      acc
+    end)
+    |> clear_streaming()
+  end
 
-    {_stamped, state} = Nest.Agents.Agent.__append_message__(state, final_message)
+  defp clear_streaming(state) do
     %{state | live: %{state.live | streaming_acc: nil, tool_index_map: %{}}}
   end
+
+  defp terminal_messages(state, metadata) do
+    messages = state.chat_state.messages
+
+    case partial_message(state.live.streaming_acc, metadata) do
+      # Nothing streamed (or only a stale accumulator whose content is
+      # already represented by a trailing assistant): close the sequence
+      # with the non-empty recovery instead.
+      nil ->
+        recovery_messages(messages, metadata)
+
+      partial ->
+        case MessageList.last_wire_role(messages) do
+          :assistant -> recovery_messages(messages, metadata)
+          _ -> [partial]
+        end
+    end
+  end
+
+  defp recovery_messages(messages, metadata) do
+    messages
+    |> MessageList.pairing_bridge(MessageList.continuation_prompt())
+    |> Enum.map(&tag_metadata(&1, metadata))
+  end
+
+  # A nil or all-empty accumulator yields no message (never an empty one).
+  defp partial_message(nil, _metadata), do: nil
+
+  defp partial_message(acc, metadata) do
+    case Streaming.partial_message(acc, metadata) do
+      {:assistant, %Assistant{parts: []}} -> nil
+      partial -> partial
+    end
+  end
+
+  defp tag_metadata({:assistant, %Assistant{} = msg}, metadata),
+    do: {:assistant, %{msg | metadata: metadata}}
+
+  defp tag_metadata(other, _metadata), do: other
+
+  defp stopped_metadata, do: %{"stopped_by_user" => true}
+  defp error_metadata, do: %{"error" => true}
 
   # Build the user-facing error message. We lead with
   # the exception's message (the part the user is most

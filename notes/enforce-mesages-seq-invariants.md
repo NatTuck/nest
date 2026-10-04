@@ -128,8 +128,24 @@ The single writer is `Nest.Agents.Agent.MessageAppender`. Every live
 append flows through it (`append_one/2`, `handle_batch/2`,
 `append_in_process/2`); `history` appends (`append_history_one/2`) are exempt.
 
+**Repair never runs on the live path.** Sequence validity is a function of
+the live turn, not of the message list in isolation:
+
+- While a turn is live (`:streaming`, `:executing_tools`, `:compacting`) the
+  turn owns the sequence. `MessageAppender` appends the requested message
+  directly — no bridge. A trailing `tool_use` is *expected* while its tool
+  worker runs (the real `tool_result` is the next message), so it must never
+  be answered synthetically.
+- A live append that does not fit the turn's wire sequence (a non-result
+  appended while a live `tool_use` is unanswered, or two consecutive
+  same-role messages) is a bug. `MessageAppender` **fails loudly** (raises)
+  rather than silently repairing.
+- At a terminal boundary (an idle agent, or `ChatTurnHandler` closing a turn)
+  the sequence may be healed by `MessageList.pairing_bridge/2` before the
+  requested message lands.
+
 `Nest.Messages.MessageList.pairing_bridge(messages, incoming) :: [message]`
-returns the repair messages to append before `incoming`:
+(terminal use only) returns the repair messages to append before `incoming`:
 
 - If the trailing message is an assistant with `Part.ToolUse` parts, compute
   the ids not answered by `incoming`.
@@ -149,17 +165,10 @@ returns the repair messages to append before `incoming`:
 - `incoming` being a complete matching `{:tool, _}` yields `[]` — a matching
   result is never duplicated.
 
-`MessageAppender` appends and persists the repair messages via the canonical
-path (stamped, broadcast, visible — never hidden) before the requested message.
-
-Return contracts are preserved: `append_one/2` still returns the requested
-stamped message; `handle_batch/2` returns every stamped message including the
-repair messages.
-
 This is what makes the `visual-possum-root` failure impossible on the live
-path: the next user message can no longer be appended after an unpaired
-`tool_use` without first writing an `is_error` tool result (and the
-alternation-preserving ack).
+path: repair can no longer race a live turn (it was the source of duplicate
+`tool_result`s and the empty messages that followed), and an invalid live
+append surfaces immediately instead of being papered over.
 
 ## 4. On-load validation (detect + classify) — DONE
 
@@ -215,16 +224,19 @@ now reads the Agent's tail:
   cancelled → append the canonical `is_error` result and `:iterate`
   again, so the model sees the failure and can retry or move on;
 - turn **cancelled** (user Stop) → stop as before; the Agent's
-  `finalize_partial_if_any/1` append triggers `pairing_bridge/2`, which
-  leaves a durable error result, then idles;
+  `finalize_partial_if_any/2` closes the sequence with `pairing_bridge/2`
+  (a durable error result plus an acknowledgement where needed), then idles.
+  It never appends an empty message: a turn that streamed nothing is closed
+  with a non-empty recovery only;
 - HTTP worker / no pending call → unchanged (`:normal` clears,
   `:shutdown`/`:killed` finalize quietly, anything else
   `chat_crashed`).
 
-The append-time bridge (§3) still covers every *other* end-of-turn
-path (stop, crash handlers) by answering the orphan before the
-placeholder lands. A hard BEAM/container kill runs no handler at all;
-that case is what §4's load-time heal cleans up.
+`ChatTurnHandler.finalize_partial_if_any/2` is the single terminal path
+shared by stop, crash, saturation, and ChatTurn death; it is the only
+caller of `pairing_bridge/2` outside the offline tool. A hard
+BEAM/container kill runs no handler at all; that case is what §4's
+load-time heal cleans up.
 
 ## 4c. Persist before broadcast — DONE
 

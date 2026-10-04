@@ -235,26 +235,19 @@ defmodule Nest.Messages.Streaming do
   Build an `{:assistant, %Assistant{}}` from an in-flight accumulator,
   tagged with `metadata`. `parts` comes from `finalize/1`; the index is
   cleared (the Agent stamps it on append) and `api_logs` is empty (a
-  partial/errored turn has no completed response log). A `nil`
-  accumulator (nothing streamed) yields an empty assistant message.
+  partial/errored turn has no completed response log).
 
-  Used by the stop path (`ChatTurnHandler.finalize_partial_if_any/1`)
+  There is deliberately no `nil`-accumulator clause: nothing streamed
+  means no assistant message exists, and an empty message must never be
+  built or persisted. Callers with a possibly-nil accumulator must
+  branch themselves (see `ChatTurnHandler.partial_message/2`).
+
+  Used by the stop path (`ChatTurnHandler.finalize_partial_if_any/2`)
   and the stream-error path (`LLMStreamHandler.llm_error/2`) so both
   persist whatever the model had streamed before the turn ended.
   """
-  @spec partial_message(AssistantAccumulator.t() | nil, map()) ::
+  @spec partial_message(AssistantAccumulator.t(), map()) ::
           {:assistant, Assistant.t()}
-  def partial_message(nil, metadata) do
-    {:assistant,
-     %Assistant{
-       index: nil,
-       timestamp: DateTime.utc_now(),
-       parts: [],
-       api_logs: [],
-       metadata: metadata
-     }}
-  end
-
   def partial_message(%AssistantAccumulator{} = acc, metadata) do
     finalized = finalize(acc)
 

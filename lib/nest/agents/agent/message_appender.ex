@@ -57,8 +57,17 @@ defmodule Nest.Agents.Agent.MessageAppender do
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Persistence, as: AgentPersistence
   alias Nest.Messages.MessageList
+  alias Nest.Messages.Part
   alias Nest.Messages.Sanitize
+  alias Nest.Messages.Tool
   alias Nest.Tokens.PreFlight
+
+  # A turn is "live" (owns the sequence) while the LLM is streaming a
+  # reply or a tool worker is executing the trailing `tool_use`. In
+  # these states an append is normal turn progress, never repair
+  # material: the wire sequence is defined by the turn, not by the
+  # message list in isolation.
+  @live_statuses [:streaming, :executing_tools, :compacting]
 
   @doc """
   `handle_call/3` for the single-message case. Resets the
@@ -177,10 +186,21 @@ defmodule Nest.Agents.Agent.MessageAppender do
     {stamped, state}
   end
 
-  # Append the sequence-repair messages (if any) followed by the
-  # requested message, all through one state mutation. Returns
-  # `{[stamped_messages...], new_state}` with the requested message
-  # last.
+  # Append the requested message. While a turn is live the sequence is
+  # owned by that turn and repair must never fire (it would race the
+  # turn and, e.g., answer a `tool_use` whose tool worker is still about
+  # to deliver the real result). At a terminal boundary the sequence may
+  # be healed by `pairing_bridge/2` before the requested message lands.
+  #
+  # Returns `{[stamped_messages...], new_state}` with the requested
+  # message last.
+  defp append_with_bridge(%{live: %{status: status}} = state, message)
+       when status in @live_statuses do
+    assert_valid_live_append!(state, message)
+    {stamped, state} = append_stamped(state, message)
+    {[stamped], state}
+  end
+
   defp append_with_bridge(state, message) do
     bridge = MessageList.pairing_bridge(state.chat_state.messages, message)
 
@@ -189,6 +209,51 @@ defmodule Nest.Agents.Agent.MessageAppender do
       {acc ++ [stamped], state}
     end)
   end
+
+  # Fail loudly rather than silently repair: during a live turn the only
+  # legal next message is one that fits the wire sequence the turn is
+  # in. A trailing `tool_use` owned by a live worker must be answered by
+  # its tool result; otherwise roles must alternate.
+  defp assert_valid_live_append!(state, message) do
+    messages = state.chat_state.messages
+
+    case MessageList.unpaired_tail_tool_uses(messages) do
+      [] ->
+        assert_alternating!(state, messages, message)
+
+      pending ->
+        pending_ids = MapSet.new(pending, & &1.id)
+
+        if MapSet.disjoint?(pending_ids, answered_tool_ids(message)) do
+          raise ArgumentError,
+                "MessageAppender: refusing to append #{inspect(wire_role(message))} while " <>
+                  "#{MapSet.size(pending_ids)} live tool_use id(s) are unanswered " <>
+                  "(agent #{state.name}). Repair does not run on the live path."
+        end
+    end
+  end
+
+  defp assert_alternating!(state, messages, message) do
+    last = MessageList.last_wire_role(messages)
+    new = wire_role(message)
+
+    if last != nil and new == last do
+      raise ArgumentError,
+            "MessageAppender: refusing to append a second consecutive #{new} message " <>
+              "(agent #{state.name}). Repair does not run on the live path."
+    end
+  end
+
+  defp wire_role({:user, _}), do: :user
+  defp wire_role({:tool, _}), do: :user
+  defp wire_role({:assistant, _}), do: :assistant
+  defp wire_role(_), do: nil
+
+  defp answered_tool_ids({:tool, %Tool{parts: parts}}) when is_list(parts) do
+    for %Part.ToolResult{tool_call_id: id} <- parts, into: MapSet.new(), do: id
+  end
+
+  defp answered_tool_ids(_), do: MapSet.new()
 
   # The raw stamp/broadcast/persist step. No sequence repair here —
   # `append_with_bridge/2` calls this once per message.
