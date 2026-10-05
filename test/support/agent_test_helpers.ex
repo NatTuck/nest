@@ -157,7 +157,37 @@ defmodule Nest.Agents.AgentTestHelpers do
          api_logs: []
        }}
 
-    send(agent_pid, {:compaction_done, summary_text, [], summary_assistant, carried_entry})
+    # Put the machine into the compactor's generating phase with an empty
+    # staged request, then deliver the `:compaction_ok` fact the executor's
+    # commit path consumes.
+    :sys.replace_state(agent_pid, fn state ->
+      machine = state.live.machine
+
+      machine = %{
+        machine
+        | kind: :compaction,
+          phase: :generating,
+          entry: {:compaction, [], carried_entry},
+          work: %{
+            machine.work
+            | worker_kind: :http,
+              active_message_index: state.chat_state.next_message_index
+          }
+      }
+
+      %{state | live: %{state.live | machine: machine}}
+    end)
+
+    send(
+      agent_pid,
+      {:compaction_ok,
+       %{
+         summary_text: summary_text,
+         staged: [],
+         summary_assistant: summary_assistant,
+         carried_entry: carried_entry
+       }}
+    )
   end
 
   # Hand the test process ownership links to the freshly-spawned

@@ -6,7 +6,7 @@ defmodule Nest.LLM.RecoveryClient do
 
   The agent's `Agent.init/1` constructs a `%ClientConfig{client: RecoveryClient}`
   in this situation so the GenServer can still start (in the
-  `:model_missing` observable status, via `Machine.to_blocked/2`). The
+  `:model_missing` observable status, via a blocked machine phase). The
   runtime channel and GenServer blocks inbound `chat:message` traffic
   while in this state, so `run/2` is never invoked in normal operation.
 

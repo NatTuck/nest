@@ -20,8 +20,8 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
 
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Broadcasts
-  alias Nest.Agents.Agent.Handlers.LLMStreamHandler
   alias Nest.Agents.Agent.MessageAppender
+  alias Nest.Agents.Agent.Turn
   alias Nest.LLM.Preflight
   alias Nest.Messages.Assistant
   alias Nest.Messages.MessageList
@@ -375,7 +375,7 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
     end
   end
 
-  describe "LLMStreamHandler.tool_results_received/2 staleness guard" do
+  describe "stale tool-result guard" do
     test "drops a late result when an earlier result already answered the call" do
       name = unique_name("stale-tool-result")
       {:ok, _} = Persistence.insert_agent(agent_attrs(name))
@@ -383,21 +383,13 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
       initial = [system(0), user(1), assistant_tool_use(2, "call_1"), tool_result(3, "call_1")]
       insert_messages(name, initial)
 
-      # The turn already finalized (idle): a late result for call_1 would be
-      # an orphan. It must be dropped, not appended.
+      # The machine is idle: a late result for call_1 would be an orphan.
+      # It must be dropped, not appended.
       state = state(name, initial)
 
-      log =
-        capture_log(fn ->
-          assert {:noreply, ^state} =
-                   LLMStreamHandler.handle(
-                     {:tool_results_received, tool_result(nil, "call_1")},
-                     state
-                   )
-        end)
+      assert {:ok, final} = Turn.settle(state, {:tool_results, make_ref(), []})
 
-      assert log =~ "dropping stale/duplicate result"
-      assert Enum.map(state.chat_state.messages, &role/1) == [:system, :user, :assistant, :tool]
+      assert Enum.map(final.chat_state.messages, &role/1) == [:system, :user, :assistant, :tool]
       assert Enum.map(Persistence.load_messages(test_space_id(), name), &index/1) == [0, 1, 2, 3]
     end
 
@@ -417,16 +409,7 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
 
       state = state(name, initial)
 
-      log =
-        capture_log(fn ->
-          assert {:noreply, ^state} =
-                   LLMStreamHandler.handle(
-                     {:tool_results_received, tool_result(nil, "call_1")},
-                     state
-                   )
-        end)
-
-      assert log =~ "dropping stale/duplicate result"
+      assert {:ok, _final} = Turn.settle(state, {:tool_results, make_ref(), []})
 
       assert Enum.map(Persistence.load_messages(test_space_id(), name), &index/1) == [
                0,

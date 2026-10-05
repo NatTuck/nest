@@ -63,12 +63,12 @@ defmodule Nest.Agents.Agent.MessageAppender do
   alias Nest.Messages.Sanitize
   alias Nest.Tokens.PreFlight
 
-  # A turn is "live" (owns the sequence) while the LLM is streaming a
-  # reply or a tool worker is executing the trailing `tool_use`. In these
-  # states an append is normal turn progress, never repair material: the
-  # wire sequence is defined by the turn, not by the message list in
-  # isolation.
-  @live_statuses [:streaming, :executing_tools, :compacting]
+  # A turn owns the sequence (so repair must never fire) while the machine
+  # is `:generating` or `:executing_tools`. The compactor's `:committing`
+  # phase is terminal for repair purposes: the compactor turn is over and
+  # the commit writes a fresh segment, so the tail may need a bridge (the
+  # legacy commit reset to idle before appending for the same reason).
+  @live_phases [:generating, :executing_tools]
 
   @type append_result ::
           {:ok, term() | [term()], Agent.t()}
@@ -211,7 +211,7 @@ defmodule Nest.Agents.Agent.MessageAppender do
     end)
   end
 
-  defp live_turn?(state), do: Machine.status_for(state.live.machine) in @live_statuses
+  defp live_turn?(state), do: state.live.machine.phase in @live_phases
 
   # The raw stamp/broadcast/persist step. No sequence repair here.
   # Returns `{:ok, stamped, state}` or `{:invalid, reason, state}` when

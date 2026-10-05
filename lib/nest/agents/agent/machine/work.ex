@@ -12,6 +12,7 @@ defmodule Nest.Agents.Agent.Machine.Work do
   context limit, the request message list). `worker_ref` is the
   `make_ref/0` token handed to the active HTTP/tool worker; worker
   results are applied only when their ref and phase match the live turn.
+  `preflight` caches the pending tool batch while its fit check runs.
   """
 
   defstruct ctx: nil,
@@ -23,7 +24,8 @@ defmodule Nest.Agents.Agent.Machine.Work do
             worker_ref: nil,
             worker_kind: nil,
             active_message_index: 0,
-            pending_notice: nil
+            pending_notice: nil,
+            preflight: nil
 
   @type t :: %__MODULE__{
           ctx: map() | nil,
@@ -35,7 +37,8 @@ defmodule Nest.Agents.Agent.Machine.Work do
           worker_ref: reference() | nil,
           worker_kind: :http | :tools | nil,
           active_message_index: non_neg_integer(),
-          pending_notice: String.t() | nil
+          pending_notice: String.t() | nil,
+          preflight: map() | nil
         }
 
   @doc "Reset the working set."

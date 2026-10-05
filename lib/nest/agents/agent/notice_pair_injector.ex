@@ -128,7 +128,14 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
     end
   end
 
-  defp build_pair(messages, spec, :agent_user) do
+  @doc """
+  Purely build the wire-safe notice pair for `messages` in the given
+  direction. Returns `{:ok, messages}` or `:deferred` when a trailing
+  unpaired `tool_use` makes injection unsafe.
+  """
+  @spec build_pair([term()], spec(), :agent_user | :user_agent) ::
+          {:ok, [term()]} | :deferred
+  def build_pair(messages, spec, :agent_user) do
     last_role = MessageList.last_wire_role(messages)
 
     if last_role == :assistant and trailing_has_tool_use?(messages) do
@@ -153,7 +160,7 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
     end
   end
 
-  defp build_pair(messages, spec, :user_agent) do
+  def build_pair(messages, spec, :user_agent) do
     last_source_role = last_source_role(messages)
 
     cond do

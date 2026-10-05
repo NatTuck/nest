@@ -5,7 +5,7 @@ defmodule Nest.Agents.Agent.Init.NeedsRepair do
   (`notes/enforce-mesages-seq-invariants.md` §4).
 
   The agent process still starts so its history stays viewable, but the
-  observable status becomes `:needs_repair` (via `Machine.to_blocked/2`):
+  observable status becomes `:needs_repair` (via a `{:blocked, :needs_repair, _}` machine event):
   `Nest.Agents.Agent.Callbacks.chat_or_drop/3` and the agent channel
   both refuse `chat:message`, and a `chat:status` broadcast tells the
   UI to show the repair banner. Recovery is offline: run
@@ -21,11 +21,13 @@ defmodule Nest.Agents.Agent.Init.NeedsRepair do
   @spec block(Nest.Agents.Agent.t(), [Preflight.violation()], String.t() | nil) ::
           Nest.Agents.Agent.t()
   def block(state, violations, repair_command) do
+    {:ok, _actions, machine} = Machine.step(state.live.machine, {:blocked, :needs_repair, nil})
+
     state = %{
       state
       | live: %{
           state.live
-          | machine: Machine.to_blocked(state.live.machine, :needs_repair),
+          | machine: machine,
             repair: %{violations: violations, command: repair_command}
         }
     }

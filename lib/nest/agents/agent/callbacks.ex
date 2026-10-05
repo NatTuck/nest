@@ -16,7 +16,6 @@ defmodule Nest.Agents.Agent.Callbacks do
   """
 
   alias Nest.Agents.Agent.ChatPipeline
-  alias Nest.Agents.Agent.Compaction.ResultHandler
   alias Nest.Agents.Agent.Handlers
   alias Nest.Agents.Agent.Inbox
   alias Nest.Agents.Agent.Init
@@ -24,7 +23,7 @@ defmodule Nest.Agents.Agent.Callbacks do
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.MessageAppender
   alias Nest.Agents.Agent.SubAgent
-  alias Nest.Agents.Agent.Turn.Lifecycle, as: TurnLifecycle
+  alias Nest.Agents.Agent.Turn
 
   # Sub-agent: child finished its turn. Merge usage, drop the
   # pending-child entry, forward the result, broadcast status.
@@ -52,7 +51,8 @@ defmodule Nest.Agents.Agent.Callbacks do
   # child-teardown path. `handle_cast` doesn't route through `Handlers`,
   # so we delegate straight to `TurnHandler.handle/2`.
   def handle_cast({:chat_stopped, from}, state) do
-    Handlers.TurnHandler.handle({:chat_stopped, from}, state)
+    {:ok, state} = Turn.settle(state, {:stop, from})
+    {:noreply, SubAgent.stop_pending_children(state)}
   end
 
   # Defense-in-depth: drop messages while busy. See channel layer.
@@ -153,7 +153,8 @@ defmodule Nest.Agents.Agent.Callbacks do
     # Fully in-process: move to `:stopping`, kill the active worker, and
     # arm the bounded stop timer (which owns the single terminal
     # transition). Idempotent when already stopping or already idle.
-    {:reply, :ok, TurnLifecycle.stop(state, channel_pid)}
+    {:ok, state} = Turn.settle(state, {:stop, channel_pid})
+    {:reply, :ok, state}
   end
 
   # Synchronous retry/loop-ack handlers. The Agent API exposes
@@ -162,12 +163,37 @@ defmodule Nest.Agents.Agent.Callbacks do
   # the agent to actually process the request — the channel's
   # `:reply, :ok, socket` only makes sense after the agent has
   # handled the message.
-  def handle_call(:retry_compaction, from, state) do
-    ResultHandler.handle_call(:retry_compaction, from, state)
+  def handle_call(:retry_compaction, _from, state) do
+    if Machine.status_for(state.live.machine) == :compaction_failed do
+      {:ok, state} = Turn.settle(state, :retry_compaction)
+      {:reply, :ok, state}
+    else
+      require Logger
+
+      Logger.warning(
+        "retry_compaction ignored: agent=#{state.name} " <>
+          "status=#{inspect(Machine.status_for(state.live.machine))} (expected :compaction_failed)"
+      )
+
+      {:reply, :ok, state}
+    end
   end
 
-  def handle_call(:compaction_loop_detected_ok, from, state) do
-    ResultHandler.handle_call(:compaction_loop_detected_ok, from, state)
+  def handle_call(:compaction_loop_detected_ok, _from, state) do
+    if Machine.status_for(state.live.machine) == :compaction_loop_detected do
+      {:ok, state} = Turn.settle(state, :loop_ack)
+      {:reply, :ok, state}
+    else
+      require Logger
+
+      Logger.warning(
+        "compaction_loop_detected_ok ignored: agent=#{state.name} " <>
+          "status=#{inspect(Machine.status_for(state.live.machine))} " <>
+          "(expected :compaction_loop_detected)"
+      )
+
+      {:reply, :ok, state}
+    end
   end
 
   # Catch-all dispatcher for introspection calls.
@@ -184,7 +210,7 @@ defmodule Nest.Agents.Agent.Callbacks do
   defp reply_append({:stale, state}), do: {:reply, :stale, state}
 
   defp reply_append({:invalid, reason, state}) do
-    state = Nest.Agents.Agent.Handlers.TurnHandler.invalid_append_state(state, reason)
+    {:ok, state} = Turn.settle(state, {:append_result, :invalid, reason})
     {:reply, {:error, reason}, state}
   end
 

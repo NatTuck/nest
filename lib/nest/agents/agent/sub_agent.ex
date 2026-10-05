@@ -43,9 +43,9 @@ defmodule Nest.Agents.Agent.SubAgent do
   require Logger
 
   alias Nest.Agents.Agent
-  alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Machine
+  alias Nest.Agents.Agent.Turn
   alias Nest.Agents.Registry, as: AgentsRegistry
   alias Nest.Agents.Supervisor
   alias Nest.LLM.MockClient
@@ -200,10 +200,10 @@ defmodule Nest.Agents.Agent.SubAgent do
     if Map.get(opts, :query, "") != "" do
       archive = Map.get(opts, :archive, false)
 
-      {_result, _actions, machine} =
-        Machine.spawn_child(state.live.machine, child_name, task_pid, archive)
+      {:ok, state} =
+        Turn.settle(state, {:child_spawned, child_name, task_pid, archive})
 
-      put_machine(state, machine)
+      state
     else
       state
     end
@@ -291,9 +291,7 @@ defmodule Nest.Agents.Agent.SubAgent do
   @spec handle_child_completed(Agent.t(), String.t(), String.t(), map()) ::
           {:noreply, Agent.t()}
   def handle_child_completed(state, child_name, response, child_total_usage) do
-    state = apply_child_event(state, {:completed, child_name, response, child_total_usage})
-    Broadcasts.status(state)
-    {:noreply, state}
+    {:noreply, apply_child_event(state, {:completed, child_name, response, child_total_usage})}
   end
 
   @doc """
@@ -306,9 +304,7 @@ defmodule Nest.Agents.Agent.SubAgent do
   """
   @spec handle_child_failed(Agent.t(), String.t(), term()) :: {:noreply, Agent.t()}
   def handle_child_failed(state, child_name, reason) do
-    state = apply_child_event(state, {:failed, child_name, reason})
-    Broadcasts.status(state)
-    {:noreply, state}
+    {:noreply, apply_child_event(state, {:failed, child_name, reason})}
   end
 
   @doc """
@@ -319,9 +315,7 @@ defmodule Nest.Agents.Agent.SubAgent do
   """
   @spec handle_child_terminated(Agent.t(), String.t(), term()) :: {:noreply, Agent.t()}
   def handle_child_terminated(state, child_name, reason) do
-    state = apply_child_event(state, {:terminated, child_name, reason})
-    Broadcasts.status(state)
-    {:noreply, state}
+    {:noreply, apply_child_event(state, {:terminated, child_name, reason})}
   end
 
   # Apply one child lifecycle event to the machine, then run the actions
@@ -329,49 +323,15 @@ defmodule Nest.Agents.Agent.SubAgent do
   # the pre-transition entry (the terminal state clears `worker_ref`), so
   # the executor captures the running map before stepping.
   defp apply_child_event(state, event) do
-    machine = state.live.machine
-    running = machine.children.children
-
-    case Machine.step_children(machine, event) do
-      {:ok, actions, machine} ->
-        state = put_machine(state, machine)
-        Enum.reduce(actions, state, &execute_child_action(&1, running, &2))
-
-      {:ignore, _reason, machine} ->
-        put_machine(state, machine)
-    end
-  end
-
-  defp execute_child_action({:notify_worker, name, result}, running, state) do
-    with %{worker_ref: pid} <- running[name], true <- is_pid(pid) do
-      case result do
-        {:ok, response} -> send(pid, {:spawn_agent_result, name, response})
-        {:error, reason} -> send(pid, {:spawn_agent_error, name, reason})
+    event =
+      case event do
+        {:completed, name, response, usage} -> {:child_completed, name, response, usage}
+        {:failed, name, reason} -> {:child_failed, name, reason}
+        {:terminated, name, reason} -> {:child_terminated, name, reason}
+        {:abandoned, name} -> {:abandon_child, name}
       end
-    else
-      _ -> :ok
-    end
 
-    state
-  end
-
-  defp execute_child_action({:merge_usage, _name, usage}, _running, state) do
-    %{
-      state
-      | llm_metrics: %{
-          state.llm_metrics
-          | descendant_usage: Broadcasts.total_usage(state.llm_metrics.descendant_usage, usage)
-        }
-    }
-  end
-
-  defp execute_child_action({:archive_child, name}, _running, state) do
-    _ = Supervisor.archive_agent(state.space_id, name)
-    state
-  end
-
-  defp execute_child_action({:stop_child, name}, _running, state) do
-    _ = Supervisor.stop_agent(state.space_id, name)
+    {:ok, state} = Turn.settle(state, event)
     state
   end
 

@@ -20,10 +20,9 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
 
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Broadcasts
-  alias Nest.Agents.Agent.ChatPipeline
-  alias Nest.Agents.Agent.Compaction.Trigger
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.ToolFilter
+  alias Nest.Agents.Agent.Turn
   alias Nest.Messages.Assistant
   alias Nest.Messages.Part
   alias Nest.Messages.User
@@ -82,23 +81,23 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
         chat_state: %{state.chat_state | read_files: %{}}
     }
 
-    case preflight_decision(state) do
-      :fits -> insert_notice_now(state)
-      :needs_compaction -> {defer_notice_via_compaction(state), :ok}
-      :cannot_compact -> {clear_pending_notice(state), {:error, :context_overflow}}
-    end
-  end
+    state = %{
+      state
+      | live: %{
+          state.live
+          | machine: %{
+              state.live.machine
+              | work: %{state.live.machine.work | pending_notice: path}
+            }
+        }
+    }
 
-  @doc """
-  Append the pending workspace notice pair (no LLM request) and clear
-  `pending_notice`. Used by `ChatPipeline.resume_pending_notice/1` after a
-  workspace-triggered compaction.
-  """
-  @spec resume_notice(Agent.t()) :: Agent.t()
-  def resume_notice(state) do
-    case state.live.pending_notice do
-      nil -> state
-      _path -> elem(insert_notice_now(state), 0)
+    {:ok, state} = Turn.settle(state, :workspace_notice)
+
+    if Machine.status_for(state.live.machine) == :context_overflow do
+      {state, {:error, :context_overflow}}
+    else
+      {state, :ok}
     end
   end
 
@@ -124,44 +123,6 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
          api_logs: []
        }}
     ]
-  end
-
-  # The workspace notice lands at a terminal boundary (the agent is idle
-  # or `:model_missing`), so the append heals the tail and returns `:ok`.
-  # A `:cannot_compact` tripwire stops the pair (best-effort notice) rather
-  # than crashing the Agent.
-  defp insert_notice_now(state) do
-    state =
-      Enum.reduce_while(notice_pair(state.workspace_path), state, fn msg, acc ->
-        case Agent.__append_message__(acc, msg) do
-          {:ok, _stamped, acc} ->
-            {:cont, acc}
-
-          {:invalid, reason, acc} ->
-            Logger.error("[agent:#{acc.name}] dropping a workspace notice append: #{reason}")
-
-            {:halt, acc}
-
-          {:stale, acc} ->
-            {:halt, acc}
-        end
-      end)
-
-    {clear_pending_notice(state), :ok}
-  end
-
-  defp defer_notice_via_compaction(state) do
-    state = %{state | live: %{state.live | pending_notice: state.workspace_path}}
-    Trigger.post_turn(state)
-  end
-
-  defp clear_pending_notice(state) do
-    %{state | live: %{state.live | pending_notice: nil}}
-  end
-
-  defp preflight_decision(state) do
-    projected = state.chat_state.messages ++ notice_pair(state.workspace_path)
-    ChatPipeline.preflight_decision(projected, state)
   end
 
   defp tool_names(state) do

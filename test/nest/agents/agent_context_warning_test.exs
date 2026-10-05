@@ -19,6 +19,7 @@ defmodule Nest.Agents.AgentContextWarningTest do
 
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Turn.ContextReminder
+  alias Nest.Agents.Agent.Turn.Executor
   alias Nest.Agents.AgentTestHelpers
   alias Nest.LLM.MockClient
   alias Nest.Messages.MessageList
@@ -121,14 +122,21 @@ defmodule Nest.Agents.AgentContextWarningTest do
     assert state.live.context_projection == nil
   end
 
-  test "set_context_projection records the value and ignores non-integers" do
+  test "the projection action records the value and ignores non-integers" do
+    # The projection is written only by the executor's
+    # `:set_context_projection` action; exercise that action directly.
     {pid, _agent_id} = AgentTestHelpers.start_agent(%{})
+    state = :sys.get_state(pid)
 
-    send(pid, {:set_context_projection, 12_345})
-    assert :sys.get_state(pid).live.context_projection == 12_345
+    {state, nil} =
+      Executor.run_all([{:set_context_projection, 12_345}], state)
 
-    send(pid, {:set_context_projection, "nope"})
-    assert :sys.get_state(pid).live.context_projection == 12_345
+    assert state.live.context_projection == 12_345
+
+    {state, nil} =
+      Executor.run_all([{:set_context_projection, "nope"}], state)
+
+    assert state.live.context_projection == 12_345
   end
 
   defp stamped_notice?({_role, %{metadata: %{"context_threshold" => _}}}), do: true

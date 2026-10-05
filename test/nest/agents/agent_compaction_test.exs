@@ -210,10 +210,35 @@ defmodule Nest.Agents.AgentCompactionTest do
         {:assistant,
          %Assistant{index: nil, parts: [%Part.Text{text: summary_text}], api_logs: []}}
 
+      carried_entry = {:tool_call, tool_call_msg, 3, 30}
+
+      :sys.replace_state(pid, fn s ->
+        machine = s.live.machine
+
+        machine = %{
+          machine
+          | kind: :compaction,
+            phase: :generating,
+            entry: {:compaction, [suffix], carried_entry},
+            work: %{
+              machine.work
+              | worker_kind: :http,
+                active_message_index: s.chat_state.next_message_index
+            }
+        }
+
+        %{s | live: %{s.live | machine: machine}}
+      end)
+
       send(
         pid,
-        {:compaction_done, summary_text, [suffix], summary_assistant,
-         {:tool_call, tool_call_msg, 3, 30}}
+        {:compaction_ok,
+         %{
+           summary_text: summary_text,
+           staged: [suffix],
+           summary_assistant: summary_assistant,
+           carried_entry: carried_entry
+         }}
       )
 
       # `:sys.get_state/1` queues behind `:compaction_done` and
@@ -284,12 +309,12 @@ defmodule Nest.Agents.AgentCompactionTest do
       # waits for the assistant message to be finalized before
       # running — but no preflight handler reads it.
       #
-      # Structural assertion: the Compaction.ResultHandler has no
-      # path that consults `streaming_acc`.
-      handler = File.read!("lib/nest/agents/agent/compaction/result_handler.ex")
+      # Structural assertion: the pure preflight/request-staging path has
+      # no branch that consults `streaming_acc` to short-circuit fit.
+      dispatch = File.read!("lib/nest/agents/agent/turn/dispatch.ex")
 
-      refute handler =~ "streaming_acc",
-             "Compaction.ResultHandler must not consult streaming_acc " <>
+      refute dispatch =~ "streaming_acc",
+             "the preflight/request-staging path must not consult streaming_acc " <>
                "(forbidden under the never-overflow constraint)"
     end
   end

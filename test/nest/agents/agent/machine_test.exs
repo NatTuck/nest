@@ -8,9 +8,10 @@ defmodule MachineTest do
   alias Nest.Agents.Agent.Machine
 
   describe "vocabulary" do
-    test "phases and events are declared and blocked is a subset of phases" do
+    test "phases, events, actions are declared and blocked is a subset of phases" do
       refute Enum.empty?(Machine.phases())
       refute Enum.empty?(Machine.events())
+      refute Enum.empty?(Machine.actions())
       assert MapSet.subset?(MapSet.new(Machine.blocked_phases()), MapSet.new(Machine.phases()))
     end
   end
@@ -28,13 +29,18 @@ defmodule MachineTest do
       # (kind: :compaction, phase: :generating); it is not reported as
       # :streaming just because the physical worker is an HTTP worker.
       assert Machine.status_for(Machine.new(kind: :compaction, phase: :generating)) == :compacting
-
       assert Machine.status_for(Machine.new(kind: :chat, phase: :generating)) == :streaming
     end
 
     test "blocked phases report themselves" do
       for phase <- Machine.blocked_phases() do
         assert Machine.status_for(Machine.new(phase: phase)) == phase
+      end
+    end
+
+    test "status_to_machine round-trips the observable status" do
+      for status <- [:idle, :streaming, :executing_tools, :compacting] do
+        assert Machine.status_for(Machine.status_to_machine(%Machine{}, status)) == status
       end
     end
   end
@@ -71,22 +77,18 @@ defmodule MachineTest do
   end
 
   describe "intentional behaviors" do
-    test "chat turn alternates generating and executing_tools" do
-      idle = Machine.new()
+    test "a chat request appends the user message and defers an :iterate" do
+      idle = state_at(:idle)
 
-      {:ok, _actions, generating} = Machine.step(idle, {:chat_request, %{text: "hi"}})
+      {:ok, actions, generating} = Machine.step(idle, {:chat_request, {:user_message, user()}})
+
+      # intentional: the user message append and the worker spawn are
+      # separated by a mailbox `:iterate`, preserving the old driver's
+      # async boundary.
+      assert Enum.any?(actions, &match?({:append, _}, &1))
+      assert :iterate in actions
       assert generating.phase == :generating and generating.kind == :chat
       Machine.validate!(generating)
-
-      {:ok, _actions, tools} =
-        Machine.step(generating, {:http_ok, %{tool_calls: [%{id: "c1"}]}})
-
-      assert tools.phase == :executing_tools
-      Machine.validate!(tools)
-
-      {:ok, _actions, back} = Machine.step(tools, {:tool_results, %{results: []}})
-      assert back.phase == :generating
-      Machine.validate!(back)
     end
 
     test "a late worker result after :stopping is dropped, not appended" do
@@ -97,10 +99,10 @@ defmodule MachineTest do
         Machine.new(phase: :stopping, kind: :chat, work: %Machine.Work{worker_ref: make_ref()})
 
       assert {:ignore, :late_result_after_stop, ^stopping} =
-               Machine.step(stopping, {:http_ok, %{tool_calls: []}})
+               Machine.step(stopping, {:http_ok, make_ref(), response()})
 
       assert {:ignore, :late_result_after_stop, ^stopping} =
-               Machine.step(stopping, {:tool_results, %{results: []}})
+               Machine.step(stopping, {:tool_results, make_ref(), []})
     end
 
     test "a stale result in :idle is a no-op" do
@@ -108,98 +110,99 @@ defmodule MachineTest do
       # ignored, not an error and not an append.
       idle = Machine.new()
 
-      assert {:ignore, :stale_result, ^idle} = Machine.step(idle, {:http_ok, %{tool_calls: []}})
-      assert {:ignore, :stale_result, ^idle} = Machine.step(idle, {:tool_results, %{}})
+      assert {:ignore, :stale_result, ^idle} =
+               Machine.step(idle, {:http_ok, make_ref(), response()})
+
+      assert {:ignore, :stale_result, ^idle} = Machine.step(idle, {:tool_results, make_ref(), []})
     end
 
     test "a mid-turn compaction request switches the turn kind, not an unrelated phase" do
       # intentional: compaction is modeled as (kind: :compaction,
       # phase: :generating), so its observable status is :compacting while
-      # the physical HTTP worker is in flight. Kind is never folded into
-      # phase.
-      generating =
-        Machine.new(phase: :generating, kind: :chat, work: %Machine.Work{worker_kind: :http})
+      # the physical HTTP worker is in flight.
+      generating = state_at(:generating)
 
       {:ok, actions, next} =
         Machine.step(generating, {:compaction_request, {:tool_call, %{}, 1, 10}})
 
       assert next.kind == :compaction and next.phase == :generating
-      assert next.resume == {:tool_call, %{}, 1, 10}
-      assert Enum.any?(actions, &match?({:stage_compaction, _}, &1))
+      assert :iterate in actions
       Machine.validate!(next)
     end
 
     test "stop keeps the worker ref for signaling but clears the worker kind" do
-      # intentional: the executor needs the ref to signal the in-flight
+      # intentional: the executor needs the pid to signal the in-flight
       # task; the phase is no longer "waiting on that kind", so the kind is
       # cleared and the invariant holds.
-      ref = make_ref()
+      pid =
+        spawn(fn ->
+          receive do
+            :stop -> :ok
+          end
+        end)
 
       generating =
         Machine.new(
           phase: :generating,
           kind: :chat,
-          work: %Machine.Work{worker_kind: :http, worker_ref: ref}
+          work: %Machine.Work{worker_kind: :http, worker_ref: make_ref(), active_worker: pid}
         )
 
       {:ok, actions, stopping} = Machine.step(generating, {:stop, self()})
 
       assert stopping.phase == :stopping
       assert stopping.work.worker_kind == nil
-      assert Enum.any?(actions, &match?({:kill, ^ref}, &1))
-      assert Enum.any?(actions, &match?({:arm_timer, _}, &1))
+      assert Enum.any?(actions, &match?({:kill, ^pid}, &1))
+      assert Enum.any?(actions, &match?({:arm_timer, _, :stop_timer}, &1))
       Machine.validate!(stopping)
+
+      Process.exit(pid, :kill)
     end
 
     test "blocked phases ignore ordinary work" do
       blocked = Machine.new(phase: :needs_repair)
 
-      assert {:ignore, :blocked, ^blocked} = Machine.step(blocked, {:chat_request, %{}})
-      assert {:ignore, :blocked, ^blocked} = Machine.step(blocked, {:stop, self()})
+      assert {:ignore, :blocked, ^blocked} =
+               Machine.step(blocked, {:chat_request, {:user_message, user()}})
+
+      assert {:ignore, :blocked, ^blocked} = Machine.step(blocked, :iterate)
     end
 
-    test "the committing transition is a compaction phase reported as :compacting" do
-      committing = Machine.new() |> Machine.to_compaction_committing()
+    test "the committing phase is a compaction-only phase reported as :compacting" do
+      # intentional: `:committing` exists so a compaction commit has a
+      # distinct phase; it is only ever `kind: :compaction`.
+      committing = %Machine{kind: :compaction, phase: :committing}
 
-      assert committing.kind == :compaction and committing.phase == :committing
       assert Machine.status_for(committing) == :compacting
       Machine.validate!(committing)
     end
   end
 
-  describe "runtime transitions agree with the step/2 spec" do
-    test "each runtime helper lands in the same phase/worker_kind as its modeled event" do
-      # intentional: the runtime drives the machine through the
-      # `to_*` helpers, while `step/2` is the pure spec. This test keeps
-      # the two from drifting: for the modeled transition, both must land
-      # in the same phase and worker kind.
-      idle = Machine.new()
-      generating = Machine.to_chat_generating(idle)
+  describe "compaction decisions" do
+    test "the loop-breaker blocks after the consecutive cap" do
+      m = %{state_at(:idle) | loop_count: 3, entry: {:compaction, [], nil}}
+      {:ok, actions, next} = Machine.Compaction.stage(m, nil, nil)
 
-      # `to_compaction_committing` and `to_blocked` have no `step/2`
-      # counterpart: `:committing` is a synchronous commit phase the
-      # runtime sets directly (unused at runtime today), and blocked
-      # phases are entered only by an external action, not a modeled
-      # event. They are therefore intentionally not pinned here.
-      cases = [
-        {:to_chat_generating, idle, {:chat_request, %{}}},
-        {:to_chat_tools, generating, {:http_ok, %{tool_calls: [%{id: "c1"}]}}},
-        {:to_compaction_generating, generating, {:compaction_request, {:tool_call, %{}, 1, 10}}},
-        {:to_stopping, generating, {:stop, self()}},
-        {:to_idle, generating, {:http_ok, %{}}}
-      ]
+      assert next.phase == :compaction_loop_detected
+      assert Enum.any?(actions, &match?({:broadcast, {:compaction_loop, _, _, _}, _}, &1))
+    end
 
-      for {helper, start, event} <- cases do
-        {:ok, _actions, stepped} = Machine.step(start, event)
-        helped = apply(Machine, helper, [start])
+    test "a deferred assistant reply stays blocked on compaction failure" do
+      m = state_at(:idle)
+      reply = {:assistant_response, user(), 1, 5}
+      {:ok, actions, next} = Machine.Compaction.compaction_failed(m, :boom, reply)
 
-        assert helped.phase == stepped.phase,
-               "#{helper} phase #{inspect(helped.phase)} != step/2 #{inspect(stepped.phase)}"
+      assert next.phase == :compaction_failed
+      assert Enum.any?(actions, &match?({:broadcast, {:compaction_error, _}, _}, &1))
+    end
 
-        assert helped.work.worker_kind == stepped.work.worker_kind,
-               "#{helper} worker_kind #{inspect(helped.work.worker_kind)} != " <>
-                 "step/2 #{inspect(stepped.work.worker_kind)}"
-      end
+    test "resume emits the deferred workspace notice pair" do
+      base = state_at(:idle)
+      m = %{base | entry: {:compaction, [], nil}, work: %{base.work | pending_notice: "/tmp/x"}}
+      {:ok, actions, next} = Machine.Compaction.resume(m)
+
+      assert next.phase == :idle
+      assert Enum.any?(actions, &match?({:append_many, _}, &1))
     end
   end
 
@@ -246,7 +249,7 @@ defmodule MachineTest do
       :rand.seed(:exsss, {1, 2, 3})
       tags = Machine.events()
 
-      Enum.reduce(1..500, Machine.new(), fn _, state ->
+      Enum.reduce(1..500, state_at(:idle), fn _, state ->
         tag = Enum.at(tags, :rand.uniform(length(tags)) - 1)
         result = Machine.step(state, sample_event(tag))
 
@@ -270,13 +273,67 @@ defmodule MachineTest do
   defp kind_for(:committing), do: :compaction
   defp kind_for(_), do: :chat
 
+  defp user do
+    %Nest.Messages.User{index: nil, parts: [%Nest.Messages.Part.Text{text: "hi"}], api_logs: []}
+  end
+
+  defp response(overrides \\ []) do
+    struct(
+      %Nest.LLM.RunResponse{
+        text: "",
+        thinking: nil,
+        tool_calls: [],
+        refusal: nil,
+        stop_reason: :end_turn,
+        model: "m",
+        usage: %{}
+      },
+      overrides
+    )
+  end
+
+  defp system_message do
+    {:system,
+     %Nest.Messages.System{
+       index: 0,
+       parts: [%Nest.Messages.Part.Text{text: "sys"}],
+       api_logs: []
+     }}
+  end
+
+  defp ctx do
+    %{
+      agent_pid: self(),
+      agent_name: "a",
+      space_id: 1,
+      client_config: %Nest.LLM.ClientConfig{client: Nest.LLM.MockClient, model: "m"},
+      tools: [],
+      tool_choice: :auto,
+      caps: %{},
+      context_limit: 100_000,
+      context_limit_source: :default,
+      messages: [system_message()],
+      tmp_path: nil,
+      workspace_path: nil,
+      mode: "chat",
+      next_message_index: 1,
+      crossed_thresholds: %MapSet{},
+      context_projection: nil,
+      api_log_sequences: %{},
+      vocation: nil,
+      depth: 0
+    }
+  end
+
   defp state_at(phase) do
     Machine.new(
       phase: phase,
       kind: kind_for(phase),
       work: %Machine.Work{
         worker_kind: worker_kind_for(phase),
-        worker_ref: ref_for(phase)
+        worker_ref: ref_for(phase),
+        ctx: ctx(),
+        max_iterations: 10
       }
     )
   end
@@ -288,22 +345,36 @@ defmodule MachineTest do
   defp ref_for(p) when p in [:generating, :executing_tools, :stopping], do: make_ref()
   defp ref_for(_), do: nil
 
-  defp sample_event(:chat_request), do: {:chat_request, %{text: "hi"}}
-  defp sample_event(:http_ok), do: {:http_ok, %{tool_calls: []}}
-  defp sample_event(:http_error), do: {:http_error, :boom}
-  defp sample_event(:worker_crashed), do: {:worker_crashed, %RuntimeError{}, []}
-  defp sample_event(:worker_down), do: {:worker_down, :killed}
-  defp sample_event(:tool_results), do: {:tool_results, %{results: []}}
+  defp sample_event(:chat_request), do: {:chat_request, {:user_message, user()}}
+  defp sample_event(:iterate), do: :iterate
+  defp sample_event(:finalize_idle), do: :finalize_idle
+  defp sample_event(:inbox_drain), do: {:inbox_drain, [], "queued"}
+  defp sample_event(:http_ok), do: {:http_ok, make_ref(), response()}
+  defp sample_event(:http_error), do: {:http_error, make_ref(), :boom}
+  defp sample_event(:worker_crashed), do: {:worker_crashed, make_ref(), %RuntimeError{}, []}
+  defp sample_event(:worker_down), do: {:worker_down, self(), :killed}
+  defp sample_event(:worker_started), do: {:worker_started, make_ref(), self(), :http}
+  defp sample_event(:llm_error), do: {:llm_error, make_ref(), "boom"}
+  defp sample_event(:append_result), do: {:append_result, :stale, nil}
+  defp sample_event(:preflight_result), do: {:preflight_result, :fits}
   defp sample_event(:stop), do: {:stop, self()}
   defp sample_event(:stop_timer), do: :stop_timer
+  defp sample_event(:timer_armed), do: {:timer_armed, :stop_timer, make_ref()}
   defp sample_event(:compaction_request), do: {:compaction_request, {:tool_call, %{}, 1, 10}}
   defp sample_event(:compaction_ok), do: {:compaction_ok, %{summary: "s"}}
-  defp sample_event(:compaction_error), do: {:compaction_error, :boom}
+  defp sample_event(:commit_done), do: {:commit_done}
+  defp sample_event(:commit_error), do: {:commit_error, :boom}
+  defp sample_event(:compaction_error), do: {:compaction_error, :boom, nil}
+  defp sample_event(:retry_compaction), do: :retry_compaction
+  defp sample_event(:loop_ack), do: :loop_ack
+  defp sample_event(:blocked), do: {:blocked, :needs_repair, nil}
+  defp sample_event(:unblocked), do: {:unblocked}
+  defp sample_event(:chat_idle), do: :chat_idle
+  defp sample_event(:workspace_notice), do: :workspace_notice
+  defp sample_event(:tool_results), do: {:tool_results, make_ref(), []}
+  defp sample_event(:child_spawned), do: {:child_spawned, "kid", make_ref(), false}
   defp sample_event(:child_completed), do: {:child_completed, "kid", "resp", %{}}
   defp sample_event(:child_failed), do: {:child_failed, "kid", :crashed}
   defp sample_event(:child_terminated), do: {:child_terminated, "kid", :killed}
   defp sample_event(:abandon_child), do: {:abandon_child, "kid"}
-  defp sample_event(:inbox_drain), do: {:inbox_drain, %{text: "queued"}}
-  defp sample_event(:retry_compaction), do: :retry_compaction
-  defp sample_event(:loop_ack), do: :loop_ack
 end

@@ -2,21 +2,15 @@ defmodule Nest.Agents.Agent.TurnStructureTest do
   @moduledoc """
   Structural-invariant tests for the in-process turn architecture.
 
-  These assert properties the refactor is meant to guarantee: the turn
-  driver runs inside the Agent (no separate `ChatTurn` process or
-  supervisor), the turn working memory is a small sub-struct, worker
-  results are ref-validated, and the Agent is the single source of
-  conversation state.
-
-  A failure here means a contributor reintroduced one of the
-  architectural violations the refactor removed.
+  These assert properties the refactor guarantees: the turn driver runs
+  inside the Agent, the turn working memory is a small sub-struct, worker
+  results are ref-validated, and effects route through `Turn.Executor`.
   """
 
   use ExUnit.Case, async: true
 
   alias Nest.Agents.Agent.Machine.Work
 
-  # Every Agent-owned source file, for the single-writer scans below.
   @agent_sources Path.wildcard("lib/nest/agents/agent.ex") ++
                    Path.wildcard("lib/nest/agents/agent/**/*.ex")
 
@@ -37,19 +31,12 @@ defmodule Nest.Agents.Agent.TurnStructureTest do
       assert agent =~ ~r/defdelegate __append_messages__\([^\n]*MessageAppender/
     end
 
-    test "only MessageAppender, Init, and the compaction archive write the live sequence" do
-      # The canonical live sequence (`chat_state.messages` +
-      # `next_message_index`) is stamped and written only through
-      # `MessageAppender`. `Init` seeds it once from the persisted rows on
-      # restore; `Compaction.ResultHandler.archive_active_segment/1` clears
-      # the in-memory list whose rows already exist at their committed
-      # indices (the compacted segment is re-appended through
-      # `MessageAppender`). It never stamps a new index.
+    test "only MessageAppender, Init, and the executor's compaction archive write the live sequence" do
       allowed =
         MapSet.new([
           "lib/nest/agents/agent/message_appender.ex",
           "lib/nest/agents/agent/init.ex",
-          "lib/nest/agents/agent/compaction/result_handler.ex"
+          "lib/nest/agents/agent/turn/executor.ex"
         ])
 
       offenders =
@@ -100,18 +87,18 @@ defmodule Nest.Agents.Agent.TurnStructureTest do
   end
 
   describe "worker results are ref-validated" do
-    test "the turn driver matches the worker ref and phase before applying a result" do
-      turn = File.read!("lib/nest/agents/agent/turn.ex")
-      assert turn =~ "worker_ref"
-      assert turn =~ "valid_worker?"
+    test "the transition table matches the worker ref before applying a result" do
+      transitions = File.read!("lib/nest/agents/agent/machine/transitions.ex")
+      assert transitions =~ "valid_ref?"
+      assert transitions =~ "worker_ref"
     end
 
     test "workers send ref-tagged results to the Agent" do
       worker = File.read!("lib/nest/agents/agent/turn/http_worker.ex")
       assert worker =~ "{:http_response, ref, response}"
 
-      iteration = File.read!("lib/nest/agents/agent/turn/iteration.ex")
-      assert iteration =~ "{:tool_results, ref"
+      executor = File.read!("lib/nest/agents/agent/turn/executor.ex")
+      assert executor =~ "{:tool_results, ref"
     end
   end
 
@@ -121,19 +108,15 @@ defmodule Nest.Agents.Agent.TurnStructureTest do
       refute worker =~ "Broadcasts.error("
     end
 
-    test "the Agent's stream handler broadcasts chat:error" do
-      handler = File.read!("lib/nest/agents/agent/handlers/llm_stream_handler.ex")
-      assert handler =~ "Broadcasts.error("
+    test "the executor broadcasts chat:error" do
+      executor = File.read!("lib/nest/agents/agent/turn/executor.ex")
+      assert executor =~ "Broadcasts.error("
     end
   end
 
-  # True when the file writes `chat_state.messages` or
-  # `next_message_index` through a `chat_state: %{...}` update.
   @sequence_write ~r/chat_state:\s*%\{[^}]*(?:\bmessages:|\bnext_message_index:)/s
   defp sequence_writer?(path), do: Regex.match?(@sequence_write, File.read!(path))
 
-  # The source of a zero-arg public/private function, from its `def` line to
-  # its closing `  end`. Used to prove where observable status is derived.
   defp function_body(source, name) do
     case Regex.run(~r/defp #{name}\(.*?\n  end\n/s, source) do
       [body] -> body

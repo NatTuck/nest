@@ -1,475 +1,85 @@
 defmodule Nest.Agents.Agent.ChatPipeline do
   @moduledoc """
-  Chat-handling logic for an agent. Extracted from
-  `Nest.Agents.Agent` so the GenServer module stays small.
+  Chat-handling entry point for an agent.
 
-  Responsibilities:
-
-    * Resolve the effective mode + capabilities for an incoming
-      chat turn (falling back to defaults if the requested mode
-      is not in the vocation's mode map).
-    * Build the user message (persisted and LLM-facing). Both
-      carry the same `[mode: <name>]\n` prefix on `content` so
-      the mode round-trips through any store / log / replay.
-      The chat UI strips the prefix on render.
-    * Run the pre-flight check and decide whether to compact
-      first or start the turn immediately.
-    * Start the in-process turn (`Nest.Agents.Agent.Turn`).
+  The pipeline resolves the effective mode + capabilities, builds the
+  user message (persisted and LLM-facing, both carrying the same
+  `[mode: <name>]\\n` prefix so the mode round-trips through any store),
+  then hands the turn to the settle loop. Every transition/decision after
+  that point lives in `Machine.step/2`; the pipeline only prepares the
+  event.
   """
 
-  alias Nest.Agents.Agent.Broadcasts
-  alias Nest.Agents.Agent.Compaction.Overflow
-  alias Nest.Agents.Agent.Compaction.Trigger
-  alias Nest.Agents.Agent.Handlers.TurnHandler
-  alias Nest.Agents.Agent.Machine
-  alias Nest.Agents.Agent.NoticePairInjector
-  alias Nest.Agents.Agent.SystemPrompt
   alias Nest.Agents.Agent.Turn
-  alias Nest.Agents.Agent.Turn.ContextReminder
-  alias Nest.Agents.Agent.WorkspaceHandler
   alias Nest.Messages.Part
-  alias Nest.Messages.Streaming
   alias Nest.Messages.User
   alias Nest.Tokens.PreFlight
   alias Nest.Tokens.Reserve
   alias Nest.Vocations
 
   @doc """
-  Handle an incoming chat turn. Returns the updated state
-  tuple for the GenServer to use as its reply.
+  Handle an incoming chat turn. Returns the GenServer reply tuple.
   """
   @spec handle_chat(Nest.Agents.Agent.t(), String.t(), String.t() | nil) ::
           {:noreply, Nest.Agents.Agent.t()}
   def handle_chat(state, content, requested_mode) do
-    # Resolve mode: explicit > agent's current mode > "chat"
     mode = requested_mode || state.live.mode
-    # Validate mode against the vocation; fall back to default if invalid.
+
     {effective_mode, _caps} =
       resolve_mode_and_caps(mode, state.vocation, state.workspace_path, state.tmp_path)
 
-    # Clear the `cancelled` flag from any previous stop so the
-    # pre-flight compaction that may run for this turn can
-    # actually resume the chat task (the guard in
-    # `compaction_done` would otherwise discard the resume).
-    state = clear_cancelled(state)
+    state = %{state | live: %{state.live | mode: effective_mode, cancelled: false}}
+    user = build_user_message(content, effective_mode)
 
-    # Store the user message in `pending_user_message` instead
-    # of appending immediately. The pre-flight check uses
-    # `messages ++ [pending_user_message_struct]` to decide
-    # whether compaction fires. If preflight fits, `handle_chat`
-    # consumes the pending field via
-    # `append_pending_user_message/1`. If preflight needs
-    # compaction, the field stays set across the compaction;
-    # `ChatPipeline.resume_with_pending/1`
-    # appends it after compaction succeeds. We store the
-    # post-resolution `effective_mode` so the message struct's
-    # `[mode: ...]` prefix and `metadata.mode` match what the
-    # LLM would see after `resolve_mode_and_caps`.
-    state = put_pending_user_message(state, {content, effective_mode})
-
-    state = handle_preflight(state, effective_mode)
+    {:ok, state} = Turn.settle(state, {:chat_request, {:user_message, user}})
     {:noreply, state}
   end
 
-  defp clear_cancelled(state) do
-    %{state | live: %{state.live | cancelled: false}}
-  end
-
-  # Before appending the user message, check if its projected
-  # size (plus current messages) crosses a context-usage threshold.
-  # If so, inject a synthetic exchange to maintain wire alternation:
-  #
-  #   If last wire role is assistant: inject [notice_user, ack_assistant]
-  #     → assistant(wire) → user(notice) → assistant(ack) → user(real)  ✓
-  #   If last wire role is user: inject a single assistant with the notice
-  #     → user(wire) → assistant(notice+ack) → user(real)  ✓
-  #
-  # When the trailing assistant carries an unpaired `Part.ToolUse{}`
-  # (an in-flight tool call waiting for its `tool_result`), the
-  # `else` branch would inject between the `tool_use` and the
-  # upcoming `tool_result`, breaking Anthropic's tool_use/tool_result
-  # pairing invariant. In that case the threshold is marked crossed
-  # but the pair is NOT injected here; the turn's response-
-  # construction path (`Turn.ResponseHandler`, Case 2) handles the
-  # notice when the LLM's response is assembled, which is always at a
-  # wire-safe boundary.
-  defp maybe_inject_context_pair(state) do
-    limit = state.llm_metrics.context_limit
-    do_check(state, limit)
-  end
-
-  defp do_check(state, limit) do
-    pending = pending_user_message_struct(state)
-
-    if is_nil(pending) do
-      state
-    else
-      projected = state.chat_state.messages ++ [pending]
-      used = ContextReminder.estimate_messages(projected)
-      crossed = state.live.crossed_thresholds
-
-      # Record the projected size (messages + the not-yet-appended user
-      # message) before the threshold check so the status payload can
-      # surface the same number a warning compares against.
-      state = %{state | live: %{state.live | context_projection: used}}
-
-      case ContextReminder.highest_unannounced(used, limit, crossed) do
-        nil ->
-          state
-
-        atom ->
-          state = inject_notice(state, atom, crossed)
-
-          %{
-            state
-            | live: %{state.live | crossed_thresholds: MapSet.put(crossed, atom)}
-          }
-      end
-    end
-  end
-
-  defp inject_notice(state, atom, _crossed) do
-    compact? = ContextReminder.compact_available?(state.tools)
-    notice = ContextReminder.notice_text(atom, compact?)
-    ack = ContextReminder.ack_text_for(atom, compact?)
-    spec = %{kind: :context, attention: "Context?", notice: notice, ack: ack, threshold: atom}
-
-    case NoticePairInjector.inject_pair_in_process(
-           state.chat_state.messages,
-           state,
-           spec,
-           :user_agent
-         ) do
-      {:ok, _shape, _stamped, new_state} ->
-        new_state
-
-      :deferred ->
-        # Trailing assistant carries an unpaired tool_use (in-flight
-        # tool call). The notice is deferred to the turn's
-        # response-construction path (`Turn.ResponseHandler`, Case 2),
-        # which fires on a wire-safe boundary. `crossed_thresholds` is
-        # still updated upstream so the threshold doesn't re-fire on
-        # subsequent user messages while the tool call is in flight.
-        state
-    end
-  end
-
-  # Store `{content, mode}` in `state.live.machine.pending_user_message`.
-  # The field is the source of truth for the user's incoming
-  # message until we know whether compaction fires.
-  defp put_pending_user_message(state, pending) do
-    %{
-      state
-      | live: %{state.live | machine: %{state.live.machine | pending_user_message: pending}}
-    }
-  end
-
-  defp clear_pending_user_message(state) do
-    %{
-      state
-      | live: %{state.live | machine: %{state.live.machine | pending_user_message: nil}}
-    }
-  end
-
-  # Build the `Message.t()` struct for the pending user message
-  # without appending. Returns `nil` if the field is not set.
+  @doc """
+  The pending user message as a `{:user, User.t()}` tuple, or `nil`.
+  """
   @spec pending_user_message_struct(Nest.Agents.Agent.t()) :: {:user, User.t()} | nil
   def pending_user_message_struct(state) do
     case state.live.machine.pending_user_message do
-      nil -> nil
-      {content, effective_mode} -> build_user_message(state, content, effective_mode)
+      {:user_message, %User{} = user} -> {:user, user}
+      {:user, %User{} = user} -> {:user, user}
+      _ -> nil
     end
   end
 
-  # Append the pending user message via the canonical Agent
-  # path so the Agent stamps `index` and the next response's
-  # `streaming_acc` is built from the actual stamped index.
-  # After appending, the field is cleared.
-  # The user-message boundary is terminal (the agent is idle), so the
-  # append heals the tail and returns `:ok`.
-  defp append_pending_user_message(state) do
-    case pending_user_message_struct(state) do
-      nil ->
-        :no_pending
-
-      pending_message ->
-        case Nest.Agents.Agent.__append_message__(state, pending_message) do
-          {:ok, stamped_user, state} ->
-            {:ok, stamped_user, clear_pending_user_message(state)}
-
-          {:invalid, reason, state} ->
-            {:invalid, reason, state}
-        end
-    end
-  end
-
-  @doc """
-  Resume the chat after a compaction completed. Appends the
-  pending user message. The compaction handler has already
-  replaced the messages list with the compacted state; we
-  start the in-process turn (`Turn.start/4`) with the
-  appended user message.
-
-  If the user clicked Stop while compaction was in flight,
-  discard the pending message — the agent's chat task has
-  already exited (or is about to) and we don't want to spawn
-  a new one.
-  """
-  @spec resume_with_pending(Nest.Agents.Agent.t()) :: Nest.Agents.Agent.t()
-  def resume_with_pending(state) do
-    state = maybe_inject_context_pair(state)
-
-    case append_pending_user_message(state) do
-      {:ok, stamped_user, state} ->
-        # `append_pending_user_message/1` cleared the pending slot, so the
-        # effective mode is the live mode (unchanged behavior).
-        state =
-          prepare_streaming_state(
-            state,
-            state.live.mode,
-            state.live.machine.work.active_message_index
-          )
-
-        start_pending_turn(state, stamped_user)
-
-      {:invalid, reason, state} ->
-        TurnHandler.invalid_append_state(state, reason)
-
-      :no_pending ->
-        state
-    end
-  end
-
-  @doc """
-  Resume after a workspace-triggered compaction: append the pending
-  workspace notice pair (no LLM request) and stay idle. No-op when
-  there is no `pending_notice` set.
-  """
-  @spec resume_pending_notice(Nest.Agents.Agent.t()) :: Nest.Agents.Agent.t()
-  def resume_pending_notice(state) do
-    WorkspaceHandler.resume_notice(state)
-  end
-
-  # Transition the chat_state to `:streaming` after a user message
-  # has been appended via `__append_message__/2`. Sets the
-  # `active_message_index` (used by the turn for the request
-  # API log) to the user message's actual stamped index, and
-  # starts a fresh streaming accumulator for the response at
-  # `stamped_index + 1`. Both indices come from the Agent's
-  # authoritative `next_message_index`, not from a local
-  # prediction.
-  defp prepare_streaming_state(state, effective_mode, stamped_index) do
-    machine = Machine.to_chat_generating(state.live.machine)
-
-    %{
-      state
-      | live: %{
-          state.live
-          | mode: effective_mode,
-            machine: %{machine | work: %{machine.work | active_message_index: stamped_index}},
-            streaming_acc: Streaming.new(stamped_index + 1),
-            tool_index_map: %{}
-        }
-    }
-  end
-
-  # Build the persisted user message. The mode is encoded two ways:
-  # on the `metadata.mode` field (used by the UI badge) and as a
-  # `[mode: <name>]\n` prefix on the text part itself.
-  #
-  # The prefix is the source of truth for the LLM: when we
-  # re-send prior user messages on the next call (e.g. after
-  # compaction rebuilds the message list), the prefix round-trips
-  # through whatever store / log / replay we have. The client UI
-  # strips the prefix before display because the mode badge already
-  # shows it; see `assets/js/utils/stripModePrefix.js`.
-  #
-  # `index: nil` — the Agent stamps the actual index via
-  # `__append_message__/2`. The turn is not the authority on
-  # which slot the user message occupies.
-  defp build_user_message(_state, content, effective_mode) do
-    user = %User{
+  # Build the persisted user message. The mode is encoded both on
+  # `metadata.mode` (UI badge) and as a `[mode: <name>]\n` prefix on the
+  # text part (source of truth for the LLM). `index: nil` — the appender
+  # stamps the actual index.
+  defp build_user_message(content, mode) do
+    %User{
       index: nil,
       timestamp: DateTime.utc_now(),
-      parts: [%Part.Text{text: "[mode: #{effective_mode}]\n#{content}"}],
-      metadata: %{"mode" => effective_mode},
+      parts: [%Part.Text{text: "[mode: #{mode}]\n#{content}"}],
+      metadata: %{"mode" => mode},
       api_logs: []
     }
-
-    {:user, user}
-  end
-
-  # Pre-flight: would the LLM call we'd make next fit in the
-  # context window? If not, spawn a compaction task first. The
-  # task sends `{:compaction_done, new_messages, continuation}`
-  # back; the Agent's compaction result handler then resumes
-  # via `resume_with_pending/1` with the compacted messages.
-  #
-  # Every chat turn goes through the preflight — there is no
-  # "skip preflight while streaming" shortcut. Incoming chat
-  # turns are already gated away while the agent is streaming
-  # or executing tools (`Agent.Callbacks.chat_or_drop/3`), so
-  # `handle_chat/3` never runs mid-stream; compaction is never
-  # attempted against an in-flight response.
-  defp handle_preflight(state, effective_mode) do
-    case preflight_decision(messages_with_pending(state), state) do
-      :fits ->
-        append_and_spawn(state, effective_mode)
-
-      :needs_compaction ->
-        spawn_compaction_pipeline(state)
-
-      :cannot_compact ->
-        refuse_compaction(state)
-    end
-  end
-
-  # The pending user message stays in `pending_user_message`
-  # during compaction (so the compactor doesn't try to
-  # summarize a brand-new user turn). After compaction
-  # succeeds, the compactor's chat turn finishes and
-  # `ResultHandler.handle_success/3` resumes via
-  # `resume_with_pending/1` with the held user message.
-  defp spawn_compaction_pipeline(state) do
-    Trigger.post_turn(state)
-  end
-
-  # The conversation cannot fit even after compaction would
-  # run (system prompt alone exceeds the limit, or the head
-  # between system and last user is empty). Refuse the user's
-  # request: clear the pending message, set
-  # `:context_overflow` status, broadcast a `chat:error` with
-  # the actual numbers, and stay idle. The chat channel
-  # rejects `chat:message` while the agent is in
-  # `:context_overflow` status, so the user can't add more
-  # messages until they restart the agent or change the model.
-  defp refuse_compaction(state) do
-    state = clear_pending_user_message(state)
-
-    state = %{
-      state
-      | live: %{state.live | machine: Machine.to_blocked(state.live.machine, :context_overflow)}
-    }
-
-    Broadcasts.status(state)
-
-    system_prompt = render_system_prompt(state)
-    reason = refusal_reason(system_prompt, state.llm_metrics.context_limit)
-
-    Overflow.broadcast(
-      state,
-      "Nest.Agents.Agent.ChatPipeline.handle_preflight/2",
-      "start a conversation",
-      system_prompt,
-      reason
-    )
-
-    state
-  end
-
-  # Render the current system prompt via the same path the
-  # Trigger uses, so the refusal message reports the actual
-  # rendered size, not whatever happens to be at
-  # `messages[0]` (which can drift).
-  defp render_system_prompt(state) do
-    {system_prompt, _mode, _tools, _vocation} =
-      SystemPrompt.compose_vocation_config(
-        state.vocation,
-        state.workspace_path,
-        {state.llm_metrics.context_limit, state.llm_metrics.context_limit_source},
-        state.name,
-        state.depth
-      )
-
-    system_prompt
-  end
-
-  # Pick the error-message reason: `:system_oversized` when
-  # the rendered prompt exceeds the 25% safety budget,
-  # `:reserve_exhausted` for everything else (no system, or
-  # the headroom-vs-conversation arithmetic failed). Both
-  # paths end up in `Overflow.broadcast/5`'s `:reserve_exhausted`
-  # default wording except for the oversized case.
-  defp refusal_reason(system_prompt, context_limit) do
-    if system_prompt != nil and
-         not SystemPrompt.within_size_budget?(system_prompt, context_limit) do
-      :system_oversized
-    else
-      :reserve_exhausted
-    end
-  end
-
-  # The message list for the pre-flight check: existing messages
-  # plus the pending user message struct (not yet appended).
-  defp messages_with_pending(state) do
-    case pending_user_message_struct(state) do
-      nil -> state.chat_state.messages
-      pending -> state.chat_state.messages ++ [pending]
-    end
-  end
-
-  # Start the turn. The user message has already been appended to the
-  # Agent (via `append_pending_user_message/1`); `Turn.start/4` runs the
-  # first iteration. A `:cannot_compact` append fails the turn cleanly
-  # instead of starting it.
-  defp append_and_spawn(state, effective_mode) do
-    state = maybe_inject_context_pair(state)
-
-    case append_pending_user_message(state) do
-      {:ok, stamped_user, state} ->
-        state =
-          prepare_streaming_state(
-            state,
-            effective_mode,
-            state.live.machine.work.active_message_index
-          )
-
-        Broadcasts.status(state)
-
-        start_pending_turn(state, stamped_user)
-
-      {:invalid, reason, state} ->
-        TurnHandler.invalid_append_state(state, reason)
-
-      :no_pending ->
-        state
-    end
-  end
-
-  defp start_pending_turn(state, stamped_user) do
-    {_effective_mode, caps} =
-      resolve_mode_and_caps(state.live.mode, state.vocation, state.workspace_path, state.tmp_path)
-
-    Turn.start(state, state.chat_state.messages, {:user_message, stamped_user}, caps)
   end
 
   @doc """
-  The user-turn preflight decision, used by `handle_preflight/2` (and
-  callers that need the same fit/compaction decision).
-  Returns one of `:fits`, `:needs_compaction`, or `:cannot_compact`.
-
-  `context_limit` is guaranteed to be a positive integer — it is
-  resolved eagerly at agent init (with a 128k `:default` floor) and
-  never nil. A non-positive or nil limit matches no clause here and
-  raises, so a request can never be sent with an unknown limit.
+  The user-turn preflight decision, used by callers that need the same
+  fit/compaction decision.
   """
   @spec preflight_decision([{atom(), map()}], Nest.Agents.Agent.t()) :: atom()
   def preflight_decision(messages_for_llm, %{llm_metrics: %{context_limit: limit}})
       when is_integer(limit) and limit > 0 do
-    PreFlight.check_messages(
-      messages_for_llm,
-      limit,
-      Reserve.compaction_reserve(limit)
-    )
+    PreFlight.check_messages(messages_for_llm, limit, Reserve.compaction_reserve(limit))
   end
 
-  # Resolves the effective mode and capability map for a chat message.
-  #
-  # If `mode` is in the vocation's `modes` map, use it as-is.
-  # Otherwise fall back to the vocation's default mode (or "chat" if
-  # the vocation has no modes). This matches the LLM-visible
-  # `[mode: X]` prefix: we always emit a valid mode to the LLM.
-  @doc false
+  @doc """
+  Resolve the effective mode and capability map for a chat message.
+
+  If `mode` is in the vocation's `modes` map, use it as-is; otherwise fall
+  back to the vocation's default mode (or "chat" if the vocation has no
+  modes). This matches the LLM-visible `[mode: X]` prefix.
+  """
+  @spec resolve_mode_and_caps(String.t(), term(), String.t() | nil, String.t() | nil) ::
+          {String.t(), map()}
   def resolve_mode_and_caps(mode, %Nest.Vocations.Vocation{} = vocation, workspace, tmp_path) do
     modes = Vocations.list_modes(vocation)
 
@@ -485,8 +95,6 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   end
 
   def resolve_mode_and_caps(_mode, _no_vocation_or_id, workspace, tmp_path) do
-    # No vocation struct or vocation_id available: only "chat"
-    # is valid.
     {"chat", chat_caps(workspace, tmp_path)}
   end
 

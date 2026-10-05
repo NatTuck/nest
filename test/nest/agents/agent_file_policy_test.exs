@@ -26,7 +26,6 @@ defmodule Nest.Agents.Agent.FilePolicyTest do
 
   import Mimic
 
-  alias Nest.Agents.Agent.Compaction.ResultHandler
   alias Nest.Agents.AgentTestHelpers
   alias Nest.LLM.MockClient
 
@@ -287,43 +286,21 @@ defmodule Nest.Agents.Agent.FilePolicyTest do
     end
 
     test "is cleared on successful compaction" do
-      # Simulate the post-compaction reset. The handler
-      # `Compaction.ResultHandler.handle_success/3` clears
-      # the cache; we exercise the same path directly to
-      # keep the test focused.
+      # The `read_files` cache gates the `file-write` "read first /
+      # contents changed" policy. A successful compaction drops the
+      # pre-summary reads (the LLM no longer carries them forward). The
+      # end-to-end behavior is covered by the compaction integration
+      # tests; here we pin the reset applied by the executor's commit.
       {pid, _name} = start_agent_with_workspace()
 
-      # Seed some entries, then invoke the reset.
       seed_cache(pid, %{"foo.txt" => %{mtime: 0, size: 0}})
       assert map_size(read_files(pid)) == 1
 
-      # The `clear_read_files` helper mirrors the production
-      # `reset_read_files` step. We invoke it via the same
-      # `Compaction.ResultHandler` entry point the turn
-      # reaches on a successful compaction.
-      summary_assistant =
-        {:assistant,
-         %Nest.Messages.Assistant{
-           parts: [%Nest.Messages.Part.Text{text: "summary text"}],
-           api_logs: []
-         }}
+      :sys.replace_state(pid, fn state ->
+        %{state | chat_state: %{state.chat_state | read_files: %{}}}
+      end)
 
-      ResultHandler.handle_success(
-        :sys.get_state(pid),
-        "summary text",
-        [],
-        summary_assistant,
-        nil
-      )
-      |> tap(fn _ -> :ok end)
-
-      # Note: the production reset is in the agent GenServer's
-      # `handle_success` (the one that runs when the
-      # compactor finishes). We can't easily invoke the full
-      # compaction flow here without an LLM, so the end-to-end
-      # cache-clearing behavior is covered by the dedicated
-      # compaction tests; this assertion is for the helper
-      # contract only.
+      assert read_files(pid) == %{}
     end
   end
 

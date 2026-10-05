@@ -141,6 +141,16 @@ defmodule Nest.Agents.Agent.Inbox do
     end)
   end
 
+  @doc """
+  Combine queued entries and, when over the async-message cap, offload the
+  text to the agent scratch dir. Returns the content string to deliver.
+  Used by the turn executor's `:drain_inbox` action.
+  """
+  @spec combine_and_offload([entry()], Agent.t()) :: String.t()
+  def combine_and_offload(entries, state) do
+    offload(combine(entries), entries, state)
+  end
+
   # ---- private ----
 
   defp enqueue(state, sender, content) do

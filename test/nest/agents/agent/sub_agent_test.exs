@@ -73,8 +73,14 @@ defmodule Nest.Agents.Agent.SubAgentTest do
     test "no-op for an unknown child name" do
       parent = build_parent_state()
 
-      assert {:noreply, ^parent} =
+      assert {:noreply, new_state} =
                SubAgent.handle_child_completed(parent, "ghost-child", "ok", %{})
+
+      # The turn settle-loop only rebuilds the (opaque) working ctx; the
+      # child bookkeeping and observable status are untouched.
+      assert Machine.pending_children(new_state.live.machine) == %{}
+      assert new_state.live.machine.children == parent.live.machine.children
+      assert Machine.status_for(new_state.live.machine) == Machine.status_for(parent.live.machine)
     end
 
     test "cascades the merge: descendant usage accumulates across children" do
@@ -143,8 +149,11 @@ defmodule Nest.Agents.Agent.SubAgentTest do
     test "a failure for an unknown child is a no-op" do
       parent = build_parent_state()
 
-      assert {:noreply, ^parent} = SubAgent.handle_child_failed(parent, "ghost", :stopped)
-      assert {:noreply, ^parent} = SubAgent.handle_child_terminated(parent, "ghost", :shutdown)
+      assert {:noreply, failed} = SubAgent.handle_child_failed(parent, "ghost", :stopped)
+      assert failed.live.machine.children == parent.live.machine.children
+
+      assert {:noreply, terminated} = SubAgent.handle_child_terminated(parent, "ghost", :shutdown)
+      assert terminated.live.machine.children == parent.live.machine.children
     end
   end
 
@@ -182,7 +191,7 @@ defmodule Nest.Agents.Agent.SubAgentTest do
 
   defp with_running_child(state, name, task_pid, archive \\ false) do
     {:ok, _actions, machine} =
-      Machine.spawn_child(state.live.machine, name, task_pid, archive)
+      Machine.step(state.live.machine, {:child_spawned, name, task_pid, archive})
 
     %{state | live: %{state.live | machine: machine}}
   end

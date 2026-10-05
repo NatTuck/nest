@@ -39,11 +39,8 @@ defmodule Nest.Agents.Agent.Init.Recovery do
     }
 
     state = Init.build_state(attrs, recovery_client)
-
-    state = %{
-      state
-      | live: %{state.live | machine: Machine.to_blocked(state.live.machine, :model_missing)}
-    }
+    {:ok, _actions, machine} = Machine.step(state.live.machine, {:blocked, :model_missing, nil})
+    state = %{state | live: %{state.live | machine: machine}}
 
     state =
       Init.seed_from_db(

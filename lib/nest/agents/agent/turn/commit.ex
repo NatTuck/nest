@@ -1,0 +1,115 @@
+defmodule Nest.Agents.Agent.Turn.Commit do
+  @moduledoc """
+  Pure builders for the post-compaction active segment.
+
+  `Turn.Executor` performs the compaction commit's database writes; this
+  module builds the messages and marker it writes. Splitting the pure
+  shaping out keeps the executor focused on effects and keeps the
+  segment layout (`rebuilt system?`, `summary_user`, carried tail,
+  usage drop) in one exhaustively-testable place.
+  """
+
+  alias Nest.Agents.Agent
+  alias Nest.Agents.Agent.Compaction.Marker
+  alias Nest.Agents.Agent.SystemPrompt
+  alias Nest.Messages.Assistant
+  alias Nest.Messages.Part
+  alias Nest.Messages.System, as: MsgSystem
+  alias Nest.Messages.User
+  alias Nest.Tokens.Estimator
+
+  require Logger
+
+  @doc """
+  Build `{new_active_messages, marker}` for a successful compaction.
+  """
+  @spec active_segment(
+          Agent.t(),
+          String.t(),
+          Agent.Machine.entry() | nil,
+          non_neg_integer(),
+          non_neg_integer(),
+          String.t() | nil
+        ) :: {[term()], tuple()}
+  def active_segment(
+        state,
+        summary_text,
+        carried_entry,
+        marker_index,
+        archived_count,
+        system_prompt
+      ) do
+    now = DateTime.utc_now()
+    archived_messages = state.chat_state.messages || []
+
+    summary_user =
+      {:user,
+       %User{
+         parts: [%Part.Text{text: "Summary of earlier conversation:\n\n" <> summary_text}],
+         timestamp: now,
+         api_logs: []
+       }}
+
+    rebuilt_system = build_rebuilt_system(system_prompt, state.llm_metrics.context_limit, now)
+
+    new_messages =
+      case rebuilt_system do
+        nil -> append_entry_tail([summary_user], carried_entry)
+        sys -> [sys | append_entry_tail([summary_user], carried_entry)]
+      end
+      |> Enum.map(&drop_pre_compaction_usage/1)
+
+    marker =
+      Marker.build_marker(
+        marker_index,
+        archived_count,
+        state.chat_state.compaction_count + 1,
+        Estimator.estimate_messages(archived_messages),
+        Estimator.estimate_messages(new_messages)
+      )
+
+    {new_messages, marker}
+  end
+
+  @doc "Append the carried entry's messages to the new active segment."
+  @spec append_entry_tail([term()], Agent.Machine.entry() | nil) :: [term()]
+  def append_entry_tail(new_messages, {:user_message, msg}), do: new_messages ++ [{:user, msg}]
+  def append_entry_tail(new_messages, {:tool_call, msg, _, _}), do: new_messages ++ [msg]
+  def append_entry_tail(new_messages, {:compact_tool, [a, b], _, _}), do: new_messages ++ [a, b]
+  def append_entry_tail(new_messages, {:assistant_response, msg, _, _}), do: new_messages ++ [msg]
+  def append_entry_tail(new_messages, _other), do: new_messages
+
+  # A carried assistant was produced against the pre-compaction context,
+  # so its provider `usage` no longer anchors the active segment. Drop the
+  # struct field (the api_log still carries the response).
+  defp drop_pre_compaction_usage({:assistant, %Assistant{} = assistant}) do
+    {:assistant, %{assistant | usage: nil}}
+  end
+
+  defp drop_pre_compaction_usage(message), do: message
+
+  defp build_rebuilt_system(system_prompt, context_limit, now) do
+    cond do
+      is_nil(system_prompt) ->
+        nil
+
+      not SystemPrompt.within_size_budget?(system_prompt, context_limit) ->
+        Logger.warning(
+          "Compaction post-compaction dropping rebuilt system: rendered prompt exceeds " <>
+            "25% safety budget for context_limit=#{context_limit}"
+        )
+
+        nil
+
+      true ->
+        {:system,
+         %MsgSystem{
+           parts: [%Part.Text{text: system_prompt}],
+           timestamp: now,
+           api_logs: [],
+           metadata: nil,
+           tokens: nil
+         }}
+    end
+  end
+end

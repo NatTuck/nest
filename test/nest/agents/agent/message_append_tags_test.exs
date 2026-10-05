@@ -20,11 +20,10 @@ defmodule Nest.Agents.Agent.MessageAppendTagsTest do
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Callbacks
-  alias Nest.Agents.Agent.Handlers.LLMStreamHandler
-  alias Nest.Agents.Agent.Handlers.TurnHandler
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.MessageAppender
   alias Nest.Agents.Agent.Repair
+  alias Nest.Agents.Agent.Turn
   alias Nest.Messages.Assistant
   alias Nest.Messages.Part
   alias Nest.Messages.System, as: MsgSystem
@@ -114,11 +113,15 @@ defmodule Nest.Agents.Agent.MessageAppendTagsTest do
       assert {:invalid, reason, state} =
                MessageAppender.append_one(state, assistant_text(nil))
 
-      {final, log} = with_log(fn -> TurnHandler.invalid_append_state(state, reason) end)
+      {final, log} =
+        with_log(fn ->
+          {:ok, final} = Turn.settle(state, {:append_result, :invalid, reason})
+          final
+        end)
 
       assert Machine.status_for(final.live.machine) == :idle
       assert log =~ "chat_crashed"
-      assert is_nil(final.live.machine.work.ctx)
+      assert is_nil(final.live.machine.work.active_worker)
 
       assert_receive {:chat_error, %{content: content}}
       assert content =~ "second consecutive"
@@ -225,40 +228,32 @@ defmodule Nest.Agents.Agent.MessageAppendTagsTest do
     end
   end
 
-  describe "LLMStreamHandler live append tags" do
-    test "a tool-call append on a broken live tail fails the turn to idle" do
-      name = unique_name("llm-tool-calls-invalid")
-      {:ok, _} = Persistence.insert_agent(agent_attrs(name))
-
-      initial = [system(0), user(1), assistant_text(2)]
-      insert_messages(name, initial)
-      state = state(name, initial) |> live(:streaming)
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.space_id}:#{name}")
-
-      {:assistant, msg} = assistant_text(nil)
-
-      {result, log} = with_log(fn -> LLMStreamHandler.tool_calls_received(msg, state) end)
-
-      assert {:noreply, final} = result
-      assert Machine.status_for(final.live.machine) == :idle
-      assert log =~ "chat_crashed"
-      assert_receive {:chat_error, %{content: _}}
-    end
-
-    test "an error append on a broken live tail fails the turn to idle" do
+  describe "live stream failure tags" do
+    test "the worker's llm_error callback fails the live turn to idle with chat:error" do
       name = unique_name("llm-error-invalid")
       {:ok, _} = Persistence.insert_agent(agent_attrs(name))
 
       initial = [system(0), user(1), assistant_text(2)]
       insert_messages(name, initial)
-      state = state(name, initial) |> live(:streaming)
+      ref = make_ref()
+
+      state =
+        state(name, initial)
+        |> live(:streaming)
+        |> put_in(
+          [Access.key(:live), Access.key(:machine), Access.key(:work), Access.key(:worker_ref)],
+          ref
+        )
+
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.space_id}:#{name}")
 
-      {final, log} = with_log(fn -> LLMStreamHandler.llm_error_state("boom", state) end)
+      {result, log} = with_log(fn -> Turn.handle({:llm_error, "boom"}, state) end)
 
+      assert {:noreply, final} = result
       assert Machine.status_for(final.live.machine) == :idle
-      assert log =~ "chat_crashed"
-      assert_receive {:chat_error, %{content: _}}
+      assert log =~ "chat:error"
+      assert_receive {:chat_error, %{content: content}}
+      assert content =~ "boom"
     end
   end
 

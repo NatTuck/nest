@@ -3,11 +3,10 @@ defmodule Nest.Agents.Agent.Machine do
   The Agent's single, explicit, in-process turn state machine.
 
   This module is the *pure* core: it owns the phase vocabulary, the
-  event vocabulary, the transition function, the observable-status
-  derivation, and the invariant check. The Agent process is the
-  executor: it calls `step/2`, applies the returned actions (which are
-  the only side-effecting operations), and holds the authoritative
-  machine state.
+  event vocabulary, the action vocabulary, the transition function, the
+  observable-status derivation, and the invariant check. `step/2` is the
+  only transition function and the only turn-decision authority; it is
+  dispatched by `Nest.Agents.Agent.Machine.Transitions`.
 
   ## Observable vs internal state
 
@@ -41,6 +40,7 @@ defmodule Nest.Agents.Agent.Machine do
   """
 
   alias Nest.Agents.Agent.Machine.Children
+  alias Nest.Agents.Agent.Machine.Transitions
 
   # The blocked phases are terminal-ish stalls that require an external
   # action (change model, repair, retry, acknowledge) to leave.
@@ -59,23 +59,76 @@ defmodule Nest.Agents.Agent.Machine do
   # the transition-coverage test.
   @events [
     :chat_request,
+    :iterate,
+    :finalize_idle,
+    :inbox_drain,
     :http_ok,
     :http_error,
     :worker_crashed,
     :worker_down,
-    :tool_results,
+    :worker_started,
+    :llm_error,
+    :append_result,
+    :preflight_result,
     :stop,
     :stop_timer,
+    :timer_armed,
     :compaction_request,
     :compaction_ok,
+    :commit_done,
+    :commit_error,
     :compaction_error,
+    :retry_compaction,
+    :loop_ack,
+    :blocked,
+    :unblocked,
+    :chat_idle,
+    :workspace_notice,
+    :tool_results,
+    :child_spawned,
     :child_completed,
     :child_failed,
     :child_terminated,
-    :abandon_child,
-    :inbox_drain,
-    :retry_compaction,
-    :loop_ack
+    :abandon_child
+  ]
+
+  # The declared action vocabulary. Every action must have exactly one
+  # `Turn.Executor` clause (pinned by `turn/executor_test.exs`).
+  @actions [
+    :append,
+    :append_many,
+    :marker,
+    :spawn_http,
+    :spawn_tools,
+    :preflight,
+    :stage_compaction,
+    :commit_compaction,
+    :kill,
+    :arm_timer,
+    :cancel_timer,
+    :ack,
+    :broadcast,
+    :merge_metrics,
+    :set_crossed_thresholds,
+    :set_context_projection,
+    :set_api_log_sequences,
+    :set_cancelled,
+    :set_streaming,
+    :clear_transient,
+    :llm_error,
+    :fail_turn,
+    :finalize,
+    :drain_inbox,
+    :restore_inbox,
+    :notify_parent,
+    :notify_worker,
+    :merge_usage,
+    :stop_child,
+    :archive_child,
+    :stop_all_children,
+    :record_file_access,
+    :log,
+    :iterate
   ]
 
   @type kind :: :chat | :compaction
@@ -92,17 +145,7 @@ defmodule Nest.Agents.Agent.Machine do
           | :compaction_failed
           | :compaction_loop_detected
 
-  @type action ::
-          {:append, term()}
-          | {:persist, term()}
-          | {:broadcast, atom(), term()}
-          | {:spawn_http, term()}
-          | {:spawn_tools, term()}
-          | {:kill, reference()}
-          | {:arm_timer, pos_integer()}
-          | {:cancel_timer, reference()}
-          | {:spawn_child, term()}
-          | {:notify_parent, term()}
+  @type action :: tuple() | :iterate
 
   @type tool_pair :: [Nest.Messages.Assistant.t() | Nest.Messages.Tool.t()]
 
@@ -147,6 +190,10 @@ defmodule Nest.Agents.Agent.Machine do
   @spec events() :: [atom()]
   def events, do: @events
 
+  @doc "The declared action vocabulary."
+  @spec actions() :: [atom()]
+  def actions, do: @actions
+
   @doc "The blocked (externally-unstuck) phases."
   @spec blocked_phases() :: [phase()]
   def blocked_phases, do: @blocked
@@ -169,60 +216,12 @@ defmodule Nest.Agents.Agent.Machine do
   def status_for(%__MODULE__{phase: :stopping, kind: :chat}), do: :streaming
   def status_for(%__MODULE__{phase: :stopping, kind: :compaction}), do: :compacting
 
-  # --- runtime transitions ---
-  #
-  # The executor drives these; each is the runtime equivalent of a
-  # modeled `step/2` transition. The invariant is enforced on entry, and
-  # `status_for/1` is the single authority for the observable status.
-
-  @doc "Terminal transition back to idle (clears the working set)."
-  @spec to_idle(t()) :: t()
-  def to_idle(%__MODULE__{} = s) do
-    validate!(%{s | phase: :idle, work: %__MODULE__.Work{}, stop_timer: nil})
-  end
-
-  @doc """
-  Enter the terminal-preemption phase on a user stop. Survives a stop
-  from any phase (including blocked) so a wedged agent can always be
-  stopped. Keeps the worker ref for the executor to signal, but clears
-  the worker kind: the phase is no longer waiting on that kind.
-  """
-  @spec to_stopping(t()) :: t()
-  def to_stopping(%__MODULE__{} = s) do
-    validate!(%{
-      s
-      | phase: :stopping,
-        work: %{s.work | worker_kind: nil, active_worker_kind: nil}
-    })
-  end
-
   @doc "True while a user stop is in flight (terminal transition pending)."
   @spec stopping?(t()) :: boolean()
   def stopping?(%__MODULE__{phase: :stopping}), do: true
   def stopping?(%__MODULE__{}), do: false
 
-  # --- children ---
-  #
-  # The parent's outstanding-children bookkeeping lives in the pure
-  # `Children` sub-machine. These helpers are the machine's public
-  # surface for it; the executor runs the returned actions.
-
-  @doc "Register a spawned child. Returns the actions the executor must run."
-  @spec spawn_child(t(), String.t(), reference() | pid() | nil, boolean()) ::
-          {:ok, [term()], t()} | {:ignore, atom(), t()}
-  def spawn_child(%__MODULE__{} = m, name, worker_ref, archive \\ false) do
-    apply_children(Children.spawn(m.children, name, worker_ref, archive), m)
-  end
-
-  @doc "Apply one child lifecycle event."
-  @spec step_children(t(), term()) :: {:ok, [term()], t()} | {:ignore, atom(), t()}
-  def step_children(%__MODULE__{} = m, event) do
-    apply_children(Children.step(m.children, event), m)
-  end
-
-  @doc "Drop all child bookkeeping (used by the stop/cascade paths)."
-  @spec clear_children(t()) :: t()
-  def clear_children(%__MODULE__{} = m), do: %{m | children: Children.new()}
+  # --- children readers ---
 
   @doc "The running children as a `%{name => worker_ref}` map (test/status view)."
   @spec pending_children(t()) :: %{String.t() => reference() | pid() | nil}
@@ -234,54 +233,9 @@ defmodule Nest.Agents.Agent.Machine do
   @spec running_child_names(t()) :: [String.t()]
   def running_child_names(%__MODULE__{children: children}), do: Children.running_names(children)
 
-  defp apply_children({:ok, actions, children}, m), do: {:ok, actions, %{m | children: children}}
-
-  defp apply_children({:ignore, reason, children}, m),
-    do: {:ignore, reason, %{m | children: children}}
-
-  @doc "A chat turn's LLM call is in flight."
-  @spec to_chat_generating(t()) :: t()
-  def to_chat_generating(%__MODULE__{} = s), do: put(s, :chat, :generating, :http)
-
-  @doc "A chat turn's tool worker is in flight."
-  @spec to_chat_tools(t()) :: t()
-  def to_chat_tools(%__MODULE__{} = s), do: put(s, :chat, :executing_tools, :tools)
-
-  @doc "A compaction summary call is in flight."
-  @spec to_compaction_generating(t()) :: t()
-  def to_compaction_generating(%__MODULE__{} = s), do: put(s, :compaction, :generating, :http)
-
-  @doc "A compaction summary landed and is being committed."
-  @spec to_compaction_committing(t()) :: t()
-  def to_compaction_committing(%__MODULE__{} = s), do: put(s, :compaction, :committing)
-
-  @doc "Enter a blocked (externally-unstuck) phase."
-  @spec to_blocked(t(), phase()) :: t()
-  def to_blocked(%__MODULE__{} = s, phase) when phase in @blocked, do: put(s, s.kind, phase)
-
-  # Inverse of `status_for/1` for callers that legitimately start from an
-  # observable status (tests simulating a phase). Kept alongside the
-  # authority so the mapping can't drift.
-  @doc false
-  @spec status_to_machine(t(), atom()) :: t()
-  def status_to_machine(%__MODULE__{} = s, status) do
-    case status do
-      :idle -> to_idle(s)
-      :streaming -> to_chat_generating(s)
-      :executing_tools -> to_chat_tools(s)
-      :compacting -> to_compaction_generating(s)
-      other -> to_blocked(s, other)
-    end
-  end
-
-  defp put(%__MODULE__{} = s, kind, phase, worker_kind \\ nil) do
-    validate!(%{
-      s
-      | kind: kind,
-        phase: phase,
-        work: %{s.work | worker_kind: worker_kind, worker_ref: nil}
-    })
-  end
+  @doc "Drop all child bookkeeping (used by the stop/cascade paths)."
+  @spec clear_children(t()) :: t()
+  def clear_children(%__MODULE__{} = m), do: %{m | children: Children.new()}
 
   @doc """
   Apply one event. Pure: returns the actions the executor must run and the
@@ -290,7 +244,7 @@ defmodule Nest.Agents.Agent.Machine do
   @spec step(t(), term()) :: {:ok, [action()], t()} | {:ignore, atom(), t()} | :quarantine
   def step(%__MODULE__{} = state, event) do
     if event_tag(event) in @events do
-      do_step(state, event)
+      Transitions.do_step(state, event)
     else
       :quarantine
     end
@@ -301,111 +255,27 @@ defmodule Nest.Agents.Agent.Machine do
   def event_tag(tag) when is_atom(tag), do: tag
   def event_tag(tuple) when is_tuple(tuple), do: elem(tuple, 0)
 
-  # --- transitions ---
-  #
-  # NOTE: intentional behavior for each non-obvious clause is recorded as
-  # an inline comment next to the clause *and* pinned by a test in
-  # machine_test.exs. Do not move intent into @doc.
+  @doc false
+  # Test-only inverse of `status_for/1` for fixtures that need a machine in
+  # a given observable status. There is no production caller; production
+  # only ever reaches a phase through `step/2`.
+  @spec status_to_machine(t(), atom()) :: t()
+  def status_to_machine(%__MODULE__{} = m, status) do
+    {kind, phase, worker_kind} = status_mapping(status)
 
-  # idle is the only phase that accepts new work.
-  defp do_step(%{phase: :idle} = s, {:chat_request, _} = e) do
-    {:ok, [{:append_user, e}, {:spawn_http, e}],
-     %{s | kind: :chat, phase: :generating, work: %{s.work | worker_kind: :http}}}
+    validate!(%{
+      m
+      | kind: kind,
+        phase: phase,
+        work: %{m.work | worker_kind: worker_kind, worker_ref: nil}
+    })
   end
 
-  defp do_step(%{phase: :idle} = s, {:inbox_drain, _} = e) do
-    {:ok, [{:append_user, e}, {:spawn_http, e}],
-     %{s | kind: :chat, phase: :generating, work: %{s.work | worker_kind: :http}}}
-  end
-
-  # A chat LLM response with tool calls moves to tool execution; a text
-  # response finalizes the turn back to idle.
-  defp do_step(%{phase: :generating, kind: :chat} = s, {:http_ok, %{tool_calls: [_ | _]} = e}) do
-    {:ok, [{:append_assistant, e}, {:spawn_tools, e}],
-     %{s | phase: :executing_tools, work: %{s.work | worker_kind: :tools, worker_ref: nil}}}
-  end
-
-  defp do_step(%{phase: :generating, kind: :chat} = s, {:http_ok, e}) do
-    {:ok, [{:append_assistant, e}, :finalize_idle],
-     %{s | phase: :idle, work: %{s.work | worker_kind: nil, worker_ref: nil}}}
-  end
-
-  # Tool results feed back into the LLM.
-  defp do_step(%{phase: :executing_tools} = s, {:tool_results, e}) do
-    {:ok, [{:append_tools, e}, {:spawn_http, e}],
-     %{
-       s
-       | phase: :generating,
-         work: %{s.work | worker_kind: :http, worker_ref: nil, iteration: s.work.iteration + 1}
-     }}
-  end
-
-  # A mid-turn request to compact switches the turn to the compaction kind.
-  defp do_step(%{phase: p} = s, {:compaction_request, e})
-       when p in [:generating, :executing_tools] do
-    {:ok, [{:stage_compaction, e}, {:spawn_http, e}],
-     %{
-       s
-       | kind: :compaction,
-         phase: :generating,
-         work: %{s.work | worker_kind: :http, worker_ref: nil},
-         resume: e
-     }}
-  end
-
-  # Compaction summary lands: commit, then resume the carried entry.
-  defp do_step(%{phase: :generating, kind: :compaction} = s, {:compaction_ok, e}) do
-    {:ok, [{:commit_compaction, e}, {:resume, s.resume}],
-     %{
-       s
-       | kind: :chat,
-         phase: :idle,
-         work: %{s.work | worker_kind: nil, worker_ref: nil},
-         resume: nil
-     }}
-  end
-
-  # Stop preempts any active phase. The worker kind is cleared (the phase
-  # is no longer waiting on that kind); the worker ref is kept so the
-  # executor can signal the in-flight task to stop.
-  defp do_step(%{phase: p} = s, {:stop, _}) when p in [:generating, :executing_tools] do
-    {:ok, [{:kill, s.work.worker_ref}, {:arm_timer, 2_000}],
-     %{s | phase: :stopping, work: %{s.work | worker_kind: nil, active_worker_kind: nil}}}
-  end
-
-  # A late worker result after stop is intentionally dropped, not appended.
-  # The terminal recovery already closed the sequence; appending would
-  # orphan the result. Do not "repair" this by appending.
-  defp do_step(%{phase: :stopping} = s, {:http_ok, _}), do: {:ignore, :late_result_after_stop, s}
-
-  defp do_step(%{phase: :stopping} = s, {:tool_results, _}),
-    do: {:ignore, :late_result_after_stop, s}
-
-  # The stop fallback timer force-finalizes.
-  defp do_step(%{phase: :stopping} = s, :stop_timer) do
-    {:ok, [:force_finalize],
-     %{s | phase: :idle, work: %{s.work | worker_kind: nil, worker_ref: nil}}}
-  end
-
-  # A duplicate result for a phase that is no longer waiting is a no-op.
-  defp do_step(%{phase: :idle} = s, {:http_ok, _}), do: {:ignore, :stale_result, s}
-  defp do_step(%{phase: :idle} = s, {:tool_results, _}), do: {:ignore, :stale_result, s}
-
-  # Child lifecycle events are handled by the Children sub-machine; from
-  # the turn machine's perspective they never change the phase.
-  defp do_step(%{phase: p} = s, {:child_completed, _}) when p not in @blocked,
-    do: {:ignore, :children_submachine, s}
-
-  defp do_step(%{phase: _} = s, {:child_failed, _}), do: {:ignore, :children_submachine, s}
-  defp do_step(%{phase: _} = s, {:child_terminated, _}), do: {:ignore, :children_submachine, s}
-  defp do_step(%{phase: _} = s, {:abandon_child, _}), do: {:ignore, :children_submachine, s}
-
-  # Blocked phases reject ordinary work until an external action unsticks
-  # them; the retry/ack events are their only exits.
-  defp do_step(%{phase: p} = s, _event) when p in @blocked, do: {:ignore, :blocked, s}
-
-  # Any declared event not matched above is intentionally inert here.
-  defp do_step(%__MODULE__{} = s, _event), do: {:ignore, :not_applicable, s}
+  defp status_mapping(:idle), do: {:chat, :idle, nil}
+  defp status_mapping(:streaming), do: {:chat, :generating, :http}
+  defp status_mapping(:executing_tools), do: {:chat, :executing_tools, :tools}
+  defp status_mapping(:compacting), do: {:compaction, :generating, :http}
+  defp status_mapping(status), do: {:chat, status, nil}
 
   @doc """
   Assert the machine's cross-field invariants. Raises on violation.

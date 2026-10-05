@@ -19,7 +19,7 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
 
   import ExUnit.CaptureLog
 
-  alias Nest.Agents.Agent.Compaction.Trigger
+  alias Nest.Agents.Agent.Turn
   alias Nest.LLM.MockClient
   alias Nest.TextFixtures
   alias Nest.Vocations
@@ -76,6 +76,14 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
   end
 
   defp agent_state(pid), do: :sys.get_state(pid)
+
+  # The new post-turn compaction entry point: a compaction request against
+  # an idle machine. The HTTP spawn is deferred via the mailbox (as the old
+  # driver did), so a non-GenServer test process never performs a real call.
+  defp post_turn(state) do
+    {:ok, state} = Turn.settle(state, {:compaction_request, nil})
+    state
+  end
 
   # Build a minimal state struct for `Trigger.post_turn/1` tests.
   # `Trigger.post_turn/1` is a regular function that reads only
@@ -142,7 +150,7 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
       # result so we can assert the in-memory state shape.
       {state_after, _log} =
         with_log(fn ->
-          Trigger.post_turn(state_before)
+          post_turn(state_before)
         end)
 
       assert Machine.status_for(state_after.live.machine) == :context_overflow
@@ -157,7 +165,7 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
       # Capture the Logger.error that the broadcast path emits; the
       # test asserts the PubSub broadcast content separately, so the
       # log is just noise.
-      _ = capture_log(fn -> Trigger.post_turn(state) end)
+      _ = capture_log(fn -> post_turn(state) end)
 
       assert_receive {:chat_error, %{content: msg}}
 
@@ -173,12 +181,12 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
       vocation = oversized_vocation()
       state = build_minimal_state(vocation)
 
-      {state_after, _log} = with_log(fn -> Trigger.post_turn(state) end)
+      {state_after, _log} = with_log(fn -> post_turn(state) end)
 
       assert Machine.status_for(state_after.live.machine) == :context_overflow
 
-      assert is_nil(state_after.live.machine.work.ctx),
-             "Trigger.post_turn should not have spawned a chat turn for an oversized system"
+      assert is_nil(state_after.live.machine.work.active_worker),
+             "the oversized-system path must not have spawned a chat worker"
     end
   end
 
@@ -194,7 +202,7 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
       # choke point when the Trigger appends its compaction suffix.
       state_before = build_minimal_state(vocation, 100_000)
 
-      {state_after, _log} = with_log(fn -> Trigger.post_turn(state_before) end)
+      {state_after, _log} = with_log(fn -> post_turn(state_before) end)
 
       # A normal vocation should NOT trigger the oversized path —
       # agent should NOT have transitioned to :context_overflow
@@ -229,7 +237,7 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
       # `ChatPipeline.handle_chat/3`'s spawn-compaction path),
       # which can broadcast a `chat:error` for the nil-vocation
       # case. Capture so the test output stays clean.
-      {state_after, _log} = with_log(fn -> Trigger.post_turn(state) end)
+      {state_after, _log} = with_log(fn -> post_turn(state) end)
 
       assert Machine.status_for(state_after.live.machine) == :compacting,
              "expected :compacting, got #{inspect(Machine.status_for(state_after.live.machine))}"
