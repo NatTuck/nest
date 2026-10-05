@@ -52,6 +52,23 @@ defmodule MachineStructureTest do
       assert offenders == [], "reintroduced side-door transition(s): #{inspect(offenders)}"
     end
 
+    test "Turn is the only lib caller of Machine.step/2" do
+      # Every machine event must flow through the settle loop so the
+      # returned actions are run and status changes are broadcast. A
+      # caller that steps the machine directly would silently drop
+      # actions. Init enters its blocked phase via `Machine.Phase.enter_blocked/2`
+      # (a pure phase write with no actions); model changes route
+      # `{:unblocked}` through `Turn.settle/2`.
+      offenders =
+        for path <- @agent_sources,
+            File.read!(path) =~ ~r/Machine\.step\(/,
+            path != "lib/nest/agents/agent/turn.ex",
+            do: path
+
+      assert offenders == [],
+             "Machine.step/2 must only be called from Turn; found: #{inspect(offenders)}"
+    end
+
     test "no Agent source stores an observable status on live" do
       for path <- @agent_sources do
         for base <- map_update_status_bases(File.read!(path)) do

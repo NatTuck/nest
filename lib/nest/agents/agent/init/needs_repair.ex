@@ -15,13 +15,13 @@ defmodule Nest.Agents.Agent.Init.NeedsRepair do
   require Logger
 
   alias Nest.Agents.Agent.Broadcasts
-  alias Nest.Agents.Agent.Machine
+  alias Nest.Agents.Agent.Machine.Phase
   alias Nest.LLM.Preflight
 
   @spec block(Nest.Agents.Agent.t(), [Preflight.violation()], String.t() | nil) ::
           Nest.Agents.Agent.t()
   def block(state, violations, repair_command) do
-    {:ok, _actions, machine} = Machine.step(state.live.machine, {:blocked, :needs_repair, nil})
+    machine = Phase.enter_blocked(state.live.machine, :needs_repair)
 
     state = %{
       state

@@ -63,6 +63,8 @@ defmodule Nest.Agents.Agent.ModelHandler do
   end
 
   defp perform_edit_agent(state, new_model, workspace_path) do
+    old_status = Machine.status_for(state.live.machine)
+
     case Config.create_client_config(new_model) do
       {:error, reason} ->
         # Wrap the model-resolution error like `perform_set_model/2`
@@ -77,9 +79,7 @@ defmodule Nest.Agents.Agent.ModelHandler do
                Persistence.update_agent_workspace(state.space_id, state.name, workspace_path) do
           state = apply_new_model(state, new_model, client_config)
           {state, _workspace_reply} = WorkspaceHandler.apply_workspace(state, workspace_path)
-          Broadcasts.status(state)
-          {state, _result} = Turn.drain_inbox(state)
-          {:reply, :ok, state}
+          {:reply, :ok, unblock_and_announce(state, old_status)}
         else
           {:error, reason} -> {:reply, {:error, reason}, state}
         end
@@ -104,6 +104,8 @@ defmodule Nest.Agents.Agent.ModelHandler do
   # sequence. Returns the GenServer's reply tuple so the call to
   # `perform_set_model/2` reads as a straight-line pipeline.
   defp perform_set_model(state, new_model) do
+    old_status = Machine.status_for(state.live.machine)
+
     case Config.create_client_config(new_model) do
       {:error, reason} ->
         {:reply, {:error, {:invalid_model, reason}}, state}
@@ -115,11 +117,24 @@ defmodule Nest.Agents.Agent.ModelHandler do
 
           :ok ->
             new_state = apply_new_model(state, new_model, client_config)
-            Broadcasts.status(new_state)
-            {new_state, _result} = Turn.drain_inbox(new_state)
-            {:reply, :ok, new_state}
+            {:reply, :ok, unblock_and_announce(new_state, old_status)}
         end
     end
+  end
+
+  # Apply the `:unblocked` transition through the settle loop so the
+  # machine's `:drain_inbox` action runs (the `:model_missing` recovery),
+  # then announce the status. `Turn.settle/2` broadcasts when the status
+  # changes; when the agent was already idle the status is unchanged, so
+  # we broadcast explicitly to push the new model to subscribers.
+  defp unblock_and_announce(state, old_status) do
+    {:ok, state} = Turn.settle(state, {:unblocked})
+
+    if Machine.status_for(state.live.machine) == old_status do
+      Broadcasts.status(state)
+    end
+
+    state
   end
 
   # Mutate the state for a new model/client. Does NOT broadcast — the
@@ -128,7 +143,7 @@ defmodule Nest.Agents.Agent.ModelHandler do
   defp apply_new_model(state, new_model, client_config) do
     {context_limit, context_limit_source} = Init.initial_context_limit(new_model)
 
-    state = %{
+    %{
       state
       | model: new_model,
         client_config: client_config,
@@ -147,14 +162,5 @@ defmodule Nest.Agents.Agent.ModelHandler do
             context_limit_source: context_limit_source
         }
     }
-
-    # `:model_missing` recovery transition — flag flips to
-    # `:idle` so the ChatPage's repair banner clears.
-    if Machine.status_for(state.live.machine) == :model_missing do
-      {:ok, _actions, machine} = Machine.step(state.live.machine, {:unblocked})
-      %{state | live: %{state.live | machine: machine}}
-    else
-      state
-    end
   end
 end
