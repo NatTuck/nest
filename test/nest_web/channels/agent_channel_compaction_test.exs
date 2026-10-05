@@ -10,8 +10,8 @@ defmodule NestWeb.AgentChannelCompactionTest do
   compaction, even when the DB write succeeded. The
   PubSub broadcast is sent by
   `Nest.Agents.Agent.Broadcasts.compaction/2` after
-  `CompactionLifecycle.persist_and_broadcast/5` confirms
-  the DB write; the JS side (`assets/js/channels/agent.js`)
+  `Turn.Executor` commits the compaction DB write; the JS side
+  (`assets/js/channels/agent.js`)
   subscribes to the `chat:compaction` event and uses it to
   render the compaction divider. The payload carries the
   marker only — the archive is fetched lazily over

@@ -2,8 +2,8 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
   @moduledoc """
   Tests for the 25% safety budget on the rendered system prompt.
 
-  The Trigger checks `SystemPrompt.within_size_budget?/2` before
-  computing the summary budget. If the rendered prompt exceeds 25%
+  `Machine.Compaction.stage/3` checks `SystemPrompt.within_size_budget?/2`
+  before computing the summary budget. If the rendered prompt exceeds 25%
   of the context window, compaction refuses with the
   `:system_oversized` error wording instead of the generic
   `:reserve_exhausted` one.
@@ -92,13 +92,12 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
     state
   end
 
-  # Build a minimal state struct for `Trigger.post_turn/1` tests.
-  # `Trigger.post_turn/1` is a regular function that reads only
-  # `state.name`, `state.vocation`, `state.workspace_path`,
-  # `state.depth`, `state.llm_metrics`, and `Machine.status_for(state.live.machine)`.
-  # Spawning a real Agent is ~100ms overhead per test; building
-  # the struct directly is <5ms. The test verifies the in-memory
-  # state shape + PubSub broadcast, not the GenServer lifecycle.
+  # Build a minimal state struct for the `Compaction.stage/3` tests.
+  # Staging reads `state.live.machine`, `state.llm_metrics`, and the turn
+  # context (`Turn.build_ctx/1`). Spawning a real Agent is ~100ms
+  # overhead per test; building the struct directly is <5ms. The test
+  # verifies the in-memory state shape + PubSub broadcast, not the
+  # GenServer lifecycle.
   #
   # The context_limit defaults to 8_000 so the 24k-char rendered
   # prompt on the oversized vocation exceeds 25% — qwen3.5-plus
@@ -136,21 +135,19 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
     }
   end
 
-  describe "Trigger.start refuses compaction when the rendered system exceeds 25% budget" do
+  describe "Compaction staging refuses compaction when the rendered system exceeds 25% budget" do
     test "the agent transitions to :context_overflow and stays there" do
       vocation = oversized_vocation()
 
-      # Build a minimal state struct (no Agent process) — `Trigger.post_turn/1`
-      # is a regular function that only reads `state.name`,
-      # `state.vocation`, `state.workspace_path`, `state.depth`,
-      # `state.llm_metrics`, and `Machine.status_for(state.live.machine)`.
-      # Spawning a real Agent is ~100ms overhead per test;
-      # building the struct directly is <5ms. The test verifies
-      # the in-memory state shape, not the GenServer lifecycle.
+      # Build a minimal state struct (no Agent process): `Compaction.stage/3`
+      # reads only `state.live.machine` and the turn context. Spawning a
+      # real Agent is ~100ms overhead per test; building the struct
+      # directly is <5ms. The test verifies the in-memory state shape,
+      # not the GenServer lifecycle.
       state_before = build_minimal_state(vocation)
       refute Machine.status_for(state_before.live.machine) == :context_overflow
 
-      # `Trigger.post_turn/1` → `broadcast_oversized/2` → `Overflow.broadcast/5`
+      # The `{:overflow, :system_oversized, _}` broadcast → `Overflow.broadcast/5`
       # → `Broadcasts.error/4` which calls `Logger.error/2`. AGENTS.md
       # line 84-92 forbids tests from printing to the console;
       # `with_log/2` captures the log AND returns the function's
@@ -197,7 +194,7 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
     end
   end
 
-  describe "Trigger.start still works for normal (under-budget) vocations" do
+  describe "Compaction staging still works for normal (under-budget) vocations" do
     test "does not refuse when the rendered prompt is within 25%" do
       vocation = normal_vocation()
 
@@ -206,7 +203,7 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
       # tests is below the reserve floor, which makes `check_messages`
       # report `:cannot_compact` for ANY message list (reserve alone
       # exceeds the window) and would wrongly trip the pre-flight
-      # choke point when the Trigger appends its compaction suffix.
+      # choke point when compaction staging appends its request suffix.
       state_before = build_minimal_state(vocation, 100_000)
 
       {state_after, _log} = with_log(fn -> post_turn(state_before) end)
@@ -221,7 +218,7 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
   end
 
   describe "vocation with no system_prompt (state.vocation == nil)" do
-    test "Trigger.start falls back to messages[0] for the rendered size (legacy test fixtures)" do
+    test "Compaction staging falls back to messages[0] for the rendered size (legacy test fixtures)" do
       # `agents.vocation_id` is a NOT NULL FK, so we have to
       # pass a real id (a "Test Default" vocation inserted by
       # the helper). But `vocation: nil` on the attrs still
@@ -230,9 +227,9 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
       # `vocation_id` is a non-zero integer AND the helper
       # wants the struct. Here we override `vocation: nil`
       # explicitly to exercise the `compose_vocation_config/4`
-      # nil-vocation clause. Trigger's `render_system_prompt/2`
-      # falls back to extracting the rendered text from
-      # `messages[0]` so the compaction can still proceed
+      # nil-vocation clause. `Dispatch.compaction_plan/1`'s
+      # `system_prompt/2` falls back to extracting the rendered text
+      # from `messages[0]` so the compaction can still proceed
       # (preserves the pre-fix behavior for tests that relied
       # on it).
       vid = vocation_id_for_test()
@@ -240,10 +237,10 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
 
       state = agent_state(pid)
 
-      # `start_agent/1` ran `Trigger.start/2` already (via
-      # `ChatPipeline.handle_chat/3`'s spawn-compaction path),
-      # which can broadcast a `chat:error` for the nil-vocation
-      # case. Capture so the test output stays clean.
+      # `start_agent/1` already staged a compaction (via
+      # `ChatPipeline.handle_chat/3`), which can broadcast a
+      # `chat:error` for the nil-vocation case. Capture so the test
+      # output stays clean.
       {state_after, _log} = with_log(fn -> post_turn(state) end)
 
       assert Machine.status_for(state_after.live.machine) == :compacting,

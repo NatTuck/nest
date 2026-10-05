@@ -6,7 +6,7 @@ defmodule Nest.Persistence.AgentCompaction do
   Loads a single agent (by space + name), plans an offline
   compaction, optionally summarizes and writes it, and formats a
   report. This is a standalone recovery path: it shares no code with
-  the live compaction pipeline (`Trigger` / `ResultHandler` /
+  the live compaction pipeline (`Machine.Compaction` / `Turn.Executor` /
   `Nest.Tokens.Compactor` / `MessageAppender`), so it still works when
   the live mechanism can't run — notably when the active history
   already exceeds the model's context window.

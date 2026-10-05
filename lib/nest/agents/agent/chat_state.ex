@@ -114,7 +114,7 @@ defmodule Nest.Agents.Agent.ChatState.Live do
   `Nest.Agents.Agent.Turn.ContextReminder` has already
   announced for the current conversation segment. Cleared
   to `%MapSet{}` on successful compaction in
-  `Compaction.ResultHandler.handle_success/3`, so warnings
+  `Machine.Compaction`, so warnings
   re-fire if usage rises again after the history was summarized.
   On restore it is rebuilt from the active messages' notice
   metadata (`Init.seed_from_db/3`), so a BEAM restart mid-

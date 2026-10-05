@@ -13,7 +13,7 @@ defmodule Nest.Agents.Agent.Compaction.Overflow do
 
     * `:reserve_exhausted` — the compactor's summary
       budget computation (in
-      `Nest.Agents.Agent.Compaction.Trigger`) finds the
+      `Nest.Agents.Agent.Machine.Compaction`) finds the
       system + suffix would overflow the compaction reserve.
       The agent stays in its current status (no
       spawn) and the user is told why compaction can't
@@ -100,7 +100,7 @@ defmodule Nest.Agents.Agent.Compaction.Overflow do
   Broadcast the overflow `chat:error` to the UI. The
   `source` is the call site (e.g.
   `"Nest.Agents.Agent.ChatPipeline.handle_preflight/2"` or
-  `inspect(Nest.Agents.Agent.Compaction.Trigger)`) for log
+  `"Nest.Agents.Agent.Turn.Executor"`) for log
   correlation. The `system_prompt` is the rendered string
   from `compose_vocation_config/5`; `reason` selects the
   message shape (see `message/4`).

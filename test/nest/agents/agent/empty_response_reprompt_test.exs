@@ -5,7 +5,7 @@ defmodule Nest.Agents.Agent.EmptyResponseRepromptTest do
   A model can end a turn having streamed only reasoning
   (`reasoning_content`) and no actual reply text. The turn used to
   treat that as a finished answer, leaving the user with a thinking-
-  only "reply" and a dead conversation. Now the `ResponseHandler`
+  only "reply" and a dead conversation. Now `Machine.Response`
   detects a silent response (no text, no refusal), injects an explicit
   user nudge, and re-asks — bounded by `@max_empty_retries` — before
   giving up and finalizing.

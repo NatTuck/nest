@@ -10,7 +10,7 @@ defmodule Nest.Agents.Agent.ToolFilter do
       tool list per the clone rule).
     * `Nest.Agents.Agent.WorkspaceHandler` — when the workspace changes
       and the tool list is rebuilt.
-    * `Nest.Agents.Agent.Compaction.ResultHandler` — on compaction
+    * `Nest.Agents.Agent.Machine.Compaction` — on compaction
       (which invalidates the prefix cache, so the list may change).
 
   Keeping the map from depth → filter here means the spawn and

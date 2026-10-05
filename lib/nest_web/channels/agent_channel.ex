@@ -145,9 +145,9 @@ defmodule NestWeb.AgentChannel do
   end
 
   # When a running turn processes a `chat:stop`, the Agent's
-  # `Turn.Lifecycle.stop/2` acks this channel (the pid that
-  # initiated the stop) with a bare `:stopped`. Nothing needs
-  # forwarding: the `chat:stop` handler already replied `:ok`, and the
+  # `{:stop, channel}` transition (run by `Turn.Executor`) acks this
+  # channel (the pid that initiated the stop) with a bare `:stopped`.
+  # Nothing needs forwarding: the `chat:stop` handler already replied `:ok`, and the
   # client's "Stopping…" state is cleared by the Agent's subsequent
   # `chat:status: idle` broadcast. We just must not crash on it.
   @impl true

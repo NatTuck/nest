@@ -251,15 +251,16 @@ defmodule Nest.Agents.AgentCompactionTest do
   end
 
   describe "per-iteration preflight has been removed" do
-    test "CompactionHandler does not accept {:preflight_request, _, _} (Trigger A is gone)" do
+    test "CompactionHandler does not accept {:preflight_request, _, _} (the per-iteration trigger is gone)" do
       {pid, _agent_id} =
         start_agent(%{
           model: %{name: "qwen3.5-plus"},
           vocation_id: programmer_vocation_id_for_test()
         })
 
-      # Per-iteration preflight compaction was removed in favor of
-      # the BatchSizer + Trigger B (per-handle_chat). The Agent
+      # Per-iteration preflight compaction was removed in favor of the
+      # BatchSizer preflight (`Machine.Response`) and staged compaction
+      # (`Machine.Compaction.stage/3`). The Agent
       # must NOT have a handler for `{:preflight_request, _, _}` —
       # any such message lands in the Agent's mailbox unhandled
       # and is silently discarded.
@@ -404,7 +405,7 @@ defmodule Nest.Agents.AgentCompactionTest do
              "expected fresh system message to contain the rendered system prompt"
 
       # The carried tool_call was executed by the post-compaction
-      # chat turn (Trigger 2 mid-turn resume), so the
+      # chat turn (the mid-turn resume), so the
       # tool_call + tool_result are consumed and replaced
       # with the final assistant response. Assert the tail
       # carries an assistant message.

@@ -244,7 +244,7 @@ defmodule Nest.Tokens.Compactor do
   `<think>...</think>` blocks and trimming whitespace.
 
   This is the single summary contract, shared by `compact/3` and the live
-  compaction commit (`Nest.Agents.Agent.Compaction.ResultHandler`). A missing
+  compaction commit (`Nest.Agents.Agent.Turn.Executor`). A missing
   summary is a hard bug: every compaction marker must be bracketed by the
   summary it produced (see `notes/compaction-reserve-plan.md`). An empty or
   think-only response returns `{:error, :llm_returned_empty}` so the caller

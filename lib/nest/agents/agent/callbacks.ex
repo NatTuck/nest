@@ -49,7 +49,7 @@ defmodule Nest.Agents.Agent.Callbacks do
   # in-process turn finalizes through the stop timer and does not cast
   # this; the sub-agent cascade tests drive it directly to exercise the
   # child-teardown path. `handle_cast` doesn't route through `Handlers`,
-  # so we delegate straight to `TurnHandler.handle/2`.
+  # so we settle the stop directly via `Turn.settle/2`.
   def handle_cast({:chat_stopped, from}, state) do
     {:ok, state} = Turn.settle(state, {:stop, from})
     {:noreply, SubAgent.stop_pending_children(state)}
@@ -220,10 +220,8 @@ defmodule Nest.Agents.Agent.Callbacks do
   @doc false
   def stamped_index({_role, %{index: index}}), do: index
 
-  # Compaction completion is handled in-process by
-  # `Nest.Agents.Agent.Compaction.ResultHandler.handle_success/3`
-  # (called from `ResultHandler.handle/2` on
-  # `{:compaction_done, ...}` arrival).
+  # Compaction completion is handled in-process by the `{:commit_done}`
+  # transition (`Machine.Compaction.resume/1`), so it never arrives here.
   def handle_info(msg, state) do
     Handlers.handle(msg, state)
   end

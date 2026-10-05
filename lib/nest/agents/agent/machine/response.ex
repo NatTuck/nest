@@ -9,8 +9,8 @@ defmodule Nest.Agents.Agent.Machine.Response do
   and nudge content, the API log, and the continuation, then returns the
   actions the executor runs. No effects happen here.
 
-  Extracted from the old `Turn.ResponseHandler` and rooted in
-  `Machine.Turn.classify_response/1` so the decision table has one home.
+  Rooted in `Machine.Turn.classify_response/1` so the decision table
+  has one home.
   """
 
   alias Nest.Agents.Agent.BatchSizer

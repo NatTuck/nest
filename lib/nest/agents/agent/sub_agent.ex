@@ -362,8 +362,8 @@ defmodule Nest.Agents.Agent.SubAgent do
 
   @doc """
   Stop every currently-running child and clear the children
-  sub-machine. Called from `TurnHandler.chat_stopped_state/1` (via
-  `force_idle/2`) so a user-initiated Stop cuts off outstanding queries,
+  sub-machine. Called from the Agent's `{:chat_stopped, _}` handler
+  (`Turn.handle/2`) so a user-initiated Stop cuts off outstanding queries,
   and from `cascade_terminate/1` on GenServer death.
 
   Only children currently being queried (running) are stopped — idle

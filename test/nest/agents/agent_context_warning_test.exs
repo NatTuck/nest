@@ -7,7 +7,7 @@ defmodule Nest.Agents.AgentContextWarningTest do
   `state.live.crossed_thresholds` (per conversation, not per turn);
   the in-process turn reads it directly from the Agent state and
   writes the updated set back. Cleared on successful compaction in
-  `Compaction.ResultHandler`. The pure unit tests for
+  `Machine.Compaction`. The pure unit tests for
   `ContextReminder.highest_unannounced/3` live in
   `test/nest/agents/agent/turn/context_reminder_test.exs`;
   this module covers the wiring.

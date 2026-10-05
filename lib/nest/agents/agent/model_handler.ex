@@ -149,7 +149,7 @@ defmodule Nest.Agents.Agent.ModelHandler do
         client_config: client_config,
         # Reset the threshold set so reminders re-fire under
         # the new model's context window. Mirrors the post-
-        # compaction reset in `Compaction.ResultHandler`.
+        # compaction reset in `Machine.Compaction`.
         # Must be a `MapSet.new()` (not `%{}`) — the field is
         # structurally a MapSet across every other writesite
         # and `ContextReminder.highest_unannounced/3` calls

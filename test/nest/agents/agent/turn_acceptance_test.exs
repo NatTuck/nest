@@ -54,9 +54,9 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
     end)
   end
 
-  # The carried assistant+ToolUse handed to a resumed turn via
-  # `{:compaction_done, "…", {:tool_call, msg, iter, max}}`. The resumed
-  # turn executes it first (Trigger 2), then makes its next LLM call with
+  # The carried assistant+ToolUse handed to a resumed turn as the
+  # compaction entry `{:tool_call, msg, iter, max}`. The resumed turn
+  # executes it first, then makes its next LLM call with
   # the carried iteration count — so seeding a turn at the cap makes its
   # first LLM call the final `tools: nil` one. `context-check` (rather
   # than `context-compact`) keeps that execution from triggering a
@@ -236,7 +236,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
       # same contract.
       #
       # The `tools: nil` decision itself is asserted directly in
-      # `turn/iteration_test.exs`. What this test pins is the
+      # `machine/turn_test.exs`. What this test pins is the
       # observable end of it: the final call's text lands as the final
       # assistant message and the turn ends idle.
       MockClient.set_response("Final answer at the cap")

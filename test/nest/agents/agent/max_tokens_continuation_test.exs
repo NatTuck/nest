@@ -4,7 +4,7 @@ defmodule Nest.Agents.Agent.MaxTokensContinuationTest do
 
   A model that runs out of output tokens mid-answer stops with
   `stop_reason` `"max_tokens"` (Anthropic) or `"length"` (OpenAI). That
-  is not a finished reply: the `ResponseHandler` appends a "keep going"
+  is not a finished reply: `Machine.Response` appends a "keep going"
   user nudge and re-asks, bounded by `@max_truncation_retries`, so the
   answer is completed instead of dead-ending.
   """

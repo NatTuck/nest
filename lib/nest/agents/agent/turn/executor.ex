@@ -337,13 +337,13 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   end
 
   defp execute({:broadcast, {:compaction_error, msg}, _}, state) do
-    source = "Nest.Agents.Agent.Compaction.ResultHandler.handle_error/3"
+    source = "Nest.Agents.Agent.Turn.Executor"
     Broadcasts.compaction_error(state, msg, source)
     {state, :continue}
   end
 
   defp execute({:broadcast, {:compaction_loop, reason, count, max}, _}, state) do
-    source = "Nest.Agents.Agent.Compaction.ResultHandler"
+    source = "Nest.Agents.Agent.Turn.Executor"
     Broadcasts.compaction_loop(state.space_id, state.name, reason, source, count, max)
     {state, :continue}
   end

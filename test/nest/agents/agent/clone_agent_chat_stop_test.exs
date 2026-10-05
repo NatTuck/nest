@@ -6,8 +6,8 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
   Here we drive the cascade by sending `{:chat_stopped, _}`
   directly to the parent — the same message the stop path
   would have sent through the channel → stop handler — and
-  verify `chat_stopped_state/1` walks the machine's running
-  children and stops every descendant.
+  verify the Agent's `{:chat_stopped, _}` handler walks the
+  machine's running children and stops every descendant.
 
   See `notes/stop-children-when-parent-stopped.md` for the
   design and the race analysis this test pins down.

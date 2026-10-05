@@ -2,8 +2,8 @@ defmodule Nest.Agents.Agent.Turn.Terminal do
   @moduledoc """
   Pure builders for a turn's terminal recovery.
 
-  Extracted from the old `Handlers.TurnHandler` so `Turn.Executor` (the
-  only place effects happen) can share one implementation of the
+  `Turn.Executor` (the only place effects happen) uses one
+  implementation of the
   "finalize the partial / heal the tail / build the parent payload"
   logic without any of it living outside the executor's call graph.
 

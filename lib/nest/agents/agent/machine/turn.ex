@@ -2,8 +2,8 @@ defmodule Nest.Agents.Agent.Machine.Turn do
   @moduledoc """
   Pure decision logic for a chat turn's response handling.
 
-  `classify_response/1` is the branch table `ResponseHandler` uses after an
-  LLM response arrives. It is pure so it can be exhaustively tested and so
+  `classify_response/1` is the branch table `Machine.Response` uses after
+  an LLM response arrives. It is pure so it can be exhaustively tested and so
   the eventual in-process turn driver reuses one decision table.
 
   This module carries no side effects and no Agent state.

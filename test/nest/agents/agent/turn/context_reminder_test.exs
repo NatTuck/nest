@@ -4,12 +4,11 @@ defmodule Nest.Agents.Agent.Turn.ContextReminderTest do
 
   These are unit tests of `ContextReminder.highest_unannounced/3`,
   `ContextReminder.format/4`, and `ContextReminder.build_message/3`.
-  The in-process turn wiring (the context spec injected from
-  `NoticeInjector`, the set persisted on the Agent's
+  The in-process turn wiring (the context spec injected by the
+  user-notice / response path, the set persisted on the Agent's
   `live.crossed_thresholds`, and the set cleared on successful
-  compaction in `Compaction.ResultHandler.handle_success/3`)
-  is covered by the regression tests in
-  `agent_turn_iteration_test.exs`.
+  compaction in `Machine.Compaction`) is covered by the regression
+  tests in `agent_context_warning_test.exs`.
 
   ## Reserve-aware math
 

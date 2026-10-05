@@ -347,7 +347,7 @@ defmodule Nest.Tools.ShellCmd do
   defp append_stderr(acc, data),
     do: %{acc | stderr: [to_string(data) | acc.stderr]}
 
-  # The user clicked Stop. `Lifecycle.stop_chat/2` forwards
+  # The user clicked Stop. `Agent.stop_chat/2` forwards
   # `{:stop_chat, _}` to the tool worker before
   # `Process.exit(worker, :kill)` so we can clean up the bwrap
   # OS process explicitly. Without this, the `:erlexec` port

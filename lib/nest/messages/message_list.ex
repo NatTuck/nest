@@ -1,9 +1,8 @@
 defmodule Nest.Messages.MessageList do
   @moduledoc """
-  Pure functions on message lists. Extracted from
-  `Nest.Agents.Agent.Turn.Iteration` so the compactor
-  and subagent paths can share the same utilities without
-  importing iteration-internal functions.
+  Pure functions on message lists. Shared by the compactor and
+  subagent paths so they can use the same utilities without
+  importing turn-internal functions.
   """
 
   alias Nest.Messages.Assistant

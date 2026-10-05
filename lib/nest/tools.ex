@@ -240,7 +240,7 @@ defmodule Nest.Tools do
 
   # The `context-compact` tool triggers compaction. It is a
   # control-flow tool: it is intercepted by the turn response
-  # handler (`Nest.Agents.Agent.Turn.ResponseHandler`, which requires
+  # handler (`Nest.Agents.Agent.Machine.Response`, which requires
   # it to be the sole call in a batch) and
   # never actually invoked here, so its `function` is a stub. The
   # schema surfaces the `focus` argument the LLM can pass to guide

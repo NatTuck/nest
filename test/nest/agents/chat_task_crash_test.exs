@@ -8,8 +8,8 @@ defmodule Nest.Agents.ChatTaskCrashTest do
   because the LLM provider sent an unrecognized delta
   shape), `Turn.HTTPWorker.run/2`'s `try/catch` converts the raise
   into a `{:worker_crashed, ref, exception, stacktrace}` message to
-  the Agent. The Agent's turn routes it to
-  `TurnHandler.chat_crashed_state/3`, which then:
+  the Agent. The Agent routes it to the `{:worker_crashed, _}`
+  transition, which then:
 
     1. Saves any partial content as a normal assistant
        message (so the user doesn't lose their work).
@@ -94,12 +94,12 @@ defmodule Nest.Agents.ChatTaskCrashTest do
         assert_receive {:chat_status, %{status: "idle"}}, 500
 
         # The user message is broadcast first (the agent builds
-        # it before the ChatTurn starts).
+        # it before the turn starts).
         assert_received {:chat_message, {:user, %{index: 1}}}
 
         # The worker catches the raise and sends
         # `{:worker_crashed, ref, exception, stacktrace}` to the
-        # Agent. The Agent's `chat_crashed_state/3` handler
+        # Agent. The Agent's `{:worker_crashed, _}` transition
         # broadcasts `chat:error` followed by a `chat:status:
         # idle` transition. The error message carries the
         # exception's text AND a stacktrace snippet (the user

@@ -102,9 +102,9 @@ defmodule Nest.Agents.AgentToolsSecondChanceTest do
     end
   end
 
-  # The carried assistant+ToolUse handed to a resumed turn via
-  # `{:compaction_done, "…", {:tool_call, msg, iter, max}}`. The resumed
-  # turn executes it first (Trigger 2), then makes its next LLM call with
+  # The carried assistant+ToolUse handed to a resumed turn as the
+  # compaction entry `{:tool_call, msg, iter, max}`. The resumed turn
+  # executes it first, then makes its next LLM call with
   # the carried iteration count — so seeding a turn at the cap makes that
   # call the final `tools: nil` one. `context-check` (rather than
   # `context-compact`) keeps the execution from triggering a compaction
