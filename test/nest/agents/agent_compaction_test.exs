@@ -12,6 +12,7 @@ defmodule Nest.Agents.AgentCompactionTest do
   import Mimic
 
   alias Nest.Agents.Agent
+  alias Nest.Agents.Agent.Machine
   alias Nest.LLM.MockClient
   alias Nest.LLM.RunResponse
   alias Nest.Messages.Assistant
@@ -247,6 +248,68 @@ defmodule Nest.Agents.AgentCompactionTest do
       refute Map.has_key?(payload, :history)
 
       assert_receive {:chat_status, %{status: "idle"}}, 500
+    end
+  end
+
+  describe "final-reply reserve deferral" do
+    test "an over-reserve final reply is compacted and committed active-side exactly once" do
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+
+      state = :sys.get_state(pid)
+      space_id = state.space_id
+      name = state.name
+
+      # A small effective window: the reply's reported usage (85k) plus the
+      # reserve (20k) exceeds 100k, while the pre-reply context fits.
+      :sys.replace_state(pid, fn state ->
+        %{
+          state
+          | llm_metrics: %{
+              state.llm_metrics
+              | context_limit: 100_000,
+                context_limit_source: :config
+            }
+        }
+      end)
+
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{space_id}:#{name}")
+
+      # The reply reports a usage that would spend the reserve, so the
+      # machine must defer it across a compaction instead of persisting it
+      # into the live list.
+      MockClient.set_stream_events([
+        {:text, "FINAL"},
+        {:usage, %{input_tokens: 85_000, output_tokens: 10}}
+      ])
+
+      :ok = Agent.chat(pid, "answer this")
+
+      assert_receive {:chat_compaction, %{marker: _}}, 5_000
+      assert_receive {:chat_status, %{status: "idle"}}, 5_000
+
+      state = :sys.get_state(pid)
+      messages = state.chat_state.messages
+
+      # The deferred reply landed exactly once on the active side.
+      replies =
+        Enum.filter(messages, fn
+          {:assistant, %{parts: [%Part.Text{text: "FINAL"}]}} -> true
+          _ -> false
+        end)
+
+      assert length(replies) == 1,
+             "expected exactly one committed final reply; got #{inspect(messages)}"
+
+      # The compaction produced the active summary_user.
+      assert Enum.any?(messages, fn
+               {:user, %{parts: [%Part.Text{text: t}]}} when is_binary(t) ->
+                 String.starts_with?(t, "Summary of earlier conversation:")
+
+               _ ->
+                 false
+             end)
+
+      assert Machine.status_for(state.live.machine) == :idle
     end
   end
 

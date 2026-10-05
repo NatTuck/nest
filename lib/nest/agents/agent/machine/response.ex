@@ -99,8 +99,7 @@ defmodule Nest.Agents.Agent.Machine.Response do
   end
 
   defp branch(:force_finalize, m, _response, assistant_msg, base) do
-    machine = Phase.enter(m, :chat, :idle)
-    {:ok, base ++ [{:append, assistant_msg}, {:finalize, :clean}, {:drain_inbox}], machine}
+    finalize_or_defer(m, assistant_msg, base, [{:finalize, :clean}, {:drain_inbox}])
   end
 
   defp branch(:overflow_tool_calls, m, response, assistant_msg, base) do
@@ -131,25 +130,50 @@ defmodule Nest.Agents.Agent.Machine.Response do
         {:ok, base ++ [{:append, assistant_msg}, {:append, nudge_msg}, :iterate], machine}
 
       :finalize ->
-        machine = Phase.enter(m, :chat, :idle)
         warning = finalize_warning(kind)
 
-        {:ok,
-         base ++
-           [
-             {:append, assistant_msg},
-             {:log, :warning, warning},
-             {:finalize, :clean},
-             {:drain_inbox}
-           ], machine}
+        finalize_or_defer(m, assistant_msg, base, [
+          {:log, :warning, warning},
+          {:finalize, :clean},
+          {:drain_inbox}
+        ])
     end
   end
 
   defp branch(:finalize, m, _response, assistant_msg, base) do
     # A final text reply is not tool execution: append the assistant and
     # go straight to idle (same shape as a forced finalize).
-    machine = Phase.enter(m, :chat, :idle)
-    {:ok, base ++ [{:append, assistant_msg}, {:finalize, :clean}, {:drain_inbox}], machine}
+    finalize_or_defer(m, assistant_msg, base, [{:finalize, :clean}, {:drain_inbox}])
+  end
+
+  # Append a final assistant reply, or — when persisting it would spend the
+  # compaction reserve (`size(M + reply) + C > L`) — carry it across a
+  # compaction as `{:assistant_response, msg, iter, max}`. The reply was
+  # produced against the pre-compaction context, so it is not part of the
+  # compaction request; `Machine.Compaction.resume/1` commits it active-side
+  # after the summary and finalizes. `tail` runs after the append in the
+  # fits branch (e.g. a finalize warning log).
+  defp finalize_or_defer(m, assistant_msg, base, tail) do
+    if reply_fits?(m, assistant_msg) do
+      machine = Phase.enter(m, :chat, :idle)
+      {:ok, base ++ [{:append, assistant_msg} | tail], machine}
+    else
+      continuation =
+        {:assistant_response, assistant_msg, m.work.iteration, m.work.max_iterations}
+
+      {:ok, actions, machine} = Compaction.stage(m, continuation, nil)
+      {:ok, base ++ actions, machine}
+    end
+  end
+
+  defp reply_fits?(m, assistant_msg) do
+    limit = m.work.ctx.context_limit
+
+    if is_integer(limit) and limit > 0 do
+      Budget.fits?(m.work.ctx.messages ++ [assistant_msg], limit)
+    else
+      true
+    end
   end
 
   defp finalize_warning(:silent),

@@ -7,6 +7,7 @@ defmodule MachineTest do
 
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Machine.Compaction
+  alias Nest.Agents.Agent.Machine.Response
 
   describe "vocabulary" do
     test "phases, events, actions are declared and blocked is a subset of phases" do
@@ -273,6 +274,38 @@ defmodule MachineTest do
         assert is_atom(Machine.status_for(next))
         next
       end)
+    end
+  end
+
+  describe "final-reply reserve deferral" do
+    test "a reply that leaves the reserve intact is appended and finalizes" do
+      m = %{state_at(:generating) | work: %{state_at(:generating).work | active_message_index: 1}}
+      reply = response(text: "done", usage: %{input_tokens: 1_000, output_tokens: 10})
+
+      {:ok, actions, next} = Response.dispatch(m, reply)
+
+      # intentional: the reply fits (size + C <= L), so it is persisted
+      # active-side immediately.
+      assert Enum.any?(actions, &match?({:append, {:assistant, _}}, &1))
+      assert {:finalize, :clean} in actions
+      assert next.kind == :chat and next.phase == :idle
+    end
+
+    test "a reply that would spend the reserve is carried across a compaction" do
+      m = %{state_at(:generating) | work: %{state_at(:generating).work | active_message_index: 1}}
+      # 85k input + the 20k reserve exceeds the 100k context, so persisting
+      # the reply would leave nothing free for the compaction request.
+      reply = response(text: "done", usage: %{input_tokens: 85_000, output_tokens: 10})
+
+      {:ok, actions, next} = Response.dispatch(m, reply)
+
+      # intentional: defer the reply (do not persist it here); it is
+      # committed active-side after the summary by `Compaction.resume/1`.
+      refute Enum.any?(actions, &match?({:append, {:assistant, _}}, &1))
+      assert :iterate in actions
+      assert next.kind == :compaction and next.phase == :generating
+
+      assert {:compaction, _staged, {:assistant_response, {:assistant, _}, 0, 10}} = next.entry
     end
   end
 
