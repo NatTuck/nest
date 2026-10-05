@@ -40,6 +40,8 @@ defmodule Nest.Agents.Agent.Machine do
     * `:quarantine` — an undeclared event tag (drift)
   """
 
+  alias Nest.Agents.Agent.Machine.Children
+
   # The blocked phases are terminal-ish stalls that require an external
   # action (change model, repair, retry, acknowledge) to leave.
   @blocked [
@@ -120,7 +122,9 @@ defmodule Nest.Agents.Agent.Machine do
             resume: nil,
             loop_count: 0,
             pending_user_message: nil,
-            mid_turn_entry: nil
+            mid_turn_entry: nil,
+            children: %Nest.Agents.Agent.Machine.Children{},
+            stop_timer: nil
 
   @type t :: %__MODULE__{
           kind: kind(),
@@ -130,7 +134,9 @@ defmodule Nest.Agents.Agent.Machine do
           resume: term(),
           loop_count: non_neg_integer(),
           pending_user_message: term(),
-          mid_turn_entry: term()
+          mid_turn_entry: term(),
+          children: Nest.Agents.Agent.Machine.Children.t(),
+          stop_timer: reference() | nil
         }
 
   @doc "The declared phase vocabulary."
@@ -171,7 +177,67 @@ defmodule Nest.Agents.Agent.Machine do
 
   @doc "Terminal transition back to idle (clears the working set)."
   @spec to_idle(t()) :: t()
-  def to_idle(%__MODULE__{} = s), do: validate!(%{s | phase: :idle, work: %__MODULE__.Work{}})
+  def to_idle(%__MODULE__{} = s) do
+    validate!(%{s | phase: :idle, work: %__MODULE__.Work{}, stop_timer: nil})
+  end
+
+  @doc """
+  Enter the terminal-preemption phase on a user stop. Survives a stop
+  from any phase (including blocked) so a wedged agent can always be
+  stopped. Keeps the worker ref for the executor to signal, but clears
+  the worker kind: the phase is no longer waiting on that kind.
+  """
+  @spec to_stopping(t()) :: t()
+  def to_stopping(%__MODULE__{} = s) do
+    validate!(%{
+      s
+      | phase: :stopping,
+        work: %{s.work | worker_kind: nil, active_worker_kind: nil}
+    })
+  end
+
+  @doc "True while a user stop is in flight (terminal transition pending)."
+  @spec stopping?(t()) :: boolean()
+  def stopping?(%__MODULE__{phase: :stopping}), do: true
+  def stopping?(%__MODULE__{}), do: false
+
+  # --- children ---
+  #
+  # The parent's outstanding-children bookkeeping lives in the pure
+  # `Children` sub-machine. These helpers are the machine's public
+  # surface for it; the executor runs the returned actions.
+
+  @doc "Register a spawned child. Returns the actions the executor must run."
+  @spec spawn_child(t(), String.t(), reference() | pid() | nil, boolean()) ::
+          {:ok, [term()], t()} | {:ignore, atom(), t()}
+  def spawn_child(%__MODULE__{} = m, name, worker_ref, archive \\ false) do
+    apply_children(Children.spawn(m.children, name, worker_ref, archive), m)
+  end
+
+  @doc "Apply one child lifecycle event."
+  @spec step_children(t(), term()) :: {:ok, [term()], t()} | {:ignore, atom(), t()}
+  def step_children(%__MODULE__{} = m, event) do
+    apply_children(Children.step(m.children, event), m)
+  end
+
+  @doc "Drop all child bookkeeping (used by the stop/cascade paths)."
+  @spec clear_children(t()) :: t()
+  def clear_children(%__MODULE__{} = m), do: %{m | children: Children.new()}
+
+  @doc "The running children as a `%{name => worker_ref}` map (test/status view)."
+  @spec pending_children(t()) :: %{String.t() => reference() | pid() | nil}
+  def pending_children(%__MODULE__{children: %Children{children: children}}) do
+    for {name, %{state: :running, worker_ref: ref}} <- children, into: %{}, do: {name, ref}
+  end
+
+  @doc "The names of currently-running children."
+  @spec running_child_names(t()) :: [String.t()]
+  def running_child_names(%__MODULE__{children: children}), do: Children.running_names(children)
+
+  defp apply_children({:ok, actions, children}, m), do: {:ok, actions, %{m | children: children}}
+
+  defp apply_children({:ignore, reason, children}, m),
+    do: {:ignore, reason, %{m | children: children}}
 
   @doc "A chat turn's LLM call is in flight."
   @spec to_chat_generating(t()) :: t()
@@ -304,7 +370,7 @@ defmodule Nest.Agents.Agent.Machine do
   # executor can signal the in-flight task to stop.
   defp do_step(%{phase: p} = s, {:stop, _}) when p in [:generating, :executing_tools] do
     {:ok, [{:kill, s.work.worker_ref}, {:arm_timer, 2_000}],
-     %{s | phase: :stopping, work: %{s.work | worker_kind: nil}}}
+     %{s | phase: :stopping, work: %{s.work | worker_kind: nil, active_worker_kind: nil}}}
   end
 
   # A late worker result after stop is intentionally dropped, not appended.

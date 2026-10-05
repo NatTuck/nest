@@ -7,29 +7,37 @@ defmodule Nest.Agents.Agent.SubAgent do
     * `handle_spawn_request/3` — a tool worker blocked on an
       `agents-spawn` tool call asked this agent to spawn a
       child. We delegate to the supervisor (fresh or
-      context-cloned), record `{child_name => task_pid}` in
-      `state.chat_state.pending_children` when a `query` is
-      present, kick off `Agents.chat(child_name, query)`, then
-      reply with the child's name (the worker matches its
-      eventual `:spawn_agent_result` on it).
+      context-cloned), register the child in the machine's
+      `Nest.Agents.Agent.Machine.Children` sub-machine when a
+      `query` is present, kick off `Agents.chat(child_name,
+      query)`, then reply with the child's name (the worker
+      matches its eventual `:spawn_agent_result` on it).
 
     * `handle_child_completed/4` — a child cast up the
       tree carrying its last assistant content and its
-      total usage. We merge the child's total into the
-      parent's `descendant_usage`, drop the pending entry,
-      forward `:spawn_agent_result` to the worker (archiving
-      the child first if it was spawned with `archive: true`),
-      and broadcast an updated status (so the token chip's
-      total updates mid-stream).
+      total usage. We run the child event through the
+      `Children` sub-machine, merge the reported usage into
+      the parent's `descendant_usage`, forward
+      `:spawn_agent_result` to the blocked worker (archiving
+      the child if it was spawned with `archive: true`), and
+      broadcast an updated status (so the token chip's total
+      updates mid-stream).
 
   ## Address strategy
 
   The child reaches the parent by `GenServer.cast`-ing to
   `Nest.Agents.Registry.via_tuple(space_id, parent_name)`. The
-  parent looks the child up in `pending_children` by name (the
-  `task_pid` is the only pid we hold; the worker has no
+  parent looks the child up in the children sub-machine by name
+  (the `task_pid` is the only pid we hold; the worker has no
   registered name, so `:spawn_agent_result` reaches it via
   `send/2` from the parent).
+
+  ## Usage accounting
+
+  The child's usage is merged only through the `:completed`
+  terminal transition. An `:abandoned` child (per-item deadline)
+  that later completes does not merge usage — the user asked to
+  stop everything. See `Machine.Children`.
   """
 
   require Logger
@@ -37,6 +45,7 @@ defmodule Nest.Agents.Agent.SubAgent do
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Config
+  alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Registry, as: AgentsRegistry
   alias Nest.Agents.Supervisor
   alias Nest.LLM.MockClient
@@ -181,28 +190,20 @@ defmodule Nest.Agents.Agent.SubAgent do
     end
   end
 
-  # Register the child in `pending_children` only when it has a
-  # `query` to answer (the worker is blocked awaiting the
-  # result). A child spawned without a query runs independently
-  # and never calls back, so there's nothing to track. When
-  # `archive` is set, remember the child in
-  # `chat_state.archiving` so `handle_child_completed/4`
-  # archives it after the response is forwarded.
+  # Register the child in the machine's children sub-machine only when
+  # it has a `query` to answer (the worker is blocked awaiting the
+  # result). A child spawned without a query runs independently and
+  # never calls back, so there's nothing to track. The `archive` flag
+  # is carried on the child entry so the terminal transition can emit
+  # a single archive action after the response is forwarded.
   defp track_child(state, child_name, task_pid, opts) do
     if Map.get(opts, :query, "") != "" do
-      chat_state = %{
-        state.chat_state
-        | pending_children: Map.put(state.chat_state.pending_children, child_name, task_pid)
-      }
+      archive = Map.get(opts, :archive, false)
 
-      archiving =
-        if Map.get(opts, :archive, false) do
-          MapSet.put(state.chat_state.archiving, child_name)
-        else
-          state.chat_state.archiving
-        end
+      {_result, _actions, machine} =
+        Machine.spawn_child(state.live.machine, child_name, task_pid, archive)
 
-      %{state | chat_state: %{chat_state | archiving: archiving}}
+      put_machine(state, machine)
     else
       state
     end
@@ -225,27 +226,15 @@ defmodule Nest.Agents.Agent.SubAgent do
   end
 
   # A tool worker (running an `agents-batch`) hit a per-item deadline and
-  # asked us to abandon one of its children. Stop the child's process
-  # (so it stops burning resources) and drop it from our bookkeeping so a
-  # late-arriving `:child_completed` becomes a defensive no-op in
-  # `handle_child_completed/4`. We do NOT archive here — the child never
-  # produced a response, so there is nothing to keep; it is simply
-  # stopped. Replies `:ok` so the worker's blocking `GenServer.call/3`
-  # unblocks.
+  # asked us to abandon one of its children. The `Children` sub-machine's
+  # `:abandoned` transition is terminal (so a late `:child_completed`
+  # becomes a defensive no-op) and emits a single `{:stop_child, name}`
+  # action, which the executor runs. We do NOT archive here — the child
+  # never produced a response, so there is nothing to keep. Replies `:ok`
+  # so the worker's blocking `GenServer.call/3` unblocks.
   @spec handle_abandon_child(Agent.t(), pid(), String.t()) :: {:reply, :ok, Agent.t()}
   def handle_abandon_child(state, _task_pid, name) do
-    _ = Supervisor.stop_agent(state.space_id, name)
-
-    new_state = %{
-      state
-      | chat_state: %{
-          state.chat_state
-          | pending_children: Map.delete(state.chat_state.pending_children, name),
-            archiving: MapSet.delete(state.chat_state.archiving, name)
-        }
-    }
-
-    {:reply, :ok, new_state}
+    {:reply, :ok, apply_child_event(state, {:abandoned, name})}
   end
 
   # Test-only: if the `:nest` app env has
@@ -292,76 +281,34 @@ defmodule Nest.Agents.Agent.SubAgent do
   end
 
   @doc """
-  Merge `child_total_usage` into `state.llm_metrics.descendant_usage`,
-  drop the pending entry, forward `:spawn_agent_result` to the
-  blocked worker, archive the child if requested, and broadcast
-  the updated status. Returns the GenServer reply tuple (which
-  for a `handle_cast` is just `{:noreply, new_state}`).
+  Merge the child's reported usage into
+  `state.llm_metrics.descendant_usage`, forward
+  `:spawn_agent_result` to the blocked worker, archive the child if it
+  was spawned with `archive: true`, and broadcast the updated status.
+  Returns the GenServer reply tuple (which for a `handle_cast` is just
+  `{:noreply, new_state}`).
   """
   @spec handle_child_completed(Agent.t(), String.t(), String.t(), map()) ::
           {:noreply, Agent.t()}
   def handle_child_completed(state, child_name, response, child_total_usage) do
-    case Map.get(state.chat_state.pending_children, child_name) do
-      nil ->
-        # Defensive: shouldn't happen in production
-        # (every child that casts up the tree is in the
-        # map). Drop silently if it does.
-        {:noreply, state}
-
-      task_pid ->
-        new_pending = Map.delete(state.chat_state.pending_children, child_name)
-
-        new_llm_metrics = %{
-          state.llm_metrics
-          | descendant_usage:
-              Broadcasts.total_usage(state.llm_metrics.descendant_usage, child_total_usage)
-        }
-
-        send(task_pid, {:spawn_agent_result, child_name, response})
-
-        new_state = %{
-          state
-          | chat_state: %{
-              state.chat_state
-              | pending_children: new_pending,
-                archiving: MapSet.delete(state.chat_state.archiving, child_name)
-            },
-            llm_metrics: new_llm_metrics
-        }
-
-        # Archive against the ORIGINAL state, not `new_state`: `new_state`
-        # already dropped `child_name` from `archiving`, so checking it
-        # there would always be false and the child would never be
-        # archived. The pre-completion set still carries `child_name`
-        # iff it was spawned with `archive: true`.
-        maybe_archive_completed_child(state, child_name)
-
-        Broadcasts.status(new_state)
-        {:noreply, new_state}
-    end
-  end
-
-  # If the child was spawned with `archive: true`, stop + mark
-  # it archived now that its response has been forwarded.
-  defp maybe_archive_completed_child(state, child_name) do
-    if MapSet.member?(state.chat_state.archiving, child_name) do
-      Nest.Agents.Supervisor.archive_agent(state.space_id, child_name)
-    end
-
-    :ok
+    state = apply_child_event(state, {:completed, child_name, response, child_total_usage})
+    Broadcasts.status(state)
+    {:noreply, state}
   end
 
   @doc """
   A child ended its turn without a normal completion (its
-  chat crashed or was stopped). Fail the matching pending slot
-  so the blocked tool worker (an `agents-spawn` / `agents-batch`)
-  fails fast instead of waiting out its timeout. Never archives
-  a failed child — a crashed/stopped child is left in place for
-  inspection. Returns the GenServer reply tuple.
+  chat crashed or was stopped). Run the failure through the
+  `Children` sub-machine so the blocked tool worker (an
+  `agents-spawn` / `agents-batch`) fails fast instead of waiting out
+  its timeout. Never archives a failed child — a crashed/stopped child
+  is left in place for inspection. Returns the GenServer reply tuple.
   """
   @spec handle_child_failed(Agent.t(), String.t(), term()) :: {:noreply, Agent.t()}
   def handle_child_failed(state, child_name, reason) do
-    fail_pending_child(state, child_name, reason)
+    state = apply_child_event(state, {:failed, child_name, reason})
+    Broadcasts.status(state)
+    {:noreply, state}
   end
 
   @doc """
@@ -372,33 +319,60 @@ defmodule Nest.Agents.Agent.SubAgent do
   """
   @spec handle_child_terminated(Agent.t(), String.t(), term()) :: {:noreply, Agent.t()}
   def handle_child_terminated(state, child_name, reason) do
-    fail_pending_child(state, child_name, reason)
+    state = apply_child_event(state, {:terminated, child_name, reason})
+    Broadcasts.status(state)
+    {:noreply, state}
   end
 
-  # Forward `:spawn_agent_error` to the blocked worker and drop the
-  # child from `pending_children` + `archiving` (without archiving it).
-  # A child that already completed (or was abandoned on timeout) has no
-  # pending entry, so the notification is a defensive no-op.
-  defp fail_pending_child(state, child_name, reason) do
-    case Map.get(state.chat_state.pending_children, child_name) do
-      nil ->
-        {:noreply, state}
+  # Apply one child lifecycle event to the machine, then run the actions
+  # the pure `Children` sub-machine returned. Worker notifications need
+  # the pre-transition entry (the terminal state clears `worker_ref`), so
+  # the executor captures the running map before stepping.
+  defp apply_child_event(state, event) do
+    machine = state.live.machine
+    running = machine.children.children
 
-      task_pid ->
-        send(task_pid, {:spawn_agent_error, child_name, reason})
+    case Machine.step_children(machine, event) do
+      {:ok, actions, machine} ->
+        state = put_machine(state, machine)
+        Enum.reduce(actions, state, &execute_child_action(&1, running, &2))
 
-        new_state = %{
-          state
-          | chat_state: %{
-              state.chat_state
-              | pending_children: Map.delete(state.chat_state.pending_children, child_name),
-                archiving: MapSet.delete(state.chat_state.archiving, child_name)
-            }
-        }
-
-        Broadcasts.status(new_state)
-        {:noreply, new_state}
+      {:ignore, _reason, machine} ->
+        put_machine(state, machine)
     end
+  end
+
+  defp execute_child_action({:notify_worker, name, result}, running, state) do
+    with %{worker_ref: pid} <- running[name], true <- is_pid(pid) do
+      case result do
+        {:ok, response} -> send(pid, {:spawn_agent_result, name, response})
+        {:error, reason} -> send(pid, {:spawn_agent_error, name, reason})
+      end
+    else
+      _ -> :ok
+    end
+
+    state
+  end
+
+  defp execute_child_action({:merge_usage, _name, usage}, _running, state) do
+    %{
+      state
+      | llm_metrics: %{
+          state.llm_metrics
+          | descendant_usage: Broadcasts.total_usage(state.llm_metrics.descendant_usage, usage)
+        }
+    }
+  end
+
+  defp execute_child_action({:archive_child, name}, _running, state) do
+    _ = Supervisor.archive_agent(state.space_id, name)
+    state
+  end
+
+  defp execute_child_action({:stop_child, name}, _running, state) do
+    _ = Supervisor.stop_agent(state.space_id, name)
+    state
   end
 
   # Notify all connected lobby clients that a subagent has
@@ -427,51 +401,47 @@ defmodule Nest.Agents.Agent.SubAgent do
   end
 
   @doc """
-  Stop every agent in `state.chat_state.pending_children` and clear
-  the map. Called from `ChatTurnHandler.chat_stopped/1` so a
-  user-initiated Stop cuts off outstanding queries, and from
-  `cascade_terminate/1` on GenServer death.
+  Stop every currently-running child and clear the children
+  sub-machine. Called from `TurnHandler.chat_stopped_state/1` (via
+  `force_idle/2`) so a user-initiated Stop cuts off outstanding queries,
+  and from `cascade_terminate/1` on GenServer death.
 
-  Only children currently being queried (in `pending_children`)
-  are stopped — idle specialists are left running. Archiving a
-  whole subtree is handled separately by
-  `Supervisor.archive_agent/2`.
+  Only children currently being queried (running) are stopped — idle
+  specialists are left running. Archiving a whole subtree is handled
+  separately by `Supervisor.archive_agent/2`.
 
   `Supervisor.stop_agent/1` returns `:ok` on success and
-  `{:error, :not_found}` when the child has already terminated
-  (e.g. it finished during the same `chat_stopped` flush). Both
-  outcomes satisfy "no descendants are running," so we discard
-  them all. `ChatRegistry`'s `:DOWN` self-cleanup keeps the
-  bookkeeping consistent if a child died between iteration steps.
+  `{:error, :not_found}` when the child has already terminated (e.g. it
+  finished during the same `chat_stopped` flush). Both outcomes satisfy
+  "no descendants are running," so we discard them all. `ChildRegistry`'s
+  `:DOWN` self-cleanup keeps the bookkeeping consistent if a child died
+  between iteration steps.
 
-  The returned state has `pending_children` cleared to `%{}` so a
+  The returned state has the children sub-machine reset to empty so a
   late-arriving `:child_completed` cast (a child that finished
-  milliseconds before we stopped it) becomes a defensive no-op in
-  `handle_child_completed/4` via its `Map.get`-then-`nil`
-  short-circuit.
+  milliseconds before we stopped it) becomes a defensive no-op.
   """
   @spec stop_pending_children(Agent.t()) :: Agent.t()
   def stop_pending_children(state) do
-    state.chat_state.pending_children
-    |> Enum.each(fn {child_name, _task_pid} ->
+    machine = state.live.machine
+
+    machine
+    |> Machine.running_child_names()
+    |> Enum.each(fn child_name ->
       _ = Supervisor.stop_agent(state.space_id, child_name)
     end)
 
-    %{
-      state
-      | chat_state: %{state.chat_state | pending_children: %{}, archiving: %MapSet{}}
-    }
+    put_machine(state, Machine.clear_children(machine))
   end
 
   @doc """
   Stop this agent's outstanding queries before the GenServer
   itself is torn down. Called from `Nest.Agents.Agent.terminate/2`.
 
-  Only children currently being queried (in `pending_children`)
-  are stopped — idle specialists survive their parent's death.
-  Archiving a whole subtree is handled separately by
-  `Supervisor.archive_agent/2`. We deliberately do NOT stop
-  `state.name` itself — that's the supervisor's job, and we're
+  Only children currently being queried (running) are stopped — idle
+  specialists survive their parent's death. Archiving a whole subtree is
+  handled separately by `Supervisor.archive_agent/2`. We deliberately do
+  NOT stop `state.name` itself — that's the supervisor's job, and we're
   already in our own `terminate/2` callback when this runs.
   """
   @spec cascade_terminate(Agent.t()) :: :ok
@@ -489,4 +459,6 @@ defmodule Nest.Agents.Agent.SubAgent do
     # shutdown error.
     :exit, _ -> :ok
   end
+
+  defp put_machine(state, machine), do: %{state | live: %{state.live | machine: machine}}
 end

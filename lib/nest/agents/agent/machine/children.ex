@@ -20,9 +20,10 @@ defmodule Nest.Agents.Agent.Machine.Children do
 
   @type entry :: %{
           state: state(),
-          worker_ref: reference() | nil,
+          worker_ref: reference() | pid() | nil,
           result: term(),
-          usage: term()
+          usage: term(),
+          archive: boolean()
         }
 
   @type t :: %__MODULE__{children: %{String.t() => entry()}}
@@ -50,13 +51,31 @@ defmodule Nest.Agents.Agent.Machine.Children do
     for {name, %{state: :running}} <- c, do: name
   end
 
-  @doc "Register a freshly-spawned child as running."
-  @spec spawn(t(), String.t(), reference() | nil) :: {:ok, [term()], t()} | {:ignore, atom(), t()}
-  def spawn(%__MODULE__{} = m, name, worker_ref) do
+  @doc """
+  Register a freshly-spawned child as running.
+
+  `archive` records whether the parent asked for a one-shot child
+  (`agents-spawn`/`agents-batch` with `archive: true`): a completed
+  child is archived exactly once, at its terminal transition.
+  """
+  @spec spawn(t(), String.t(), reference() | pid() | nil) ::
+          {:ok, [term()], t()} | {:ignore, atom(), t()}
+  def spawn(m, name, worker_ref), do: spawn(m, name, worker_ref, false)
+
+  @spec spawn(t(), String.t(), reference() | pid() | nil, boolean()) ::
+          {:ok, [term()], t()} | {:ignore, atom(), t()}
+  def spawn(%__MODULE__{} = m, name, worker_ref, archive) do
     if Map.has_key?(m.children, name) do
       {:ignore, :duplicate_child, m}
     else
-      entry = %{state: :running, worker_ref: worker_ref, result: nil, usage: nil}
+      entry = %{
+        state: :running,
+        worker_ref: worker_ref,
+        result: nil,
+        usage: nil,
+        archive: archive
+      }
+
       {:ok, [{:track_child, name, worker_ref}], put(m, name, entry)}
     end
   end
@@ -90,14 +109,31 @@ defmodule Nest.Agents.Agent.Machine.Children do
   # intentional: an `:abandoned` child that nonetheless completes later does
   # NOT merge usage. The user asked to stop everything, so the child's cost
   # is intentionally not counted. Do not "fix" this by merging.
+  #
+  # intentional: archiving is a completion-only concern. A completed child
+  # spawned with `archive: true` emits exactly one `{:archive_child, name}`;
+  # a failed/terminated/abandoned child never does. Do not archive on
+  # failure — a crashed child is left in place for inspection.
   defp terminal(m, name, term_state, result, usage, actions) do
     case m.children[name] do
       %{state: s} when s in @terminal ->
         {:ignore, :already_terminal, m}
 
-      %{} ->
-        {:ok, actions,
-         put(m, name, %{state: term_state, worker_ref: nil, result: result, usage: usage})}
+      %{archive: archive} ->
+        actions =
+          if archive and term_state == :completed,
+            do: actions ++ [{:archive_child, name}],
+            else: actions
+
+        entry = %{
+          state: term_state,
+          worker_ref: nil,
+          result: result,
+          usage: usage,
+          archive: archive
+        }
+
+        {:ok, actions, put(m, name, entry)}
 
       nil ->
         {:ignore, :unknown_child, m}

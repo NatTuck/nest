@@ -12,9 +12,9 @@ defmodule Nest.Agents.Agent.Handlers.TurnHandler do
 
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Broadcasts
-  alias Nest.Agents.Agent.Inbox
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.SubAgent
+  alias Nest.Agents.Agent.Turn.Idle
   alias Nest.Agents.Registry, as: AgentsRegistry
   alias Nest.LLM.Client
   alias Nest.Messages.Assistant
@@ -52,18 +52,18 @@ defmodule Nest.Agents.Agent.Handlers.TurnHandler do
       state
       | live: %{
           state.live
-          | machine: Machine.to_idle(state.live.machine),
-            streaming_acc: nil,
+          | streaming_acc: nil,
             cancelled: false,
             tool_index_map: %{},
             context_projection: nil
         }
     }
 
-    Broadcasts.status(state)
-
+    # Notify the parent BEFORE draining: a child that receives a queued
+    # inbox message as it goes idle must still report the reply it just
+    # completed, not the empty tail the drained user message leaves.
     state = maybe_notify_parent_on_idle(state)
-    Inbox.drain_if_idle(state)
+    Idle.enter(state)
   end
 
   @doc """
@@ -82,42 +82,31 @@ defmodule Nest.Agents.Agent.Handlers.TurnHandler do
     state = finalize_partial_if_any(state, error_metadata())
     error_msg = format_chat_task_error(exception, stacktrace)
 
-    if benign_chat_crash?(exception) do
-      state = idle_after_crash(state, :idle, %{})
-      Broadcasts.status(state)
-      notify_parent_of_failure(state, crash_reason(exception))
-      Inbox.drain_if_idle(state)
-    else
-      Logger.error(fn ->
-        "[agent:#{state.name}] chat_crashed msg_index=#{state.chat_state.next_message_index} ::\n" <>
-          Exception.format(:error, exception, stacktrace)
-      end)
+    state =
+      if benign_chat_crash?(exception) do
+        clear_cancelled(state) |> Idle.enter()
+      else
+        Logger.error(fn ->
+          "[agent:#{state.name}] chat_crashed msg_index=#{state.chat_state.next_message_index} ::\n" <>
+            Exception.format(:error, exception, stacktrace)
+        end)
 
-      Broadcasts.error(
-        state.space_id,
-        state.name,
-        state.chat_state.next_message_index,
-        error_msg,
-        "Turn.run/2"
-      )
+        Broadcasts.error(
+          state.space_id,
+          state.name,
+          state.chat_state.next_message_index,
+          error_msg,
+          "Turn.run/2"
+        )
 
-      state = idle_after_crash(state, :idle, %{})
-      Broadcasts.status(state)
-      notify_parent_of_failure(state, crash_reason(exception))
-      Inbox.drain_if_idle(state)
-    end
+        clear_cancelled(state) |> Idle.enter()
+      end
+
+    notify_parent_of_failure(state, crash_reason(exception))
+    state
   end
 
-  defp idle_after_crash(state, _status, _extra) do
-    %{
-      state
-      | live: %{
-          state.live
-          | machine: Machine.to_idle(state.live.machine),
-            cancelled: false
-        }
-    }
-  end
+  defp clear_cancelled(state), do: %{state | live: %{state.live | cancelled: false}}
 
   @doc """
   Force the agent back to `:idle` from any busy state. Idempotent: a
@@ -140,20 +129,9 @@ defmodule Nest.Agents.Agent.Handlers.TurnHandler do
   end
 
   defp finalize_stopped(state, metadata) do
-    state = finalize_partial_if_any(state, metadata)
-
-    state = %{
-      state
-      | live: %{
-          state.live
-          | machine: Machine.to_idle(state.live.machine),
-            cancelled: false
-        }
-    }
-
-    Broadcasts.status(state)
+    state = finalize_partial_if_any(state, metadata) |> clear_cancelled()
     notify_parent_of_failure(state, :stopped)
-    state
+    Idle.enter(state)
   end
 
   @doc """

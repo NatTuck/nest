@@ -165,12 +165,10 @@ defmodule Nest.Agents.Agent.Callbacks do
   # schedule a bounded `:stop_fallback` so a dead/wedged turn that never
   # acks is force-idled too.
   def handle_call({:stop_chat, channel_pid}, _from, state) do
-    # Fully in-process: set `cancelled` first (so any in-flight worker's
-    # `should_stop` callback observes it), kill the active worker, and
-    # finalize the turn. Idempotent when the agent is already idle.
-    state = %{state | live: %{state.live | cancelled: true}}
-    state = TurnLifecycle.stop(state, channel_pid)
-    {:reply, :ok, state}
+    # Fully in-process: move to `:stopping`, kill the active worker, and
+    # arm the bounded stop timer (which owns the single terminal
+    # transition). Idempotent when already stopping or already idle.
+    {:reply, :ok, TurnLifecycle.stop(state, channel_pid)}
   end
 
   # Synchronous retry/loop-ack handlers. The Agent API exposes

@@ -4,16 +4,19 @@ defmodule Nest.Agents.Agent.Turn.Lifecycle do
 
   Owns three concerns:
 
-    * `stop/2` — the user clicked Stop. Ack the channel, give the active
-      worker a chance to clean up in-flight OS subprocesses, kill it as a
-      failsafe, and finalize the turn in-process (no separate process to
-      stop).
+    * `stop/2` — the user clicked Stop. Ack the channel, move the machine
+      to `:stopping`, give the active worker a chance to clean up
+      in-flight OS subprocesses, kill it as a failsafe, and arm the
+      bounded `:stop_timer`. The timer owns the single terminal
+      transition to idle (see `Nest.Agents.Agent.Turn`).
     * `worker_exited/3` — a worker died without delivering a result.
     * `finalize_turn/1` / `finalize_compaction/3` — terminal transitions.
   """
 
   alias Nest.Agents.Agent
+  alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Handlers.TurnHandler
+  alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.MessageAppender
   alias Nest.Messages.MessageList
 
@@ -27,14 +30,32 @@ defmodule Nest.Agents.Agent.Turn.Lifecycle do
 
   @doc """
   The user clicked Stop. Runs entirely in the Agent process: ack the
-  channel with `:stopped`, kill the active worker (after a stop-aware
-  cleanup hook), and finalize the turn. Returns the updated state.
+  channel with `:stopped`, move the machine into the `:stopping` phase,
+  kill the active worker (after a stop-aware cleanup hook), and arm the
+  bounded `:stop_timer`. The timer, not this call, performs the single
+  terminal transition to idle. A stop while already `:stopping` (a
+  second click, or a stop racing a late result) is a no-op; a stop on an
+  already-idle agent is a no-op. Returns the updated state.
   """
   @spec stop(Agent.t(), pid()) :: Agent.t()
   def stop(state, channel_pid) do
+    machine = state.live.machine
+
+    cond do
+      Machine.stopping?(machine) -> state
+      Machine.status_for(machine) == :idle -> state
+      true -> begin_stop(state, channel_pid)
+    end
+  end
+
+  defp begin_stop(state, channel_pid) do
     send(channel_pid, :stopped)
+    state = %{state | live: %{state.live | cancelled: true}}
     state = kill_active_worker(state)
-    TurnHandler.chat_stopped_state(state)
+
+    ref = Process.send_after(self(), :stop_timer, Config.configured_stop_fallback_ms())
+    machine = %{Machine.to_stopping(state.live.machine) | stop_timer: ref}
+    %{state | live: %{state.live | machine: machine}}
   end
 
   defp kill_active_worker(state) do
@@ -60,6 +81,16 @@ defmodule Nest.Agents.Agent.Turn.Lifecycle do
   """
   @spec worker_exited(pid(), term(), Agent.t()) :: {:noreply, Agent.t()}
   def worker_exited(_pid, reason, state) do
+    if Machine.stopping?(state.live.machine) do
+      # The stop timer owns the single terminal transition. A DOWN for
+      # the worker we just killed must not finalize the turn first.
+      {:noreply, state}
+    else
+      worker_exited_body(reason, state)
+    end
+  end
+
+  defp worker_exited_body(reason, state) do
     tool_uses =
       if state.live.machine.work.active_worker_kind == :tools do
         MessageList.unpaired_tail_tool_uses(state.chat_state.messages)

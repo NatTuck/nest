@@ -52,19 +52,12 @@ defmodule Nest.Agents.Agent.ChatState do
   marker's `message_index`; the marker itself sits below the boundary
   because of the `<=` rule.
 
-  The `pending_children` map tracks child agents that this
-  agent has spawned via `agents-spawn` (with a `query`). Keys
-  are child agent IDs (strings), values are the pid of the
-  blocked tool task waiting for the child's response. When a
-  child completes, its GenServer sends
-  `{:child_completed, child_id, response, total_usage}` to the
-  parent, and the parent routes the response to the waiting
-  tool task.
-
-  The `archiving` MapSet holds the names of children spawned
-  with `archive: true`. After their response is forwarded, the
-  parent stops + marks them archived (one-shot spawns). Cleared
-  alongside `pending_children`.
+  Outstanding child agents spawned via `agents-spawn` (with a
+  `query`) are tracked by the machine's
+  `Nest.Agents.Agent.Machine.Children` sub-machine, not here:
+  each entry carries the blocked tool worker's pid and the
+  `archive` flag, and transitions exactly once to a terminal
+  state. See `Nest.Agents.Agent.SubAgent`.
 
   The `read_files` map gates the `file-write` tool: every
   successful `file-read` and `file-write` is recorded here as
@@ -85,8 +78,6 @@ defmodule Nest.Agents.Agent.ChatState do
             last_compaction_index: -1,
             compaction_count: 0,
             next_message_index: 0,
-            pending_children: %{},
-            archiving: %MapSet{},
             read_files: %{}
 end
 

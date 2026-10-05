@@ -75,6 +75,9 @@ defmodule Nest.Agents.Agent.Turn do
   @spec handle(term(), Agent.t()) :: GenServer.reply()
   def handle(:iterate, state), do: iterate(state)
 
+  # The bounded stop fallback: the single terminal transition to idle.
+  def handle(:stop_timer, state), do: stop_timer(state)
+
   def handle({:http_response, ref, response}, state) when is_map(response) do
     if valid_worker?(state, ref, :http) do
       handle_response(response, state)
@@ -116,20 +119,41 @@ defmodule Nest.Agents.Agent.Turn do
   end
 
   # The worker ref must match the live turn (drops stale results) and,
-  # when given, the phase must match the in-flight worker kind.
+  # when given, the phase must match the in-flight worker kind. A stop in
+  # flight drops every late worker result: the stop timer owns the single
+  # terminal transition, so nothing may race it.
   defp valid_worker?(state, ref, kind) do
     work = state.live.machine.work
 
-    is_reference(work.worker_ref) and work.worker_ref == ref and
-      (kind == nil or work.active_worker_kind == kind)
+    not Machine.stopping?(state.live.machine) and is_reference(work.worker_ref) and
+      work.worker_ref == ref and (kind == nil or work.active_worker_kind == kind)
+  end
+
+  # The stop timer fired: finalize the interrupted turn in-process with
+  # the `stopped_by_user` recovery. Idempotent — a timer that fires after
+  # the turn already reached idle is a no-op.
+  defp stop_timer(state) do
+    if Machine.stopping?(state.live.machine) do
+      state = update_machine(state, &%{&1 | stop_timer: nil})
+      {:noreply, TurnHandler.chat_stopped_state(state)}
+    else
+      {:noreply, state}
+    end
+  end
+
+  defp update_machine(state, fun) do
+    %{state | live: %{state.live | machine: fun.(state.live.machine)}}
   end
 
   # Iteration
 
-  defp iterate(%{live: %{machine: %{work: %{ctx: nil}}}} = state), do: {:noreply, state}
-
-  defp iterate(state) do
-    safe_iterate(state)
+  defp iterate(%{live: %{machine: machine}} = state) do
+    cond do
+      # A stop is in flight; the timer will finalize. Do not dispatch.
+      Machine.stopping?(machine) -> {:noreply, state}
+      is_nil(machine.work.ctx) -> {:noreply, state}
+      true -> safe_iterate(state)
+    end
   catch
     :exit, _ -> {:noreply, state}
   end

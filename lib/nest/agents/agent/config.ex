@@ -264,6 +264,18 @@ defmodule Nest.Agents.Agent.Config do
     end
   end
 
+  @doc """
+  The bounded fallback for a user-initiated Stop: how long the Agent
+  waits in the `:stopping` phase before it force-finalizes the turn to
+  idle. Reads `:stop_fallback_ms` from the app env, defaulting to 2000ms
+  when unset (tests set 100ms). The timer always fires, so a stop can
+  never leave the agent stuck in `:stopping`.
+  """
+  @spec configured_stop_fallback_ms() :: pos_integer()
+  def configured_stop_fallback_ms do
+    Application.get_env(:nest, :stop_fallback_ms, 2_000)
+  end
+
   # Hard ceiling on how many children a single `agents-batch` call may
   # run at once. The configured `max-concurrency` (and any per-call
   # `max_concurrency` override) is clamped to this so a misconfig or a

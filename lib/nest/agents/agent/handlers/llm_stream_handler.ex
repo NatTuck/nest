@@ -29,8 +29,8 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
 
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Handlers.LLMStreamHandler.FileAccess
-  alias Nest.Agents.Agent.Inbox
   alias Nest.Agents.Agent.Machine
+  alias Nest.Agents.Agent.Turn.Idle
   alias Nest.Messages.Assistant
   alias Nest.Messages.MessageList
   alias Nest.Messages.Part
@@ -53,7 +53,14 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   end
 
   def handle({:llm_error, error_msg}, state) do
-    {:noreply, llm_error_state(error_msg, state)}
+    # A stop is already in flight and the timer owns the single terminal
+    # transition; an error arriving from the (about-to-be-killed) worker
+    # must not finalize a second time.
+    if state.live.cancelled or Machine.stopping?(state.live.machine) do
+      {:noreply, state}
+    else
+      {:noreply, llm_error_state(error_msg, state)}
+    end
   end
 
   def handle({:tool_calls_received, {:assistant, %Assistant{} = msg}}, state) do
@@ -252,15 +259,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
     {stamped, state} = Nest.Agents.Agent.__append_message__(state, error_message)
     stamped_index = Nest.Agents.Agent.stamped_index(stamped)
 
-    state = %{
-      state
-      | live: %{
-          state.live
-          | streaming_acc: nil,
-            machine: Machine.to_idle(state.live.machine),
-            tool_index_map: %{}
-        }
-    }
+    state = %{state | live: %{state.live | streaming_acc: nil, tool_index_map: %{}}}
 
     Broadcasts.error(
       state.space_id,
@@ -270,8 +269,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
       "Turn.run/2"
     )
 
-    Broadcasts.status(state)
-    Inbox.drain_if_idle(state)
+    Idle.enter(state)
   end
 
   # Preserve whatever the model streamed before the failure (a dropped

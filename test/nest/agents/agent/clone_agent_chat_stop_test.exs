@@ -73,7 +73,7 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
     new_state = :sys.get_state(parent_pid)
 
     # Bookkeeping reset.
-    assert new_state.chat_state.pending_children == %{}
+    assert Machine.pending_children(new_state.live.machine) == %{}
     assert new_state.live.machine.work.active_worker == nil
     assert new_state.live.cancelled == false
     assert Machine.status_for(new_state.live.machine) == :idle
@@ -220,8 +220,8 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
     send(parent_pid, {:chat_stopped, parent_pid})
     new_state = :sys.get_state(parent_pid)
 
-    # Usage was merged before pending_children got cleared.
-    assert new_state.chat_state.pending_children == %{}
+    # Usage was merged before the children sub-machine got cleared.
+    assert Machine.pending_children(new_state.live.machine) == %{}
     assert new_state.llm_metrics.descendant_usage.output_tokens == 7
     assert new_state.llm_metrics.descendant_usage.total_input_tokens == 5
     assert new_state.llm_metrics.descendant_usage.total_tokens == 12

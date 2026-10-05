@@ -224,7 +224,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
 
   # Cast `:child_completed` to the parent, mimicking what the
   # child's `chat_idle` handler does in production. The parent
-  # reads the child's name from `state.chat_state.pending_children`,
+  # finds the child in the machine's children sub-machine,
   # forwards `:spawn_agent_result` to the blocked tool worker,
   # and merges the child's usage into `descendant_usage`.
   defp cast_child_completed_to_parent(parent_name, child_name, response) do

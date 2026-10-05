@@ -303,13 +303,13 @@ defmodule Nest.Agents.AgentStopTest do
     end
   end
 
-  describe "stop_chat/2 returns synchronously" do
-    test "Agent.stop_chat/2 blocks until the Agent's handle_call replies and the turn is cleared" do
+  describe "stop_chat/2 bounded fallback" do
+    test "Agent.stop_chat/2 returns :ok and the bounded timer finalizes the turn" do
       # `Agent.stop_chat/2` is `GenServer.call(pid, {:stop_chat, from},
       # :infinity)`. Per SMELLS.md, all own-GenServer communication uses
-      # call/cast — no `send/2`. The test verifies the call returns `:ok`
-      # and that the in-process turn has been finalized by the time the
-      # call returns.
+      # call/cast — no `send/2`. The call synchronously acks and enters
+      # the `:stopping` phase; the bounded stop timer (100ms in test)
+      # performs the single terminal transition to idle.
       events = for _ <- 1..100, do: {:text, "x"}
       MockClient.set_stream_events(events)
 
@@ -322,12 +322,13 @@ defmodule Nest.Agents.AgentStopTest do
 
       assert :ok = Agent.stop_chat(pid, self())
 
+      assert_receive {:chat_status, %{status: "idle"}}, 2000
+
       state = :sys.get_state(pid)
       assert Machine.status_for(state.live.machine) == :idle
       assert state.live.machine.work.active_worker == nil
       assert state.live.cancelled == false
-
-      assert_receive {:chat_status, %{status: "idle"}}, 2000
+      assert state.live.machine.stop_timer == nil
     end
   end
 

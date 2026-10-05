@@ -22,10 +22,11 @@ config :nest, Nest.Repo,
 # (the third arg of `Application.get_env/3`) by default.
 config :nest, force_subagent_mock: true
 
-# The Agent's bounded Stop fallback (see `Agent.Callbacks`) defaults to
-# 2s in production. Tests that exercise a dead/wedged ChatTurn don't
-# need to wait that long, and the suite must stay under 5s.
-config :nest, stop_fallback_ms: 100
+# The Agent's bounded Stop fallback (see `Agent.Turn.Lifecycle.stop/2`)
+# defaults to 2s in production. Tests that exercise a stop don't need to
+# wait that long; the kill is synchronous, so the fallback timer can fire
+# immediately and the suite stays fast under the tight host timeout.
+config :nest, stop_fallback_ms: 1
 
 # Keep unit tests independent of the host's `/dev`: pin HPU detection to
 # none so the sandbox always takes the non-HPU path, while

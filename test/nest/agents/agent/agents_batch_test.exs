@@ -35,6 +35,8 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
 
   alias Nest.Agents
   alias Nest.Agents.Agent
+  alias Nest.Agents.Agent.Machine
+  alias Nest.Agents.Agent.Machine.Children
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Supervisor
   alias Nest.LLM.MockClient
@@ -107,12 +109,16 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     # Usage-merge ran for the three children.
     assert parent_state.llm_metrics.descendant_usage.output_tokens > 0
 
-    # No children left pending, and `archive` (default true) cleaned up:
+    # No children left running, and `archive` (default true) cleaned up:
     # the coordinator archives each child after forwarding its response,
     # which runs before the parent goes idle (asserted above). The DB
     # `archived` flag is the deterministic proof (no liveness polling).
-    assert parent_state.chat_state.pending_children == %{}
-    assert parent_state.chat_state.archiving == MapSet.new()
+    assert Machine.pending_children(parent_state.live.machine) == %{}
+
+    assert Enum.all?(
+             child_names,
+             &(Children.status(parent_state.live.machine.children, &1) == :completed)
+           )
 
     assert_children_archived(space_id, child_names)
   end
@@ -152,7 +158,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     assert [first, "beta-done", "gamma-done"] = Jason.decode!(content)
     assert String.starts_with?(first, "[error:")
 
-    assert parent_state.chat_state.pending_children == %{}
+    assert Machine.pending_children(parent_state.live.machine) == %{}
 
     # A failed child is never auto-archived (unlike a completed one).
     {:ok, failed_row} = Nest.Persistence.fetch_agent(space_id, child0)
@@ -178,7 +184,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     assert [first, second] = parent_state |> batch_tool_content() |> Jason.decode!()
     assert first =~ "timed out after 1ms"
     assert second =~ "timed out after 1ms"
-    assert parent_state.chat_state.pending_children == %{}
+    assert Machine.pending_children(parent_state.live.machine) == %{}
   end
 
   test "a timed-out item fails the whole call under fail_fast", %{vid: vid} do
@@ -208,7 +214,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
              batch_tool_result(parent_state)
 
     assert content =~ "timed out after 1ms"
-    assert parent_state.chat_state.pending_children == %{}
+    assert Machine.pending_children(parent_state.live.machine) == %{}
   end
 
   # ---- helpers ----

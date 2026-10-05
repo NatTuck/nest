@@ -43,12 +43,12 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   alias Nest.Agents.Agent.ChatPipeline
   alias Nest.Agents.Agent.Compaction.Marker
   alias Nest.Agents.Agent.Compaction.Trigger
-  alias Nest.Agents.Agent.Inbox
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.MessageAppender
   alias Nest.Agents.Agent.SystemPrompt
   alias Nest.Agents.Agent.ToolFilter
   alias Nest.Agents.Agent.Turn
+  alias Nest.Agents.Agent.Turn.Idle
   alias Nest.Messages.Assistant
   alias Nest.Messages.Part
   alias Nest.Messages.System
@@ -379,7 +379,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
         | live: %{
             state.live
             | machine: %{
-                Machine.to_idle(state.live.machine)
+                state.live.machine
                 | loop_count: 0,
                   pending_user_message: nil
               },
@@ -387,8 +387,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
           }
       }
 
-      Broadcasts.status(state)
-      Inbox.drain_if_idle(state)
+      Idle.enter(state)
     end
   end
 
@@ -540,7 +539,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
     # Broadcast the resumed status so the UI leaves the stale
     # `:compacting` and shows the turn that is actually about to run.
     Broadcasts.status(state)
-    Inbox.drain_if_idle(state)
+    Idle.drain(state)
   end
 
   # The machine phase the resumed turn is about to be in. A

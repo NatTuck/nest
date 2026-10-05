@@ -157,6 +157,14 @@ defmodule MachineTest do
       assert {:ignore, :blocked, ^blocked} = Machine.step(blocked, {:chat_request, %{}})
       assert {:ignore, :blocked, ^blocked} = Machine.step(blocked, {:stop, self()})
     end
+
+    test "the committing transition is a compaction phase reported as :compacting" do
+      committing = Machine.new() |> Machine.to_compaction_committing()
+
+      assert committing.kind == :compaction and committing.phase == :committing
+      assert Machine.status_for(committing) == :compacting
+      Machine.validate!(committing)
+    end
   end
 
   describe "invariants" do
@@ -187,6 +195,12 @@ defmodule MachineTest do
     test "validate!/1 rejects a worker kind in idle" do
       assert_raise RuntimeError, ~r/must not have a worker_kind/, fn ->
         Machine.validate!(Machine.new(phase: :idle, work: %Machine.Work{worker_kind: :http}))
+      end
+    end
+
+    test "validate!/1 rejects :committing for a chat kind" do
+      assert_raise RuntimeError, ~r/compaction-only/, fn ->
+        Machine.validate!(Machine.new(phase: :committing, kind: :chat))
       end
     end
   end

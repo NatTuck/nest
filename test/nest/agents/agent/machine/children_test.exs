@@ -53,6 +53,34 @@ defmodule Machine.ChildrenTest do
     assert Children.status(m, "kid") == :abandoned
   end
 
+  test "an archived child emits exactly one archive action on completion" do
+    {:ok, _actions, m} = Children.spawn(Children.new(), "kid", nil, true)
+
+    {:ok, actions, m} = Children.step(m, {:completed, "kid", "resp", %{total_tokens: 7}})
+
+    assert Enum.count(actions, &match?({:archive_child, "kid"}, &1)) == 1
+
+    # A later event (e.g. a duplicate completion) does not archive again.
+    assert {:ignore, :already_terminal, _m} =
+             Children.step(m, {:completed, "kid", "resp", %{total_tokens: 7}})
+  end
+
+  test "a failed, terminated, or abandoned child is never archived" do
+    # intentional: archiving is completion-only. A child spawned with
+    # `archive: true` that fails/dies/abandons is left in place; only a
+    # clean completion emits the archive action.
+    for event <- [
+          {:failed, "kid", :crashed},
+          {:terminated, "kid", :killed},
+          {:abandoned, "kid"}
+        ] do
+      {:ok, _actions, m} = Children.spawn(Children.new(), "kid", nil, true)
+      {:ok, actions, _m} = Children.step(m, event)
+
+      refute Enum.any?(actions, &match?({:archive_child, _}, &1))
+    end
+  end
+
   test "exactly one terminal transition wins; a later event is a no-op" do
     # intentional: a completion racing a stop cannot double-notify the
     # worker or double-count usage. The first terminal event wins; later
@@ -70,6 +98,11 @@ defmodule Machine.ChildrenTest do
     m = Children.new()
     assert {:ignore, :unknown_child, ^m} = Children.step(m, {:completed, "ghost", "r", %{}})
     assert Children.status(m, "ghost") == :unknown
+  end
+
+  test "an unrecognized event is not applicable" do
+    m = Children.new()
+    assert {:ignore, :not_applicable, ^m} = Children.step(m, {:nonsense, "kid"})
   end
 
   test "an abandoned child that later completes does not merge usage" do
