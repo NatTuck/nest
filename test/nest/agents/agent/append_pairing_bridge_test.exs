@@ -19,6 +19,7 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
   import Nest.PersistenceTestHelpers
 
   alias Nest.Agents.Agent
+  alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Handlers.LLMStreamHandler
   alias Nest.Agents.Agent.MessageAppender
   alias Nest.LLM.Preflight
@@ -127,7 +128,7 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
 
       state = state(name, initial)
 
-      {stamped_user, state} = MessageAppender.append_one(state, user("new question"))
+      {:ok, stamped_user, state} = MessageAppender.append_one(state, user("new question"))
 
       # Returns only the requested message, stamped at the end.
       assert {:user, %User{index: 5, parts: [%Part.Text{text: "new question"}]}} = stamped_user
@@ -176,7 +177,7 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
         insert_messages(name, initial)
 
         state = state(name, initial)
-        {stamped_user, state} = MessageAppender.append_one(state, user("next question"))
+        {:ok, stamped_user, state} = MessageAppender.append_one(state, user("next question"))
 
         assert {:user, %User{}} = stamped_user
 
@@ -202,7 +203,7 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
       insert_messages(name, initial)
 
       state = state(name, initial)
-      {stamped, state} = MessageAppender.append_one(state, tool_result(nil, "call_1"))
+      {:ok, stamped, state} = MessageAppender.append_one(state, tool_result(nil, "call_1"))
 
       assert {:tool, %Tool{index: 3}} = stamped
       assert length(state.chat_state.messages) == 4
@@ -217,7 +218,9 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
       insert_messages(name, initial)
 
       state = state(name, initial)
-      {stamped, state} = MessageAppender.append_one(state, user("before" <> <<0>> <> "after"))
+
+      {:ok, stamped, state} =
+        MessageAppender.append_one(state, user("before" <> <<0>> <> "after"))
 
       assert {:user, %User{parts: [%Part.Text{text: "before\uFFFDafter"}]}} = stamped
 
@@ -234,7 +237,7 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
 
       state = state(name, initial)
 
-      {stamped, state} =
+      {:ok, stamped, state} =
         MessageAppender.handle_batch(state, [assistant_text(nil), user("real")])
 
       assert Enum.map(stamped, &index/1) == [3, 4, 5]
@@ -272,7 +275,7 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
 
       state = state(name, initial) |> live(:executing_tools)
 
-      {stamped, state} = MessageAppender.append_one(state, tool_result(nil, "call_1"))
+      {:ok, stamped, state} = MessageAppender.append_one(state, tool_result(nil, "call_1"))
 
       assert {:tool, %Tool{index: 3, parts: [%Part.ToolResult{tool_call_id: "call_1"}]}} = stamped
 
@@ -281,7 +284,7 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
       assert Enum.map(Persistence.load_messages(test_space_id(), name), &index/1) == [0, 1, 2, 3]
     end
 
-    test "appending anything but the tool result while a live tool_use is pending raises" do
+    test "a non-result append while a live tool_use is pending is :invalid and dropped" do
       name = unique_name("live-orphan-append")
       {:ok, _} = Persistence.insert_agent(agent_attrs(name))
 
@@ -290,12 +293,15 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
 
       state = state(name, initial) |> live(:executing_tools)
 
-      assert_raise ArgumentError, ~r/live tool_use/, fn ->
-        MessageAppender.append_one(state, user("sneaky user"))
-      end
+      assert {:invalid, reason, ^state} =
+               MessageAppender.append_one(state, user("sneaky user"))
+
+      assert reason =~ "live tool_use"
+      assert Enum.map(state.chat_state.messages, &role/1) == [:system, :user, :assistant]
+      assert Enum.map(Persistence.load_messages(test_space_id(), name), &index/1) == [0, 1, 2]
     end
 
-    test "appending a second consecutive assistant while streaming raises" do
+    test "appending a second consecutive assistant while streaming is :invalid and dropped" do
       name = unique_name("live-alternation")
       {:ok, _} = Persistence.insert_agent(agent_attrs(name))
 
@@ -304,9 +310,39 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
 
       state = state(name, initial) |> live(:streaming)
 
-      assert_raise ArgumentError, ~r/second consecutive assistant/, fn ->
-        MessageAppender.append_one(state, assistant_text(nil))
-      end
+      assert {:invalid, reason, ^state} =
+               MessageAppender.append_one(state, assistant_text(nil))
+
+      assert reason =~ "second consecutive assistant"
+      assert Enum.map(state.chat_state.messages, &role/1) == [:system, :user, :assistant]
+      assert Enum.map(Persistence.load_messages(test_space_id(), name), &index/1) == [0, 1, 2]
+    end
+
+    test "a duplicate/late tool result is :stale and dropped with a warning" do
+      name = unique_name("live-stale-result")
+      {:ok, _} = Persistence.insert_agent(agent_attrs(name))
+
+      # Tail is an assistant whose tool_use was already answered: the
+      # duplicate result does not answer the live tail.
+      initial = [
+        system(0),
+        user(1),
+        assistant_tool_use(2, "call_1"),
+        tool_result(3, "call_1")
+      ]
+
+      insert_messages(name, initial)
+      state = state(name, initial) |> live(:streaming)
+
+      log =
+        capture_log(fn ->
+          assert {:stale, ^state} =
+                   MessageAppender.append_one(state, tool_result(nil, "call_1"))
+        end)
+
+      assert log =~ "stale append"
+      assert Enum.map(state.chat_state.messages, &role/1) == [:system, :user, :assistant, :tool]
+      assert Enum.map(Persistence.load_messages(test_space_id(), name), &index/1) == [0, 1, 2, 3]
     end
   end
 
@@ -327,7 +363,7 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{test_space_id()}:#{name}")
 
       state = state(name, [system(0), user(1)])
-      {_stamped, _state} = MessageAppender.append_one(state, assistant_text(nil))
+      {:ok, _stamped, _state} = MessageAppender.append_one(state, assistant_text(nil))
 
       {:messages, messages} = Process.info(self(), :messages)
       persisted_at = Enum.find_index(messages, &(&1 == :persisted))
@@ -408,7 +444,12 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
     %Agent{
       name: name,
       space_id: test_space_id(),
-      llm_metrics: %Agent.LlmMetrics{context_limit: 100_000, context_limit_source: :config},
+      llm_metrics: %Agent.LlmMetrics{
+        context_limit: 100_000,
+        context_limit_source: :config,
+        usage_totals: Broadcasts.empty_usage_totals(),
+        descendant_usage: Broadcasts.empty_usage_totals()
+      },
       chat_state: %Agent.ChatState{messages: messages, next_message_index: next_index(messages)}
     }
   end

@@ -183,15 +183,18 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   # path so the Agent stamps `index` and the next response's
   # `streaming_acc` is built from the actual stamped index.
   # After appending, the field is cleared.
+  # The user-message boundary is terminal (the agent is idle), so the
+  # append heals the tail and returns `:ok`.
   defp append_pending_user_message(state) do
     case pending_user_message_struct(state) do
       nil ->
         {nil, state}
 
       pending_message ->
-        {stamped_user, state} = Nest.Agents.Agent.__append_message__(state, pending_message)
-        state = clear_pending_user_message(state)
-        {stamped_user, state}
+        {:ok, stamped_user, state} =
+          Nest.Agents.Agent.__append_message__(state, pending_message)
+
+        {stamped_user, clear_pending_user_message(state)}
     end
   end
 
@@ -212,11 +215,9 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     state = maybe_inject_context_pair(state)
     {stamped_user, state} = append_pending_user_message(state)
 
-    effective_mode =
-      case state.live.machine.pending_user_message do
-        nil -> state.live.mode
-        {_content, mode} -> mode || state.live.mode
-      end
+    # `append_pending_user_message/1` cleared the pending slot, so the
+    # effective mode is the live mode (unchanged behavior).
+    effective_mode = state.live.mode
 
     state =
       prepare_streaming_state(
@@ -226,7 +227,12 @@ defmodule Nest.Agents.Agent.ChatPipeline do
       )
 
     {_effective_mode, caps} =
-      resolve_mode_and_caps(state.live.mode, state.vocation, state.workspace_path, state.tmp_path)
+      resolve_mode_and_caps(
+        state.live.mode,
+        state.vocation,
+        state.workspace_path,
+        state.tmp_path
+      )
 
     Turn.start(state, state.chat_state.messages, {:user_message, stamped_user}, caps)
   end

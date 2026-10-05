@@ -587,13 +587,13 @@ defmodule Nest.Agents.Agent do
 
   @doc false
   # In-process variant of `handle_call({:append_message, _})`.
-  # Returns `{stamped_message, new_state}`.
-  @spec __append_message__(t(), {atom(), map()}) :: {term(), t()}
+  # Returns the tagged append result (see `MessageAppender`).
+  @spec __append_message__(t(), {atom(), map()}) :: MessageAppender.append_result()
   defdelegate __append_message__(state, message), to: MessageAppender, as: :append_one
 
   @doc false
-  # In-process batch append. Returns `{stamped_messages, new_state}`.
-  @spec __append_messages__(t(), [{atom(), map()}]) :: {[term()], t()}
+  # In-process batch append. Returns the tagged append result.
+  @spec __append_messages__(t(), [{atom(), map()}]) :: MessageAppender.append_result()
   defdelegate __append_messages__(state, messages), to: MessageAppender, as: :append_in_process
 
   @doc false

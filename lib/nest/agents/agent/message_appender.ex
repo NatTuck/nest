@@ -1,166 +1,138 @@
 defmodule Nest.Agents.Agent.MessageAppender do
   @moduledoc """
-  Handles the `Agent`'s `:append_message` and `:append_messages`
-  GenServer calls.
+  Handles the `Agent`'s message-append entry points.
 
-  The single-message variant
-  (`handle_call({:append_message, message}, ...)`) appends one
-  message and returns the stamped result. The batch variant
-  (`handle_call({:append_messages, messages}, ...)`) appends a
-  list of messages in one mailbox round-trip.
+  The single-message variant appends one message; the batch variant
+  appends a list of messages in one mailbox round-trip.
+
+  ## Tagged results
+
+  An append never raises on a sequence mismatch. Every entry point
+  returns one of:
+
+      {:ok, stamped_message_or_messages, state}
+      {:stale, state}
+      {:invalid, reason, state}
+
+  `:stale` (a tool result that does not answer the live tail) is dropped
+  with a warning; `:invalid` (a genuinely broken live sequence) is
+  dropped and the caller fails the turn cleanly. The decision itself
+  lives in `Nest.Agents.Agent.Repair`; this module only applies it.
 
   ## Atomicity (the batch variant)
 
-  The batch variant exists to close a wire-format regression:
-  when a caller (e.g., the Case 2 notice injector in
-  `Nest.Agents.Agent.ChatTurn.NoticeInjector`) needs to land
-  a synthetic pair like `[assistant(attention), user(notice)]`
-  in the Agent's messages list, doing it via two sequential
-  `{:append_message, _}` calls leaves the messages list
-  half-updated if the second call times out (the Agent's
-  mailbox can be slow under DB load, and the second reply can
-  come back after the per-call `5_000ms` budget). The Agent
-  process serializes messages, so a single
-  `{:append_messages, _}` call means the messages list is
-  either fully updated (all stamped) or fully untouched.
+  The batch variant exists to close a wire-format regression: when a
+  caller needs to land a synthetic pair like
+  `[assistant(attention), user(notice)]`, doing it via two sequential
+  appends leaves the messages list half-updated if the second call times
+  out. A single batch call means the messages list is either fully
+  updated (all stamped) or untouched.
 
-  ## Sequence repair (prevent)
+  ## Live vs terminal
 
-  Every live append flows through here, so this is where the
-  append-time half of the sequence invariants lives. Before the
-  requested message lands, `MessageList.pairing_bridge/2` is asked
-  for repair messages: when the tail is an assistant with an
-  unpaired `tool_use`, a synthetic `is_error` tool result (and, for
-  an incoming user message, an assistant acknowledgement so
-  alternation holds) is appended and persisted first. This is what
-  makes the `visual-possum-root` orphan impossible on the live path;
-  see `notes/enforce-mesages-seq-invariants.md`.
+  While a turn is live (`:streaming`, `:executing_tools`, `:compacting`)
+  the turn owns the sequence: `Repair.decide(:live, ...)` classifies the
+  append and this module never repairs. At a terminal boundary
+  (idle/stopping/blocked) `Repair.decide(:terminal, ...)` heals the tail
+  with `MessageList.pairing_bridge/2` before the requested message lands.
 
   ## Loop-breaker reset
 
-  Both handlers reset `consecutive_compaction_count` to zero
-  when an appended message is genuine progress (`:user`,
-  `:assistant`, or `:tool`). Repair messages are part of the
-  requested append and do not change the reset decision (which is
-  taken from the caller's requested messages).
+  Both single and batch handlers reset `consecutive_compaction_count` to
+  zero when an appended message is genuine progress (`:user`,
+  `:assistant`, or `:tool`). Repair messages are part of the requested
+  append and do not change the reset decision.
 
-  ## In-process entry point
+  ## In-process entry points
 
-  `__append_messages__/2` is the in-process twin of the batch
-  handler. Same atomicity guarantee (a single state mutation),
-  no mailbox round-trip. Used by the Case C pipeline injector
-  in `Nest.Agents.Agent.ChatPipeline` (which runs inside the
-  Agent process and can't GenServer.call itself).
+  `__append_messages__/2` is the in-process twin of the batch handler
+  and `__append_message__/2` of the single handler: same guarantee, no
+  mailbox round-trip.
   """
+
+  require Logger
 
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Persistence, as: AgentPersistence
-  alias Nest.Messages.MessageList
-  alias Nest.Messages.Part
+  alias Nest.Agents.Agent.Repair
   alias Nest.Messages.Sanitize
-  alias Nest.Messages.Tool
   alias Nest.Tokens.PreFlight
 
   # A turn is "live" (owns the sequence) while the LLM is streaming a
-  # reply or a tool worker is executing the trailing `tool_use`. In
-  # these states an append is normal turn progress, never repair
-  # material: the wire sequence is defined by the turn, not by the
-  # message list in isolation.
+  # reply or a tool worker is executing the trailing `tool_use`. In these
+  # states an append is normal turn progress, never repair material: the
+  # wire sequence is defined by the turn, not by the message list in
+  # isolation.
   @live_statuses [:streaming, :executing_tools, :compacting]
 
+  @type append_result ::
+          {:ok, term() | [term()], Agent.t()}
+          | {:stale, Agent.t()}
+          | {:invalid, String.t(), Agent.t()}
+
   @doc """
-  `handle_call/3` for the single-message case. Resets the
-  loop-breaker counter on genuine progress, then appends via
-  `append_one/2` and returns `{stamped, new_state}`.
+  Single-message append: reset the loop-breaker counter on genuine
+  progress, then append. Returns the tagged result.
   """
-  @spec handle_single(Agent.t(), {atom(), map()}) :: {term(), Agent.t()}
+  @spec handle_single(Agent.t(), {atom(), map()}) :: append_result()
   def handle_single(state, message) do
     state = if progress_message?(message), do: reset_consecutive(state), else: state
     append_one(state, message)
   end
 
   @doc """
-  `handle_call/3` for the batch case. Resets the loop-breaker
-  counter once if any message is genuine progress, then appends each
-  via `append_with_bridge/2` in input order. Returns every stamped
-  message, including any repair messages.
+  Batch append: reset the loop-breaker counter once if any message is
+  genuine progress, then append each in input order. Returns every
+  stamped message (including terminal repair messages).
   """
-  @spec handle_batch(Agent.t(), [{atom(), map()}]) :: {[term()], Agent.t()}
+  @spec handle_batch(Agent.t(), [{atom(), map()}]) :: append_result()
   def handle_batch(state, messages) do
     state =
       if Enum.any?(messages, &progress_message?/1), do: reset_consecutive(state), else: state
 
-    Enum.reduce(messages, {[], state}, fn message, {acc, state} ->
-      {stamped, state} = append_with_bridge(state, message)
-      {acc ++ stamped, state}
+    Enum.reduce_while(messages, {:ok, [], state}, fn message, {:ok, acc, state} ->
+      case append_with_bridge(state, message) do
+        {:ok, stamped, state} -> {:cont, {:ok, acc ++ stamped, state}}
+        {:stale, state} -> {:halt, {:stale, state}}
+        {:invalid, reason, state} -> {:halt, {:invalid, reason, state}}
+      end
     end)
   end
 
   @doc """
-  In-process batch append. Same atomicity guarantee as
-  `handle_batch/2` without paying the round-trip cost for
-  callers that already run inside the Agent process.
-
-  Returns `{stamped_messages, new_state}`. The loop-breaker
-  counter resets if any message in the batch is genuine
-  progress; otherwise the counter is preserved.
+  In-process batch append: same atomicity guarantee as `handle_batch/2`
+  without the round-trip.
   """
-  @spec append_in_process(Agent.t(), [{atom(), map()}]) :: {[term()], Agent.t()}
-  def append_in_process(state, messages) do
-    handle_batch(state, messages)
-  end
+  @spec append_in_process(Agent.t(), [{atom(), map()}]) :: append_result()
+  def append_in_process(state, messages), do: handle_batch(state, messages)
 
   @doc """
-  Stamp and append a single message to the in-memory state.
-  Index comes from `state.chat_state.next_message_index`;
-  after stamping, the index is bumped and the message is
-  persisted, then broadcast. Persisting first means the UI can
-  never show a row the DB did not commit; a failed persist
-  crashes the Agent before the broadcast runs. Returns
-  `{stamped_message, new_state}`.
-
-  Any sequence-repair messages required before this one are
-  appended first (see the moduledoc); this still returns only the
-  requested stamped message.
-
-  Choke point: no message is stored from a conversation that
-  has not passed the pre-flight decision. `PreFlight.ensure_passed!/2`
-  raises if `state.chat_state.messages` is `:cannot_compact`, so a
-  message is never appended into an unrecoverable conversation.
-  `state.llm_metrics.context_limit` is resolved eagerly at agent
-  init (never nil); the guard clause below enforces that too.
+  In-process single append: stamp and append the requested message,
+  returning `{:ok, stamped_message, state}`. Repair messages required at
+  a terminal boundary are appended first; the requested message is the
+  one returned.
   """
-  @spec append_one(Agent.t(), {atom(), map()}) :: {term(), Agent.t()}
+  @spec append_one(Agent.t(), {atom(), map()}) :: append_result()
   def append_one(state, message) do
-    {stamped, state} = append_with_bridge(state, message)
-    {List.last(stamped), state}
+    case append_with_bridge(state, message) do
+      {:ok, stamped, state} -> {:ok, List.last(stamped), state}
+      {:stale, state} -> {:stale, state}
+      {:invalid, reason, state} -> {:invalid, reason, state}
+    end
   end
 
   @doc """
   Stamp and persist the compaction marker, which *is* the new
-  `last_compaction_index`: the marker consumes a real index slot in
-  the sequence (`state.chat_state.next_message_index`), and the
-  boundary moves to it, so the marker lands on the archived side of
-  the partition and never in the LLM-facing `messages`.
+  `last_compaction_index`: the marker consumes a real index slot and the
+  boundary moves to it, so the marker lands on the archived side of the
+  partition and never in the LLM-facing `messages`.
 
-  No in-memory archive is kept - the archived slice is derived from
-  the DB on demand (`Persistence.load_history/2`). Persisting the
-  marker goes through the unified insert path, which writes the row
-  and bumps `agents.last_compaction_index` in one transaction.
-
-  Does NOT broadcast `chat:message` — the marker's broadcast
-  path is `chat:compaction` (marker only), which the caller
-  fires separately via
-  `Nest.Agents.Agent.Broadcasts.compaction/2`. Does NOT call
-  `reset_consecutive/1` — archiving a marker is not a "progress"
-  signal. Marker appends are exempt from the sequence repair
-  (the invariant is on the LLM-facing `messages` sequence).
-
-  Returns `{stamped_message, new_state}`.
+  Markers are exempt from sequence repair (the invariant is on the
+  LLM-facing sequence). Returns `{:ok, stamped_message, state}`.
   """
-  @spec append_marker(Agent.t(), {atom(), map()}) :: {term(), Agent.t()}
+  @spec append_marker(Agent.t(), {atom(), map()}) :: {:ok, term(), Agent.t()}
   def append_marker(%{llm_metrics: %{context_limit: limit}} = state, message)
       when is_integer(limit) and limit > 0 do
     PreFlight.ensure_passed!(state.chat_state.messages, limit)
@@ -184,79 +156,55 @@ defmodule Nest.Agents.Agent.MessageAppender do
       state.chat_state.next_message_index
     )
 
-    {stamped, state}
+    {:ok, stamped, state}
   end
 
   # Append the requested message. While a turn is live the sequence is
-  # owned by that turn and repair must never fire (it would race the
-  # turn and, e.g., answer a `tool_use` whose tool worker is still about
-  # to deliver the real result). At a terminal boundary the sequence may
-  # be healed by `pairing_bridge/2` before the requested message lands.
-  #
-  # Returns `{[stamped_messages...], new_state}` with the requested
-  # message last.
+  # owned by that turn and repair must never fire (it would race the turn
+  # and, e.g., answer a `tool_use` whose worker is still about to deliver
+  # the real result). At a terminal boundary the sequence is healed
+  # before the requested message lands.
   defp append_with_bridge(state, message) do
-    if Machine.status_for(state.live.machine) in @live_statuses do
-      assert_valid_live_append!(state, message)
-      {stamped, state} = append_stamped(state, message)
-      {[stamped], state}
+    if live_turn?(state) do
+      append_live(state, message)
     else
-      bridge = MessageList.pairing_bridge(state.chat_state.messages, message)
+      {:repair, repair_messages} =
+        Repair.decide(:terminal, state.chat_state.messages, message)
 
-      Enum.reduce(bridge ++ [message], {[], state}, fn msg, {acc, state} ->
-        {stamped, state} = append_stamped(state, msg)
+      append_messages(state, repair_messages ++ [message])
+    end
+  end
+
+  defp append_live(state, message) do
+    case Repair.decide(:live, state.chat_state.messages, message) do
+      :ok -> append_messages(state, [message])
+      :stale -> drop_stale(state, message)
+      {:invalid, reason} -> {:invalid, reason, state}
+    end
+  end
+
+  defp drop_stale(state, _message) do
+    Logger.warning(
+      "[agent:#{state.name}] dropping a stale append (status=" <>
+        "#{Machine.status_for(state.live.machine)}): it does not answer the live sequence"
+    )
+
+    {:stale, state}
+  end
+
+  defp append_messages(state, messages) do
+    {stamped, state} =
+      Enum.reduce(messages, {[], state}, fn message, {acc, state} ->
+        {stamped, state} = append_stamped(state, message)
         {acc ++ [stamped], state}
       end)
-    end
+
+    {:ok, stamped, state}
   end
 
-  # Fail loudly rather than silently repair: during a live turn the only
-  # legal next message is one that fits the wire sequence the turn is
-  # in. A trailing `tool_use` owned by a live worker must be answered by
-  # its tool result; otherwise roles must alternate.
-  defp assert_valid_live_append!(state, message) do
-    messages = state.chat_state.messages
+  defp live_turn?(state), do: Machine.status_for(state.live.machine) in @live_statuses
 
-    case MessageList.unpaired_tail_tool_uses(messages) do
-      [] ->
-        assert_alternating!(state, messages, message)
-
-      pending ->
-        pending_ids = MapSet.new(pending, & &1.id)
-
-        if MapSet.disjoint?(pending_ids, answered_tool_ids(message)) do
-          raise ArgumentError,
-                "MessageAppender: refusing to append #{inspect(wire_role(message))} while " <>
-                  "#{MapSet.size(pending_ids)} live tool_use id(s) are unanswered " <>
-                  "(agent #{state.name}). Repair does not run on the live path."
-        end
-    end
-  end
-
-  defp assert_alternating!(state, messages, message) do
-    last = MessageList.last_wire_role(messages)
-    new = wire_role(message)
-
-    if last != nil and new == last do
-      raise ArgumentError,
-            "MessageAppender: refusing to append a second consecutive #{new} message " <>
-              "(agent #{state.name}). Repair does not run on the live path."
-    end
-  end
-
-  defp wire_role({:user, _}), do: :user
-  defp wire_role({:tool, _}), do: :user
-  defp wire_role({:assistant, _}), do: :assistant
-  defp wire_role(_), do: nil
-
-  defp answered_tool_ids({:tool, %Tool{parts: parts}}) when is_list(parts) do
-    for %Part.ToolResult{tool_call_id: id} <- parts, into: MapSet.new(), do: id
-  end
-
-  defp answered_tool_ids(_), do: MapSet.new()
-
-  # The raw stamp/broadcast/persist step. No sequence repair here —
-  # `append_with_bridge/2` calls this once per message.
+  # The raw stamp/broadcast/persist step. No sequence repair here.
   defp append_stamped(%{llm_metrics: %{context_limit: limit}} = state, message)
        when is_integer(limit) and limit > 0 do
     # NUL and invalid UTF-8 (raw shell/file bytes) cannot be stored in

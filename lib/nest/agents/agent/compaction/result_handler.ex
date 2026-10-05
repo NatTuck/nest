@@ -145,7 +145,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
     # assistant. They land before the marker, so the archived slice is exactly
     # the sequence that was sent to produce the summary. A failed compaction
     # never reaches here, so nothing from it is persisted.
-    {_stamped, state} = Agent.__append_messages__(state, staged ++ [summary_assistant])
+    {:ok, _stamped, state} = Agent.__append_messages__(state, staged ++ [summary_assistant])
 
     marker_index = state.chat_state.next_message_index
     archived_messages = state.chat_state.messages || []
@@ -277,8 +277,8 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   # marker via `append_marker/2` (no broadcast),
   # new messages to `messages` (`__append_messages__/2`).
   defp commit_compaction(state, marker, new_messages) do
-    {_marker, state} = MessageAppender.append_marker(state, marker)
-    {_stamped, state} = Agent.__append_messages__(state, new_messages)
+    {:ok, _marker, state} = MessageAppender.append_marker(state, marker)
+    {:ok, _stamped, state} = Agent.__append_messages__(state, new_messages)
     state
   end
 

@@ -56,12 +56,12 @@ defmodule Nest.Persistence do
   require Logger
 
   alias Ecto.Changeset
+  alias Nest.Agents.Agent.Repair
   alias Nest.Agents.PersistedAgent
   alias Nest.Agents.PersistedMessage
   alias Nest.LLM.Preflight
   alias Nest.Messages.Compaction
   alias Nest.Messages.Message
-  alias Nest.Messages.MessageList
   alias Nest.Persistence.CompactionMarker
   alias Nest.Repo
   alias Nest.Spaces.Space
@@ -448,23 +448,10 @@ defmodule Nest.Persistence do
   defp classify_sequence(preloaded, boundary) do
     active = Enum.filter(preloaded, fn {_role, %{index: idx}} -> idx > boundary end)
 
-    case Preflight.validate(active) do
-      :ok ->
-        {[], nil}
-
-      {:error, [%{rule: :no_trailing_orphan, expected_ids: expected_ids} = violation]} ->
-        tool_uses =
-          active
-          |> MessageList.unpaired_tail_tool_uses()
-          |> Enum.filter(&(&1.id in expected_ids))
-
-        case tool_uses do
-          [] -> {[violation], nil}
-          uses -> {[], uses}
-        end
-
-      {:error, violations} ->
-        {violations, nil}
+    case Repair.decide(:load, active, nil) do
+      :ok -> {[], nil}
+      {:interrupted, tool_uses} -> {[], tool_uses}
+      {:violations, violations} -> {violations, nil}
     end
   end
 

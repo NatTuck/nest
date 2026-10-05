@@ -13,6 +13,7 @@ defmodule Nest.Agents.Agent.Handlers.TurnHandler do
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Machine
+  alias Nest.Agents.Agent.Repair
   alias Nest.Agents.Agent.SubAgent
   alias Nest.Agents.Agent.Turn.Idle
   alias Nest.Agents.Registry, as: AgentsRegistry
@@ -72,6 +73,16 @@ defmodule Nest.Agents.Agent.Handlers.TurnHandler do
   """
   @spec chat_stopped_state(Agent.t()) :: Agent.t()
   def chat_stopped_state(state), do: force_idle(state, stopped_metadata())
+
+  @doc """
+  A live append was refused because it would break the wire sequence
+  (`Repair` classified it `:invalid`). Fail the turn cleanly: broadcast
+  `chat:error` and finalize to idle. The Agent process survives.
+  """
+  @spec invalid_append_state(Agent.t(), String.t()) :: Agent.t()
+  def invalid_append_state(state, reason) do
+    chat_crashed_state(%ArgumentError{message: reason}, [], state)
+  end
 
   @doc """
   An unexpected crash: finalize the partial with `error` metadata,
@@ -233,11 +244,28 @@ defmodule Nest.Agents.Agent.Handlers.TurnHandler do
   defp finalize_partial_if_any(state, metadata) do
     state
     |> terminal_messages(metadata)
-    |> Enum.reduce(state, fn message, acc ->
-      {_stamped, acc} = Nest.Agents.Agent.__append_message__(acc, message)
-      acc
-    end)
+    |> Enum.reduce(state, &append_terminal(&2, &1))
     |> clear_streaming()
+  end
+
+  # Terminal recovery appends never route a mismatch back into
+  # `invalid_append_state/2` (that would recurse): an invalid recovery is
+  # logged and dropped.
+  defp append_terminal(state, message) do
+    case Nest.Agents.Agent.__append_message__(state, message) do
+      {:ok, _stamped, state} ->
+        state
+
+      {:stale, state} ->
+        state
+
+      {:invalid, reason, state} ->
+        Logger.error(
+          "[agent:#{state.name}] dropping an invalid terminal recovery append: #{reason}"
+        )
+
+        state
+    end
   end
 
   defp clear_streaming(state) do
@@ -260,9 +288,8 @@ defmodule Nest.Agents.Agent.Handlers.TurnHandler do
   end
 
   defp recovery_messages(messages, metadata) do
-    messages
-    |> MessageList.pairing_bridge(MessageList.continuation_prompt())
-    |> Enum.map(&tag_metadata(&1, metadata))
+    {:repair, repair} = Repair.decide(:terminal, messages, MessageList.continuation_prompt())
+    Enum.map(repair, &tag_metadata(&1, metadata))
   end
 
   defp partial_message(nil, _metadata), do: nil

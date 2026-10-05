@@ -17,7 +17,7 @@ defmodule Nest.Agents.Agent.Init.InterruptedToolCall do
 
   require Logger
 
-  alias Nest.Messages.MessageList
+  alias Nest.Agents.Agent.Repair
   alias Nest.Messages.Part
 
   @spec heal(Nest.Agents.Agent.t(), [Part.ToolUse.t()]) :: Nest.Agents.Agent.t()
@@ -27,12 +27,9 @@ defmodule Nest.Agents.Agent.Init.InterruptedToolCall do
         "answering #{length(tool_uses)} unpaired tool_use id(s) with an error result and idling."
     )
 
-    case MessageList.interrupted_tool_result(tool_uses) do
-      nil ->
-        state
-
-      tool_msg ->
-        append_or_keep(state, [tool_msg, MessageList.repair_ack()])
+    case Repair.load_heal(tool_uses) do
+      [] -> state
+      messages -> append_or_keep(state, messages)
     end
   end
 
@@ -40,8 +37,13 @@ defmodule Nest.Agents.Agent.Init.InterruptedToolCall do
   # already `:cannot_compact`. In that pathological case, leave the state
   # untouched and log; the send guard still refuses to send the invalid
   # tail, so we degrade safely rather than crash-loop the Agent.
+  # The load path is terminal, so the append heals the tail and returns
+  # `:ok`. A `:cannot_compact` pre-flight refusal (or an impossible tag)
+  # is rescued and leaves the state untouched; the send guard still
+  # refuses to send the invalid tail, so we degrade safely rather than
+  # crash-loop the Agent.
   defp append_or_keep(state, messages) do
-    {_stamped, state} = Nest.Agents.Agent.__append_messages__(state, messages)
+    {:ok, _stamped, state} = Nest.Agents.Agent.__append_messages__(state, messages)
     state
   rescue
     error ->

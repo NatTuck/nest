@@ -103,13 +103,11 @@ defmodule Nest.Agents.Agent.Callbacks do
   # place. The batch variant exists for the Case 2 notice-pair
   # injectors (see `Nest.Agents.Agent.NoticePairInjector`).
   def handle_call({:append_message, message}, _from, state) do
-    {stamped, state} = MessageAppender.handle_single(state, message)
-    {:reply, stamped, state}
+    reply_append(MessageAppender.handle_single(state, message))
   end
 
   def handle_call({:append_messages, messages}, _from, state) do
-    {stamped, state} = MessageAppender.handle_batch(state, messages)
-    {:reply, stamped, state}
+    reply_append(MessageAppender.handle_batch(state, messages))
   end
 
   # Sub-agent: a tool worker (running in the chat turn) is
@@ -188,6 +186,19 @@ defmodule Nest.Agents.Agent.Callbacks do
   # Catch-all dispatcher for introspection calls.
   def handle_call(msg, from, state) do
     IntrospectionHandler.handle(msg, from, state)
+  end
+
+  # The tagged append result maps to the legacy GenServer reply for
+  # trusted callers: the stamped message(s) on success, `:stale` for a
+  # dropped stale result, and `{:error, reason}` for a broken sequence
+  # (which also fails the turn cleanly so the agent is never left live on
+  # an invalid tail).
+  defp reply_append({:ok, stamped, state}), do: {:reply, stamped, state}
+  defp reply_append({:stale, state}), do: {:reply, :stale, state}
+
+  defp reply_append({:invalid, reason, state}) do
+    state = Nest.Agents.Agent.Handlers.TurnHandler.invalid_append_state(state, reason)
+    {:reply, {:error, reason}, state}
   end
 
   # Extract the index from a stamped message tuple. Exposed

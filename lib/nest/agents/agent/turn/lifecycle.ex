@@ -18,6 +18,7 @@ defmodule Nest.Agents.Agent.Turn.Lifecycle do
   alias Nest.Agents.Agent.Handlers.TurnHandler
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.MessageAppender
+  alias Nest.Agents.Agent.Repair
   alias Nest.Messages.MessageList
 
   require Logger
@@ -120,20 +121,26 @@ defmodule Nest.Agents.Agent.Turn.Lifecycle do
   defp recover_interrupted_tool(state, tool_uses) do
     state = clear_worker(state)
 
-    case MessageList.interrupted_tool_result(tool_uses) do
-      nil ->
+    case Repair.decide(:worker_death, state.chat_state.messages, nil) do
+      :none ->
         {:noreply, TurnHandler.chat_stopped_state(state)}
 
-      tool_msg ->
+      {:repair, [tool_msg]} ->
         Logger.warning(
           "Chat turn for agent #{state.name} lost its tool worker without a result; " <>
             "answering #{length(tool_uses)} tool_use id(s) with an error result and continuing."
         )
 
-        {_stamped, state} = MessageAppender.handle_single(state, tool_msg)
-        send(self(), :iterate)
-        {:noreply, state}
+        append_recovery(state, tool_msg)
     end
+  end
+
+  # The repair result answers the unanswered tail `tool_use`, so the live
+  # append is valid (`:ok`).
+  defp append_recovery(state, tool_msg) do
+    {:ok, _stamped, state} = MessageAppender.handle_single(state, tool_msg)
+    send(self(), :iterate)
+    {:noreply, state}
   end
 
   @doc """

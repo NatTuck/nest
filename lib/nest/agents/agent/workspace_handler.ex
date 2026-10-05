@@ -124,10 +124,12 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
     ]
   end
 
+  # The workspace notice lands at a terminal boundary (the agent is idle
+  # or `:model_missing`), so the append heals the tail and returns `:ok`.
   defp insert_notice_now(state) do
     state =
       Enum.reduce(notice_pair(state.workspace_path), state, fn msg, acc ->
-        {_stamped, acc} = Agent.__append_message__(acc, msg)
+        {:ok, _stamped, acc} = Agent.__append_message__(acc, msg)
         acc
       end)
 

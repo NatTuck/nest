@@ -111,16 +111,20 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
           {:ok, shape(), [term()], map()} | shape()
   def inject_pair_in_process(messages, state, spec, direction) do
     with {:ok, pair_messages} <- build_pair(messages, spec, direction) do
-      {stamped, new_state} = Nest.Agents.Agent.__append_messages__(state, pair_messages)
+      append_pair_in_process(state, pair_messages, direction)
+    end
+  end
 
-      shape =
-        case {length(stamped), direction} do
-          {1, _} -> :single_assistant
-          {_, :agent_user} -> :agent_user_pair
-          {_, :user_agent} -> :user_agent_pair
-        end
+  defp append_pair_in_process(state, pair_messages, direction) do
+    case Nest.Agents.Agent.__append_messages__(state, pair_messages) do
+      {:ok, stamped, new_state} ->
+        {:ok, shape_for(stamped, direction), stamped, new_state}
 
-      {:ok, shape, stamped, new_state}
+      {:stale, _new_state} ->
+        :deferred
+
+      {:invalid, _reason, _new_state} ->
+        :deferred
     end
   end
 
@@ -208,21 +212,19 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
 
   defp append_pair(agent_pid, pair_messages, direction) do
     case GenServer.call(agent_pid, {:append_messages, pair_messages}, 5_000) do
-      [_ | _] = stamped ->
-        shape =
-          case {length(stamped), direction} do
-            {1, _} -> :single_assistant
-            {_, :agent_user} -> :agent_user_pair
-            {_, :user_agent} -> :user_agent_pair
-          end
-
-        {:ok, shape, stamped}
-
-      _ ->
-        :agent_dead
+      [_ | _] = stamped -> {:ok, shape_for(stamped, direction), stamped}
+      _ -> :agent_dead
     end
   catch
     :exit, _ -> :agent_dead
+  end
+
+  defp shape_for(stamped, direction) do
+    case {length(stamped), direction} do
+      {1, _} -> :single_assistant
+      {_, :agent_user} -> :agent_user_pair
+      {_, :user_agent} -> :user_agent_pair
+    end
   end
 
   defp fetch_messages(agent_pid) do

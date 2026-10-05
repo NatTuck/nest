@@ -12,6 +12,7 @@ defmodule Nest.Agents.Agent.Turn.ResponseHandler do
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.Agents.Agent.Handlers.LLMStreamHandler
+  alias Nest.Agents.Agent.Handlers.TurnHandler
   alias Nest.Agents.Agent.Machine.Turn
   alias Nest.Agents.Agent.MessageAppender
   alias Nest.Agents.Agent.Turn.APILog
@@ -88,8 +89,7 @@ defmodule Nest.Agents.Agent.Turn.ResponseHandler do
         Lifecycle.finalize_compaction(state, response, assistant_msg)
 
       :force_finalize ->
-        state = persist_assistant(state, assistant_msg)
-        Lifecycle.finalize_turn(state)
+        persist_and(state, assistant_msg, &Lifecycle.finalize_turn/1)
 
       :overflow_tool_calls ->
         handle_overflow_tool_calls(response, state, assistant_msg)
@@ -98,30 +98,28 @@ defmodule Nest.Agents.Agent.Turn.ResponseHandler do
         handle_normal_tool_calls(response, state, assistant_msg)
 
       :empty_assistant ->
-        # A provider response with no text, thinking, refusal, or tool
-        # call at all would persist a zero-part assistant message. Never
-        # do that: surface it as a non-empty error (broadcast BEFORE the
-        # idle status) and end the turn.
-        state =
-          LLMStreamHandler.llm_error_state(
-            "The model returned a response with no content.",
-            state
-          )
-
-        Lifecycle.finalize_turn(state)
+        handle_empty_assistant(state)
 
       :truncated ->
-        state = persist_assistant(state, assistant_msg)
-        handle_truncated_response(state)
+        persist_and(state, assistant_msg, &handle_truncated_response/1)
 
       :silent ->
-        state = persist_assistant(state, assistant_msg)
-        handle_silent_response(state)
+        persist_and(state, assistant_msg, &handle_silent_response/1)
 
       :finalize ->
-        state = persist_assistant(state, assistant_msg)
-        Lifecycle.finalize_turn(state)
+        persist_and(state, assistant_msg, &Lifecycle.finalize_turn/1)
     end
+  end
+
+  # A provider response with no text, thinking, refusal, or tool call at
+  # all would persist a zero-part assistant message. Never do that:
+  # surface it as a non-empty error (broadcast BEFORE the idle status) and
+  # end the turn.
+  defp handle_empty_assistant(state) do
+    state =
+      LLMStreamHandler.llm_error_state("The model returned a response with no content.", state)
+
+    Lifecycle.finalize_turn(state)
   end
 
   # Build the classification input for `Machine.Turn.classify_response/1`
@@ -142,9 +140,21 @@ defmodule Nest.Agents.Agent.Turn.ResponseHandler do
 
   defp empty_assistant?({:assistant, %Assistant{parts: parts}}), do: parts == []
 
+  defp persist_and(state, assistant_msg, fun) do
+    case persist_assistant(state, assistant_msg) do
+      {:ok, state} -> fun.(state)
+      {:invalid, state} -> {:noreply, state}
+    end
+  end
+
   defp persist_assistant(state, {:assistant, msg}) do
-    {:noreply, state} = LLMStreamHandler.tool_calls_received(msg, state)
-    state
+    case LLMStreamHandler.persist_assistant(msg, state) do
+      {:ok, state} ->
+        {:ok, state}
+
+      {:invalid, reason, state} ->
+        {:invalid, TurnHandler.invalid_append_state(state, reason)}
+    end
   end
 
   defp silent_response?(response) do
@@ -191,6 +201,12 @@ defmodule Nest.Agents.Agent.Turn.ResponseHandler do
 
       :no_room ->
         Lifecycle.finalize_turn(state)
+
+      {:stale, state} ->
+        Lifecycle.finalize_turn(state)
+
+      {:invalid, state} ->
+        {:noreply, state}
     end
   end
 
@@ -212,8 +228,12 @@ defmodule Nest.Agents.Agent.Turn.ResponseHandler do
       :no_room
     else
       user_message = ContextReminder.build_user_notice(text, nil)
-      {_stamped, state} = MessageAppender.handle_single(state, user_message)
-      {:ok, state}
+
+      case MessageAppender.handle_single(state, user_message) do
+        {:ok, _stamped, state} -> {:ok, state}
+        {:stale, state} -> {:stale, state}
+        {:invalid, reason, state} -> {:invalid, TurnHandler.invalid_append_state(state, reason)}
+      end
     end
   end
 
@@ -259,12 +279,14 @@ defmodule Nest.Agents.Agent.Turn.ResponseHandler do
   end
 
   defp handle_overflow_tool_calls(response, state, assistant_msg) do
-    state = persist_assistant(state, assistant_msg)
-    tool_msg = Messages.synthetic_error_tool_results(response)
-    {_stamped, state} = MessageAppender.handle_single(state, tool_msg)
-    state = put_force_finalize(state, true)
-    send(self(), :iterate)
-    {:noreply, state}
+    case persist_assistant(state, assistant_msg) do
+      {:ok, state} ->
+        tool_msg = Messages.synthetic_error_tool_results(response)
+        append_force_finalize(state, tool_msg)
+
+      {:invalid, state} ->
+        {:noreply, state}
+    end
   end
 
   defp handle_normal_tool_calls(response, state, assistant_msg) do
@@ -317,18 +339,36 @@ defmodule Nest.Agents.Agent.Turn.ResponseHandler do
   end
 
   defp refuse_compact_mixed(response, state, assistant_msg) do
-    state = persist_assistant(state, assistant_msg)
+    case persist_assistant(state, assistant_msg) do
+      {:ok, state} ->
+        tool_msg =
+          Messages.refuse_context_compact_co_batch(
+            response.tool_calls,
+            turn(state).ctx.messages || []
+          )
 
-    tool_msg =
-      Messages.refuse_context_compact_co_batch(
-        response.tool_calls,
-        turn(state).ctx.messages || []
-      )
+        append_force_finalize(state, tool_msg)
 
-    {_stamped, state} = MessageAppender.handle_single(state, tool_msg)
-    state = put_force_finalize(state, true)
-    send(self(), :iterate)
-    {:noreply, state}
+      {:invalid, state} ->
+        {:noreply, state}
+    end
+  end
+
+  # Append a synthetic tool result and re-iterate with force_finalize. A
+  # broken append stops the turn cleanly instead of crashing the Agent.
+  defp append_force_finalize(state, tool_msg) do
+    case MessageAppender.handle_single(state, tool_msg) do
+      {:ok, _stamped, state} ->
+        state = put_force_finalize(state, true)
+        send(self(), :iterate)
+        {:noreply, state}
+
+      {:stale, state} ->
+        {:noreply, state}
+
+      {:invalid, reason, state} ->
+        {:noreply, TurnHandler.invalid_append_state(state, reason)}
+    end
   end
 
   @spec build_synthetic_compact_result(Nest.Messages.ToolCall.t(), non_neg_integer()) ::
@@ -354,8 +394,10 @@ defmodule Nest.Agents.Agent.Turn.ResponseHandler do
   defp handle_regular_tool_calls(response, state, assistant_msg) do
     case post_response_preflight(response.tool_calls, state, assistant_msg) do
       :fits ->
-        state = persist_assistant(state, assistant_msg)
-        Iteration.spawn_tool_worker(state, response.tool_calls)
+        case persist_assistant(state, assistant_msg) do
+          {:ok, state} -> Iteration.spawn_tool_worker(state, response.tool_calls)
+          {:invalid, state} -> {:noreply, state}
+        end
 
       {:refuse, _reason} ->
         continuation = {

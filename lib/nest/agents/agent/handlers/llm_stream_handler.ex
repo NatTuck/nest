@@ -29,6 +29,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
 
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Handlers.LLMStreamHandler.FileAccess
+  alias Nest.Agents.Agent.Handlers.TurnHandler
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Turn.Idle
   alias Nest.Messages.Assistant
@@ -256,20 +257,24 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   def llm_error_state(error_msg, state) do
     error_message = build_error_message(error_msg, state)
 
-    {stamped, state} = Nest.Agents.Agent.__append_message__(state, error_message)
-    stamped_index = Nest.Agents.Agent.stamped_index(stamped)
+    case Nest.Agents.Agent.__append_message__(state, error_message) do
+      {:ok, stamped, state} ->
+        stamped_index = Nest.Agents.Agent.stamped_index(stamped)
+        state = %{state | live: %{state.live | streaming_acc: nil, tool_index_map: %{}}}
 
-    state = %{state | live: %{state.live | streaming_acc: nil, tool_index_map: %{}}}
+        Broadcasts.error(
+          state.space_id,
+          state.name,
+          stamped_index,
+          error_msg,
+          "Turn.run/2"
+        )
 
-    Broadcasts.error(
-      state.space_id,
-      state.name,
-      stamped_index,
-      error_msg,
-      "Turn.run/2"
-    )
+        Idle.enter(state)
 
-    Idle.enter(state)
+      {:invalid, reason, state} ->
+        TurnHandler.invalid_append_state(state, reason)
+    end
   end
 
   # Preserve whatever the model streamed before the failure (a dropped
@@ -301,14 +306,34 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   # to fit; the in-process driver calls this directly.
   @doc false
   def tool_calls_received(tool_call_message, state) do
+    case persist_assistant(tool_call_message, state) do
+      {:ok, state} -> {:noreply, state}
+      {:invalid, reason, state} -> {:noreply, TurnHandler.invalid_append_state(state, reason)}
+    end
+  end
+
+  # Append an assistant message and move to the tools phase. Returns a
+  # tagged result so the in-process driver can stop the turn on a broken
+  # sequence instead of crashing the Agent.
+  @doc false
+  @spec persist_assistant(Assistant.t(), Nest.Agents.Agent.t()) ::
+          {:ok, Nest.Agents.Agent.t()} | {:invalid, String.t(), Nest.Agents.Agent.t()}
+  def persist_assistant(tool_call_message, state) do
     tool_call_message = {:assistant, %{tool_call_message | index: nil}}
 
-    {_stamped, state} = Nest.Agents.Agent.__append_message__(state, tool_call_message)
+    case Nest.Agents.Agent.__append_message__(state, tool_call_message) do
+      {:ok, _stamped, state} ->
+        state = %{
+          state
+          | live: %{state.live | machine: Machine.to_chat_tools(state.live.machine)}
+        }
 
-    state = %{state | live: %{state.live | machine: Machine.to_chat_tools(state.live.machine)}}
+        Broadcasts.status(state)
+        {:ok, state}
 
-    Broadcasts.status(state)
-    {:noreply, state}
+      {:invalid, reason, state} ->
+        {:invalid, reason, state}
+    end
   end
 
   @doc false
@@ -331,8 +356,11 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
     end
   end
 
+  # `tool_results_received/2` only calls this after the staleness guard
+  # confirms the result answers the trailing `tool_use`, so the append is
+  # always live-valid (`:ok`).
   defp append_tool_result(tool_result_message, state) do
-    {stamped, state} = Nest.Agents.Agent.__append_message__(state, tool_result_message)
+    {:ok, stamped, state} = Nest.Agents.Agent.__append_message__(state, tool_result_message)
     stamped_index = Nest.Agents.Agent.stamped_index(stamped)
 
     # Update the `read_files` cache from this tool result
