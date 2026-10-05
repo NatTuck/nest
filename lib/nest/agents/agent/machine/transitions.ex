@@ -380,7 +380,7 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
 
   # --- chat start / preflight ---
 
-  defp start_chat(m, entry, _inbox_entries) do
+  defp start_chat(m, entry, inbox_entries) do
     user = unwrap_user(entry)
     projected = messages(m) ++ [user]
     limit = m.work.ctx.context_limit
@@ -397,8 +397,16 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
       :cannot_compact ->
         machine = enter_blocked(m, :context_overflow)
 
-        {:ok, [{:broadcast, {:overflow, :reserve_exhausted, "start a conversation"}, nil}],
-         machine}
+        # Restore the drained inbox so the queued messages are not lost;
+        # they retry once the agent returns to idle (model change/repair).
+        actions = [{:broadcast, {:overflow, :reserve_exhausted, "start a conversation"}, nil}]
+
+        actions =
+          if inbox_entries in [nil, []],
+            do: actions,
+            else: actions ++ [{:restore_inbox, inbox_entries}]
+
+        {:ok, actions, machine}
     end
   end
 

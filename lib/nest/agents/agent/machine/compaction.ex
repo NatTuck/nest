@@ -130,7 +130,7 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
 
       match?({:assistant_response, _, _, _}, carried) ->
         machine = Phase.enter(%{m | entry: nil}, :chat, :idle)
-        {:ok, [{:notify_parent, :completed}, {:drain_inbox}], machine}
+        {:ok, [{:finalize, :clean}, {:drain_inbox}], machine}
 
       carried == nil ->
         resume_with_pending(m)
@@ -145,7 +145,7 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
     case m.pending_user_message do
       nil ->
         machine = Phase.enter(%{m | entry: nil}, :chat, :idle)
-        {:ok, [{:notify_parent, :completed}, {:drain_inbox}], machine}
+        {:ok, [{:finalize, :clean}, {:drain_inbox}], machine}
 
       entry ->
         user = Phase.unwrap_user(entry)

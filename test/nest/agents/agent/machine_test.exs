@@ -268,6 +268,30 @@ defmodule MachineTest do
     end
   end
 
+  describe "compaction resume" do
+    test "a deferred assistant_response resume finalizes cleanly instead of casting to the parent" do
+      # intentional: an idle-after-compaction resume must not emit a
+      # malformed parent notification. The old `{:notify_parent, :completed}`
+      # cast a bare `:completed` atom, which no parent `handle_cast/2`
+      # clause matches (a child's parent would crash). It now finalizes
+      # like any clean idle (the executor builds the real payload).
+      carried = {:assistant_response, %Nest.Messages.Assistant{parts: []}, 0, 5}
+
+      machine =
+        Machine.new(
+          phase: :committing,
+          kind: :compaction,
+          entry: {:compaction, [], carried}
+        )
+
+      {:ok, actions, next} = Machine.step(machine, {:commit_done})
+
+      assert {:finalize, :clean} in actions
+      refute Enum.any?(actions, &match?({:notify_parent, _}, &1))
+      assert next.phase == :idle
+    end
+  end
+
   # --- helpers ---
 
   defp kind_for(:committing), do: :compaction
