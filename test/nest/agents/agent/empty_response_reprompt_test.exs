@@ -3,7 +3,7 @@ defmodule Nest.Agents.Agent.EmptyResponseRepromptTest do
   Tests for the empty-response re-prompt.
 
   A model can end a turn having streamed only reasoning
-  (`reasoning_content`) and no actual reply text. `ChatTurn` used to
+  (`reasoning_content`) and no actual reply text. The turn used to
   treat that as a finished answer, leaving the user with a thinking-
   only "reply" and a dead conversation. Now the `ResponseHandler`
   detects a silent response (no text, no refusal), injects an explicit

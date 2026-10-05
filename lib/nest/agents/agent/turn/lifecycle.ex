@@ -138,9 +138,17 @@ defmodule Nest.Agents.Agent.Turn.Lifecycle do
   # The repair result answers the unanswered tail `tool_use`, so the live
   # append is valid (`:ok`).
   defp append_recovery(state, tool_msg) do
-    {:ok, _stamped, state} = MessageAppender.handle_single(state, tool_msg)
-    send(self(), :iterate)
-    {:noreply, state}
+    case MessageAppender.handle_single(state, tool_msg) do
+      {:ok, _stamped, state} ->
+        send(self(), :iterate)
+        {:noreply, state}
+
+      {:invalid, reason, state} ->
+        {:noreply, TurnHandler.invalid_append_state(state, reason)}
+
+      {:stale, state} ->
+        {:noreply, TurnHandler.chat_stopped_state(state)}
+    end
   end
 
   @doc """

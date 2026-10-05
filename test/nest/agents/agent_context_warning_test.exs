@@ -4,12 +4,12 @@ defmodule Nest.Agents.AgentContextWarningTest do
   user message past 25%" bug.
 
   The "already announced" set lives on
-  `state.live.crossed_thresholds` (per conversation, not per
-  ChatTurn); a ChatTurn reads it from `ctx` and sends the updated
-  set back via `{:set_crossed_thresholds, set}`. Cleared on
-  successful compaction in `Compaction.ResultHandler`. The pure
-  unit tests for `ContextReminder.highest_unannounced/3` live in
-  `test/nest/agents/agent/chat_turn/context_reminder_test.exs`;
+  `state.live.crossed_thresholds` (per conversation, not per turn);
+  the in-process turn reads it directly from the Agent state and
+  writes the updated set back. Cleared on successful compaction in
+  `Compaction.ResultHandler`. The pure unit tests for
+  `ContextReminder.highest_unannounced/3` live in
+  `test/nest/agents/agent/turn/context_reminder_test.exs`;
   this module covers the wiring.
   """
 
@@ -135,7 +135,7 @@ defmodule Nest.Agents.AgentContextWarningTest do
   defp stamped_notice?(_), do: false
 
   @tag timeout: 30_000
-  test "the Agent's crossed_thresholds persists the fired atom across ChatTurns" do
+  test "the Agent's crossed_thresholds persists the fired atom across turns" do
     {pid, _agent_id} = AgentTestHelpers.start_agent(%{})
 
     seed_past_25_percent(pid)
@@ -150,12 +150,12 @@ defmodule Nest.Agents.AgentContextWarningTest do
              "got #{inspect(state.live.crossed_thresholds)}"
   end
 
-  test "compaction_done clears crossed_thresholds so the next ChatTurn can re-fire" do
+  test "compaction_done clears crossed_thresholds so the next turn can re-fire" do
     {pid, _agent_id} = AgentTestHelpers.start_agent(%{})
 
     :sys.replace_state(pid, fn state ->
       # Seeded messages are short enough that any post-compaction
-      # ChatTurn will be well under 25% of the working budget,
+      # turn will be well under 25% of the working budget,
       # so the cleared set stays cleared (no reminder fires).
       messages = [
         {:system,
@@ -177,8 +177,8 @@ defmodule Nest.Agents.AgentContextWarningTest do
 
     AgentTestHelpers.send_compaction_done(pid, "Summary", nil)
 
-    # The handler resets the set BEFORE spawning the next ChatTurn.
-    # The next ChatTurn runs an iteration (against the short seeded
+    # The handler resets the set BEFORE starting the next turn.
+    # The next turn runs an iteration (against the short seeded
     # messages, well under 25%) and finalizes to :idle. After that
     # the field must still be empty (no reminder fires).
     assert_receive {:chat_status, %{status: "idle"}}, 1_000

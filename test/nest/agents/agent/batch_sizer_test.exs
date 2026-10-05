@@ -338,9 +338,9 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
   describe "ToolLoop integration" do
     # Note: `context-compact` used to be handled inside ToolLoop
     # (singleton → task-worker block on compaction; mixed → refuse).
-    # The chat turn's `ResponseHandler` owns that handling now;
-    # see `test/nest/agents/agent/chat_turn/response_handler_test.exs`
-    # for the modern coverage. `ToolLoop.execute/3` is now an
+    # The turn's `ResponseHandler` owns that handling now;
+    # see `test/nest/agents/agent_turn_iteration_test.exs` for the
+    # modern coverage. `ToolLoop.execute/3` is now an
     # unconditional passthrough to `BatchSizer.run/2` for non-empty
     # batches and `[]` for empty ones.
 

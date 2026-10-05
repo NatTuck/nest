@@ -33,25 +33,34 @@ defmodule Nest.Agents.Agent.Init.InterruptedToolCall do
     end
   end
 
-  # The canonical append path refuses (raises) when the conversation is
-  # already `:cannot_compact`. In that pathological case, leave the state
-  # untouched and log; the send guard still refuses to send the invalid
-  # tail, so we degrade safely rather than crash-loop the Agent.
   # The load path is terminal, so the append heals the tail and returns
-  # `:ok`. A `:cannot_compact` pre-flight refusal (or an impossible tag)
-  # is rescued and leaves the state untouched; the send guard still
-  # refuses to send the invalid tail, so we degrade safely rather than
-  # crash-loop the Agent.
+  # `:ok`. A `:cannot_compact` pre-flight refusal is surfaced as
+  # `{:invalid, reason, state}`; leave the state untouched and log. The send
+  # guard still refuses to send the invalid tail, so we degrade safely
+  # rather than crash-loop the Agent. The rescue is a backstop for a
+  # genuinely unexpected failure.
   defp append_or_keep(state, messages) do
-    {:ok, _stamped, state} = Nest.Agents.Agent.__append_messages__(state, messages)
-    state
+    case Nest.Agents.Agent.__append_messages__(state, messages) do
+      {:ok, _stamped, state} ->
+        state
+
+      {:invalid, reason, state} ->
+        log_unhealed(state, reason)
+        state
+
+      {:stale, state} ->
+        state
+    end
   rescue
     error ->
-      Logger.error(
-        "Agent #{state.name} (space #{state.space_id}) could not heal its interrupted " <>
-          "tool call: #{Exception.message(error)}"
-      )
-
+      log_unhealed(state, Exception.message(error))
       state
+  end
+
+  defp log_unhealed(state, reason) do
+    Logger.error(
+      "Agent #{state.name} (space #{state.space_id}) could not heal its interrupted " <>
+        "tool call: #{reason}"
+    )
   end
 end

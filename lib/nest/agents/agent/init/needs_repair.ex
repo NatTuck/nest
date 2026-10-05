@@ -4,8 +4,8 @@ defmodule Nest.Agents.Agent.Init.NeedsRepair do
   active message sequence failed the wire preflight at load
   (`notes/enforce-mesages-seq-invariants.md` §4).
 
-  The agent process still starts so its history stays viewable, but
-  `live.status` becomes `:needs_repair`:
+  The agent process still starts so its history stays viewable, but the
+  observable status becomes `:needs_repair` (via `Machine.to_blocked/2`):
   `Nest.Agents.Agent.Callbacks.chat_or_drop/3` and the agent channel
   both refuse `chat:message`, and a `chat:status` broadcast tells the
   UI to show the repair banner. Recovery is offline: run

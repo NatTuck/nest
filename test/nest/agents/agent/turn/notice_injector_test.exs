@@ -10,6 +10,8 @@ defmodule Nest.Agents.Agent.Turn.NoticeInjectorTest do
 
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Turn.NoticeInjector
   alias Nest.LLM.RunResponse
@@ -73,6 +75,28 @@ defmodule Nest.Agents.Agent.Turn.NoticeInjectorTest do
       assert spec.kind == :context
       assert spec.threshold == :p25
       refute spec.notice =~ "50%"
+    end
+  end
+
+  describe "inject_all/2 appended-message count" do
+    test "counts only messages actually appended (0 when a notice is skipped)" do
+      # A `context_limit` of 1 leaves no content budget, so every notice
+      # pair is skipped by `notice_over_budget?/3`. The returned count must
+      # be the number of appended messages (0), not the number of specs
+      # collected (which the caller would otherwise turn into a bogus
+      # `active_message_index` bump).
+      state =
+        build_state(
+          pending_notice: "2 tool call rounds remaining. Plan your remaining tool use carefully.",
+          context_limit: 1
+        )
+
+      {result, log} =
+        with_log(fn -> NoticeInjector.inject_all(%RunResponse{}, state) end)
+
+      assert {0, returned} = result
+      assert log =~ "skipping budget notice"
+      assert returned.live.machine.work.pending_notice == nil
     end
   end
 

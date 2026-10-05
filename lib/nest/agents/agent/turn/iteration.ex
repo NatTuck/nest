@@ -4,7 +4,7 @@ defmodule Nest.Agents.Agent.Turn.Iteration do
   notification, LLM dispatch (ordinary + compaction), and worker spawning.
 
   Every LLM request carries a known, positive `context_limit` and must
-  have passed the pre-flight decision (`PreFlight.ensure_passed!/2`).
+  have passed the pre-flight decision (`PreFlight.check_passed/2`).
   An ordinary turn must never send a context that would spend the
   compaction reserve; the compactor turn is exempt.
   """
@@ -144,15 +144,25 @@ defmodule Nest.Agents.Agent.Turn.Iteration do
     limit = state.live.machine.work.ctx.context_limit
 
     if is_integer(limit) and limit > 0 do
-      PreFlight.ensure_passed!(messages, limit)
-
-      if ordinary_turn?(state) and not Budget.fits?(messages, limit) do
-        refuse_over_budget(state, messages, limit)
-      else
-        validate_and_dispatch(state, messages)
-      end
+      guarded_dispatch(state, messages, limit)
     else
       refuse_invalid_sequence(state, "context_limit is not a positive integer")
+    end
+  end
+
+  # The tripwire first (never send/store a `:cannot_compact` list), then
+  # the ordinary-turn reserve check, then the wire-format check.
+  defp guarded_dispatch(state, messages, limit) do
+    case PreFlight.check_passed(messages, limit) do
+      {:error, reason} ->
+        refuse_invalid_sequence(state, reason)
+
+      :ok ->
+        if ordinary_turn?(state) and not Budget.fits?(messages, limit) do
+          refuse_over_budget(state, messages, limit)
+        else
+          validate_and_dispatch(state, messages)
+        end
     end
   end
 

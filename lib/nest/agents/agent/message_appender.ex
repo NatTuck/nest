@@ -15,9 +15,12 @@ defmodule Nest.Agents.Agent.MessageAppender do
       {:invalid, reason, state}
 
   `:stale` (a tool result that does not answer the live tail) is dropped
-  with a warning; `:invalid` (a genuinely broken live sequence) is
-  dropped and the caller fails the turn cleanly. The decision itself
-  lives in `Nest.Agents.Agent.Repair`; this module only applies it.
+  with a warning; `:invalid` (a genuinely broken live sequence, or a
+  list that fails the `:cannot_compact` send/store tripwire) is dropped
+  and the caller fails the turn cleanly. The decision itself lives in
+  `Nest.Agents.Agent.Repair`; this module only applies it. Appends never
+  raise: the pre-flight tripwire is surfaced as `:invalid`, not an
+  exception.
 
   ## Atomicity (the batch variant)
 
@@ -130,33 +133,40 @@ defmodule Nest.Agents.Agent.MessageAppender do
   partition and never in the LLM-facing `messages`.
 
   Markers are exempt from sequence repair (the invariant is on the
-  LLM-facing sequence). Returns `{:ok, stamped_message, state}`.
+  LLM-facing sequence). Returns `{:ok, stamped_message, state}` or
+  `{:invalid, reason, state}` if the marker list fails the tripwire.
   """
-  @spec append_marker(Agent.t(), {atom(), map()}) :: {:ok, term(), Agent.t()}
+  @spec append_marker(Agent.t(), {atom(), map()}) ::
+          {:ok, term(), Agent.t()} | {:invalid, String.t(), Agent.t()}
   def append_marker(%{llm_metrics: %{context_limit: limit}} = state, message)
       when is_integer(limit) and limit > 0 do
-    PreFlight.ensure_passed!(state.chat_state.messages, limit)
-    index = state.chat_state.next_message_index
-    stamped = put_message_index(message, index)
+    case PreFlight.check_passed(state.chat_state.messages, limit) do
+      :ok ->
+        index = state.chat_state.next_message_index
+        stamped = put_message_index(message, index)
 
-    state = %{
-      state
-      | chat_state: %{
-          state.chat_state
-          | last_compaction_index: index,
-            compaction_count: state.chat_state.compaction_count + 1,
-            next_message_index: index + 1
+        state = %{
+          state
+          | chat_state: %{
+              state.chat_state
+              | last_compaction_index: index,
+                compaction_count: state.chat_state.compaction_count + 1,
+                next_message_index: index + 1
+            }
         }
-    }
 
-    AgentPersistence.append_message(
-      state.space_id,
-      state.name,
-      stamped,
-      state.chat_state.next_message_index
-    )
+        AgentPersistence.append_message(
+          state.space_id,
+          state.name,
+          stamped,
+          state.chat_state.next_message_index
+        )
 
-    {:ok, stamped, state}
+        {:ok, stamped, state}
+
+      {:error, reason} ->
+        {:invalid, reason, state}
+    end
   end
 
   # Append the requested message. While a turn is live the sequence is
@@ -193,18 +203,20 @@ defmodule Nest.Agents.Agent.MessageAppender do
   end
 
   defp append_messages(state, messages) do
-    {stamped, state} =
-      Enum.reduce(messages, {[], state}, fn message, {acc, state} ->
-        {stamped, state} = append_stamped(state, message)
-        {acc ++ [stamped], state}
-      end)
-
-    {:ok, stamped, state}
+    Enum.reduce_while(messages, {:ok, [], state}, fn message, {:ok, acc, state} ->
+      case append_stamped(state, message) do
+        {:ok, stamped, state} -> {:cont, {:ok, acc ++ [stamped], state}}
+        {:invalid, reason, state} -> {:halt, {:invalid, reason, state}}
+      end
+    end)
   end
 
   defp live_turn?(state), do: Machine.status_for(state.live.machine) in @live_statuses
 
   # The raw stamp/broadcast/persist step. No sequence repair here.
+  # Returns `{:ok, stamped, state}` or `{:invalid, reason, state}` when
+  # the current list trips the `:cannot_compact` pre-flight guard (the
+  # caller fails the turn cleanly rather than raising).
   defp append_stamped(%{llm_metrics: %{context_limit: limit}} = state, message)
        when is_integer(limit) and limit > 0 do
     # NUL and invalid UTF-8 (raw shell/file bytes) cannot be stored in
@@ -213,27 +225,32 @@ defmodule Nest.Agents.Agent.MessageAppender do
     # request all carry the same text.
     message = Sanitize.message(message)
 
-    PreFlight.ensure_passed!(state.chat_state.messages, limit)
-    index = state.chat_state.next_message_index
-    stamped = put_message_index(message, index)
+    case PreFlight.check_passed(state.chat_state.messages, limit) do
+      :ok ->
+        index = state.chat_state.next_message_index
+        stamped = put_message_index(message, index)
 
-    messages = state.chat_state.messages ++ [stamped]
+        messages = state.chat_state.messages ++ [stamped]
 
-    state = %{
-      state
-      | chat_state: %{state.chat_state | messages: messages, next_message_index: index + 1}
-    }
+        state = %{
+          state
+          | chat_state: %{state.chat_state | messages: messages, next_message_index: index + 1}
+        }
 
-    AgentPersistence.append_message(
-      state.space_id,
-      state.name,
-      stamped,
-      state.chat_state.next_message_index
-    )
+        AgentPersistence.append_message(
+          state.space_id,
+          state.name,
+          stamped,
+          state.chat_state.next_message_index
+        )
 
-    Broadcasts.message(state, stamped)
+        Broadcasts.message(state, stamped)
 
-    {stamped, state}
+        {:ok, stamped, state}
+
+      {:error, reason} ->
+        {:invalid, reason, state}
+    end
   end
 
   defp put_message_index({role, %{index: _} = msg}, index) do

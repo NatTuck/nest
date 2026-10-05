@@ -352,33 +352,42 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
 
   # `tool_results_received/2` only calls this after the staleness guard
   # confirms the result answers the trailing `tool_use`, so the append is
-  # always live-valid (`:ok`).
+  # normally live-valid (`:ok`). A `:cannot_compact` tripwire fails the
+  # turn cleanly; a `:stale` result is dropped.
   defp append_tool_result(tool_result_message, state) do
-    {:ok, stamped, state} = Nest.Agents.Agent.__append_message__(state, tool_result_message)
-    stamped_index = Nest.Agents.Agent.stamped_index(stamped)
+    case Nest.Agents.Agent.__append_message__(state, tool_result_message) do
+      {:ok, stamped, state} ->
+        stamped_index = Nest.Agents.Agent.stamped_index(stamped)
 
-    # Update the `read_files` cache from this tool result
-    # (only on success — a failed read/write shouldn't pin a
-    # stale mtime into the cache). Successful `file-write`
-    # is also recorded here so a follow-up `file-write` from
-    # the same agent sees the new on-disk state, not the
-    # pre-write state. Path resolution goes through the same
-    # workspace-root convention `file-read` uses, so cache
-    # keys match the policy-check keys at write time.
-    state = FileAccess.record(stamped, state)
+        # Update the `read_files` cache from this tool result
+        # (only on success — a failed read/write shouldn't pin a
+        # stale mtime into the cache). Successful `file-write`
+        # is also recorded here so a follow-up `file-write` from
+        # the same agent sees the new on-disk state, not the
+        # pre-write state. Path resolution goes through the same
+        # workspace-root convention `file-read` uses, so cache
+        # keys match the policy-check keys at write time.
+        state = FileAccess.record(stamped, state)
 
-    state = %{
-      state
-      | live: %{
-          state.live
-          | machine: Machine.to_chat_generating(state.live.machine),
-            streaming_acc: Streaming.new(stamped_index + 1),
-            tool_index_map: %{}
+        state = %{
+          state
+          | live: %{
+              state.live
+              | machine: Machine.to_chat_generating(state.live.machine),
+                streaming_acc: Streaming.new(stamped_index + 1),
+                tool_index_map: %{}
+            }
         }
-    }
 
-    Broadcasts.status(state)
-    {:noreply, state}
+        Broadcasts.status(state)
+        {:noreply, state}
+
+      {:invalid, reason, state} ->
+        {:noreply, TurnHandler.invalid_append_state(state, reason)}
+
+      {:stale, state} ->
+        {:noreply, state}
+    end
   end
 
   # A tool result may only be appended when the current tail is an assistant

@@ -144,9 +144,19 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
     # Persist the staged compaction request (bridge + suffix) and the summary
     # assistant. They land before the marker, so the archived slice is exactly
     # the sequence that was sent to produce the summary. A failed compaction
-    # never reaches here, so nothing from it is persisted.
-    {:ok, _stamped, state} = Agent.__append_messages__(state, staged ++ [summary_assistant])
+    # never reaches here, so nothing from it is persisted. A
+    # `:cannot_compact` append is surfaced through the retryable failure path
+    # instead of crashing the Agent.
+    case Agent.__append_messages__(state, staged ++ [summary_assistant]) do
+      {:ok, _stamped, state} ->
+        commit_active_segment(state, summary_text, carried_entry, system_prompt)
 
+      {:invalid, reason, state} ->
+        handle_error(state, reason, carried_entry)
+    end
+  end
+
+  defp commit_active_segment(state, summary_text, carried_entry, system_prompt) do
     marker_index = state.chat_state.next_message_index
     archived_messages = state.chat_state.messages || []
     archived_count = length(archived_messages)
@@ -162,11 +172,15 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
       )
 
     state = archive_active_segment(state, archived_messages)
-    state = commit_compaction(state, marker, new_messages)
 
-    Broadcasts.compaction(state, marker)
+    case commit_compaction(state, marker, new_messages) do
+      {:ok, state} ->
+        Broadcasts.compaction(state, marker)
+        spawn_next_turn(state, carried_entry)
 
-    spawn_next_turn(state, carried_entry)
+      {:invalid, reason, state} ->
+        handle_error(state, reason, carried_entry)
+    end
   end
 
   # Re-fetch the vocation from the DB (falling back to the
@@ -275,11 +289,21 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
 
   # Place post-compaction entries via the canonical append path: the
   # marker via `append_marker/2` (no broadcast),
-  # new messages to `messages` (`__append_messages__/2`).
+  # new messages to `messages` (`__append_messages__/2`). Both append
+  # against a small (system + summary_user + carried tail) list, so the
+  # `:cannot_compact` branch is effectively unreachable; it exists so the
+  # Agent never crashes if a tiny limit makes even that list fail.
   defp commit_compaction(state, marker, new_messages) do
-    {:ok, _marker, state} = MessageAppender.append_marker(state, marker)
-    {:ok, _stamped, state} = Agent.__append_messages__(state, new_messages)
-    state
+    case MessageAppender.append_marker(state, marker) do
+      {:ok, _marker, state} ->
+        case Agent.__append_messages__(state, new_messages) do
+          {:ok, _stamped, state} -> {:ok, state}
+          {:invalid, reason, state} -> {:invalid, reason, state}
+        end
+
+      {:invalid, reason, state} ->
+        {:invalid, reason, state}
+    end
   end
 
   # Drop the pre-compaction `messages` from memory (their DB rows already

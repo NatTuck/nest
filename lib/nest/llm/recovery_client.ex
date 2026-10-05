@@ -5,10 +5,10 @@ defmodule Nest.LLM.RecoveryClient do
   `~/.config/nest/config.toml` while the agent row stayed in the DB.
 
   The agent's `Agent.init/1` constructs a `%ClientConfig{client: RecoveryClient}`
-  in this situation so the GenServer can still start (with
-  `live.status == :model_missing`). The runtime channel and
-  GenServer blocks inbound `chat:message` traffic while in this
-  state, so `run/2` is never invoked in normal operation.
+  in this situation so the GenServer can still start (in the
+  `:model_missing` observable status, via `Machine.to_blocked/2`). The
+  runtime channel and GenServer blocks inbound `chat:message` traffic
+  while in this state, so `run/2` is never invoked in normal operation.
 
   ## Why not just `:stop` the GenServer?
 

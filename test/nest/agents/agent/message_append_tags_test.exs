@@ -124,6 +124,31 @@ defmodule Nest.Agents.Agent.MessageAppendTagsTest do
       assert content =~ "second consecutive"
     end
 
+    test "a :cannot_compact append is tagged :invalid instead of raising" do
+      # `context_limit: 1` makes `PreFlight.check_passed/2` return
+      # `:cannot_compact` (the reserve alone exceeds the limit), which the
+      # append path surfaces as a tagged `:invalid` rather than an
+      # `ArgumentError`. No rows are inserted: the tripwire returns before
+      # the append persists.
+      state =
+        state(unique_name("cannot-compact"), [system(0), user(1)])
+        |> live(:streaming)
+        |> with_limit(1)
+
+      assert {:invalid, reason, _state} = MessageAppender.append_one(state, assistant_text(nil))
+      assert reason =~ ":cannot_compact"
+
+      # The trusted GenServer append call maps the same tripwire to an error
+      # reply and fails the turn cleanly.
+      {reply, log} =
+        with_log(fn ->
+          Callbacks.handle_call({:append_message, assistant_text(nil)}, nil, state)
+        end)
+
+      assert {:reply, {:error, ^reason}, _state} = reply
+      assert log =~ "chat_crashed"
+    end
+
     test "a live batch halts on the first stale and on the first invalid message" do
       name = unique_name("live-batch")
       {:ok, _} = Persistence.insert_agent(agent_attrs(name))
@@ -261,6 +286,10 @@ defmodule Nest.Agents.Agent.MessageAppendTagsTest do
           | machine: Machine.status_to_machine(state.live.machine, status)
         }
     }
+  end
+
+  defp with_limit(state, limit) do
+    %{state | llm_metrics: %{state.llm_metrics | context_limit: limit}}
   end
 
   defp insert_messages(name, messages) do

@@ -231,12 +231,12 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
       # tool rounds to walk the iteration counter up to it, resume a turn
       # that is already at the cap: the carried
       # `{:tool_call, msg, iter, max}` continuation preserves both
-      # counters (`ChatTurn.State.entry`), so the resumed turn's next LLM
+      # counters (the machine entry), so the resumed turn's next LLM
       # call is the final `tools: nil` call. One LLM round instead of six,
       # same contract.
       #
       # The `tools: nil` decision itself is asserted directly in
-      # `chat_turn/iteration_test.exs`. What this test pins is the
+      # `turn/iteration_test.exs`. What this test pins is the
       # observable end of it: the final call's text lands as the final
       # assistant message and the turn ends idle.
       MockClient.set_response("Final answer at the cap")
@@ -300,8 +300,8 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
       assert_receive {:chat_delta, _}, 500
 
       # Use the public stop API instead of reaching into the
-      # Agent's private `chat_turn_pid` field. The Agent routes
-      # the stop signal to the ChatTurn internally.
+      # Agent's internals. The stop runs entirely in the Agent
+      # process.
       Agent.stop_chat(pid, self())
 
       assert_receive {:chat_status, %{status: "idle"}}, 2000

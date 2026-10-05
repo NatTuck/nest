@@ -1,16 +1,15 @@
 defmodule Nest.Agents.ChatTaskCrashTest do
   @moduledoc """
-  Tests for the ChatTurn crash-recovery flow.
+  Tests for the chat-turn crash-recovery flow.
 
   When the HTTP worker (running in `Task.Supervisor` under
-  `Nest.Agents.TaskSupervisor`, spawned by the ChatTurn)
+  `Nest.Agents.TaskSupervisor`, spawned by the in-process turn)
   raises an unhandled exception (e.g. a `FunctionClauseError`
   because the LLM provider sent an unrecognized delta
-  shape), the ChatTurn's `try/catch` in
-  `ChatTurn.http_worker_fun/2` converts the raise into a
-  `{:chat_crashed, reason, stacktrace}` message to the
-  Agent. The Agent's `LLMStreamHandler.chat_crashed/3`
-  then:
+  shape), `Turn.HTTPWorker.run/2`'s `try/catch` converts the raise
+  into a `{:worker_crashed, ref, exception, stacktrace}` message to
+  the Agent. The Agent's turn routes it to
+  `TurnHandler.chat_crashed_state/3`, which then:
 
     1. Saves any partial content as a normal assistant
        message (so the user doesn't lose their work).
@@ -21,15 +20,13 @@ defmodule Nest.Agents.ChatTaskCrashTest do
        drops out of "Generating response...".
     4. Transitions the agent to `:idle`.
 
-  Without this flow, the ChatTurn would die silently, the
+  Without this flow, the worker would die silently, the
   Agent would stay in `:streaming` status forever, and the
   UI would be stuck on "Generating response...".
 
-  After the ChatTurn refactor, the crash boundary moves
-  from `Nest.Agents.Agent.LLMRunner.run/2` to
-  `Nest.LLM.MockClient.run/2` (the new HTTP client
-  boundary). The stubs in this file target the new
-  boundary.
+  The crash boundary is the LLM client boundary
+  (`Nest.LLM.MockClient.run/2` here). The stubs in this file
+  target that boundary.
 
   The benign-exit (test-cleanup) variants live in
   `ChatTaskCleanupTest` so these flows run on their own worker.
@@ -67,9 +64,8 @@ defmodule Nest.Agents.ChatTaskCrashTest do
       # raise a `FunctionClauseError` — the same shape
       # the MiniMax field report exhibited. This runs in
       # the HTTP worker; the worker's try/catch converts
-      # it into a `{:http_error, _}` to the ChatTurn,
-      # which forwards `{:chat_crashed, reason, _}` to
-      # the Agent.
+      # it into a `{:worker_crashed, ref, exception, stacktrace}`
+      # message to the Agent.
       Mimic.stub(MockClient, :run, fn _request, _opts ->
         raise FunctionClauseError,
           module: Nest.LLM.OpenAIClient,
@@ -100,9 +96,9 @@ defmodule Nest.Agents.ChatTaskCrashTest do
         # it before the ChatTurn starts).
         assert_received {:chat_message, {:user, %{index: 1}}}
 
-        # The ChatTurn catches the raise and sends
-        # `{:chat_crashed, reason, stacktrace}` to the
-        # Agent. The Agent's `chat_crashed/3` handler
+        # The worker catches the raise and sends
+        # `{:worker_crashed, ref, exception, stacktrace}` to the
+        # Agent. The Agent's `chat_crashed_state/3` handler
         # broadcasts `chat:error` followed by a `chat:status:
         # idle` transition. The error message carries the
         # exception's text AND a stacktrace snippet (the user
@@ -236,7 +232,7 @@ defmodule Nest.Agents.ChatTaskCrashTest do
       {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
       # A raw exit signal (not trappable by the worker's own try/catch)
-      # kills the worker before it can send a result. The ChatTurn's
+      # kills the worker before it can send a result. The turn's
       # `Process.monitor` DOWN must convert that into `chat_crashed`;
       # otherwise the turn hangs in `:streaming` forever.
       Mimic.stub(MockClient, :run, fn _request, _opts -> Process.exit(self(), :boom) end)

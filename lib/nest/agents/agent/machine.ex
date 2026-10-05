@@ -157,7 +157,7 @@ defmodule Nest.Agents.Agent.Machine do
 
   @doc """
   The observable status, derived from `(kind, phase)`. This is the single
-  authority for the Agent's `live.status`; nothing else may set it.
+  authority for the Agent's observable status; nothing else may set it.
   """
   @spec status_for(t()) :: atom()
   def status_for(%__MODULE__{phase: p}) when p in @blocked, do: p

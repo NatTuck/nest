@@ -33,7 +33,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
        to the blocked tool worker.
     6. The worker (Task) appends the synthesized `tool[X]`
        message with `tool_call_id: "call_clone_1"` and
-       the child's text as content, and ChatTurn continues
+       the child's text as content, and the turn continues
        iterating.
     7. A's second `MockClient.run/2` (the surface the
        preflight gates) consumes (b); A finishes and

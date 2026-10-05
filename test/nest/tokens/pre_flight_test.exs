@@ -202,14 +202,14 @@ defmodule Nest.Tokens.PreFlightTest do
     end
   end
 
-  describe "ensure_passed!/2" do
+  describe "check_passed/2" do
     test "returns :ok when the list fits" do
       messages = [
         {:system, %System{parts: [%Part.Text{text: "You are helpful"}]}},
         {:user, %User{parts: [%Part.Text{text: "Hello"}]}}
       ]
 
-      assert PreFlight.ensure_passed!(messages, 100_000) == :ok
+      assert PreFlight.check_passed(messages, 100_000) == :ok
     end
 
     test "returns :ok when compaction is needed but possible (summarizable head)" do
@@ -225,23 +225,21 @@ defmodule Nest.Tokens.PreFlightTest do
       projected = Estimator.estimate_messages(messages)
       limit = projected + 8_192 - 100
 
-      assert PreFlight.ensure_passed!(messages, limit) == :ok
+      assert PreFlight.check_passed(messages, limit) == :ok
     end
 
-    test "raises when the system prompt alone overflows (:cannot_compact)" do
+    test "returns an error when the system prompt alone overflows (:cannot_compact)" do
       huge_system_text = String.duplicate("a ", 30_000)
       sys = {:system, %System{parts: [%Part.Text{text: huge_system_text}]}}
       user = {:user, %User{parts: [%Part.Text{text: "hi"}]}}
 
-      assert_raise ArgumentError, fn ->
-        PreFlight.ensure_passed!([sys, user], 32_768)
-      end
+      assert {:error, reason} = PreFlight.check_passed([sys, user], 32_768)
+      assert reason =~ ":cannot_compact"
     end
 
-    test "raises when the list is :cannot_compact even for an empty list below the reserve floor" do
-      assert_raise ArgumentError, fn ->
-        PreFlight.ensure_passed!([], 8_000)
-      end
+    test "returns an error when the list is :cannot_compact even for an empty list below the reserve floor" do
+      assert {:error, reason} = PreFlight.check_passed([], 8_000)
+      assert reason =~ ":cannot_compact"
     end
   end
 end

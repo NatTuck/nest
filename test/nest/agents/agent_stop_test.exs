@@ -45,7 +45,7 @@ defmodule Nest.Agents.AgentStopTest do
 
       {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
-      :ok = Agent.chat(pid, "Start")
+      :ok = Agent.chat(pid, "Tell me a story")
 
       assert_receive {:chat_message, {:user, %{index: 1}}}, 500
       assert_receive {:chat_status, %{status: "streaming"}}, 500
@@ -54,28 +54,10 @@ defmodule Nest.Agents.AgentStopTest do
       Agent.stop_chat(pid, self())
 
       assert_receive {:chat_message,
-                      {:assistant, %Assistant{metadata: %{"stopped_by_user" => true}}}},
-                     500
-
-      assert_receive {:chat_status, %{status: "idle"}}, 500
-    end
-
-    test "the finalized assistant message carries the partial text content" do
-      events = for _ <- 1..1000, do: {:text, "x"}
-      MockClient.set_stream_events(events)
-
-      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-
-      :ok = Agent.chat(pid, "Tell me a story")
-      assert_receive {:chat_message, {:user, _}}, 500
-      assert_receive {:chat_delta, _}, 500
-
-      Agent.stop_chat(pid, self())
-
-      assert_receive {:chat_message,
-                      {:assistant, %Assistant{parts: [%Part.Text{text: content}], index: 2}}},
+                      {:assistant, %Assistant{parts: [%Part.Text{text: content}], index: 2} = msg}},
                      2000
 
+      assert msg.metadata["stopped_by_user"] == true
       assert is_binary(content)
       assert content != ""
       assert String.starts_with?(content, "x")
@@ -291,13 +273,11 @@ defmodule Nest.Agents.AgentStopTest do
       assert_receive {:chat_status, %{status: "idle"}}, 2000
       assert_receive {:chat_message, {:user, %{index: 3}}}, 500
 
+      # Reaching the second response proves the Agent GenServer survived
+      # (the original bug crashed it with FunctionClauseError).
       assert_receive {:chat_message,
                       {:assistant, %{parts: [%Part.Text{text: "Second response"}]}}},
                      500
-
-      # The Agent GenServer must still be alive (the
-      # original bug crashed it with FunctionClauseError).
-      assert Process.alive?(pid)
     end
   end
 
@@ -306,8 +286,8 @@ defmodule Nest.Agents.AgentStopTest do
       # `Agent.stop_chat/2` is `GenServer.call(pid, {:stop_chat, from},
       # :infinity)`. Per SMELLS.md, all own-GenServer communication uses
       # call/cast — no `send/2`. The call synchronously acks and enters
-      # the `:stopping` phase; the bounded stop timer (100ms in test)
-      # performs the single terminal transition to idle.
+      # the `:stopping` phase; the bounded stop timer (`stop_fallback_ms: 1`
+      # in test) performs the single terminal transition to idle.
       events = for _ <- 1..100, do: {:text, "x"}
       MockClient.set_stream_events(events)
 

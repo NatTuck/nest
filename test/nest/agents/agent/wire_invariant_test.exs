@@ -27,7 +27,7 @@ defmodule Nest.Agents.Agent.WireInvariantTest do
       finalizes — no LLM call is made with assistant at the
       tail.
 
-    * **Stop-before-any-delta**: `ChatTurnHandler.finalize_partial_if_any/2`
+    * **Stop-before-any-delta**: `TurnHandler.finalize_partial_if_any/2`
       closes the turn with a non-empty recovery (`MessageList.pairing_bridge/2`)
       when the user stops before the first delta arrives. No empty message
       is ever persisted, and the list stays alternation-valid.

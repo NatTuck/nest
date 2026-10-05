@@ -164,24 +164,27 @@ defmodule Nest.Tokens.PreFlight do
   end
 
   @doc """
-  Choke-point guard: raise unless the given message list has
-  "passed" the pre-flight decision — i.e. `check_messages/3`
-  returns `:fits` or `:needs_compaction`, NOT `:cannot_compact`.
+  Choke-point guard: the tagged form of the pass check. Returns `:ok`
+  when the given list "passed" the pre-flight decision — i.e.
+  `check_messages/3` returns `:fits` or `:needs_compaction`, NOT
+  `:cannot_compact` — or `{:error, reason}` when the list is
+  `:cannot_compact`.
 
   Used at the LLM-send and message-append choke points so a
   conversation is never sent to, or added to, in a state where
-  compaction is impossible. `context_limit` is always a positive
+  compaction is impossible. Callers surface the reason (`chat:error`)
+  instead of crashing the Agent. `context_limit` is always a positive
   integer in the agent runtime (resolved eagerly at init with a
   128k `:default` floor); a non-positive limit matches no
   `check_messages/3` clause and raises.
   """
-  @spec ensure_passed!([Nest.Messages.Message.t()], pos_integer()) :: :ok
-  def ensure_passed!(messages, context_limit) do
+  @spec check_passed([Nest.Messages.Message.t()], pos_integer()) :: :ok | {:error, String.t()}
+  def check_passed(messages, context_limit) do
     case check_messages(messages, context_limit, Reserve.compaction_reserve(context_limit)) do
       :cannot_compact ->
-        raise ArgumentError,
-              "pre-flight decision is :cannot_compact for context_limit=#{context_limit}; " <>
-                "refusing to send/store rather than risk an unrecoverable overflow"
+        {:error,
+         "pre-flight decision is :cannot_compact for context_limit=#{context_limit}; " <>
+           "refusing to send/store rather than risk an unrecoverable overflow"}
 
       _ ->
         :ok

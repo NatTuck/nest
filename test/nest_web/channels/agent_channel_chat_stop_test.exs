@@ -33,7 +33,7 @@ defmodule NestWeb.AgentChannelChatStopTest do
     end
 
     test "stop mid-stream does not crash the channel", %{socket: socket} do
-      # Regression: stopping a running ChatTurn acks the channel with a
+      # Regression: stopping a running chat turn acks the channel with a
       # bare `:stopped`. The channel used to have no `handle_info` clause
       # for it and crashed, killing the join. Drive a real mid-stream
       # stop, then verify the same socket still serves a channel request

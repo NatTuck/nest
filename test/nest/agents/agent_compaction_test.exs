@@ -162,7 +162,7 @@ defmodule Nest.Agents.AgentCompactionTest do
         end)
 
       # The MockClient stream events include `arguments_delta: "{}"`
-      # which the ChatTurn validates against the schema's `required`
+      # which the turn validates against the schema's `required`
       # fields before the final `{:done, ...}` arrives. The
       # "Missing required arguments" log is a deliberate diagnostic
       # for that incremental-validation path.

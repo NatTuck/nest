@@ -299,8 +299,8 @@ defmodule Nest.Agents.Agent.FilePolicyTest do
 
       # The `clear_read_files` helper mirrors the production
       # `reset_read_files` step. We invoke it via the same
-      # `Compaction.ResultHandler` entry point the ChatTurn
-      # would call on a successful compaction.
+      # `Compaction.ResultHandler` entry point the turn
+      # reaches on a successful compaction.
       summary_assistant =
         {:assistant,
          %Nest.Messages.Assistant{

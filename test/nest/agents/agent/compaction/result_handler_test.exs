@@ -262,8 +262,8 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandlerTest do
     # is set, it dispatches to `needs_entry/2` (carries the
     # mid-turn entry forward); when nil, it dispatches to
     # `Trigger.post_turn/1` (resumes from a held user message).
-    # Both branches run through `Trigger.start/2` and would spawn
-    # a ChatTurn — the unit test sets `vocation: nil` and
+    # Both branches run through `Trigger.start/2` and would start
+    # a turn — the unit test sets `vocation: nil` and
     # `messages: []` so `render_system_prompt/2` returns nil and
     # `start/2` short-circuits to `broadcast_reserve_exhausted/2`
     # (no spawn). The catch is the `Logger.error/2` that the
@@ -273,7 +273,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandlerTest do
     # The branch observable is the post-state `mid_turn_entry`
     # field:
     #   * `needs_entry` clears it then re-sets it to
-    #     `%{entry: carried_entry}` so the next ChatTurn sees
+    #     `%{entry: carried_entry}` so the next turn sees
     #     the carried tool_call continuation.
     #   * `Trigger.post_turn` does not touch it.
     # Both branches broadcast `{:chat_status, %{status: "compacting"}}`

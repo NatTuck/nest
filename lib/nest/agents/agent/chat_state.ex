@@ -91,35 +91,23 @@ defmodule Nest.Agents.Agent.ChatState.Live do
   Persisted fields live in `Nest.Agents.Agent.ChatState`; this
   struct holds only what a live turn needs while it's running.
 
-  The `turn` field is `%Nest.Agents.Agent.Machine.Work{}`: the
-  turn-scoped working memory the in-process driver (`Nest.Agents.Agent.Turn`)
-  uses while a chat or compaction turn is in flight. It is reset to its
-  default at the end of every turn.
+  The `machine` field is the `Nest.Agents.Agent.Machine` state: the
+  observable kind/phase plus the turn-scoped working memory
+  (`machine.work`, a `%Nest.Agents.Agent.Machine.Work{}`) the
+  in-process driver (`Nest.Agents.Agent.Turn`) uses while a chat or
+  compaction turn is in flight. Observable status derives from
+  `Machine.status_for/1` and is never stored as a parallel field;
+  `machine.work` is reset to its default at the end of every turn. The
+  resume intents (`machine.pending_user_message`, `machine.mid_turn_entry`)
+  and the loop-breaker (`machine.loop_count`; a count above
+  `@max_consecutive_compactions` enters `:compaction_loop_detected`) live
+  on the machine, not here.
 
   The `cancelled` field is a sticky flag set when the user
   clicks Stop. It guards the compaction resume
   so an in-flight compaction result
   does not auto-resume a new chat turn after the user has
   already stopped.
-
-  The `pending_user_message` field holds the user's incoming
-  message — `{content, mode}` — until we know whether compaction
-  fires. `handle_chat/3` stores the message here and runs the
-  preflight; if preflight fits, the field is consumed by
-  `handle_chat/3`'s append path. If preflight needs compaction,
-  the field is preserved across the compaction; on success,
-  `ChatPipeline.resume_with_pending/1` appends it. On failure, the
-  field stays set so `chat:retry-compaction` can re-attach it
-  to the next compaction attempt.
-
-  The `mid_turn_entry` field is set when a mid-turn
-  compaction is in flight or has failed. Its presence tells
-  `retry_compaction/1` to resume with `:mid_turn_entry`
-  (start a fresh turn to execute the LLM's pending tool
-  calls) instead of the Trigger B path (append a held user
-  message). It carries the entry (the resume payload for
-  the next turn) so the tool-call iteration cap is
-  enforced across the compaction boundary.
 
   The `crossed_thresholds` field is the `MapSet` of context-usage
   threshold atoms (`:p25`, `:p50`, `:p75`) that
@@ -131,17 +119,6 @@ defmodule Nest.Agents.Agent.ChatState.Live do
   On restore it is rebuilt from the active messages' notice
   metadata (`Init.seed_from_db/3`), so a BEAM restart mid-
   conversation does not re-announce a threshold.
-
-  The `consecutive_compaction_count` field is the loop-breaker
-  counter. Incremented every time a compaction is spawned
-  (Trigger B/C or `:compact` tool). Reset to 0 when a
-  user/assistant/tool message is appended (genuine progress).
-  When the count exceeds `@max_consecutive_compactions` in
-  `Compaction.ResultHandler`, the agent enters
-  `:compaction_loop_detected` and broadcasts
-  `chat:compaction-loop`. The user clicks an OK button on the
-  banner to clear the state and resume accepting new
-  `chat:message` traffic.
 
   The `tool_index_map` field is the index→id map for tool-use
   streaming. Anthropic sends subsequent `input_json_delta` events

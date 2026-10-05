@@ -176,10 +176,16 @@ defmodule MachineTest do
       idle = Machine.new()
       generating = Machine.to_chat_generating(idle)
 
+      # `to_compaction_committing` and `to_blocked` have no `step/2`
+      # counterpart: `:committing` is a synchronous commit phase the
+      # runtime sets directly (unused at runtime today), and blocked
+      # phases are entered only by an external action, not a modeled
+      # event. They are therefore intentionally not pinned here.
       cases = [
         {:to_chat_generating, idle, {:chat_request, %{}}},
         {:to_chat_tools, generating, {:http_ok, %{tool_calls: [%{id: "c1"}]}}},
         {:to_compaction_generating, generating, {:compaction_request, {:tool_call, %{}, 1, 10}}},
+        {:to_stopping, generating, {:stop, self()}},
         {:to_idle, generating, {:http_ok, %{}}}
       ]
 

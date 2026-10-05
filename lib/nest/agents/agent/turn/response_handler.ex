@@ -58,7 +58,7 @@ defmodule Nest.Agents.Agent.Turn.ResponseHandler do
 
     {injected, state} = NoticeInjector.inject_all(response, state)
 
-    state = advance_active_index(state, 2 * injected)
+    state = advance_active_index(state, injected)
 
     {response_log, state} = APILog.store_response_log(state, active_index(state), response)
     assistant_msg = {role, %{msg | api_logs: [response_log]}}

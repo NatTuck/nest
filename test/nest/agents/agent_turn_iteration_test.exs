@@ -4,21 +4,20 @@ defmodule Nest.Agents.AgentTurnIterationTest do
 
   The flow:
 
-    * `ChatTurn.handle_response/2` runs `BatchSizer.preflight/2`
+    * `Turn.ResponseHandler.handle/3` runs `BatchSizer.preflight/2`
       on the projected tool results. If the projected total
       would push the conversation past
-      `(context_limit - reserve)`, the ChatTurn exits cleanly
-      with `{:needs_compaction, self(), continuation}` where
+      `(context_limit - reserve)`, the in-process turn emits
+      `{:needs_compaction, self(), continuation}` where
       `continuation` carries the carried tool_call message +
       iteration count.
     * The Agent receives `:needs_compaction`, sets
       `:compacting` status, and spawns the compactor with
-      the `{:tool_call, <msg>, iter, max}` continuation
-      (the unified `ChatTurn.State.continuation/0` shape).
-    * On compaction success, the Agent spawns a fresh
-      ChatTurn with the same continuation. The new ChatTurn
-      sees the compacted messages and the carried
-      assistant+ToolUse at the tail, and executes the LLM's
+      the `{:tool_call, <msg>, iter, max}` continuation.
+    * On compaction success, the Agent starts a fresh
+      in-process turn (`Nest.Agents.Agent.Turn`) with the same
+      continuation. The turn sees the compacted messages and the
+      carried assistant+ToolUse at the tail, and executes the LLM's
       already-emitted tool calls rather than calling the LLM
       again.
     * Iteration count is preserved across the compaction
@@ -60,7 +59,7 @@ defmodule Nest.Agents.AgentTurnIterationTest do
   defp start_test_agent do
     # The standard helper handles row insertion (via
     # `Agent.pre_spawn/1`), supervisor spawn, sandbox allow
-    # (so spawned ChatTurn pids can do DB writes), and
+    # (so spawned task workers can do DB writes), and
     # MockClient swap. The synthetic tool calls in this
     # file use `name: "context-compact"`, which the helper's
     # default "Test Default" vocation includes in its
@@ -75,7 +74,7 @@ defmodule Nest.Agents.AgentTurnIterationTest do
   # The shape and ids don't matter for the wiring tests — only
   # that the carried message is a `{:assistant, %Assistant{}}`
   # tuple whose parts include at least one `%Part.ToolUse{}`
-  # so the resumed ChatTurn's `pending_tool_calls?/1` check
+  # so the resumed turn's `pending_tool_calls?/1` check
   # finds a real outstanding tool call at the messages tail.
   defp synthetic_tool_call_msg do
     {:assistant,
@@ -97,8 +96,7 @@ defmodule Nest.Agents.AgentTurnIterationTest do
       {pid, _name} = start_test_agent()
 
       capture_log(fn ->
-        # `:needs_compaction` now carries the full
-        # `ChatTurn.State.continuation/0` payload — the
+        # `:needs_compaction` carries the machine entry — the
         # outstanding assistant+ToolUse + iteration count.
         send(pid, {:needs_compaction, self(), {:tool_call, synthetic_tool_call_msg(), 5, 30}})
 
@@ -147,13 +145,12 @@ defmodule Nest.Agents.AgentTurnIterationTest do
         # Send compaction_done with the unified
         # `{:tool_call, msg, iter, max}` continuation. The
         # carried `msg` is synthetic — what matters for this
-        # test is that the new ChatTurn spawns and runs,
-        # producing a chat:status broadcast the test can
-        # observe.
+        # test is that the new turn runs, producing a
+        # chat:status broadcast the test can observe.
         send_compaction_done(pid, "Summary", {:tool_call, synthetic_tool_call_msg(), 25, 30})
 
-        # The new ChatTurn spawns and runs. With the carried
-        # assistant+ToolUse at the tail, the ChatTurn's
+        # The new turn runs. With the carried
+        # assistant+ToolUse at the tail,
         # `pending_tool_calls?/1` returns true and it
         # executes the carried tool call (context-compact,
         # which BatchSizer strips → empty result); then the
@@ -212,7 +209,7 @@ defmodule Nest.Agents.AgentTurnIterationTest do
         send_compaction_done(pid, "Summary", {:tool_call, synthetic_tool_call_msg(), 7, 30})
 
         # Wait for the compactor to finish and the new
-        # ChatTurn to spawn. The new ChatTurn iterates
+        # turn to start. The new turn iterates
         # (the carried tool_call triggers
         # `execute_pending_tool_calls`, which yields an
         # empty BatchSizer run after the context-compact
@@ -242,8 +239,8 @@ defmodule Nest.Agents.AgentTurnIterationTest do
     # Regression for the field bug: when mid-turn compaction fires, the
     # LLM's emitted tool calls used to be archived into history along
     # with the rest of the pre-compaction messages, leaving the new
-    # ChatTurn with no assistant+ToolUse at the tail. The resumed
-    # ChatTurn would then trip its iteration dispatch with no
+    # turn with no assistant+ToolUse at the tail. The resumed
+    # turn would then trip its iteration dispatch with no
     # outstanding tool call to execute, and the chat turn would fall
     # straight through to the LLM — losing the LLM's already-emitted
     # tool calls.
@@ -395,7 +392,7 @@ defmodule Nest.Agents.AgentTurnIterationTest do
   end
 
   describe "mid-turn re-compaction of a still-refused tool batch" do
-    # Regression: the resumed ChatTurn used to emit a stale 4-tuple
+    # Regression: the resumed turn used to emit a stale 4-tuple
     # `{:needs_compaction, pid, iteration, max_iterations}` that no
     # handler matched, so a compactor that still couldn't make room
     # stalled the turn silently. It must emit the unified 3-tuple

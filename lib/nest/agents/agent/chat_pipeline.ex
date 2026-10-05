@@ -20,6 +20,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Compaction.Overflow
   alias Nest.Agents.Agent.Compaction.Trigger
+  alias Nest.Agents.Agent.Handlers.TurnHandler
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.NoticePairInjector
   alias Nest.Agents.Agent.SystemPrompt
@@ -189,13 +190,16 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   defp append_pending_user_message(state) do
     case pending_user_message_struct(state) do
       nil ->
-        {nil, state}
+        :no_pending
 
       pending_message ->
-        {:ok, stamped_user, state} =
-          Nest.Agents.Agent.__append_message__(state, pending_message)
+        case Nest.Agents.Agent.__append_message__(state, pending_message) do
+          {:ok, stamped_user, state} ->
+            {:ok, stamped_user, clear_pending_user_message(state)}
 
-        {stamped_user, clear_pending_user_message(state)}
+          {:invalid, reason, state} ->
+            {:invalid, reason, state}
+        end
     end
   end
 
@@ -214,28 +218,26 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   @spec resume_with_pending(Nest.Agents.Agent.t()) :: Nest.Agents.Agent.t()
   def resume_with_pending(state) do
     state = maybe_inject_context_pair(state)
-    {stamped_user, state} = append_pending_user_message(state)
 
-    # `append_pending_user_message/1` cleared the pending slot, so the
-    # effective mode is the live mode (unchanged behavior).
-    effective_mode = state.live.mode
+    case append_pending_user_message(state) do
+      {:ok, stamped_user, state} ->
+        # `append_pending_user_message/1` cleared the pending slot, so the
+        # effective mode is the live mode (unchanged behavior).
+        state =
+          prepare_streaming_state(
+            state,
+            state.live.mode,
+            state.live.machine.work.active_message_index
+          )
 
-    state =
-      prepare_streaming_state(
-        state,
-        effective_mode,
-        state.live.machine.work.active_message_index
-      )
+        start_pending_turn(state, stamped_user)
 
-    {_effective_mode, caps} =
-      resolve_mode_and_caps(
-        state.live.mode,
-        state.vocation,
-        state.workspace_path,
-        state.tmp_path
-      )
+      {:invalid, reason, state} ->
+        TurnHandler.invalid_append_state(state, reason)
 
-    Turn.start(state, state.chat_state.messages, {:user_message, stamped_user}, caps)
+      :no_pending ->
+        state
+    end
   end
 
   @doc """
@@ -408,20 +410,33 @@ defmodule Nest.Agents.Agent.ChatPipeline do
 
   # Start the turn. The user message has already been appended to the
   # Agent (via `append_pending_user_message/1`); `Turn.start/4` runs the
-  # first iteration.
+  # first iteration. A `:cannot_compact` append fails the turn cleanly
+  # instead of starting it.
   defp append_and_spawn(state, effective_mode) do
     state = maybe_inject_context_pair(state)
-    {stamped_user, state} = append_pending_user_message(state)
 
-    state =
-      prepare_streaming_state(
-        state,
-        effective_mode,
-        state.live.machine.work.active_message_index
-      )
+    case append_pending_user_message(state) do
+      {:ok, stamped_user, state} ->
+        state =
+          prepare_streaming_state(
+            state,
+            effective_mode,
+            state.live.machine.work.active_message_index
+          )
 
-    Broadcasts.status(state)
+        Broadcasts.status(state)
 
+        start_pending_turn(state, stamped_user)
+
+      {:invalid, reason, state} ->
+        TurnHandler.invalid_append_state(state, reason)
+
+      :no_pending ->
+        state
+    end
+  end
+
+  defp start_pending_turn(state, stamped_user) do
     {_effective_mode, caps} =
       resolve_mode_and_caps(state.live.mode, state.vocation, state.workspace_path, state.tmp_path)
 

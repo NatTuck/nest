@@ -50,14 +50,15 @@ defmodule Nest.Agents.Agent.Turn.NoticeInjector do
 
   @doc """
   Collect specs, inject each, update bookkeeping, and return
-  `{count, state}`. The caller advances `active_message_index` by
-  `2 * count`.
+  `{appended, state}` where `appended` is the number of messages
+  actually appended (a skipped or deferred spec contributes 0, so the
+  caller advances `active_message_index` by exactly what landed).
   """
   @spec inject_all(RunResponse.t(), Agent.t()) :: {non_neg_integer(), Agent.t()}
   def inject_all(response, state) do
     messages = state.chat_state.messages
     specs = collect_specs(response, state, messages)
-    state = inject_specs(specs, state, messages)
+    {appended, state} = inject_specs(specs, state, messages)
 
     state =
       if Enum.any?(specs, &(&1.kind == :budget)) do
@@ -68,7 +69,7 @@ defmodule Nest.Agents.Agent.Turn.NoticeInjector do
 
     _ = update_crossed_thresholds_for_context(response, state, messages)
 
-    {length(specs), state}
+    {appended, state}
   end
 
   defp compute_context_spec(response, state, messages) do
@@ -109,11 +110,12 @@ defmodule Nest.Agents.Agent.Turn.NoticeInjector do
     end
   end
 
-  defp inject_specs([], state, _messages), do: state
+  defp inject_specs([], state, _messages), do: {0, state}
 
   defp inject_specs([spec | rest], state, messages) do
-    state = inject_one_spec(spec, state, messages)
-    inject_specs(rest, state, messages)
+    {count, state} = inject_one_spec(spec, state, messages)
+    {more, state} = inject_specs(rest, state, messages)
+    {count + more, state}
   end
 
   defp inject_one_spec(spec, state, messages) do
@@ -122,12 +124,12 @@ defmodule Nest.Agents.Agent.Turn.NoticeInjector do
         "NoticeInjector: skipping #{spec.kind} notice; no room within the compaction reserve"
       )
 
-      state
+      {0, state}
     else
       case NoticePairInjector.inject_pair_in_process(messages, state, spec, :agent_user) do
-        {:ok, _shape, _stamped, new_state} -> new_state
-        :deferred -> state
-        :agent_dead -> state
+        {:ok, _shape, stamped, new_state} -> {length(stamped), new_state}
+        :deferred -> {0, state}
+        :agent_dead -> {0, state}
       end
     end
   end

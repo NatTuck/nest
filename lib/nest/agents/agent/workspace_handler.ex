@@ -31,6 +31,8 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
   alias Nest.Tools
   alias Nest.Tools.Groups
 
+  require Logger
+
   @doc """
   Standalone workspace change. Dispatched from `IntrospectionHandler`.
   """
@@ -126,11 +128,23 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
 
   # The workspace notice lands at a terminal boundary (the agent is idle
   # or `:model_missing`), so the append heals the tail and returns `:ok`.
+  # A `:cannot_compact` tripwire stops the pair (best-effort notice) rather
+  # than crashing the Agent.
   defp insert_notice_now(state) do
     state =
-      Enum.reduce(notice_pair(state.workspace_path), state, fn msg, acc ->
-        {:ok, _stamped, acc} = Agent.__append_message__(acc, msg)
-        acc
+      Enum.reduce_while(notice_pair(state.workspace_path), state, fn msg, acc ->
+        case Agent.__append_message__(acc, msg) do
+          {:ok, _stamped, acc} ->
+            {:cont, acc}
+
+          {:invalid, reason, acc} ->
+            Logger.error("[agent:#{acc.name}] dropping a workspace notice append: #{reason}")
+
+            {:halt, acc}
+
+          {:stale, acc} ->
+            {:halt, acc}
+        end
       end)
 
     {clear_pending_notice(state), :ok}

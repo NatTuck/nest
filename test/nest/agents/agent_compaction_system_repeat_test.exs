@@ -84,8 +84,8 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
   # `:chat_message` broadcasts from `run_compaction/3`'s
   # pre-seed loop are observable via `assert_receive/1`.
   defp start_with_vocation(vocation, attrs \\ []) do
-    # Canned response for the next chat turn spawned by
-    # `spawn_next_chat_turn/2` after compaction.
+    # Canned response for the next chat turn started by
+    # `spawn_next_turn/2` after compaction.
     MockClient.set_response("done")
 
     full_attrs =

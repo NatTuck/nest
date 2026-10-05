@@ -4,10 +4,10 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
   with `clone_agent_registration_test.exs`, which covers the
   GenServer-terminate cascade via `Agents.delete_agent/1`.
   Here we drive the cascade by sending `{:chat_stopped, _}`
-  directly to the parent — the same message the ChatTurn
-  would have sent through the channel → StopHandler →
-  ChatTurn path — and verify the parent's `chat_stopped/1`
-  walks `pending_children` and stops every descendant.
+  directly to the parent — the same message the stop path
+  would have sent through the channel → stop handler — and
+  verify `chat_stopped_state/1` walks the machine's running
+  children and stops every descendant.
 
   See `notes/stop-children-when-parent-stopped.md` for the
   design and the race analysis this test pins down.
