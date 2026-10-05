@@ -19,6 +19,7 @@ defmodule Nest.Agents.Agent.Turn do
   alias Nest.Agents.Agent.ChatPipeline
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Machine
+  alias Nest.Agents.Agent.Machine.Phase
   alias Nest.Agents.Agent.SubAgent
   alias Nest.Agents.Agent.Turn.Executor
 
@@ -68,11 +69,25 @@ defmodule Nest.Agents.Agent.Turn do
     end
   end
 
+  # An undeclared event is drift. Log loudly, then fail the turn cleanly
+  # back to idle so a stray message can never leave the agent wedged in a
+  # busy phase. An already-idle agent is left untouched.
   defp quarantine!(state, event) do
     require Logger
 
     Logger.error("[agent:#{state.name}] quarantined undeclared turn event: #{inspect(event)}")
-    state
+
+    if state.live.machine.phase == :idle do
+      state
+    else
+      machine = Phase.enter(state.live.machine, state.live.machine.kind, :idle)
+      state = %{state | live: %{state.live | machine: machine}}
+
+      error = %RuntimeError{message: "quarantined turn event: #{inspect(event)}"}
+      {state, _follow} = Executor.run_all([{:fail_turn, error, []}], state)
+      Broadcasts.status(state)
+      state
+    end
   end
 
   # --- GenServer info dispatch ---

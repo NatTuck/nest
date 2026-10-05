@@ -175,6 +175,17 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   def do_step(%{phase: :stopping} = m, {:worker_down, _pid, _reason}),
     do: {:ignore, :late_worker_down, m}
 
+  # A compactor worker that dies without delivering a result is a
+  # compaction failure, not a turn crash: route it through the same
+  # retryable path as `:http_error`/`:worker_crashed` for the compactor.
+  def do_step(%{kind: :compaction} = m, {:worker_down, pid, reason}) do
+    if is_pid(pid) and pid == m.work.active_worker do
+      Compaction.compaction_failed(m, reason, Compaction.carried(m))
+    else
+      {:ignore, :unknown_worker_down, m}
+    end
+  end
+
   def do_step(%Machine{} = m, {:worker_down, pid, reason}) do
     if is_pid(pid) and pid == m.work.active_worker do
       worker_down(m, reason)

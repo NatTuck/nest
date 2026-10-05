@@ -10,6 +10,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Machine
+  alias Nest.Agents.Agent.Turn
   alias Nest.Agents.Agent.Turn.Executor
   alias Nest.Messages.Part
   alias Nest.Messages.User
@@ -320,6 +321,34 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
         {_state, nil} =
           run({:fail_turn, %RuntimeError{message: "boom"}, [{__MODULE__, :test, 1, []}]}, state())
       end)
+    end
+  end
+
+  describe "Turn.settle quarantine" do
+    test "an undeclared event fails the turn to idle instead of wedging it busy" do
+      base = state()
+
+      # A busy (non-idle) machine, so the quarantine path must fail the
+      # turn rather than leave it stuck. `space_id: nil` keeps the
+      # recovery append out of the DB.
+      machine = %{
+        base.live.machine
+        | phase: :generating,
+          kind: :chat,
+          work: %{base.live.machine.work | worker_kind: :http}
+      }
+
+      busy = %{base | space_id: nil, live: %{base.live | machine: machine}}
+
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{busy.space_id}:#{busy.name}")
+
+      {result, log} = with_log(fn -> Turn.settle(busy, {:totally_unknown_event}) end)
+
+      assert {:ok, settled} = result
+      assert Machine.status_for(settled.live.machine) == :idle
+      assert log =~ "quarantined"
+      assert_received {:chat_error, %{content: content}}
+      assert content =~ "quarantined"
     end
   end
 end

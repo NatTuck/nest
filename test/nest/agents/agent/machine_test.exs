@@ -61,6 +61,14 @@ defmodule MachineTest do
             assert is_list(actions)
             Machine.validate!(next)
 
+            # Every emitted action must be in the declared vocabulary (and
+            # therefore have an executor clause). Guards against a
+            # transition emitting an action the executor cannot run.
+            for action <- actions do
+              assert action_tag(action) in Machine.actions(),
+                     "#{inspect(tag)}/#{inspect(phase)} emitted undeclared action #{inspect(action)}"
+            end
+
           {:ignore, reason, next} ->
             assert is_atom(reason)
             Machine.validate!(next)
@@ -293,6 +301,12 @@ defmodule MachineTest do
   end
 
   # --- helpers ---
+
+  defp action_tag(:iterate), do: :iterate
+  defp action_tag({tag}), do: tag
+  defp action_tag({tag, _}), do: tag
+  defp action_tag({tag, _, _}), do: tag
+  defp action_tag({tag, _, _, _}), do: tag
 
   defp kind_for(:committing), do: :compaction
   defp kind_for(_), do: :chat

@@ -380,15 +380,36 @@ defmodule Nest.Agents.Agent.Turn.Executor do
     {state, :continue}
   end
 
+  # Backstop for drift: an action the machine emitted with no clause must
+  # never crash the Agent. The guard tests assert every declared action
+  # has a clause; this logs loudly and moves on if that ever breaks.
+  defp execute(other, state) do
+    Logger.error("[turn executor] unknown turn action: #{inspect(other)}")
+    {state, :continue}
+  end
+
   # --- helpers ---
 
   defp spawn_worker(state, kind, fun) do
     ref = make_ref()
     agent_pid = self()
 
-    case Task.Supervisor.start_child(Nest.Agents.TaskSupervisor, fn -> fun.(ref, agent_pid) end) do
+    case Task.Supervisor.start_child(Nest.Agents.TaskSupervisor, fn ->
+           # Wait for the executor's go-ahead so the monitor is established
+           # while the worker is still alive. Otherwise a worker that dies
+           # immediately yields a `:noproc` DOWN instead of its real exit
+           # reason.
+           receive do
+             {:worker_go, ^ref} -> :ok
+           after
+             5_000 -> exit(:no_worker_go)
+           end
+
+           fun.(ref, agent_pid)
+         end) do
       {:ok, pid} ->
         Process.monitor(pid)
+        send(pid, {:worker_go, ref})
         {state, {:follow, {:worker_started, ref, pid, kind}}}
 
       _other ->
