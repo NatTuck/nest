@@ -166,7 +166,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
 
     Broadcasts.compaction(state, marker)
 
-    spawn_next_chat_turn(state, carried_entry)
+    spawn_next_turn(state, carried_entry)
   end
 
   # Re-fetch the vocation from the DB (falling back to the
@@ -514,7 +514,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
       state.vocation
   end
 
-  defp spawn_next_chat_turn(state, carried_entry) do
+  defp spawn_next_turn(state, carried_entry) do
     state =
       cond do
         # A workspace change deferred its notice via compaction: append the

@@ -144,7 +144,7 @@ defmodule Nest.Agents.Agent.Compaction.Trigger do
              ) do
           {:ok, _n, rendered_suffix} ->
             staged = stage_request(messages, rendered_suffix)
-            spawn_compaction_chat_turn(state, carried_entry, staged)
+            spawn_compaction_turn(state, carried_entry, staged)
 
           {:error, :reserve_exhausted} ->
             broadcast_reserve_exhausted(state, system_prompt)
@@ -220,7 +220,7 @@ defmodule Nest.Agents.Agent.Compaction.Trigger do
   # `next_message_index + length(staged)` once the staged request lands, so
   # we key the streaming accumulator (and the in-process `Turn`'s
   # `active_message_index`) to that provisional index.
-  defp spawn_compaction_chat_turn(state, carried_entry, staged) do
+  defp spawn_compaction_turn(state, carried_entry, staged) do
     provisional_index = state.chat_state.next_message_index + length(staged)
 
     next_state = %{
