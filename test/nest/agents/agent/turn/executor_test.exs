@@ -89,13 +89,9 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       assert state.live.api_log_sequences == %{0 => 3}
     end
 
-    test "set_cancelled and clear_transient" do
+    test "set_cancelled sets the sticky flag" do
       {state, nil} = run({:set_cancelled, true})
       assert state.live.cancelled
-
-      {state, nil} = run({:clear_transient}, state)
-      refute state.live.cancelled
-      assert state.live.streaming_acc == nil
     end
 
     test "set_streaming seeds an accumulator at the index" do

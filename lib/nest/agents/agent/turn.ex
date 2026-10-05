@@ -135,6 +135,30 @@ defmodule Nest.Agents.Agent.Turn do
 
   defp reply({:ok, state}), do: {:noreply, state}
 
+  @doc """
+  Drain queued async messages through the executor (the single drain
+  path). Returns `{state, :delivered | :queued}`; a no-op when the inbox
+  is empty. Used by `Inbox.handle_delivery/3` (idle target) and by
+  `ModelHandler` after a model change returns the agent to idle.
+  """
+  @spec drain_inbox(Agent.t()) :: {Agent.t(), :delivered | :queued}
+  def drain_inbox(state) do
+    if state.live.inbox == [] do
+      {state, :delivered}
+    else
+      {state, follow} = Executor.run_all([{:drain_inbox}], state)
+
+      case follow do
+        nil ->
+          {state, :delivered}
+
+        event ->
+          {:ok, state} = settle(state, event)
+          {state, if(state.live.inbox == [], do: :delivered, else: :queued)}
+      end
+    end
+  end
+
   # --- context preparation ---
 
   # The pure machine reads its world from `work.ctx`. Rebuild the volatile

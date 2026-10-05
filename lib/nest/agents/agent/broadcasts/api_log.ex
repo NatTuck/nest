@@ -14,7 +14,8 @@ defmodule Nest.Agents.Agent.Broadcasts.ApiLog do
   # Sequence-numbered api_log id for a `(message_index,
   # existing_sequences)` pair. The format `<message_index>.<seq>`
   # (zero-padded to 3 digits each) is the canonical format
-  # used by both the per-agent apiLog list (see `Nest.Agents.Agent.Turn.APILog`)
+  # used by both the per-agent apiLog list (see
+  # `Nest.Agents.Agent.Machine.Response.assistant_with_log/2`)
   # and the API debug page in the JS.
   def next_id(message_index, sequences) do
     sequence = Map.get(sequences, message_index, 0)

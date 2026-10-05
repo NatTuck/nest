@@ -6,12 +6,13 @@ defmodule Nest.Agents.Agent.Inbox do
   GenServer (`Agent.deliver_message/3` → `handle_delivery/3`).
 
     * **Idle target** — the message (plus anything already queued) is
-      combined into one user message and a turn starts immediately.
+      combined into one user message and drained through the turn
+      executor (`Nest.Agents.Agent.Turn.drain_inbox/1`), the single drain
+      path.
     * **Busy target** (`:streaming`, `:executing_tools`, `:compacting`) —
       the message is queued on `state.live.inbox`. When the target next
-      goes idle, `drain_if_idle/1` combines every queued entry into a
-      single user message and appends it through the normal
-      `ChatPipeline.handle_chat/3` path.
+      goes idle the machine's `:idle` transition emits the `:drain_inbox`
+      action, which drains every queued entry into a single user message.
     * **Broken target** (`:model_missing`, `:needs_repair`,
       `:context_overflow`, `:compaction_failed`,
       `:compaction_loop_detected`) — the sender gets an error and
@@ -29,9 +30,9 @@ defmodule Nest.Agents.Agent.Inbox do
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.BatchSizer.Overflow
   alias Nest.Agents.Agent.Broadcasts
-  alias Nest.Agents.Agent.ChatPipeline
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Machine
+  alias Nest.Agents.Agent.Turn
   alias Nest.Tokens.Estimator
 
   require Logger
@@ -39,10 +40,6 @@ defmodule Nest.Agents.Agent.Inbox do
   # Statuses during which an incoming message must queue rather than
   # start a turn.
   @busy_statuses [:streaming, :executing_tools, :compacting]
-
-  # A turn was refused rather than started. The queued messages are
-  # restored so a later `drain_if_idle/1` retries them.
-  @refused_statuses [:context_overflow, :compaction_loop_detected]
 
   # Hard cap on queued messages. When full the sender gets an
   # `:inbox_full` error and nothing is queued.
@@ -74,55 +71,12 @@ defmodule Nest.Agents.Agent.Inbox do
         {:reply, {:ok, :queued}, state}
 
       status == :idle ->
-        {state, result} =
-          state
-          |> enqueue(sender, content)
-          |> drain()
-
+        state = enqueue(state, sender, content)
+        {state, result} = Turn.drain_inbox(state)
         {:reply, {:ok, result}, state}
 
       true ->
         {:reply, {:error, {:status, status}}, state}
-    end
-  end
-
-  @doc """
-  Drain the inbox if (and only if) the agent is idle and something is
-  queued. A no-op otherwise, so callers can safely invoke it at every
-  natural idle transition.
-  """
-  @spec drain_if_idle(Agent.t()) :: Agent.t()
-  def drain_if_idle(%{live: %{inbox: [_ | _]} = live} = state) do
-    if Machine.status_for(live.machine) == :idle do
-      {state, _result} = drain(state)
-      state
-    else
-      state
-    end
-  end
-
-  def drain_if_idle(state), do: state
-
-  @doc """
-  Combine every queued entry into one user message and start a turn.
-
-  The inbox is cleared *before* the turn starts; if `handle_chat/3`
-  refuses to start one (context overflow / compaction loop), the
-  entries are restored so a later drain can retry them. Returns
-  `{state, :delivered | :queued}`.
-  """
-  @spec drain(Agent.t()) :: {Agent.t(), :delivered | :queued}
-  def drain(state) do
-    entries = state.live.inbox
-    content = offload(combine(entries), entries, state)
-
-    state = state |> clear_inbox() |> broadcast()
-    {:noreply, state} = ChatPipeline.handle_chat(state, content, nil)
-
-    if Machine.status_for(state.live.machine) in @refused_statuses do
-      {state |> restore(entries) |> broadcast(), :queued}
-    else
-      {state, :delivered}
     end
   end
 
@@ -157,10 +111,6 @@ defmodule Nest.Agents.Agent.Inbox do
     entry = %{from: sender, content: content, timestamp: DateTime.utc_now()}
     %{state | live: %{state.live | inbox: state.live.inbox ++ [entry]}}
   end
-
-  defp clear_inbox(state), do: %{state | live: %{state.live | inbox: []}}
-
-  defp restore(state, entries), do: %{state | live: %{state.live | inbox: entries}}
 
   defp broadcast(state) do
     Broadcasts.inbox(state, serialize(state.live.inbox))

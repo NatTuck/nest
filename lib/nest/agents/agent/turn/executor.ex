@@ -121,21 +121,6 @@ defmodule Nest.Agents.Agent.Turn.Executor do
     {state, :continue}
   end
 
-  defp execute({:clear_transient}, state) do
-    state = %{
-      state
-      | live: %{
-          state.live
-          | streaming_acc: nil,
-            cancelled: false,
-            tool_index_map: %{},
-            context_projection: nil
-        }
-    }
-
-    {state, :continue}
-  end
-
   defp execute({:ack, pid, term}, state) when is_pid(pid) do
     send(pid, term)
     {state, :continue}
@@ -178,13 +163,6 @@ defmodule Nest.Agents.Agent.Turn.Executor do
       {:ok, _stamped, state} -> {state, :continue}
       {:stale, state} -> {state, {:follow, {:append_result, :stale, nil}}}
       {:invalid, reason, state} -> {state, {:follow, {:append_result, :invalid, reason}}}
-    end
-  end
-
-  defp execute({:marker, marker}, state) do
-    case MessageAppender.append_marker(state, marker) do
-      {:ok, _stamped, state} -> {state, :continue}
-      {:invalid, reason, state} -> {state, {:follow, {:commit_error, reason}}}
     end
   end
 
@@ -287,11 +265,6 @@ defmodule Nest.Agents.Agent.Turn.Executor do
         Logger.error("[agent:#{state.name}] dropping an invalid stream-error append: #{reason}")
         {clear_live(state), :continue}
     end
-  end
-
-  defp execute({:notify_parent, payload}, state) do
-    send_parent(state, payload)
-    {state, :continue}
   end
 
   defp execute({:notify_worker, name, pid, result}, state) when is_pid(pid) do
