@@ -35,6 +35,7 @@ defmodule Nest.Agents.ChatTaskCrashTest do
   alias Nest.Agents.Agent.Machine
 
   import ExUnit.CaptureLog
+  import Eventually
   import Mimic
 
   alias Nest.Agents.Agent
@@ -231,15 +232,35 @@ defmodule Nest.Agents.ChatTaskCrashTest do
     test "an abnormal worker exit is detected via monitor and the agent idles", %{} do
       {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
-      # A raw exit signal (not trappable by the worker's own try/catch)
-      # kills the worker before it can send a result. The turn's
-      # `Process.monitor` DOWN must convert that into `chat_crashed`;
-      # otherwise the turn hangs in `:streaming` forever.
-      Mimic.stub(MockClient, :run, fn _request, _opts -> Process.exit(self(), :boom) end)
+      parent = self()
+
+      # Block the worker so the monitor is established while it is still
+      # alive. A stub that exits immediately can lose the race against
+      # `Process.monitor/1` and report `:noproc` instead of the real exit
+      # reason; blocking makes the monitor-DOWN reason deterministic.
+      Mimic.stub(MockClient, :run, fn _request, _opts ->
+        send(parent, :worker_blocked)
+
+        receive do
+          :never -> :ok
+        end
+      end)
+
       Mimic.allow(MockClient, self(), pid)
 
       capture_log(fn ->
         :ok = Agent.chat(pid, "Hello")
+
+        assert_receive :worker_blocked, 500
+
+        worker =
+          eventually(fn -> :sys.get_state(pid).live.machine.work.active_worker end, timeout: 500)
+
+        # A raw exit signal (not trappable by the worker's own try/catch)
+        # kills the worker before it can send a result. The turn's
+        # `Process.monitor` DOWN must convert that into `chat_crashed`;
+        # otherwise the turn hangs in `:streaming` forever.
+        Process.exit(worker, :boom)
 
         assert_receive {:chat_status, %{status: "idle"}}, 500
         assert_received {:chat_error, %{content: content}}
