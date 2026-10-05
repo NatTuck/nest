@@ -559,12 +559,13 @@ defmodule NestWeb.AgentChannelChatTest do
           state
           | live: %{
               state.live
-              | machine:
+              | machine: %{
                   Machine.status_to_machine(
                     state.live.machine,
                     :compaction_failed
-                  ),
-                pending_user_message: {"Hello", "chat"}
+                  )
+                  | pending_user_message: {"Hello", "chat"}
+                }
             }
         }
       end)

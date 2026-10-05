@@ -257,10 +257,8 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
       | live: %{
           state.live
           | streaming_acc: nil,
-            active_message_index: stamped_index,
             machine: Machine.to_idle(state.live.machine),
-            tool_index_map: %{},
-            turn: %Nest.Agents.Agent.ChatState.Live.Turn{}
+            tool_index_map: %{}
         }
     }
 

@@ -88,8 +88,10 @@ defmodule NestWeb.AgentChannelCompactionLoopTest do
         state
         | live: %{
             cs
-            | machine: Machine.status_to_machine(cs.machine, :compaction_loop_detected),
-              consecutive_compaction_count: 4
+            | machine: %{
+                Machine.status_to_machine(cs.machine, :compaction_loop_detected)
+                | loop_count: 4
+              }
           }
       }
     end)
@@ -102,6 +104,6 @@ defmodule NestWeb.AgentChannelCompactionLoopTest do
     state = :sys.get_state(agent_pid)
 
     assert Machine.status_for(state.live.machine) == :idle
-    assert state.live.consecutive_compaction_count == 0
+    assert state.live.machine.loop_count == 0
   end
 end

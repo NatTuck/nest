@@ -114,8 +114,7 @@ defmodule Nest.Agents.Agent.Handlers.TurnHandler do
       | live: %{
           state.live
           | machine: Machine.to_idle(state.live.machine),
-            cancelled: false,
-            turn: %Nest.Agents.Agent.ChatState.Live.Turn{}
+            cancelled: false
         }
     }
   end
@@ -137,7 +136,7 @@ defmodule Nest.Agents.Agent.Handlers.TurnHandler do
 
   defp idle_and_clear?(state) do
     Machine.status_for(state.live.machine) == :idle and is_nil(state.live.streaming_acc) and
-      is_nil(state.live.turn.ctx)
+      is_nil(state.live.machine.work.ctx)
   end
 
   defp finalize_stopped(state, metadata) do
@@ -148,8 +147,7 @@ defmodule Nest.Agents.Agent.Handlers.TurnHandler do
       | live: %{
           state.live
           | machine: Machine.to_idle(state.live.machine),
-            cancelled: false,
-            turn: %Nest.Agents.Agent.ChatState.Live.Turn{}
+            cancelled: false
         }
     }
 

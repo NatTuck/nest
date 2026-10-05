@@ -93,7 +93,8 @@ defmodule MachineTest do
       # intentional: once a stop is in flight the terminal recovery closes
       # the sequence. A late HTTP/tool result MUST be dropped; appending it
       # would orphan the result. Do not "repair" this by appending.
-      stopping = %{Machine.new(phase: :stopping, kind: :chat) | worker_ref: make_ref()}
+      stopping =
+        Machine.new(phase: :stopping, kind: :chat, work: %Machine.Work{worker_ref: make_ref()})
 
       assert {:ignore, :late_result_after_stop, ^stopping} =
                Machine.step(stopping, {:http_ok, %{tool_calls: []}})
@@ -116,7 +117,8 @@ defmodule MachineTest do
       # phase: :generating), so its observable status is :compacting while
       # the physical HTTP worker is in flight. Kind is never folded into
       # phase.
-      generating = %{Machine.new(phase: :generating, kind: :chat) | worker_kind: :http}
+      generating =
+        Machine.new(phase: :generating, kind: :chat, work: %Machine.Work{worker_kind: :http})
 
       {:ok, actions, next} =
         Machine.step(generating, {:compaction_request, {:tool_call, %{}, 1, 10}})
@@ -133,16 +135,17 @@ defmodule MachineTest do
       # cleared and the invariant holds.
       ref = make_ref()
 
-      generating = %{
-        Machine.new(phase: :generating, kind: :chat)
-        | worker_kind: :http,
-          worker_ref: ref
-      }
+      generating =
+        Machine.new(
+          phase: :generating,
+          kind: :chat,
+          work: %Machine.Work{worker_kind: :http, worker_ref: ref}
+        )
 
       {:ok, actions, stopping} = Machine.step(generating, {:stop, self()})
 
       assert stopping.phase == :stopping
-      assert stopping.worker_kind == nil
+      assert stopping.work.worker_kind == nil
       assert Enum.any?(actions, &match?({:kill, ^ref}, &1))
       assert Enum.any?(actions, &match?({:arm_timer, _}, &1))
       Machine.validate!(stopping)
@@ -165,21 +168,25 @@ defmodule MachineTest do
 
     test "validate!/1 rejects a generating phase with no worker kind" do
       assert_raise RuntimeError, ~r/worker_kind/, fn ->
-        Machine.validate!(Machine.new(phase: :generating, kind: :chat, worker_kind: nil))
+        Machine.validate!(Machine.new(phase: :generating, kind: :chat))
       end
     end
 
     test "validate!/1 rejects :executing_tools for a compaction kind" do
       assert_raise RuntimeError, ~r/chat-only/, fn ->
         Machine.validate!(
-          Machine.new(phase: :executing_tools, kind: :compaction, worker_kind: :tools)
+          Machine.new(
+            phase: :executing_tools,
+            kind: :compaction,
+            work: %Machine.Work{worker_kind: :tools}
+          )
         )
       end
     end
 
     test "validate!/1 rejects a worker kind in idle" do
       assert_raise RuntimeError, ~r/must not have a worker_kind/, fn ->
-        Machine.validate!(Machine.new(phase: :idle, worker_kind: :http))
+        Machine.validate!(Machine.new(phase: :idle, work: %Machine.Work{worker_kind: :http}))
       end
     end
   end
@@ -217,8 +224,10 @@ defmodule MachineTest do
     Machine.new(
       phase: phase,
       kind: kind_for(phase),
-      worker_kind: worker_kind_for(phase),
-      worker_ref: ref_for(phase)
+      work: %Machine.Work{
+        worker_kind: worker_kind_for(phase),
+        worker_ref: ref_for(phase)
+      }
     )
   end
 

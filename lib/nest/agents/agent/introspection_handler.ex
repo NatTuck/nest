@@ -52,11 +52,11 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
   """
   @spec handle(term(), GenServer.from(), Agent.t()) :: GenServer.reply()
   def handle({:set_consecutive_compaction_count, n}, _from, state) when is_integer(n) do
-    {:reply, :ok, %{state | live: %{state.live | consecutive_compaction_count: n}}}
+    {:reply, :ok, %{state | live: %{state.live | machine: %{state.live.machine | loop_count: n}}}}
   end
 
   def handle(:get_consecutive_compaction_count, _from, state) do
-    {:reply, state.live.consecutive_compaction_count, state}
+    {:reply, state.live.machine.loop_count, state}
   end
 
   def handle(:get_public_info, _from, state) do
@@ -103,7 +103,7 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
   # The turn now runs in-process, so this reports the worker the turn is
   # currently waiting on rather than a separate turn process.
   def handle(:get_chat_turn_pid, _from, state) do
-    {:reply, state.live.turn.active_worker, state}
+    {:reply, state.live.machine.work.active_worker, state}
   end
 
   # Test-friendly: returns the `pending_children` map so

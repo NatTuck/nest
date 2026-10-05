@@ -12,7 +12,7 @@ defmodule Nest.Agents.Agent.Turn do
 
   ## Entry shapes
 
-  The `entry` carried on `live.turn` selects the first iteration's
+  The `entry` carried on `live.machine` selects the first iteration's
   behavior:
 
     * `{:user_message, User.t()}` — the message is already appended;
@@ -31,10 +31,11 @@ defmodule Nest.Agents.Agent.Turn do
 
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.BatchSizer
-  alias Nest.Agents.Agent.ChatState.Live.Turn
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Handlers.LLMStreamHandler
   alias Nest.Agents.Agent.Handlers.TurnHandler
+  alias Nest.Agents.Agent.Machine
+  alias Nest.Agents.Agent.Machine.Work
   alias Nest.Agents.Agent.ToolLoop
   alias Nest.Agents.Agent.Turn.BudgetReminder
   alias Nest.Agents.Agent.Turn.Iteration
@@ -46,21 +47,22 @@ defmodule Nest.Agents.Agent.Turn do
   # Client API used by the pipeline / compaction trigger / result handler.
 
   @doc """
-  Start a turn on `state`. Sets `live.turn` from the entry and queues the
-  first `:iterate`. `caps` is the resolved capability map for the mode.
+  Start a turn on `state`. Sets the machine's working set + entry and
+  queues the first `:iterate`. `caps` is the resolved capability map for
+  the mode.
   """
-  @spec start(Agent.t(), list(), Turn.entry(), map()) :: Agent.t()
+  @spec start(Agent.t(), list(), Machine.entry() | nil, map()) :: Agent.t()
   def start(state, messages, entry, caps) do
     ctx = build_ctx(state, messages, caps)
 
-    turn = %Turn{
+    work = %Work{
       ctx: ctx,
       iteration: initial_iteration(entry),
-      max_iterations: initial_max_iterations(entry),
-      entry: entry
+      max_iterations: initial_max_iterations(entry)
     }
 
-    state = %{state | live: %{state.live | turn: turn}}
+    machine = %{state.live.machine | work: work, entry: entry}
+    state = %{state | live: %{state.live | machine: machine}}
     send(self(), :iterate)
     state
   end
@@ -106,7 +108,7 @@ defmodule Nest.Agents.Agent.Turn do
   end
 
   def handle({:DOWN, _mref, :process, pid, reason}, state) do
-    if pid == state.live.turn.active_worker do
+    if pid == state.live.machine.work.active_worker do
       Lifecycle.worker_exited(pid, reason, state)
     else
       {:noreply, state}
@@ -116,15 +118,15 @@ defmodule Nest.Agents.Agent.Turn do
   # The worker ref must match the live turn (drops stale results) and,
   # when given, the phase must match the in-flight worker kind.
   defp valid_worker?(state, ref, kind) do
-    turn = state.live.turn
+    work = state.live.machine.work
 
-    is_reference(turn.worker_ref) and turn.worker_ref == ref and
-      (kind == nil or turn.active_worker_kind == kind)
+    is_reference(work.worker_ref) and work.worker_ref == ref and
+      (kind == nil or work.active_worker_kind == kind)
   end
 
   # Iteration
 
-  defp iterate(%{live: %{turn: %{ctx: nil}}} = state), do: {:noreply, state}
+  defp iterate(%{live: %{machine: %{work: %{ctx: nil}}}} = state), do: {:noreply, state}
 
   defp iterate(state) do
     safe_iterate(state)
@@ -134,29 +136,30 @@ defmodule Nest.Agents.Agent.Turn do
 
   defp safe_iterate(state) do
     state = maybe_inject_budget_reminder(state)
-    state = update_turn(state, &%{&1 | iteration: &1.iteration + 1})
+    state = update_work(state, &%{&1 | iteration: &1.iteration + 1})
 
     Iteration.notify_max_iterations(state)
 
+    machine = state.live.machine
     messages = state.chat_state.messages
     next_index = state.chat_state.next_message_index
 
     state =
-      update_turn(state, fn turn ->
+      update_work(state, fn work ->
         %{
-          turn
-          | active_message_index: active_index(turn, next_index),
-            ctx: %{turn.ctx | messages: messages}
+          work
+          | active_message_index: active_index(machine, next_index),
+            ctx: %{work.ctx | messages: messages}
         }
       end)
 
     iteration_branch(state, messages, state.live.cancelled)
   end
 
-  defp active_index(%Turn{entry: {:compaction, staged, _}}, next_index),
+  defp active_index(%Machine{entry: {:compaction, staged, _}}, next_index),
     do: next_index + length(staged)
 
-  defp active_index(_turn, next_index), do: next_index
+  defp active_index(_machine, next_index), do: next_index
 
   defp iteration_branch(state, messages, cancelled) do
     cond do
@@ -174,7 +177,7 @@ defmodule Nest.Agents.Agent.Turn do
     end
   end
 
-  defp compactor_entry?(state), do: match?({:compaction, _, _}, state.live.turn.entry)
+  defp compactor_entry?(state), do: match?({:compaction, _, _}, state.live.machine.entry)
 
   defp pending_tool_calls?(messages) do
     case List.last(messages) do
@@ -189,15 +192,15 @@ defmodule Nest.Agents.Agent.Turn do
   defp execute_pending_tool_calls(state, messages) do
     [{:assistant, %{parts: parts}} | _] = Enum.reverse(messages)
     tool_calls = ResponseHandler.extract_tool_calls_from_parts(parts)
+    machine = state.live.machine
 
-    case BatchSizer.preflight(ToolLoop.strip_context_compact(tool_calls), state.live.turn.ctx) do
+    case BatchSizer.preflight(ToolLoop.strip_context_compact(tool_calls), machine.work.ctx) do
       :fits ->
         Iteration.spawn_tool_worker(state, tool_calls)
 
       {:refuse, _reason} ->
         continuation =
-          {:tool_call, List.last(messages), state.live.turn.iteration,
-           state.live.turn.max_iterations}
+          {:tool_call, List.last(messages), machine.work.iteration, machine.work.max_iterations}
 
         send(self(), {:needs_compaction, self(), continuation})
         {:noreply, state}
@@ -211,15 +214,15 @@ defmodule Nest.Agents.Agent.Turn do
   defp initial_max_iterations(_), do: Config.configured_max_tool_iterations()
 
   defp maybe_inject_budget_reminder(state) do
-    turn = state.live.turn
-    remaining = turn.max_iterations - turn.iteration
+    work = state.live.machine.work
+    remaining = work.max_iterations - work.iteration
 
     case BudgetReminder.notice_text(remaining) do
       nil ->
         state
 
       notice ->
-        update_turn(state, &%{&1 | pending_notice: &1.pending_notice || notice})
+        update_work(state, &%{&1 | pending_notice: &1.pending_notice || notice})
     end
   end
 
@@ -235,14 +238,14 @@ defmodule Nest.Agents.Agent.Turn do
 
   defp handle_tool_results(results, state) do
     state =
-      update_turn(state, &%{&1 | active_worker: nil, active_worker_kind: nil, worker_ref: nil})
+      update_work(state, &%{&1 | active_worker: nil, active_worker_kind: nil, worker_ref: nil})
 
     if state.live.cancelled do
       {:noreply, state |> Lifecycle.clear_turn() |> TurnHandler.chat_stopped_state()}
     else
       {:tool, tool} = Messages.tool(results)
       {:noreply, state} = LLMStreamHandler.tool_results_received(tool, state)
-      state = update_turn(state, &%{&1 | pending_notice: nil})
+      state = update_work(state, &%{&1 | pending_notice: nil})
       send(self(), :iterate)
       {:noreply, state}
     end
@@ -267,7 +270,8 @@ defmodule Nest.Agents.Agent.Turn do
     }
   end
 
-  defp update_turn(state, fun) do
-    %{state | live: %{state.live | turn: fun.(state.live.turn)}}
+  defp update_work(state, fun) do
+    machine = state.live.machine
+    %{state | live: %{state.live | machine: %{machine | work: fun.(machine.work)}}}
   end
 end

@@ -296,6 +296,6 @@ defmodule Nest.Agents.Agent.MessageAppender do
   defp progress_message?(_), do: false
 
   defp reset_consecutive(state) do
-    %{state | live: %{state.live | consecutive_compaction_count: 0}}
+    %{state | live: %{state.live | machine: %{state.live.machine | loop_count: 0}}}
   end
 end

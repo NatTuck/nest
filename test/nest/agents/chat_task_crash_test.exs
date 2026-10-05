@@ -252,7 +252,7 @@ defmodule Nest.Agents.ChatTaskCrashTest do
 
       state = :sys.get_state(pid)
       assert Machine.status_for(state.live.machine) == :idle
-      assert state.live.turn.active_worker == nil
+      assert state.live.machine.work.active_worker == nil
     end
   end
 

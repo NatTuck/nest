@@ -102,24 +102,35 @@ defmodule Nest.Agents.Agent.Machine do
           | {:spawn_child, term()}
           | {:notify_parent, term()}
 
+  @type tool_pair :: [Nest.Messages.Assistant.t() | Nest.Messages.Tool.t()]
+
+  # The start-state intent for a turn's first iteration. See
+  # `Nest.Agents.Agent.Turn` for the per-shape behavior.
+  @type entry ::
+          {:user_message, Nest.Messages.User.t()}
+          | {:tool_call, Nest.Messages.Assistant.t(), non_neg_integer(), pos_integer()}
+          | {:compact_tool, tool_pair(), non_neg_integer(), pos_integer()}
+          | {:assistant_response, Nest.Messages.Assistant.t(), non_neg_integer(), pos_integer()}
+          | {:compaction, [tuple()], entry() | nil}
+
   defstruct kind: :chat,
             phase: :idle,
-            worker_ref: nil,
-            worker_kind: nil,
-            iteration: 0,
-            max_iterations: 10,
+            work: %Nest.Agents.Agent.Machine.Work{},
             entry: nil,
-            resume: nil
+            resume: nil,
+            loop_count: 0,
+            pending_user_message: nil,
+            mid_turn_entry: nil
 
   @type t :: %__MODULE__{
           kind: kind(),
           phase: phase(),
-          worker_ref: reference() | nil,
-          worker_kind: :http | :tools | nil,
-          iteration: non_neg_integer(),
-          max_iterations: pos_integer(),
+          work: Nest.Agents.Agent.Machine.Work.t(),
           entry: term(),
-          resume: term()
+          resume: term(),
+          loop_count: non_neg_integer(),
+          pending_user_message: term(),
+          mid_turn_entry: term()
         }
 
   @doc "The declared phase vocabulary."
@@ -158,9 +169,9 @@ defmodule Nest.Agents.Agent.Machine do
   # modeled `step/2` transition. The invariant is enforced on entry, and
   # `status_for/1` is the single authority for the observable status.
 
-  @doc "Terminal transition back to idle."
+  @doc "Terminal transition back to idle (clears the working set)."
   @spec to_idle(t()) :: t()
-  def to_idle(%__MODULE__{} = s), do: put(s, s.kind, :idle)
+  def to_idle(%__MODULE__{} = s), do: validate!(%{s | phase: :idle, work: %__MODULE__.Work{}})
 
   @doc "A chat turn's LLM call is in flight."
   @spec to_chat_generating(t()) :: t()
@@ -198,7 +209,12 @@ defmodule Nest.Agents.Agent.Machine do
   end
 
   defp put(%__MODULE__{} = s, kind, phase, worker_kind \\ nil) do
-    validate!(%{s | kind: kind, phase: phase, worker_kind: worker_kind, worker_ref: nil})
+    validate!(%{
+      s
+      | kind: kind,
+        phase: phase,
+        work: %{s.work | worker_kind: worker_kind, worker_ref: nil}
+    })
   end
 
   @doc """
@@ -228,50 +244,67 @@ defmodule Nest.Agents.Agent.Machine do
   # idle is the only phase that accepts new work.
   defp do_step(%{phase: :idle} = s, {:chat_request, _} = e) do
     {:ok, [{:append_user, e}, {:spawn_http, e}],
-     %{s | kind: :chat, phase: :generating, worker_kind: :http}}
+     %{s | kind: :chat, phase: :generating, work: %{s.work | worker_kind: :http}}}
   end
 
   defp do_step(%{phase: :idle} = s, {:inbox_drain, _} = e) do
     {:ok, [{:append_user, e}, {:spawn_http, e}],
-     %{s | kind: :chat, phase: :generating, worker_kind: :http}}
+     %{s | kind: :chat, phase: :generating, work: %{s.work | worker_kind: :http}}}
   end
 
   # A chat LLM response with tool calls moves to tool execution; a text
   # response finalizes the turn back to idle.
   defp do_step(%{phase: :generating, kind: :chat} = s, {:http_ok, %{tool_calls: [_ | _]} = e}) do
     {:ok, [{:append_assistant, e}, {:spawn_tools, e}],
-     %{s | phase: :executing_tools, worker_kind: :tools, worker_ref: nil}}
+     %{s | phase: :executing_tools, work: %{s.work | worker_kind: :tools, worker_ref: nil}}}
   end
 
   defp do_step(%{phase: :generating, kind: :chat} = s, {:http_ok, e}) do
     {:ok, [{:append_assistant, e}, :finalize_idle],
-     %{s | phase: :idle, worker_kind: nil, worker_ref: nil}}
+     %{s | phase: :idle, work: %{s.work | worker_kind: nil, worker_ref: nil}}}
   end
 
   # Tool results feed back into the LLM.
   defp do_step(%{phase: :executing_tools} = s, {:tool_results, e}) do
     {:ok, [{:append_tools, e}, {:spawn_http, e}],
-     %{s | phase: :generating, worker_kind: :http, worker_ref: nil, iteration: s.iteration + 1}}
+     %{
+       s
+       | phase: :generating,
+         work: %{s.work | worker_kind: :http, worker_ref: nil, iteration: s.work.iteration + 1}
+     }}
   end
 
   # A mid-turn request to compact switches the turn to the compaction kind.
   defp do_step(%{phase: p} = s, {:compaction_request, e})
        when p in [:generating, :executing_tools] do
     {:ok, [{:stage_compaction, e}, {:spawn_http, e}],
-     %{s | kind: :compaction, phase: :generating, worker_kind: :http, worker_ref: nil, resume: e}}
+     %{
+       s
+       | kind: :compaction,
+         phase: :generating,
+         work: %{s.work | worker_kind: :http, worker_ref: nil},
+         resume: e
+     }}
   end
 
   # Compaction summary lands: commit, then resume the carried entry.
   defp do_step(%{phase: :generating, kind: :compaction} = s, {:compaction_ok, e}) do
     {:ok, [{:commit_compaction, e}, {:resume, s.resume}],
-     %{s | kind: :chat, phase: :idle, worker_kind: nil, worker_ref: nil, resume: nil}}
+     %{
+       s
+       | kind: :chat,
+         phase: :idle,
+         work: %{s.work | worker_kind: nil, worker_ref: nil},
+         resume: nil
+     }}
   end
 
   # Stop preempts any active phase. The worker kind is cleared (the phase
   # is no longer waiting on that kind); the worker ref is kept so the
   # executor can signal the in-flight task to stop.
   defp do_step(%{phase: p} = s, {:stop, _}) when p in [:generating, :executing_tools] do
-    {:ok, [{:kill, s.worker_ref}, {:arm_timer, 2_000}], %{s | phase: :stopping, worker_kind: nil}}
+    {:ok, [{:kill, s.work.worker_ref}, {:arm_timer, 2_000}],
+     %{s | phase: :stopping, work: %{s.work | worker_kind: nil}}}
   end
 
   # A late worker result after stop is intentionally dropped, not appended.
@@ -284,7 +317,8 @@ defmodule Nest.Agents.Agent.Machine do
 
   # The stop fallback timer force-finalizes.
   defp do_step(%{phase: :stopping} = s, :stop_timer) do
-    {:ok, [:force_finalize], %{s | phase: :idle, worker_kind: nil, worker_ref: nil}}
+    {:ok, [:force_finalize],
+     %{s | phase: :idle, work: %{s.work | worker_kind: nil, worker_ref: nil}}}
   end
 
   # A duplicate result for a phase that is no longer waiting is a no-op.
@@ -324,13 +358,14 @@ defmodule Nest.Agents.Agent.Machine do
     s
   end
 
-  defp validate_worker!(%{phase: p, worker_kind: wk}) when p in [:generating, :executing_tools] do
+  defp validate_worker!(%{phase: p, work: %{worker_kind: wk}})
+       when p in [:generating, :executing_tools] do
     if wk in [:http, :tools],
       do: :ok,
       else: raise("machine invariant: #{p} needs a worker_kind, got #{inspect(wk)}")
   end
 
-  defp validate_worker!(%{phase: p, worker_kind: wk})
+  defp validate_worker!(%{phase: p, work: %{worker_kind: wk}})
        when p in [:idle, :committing, :stopping] or p in @blocked do
     if is_nil(wk),
       do: :ok,

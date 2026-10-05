@@ -85,14 +85,16 @@ defmodule Nest.Agents.Agent.Turn.NoticeInjectorTest do
       chat_state: %Agent.ChatState{messages: messages},
       live: %Agent.ChatState.Live{
         crossed_thresholds: MapSet.new(),
-        turn: %Agent.ChatState.Live.Turn{
-          pending_notice: Keyword.get(opts, :pending_notice),
-          ctx: %{
-            agent_pid: self(),
-            context_limit: Keyword.get(opts, :context_limit, 0),
-            tools: Keyword.get(opts, :tools, []),
-            tool_choice: :auto,
-            messages: messages
+        machine: %Agent.Machine{
+          work: %Agent.Machine.Work{
+            pending_notice: Keyword.get(opts, :pending_notice),
+            ctx: %{
+              agent_pid: self(),
+              context_limit: Keyword.get(opts, :context_limit, 0),
+              tools: Keyword.get(opts, :tools, []),
+              tool_choice: :auto,
+              messages: messages
+            }
           }
         }
       }

@@ -227,7 +227,7 @@ defmodule Nest.Agents.Agent.Turn.ResponseHandler do
     end
   end
 
-  defp compactor_entry?(state), do: match?({:compaction, _, _}, turn(state).entry)
+  defp compactor_entry?(state), do: match?({:compaction, _, _}, state.live.machine.entry)
 
   defp defer_response?(response, state, assistant_msg) do
     not compactor_entry?(state) and
@@ -384,23 +384,24 @@ defmodule Nest.Agents.Agent.Turn.ResponseHandler do
 
   # --- turn accessors ---
 
-  defp turn(state), do: state.live.turn
+  defp turn(state), do: state.live.machine.work
 
   defp clear_worker(state) do
-    update_turn(state, &%{&1 | active_worker: nil, active_worker_kind: nil})
+    update_work(state, &%{&1 | active_worker: nil, active_worker_kind: nil})
   end
 
   defp put_force_finalize(state, value) do
-    update_turn(state, &%{&1 | force_finalize: value})
+    update_work(state, &%{&1 | force_finalize: value})
   end
 
   defp active_index(state), do: turn(state).active_message_index
 
   defp advance_active_index(state, n) do
-    update_turn(state, &%{&1 | active_message_index: &1.active_message_index + n})
+    update_work(state, &%{&1 | active_message_index: &1.active_message_index + n})
   end
 
-  defp update_turn(state, fun) do
-    %{state | live: %{state.live | turn: fun.(state.live.turn)}}
+  defp update_work(state, fun) do
+    machine = state.live.machine
+    %{state | live: %{state.live | machine: %{machine | work: fun.(machine.work)}}}
   end
 end

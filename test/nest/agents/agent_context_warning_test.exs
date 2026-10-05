@@ -248,7 +248,7 @@ defmodule Nest.Agents.AgentContextWarningTest do
     # in a real scenario) so the test exercises the pipeline's
     # injection guard specifically.
     state = :sys.get_state(pid)
-    state = put_in(state.live.pending_user_message, {"New request", "chat"})
+    state = put_in(state.live.machine.pending_user_message, {"New request", "chat"})
 
     # The pending message is enough tokens to push usage past
     # 25% of the working budget.

@@ -15,6 +15,7 @@ defmodule Nest.Agents.Agent.Turn.IterationTest do
   use ExUnit.Case, async: true
 
   alias Nest.Agents.Agent.ChatState.Live
+  alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Turn.Iteration
 
   @tools [%{name: "context-check"}]
@@ -33,10 +34,12 @@ defmodule Nest.Agents.Agent.Turn.IterationTest do
   defp state(iteration, max_iterations) do
     %Nest.Agents.Agent{
       live: %Live{
-        turn: %Live.Turn{
-          iteration: iteration,
-          max_iterations: max_iterations,
-          ctx: %{tools: @tools, tool_choice: :auto}
+        machine: %Machine{
+          work: %Machine.Work{
+            iteration: iteration,
+            max_iterations: max_iterations,
+            ctx: %{tools: @tools, tool_choice: :auto}
+          }
         }
       }
     }

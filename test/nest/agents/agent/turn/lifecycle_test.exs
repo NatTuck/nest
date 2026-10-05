@@ -25,8 +25,8 @@ defmodule Nest.Agents.Agent.Turn.LifecycleTest do
         ExUnit.CaptureLog.with_log(fn -> Lifecycle.worker_exited(self(), :killed, state) end)
 
       assert {:noreply, returned} = result
-      assert returned.live.turn.active_worker == nil
-      assert returned.live.turn.active_worker_kind == nil
+      assert returned.live.machine.work.active_worker == nil
+      assert returned.live.machine.work.active_worker_kind == nil
       assert_received :iterate
       assert log =~ "lost its tool worker"
 
@@ -47,7 +47,13 @@ defmodule Nest.Agents.Agent.Turn.LifecycleTest do
 
       state = %{
         base
-        | live: %{base.live | turn: %{base.live.turn | active_worker_kind: :http}}
+        | live: %{
+            base.live
+            | machine: %{
+                base.live.machine
+                | work: %{base.live.machine.work | active_worker_kind: :http}
+              }
+          }
       }
 
       assert {:noreply, returned} = Lifecycle.worker_exited(self(), :shutdown, state)
@@ -57,6 +63,15 @@ defmodule Nest.Agents.Agent.Turn.LifecycleTest do
   end
 
   defp state(messages, cancelled) do
+    machine =
+      Machine.status_to_machine(%Machine{}, :executing_tools)
+
+    work = %Agent.Machine.Work{
+      active_worker: self(),
+      active_worker_kind: :tools,
+      ctx: %{agent_pid: self(), context_limit: 100_000, tools: [], tool_choice: :auto}
+    }
+
     %Agent{
       name: nil,
       space_id: nil,
@@ -68,17 +83,8 @@ defmodule Nest.Agents.Agent.Turn.LifecycleTest do
       },
       chat_state: %Agent.ChatState{messages: messages, next_message_index: 2},
       live: %Agent.ChatState.Live{
-        machine:
-          Machine.status_to_machine(
-            %Machine{},
-            :executing_tools
-          ),
-        cancelled: cancelled,
-        turn: %Agent.ChatState.Live.Turn{
-          active_worker: self(),
-          active_worker_kind: :tools,
-          ctx: %{agent_pid: self(), context_limit: 100_000, tools: [], tool_choice: :auto}
-        }
+        machine: %{machine | work: work},
+        cancelled: cancelled
       }
     }
   end

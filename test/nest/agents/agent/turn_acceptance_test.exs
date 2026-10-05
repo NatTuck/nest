@@ -93,7 +93,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
       state = :sys.get_state(pid)
 
       assert Machine.status_for(state.live.machine) == :idle
-      assert state.live.turn.active_worker == nil
+      assert state.live.machine.work.active_worker == nil
       assert state.live.cancelled == false
 
       indices = message_indices(state)
@@ -262,7 +262,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
 
       # The agent goes to :idle after the final call.
       assert Machine.status_for(state.live.machine) == :idle
-      assert state.live.turn.active_worker == nil
+      assert state.live.machine.work.active_worker == nil
 
       assert Enum.any?(state.chat_state.messages, fn
                {:assistant, %Assistant{parts: parts}} ->
@@ -309,7 +309,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
       state = :sys.get_state(pid)
 
       assert Machine.status_for(state.live.machine) == :idle
-      assert state.live.turn.active_worker == nil
+      assert state.live.machine.work.active_worker == nil
 
       final_assistants =
         Enum.filter(state.chat_state.messages, fn
@@ -361,7 +361,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
       state = :sys.get_state(pid)
 
       assert Machine.status_for(state.live.machine) == :idle
-      assert state.live.turn.active_worker == nil
+      assert state.live.machine.work.active_worker == nil
     end
   end
 

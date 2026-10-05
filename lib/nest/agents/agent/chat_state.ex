@@ -90,59 +90,6 @@ defmodule Nest.Agents.Agent.ChatState do
             read_files: %{}
 end
 
-defmodule Nest.Agents.Agent.ChatState.Live.Turn do
-  @moduledoc """
-  The turn-scoped working memory for the in-process turn driver
-  (`Nest.Agents.Agent.Turn`).
-
-  The Agent itself is the single owner and driver of a chat turn:
-  this struct carries the iteration-scoped state (`ctx`, `iteration`,
-  `max_iterations`, `force_finalize`, the active worker handle, the
-  start-state `entry`) that used to live on the deleted ChatTurn
-  process. It is grouped here so the parent `Live` struct stays under
-  the credo field cap.
-
-  The `worker_ref` is the `make_ref/0` token handed to the active
-  HTTP/tool worker; worker results are applied only when their ref and
-  phase match the live turn (see `Turn`).
-  """
-
-  defstruct ctx: nil,
-            iteration: 0,
-            max_iterations: 0,
-            force_finalize: false,
-            active_worker: nil,
-            active_worker_kind: nil,
-            worker_ref: nil,
-            active_message_index: 0,
-            pending_notice: nil,
-            entry: {:user_message, %Nest.Messages.User{parts: []}}
-
-  @type tool_pair :: [Nest.Messages.Assistant.t() | Nest.Messages.Tool.t()]
-
-  # The start-state intent for a turn's first iteration. See
-  # `Nest.Agents.Agent.Turn` for the per-shape behavior.
-  @type entry ::
-          {:user_message, Nest.Messages.User.t()}
-          | {:tool_call, Nest.Messages.Assistant.t(), non_neg_integer(), pos_integer()}
-          | {:compact_tool, tool_pair(), non_neg_integer(), pos_integer()}
-          | {:assistant_response, Nest.Messages.Assistant.t(), non_neg_integer(), pos_integer()}
-          | {:compaction, [tuple()], entry() | nil}
-
-  @type t :: %__MODULE__{
-          ctx: map() | nil,
-          iteration: non_neg_integer(),
-          max_iterations: non_neg_integer(),
-          force_finalize: boolean(),
-          active_worker: pid() | nil,
-          active_worker_kind: :http | :tools | nil,
-          worker_ref: reference() | nil,
-          active_message_index: non_neg_integer(),
-          pending_notice: String.t() | nil,
-          entry: entry()
-        }
-end
-
 defmodule Nest.Agents.Agent.ChatState.Live do
   @moduledoc """
   The *per-process* (ephemeral) portion of a per-agent chat
@@ -152,7 +99,7 @@ defmodule Nest.Agents.Agent.ChatState.Live do
   Persisted fields live in `Nest.Agents.Agent.ChatState`; this
   struct holds only what a live turn needs while it's running.
 
-  The `turn` field is `%Nest.Agents.Agent.ChatState.Live.Turn{}`: the
+  The `turn` field is `%Nest.Agents.Agent.Machine.Work{}`: the
   turn-scoped working memory the in-process driver (`Nest.Agents.Agent.Turn`)
   uses while a chat or compaction turn is in flight. It is reset to its
   default at the end of every turn.
@@ -230,13 +177,9 @@ defmodule Nest.Agents.Agent.ChatState.Live do
   """
   defstruct streaming_acc: nil,
             machine: %Nest.Agents.Agent.Machine{},
-            active_message_index: 0,
             api_log_sequences: %{},
-            turn: %Nest.Agents.Agent.ChatState.Live.Turn{},
             cancelled: false,
-            pending_user_message: nil,
             pending_notice: nil,
-            mid_turn_entry: nil,
             crossed_thresholds: %MapSet{},
             # The forward-looking context size (in tokens) the most
             # recent context-warning check projected: appended messages
@@ -246,7 +189,6 @@ defmodule Nest.Agents.Agent.ChatState.Live do
             # show the same number the reminder compared against.
             # `nil` when no projection is in flight.
             context_projection: nil,
-            consecutive_compaction_count: 0,
             tool_index_map: %{},
             # The agent's currently active conversation mode (e.g.
             # "chat", "build", "plan"). Reset to the vocation's
@@ -262,8 +204,4 @@ defmodule Nest.Agents.Agent.ChatState.Live do
             # moduledoc. Entries are `%{from: name, content: text,
             # timestamp: DateTime.t()}` in arrival order.
             inbox: []
-
-  @type mid_turn_entry :: %{
-          entry: Nest.Agents.Agent.ChatState.Live.Turn.entry() | nil
-        }
 end

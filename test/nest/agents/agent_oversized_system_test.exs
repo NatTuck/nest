@@ -177,7 +177,7 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
 
       assert Machine.status_for(state_after.live.machine) == :context_overflow
 
-      assert is_nil(state_after.live.turn.ctx),
+      assert is_nil(state_after.live.machine.work.ctx),
              "Trigger.post_turn should not have spawned a chat turn for an oversized system"
     end
   end

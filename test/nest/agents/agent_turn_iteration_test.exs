@@ -194,8 +194,11 @@ defmodule Nest.Agents.AgentTurnIterationTest do
           state
           | live: %{
               state.live
-              | mid_turn_entry: %{
-                  entry: {:tool_call, synthetic_tool_call_msg(), 7, 30}
+              | machine: %{
+                  state.live.machine
+                  | mid_turn_entry: %{
+                      entry: {:tool_call, synthetic_tool_call_msg(), 7, 30}
+                    }
                 }
             }
         }
@@ -231,7 +234,7 @@ defmodule Nest.Agents.AgentTurnIterationTest do
       end)
 
       state_after = :sys.get_state(pid)
-      assert state_after.live.mid_turn_entry == nil
+      assert state_after.live.machine.mid_turn_entry == nil
     end
   end
 
@@ -314,12 +317,12 @@ defmodule Nest.Agents.AgentTurnIterationTest do
           # after which `live.turn` is reset. The turn state below is
           # read here so the carry-forward assertions can run before
           # that happens.
-          turn = :sys.get_state(pid).live.turn
-          send(self(), {:turn_captured, turn})
+          machine = :sys.get_state(pid).live.machine
+          send(self(), {:turn_captured, machine})
         end)
 
-      assert_receive {:turn_captured, turn}, 1_000
-      assert turn.entry == {:tool_call, assistant_with_tool_use, 3, 30}
+      assert_receive {:turn_captured, machine}, 1_000
+      assert machine.entry == {:tool_call, assistant_with_tool_use, 3, 30}
 
       # Post-compaction, the agent's chat_state.messages is the
       # canonical shape:
@@ -372,7 +375,7 @@ defmodule Nest.Agents.AgentTurnIterationTest do
       # The turn's `entry` is the carried entry itself — the
       # `{:tool_call, msg, iter, max}` shape — and its request context
       # still carries the trailing assistant+ToolUse.
-      {ctx_tail_role, ctx_tail_struct} = List.last(turn.ctx.messages)
+      {ctx_tail_role, ctx_tail_struct} = List.last(machine.work.ctx.messages)
       assert ctx_tail_role == :assistant
       assert Enum.any?(ctx_tail_struct.parts, &match?(%Part.ToolUse{id: "call_1"}, &1))
 
@@ -448,7 +451,7 @@ defmodule Nest.Agents.AgentTurnIterationTest do
         %{
           state
           | chat_state: %{state.chat_state | messages: messages},
-            live: %{state.live | consecutive_compaction_count: 3},
+            live: %{state.live | machine: %{state.live.machine | loop_count: 3}},
             llm_metrics: %{state.llm_metrics | context_limit: 128_000}
         }
       end)

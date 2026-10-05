@@ -38,7 +38,7 @@ defmodule Nest.Agents.Agent.Turn.NoticeInjector do
   end
 
   defp collect_specs(response, state, messages) do
-    pending = state.live.turn.pending_notice
+    pending = state.live.machine.work.pending_notice
 
     budget =
       if pending, do: BudgetReminder.spec_from_pending(pending)
@@ -72,7 +72,7 @@ defmodule Nest.Agents.Agent.Turn.NoticeInjector do
   end
 
   defp compute_context_spec(response, state, messages) do
-    ctx = state.live.turn.ctx
+    ctx = state.live.machine.work.ctx
     limit = ctx.context_limit
 
     if not is_integer(limit) or limit <= 0 do
@@ -88,7 +88,7 @@ defmodule Nest.Agents.Agent.Turn.NoticeInjector do
   # Update `live.crossed_thresholds` / `live.context_projection` after a
   # context spec has been injected.
   defp update_crossed_thresholds_for_context(response, state, messages) do
-    ctx = state.live.turn.ctx
+    ctx = state.live.machine.work.ctx
     limit = ctx.context_limit
 
     if is_integer(limit) and limit > 0 do
@@ -135,7 +135,7 @@ defmodule Nest.Agents.Agent.Turn.NoticeInjector do
   # Synthetic notices are ordinary content: they must never spend the
   # compaction reserve.
   defp notice_over_budget?(spec, state, messages) do
-    limit = state.live.turn.ctx.context_limit
+    limit = state.live.machine.work.ctx.context_limit
 
     if is_integer(limit) and limit > 0 do
       pair_size =
@@ -148,7 +148,7 @@ defmodule Nest.Agents.Agent.Turn.NoticeInjector do
   end
 
   defp projected_tokens_for_response(response, state, messages) do
-    ctx = %{state.live.turn.ctx | messages: messages}
+    ctx = %{state.live.machine.work.ctx | messages: messages}
 
     case response.tool_calls do
       nil ->
@@ -172,7 +172,15 @@ defmodule Nest.Agents.Agent.Turn.NoticeInjector do
   end
 
   defp put_pending_notice(state, value) do
-    %{state | live: %{state.live | turn: %{state.live.turn | pending_notice: value}}}
+    machine = state.live.machine
+
+    %{
+      state
+      | live: %{
+          state.live
+          | machine: %{machine | work: %{machine.work | pending_notice: value}}
+        }
+    }
   end
 
   defp put_context_projection(state, tokens) do

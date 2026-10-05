@@ -14,9 +14,9 @@ defmodule Nest.Agents.Agent.TurnStructureTest do
 
   use ExUnit.Case, async: true
 
-  alias Nest.Agents.Agent.ChatState.Live.Turn
+  alias Nest.Agents.Agent.Machine.Work
 
-  describe "ChatState.Live.Turn" do
+  describe "Machine.Work" do
     test "has exactly the expected fields (no Agent state duplication)" do
       expected =
         [
@@ -24,24 +24,24 @@ defmodule Nest.Agents.Agent.TurnStructureTest do
           :active_worker,
           :active_worker_kind,
           :ctx,
-          :entry,
           :force_finalize,
           :iteration,
           :max_iterations,
           :pending_notice,
+          :worker_kind,
           :worker_ref
         ]
         |> Enum.sort()
 
-      actual = Turn.__struct__() |> Map.from_struct() |> Map.keys() |> Enum.sort()
+      actual = Work.__struct__() |> Map.from_struct() |> Map.keys() |> Enum.sort()
       assert actual == expected
     end
 
     test "does not duplicate persisted conversation state" do
-      struct_keys = Turn.__struct__() |> Map.from_struct() |> Map.keys()
+      struct_keys = Work.__struct__() |> Map.from_struct() |> Map.keys()
 
       for field <- [:messages, :streaming_acc, :next_message_index, :chat_turn_pid] do
-        refute field in struct_keys, "Live.Turn must not carry #{inspect(field)}"
+        refute field in struct_keys, "Machine.Work must not carry #{inspect(field)}"
       end
     end
   end

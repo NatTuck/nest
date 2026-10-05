@@ -110,7 +110,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
           String.t(),
           [tuple()],
           tuple(),
-          Agent.ChatState.Live.Turn.entry() | nil
+          Agent.Machine.entry() | nil
         ) :: Agent.t()
   def handle_success(state, summary_text, staged, summary_assistant, carried_entry) do
     summary_text = ThinkTags.strip(summary_text)
@@ -299,7 +299,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   status, broadcast `chat:error` + `chat:status`. No marker,
   archive, or summary_user (the user sees the real error).
   """
-  @spec handle_error(Agent.t(), term(), Agent.ChatState.Live.Turn.entry() | nil) :: Agent.t()
+  @spec handle_error(Agent.t(), term(), Agent.Machine.entry() | nil) :: Agent.t()
   def handle_error(state, reason, carried_entry) do
     Logger.warning("Compaction failed: agent=#{state.name} reason=#{inspect(reason)}")
 
@@ -327,14 +327,16 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   @doc """
   Mid-turn compaction request from a running ChatTurn.
   """
-  @spec needs_entry(Agent.t(), Agent.ChatState.Live.Turn.entry() | nil) :: Agent.t()
+  @spec needs_entry(Agent.t(), Agent.Machine.entry() | nil) :: Agent.t()
   def needs_entry(state, carried_entry) do
     state = %{
       state
       | live: %{
           state.live
-          | machine: Machine.to_compaction_generating(state.live.machine),
-            mid_turn_entry: %{entry: carried_entry}
+          | machine: %{
+              Machine.to_compaction_generating(state.live.machine)
+              | mid_turn_entry: %{entry: carried_entry}
+            }
         }
     }
 
@@ -344,20 +346,20 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
 
   @spec check_consecutive(Agent.t()) :: :refuse | {:ok, Agent.t()}
   def check_consecutive(state) do
-    count = state.live.consecutive_compaction_count + 1
+    count = state.live.machine.loop_count + 1
 
     if count > @max_consecutive_compactions do
       # Report the N compactions that already happened as "attempted".
       set_compaction_loop(
         state,
         :consecutive_compaction_threshold,
-        state.live.consecutive_compaction_count,
+        state.live.machine.loop_count,
         @max_consecutive_compactions
       )
 
       :refuse
     else
-      state = %{state | live: %{state.live | consecutive_compaction_count: count}}
+      state = %{state | live: %{state.live | machine: %{state.live.machine | loop_count: count}}}
       {:ok, state}
     end
   end
@@ -376,9 +378,11 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
         state
         | live: %{
             state.live
-            | machine: Machine.to_idle(state.live.machine),
-              consecutive_compaction_count: 0,
-              pending_user_message: nil,
+            | machine: %{
+                Machine.to_idle(state.live.machine)
+                | loop_count: 0,
+                  pending_user_message: nil
+              },
               pending_notice: nil
           }
       }
@@ -398,7 +402,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
 
         state
 
-      entry = state.live.mid_turn_entry ->
+      entry = state.live.machine.mid_turn_entry ->
         state = clear_mid_turn_entry(state)
         needs_entry(state, entry.entry)
 
@@ -433,7 +437,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   end
 
   defp clear_mid_turn_entry(state) do
-    %{state | live: %{state.live | mid_turn_entry: nil}}
+    %{state | live: %{state.live | machine: %{state.live.machine | mid_turn_entry: nil}}}
   end
 
   defp put_idle(state) do

@@ -152,22 +152,28 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     end
   end
 
-  # Store `{content, mode}` in `state.live.pending_user_message`.
+  # Store `{content, mode}` in `state.live.machine.pending_user_message`.
   # The field is the source of truth for the user's incoming
   # message until we know whether compaction fires.
   defp put_pending_user_message(state, pending) do
-    %{state | live: %{state.live | pending_user_message: pending}}
+    %{
+      state
+      | live: %{state.live | machine: %{state.live.machine | pending_user_message: pending}}
+    }
   end
 
   defp clear_pending_user_message(state) do
-    %{state | live: %{state.live | pending_user_message: nil}}
+    %{
+      state
+      | live: %{state.live | machine: %{state.live.machine | pending_user_message: nil}}
+    }
   end
 
   # Build the `Message.t()` struct for the pending user message
   # without appending. Returns `nil` if the field is not set.
   @spec pending_user_message_struct(Nest.Agents.Agent.t()) :: {:user, User.t()} | nil
   def pending_user_message_struct(state) do
-    case state.live.pending_user_message do
+    case state.live.machine.pending_user_message do
       nil -> nil
       {content, effective_mode} -> build_user_message(state, content, effective_mode)
     end
@@ -207,7 +213,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     {stamped_user, state} = append_pending_user_message(state)
 
     effective_mode =
-      case state.live.pending_user_message do
+      case state.live.machine.pending_user_message do
         nil -> state.live.mode
         {_content, mode} -> mode || state.live.mode
       end
@@ -216,7 +222,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
       prepare_streaming_state(
         state,
         effective_mode,
-        state.live.active_message_index
+        state.live.machine.work.active_message_index
       )
 
     {_effective_mode, caps} =
@@ -256,13 +262,14 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   # authoritative `next_message_index`, not from a local
   # prediction.
   defp prepare_streaming_state(state, effective_mode, stamped_index) do
+    machine = Machine.to_chat_generating(state.live.machine)
+
     %{
       state
       | live: %{
           state.live
           | mode: effective_mode,
-            machine: Machine.to_chat_generating(state.live.machine),
-            active_message_index: stamped_index,
+            machine: %{machine | work: %{machine.work | active_message_index: stamped_index}},
             streaming_acc: Streaming.new(stamped_index + 1),
             tool_index_map: %{}
         }
@@ -418,7 +425,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
       prepare_streaming_state(
         state,
         effective_mode,
-        state.live.active_message_index
+        state.live.machine.work.active_message_index
       )
 
     Broadcasts.status(state)

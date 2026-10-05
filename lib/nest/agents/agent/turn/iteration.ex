@@ -27,7 +27,7 @@ defmodule Nest.Agents.Agent.Turn.Iteration do
   """
   @spec notify_max_iterations(Agent.t()) :: :ok
   def notify_max_iterations(state) do
-    turn = state.live.turn
+    turn = state.live.machine.work
 
     if turn.iteration > turn.max_iterations do
       Broadcasts.notification(state.space_id, state.name, %{
@@ -56,8 +56,8 @@ defmodule Nest.Agents.Agent.Turn.Iteration do
   """
   @spec dispatch_compaction(Agent.t(), list()) :: {:noreply, Agent.t()}
   def dispatch_compaction(state, messages) do
-    state = update_turn(state, &%{&1 | ctx: %{&1.ctx | tools: nil, tool_choice: :none}})
-    {_, staged, _} = state.live.turn.entry
+    state = update_work(state, &%{&1 | ctx: %{&1.ctx | tools: nil, tool_choice: :none}})
+    {_, staged, _} = state.live.machine.entry
 
     request =
       messages
@@ -75,7 +75,7 @@ defmodule Nest.Agents.Agent.Turn.Iteration do
   """
   @spec tool_config_for_iteration(Agent.t()) :: {list() | nil, :auto | :none}
   def tool_config_for_iteration(state) do
-    turn = state.live.turn
+    turn = state.live.machine.work
 
     if turn.iteration > turn.max_iterations,
       do: {nil, :none},
@@ -88,7 +88,7 @@ defmodule Nest.Agents.Agent.Turn.Iteration do
   """
   @spec spawn_tool_worker(Agent.t(), [Nest.Messages.ToolCall.t()]) :: {:noreply, Agent.t()}
   def spawn_tool_worker(state, tool_calls) do
-    ctx = state.live.turn.ctx
+    ctx = state.live.machine.work.ctx
     ref = make_ref()
     agent_pid = ctx.agent_pid
 
@@ -107,7 +107,7 @@ defmodule Nest.Agents.Agent.Turn.Iteration do
         Process.monitor(pid)
 
         {:noreply,
-         update_turn(
+         update_work(
            state,
            &%{&1 | active_worker: pid, active_worker_kind: :tools, worker_ref: ref}
          )}
@@ -118,30 +118,30 @@ defmodule Nest.Agents.Agent.Turn.Iteration do
   end
 
   defp put_max_tokens(state, value) do
-    update_turn(state, &%{&1 | ctx: Map.put(&1.ctx, :max_tokens, value)})
+    update_work(state, &%{&1 | ctx: Map.put(&1.ctx, :max_tokens, value)})
   end
 
   defp refresh_ctx_messages(state, messages) do
-    update_turn(state, &%{&1 | ctx: %{&1.ctx | messages: messages}})
+    update_work(state, &%{&1 | ctx: %{&1.ctx | messages: messages}})
   end
 
   defp ordinary_max_tokens(state) do
-    limit = state.live.turn.ctx.context_limit
+    limit = state.live.machine.work.ctx.context_limit
     max(1, min(sane_default(state), round(0.20 * limit)))
   end
 
   defp compactor_max_tokens(state, input) do
-    limit = state.live.turn.ctx.context_limit
+    limit = state.live.machine.work.ctx.context_limit
     max(1, min(limit - Budget.size(input), sane_default(state)))
   end
 
   defp sane_default(state) do
-    model = state.live.turn.ctx.client_config.model
+    model = state.live.machine.work.ctx.client_config.model
     GenerationDefaults.default_max_tokens(model) || 32_000
   end
 
   defp spawn_http_worker(state, messages) do
-    limit = state.live.turn.ctx.context_limit
+    limit = state.live.machine.work.ctx.context_limit
 
     if is_integer(limit) and limit > 0 do
       PreFlight.ensure_passed!(messages, limit)
@@ -166,7 +166,7 @@ defmodule Nest.Agents.Agent.Turn.Iteration do
     end
   end
 
-  defp ordinary_turn?(state), do: not match?({:compaction, _, _}, state.live.turn.entry)
+  defp ordinary_turn?(state), do: not match?({:compaction, _, _}, state.live.machine.entry)
 
   defp refuse_over_budget(state, messages, limit) do
     size = Budget.size(messages)
@@ -191,27 +191,28 @@ defmodule Nest.Agents.Agent.Turn.Iteration do
     {tools, tool_choice} = tool_config_for_iteration(state)
 
     state =
-      update_turn(
+      update_work(
         state,
         &%{&1 | ctx: %{&1.ctx | tools: tools, tool_choice: tool_choice, messages: messages}}
       )
 
-    ctx = state.live.turn.ctx
+    start_http_worker(state)
+  end
+
+  defp start_http_worker(state) do
+    ctx = state.live.machine.work.ctx
     ref = make_ref()
     agent_pid = ctx.agent_pid
 
-    case Task.Supervisor.start_child(
-           Nest.Agents.TaskSupervisor,
-           fn ->
-             Process.put(:"$callers", [agent_pid])
-             HTTPWorker.run(ctx, ref)
-           end
-         ) do
+    case Task.Supervisor.start_child(Nest.Agents.TaskSupervisor, fn ->
+           Process.put(:"$callers", [agent_pid])
+           HTTPWorker.run(ctx, ref)
+         end) do
       {:ok, pid} ->
         Process.monitor(pid)
 
         {:noreply,
-         update_turn(
+         update_work(
            state,
            &%{&1 | active_worker: pid, active_worker_kind: :http, worker_ref: ref}
          )}
@@ -221,7 +222,8 @@ defmodule Nest.Agents.Agent.Turn.Iteration do
     end
   end
 
-  defp update_turn(state, fun) do
-    %{state | live: %{state.live | turn: fun.(state.live.turn)}}
+  defp update_work(state, fun) do
+    machine = state.live.machine
+    %{state | live: %{state.live | machine: %{machine | work: fun.(machine.work)}}}
   end
 end

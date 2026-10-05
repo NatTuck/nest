@@ -74,7 +74,7 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
 
     # Bookkeeping reset.
     assert new_state.chat_state.pending_children == %{}
-    assert new_state.live.turn.active_worker == nil
+    assert new_state.live.machine.work.active_worker == nil
     assert new_state.live.cancelled == false
     assert Machine.status_for(new_state.live.machine) == :idle
 

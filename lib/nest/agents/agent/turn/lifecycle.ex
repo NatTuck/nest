@@ -38,7 +38,7 @@ defmodule Nest.Agents.Agent.Turn.Lifecycle do
   end
 
   defp kill_active_worker(state) do
-    case state.live.turn.active_worker do
+    case state.live.machine.work.active_worker do
       nil ->
         state
 
@@ -61,7 +61,7 @@ defmodule Nest.Agents.Agent.Turn.Lifecycle do
   @spec worker_exited(pid(), term(), Agent.t()) :: {:noreply, Agent.t()}
   def worker_exited(_pid, reason, state) do
     tool_uses =
-      if state.live.turn.active_worker_kind == :tools do
+      if state.live.machine.work.active_worker_kind == :tools do
         MessageList.unpaired_tail_tool_uses(state.chat_state.messages)
       else
         []
@@ -83,7 +83,7 @@ defmodule Nest.Agents.Agent.Turn.Lifecycle do
   end
 
   defp clear_worker(state) do
-    update_turn(state, &%{&1 | active_worker: nil, active_worker_kind: nil, worker_ref: nil})
+    update_work(state, &%{&1 | active_worker: nil, active_worker_kind: nil, worker_ref: nil})
   end
 
   defp recover_interrupted_tool(state, tool_uses) do
@@ -122,7 +122,7 @@ defmodule Nest.Agents.Agent.Turn.Lifecycle do
   @spec finalize_compaction(Agent.t(), Nest.LLM.RunResponse.t(), tuple()) ::
           {:noreply, Agent.t()}
   def finalize_compaction(state, response, summary_assistant) do
-    {_, staged, carried_entry} = state.live.turn.entry
+    {_, staged, carried_entry} = state.live.machine.entry
 
     send(
       self(),
@@ -133,14 +133,24 @@ defmodule Nest.Agents.Agent.Turn.Lifecycle do
   end
 
   @doc """
-  Reset the turn-scoped working memory to its default.
+  Reset the turn-scoped working memory (work + entry) to its default,
+  preserving the machine's resume intents and the loop-breaker counter.
   """
   @spec clear_turn(Agent.t()) :: Agent.t()
   def clear_turn(state) do
-    %{state | live: %{state.live | turn: %Nest.Agents.Agent.ChatState.Live.Turn{}}}
+    machine = state.live.machine
+
+    %{
+      state
+      | live: %{
+          state.live
+          | machine: %{machine | work: %Nest.Agents.Agent.Machine.Work{}, entry: nil}
+        }
+    }
   end
 
-  defp update_turn(state, fun) do
-    %{state | live: %{state.live | turn: fun.(state.live.turn)}}
+  defp update_work(state, fun) do
+    machine = state.live.machine
+    %{state | live: %{state.live | machine: %{machine | work: fun.(machine.work)}}}
   end
 end

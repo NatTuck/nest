@@ -93,7 +93,7 @@ defmodule Nest.Agents.Agent.Compaction.Trigger do
   turn with `carried_entry` (a `{:tool_call, _, _, _}`
   or `{:compact_tool, _, _, _}`).
   """
-  @spec mid_turn(Agent.t(), Agent.ChatState.Live.Turn.entry() | nil) :: Agent.t()
+  @spec mid_turn(Agent.t(), Agent.Machine.entry() | nil) :: Agent.t()
   def mid_turn(state, carried_entry) do
     case ResultHandler.check_consecutive(state) do
       :refuse ->

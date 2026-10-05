@@ -324,7 +324,7 @@ defmodule Nest.Agents.AgentStopTest do
 
       state = :sys.get_state(pid)
       assert Machine.status_for(state.live.machine) == :idle
-      assert state.live.turn.active_worker == nil
+      assert state.live.machine.work.active_worker == nil
       assert state.live.cancelled == false
 
       assert_receive {:chat_status, %{status: "idle"}}, 2000
@@ -374,7 +374,7 @@ defmodule Nest.Agents.AgentStopTest do
         result = TurnHandler.spawn_failed(:sys.get_state(pid), "saturated")
 
         assert Machine.status_for(result.live.machine) == :idle
-        assert is_nil(result.live.turn.ctx)
+        assert is_nil(result.live.machine.work.ctx)
         assert_receive {:chat_error, %{content: content}}, 500
         assert content =~ "saturated"
 
