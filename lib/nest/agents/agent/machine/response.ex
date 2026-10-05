@@ -146,10 +146,10 @@ defmodule Nest.Agents.Agent.Machine.Response do
   end
 
   defp branch(:finalize, m, _response, assistant_msg, base) do
-    # Persist the final assistant while in `:executing_tools` so the
-    # status announcement matches the legacy persist path, then finalize.
-    machine = Phase.enter(m, :chat, :executing_tools, :tools)
-    {:ok, base ++ [{:append, assistant_msg}, :finalize_idle], machine}
+    # A final text reply is not tool execution: append the assistant and
+    # go straight to idle (same shape as a forced finalize).
+    machine = Phase.enter(m, :chat, :idle)
+    {:ok, base ++ [{:append, assistant_msg}, {:finalize, :clean}, {:drain_inbox}], machine}
   end
 
   defp finalize_warning(:silent),

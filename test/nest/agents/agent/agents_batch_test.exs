@@ -279,7 +279,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
   defp zip(list, list2), do: Enum.zip(list, list2)
 
   # Cast a child's completion to the coordinator, mimicking the
-  # child's `chat_idle` cast in production.
+  # child's idle completion in production.
   defp cast_child_completed(parent_pid, child_name, response) do
     usage = %{
       input_tokens: 0,

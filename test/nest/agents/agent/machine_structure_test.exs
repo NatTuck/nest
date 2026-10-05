@@ -218,7 +218,6 @@ defmodule MachineStructureTest do
   end
 
   defp sample_event(:iterate), do: :iterate
-  defp sample_event(:finalize_idle), do: :finalize_idle
   defp sample_event(:inbox_drain), do: {:inbox_drain, [], "queued"}
   defp sample_event(:http_ok), do: {:http_ok, %{tool_calls: []}}
   defp sample_event(:http_error), do: {:http_error, :boom}
@@ -240,7 +239,6 @@ defmodule MachineStructureTest do
   defp sample_event(:loop_ack), do: :loop_ack
   defp sample_event(:blocked), do: {:blocked, :needs_repair, nil}
   defp sample_event(:unblocked), do: {:unblocked}
-  defp sample_event(:chat_idle), do: :chat_idle
   defp sample_event(:workspace_notice), do: :workspace_notice
   defp sample_event(:tool_results), do: {:tool_results, %{results: []}}
   defp sample_event(:child_spawned), do: {:child_spawned, "kid", make_ref(), false}

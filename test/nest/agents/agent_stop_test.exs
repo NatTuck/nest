@@ -151,7 +151,11 @@ defmodule Nest.Agents.AgentStopTest do
       tool_assistant = wait_for_assistant_with_tool_use(2_000)
       assert tool_assistant != nil
       assert Enum.any?(tool_assistant.parts, &match?(%Part.ToolUse{}, &1))
-      assert_receive {:chat_status, %{status: "executing_tools"}}, 500
+
+      # `context-compact` is the sole tool call, so the turn hands off to
+      # the compactor (there is no tool worker to execute); sync on the
+      # resulting `:compacting` status.
+      assert_receive {:chat_status, %{status: "compacting"}}, 500
 
       # The context-compact hand-off completes quickly; the compactor
       # may already have run by the time we get here. Use the public

@@ -241,12 +241,12 @@ defmodule Nest.Messages.Streaming do
   means no assistant message exists, and an empty message must never be
   built or persisted. Callers with a possibly-nil accumulator must
   branch themselves (see
-  `Nest.Agents.Agent.Handlers.TurnHandler.partial_message/2`).
+  `Nest.Agents.Agent.Turn.Terminal.partial_message/2`).
 
-  Used by the stop path
-  (`Nest.Agents.Agent.Handlers.TurnHandler.finalize_partial_if_any/2`)
-  and the stream-error path (`LLMStreamHandler.llm_error_state/2`) so
-  both persist whatever the model had streamed before the turn ended.
+  Used by the terminal/stop recovery path
+  (`Nest.Agents.Agent.Turn.Terminal.recovery_messages/2`) and the
+  stream-error path (`Terminal.error_assistant_message/2`) so both
+  persist whatever the model had streamed before the turn ended.
   """
   @spec partial_message(AssistantAccumulator.t(), map()) ::
           {:assistant, Assistant.t()}

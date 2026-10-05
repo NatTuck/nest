@@ -48,10 +48,15 @@ defmodule Nest.Agents.Agent.InboxTest do
     state = :sys.get_state(pid)
     assert Enum.map(state.live.inbox, & &1.from) == ["alice", "bob"]
 
-    # Simulate the in-flight turn completing; the drain is synchronous
-    # with the `:chat_idle` handling, so `:sys.get_state` below sees the
-    # combined user message already appended.
-    send(pid, {:chat_idle, make_ref()})
+    # The in-flight turn ends (preempted here); the resulting idle
+    # transition clears `cancelled` and drains the queued messages.
+    Agent.stop_chat(pid, self())
+
+    assert Eventually.eventually(
+             fn -> :sys.get_state(pid).live.inbox == [] end,
+             timeout: 500
+           )
+
     state = :sys.get_state(pid)
 
     assert state.live.inbox == []
@@ -72,7 +77,18 @@ defmodule Nest.Agents.Agent.InboxTest do
     set_status(pid, :streaming)
 
     assert {:ok, :queued} = Agent.deliver_message(pid, "alice", @oversized)
-    send(pid, {:chat_idle, make_ref()})
+
+    Agent.stop_chat(pid, self())
+
+    assert Eventually.eventually(
+             fn ->
+               Enum.any?(
+                 user_texts(:sys.get_state(pid)),
+                 &(&1 =~ "queued message" and &1 =~ "saved to")
+               )
+             end,
+             timeout: 500
+           )
 
     state = :sys.get_state(pid)
 

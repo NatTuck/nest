@@ -60,7 +60,6 @@ defmodule Nest.Agents.Agent.Machine do
   @events [
     :chat_request,
     :iterate,
-    :finalize_idle,
     :inbox_drain,
     :http_ok,
     :http_error,
@@ -82,7 +81,6 @@ defmodule Nest.Agents.Agent.Machine do
     :loop_ack,
     :blocked,
     :unblocked,
-    :chat_idle,
     :workspace_notice,
     :tool_results,
     :child_spawned,

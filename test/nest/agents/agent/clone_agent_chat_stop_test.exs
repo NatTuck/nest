@@ -203,8 +203,8 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
       )
 
     # The child finishes *before* the parent's chat_stopped flush
-    # runs. Cast the same shape `chat_idle/1`'s
-    # `notify_parent_on_idle/2` would have produced.
+    # runs. Cast the same shape the child's idle completion sends
+    # (`Terminal.parent_completion/1`).
     child_total = %{
       Broadcasts.empty_usage_totals()
       | output_tokens: 7,

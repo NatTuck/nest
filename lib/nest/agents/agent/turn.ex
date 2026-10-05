@@ -81,7 +81,6 @@ defmodule Nest.Agents.Agent.Turn do
   @spec handle(term(), Agent.t()) :: {:noreply, Agent.t()}
   def handle(:iterate, state), do: reply(settle(state, :iterate))
   def handle(:stop_timer, state), do: reply(settle(state, :stop_timer))
-  def handle({:chat_idle, _pid}, state), do: reply(settle(state, :chat_idle))
 
   # Compatibility `send/2` path for the legacy `{:chat_stopped, _}`: force
   # the stop transition and tear down outstanding query children immediately.

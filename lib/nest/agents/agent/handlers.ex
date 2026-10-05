@@ -38,7 +38,6 @@ defmodule Nest.Agents.Agent.Handlers do
 
   defp route_for(:iterate), do: {:ok, Turn}
   defp route_for(:stop_timer), do: {:ok, Turn}
-  defp route_for({:chat_idle, _}), do: {:ok, Turn}
   defp route_for({:chat_stopped, _}), do: {:ok, Turn}
   defp route_for({:llm_error, _}), do: {:ok, Turn}
   defp route_for({:http_response, _, _}), do: {:ok, Turn}

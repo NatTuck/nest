@@ -103,12 +103,6 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
     {:ok, [{:drain_inbox}], enter(m, :chat, :idle)}
   end
 
-  # Compatibility entry for the legacy `{:chat_idle, _}` lifecycle message:
-  # force the terminal idle transition and drain the async inbox.
-  def do_step(%{phase: p} = m, :chat_idle) when p != :stopping do
-    {:ok, [{:drain_inbox}], enter(m, :chat, :idle)}
-  end
-
   # Blocked phases reject ordinary work until an exit event unsticks them.
   def do_step(%{phase: p} = m, _event) when p in @blocked, do: {:ignore, :blocked, m}
 
@@ -310,14 +304,6 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
     do: {:ignore, :stale_result, m}
 
   # --- executing tools ---
-
-  # The assistant reply lands while the machine is briefly `:executing_tools`
-  # (matching the legacy persist path, which announced that status while
-  # appending the final assistant); then the turn finalizes to idle.
-  def do_step(%{phase: :executing_tools} = m, :finalize_idle) do
-    machine = enter(m, :chat, :idle)
-    {:ok, [{:finalize, :clean}, {:drain_inbox}], machine}
-  end
 
   def do_step(%{phase: :executing_tools} = m, {:tool_results, ref, results}) do
     if valid_ref?(m, ref), do: tool_results(m, results), else: {:ignore, :stale_result, m}
