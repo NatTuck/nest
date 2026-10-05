@@ -30,6 +30,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Handlers.LLMStreamHandler.FileAccess
   alias Nest.Agents.Agent.Inbox
+  alias Nest.Agents.Agent.Machine
   alias Nest.Messages.Assistant
   alias Nest.Messages.MessageList
   alias Nest.Messages.Part
@@ -52,7 +53,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   end
 
   def handle({:llm_error, error_msg}, state) do
-    llm_error(error_msg, state)
+    {:noreply, llm_error_state(error_msg, state)}
   end
 
   def handle({:tool_calls_received, {:assistant, %Assistant{} = msg}}, state) do
@@ -236,10 +237,16 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   # formatted error string; we are the single source of
   # `chat:error` events (the worker no longer broadcasts
   # directly — that double-broadcast was a bug). The error
-  # is broadcast with the `[Source: ChatTurn.run_chat_task/1]`
+  # is broadcast with the `[Source: Turn.run/2]`
   # tag so the user can grep the server log for the matching
   # entry.
-  defp llm_error(error_msg, state) do
+  #
+  # Public so the in-process driver can finalize an error stream
+  # directly (see `Turn.ResponseHandler`'s empty-response case) and
+  # keep the `chat:error` broadcast ordered before the idle status.
+  @doc false
+  @spec llm_error_state(String.t(), Nest.Agents.Agent.t()) :: Nest.Agents.Agent.t()
+  def llm_error_state(error_msg, state) do
     error_message = build_error_message(error_msg, state)
 
     {stamped, state} = Nest.Agents.Agent.__append_message__(state, error_message)
@@ -251,8 +258,9 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
           state.live
           | streaming_acc: nil,
             active_message_index: stamped_index,
-            status: :idle,
-            tool_index_map: %{}
+            machine: Machine.to_idle(state.live.machine),
+            tool_index_map: %{},
+            turn: %Nest.Agents.Agent.ChatState.Live.Turn{}
         }
     }
 
@@ -261,11 +269,11 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
       state.name,
       stamped_index,
       error_msg,
-      "ChatTurn.run_chat_task/1"
+      "Turn.run/2"
     )
 
     Broadcasts.status(state)
-    {:noreply, Inbox.drain_if_idle(state)}
+    Inbox.drain_if_idle(state)
   end
 
   # Preserve whatever the model streamed before the failure (a dropped
@@ -293,25 +301,22 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
     end
   end
 
-  # Build the user-facing error message. We lead with the
-  # exception's message (the part the user is most likely to
-  # recognize — e.g. "protocol Enumerable not implemented for
-  # Atom. ... Got value: nil") and then append a 5-frame
-  # stacktrace snippet so the UI shows where the crash
-  # happened. The full stacktrace is in the server log
-  # (logged by both the chat task and this handler).
-  defp tool_calls_received(tool_call_message, state) do
+  # Tool-call responses are persisted only once their batch is confirmed
+  # to fit; the in-process driver calls this directly.
+  @doc false
+  def tool_calls_received(tool_call_message, state) do
     tool_call_message = {:assistant, %{tool_call_message | index: nil}}
 
     {_stamped, state} = Nest.Agents.Agent.__append_message__(state, tool_call_message)
 
-    state = %{state | live: %{state.live | status: :executing_tools}}
+    state = %{state | live: %{state.live | machine: Machine.to_chat_tools(state.live.machine)}}
 
     Broadcasts.status(state)
     {:noreply, state}
   end
 
-  defp tool_results_received(tool_result_message, state) do
+  @doc false
+  def tool_results_received(tool_result_message, state) do
     tool_result_message = {:tool, %{tool_result_message | index: nil}}
 
     if answers_pending_tool_use?(state.chat_state.messages, tool_result_message) do
@@ -323,7 +328,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
       # orphan `tool_result` in an otherwise-closed sequence. Drop it.
       Logger.warning(
         "[agent:#{state.name}] ignoring a tool result that does not answer the trailing " <>
-          "tool_use (status=#{state.live.status}); dropping stale/duplicate result"
+          "tool_use (status=#{Machine.status_for(state.live.machine)}); dropping stale/duplicate result"
       )
 
       {:noreply, state}
@@ -348,7 +353,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
       state
       | live: %{
           state.live
-          | status: :streaming,
+          | machine: Machine.to_chat_generating(state.live.machine),
             streaming_acc: Streaming.new(stamped_index + 1),
             tool_index_map: %{}
         }
@@ -382,19 +387,15 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
   # tool result.
 
   defp llm_usage(usage, state) do
-    # The per-call usage is recorded on the assistant message itself
-    # (`Messages.assistant/1` copies `response.usage`), so
-    # `ConversationSize` derives its real floor from the newest assistant's
-    # `usage` when it sizes the live context. We do not mutate any
-    # already-committed message here.
+    {:noreply, llm_usage_state(usage, state)}
+  end
 
-    # Merge per-call usage into the running totals and broadcast a
-    # fresh `chat:status` so the chip can update mid-stream.
-    # `last_input` is overwritten (not summed): each LLM call's
-    # `prompt_tokens` is the size of the full context sent for that
-    # call, so the *most recent* value is the current context size.
-    # `total_output` and `total_reasoning` are cumulative across the
-    # session.
+  # Merge per-call usage into the running totals and broadcast a fresh
+  # `chat:status` so the chip can update mid-stream. Shared with the
+  # in-process turn driver, which calls it directly.
+  @doc false
+  @spec llm_usage_state(map() | nil, Nest.Agents.Agent.t()) :: Nest.Agents.Agent.t()
+  def llm_usage_state(usage, state) do
     state = %{
       state
       | llm_metrics: %{
@@ -404,7 +405,7 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
     }
 
     Broadcasts.status(state)
-    {:noreply, state}
+    state
   end
 
   # The ChatTurn's lifecycle signals (`{:chat_idle, _}`,

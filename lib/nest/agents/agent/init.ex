@@ -19,11 +19,11 @@ defmodule Nest.Agents.Agent.Init do
   @spawn_tools ~w(agents-spawn agents-batch)
 
   alias Nest.Agents.Agent.Broadcasts
-  alias Nest.Agents.Agent.ChatTurn.ContextReminder
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Persistence, as: AgentPersistence
   alias Nest.Agents.Agent.SystemPrompt
   alias Nest.Agents.Agent.TreePosition
+  alias Nest.Agents.Agent.Turn.ContextReminder
   alias Nest.Messages.Part
   alias Nest.Messages.System
   alias Nest.Tools

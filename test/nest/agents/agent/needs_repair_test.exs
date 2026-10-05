@@ -10,6 +10,7 @@ defmodule Nest.Agents.Agent.NeedsRepairTest do
   """
 
   use Nest.DataCase, async: true
+  alias Nest.Agents.Agent.Machine
 
   alias Nest.Agents
   alias Nest.Agents.Agent
@@ -137,7 +138,7 @@ defmodule Nest.Agents.Agent.NeedsRepairTest do
           assert {:ok, pid} = Supervisor.start_under_test(attrs)
           state = :sys.get_state(pid)
 
-          assert state.live.status == :needs_repair
+          assert Machine.status_for(state.live.machine) == :needs_repair
           assert state.live.repair.violations == attrs.sequence_violations
           assert state.live.repair.command == attrs.repair_command
 

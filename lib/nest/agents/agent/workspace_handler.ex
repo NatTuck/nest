@@ -22,6 +22,7 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ChatPipeline
   alias Nest.Agents.Agent.Compaction.Trigger
+  alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.ToolFilter
   alias Nest.Messages.Assistant
   alias Nest.Messages.Part
@@ -36,7 +37,7 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
   @spec handle({:set_workspace, String.t() | nil}, GenServer.from(), Agent.t()) ::
           GenServer.reply()
   def handle({:set_workspace, path}, _from, state) do
-    if state.live.status in [:idle, :model_missing] do
+    if Machine.status_for(state.live.machine) in [:idle, :model_missing] do
       perform_workspace_change(state, normalize(path))
     else
       {:reply, {:error, :agent_busy}, state}

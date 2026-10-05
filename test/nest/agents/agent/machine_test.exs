@@ -1,4 +1,4 @@
-defmodule Nest.Agents.Agent.MachineTest do
+defmodule MachineTest do
   @moduledoc false
   # NOTE: per the project rule, this file's behavior contract is carried by
   # the tests + inline # comments below, not by this moduledoc.

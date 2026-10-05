@@ -18,12 +18,13 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   """
 
   alias Nest.Agents.Agent.Broadcasts
-  alias Nest.Agents.Agent.ChatTurn.ContextReminder
-  alias Nest.Agents.Agent.ChatTurnSpawner
   alias Nest.Agents.Agent.Compaction.Overflow
   alias Nest.Agents.Agent.Compaction.Trigger
+  alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.NoticePairInjector
   alias Nest.Agents.Agent.SystemPrompt
+  alias Nest.Agents.Agent.Turn
+  alias Nest.Agents.Agent.Turn.ContextReminder
   alias Nest.Agents.Agent.WorkspaceHandler
   alias Nest.Messages.Part
   alias Nest.Messages.Streaming
@@ -221,7 +222,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     {_effective_mode, caps} =
       resolve_mode_and_caps(state.live.mode, state.vocation, state.workspace_path, state.tmp_path)
 
-    ChatTurnSpawner.spawn(state, state.chat_state.messages, {:user_message, stamped_user}, caps)
+    Turn.start(state, state.chat_state.messages, {:user_message, stamped_user}, caps)
   end
 
   # Backward-compat alias used by older test fixtures. Routes
@@ -260,7 +261,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
       | live: %{
           state.live
           | mode: effective_mode,
-            status: :streaming,
+            machine: Machine.to_chat_generating(state.live.machine),
             active_message_index: stamped_index,
             streaming_acc: Streaming.new(stamped_index + 1),
             tool_index_map: %{}
@@ -341,7 +342,11 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   # messages until they restart the agent or change the model.
   defp refuse_compaction(state) do
     state = clear_pending_user_message(state)
-    state = %{state | live: %{state.live | status: :context_overflow}}
+
+    state = %{
+      state
+      | live: %{state.live | machine: Machine.to_blocked(state.live.machine, :context_overflow)}
+    }
 
     Broadcasts.status(state)
 
@@ -421,7 +426,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     {_effective_mode, caps} =
       resolve_mode_and_caps(state.live.mode, state.vocation, state.workspace_path, state.tmp_path)
 
-    ChatTurnSpawner.spawn(state, state.chat_state.messages, {:user_message, stamped_user}, caps)
+    Turn.start(state, state.chat_state.messages, {:user_message, stamped_user}, caps)
   end
 
   @doc """

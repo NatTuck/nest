@@ -38,10 +38,11 @@ defmodule Nest.Agents.Agent.Compaction.Trigger do
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ChatPipeline
-  alias Nest.Agents.Agent.ChatTurnSpawner
   alias Nest.Agents.Agent.Compaction.Overflow
   alias Nest.Agents.Agent.Compaction.ResultHandler
+  alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.SystemPrompt
+  alias Nest.Agents.Agent.Turn
   alias Nest.Messages.Assistant
   alias Nest.Messages.MessageList
   alias Nest.Messages.Part
@@ -62,7 +63,11 @@ defmodule Nest.Agents.Agent.Compaction.Trigger do
   """
   @spec post_turn(Agent.t()) :: Agent.t()
   def post_turn(state) do
-    state = %{state | live: %{state.live | status: :compacting}}
+    state = %{
+      state
+      | live: %{state.live | machine: Machine.to_compaction_generating(state.live.machine)}
+    }
+
     Broadcasts.status(state)
 
     case ResultHandler.check_consecutive(state) do
@@ -88,7 +93,7 @@ defmodule Nest.Agents.Agent.Compaction.Trigger do
   turn with `carried_entry` (a `{:tool_call, _, _, _}`
   or `{:compact_tool, _, _, _}`).
   """
-  @spec mid_turn(Agent.t(), Agent.ChatTurn.State.entry() | nil) :: Agent.t()
+  @spec mid_turn(Agent.t(), Agent.ChatState.Live.Turn.entry() | nil) :: Agent.t()
   def mid_turn(state, carried_entry) do
     case ResultHandler.check_consecutive(state) do
       :refuse ->
@@ -231,7 +236,7 @@ defmodule Nest.Agents.Agent.Compaction.Trigger do
         Map.get(next_state, :tmp_path)
       )
 
-    ChatTurnSpawner.spawn(
+    Turn.start(
       next_state,
       next_state.chat_state.messages,
       {:compaction, staged, carried_entry},
@@ -261,7 +266,7 @@ defmodule Nest.Agents.Agent.Compaction.Trigger do
   defp broadcast_oversized(state, system_prompt) do
     state = %{
       state
-      | live: %{state.live | status: :context_overflow}
+      | live: %{state.live | machine: Machine.to_blocked(state.live.machine, :context_overflow)}
     }
 
     Broadcasts.status(state)

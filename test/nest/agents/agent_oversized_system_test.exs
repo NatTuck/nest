@@ -15,6 +15,7 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
     message uses the rendered size, not the messages[0] fallback.
   """
   use Nest.DataCase, async: true
+  alias Nest.Agents.Agent.Machine
 
   import ExUnit.CaptureLog
 
@@ -79,7 +80,7 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
   # Build a minimal state struct for `Trigger.post_turn/1` tests.
   # `Trigger.post_turn/1` is a regular function that reads only
   # `state.name`, `state.vocation`, `state.workspace_path`,
-  # `state.depth`, `state.llm_metrics`, and `state.live.status`.
+  # `state.depth`, `state.llm_metrics`, and `Machine.status_for(state.live.machine)`.
   # Spawning a real Agent is ~100ms overhead per test; building
   # the struct directly is <5ms. The test verifies the in-memory
   # state shape + PubSub broadcast, not the GenServer lifecycle.
@@ -102,7 +103,7 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
         descendant_usage: empty_usage_totals()
       },
       live: %Nest.Agents.Agent.ChatState.Live{
-        status: :idle
+        machine: %Machine{}
       }
     }
   end
@@ -127,12 +128,12 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
       # Build a minimal state struct (no Agent process) — `Trigger.post_turn/1`
       # is a regular function that only reads `state.name`,
       # `state.vocation`, `state.workspace_path`, `state.depth`,
-      # `state.llm_metrics`, and `state.live.status`.
+      # `state.llm_metrics`, and `Machine.status_for(state.live.machine)`.
       # Spawning a real Agent is ~100ms overhead per test;
       # building the struct directly is <5ms. The test verifies
       # the in-memory state shape, not the GenServer lifecycle.
       state_before = build_minimal_state(vocation)
-      refute state_before.live.status == :context_overflow
+      refute Machine.status_for(state_before.live.machine) == :context_overflow
 
       # `Trigger.post_turn/1` → `broadcast_oversized/2` → `Overflow.broadcast/5`
       # → `Broadcasts.error/4` which calls `Logger.error/2`. AGENTS.md
@@ -144,7 +145,7 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
           Trigger.post_turn(state_before)
         end)
 
-      assert state_after.live.status == :context_overflow
+      assert Machine.status_for(state_after.live.machine) == :context_overflow
     end
 
     test "the broadcast carries the oversized-system wording" do
@@ -174,9 +175,9 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
 
       {state_after, _log} = with_log(fn -> Trigger.post_turn(state) end)
 
-      assert state_after.live.status == :context_overflow
+      assert Machine.status_for(state_after.live.machine) == :context_overflow
 
-      assert state_after.live.chat_turn_pid == state.live.chat_turn_pid,
+      assert is_nil(state_after.live.turn.ctx),
              "Trigger.post_turn should not have spawned a chat turn for an oversized system"
     end
   end
@@ -199,8 +200,8 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
       # agent should NOT have transitioned to :context_overflow
       # (whether or not the summary budget check refuses on its
       # own — that's a different code path).
-      assert state_after.live.status != :context_overflow or
-               state_after.live.status == :compacting
+      assert Machine.status_for(state_after.live.machine) != :context_overflow or
+               Machine.status_for(state_after.live.machine) == :compacting
     end
   end
 
@@ -230,8 +231,8 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
       # case. Capture so the test output stays clean.
       {state_after, _log} = with_log(fn -> Trigger.post_turn(state) end)
 
-      assert state_after.live.status == :compacting,
-             "expected :compacting, got #{inspect(state_after.live.status)}"
+      assert Machine.status_for(state_after.live.machine) == :compacting,
+             "expected :compacting, got #{inspect(Machine.status_for(state_after.live.machine))}"
     end
   end
 end

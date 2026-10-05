@@ -14,6 +14,7 @@ defmodule Nest.Agents.AgentStreamErrorTest do
     3. Broadcast `chat:error` and transition to `:idle`.
   """
   use Nest.DataCase, async: true
+  alias Nest.Agents.Agent.Machine
 
   import Eventually
   import ExUnit.CaptureLog
@@ -71,15 +72,15 @@ defmodule Nest.Agents.AgentStreamErrorTest do
         assert content =~ "stream ended unexpectedly"
       end)
 
-      # The ChatTurn stops asynchronously after `llm_error` idles the
+      # The in-process turn clears its worker as `llm_error` idles the
       # agent, so wait for it to clear rather than reading immediately.
       assert eventually(
-               fn -> :sys.get_state(pid).live.chat_turn_pid == nil end,
+               fn -> :sys.get_state(pid).live.turn.active_worker == nil end,
                timeout: 1_000
              )
 
       state = :sys.get_state(pid)
-      assert state.live.status == :idle
+      assert Machine.status_for(state.live.machine) == :idle
     end
 
     test "an error with no streamed content produces an error-only message" do

@@ -11,42 +11,36 @@ defmodule Nest.Agents.Agent.Handlers do
       errors, usage).
     * `Nest.Agents.Agent.Handlers.ApiLogHandler` — API log
       events.
-    * `Nest.Agents.Agent.Handlers.ChatTurnHandler` — chat
-      turn lifecycle events.
+    * `Nest.Agents.Agent.Handlers.TurnHandler` — chat turn
+      lifecycle events.
+    * `Nest.Agents.Agent.Handlers.ExitHandler` —
+      process exit signals.
+    * `Nest.Agents.Agent.Turn` — the in-process turn driver
+      (iteration, worker results).
     * `Nest.Agents.Agent.Compaction.ResultHandler` —
       compaction completion + retry events (the
       trigger-side lives in
       `Nest.Agents.Agent.Compaction.Trigger`).
-  * `Nest.Agents.Agent.Handlers.ExitHandler` —
-      process exit signals.
-
-  Context-limit resolution happens once at startup in
-  `Nest.Agents.Agent.Init.initial_context_limit/1` (synchronous,
-  reads the cached `Nest.Models` cache) — there is no
-  mid-flight discovery event to handle here.
   """
 
   alias Nest.Agents.Agent.Compaction.ResultHandler
   alias Nest.Agents.Agent.Handlers.ApiLogHandler
-  alias Nest.Agents.Agent.Handlers.ChatTurnHandler
   alias Nest.Agents.Agent.Handlers.ExitHandler
   alias Nest.Agents.Agent.Handlers.LLMStreamHandler
+  alias Nest.Agents.Agent.Handlers.TurnHandler
+  alias Nest.Agents.Agent.Turn
 
   @doc """
   Dispatch an arbitrary `handle_info/2` message. Returns
   the GenServer's reply tuple (`{:noreply, state}` or
   `{:stop, reason, state}`).
-
-  The message tag is extracted to look up a sub-handler
-  module; the sub-handler then pattern-matches the message
-  shape. This keeps the top-level dispatch under the ABCSize
-  and cyclomatic-complexity limits.
   """
   @spec handle(term(), Nest.Agents.Agent.t()) :: GenServer.reply()
   def handle(msg, state) do
     case route_for(msg) do
       {:ok, LLMStreamHandler} -> LLMStreamHandler.handle(msg, state)
-      {:ok, ChatTurnHandler} -> ChatTurnHandler.handle(msg, state)
+      {:ok, TurnHandler} -> TurnHandler.handle(msg, state)
+      {:ok, Turn} -> Turn.handle(msg, state)
       {:ok, ApiLogHandler} -> ApiLogHandler.handle(msg, state)
       {:ok, ResultHandler} -> ResultHandler.handle(msg, state)
       {:ok, ExitHandler} -> ExitHandler.handle(msg, state)
@@ -54,21 +48,23 @@ defmodule Nest.Agents.Agent.Handlers do
     end
   end
 
-  # Tag → sub-handler module. An unknown tag falls through to
-  # the `unknown/1` catch-all.
   defp route_for({:delta_received, _, _}), do: {:ok, LLMStreamHandler}
   defp route_for({:thinking_signature_received, _}), do: {:ok, LLMStreamHandler}
   defp route_for({:llm_error, _}), do: {:ok, LLMStreamHandler}
   defp route_for({:tool_calls_received, _}), do: {:ok, LLMStreamHandler}
   defp route_for({:tool_results_received, _}), do: {:ok, LLMStreamHandler}
   defp route_for({:llm_usage, _}), do: {:ok, LLMStreamHandler}
-  defp route_for({:chat_idle, _}), do: {:ok, ChatTurnHandler}
-  defp route_for({:chat_stopped, _}), do: {:ok, ChatTurnHandler}
-  defp route_for({:chat_crashed, _, _}), do: {:ok, ChatTurnHandler}
-  defp route_for({:set_crossed_thresholds, _}), do: {:ok, ChatTurnHandler}
-  defp route_for({:stop_fallback, _}), do: {:ok, ChatTurnHandler}
-  defp route_for({:DOWN, _, :process, _, _}), do: {:ok, ChatTurnHandler}
-  defp route_for({:set_context_projection, _}), do: {:ok, ChatTurnHandler}
+  defp route_for(:iterate), do: {:ok, Turn}
+  defp route_for({:http_response, _, _}), do: {:ok, Turn}
+  defp route_for({:http_error, _, _}), do: {:ok, Turn}
+  defp route_for({:worker_crashed, _, _, _}), do: {:ok, Turn}
+  defp route_for({:tool_results, _, _}), do: {:ok, Turn}
+  defp route_for({:DOWN, _, :process, _, _}), do: {:ok, Turn}
+  defp route_for({:chat_idle, _}), do: {:ok, TurnHandler}
+  defp route_for({:chat_stopped, _}), do: {:ok, TurnHandler}
+  defp route_for({:chat_crashed, _, _}), do: {:ok, TurnHandler}
+  defp route_for({:set_crossed_thresholds, _}), do: {:ok, TurnHandler}
+  defp route_for({:set_context_projection, _}), do: {:ok, TurnHandler}
   defp route_for({:api_log_sequences_updated, _}), do: {:ok, ApiLogHandler}
   defp route_for({:compaction_done, _, _, _, _}), do: {:ok, ResultHandler}
   defp route_for({:compaction_failed, _, _}), do: {:ok, ResultHandler}

@@ -1,4 +1,4 @@
-defmodule Nest.Agents.Agent.ChatTurn.IterationTest do
+defmodule Nest.Agents.Agent.Turn.IterationTest do
   @moduledoc """
   `Iteration.tool_config_for_iteration/1` — the `{tools, tool_choice}`
   pair the turn hands the HTTP worker.
@@ -14,33 +14,31 @@ defmodule Nest.Agents.Agent.ChatTurn.IterationTest do
 
   use ExUnit.Case, async: true
 
-  alias Nest.Agents.Agent.ChatTurn.Iteration
-  alias Nest.Agents.Agent.ChatTurn.State
+  alias Nest.Agents.Agent.ChatState.Live
+  alias Nest.Agents.Agent.Turn.Iteration
 
   @tools [%{name: "context-check"}]
 
   test "tools are dropped only once the iteration counter passes the cap" do
-    ctx = %{tools: @tools, tool_choice: :auto}
-
     # Below the cap the turn's own tools and tool choice pass through.
-    assert Iteration.tool_config_for_iteration(%State{
-             iteration: 4,
-             max_iterations: 5,
-             ctx: ctx
-           }) == {@tools, :auto}
+    assert Iteration.tool_config_for_iteration(state(4, 5)) == {@tools, :auto}
 
     # Still at the cap: the last in-budget round keeps its tools.
-    assert Iteration.tool_config_for_iteration(%State{
-             iteration: 5,
-             max_iterations: 5,
-             ctx: ctx
-           }) == {@tools, :auto}
+    assert Iteration.tool_config_for_iteration(state(5, 5)) == {@tools, :auto}
 
     # Past the cap: this is the final call.
-    assert Iteration.tool_config_for_iteration(%State{
-             iteration: 6,
-             max_iterations: 5,
-             ctx: ctx
-           }) == {nil, :none}
+    assert Iteration.tool_config_for_iteration(state(6, 5)) == {nil, :none}
+  end
+
+  defp state(iteration, max_iterations) do
+    %Nest.Agents.Agent{
+      live: %Live{
+        turn: %Live.Turn{
+          iteration: iteration,
+          max_iterations: max_iterations,
+          ctx: %{tools: @tools, tool_choice: :auto}
+        }
+      }
+    }
   end
 end

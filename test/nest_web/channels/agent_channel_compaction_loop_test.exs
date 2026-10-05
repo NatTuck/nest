@@ -17,6 +17,7 @@ defmodule NestWeb.AgentChannelCompactionLoopTest do
   """
 
   use NestWeb.ChannelCase, async: true
+  alias Nest.Agents.Agent.Machine
   use NestWeb.AgentChannelTestHelpers
 
   import Mimic
@@ -56,7 +57,13 @@ defmodule NestWeb.AgentChannelCompactionLoopTest do
     {:ok, agent_pid} = Supervisor.get_agent(space_id, agent_id)
 
     :sys.replace_state(agent_pid, fn %Agent{live: cs} = state ->
-      %{state | live: %{cs | status: :compaction_loop_detected}}
+      %{
+        state
+        | live: %{
+            cs
+            | machine: Machine.status_to_machine(cs.machine, :compaction_loop_detected)
+          }
+      }
     end)
 
     ref = push(socket, "chat:message", %{"content" => "trying to send", "mode" => "chat"})
@@ -79,7 +86,11 @@ defmodule NestWeb.AgentChannelCompactionLoopTest do
     :sys.replace_state(agent_pid, fn %Agent{live: cs} = state ->
       %{
         state
-        | live: %{cs | status: :compaction_loop_detected, consecutive_compaction_count: 4}
+        | live: %{
+            cs
+            | machine: Machine.status_to_machine(cs.machine, :compaction_loop_detected),
+              consecutive_compaction_count: 4
+          }
       }
     end)
 
@@ -90,7 +101,7 @@ defmodule NestWeb.AgentChannelCompactionLoopTest do
     # and the counter resets to 0.
     state = :sys.get_state(agent_pid)
 
-    assert state.live.status == :idle
+    assert Machine.status_for(state.live.machine) == :idle
     assert state.live.consecutive_compaction_count == 0
   end
 end

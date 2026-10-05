@@ -1,19 +1,19 @@
-defmodule Nest.Agents.Agent.ChatTurnTest do
+defmodule Nest.Agents.Agent.TurnAcceptanceTest do
   @moduledoc """
-  Acceptance tests for the `Nest.Agents.Agent.ChatTurn`
-  GenServer — the iteration state machine that drives each
-  chat turn. These tests are the contract: they drive the
-  ChatTurn through every transition (single-iteration,
-  multi-iteration, budget reminder, max-iterations
-  second-chance, user stop, HTTP crash, nil usage, multi-turn)
-  with a real Agent and the existing `MockClient`.
+  Acceptance tests for the Agent's in-process turn driver —
+  the iteration state machine that drives each chat turn.
+  These tests are the contract: they drive the turn through
+  every transition (single-iteration, multi-iteration, budget
+  reminder, max-iterations second-chance, user stop, HTTP
+  crash, nil usage, multi-turn) with a real Agent and the
+  existing `MockClient`.
 
   They use `:sys.get_state/1` to inspect the Agent's state
   directly so we can assert against the message index, the
-  status, and the `chat_turn_pid` field (the externally
-  visible contract the ChatTurn must honor). PubSub
-  broadcasts are used to assert the externally visible
-  contract (chat:message, chat:status, chat:error).
+  status, and the active worker (the externally visible
+  contract the driver must honor). PubSub broadcasts are used
+  to assert the externally visible contract (chat:message,
+  chat:status, chat:error).
 
   These tests must pass before the refactor is complete.
   They cover the regression cases that the old
@@ -21,6 +21,7 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
   dual-counter bug class.
   """
   use Nest.DataCase, async: true
+  alias Nest.Agents.Agent.Machine
 
   import ExUnit.CaptureLog
   import Mimic
@@ -91,8 +92,8 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
 
       state = :sys.get_state(pid)
 
-      assert state.live.status == :idle
-      assert state.live.chat_turn_pid == nil
+      assert Machine.status_for(state.live.machine) == :idle
+      assert state.live.turn.active_worker == nil
       assert state.live.cancelled == false
 
       indices = message_indices(state)
@@ -147,7 +148,7 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
       assert length(indices) >= 5
       assert indices == Enum.sort(indices), "indices must be sorted"
       assert length(Enum.uniq(indices)) == length(indices), "indices must be unique"
-      assert state.live.status == :idle
+      assert Machine.status_for(state.live.machine) == :idle
     end
   end
 
@@ -260,8 +261,8 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
       state = :sys.get_state(pid)
 
       # The agent goes to :idle after the final call.
-      assert state.live.status == :idle
-      assert state.live.chat_turn_pid == nil
+      assert Machine.status_for(state.live.machine) == :idle
+      assert state.live.turn.active_worker == nil
 
       assert Enum.any?(state.chat_state.messages, fn
                {:assistant, %Assistant{parts: parts}} ->
@@ -307,8 +308,8 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
 
       state = :sys.get_state(pid)
 
-      assert state.live.status == :idle
-      assert state.live.chat_turn_pid == nil
+      assert Machine.status_for(state.live.machine) == :idle
+      assert state.live.turn.active_worker == nil
 
       final_assistants =
         Enum.filter(state.chat_state.messages, fn
@@ -359,8 +360,8 @@ defmodule Nest.Agents.Agent.ChatTurnTest do
 
       state = :sys.get_state(pid)
 
-      assert state.live.status == :idle
-      assert state.live.chat_turn_pid == nil
+      assert Machine.status_for(state.live.machine) == :idle
+      assert state.live.turn.active_worker == nil
     end
   end
 

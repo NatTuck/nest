@@ -19,6 +19,7 @@ defmodule Nest.Agents.Agent.Broadcasts do
 
   require Logger
 
+  alias Nest.Agents.Agent.Machine
   alias Nest.Messages.Compaction
   alias Nest.PubSub
 
@@ -325,7 +326,7 @@ defmodule Nest.Agents.Agent.Broadcasts do
     descendant = state.llm_metrics.descendant_usage
 
     %{
-      status: to_string(state.live.status),
+      status: to_string(Machine.status_for(state.live.machine)),
       currentMode: state.live.mode,
       model: model_payload(state.model),
       workspacePath: state.workspace_path,

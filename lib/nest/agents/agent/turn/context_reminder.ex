@@ -1,45 +1,11 @@
-defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
+defmodule Nest.Agents.Agent.Turn.ContextReminder do
   @moduledoc """
   Mid-iteration context-usage reminders for the LLM.
 
-  Whenever the chat task is about to make an LLM call, the
-  ChatTurn's `iterate/1` checks the current context usage
-  against a list of thresholds (25%, 50%, 75%). When a new
-  threshold is crossed, the notice is deferred and attaches to
-  the next tool response as a `Part.Text`, or is injected as a
-  `[notice_user, ack_assistant]` pair when there are no pending
-  tool results.
-
-  Both sides of the pair carry information — the assistant ack
-  primes the model's awareness for the next real response.
-
-  Thresholds measure against the *working* budget
+  Thresholds (25%, 50%, 75%) measure against the *working* budget
   (`context_limit - Reserve.compaction_reserve/1`), not the raw
-  window — the same denominator the UI chip shows alongside its
-  raw window percent (see
-  `Nest.Agents.Agent.Broadcasts.Usage.context_usage_map/4`).
-
-  Firing rules:
-    * Each threshold fires at most once between compactions.
-      The "already announced" set lives on
-      `Nest.Agents.Agent.ChatState.crossed_thresholds` (per
-      conversation, not per ChatTurn).
-    * Only the highest currently-crossed threshold is announced.
-    * When compaction succeeds, the set is cleared.
-    * On restore (`Init.seed_from_db/3`) the set is rebuilt from the
-      `metadata["context_threshold"]` stamps this module puts on the
-      injected notices, so a BEAM restart mid-conversation does not
-      re-announce a threshold.
-    * If `context_limit` is unknown (nil), no warning is injected.
-
-  Notice specs (the generic mechanism for Case 2 injection):
-
-  `spec/3` returns a `%{kind, attention, notice}` map when a
-  new threshold crosses, or `nil` otherwise. The attention text
-  is the short string the LLM sees as a synthetic assistant
-  message just before the notice; the notice text is the full
-  format with token numbers. See `ResponseHandler.collect_case2_specs/2`
-  for how specs are collected and injected.
+  window. Each threshold fires at most once between compactions; the
+  "already announced" set lives on `state.live.crossed_thresholds`.
   """
 
   alias Nest.LLM.ClientConfig
@@ -79,8 +45,7 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
 
   @doc """
   Returns the highest threshold atom that is currently
-  crossed but not yet in `crossed`, or `nil` if no new
-  threshold should be announced.
+  crossed but not yet in `crossed`, or `nil`.
   """
   @spec highest_unannounced(non_neg_integer(), pos_integer(), MapSet.t(atom())) ::
           atom() | nil
@@ -101,14 +66,7 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
   end
 
   @doc """
-  Notice text for a threshold atom. Returns a short
-  sentence the callers can attach to a tool response or
-  use as the user side of a synthetic pair.
-
-  `compact?` (default `true`) controls whether the p75 notice
-  recommends the `context-compact` tool. Pass `false` when the
-  agent has no such tool (see `compact_available?/1`) so the
-  prompt never suggests a tool the model cannot call.
+  Notice text for a threshold atom.
   """
   @spec notice_text(atom(), boolean()) :: String.t()
   def notice_text(atom, compact? \\ true)
@@ -119,10 +77,6 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
 
   @doc """
   Assistant ack text that pairs with a given notice.
-  Primes the model's awareness for the next response.
-
-  `compact?` mirrors `notice_text/2`: when false, the p75 ack
-  omits the compaction recommendation.
   """
   @spec ack_text_for(atom(), boolean()) :: String.t()
   def ack_text_for(atom, compact? \\ true)
@@ -132,20 +86,13 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
   def ack_text_for(atom, _compact?), do: Map.fetch!(@ack_texts, atom)
 
   @doc """
-  Whether the agent owns the `context-compact` tool — i.e. can
-  trigger compaction itself. Used to decide whether the p75
-  context-usage reminder may recommend that tool.
+  Whether the agent owns the `context-compact` tool.
   """
   @spec compact_available?([Nest.LLM.Tool.t()] | nil) :: boolean()
   def compact_available?(tools), do: Enum.any?(tools || [], &(&1.name == "context-compact"))
 
   @doc """
-  Build a complete notice spec for a context-usage threshold
-  crossing. Returns the spec map (attention + notice) when a
-  new threshold crosses, or `nil` otherwise. The attention
-  text "Context?" signals to the LLM that the next user
-  message is a context-usage reminder, distinguishing it
-  from other notice types (e.g. tool-call budget).
+  Build a complete notice spec for a context-usage threshold crossing.
   """
   @spec spec(non_neg_integer(), pos_integer(), MapSet.t(atom()), boolean()) :: spec() | nil
   def spec(used, limit, crossed, compact? \\ true) do
@@ -164,13 +111,7 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
   end
 
   @doc """
-  Metadata stamp for a notice spec, or `nil` when the spec isn't a
-  context-usage threshold.
-
-  `NoticePairInjector` attaches this to the synthetic message that
-  carries the notice so the announced set can be rebuilt after a
-  BEAM restart by scanning the persisted active messages
-  (see `announced_thresholds/1`).
+  Metadata stamp for a notice spec, or `nil`.
   """
   @spec context_metadata(spec()) :: %{String.t() => String.t()} | nil
   def context_metadata(%{kind: :context, threshold: atom}) when is_atom(atom) do
@@ -179,23 +120,11 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
 
   def context_metadata(_spec), do: nil
 
-  # Every threshold atom, in crossing order. Used to validate the
-  # persisted metadata strings back into atoms without allocating
-  # new atoms from storage.
   @threshold_atoms [:p25, :p50, :p75]
 
   @doc """
   The set of context-usage thresholds already announced in the
   given active message list.
-
-  The injected notice messages carry a
-  `metadata["context_threshold"]` stamp; scanning the active list
-  (messages with index greater than the compaction boundary)
-  therefore yields exactly the thresholds announced in the
-  current conversation segment. Called on restore so a BEAM
-  restart between turns does not re-announce a threshold.
-
-  Unknown or absent stamps are ignored (no atom creation).
   """
   @spec announced_thresholds([term()]) :: MapSet.t(atom())
   def announced_thresholds(messages) when is_list(messages) do
@@ -231,18 +160,15 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminder do
 
   @doc """
   Build the reminder message for the given threshold atom.
-  Kept for test compatibility and callers that need the
-  legacy `{:system, _}` format. Prefer `notice_text/2`
-  for new call sites.
+  Kept for callers that need the legacy shape.
   """
   @spec build_message(atom(), non_neg_integer(), pos_integer(), ClientConfig.t() | nil) ::
-          {:system, Nest.Messages.System.t()} | {:user, User.t()}
+          {:user, User.t()}
   def build_message(atom, used, limit, client_config) do
     build_user_notice(format(atom, used, limit), client_config)
   end
 
-  @spec build_message(atom(), non_neg_integer(), pos_integer()) ::
-          {:system, Nest.Messages.System.t()} | {:user, User.t()}
+  @spec build_message(atom(), non_neg_integer(), pos_integer()) :: {:user, User.t()}
   def build_message(atom, used, limit),
     do: build_message(atom, used, limit, %ClientConfig{})
 

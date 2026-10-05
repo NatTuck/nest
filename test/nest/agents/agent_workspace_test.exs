@@ -10,6 +10,7 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
   """
 
   use Nest.DataCase, async: true
+  alias Nest.Agents.Agent.Machine
 
   import Mimic
 
@@ -126,7 +127,16 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
 
     test "refuses while the agent is busy" do
       {pid, _vid} = workspace_agent!()
-      :sys.replace_state(pid, fn state -> %{state | live: %{state.live | status: :streaming}} end)
+
+      :sys.replace_state(pid, fn state ->
+        %{
+          state
+          | live: %{
+              state.live
+              | machine: Machine.status_to_machine(state.live.machine, :streaming)
+            }
+        }
+      end)
 
       assert {:error, :agent_busy} =
                Agents.edit_agent(
@@ -139,7 +149,15 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
       # The `:streaming` status was fabricated for the refusal check
       # (there is no real turn). Restore idle so the teardown's
       # zero-in-flight-agents assertion holds.
-      :sys.replace_state(pid, fn state -> %{state | live: %{state.live | status: :idle}} end)
+      :sys.replace_state(pid, fn state ->
+        %{
+          state
+          | live: %{
+              state.live
+              | machine: Machine.status_to_machine(state.live.machine, :idle)
+            }
+        }
+      end)
     end
   end
 

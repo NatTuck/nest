@@ -15,6 +15,7 @@ defmodule Nest.Agents.Agent.Init.NeedsRepair do
   require Logger
 
   alias Nest.Agents.Agent.Broadcasts
+  alias Nest.Agents.Agent.Machine
   alias Nest.LLM.Preflight
 
   @spec block(Nest.Agents.Agent.t(), [Preflight.violation()], String.t() | nil) ::
@@ -24,7 +25,7 @@ defmodule Nest.Agents.Agent.Init.NeedsRepair do
       state
       | live: %{
           state.live
-          | status: :needs_repair,
+          | machine: Machine.to_blocked(state.live.machine, :needs_repair),
             repair: %{violations: violations, command: repair_command}
         }
     }

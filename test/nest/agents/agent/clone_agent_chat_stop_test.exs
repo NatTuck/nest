@@ -13,6 +13,7 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
   design and the race analysis this test pins down.
   """
   use Nest.DataCase, async: true
+  alias Nest.Agents.Agent.Machine
 
   import Mimic
   import Eventually
@@ -73,9 +74,9 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
 
     # Bookkeeping reset.
     assert new_state.chat_state.pending_children == %{}
-    assert new_state.live.chat_turn_pid == nil
+    assert new_state.live.turn.active_worker == nil
     assert new_state.live.cancelled == false
-    assert new_state.live.status == :idle
+    assert Machine.status_for(new_state.live.machine) == :idle
 
     # The child's GenServer is gone (eventually, via supervisor
     # + ChildRegistry :DOWN cleanup).

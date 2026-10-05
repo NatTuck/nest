@@ -1,4 +1,4 @@
-defmodule Nest.Agents.Agent.MachineStructureTest do
+defmodule MachineStructureTest do
   @moduledoc false
   # Structural "no reintroduction" tests for the Agent machine. These assert
   # properties of the source that unit/integration tests cannot catch.

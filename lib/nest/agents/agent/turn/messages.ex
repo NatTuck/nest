@@ -1,10 +1,8 @@
-defmodule Nest.Agents.Agent.ChatTurn.Messages do
+defmodule Nest.Agents.Agent.Turn.Messages do
   @moduledoc """
-  Message builders for the ChatTurn. Pure functions that
-  build the `{:role, %Struct{}}` tuples the ChatTurn
-  appends to the Agent. Extracted from `ChatTurn` to
-  keep the iteration state machine under the credo line
-  limit.
+  Message builders for the in-process turn driver. Pure functions
+  that build the `{:role, %Struct{}}` tuples the driver appends to
+  the Agent.
   """
 
   alias Nest.Messages.Assistant
@@ -17,14 +15,7 @@ defmodule Nest.Agents.Agent.ChatTurn.Messages do
 
   @doc """
   Build an assistant message from a `RunResponse`. The
-  Agent stamps the index via `__append_message__/2`.
-
-  Assembles a parts list in the order the response carries
-  them: text first, then thinking (with signature), then tool
-  uses. Refusal text becomes a `Part.Refusal`. The
-  response-level `usage`, `finish_reason`, and `model` are
-  preserved on the `Assistant` struct so they round-trip
-  through persistence.
+  Agent stamps the index via `MessageAppender` when it appends.
   """
   @spec assistant(Nest.LLM.RunResponse.t()) :: {:assistant, Assistant.t()}
   def assistant(response) do
@@ -102,10 +93,7 @@ defmodule Nest.Agents.Agent.ChatTurn.Messages do
 
   @doc """
   Build a synthetic error tool-result message for the
-  max-iterations second-chance path. The LLM hit the
-  iteration cap and emitted more tool calls; the
-  ChatTurn synthesizes error results so the LLM sees
-  the constraint on the next call.
+  max-iterations second-chance path.
   """
   @spec synthetic_error_tool_results(Nest.LLM.RunResponse.t()) :: {:tool, Tool.t()}
   def synthetic_error_tool_results(response) do
@@ -125,17 +113,7 @@ defmodule Nest.Agents.Agent.ChatTurn.Messages do
 
   @doc """
   Refuse a batch that mixes `context-compact` with other
-  tool calls. Returns a single `{:tool, _}` message with one
-  `Part.ToolResult` per tool call, all `is_error: true` and a
-  shared reason. The LLM receives one refusal message in the
-  next iteration and is expected to retry without
-  `context-compact` mixed in. Used by `ResponseHandler` when
-  the LLM emits `context-compact` together with non-compact
   tool calls.
-
-  `_messages_before` is accepted for symmetry with other
-  message builders (it would be used for richer refusal text
-  that referenced the pre-compaction state); currently unused.
   """
   @spec refuse_context_compact_co_batch([Nest.Messages.ToolCall.t()], [tuple()]) ::
           {:tool, Tool.t()}

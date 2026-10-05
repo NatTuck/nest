@@ -5,7 +5,6 @@ defmodule Nest.Application do
 
   use Application
 
-  alias Nest.Agents.Agent.ChatTurnSupervisor
   alias Nest.Agents.ChildRegistry
   alias Nest.Sandbox.ShellJobs
   alias Nest.Tokens.Tokenizer
@@ -31,7 +30,6 @@ defmodule Nest.Application do
       Nest.Agents.Registry.child_spec(),
       ChildRegistry.child_spec(),
       Nest.Agents.Supervisor.child_spec(),
-      ChatTurnSupervisor,
       {Task.Supervisor, name: Nest.Agents.TaskSupervisor},
       {Task.Supervisor, name: Nest.Models.TaskSupervisor},
       # Background shell-job manager (per-agent `shell-cmd background`)

@@ -18,7 +18,7 @@ defmodule Nest.Agents.AgentContextWarningTest do
   import Mimic
 
   alias Nest.Agents.Agent
-  alias Nest.Agents.Agent.ChatTurn.ContextReminder
+  alias Nest.Agents.Agent.Turn.ContextReminder
   alias Nest.Agents.AgentTestHelpers
   alias Nest.LLM.MockClient
   alias Nest.Messages.MessageList

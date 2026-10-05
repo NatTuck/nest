@@ -6,6 +6,7 @@ defmodule Nest.Agents.Agent.InboxTest do
   """
 
   use Nest.DataCase, async: true
+  alias Nest.Agents.Agent.Machine
 
   alias Nest.Agents
   alias Nest.Agents.Agent
@@ -119,11 +120,22 @@ defmodule Nest.Agents.Agent.InboxTest do
   end
 
   defp set_status(pid, status) do
-    :sys.replace_state(pid, fn state -> %{state | live: %{state.live | status: status}} end)
+    :sys.replace_state(pid, fn state ->
+      %{
+        state
+        | live: %{
+            state.live
+            | machine: Machine.status_to_machine(state.live.machine, status)
+          }
+      }
+    end)
   end
 
   defp wait_idle(pid) do
-    assert Eventually.eventually(fn -> :sys.get_state(pid).live.status == :idle end,
+    assert Eventually.eventually(
+             fn ->
+               Machine.status_for(:sys.get_state(pid).live.machine) == :idle
+             end,
              timeout: 500
            )
   end

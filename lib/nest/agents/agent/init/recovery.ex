@@ -21,6 +21,7 @@ defmodule Nest.Agents.Agent.Init.Recovery do
 
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Init
+  alias Nest.Agents.Agent.Machine
   alias Nest.LLM.ClientConfig
   alias Nest.LLM.RecoveryClient
 
@@ -38,7 +39,11 @@ defmodule Nest.Agents.Agent.Init.Recovery do
     }
 
     state = Init.build_state(attrs, recovery_client)
-    state = %{state | live: %{state.live | status: :model_missing}}
+
+    state = %{
+      state
+      | live: %{state.live | machine: Machine.to_blocked(state.live.machine, :model_missing)}
+    }
 
     state =
       Init.seed_from_db(

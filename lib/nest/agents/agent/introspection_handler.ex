@@ -36,6 +36,7 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Inbox
+  alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.ModelHandler
   alias Nest.Agents.Agent.Restore
   alias Nest.Agents.Agent.WorkspaceHandler
@@ -98,8 +99,11 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
     {:reply, system_prompt_from_messages(state.chat_state.messages), state}
   end
 
+  # Test-only: returns the in-flight worker pid (or `nil` when idle).
+  # The turn now runs in-process, so this reports the worker the turn is
+  # currently waiting on rather than a separate turn process.
   def handle(:get_chat_turn_pid, _from, state) do
-    {:reply, state.live.chat_turn_pid, state}
+    {:reply, state.live.turn.active_worker, state}
   end
 
   # Test-friendly: returns the `pending_children` map so
@@ -223,7 +227,7 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
         # this (see `Nest.Persistence.History`).
         last_compaction_index: state.chat_state.last_compaction_index,
         compaction_count: state.chat_state.compaction_count,
-        status: state.live.status,
+        status: Machine.status_for(state.live.machine),
         # Populated only in the `:needs_repair` state: the active
         # sequence's wire violations and the offline repair command the
         # UI banner shows. Empty/nil for a healthy agent.

@@ -90,6 +90,59 @@ defmodule Nest.Agents.Agent.ChatState do
             read_files: %{}
 end
 
+defmodule Nest.Agents.Agent.ChatState.Live.Turn do
+  @moduledoc """
+  The turn-scoped working memory for the in-process turn driver
+  (`Nest.Agents.Agent.Turn`).
+
+  The Agent itself is the single owner and driver of a chat turn:
+  this struct carries the iteration-scoped state (`ctx`, `iteration`,
+  `max_iterations`, `force_finalize`, the active worker handle, the
+  start-state `entry`) that used to live on the deleted ChatTurn
+  process. It is grouped here so the parent `Live` struct stays under
+  the credo field cap.
+
+  The `worker_ref` is the `make_ref/0` token handed to the active
+  HTTP/tool worker; worker results are applied only when their ref and
+  phase match the live turn (see `Turn`).
+  """
+
+  defstruct ctx: nil,
+            iteration: 0,
+            max_iterations: 0,
+            force_finalize: false,
+            active_worker: nil,
+            active_worker_kind: nil,
+            worker_ref: nil,
+            active_message_index: 0,
+            pending_notice: nil,
+            entry: {:user_message, %Nest.Messages.User{parts: []}}
+
+  @type tool_pair :: [Nest.Messages.Assistant.t() | Nest.Messages.Tool.t()]
+
+  # The start-state intent for a turn's first iteration. See
+  # `Nest.Agents.Agent.Turn` for the per-shape behavior.
+  @type entry ::
+          {:user_message, Nest.Messages.User.t()}
+          | {:tool_call, Nest.Messages.Assistant.t(), non_neg_integer(), pos_integer()}
+          | {:compact_tool, tool_pair(), non_neg_integer(), pos_integer()}
+          | {:assistant_response, Nest.Messages.Assistant.t(), non_neg_integer(), pos_integer()}
+          | {:compaction, [tuple()], entry() | nil}
+
+  @type t :: %__MODULE__{
+          ctx: map() | nil,
+          iteration: non_neg_integer(),
+          max_iterations: non_neg_integer(),
+          force_finalize: boolean(),
+          active_worker: pid() | nil,
+          active_worker_kind: :http | :tools | nil,
+          worker_ref: reference() | nil,
+          active_message_index: non_neg_integer(),
+          pending_notice: String.t() | nil,
+          entry: entry()
+        }
+end
+
 defmodule Nest.Agents.Agent.ChatState.Live do
   @moduledoc """
   The *per-process* (ephemeral) portion of a per-agent chat
@@ -99,12 +152,10 @@ defmodule Nest.Agents.Agent.ChatState.Live do
   Persisted fields live in `Nest.Agents.Agent.ChatState`; this
   struct holds only what a live turn needs while it's running.
 
-  The `chat_turn_pid` field tracks the in-flight ChatTurn
-  GenServer child that is currently driving the LLM call
-  chain for this agent. It is set when the ChatTurn is
-  spawned (in `ChatPipeline.spawn_chat_turn/1`) and cleared
-  on natural completion or after a user-initiated stop. The
-  stop handler reads it to send a `{:stop_chat, _}` signal.
+  The `turn` field is `%Nest.Agents.Agent.ChatState.Live.Turn{}`: the
+  turn-scoped working memory the in-process driver (`Nest.Agents.Agent.Turn`)
+  uses while a chat or compaction turn is in flight. It is reset to its
+  default at the end of every turn.
 
   The `cancelled` field is a sticky flag set when the user
   clicks Stop. It guards the compaction resume
@@ -125,18 +176,16 @@ defmodule Nest.Agents.Agent.ChatState.Live do
   The `mid_turn_entry` field is set when a mid-turn
   compaction is in flight or has failed. Its presence tells
   `retry_compaction/1` to resume with `:mid_turn_entry`
-  (spawn a fresh ChatTurn to execute the LLM's pending tool
+  (start a fresh turn to execute the LLM's pending tool
   calls) instead of the Trigger B path (append a held user
   message). It carries the entry (the resume payload for
-  the next ChatTurn) so the tool-call iteration cap is
+  the next turn) so the tool-call iteration cap is
   enforced across the compaction boundary.
 
   The `crossed_thresholds` field is the `MapSet` of context-usage
-  threshold atoms (`:p25`, `:p50`, `:p75`) that the
-  `Nest.Agents.Agent.ChatTurn.ContextReminder` has already
-  announced for the current conversation segment. The ChatTurn
-  fetches it via `ctx` on spawn and sends `{:set_crossed_thresholds,
-  set}` back to the Agent when it fires a new threshold. Cleared
+  threshold atoms (`:p25`, `:p50`, `:p75`) that
+  `Nest.Agents.Agent.Turn.ContextReminder` has already
+  announced for the current conversation segment. Cleared
   to `%MapSet{}` on successful compaction in
   `Compaction.ResultHandler.handle_success/3`, so warnings
   re-fire if usage rises again after the history was summarized.
@@ -180,10 +229,10 @@ defmodule Nest.Agents.Agent.ChatState.Live do
   16-field cap.
   """
   defstruct streaming_acc: nil,
-            status: :idle,
+            machine: %Nest.Agents.Agent.Machine{},
             active_message_index: 0,
             api_log_sequences: %{},
-            chat_turn_pid: nil,
+            turn: %Nest.Agents.Agent.ChatState.Live.Turn{},
             cancelled: false,
             pending_user_message: nil,
             pending_notice: nil,
@@ -214,5 +263,7 @@ defmodule Nest.Agents.Agent.ChatState.Live do
             # timestamp: DateTime.t()}` in arrival order.
             inbox: []
 
-  @type mid_turn_entry :: %{entry: Nest.Agents.Agent.ChatTurn.State.entry() | nil}
+  @type mid_turn_entry :: %{
+          entry: Nest.Agents.Agent.ChatState.Live.Turn.entry() | nil
+        }
 end

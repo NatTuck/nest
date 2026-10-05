@@ -55,6 +55,7 @@ defmodule Nest.Agents.Agent.MessageAppender do
 
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Broadcasts
+  alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Persistence, as: AgentPersistence
   alias Nest.Messages.MessageList
   alias Nest.Messages.Part
@@ -194,20 +195,19 @@ defmodule Nest.Agents.Agent.MessageAppender do
   #
   # Returns `{[stamped_messages...], new_state}` with the requested
   # message last.
-  defp append_with_bridge(%{live: %{status: status}} = state, message)
-       when status in @live_statuses do
-    assert_valid_live_append!(state, message)
-    {stamped, state} = append_stamped(state, message)
-    {[stamped], state}
-  end
-
   defp append_with_bridge(state, message) do
-    bridge = MessageList.pairing_bridge(state.chat_state.messages, message)
+    if Machine.status_for(state.live.machine) in @live_statuses do
+      assert_valid_live_append!(state, message)
+      {stamped, state} = append_stamped(state, message)
+      {[stamped], state}
+    else
+      bridge = MessageList.pairing_bridge(state.chat_state.messages, message)
 
-    Enum.reduce(bridge ++ [message], {[], state}, fn msg, {acc, state} ->
-      {stamped, state} = append_stamped(state, msg)
-      {acc ++ [stamped], state}
-    end)
+      Enum.reduce(bridge ++ [message], {[], state}, fn msg, {acc, state} ->
+        {stamped, state} = append_stamped(state, msg)
+        {acc ++ [stamped], state}
+      end)
+    end
   end
 
   # Fail loudly rather than silently repair: during a live turn the only

@@ -1,4 +1,4 @@
-defmodule Nest.Agents.Agent.Machine.TurnTest do
+defmodule Machine.TurnTest do
   @moduledoc false
   # NOTE: behavior contract carried by the tests + inline # comments.
 

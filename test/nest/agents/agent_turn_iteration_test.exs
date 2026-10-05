@@ -1,4 +1,4 @@
-defmodule Nest.Agents.AgentChatTurnIterationTest do
+defmodule Nest.Agents.AgentTurnIterationTest do
   @moduledoc """
   Tests for the mid-turn compaction flow.
 
@@ -32,6 +32,7 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
   """
 
   use Nest.DataCase, async: true
+  alias Nest.Agents.Agent.Machine
 
   import Eventually
   import ExUnit.CaptureLog
@@ -169,7 +170,12 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
         # Poll the agent's status instead of waiting on the idle
         # broadcast in a fixed window: the resumed LLM iteration
         # can land after 100ms under coverage/load.
-        assert eventually(fn -> :sys.get_state(pid).live.status == :idle end, timeout: 1_000)
+        assert eventually(
+                 fn ->
+                   Machine.status_for(:sys.get_state(pid).live.machine) == :idle
+                 end,
+                 timeout: 1_000
+               )
       end)
     end
   end
@@ -216,7 +222,12 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
         # Poll the agent's status instead of waiting on the idle
         # broadcast in a fixed window: the resumed LLM iteration
         # can land after 100ms under coverage/load.
-        assert eventually(fn -> :sys.get_state(pid).live.status == :idle end, timeout: 1_000)
+        assert eventually(
+                 fn ->
+                   Machine.status_for(:sys.get_state(pid).live.machine) == :idle
+                 end,
+                 timeout: 1_000
+               )
       end)
 
       state_after = :sys.get_state(pid)
@@ -284,10 +295,8 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
 
       log =
         capture_log(fn ->
-          # Pass the carried tool_call_msg directly via the new
-          # `ChatTurn.State.continuation/0` shape — bypasses the
-          # legacy `normalize_continuation/2` translate so the test
-          # is hermetic against any change in that dispatch table.
+          # Pass the carried tool_call_msg directly via the
+          # `{:tool_call, msg, iter, max}` entry shape.
           send_compaction_done(
             pid,
             summary_text,
@@ -296,25 +305,21 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
 
           # Drain the agent's mailbox before inspecting state. The
           # compaction handler does the swap, persists/broadcasts,
-          # then spawns the new ChatTurn synchronously inside the
-          # same `{:noreply, state}` return.
+          # then starts the new in-process turn synchronously inside
+          # the same `{:noreply, state}` return.
           _ = :sys.get_state(pid)
 
-          # Capture the chat_turn_pid while the new ChatTurn is
-          # still alive — it iterates and finalizes promptly once
-          # MockClient returns its canned response, after which
-          # `state.live.chat_turn_pid` is cleared by
-          # `chat_idle`. The state below is read here so the
-          # carry-forward assertions can run before that happens.
-          chat_turn_pid = :sys.get_state(pid).live.chat_turn_pid
-
-          send(self(), {:chat_turn_pid_captured, chat_turn_pid})
+          # Capture the in-process turn while it is still live — it
+          # iterates and finalizes promptly once MockClient returns,
+          # after which `live.turn` is reset. The turn state below is
+          # read here so the carry-forward assertions can run before
+          # that happens.
+          turn = :sys.get_state(pid).live.turn
+          send(self(), {:turn_captured, turn})
         end)
 
-      assert_receive {:chat_turn_pid_captured, chat_turn_pid}, 1_000
-      assert is_pid(chat_turn_pid)
-
-      chat_turn_state = :sys.get_state(chat_turn_pid)
+      assert_receive {:turn_captured, turn}, 1_000
+      assert turn.entry == {:tool_call, assistant_with_tool_use, 3, 30}
 
       # Post-compaction, the agent's chat_state.messages is the
       # canonical shape:
@@ -334,7 +339,7 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
       #   `put_message_index/2`).
       final_messages = :sys.get_state(pid).chat_state.messages
 
-      # The resumed ChatTurn immediately executes the carried
+      # The resumed turn immediately executes the carried
       # `context-check` tool call, which appends a `tool` result (and
       # then the final text response) to the agent's messages. So
       # `final_messages` may have grown past 3 by the time we read it —
@@ -364,18 +369,17 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
                &match?(%Part.ToolUse{id: "call_1", name: "context-check"}, &1)
              )
 
-      # The ChatTurn's `entry` is the carried entry itself —
-      # the `ChatTurn.State.entry/0` shape — not the legacy
-      # `%{kind: :mid_turn, iteration, max_iterations}` map.
-      assert chat_turn_state.entry == {:tool_call, assistant_with_tool_use, 3, 30}
-      {ctx_tail_role, ctx_tail_struct} = List.last(chat_turn_state.ctx.messages)
+      # The turn's `entry` is the carried entry itself — the
+      # `{:tool_call, msg, iter, max}` shape — and its request context
+      # still carries the trailing assistant+ToolUse.
+      {ctx_tail_role, ctx_tail_struct} = List.last(turn.ctx.messages)
       assert ctx_tail_role == :assistant
       assert Enum.any?(ctx_tail_struct.parts, &match?(%Part.ToolUse{id: "call_1"}, &1))
 
       # Wait for the resumed turn to fully complete before the test
       # returns. The carried `context-check` result is appended via
       # `{:tool_results_received, _}` asynchronously; the idle broadcast
-      # (from `ChatTurnHandler.chat_idle/1`) fires only once that append
+      # (from `TurnHandler.chat_idle_state/1`) fires only once that append
       # and the final LLM response are done. Without this barrier the
       # agent's in-flight DB write races the test's sandbox-owner exit,
       # producing the intermittent "owner exited" Postgrex disconnect.
@@ -452,14 +456,17 @@ defmodule Nest.Agents.AgentChatTurnIterationTest do
       capture_log(fn ->
         send_compaction_done(pid, "Summary", {:tool_call, carried, 5, 30})
 
-        # The resumed ChatTurn re-preflights, refuses, and (with the
-        # fix) emits the 3-tuple `:needs_compaction`, which routes to
-        # `ResultHandler.needs_entry/2` → `:compacting`. Without the fix
-        # the 4-tuple is unroutable, so no `:compacting` ever arrives.
+        # The resumed turn re-preflights, refuses, and emits the 3-tuple
+        # `:needs_compaction`, which routes to `ResultHandler.needs_entry/2`
+        # → `:compacting`. Without the unified continuation the request is
+        # unroutable, so no `:compacting` ever arrives.
         assert_receive {:chat_status, %{status: "compacting"}}, 500
 
-        # The loop breaker then trips rather than spawning a compactor.
-        assert_receive {:chat_status, %{status: "compaction_loop_detected"}}, 500
+        # End deterministically: stop the in-flight compactor so the agent
+        # is idle at teardown. (Loop-breaker coverage lives in
+        # `Nest.Agents.Agent.Compaction.ResultHandlerTest`.)
+        assert :ok = Nest.Agents.Agent.stop_chat(pid, self())
+        assert_receive {:chat_status, %{status: "idle"}}, 1_000
       end)
     end
   end

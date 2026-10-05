@@ -9,6 +9,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
   """
 
   use Nest.DataCase, async: true
+  alias Nest.Agents.Agent.Machine
 
   import Mimic
 
@@ -103,7 +104,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
                provider: "anthropic-provider"
              }
 
-      assert state.live.status == :idle
+      assert Machine.status_for(state.live.machine) == :idle
     end
 
     test "broadcasts chat:status with the new model" do
@@ -142,7 +143,13 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
 
       # Force the agent into :streaming without an actual LLM call.
       :sys.replace_state(pid, fn state ->
-        %{state | live: %{state.live | status: :streaming}}
+        %{
+          state
+          | live: %{
+              state.live
+              | machine: Machine.status_to_machine(state.live.machine, :streaming)
+            }
+        }
       end)
 
       state_before = :sys.get_state(pid)
@@ -158,12 +165,20 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
       state_after = :sys.get_state(pid)
       assert state_after.client_config.client == state_before.client_config.client
       assert state_after.model == state_before.model
-      assert state_after.live.status == :streaming
+      assert Machine.status_for(state_after.live.machine) == :streaming
 
       # The `:streaming` status was fabricated for the refusal check
       # (there is no real turn). Restore idle so the teardown's
       # zero-in-flight-agents assertion holds.
-      :sys.replace_state(pid, fn state -> %{state | live: %{state.live | status: :idle}} end)
+      :sys.replace_state(pid, fn state ->
+        %{
+          state
+          | live: %{
+              state.live
+              | machine: Machine.status_to_machine(state.live.machine, :idle)
+            }
+        }
+      end)
     end
 
     test "rejects an unknown model with :invalid_model" do
@@ -228,7 +243,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
             })
 
           state = :sys.get_state(pid)
-          assert state.live.status == :model_missing
+          assert Machine.status_for(state.live.machine) == :model_missing
           assert state.client_config.client == RecoveryClient
 
           # Repair through Agents.change_model/2.
@@ -239,7 +254,7 @@ defmodule Nest.Agents.Agent.ChangeModelTest do
             })
 
           state = :sys.get_state(pid)
-          assert state.live.status == :idle
+          assert Machine.status_for(state.live.machine) == :idle
           assert state.client_config.client == AnthropicClient
 
           assert state.model == %{

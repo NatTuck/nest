@@ -13,6 +13,7 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
   """
 
   use Nest.DataCase, async: true
+  alias Nest.Agents.Agent.Machine
 
   import ExUnit.CaptureLog
   import Nest.PersistenceTestHelpers
@@ -413,7 +414,13 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
   end
 
   defp live(state, status) do
-    %{state | live: %Agent.ChatState.Live{status: status, chat_turn_pid: self()}}
+    %{
+      state
+      | live: %{
+          state.live
+          | machine: Machine.status_to_machine(state.live.machine, status)
+        }
+    }
   end
 
   defp insert_messages(name, messages) do

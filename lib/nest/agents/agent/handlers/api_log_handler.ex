@@ -14,16 +14,11 @@ defmodule Nest.Agents.Agent.Handlers.ApiLogHandler do
   """
   @spec handle(term(), Nest.Agents.Agent.t()) :: GenServer.reply()
   def handle({:api_log_sequences_updated, sequences}, state) do
-    # The ChatTurn completed normally (no stop). Clear the
-    # `chat_turn_pid` and `cancelled` flag so the next chat
-    # turn can start fresh. The `:chat_idle` handler does
-    # the same; this handler exists to keep the api_log
-    # sequences consistent in case the Agent's lifecycle
-    # state diverged (defense in depth).
+    # API-log sequence bookkeeping. The turn stores these directly now;
+    # this handler remains for defense in depth.
     live =
       state.live
       |> Map.put(:api_log_sequences, sequences)
-      |> Map.put(:chat_turn_pid, nil)
       |> Map.put(:cancelled, false)
 
     {:noreply, %{state | live: live}}

@@ -41,13 +41,14 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ChatPipeline
-  alias Nest.Agents.Agent.ChatTurnSpawner
   alias Nest.Agents.Agent.Compaction.Marker
   alias Nest.Agents.Agent.Compaction.Trigger
   alias Nest.Agents.Agent.Inbox
+  alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.MessageAppender
   alias Nest.Agents.Agent.SystemPrompt
   alias Nest.Agents.Agent.ToolFilter
+  alias Nest.Agents.Agent.Turn
   alias Nest.Messages.Assistant
   alias Nest.Messages.Part
   alias Nest.Messages.System
@@ -109,7 +110,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
           String.t(),
           [tuple()],
           tuple(),
-          Agent.ChatTurn.State.entry() | nil
+          Agent.ChatState.Live.Turn.entry() | nil
         ) :: Agent.t()
   def handle_success(state, summary_text, staged, summary_assistant, carried_entry) do
     summary_text = ThinkTags.strip(summary_text)
@@ -133,7 +134,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
     state =
       state
       |> clear_mid_turn_entry()
-      |> put_status(:idle)
+      |> put_idle()
       |> reset_crossed_thresholds()
       |> reset_context_projection()
       |> reset_read_files()
@@ -298,13 +299,13 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   status, broadcast `chat:error` + `chat:status`. No marker,
   archive, or summary_user (the user sees the real error).
   """
-  @spec handle_error(Agent.t(), term(), Agent.ChatTurn.State.entry() | nil) :: Agent.t()
+  @spec handle_error(Agent.t(), term(), Agent.ChatState.Live.Turn.entry() | nil) :: Agent.t()
   def handle_error(state, reason, carried_entry) do
     Logger.warning("Compaction failed: agent=#{state.name} reason=#{inspect(reason)}")
 
     # The staged compaction request/response are discarded (never persisted);
     # this only flips status and surfaces the error.
-    state = put_status(state, :compaction_failed)
+    state = put_compaction_failed(state)
     Broadcasts.status(state)
 
     Broadcasts.compaction_error(
@@ -326,13 +327,13 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   @doc """
   Mid-turn compaction request from a running ChatTurn.
   """
-  @spec needs_entry(Agent.t(), Agent.ChatTurn.State.entry() | nil) :: Agent.t()
+  @spec needs_entry(Agent.t(), Agent.ChatState.Live.Turn.entry() | nil) :: Agent.t()
   def needs_entry(state, carried_entry) do
     state = %{
       state
       | live: %{
           state.live
-          | status: :compacting,
+          | machine: Machine.to_compaction_generating(state.live.machine),
             mid_turn_entry: %{entry: carried_entry}
         }
     }
@@ -363,10 +364,10 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
 
   @spec loop_detected_ok(Agent.t()) :: Agent.t()
   def loop_detected_ok(state) do
-    if state.live.status != :compaction_loop_detected do
+    if Machine.status_for(state.live.machine) != :compaction_loop_detected do
       Logger.warning(
         "compaction_loop_detected_ok ignored: agent=#{state.name} " <>
-          "status=#{inspect(state.live.status)} (expected :compaction_loop_detected)"
+          "status=#{inspect(Machine.status_for(state.live.machine))} (expected :compaction_loop_detected)"
       )
 
       state
@@ -375,7 +376,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
         state
         | live: %{
             state.live
-            | status: :idle,
+            | machine: Machine.to_idle(state.live.machine),
               consecutive_compaction_count: 0,
               pending_user_message: nil,
               pending_notice: nil
@@ -390,9 +391,9 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   @spec retry_compaction(Agent.t()) :: Agent.t()
   def retry_compaction(state) do
     cond do
-      state.live.status != :compaction_failed ->
+      Machine.status_for(state.live.machine) != :compaction_failed ->
         Logger.warning(
-          "retry_compaction ignored: agent=#{state.name} status=#{inspect(state.live.status)} (expected :compaction_failed)"
+          "retry_compaction ignored: agent=#{state.name} status=#{inspect(Machine.status_for(state.live.machine))} (expected :compaction_failed)"
         )
 
         state
@@ -409,7 +410,14 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   # --- private helpers ---
 
   defp set_compaction_loop(state, reason, attempt_count, max_attempts) do
-    state = %{state | live: %{state.live | status: :compaction_loop_detected}}
+    state = %{
+      state
+      | live: %{
+          state.live
+          | machine: Machine.to_blocked(state.live.machine, :compaction_loop_detected)
+        }
+    }
+
     Broadcasts.status(state)
 
     Broadcasts.compaction_loop(
@@ -428,8 +436,15 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
     %{state | live: %{state.live | mid_turn_entry: nil}}
   end
 
-  defp put_status(state, status) do
-    %{state | live: %{state.live | status: status}}
+  defp put_idle(state) do
+    %{state | live: %{state.live | machine: Machine.to_idle(state.live.machine)}}
+  end
+
+  defp put_compaction_failed(state) do
+    %{
+      state
+      | live: %{state.live | machine: Machine.to_blocked(state.live.machine, :compaction_failed)}
+    }
   end
 
   # Append the carried entry's messages to the post-compaction active
@@ -507,31 +522,35 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
         # A deferred reply is terminal: it was already appended by the commit
         # (`append_entry_tail/2`), and there is nothing left to ask the LLM.
         match?({:assistant_response, _, _, _}, carried_entry) ->
-          put_status(state, :idle)
+          put_idle(state)
 
         carried_entry == nil ->
           ChatPipeline.resume_with_pending(state)
 
         true ->
           state
-          |> put_status(resumed_status(carried_entry))
+          |> put_resumed(carried_entry)
           |> spawn_with_entry(carried_entry)
       end
 
     # Broadcast the resumed status so the UI leaves the stale
-    # `:compacting` (and the silently-set `:idle`/`:streaming`) and shows
-    # the turn that is actually about to run.
+    # `:compacting` and shows the turn that is actually about to run.
     Broadcasts.status(state)
     Inbox.drain_if_idle(state)
   end
 
-  # The status the resumed turn is about to be in. A `{:tool_call, ...}`
-  # continuation executes the carried tool calls first, so it resumes in
-  # `:executing_tools`; a `{:compact_tool, ...}` continuation calls the
-  # LLM directly, so it resumes in `:streaming`. `resume_with_pending/1`
-  # already sets `:streaming`; `resume_pending_notice/1` stays `:idle`.
-  defp resumed_status({:tool_call, _, _, _}), do: :executing_tools
-  defp resumed_status(_entry), do: :streaming
+  # The machine phase the resumed turn is about to be in. A
+  # `{:tool_call, ...}` continuation executes the carried tool calls
+  # first (tool phase); a `{:compact_tool, ...}` continuation calls the
+  # LLM directly (generating). `resume_with_pending/1` already sets the
+  # chat-generating phase; `resume_pending_notice/1` stays idle.
+  defp put_resumed(state, {:tool_call, _, _, _}) do
+    %{state | live: %{state.live | machine: Machine.to_chat_tools(state.live.machine)}}
+  end
+
+  defp put_resumed(state, _entry) do
+    %{state | live: %{state.live | machine: Machine.to_chat_generating(state.live.machine)}}
+  end
 
   defp spawn_with_entry(state, entry) do
     {_effective_mode, caps} =
@@ -542,7 +561,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
         state.tmp_path
       )
 
-    ChatTurnSpawner.spawn(state, state.chat_state.messages, entry, caps)
+    Turn.start(state, state.chat_state.messages, entry, caps)
   end
 
   defp format_reason(:reserve_exhausted),

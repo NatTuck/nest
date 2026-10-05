@@ -1,4 +1,4 @@
-defmodule Nest.Agents.Agent.ChatTurn.ContextReminderTest do
+defmodule Nest.Agents.Agent.Turn.ContextReminderTest do
   @moduledoc """
   Tests for the mid-iteration context-usage reminder logic.
 
@@ -28,7 +28,7 @@ defmodule Nest.Agents.Agent.ChatTurn.ContextReminderTest do
 
   use ExUnit.Case, async: true
 
-  alias Nest.Agents.Agent.ChatTurn.ContextReminder
+  alias Nest.Agents.Agent.Turn.ContextReminder
   alias Nest.LLM.ClientConfig
   alias Nest.Messages.User
 

@@ -35,6 +35,7 @@ defmodule Nest.Agents.ChatTaskCrashTest do
   `ChatTaskCleanupTest` so these flows run on their own worker.
   """
   use Nest.DataCase, async: true
+  alias Nest.Agents.Agent.Machine
 
   import ExUnit.CaptureLog
   import Mimic
@@ -250,8 +251,8 @@ defmodule Nest.Agents.ChatTaskCrashTest do
       end)
 
       state = :sys.get_state(pid)
-      assert state.live.status == :idle
-      assert state.live.chat_turn_pid == nil
+      assert Machine.status_for(state.live.machine) == :idle
+      assert state.live.turn.active_worker == nil
     end
   end
 

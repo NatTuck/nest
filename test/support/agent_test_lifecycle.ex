@@ -33,11 +33,12 @@ defmodule Nest.Agents.AgentTestLifecycle do
 
   import Ecto.Query
 
+  alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Registry
   alias Nest.Repo
   alias Nest.Spaces.Space
 
-  # `live.status` values that mean an LLM/tool/compaction turn is
+  # Observable status values that mean an LLM/tool/compaction turn is
   # actively running. Every other value (`:idle`, `:model_missing`,
   # `:context_overflow`, `:compaction_failed`,
   # `:compaction_loop_detected`) is a terminal/frozen state where no
@@ -113,7 +114,7 @@ defmodule Nest.Agents.AgentTestLifecycle do
   Raise the explicit "zero remaining agents for this test" assertion
   when `stop_test_agents/0` reported a violation: an owned agent still
   alive after teardown, or an owned agent that was still in flight
-  (`live.status` in `[:streaming, :executing_tools, :compacting]`) when
+  (`Machine.status_for/1` in `[:streaming, :executing_tools, :compacting]`) when
   the test body finished.
   """
   @spec assert_zero_remaining!(map()) :: :ok
@@ -169,7 +170,7 @@ defmodule Nest.Agents.AgentTestLifecycle do
   # unit tests register a fake parent) is treated as not-in-flight.
   defp agent_status(pid) do
     case :sys.get_state(pid) do
-      %{live: %{status: status}} -> status
+      %{live: %{machine: machine}} -> Machine.status_for(machine)
       _ -> :not_an_agent
     end
   catch

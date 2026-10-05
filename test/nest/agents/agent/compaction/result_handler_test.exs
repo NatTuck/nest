@@ -20,6 +20,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandlerTest do
   """
 
   use ExUnit.Case, async: true
+  alias Nest.Agents.Agent.Machine
 
   import ExUnit.CaptureLog
 
@@ -112,7 +113,9 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandlerTest do
           state1 = elem(ResultHandler.check_consecutive(state), 1)
           state2 = elem(ResultHandler.check_consecutive(state1), 1)
           state3 = elem(ResultHandler.check_consecutive(state2), 1)
-          assert state3.live.status != :compaction_loop_detected
+
+          assert Machine.status_for(state3.live.machine) !=
+                   :compaction_loop_detected
 
           # 4th bumps to 4, exceeds threshold, refuses.
           :refuse = ResultHandler.check_consecutive(state3)
@@ -133,7 +136,11 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandlerTest do
         chat_state: %ChatState{},
         live: %Live{
           mode: "chat",
-          status: :compaction_loop_detected,
+          machine:
+            Machine.status_to_machine(
+              %Machine{},
+              :compaction_loop_detected
+            ),
           consecutive_compaction_count: 4,
           pending_user_message: {"hi", "chat"}
         }
@@ -141,7 +148,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandlerTest do
 
       assert {:noreply, new_state} = ResultHandler.handle(:compaction_loop_detected_ok, state)
 
-      assert new_state.live.status == :idle
+      assert Machine.status_for(new_state.live.machine) == :idle
       assert new_state.live.consecutive_compaction_count == 0
       assert new_state.live.pending_user_message == nil
     end
@@ -159,7 +166,11 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandlerTest do
               chat_state: %ChatState{},
               live: %Live{
                 mode: "chat",
-                status: status,
+                machine:
+                  Machine.status_to_machine(
+                    %Machine{},
+                    status
+                  ),
                 consecutive_compaction_count: 5,
                 pending_user_message: {"hi", "chat"}
               }
@@ -169,7 +180,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandlerTest do
                      ResultHandler.handle(:compaction_loop_detected_ok, state)
 
             # No state change when status is wrong.
-            assert returned_state.live.status == status
+            assert Machine.status_for(returned_state.live.machine) == status
             assert returned_state.live.consecutive_compaction_count == 5
             assert returned_state.live.pending_user_message == {"hi", "chat"}
           end
@@ -199,7 +210,9 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandlerTest do
                      state
                    )
 
-          assert new_state.live.status == :compaction_failed
+          assert Machine.status_for(new_state.live.machine) ==
+                   :compaction_failed
+
           assert_receive {:chat_error, %{content: content, compactionError: true}}
           assert content =~ "no output from the model for 300s"
         end)
@@ -218,7 +231,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandlerTest do
                    state
                  )
 
-        assert new_state.live.status == :compaction_failed
+        assert Machine.status_for(new_state.live.machine) == :compaction_failed
         assert_receive {:chat_error, %{content: content, compactionError: true}}
         assert content =~ "the response stream ended unexpectedly"
       end)
@@ -236,7 +249,10 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandlerTest do
         log =
           capture_log(fn ->
             new_state = ResultHandler.handle_success(state, empty, [], summary_assistant, nil)
-            assert new_state.live.status == :compaction_failed
+
+            assert Machine.status_for(new_state.live.machine) ==
+                     :compaction_failed
+
             assert_receive {:chat_error, %{content: content, compactionError: true}}
             assert content =~ "empty summary"
           end)
@@ -276,7 +292,11 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandlerTest do
         state
         | live: %{
             state.live
-            | status: :compaction_failed,
+            | machine:
+                Machine.status_to_machine(
+                  state.live.machine,
+                  :compaction_failed
+                ),
               mid_turn_entry: %{entry: :synthetic_carried_entry}
           }
       }
@@ -290,7 +310,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandlerTest do
           # Branch assertion: `needs_entry/2` re-set `mid_turn_entry`
           # (after `clear_mid_turn_entry/1` briefly cleared it).
           # `Trigger.post_turn/1` would have left it nil.
-          assert result.live.status == :compacting
+          assert Machine.status_for(result.live.machine) == :compacting
           assert result.live.mid_turn_entry == %{entry: :synthetic_carried_entry}
 
           # External observable: the `:compacting` broadcast fired.
@@ -303,7 +323,15 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandlerTest do
 
       state = %{
         state
-        | live: %{state.live | status: :compaction_failed, mid_turn_entry: nil}
+        | live: %{
+            state.live
+            | machine:
+                Machine.status_to_machine(
+                  state.live.machine,
+                  :compaction_failed
+                ),
+              mid_turn_entry: nil
+          }
       }
 
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.space_id}:#{state.name}")
@@ -316,7 +344,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandlerTest do
           # `mid_turn_entry`. If `needs_entry/2` had been called,
           # `mid_turn_entry` would have been re-set to
           # `%{entry: carried_entry}`.
-          assert result.live.status == :compacting
+          assert Machine.status_for(result.live.machine) == :compacting
           assert result.live.mid_turn_entry == nil
 
           # External observable: the `:compacting` broadcast fired.

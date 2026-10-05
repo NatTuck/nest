@@ -19,6 +19,7 @@ defmodule Nest.Agents.Agent.RecoveryTest do
   """
 
   use Nest.DataCase, async: true
+  alias Nest.Agents.Agent.Machine
 
   import Mimic
 
@@ -87,7 +88,7 @@ defmodule Nest.Agents.Agent.RecoveryTest do
           assert Process.alive?(pid)
 
           state = :sys.get_state(pid)
-          assert state.live.status == :model_missing
+          assert Machine.status_for(state.live.machine) == :model_missing
           assert state.client_config.client == RecoveryClient
           assert state.model == %{name: "ghost-model"}
         end)

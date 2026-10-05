@@ -152,6 +152,55 @@ defmodule Nest.Agents.Agent.Machine do
   def status_for(%__MODULE__{phase: :stopping, kind: :chat}), do: :streaming
   def status_for(%__MODULE__{phase: :stopping, kind: :compaction}), do: :compacting
 
+  # --- runtime transitions ---
+  #
+  # The executor drives these; each is the runtime equivalent of a
+  # modeled `step/2` transition. The invariant is enforced on entry, and
+  # `status_for/1` is the single authority for the observable status.
+
+  @doc "Terminal transition back to idle."
+  @spec to_idle(t()) :: t()
+  def to_idle(%__MODULE__{} = s), do: put(s, s.kind, :idle)
+
+  @doc "A chat turn's LLM call is in flight."
+  @spec to_chat_generating(t()) :: t()
+  def to_chat_generating(%__MODULE__{} = s), do: put(s, :chat, :generating, :http)
+
+  @doc "A chat turn's tool worker is in flight."
+  @spec to_chat_tools(t()) :: t()
+  def to_chat_tools(%__MODULE__{} = s), do: put(s, :chat, :executing_tools, :tools)
+
+  @doc "A compaction summary call is in flight."
+  @spec to_compaction_generating(t()) :: t()
+  def to_compaction_generating(%__MODULE__{} = s), do: put(s, :compaction, :generating, :http)
+
+  @doc "A compaction summary landed and is being committed."
+  @spec to_compaction_committing(t()) :: t()
+  def to_compaction_committing(%__MODULE__{} = s), do: put(s, :compaction, :committing)
+
+  @doc "Enter a blocked (externally-unstuck) phase."
+  @spec to_blocked(t(), phase()) :: t()
+  def to_blocked(%__MODULE__{} = s, phase) when phase in @blocked, do: put(s, s.kind, phase)
+
+  # Inverse of `status_for/1` for callers that legitimately start from an
+  # observable status (tests simulating a phase). Kept alongside the
+  # authority so the mapping can't drift.
+  @doc false
+  @spec status_to_machine(t(), atom()) :: t()
+  def status_to_machine(%__MODULE__{} = s, status) do
+    case status do
+      :idle -> to_idle(s)
+      :streaming -> to_chat_generating(s)
+      :executing_tools -> to_chat_tools(s)
+      :compacting -> to_compaction_generating(s)
+      other -> to_blocked(s, other)
+    end
+  end
+
+  defp put(%__MODULE__{} = s, kind, phase, worker_kind \\ nil) do
+    validate!(%{s | kind: kind, phase: phase, worker_kind: worker_kind, worker_ref: nil})
+  end
+
   @doc """
   Apply one event. Pure: returns the actions the executor must run and the
   next machine state. Never raises for a declared event.

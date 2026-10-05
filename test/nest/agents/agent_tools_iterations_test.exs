@@ -7,6 +7,7 @@ defmodule Nest.Agents.AgentToolsIterationsTest do
   runs on its own ExUnit worker.
   """
   use Nest.DataCase, async: true
+  alias Nest.Agents.Agent.Machine
 
   alias Nest.Agents.Agent
   alias Nest.LLM.MockClient
@@ -54,7 +55,12 @@ defmodule Nest.Agents.AgentToolsIterationsTest do
       # sequential LLM calls plus tool execution through the GenServer/DB
       # pipeline under 24-way async concurrency, so a 500ms receive is not a
       # deterministic bound.
-      assert eventually(fn -> :sys.get_state(pid).live.status == :idle end, timeout: 1_000)
+      assert eventually(
+               fn ->
+                 Machine.status_for(:sys.get_state(pid).live.machine) == :idle
+               end,
+               timeout: 1_000
+             )
 
       # Below the cap, `max_iterations` is never broadcast. If it ever were,
       # it would be emitted before idle, so this non-blocking check is

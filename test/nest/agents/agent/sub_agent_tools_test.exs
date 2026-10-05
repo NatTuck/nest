@@ -27,6 +27,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
   """
 
   use Nest.DataCase, async: true
+  alias Nest.Agents.Agent.Machine
 
   import ExUnit.CaptureLog
 
@@ -369,7 +370,11 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
                false
            end)
 
-    assert Eventually.eventually(fn -> :sys.get_state(specialist_pid).live.status == :idle end,
+    assert Eventually.eventually(
+             fn ->
+               Machine.status_for(:sys.get_state(specialist_pid).live.machine) ==
+                 :idle
+             end,
              timeout: 500
            )
   end

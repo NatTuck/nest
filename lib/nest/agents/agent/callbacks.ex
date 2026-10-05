@@ -21,13 +21,10 @@ defmodule Nest.Agents.Agent.Callbacks do
   alias Nest.Agents.Agent.Inbox
   alias Nest.Agents.Agent.Init
   alias Nest.Agents.Agent.IntrospectionHandler
+  alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.MessageAppender
   alias Nest.Agents.Agent.SubAgent
-
-  # The bounded delay before `handle_call({:stop_chat, ...})` force-idles
-  # a ChatTurn that never acked. Overridable so tests don't pay the
-  # production 2s.
-  defp stop_fallback_ms, do: Application.get_env(:nest, :stop_fallback_ms, 2_000)
+  alias Nest.Agents.Agent.Turn.Lifecycle, as: TurnLifecycle
 
   # Sub-agent: child finished its turn. Merge usage, drop the
   # pending-child entry, forward the result, broadcast status.
@@ -57,23 +54,25 @@ defmodule Nest.Agents.Agent.Callbacks do
   # `route_for/1` — but `handle_cast` doesn't go through
   # `Handlers`, so we delegate directly.
   def handle_cast({:chat_stopped, chat_turn_pid}, state) do
-    Handlers.ChatTurnHandler.handle({:chat_stopped, chat_turn_pid}, state)
+    Handlers.TurnHandler.handle({:chat_stopped, chat_turn_pid}, state)
   end
 
   # Defense-in-depth: drop messages while busy. See channel layer.
   def handle_cast({:chat, content}, state), do: chat_or_drop(state, content, nil)
   def handle_cast({:chat, content, mode}, state), do: chat_or_drop(state, content, mode)
 
-  defp chat_or_drop(state, _content, _mode)
-       when state.live.status in [
-              :streaming,
-              :executing_tools,
-              :model_missing,
-              :needs_repair
-            ],
-       do: {:noreply, state}
-
-  defp chat_or_drop(state, content, mode), do: ChatPipeline.handle_chat(state, content, mode)
+  defp chat_or_drop(state, content, mode) do
+    if Machine.status_for(state.live.machine) in [
+         :streaming,
+         :executing_tools,
+         :model_missing,
+         :needs_repair
+       ] do
+      {:noreply, state}
+    else
+      ChatPipeline.handle_chat(state, content, mode)
+    end
+  end
 
   # Construct the `:model_missing` recovery state. The
   # implementation lives in `Init.Recovery` so this module
@@ -166,22 +165,12 @@ defmodule Nest.Agents.Agent.Callbacks do
   # schedule a bounded `:stop_fallback` so a dead/wedged turn that never
   # acks is force-idled too.
   def handle_call({:stop_chat, channel_pid}, _from, state) do
+    # Fully in-process: set `cancelled` first (so any in-flight worker's
+    # `should_stop` callback observes it), kill the active worker, and
+    # finalize the turn. Idempotent when the agent is already idle.
     state = %{state | live: %{state.live | cancelled: true}}
-
-    case state.live.chat_turn_pid do
-      nil ->
-        {:reply, :ok, Handlers.ChatTurnHandler.force_idle(state)}
-
-      chat_turn_pid ->
-        try do
-          GenServer.call(chat_turn_pid, {:stop_chat, channel_pid}, 5_000)
-        catch
-          :exit, _ -> :ok
-        end
-
-        Process.send_after(self(), {:stop_fallback, chat_turn_pid}, stop_fallback_ms())
-        {:reply, :ok, state}
-    end
+    state = TurnLifecycle.stop(state, channel_pid)
+    {:reply, :ok, state}
   end
 
   # Synchronous retry/loop-ack handlers. The Agent API exposes

@@ -27,6 +27,7 @@ defmodule Nest.Agents.Agent.SubAgentTest do
   focused on the receive-side handler.
   """
   use ExUnit.Case, async: true
+  alias Nest.Agents.Agent.Machine
 
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Broadcasts
@@ -187,7 +188,9 @@ defmodule Nest.Agents.Agent.SubAgentTest do
       assert new_state.chat_state.pending_children == %{}
       # Other fields are untouched.
       assert new_state.name == state.name
-      assert new_state.live.status == state.live.status
+
+      assert Machine.status_for(new_state.live.machine) ==
+               Machine.status_for(state.live.machine)
     end
   end
 

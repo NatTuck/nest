@@ -7,6 +7,7 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
   credo's 500-line cap.
   """
   use Nest.DataCase, async: true
+  alias Nest.Agents.Agent.Machine
 
   import Mimic
 
@@ -114,7 +115,7 @@ defmodule Nest.Agents.AgentCompactionPreflightTest do
 
       # The agent stays idle (no chat turn was spawned).
       state_after = :sys.get_state(pid)
-      assert state_after.live.status == :context_overflow
+      assert Machine.status_for(state_after.live.machine) == :context_overflow
       assert state_after.live.pending_user_message == nil
 
       # The user message was NOT appended to the conversation.

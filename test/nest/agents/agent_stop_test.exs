@@ -8,19 +8,20 @@ defmodule Nest.Agents.AgentStopTest do
       transitions to `:idle`.
     * Stopping after the LLM stream completes (between turns)
       — no-op.
-    * Stopping during a `context` tool compaction call — chat
-      task unwinds, no `:compaction_done` resume
+    * Stopping during a `context` tool compaction call — the
+      in-process turn unwinds, no `:compaction_done` resume
       auto-resumes.
     * Idempotency — multiple `Agent.stop_chat/2` calls
       before finalization don't crash anything.
   """
   use Nest.DataCase, async: true
+  alias Nest.Agents.Agent.Machine
 
   import ExUnit.CaptureLog
   import Mimic
 
   alias Nest.Agents.Agent
-  alias Nest.Agents.Agent.Handlers.ChatTurnHandler
+  alias Nest.Agents.Agent.Handlers.TurnHandler
   alias Nest.LLM.MockClient
   alias Nest.Messages.Assistant
   alias Nest.Messages.Part
@@ -33,8 +34,6 @@ defmodule Nest.Agents.AgentStopTest do
     Process.put(:nest_test_agent_pid, self())
     MockClient.start_link()
     MockClient.clear()
-
-    # drain loop killed with fire, it can *NEVER EVER* come back
 
     on_exit(fn -> Process.delete(:nest_test_agent_pid) end)
 
@@ -103,27 +102,22 @@ defmodule Nest.Agents.AgentStopTest do
   describe "stop_chat/2 before any LLM delta" do
     test "closes the turn with a non-empty assistant message, never an empty one" do
       # The user clicks Stop between sending the message and receiving
-      # any text from the LLM (the HTTP worker is mid-stream and has not
-      # emitted a delta). No empty message is ever inserted: the turn is
-      # closed with a non-empty acknowledgement tagged `stopped_by_user`
-      # so the messages list stays alternation-valid for the next turn.
-      #
-      # Send stop directly to the chat turn pid so the stop wins the race
-      # against the streaming worker (the worker is spawned but has not
-      # yet emitted deltas).
+      # any text from the LLM. No empty message is ever inserted: the
+      # turn is closed with a non-empty acknowledgement tagged
+      # `stopped_by_user` so the messages list stays alternation-valid
+      # for the next turn.
       {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+
+      # Empty stream events: the HTTP worker starts but never emits a
+      # delta, so `streaming_acc` stays nil at stop time.
+      MockClient.set_stream_events([{:text, ""}])
 
       :ok = Agent.chat(pid, "Start")
 
       assert_receive {:chat_message, {:user, _}}, 500
       assert_receive {:chat_status, %{status: "streaming"}}, 500
 
-      chat_turn_pid = :sys.get_state(pid).live.chat_turn_pid
-      assert is_pid(chat_turn_pid)
-
-      # Stop before any delta arrives (`streaming_acc` is nil because no
-      # `{:delta_received, _, :text}` event has reached the Agent yet).
-      GenServer.call(chat_turn_pid, {:stop_chat, self()}, :infinity)
+      Agent.stop_chat(pid, self())
 
       assert_receive {:chat_message,
                       {:assistant, %Assistant{metadata: %{"stopped_by_user" => true}}}},
@@ -153,10 +147,9 @@ defmodule Nest.Agents.AgentStopTest do
   describe "stop_chat/2 during context-compact tool" do
     test "the tool-call mid-execution stop unwinds without auto-resume" do
       # Set up a stream that emits one `context-compact` tool call.
-      # The ChatTurn's `handle_compact_only/3` emits
-      # `{:needs_compaction, _}` to the Agent and stops; the Agent
-      # then owns the compaction. We stop the agent while that
-      # hand-off is in flight.
+      # The turn's `handle_compact_only/3` emits `{:needs_compaction, _}`
+      # to the Agent and stops; the Agent then owns the compaction. We
+      # stop the agent while that hand-off is in flight.
       MockClient.set_tool_response(%{
         text: "compacting",
         tool_calls: [
@@ -173,27 +166,20 @@ defmodule Nest.Agents.AgentStopTest do
       :ok = Agent.chat(pid, "compact please")
 
       assert_receive {:chat_message, {:user, _}}, 500
-      # The tool call message is broadcast; the ChatTurn is emitting
-      # `{:needs_compaction, _}` and stopping (the Agent owns the
-      # compaction).
-      # Drain to find the assistant carrying the tool call
-      # (a context-notice synthetic pair may precede it).
+      # Drain to find the assistant carrying the tool call (a
+      # context-notice synthetic pair may precede it).
       tool_assistant = wait_for_assistant_with_tool_use(2_000)
       assert tool_assistant != nil
       assert Enum.any?(tool_assistant.parts, &match?(%Part.ToolUse{}, &1))
       assert_receive {:chat_status, %{status: "executing_tools"}}, 500
 
-      # The context-compact hand-off completes quickly (the ChatTurn emits
-      # `{:needs_compaction, _}` and stops; the compactor may already have
-      # run by the time we get here). Use the public stop API so the stop
-      # always wins regardless of which turn currently owns the pid; the
-      # real assertion is that the agent ends idle without auto-resuming.
+      # The context-compact hand-off completes quickly; the compactor
+      # may already have run by the time we get here. Use the public
+      # stop API so the stop always wins regardless of the in-flight
+      # phase; the real assertion is that the agent ends idle without
+      # auto-resuming.
       assert :ok = Agent.stop_chat(pid, self())
 
-      # The agent's stop handler waits for the chat task to
-      # ack via `{:chat_stopped, _}`. The ChatTurn's stop path
-      # catches the `{:stop_chat, _}`, replies `:stopped`, and
-      # sends the `{:chat_stopped, self()}` ack.
       assert_receive {:chat_status, %{status: "idle"}}, 2000
     end
   end
@@ -210,17 +196,6 @@ defmodule Nest.Agents.AgentStopTest do
       assert_receive {:chat_message, {:user, _}}, 500
       assert_receive {:chat_delta, _}, 500
 
-      # Three rapid stops via the public `Agent.stop_chat/2`
-      # entry point. Each is a `GenServer.call` to the
-      # Agent's `handle_call({:stop_chat, _})`, which sets
-      # `cancelled` and propagates to the ChatTurn via
-      # `GenServer.call(chat_turn_pid, {:stop_chat, _}, 5_000)`.
-      # The first call does the real work (kills the worker,
-      # stops the ChatTurn, casts `{:chat_stopped, _}` to
-      # the Agent). After it returns, `state.live.chat_turn_pid`
-      # is `nil`, so the second and third calls' `if chat_turn_pid`
-      # branch is skipped — no work, no second `chat_stopped`
-      # cast.
       Agent.stop_chat(pid, self())
       Agent.stop_chat(pid, self())
       Agent.stop_chat(pid, self())
@@ -329,15 +304,12 @@ defmodule Nest.Agents.AgentStopTest do
   end
 
   describe "stop_chat/2 returns synchronously" do
-    test "Agent.stop_chat/2 is a GenServer.call that blocks until the Agent's handle_call replies" do
-      # The new `Agent.stop_chat/2` is `GenServer.call(pid,
-      # {:stop_chat, from}, :infinity)`. Per SMELLS.md, all
-      # own-GenServer communication uses call/cast — no
-      # `send/2`. The test verifies the call returns `:ok`
-      # (the synchronous return) and that the ChatTurn's pid
-      # is gone from the Agent's state by the time the call
-      # returns (because the Agent's `handle_call({:stop_chat,
-      # _})` propagated to the ChatTurn before replying).
+    test "Agent.stop_chat/2 blocks until the Agent's handle_call replies and the turn is cleared" do
+      # `Agent.stop_chat/2` is `GenServer.call(pid, {:stop_chat, from},
+      # :infinity)`. Per SMELLS.md, all own-GenServer communication uses
+      # call/cast — no `send/2`. The test verifies the call returns `:ok`
+      # and that the in-process turn has been finalized by the time the
+      # call returns.
       events = for _ <- 1..100, do: {:text, "x"}
       MockClient.set_stream_events(events)
 
@@ -348,20 +320,11 @@ defmodule Nest.Agents.AgentStopTest do
       assert_receive {:chat_message, {:user, _}}, 500
       assert_receive {:chat_delta, _}, 500
 
-      # The call is synchronous — it returns :ok only after
-      # the Agent has processed the stop and replied. The
-      # :ok pattern match here verifies the return value.
       assert :ok = Agent.stop_chat(pid, self())
 
-      # After the call returns, the ChatTurn has been
-      # signaled to stop and the Agent's state reflects
-      # `chat_turn_pid: nil`. The `cancelled` flag has
-      # already been cleared by the casted `{:chat_stopped,
-      # _}` handler that runs immediately after the call
-      # returns (the cast is queued in the Agent's mailbox
-      # and processed before our `:sys.get_state/1` call).
       state = :sys.get_state(pid)
-      assert state.live.chat_turn_pid == nil
+      assert Machine.status_for(state.live.machine) == :idle
+      assert state.live.turn.active_worker == nil
       assert state.live.cancelled == false
 
       assert_receive {:chat_status, %{status: "idle"}}, 2000
@@ -369,155 +332,55 @@ defmodule Nest.Agents.AgentStopTest do
   end
 
   describe "stop_chat/2 always reaches idle" do
-    test "a chat_turn_pid that is already dead is force-idled by the bounded fallback" do
+    test "a busy status with no active worker forces idle immediately" do
       {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
-      # The reported wedge: the agent believes a turn is in flight
-      # (`:streaming`) but the ChatTurn process is already gone. Before
-      # the fallback, `stop_chat` called the dead pid, swallowed the
-      # `:noproc` exit, and left the agent busy forever.
-      dead_pid = spawn(fn -> :ok end)
-      ref = Process.monitor(dead_pid)
-      assert_receive {:DOWN, ^ref, :process, ^dead_pid, _}, 500
-
+      # Busy status with no worker to stop (e.g. the turn already
+      # finished). Stop must recover synchronously.
       :sys.replace_state(pid, fn state ->
-        %{state | live: %{state.live | status: :streaming, chat_turn_pid: dead_pid}}
-      end)
-
-      assert :ok = Agent.stop_chat(pid, self())
-
-      # The 2s fallback forces idle.
-      assert_receive {:chat_status, %{status: "idle"}}, 3_000
-
-      state = :sys.get_state(pid)
-      assert state.live.status == :idle
-      assert state.live.chat_turn_pid == nil
-    end
-
-    test "a nil chat_turn_pid forces idle immediately" do
-      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-
-      # Busy status with no turn to ask (e.g. the spawn superseded the
-      # turn, or it already finished). Stop must recover synchronously.
-      :sys.replace_state(pid, fn state ->
-        %{state | live: %{state.live | status: :executing_tools, chat_turn_pid: nil}}
+        %{
+          state
+          | live: %{
+              state.live
+              | machine:
+                  Machine.status_to_machine(
+                    state.live.machine,
+                    :executing_tools
+                  )
+            }
+        }
       end)
 
       assert :ok = Agent.stop_chat(pid, self())
 
       assert_receive {:chat_status, %{status: "idle"}}, 500
-      assert :sys.get_state(pid).live.status == :idle
+      assert Machine.status_for(:sys.get_state(pid).live.machine) == :idle
     end
 
     test "spawn_failed forces idle and broadcasts an error" do
       {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
 
       :sys.replace_state(pid, fn state ->
-        %{state | live: %{state.live | status: :streaming}}
+        %{
+          state
+          | live: %{
+              state.live
+              | machine: Machine.status_to_machine(state.live.machine, :streaming)
+            }
+        }
       end)
 
       capture_log(fn ->
-        result =
-          ChatTurnHandler.spawn_failed(
-            :sys.get_state(pid),
-            "saturated"
-          )
+        result = TurnHandler.spawn_failed(:sys.get_state(pid), "saturated")
 
-        assert result.live.status == :idle
-        assert result.live.chat_turn_pid == nil
+        assert Machine.status_for(result.live.machine) == :idle
+        assert is_nil(result.live.turn.ctx)
         assert_receive {:chat_error, %{content: content}}, 500
         assert content =~ "saturated"
 
         # Apply the returned state so teardown sees the agent idle.
         :sys.replace_state(pid, fn _ -> result end)
       end)
-    end
-  end
-
-  describe "stale ChatTurn lifecycle events" do
-    test "a {:chat_stopped, stale_pid} from a superseded turn is ignored" do
-      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-
-      live_turn_pid =
-        spawn(fn ->
-          receive do
-            :never -> :ok
-          end
-        end)
-
-      :sys.replace_state(pid, fn state ->
-        %{state | live: %{state.live | status: :streaming, chat_turn_pid: live_turn_pid}}
-      end)
-
-      stale_turn_pid = spawn(fn -> :ok end)
-      send(pid, {:chat_stopped, stale_turn_pid})
-      _ = :sys.get_state(pid)
-
-      # The live turn is untouched: no force-idle, no fabricated message.
-      state = :sys.get_state(pid)
-      assert state.live.status == :streaming
-      assert state.live.chat_turn_pid == live_turn_pid
-
-      Process.exit(live_turn_pid, :kill)
-
-      :sys.replace_state(pid, fn state ->
-        %{state | live: %{state.live | status: :idle, chat_turn_pid: nil}}
-      end)
-    end
-  end
-
-  describe "unexpected ChatTurn death" do
-    test "killing the active ChatTurn mid-stream force-idles the agent via the monitor" do
-      events = for _ <- 1..1000, do: {:text, "x"}
-      MockClient.set_stream_events(events)
-
-      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-
-      :ok = Agent.chat(pid, "Start")
-      assert_receive {:chat_message, {:user, _}}, 500
-      assert_receive {:chat_delta, _}, 500
-
-      chat_turn_pid = :sys.get_state(pid).live.chat_turn_pid
-      assert is_pid(chat_turn_pid)
-
-      # A crash that never reports (e.g. an exception outside the
-      # worker's own rescue) previously left the agent `:streaming`
-      # forever. The Agent monitors the turn now, so the DOWN is
-      # observed and the agent idles with an error.
-      capture_log(fn ->
-        Process.exit(chat_turn_pid, :kill)
-
-        assert_receive {:chat_error, _}, 500
-        assert_receive {:chat_status, %{status: "idle"}}, 500
-      end)
-
-      state = :sys.get_state(pid)
-      assert state.live.status == :idle
-      assert state.live.chat_turn_pid == nil
-    end
-
-    test "an orderly ChatTurn shutdown mid-stream idles the agent without an error" do
-      events = for _ <- 1..1000, do: {:text, "x"}
-      MockClient.set_stream_events(events)
-
-      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-
-      :ok = Agent.chat(pid, "Start")
-      assert_receive {:chat_message, {:user, _}}, 500
-      assert_receive {:chat_delta, _}, 500
-
-      chat_turn_pid = :sys.get_state(pid).live.chat_turn_pid
-      assert is_pid(chat_turn_pid)
-
-      # A supervisor/app-teardown style stop exits the ChatTurn with
-      # `:shutdown`. The Agent must leave the busy status (so the UI
-      # isn't stuck) but not surface a `chat:error`.
-      :ok = GenServer.stop(chat_turn_pid, :shutdown)
-
-      assert_receive {:chat_status, %{status: "idle"}}, 500
-      refute_received {:chat_error, _}
-
-      assert :sys.get_state(pid).live.status == :idle
     end
   end
 

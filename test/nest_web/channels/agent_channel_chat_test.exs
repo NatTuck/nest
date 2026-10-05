@@ -4,6 +4,7 @@ defmodule NestWeb.AgentChannelChatTest do
   `chat:status`, `chat:sync` edge cases, and the `chat:error` event.
   """
   use NestWeb.ChannelCase, async: true
+  alias Nest.Agents.Agent.Machine
   use NestWeb.AgentChannelTestHelpers
 
   import ExUnit.CaptureLog
@@ -358,7 +359,7 @@ defmodule NestWeb.AgentChannelChatTest do
 
       # Verify the error was logged with the correct message
       assert log =~ "chat:error"
-      assert log =~ "ChatTurn.run_chat_task/1"
+      assert log =~ "Turn.run/2"
       assert log =~ "model unavailable"
     end
 
@@ -426,7 +427,7 @@ defmodule NestWeb.AgentChannelChatTest do
 
           # Verify the error was logged with the correct message
           assert log =~ "chat:error"
-          assert log =~ "ChatTurn.run_chat_task/1"
+          assert log =~ "Turn.run/2"
           assert log =~ "model failed"
         end)
     end
@@ -441,7 +442,13 @@ defmodule NestWeb.AgentChannelChatTest do
       {:ok, agent_pid} = Supervisor.get_agent(space_id, id)
 
       :sys.replace_state(agent_pid, fn state ->
-        %{state | live: %{state.live | status: :compacting}}
+        %{
+          state
+          | live: %{
+              state.live
+              | machine: Machine.status_to_machine(state.live.machine, :compacting)
+            }
+        }
       end)
 
       ref = push(socket, "chat:message", %{"content" => "during compaction"})
@@ -452,7 +459,13 @@ defmodule NestWeb.AgentChannelChatTest do
       # check (there is no real turn). Restore idle so the teardown's
       # zero-in-flight-agents assertion holds.
       :sys.replace_state(agent_pid, fn state ->
-        %{state | live: %{state.live | status: :idle}}
+        %{
+          state
+          | live: %{
+              state.live
+              | machine: Machine.status_to_machine(state.live.machine, :idle)
+            }
+        }
       end)
     end
 
@@ -464,7 +477,17 @@ defmodule NestWeb.AgentChannelChatTest do
       {:ok, agent_pid} = Supervisor.get_agent(space_id, id)
 
       :sys.replace_state(agent_pid, fn state ->
-        %{state | live: %{state.live | status: :compaction_failed}}
+        %{
+          state
+          | live: %{
+              state.live
+              | machine:
+                  Machine.status_to_machine(
+                    state.live.machine,
+                    :compaction_failed
+                  )
+            }
+        }
       end)
 
       ref = push(socket, "chat:message", %{"content" => "after failure"})
@@ -483,7 +506,17 @@ defmodule NestWeb.AgentChannelChatTest do
       {:ok, agent_pid} = Supervisor.get_agent(space_id, id)
 
       :sys.replace_state(agent_pid, fn state ->
-        %{state | live: %{state.live | status: :context_overflow}}
+        %{
+          state
+          | live: %{
+              state.live
+              | machine:
+                  Machine.status_to_machine(
+                    state.live.machine,
+                    :context_overflow
+                  )
+            }
+        }
       end)
 
       ref = push(socket, "chat:message", %{"content" => "this won't fit"})
@@ -526,7 +559,11 @@ defmodule NestWeb.AgentChannelChatTest do
           state
           | live: %{
               state.live
-              | status: :compaction_failed,
+              | machine:
+                  Machine.status_to_machine(
+                    state.live.machine,
+                    :compaction_failed
+                  ),
                 pending_user_message: {"Hello", "chat"}
             }
         }

@@ -55,7 +55,7 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
   messages list.
   """
 
-  alias Nest.Agents.Agent.ChatTurn.ContextReminder
+  alias Nest.Agents.Agent.Turn.ContextReminder
   alias Nest.Messages.Assistant
   alias Nest.Messages.MessageList
   alias Nest.Messages.Part

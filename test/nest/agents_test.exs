@@ -11,6 +11,7 @@ defmodule Nest.AgentsTest do
   outlives its test (parallel-test ghost-pid leak fixed).
   """
   use Nest.DataCase, async: true
+  alias Nest.Agents.Agent.Machine
 
   import Eventually
   import Mimic
@@ -290,7 +291,12 @@ defmodule Nest.AgentsTest do
       # turn finalizes. Poll the agent state rather than waiting on a
       # fixed 100ms window — a slow scheduler can push the idle
       # transition past it.
-      assert eventually(fn -> :sys.get_state(pid).live.status == :idle end, timeout: 1_000)
+      assert eventually(
+               fn ->
+                 Machine.status_for(:sys.get_state(pid).live.machine) == :idle
+               end,
+               timeout: 1_000
+             )
 
       {:ok, info} = Agents.get_info(AgentTestHelpers.current_space_id(), name)
       assert info.message_count == 3

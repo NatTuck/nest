@@ -19,6 +19,7 @@ defmodule Nest.Agents.Agent.ModelHandler do
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Inbox
   alias Nest.Agents.Agent.Init
+  alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.WorkspaceHandler
   alias Nest.Persistence
 
@@ -42,7 +43,7 @@ defmodule Nest.Agents.Agent.ModelHandler do
   """
   @spec handle(map(), GenServer.from(), Agent.t()) :: GenServer.reply()
   def handle({:set_model, new_model}, _from, state) when is_map(new_model) do
-    if state.live.status in [:idle, :model_missing] do
+    if Machine.status_for(state.live.machine) in [:idle, :model_missing] do
       perform_set_model(state, new_model)
     else
       {:reply, {:error, :agent_busy}, state}
@@ -54,7 +55,7 @@ defmodule Nest.Agents.Agent.ModelHandler do
   # an invalid model or a missing workspace for a workspace-requiring
   # vocation leaves the agent unchanged. Broadcasts status once.
   def handle({:edit_agent, new_model, workspace_path}, _from, state) when is_map(new_model) do
-    if state.live.status in [:idle, :model_missing] do
+    if Machine.status_for(state.live.machine) in [:idle, :model_missing] do
       perform_edit_agent(state, new_model, normalize_workspace(workspace_path))
     else
       {:reply, {:error, :agent_busy}, state}
@@ -147,8 +148,8 @@ defmodule Nest.Agents.Agent.ModelHandler do
 
     # `:model_missing` recovery transition — flag flips to
     # `:idle` so the ChatPage's repair banner clears.
-    if state.live.status == :model_missing do
-      %{state | live: %{state.live | status: :idle}}
+    if Machine.status_for(state.live.machine) == :model_missing do
+      %{state | live: %{state.live | machine: Machine.to_idle(state.live.machine)}}
     else
       state
     end

@@ -1,11 +1,11 @@
-defmodule Nest.Agents.Agent.ChatTurn.BudgetReminderTest do
+defmodule Nest.Agents.Agent.Turn.BudgetReminderTest do
   @moduledoc """
   Tests for the tool-call budget reminder notice text.
   """
 
   use ExUnit.Case, async: true
 
-  alias Nest.Agents.Agent.ChatTurn.BudgetReminder
+  alias Nest.Agents.Agent.Turn.BudgetReminder
 
   describe "notice_text/1 returning nil" do
     test "above the warning band (more than 2 rounds remaining)" do

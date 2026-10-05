@@ -31,6 +31,7 @@ defmodule Nest.Agents.Agent.Inbox do
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ChatPipeline
   alias Nest.Agents.Agent.Config
+  alias Nest.Agents.Agent.Machine
   alias Nest.Tokens.Estimator
 
   require Logger
@@ -62,15 +63,17 @@ defmodule Nest.Agents.Agent.Inbox do
   @spec handle_delivery(Agent.t(), String.t(), String.t()) ::
           {:reply, {:ok, :delivered | :queued} | {:error, term()}, Agent.t()}
   def handle_delivery(state, sender, content) do
+    status = Machine.status_for(state.live.machine)
+
     cond do
       length(state.live.inbox) >= @max_inbox_size ->
         {:reply, {:error, :inbox_full}, state}
 
-      state.live.status in @busy_statuses ->
+      status in @busy_statuses ->
         state = state |> enqueue(sender, content) |> broadcast()
         {:reply, {:ok, :queued}, state}
 
-      state.live.status == :idle ->
+      status == :idle ->
         {state, result} =
           state
           |> enqueue(sender, content)
@@ -79,7 +82,7 @@ defmodule Nest.Agents.Agent.Inbox do
         {:reply, {:ok, result}, state}
 
       true ->
-        {:reply, {:error, {:status, state.live.status}}, state}
+        {:reply, {:error, {:status, status}}, state}
     end
   end
 
@@ -89,9 +92,13 @@ defmodule Nest.Agents.Agent.Inbox do
   natural idle transition.
   """
   @spec drain_if_idle(Agent.t()) :: Agent.t()
-  def drain_if_idle(%{live: %{status: :idle, inbox: [_ | _]}} = state) do
-    {state, _result} = drain(state)
-    state
+  def drain_if_idle(%{live: %{inbox: [_ | _]} = live} = state) do
+    if Machine.status_for(live.machine) == :idle do
+      {state, _result} = drain(state)
+      state
+    else
+      state
+    end
   end
 
   def drain_if_idle(state), do: state
@@ -112,7 +119,7 @@ defmodule Nest.Agents.Agent.Inbox do
     state = state |> clear_inbox() |> broadcast()
     {:noreply, state} = ChatPipeline.handle_chat(state, content, nil)
 
-    if state.live.status in @refused_statuses do
+    if Machine.status_for(state.live.machine) in @refused_statuses do
       {state |> restore(entries) |> broadcast(), :queued}
     else
       {state, :delivered}
