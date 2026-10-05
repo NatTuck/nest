@@ -167,6 +167,36 @@ defmodule MachineTest do
     end
   end
 
+  describe "runtime transitions agree with the step/2 spec" do
+    test "each runtime helper lands in the same phase/worker_kind as its modeled event" do
+      # intentional: the runtime drives the machine through the
+      # `to_*` helpers, while `step/2` is the pure spec. This test keeps
+      # the two from drifting: for the modeled transition, both must land
+      # in the same phase and worker kind.
+      idle = Machine.new()
+      generating = Machine.to_chat_generating(idle)
+
+      cases = [
+        {:to_chat_generating, idle, {:chat_request, %{}}},
+        {:to_chat_tools, generating, {:http_ok, %{tool_calls: [%{id: "c1"}]}}},
+        {:to_compaction_generating, generating, {:compaction_request, {:tool_call, %{}, 1, 10}}},
+        {:to_idle, generating, {:http_ok, %{}}}
+      ]
+
+      for {helper, start, event} <- cases do
+        {:ok, _actions, stepped} = Machine.step(start, event)
+        helped = apply(Machine, helper, [start])
+
+        assert helped.phase == stepped.phase,
+               "#{helper} phase #{inspect(helped.phase)} != step/2 #{inspect(stepped.phase)}"
+
+        assert helped.work.worker_kind == stepped.work.worker_kind,
+               "#{helper} worker_kind #{inspect(helped.work.worker_kind)} != " <>
+                 "step/2 #{inspect(stepped.work.worker_kind)}"
+      end
+    end
+  end
+
   describe "invariants" do
     test "validate!/1 accepts every declared phase" do
       for phase <- Machine.phases() do

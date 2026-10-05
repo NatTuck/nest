@@ -208,11 +208,26 @@ Files: `chat_turn/iteration.ex`, `llm/runner.ex`, `llm/run_request.ex`.
 
 # Agent machine refactor (collapse `ChatTurn` into the Agent)
 
-Active workstream. Steps 1–2 are committed at checkpoint `9f29364`. Step 3
-landed and `mix precommit` green (uncommitted). Step 4 is in progress: 4a
-(machine as the status authority) landed and green; 4b (fold compaction
-into the machine) remains. This section is the executable checklist for the
-remaining steps; the design rationale is the conversation, not a doc.
+DONE. Steps 1–7 are implemented and committed; `mix precommit` is green
+(1836 tests, coverage 84.2%). Commits: `9f29364` (1–2), `1f7d591` (3+4a),
+`030b92b` (4b), `911dd58` (5), `540bfab` (6), `0d5ed82` (7), `d53b7b1`
+(cleanup). The section below is kept as the design record + the residual
+optional items.
+
+Final architecture: the Agent owns and drives a turn in-process. The pure
+`Nest.Agents.Agent.Machine` (`status_for/1` is the single observable-status
+authority; `Machine.Work` holds the turn working set; `Machine.Children`
+holds outstanding query children) is driven by `Nest.Agents.Agent.Turn`
+plus `Turn.{Iteration,ResponseHandler,Lifecycle,Messages,NoticeInjector,
+ContextReminder,BudgetReminder,APILog,HTTPWorker,Idle}`. `MessageAppender`
+is the single sequence writer (tagged `{:ok|:stale|:invalid, ...}`);
+`Nest.Agents.Agent.Repair.decide/3` is the single repair decision;
+`mix nest.repair_messages` is the offline authority.
+
+Residual optional items (not required): test comment prose still says
+"ChatTurn" in a few historical spots; `Machine.step/2` is the pure spec and
+the runtime uses the `to_*` helpers (a test now pins that they agree on
+phase/worker-kind).
 
 ## Locked design decisions
 

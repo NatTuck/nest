@@ -238,14 +238,6 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     Turn.start(state, state.chat_state.messages, {:user_message, stamped_user}, caps)
   end
 
-  # Backward-compat alias used by older test fixtures. Routes
-  # through `resume_with_pending/1` so the pending message is
-  # appended exactly once.
-  @deprecated "Use resume_with_pending/1 instead"
-  def resume_after_compaction(state, _content, _mode) do
-    resume_with_pending(state)
-  end
-
   @doc """
   Resume after a workspace-triggered compaction: append the pending
   workspace notice pair (no LLM request) and stay idle. No-op when
