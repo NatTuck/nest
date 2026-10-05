@@ -143,23 +143,17 @@ defmodule Nest.Agents.AgentTestHelpers do
   end
 
   @doc """
-  Send a compaction commit to an agent using the current
-  `{:compaction_done, summary_text, staged, summary_assistant, carried_entry}`
-  contract. Direct-injection tests bypass `Trigger`/`ResponseHandler`, so
-  they pass an empty staged request and a summary assistant built from
-  `summary_text`.
+  Deliver a compaction result to an agent by driving the production
+  compaction entry: put the machine into the compactor's `:generating`
+  phase with `entry = {:compaction, [], carried_entry}`, then send the
+  `{:http_response, ref, %RunResponse{}}` the executor's commit path
+  consumes (via `Compaction.commit_compaction/2`).
   """
   def send_compaction_done(agent_pid, summary_text, carried_entry) do
-    summary_assistant =
-      {:assistant,
-       %Nest.Messages.Assistant{
-         parts: [%Part.Text{text: summary_text}],
-         api_logs: []
-       }}
+    ref = make_ref()
 
     # Put the machine into the compactor's generating phase with an empty
-    # staged request, then deliver the `:compaction_ok` fact the executor's
-    # commit path consumes.
+    # staged request and a live worker ref, then deliver the HTTP response.
     :sys.replace_state(agent_pid, fn state ->
       machine = state.live.machine
 
@@ -171,6 +165,7 @@ defmodule Nest.Agents.AgentTestHelpers do
           work: %{
             machine.work
             | worker_kind: :http,
+              worker_ref: ref,
               active_message_index: state.chat_state.next_message_index
           }
       }
@@ -180,13 +175,7 @@ defmodule Nest.Agents.AgentTestHelpers do
 
     send(
       agent_pid,
-      {:compaction_ok,
-       %{
-         summary_text: summary_text,
-         staged: [],
-         summary_assistant: summary_assistant,
-         carried_entry: carried_entry
-       }}
+      {:http_response, ref, %Nest.LLM.RunResponse{text: summary_text, usage: nil}}
     )
   end
 

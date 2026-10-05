@@ -41,7 +41,6 @@ defmodule Nest.Agents.Agent.Handlers do
   defp route_for({:chat_stopped, _}), do: {:ok, Turn}
   defp route_for({:llm_error, _}), do: {:ok, Turn}
   defp route_for({:http_response, _, _}), do: {:ok, Turn}
-  defp route_for({:compaction_ok, _}), do: {:ok, Turn}
   defp route_for({:http_error, _, _}), do: {:ok, Turn}
   defp route_for({:worker_crashed, _, _, _}), do: {:ok, Turn}
   defp route_for({:tool_results, _, _}), do: {:ok, Turn}

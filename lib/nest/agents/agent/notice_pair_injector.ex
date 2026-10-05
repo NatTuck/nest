@@ -1,58 +1,36 @@
 defmodule Nest.Agents.Agent.NoticePairInjector do
   @moduledoc """
-  Wire-safe synthetic notice pair injection.
+  Wire-safe synthetic notice pair construction.
 
   The Agent's messages list must alternate `user → assistant →
   user → assistant` to satisfy every LLM provider's wire
-  format. Two callers (the LLM-response path, the
-  user-message path) need to wedge a synthetic pair into the
-  stream — a single synthetic `assistant(attention)` and
-  `user(notice)` so the LLM sees a structured signal before
-  it commits to its next response.
+  format. The user-message path (`Machine.Transitions`) and the
+  LLM-response path (`Machine.Response`) both need to wedge a
+  synthetic pair into the stream — a synthetic
+  `assistant(attention)` and/or `user(notice)` so the LLM sees a
+  structured signal before it commits to its next response.
 
-  Both callers face the same problem: where exactly do I
-  drop the pair without breaking alternation? That depends
-  on the *current* trailing role, which neither caller wants
-  to compute by hand. This module centralizes the decision.
+  `build_pair/3` is pure: it returns the wire-safe messages to
+  insert (or `:deferred` when a trailing unpaired `tool_use` makes
+  injection unsafe), and the caller emits them as `{:append_many, _}`
+  actions for the turn executor. The two injection shapes:
 
-  The two injection shapes (each satisfies alternation from a
-  different starting role):
+      :agent_user    → [assistant(attention), user(notice)]
+      :user_agent    → [assistant(notice+ack)]  (trailing user/tool)
+                     | [user(notice), assistant(ack)]  (trailing assistant)
 
-      :agent_user_pair    → [assistant(attention), user(notice)]
-      :user_agent_pair    → [user(notice), assistant(ack)]
-      :single_assistant   → [assistant(notice+ack)]
+  `:agent_user` is used at LLM-response construction time (the
+  response's trailing role is `:user` or `:tool` from the tool
+  result that triggered the call). After this injection the trailing
+  role is `:user`, and nothing in the chat turn would drive a next
+  iteration — so the caller MUST iterate after a successful
+  `:agent_user` injection.
 
-  `:agent_user_pair` is used at LLM-response construction time
-  (the response's trailing role is `:user` or `:tool` from the
-  tool result that triggered the call). After this injection
-  the trailing role is `:user`, and nothing in the chat turn
-  would drive a next iteration — so the caller MUST send
-  `:iterate` after a successful `:agent_user_pair`
-  injection.
-
-  `:user_agent_pair` and `:single_assistant` are used at
-  user-message construction time (the new user message
-  follows the injection and itself drives the next chat turn
-  via `ChatPipeline.handle_chat/3`). No iterate is needed
-  after these shapes.
-
-  `:deferred` is returned when a trailing assistant carries
-  an unpaired `Part.ToolUse{}` — putting a notice pair
-  between the `tool_use` and its upcoming `tool_result`
-  breaks Anthropic's tool-use/tool-result pairing invariant.
-  The caller is expected to retry on the next safe boundary
-  (typically the next LLM-response construction site).
-
-  ## Atomicity
-
-  The pair is appended via `{:append_messages, _}`, a single
-  GenServer.call. A partial failure (agent dead, mailbox
-  timeout) leaves the messages list either fully updated or
-  fully untouched — never half-updated with an assistant
-  message followed by no user message. This closes the
-  regression where the second of two sequential appends
-  timed out and the LLM was given a wire-format-broken
-  messages list.
+  `:deferred` is returned when a trailing assistant carries an
+  unpaired `Part.ToolUse{}` — putting a notice pair between the
+  `tool_use` and its upcoming `tool_result` breaks Anthropic's
+  tool-use/tool-result pairing invariant. The caller retries on the
+  next safe boundary (the next LLM-response construction site).
   """
 
   alias Nest.Agents.Agent.Turn.ContextReminder
@@ -60,7 +38,6 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
   alias Nest.Messages.MessageList
   alias Nest.Messages.Part
 
-  @type shape :: :agent_user_pair | :user_agent_pair | :single_assistant | :deferred
   @type spec :: %{
           required(:kind) => atom(),
           required(:attention) => String.t(),
@@ -68,65 +45,6 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
           optional(:threshold) => atom(),
           optional(:ack) => String.t()
         }
-
-  @doc """
-  Inject a synthetic notice pair into the Agent's messages
-  list. Returns `{:ok, shape, stamped_messages}` on success,
-  `:deferred` if a trailing tool_use makes injection unsafe,
-  or `:agent_dead` if the Agent GenServer is unreachable.
-
-  Direction is `:agent_user` for the LLM-response path (use
-  after an LLM call that crossed a threshold; the next LLM
-  call needs to be triggered by `:iterate`) or `:user_agent`
-  for the user-message path (use before a new user message;
-  no iterate needed because the user message drives the
-  next chat turn on its own).
-
-  Returns `{:ok, :user_agent_pair, _}` or `{:ok,
-  :agent_user_pair, _}` based on direction — never `:single_assistant`
-  from this entry point (the single-message variant is only
-  produced by `inject_pair_in_process/4` for `:user_agent`
-  + trailing `:user` role).
-  """
-  @spec inject_pair(GenServer.server(), spec(), :agent_user | :user_agent) ::
-          {:ok, shape(), [term()]} | shape() | :agent_dead
-  def inject_pair(agent_pid, spec, direction) do
-    with {:ok, messages} <- fetch_messages(agent_pid),
-         {:ok, pair_messages} <- build_pair(messages, spec, direction) do
-      append_pair(agent_pid, pair_messages, direction)
-    end
-  end
-
-  # In-process variant for callers that already run inside the
-  # Agent process (the user-message pipeline). Same wire-safety
-  # rules as `inject_pair/3`, but skips the GenServer.call —
-  # the pair is appended via `__append_messages__/2` directly.
-  #
-  # `messages` is the Agent's current messages list (caller
-  # passes `state.chat_state.messages` directly to avoid the
-  # self-call). Returns `{:ok, shape, stamped_messages,
-  # new_state}` on success, or `:deferred` on a trailing
-  # tool_use.
-  @spec inject_pair_in_process([term()], map(), spec(), :agent_user | :user_agent) ::
-          {:ok, shape(), [term()], map()} | shape()
-  def inject_pair_in_process(messages, state, spec, direction) do
-    with {:ok, pair_messages} <- build_pair(messages, spec, direction) do
-      append_pair_in_process(state, pair_messages, direction)
-    end
-  end
-
-  defp append_pair_in_process(state, pair_messages, direction) do
-    case Nest.Agents.Agent.__append_messages__(state, pair_messages) do
-      {:ok, stamped, new_state} ->
-        {:ok, shape_for(stamped, direction), stamped, new_state}
-
-      {:stale, _new_state} ->
-        :deferred
-
-      {:invalid, _reason, _new_state} ->
-        :deferred
-    end
-  end
 
   @doc """
   Purely build the wire-safe notice pair for `messages` in the given
@@ -217,32 +135,6 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
     end
   end
 
-  defp append_pair(agent_pid, pair_messages, direction) do
-    case GenServer.call(agent_pid, {:append_messages, pair_messages}, 5_000) do
-      [_ | _] = stamped -> {:ok, shape_for(stamped, direction), stamped}
-      _ -> :agent_dead
-    end
-  catch
-    :exit, _ -> :agent_dead
-  end
-
-  defp shape_for(stamped, direction) do
-    case {length(stamped), direction} do
-      {1, _} -> :single_assistant
-      {_, :agent_user} -> :agent_user_pair
-      {_, :user_agent} -> :user_agent_pair
-    end
-  end
-
-  defp fetch_messages(agent_pid) do
-    case GenServer.call(agent_pid, :get_messages, 1_000) do
-      messages when is_list(messages) -> {:ok, messages}
-      _ -> :agent_dead
-    end
-  catch
-    :exit, _ -> :agent_dead
-  end
-
   defp trailing_has_tool_use?(messages) do
     case List.last(messages) do
       {:assistant, %Assistant{parts: parts}} ->
@@ -276,7 +168,7 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
   end
 
   # Default ack text by spec kind. Mirrors the ack texts the
-  # two original call sites used (context_reminder.ex and
+  # original call sites used (context_reminder.ex and
   # budget_reminder.ex) so the unified injector produces the
   # same wire output as the old per-site builders.
   defp ack_for_kind(:context), do: "Okay, noted."

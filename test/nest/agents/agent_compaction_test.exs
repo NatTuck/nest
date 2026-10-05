@@ -206,11 +206,8 @@ defmodule Nest.Agents.AgentCompactionTest do
         {:user,
          %User{index: nil, parts: [%Part.Text{text: "[mode: compact] summarize"}], api_logs: []}}
 
-      summary_assistant =
-        {:assistant,
-         %Assistant{index: nil, parts: [%Part.Text{text: summary_text}], api_logs: []}}
-
       carried_entry = {:tool_call, tool_call_msg, 3, 30}
+      ref = make_ref()
 
       :sys.replace_state(pid, fn s ->
         machine = s.live.machine
@@ -223,6 +220,7 @@ defmodule Nest.Agents.AgentCompactionTest do
             work: %{
               machine.work
               | worker_kind: :http,
+                worker_ref: ref,
                 active_message_index: s.chat_state.next_message_index
             }
         }
@@ -232,13 +230,7 @@ defmodule Nest.Agents.AgentCompactionTest do
 
       send(
         pid,
-        {:compaction_ok,
-         %{
-           summary_text: summary_text,
-           staged: [suffix],
-           summary_assistant: summary_assistant,
-           carried_entry: carried_entry
-         }}
+        {:http_response, ref, %Nest.LLM.RunResponse{text: summary_text, usage: nil}}
       )
 
       # `:sys.get_state/1` queues behind `:compaction_done` and

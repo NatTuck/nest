@@ -6,6 +6,7 @@ defmodule MachineTest do
   use ExUnit.Case, async: true
 
   alias Nest.Agents.Agent.Machine
+  alias Nest.Agents.Agent.Machine.Compaction
 
   describe "vocabulary" do
     test "phases, events, actions are declared and blocked is a subset of phases" do
@@ -130,8 +131,7 @@ defmodule MachineTest do
       # the physical HTTP worker is in flight.
       generating = state_at(:generating)
 
-      {:ok, actions, next} =
-        Machine.step(generating, {:compaction_request, {:tool_call, %{}, 1, 10}})
+      {:ok, actions, next} = Compaction.stage(generating, {:tool_call, %{}, 1, 10}, nil)
 
       assert next.kind == :compaction and next.phase == :generating
       assert :iterate in actions
@@ -397,8 +397,6 @@ defmodule MachineTest do
   defp sample_event(:stop), do: {:stop, self()}
   defp sample_event(:stop_timer), do: :stop_timer
   defp sample_event(:timer_armed), do: {:timer_armed, :stop_timer, make_ref()}
-  defp sample_event(:compaction_request), do: {:compaction_request, {:tool_call, %{}, 1, 10}}
-  defp sample_event(:compaction_ok), do: {:compaction_ok, %{summary: "s"}}
   defp sample_event(:commit_done), do: {:commit_done}
   defp sample_event(:commit_error), do: {:commit_error, :boom}
   defp sample_event(:compaction_error), do: {:compaction_error, :boom, nil}

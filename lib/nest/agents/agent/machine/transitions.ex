@@ -203,9 +203,6 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
     start_chat(m, {:user_message, user}, entries)
   end
 
-  def do_step(%{phase: :idle} = m, {:compaction_request, entry}),
-    do: Compaction.stage(m, entry, m.pending_user_message)
-
   def do_step(%{phase: :idle} = m, {:http_ok, _ref, _response}), do: {:ignore, :stale_result, m}
 
   def do_step(%{phase: :idle} = m, {:tool_results, _ref, _results}),
@@ -296,14 +293,6 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
 
   def do_step(%{phase: :generating, kind: :chat} = m, :iterate), do: iterate(m)
 
-  def do_step(%{phase: :generating, kind: :chat} = m, {:compaction_request, entry}) do
-    Compaction.stage(m, entry, nil)
-  end
-
-  def do_step(%{phase: :executing_tools} = m, {:compaction_request, entry}) do
-    Compaction.stage(m, entry, nil)
-  end
-
   def do_step(%{phase: :generating, kind: :chat} = m, {:append_result, :invalid, reason}) do
     fail_turn(m, %ArgumentError{message: reason}, [])
   end
@@ -338,10 +327,6 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
       else: {:ignore, :stale_result, m}
   end
 
-  def do_step(%{phase: :generating, kind: :compaction} = m, {:compaction_ok, data}) do
-    {:ok, [{:commit_compaction, data}], enter(m, :compaction, :committing)}
-  end
-
   def do_step(%{phase: :generating, kind: :compaction} = m, {:compaction_error, reason, carried}) do
     Compaction.compaction_failed(m, reason, carried)
   end
@@ -356,10 +341,6 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
     if valid_ref?(m, ref),
       do: Compaction.compaction_failed(m, ex, Compaction.carried(m)),
       else: {:ignore, :stale_result, m}
-  end
-
-  def do_step(%{phase: :generating, kind: :compaction} = m, {:compaction_request, entry}) do
-    Compaction.stage(m, entry, nil)
   end
 
   # The staged compaction request was assembled; spawn the compactor.

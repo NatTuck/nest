@@ -108,10 +108,6 @@ defmodule Nest.Agents.Agent.Turn do
     reply(settle(state, {:http_ok, ref, response}))
   end
 
-  def handle({:compaction_ok, data}, state) do
-    reply(settle(state, {:compaction_ok, data}))
-  end
-
   def handle({:http_error, ref, reason}, state) do
     reply(settle(state, {:http_error, ref, reason}))
   end

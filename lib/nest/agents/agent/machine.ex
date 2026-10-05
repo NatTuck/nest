@@ -72,8 +72,6 @@ defmodule Nest.Agents.Agent.Machine do
     :stop,
     :stop_timer,
     :timer_armed,
-    :compaction_request,
-    :compaction_ok,
     :commit_done,
     :commit_error,
     :compaction_error,

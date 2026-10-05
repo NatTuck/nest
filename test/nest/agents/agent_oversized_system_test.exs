@@ -16,10 +16,12 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
   """
   use Nest.DataCase, async: true
   alias Nest.Agents.Agent.Machine
+  alias Nest.Agents.Agent.Machine.Compaction
 
   import ExUnit.CaptureLog
 
   alias Nest.Agents.Agent.Turn
+  alias Nest.Agents.Agent.Turn.Executor
   alias Nest.LLM.MockClient
   alias Nest.TextFixtures
   alias Nest.Vocations
@@ -77,11 +79,16 @@ defmodule Nest.Agents.AgentOversizedSystemTest do
 
   defp agent_state(pid), do: :sys.get_state(pid)
 
-  # The new post-turn compaction entry point: a compaction request against
-  # an idle machine. The HTTP spawn is deferred via the mailbox (as the old
-  # driver did), so a non-GenServer test process never performs a real call.
+  # The post-turn compaction entry point: stage a compaction against an
+  # idle machine via the same pure `Compaction.stage/3` the machine uses.
+  # The HTTP spawn is deferred via the mailbox, so a non-GenServer test
+  # process never performs a real call.
   defp post_turn(state) do
-    {:ok, state} = Turn.settle(state, {:compaction_request, nil})
+    ctx = Turn.build_ctx(state)
+    machine = %{state.live.machine | work: %{state.live.machine.work | ctx: ctx}}
+    {:ok, actions, machine} = Compaction.stage(machine, nil, nil)
+    state = %{state | live: %{state.live | machine: machine}}
+    {state, _follow} = Executor.run_all(actions, state)
     state
   end
 

@@ -12,32 +12,31 @@ defmodule Nest.Agents.Agent.WireInvariantTest do
 
   The wire invariant holds in this codebase because:
 
-    * **Case A** (chat_pipeline.ex): a context warning is
-      injected before a not-yet-sent user message. The
-      injection shape (`NoticePairInjector.build_pair/3` with
-      `:user_agent` direction) leaves the messages list
-      ending with the new user message, which is wire-valid.
+    * **Case A** (user-message path): a context warning is
+      injected before a not-yet-sent user message. The injection
+      shape (`NoticePairInjector.build_pair/3` with `:user_agent`
+      direction) leaves the messages list ending with the new
+      user message, which is wire-valid.
 
-    * **Case B** (response_handler.ex Case 2): a context or
-      budget reminder is injected before a not-yet-appended
-      LLM tool-use response. After the tool worker appends
-      the tool result, the messages list ends with `tool`
-      (wire `:user`), which is wire-valid for the iter-2
-      LLM call. When the LLM responds text-only, the chat
-      finalizes — no LLM call is made with assistant at the
-      tail.
+    * **Case B** (LLM-response path): a context or budget reminder
+      is injected before a not-yet-appended LLM tool-use response.
+      After the tool worker appends the tool result, the messages
+      list ends with `tool` (wire `:user`), which is wire-valid for
+      the iter-2 LLM call. When the LLM responds text-only, the chat
+      finalizes — no LLM call is made with assistant at the tail.
 
-    * **Stop-before-any-delta**: `TurnHandler.finalize_partial_if_any/2`
-      closes the turn with a non-empty recovery (`MessageList.pairing_bridge/2`)
-      when the user stops before the first delta arrives. No empty message
-      is ever persisted, and the list stays alternation-valid.
+    * **Stop-before-any-delta**: the terminal recovery
+      (`Turn.Terminal.recovery_messages/2`) closes the turn with a
+      non-empty recovery (`MessageList.pairing_bridge/2`) when the
+      user stops before the first delta arrives. No empty message is
+      ever persisted, and the list stays alternation-valid.
 
-  These tests pin each of those scenarios at the unit level.
+  These tests pin each of those scenarios at the unit level, using the
+  pure `build_pair/3` the machine emits as `{:append_many, _}` actions.
   """
 
   use ExUnit.Case, async: true
 
-  alias Nest.Agents.Agent
   alias Nest.Agents.Agent.NoticePairInjector
   alias Nest.Messages.Assistant
   alias Nest.Messages.MessageList
@@ -45,7 +44,7 @@ defmodule Nest.Agents.Agent.WireInvariantTest do
   alias Nest.Messages.Tool
   alias Nest.Messages.User
 
-  describe "Case A (chat_pipeline.ex) — inject before user message" do
+  describe "Case A (user-message path) — inject before user message" do
     test "trailing :user (post-compaction): single assistant → tail user after append" do
       # After compaction, the messages list ends with
       # `summary_user`. The pending real user message follows.
@@ -53,18 +52,12 @@ defmodule Nest.Agents.Agent.WireInvariantTest do
       # wire is `[user, assistant, user]` after appending the
       # real user message.
       messages = [user_struct(0, "summary")]
-      state = build_state(messages)
 
-      assert {:ok, :single_assistant, _stamped, new_state} =
-               NoticePairInjector.inject_pair_in_process(
-                 messages,
-                 state,
-                 spec(),
-                 :user_agent
-               )
+      assert {:ok, pair} = NoticePairInjector.build_pair(messages, spec(), :user_agent)
+      assert [{:assistant, _}] = pair
 
-      real_user = user_struct(new_state.chat_state.next_message_index, "hello")
-      new_messages = new_state.chat_state.messages ++ [real_user]
+      real_user = user_struct(length(messages) + length(pair), "hello")
+      new_messages = messages ++ pair ++ [real_user]
 
       assert MessageList.last_wire_role(new_messages) == :user
     end
@@ -76,18 +69,12 @@ defmodule Nest.Agents.Agent.WireInvariantTest do
       # `[assistant(notice+ack)]` keeps the wire valid; a
       # full pair would create back-to-back users.
       messages = [user_struct(0, "hello"), tool_struct(1, "result")]
-      state = build_state(messages)
 
-      assert {:ok, :single_assistant, _stamped, new_state} =
-               NoticePairInjector.inject_pair_in_process(
-                 messages,
-                 state,
-                 spec(),
-                 :user_agent
-               )
+      assert {:ok, pair} = NoticePairInjector.build_pair(messages, spec(), :user_agent)
+      assert [{:assistant, _}] = pair
 
-      real_user = user_struct(new_state.chat_state.next_message_index, "again")
-      new_messages = new_state.chat_state.messages ++ [real_user]
+      real_user = user_struct(length(messages) + length(pair), "again")
+      new_messages = messages ++ pair ++ [real_user]
 
       assert MessageList.last_wire_role(new_messages) == :user
     end
@@ -98,23 +85,13 @@ defmodule Nest.Agents.Agent.WireInvariantTest do
       # sequence must be `assistant → user(notice) →
       # assistant(ack) → user(real)`. The full pair is
       # required.
-      messages = [
-        user_struct(0, "hi"),
-        assistant_struct(1, "ok")
-      ]
+      messages = [user_struct(0, "hi"), assistant_struct(1, "ok")]
 
-      state = build_state(messages)
+      assert {:ok, pair} = NoticePairInjector.build_pair(messages, spec(), :user_agent)
+      assert [{:user, _}, {:assistant, _}] = pair
 
-      assert {:ok, :user_agent_pair, _stamped, new_state} =
-               NoticePairInjector.inject_pair_in_process(
-                 messages,
-                 state,
-                 spec(),
-                 :user_agent
-               )
-
-      real_user = user_struct(new_state.chat_state.next_message_index, "more")
-      new_messages = new_state.chat_state.messages ++ [real_user]
+      real_user = user_struct(length(messages) + length(pair), "more")
+      new_messages = messages ++ pair ++ [real_user]
 
       assert MessageList.last_wire_role(new_messages) == :user
     end
@@ -129,24 +106,13 @@ defmodule Nest.Agents.Agent.WireInvariantTest do
       # `:deferred` returns without injecting; the next safe
       # boundary (the next iteration's response handler) will
       # retry.
-      messages = [
-        user_struct(0, "hi"),
-        assistant_struct_with_tool_use(1)
-      ]
+      messages = [user_struct(0, "hi"), assistant_struct_with_tool_use(1)]
 
-      state = build_state(messages)
-
-      assert :deferred ==
-               NoticePairInjector.inject_pair_in_process(
-                 messages,
-                 state,
-                 spec(),
-                 :user_agent
-               )
+      assert :deferred == NoticePairInjector.build_pair(messages, spec(), :user_agent)
     end
   end
 
-  describe "Case B (response_handler.ex Case 2) — inject before tool_use" do
+  describe "Case B (LLM-response path) — inject before tool_use" do
     test "LLM responds with tool_use: full pair + LLM 1 + tool results → tail tool" do
       # The Case 2 inject happens at the response-handler
       # entry, BEFORE the LLM's assistant message is appended.
@@ -157,22 +123,15 @@ defmodule Nest.Agents.Agent.WireInvariantTest do
       messages = [user_struct(0, "do something")]
 
       # Step 1: Case 2 inject (`:agent_user` direction).
-      agent_user_state = build_state(messages)
-
-      assert {:ok, :agent_user_pair, _stamped, after_inject_state} =
-               NoticePairInjector.inject_pair_in_process(
-                 messages,
-                 agent_user_state,
-                 spec(),
-                 :agent_user
-               )
+      assert {:ok, pair} = NoticePairInjector.build_pair(messages, spec(), :agent_user)
+      after_inject = messages ++ pair
 
       # Step 2: LLM 1 response appended (with tool_use).
-      llm1 = assistant_struct_with_tool_use(after_inject_state.chat_state.next_message_index)
-      after_llm1_messages = after_inject_state.chat_state.messages ++ [llm1]
+      llm1 = assistant_struct_with_tool_use(length(after_inject))
+      after_llm1_messages = after_inject ++ [llm1]
 
       # Step 3: tool worker appends tool result.
-      tool_result = tool_struct(after_inject_state.chat_state.next_message_index + 1, "ok")
+      tool_result = tool_struct(length(after_inject) + 1, "ok")
       final_messages = after_llm1_messages ++ [tool_result]
 
       assert MessageList.last_wire_role(final_messages) == :user
@@ -187,18 +146,12 @@ defmodule Nest.Agents.Agent.WireInvariantTest do
       # (Case A's trailing-`:assistant` branch, full pair
       # injection).
       messages = [user_struct(0, "hello")]
-      agent_user_state = build_state(messages)
 
-      assert {:ok, :agent_user_pair, _stamped, after_inject_state} =
-               NoticePairInjector.inject_pair_in_process(
-                 messages,
-                 agent_user_state,
-                 spec(),
-                 :agent_user
-               )
+      assert {:ok, pair} = NoticePairInjector.build_pair(messages, spec(), :agent_user)
+      after_inject = messages ++ pair
 
-      llm1 = assistant_struct(after_inject_state.chat_state.next_message_index, "response")
-      after_llm1 = after_inject_state.chat_state.messages ++ [llm1]
+      llm1 = assistant_struct(length(after_inject), "response")
+      after_llm1 = after_inject ++ [llm1]
 
       # Tail = assistant (the chat is finalizing; no LLM
       # call is made with this list).
@@ -207,18 +160,11 @@ defmodule Nest.Agents.Agent.WireInvariantTest do
       # The next user turn provides a trailing user message.
       # Case A's trailing-`:assistant` branch injects the
       # full pair, leaving the list ending in `user`.
-      next_user_state = build_state(after_llm1)
+      assert {:ok, next_pair} = NoticePairInjector.build_pair(after_llm1, spec(), :user_agent)
+      assert [{:user, _}, {:assistant, _}] = next_pair
 
-      assert {:ok, :user_agent_pair, _stamped, after_next_state} =
-               NoticePairInjector.inject_pair_in_process(
-                 after_llm1,
-                 next_user_state,
-                 spec(),
-                 :user_agent
-               )
-
-      next_real_user = user_struct(after_next_state.chat_state.next_message_index, "next")
-      ready_for_llm = after_next_state.chat_state.messages ++ [next_real_user]
+      next_real_user = user_struct(length(after_llm1) + length(next_pair), "next")
+      ready_for_llm = after_llm1 ++ next_pair ++ [next_real_user]
 
       assert MessageList.last_wire_role(ready_for_llm) == :user
     end
@@ -238,24 +184,15 @@ defmodule Nest.Agents.Agent.WireInvariantTest do
       # The tail is `tool` (wire `:user`), which is what the
       # iter-2 LLM call sees at its tail.
       messages = [user_struct(0, "do something")]
-      agent_user_state = build_state(messages)
 
-      assert {:ok, :agent_user_pair, _stamped, after_inject} =
-               NoticePairInjector.inject_pair_in_process(
-                 messages,
-                 agent_user_state,
-                 spec(),
-                 :agent_user
-               )
+      assert {:ok, pair} = NoticePairInjector.build_pair(messages, spec(), :agent_user)
+      after_inject = messages ++ pair
 
-      after_inject_messages = after_inject.chat_state.messages
-
-      llm1_idx = after_inject.chat_state.next_message_index
+      llm1_idx = length(after_inject)
       llm1 = assistant_struct_with_tool_use(llm1_idx)
-      after_llm1 = after_inject_messages ++ [llm1]
+      after_llm1 = after_inject ++ [llm1]
 
-      tool_result_idx = llm1_idx + 1
-      tool_result = tool_struct(tool_result_idx, "ok")
+      tool_result = tool_struct(llm1_idx + 1, "ok")
       iter2_input = after_llm1 ++ [tool_result]
 
       assert length(iter2_input) == length(messages) + 4
@@ -286,23 +223,6 @@ defmodule Nest.Agents.Agent.WireInvariantTest do
 
   defp spec do
     %{kind: :context, attention: "Context?", notice: "token budget", ack: "Okay, noted."}
-  end
-
-  defp build_state(messages) do
-    %Agent{
-      llm_metrics: %Agent.LlmMetrics{context_limit: 100_000, context_limit_source: :config},
-      chat_state: %Agent.ChatState{
-        messages: messages,
-        next_message_index: next_index(messages)
-      }
-    }
-  end
-
-  defp next_index(messages) do
-    case Enum.map(messages, fn {_, %{index: i}} -> i end) |> Enum.max() do
-      nil -> 0
-      max -> max + 1
-    end
   end
 
   defp user_struct(index, text) do
