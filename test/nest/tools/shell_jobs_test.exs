@@ -1,6 +1,8 @@
 defmodule Nest.Tools.ShellJobsTest do
   use ExUnit.Case, async: true
 
+  import Eventually
+
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.Messages.{ToolCall, ToolResult}
   alias Nest.Sandbox.ShellJobs
@@ -37,6 +39,14 @@ defmodule Nest.Tools.ShellJobsTest do
   # racing an OS kill against a fixed receive timeout.
   defp waiters(id), do: Map.get(:sys.get_state(ShellJobs).waiters, id, [])
 
+  # `echo` is fast, but the OS decides when it exits. Poll the manager's
+  # authoritative status instead of racing the `shell-wait` timeout.
+  defp wait_until_exited(key, id) do
+    assert eventually(fn -> match?({:ok, {:exited, _}}, ShellJobs.status(key, id)) end,
+             timeout: 5_000
+           )
+  end
+
   test "shell-list reports the agent's jobs", %{key: key, tmp: tmp, context: context} do
     assert {:ok, "No background jobs."} =
              invoke(Tools.get_function("shell-list", nil, nil), %{}, context)
@@ -54,6 +64,7 @@ defmodule Nest.Tools.ShellJobsTest do
     context: context
   } do
     id = start_job!("echo done", tmp, key)
+    wait_until_exited(key, id)
 
     assert {:ok, text} =
              invoke(

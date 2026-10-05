@@ -76,12 +76,6 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
     llm_usage(usage, state)
   end
 
-  # The ChatTurn's lifecycle signals (`{:chat_idle, _}`,
-  # `{:chat_stopped, _}`, `{:chat_crashed, _, _}`) are
-  # routed to `ChatTurnHandler` by the top-level
-  # `Handlers` dispatcher. This module keeps the legacy
-  # `chat_task_crashed` path for backward compat.
-
   # Accumulate delta using Streaming module based on content type.
   # If the streaming_acc is nil (e.g. a late delta from a
   # previous chat arrived after `chat_stopped` cleared it,
@@ -389,8 +383,8 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
 
   # A tool result may only be appended when the current tail is an assistant
   # `tool_use` whose ids it answers. This is the invariant that keeps a late
-  # `{:tool_results_received, _}` (sent asynchronously by a ChatTurn that has
-  # since been finalized) from appending an orphan result.
+  # `{:tool_results_received, _}` (sent asynchronously by the turn's tool
+  # worker after the turn was finalized) from appending an orphan result.
   defp answers_pending_tool_use?(messages, {:tool, %Tool{parts: parts}}) do
     pending = MessageList.unpaired_tail_tool_uses(messages)
     pending != [] and Enum.any?(pending, fn %Part.ToolUse{id: id} -> answers_id?(parts, id) end)
@@ -431,9 +425,4 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler do
     Broadcasts.status(state)
     state
   end
-
-  # The ChatTurn's lifecycle signals (`{:chat_idle, _}`,
-  # `{:chat_stopped, _}`, `{:chat_crashed, _, _}`) are
-  # routed to `ChatTurnHandler` by the top-level
-  # `Handlers` dispatcher.
 end

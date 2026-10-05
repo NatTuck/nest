@@ -19,8 +19,6 @@ defmodule Nest.Agents.Agent.ClientAPI do
     * `get_messages/1` — active message list.
     * `get_history/1` — archived history (compacted-away
       messages plus `{:compaction, _}` markers).
-    * `get_chat_turn_pid/1` — test-only handle for asserting
-      which worker is in-flight.
     * `terminate/1` — `GenServer.stop/2` with normal reason.
 
   ## Why this lives separately from IntrospectionHandler
@@ -29,16 +27,6 @@ defmodule Nest.Agents.Agent.ClientAPI do
   module owns the "send the call" wrappers so the GenServer's
   exported call surface doesn't grow past the credo cap.
   """
-
-  @doc """
-  Test-only: returns the pid of the in-flight ChatTurn (or
-  `nil` if the agent is idle). Production code should use
-  `Agent.stop_chat/2` instead.
-  """
-  @spec get_chat_turn_pid(pid()) :: pid() | nil
-  def get_chat_turn_pid(pid) do
-    GenServer.call(pid, :get_chat_turn_pid)
-  end
 
   @doc """
   Terminates the agent process.

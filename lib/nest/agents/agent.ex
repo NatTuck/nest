@@ -86,9 +86,10 @@ defmodule Nest.Agents.Agent do
   ]
 
   # Read-only context threaded through a single chat turn is
-  # constructed by `ChatPipeline.spawn_chat_turn/1` and lives on
-  # the ChatTurn's `ctx` field. The Agent is the storage layer
-  # + lifecycle router; the ChatTurn drives the iteration.
+  # constructed by `ChatPipeline.append_and_spawn/2` (via
+  # `Turn.start/4`) and lives on the machine's `work.ctx`. The Agent
+  # is the storage layer + lifecycle router; the in-process
+  # `Nest.Agents.Agent.Turn` drives the iteration.
   #
   # The agent's system prompt lives at position 0 of
   # `state.chat_state.messages` (a `{:system, %System{}}` tuple).
@@ -330,8 +331,8 @@ defmodule Nest.Agents.Agent do
   end
 
   @doc """
-  Signal the in-flight chat task (if any) to stop. `from` is the
-  channel pid that initiated the stop (used so the ChatTurn
+  Signal the in-flight chat turn (if any) to stop. `from` is the
+  channel pid that initiated the stop (used so the in-process turn
   can ack `:stopped` to it). Blocks until the Agent's
   `handle_call({:stop_chat, _})` returns. A no-op when idle;
   idempotent.
@@ -411,13 +412,6 @@ defmodule Nest.Agents.Agent do
   end
 
   def resolve_caps(_), do: Nest.Sandbox.default_caps()
-
-  @doc """
-  Test-only: returns the pid of the in-flight ChatTurn (or
-  `nil` if the agent is idle). Production code should use
-  `stop_chat/2` instead. Re-export of `ClientAPI.get_chat_turn_pid/1`.
-  """
-  defdelegate get_chat_turn_pid(pid), to: ClientAPI
 
   @doc """
   Terminates the agent process. Re-export of `ClientAPI.terminate/1`.

@@ -145,25 +145,6 @@ defmodule Nest.Agents.Agent.Handlers.TurnHandler do
     Idle.enter(state)
   end
 
-  @doc """
-  A turn could not be started (worker/supervisor saturated). Force idle
-  and surface an error.
-  """
-  @spec spawn_failed(Agent.t(), String.t()) :: Agent.t()
-  def spawn_failed(state, reason) do
-    state = force_idle(state, error_metadata())
-
-    Broadcasts.error(
-      state.space_id,
-      state.name,
-      state.chat_state.next_message_index,
-      "Could not start chat turn: #{reason}",
-      "Turn.spawn/4"
-    )
-
-    state
-  end
-
   # --- helpers ---
 
   defp maybe_notify_parent_on_idle(state) do

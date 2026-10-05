@@ -138,8 +138,13 @@ defmodule Nest.Agents.Agent.MessageAppendTagsTest do
       insert_messages(name, stale_initial)
       stale_state = state(name, stale_initial) |> live(:streaming)
 
-      assert {:stale, ^stale_state} =
-               MessageAppender.handle_batch(stale_state, [tool_result(nil, "call_1")])
+      {stale_result, stale_log} =
+        with_log(fn ->
+          MessageAppender.handle_batch(stale_state, [tool_result(nil, "call_1")])
+        end)
+
+      assert {:stale, ^stale_state} = stale_result
+      assert stale_log =~ "dropping a stale append"
 
       invalid_name = unique_name("live-batch-invalid")
       {:ok, _} = Persistence.insert_agent(agent_attrs(invalid_name))
@@ -167,12 +172,13 @@ defmodule Nest.Agents.Agent.MessageAppendTagsTest do
       insert_messages(name, stale_initial)
       stale_state = state(name, stale_initial) |> live(:streaming)
 
-      assert {:reply, :stale, ^stale_state} =
-               Callbacks.handle_call(
-                 {:append_message, tool_result(nil, "call_1")},
-                 nil,
-                 stale_state
-               )
+      {stale_reply, stale_log} =
+        with_log(fn ->
+          Callbacks.handle_call({:append_message, tool_result(nil, "call_1")}, nil, stale_state)
+        end)
+
+      assert {:reply, :stale, ^stale_state} = stale_reply
+      assert stale_log =~ "dropping a stale append"
 
       invalid_name = unique_name("callbacks-invalid")
       {:ok, _} = Persistence.insert_agent(agent_attrs(invalid_name))

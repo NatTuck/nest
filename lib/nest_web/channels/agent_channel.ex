@@ -144,8 +144,8 @@ defmodule NestWeb.AgentChannel do
     {:noreply, socket}
   end
 
-  # When a running ChatTurn processes a `chat:stop`, its
-  # `ChatTurn.Lifecycle.stop_chat/2` acks this channel (the pid that
+  # When a running turn processes a `chat:stop`, the Agent's
+  # `Turn.Lifecycle.stop/2` acks this channel (the pid that
   # initiated the stop) with a bare `:stopped`. Nothing needs
   # forwarding: the `chat:stop` handler already replied `:ok`, and the
   # client's "Stopping…" state is cleared by the Agent's subsequent

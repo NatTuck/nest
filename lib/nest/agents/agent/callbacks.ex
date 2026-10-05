@@ -46,15 +46,13 @@ defmodule Nest.Agents.Agent.Callbacks do
     SubAgent.handle_child_terminated(state, child_name, reason)
   end
 
-  # ChatTurn finished unwinding from a user-initiated stop.
-  # The ChatTurn casts this from `Lifecycle.stop_chat/2`'s
-  # cleanup — it doesn't wait for a reply (the Agent's
-  # `chat_stopped/1` does DB I/O). Delegated to the existing
-  # `ChatTurnHandler.chat_stopped/2` via `Handlers.handle/2`'s
-  # `route_for/1` — but `handle_cast` doesn't go through
-  # `Handlers`, so we delegate directly.
-  def handle_cast({:chat_stopped, chat_turn_pid}, state) do
-    Handlers.TurnHandler.handle({:chat_stopped, chat_turn_pid}, state)
+  # Compatibility entry point for a `{:chat_stopped, _}` cast. The
+  # in-process turn finalizes through the stop timer and does not cast
+  # this; the sub-agent cascade tests drive it directly to exercise the
+  # child-teardown path. `handle_cast` doesn't route through `Handlers`,
+  # so we delegate straight to `TurnHandler.handle/2`.
+  def handle_cast({:chat_stopped, from}, state) do
+    Handlers.TurnHandler.handle({:chat_stopped, from}, state)
   end
 
   # Defense-in-depth: drop messages while busy. See channel layer.
@@ -145,23 +143,12 @@ defmodule Nest.Agents.Agent.Callbacks do
     SubAgent.handle_abandon_child(state, task_pid, name)
   end
 
-  # User clicked Stop. Synchronously mark the in-flight
-  # ChatTurn as cancelled and tell it to do the actual stop
-  # work (kill worker, ack the channel, send `:chat_stopped`
-  # to ourselves, stop). The `cancelled` flag is set FIRST
-  # so any concurrent `GenServer.call(:get_messages_with_cancelled)`
-  # from the ChatTurn's `handle_info` clauses sees the flag
-  # after this `handle_call` returns. The call to the
-  # ChatTurn uses a 5s timeout to break the rare deadlock
-  # where the ChatTurn is itself blocked on
-  # `safe_iterate/1`'s `GenServer.call(agent, ...)` — the
-  # ChatTurn's `iterate/1` catches the exit and stops cleanly.
-  #
-  # Stop must ALWAYS return the agent to idle within bounded
-  # time. When there is no ChatTurn to ask (already finished, or the
-  # spawn never produced a pid) we force idle immediately. Otherwise we
-  # schedule a bounded `:stop_fallback` so a dead/wedged turn that never
-  # acks is force-idled too.
+  # User clicked Stop. Runs entirely in the Agent process: set the
+  # `cancelled` flag, move the machine to `:stopping`, kill the active
+  # worker, and arm the bounded stop timer. The timer owns the single
+  # terminal transition, so a dead or wedged turn can't leave the agent
+  # busy. Stop must ALWAYS return the agent to idle within bounded time;
+  # an already-idle (or already-stopping) agent is a no-op.
   def handle_call({:stop_chat, channel_pid}, _from, state) do
     # Fully in-process: move to `:stopping`, kill the active worker, and
     # arm the bounded stop timer (which owns the single terminal
@@ -209,7 +196,7 @@ defmodule Nest.Agents.Agent.Callbacks do
 
   # Compaction completion is handled in-process by
   # `Nest.Agents.Agent.Compaction.ResultHandler.handle_success/3`
-  # (called from `Handlers.CompactionHandler.handle/2` on
+  # (called from `ResultHandler.handle/2` on
   # `{:compaction_done, ...}` arrival).
   def handle_info(msg, state) do
     Handlers.handle(msg, state)

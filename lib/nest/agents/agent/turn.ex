@@ -2,13 +2,12 @@ defmodule Nest.Agents.Agent.Turn do
   @moduledoc """
   The Agent's in-process turn driver.
 
-  The Agent itself owns and drives a chat turn: this module ports the
-  iteration loop that used to live in the `ChatTurn` GenServer into
-  functions that operate on the Agent state. HTTP/tool calls still run
-  as `Task` workers, but they report back to the Agent tagged with the
-  turn's `worker_ref`; a result is applied only when its ref and phase
-  match the live turn, so a stale or duplicate result (one that arrives
-  after a stop or a finalize) is dropped.
+  The Agent itself owns and drives a chat turn: this module carries the
+  iteration loop as functions that operate on the Agent state. HTTP/tool
+  calls run as `Task` workers, but they report back to the Agent tagged
+  with the turn's `worker_ref`; a result is applied only when its ref and
+  phase match the live turn, so a stale or duplicate result (one that
+  arrives after a stop or a finalize) is dropped.
 
   ## Entry shapes
 

@@ -59,15 +59,6 @@ defmodule Nest.DotConfig do
     carries a value. Parsed from the optional `default-context-limit`
     TOML key on `[providers.<name>]`. `nil` when absent.
 
-    `rewrite_late_system_messages` is the optional boolean that routes
-    mid-conversation reminders (context-usage threshold, tool-call
-    budget, the compactor's `[mode: compact]` suffix) through `User`
-    messages with `[System notice: …]` brackets instead of `System`
-    messages. Defaults to `false`. Set on providers whose chat
-    template enforces "system must be at the beginning" (Qwen3.5 on
-    vLLM, etc.). Parsed from the optional `rewrite-late-system-messages`
-    TOML key. See `Nest.Agents.Agent.ChatTurn.LateMessage.build/2`.
-
     `probe_base_url` is the optional URL used for *model discovery*
     only (`GET <base>/models`). Defaults to `nil`, in which case
     `base_url` is used for both chat and discovery. Set this on

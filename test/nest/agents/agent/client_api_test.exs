@@ -120,15 +120,6 @@ defmodule Nest.Agents.Agent.ClientAPITest do
     end
   end
 
-  describe "get_chat_turn_pid/1" do
-    test "returns nil when the agent is idle" do
-      {pid, _name} =
-        AgentTestHelpers.start_agent(%{model: %{name: "qwen3.5-plus", provider: "model-studio"}})
-
-      assert ClientAPI.get_chat_turn_pid(pid) == nil
-    end
-  end
-
   describe "terminate/1" do
     test "stops the agent process" do
       {pid, _name} =

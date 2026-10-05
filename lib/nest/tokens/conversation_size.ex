@@ -5,7 +5,7 @@ defmodule Nest.Tokens.ConversationSize do
   and the estimator only for the messages after it.
 
   Every assistant message carries the LLM response's `usage` (set by
-  `Nest.Agents.Agent.ChatTurn.Messages.assistant/1` and persisted with
+  `Nest.Agents.Agent.Turn.Messages.assistant/1` and persisted with
   the message). The provider-reported input count is the size of the
   context that produced that reply; adding the reply's own
   `output_tokens` gives the size of the conversation *including* that

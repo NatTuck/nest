@@ -3,8 +3,8 @@ defmodule Nest.Agents.Agent.ToolLoop do
   Per-tool execution for the LLM tool-call loop, with
   BatchSizer-driven deterministic sizing.
 
-  Called by `Nest.Agents.Agent.ChatTurn` after a response
-  with `tool_calls` is received. Responsibilities:
+  Called by the in-process turn (`Nest.Agents.Agent.Turn`) after a
+  response with `tool_calls` is received. Responsibilities:
 
     * Split the batch by tool — sub-agent tools (`agents-spawn`,
       `agents-query`, `agents-list`, `agents-archive`) are routed

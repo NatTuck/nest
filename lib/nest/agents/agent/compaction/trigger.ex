@@ -13,11 +13,11 @@ defmodule Nest.Agents.Agent.Compaction.Trigger do
       handler appends the held user message and spawns a
       normal `{:user_message, _}` chat turn.
 
-    * **Mid-turn (Trigger B/C)**: from
-      `Nest.Agents.Agent.ChatTurn` when (a) projected tool
+    * **Mid-turn (Trigger B/C)**: from the in-process turn
+      (`Nest.Agents.Agent.Turn`) when (a) projected tool
       results would push past `context_limit - reserve`
       or (b) the LLM emitted `context-compact` as the sole
-      tool call. The ChatTurn sends
+      tool call. The turn sends
       `{:needs_compaction, _, carried_entry}` to the
       Agent; this trigger spawns the compactor's chat
       turn with the carried entry (a `{:tool_call, _, _,
@@ -110,8 +110,8 @@ defmodule Nest.Agents.Agent.Compaction.Trigger do
   # of truth for the system size when a vocation is present),
   # checks the 25% safety budget, computes the summary budget,
   # builds the suffix, appends it to the messages list (the
-  # user sees the compaction request), then spawns a
-  # ChatTurn with `{:compaction, _, carried_entry}`.
+  # user sees the compaction request), then starts the in-process
+  # turn (`Turn.start/4`) with `{:compaction, _, carried_entry}`.
   #
   # When `state.vocation` is `nil` (test fixtures use this as
   # a "minimal default" sentinel), fall back to extracting the
@@ -218,8 +218,8 @@ defmodule Nest.Agents.Agent.Compaction.Trigger do
   #
   # The summary assistant will be persisted at
   # `next_message_index + length(staged)` once the staged request lands, so
-  # we key the streaming accumulator (and, in `ChatTurn.safe_iterate/1`,
-  # the ChatTurn's `active_message_index`) to that provisional index.
+  # we key the streaming accumulator (and the in-process `Turn`'s
+  # `active_message_index`) to that provisional index.
   defp spawn_compaction_chat_turn(state, carried_entry, staged) do
     provisional_index = state.chat_state.next_message_index + length(staged)
 

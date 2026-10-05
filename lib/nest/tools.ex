@@ -131,7 +131,7 @@ defmodule Nest.Tools do
 
   Tools that manage per-agent resources (background shell jobs) read
   this from the per-call context. The context is supplied by
-  `Nest.Agents.Agent.BatchSizer`, which forwards the ChatTurn's
+  `Nest.Agents.Agent.BatchSizer`, which forwards the in-process turn's
   identity; both the writer (`shell-cmd`) and the readers
   (`shell-list`/`shell-wait`/`shell-kill`) must derive it the same way.
   `:unknown` is the defensive fallback for callers without an identity
@@ -239,8 +239,9 @@ defmodule Nest.Tools do
   end
 
   # The `context-compact` tool triggers compaction. It is a
-  # control-flow tool: it is intercepted by the ChatTurn response
-  # handler (which requires it to be the sole call in a batch) and
+  # control-flow tool: it is intercepted by the turn response
+  # handler (`Nest.Agents.Agent.Turn.ResponseHandler`, which requires
+  # it to be the sole call in a batch) and
   # never actually invoked here, so its `function` is a stub. The
   # schema surfaces the `focus` argument the LLM can pass to guide
   # what the compaction summary should preserve.

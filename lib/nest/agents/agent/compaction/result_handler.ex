@@ -1,7 +1,7 @@
 defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   @moduledoc """
   Handle the compactor's chat-turn result. When the
-  ChatTurn finishes successfully it sends
+  turn finishes successfully it sends
   `{:compaction_done, summary_text, staged, summary_assistant,
   carried_entry}` to the Agent; this module commits the
   compaction:
@@ -71,7 +71,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
     {:noreply, handle_error(state, reason, carried_entry)}
   end
 
-  def handle({:needs_compaction, _chat_turn_pid, carried_entry}, state) do
+  def handle({:needs_compaction, _from, carried_entry}, state) do
     {:noreply, needs_entry(state, carried_entry)}
   end
 
@@ -325,7 +325,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   end
 
   @doc """
-  Mid-turn compaction request from a running ChatTurn.
+  Mid-turn compaction request from a running turn.
   """
   @spec needs_entry(Agent.t(), Agent.Machine.entry() | nil) :: Agent.t()
   def needs_entry(state, carried_entry) do
@@ -599,7 +599,7 @@ defmodule Nest.Agents.Agent.Compaction.ResultHandler do
   defp carried_entry_tag({:assistant_response, _, _, _}), do: :assistant_response
 
   # Reset the "already announced" threshold set so the next
-  # ChatTurn re-fires warnings if usage rises again after the
+  # turn re-fires warnings if usage rises again after the
   # history was summarized.
   defp reset_crossed_thresholds(state) do
     %{state | live: %{state.live | crossed_thresholds: %MapSet{}}}

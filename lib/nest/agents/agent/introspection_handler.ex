@@ -18,7 +18,7 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
   `:get_consecutive_compaction_count/0` clauses are test-only
   hooks for the loop-breaker counter. Production callers
   should not need them — the counter is managed internally
-  by `CompactionHandler.check_consecutive/1` and resets via
+  by `Compaction.ResultHandler.check_consecutive/1` and resets via
   the append_message path in the agent's `handle_call/3`.
 
   The `:check_read_policy/2` clause is the synchronous
@@ -67,7 +67,7 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
     {:reply, state.chat_state.messages, state}
   end
 
-  # Returns `{messages, cancelled}` so the ChatTurn can
+  # Returns `{messages, cancelled}` so the turn can
   # short-circuit on user-initiated stops without waiting
   # for the next `:stop_chat` message to be processed.
   def handle(:get_messages_with_cancelled, _from, state) do
@@ -97,13 +97,6 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
   # position 0 of `state.chat_state.messages`).
   def handle(:get_system_prompt, _from, state) do
     {:reply, system_prompt_from_messages(state.chat_state.messages), state}
-  end
-
-  # Test-only: returns the in-flight worker pid (or `nil` when idle).
-  # The turn now runs in-process, so this reports the worker the turn is
-  # currently waiting on rather than a separate turn process.
-  def handle(:get_chat_turn_pid, _from, state) do
-    {:reply, state.live.machine.work.active_worker, state}
   end
 
   # Test-friendly: returns the running-children map (name => blocked

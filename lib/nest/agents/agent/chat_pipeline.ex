@@ -13,8 +13,8 @@ defmodule Nest.Agents.Agent.ChatPipeline do
       the mode round-trips through any store / log / replay.
       The chat UI strips the prefix on render.
     * Run the pre-flight check and decide whether to compact
-      first or go straight to the ChatTurn.
-    * Spawn the ChatTurn via the ChatTurnSupervisor.
+      first or start the turn immediately.
+    * Start the in-process turn (`Nest.Agents.Agent.Turn`).
   """
 
   alias Nest.Agents.Agent.Broadcasts
@@ -88,9 +88,10 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   # `else` branch would inject between the `tool_use` and the
   # upcoming `tool_result`, breaking Anthropic's tool_use/tool_result
   # pairing invariant. In that case the threshold is marked crossed
-  # but the pair is NOT injected here; the ChatTurn's response-
-  # construction path (Case 2) handles the notice when the LLM's
-  # response is assembled, which is always at a wire-safe boundary.
+  # but the pair is NOT injected here; the turn's response-
+  # construction path (`Turn.ResponseHandler`, Case 2) handles the
+  # notice when the LLM's response is assembled, which is always at a
+  # wire-safe boundary.
   defp maybe_inject_context_pair(state) do
     limit = state.llm_metrics.context_limit
     do_check(state, limit)
@@ -143,11 +144,11 @@ defmodule Nest.Agents.Agent.ChatPipeline do
 
       :deferred ->
         # Trailing assistant carries an unpaired tool_use (in-flight
-        # tool call). The notice is deferred to the ChatTurn's
-        # response-construction path (Case 2), which fires on a
-        # wire-safe boundary. `crossed_thresholds` is still updated
-        # upstream so the threshold doesn't re-fire on subsequent
-        # user messages while the tool call is in flight.
+        # tool call). The notice is deferred to the turn's
+        # response-construction path (`Turn.ResponseHandler`, Case 2),
+        # which fires on a wire-safe boundary. `crossed_thresholds` is
+        # still updated upstream so the threshold doesn't re-fire on
+        # subsequent user messages while the tool call is in flight.
         state
     end
   end
@@ -202,7 +203,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   Resume the chat after a compaction completed. Appends the
   pending user message. The compaction handler has already
   replaced the messages list with the compacted state; we
-  spawn a ChatTurn via `ChatTurnSpawner.spawn/4` with the
+  start the in-process turn (`Turn.start/4`) with the
   appended user message.
 
   If the user clicked Stop while compaction was in flight,
@@ -255,13 +256,9 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     WorkspaceHandler.resume_notice(state)
   end
 
-  # Kept for legacy callers (no production path uses this after
-  # the post-compaction dispatch consolidated through
-  # `ChatTurnSpawner.spawn/4`).
-
   # Transition the chat_state to `:streaming` after a user message
   # has been appended via `__append_message__/2`. Sets the
-  # `active_message_index` (used by the ChatTurn for the request
+  # `active_message_index` (used by the turn for the request
   # API log) to the user message's actual stamped index, and
   # starts a fresh streaming accumulator for the response at
   # `stamped_index + 1`. Both indices come from the Agent's
@@ -294,8 +291,8 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   # shows it; see `assets/js/utils/stripModePrefix.js`.
   #
   # `index: nil` — the Agent stamps the actual index via
-  # `__append_message__/2`. The ChatTurn is no longer the
-  # authority on which slot the user message occupies.
+  # `__append_message__/2`. The turn is not the authority on
+  # which slot the user message occupies.
   defp build_user_message(_state, content, effective_mode) do
     user = %User{
       index: nil,
@@ -311,9 +308,8 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   # Pre-flight: would the LLM call we'd make next fit in the
   # context window? If not, spawn a compaction task first. The
   # task sends `{:compaction_done, new_messages, continuation}`
-  # back; the Agent's `compaction_done` handler then spawns
-  # the ChatTurn via `resume_after_compaction/3` with the
-  # compacted messages.
+  # back; the Agent's compaction result handler then resumes
+  # via `resume_with_pending/1` with the compacted messages.
   #
   # Every chat turn goes through the preflight — there is no
   # "skip preflight while streaming" shortcut. Incoming chat
@@ -418,11 +414,9 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     end
   end
 
-  # Spawn the chat turn. The user message has already been
-  # appended to the Agent (via `append_pending_user_message/1`).
-  # `info` is a marker indicating this ChatTurn was spawned from
-  # the user-turn-boundary path; the ChatTurn's dispatch is the
-  # same as the default flow.
+  # Start the turn. The user message has already been appended to the
+  # Agent (via `append_pending_user_message/1`); `Turn.start/4` runs the
+  # first iteration.
   defp append_and_spawn(state, effective_mode) do
     state = maybe_inject_context_pair(state)
     {stamped_user, state} = append_pending_user_message(state)

@@ -1,8 +1,9 @@
 defmodule Nest.LLM.StreamConsumer do
   @moduledoc """
   Shared canonical-event-stream reducer for the LLM consumer
-  paths (`Nest.Agents.Agent.ChatTurn.HTTPWorker.run/2`
-  and `Nest.Agents.Agent.Compaction.consume_quietly/2`).
+  paths (`Nest.LLM.Runner`, which drives the live
+  `Nest.Agents.Agent.Turn.HTTPWorker.run/2` call, and
+  `Nest.Scripts.CompactionProbeSupport`).
 
   Walks the canonical event stream produced by the LLM
   clients, accumulates the response, and invokes a small

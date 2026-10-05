@@ -29,10 +29,11 @@ defmodule Nest.Agents.Agent.ChatState do
   Splitting the two makes the persistence boundary explicit:
   `ChatState` is touched only by `init/1`, the restore path, and
   the append/compaction message handlers; `ChatState.Live` is
-  touched by the ChatTurn, streaming, Stop, and compaction-result
-  handlers. A field on the wrong side of the boundary (e.g. a
-  non-nil `streaming_acc`) is a bug. `crossed_thresholds` is the
-  one Live field that is *derived* on restore rather than reset:
+  touched by the in-process turn, streaming, Stop, and
+  compaction-result handlers. A field on the wrong side of the
+  boundary (e.g. a non-nil `streaming_acc`) is a bug.
+  `crossed_thresholds` is the one Live field that is *derived* on
+  restore rather than reset:
   it is rebuilt from the persisted notice metadata so a restart
   doesn't re-announce thresholds (see
   `ContextReminder.announced_thresholds/1`).

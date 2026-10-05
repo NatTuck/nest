@@ -240,11 +240,13 @@ defmodule Nest.Messages.Streaming do
   There is deliberately no `nil`-accumulator clause: nothing streamed
   means no assistant message exists, and an empty message must never be
   built or persisted. Callers with a possibly-nil accumulator must
-  branch themselves (see `ChatTurnHandler.partial_message/2`).
+  branch themselves (see
+  `Nest.Agents.Agent.Handlers.TurnHandler.partial_message/2`).
 
-  Used by the stop path (`ChatTurnHandler.finalize_partial_if_any/2`)
-  and the stream-error path (`LLMStreamHandler.llm_error/2`) so both
-  persist whatever the model had streamed before the turn ended.
+  Used by the stop path
+  (`Nest.Agents.Agent.Handlers.TurnHandler.finalize_partial_if_any/2`)
+  and the stream-error path (`LLMStreamHandler.llm_error_state/2`) so
+  both persist whatever the model had streamed before the turn ended.
   """
   @spec partial_message(AssistantAccumulator.t(), map()) ::
           {:assistant, Assistant.t()}

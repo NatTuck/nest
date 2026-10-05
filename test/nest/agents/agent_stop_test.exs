@@ -17,11 +17,9 @@ defmodule Nest.Agents.AgentStopTest do
   use Nest.DataCase, async: true
   alias Nest.Agents.Agent.Machine
 
-  import ExUnit.CaptureLog
   import Mimic
 
   alias Nest.Agents.Agent
-  alias Nest.Agents.Agent.Handlers.TurnHandler
   alias Nest.LLM.MockClient
   alias Nest.Messages.Assistant
   alias Nest.Messages.Part
@@ -356,32 +354,6 @@ defmodule Nest.Agents.AgentStopTest do
 
       assert_receive {:chat_status, %{status: "idle"}}, 500
       assert Machine.status_for(:sys.get_state(pid).live.machine) == :idle
-    end
-
-    test "spawn_failed forces idle and broadcasts an error" do
-      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
-
-      :sys.replace_state(pid, fn state ->
-        %{
-          state
-          | live: %{
-              state.live
-              | machine: Machine.status_to_machine(state.live.machine, :streaming)
-            }
-        }
-      end)
-
-      capture_log(fn ->
-        result = TurnHandler.spawn_failed(:sys.get_state(pid), "saturated")
-
-        assert Machine.status_for(result.live.machine) == :idle
-        assert is_nil(result.live.machine.work.ctx)
-        assert_receive {:chat_error, %{content: content}}, 500
-        assert content =~ "saturated"
-
-        # Apply the returned state so teardown sees the agent idle.
-        :sys.replace_state(pid, fn _ -> result end)
-      end)
     end
   end
 
