@@ -19,14 +19,6 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
   # `to_valid_utf8/1` for byte sequences that don't decode.
   @replacement_char <<0xEF, 0xBF, 0xBD>>
 
-  # Returned when there is no room for any of the content: no budget for
-  # even the first line, or the content itself is empty. It is never
-  # empty itself, so a caller can never turn "we dropped the content"
-  # into a silent empty result. `substitute/5` passes a variant naming
-  # the scratch file; this default is for callers that already put the
-  # pointer inline (e.g. `BatchSizer`'s binary-output path).
-  @elided_marker "[content elided: the full result was written to a scratch file]"
-
   @doc """
   Write `content` to a scratch file under `ctx.tmp_path` and return
   the path, or `nil` when the tmp dir is unavailable or the write
@@ -111,9 +103,13 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
   first line, or `content` is empty, `no_room` is returned instead. It
   must be a non-empty self-describing marker so a caller can always tell
   that content was dropped (and where it went).
+
+  There is deliberately no default `no_room`: every caller has to say
+  where the dropped content went, so no result can claim content was
+  elided without naming the file that holds it.
   """
   @spec head_text(String.t(), integer(), String.t()) :: String.t()
-  def head_text(content, budget, no_room \\ @elided_marker)
+  def head_text(content, budget, no_room)
 
   def head_text("", _budget, no_room), do: no_room
   def head_text(_content, budget, no_room) when budget <= 0, do: no_room
@@ -143,7 +139,7 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
   Never returns an empty string; see `head_text/3` for `no_room`.
   """
   @spec truncate_to_fit(String.t(), integer(), String.t()) :: String.t()
-  def truncate_to_fit(text, target_tokens, no_room \\ @elided_marker)
+  def truncate_to_fit(text, target_tokens, no_room)
 
   def truncate_to_fit(_text, target_tokens, no_room) when target_tokens <= 0, do: no_room
   def truncate_to_fit(text, target_tokens, no_room), do: head_text(text, target_tokens, no_room)

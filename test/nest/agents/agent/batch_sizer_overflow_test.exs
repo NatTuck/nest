@@ -27,22 +27,22 @@ defmodule Nest.Agents.Agent.BatchSizer.OverflowTest do
   end
 
   describe "no-budget paths" do
-    test "head_text/3 and truncate_to_fit/3 never return an empty string" do
+    test "head_text/3 and truncate_to_fit/3 return the caller's marker, never empty" do
       # No budget at all, a budget too small for even the first line, and
-      # empty content: each yields the elision marker instead of "".
-      assert Overflow.head_text("content", 0) =~ "elided"
-      assert Overflow.head_text("a line far too long for a 1-token budget", 1) =~ "elided"
-      assert Overflow.head_text("", 100) =~ "elided"
-      assert Overflow.truncate_to_fit("content", 0) =~ "elided"
+      # empty content: each returns the caller's elision marker verbatim
+      # instead of "" (or a truncated head).
+      marker = "[content elided: see /tmp/x.txt]"
+
+      assert Overflow.head_text("content", 0, marker) == marker
+      assert Overflow.head_text("a line far too long for a 1-token budget", 1, marker) == marker
+      assert Overflow.head_text("", 100, marker) == marker
+      assert Overflow.truncate_to_fit("content", 0, marker) == marker
     end
 
     test "head_text/3 returns the leading whole lines that fit the budget" do
-      assert Overflow.head_text("first\nsecond\nthird\n", 100) == "first\nsecond\nthird"
-    end
-
-    test "head_text/3 returns a caller-supplied marker verbatim" do
-      assert Overflow.head_text("content", 0, "[content elided: see /tmp/x.txt]") ==
-               "[content elided: see /tmp/x.txt]"
+      # The marker goes unused here: every line fits, so nothing is dropped.
+      assert Overflow.head_text("first\nsecond\nthird\n", 100, "unused") ==
+               "first\nsecond\nthird"
     end
   end
 

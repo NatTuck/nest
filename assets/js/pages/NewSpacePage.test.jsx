@@ -26,11 +26,19 @@ const mocks = vi.hoisted(() => ({
   rescanModels: vi.fn(),
 }));
 
-vi.mock("../channels", () => ({
-  createSpace: mocks.createSpace,
-  suggestSpaceName: mocks.suggestSpaceName,
-  rescanModels: mocks.rescanModels,
-}));
+// Spread the real module and override only the three pushes this file
+// spies on. Hand-enumerating the exports means a page that gains a new
+// module-scope channel import fails to load with a confusing "No export
+// is defined on the mock" error.
+vi.mock("../channels", async () => {
+  const actual = await vi.importActual("../channels");
+  return {
+    ...actual,
+    createSpace: mocks.createSpace,
+    suggestSpaceName: mocks.suggestSpaceName,
+    rescanModels: mocks.rescanModels,
+  };
+});
 
 import { NewSpacePage, validateNewSpaceForm } from "./NewSpacePage";
 

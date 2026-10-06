@@ -248,6 +248,42 @@ defmodule Nest.Agents.Agent.LoadBridgeTest do
       assert {:ok, again} = Persistence.build_attrs_for_start(space_id, name)
       assert again.load_heal == nil
     end
+
+    test "two callers that both pass the re-check derive the same append index" do
+      space_id = current_space_id()
+      name = unique_name("heal-race")
+      {:ok, _} = Persistence.insert_agent(agent_attrs(space_id, name))
+      initial = [system(0), user(1, "hi")]
+      insert_messages(space_id, name, initial)
+
+      # The same-instant interleaving `refresh/1` cannot rule out: two
+      # callers both classify the same pre-heal tail, each build their state
+      # from the same pre-heal attrs, and heal without re-reading. Both
+      # derive the same append index; the unique `(agent_id, message_index)`
+      # index plus `insert_message/3`'s `on_conflict: :nothing` drops the
+      # loser's row, so the persisted sequence keeps one heal row and
+      # neither caller holds a row the DB does not have.
+      {:bridge, [ack]} = Repair.classify_load(initial)
+      state_a = load_state(name, space_id, initial)
+      state_b = load_state(name, space_id, initial)
+
+      {{healed_a, healed_b}, log} =
+        with_log(fn ->
+          {Init.LoadHeal.heal(state_a, {:bridge, [ack]}),
+           Init.LoadHeal.heal(state_b, {:bridge, [ack]})}
+        end)
+
+      assert log =~ "idle sequence ending on a user message"
+
+      # One heal row, not two, at the index both appends derived (2).
+      persisted = persisted_sequence(space_id, name)
+      assert persisted == [{0, :system}, {1, :user}, {2, :assistant}]
+
+      # Both in-memory sequences match the persisted one, so the loser's
+      # in-memory row carries the same `(index, role)` the winner's did.
+      assert in_memory_sequence(healed_a) == persisted
+      assert in_memory_sequence(healed_b) == persisted
+    end
   end
 
   # ---- helpers ----
@@ -261,6 +297,12 @@ defmodule Nest.Agents.Agent.LoadBridgeTest do
   defp persisted_sequence(space_id, name) do
     Persistence.load_messages(space_id, name)
     |> Enum.map(fn {role, %{index: index}} -> {index, role} end)
+  end
+
+  # The in-memory sequence as `{index, role}` pairs, mirroring
+  # `persisted_sequence/2` so the two can be compared directly.
+  defp in_memory_sequence(state) do
+    Enum.map(state.chat_state.messages, fn {role, %{index: index}} -> {index, role} end)
   end
 
   defp load_state(name, space_id, messages) do
