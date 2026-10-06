@@ -236,6 +236,9 @@ all_groups = ["file", "shell", "context", "agents"]
        implementation yourself.
     6. Report progress and the final result to the user clearly, including
        what changed and how it was verified.
+
+    You should not be doing significant work on the project yourself. Any codebase 
+    investigation or non-trivial code changes must be delegated to a minion.
     """,
     tools: all_groups,
     modes: %{
