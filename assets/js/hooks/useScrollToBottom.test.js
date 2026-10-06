@@ -2,7 +2,7 @@
  * useScrollToBottom hook tests
  *
  * Covers the scroll/auto-scroll behavior driven by the hook:
- * - At-bottom detection via the scroll listener
+ * - At-bottom detection via the scroll listener (distance + direction)
  * - Auto-scroll when at the bottom
  * - hasNewContent flips to true when scrolled up and a new trigger arrives
  * - hasNewContent clears when the user scrolls back to the bottom
@@ -25,8 +25,12 @@ beforeEach(() => {
   }
 });
 
+// Default metrics start at the bottom (scrollTop === scrollHeight - clientHeight,
+// i.e. distanceFromBottom === 0) because the hook un-pins on scroll direction: a
+// scroll-up only registers if scrollTop decreases from where it was. Starting at
+// the bottom makes a later setMetrics({ scrollTop: 0, ... }) a genuine scroll-up.
 function setupContainer({
-  scrollTop = 0,
+  scrollTop = 500,
   scrollHeight = 1000,
   clientHeight = 500,
 } = {}) {
@@ -94,20 +98,7 @@ describe("useScrollToBottom", () => {
       expect(result.current.hasNewContent).toBe(false);
     });
 
-    it("treats being within 300px of the bottom as at-bottom", () => {
-      const { result, container } = renderHookWithContainer("agent-1", null);
-      setMetrics(container, {
-        scrollTop: 250,
-        scrollHeight: 1000,
-        clientHeight: 500,
-      });
-      act(() => {
-        fireEvent.scroll(container);
-      });
-      expect(result.current.isAtBottom).toBe(true);
-    });
-
-    it("flips isAtBottom to false when the user scrolls up past the threshold", () => {
+    it("flips isAtBottom to false when the user scrolls up", () => {
       const { result, container } = renderHookWithContainer("agent-1", null);
       setMetrics(container, {
         scrollTop: 0,
@@ -215,6 +206,62 @@ describe("useScrollToBottom", () => {
         fireEvent.scroll(container);
       });
       expect(result.current.hasNewContent).toBe(false);
+    });
+
+    it("un-pins auto-scroll after a small scroll-up", () => {
+      // Regression for issue #6: a PgUp/wheel scroll of only a few pixels used
+      // to stay "at bottom" under a 300px slop, so the next streamed token
+      // yanked the view back down. A scroll-up of any size must un-pin.
+      const scrollIntoView = vi.fn();
+      const original = Element.prototype.scrollIntoView;
+      Element.prototype.scrollIntoView = scrollIntoView;
+
+      try {
+        const { result, container, rerender } = renderHookWithContainer(
+          "agent-1",
+          "token-1",
+        );
+        setMetrics(container, { scrollTop: 480 });
+        act(() => {
+          fireEvent.scroll(container);
+        });
+        expect(result.current.isAtBottom).toBe(false);
+
+        scrollIntoView.mockClear();
+        rerender({ id: "agent-1", trigger: "token-2" });
+
+        expect(scrollIntoView).not.toHaveBeenCalled();
+        expect(result.current.hasNewContent).toBe(true);
+      } finally {
+        Element.prototype.scrollIntoView = original;
+      }
+    });
+
+    it("stays pinned when content grows while at the bottom", () => {
+      // Streaming grows scrollHeight without moving scrollTop; that is not a
+      // user scroll-up, so the hook must keep auto-scrolling the new content.
+      const scrollIntoView = vi.fn();
+      const original = Element.prototype.scrollIntoView;
+      Element.prototype.scrollIntoView = scrollIntoView;
+
+      try {
+        const { result, container, rerender } = renderHookWithContainer(
+          "agent-1",
+          "token-1",
+        );
+        setMetrics(container, { scrollHeight: 1200 });
+        act(() => {
+          fireEvent.scroll(container);
+        });
+        expect(result.current.isAtBottom).toBe(true);
+
+        scrollIntoView.mockClear();
+        rerender({ id: "agent-1", trigger: "token-2" });
+
+        expect(scrollIntoView).toHaveBeenCalled();
+      } finally {
+        Element.prototype.scrollIntoView = original;
+      }
     });
   });
 

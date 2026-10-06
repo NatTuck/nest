@@ -1,13 +1,18 @@
 import { useEffect, useLayoutEffect, useState } from "react";
 
-const BOTTOM_THRESHOLD_PX = 300;
+const AT_BOTTOM_EPSILON_PX = 2;
 
 /**
  * Drives the "scroll to bottom on new content, show a jump button when
  * scrolled up" behavior for a scrollable container.
  *
- * - Tracks whether the user is within BOTTOM_THRESHOLD_PX of the bottom
- *   via a passive scroll listener.
+ * - Tracks whether the container is pinned to the bottom via a passive
+ *   scroll listener. A scroll event that leaves the container within
+ *   AT_BOTTOM_EPSILON_PX of the bottom re-pins it; otherwise a scroll
+ *   event whose `scrollTop` decreased (a genuine user scroll-up) un-pins
+ *   it. Scroll events that don't move the container up -- content growth,
+ *   or our own programmatic scrolls -- leave the flag untouched, so a
+ *   streaming delta never falsely un-pins a user who is following along.
  * - On new content (controlled by the caller via the `trigger` value),
  *   auto-scrolls to the end if the user is at the bottom, or surfaces
  *   `hasNewContent = true` if the user is scrolled up.
@@ -45,28 +50,37 @@ export function useScrollToBottom(
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [hasNewContent, setHasNewContent] = useState(false);
 
-  // Track scroll position so we can decide whether to auto-scroll on new content.
-  // We do not run an initial check: the hook assumes "at bottom" on first mount
-  // (the useLayoutEffect below scrolls there), and only updates from real user
-  // scroll events after that.
+  // Track scroll direction so we can tell a real user scroll-up apart from
+  // content growth or our own programmatic scrolls. We do not run an initial
+  // check: the hook assumes "at bottom" on first mount (the useLayoutEffect
+  // below scrolls there), and only updates from real scroll events after that.
   // biome-ignore lint/correctness/useExhaustiveDependencies: id triggers re-attach on conversation change
   useEffect(() => {
     if (!scrollContainerEl) return;
 
-    const checkAtBottom = () => {
-      const atBottom =
-        scrollContainerEl.scrollHeight -
-          scrollContainerEl.scrollTop -
-          scrollContainerEl.clientHeight <
-        BOTTOM_THRESHOLD_PX;
-      setIsAtBottom(atBottom);
-      if (atBottom) setHasNewContent(false);
+    // Baseline for direction detection. Content growth changes scrollHeight
+    // but not scrollTop, and our programmatic scrollIntoView only ever
+    // increases scrollTop, so a decreasing scrollTop means the user scrolled up.
+    let lastScrollTop = scrollContainerEl.scrollTop;
+
+    const handleScroll = () => {
+      const { scrollHeight, scrollTop, clientHeight } = scrollContainerEl;
+      const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+
+      if (distanceFromBottom <= AT_BOTTOM_EPSILON_PX) {
+        setIsAtBottom(true);
+        setHasNewContent(false);
+      } else if (scrollTop < lastScrollTop) {
+        setIsAtBottom(false);
+      }
+
+      lastScrollTop = scrollTop;
     };
 
-    scrollContainerEl.addEventListener("scroll", checkAtBottom, {
+    scrollContainerEl.addEventListener("scroll", handleScroll, {
       passive: true,
     });
-    return () => scrollContainerEl.removeEventListener("scroll", checkAtBottom);
+    return () => scrollContainerEl.removeEventListener("scroll", handleScroll);
   }, [id, scrollContainerEl]);
 
   // Auto-scroll on new content, but only if the user is already at the bottom.
