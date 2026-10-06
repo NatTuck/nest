@@ -39,6 +39,7 @@ import {
   archiveSpace,
   unarchiveSpace,
   clearAgentChannels,
+  agentChannels,
 } from "./channels";
 
 describe("channels", () => {
@@ -1202,12 +1203,12 @@ describe("channels", () => {
       });
     });
 
-    it("triggers a full chat:sync from the init handler when messageCount disagrees with the cache", async () => {
+    it("incrementally syncs from the init handler when messageCount disagrees with the cache", async () => {
       // The init event arrives with messageCount=2 and 1 message
-      // in the payload. `2 !== cache.messages.length(1)`, so the
-      // cache can't be trusted: it is dropped and a full sync is
-      // requested from -1 rather than an incremental lastIndex
-      // sync a stale/merged index would defeat.
+      // in the payload. The cache's single contiguous row (index
+      // 0) is a safe watermark, so it is kept and only the delta
+      // (from lastIndex 0) is requested rather than rebuilding
+      // from -1.
       setNextJoinResult("agent:1:agent-1", {
         autoInit: {
           id: "agent-1",
@@ -1222,7 +1223,14 @@ describe("channels", () => {
       joinAgent("agent-1", 1);
 
       const pushPayload = await pushPromise;
-      assert.deepStrictEqual(pushPayload, { lastIndex: -1 });
+      assert.deepStrictEqual(pushPayload, { lastIndex: 0 });
+
+      // The index-0 row survives the incremental sync.
+      const cache = useStore.getState().agentsCache["agent-1"];
+      assert.deepStrictEqual(
+        cache.messages.map((m) => m.index),
+        [0],
+      );
     });
 
     it("should set agent status to error on join error", async () => {
@@ -1513,6 +1521,281 @@ describe("channels", () => {
         setTimeout(() => resolve("timeout"), 40),
       );
       assert.strictEqual(await Promise.race([historyPush, timeout]), "timeout");
+    });
+  });
+
+  describe("agent cache reuse on rejoin", () => {
+    // The message list is immutable, so switching back to an agent
+    // should only fetch the rows appended while we were away, not
+    // resync the whole list from -1.
+
+    const contiguous = (count) =>
+      Array.from({ length: count }, (_, index) => ({
+        index,
+        role: index % 2 === 0 ? "user" : "assistant",
+        content: `message ${index}`,
+      }));
+
+    it("rejoins with an incremental chat:sync from the cached lastIndex", async () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 3,
+        messages: contiguous(3),
+      });
+
+      setNextJoinResult("agent:1:agent-1", {
+        autoInit: {
+          id: "agent-1",
+          model: { name: "gpt-4" },
+          messageCount: 4,
+          status: "idle",
+        },
+      });
+
+      const pushPromise = captureNextPush("agent:1:agent-1", "chat:sync");
+      joinAgent("agent-1", 1);
+
+      const pushPayload = await pushPromise;
+      assert.deepStrictEqual(pushPayload, { lastIndex: 2 });
+
+      // The cached rows survive: the sync only fetched the delta.
+      const cache = useStore.getState().agentsCache["agent-1"];
+      assert.deepStrictEqual(
+        cache.messages.map((m) => m.index),
+        [0, 1, 2],
+      );
+    });
+
+    it("rejoins with an incremental chat:sync from the chat:status path", async () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 3,
+        messages: contiguous(3),
+      });
+
+      setNextJoinResult("agent:1:agent-1", {
+        autoInit: {
+          id: "agent-1",
+          model: { name: "gpt-4" },
+          messageCount: 3,
+          status: "idle",
+        },
+      });
+      joinAgent("agent-1", 1);
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      setNextPushResult("agent:1:agent-1", "chat:status", {
+        ok: { model: { name: "gpt-4" }, messageCount: 4 },
+      });
+      const pushPromise = captureNextPush("agent:1:agent-1", "chat:sync");
+      joinAgent("agent-1", 1);
+
+      const pushPayload = await pushPromise;
+      assert.deepStrictEqual(pushPayload, { lastIndex: 2 });
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      assert.deepStrictEqual(
+        cache.messages.map((m) => m.index),
+        [0, 1, 2],
+      );
+    });
+
+    it("does not push chat:sync when the rejoin count matches the cache", async () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 3,
+        messages: contiguous(3),
+      });
+
+      setNextJoinResult("agent:1:agent-1", {
+        autoInit: {
+          id: "agent-1",
+          model: { name: "gpt-4" },
+          messageCount: 3,
+          status: "idle",
+        },
+      });
+
+      joinAgent("agent-1", 1);
+      // The channel is in the map synchronously after `joinAgent`, and
+      // the init handler runs on a timer, so spying here catches any
+      // push the reconcile makes.
+      const pushSpy = vi.spyOn(agentChannels.get("agent-1"), "push");
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      assert.strictEqual(
+        pushSpy.mock.calls.some(([event]) => event === "chat:sync"),
+        false,
+        "a matching messageCount must not trigger chat:sync",
+      );
+
+      // The matching cache is left untouched.
+      const cache = useStore.getState().agentsCache["agent-1"];
+      assert.deepStrictEqual(
+        cache.messages.map((m) => m.index),
+        [0, 1, 2],
+      );
+
+      pushSpy.mockRestore();
+    });
+
+    it("leaves the cache alone when the rejoin payload omits messageCount", async () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 3,
+        messages: contiguous(3),
+      });
+
+      setNextJoinResult("agent:1:agent-1", {
+        autoInit: {
+          id: "agent-1",
+          model: { name: "gpt-4" },
+          messageCount: 3,
+          status: "idle",
+        },
+      });
+      joinAgent("agent-1", 1);
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      // A status reply with no messageCount can't be reconciled, so the
+      // cache is kept and no sync is requested. The new model is the
+      // marker that the reply's handler has run.
+      setNextPushResult("agent:1:agent-1", "chat:status", {
+        ok: { model: { name: "claude-3" } },
+      });
+      const pushSpy = vi.spyOn(agentChannels.get("agent-1"), "push");
+      joinAgent("agent-1", 1);
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.model?.name,
+          "claude-3",
+        );
+      });
+
+      assert.strictEqual(
+        pushSpy.mock.calls.some(([event]) => event === "chat:sync"),
+        false,
+        "a payload without messageCount must not trigger chat:sync",
+      );
+      const cache = useStore.getState().agentsCache["agent-1"];
+      assert.deepStrictEqual(
+        cache.messages.map((m) => m.index),
+        [0, 1, 2],
+      );
+
+      pushSpy.mockRestore();
+    });
+
+    it("full-syncs when the cached rows are non-contiguous", async () => {
+      // A hole in the cached indices means `lastIndex` is not a safe
+      // watermark (a lastIndex-based sync would never fill the hole),
+      // so the cache is dropped and rebuilt from -1.
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 2,
+        messages: [
+          { index: 0, role: "user", content: "A" },
+          { index: 2, role: "assistant", content: "C" },
+        ],
+      });
+
+      setNextJoinResult("agent:1:agent-1", {
+        autoInit: {
+          id: "agent-1",
+          model: { name: "gpt-4" },
+          messageCount: 3,
+          status: "idle",
+        },
+      });
+
+      const pushPromise = captureNextPush("agent:1:agent-1", "chat:sync");
+      joinAgent("agent-1", 1);
+
+      const pushPayload = await pushPromise;
+      assert.deepStrictEqual(pushPayload, { lastIndex: -1 });
+      assert.strictEqual(
+        useStore.getState().agentsCache["agent-1"].messages.length,
+        0,
+      );
+    });
+
+    it("full-syncs when a compaction archived the cached rows while away", async () => {
+      // The count happens to match, but the new boundary sits above
+      // every cached row: the cache is a stale pre-compaction list.
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 3,
+        messages: contiguous(3),
+      });
+
+      setNextJoinResult("agent:1:agent-1", {
+        autoInit: {
+          id: "agent-1",
+          model: { name: "gpt-4" },
+          messageCount: 3,
+          status: "idle",
+          lastCompactionIndex: 5,
+          compactionCount: 1,
+        },
+      });
+
+      const pushPromise = captureNextPush("agent:1:agent-1", "chat:sync");
+      joinAgent("agent-1", 1);
+
+      const pushPayload = await pushPromise;
+      assert.deepStrictEqual(pushPayload, { lastIndex: -1 });
+      assert.strictEqual(
+        useStore.getState().agentsCache["agent-1"].messages.length,
+        0,
+      );
+    });
+
+    it("full-syncs when a compaction boundary lands exactly on the cached tail", async () => {
+      // The boundary equals the cached lastIndex (2), so every cached
+      // row was archived even though the count still matches.
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 3,
+        messages: contiguous(3),
+      });
+
+      setNextJoinResult("agent:1:agent-1", {
+        autoInit: {
+          id: "agent-1",
+          model: { name: "gpt-4" },
+          messageCount: 3,
+          status: "idle",
+          lastCompactionIndex: 2,
+          compactionCount: 1,
+        },
+      });
+
+      const pushPromise = captureNextPush("agent:1:agent-1", "chat:sync");
+      joinAgent("agent-1", 1);
+
+      const pushPayload = await pushPromise;
+      assert.deepStrictEqual(pushPayload, { lastIndex: -1 });
+      assert.strictEqual(
+        useStore.getState().agentsCache["agent-1"].messages.length,
+        0,
+      );
     });
   });
 
@@ -3937,7 +4220,7 @@ describe("channels", () => {
       assert.deepStrictEqual(push2, { lastIndex: 9 });
     });
 
-    it("clears the per-agent sync state on leaveAgent", async () => {
+    it("still pushes a chat:sync with the new marker index after a leave/rejoin", async () => {
       joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
@@ -3956,17 +4239,12 @@ describe("channels", () => {
       const push1 = await push1Promise;
       assert.deepStrictEqual(push1, { lastIndex: 5 });
 
-      // Leave the channel; the sync state is reset
       leaveAgent("agent-1");
 
-      // Re-join. The pre-existing channel path (in
-      // `joinAgent`) sends a `chat:status` push; the
-      // response is consumed by the rejoin handler. The
-      // test asserts that a fresh chat:compaction event
-      // after the rejoin produces a push with the
-      // post-rejoin marker's index (the symptom of
-      // `syncState` not being cleared would be a stale
-      // inFlight flag from the previous session).
+      // Re-join after leaving. The channel map entry is gone, so this
+      // is a fresh join; the cached conversation is kept, and a fresh
+      // chat:compaction event must still produce a sync carrying the
+      // new marker's index.
       joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
