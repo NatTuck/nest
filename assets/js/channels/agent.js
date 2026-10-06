@@ -504,6 +504,25 @@ export function retryCompaction(agentId, onError) {
 }
 
 /**
+ * Request that the agent compact its conversation now (`/compact`).
+ * Control-plane only: unlike `sendMessage` it appends no user message
+ * and does not set `waitingForResponse` — the existing `compacting`
+ * status broadcast and compaction divider are the feedback. A no-op
+ * when the channel isn't connected.
+ */
+export function compactAgent(agentId, onError) {
+  const channel = agentChannels.get(agentId);
+  if (!channel) {
+    if (onError) onError(new Error("Not connected to agent"));
+    return;
+  }
+
+  channel.push("chat:compact", {}).receive("error", (err) => {
+    if (onError) onError(err);
+  });
+}
+
+/**
  * Acknowledge a `:compaction_loop_detected` status. A no-op when
  * the channel isn't connected.
  */

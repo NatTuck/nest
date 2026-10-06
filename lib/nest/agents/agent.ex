@@ -357,6 +357,16 @@ defmodule Nest.Agents.Agent do
   def retry_compaction(pid), do: GenServer.call(pid, :retry_compaction, :infinity)
 
   @doc """
+  Stage a compaction turn now (the user's `/compact` command).
+
+  Only valid from `:idle`; the handler replies `{:error, {:not_idle, status}}`
+  for any other status without touching the machine. Synchronous so the
+  channel's reply lands after the agent has actually staged the compaction.
+  """
+  @spec compact(pid()) :: :ok | {:error, {:not_idle, atom()}}
+  def compact(pid), do: GenServer.call(pid, :compact, :infinity)
+
+  @doc """
   Acknowledge a `:compaction_loop_detected` status. Handler
   no-ops when the agent isn't in that status.
 

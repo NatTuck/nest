@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ModeSelector } from "./ModeSelector";
+import { commandSuggestions } from "../utils/slashCommands.js";
 
 const MAX_HEIGHT_PX = 240;
 
@@ -44,6 +45,10 @@ const MAX_HEIGHT_PX = 240;
  *   current and archived messages. When non-empty and the input is
  *   interactive, a small muted hint is rendered below the form to
  *   advertise the keybinding.
+ * - `commands`: registered slash commands (`{ name, description }`).
+ *   While the input holds `/<partial>` a click-selectable autocomplete
+ *   menu is shown above the textarea. Selecting a command fills the
+ *   input; it never sends.
  */
 export function ChatInput({
   value,
@@ -64,6 +69,11 @@ export function ChatInput({
   mode,
   onModeChange,
   history = [],
+  // Registered slash commands (`{ name, description }`). When the user
+  // types `/<partial>` an autocomplete menu appears above the textarea.
+  // Selection is click-only for now; Enter keeps inserting a newline and
+  // Ctrl/Cmd+Enter keeps sending.
+  commands = [],
 }) {
   const textareaRef = useRef(null);
 
@@ -263,6 +273,12 @@ export function ChatInput({
     return null;
   }
 
+  // Slash-command autocomplete suggestions. Only while the input is
+  // interactive and the text is a `/<partial>`; empty otherwise (so the
+  // menu is absent for ordinary messages).
+  const suggestions =
+    !disabled && !isBusy ? commandSuggestions(value, commands) : [];
+
   return (
     <form
       onSubmit={(e) => {
@@ -273,30 +289,57 @@ export function ChatInput({
       }}
       className="border-t border-gray-200 pt-4"
     >
-      <div className="flex gap-2">
-        <textarea
-          ref={textareaRef}
-          value={value}
-          onChange={(e) => handleChange(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={placeholder}
-          disabled={disabled || isBusy}
-          rows={2}
-          aria-label="Message"
-          aria-keyshortcuts="Control+ArrowUp Control+ArrowDown Meta+ArrowUp Meta+ArrowDown Control+Enter Meta+Enter Control+m Meta+m"
-          title="Enter to newline • Ctrl/Cmd+Enter to send • Ctrl/Cmd+Up/Down to walk previous prompts • Ctrl/Cmd+M to cycle modes"
-          className="flex-1 px-4 py-3 border border-gray-300 rounded-lg resize-none overflow-y-auto leading-snug focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none disabled:bg-gray-100 disabled:cursor-not-allowed"
-          style={{ maxHeight: `${MAX_HEIGHT_PX}px` }}
-        />
-        {modes && modes.length > 1 && onModeChange && (
-          <ModeSelector
-            modes={modes}
-            value={mode}
-            onChange={onModeChange}
-            disabled={disabled || isBusy}
-          />
+      <div className="relative">
+        {suggestions.length > 0 && (
+          <div
+            role="listbox"
+            aria-label="Slash command suggestions"
+            className="absolute bottom-full left-0 z-20 mb-2 w-80 max-w-full overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg"
+          >
+            {suggestions.map((command) => (
+              <button
+                key={command.name}
+                type="button"
+                role="option"
+                aria-selected={false}
+                onClick={() => onChange(`/${command.name}`)}
+                className="flex w-full flex-col items-start gap-0.5 px-4 py-2 text-left transition-colors duration-150 hover:bg-blue-50 active:bg-blue-100"
+              >
+                <span className="font-mono text-sm font-semibold text-blue-700">
+                  /{command.name}
+                </span>
+                <span className="text-xs text-gray-500">
+                  {command.description}
+                </span>
+              </button>
+            ))}
+          </div>
         )}
-        {renderActionButton()}
+        <div className="flex gap-2">
+          <textarea
+            ref={textareaRef}
+            value={value}
+            onChange={(e) => handleChange(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder={placeholder}
+            disabled={disabled || isBusy}
+            rows={2}
+            aria-label="Message"
+            aria-keyshortcuts="Control+ArrowUp Control+ArrowDown Meta+ArrowUp Meta+ArrowDown Control+Enter Meta+Enter Control+m Meta+m"
+            title="Enter to newline • Ctrl/Cmd+Enter to send • Ctrl/Cmd+Up/Down to walk previous prompts • Ctrl/Cmd+M to cycle modes"
+            className="flex-1 px-4 py-3 border border-gray-300 rounded-lg resize-none overflow-y-auto leading-snug focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none disabled:bg-gray-100 disabled:cursor-not-allowed"
+            style={{ maxHeight: `${MAX_HEIGHT_PX}px` }}
+          />
+          {modes && modes.length > 1 && onModeChange && (
+            <ModeSelector
+              modes={modes}
+              value={mode}
+              onChange={onModeChange}
+              disabled={disabled || isBusy}
+            />
+          )}
+          {renderActionButton()}
+        </div>
       </div>
       <p className="mt-1 px-1 text-xs text-gray-400" aria-hidden="true">
         Ctrl+↑ / Ctrl+↓ to walk previous prompts • Ctrl/Cmd+M to cycle modes

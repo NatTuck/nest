@@ -215,6 +215,50 @@ defmodule MachineTest do
     end
   end
 
+  describe "manual compaction (:compact_request)" do
+    test "from :idle it stages a compaction turn and defers an :iterate" do
+      # intentional: /compact reuses the exact automatic-compaction path;
+      # the only difference is the user-initiated entry point.
+      {:ok, actions, next} = Machine.step(state_at(:idle), :compact_request)
+
+      assert :iterate in actions
+      assert next.kind == :compaction and next.phase == :generating
+      assert {:compaction, staged, nil} = next.entry
+      assert is_list(staged)
+      Machine.validate!(next)
+    end
+
+    test "from a non-idle phase it is ignored" do
+      # intentional: compaction only starts from idle; a request while a
+      # turn is in flight is a no-op (the Agent rejects it before stepping).
+      generating = state_at(:generating)
+
+      assert {:ignore, :not_applicable, ^generating} =
+               Machine.step(generating, :compact_request)
+    end
+
+    test "three consecutive manual requests never trip the loop breaker" do
+      # intentional: a manual request resets loop_count before staging, so
+      # deliberate back-to-back compactions are not mistaken for the
+      # automatic compaction loop the breaker guards against.
+      {tripped?, final} =
+        Enum.reduce(1..3, {false, state_at(:idle)}, fn _, {tripped?, machine} ->
+          {:ok, actions, next} = Machine.step(machine, :compact_request)
+
+          tripped =
+            tripped? or
+              Enum.any?(actions, &match?({:broadcast, {:compaction_loop, _, _, _}, _}, &1))
+
+          # Simulate the compaction completing and returning to idle,
+          # carrying the loop_count the stage left behind.
+          {tripped, %{next | phase: :idle, kind: :chat, work: %{next.work | worker_kind: nil}}}
+        end)
+
+      refute tripped?
+      assert final.loop_count == 1
+    end
+  end
+
   describe "invariants" do
     test "validate!/1 accepts every declared phase" do
       for phase <- Machine.phases() do
@@ -434,6 +478,7 @@ defmodule MachineTest do
   defp sample_event(:commit_error), do: {:commit_error, :boom}
   defp sample_event(:compaction_error), do: {:compaction_error, :boom, nil}
   defp sample_event(:retry_compaction), do: :retry_compaction
+  defp sample_event(:compact_request), do: :compact_request
   defp sample_event(:loop_ack), do: :loop_ack
   defp sample_event(:blocked), do: {:blocked, :needs_repair, nil}
   defp sample_event(:unblocked), do: {:unblocked}

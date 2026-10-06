@@ -368,6 +368,49 @@ defmodule Nest.AgentsTest do
     end
   end
 
+  describe "compact/2" do
+    test "returns {:error, :not_found} for a nonexistent agent" do
+      assert Agents.compact(AgentTestHelpers.current_space_id(), "nonexistent") ==
+               {:error, :not_found}
+    end
+
+    test "rejects a non-idle agent without starting a compaction" do
+      {agent_pid, name} = AgentTestHelpers.start_agent(%{name: fresh_name()})
+      space_id = AgentTestHelpers.current_space_id()
+
+      # Fabricate a streaming agent: `compact/2` must refuse rather than
+      # stage a compaction on a turn that is already in flight.
+      :sys.replace_state(agent_pid, fn state ->
+        %{
+          state
+          | live: %{
+              state.live
+              | machine: Machine.status_to_machine(state.live.machine, :streaming)
+            }
+        }
+      end)
+
+      assert Agents.compact(space_id, name) == {:error, {:not_idle, :streaming}}
+
+      # No compaction was staged: the machine is still the fabricated
+      # streaming state and the loop counter is untouched.
+      machine = :sys.get_state(agent_pid).live.machine
+      assert Machine.status_for(machine) == :streaming
+      assert machine.loop_count == 0
+
+      # Restore idle so the teardown's zero-in-flight-agents assertion holds.
+      :sys.replace_state(agent_pid, fn state ->
+        %{
+          state
+          | live: %{
+              state.live
+              | machine: Machine.status_to_machine(state.live.machine, :idle)
+            }
+        }
+      end)
+    end
+  end
+
   describe "change_model/2" do
     test "repairs an agent that started in :model_missing state" do
       log =

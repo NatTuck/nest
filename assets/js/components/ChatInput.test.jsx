@@ -29,6 +29,7 @@ function setup(props = {}) {
       modes={props.modes}
       mode={props.mode}
       onModeChange={props.onModeChange ?? onModeChange}
+      commands={props.commands}
     />,
   );
   const textarea = props.frozen ? null : screen.getByLabelText("Message");
@@ -710,6 +711,51 @@ describe("ChatInput", () => {
         <ChatInput value="" onChange={() => {}} onSend={() => {}} isBusy />,
       );
       expect(getHint()).toBeInTheDocument();
+    });
+  });
+
+  describe("slash command autocomplete", () => {
+    const commands = [
+      { name: "compact", description: "Compact the conversation." },
+    ];
+
+    it("shows a click-selectable suggestion menu for a slash partial", () => {
+      const { onChange, onSend } = setup({ value: "/", commands });
+
+      const listbox = screen.getByRole("listbox", {
+        name: /slash command suggestions/i,
+      });
+      expect(listbox).toBeInTheDocument();
+
+      // Selecting fills the input and never sends.
+      fireEvent.click(screen.getByRole("option", { name: /\/compact/ }));
+      expect(onChange).toHaveBeenCalledWith("/compact");
+      expect(onSend).not.toHaveBeenCalled();
+    });
+
+    it("hides the menu for non-command text and once a command is complete", () => {
+      const { rerender, onChange } = setup({ value: "hello", commands });
+      expect(screen.queryByRole("listbox")).toBeNull();
+
+      rerender(
+        <ChatInput
+          value="/compact"
+          onChange={onChange}
+          onSend={vi.fn()}
+          commands={commands}
+        />,
+      );
+      expect(screen.queryByRole("listbox")).toBeNull();
+    });
+
+    it("hides the menu when the input is disabled", () => {
+      setup({ value: "/", commands, disabled: true });
+      expect(screen.queryByRole("listbox")).toBeNull();
+    });
+
+    it("shows no menu when no commands are registered", () => {
+      setup({ value: "/" });
+      expect(screen.queryByRole("listbox")).toBeNull();
     });
   });
 });

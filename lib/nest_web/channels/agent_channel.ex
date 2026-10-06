@@ -388,38 +388,28 @@ defmodule NestWeb.AgentChannel do
 
   @impl true
   def handle_in("chat:retry-compaction", _payload, socket) do
-    space_id = socket.assigns.space_id
-    name = socket.assigns.name
+    Agents.retry_compaction(socket.assigns.space_id, socket.assigns.name)
+    |> reply_control(socket)
+  end
 
-    case Agents.retry_compaction(space_id, name) do
-      :ok -> {:reply, {:ok, %{}}, socket}
-      {:error, :not_found} -> {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
-      {:error, reason} -> {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
-    end
+  # Manual `/compact`: the Agent is the authority on whether a compaction
+  # may start (a non-idle agent reports `agent_status_<status>`).
+  @impl true
+  def handle_in("chat:compact", _payload, socket) do
+    Agents.compact(socket.assigns.space_id, socket.assigns.name)
+    |> reply_control(socket)
   end
 
   @impl true
   def handle_in("chat:loop-detected-ok", _payload, socket) do
-    space_id = socket.assigns.space_id
-    name = socket.assigns.name
-
-    case Agents.compaction_loop_detected_ok(space_id, name) do
-      :ok -> {:reply, {:ok, %{}}, socket}
-      {:error, :not_found} -> {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
-      {:error, reason} -> {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
-    end
+    Agents.compaction_loop_detected_ok(socket.assigns.space_id, socket.assigns.name)
+    |> reply_control(socket)
   end
 
   @impl true
   def handle_in("chat:stop", _payload, socket) do
-    space_id = socket.assigns.space_id
-    name = socket.assigns.name
-
-    case Agents.stop_chat(space_id, name, self()) do
-      :ok -> {:reply, {:ok, %{}}, socket}
-      {:error, :not_found} -> {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
-      {:error, reason} -> {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
-    end
+    Agents.stop_chat(socket.assigns.space_id, socket.assigns.name, self())
+    |> reply_control(socket)
   end
 
   # Fetch the agent's current background shell jobs. The same list is
@@ -600,6 +590,14 @@ defmodule NestWeb.AgentChannel do
         {:reply, {:error, %{"reason" => reason}}, socket}
     end
   end
+
+  # Reply shaper shared by the control-plane `chat:*` handlers.
+  defp reply_control(:ok, socket), do: {:reply, {:ok, %{}}, socket}
+  defp reply_control({:error, :not_found}, socket), do: reply_err("agent_not_found", socket)
+  defp reply_control({:error, {:not_idle, s}}, socket), do: reply_err("agent_status_#{s}", socket)
+  defp reply_control({:error, reason}, socket), do: reply_err(to_string(reason), socket)
+
+  defp reply_err(reason, socket), do: {:reply, {:error, %{"reason" => reason}}, socket}
 
   # `before` walks backwards through the archive (`nil` starts at the
   # boundary), `limit` bounds one page, and `role` selects a

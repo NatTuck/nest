@@ -28,6 +28,7 @@ import {
   stopMessage,
   retryCompaction,
   compactionLoopOk,
+  compactAgent,
   killShellJob,
   fetchShellLog,
   refreshShellJobs,
@@ -3888,6 +3889,89 @@ describe("channels", () => {
 
       let errorCalled = false;
       compactionLoopOk("agent-1", (_err) => {
+        errorCalled = true;
+      });
+
+      await vi.waitFor(() => {
+        assert.strictEqual(errorCalled, true);
+      });
+    });
+  });
+
+  describe("compactAgent", () => {
+    it("should call onError when not connected to agent", async () => {
+      let errorCalled = false;
+      compactAgent("missing-agent", (_err) => {
+        errorCalled = true;
+      });
+
+      await vi.waitFor(() => {
+        assert.strictEqual(errorCalled, true);
+      });
+    });
+
+    it("should not throw when not connected and onError is omitted", () => {
+      assert.doesNotThrow(() => {
+        compactAgent("missing-agent");
+      });
+    });
+
+    it("pushes chat:compact without adding a user message or a waiting flag", async () => {
+      setNextJoinResult("agent:1:agent-1", {
+        autoInit: {
+          id: "agent-1",
+          model: { name: "gpt-4", provider: "openai" },
+          messageCount: 0,
+          status: "idle",
+        },
+      });
+      joinAgent("agent-1", 1);
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      const pushCapture = captureNextPush("agent:1:agent-1", "chat:compact");
+
+      compactAgent("agent-1");
+
+      assert.deepStrictEqual(await pushCapture, {});
+
+      // A command is control-plane: unlike sendMessage it must not
+      // optimistically append a user message or mark the agent as
+      // awaiting a response.
+      const cache = useStore.getState().agentsCache["agent-1"];
+      assert.strictEqual(cache.messages.length, 0);
+      assert.notStrictEqual(cache.waitingForResponse, true);
+    });
+
+    it("should push chat:compact and invoke onError on push failure", async () => {
+      setNextJoinResult("agent:1:agent-1", {
+        autoInit: {
+          id: "agent-1",
+          model: { name: "gpt-4", provider: "openai" },
+          messageCount: 0,
+          status: "idle",
+        },
+      });
+      joinAgent("agent-1", 1);
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      setNextPushResult("agent:1:agent-1", "chat:compact", {
+        error: { reason: "agent_status_compacting" },
+      });
+
+      let errorCalled = false;
+      compactAgent("agent-1", (_err) => {
         errorCalled = true;
       });
 

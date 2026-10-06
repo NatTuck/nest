@@ -612,4 +612,53 @@ defmodule NestWeb.AgentChannelChatTest do
                )
     end
   end
+
+  describe "handle_in(chat:compact)" do
+    test "stages a compaction for an idle agent", %{socket: socket} do
+      ref = push(socket, "chat:compact", %{})
+
+      assert_reply ref, :ok, %{}
+
+      assert_receive {:chat_status, %{status: "compacting"}}, 500
+
+      # The compactor completes (MockClient's random-text fallback) and
+      # the agent returns to idle.
+      assert_receive {:chat_status, %{status: "idle"}}, 500
+    end
+
+    test "rejects a compaction while the agent is busy", %{
+      socket: socket,
+      agent_id: id,
+      space_id: space_id
+    } do
+      {:ok, agent_pid} = Supervisor.get_agent(space_id, id)
+
+      :sys.replace_state(agent_pid, fn state ->
+        %{
+          state
+          | live: %{
+              state.live
+              | machine: Machine.status_to_machine(state.live.machine, :compacting)
+            }
+        }
+      end)
+
+      ref = push(socket, "chat:compact", %{})
+
+      assert_reply ref, :error, %{"reason" => "agent_status_compacting"}
+
+      # The `:compacting` status was fabricated for the rejection check
+      # (there is no real turn). Restore idle so the teardown's
+      # zero-in-flight-agents assertion holds.
+      :sys.replace_state(agent_pid, fn state ->
+        %{
+          state
+          | live: %{
+              state.live
+              | machine: Machine.status_to_machine(state.live.machine, :idle)
+            }
+        }
+      end)
+    end
+  end
 end

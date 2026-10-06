@@ -57,6 +57,7 @@ import {
   stopMessage,
   retryCompaction,
   compactionLoopOk,
+  compactAgent,
 } from "../channels";
 vi.mock("../channels", () => ({
   joinAgent: vi.fn(),
@@ -65,6 +66,7 @@ vi.mock("../channels", () => ({
   stopMessage: vi.fn(),
   retryCompaction: vi.fn(),
   compactionLoopOk: vi.fn(),
+  compactAgent: vi.fn(),
   editAgent: mocks.editAgent,
 }));
 
@@ -1970,5 +1972,66 @@ describe("ChatPage model picker (model_missing recovery)", () => {
       expect(screen.getByText(match)).toBeInTheDocument();
       unmount();
     }
+  });
+});
+
+describe("ChatPage slash commands", () => {
+  beforeEach(() => {
+    mockAgentsCache = {};
+    sendMessage.mockClear();
+    compactAgent.mockClear();
+  });
+
+  function renderIdleAgent() {
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "idle",
+        messages: [],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+    return renderChat();
+  }
+
+  it("dispatches /compact to compactAgent and clears the input without sending a message", () => {
+    renderIdleAgent();
+
+    const textarea = screen.getByLabelText("Message");
+    fireEvent.change(textarea, { target: { value: "/compact" } });
+    fireEvent.click(screen.getByRole("button", { name: /send/i }));
+
+    expect(compactAgent).toHaveBeenCalledTimes(1);
+    expect(compactAgent).toHaveBeenCalledWith(
+      "test-agent",
+      expect.any(Function),
+    );
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Message").value).toBe("");
+  });
+
+  it("sends an unknown /command as a normal chat message", () => {
+    renderIdleAgent();
+
+    const textarea = screen.getByLabelText("Message");
+    fireEvent.change(textarea, { target: { value: "/unknown" } });
+    fireEvent.click(screen.getByRole("button", { name: /send/i }));
+
+    expect(compactAgent).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage.mock.calls[0][1]).toBe("/unknown");
+  });
+
+  it("surfaces a compactAgent onError in the send error banner", () => {
+    renderIdleAgent();
+
+    const textarea = screen.getByLabelText("Message");
+    fireEvent.change(textarea, { target: { value: "/compact" } });
+    fireEvent.click(screen.getByRole("button", { name: /send/i }));
+
+    const errorCallback = compactAgent.mock.calls[0][1];
+    act(() => errorCallback({ reason: "agent_status_compacting" }));
+
+    expect(screen.getByText("agent_status_compacting")).toBeInTheDocument();
   });
 });

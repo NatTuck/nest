@@ -321,6 +321,21 @@ defmodule Nest.Agents do
   end
 
   @doc """
+  Stage a compaction now for the named agent (the user's `/compact`).
+
+  Only valid while the agent is `:idle`; any other status returns
+  `{:error, {:not_idle, status}}`. The Agent is the authority on the
+  status check (no channel-side pre-check).
+  """
+  @spec compact(integer(), String.t()) :: :ok | {:error, :not_found | {:not_idle, atom()}}
+  def compact(space_id, name) do
+    case Supervisor.get_agent(space_id, name) do
+      {:ok, pid} -> Agent.compact(pid)
+      {:error, _} = err -> err
+    end
+  end
+
+  @doc """
   Acknowledge a `:compaction_loop_detected` status.
   """
   @spec compaction_loop_detected_ok(integer(), String.t()) :: :ok | {:error, atom()}

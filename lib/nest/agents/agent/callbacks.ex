@@ -179,6 +179,22 @@ defmodule Nest.Agents.Agent.Callbacks do
     end
   end
 
+  # A manual `/compact`. The Agent is the single authority on whether a
+  # compaction may start: only `:idle` stages one. Every other status
+  # (streaming, executing_tools, compacting, blocked) replies with
+  # `{:error, {:not_idle, status}}` and leaves the machine untouched, so
+  # there is no TOCTOU window between a channel-side check and the stage.
+  def handle_call(:compact, _from, state) do
+    case Machine.status_for(state.live.machine) do
+      :idle ->
+        {:ok, state} = Turn.settle(state, :compact_request)
+        {:reply, :ok, state}
+
+      status ->
+        {:reply, {:error, {:not_idle, status}}, state}
+    end
+  end
+
   def handle_call(:compaction_loop_detected_ok, _from, state) do
     if Machine.status_for(state.live.machine) == :compaction_loop_detected do
       {:ok, state} = Turn.settle(state, :loop_ack)
