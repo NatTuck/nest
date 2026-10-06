@@ -1,13 +1,26 @@
 import { useEffect, useLayoutEffect, useState } from "react";
 
-const BOTTOM_THRESHOLD_PX = 300;
+const AT_BOTTOM_EPSILON_PX = 2;
 
 /**
  * Drives the "scroll to bottom on new content, show a jump button when
  * scrolled up" behavior for a scrollable container.
  *
- * - Tracks whether the user is within BOTTOM_THRESHOLD_PX of the bottom
- *   via a passive scroll listener.
+ * - Tracks whether the container is pinned to the bottom. A `scroll`
+ *   event *re-pins* whenever the container lands within
+ *   AT_BOTTOM_EPSILON_PX of the bottom (`isAtBottom` becomes true and
+ *   `hasNewContent` clears), and *un-pins* only when it moved upward
+ *   (`scrollTop` decreased) while still away from the bottom. The
+ *   direction check is what covers scrolls the browser performs without a
+ *   wheel/touch/key event we can observe -- dragging the scrollbar, or
+ *   Space / Shift+Space. Content growth does not un-pin: it changes
+ *   `scrollHeight` only, never `scrollTop`, and our own programmatic
+ *   scrolls only ever increase `scrollTop`.
+ * - Un-pinning also happens immediately on a real user gesture, however
+ *   far it moved: a `wheel` event with `deltaY < 0` or a `touchmove` on
+ *   the container, and a `keydown` for PageUp / ArrowUp / Home on
+ *   `window` (focus is usually in the composer textarea, so a
+ *   container-only key listener would miss PgUp).
  * - On new content (controlled by the caller via the `trigger` value),
  *   auto-scrolls to the end if the user is at the bottom, or surfaces
  *   `hasNewContent = true` if the user is scrolled up.
@@ -45,28 +58,89 @@ export function useScrollToBottom(
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [hasNewContent, setHasNewContent] = useState(false);
 
-  // Track scroll position so we can decide whether to auto-scroll on new content.
-  // We do not run an initial check: the hook assumes "at bottom" on first mount
-  // (the useLayoutEffect below scrolls there), and only updates from real user
-  // scroll events after that.
+  // Attach the listeners that decide "is the user at the bottom?".
+  // We do not run an initial check: the hook assumes "at bottom" on
+  // first mount (the useLayoutEffect below scrolls there), and only
+  // updates from real events after that.
   // biome-ignore lint/correctness/useExhaustiveDependencies: id triggers re-attach on conversation change
   useEffect(() => {
     if (!scrollContainerEl) return;
 
-    const checkAtBottom = () => {
-      const atBottom =
-        scrollContainerEl.scrollHeight -
-          scrollContainerEl.scrollTop -
-          scrollContainerEl.clientHeight <
-        BOTTOM_THRESHOLD_PX;
-      setIsAtBottom(atBottom);
-      if (atBottom) setHasNewContent(false);
+    // Reaching the bottom (or the smooth jumpToBottom animation finishing)
+    // means the user wants to follow along again. A scroll that moved
+    // *upward* while still away from the bottom is a user scroll-up even
+    // when no wheel/touch/key event reached us: that is how a scrollbar
+    // drag or Space / Shift+Space shows up. Content growth cannot trigger
+    // this branch -- it changes scrollHeight, not scrollTop, and scrollTop
+    // only decreases when the user (or the browser on the user's behalf)
+    // actually scrolled up.
+    let lastScrollTop = scrollContainerEl.scrollTop;
+    const handleScroll = () => {
+      const { scrollHeight, scrollTop, clientHeight } = scrollContainerEl;
+      const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+
+      if (distanceFromBottom <= AT_BOTTOM_EPSILON_PX) {
+        setIsAtBottom(true);
+        setHasNewContent(false);
+      } else if (scrollTop < lastScrollTop) {
+        setIsAtBottom(false);
+      }
+
+      lastScrollTop = scrollTop;
     };
 
-    scrollContainerEl.addEventListener("scroll", checkAtBottom, {
+    // Real user input that scrolls up. A wheel-up or touch drag is an
+    // unambiguous intent to leave the bottom, regardless of how far it
+    // moved (a few pixels is enough).
+    const handleWheel = (event) => {
+      if (event.deltaY < 0) setIsAtBottom(false);
+    };
+    const handleTouchMove = () => setIsAtBottom(false);
+
+    // Keyboard scroll-ups. The composer textarea usually holds focus, so
+    // listen on `window` rather than the container.
+    //
+    // PageUp and ArrowUp/Home are treated differently. PageUp is never
+    // handled by the textarea itself: the browser routes it to the scroll
+    // container even while the composer has focus, and issue #6 requires
+    // it to stop auto-scroll. ArrowUp/Home are ambiguous -- in a text
+    // field they move the caret, and Ctrl/Cmd+ArrowUp is the composer's
+    // own history-walk shortcut -- so they only count as scroll-up intent
+    // when focus is outside any editable field and no modifier is held.
+    const isEditableTarget = (target) =>
+      target instanceof Element &&
+      target.closest("input, textarea, select, [contenteditable]") !== null;
+
+    const handleKeyDown = (event) => {
+      if (event.key === "PageUp") {
+        setIsAtBottom(false);
+        return;
+      }
+
+      if (event.key !== "ArrowUp" && event.key !== "Home") return;
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (isEditableTarget(event.target)) return;
+
+      setIsAtBottom(false);
+    };
+
+    scrollContainerEl.addEventListener("scroll", handleScroll, {
       passive: true,
     });
-    return () => scrollContainerEl.removeEventListener("scroll", checkAtBottom);
+    scrollContainerEl.addEventListener("wheel", handleWheel, {
+      passive: true,
+    });
+    scrollContainerEl.addEventListener("touchmove", handleTouchMove, {
+      passive: true,
+    });
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      scrollContainerEl.removeEventListener("scroll", handleScroll);
+      scrollContainerEl.removeEventListener("wheel", handleWheel);
+      scrollContainerEl.removeEventListener("touchmove", handleTouchMove);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
   }, [id, scrollContainerEl]);
 
   // Auto-scroll on new content, but only if the user is already at the bottom.

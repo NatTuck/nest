@@ -44,4 +44,8 @@ npm-debug.log
 
 # JS test coverage output
 /assets/coverage/
+/assets/coverage-json/
 *.coverdata
+
+# Read-only sandbox mount at the repo root; never commit.
+/.nest

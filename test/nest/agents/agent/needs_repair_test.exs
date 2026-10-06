@@ -39,7 +39,7 @@ defmodule Nest.Agents.Agent.NeedsRepairTest do
       assert {:ok, attrs} = Persistence.build_attrs_for_start(space_id, name)
       assert attrs.sequence_violations == []
       assert attrs.repair_command == nil
-      assert [%Part.ToolUse{id: "call_1", name: "shell-cmd"}] = attrs.interrupted_tool_call
+      assert [%Part.ToolUse{id: "call_1", name: "shell-cmd"}] = attrs.load_heal
     end
 
     test "attaches violations and a repair command for real corruption" do
@@ -52,7 +52,7 @@ defmodule Nest.Agents.Agent.NeedsRepairTest do
       assert [{:tool_pairing, _position}] =
                Enum.map(attrs.sequence_violations, &{&1.rule, &1.position})
 
-      assert attrs.interrupted_tool_call == nil
+      assert attrs.load_heal == nil
       assert attrs.repair_command =~ "mix nest.repair_messages --space "
     end
 
@@ -69,7 +69,7 @@ defmodule Nest.Agents.Agent.NeedsRepairTest do
 
       assert {:ok, attrs} = Persistence.build_attrs_for_start(space_id, name)
       assert attrs.sequence_violations == []
-      assert attrs.interrupted_tool_call == nil
+      assert attrs.load_heal == nil
       assert attrs.repair_command == nil
     end
   end
@@ -101,7 +101,7 @@ defmodule Nest.Agents.Agent.NeedsRepairTest do
       log =
         ExUnit.CaptureLog.capture_log(fn ->
           healed =
-            Init.InterruptedToolCall.heal(state, [
+            Init.LoadHeal.heal(state, [
               %Part.ToolUse{id: "call_1", name: "shell-cmd", arguments: %{}}
             ])
 
@@ -122,7 +122,69 @@ defmodule Nest.Agents.Agent.NeedsRepairTest do
 
       assert {:ok, again} = Persistence.build_attrs_for_start(space_id, name)
       assert again.sequence_violations == []
-      assert again.interrupted_tool_call == nil
+      assert again.load_heal == nil
+    end
+
+    test "fetch_or_start_agent heals the orphan in the caller before the child spawns" do
+      space_id = AgentTestHelpers.current_space_id()
+      name = unique_name("orphan-load")
+      insert_interrupted_agent(space_id, name)
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert {:ok, ^name} = Supervisor.fetch_or_start_agent(space_id, %{name: name})
+        end)
+
+      assert log =~ "interrupted tool call"
+
+      # Healed and persisted in the caller's DB context — the spawned
+      # child's `init/1` never touched the DB, which is what lets this
+      # file run `async: true`.
+      assert [:system, :user, :assistant, :tool, :assistant] =
+               Persistence.load_messages(space_id, name) |> Enum.map(&elem(&1, 0))
+
+      assert {:ok, info} = Agents.get_info(space_id, name)
+      assert info.status == :idle
+
+      assert {:ok, again} = Persistence.build_attrs_for_start(space_id, name)
+      assert again.sequence_violations == []
+      assert again.load_heal == nil
+    end
+
+    test "a second heal of the interrupted tail appends nothing" do
+      space_id = AgentTestHelpers.current_space_id()
+      name = unique_name("heal-once")
+      insert_interrupted_agent(space_id, name)
+
+      {:ok, attrs} = Persistence.build_attrs_for_start(space_id, name)
+      assert [%Part.ToolUse{id: "call_1"}] = attrs.load_heal
+
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{space_id}:#{name}")
+
+      log = ExUnit.CaptureLog.capture_log(fn -> Agent.pre_load_heal(attrs) end)
+      assert log =~ "interrupted tool call"
+
+      # The error result and its ack were appended once, in order.
+      assert_received {:chat_message,
+                       {:tool,
+                        %Tool{parts: [%Part.ToolResult{tool_call_id: "call_1", is_error: true}]}}}
+
+      assert_received {:chat_message, {:assistant, %Assistant{index: 4}}}
+      assert persisted_sequence(space_id, name) == healed_orphan_sequence()
+
+      # A second caller holding the same pre-heal attrs re-derives the
+      # classification from a fresh read, sees the healed tail, and appends
+      # nothing: no second `tool_result`/ack pair, no second broadcast.
+      # `capture_log` is here only so a regression's heal warning doesn't
+      # print to the console.
+      _ =
+        ExUnit.CaptureLog.capture_log(fn ->
+          again = Agent.pre_load_heal(attrs)
+          assert again.load_heal == nil
+          refute_received {:chat_message, _}
+        end)
+
+      assert persisted_sequence(space_id, name) == healed_orphan_sequence()
     end
 
     test "a genuinely corrupt sequence blocks as :needs_repair and reloads to :idle after repair" do
@@ -157,17 +219,44 @@ defmodule Nest.Agents.Agent.NeedsRepairTest do
       assert {:ok, _plan, _agents} =
                MessageRepair.run({:space, space_name}, apply: true)
 
-      assert {:ok, _name} = Agents.reload_agent(space_id, name)
+      # The offline repair leaves the repaired sequence on a user tail, so
+      # the reloaded agent's init heals it with the load bridge (appended
+      # and persisted before the agent goes idle).
+      reload_log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert {:ok, _name} = Agents.reload_agent(space_id, name)
+        end)
+
+      assert reload_log =~ "idle sequence ending on a user message"
+      refute reload_log =~ "could not heal"
 
       assert {:ok, info} = Agents.get_info(space_id, name)
       assert info.status == :idle
 
+      # The bridge is persisted: the repaired user tail is closed by an
+      # assistant ack, so a subsequent load has nothing left to heal.
+      assert {:assistant, _} = Persistence.load_messages(space_id, name) |> List.last()
+
       assert {:ok, repaired} = Persistence.build_attrs_for_start(space_id, name)
       assert repaired.sequence_violations == []
+      assert repaired.load_heal == nil
     end
   end
 
   # ---- helpers ----
+
+  # The persisted sequence after the interrupted-tool-call heal: the error
+  # result answers `call_1` and the ack closes the turn on an assistant.
+  defp healed_orphan_sequence do
+    [{0, :system}, {1, :user}, {2, :assistant}, {3, :tool}, {4, :assistant}]
+  end
+
+  # The persisted sequence as `{index, role}` pairs, so one assertion pins
+  # the roles, their order, and that no extra row was appended.
+  defp persisted_sequence(space_id, name) do
+    Persistence.load_messages(space_id, name)
+    |> Enum.map(fn {role, %{index: index}} -> {index, role} end)
+  end
 
   defp insert_interrupted_agent(space_id, name) do
     {:ok, _} = Persistence.insert_agent(agent_attrs(space_id, name))

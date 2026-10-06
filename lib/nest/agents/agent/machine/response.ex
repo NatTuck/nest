@@ -196,8 +196,21 @@ defmodule Nest.Agents.Agent.Machine.Response do
     continuation =
       {:compact_tool, [assistant_msg, synthetic], m.work.iteration, m.work.max_iterations}
 
+    # The LLM's `focus` arg rides on `work` into
+    # `Dispatch.compaction_plan/1`, which renders it into the suffix.
+    m = %{m | work: %{m.work | focus: compact_focus(tool_call)}}
     {:ok, actions, machine} = Compaction.stage(m, continuation, nil)
     {:ok, base ++ actions, machine}
+  end
+
+  # The `context-compact` tool's optional `focus` argument. JSON-decoded
+  # arguments arrive with string keys; an absent/non-string/blank value
+  # means no operator guidance.
+  defp compact_focus(%ToolCall{arguments: args}) do
+    case args do
+      %{"focus" => focus} when is_binary(focus) and focus != "" -> focus
+      _ -> nil
+    end
   end
 
   defp refuse_mixed(m, response, assistant_msg, base) do

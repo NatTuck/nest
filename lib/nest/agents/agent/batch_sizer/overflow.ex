@@ -55,7 +55,10 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
 
   truncated (line-aligned) so `Estimator.estimate/1` of the result is at
   most `budget` tokens. The result is always valid UTF-8 and always fits;
-  callers must not inline the full `content` instead.
+  callers must not inline the full `content` instead. It is also never
+  empty: when there is no budget for any of the content, the marker names
+  the scratch file so the model still knows that content was elided and
+  where to find it.
 
   `label` names the result for the model (e.g. `"Command output of 'ls'"`).
   `prefix` names the scratch file (see `write/4`). `content` is expected
@@ -65,23 +68,23 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
   @spec substitute(binary(), map(), String.t(), non_neg_integer(), String.t()) :: String.t()
   def substitute(content, ctx, label, budget, prefix) do
     size = Estimator.estimate(content)
+    path = write(content, ctx, prefix, "txt")
 
-    location =
-      case write(content, ctx, prefix, "txt") do
-        nil -> "temp file unavailable"
-        path -> "saved to #{path}"
-      end
-
+    location = if path, do: "saved to #{path}", else: "temp file unavailable"
+    no_room = elided_marker(path)
     header = "#{label} (#{size} tokens) #{location}."
 
-    block =
-      case head_text(content, head_budget(header)) do
-        "" -> header
-        head -> header <> "\n\n" <> head
-      end
-
-    truncate_to_fit(block, budget)
+    block = header <> "\n\n" <> head_text(content, head_budget(header), no_room)
+    truncate_to_fit(block, budget, no_room)
   end
+
+  # The no-room marker for a substituted result. It always says the
+  # content was elided, and names the scratch file when one was written
+  # so the model can still read the full text.
+  defp elided_marker(nil),
+    do: "[content elided: the full result could not be written to a scratch file]"
+
+  defp elided_marker(path), do: "[content elided: see #{path}]"
 
   # Head budget: ~4× the header, with a floor so a very short header
   # still yields a usable preview.
@@ -95,33 +98,51 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
 
   Whole lines only (never mid-line). `Estimator.estimate/1` includes a
   per-line overhead, matching the rest of the sizing path.
+
+  Never returns an empty string: when the budget can't fit even the
+  first line, or `content` is empty, `no_room` is returned instead. It
+  must be a non-empty self-describing marker so a caller can always tell
+  that content was dropped (and where it went).
+
+  There is deliberately no default `no_room`: every caller has to say
+  where the dropped content went, so no result can claim content was
+  elided without naming the file that holds it.
   """
-  @spec head_text(String.t(), integer()) :: String.t()
-  def head_text("", _budget), do: ""
-  def head_text(_content, budget) when budget <= 0, do: ""
+  @spec head_text(String.t(), integer(), String.t()) :: String.t()
+  def head_text(content, budget, no_room)
 
-  def head_text(content, budget) do
-    content
-    |> String.split("\n")
-    |> Enum.reduce_while({"", 0}, fn line, {acc, used} ->
-      line_tokens = Estimator.estimate(line)
+  def head_text("", _budget, no_room), do: no_room
+  def head_text(_content, budget, no_room) when budget <= 0, do: no_room
 
-      if used + line_tokens <= budget do
-        {:cont, {acc <> line <> "\n", used + line_tokens}}
-      else
-        {:halt, {acc, used}}
-      end
-    end)
-    |> elem(0)
-    |> String.trim_trailing()
+  def head_text(content, budget, no_room) do
+    head =
+      content
+      |> String.split("\n")
+      |> Enum.reduce_while({"", 0}, fn line, {acc, used} ->
+        line_tokens = Estimator.estimate(line)
+
+        if used + line_tokens <= budget do
+          {:cont, {acc <> line <> "\n", used + line_tokens}}
+        else
+          {:halt, {acc, used}}
+        end
+      end)
+      |> elem(0)
+      |> String.trim_trailing()
+
+    if head == "", do: no_room, else: head
   end
 
   @doc """
   Trim `text` to at most `target_tokens` by taking leading whole lines.
+
+  Never returns an empty string; see `head_text/3` for `no_room`.
   """
-  @spec truncate_to_fit(String.t(), integer()) :: String.t()
-  def truncate_to_fit(_text, target_tokens) when target_tokens <= 0, do: ""
-  def truncate_to_fit(text, target_tokens), do: head_text(text, target_tokens)
+  @spec truncate_to_fit(String.t(), integer(), String.t()) :: String.t()
+  def truncate_to_fit(text, target_tokens, no_room)
+
+  def truncate_to_fit(_text, target_tokens, no_room) when target_tokens <= 0, do: no_room
+  def truncate_to_fit(text, target_tokens, no_room), do: head_text(text, target_tokens, no_room)
 
   @doc """
   Lossy UTF-8 coercion: replace every invalid byte sequence, and every

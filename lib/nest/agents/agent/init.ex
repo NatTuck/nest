@@ -5,9 +5,12 @@ defmodule Nest.Agents.Agent.Init do
   stays small.
 
   The `init/1` callback delegates to `build_state/2` here for
-  the struct construction (no side effects) and to
-  `persist_initial_system_message/1` for the DB write of the
-  initial system message row.
+  the struct construction and to `seed_from_db/4` for hydrating
+  the persisted message sequence. Both are pure — no side
+  effects, no DB access (see the hard rule in
+  `Nest.Agents.Agent.init/1`). The initial system message row and
+  the load-time sequence heal are written by the *caller*, in
+  `Agent.pre_spawn/1` and `Agent.pre_load_heal/1`.
   """
 
   require Logger
@@ -29,7 +32,7 @@ defmodule Nest.Agents.Agent.Init do
   alias Nest.Tools
 
   @doc """
-  Build the initial state struct. Pure: no DB writes, no
+  Build the initial state struct. Pure: no DB access, no
   broadcasts, no logging.
 
   The caller is responsible for providing the loaded vocation
@@ -113,11 +116,11 @@ defmodule Nest.Agents.Agent.Init do
   or when the agent's `chat_state.messages` list is empty.
 
   This function is retained for direct callers that want to
-  pre-persist a system message row outside of `Agent.start_link/1`
+  pre-persist a system message row outside of `Agent.pre_spawn/1`
   — for example, the regression test in `agent_persistence_test.exs`
   that pins the wrapper's idempotency contract. `Agent.init/1`
   no longer calls this; the canonical pre-spawn write lives in
-  `Agent.start_link/1` itself (in the calling process's DB context).
+  `Agent.pre_spawn/1` (in the calling process's DB context).
   """
   @spec persist_initial_system_message(Nest.Agents.Agent.t()) :: :ok
   def persist_initial_system_message(state) do

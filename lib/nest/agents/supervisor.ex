@@ -55,6 +55,12 @@ defmodule Nest.Agents.Supervisor do
       under the supervisor seeded with the active messages.
     * If no row exists, return `{:error, :not_found}`.
 
+  The load-time sequence heal (`Agent.pre_load_heal/1`) runs here,
+  in the caller's DB context, before the child is spawned — never in
+  the child's `init/1` (see the hard rule there). It is idempotent: a
+  caller that finds the tail already healed appends nothing, and both
+  callers get `{:ok, name}`.
+
   Returns `{:ok, name}` on success.
   """
   @spec fetch_or_start_agent(integer(), map()) :: {:ok, String.t()} | {:error, term()}
@@ -65,9 +71,14 @@ defmodule Nest.Agents.Supervisor do
 
       existing_name ->
         case safe_fetch_for_start(space_id, existing_name) do
-          {:ok, start_attrs} -> start_under_supervisor(start_attrs, existing_name)
-          {:error, :not_found} -> {:error, :not_found}
-          {:error, reason} -> {:error, reason}
+          {:ok, start_attrs} ->
+            start_under_supervisor(Agent.pre_load_heal(start_attrs), existing_name)
+
+          {:error, :not_found} ->
+            {:error, :not_found}
+
+          {:error, reason} ->
+            {:error, reason}
         end
     end
   end
@@ -96,12 +107,17 @@ defmodule Nest.Agents.Supervisor do
 
   @doc """
   Test-only: start a single agent under the supervisor.
+
+  Applies `Agent.pre_load_heal/1` in the caller's DB context (matching
+  `fetch_or_start_agent/2`) so an interrupted sequence is healed before
+  the child spawns. The heal is idempotent, so an already-healed tail is
+  left alone.
   """
   @spec start_under_test(map()) :: {:ok, pid()} | {:error, term()}
   def start_under_test(attrs) do
     _name = Map.fetch!(attrs, :name)
 
-    case DynamicSupervisor.start_child(@supervisor_name, {Agent, attrs}) do
+    case DynamicSupervisor.start_child(@supervisor_name, {Agent, Agent.pre_load_heal(attrs)}) do
       {:ok, pid} -> {:ok, pid}
       {:error, {:already_started, pid}} -> {:ok, pid}
       {:error, reason} -> {:error, reason}

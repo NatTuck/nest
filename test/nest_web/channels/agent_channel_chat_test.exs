@@ -612,4 +612,81 @@ defmodule NestWeb.AgentChannelChatTest do
                )
     end
   end
+
+  describe "handle_in(chat:compact)" do
+    test "stages a compaction for an idle agent and forwards the focus", %{
+      socket: socket,
+      agent_id: id,
+      space_id: space_id
+    } do
+      {:ok, agent_pid} = Supervisor.get_agent(space_id, id)
+
+      # Fail the compactor's LLM call so the machine parks in
+      # `:compaction_failed` right after staging. That is a deterministic
+      # sync point: a failed compaction keeps the focus for the retry, so
+      # the state is stable there. Asserting right after the reply would
+      # instead race the compactor's completion, which legitimately clears
+      # the focus on the way back to idle.
+      MockClient.set_error("boom")
+
+      log =
+        capture_log(fn ->
+          ref = push(socket, "chat:compact", %{"focus" => "keep the API decisions"})
+
+          assert_reply ref, :ok, %{}
+
+          assert_receive {:chat_status, %{status: "compacting"}}, 500
+          assert_receive {:chat_status, %{status: "compaction_failed"}}, 500
+        end)
+
+      assert log =~ "Compaction failed"
+
+      # The channel read `payload["focus"]` and threaded it through
+      # `Agents.compact/3` → `Agent.compact/2` onto the machine's working
+      # set synchronously (before the reply).
+      assert :sys.get_state(agent_pid).live.machine.work.focus == "keep the API decisions"
+
+      # Retrying re-renders the same focus; the compactor completes
+      # (MockClient's random-text fallback) and the agent returns to idle.
+      retry_ref = push(socket, "chat:retry-compaction", %{})
+
+      assert_reply retry_ref, :ok, %{}
+      assert_receive {:chat_status, %{status: "idle"}}, 500
+    end
+
+    test "rejects a compaction while the agent is busy", %{
+      socket: socket,
+      agent_id: id,
+      space_id: space_id
+    } do
+      {:ok, agent_pid} = Supervisor.get_agent(space_id, id)
+
+      :sys.replace_state(agent_pid, fn state ->
+        %{
+          state
+          | live: %{
+              state.live
+              | machine: Machine.status_to_machine(state.live.machine, :compacting)
+            }
+        }
+      end)
+
+      ref = push(socket, "chat:compact", %{})
+
+      assert_reply ref, :error, %{"reason" => "agent_status_compacting"}
+
+      # The `:compacting` status was fabricated for the rejection check
+      # (there is no real turn). Restore idle so the teardown's
+      # zero-in-flight-agents assertion holds.
+      :sys.replace_state(agent_pid, fn state ->
+        %{
+          state
+          | live: %{
+              state.live
+              | machine: Machine.status_to_machine(state.live.machine, :idle)
+            }
+        }
+      end)
+    end
+  end
 end

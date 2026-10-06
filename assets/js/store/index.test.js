@@ -5,6 +5,7 @@
 
 import { describe, it, beforeEach, vi, expect } from "vitest";
 import { useStore } from "./index";
+import { MAX_CACHED_AGENTS } from "./slices/agentCache";
 
 describe("store", () => {
   beforeEach(() => {
@@ -381,6 +382,73 @@ describe("store", () => {
       expect(cache.messages).toHaveLength(1);
       expect(cache.status).toBe("connecting");
       expect(cache.error).toBeNull();
+    });
+  });
+
+  describe("agent cache size cap", () => {
+    // The immutable message list is cached per-agent so switching back
+    // is cheap, but the cache must not grow without bound. Each visit
+    // records recency; once the cap is exceeded the least-recently-viewed
+    // evictable agent is dropped.
+
+    const visit = (id) => {
+      useStore.getState().setAgentConnecting(id);
+      useStore.getState().setAgentDisconnected(id);
+    };
+
+    it("evicts the least-recently-viewed agent once the cap is exceeded", () => {
+      for (let i = 0; i < MAX_CACHED_AGENTS; i++) visit(`agent-${i}`);
+
+      useStore.getState().setAgentConnecting("current");
+
+      const cache = useStore.getState().agentsCache;
+      expect(cache["agent-0"]).toBeUndefined();
+      expect(cache.current).toBeDefined();
+      expect(Object.keys(cache)).toHaveLength(MAX_CACHED_AGENTS);
+    });
+
+    it("keeps the joining agent and any agent with a live channel", () => {
+      for (let i = 0; i < MAX_CACHED_AGENTS; i++) visit(`agent-${i}`);
+
+      // A connected agent's channel would keep pushing into a cache
+      // that no longer exists, so it is skipped.
+      const connected = `agent-${MAX_CACHED_AGENTS - 1}`;
+      useStore.getState().setAgentConnecting(connected);
+      useStore.getState().setAgentConnected(connected, {});
+
+      // A second join in flight (status connecting) is skipped too.
+      useStore.getState().setAgentConnecting("half-joined");
+      // The oldest disconnected entry is evicted instead.
+      expect(useStore.getState().agentsCache["agent-0"]).toBeUndefined();
+
+      useStore.getState().setAgentConnecting("current");
+
+      const cache = useStore.getState().agentsCache;
+      expect(cache["agent-1"]).toBeUndefined();
+      expect(cache[connected]).toBeDefined();
+      expect(cache["half-joined"]).toBeDefined();
+      expect(cache.current).toBeDefined();
+    });
+
+    it("re-visits an evicted agent with a fresh, empty cache", () => {
+      for (let i = 0; i <= MAX_CACHED_AGENTS; i++) visit(`agent-${i}`);
+
+      expect(useStore.getState().agentsCache["agent-0"]).toBeUndefined();
+
+      useStore.getState().setAgentConnecting("agent-0");
+      expect(useStore.getState().agentsCache["agent-0"].messages).toEqual([]);
+      expect(useStore.getState().agentsCache["agent-0"].lastIndex).toBe(-1);
+
+      // A fresh sync then repopulates it from scratch.
+      useStore.getState().syncAgentMessages("agent-0", {
+        messages: [
+          { index: 0, role: "user", content: "A" },
+          { index: 1, role: "assistant", content: "B" },
+        ],
+      });
+      const cache = useStore.getState().agentsCache["agent-0"];
+      expect(cache.messages.map((m) => m.index)).toEqual([0, 1]);
+      expect(cache.lastIndex).toBe(1);
     });
   });
 
@@ -3336,7 +3404,8 @@ describe("store", () => {
         ]);
       useStore.getState().setAgentCompactionMarker("agent-1", MARKER);
 
-      // The rejoin path (`chat:status`) carries neither field.
+      // The rejoin payload (`chat:status`) does carry both fields; this
+      // fixture omits them deliberately to pin the `?? existing` fallback.
       useStore.getState().setAgentConnected("agent-1", {
         messageCount: 0,
         status: "idle",

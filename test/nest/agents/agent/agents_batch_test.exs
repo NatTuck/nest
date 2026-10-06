@@ -80,7 +80,18 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
       cast_child_completed(parent_pid, name, "#{item}-done")
     end
 
-    assert_receive {:chat_status, %{status: "idle"}}, 2_000
+    # Every idle fence in this file waits for the same thing, and there is
+    # no synchronous point to sync on: the parent reaches `:idle` only after
+    # the tool worker Task (spawned by `Turn.Executor` for the
+    # `agents-batch` call) sends its `{:tool_results, ref, results}` back to
+    # the parent's mailbox — a hop from a third process that a
+    # `:sys.get_state(parent_pid)` issued after the `:child_completed`
+    # casts cannot wait for (the parent is still `:executing_tools` when
+    # that call returns). `Phoenix.PubSub` delivers the idle broadcast with
+    # a synchronous `send` to this local subscriber, so the wait ends the
+    # moment the parent idles; 500ms is a wide margin (the whole file runs
+    # in ~0.4s).
+    assert_receive {:chat_status, %{status: "idle"}}, 500
 
     parent_state = :sys.get_state(parent_pid)
     AgentTestHelpers.assert_unique_message_indices(parent_state)
@@ -123,6 +134,39 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     assert_children_archived(space_id, child_names)
   end
 
+  test "a child that finished its turn with no text becomes a marker slot", %{vid: vid} do
+    {parent_pid, parent_name} = start_batch_parent(vid)
+    space_id = AgentTestHelpers.current_space_id()
+
+    run_batch(parent_pid, "call_batch_no_text", %{
+      "template" => "sum {item}",
+      "items" => ["alpha", "beta"]
+    })
+
+    Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
+    [child0, child1] = collect_child_names(parent_name, 2)
+
+    on_exit(fn ->
+      Enum.each([child0, child1], fn n -> _ = Supervisor.stop_agent(space_id, n) end)
+    end)
+
+    # A child whose final assistant message carried no text reports an
+    # empty response — the slot must say so instead of going out as `""`.
+    cast_child_completed(parent_pid, child0, "")
+    cast_child_completed(parent_pid, child1, "beta-done")
+
+    assert_receive {:chat_status, %{status: "idle"}}, 500
+
+    parent_state = :sys.get_state(parent_pid)
+    result = batch_tool_result(parent_state)
+
+    assert [first, "beta-done"] = Jason.decode!(result.content)
+    assert first == "[error: finished its turn without producing any text]"
+    # One text-less child is a slot marker, not a whole-call failure.
+    assert result.is_error == false
+    assert Machine.pending_children(parent_state.live.machine) == %{}
+  end
+
   test "a child that dies before responding fails its slot fast and is not archived",
        %{vid: vid} do
     {parent_pid, parent_name} = start_batch_parent(vid)
@@ -150,7 +194,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     cast_child_completed(parent_pid, child1, "beta-done")
     cast_child_completed(parent_pid, child2, "gamma-done")
 
-    assert_receive {:chat_status, %{status: "idle"}}, 2_000
+    assert_receive {:chat_status, %{status: "idle"}}, 500
 
     parent_state = :sys.get_state(parent_pid)
     content = batch_tool_content(parent_state)
@@ -177,7 +221,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
     [_child0, _child1] = collect_child_names(parent_name, 2)
 
-    assert_receive {:chat_status, %{status: "idle"}}, 2_000
+    assert_receive {:chat_status, %{status: "idle"}}, 500
 
     parent_state = :sys.get_state(parent_pid)
 
@@ -202,7 +246,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
         Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
         [_child0] = collect_child_names(parent_name, 1)
 
-        assert_receive {:chat_status, %{status: "idle"}}, 2_000
+        assert_receive {:chat_status, %{status: "idle"}}, 500
       end)
 
     assert log =~ "BatchSizer produced is_error=true tool result"
@@ -262,6 +306,13 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
   # Collect `count` `agent:created` broadcasts for `parent_name`, in the
   # order they arrive (item order). Non-matching broadcasts from
   # concurrent tests are filtered by the `parentName` guard.
+  #
+  # There is no synchronous point to wait on here: `Agent.chat/2` only
+  # casts, and the broadcast is emitted by the parent while it handles a
+  # `{:spawn_agent_request, ...}` call from the tool worker Task, which is
+  # itself spawned asynchronously a few hops later. So the fence is a real
+  # (bounded) wait, and the timeout is PER CHILD: a 3-item batch can spend
+  # up to 3x this. 500ms is a wide margin — the whole file runs in ~0.4s.
   defp collect_child_names(_parent_name, 0, acc), do: Enum.reverse(acc)
 
   defp collect_child_names(parent_name, n, acc) do
@@ -269,7 +320,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
                      event: "agent:created",
                      payload: %{"name" => name, "parentName" => ^parent_name}
                    },
-                   5_000
+                   500
 
     collect_child_names(parent_name, n - 1, [name | acc])
   end

@@ -22,6 +22,7 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
   import ExUnit.CaptureLog
 
   alias Nest.Agents.Agent.BatchSizer
+  alias Nest.Agents.Agent.BatchSizer.Overflow
   alias Nest.Agents.Agent.BatchSizer.ProjectedSize
   alias Nest.LLM.Tool
   alias Nest.Messages.{Part, ToolCall, ToolResult}
@@ -534,6 +535,36 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       assert content =~ <<0xEF, 0xBF, 0xBD>>
 
       # The scratch file preserves the ORIGINAL raw bytes (including NUL).
+      assert File.read!(saved_path(content)) == raw
+    end
+
+    test "an exhausted batch budget keeps the pointer and drops the inline view", %{} do
+      # A small binary normally inlines `pointer <> "\n\n" <> body`. When
+      # the running batch budget is already spent, the result is trimmed to
+      # the caller-supplied marker instead: the `pointer` (which names the
+      # scratch file and byte count) plus a note that the inline lossy view
+      # was dropped. `execute/2` runs the tool; `cook/2` applies the budget
+      # pass against an exhausted limit (preflight would refuse a limit this
+      # small, so `run/2` cannot reach this branch).
+      raw = <<"OK", 0x1F, 0x8B, 0x08, 0x00, 0xFF>>
+      dir = tmp_dir_for_test()
+      tools = [binary_tool(raw)]
+      calls = [call("c1", "shell-cmd", %{"command" => "cat data.bin"})]
+
+      entries = BatchSizer.execute(calls, ctx(tools, tmp_path: dir))
+
+      assert [%ToolResult{name: "shell-cmd", is_error: false, content: content}] =
+               BatchSizer.cook(entries, ctx(tools, context_limit: 100, tmp_path: dir))
+
+      assert String.valid?(content)
+      assert content =~ "(non-text binary output, 7 bytes)"
+      assert content =~ "saved to "
+      assert content =~ dir
+      assert content =~ "inline view elided"
+      # The inline lossy view is exactly what got dropped.
+      refute content =~ Overflow.to_valid_utf8(raw)
+
+      # The scratch file still holds the original raw bytes.
       assert File.read!(saved_path(content)) == raw
     end
   end

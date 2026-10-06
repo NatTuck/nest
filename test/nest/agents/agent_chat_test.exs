@@ -12,7 +12,10 @@ defmodule Nest.Agents.AgentChatTest do
 
   alias Nest.Agents.Agent
   alias Nest.LLM.MockClient
+  alias Nest.LLM.Preflight
+  alias Nest.Messages.Assistant
   alias Nest.Messages.Part
+  alias Nest.Messages.User
   alias Nest.Vocations
 
   setup :verify_on_exit!
@@ -143,6 +146,117 @@ defmodule Nest.Agents.AgentChatTest do
       assert partial_text != ""
       assert full_text != ""
       assert String.contains?(full_text, partial_text) or partial_text == full_text
+    end
+
+    test "a user message after a user tail is bridged and delivered, not dropped" do
+      # Regression for the "send user message after user message" bug.
+      # An idle agent whose active list ends on a `user` message (e.g. a
+      # crash between the user append and the first assistant delta) must
+      # have the canonical assistant bridge inserted before the next user
+      # message, so alternation holds and the message is delivered. Before
+      # the fix the turn-opening append was classified as a live append,
+      # `Repair.classify_live/2` refused the consecutive-user shape, and
+      # the turn died with `chat:error`, dropping the user's message.
+      {pid, _agent_id} = start_agent()
+
+      # High `context_limit` so no context notice fires: the only possible
+      # source of the bridge is the sequence repair, not a threshold.
+      :sys.replace_state(pid, fn state ->
+        messages = [
+          {:system,
+           %Nest.Messages.System{
+             index: 0,
+             parts: [%Part.Text{text: "Test system prompt."}],
+             api_logs: []
+           }},
+          {:user, %User{index: 1, parts: [%Part.Text{text: "previous question"}], api_logs: []}}
+        ]
+
+        %{
+          state
+          | chat_state: %{state.chat_state | messages: messages, next_message_index: 2},
+            llm_metrics: %{state.llm_metrics | context_limit: 200_000}
+        }
+      end)
+
+      MockClient.set_response("Done")
+
+      :ok = Agent.chat(pid, "next question")
+
+      assert_receive {:chat_status, %{status: "idle"}}, 500
+
+      refute_received {:chat_error, _}
+
+      state = :sys.get_state(pid)
+      tail = Enum.take(state.chat_state.messages, -4)
+
+      assert Enum.map(tail, &elem(&1, 0)) == [:user, :assistant, :user, :assistant]
+
+      assert {:assistant, %Assistant{parts: [%Part.Text{text: ack_text}], metadata: metadata}} =
+               Enum.at(tail, 1)
+
+      assert ack_text =~ "continuing from here"
+      refute Map.has_key?(metadata || %{}, "context_threshold")
+
+      assert {:user, %User{parts: [%Part.Text{text: "[mode: chat]\nnext question"}]}} =
+               Enum.at(tail, 2)
+
+      assert :ok = Preflight.validate(state.chat_state.messages)
+    end
+
+    test "a post-compaction user turn appends cleanly without a repair ack" do
+      # The compaction commit closes the active segment with the
+      # compaction-specific assistant ack, so the next user message lands
+      # on an assistant tail and needs no live-path repair bridge. This is
+      # the integration half of "an idle agent never ends on a user
+      # message": the alternation bridge's text must never appear.
+      {pid, _agent_id} = start_agent()
+
+      :sys.replace_state(pid, fn state ->
+        messages = [
+          {:system,
+           %Nest.Messages.System{
+             index: 0,
+             parts: [%Part.Text{text: "Test system prompt."}],
+             api_logs: []
+           }},
+          {:user, %User{index: 1, parts: [%Part.Text{text: "previous question"}], api_logs: []}}
+        ]
+
+        %{state | chat_state: %{state.chat_state | messages: messages, next_message_index: 2}}
+      end)
+
+      send_compaction_done(pid, "Summary", nil)
+      assert_receive {:chat_status, %{status: "idle"}}, 500
+
+      state = :sys.get_state(pid)
+
+      assert {:assistant, %Assistant{parts: [%Part.Text{text: compaction_ack}]}} =
+               List.last(state.chat_state.messages)
+
+      assert compaction_ack =~ "Compaction complete"
+      assert :ok = Preflight.validate(state.chat_state.messages)
+
+      MockClient.set_response("Done")
+      :ok = Agent.chat(pid, "next question")
+      assert_receive {:chat_status, %{status: "idle"}}, 500
+
+      refute_received {:chat_error, _}
+
+      state = :sys.get_state(pid)
+
+      assert Enum.map(state.chat_state.messages, &elem(&1, 0)) |> Enum.take(-4) ==
+               [:user, :assistant, :user, :assistant]
+
+      texts =
+        Enum.map(state.chat_state.messages, fn {_role, msg} -> text_from_parts(msg.parts) end)
+
+      assert Enum.any?(texts, &(&1 =~ "Compaction complete"))
+
+      refute Enum.any?(texts, &(&1 =~ "continuing from here")),
+             "the next user turn must not need the alternation bridge ack"
+
+      assert :ok = Preflight.validate(state.chat_state.messages)
     end
   end
 

@@ -29,6 +29,7 @@ function setup(props = {}) {
       modes={props.modes}
       mode={props.mode}
       onModeChange={props.onModeChange ?? onModeChange}
+      commands={props.commands}
     />,
   );
   const textarea = props.frozen ? null : screen.getByLabelText("Message");
@@ -710,6 +711,55 @@ describe("ChatInput", () => {
         <ChatInput value="" onChange={() => {}} onSend={() => {}} isBusy />,
       );
       expect(getHint()).toBeInTheDocument();
+    });
+  });
+
+  describe("slash command autocomplete", () => {
+    const commands = [
+      { name: "compact", description: "Compact the conversation." },
+    ];
+
+    it("shows a click-selectable suggestion menu for a slash partial", () => {
+      const { onChange, onSend, textarea } = setup({ value: "/", commands });
+
+      expect(
+        screen.getByRole("listbox", { name: "Slash command suggestions" }),
+      ).toBeInTheDocument();
+      const suggestion = screen.getByRole("option", { name: /\/compact/ });
+      // Selection is click-only, so no option is ever the selected one.
+      expect(suggestion).toHaveAttribute("aria-selected", "false");
+
+      // Selecting fills the input, returns focus to the textarea, and
+      // never sends.
+      fireEvent.click(suggestion);
+      expect(onChange).toHaveBeenCalledWith("/compact");
+      expect(textarea).toHaveFocus();
+      expect(onSend).not.toHaveBeenCalled();
+    });
+
+    it("hides the menu for non-command text and once a command is complete", () => {
+      const { rerender, onChange } = setup({ value: "hello", commands });
+      expect(screen.queryByRole("listbox")).toBeNull();
+
+      rerender(
+        <ChatInput
+          value="/compact"
+          onChange={onChange}
+          onSend={vi.fn()}
+          commands={commands}
+        />,
+      );
+      expect(screen.queryByRole("listbox")).toBeNull();
+    });
+
+    it("hides the menu when the input is disabled", () => {
+      setup({ value: "/", commands, disabled: true });
+      expect(screen.queryByRole("listbox")).toBeNull();
+    });
+
+    it("shows no menu when no commands are registered", () => {
+      setup({ value: "/" });
+      expect(screen.queryByRole("listbox")).toBeNull();
     });
   });
 });

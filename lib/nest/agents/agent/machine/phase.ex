@@ -7,6 +7,14 @@ defmodule Nest.Agents.Agent.Machine.Phase do
   entry/context helpers) keeps `Machine.Transitions` and
   `Machine.Compaction` within the file-length budget and makes the single
   writer obvious.
+
+  `enter/4` is also the turn boundary, so it is where the turn-scoped
+  `work.focus` is dropped: entering a chat turn, or entering any `:idle`
+  phase, ends the compaction turn the focus was staged for, so the
+  operator's guidance cannot leak into a later *automatic* compaction.
+  Entering a `:compaction` turn leaves it untouched, and
+  `enter_blocked/2` deliberately preserves it so a `:compaction_failed`
+  retry re-renders the same guidance.
   """
 
   alias Nest.Agents.Agent.Config
@@ -26,10 +34,33 @@ defmodule Nest.Agents.Agent.Machine.Phase do
           | worker_kind: worker_kind,
             worker_ref: nil,
             active_worker: nil,
-            active_worker_kind: worker_kind
+            active_worker_kind: worker_kind,
+            focus: turn_focus(kind, phase, m.work.focus)
         }
     })
   end
+
+  # `focus` is turn-scoped: it exists only for the compaction turn it was
+  # staged for. Entering a chat turn — or any `:idle` phase — ends that
+  # turn, so the operator's guidance must not survive into a later
+  # *automatic* compaction (`Transitions.start_chat/3`,
+  # `Response.finalize_or_defer/4`, `:workspace_notice`), which would
+  # silently apply a stale focus to a summary nobody asked for.
+  #
+  # Both clauses are load-bearing:
+  #   * `kind == :chat` covers `Compaction.resume/1` →
+  #     `resume_machine/2`, which enters `:generating` directly from
+  #     `:committing` and never passes through `:idle`;
+  #   * `phase == :idle` covers a stop during a compaction (`{:stop, _}`
+  #     → `:stopping` keeps kind `:compaction`, then `stop_timer` →
+  #     `enter(m, m.kind, :idle)`) and any other route back to idle with a
+  #     stale focus.
+  #
+  # Leaving a `:compaction` turn untouched is what keeps `retry_compaction`
+  # (from `:compaction_failed`) re-rendering the SAME focus.
+  defp turn_focus(:chat, _phase, _focus), do: nil
+  defp turn_focus(_kind, :idle, _focus), do: nil
+  defp turn_focus(_kind, _phase, focus), do: focus
 
   @doc "Enter an externally-unstuck blocked phase."
   @spec enter_blocked(Machine.t(), Machine.phase()) :: Machine.t()

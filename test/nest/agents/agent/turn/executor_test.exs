@@ -12,6 +12,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Turn
   alias Nest.Agents.Agent.Turn.Executor
+  alias Nest.Messages.Assistant
   alias Nest.Messages.Part
   alias Nest.Messages.User
 
@@ -63,6 +64,16 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
        index: nil,
        timestamp: DateTime.utc_now(),
        parts: [%Part.Text{text: "hi"}],
+       api_logs: []
+     }}
+  end
+
+  defp assistant_msg do
+    {:assistant,
+     %Assistant{
+       index: nil,
+       timestamp: DateTime.utc_now(),
+       parts: [%Part.Text{text: "ok"}],
        api_logs: []
      }}
   end
@@ -158,10 +169,16 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
             Machine.status_to_machine(state().live.machine, :streaming)
           )
 
-        {state, nil} = run({:append, user_msg()}, live)
+        # Seed an assistant tail: the next assistant append is still a
+        # genuinely broken live sequence. (Only user-after-user is
+        # bridged on the live path; assistant-after-assistant fails
+        # loudly.)
+        {seeded, nil} = run({:append, assistant_msg()}, live)
 
-        assert {_state, {:append_result, :invalid, _reason}} =
-                 run({:append, user_msg()}, state)
+        assert {_state, {:append_result, :invalid, reason}} =
+                 run({:append, assistant_msg()}, seeded)
+
+        assert reason =~ "second consecutive assistant"
       end)
     end
 

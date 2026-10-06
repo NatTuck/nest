@@ -384,13 +384,8 @@ defmodule Nest.Agents.Agent.BatchSizer do
   # without opening the file.
   defp handle_binary_shell(tc, content, ctx, acc) do
     bytes = byte_size(content)
-
-    location =
-      case Overflow.write(content, ctx, write_prefix(tc.name), "txt") do
-        nil -> "temp file unavailable"
-        path -> "saved to #{path}"
-      end
-
+    path = Overflow.write(content, ctx, write_prefix(tc.name), "txt")
+    location = if path, do: "saved to #{path}", else: "temp file unavailable"
     pointer = "#{output_label(tc)} (non-text binary output, #{bytes} bytes) #{location}."
 
     inline =
@@ -411,8 +406,14 @@ defmodule Nest.Agents.Agent.BatchSizer do
     if acc.running + inline_size <= acc.limit do
       {{tc, :ok, inline}, advance(acc, inline_size)}
     else
+      # No room for the inline view. Trim to whole lines, but pass an
+      # explicit marker: a generic one would only say "written to a scratch
+      # file" and drop the path. `pointer` already names the scratch file
+      # and byte count (or says the temp file was unavailable), so the
+      # marker reads correctly in both cases.
       budget = max(0, acc.limit - acc.running - per_message_overhead())
-      trimmed = Overflow.head_text(inline, budget)
+      no_room = pointer <> " [inline view elided]"
+      trimmed = Overflow.head_text(inline, budget, no_room)
       trimmed_size = Estimator.estimate(trimmed) + per_message_overhead()
       {{tc, :ok, trimmed}, advance(acc, trimmed_size)}
     end

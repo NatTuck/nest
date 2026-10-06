@@ -233,13 +233,18 @@ defmodule Nest.AgentsTest do
 
     test "skips agents whose process dies during enumeration" do
       # Regression for the race where a sibling test's agent
-      # is alive at `Supervisor.get_agent/1` time but exits
-      # with `:crash` (or any non-graceful reason) between
-      # the alive-check and the `GenServer.call`. The
-      # catch clause in `Agents.fetch_public_info/1` and
-      # `Agents.build_agent_data/1` must treat any exit as
-      # `:not_found` rather than propagating the `:crash`
+      # is alive at registry-lookup time but exits with
+      # `:crash` (or any non-graceful reason) before
+      # `Agent.get_public_info/1` lands. The catch in
+      # `Visibility.fetch_from_registry/3` must treat any exit
+      # as "not found" rather than propagating the `:crash`
       # and aborting the whole listing.
+      #
+      # `list_agents_info_for_space/1` now also backfills from
+      # the `agents` table, so delete both rows first: otherwise
+      # the persisted branch would return the two agents and the
+      # empty-list assertion below could pass even if the exit
+      # were NOT swallowed.
       {_pid1, id1} = AgentTestHelpers.start_agent(%{name: fresh_name()})
       space_id = AgentTestHelpers.current_space_id()
       id2 = fresh_name()
@@ -252,12 +257,15 @@ defmodule Nest.AgentsTest do
 
       AgentTestHelpers.ensure_cleanup(id2)
 
+      :ok = Nest.Persistence.delete_agent(space_id, id1)
+      :ok = Nest.Persistence.delete_agent(space_id, id2)
+
       # Stub `Agent.get_public_info/1` to `exit(:crash)` for
       # every agent — simulates the case where every
       # registered agent's GenServer crashed between the
-      # supervisor lookup and the call landing. The widened
-      # catch should swallow every `:crash` exit and the
-      # list should come back empty.
+      # registry lookup and the call landing. The catch should
+      # swallow every `:crash` exit and the list should come
+      # back empty.
       Mimic.copy(Nest.Agents.Agent)
       Mimic.stub(Nest.Agents.Agent, :get_public_info, fn _pid -> exit(:crash) end)
 
@@ -357,6 +365,68 @@ defmodule Nest.AgentsTest do
                "nonexistent"
              ) ==
                {:error, :not_found}
+    end
+  end
+
+  describe "compact/3" do
+    test "returns {:error, :not_found} for a nonexistent agent" do
+      assert Agents.compact(AgentTestHelpers.current_space_id(), "nonexistent", nil) ==
+               {:error, :not_found}
+    end
+
+    test "forwards the focus to the agent's compact handler" do
+      # `Agents.compact/3` resolves the pid and hands the focus straight to
+      # `Agent.compact/2`; stub the agent call so we assert the forwarded
+      # argument without running a real compaction turn.
+      {pid, name} = AgentTestHelpers.start_agent(%{name: fresh_name()})
+      space_id = AgentTestHelpers.current_space_id()
+
+      Agent
+      |> stub(:compact, fn ^pid, focus ->
+        send(self(), {:agent_compact, focus})
+        :ok
+      end)
+
+      assert :ok = Agents.compact(space_id, name, "keep the API decisions")
+      assert_receive {:agent_compact, "keep the API decisions"}
+    end
+
+    test "rejects a non-idle agent without starting a compaction" do
+      {agent_pid, name} = AgentTestHelpers.start_agent(%{name: fresh_name()})
+      space_id = AgentTestHelpers.current_space_id()
+
+      # Fabricate a streaming agent: `compact/3` must refuse rather than
+      # stage a compaction on a turn that is already in flight.
+      :sys.replace_state(agent_pid, fn state ->
+        %{
+          state
+          | live: %{
+              state.live
+              | machine: Machine.status_to_machine(state.live.machine, :streaming)
+            }
+        }
+      end)
+
+      assert Agents.compact(space_id, name, "keep the API decisions") ==
+               {:error, {:not_idle, :streaming}}
+
+      # No compaction was staged: the machine is still the fabricated
+      # streaming state, the loop counter and focus are untouched.
+      machine = :sys.get_state(agent_pid).live.machine
+      assert Machine.status_for(machine) == :streaming
+      assert machine.loop_count == 0
+      assert machine.work.focus == nil
+
+      # Restore idle so the teardown's zero-in-flight-agents assertion holds.
+      :sys.replace_state(agent_pid, fn state ->
+        %{
+          state
+          | live: %{
+              state.live
+              | machine: Machine.status_to_machine(state.live.machine, :idle)
+            }
+        }
+      end)
     end
   end
 

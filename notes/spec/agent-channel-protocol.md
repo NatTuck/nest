@@ -166,6 +166,14 @@ Requests missing messages after a reconnection.
 Manual trigger to retry a failed compaction.
 **Payload:** `{}`
 
+### `chat:compact`
+Manually compact the conversation now (the `/compact [focus]` slash command). Only valid while the agent is `idle`.
+**Payload:** `{}` or `{"focus": "keep the API decisions"}`. `focus` is optional operator guidance for the summary (what it should preserve). The key is omitted when the command has no args; `nil` and `""` are treated as no guidance.
+**Responses:**
+- `{:ok, %{}}`: The compaction **request was accepted** — the agent was `idle` and staged the turn. It does **not** mean the compaction succeeded or committed: a staging failure (e.g. the system prompt is oversized) arrives asynchronously as a `chat:error` broadcast, and progress is reported by the existing `chat:status` (`compacting` → `idle`) and the `chat:compaction` marker.
+- `{:error, %{"reason" => "agent_status_<status>"}}`: Agent is not idle (e.g. `agent_status_compacting`, `agent_status_streaming`).
+- `{:error, %{"reason" => "agent_not_found"}}`: Agent is not in the registry.
+
 ### `chat:loop-detected-ok`
 Acknowledges a compaction loop and resets agent status to `:idle`.
 **Payload:** `{}`

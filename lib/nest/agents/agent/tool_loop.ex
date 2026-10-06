@@ -221,7 +221,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
   defp await_spawn_result(ctx, tc, spawned_name, timeout) do
     receive do
       {:spawn_agent_result, ^spawned_name, response} ->
-        build_tool_result(tc, "agents-spawn", bound_content(response, tc, ctx))
+        spawn_reply_result(ctx, tc, spawned_name, response)
 
       {:spawn_agent_error, ^spawned_name, reason} ->
         build_tool_result(
@@ -238,16 +238,37 @@ defmodule Nest.Agents.Agent.ToolLoop do
     end
   end
 
-  # `agents-list`: read the space's live agents and serialize
-  # their name, vocation, status, and depth. Pure read — no
-  # GenServer round-trip needed.
+  # The child's final text is the tool result. A child that finished its
+  # turn without any text must not come back as a successful empty
+  # result: say so explicitly instead.
+  defp spawn_reply_result(_ctx, tc, spawned_name, "") do
+    build_tool_result(
+      tc,
+      "agents-spawn",
+      "Child agent #{spawned_name} finished its turn without producing any text.",
+      true
+    )
+  end
+
+  defp spawn_reply_result(ctx, tc, _spawned_name, response) do
+    build_tool_result(tc, "agents-spawn", bound_content(response, tc, ctx))
+  end
+
+  # `agents-list`: read the space's non-archived agents —
+  # running or persisted-only — and serialize their name,
+  # vocation, status, and depth. Pure read — no GenServer
+  # round-trip needed.
   defp run_list_agents(ctx, %ToolCall{} = tc) do
     listing =
       Nest.Agents.list_agents_info_for_space(ctx.space_id)
       |> Enum.map(fn info ->
         %{
           name: info.name,
-          vocation: info.vocation_slug,
+          # Every listing entry carries a resolved slug: the
+          # registry branch from the live agent's vocation struct,
+          # the persisted-only branch resolved from the row's
+          # `vocation_id` by `Nest.Agents.Visibility`.
+          vocation: Map.get(info, :vocation_slug),
           status: info.status,
           depth: info.depth
         }
@@ -334,6 +355,10 @@ defmodule Nest.Agents.Agent.ToolLoop do
   # sending so the first idle we see is only accepted once a
   # NEW assistant message (index >= pre_count) exists — this
   # guards against reading a stale, pre-query response.
+  #
+  # The wait is tagged: a timeout, a failed read, or a turn that
+  # finished without text all come back as errors with distinct
+  # messages, never as a successful empty result.
   defp run_query_agent(ctx, %ToolCall{} = tc) do
     target = extract_string_arg(tc, "name")
     prompt = extract_string_arg(tc, "prompt")
@@ -354,7 +379,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
 
         try do
           case Nest.Agents.chat(space_id, target, prompt) do
-            :ok -> {:ok, await_query_result(space_id, target, length(messages), timeout)}
+            :ok -> await_query_result(space_id, target, length(messages), timeout)
             {:error, reason} -> {:error, {:chat, reason}}
           end
         after
@@ -368,6 +393,33 @@ defmodule Nest.Agents.Agent.ToolLoop do
 
   defp build_query_result({:ok, content}, tc, _target, ctx),
     do: build_tool_result(tc, "agents-query", bound_content(content, tc, ctx))
+
+  defp build_query_result({:error, {:timeout, timeout}}, tc, target, _ctx),
+    do:
+      build_tool_result(
+        tc,
+        "agents-query",
+        "Could not query #{target}: timed out after #{timeout}ms waiting for its turn to finish.",
+        true
+      )
+
+  defp build_query_result({:error, :no_text}, tc, target, _ctx),
+    do:
+      build_tool_result(
+        tc,
+        "agents-query",
+        "Could not query #{target}: it finished its turn without producing any text.",
+        true
+      )
+
+  defp build_query_result({:error, {:read_failed, reason}}, tc, target, _ctx),
+    do:
+      build_tool_result(
+        tc,
+        "agents-query",
+        "Could not query #{target}: could not read its messages: #{inspect(reason)}",
+        true
+      )
 
   defp build_query_result({:error, {:chat, reason}}, tc, target, _ctx),
     do:
@@ -465,6 +517,11 @@ defmodule Nest.Agents.Agent.ToolLoop do
     end
   end
 
+  # Block for the target's reply, one `@wait_slice_ms` slice at a time,
+  # returning `{:ok, text}` once it produced a readable reply.
+  # Running out of slices is `{:error, {:timeout, timeout}}`; a turn that
+  # finished with no text is `{:error, :no_text}`. The two must stay
+  # distinct — and neither may collapse into a bare `""`.
   defp await_query_result(space_id, target, pre_count, timeout) do
     attempts = div(timeout, @wait_slice_ms)
     wait_for_idle(space_id, target, pre_count, 0, attempts, timeout)
@@ -472,15 +529,18 @@ defmodule Nest.Agents.Agent.ToolLoop do
 
   defp wait_for_idle(_space_id, _target, _pre_count, attempts, attempts, timeout) do
     Logger.warning("agents-query: target did not go idle within #{timeout}ms")
-    ""
+    {:error, {:timeout, timeout}}
   end
 
   defp wait_for_idle(space_id, target, pre_count, attempts, max_attempts, timeout) do
     receive do
       {:chat_status, %{status: "idle"}} ->
         case read_last_assistant_after(space_id, target, pre_count) do
-          nil -> wait_for_idle(space_id, target, pre_count, attempts + 1, max_attempts, timeout)
-          content -> content
+          :pending ->
+            wait_for_idle(space_id, target, pre_count, attempts + 1, max_attempts, timeout)
+
+          reply ->
+            reply
         end
 
       _other ->
@@ -492,23 +552,35 @@ defmodule Nest.Agents.Agent.ToolLoop do
   end
 
   # The target's newest assistant message that arrived after the
-  # query was sent (index >= pre_count). Returns `nil` when the
-  # turn hasn't produced one yet (so the idle wait keeps going).
+  # query was sent (index >= pre_count). Returns `:pending` when the
+  # turn hasn't produced one yet (so the idle wait keeps going),
+  # `{:ok, text}` when it produced text, and `{:error, :no_text}` when it
+  # finished with an assistant message that carries no text parts.
   defp read_last_assistant_after(space_id, target, pre_count) do
     case Nest.Agents.get_messages(space_id, target) do
       {:ok, messages} ->
         messages
         |> Enum.reverse()
-        |> Enum.find_value(fn
+        |> Enum.find_value(:pending, fn
           {:assistant, %{index: idx, parts: parts}} when idx >= pre_count ->
-            assistant_text(parts)
+            assistant_reply(parts)
 
           _ ->
             nil
         end)
 
-      {:error, _} ->
-        nil
+      {:error, reason} ->
+        {:error, {:read_failed, reason}}
+    end
+  end
+
+  # A reply of `""` (an assistant message with no text parts) is not a
+  # successful answer: report it as `{:error, :no_text}` so the tool
+  # surfaces an explicit error instead of an empty result.
+  defp assistant_reply(parts) do
+    case assistant_text(parts) do
+      "" -> {:error, :no_text}
+      text -> {:ok, text}
     end
   end
 

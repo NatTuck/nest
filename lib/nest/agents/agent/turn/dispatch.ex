@@ -139,7 +139,7 @@ defmodule Nest.Agents.Agent.Turn.Dispatch do
                work.ctx.context_limit,
                system_prompt,
                messages,
-               nil
+               work.focus
              ) do
           {:ok, _n, suffix} -> {:ok, stage_request(messages, suffix)}
           {:error, :reserve_exhausted} -> {:error, :reserve_exhausted}

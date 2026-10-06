@@ -50,6 +50,18 @@ vi.mock("../store", () => {
 const mocks = vi.hoisted(() => ({
   editAgent: vi.fn(),
 }));
+
+// The scroll hook's return value, varied per test. `useScrollToBottom`
+// returns `{ isAtBottom, hasNewContent, jumpToBottom }` and ChatPage
+// wires all three into the composer's "Jump to latest" button, so the
+// holder has to carry the real shape — an array (or `undefined`) would
+// leave that wiring silently untested.
+const scroll = vi.hoisted(() => ({
+  isAtBottom: true,
+  hasNewContent: false,
+  jumpToBottom: vi.fn(),
+}));
+
 import {
   joinAgent,
   leaveAgent,
@@ -57,20 +69,31 @@ import {
   stopMessage,
   retryCompaction,
   compactionLoopOk,
+  compactAgent,
 } from "../channels";
-vi.mock("../channels", () => ({
-  joinAgent: vi.fn(),
-  leaveAgent: vi.fn(),
-  sendMessage: vi.fn(),
-  stopMessage: vi.fn(),
-  retryCompaction: vi.fn(),
-  compactionLoopOk: vi.fn(),
-  editAgent: mocks.editAgent,
-}));
+// Spread the real module and override only the calls these tests spy
+// on. Enumerating the exports by hand means a new module-scope import
+// in any page (e.g. ChatPage's `compactAgent`) breaks this file with a
+// confusing "No export is defined on the mock" error.
+vi.mock("../channels", async () => {
+  const actual = await vi.importActual("../channels");
+  return {
+    ...actual,
+    joinAgent: vi.fn(),
+    leaveAgent: vi.fn(),
+    sendMessage: vi.fn(),
+    stopMessage: vi.fn(),
+    retryCompaction: vi.fn(),
+    compactionLoopOk: vi.fn(),
+    compactAgent: vi.fn(),
+    editAgent: mocks.editAgent,
+  };
+});
 
-// Mock useScrollToBottom (not relevant to these tests).
+// Mock useScrollToBottom so the "Jump to latest" wiring can be driven
+// from the tests (see the "ChatPage jump to latest button" describe).
 vi.mock("../hooks/useScrollToBottom", () => ({
-  useScrollToBottom: () => [vi.fn(), null],
+  useScrollToBottom: () => scroll,
 }));
 
 // Mock EditAgentDialog — render nothing but expose the
@@ -103,6 +126,7 @@ vi.mock("../components/EditAgentDialog", () => ({
 }));
 
 import { ChatPage } from "./ChatPage";
+import { SLASH_COMMANDS } from "../utils/slashCommands.js";
 
 function renderChat(agentName = "test-agent", spaceSlug = "my-space") {
   mockSpaces = [{ id: 1, slug: spaceSlug, name: "My Space" }];
@@ -114,6 +138,15 @@ function renderChat(agentName = "test-agent", spaceSlug = "my-space") {
     </MemoryRouter>,
   );
 }
+
+// The scroll holder is module-scope state shared by every test in this
+// file; reset it before each test so a test that scrolls up cannot leak
+// the jump button (or a stale spy call) into the next one.
+beforeEach(() => {
+  scroll.isAtBottom = true;
+  scroll.hasNewContent = false;
+  scroll.jumpToBottom.mockClear();
+});
 
 describe("ChatPage chat header", () => {
   beforeEach(() => {
@@ -1970,5 +2003,151 @@ describe("ChatPage model picker (model_missing recovery)", () => {
       expect(screen.getByText(match)).toBeInTheDocument();
       unmount();
     }
+  });
+});
+
+describe("ChatPage slash commands", () => {
+  beforeEach(() => {
+    mockAgentsCache = {};
+    sendMessage.mockClear();
+    compactAgent.mockClear();
+  });
+
+  function renderIdleAgent() {
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "idle",
+        messages: [],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+    return renderChat();
+  }
+
+  it("dispatches /compact to compactAgent and clears the input without sending a message", () => {
+    renderIdleAgent();
+
+    const textarea = screen.getByLabelText("Message");
+    fireEvent.change(textarea, { target: { value: "/compact" } });
+    fireEvent.click(screen.getByRole("button", { name: /send/i }));
+
+    expect(compactAgent).toHaveBeenCalledTimes(1);
+    expect(compactAgent).toHaveBeenCalledWith(
+      "test-agent",
+      "",
+      expect.any(Function),
+    );
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Message").value).toBe("");
+  });
+
+  it("passes the parsed args through to compactAgent", () => {
+    renderIdleAgent();
+
+    const textarea = screen.getByLabelText("Message");
+    fireEvent.change(textarea, {
+      target: { value: "/compact focus on tests" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /send/i }));
+
+    expect(compactAgent).toHaveBeenCalledWith(
+      "test-agent",
+      "focus on tests",
+      expect.any(Function),
+    );
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("has a dispatch entry for every registered slash command", () => {
+    for (const command of SLASH_COMMANDS) {
+      const { unmount } = renderIdleAgent();
+      sendMessage.mockClear();
+
+      const textarea = screen.getByLabelText("Message");
+      fireEvent.change(textarea, { target: { value: `/${command.name}` } });
+      fireEvent.click(screen.getByRole("button", { name: /send/i }));
+
+      // A registered command with no dispatch entry would fall through
+      // to a normal chat message.
+      expect(
+        sendMessage,
+        `/${command.name} must be wired to a dispatch entry`,
+      ).not.toHaveBeenCalled();
+      unmount();
+    }
+  });
+
+  it("sends an unknown /command as a normal chat message", () => {
+    renderIdleAgent();
+
+    const textarea = screen.getByLabelText("Message");
+    fireEvent.change(textarea, { target: { value: "/unknown" } });
+    fireEvent.click(screen.getByRole("button", { name: /send/i }));
+
+    expect(compactAgent).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage.mock.calls[0][1]).toBe("/unknown");
+  });
+
+  it("surfaces a compactAgent onError in the send error banner", () => {
+    renderIdleAgent();
+
+    const textarea = screen.getByLabelText("Message");
+    fireEvent.change(textarea, { target: { value: "/compact" } });
+    fireEvent.click(screen.getByRole("button", { name: /send/i }));
+
+    const errorCallback = compactAgent.mock.calls[0][2];
+    act(() => errorCallback({ reason: "agent_status_compacting" }));
+
+    expect(screen.getByText("agent_status_compacting")).toBeInTheDocument();
+  });
+});
+
+describe("ChatPage jump to latest button", () => {
+  // `useScrollToBottom` owns the "is the user at the bottom?" decision.
+  // ChatPage's job is to hand `isAtBottom` / `hasNewContent` to the
+  // composer and pass `jumpToBottom` through as the click handler. The
+  // button's own visibility rules are covered by ChatComposer.test.jsx;
+  // this pins ChatPage's wiring of the hook's return value, which the
+  // old array-shaped mock left entirely untested.
+
+  beforeEach(() => {
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "idle",
+        messages: [],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+  });
+
+  it("shows the jump button only when the hook reports new content while scrolled up, and jumps on click", () => {
+    const { rerender } = renderChat();
+
+    // Pinned to the bottom (the hook's resting state) — nothing to jump
+    // to, so no affordance.
+    expect(
+      screen.queryByRole("button", { name: "Jump to latest messages" }),
+    ).toBeNull();
+
+    // The hook reports content that arrived while the user was scrolled
+    // up, which is exactly when the affordance must appear.
+    scroll.isAtBottom = false;
+    scroll.hasNewContent = true;
+    rerender(
+      <MemoryRouter initialEntries={["/space/my-space/agent/test-agent"]}>
+        <Routes>
+          <Route path="/space/:spaceSlug/agent/:name" element={<ChatPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Jump to latest messages" }),
+    );
+
+    expect(scroll.jumpToBottom).toHaveBeenCalledTimes(1);
   });
 });

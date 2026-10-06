@@ -21,6 +21,7 @@ export function ChatComposer({
   mode,
   onModeChange,
   history,
+  commands,
   hasNewContent,
   isAtBottom,
   jumpToBottom,
@@ -66,6 +67,7 @@ export function ChatComposer({
         mode={mode}
         onModeChange={onModeChange}
         history={history}
+        commands={commands}
       />
     </div>
   );

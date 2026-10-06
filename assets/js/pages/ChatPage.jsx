@@ -17,6 +17,7 @@ import {
   stopMessage,
   retryCompaction,
   compactionLoopOk,
+  compactAgent,
   reloadAgent,
   editAgent,
   requestHistory,
@@ -42,6 +43,7 @@ import { ShellJobsPanel } from "../components/ShellJobsPanel";
 import { useScrollToBottom } from "../hooks/useScrollToBottom";
 import { buildChatHistory } from "../utils/chatHistory.js";
 import { describeEditError, getStatusLabel } from "../utils/chatErrors.js";
+import { parseSlashCommand, SLASH_COMMANDS } from "../utils/slashCommands.js";
 
 // Stable empty fallbacks so selector return values are
 // reference-stable across renders when the underlying slice
@@ -51,6 +53,16 @@ const EMPTY_MESSAGES = [];
 const EMPTY_HISTORY = [];
 const EMPTY_MODES = ["chat"];
 const EMPTY_JOBS = [];
+
+// Slash-command dispatch: a command's name (from `SLASH_COMMANDS`) maps
+// to the action run when it is submitted. The action receives the parsed
+// `args` (the trimmed text after the command) so nothing is silently
+// dropped. These are control-plane pushes that do not create a user
+// message. Unknown `/foo` text parses to `null` and falls through to a
+// normal chat message (no silent drop).
+const SLASH_COMMAND_ACTIONS = {
+  compact: compactAgent,
+};
 
 /**
  * Chat Page component
@@ -312,6 +324,21 @@ export function ChatPage() {
 
   const handleSendMessage = () => {
     if (!inputValue.trim() || isAgentBusy) {
+      return;
+    }
+
+    // Slash commands are control-plane: they push a dedicated event
+    // instead of a chat message (no optimistic user bubble). Unknown
+    // `/foo` parses to `null` and falls through to a normal message.
+    const parsed = parseSlashCommand(inputValue);
+    const action = parsed ? SLASH_COMMAND_ACTIONS[parsed.name] : undefined;
+
+    if (action) {
+      setInputValue("");
+      setSendError(null);
+      action(name, parsed.args, (err) => {
+        setSendError(err?.reason || err?.message || "Failed to run command");
+      });
       return;
     }
 
@@ -585,6 +612,7 @@ export function ChatPage() {
             mode={currentMode ?? defaultMode}
             onModeChange={setCurrentMode}
             history={history}
+            commands={SLASH_COMMANDS}
             hasNewContent={hasNewContent}
             isAtBottom={isAtBottom}
             jumpToBottom={jumpToBottom}

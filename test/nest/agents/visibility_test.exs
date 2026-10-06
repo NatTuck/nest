@@ -13,6 +13,7 @@ defmodule Nest.Agents.VisibilityTest do
 
   use Nest.DataCase, async: true
 
+  alias Nest.Agents
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Supervisor
   alias Nest.Agents.Visibility
@@ -149,6 +150,121 @@ defmodule Nest.Agents.VisibilityTest do
 
     visible = Visibility.list_visible_agents_for(AgentTestHelpers.current_space_id(), alice.id)
     assert Enum.all?(visible, &(&1.name != name))
+  end
+
+  test "list_non_archived_agents_for_space/1 lists running and persisted-only agents, excluding archived" do
+    # The merged, no-user-filter listing behind `agents-list`.
+    model = %{name: "qwen3.5-plus", provider: "model-studio"}
+
+    {_pid, running_name} =
+      AgentTestHelpers.start_agent(%{
+        name: "running-#{System.unique_integer([:positive])}",
+        model: model
+      })
+
+    space_id = AgentTestHelpers.current_space_id()
+
+    # A second agent in the same space, stopped so only its
+    # non-archived DB row remains. The merged listing must backfill
+    # it even though the registry has no live pid for it.
+    stopped_name = "stopped-#{System.unique_integer([:positive])}"
+
+    {:ok, ^stopped_name} =
+      Agents.create_agent(space_id, model,
+        name: stopped_name,
+        vocation_id: AgentTestHelpers.vocation_id_for_test()
+      )
+
+    AgentTestHelpers.ensure_cleanup(stopped_name)
+    Supervisor.stop_agent(space_id, stopped_name)
+    AgentTestHelpers.wait_for_pid_down(space_id, stopped_name)
+
+    # An archived row must never appear.
+    archived_name = "archived-#{System.unique_integer([:positive])}"
+
+    {:ok, _row} =
+      Nest.Persistence.insert_agent(%{
+        space_id: space_id,
+        name: archived_name,
+        model: model,
+        vocation_id: AgentTestHelpers.vocation_id_for_test()
+      })
+
+    assert :ok = Nest.Persistence.archive_agent(space_id, archived_name)
+
+    infos = Visibility.list_non_archived_agents_for_space(space_id)
+    names = Enum.map(infos, & &1.name)
+
+    # The running agent's registry entry and its DB row de-dupe to
+    # one entry.
+    assert Enum.count(names, &(&1 == running_name)) == 1
+    assert stopped_name in names
+    refute archived_name in names
+
+    # Both branches report the agent's vocation slug: the registry
+    # branch from the live agent's vocation struct, the persisted-only
+    # branch resolved from the row's `vocation_id`. Both agents here
+    # were created with the per-test default vocation.
+    slug = AgentTestHelpers.vocation_slug_for_test()
+    assert Enum.find(infos, &(&1.name == running_name)).vocation_slug == slug
+    assert Enum.find(infos, &(&1.name == stopped_name)).vocation_slug == slug
+  end
+
+  test "list_non_archived_agents_for_space/1 orders persisted-only agents by name" do
+    # The `agents-list` tool truncates its serialized result to 4000 chars,
+    # so the persisted backfill is ordered by name: the dropped tail is
+    # always the alphabetically-last agents, not a query-order accident.
+    space_id = AgentTestHelpers.current_space_id()
+    model = %{name: "qwen3.5-plus", provider: "model-studio"}
+    vid = AgentTestHelpers.vocation_id_for_test()
+
+    # Insert out of alphabetical order so insertion order can't
+    # accidentally satisfy the assertion. These are persisted-only
+    # (no live pid), so the registry branch contributes nothing.
+    for name <- ["zeta", "alpha", "mu"] do
+      {:ok, _row} =
+        Nest.Persistence.insert_agent(%{
+          space_id: space_id,
+          name: name,
+          model: model,
+          vocation_id: vid
+        })
+    end
+
+    names = Visibility.list_non_archived_agents_for_space(space_id) |> Enum.map(& &1.name)
+    assert names == ["alpha", "mu", "zeta"]
+  end
+
+  test "list_non_archived_agents_for_space/1 orders a mixed live + persisted list by name" do
+    # The registry (live) branch is concatenated ahead of the persisted
+    # branch, so name-ordering has to be applied to the *merged* list:
+    # otherwise a live agent would always lead the listing and the
+    # `agents-list` truncation tail would depend on which branch an
+    # agent came from. The running agent here sorts last, so an
+    # unsorted merge would put it first.
+    model = %{name: "qwen3.5-plus", provider: "model-studio"}
+    suffix = System.unique_integer([:positive])
+    running_name = "zulu-#{suffix}"
+
+    {_pid, ^running_name} = AgentTestHelpers.start_agent(%{name: running_name, model: model})
+
+    space_id = AgentTestHelpers.current_space_id()
+    vid = AgentTestHelpers.vocation_id_for_test()
+
+    # Persisted-only (no live pid) rows, inserted out of order.
+    for name <- ["mu-#{suffix}", "alpha-#{suffix}"] do
+      {:ok, _row} =
+        Nest.Persistence.insert_agent(%{
+          space_id: space_id,
+          name: name,
+          model: model,
+          vocation_id: vid
+        })
+    end
+
+    names = Visibility.list_non_archived_agents_for_space(space_id) |> Enum.map(& &1.name)
+
+    assert names == ["alpha-#{suffix}", "mu-#{suffix}", running_name]
   end
 
   test "list_archived_agents_for/2 returns archived rows with resolved parent_name" do

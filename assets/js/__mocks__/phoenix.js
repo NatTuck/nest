@@ -199,9 +199,9 @@ function createMockChannel(topic) {
       // regular receive flow also runs (when the channel
       // calls `.receive("ok", cb)` on the returned receiver)
       // so configured responses from `setNextPushResult` are
-      // still applied — without this, `inFlight` flags in
-      // module-level sync state would never clear and
-      // subsequent tests would see "stuck" sync state.
+      // still applied — a test that only captures a push must
+      // not change whether the channel's own reply callbacks
+      // run.
       const capture = mockState.pushCaptures.get(key);
       if (capture) {
         mockState.pushCaptures.delete(key);

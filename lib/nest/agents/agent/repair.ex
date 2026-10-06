@@ -6,18 +6,34 @@ defmodule Nest.Agents.Agent.Repair do
   routes through `decide/3`. The decision is keyed by context:
 
     * `:live` — an append during a live turn. The turn owns the
-      sequence, so a mismatch is never repaired: a tool result that does
-      not answer the live tail is `:stale` (drop it), and a genuinely
-      broken sequence (a non-result while a `tool_use` is unanswered, or
-      two consecutive wire roles) is `{:invalid, reason}` (fail the turn
-      cleanly). Repair must never race a live turn.
+      sequence, so a mismatch is generally not repaired: a tool result
+      that does not answer the live tail is `:stale` (drop it), and a
+      genuinely broken sequence (a non-result while a `tool_use` is
+      unanswered, or two consecutive wire roles) is `{:invalid, reason}`
+      (fail the turn cleanly). Repair must never race a live turn.
+
+      There is exactly one exception: an incoming `user` message onto a
+      wire-`user` tail is bridged (`MessageList.pairing_bridge/2`). A
+      user message is only accepted at idle — the channel and
+      `Callbacks.chat_or_drop/3` reject it mid-turn — so this append is
+      necessarily the turn-opening append and cannot race a live turn.
+      The `pending != []` clause still wins, so no synthetic
+      `tool_result` is ever fabricated on the live path, and
+      assistant-after-assistant still fails loudly.
+
+      That exception is a last-resort guard only: the "idle agent never
+      ends on a user message" invariant is now enforced upstream, by the
+      compaction commit (`Turn.Commit.active_segment/6`) and the load
+      heal (`classify_load/1`), so an idle tail should already be an
+      assistant. This branch should be unreachable in production.
     * `:worker_death` — a tool worker died without a result; answer the
       unanswered tail `tool_use`(s) with the canonical error result.
     * `:terminal` — the turn is ending; heal the tail with the pairing
       bridge before the incoming message lands.
     * `:load` — classify a restored active slice; a lone trailing orphan
-      is an interrupted turn (heal it), anything else blocks for the
-      offline tool.
+      is an interrupted turn (heal it), a valid slice that ends on a
+      `user` wire role gets the load bridge (so an idle agent never ends
+      on a user message), and anything else blocks for the offline tool.
     * `:offline` — `mix nest.repair_messages` is the repair authority.
       It reuses the same synthetic builders (`load_heal/1`,
       `MessageList.repair_ack/0`, `MessageList.continuation_prompt/0`).
@@ -35,13 +51,13 @@ defmodule Nest.Agents.Agent.Repair do
 
   @contexts [:live, :worker_death, :terminal, :load, :offline]
 
-  @type live_decision :: :ok | :stale | {:invalid, String.t()}
+  @type live_decision :: :ok | :stale | {:invalid, String.t()} | {:repair, [term()]}
 
   @type decision ::
           live_decision()
-          | {:repair, [term()]}
           | :none
           | {:interrupted, [Part.ToolUse.t()]}
+          | {:bridge, [term()]}
           | {:violations, [Preflight.violation()]}
           | :offline_authority
 
@@ -65,12 +81,23 @@ defmodule Nest.Agents.Agent.Repair do
   def decide(:offline, _messages, _opts), do: :offline_authority
 
   @doc """
-  Classify a live append without repairing it.
+  Classify a live append, repairing the one shape that is safe to bridge.
 
   Returns `:ok` when the message fits the turn's wire sequence, `:stale`
   for a tool result that does not answer the live tail (a late/duplicate
   result), or `{:invalid, reason}` for a genuinely broken sequence.
-  `incoming` is the message about to be appended.
+
+  The single exception is an incoming `user` message onto a wire-`user`
+  tail: that is only reachable as the turn-opening append (a user message
+  is rejected mid-turn), so it is bridged rather than failed. The
+  unanswered-`tool_use` clause is checked first, so no synthetic
+  `tool_result` is ever produced here. `incoming` is the message about to
+  be appended.
+
+  The exception is a last-resort guard: the compaction commit
+  (`Turn.Commit.active_segment/6`) and the load heal (`classify_load/1`)
+  now enforce "an idle agent never ends on a user message" upstream, so
+  this branch should be unreachable in production.
   """
   @spec classify_live([term()], term()) :: live_decision()
   def classify_live(messages, incoming) do
@@ -83,6 +110,12 @@ defmodule Nest.Agents.Agent.Repair do
       pending != [] ->
         {:invalid, unanswered_tool_use_reason(incoming, pending)}
 
+      # Upstream invariant guard: compaction and load both leave the idle
+      # tail on an assistant, so this bridge should never fire in
+      # production. Kept as a last-resort heal for restored/legacy state.
+      same_wire_role?(messages, incoming) and match?({:user, _}, incoming) ->
+        {:repair, MessageList.pairing_bridge(messages, incoming)}
+
       same_wire_role?(messages, incoming) ->
         {:invalid, consecutive_role_reason(incoming)}
 
@@ -94,16 +127,32 @@ defmodule Nest.Agents.Agent.Repair do
   @doc """
   Classify a restored active slice.
 
-  Returns `:ok`, `{:interrupted, tool_uses}` for a lone trailing orphan
-  (a turn that died mid-tool), or `{:violations, violations}` for
+  Returns `:ok` for a valid slice that already ends on an `assistant`
+  (or is empty), `{:bridge, [ack]}` when the slice is valid but ends on
+  a `user` wire role, `{:interrupted, tool_uses}` for a lone trailing
+  orphan (a turn that died mid-tool), or `{:violations, violations}` for
   anything else (which blocks the agent for the offline tool).
+
+  The bridge closes the "an idle agent never ends on a user message"
+  invariant on the load path: a slice such as `[system, user]` (a crash
+  between the user append and the first assistant delta, or a legacy
+  compaction segment) is valid on the wire but would force the live
+  exception on the next user turn. Appending the load-specific ack and
+  persisting it before idling keeps the invariant true at the boundary.
   """
   @spec classify_load([term()]) ::
-          :ok | {:interrupted, [Part.ToolUse.t()]} | {:violations, [Preflight.violation()]}
+          :ok
+          | {:interrupted, [Part.ToolUse.t()]}
+          | {:bridge, [term()]}
+          | {:violations, [Preflight.violation()]}
   def classify_load(active) do
     case Preflight.validate(active) do
       :ok ->
-        :ok
+        if MessageList.last_wire_role(active) == :user do
+          {:bridge, [MessageList.idle_bridge_ack(:load)]}
+        else
+          :ok
+        end
 
       {:error, [%{rule: :no_trailing_orphan, expected_ids: expected_ids} = violation]} ->
         trailing_orphan(active, expected_ids, violation)

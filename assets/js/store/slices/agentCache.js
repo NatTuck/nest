@@ -6,37 +6,82 @@
 
 import { normalizePartial, normalizeStreaming } from "../helpers";
 
+/**
+ * Cap on the number of per-agent caches kept in memory. The message
+ * list is immutable and reused across agent switches, so the most
+ * recently viewed lists stay cached and the rest are dropped.
+ */
+export const MAX_CACHED_AGENTS = 12;
+
+// Monotonic recency clock for the LRU eviction below. Not `Date.now()`
+// so two joins in the same millisecond still order deterministically.
+let viewClock = 0;
+
+/**
+ * Whether an entry is protected from eviction. Only `connecting` and
+ * `connected` entries are protected — a live channel would keep pushing
+ * into a cache that no longer exists. Every other status, including
+ * `error`, is evictable.
+ */
+function isLiveCache(cache) {
+  return cache.status === "connecting" || cache.status === "connected";
+}
+
+/**
+ * Drop the least-recently-viewed agent caches once `agentsCache`
+ * exceeds `MAX_CACHED_AGENTS`, mutating the passed copy. The agent
+ * being joined and any protected (connecting/connected) entry are
+ * skipped.
+ */
+function evictStaleAgentCaches(agentsCache, currentId) {
+  const overflow = Object.keys(agentsCache).length - MAX_CACHED_AGENTS;
+  if (overflow <= 0) return;
+
+  const evictable = Object.keys(agentsCache)
+    .filter((id) => id !== currentId && !isLiveCache(agentsCache[id]))
+    .sort(
+      (a, b) =>
+        (agentsCache[a].lastViewedAt ?? 0) - (agentsCache[b].lastViewedAt ?? 0),
+    );
+
+  for (const id of evictable.slice(0, overflow)) {
+    delete agentsCache[id];
+  }
+}
+
 export function agentCacheSetters(set) {
   return {
     setAgentConnecting: (id) => {
       set((state) => {
         const existing = state.agentsCache[id];
-        return {
-          agentsCache: {
-            ...state.agentsCache,
-            [id]: existing
-              ? { ...existing, status: "connecting", error: null }
-              : {
-                  messages: [],
-                  history: [],
-                  historyPrompts: [],
-                  historyError: null,
-                  lastCompactionMarker: null,
-                  lastCompactionIndex: -1,
-                  compactionCount: 0,
-                  streaming: null,
-                  partial: null,
-                  lastIndex: -1,
-                  status: "connecting",
-                  error: null,
-                  model: null,
-                  waitingForResponse: false,
-                  contextLimit: null,
-                  contextLimitSource: null,
-                  usage: null,
-                },
-          },
+        const lastViewedAt = ++viewClock;
+        const agentsCache = {
+          ...state.agentsCache,
+          [id]: existing
+            ? { ...existing, status: "connecting", error: null, lastViewedAt }
+            : {
+                messages: [],
+                history: [],
+                historyPrompts: [],
+                historyError: null,
+                lastCompactionMarker: null,
+                lastCompactionIndex: -1,
+                compactionCount: 0,
+                streaming: null,
+                partial: null,
+                lastIndex: -1,
+                status: "connecting",
+                error: null,
+                model: null,
+                waitingForResponse: false,
+                contextLimit: null,
+                contextLimitSource: null,
+                usage: null,
+                lastViewedAt,
+              },
         };
+        evictStaleAgentCaches(agentsCache, id);
+        return { agentsCache };
       });
     },
 
@@ -61,9 +106,9 @@ export function agentCacheSetters(set) {
         // higher count means the agent compacted while we were away, so
         // the cached slice/prompts/marker describe a boundary that no
         // longer exists. Drop them and let the channel refetch.
-        // `chat:status` (the rejoin path) carries neither field, so the
-        // `?? existing` fallback is what preserves them across a plain
-        // reconnect.
+        // Both production callers (`init` and `chat:status`) always send
+        // both fields, so the `?? existing` fallback only applies to
+        // payloads that omit them (e.g. test fixtures).
         const lastCompactionIndex =
           payload.lastCompactionIndex ?? existing?.lastCompactionIndex ?? -1;
         const compactionCount =
@@ -76,6 +121,7 @@ export function agentCacheSetters(set) {
             ...state.agentsCache,
             [id]: {
               messages: finalMessages,
+              lastViewedAt: existing?.lastViewedAt ?? 0,
               history: archiveStale ? [] : (existing?.history ?? []),
               historyPrompts: archiveStale
                 ? []
@@ -181,8 +227,10 @@ export function agentCacheSetters(set) {
      * Drop the cached active messages so the next `chat:sync` rebuilds
      * them from `-1`. Unlike `resetAgentConversation`, connection state
      * and status are left intact — used when the client cache is known
-     * to disagree with the server (a `messageCount` mismatch, or a
-     * `needs_repair` reload while the channel is still joined).
+     * to disagree with the server: a `messageCount` below the cache
+     * (phantom rows), a non-contiguous cache, a compaction we missed
+     * while away, or a `needs_repair` reload while the channel is still
+     * joined.
      */
     resetAgentMessages: (id) => {
       set((state) => {

@@ -27,10 +27,12 @@ defmodule Nest.Agents.Agent.BatchLoop do
     at the first failure and return an error).
   * `max_concurrency` (optional) — clamped to the configured ceiling.
 
-  A per-item failure / timeout writes an `"[error: ...]"` marker into
-  that item's slot. `is_error: true` on the tool result is reserved
-  for whole-call failures (bad glob, no items, missing placeholder,
-  both-or-neither of `items`+`glob`, or a spawn that can't proceed).
+  A per-item failure / timeout — or a child that finished without
+  producing any text — writes an `"[error: ...]"` marker into that
+  item's slot, so a slot is never silently empty. `is_error: true` on
+  the tool result is reserved for whole-call failures (bad glob, no
+  items, missing placeholder, both-or-neither of `items`+`glob`, or a
+  spawn that can't proceed).
 
   ## Concurrency
 
@@ -478,9 +480,13 @@ defmodule Nest.Agents.Agent.BatchLoop do
     end
   end
 
-  # A nil slot (shouldn't survive a completed drain) becomes a marker
-  # rather than JSON `null`.
+  # A nil slot (shouldn't survive a completed drain) or a child that
+  # replied with no text becomes a marker rather than JSON `null` / `""`,
+  # so a slot is never silently empty.
   defp slot_to_string(nil), do: marker("no result")
+
+  defp slot_to_string(""), do: marker("finished its turn without producing any text")
+
   defp slot_to_string(value) when is_binary(value), do: value
 
   # ---- small helpers ----

@@ -43,16 +43,16 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
       assert [{:assistant, %Assistant{parts: [%Part.Text{text: text}]}}] =
                MessageList.pairing_bridge(paired, user(2))
 
-      assert text =~ "interrupted"
+      assert text =~ "continuing from here"
     end
 
-    test "trailing user + incoming user → assistant ack (interrupted before a response)" do
+    test "trailing user + incoming user → assistant ack" do
       messages = [assistant_text(0), user(1)]
 
       assert [{:assistant, %Assistant{parts: [%Part.Text{text: text}]}}] =
                MessageList.pairing_bridge(messages, user(2))
 
-      assert text =~ "interrupted"
+      assert text =~ "continuing from here"
     end
 
     test "orphan tool_use + incoming user → tool result + assistant ack" do
@@ -118,6 +118,71 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
     end
   end
 
+  describe "MessageList.idle_bridge_ack/1" do
+    test "builds a repair_ack-shaped assistant with case-specific wording" do
+      assert {:assistant, %Assistant{parts: [%Part.Text{text: compaction}], api_logs: []}} =
+               MessageList.idle_bridge_ack(:compaction)
+
+      assert compaction =~ "Compaction complete"
+
+      assert {:assistant, %Assistant{parts: [%Part.Text{text: load}], api_logs: []}} =
+               MessageList.idle_bridge_ack(:load)
+
+      assert load =~ "interrupted"
+
+      assert {:assistant, %Assistant{parts: [%Part.Text{text: live}], api_logs: []}} =
+               MessageList.idle_bridge_ack(:live)
+
+      assert live =~ "continuing from here"
+
+      # The tag set is closed: an unknown tag must fail loudly with a clear
+      # message rather than silently picking a default wording.
+      assert_raise ArgumentError, ~r/unknown idle_bridge_ack kind/, fn ->
+        MessageList.idle_bridge_ack(:unknown_tag)
+      end
+    end
+  end
+
+  describe "Turn.Commit.active_segment/6" do
+    test "the committed active segment never ends on a user wire role" do
+      carried_assistant = assistant_text(nil)
+
+      # The carried-entry shapes that can produce a terminal (idle)
+      # segment: no carried entry (the summary user is the tail), a
+      # carried tool pair whose tail is a tool result (wire role user),
+      # and a carried assistant (already a valid tail). A
+      # `{:user_message, _}` carried entry is never staged (the in-flight
+      # user is a `pending_user_message`), and a `{:tool_call, _}` entry
+      # resumes the live turn rather than idling, so neither is asserted
+      # here.
+      cases = [
+        {nil, [:user, :assistant], :ack},
+        {{:compact_tool, [assistant_tool_use(nil, "c1"), tool_result(nil, "c1")], 1, 5},
+         [:user, :assistant, :tool, :assistant], :ack},
+        {{:assistant_response, carried_assistant, 1, 5}, [:user, :assistant], :carried}
+      ]
+
+      for {carried, expected_roles, tail} <- cases do
+        {messages, {:compaction, marker}} =
+          Turn.Commit.active_segment(commit_state(), "summary", carried, 10, 1, nil)
+
+        assert marker.index == 10
+        assert Enum.map(messages, &role/1) == expected_roles, "roles for #{inspect(carried)}"
+        assert MessageList.last_wire_role(messages) == :assistant
+        assert :ok = Preflight.validate(messages)
+
+        case tail do
+          :ack ->
+            assert {:assistant, %Assistant{parts: [%Part.Text{text: text}]}} = List.last(messages)
+            assert text =~ "Compaction complete"
+
+          :carried ->
+            assert List.last(messages) == carried_assistant
+        end
+      end
+    end
+  end
+
   describe "MessageAppender.append_one/2" do
     test "repairs an orphan before a user message and persists the repair" do
       name = unique_name("append-orphan")
@@ -165,25 +230,37 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
     end
 
     test "adds an assistant ack before a user message appended after a wire-user tail" do
+      {:assistant, %Assistant{parts: [%Part.Text{text: ack_text}]}} =
+        MessageList.idle_bridge_ack(:live)
+
       cases = [
         {[system(0), user(1), assistant_tool_use(2, "call_1"), tool_result(3, "call_1")],
          :tool_result},
         {[system(0), user(1)], :interrupted_user}
       ]
 
-      for {initial, label} <- cases do
-        name = unique_name("append-wire-user-#{label}")
+      # Both boundaries: the idle (terminal) boundary and the production
+      # live shape — `start_chat` flips the machine to `:generating`
+      # before the turn-opening append, so the live path must apply the
+      # same bridge.
+      for {initial, label} <- cases, machine <- [:idle, :streaming] do
+        name = unique_name("append-wire-user-#{label}-#{machine}")
         {:ok, _} = Persistence.insert_agent(agent_attrs(name))
         insert_messages(name, initial)
 
         state = state(name, initial)
+        state = if machine == :streaming, do: live(state, :streaming), else: state
+
         {:ok, stamped_user, state} = MessageAppender.append_one(state, user("next question"))
 
         assert {:user, %User{}} = stamped_user
 
         assert Enum.map(state.chat_state.messages, &role/1) ==
                  Enum.map(initial, &role/1) ++ [:assistant, :user],
-               "in-memory roles for #{label}"
+               "in-memory roles for #{label} (#{machine})"
+
+        assert {:assistant, %Assistant{parts: [%Part.Text{text: ^ack_text}]}} =
+                 Enum.at(state.chat_state.messages, -2)
 
         assert :ok = Preflight.validate(state.chat_state.messages)
 
@@ -191,7 +268,10 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
 
         assert Enum.map(persisted, &role/1) ==
                  Enum.map(initial, &role/1) ++ [:assistant, :user],
-               "persisted roles for #{label}"
+               "persisted roles for #{label} (#{machine})"
+
+        assert Enum.map(persisted, &index/1) == Enum.map(state.chat_state.messages, &index/1),
+               "persisted indices for #{label} (#{machine})"
       end
     end
 
@@ -422,6 +502,15 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
   end
 
   # ---- helpers ----
+
+  # The minimal `Agent.t()` `Turn.Commit.active_segment/6` reads: the
+  # archived messages, the compaction counter, and the context limit.
+  defp commit_state do
+    %Agent{
+      chat_state: %Agent.ChatState{messages: [user(0)], compaction_count: 0},
+      llm_metrics: %Agent.LlmMetrics{context_limit: 100_000}
+    }
+  end
 
   defp state(name, messages) do
     %Agent{

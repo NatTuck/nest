@@ -35,9 +35,12 @@ defmodule Nest.Agents.Agent.MessageAppender do
 
   While a turn is live (`:streaming`, `:executing_tools`, `:compacting`)
   the turn owns the sequence: `Repair.decide(:live, ...)` classifies the
-  append and this module never repairs. At a terminal boundary
-  (idle/stopping/blocked) `Repair.decide(:terminal, ...)` heals the tail
-  with `MessageList.pairing_bridge/2` before the requested message lands.
+  append and this module only repairs the single shape `Repair` allows —
+  an incoming `user` message onto a wire-`user` tail, which can only be
+  the turn-opening append because a user message is rejected mid-turn.
+  At a terminal boundary (idle/stopping/blocked)
+  `Repair.decide(:terminal, ...)` heals the tail with
+  `MessageList.pairing_bridge/2` before the requested message lands.
 
   ## Loop-breaker reset
 
@@ -63,10 +66,13 @@ defmodule Nest.Agents.Agent.MessageAppender do
   alias Nest.Messages.Sanitize
   alias Nest.Tokens.PreFlight
 
-  # A turn owns the sequence (so repair must never fire) while the machine
-  # is `:generating` or `:executing_tools`. The compactor's `:committing`
-  # phase is terminal for repair purposes: the compactor turn is over and
-  # the commit writes a fresh segment, so the tail may need a bridge (the
+  # A turn owns the sequence while the machine is `:generating` or
+  # `:executing_tools`, so `Repair.decide(:live, ...)` classifies the
+  # append instead of healing it — except the one shape `Repair` permits
+  # on the live path (a user message onto a wire-user tail, which can only
+  # be the turn-opening append). The compactor's `:committing` phase is
+  # terminal for repair purposes: the compactor turn is over and the
+  # commit writes a fresh segment, so the tail may need a bridge (the
   # legacy commit reset to idle before appending for the same reason).
   @live_phases [:generating, :executing_tools]
 
@@ -170,10 +176,11 @@ defmodule Nest.Agents.Agent.MessageAppender do
   end
 
   # Append the requested message. While a turn is live the sequence is
-  # owned by that turn and repair must never fire (it would race the turn
-  # and, e.g., answer a `tool_use` whose worker is still about to deliver
-  # the real result). At a terminal boundary the sequence is healed
-  # before the requested message lands.
+  # owned by that turn and repair is limited to the one shape `Repair`
+  # allows on the live path (it must not race the turn and, e.g., answer a
+  # `tool_use` whose worker is still about to deliver the real result). At
+  # a terminal boundary the sequence is healed before the requested
+  # message lands.
   defp append_with_bridge(state, message) do
     if live_turn?(state) do
       append_live(state, message)
@@ -189,6 +196,7 @@ defmodule Nest.Agents.Agent.MessageAppender do
     case Repair.decide(:live, state.chat_state.messages, message) do
       :ok -> append_messages(state, [message])
       :stale -> drop_stale(state, message)
+      {:repair, repair} -> append_messages(state, repair ++ [message])
       {:invalid, reason} -> {:invalid, reason, state}
     end
   end

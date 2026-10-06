@@ -124,8 +124,8 @@ The API is unified around a single general `agents/spawn` that absorbs the old `
   - Allows the Coordinator to gather multiple "expert opinions" before synthesizing a final response.
   - Querying an **archived** agent is an error.
 
-- `agents/list()`: Returns all **non-archived** agents in the current space with their `name`, status, role, and depth.
-  - Simple DB query: `FROM agents WHERE space_id = ^space_id AND NOT archived`.
+- `agents/list()`: Returns all **non-archived** agents in the current space with their `name`, vocation (slug), status, and depth.
+  - Merged read: the live registry entries (`Registry.list_for_space/1`) **plus** the persisted `agents` rows, de-duplicated by name (a running agent appears once). Persisted-only rows are ordered by name so the tool's 4000-char truncation drops a predictable tail.
 
 - `agents/archive(name)`: Stop + mark an existing agent archived. Lifecycle cleanup for long-lived specialists spawned without `archive` (or queried repeatedly). Archived agents are excluded from `agents/list` and the lobby sidebar.
 
@@ -363,7 +363,7 @@ A handful of small cleanups surfaced during the closeout review. **F1–F4 all l
    - **Completion mechanism (no `pending_queries` needed):** the queried agent is a peer, so `clone_agent`'s `pending_children` doesn't apply. Instead the worker subscribes to the target's PubSub topic (`agent:<space_id>:<name>`), triggers the turn, and waits for the `:chat_status` idle broadcast. It captures the target's message count *before* sending and only accepts an idle once a new assistant message (index ≥ pre-count) exists — guarding against reading a stale pre-query response. Bounded by a 60s total wait (250ms poll slices).
    - **Concurrency caveat (documented):** if the target is already mid-turn for a *different* query when a new one arrives, the reader may return the earlier turn's response. Fine for the single-coordinator-per-specialist model; revisit if concurrent queries to one target become a real case.
 3. **[DONE] `list_agents()` tool**:
-   - `ToolLoop` reads `Agents.list_agents_info_for_space(space_id)` inline (no GenServer round-trip) and serializes `name`, `vocation_id`, `status`, `depth`, truncated to 4000 chars.
+   - `ToolLoop` reads `Agents.list_agents_info_for_space(space_id)` inline (no GenServer round-trip) and serializes `name`, `vocation` (the slug, not the integer `vocation_id`; a persisted-only row resolves its slug from its `vocation_id` via `Vocations.list_vocations/0`, so it is `nil` only when the row has no resolvable vocation), `status`, and `depth`, truncated to 4000 chars.
  4. **[SUPERSEDED] System prompt updates**: The original `[Delegation]` section has been **removed** — tool descriptions in the tool list are the only delegation guidance. Name + spawn depth now live in an identity line of the system message (non-clones and clones at/after compaction), and in the clone-fork notice (clones pre-compaction, whose system message is inherited verbatim). `agents/spawn` is dropped from the tool list only for non-clone agents at max depth (at spawn) and for any agent at max depth at compaction; clones pre-compaction keep it and are rejected at runtime.
 5. **[DONE] Tests**:
    - `supervisor_spawn_test.exs` (5 tests): unrestricted spawn, fresh-context count, duplicate name, whitelist allow/deny, empty-whitelist-is-unrestricted.
