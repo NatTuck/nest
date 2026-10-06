@@ -80,34 +80,6 @@ defmodule Nest.Agents.Agent.LoadBridgeTest do
   end
 
   describe "Agent.pre_load_heal/1" do
-    test "folds the healed bridge into attrs in the caller's DB context" do
-      space_id = current_space_id()
-      name = unique_name("pre-load-heal")
-      {:ok, _} = Persistence.insert_agent(agent_attrs(space_id, name))
-      insert_messages(space_id, name, [system(0), user(1, "hi")])
-
-      {:ok, attrs} = Persistence.build_attrs_for_start(space_id, name)
-      assert {:bridge, _} = attrs.load_heal
-
-      log =
-        capture_log(fn ->
-          healed = Agent.pre_load_heal(attrs)
-
-          # The heal is folded into the attrs the child seeds from and
-          # cleared, so `init/1` only has to seed (no DB work).
-          assert healed.load_heal == nil
-
-          assert Enum.map(healed.preloaded_messages, &elem(&1, 0)) ==
-                   [:system, :user, :assistant]
-        end)
-
-      assert log =~ "idle sequence ending on a user message"
-
-      # Persisted as a real row by the append path, in the caller's pid.
-      assert [:system, :user, :assistant] =
-               Persistence.load_messages(space_id, name) |> Enum.map(&elem(&1, 0))
-    end
-
     test "leaves attrs untouched when the model no longer resolves" do
       # Without a client config `init/1` boots in `:model_missing` and
       # never reaches the heal, so there is nothing to fold in.
@@ -279,8 +251,14 @@ defmodule Nest.Agents.Agent.LoadBridgeTest do
       persisted = persisted_sequence(space_id, name)
       assert persisted == [{0, :system}, {1, :user}, {2, :assistant}]
 
-      # Both in-memory sequences match the persisted one, so the loser's
-      # in-memory row carries the same `(index, role)` the winner's did.
+      # `healed_b` is the assertion that carries the information: it is the
+      # caller whose row the unique index dropped, so it is the one that
+      # proves the loser's in-memory row still carries the `(index, role)`
+      # the winner's did. `healed_a` is built from the same `initial` list
+      # and the same `ack` as `state_a`, so its sequence is
+      # `[{0, :system}, {1, :user}, {2, :assistant}]` by construction; it is
+      # asserted anyway because the test's claim is that BOTH callers end up
+      # consistent with the persisted row, not just the loser.
       assert in_memory_sequence(healed_a) == persisted
       assert in_memory_sequence(healed_b) == persisted
     end

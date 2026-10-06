@@ -61,12 +61,12 @@ It is simply never reached for the turn-opening append (the append is "live"), o
 
 | Layer | Where | Behavior |
 |---|---|---|
-| Rule set | `lib/nest/llm/preflight.ex:30-60` | `:alternation`, `:tool_pairing`, `:no_orphan_tool_results`, `:no_trailing_orphan` |
-| Live append | `message_appender.ex:188-194` + `repair.ex:76-92` | classify only; `:stale` drops, `{:invalid, _}` fails the turn loudly. **No repair.** |
-| Terminal append (idle/stopping/blocked) | `message_appender.ex:180-185` → `Repair.decide(:terminal, …)` → `MessageList.pairing_bridge/2` | appends repair messages first |
+| Rule set | `lib/nest/llm/preflight.ex:34-40` (`@rules`) | `:known_roles`, `:tool_pairing`, `:no_orphan_tool_results`, `:alternation`, `:no_trailing_orphan` |
+| Live append | `message_appender.ex:195-202` (`append_live/2`) + `repair.ex:103-125` (`classify_live/2`) | `Repair.decide(:live, …)`: `:ok` appends, `:stale` drops a late/duplicate tool result, `{:invalid, _}` fails the turn loudly. The single live repair is the turn-opening user bridge (`{:repair, _}`), appended before the requested message. |
+| Terminal append (idle/stopping/blocked) | `message_appender.ex:184-193` (`append_with_bridge/2`) → `Repair.decide(:terminal, …)` → `MessageList.pairing_bridge/2` | appends repair messages first |
 | Terminal recovery (stop/crash) | `turn/terminal.ex:37-56` | same bridge with `continuation_prompt/0` |
-| Worker death | `repair.ex:126-134` (`:worker_death`) | canonical error tool result |
-| Load | `repair.ex:148-163` (`classify_load/1`), `persistence.ex:445-458`, `init/load_heal.ex:36-57` | lone trailing orphan → error result + `repair_ack`; else `:needs_repair` |
+| Worker death | `repair.ex:178-185` (`worker_death/1`, `:worker_death`) | canonical error tool result |
+| Load | `repair.ex:148-163` (`classify_load/1`), `persistence.ex:451-460`, `init/load_heal.ex:78-97` (`heal/2`) | lone trailing orphan → error result + `repair_ack`; valid slice ending on a `user` wire role → load bridge ack; else `:needs_repair` |
 | Offline | `mix nest.repair_messages` → `planner.ex:421-431` | inserts `:ack` (user,user) / `:continuation` (assistant,assistant) |
 | Compaction request only | `turn/dispatch.ex:179-195` | non-persisted assistant bridge when the request tail is wire-`user` |
 

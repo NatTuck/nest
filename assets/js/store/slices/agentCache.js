@@ -106,9 +106,9 @@ export function agentCacheSetters(set) {
         // higher count means the agent compacted while we were away, so
         // the cached slice/prompts/marker describe a boundary that no
         // longer exists. Drop them and let the channel refetch.
-        // `chat:status` (the rejoin path) carries neither field, so the
-        // `?? existing` fallback is what preserves them across a plain
-        // reconnect.
+        // Both production callers (`init` and `chat:status`) always send
+        // both fields, so the `?? existing` fallback only applies to
+        // payloads that omit them (e.g. test fixtures).
         const lastCompactionIndex =
           payload.lastCompactionIndex ?? existing?.lastCompactionIndex ?? -1;
         const compactionCount =

@@ -3404,7 +3404,8 @@ describe("store", () => {
         ]);
       useStore.getState().setAgentCompactionMarker("agent-1", MARKER);
 
-      // The rejoin path (`chat:status`) carries neither field.
+      // The rejoin payload (`chat:status`) does carry both fields; this
+      // fixture omits them deliberately to pin the `?? existing` fallback.
       useStore.getState().setAgentConnected("agent-1", {
         messageCount: 0,
         status: "idle",
