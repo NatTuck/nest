@@ -46,9 +46,9 @@ const MAX_HEIGHT_PX = 240;
  *   interactive, a small muted hint is rendered below the form to
  *   advertise the keybinding.
  * - `commands`: registered slash commands (`{ name, description }`).
- *   While the input holds `/<partial>` a click-selectable autocomplete
- *   menu is shown above the textarea. Selecting a command fills the
- *   input; it never sends.
+ *   While the input holds `/<partial>` a click-only menu of buttons is
+ *   shown above the textarea. Selecting a command fills the input and
+ *   returns focus to the textarea; it never sends.
  */
 export function ChatInput({
   value,
@@ -70,9 +70,10 @@ export function ChatInput({
   onModeChange,
   history = [],
   // Registered slash commands (`{ name, description }`). When the user
-  // types `/<partial>` an autocomplete menu appears above the textarea.
-  // Selection is click-only for now; Enter keeps inserting a newline and
-  // Ctrl/Cmd+Enter keeps sending.
+  // types `/<partial>` a click-only menu of buttons appears above the
+  // textarea. Selecting one fills the input and keeps focus in the
+  // textarea; the menu does not advertise arrow-key navigation. Enter
+  // keeps inserting a newline and Ctrl/Cmd+Enter keeps sending.
   commands = [],
 }) {
   const textareaRef = useRef(null);
@@ -301,8 +302,15 @@ export function ChatInput({
                 key={command.name}
                 type="button"
                 role="option"
+                // Selection is click-only (no active-descendant or
+                // arrow-key model), so no option is ever the selected
+                // one. The state is stated explicitly on every option
+                // instead of being left to the `false` default.
                 aria-selected={false}
-                onClick={() => onChange(`/${command.name}`)}
+                onClick={() => {
+                  handleChange(`/${command.name}`);
+                  textareaRef.current?.focus();
+                }}
                 className="flex w-full flex-col items-start gap-0.5 px-4 py-2 text-left transition-colors duration-150 hover:bg-blue-50 active:bg-blue-100"
               >
                 <span className="font-mono text-sm font-semibold text-blue-700">

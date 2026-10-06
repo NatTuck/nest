@@ -198,11 +198,13 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
 
   def do_step(%{phase: :idle} = m, {:chat_request, entry}), do: start_chat(m, entry, nil)
 
-  # A manual `/compact`. The user asked for it, so reset the consecutive
-  # compaction counter before staging: three back-to-back manual requests
-  # are deliberate, not the automatic loop the breaker guards against.
-  def do_step(%{phase: :idle} = m, :compact_request) do
-    Compaction.stage(%{m | loop_count: 0}, nil, nil)
+  # A manual `/compact [focus]`. The user asked for it, so reset the
+  # consecutive compaction counter before staging: three back-to-back
+  # manual requests are deliberate, not the automatic loop the breaker
+  # guards against. The optional `focus` is carried on `work` so
+  # `Dispatch.compaction_plan/1` renders it into the request suffix.
+  def do_step(%{phase: :idle} = m, {:compact_request, focus}) do
+    Compaction.stage(%{m | loop_count: 0, work: %{m.work | focus: focus}}, nil, nil)
   end
 
   def do_step(%{phase: :idle} = m, {:inbox_drain, entries, content}) do

@@ -22,20 +22,27 @@ export const SLASH_COMMANDS = [
  *
  * Returns `{ name, args }` only when the trimmed text's first token is a
  * registered command name (e.g. `/compact`, or `/compact foo` → args
- * `"foo"`). Returns `null` for empty input, a bare `/`, an unknown
- * command, or plain text — the caller treats `null` as an ordinary
- * message (no silent drop).
+ * `"foo"`). `args` is the trimmed remainder after the command token, with
+ * internal whitespace (including newlines) preserved. Returns `null` for
+ * empty input, a bare `/`, an unknown command, or plain text — the caller
+ * treats `null` as an ordinary message (no silent drop).
  */
 export function parseSlashCommand(text) {
   const trimmed = (text ?? "").trim();
   if (!trimmed.startsWith("/")) return null;
 
-  const [token, ...rest] = trimmed.split(/\s+/);
+  // The command token runs up to the first whitespace; the rest is args.
+  const separatorIndex = trimmed.search(/\s/);
+  const token =
+    separatorIndex === -1 ? trimmed : trimmed.slice(0, separatorIndex);
   const name = token.slice(1);
 
   if (!SLASH_COMMANDS.some((command) => command.name === name)) return null;
 
-  return { name, args: rest.join(" ") };
+  return {
+    name,
+    args: separatorIndex === -1 ? "" : trimmed.slice(separatorIndex).trim(),
+  };
 }
 
 /**

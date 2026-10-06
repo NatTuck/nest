@@ -42,7 +42,9 @@ Extensibility: commands are declared once in a client registry (`{name, descript
 
 2. **Add the idle transition** — `lib/nest/agents/agent/machine/transitions.ex` (idle section, near line 197)
    ```elixir
-   def do_step(%{phase: :idle} = m, :compact_request), do: Compaction.stage(m, nil, nil)
+   def do_step(%{phase: :idle} = m, {:compact_request, focus}) do
+     Compaction.stage(%{m | loop_count: 0, work: %{m.work | focus: focus}}, nil, nil)
+   end
    ```
    Leave non-idle phases to the existing catch-all `{:ignore, :not_applicable, m}` (`transitions.ex:369`). Acceptance: from `:idle` the machine enters `kind: :compaction, phase: :generating` with `entry: {:compaction, staged, nil}` and emits `:iterate`; from any other phase it is ignored; `Machine.validate!/1` holds (the coverage tests already assert this for every phase/event pair).
 
@@ -55,10 +57,10 @@ Extensibility: commands are declared once in a client registry (`{name, descript
 
 4. **Agent handler** — `lib/nest/agents/agent/callbacks.ex` (near `handle_call(:retry_compaction, ...)`, line 166)
    ```elixir
-   def handle_call(:compact, _from, state) do
+   def handle_call({:compact, focus}, _from, state) do
      case Machine.status_for(state.live.machine) do
        :idle ->
-         {:ok, state} = Turn.settle(state, :compact_request)
+         {:ok, state} = Turn.settle(state, {:compact_request, focus})
          {:reply, :ok, state}
        status ->
          {:reply, {:error, {:not_idle, status}}, state}
@@ -145,7 +147,7 @@ Extensibility: commands are declared once in a client registry (`{name, descript
 - **Double-fire**: while `:compacting`, the server rejects `/compact` (`agent_status_compacting`). Note the composer does **not** currently disable during `:compacting` (`ChatPage.jsx` `isAgentBusy` excludes it; `frozen` excludes it), so the user can still type/send and get an error — a pre-existing gap, only relevant if you want `/compact` to be un-clickable mid-compaction.
 - **Unknown command**: default is to send `/foo` as an ordinary message (no silent drop). If a visible "unknown command" error is preferred, `parseSlashCommand` should return the name and ChatPage should show `sendError` instead of falling through.
 - **No persisted/echoed command**: by design no user bubble is created; the compaction divider and `compacting` status are the feedback. Confirm this satisfies the project's transparency rule (the command never reaches the LLM).
-- **`focus` arg**: the LLM `context-compact` tool accepts a `focus` string (`lib/nest/tools.ex:255-266`); `/compact` here deliberately takes none. Passing `/compact <focus>` through would require an arg on `chat:compact` and `Compaction.stage` — explicitly out of scope.
+- **`focus` arg**: the LLM `context-compact` tool accepts a `focus` string (`lib/nest/tools.ex:255-266`); `/compact <focus>` threads one through `chat:compact` → `Agents.compact/3` → `Agent.compact/2` → `{:compact_request, focus}`, which carries it on `work` (`Machine.Work.focus`) for `Dispatch.compaction_plan/1` to render into the request suffix. An omitted key, blank string, or non-string yields `nil` (no focus).
 - **Race safety**: because the Agent handler is the authority, there is no TOCTOU window (unlike a channel-side status check).
 
 ## Verification (do not run now)

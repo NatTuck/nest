@@ -147,9 +147,10 @@ isolation:
   turn. The unanswered-`tool_use` clause still wins, so no synthetic
   `tool_result` is ever fabricated on the live path.
 - A live append that does not fit the turn's wire sequence (a non-result
-  appended while a live `tool_use` is unanswered, or two consecutive
-  same-role messages) is a bug. `MessageAppender` **fails loudly** (raises)
-  rather than silently repairing.
+  appended while a live `tool_use` is unanswered, or a second consecutive
+  `assistant` message) is a bug. `MessageAppender` **fails loudly** (returns
+  `{:invalid, reason}`; the turn fails and broadcasts `chat:error`) rather
+  than silently repairing.
 - At a terminal boundary (an idle agent, or `ChatTurnHandler` closing a turn)
   the sequence may be healed by `MessageList.pairing_bridge/2` before the
   requested message lands.
@@ -194,17 +195,18 @@ corruption.
 (sendable) slice** — rows with `message_index > last_compaction_index`
 — via `Nest.LLM.Preflight.validate/1` (pure, no DB writes):
 
-- clean → `sequence_violations: []`, `interrupted_tool_call: nil`;
+- clean → `sequence_violations: []`, `load_heal: nil`;
 - a *single* trailing `:no_trailing_orphan` → `sequence_violations: []`
-  and `interrupted_tool_call: [%Part.ToolUse{}, ...]`;
+  and `load_heal: [%Part.ToolUse{}, ...]`;
 - anything else (mid-list unpaired, orphan results, alternation, …) →
   `sequence_violations` plus a `repair_command`
-  (`mix nest.repair_messages --space <name>`), `interrupted_tool_call:
+  (`mix nest.repair_messages --space <name>`), `load_heal:
   nil`.
 
-`Agent.init/1` then:
+`Agent.pre_load_heal/1` (in the caller's DB context, before the child
+spawns) then:
 
-- **interrupted call** → `Init.InterruptedToolCall.heal/2` appends the
+- **interrupted call** → `Init.LoadHeal.heal/2` appends the
   canonical `is_error` result (`MessageList.interrupted_tool_result/1`) plus
   the assistant acknowledgement (`MessageList.repair_ack/0`) through the
   append path, logs a warning, and comes up `:idle` without spending an LLM

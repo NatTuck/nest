@@ -144,5 +144,38 @@ defmodule Nest.Agents.Agent.ToolLoopCloneAgentTest do
       assert [%ToolResult{tool_call_id: "call-1", name: "agents-spawn", is_error: true}] = results
       assert results |> hd() |> Map.get(:content) =~ "max_depth_reached"
     end
+
+    test "a child that finished its turn with no text is an error, not an empty result" do
+      {:ok, _pid} =
+        FakeParent.start(
+          via: AgentsRegistry.via_tuple(AgentTestHelpers.current_space_id(), "parent-no-text"),
+          child_name: "child-no-text",
+          response: ""
+        )
+
+      results =
+        ToolLoop.execute(
+          %{agent_name: "parent-no-text", space_id: AgentTestHelpers.current_space_id()},
+          %{},
+          [
+            %ToolCall{
+              id: "call-1",
+              name: "agents-spawn",
+              arguments: %{"query" => "say hi"}
+            }
+          ]
+        )
+
+      assert [
+               %ToolResult{
+                 tool_call_id: "call-1",
+                 name: "agents-spawn",
+                 content: content,
+                 is_error: true
+               }
+             ] = results
+
+      assert content == "Child agent child-no-text finished its turn without producing any text."
+    end
   end
 end

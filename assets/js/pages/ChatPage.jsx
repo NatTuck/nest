@@ -55,11 +55,13 @@ const EMPTY_MODES = ["chat"];
 const EMPTY_JOBS = [];
 
 // Slash-command dispatch: a command's name (from `SLASH_COMMANDS`) maps
-// to the action run when it is submitted. These are control-plane pushes
-// that do not create a user message. Unknown `/foo` text parses to
-// `null` and falls through to a normal chat message (no silent drop).
+// to the action run when it is submitted. The action receives the parsed
+// `args` (the trimmed text after the command) so nothing is silently
+// dropped. These are control-plane pushes that do not create a user
+// message. Unknown `/foo` text parses to `null` and falls through to a
+// normal chat message (no silent drop).
 const SLASH_COMMAND_ACTIONS = {
-  compact: (agentId, onError) => compactAgent(agentId, onError),
+  compact: compactAgent,
 };
 
 /**
@@ -334,7 +336,7 @@ export function ChatPage() {
     if (action) {
       setInputValue("");
       setSendError(null);
-      action(name, (err) => {
+      action(name, parsed.args, (err) => {
         setSendError(err?.reason || err?.message || "Failed to run command");
       });
       return;

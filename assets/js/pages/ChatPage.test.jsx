@@ -105,6 +105,7 @@ vi.mock("../components/EditAgentDialog", () => ({
 }));
 
 import { ChatPage } from "./ChatPage";
+import { SLASH_COMMANDS } from "../utils/slashCommands.js";
 
 function renderChat(agentName = "test-agent", spaceSlug = "my-space") {
   mockSpaces = [{ id: 1, slug: spaceSlug, name: "My Space" }];
@@ -2004,10 +2005,47 @@ describe("ChatPage slash commands", () => {
     expect(compactAgent).toHaveBeenCalledTimes(1);
     expect(compactAgent).toHaveBeenCalledWith(
       "test-agent",
+      "",
       expect.any(Function),
     );
     expect(sendMessage).not.toHaveBeenCalled();
     expect(screen.getByLabelText("Message").value).toBe("");
+  });
+
+  it("passes the parsed args through to compactAgent", () => {
+    renderIdleAgent();
+
+    const textarea = screen.getByLabelText("Message");
+    fireEvent.change(textarea, {
+      target: { value: "/compact focus on tests" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /send/i }));
+
+    expect(compactAgent).toHaveBeenCalledWith(
+      "test-agent",
+      "focus on tests",
+      expect.any(Function),
+    );
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("has a dispatch entry for every registered slash command", () => {
+    for (const command of SLASH_COMMANDS) {
+      const { unmount } = renderIdleAgent();
+      sendMessage.mockClear();
+
+      const textarea = screen.getByLabelText("Message");
+      fireEvent.change(textarea, { target: { value: `/${command.name}` } });
+      fireEvent.click(screen.getByRole("button", { name: /send/i }));
+
+      // A registered command with no dispatch entry would fall through
+      // to a normal chat message.
+      expect(
+        sendMessage,
+        `/${command.name} must be wired to a dispatch entry`,
+      ).not.toHaveBeenCalled();
+      unmount();
+    }
   });
 
   it("sends an unknown /command as a normal chat message", () => {
@@ -2029,7 +2067,7 @@ describe("ChatPage slash commands", () => {
     fireEvent.change(textarea, { target: { value: "/compact" } });
     fireEvent.click(screen.getByRole("button", { name: /send/i }));
 
-    const errorCallback = compactAgent.mock.calls[0][1];
+    const errorCallback = compactAgent.mock.calls[0][2];
     act(() => errorCallback({ reason: "agent_status_compacting" }));
 
     expect(screen.getByText("agent_status_compacting")).toBeInTheDocument();

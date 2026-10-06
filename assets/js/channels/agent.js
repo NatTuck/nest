@@ -80,10 +80,14 @@ function isContiguous(messages) {
  *
  *   1. `needs_repair` — the client cache can't be trusted at all; reset
  *      and rebuild from `-1`.
- *   2. a `lastCompactionIndex` at or above the cached `lastIndex` — a
- *      missed compaction archived the whole cached active list. Checked
- *      before the count-equality check because a post-compaction active
- *      count can coincidentally match a stale pre-compaction cache.
+ *   2. a `lastCompactionIndex` at or above the cached `lastIndex`, or one
+ *      that differs from `priorBoundary` (the boundary the cache was built
+ *      around, captured before `setAgentConnected` overwrote it) — a missed
+ *      compaction archived part of the cached active list. Checked before
+ *      the count-equality check because a post-compaction active count can
+ *      coincidentally match a stale pre-compaction cache. The `differs`
+ *      check catches a compaction whose boundary sits below a drifted
+ *      cached tail, where `>=` alone would miss it.
  *   3. an equal `messageCount` — nothing to do.
  *   4. a smaller `messageCount` — the client is ahead (a phantom row the
  *      DB never committed); reset and rebuild from `-1`.
@@ -92,7 +96,7 @@ function isContiguous(messages) {
  *   6. anything else (non-contiguous cache) — reset and rebuild from
  *      `-1`.
  */
-function reconcileAgentCache(store, agentId, payload) {
+function reconcileAgentCache(store, agentId, payload, priorBoundary = -1) {
   if (payload.status === "needs_repair") {
     store.resetAgentMessages(agentId);
     store.setAgentState(agentId, "needs_repair", statusExtras(payload));
@@ -106,10 +110,13 @@ function reconcileAgentCache(store, agentId, payload) {
 
   // A boundary at or above the cached tail means every cached row was
   // archived. `===` must reset too: a boundary landing exactly on the
-  // cached tail archives the whole cached list.
+  // cached tail archives the whole cached list. A boundary that moved
+  // from the one the cache was built around also invalidates it: the
+  // cached tail can sit above the new boundary, so `>=` alone misses it.
   if (
     typeof payload.lastCompactionIndex === "number" &&
-    payload.lastCompactionIndex >= lastIndex
+    (payload.lastCompactionIndex >= lastIndex ||
+      payload.lastCompactionIndex !== priorBoundary)
   ) {
     store.resetAgentMessages(agentId);
     requestSync(agentId, { lastIndex: -1 });
@@ -254,10 +261,21 @@ export function joinAgent(agentId, spaceId) {
 
   if (existingChannel) {
     existingChannel.push("chat:status", {}).receive("ok", (payload) => {
+      // Capture the boundary the cache was built around before
+      // `setAgentConnected` overwrites it, so a missed compaction whose
+      // boundary sits below a drifted cached tail is still detected.
+      const priorBoundary =
+        getStore().agentsCache[agentId]?.lastCompactionIndex ?? -1;
       store.setAgentConnected(agentId, payload);
-      reconcileAgentCache(store, agentId, payload);
-      // The status reply carries no boundary fields, so the marker /
-      // prompt fetches key off the boundary preserved on the cache.
+      reconcileAgentCache(store, agentId, payload, priorBoundary);
+      // `chat:status` carries `lastCompactionIndex` / `compactionCount`
+      // (see `agent_channel.ex`), so `setAgentConnected` above overwrote
+      // the cached boundary with the fresh one. That overwrite is why
+      // `priorBoundary` has to be captured before that call:
+      // `reconcileAgentCache` compares the new boundary against the one
+      // the cache was built around to catch a compaction we never saw a
+      // broadcast for. `loadArchiveProjections` then keys its marker /
+      // prompt fetches off the boundary now sitting on the cache.
       loadArchiveProjections(agentId);
     });
     return;
@@ -269,9 +287,13 @@ export function joinAgent(agentId, spaceId) {
   agentChannels.set(agentId, channel);
 
   channel.on("init", (payload) => {
+    // Capture the boundary the cache was built around before
+    // `setAgentConnected` overwrites it (see reconcileAgentCache).
+    const priorBoundary =
+      getStore().agentsCache[agentId]?.lastCompactionIndex ?? -1;
     store.setAgentConnected(agentId, payload);
     store.setAgentInbox(agentId, payload.inbox ?? []);
-    reconcileAgentCache(store, agentId, payload);
+    reconcileAgentCache(store, agentId, payload, priorBoundary);
     // The init payload carries the boundary but not the archive; the
     // marker + recall prompts are fetched lazily.
     loadArchiveProjections(agentId);
@@ -329,9 +351,7 @@ export function joinAgent(agentId, spaceId) {
 
   channel.on("chat:status", (payload) => {
     if (payload.status === "needs_repair") {
-      store.resetAgentMessages(agentId);
-      store.setAgentState(agentId, "needs_repair", statusExtras(payload));
-      requestSync(agentId, { lastIndex: -1 });
+      reconcileAgentCache(store, agentId, payload);
       return;
     }
 
@@ -505,19 +525,22 @@ export function retryCompaction(agentId, onError) {
 
 /**
  * Request that the agent compact its conversation now (`/compact`).
- * Control-plane only: unlike `sendMessage` it appends no user message
- * and does not set `waitingForResponse` — the existing `compacting`
- * status broadcast and compaction divider are the feedback. A no-op
- * when the channel isn't connected.
+ * `focus`, when non-empty, is the trimmed text after the command and is
+ * sent as the compaction focus. Control-plane only: unlike `sendMessage`
+ * it appends no user message and does not set `waitingForResponse` — the
+ * existing `compacting` status broadcast and compaction divider are the
+ * feedback. A no-op when the channel isn't connected.
  */
-export function compactAgent(agentId, onError) {
+export function compactAgent(agentId, focus, onError) {
   const channel = agentChannels.get(agentId);
   if (!channel) {
     if (onError) onError(new Error("Not connected to agent"));
     return;
   }
 
-  channel.push("chat:compact", {}).receive("error", (err) => {
+  const payload = focus ? { focus } : {};
+
+  channel.push("chat:compact", payload).receive("error", (err) => {
     if (onError) onError(err);
   });
 }
@@ -535,75 +558,5 @@ export function compactionLoopOk(agentId, onError) {
 
   channel.push("chat:loop-detected-ok", {}).receive("error", (err) => {
     if (onError) onError(err);
-  });
-}
-
-/**
- * Kill one of the agent's background shell jobs. Resolves when the
- * server acknowledges, or rejects with the server error. `onError` is
- * still called (for callback-style callers). Rejects when the channel
- * isn't connected.
- */
-export function killShellJob(agentId, id, onError) {
-  return new Promise((resolve, reject) => {
-    const channel = agentChannels.get(agentId);
-    if (!channel) {
-      const err = new Error("Not connected to agent");
-      if (onError) onError(err);
-      reject(err);
-      return;
-    }
-
-    channel
-      .push("shell:kill", { id })
-      .receive("ok", () => resolve())
-      .receive("error", (err) => {
-        if (onError) onError(err);
-        reject(err);
-      });
-  });
-}
-
-/**
- * Refresh an agent's background-job list over `shell:list`. Updates the
- * store from the reply and resolves with the jobs. Rejects with the
- * server error, or when the channel isn't connected.
- */
-export function refreshShellJobs(agentId) {
-  return new Promise((resolve, reject) => {
-    const channel = agentChannels.get(agentId);
-    if (!channel) {
-      reject(new Error("Not connected to agent"));
-      return;
-    }
-
-    channel
-      .push("shell:list", {})
-      .receive("ok", (resp) => {
-        const jobs = resp?.jobs ?? [];
-        getStore().setAgentJobs(agentId, jobs);
-        resolve(jobs);
-      })
-      .receive("error", (err) => reject(err));
-  });
-}
-
-/**
- * Fetch a background job's captured log over `shell:log`. Resolves with
- * the log text, or rejects with the server error. A no-op (rejects)
- * when the channel isn't connected.
- */
-export function fetchShellLog(agentId, id) {
-  return new Promise((resolve, reject) => {
-    const channel = agentChannels.get(agentId);
-    if (!channel) {
-      reject(new Error("Not connected to agent"));
-      return;
-    }
-
-    channel
-      .push("shell:log", { id })
-      .receive("ok", (resp) => resolve(resp?.content ?? ""))
-      .receive("error", (err) => reject(err));
   });
 }

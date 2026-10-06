@@ -150,10 +150,11 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
       entry ->
         user = Phase.unwrap_user(entry)
 
-        # Append the held user at the terminal (idle) boundary so the
-        # pairing bridge heals a summary_user -> user double role; the
-        # following `:iterate` promotes the machine to `:generating` and
-        # dispatches the request.
+        # The committed segment already ends on the compaction ack
+        # (`Turn.Commit.ensure_assistant_tail/1`), so this append lands on
+        # an assistant tail and `pairing_bridge/2` has nothing to repair.
+        # The following `:iterate` promotes the machine to `:generating`
+        # and dispatches the request.
         machine = %{Phase.enter(%{m | entry: entry}, :chat, :idle) | pending_user_message: nil}
         {:ok, [{:append, user}, :iterate], machine}
     end

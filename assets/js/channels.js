@@ -4,6 +4,7 @@
  * Aggregates the channel lifecycle + pushes, split across:
  *   - `./channels/state`  — shared channel refs + helpers
  *   - `./channels/agent`  — agent-channel join + chat actions
+ *   - `./channels/shellJobs` — background shell-job kill / list / log
  *   - `./channels/lobby`  — lobby join + space/model/invite pushes
  *
  * `initChannels` lives here (it owns the socket lifecycle hookup).
@@ -14,6 +15,7 @@ import { getStore, socket } from "./channels/state";
 
 export * from "./channels/state";
 export * from "./channels/agent";
+export * from "./channels/shellJobs";
 export * from "./channels/lobby";
 
 /**

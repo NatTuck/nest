@@ -13,6 +13,7 @@ defmodule Nest.Agents.Agent.Turn.Commit do
   alias Nest.Agents.Agent.Compaction.Marker
   alias Nest.Agents.Agent.SystemPrompt
   alias Nest.Messages.Assistant
+  alias Nest.Messages.MessageList
   alias Nest.Messages.Part
   alias Nest.Messages.System, as: MsgSystem
   alias Nest.Messages.User
@@ -58,6 +59,7 @@ defmodule Nest.Agents.Agent.Turn.Commit do
         sys -> [sys | append_entry_tail([summary_user], carried_entry)]
       end
       |> Enum.map(&drop_pre_compaction_usage/1)
+      |> ensure_assistant_tail()
 
     marker =
       Marker.build_marker(
@@ -87,6 +89,20 @@ defmodule Nest.Agents.Agent.Turn.Commit do
   end
 
   defp drop_pre_compaction_usage(message), do: message
+
+  # An idle agent must never end on a `user` wire role. The carried
+  # entry can be a user message (or a tool result, wire role `user`), and
+  # with no carried entry the segment ends on the summary user message —
+  # all of which would make the next user turn need the live-path bridge.
+  # Close the segment with the compaction-specific assistant ack instead;
+  # a carried assistant tail is already valid and gets no extra message.
+  defp ensure_assistant_tail(messages) do
+    if MessageList.last_wire_role(messages) == :user do
+      messages ++ [MessageList.idle_bridge_ack(:compaction)]
+    else
+      messages
+    end
+  end
 
   defp build_rebuilt_system(system_prompt, context_limit, now) do
     cond do

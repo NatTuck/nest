@@ -123,6 +123,39 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     assert_children_archived(space_id, child_names)
   end
 
+  test "a child that finished its turn with no text becomes a marker slot", %{vid: vid} do
+    {parent_pid, parent_name} = start_batch_parent(vid)
+    space_id = AgentTestHelpers.current_space_id()
+
+    run_batch(parent_pid, "call_batch_no_text", %{
+      "template" => "sum {item}",
+      "items" => ["alpha", "beta"]
+    })
+
+    Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
+    [child0, child1] = collect_child_names(parent_name, 2)
+
+    on_exit(fn ->
+      Enum.each([child0, child1], fn n -> _ = Supervisor.stop_agent(space_id, n) end)
+    end)
+
+    # A child whose final assistant message carried no text reports an
+    # empty response — the slot must say so instead of going out as `""`.
+    cast_child_completed(parent_pid, child0, "")
+    cast_child_completed(parent_pid, child1, "beta-done")
+
+    assert_receive {:chat_status, %{status: "idle"}}, 2_000
+
+    parent_state = :sys.get_state(parent_pid)
+    result = batch_tool_result(parent_state)
+
+    assert [first, "beta-done"] = Jason.decode!(result.content)
+    assert first == "[error: finished its turn without producing any text]"
+    # One text-less child is a slot marker, not a whole-call failure.
+    assert result.is_error == false
+    assert Machine.pending_children(parent_state.live.machine) == %{}
+  end
+
   test "a child that dies before responding fails its slot fast and is not archived",
        %{vid: vid} do
     {parent_pid, parent_name} = start_batch_parent(vid)

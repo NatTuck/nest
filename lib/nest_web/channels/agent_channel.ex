@@ -26,6 +26,7 @@ defmodule NestWeb.AgentChannel do
   alias Nest.Sandbox.ShellJobs
   alias Nest.Spaces
   alias NestWeb.AgentChannel.ShellLog
+  alias NestWeb.AgentChannel.Sync
 
   @impl true
   def join("agent:" <> rest, _payload, socket) do
@@ -392,11 +393,13 @@ defmodule NestWeb.AgentChannel do
     |> reply_control(socket)
   end
 
-  # Manual `/compact`: the Agent is the authority on whether a compaction
-  # may start (a non-idle agent reports `agent_status_<status>`).
+  # Manual `/compact [focus]`: the Agent is the authority on whether a
+  # compaction may start (a non-idle agent reports `agent_status_<status>`).
+  # `focus` is optional operator guidance for the summary; an omitted key,
+  # `nil`, or `""` means no guidance.
   @impl true
-  def handle_in("chat:compact", _payload, socket) do
-    Agents.compact(socket.assigns.space_id, socket.assigns.name)
+  def handle_in("chat:compact", payload, socket) do
+    Agents.compact(socket.assigns.space_id, socket.assigns.name, optional_focus(payload))
     |> reply_control(socket)
   end
 
@@ -518,7 +521,7 @@ defmodule NestWeb.AgentChannel do
           |> Enum.filter(&index_gt?(&1, last_index))
           |> Enum.map(&format_message/1)
 
-        {reply_messages, _} = truncate_by_size(serialized, @sync_size_limit)
+        {reply_messages, _} = Sync.truncate(serialized, @sync_size_limit)
 
         partial = partial_payload(agent.partial, last_index)
 
@@ -599,6 +602,11 @@ defmodule NestWeb.AgentChannel do
 
   defp reply_err(reason, socket), do: {:reply, {:error, %{"reason" => reason}}, socket}
 
+  # The optional `/compact <focus>` argument: an omitted key, a non-string,
+  # or a blank string all mean "no operator guidance".
+  defp optional_focus(%{"focus" => focus}) when is_binary(focus) and focus != "", do: focus
+  defp optional_focus(_payload), do: nil
+
   # `before` walks backwards through the archive (`nil` starts at the
   # boundary), `limit` bounds one page, and `role` selects a
   # projection — the recall list wants only `user` rows, the card wants
@@ -625,36 +633,6 @@ defmodule NestWeb.AgentChannel do
   defp parse_history_role(nil), do: {:ok, nil}
   defp parse_history_role(role) when role in @history_roles, do: {:ok, [role]}
   defp parse_history_role(_other), do: {:error, "invalid_role"}
-
-  # Take a prefix of `messages` whose combined JSON wire size is
-  # ≤ `limit` bytes. Always returns at least one element when the
-  # input is non-empty, regardless of its individual size.
-  defp truncate_by_size([first | rest], limit) do
-    first_size = json_wire_size(first)
-
-    take_while_under(rest, limit - first_size, [first], first_size)
-  end
-
-  defp truncate_by_size([], _limit), do: {[], 0}
-
-  defp take_while_under([], _remaining, acc, total), do: {Enum.reverse(acc), total}
-
-  defp take_while_under([next | rest], remaining, acc, total) do
-    next_size = json_wire_size(next)
-
-    if next_size <= remaining do
-      take_while_under(rest, remaining - next_size, [next | acc], total + next_size)
-    else
-      {Enum.reverse(acc), total}
-    end
-  end
-
-  # Estimate of the JSON byte size for a serialised message map.
-  # Uses the external term size of the Jason-encoded binary as a
-  # cheap proxy for the actual wire byte count.
-  defp json_wire_size(map) when is_map(map) do
-    map |> Jason.encode!() |> byte_size()
-  end
 
   # Filter helper for `chat:sync`: keep only messages whose
   # `index` is greater than `last_index`. The `chat_state.messages`

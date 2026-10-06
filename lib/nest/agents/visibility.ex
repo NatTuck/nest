@@ -31,6 +31,7 @@ defmodule Nest.Agents.Visibility do
   alias Nest.Agents.PersistedAgent
   alias Nest.Agents.Registry
   alias Nest.Repo
+  alias Nest.Vocations
 
   @doc """
   Public-info map for every agent in `space_id` the
@@ -49,6 +50,9 @@ defmodule Nest.Agents.Visibility do
   running or persisted-only, with no per-user filter. Archived
   agents are excluded; agents are de-duplicated by name so a
   running agent (registry entry plus its DB row) appears once.
+  The merged list is ordered by name (not by which branch an
+  agent came from), so the `agents-list` tool's 4000-char
+  truncation drops the alphabetically-last agents.
   """
   @spec list_non_archived_agents_for_space(integer()) :: [map()]
   def list_non_archived_agents_for_space(space_id) when is_integer(space_id) do
@@ -61,7 +65,13 @@ defmodule Nest.Agents.Visibility do
     |> Enum.map(&fetch_from_registry(space_id, &1, user_id))
     |> Enum.reject(&is_nil/1)
     |> Enum.concat(persisted_visible(space_id, user_id))
+    # The live (registry) branch is concatenated first so a running
+    # agent's real status wins the de-dupe against its persisted row.
+    # Sorting after that makes the merged order depend only on the
+    # names — the truncation tail is then the alphabetically-last
+    # agents rather than "whichever branch the agent came from".
     |> Enum.uniq_by(& &1.name)
+    |> Enum.sort_by(& &1.name)
   end
 
   @doc """
@@ -156,17 +166,31 @@ defmodule Nest.Agents.Visibility do
   # BEAM pid is currently down (e.g. crashed and not yet
   # restarted) still shows up in the lobby. The on-demand
   # loader in `Supervisor.get_agent/2` will rehydrate it
-  # when the user clicks.
+  # when the user clicks. Rows are ordered by name so this
+  # branch is deterministic on its own; the caller re-sorts
+  # the merged list by name (see `list_agents/2`).
   defp persisted_visible(space_id, user_id) do
     names_by_id = agent_names_by_id(space_id)
+    slugs_by_id = vocation_slugs_by_id()
 
     from(a in PersistedAgent,
       where: a.space_id == ^space_id,
-      where: a.archived == false
+      where: a.archived == false,
+      order_by: a.name
     )
     |> filter_visible_to(user_id)
     |> Repo.all()
-    |> Enum.map(&non_archived_info(&1, names_by_id))
+    |> Enum.map(&non_archived_info(&1, names_by_id, slugs_by_id))
+  end
+
+  # `id => slug` for every vocation. A persisted agent row stores
+  # only `vocation_id`, so its slug is resolved here (mirroring
+  # `agent_names_by_id/1` for `parent_name`) rather than left nil —
+  # the `agents-list` tool reports the vocation slug of every agent,
+  # running or not.
+  defp vocation_slugs_by_id do
+    Vocations.list_vocations()
+    |> Map.new(&{&1.id, &1.slug})
   end
 
   # `nil` user_id means "no per-user filter" (space-scoped listing).
@@ -180,18 +204,21 @@ defmodule Nest.Agents.Visibility do
          %PersistedAgent{
            name: name,
            space_id: sid,
+           vocation_id: vocation_id,
            created_by_user_id: owner_id,
            shared: shared,
            model: model,
            parent_id: parent_id,
            depth: depth
          },
-         names_by_id
+         names_by_id,
+         slugs_by_id
        ) do
     %{
       name: name,
       space_id: sid,
       model: model,
+      vocation_slug: Map.get(slugs_by_id, vocation_id),
       parent_id: parent_id,
       parent_name: Map.get(names_by_id, parent_id),
       depth: depth,

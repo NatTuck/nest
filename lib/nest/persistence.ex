@@ -391,7 +391,7 @@ defmodule Nest.Persistence do
     with {:ok, row} <- fetch_agent(space_id, agent_name),
          {:ok, boundary} <- last_compaction_index(space_id, agent_name) do
       preloaded = load_full_messages(space_id, agent_name)
-      {violations, interrupted_tool_call} = classify_sequence(preloaded, boundary)
+      {violations, load_heal} = classify_sequence(preloaded, boundary)
 
       attrs =
         start_attrs(
@@ -399,7 +399,7 @@ defmodule Nest.Persistence do
           boundary,
           preloaded,
           violations,
-          interrupted_tool_call,
+          load_heal,
           parent_name_for(row)
         )
 
@@ -410,7 +410,7 @@ defmodule Nest.Persistence do
   # The `Agent.start_link/1` attrs map. Extracted from
   # `build_attrs_for_start/2` so the load path stays under credo's ABC
   # cap (the map literal is the bulk of the assignments).
-  defp start_attrs(row, boundary, preloaded, violations, interrupted_tool_call, parent_name) do
+  defp start_attrs(row, boundary, preloaded, violations, load_heal, parent_name) do
     %{
       space_id: row.space_id,
       name: row.name,
@@ -427,7 +427,7 @@ defmodule Nest.Persistence do
       shared: row.shared == true,
       preloaded_messages: preloaded,
       sequence_violations: violations,
-      interrupted_tool_call: interrupted_tool_call,
+      load_heal: load_heal,
       repair_command: repair_command(violations, row.space_id),
       vocation: load_vocation(row.vocation_id)
     }
@@ -440,17 +440,21 @@ defmodule Nest.Persistence do
   #
   # A lone trailing assistant `tool_use` with no result is a turn that
   # died mid-tool, not corruption: the run-time owner is gone, so it is
-  # recoverable at load (answer it with an error result and idle). Every
-  # other violation blocks the agent in `:needs_repair` for the offline
-  # repair tool. Returns `{violations, interrupted_tool_uses | nil}`.
+  # recoverable at load (answer it with an error result and idle). A valid
+  # slice that ends on a `user` wire role gets the load-specific assistant
+  # ack so an idle agent never ends on a user message. Every other
+  # violation blocks the agent in `:needs_repair` for the offline repair
+  # tool. Returns `{violations, heal | nil}`, where `heal` is a list of
+  # `%Part.ToolUse{}` to answer or `{:bridge, messages}` to append.
   @spec classify_sequence([Message.t()], integer()) ::
-          {[Preflight.violation()], [Nest.Messages.Part.ToolUse.t()] | nil}
+          {[Preflight.violation()], [Nest.Messages.Part.ToolUse.t()] | {:bridge, [term()]} | nil}
   defp classify_sequence(preloaded, boundary) do
     active = Enum.filter(preloaded, fn {_role, %{index: idx}} -> idx > boundary end)
 
     case Repair.decide(:load, active, nil) do
       :ok -> {[], nil}
       {:interrupted, tool_uses} -> {[], tool_uses}
+      {:bridge, messages} -> {[], {:bridge, messages}}
       {:violations, violations} -> {violations, nil}
     end
   end

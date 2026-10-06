@@ -31,6 +31,17 @@ describe("parseSlashCommand", () => {
     });
   });
 
+  it("keeps the full remainder as args, preserving newlines and inner spacing", () => {
+    expect(parseSlashCommand("/compact focus on\nmultiple lines")).toEqual({
+      name: "compact",
+      args: "focus on\nmultiple lines",
+    });
+    expect(parseSlashCommand("/compact  keep   inner   spaces")).toEqual({
+      name: "compact",
+      args: "keep   inner   spaces",
+    });
+  });
+
   it("returns null for empty input, a bare slash, unknown commands, and plain text", () => {
     expect(parseSlashCommand("")).toBeNull();
     expect(parseSlashCommand("/")).toBeNull();

@@ -13,6 +13,11 @@ defmodule Nest.Agents.Agent.Machine.Work do
   `make_ref/0` token handed to the active HTTP/tool worker; worker
   results are applied only when their ref and phase match the live turn.
   `preflight` caches the pending tool batch while its fit check runs.
+  `focus` is the optional operator guidance for the summary (the
+  `context-compact` tool's `focus` arg or `/compact <focus>`); it is
+  rendered into the compaction request suffix. It is *turn-scoped*: it is
+  cleared when the compaction turn ends (a chat turn or idle begins), so a
+  stale focus cannot leak into a later *automatic* compaction.
   """
 
   defstruct ctx: nil,
@@ -25,7 +30,10 @@ defmodule Nest.Agents.Agent.Machine.Work do
             worker_kind: nil,
             active_message_index: 0,
             pending_notice: nil,
-            preflight: nil
+            preflight: nil,
+            # Turn-scoped: `Machine.Phase.enter/4` clears it when the
+            # compaction turn ends (a chat turn or idle begins).
+            focus: nil
 
   @type t :: %__MODULE__{
           ctx: map() | nil,
@@ -38,7 +46,8 @@ defmodule Nest.Agents.Agent.Machine.Work do
           worker_kind: :http | :tools | nil,
           active_message_index: non_neg_integer(),
           pending_notice: String.t() | nil,
-          preflight: map() | nil
+          preflight: map() | nil,
+          focus: String.t() | nil
         }
 
   @doc "Reset the working set."

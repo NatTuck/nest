@@ -102,6 +102,7 @@ defmodule MachineStructureTest do
                  :active_worker,
                  :active_worker_kind,
                  :ctx,
+                 :focus,
                  :force_finalize,
                  :iteration,
                  :max_iterations,
@@ -251,7 +252,7 @@ defmodule MachineStructureTest do
   defp sample_event(:commit_error), do: {:commit_error, :boom}
   defp sample_event(:compaction_error), do: {:compaction_error, :boom, nil}
   defp sample_event(:retry_compaction), do: :retry_compaction
-  defp sample_event(:compact_request), do: :compact_request
+  defp sample_event(:compact_request), do: {:compact_request, nil}
   defp sample_event(:loop_ack), do: :loop_ack
   defp sample_event(:blocked), do: {:blocked, :needs_repair, nil}
   defp sample_event(:unblocked), do: {:unblocked}

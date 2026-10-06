@@ -53,7 +53,7 @@ defmodule Nest.Agents.Agent.MessageAppendTagsTest do
       assert {:repair, [{:assistant, %Assistant{parts: [%Part.Text{text: text}]}}]} =
                Repair.decide(:live, [user(0)], user(1))
 
-      assert text =~ "interrupted"
+      assert text =~ "continuing from here"
 
       # A `{:tool, _}` tail is wire-user too: same single ack.
       assert {:repair, [{:assistant, %Assistant{}}]} =
@@ -76,8 +76,13 @@ defmodule Nest.Agents.Agent.MessageAppendTagsTest do
                Repair.decide(:terminal, [user(0), assistant_tool_use(1, "a")], user(2))
     end
 
-    test ":load classifies clean, interrupted, and real violations" do
+    test ":load classifies clean, bridged, interrupted, and real violations" do
       assert :ok = Repair.decide(:load, [system(0), user(1), assistant_text(2)], nil)
+
+      assert {:bridge, [{:assistant, %Assistant{parts: [%Part.Text{text: text}]}}]} =
+               Repair.decide(:load, [system(0), user(1)], nil)
+
+      assert text =~ "interrupted"
 
       assert {:interrupted, [%Part.ToolUse{id: "a"}]} =
                Repair.decide(:load, [system(0), user(1), assistant_tool_use(2, "a")], nil)

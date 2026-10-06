@@ -223,10 +223,12 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     on_exit(fn -> _ = Supervisor.stop_agent(space_id, specialist_name) end)
 
     # A persisted-only (no live pid) non-archived row: the merged
-    # listing must include it even though nothing is running for it.
-    # Its DB row has no `vocation_slug`, so the tool must not raise.
+    # listing must include it even though nothing is running for it,
+    # and its entry must report the real vocation slug resolved from
+    # the row's `vocation_id` (the row stores only the id).
     model = %{name: "qwen3.5-plus", provider: "model-studio"}
     db_only_name = "db-only-#{System.unique_integer([:positive])}"
+    db_only_slug = AgentTestHelpers.vocation_slug_for_test()
 
     {:ok, _row} =
       Nest.Persistence.insert_agent(%{
@@ -283,6 +285,12 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     assert content =~ specialist_name
     assert content =~ db_only_name
     refute content =~ archived_name
+
+    # Each entry carries a real vocation slug: the running specialist's
+    # from its live vocation struct, the persisted-only row's resolved
+    # from its `vocation_id` (never `nil`).
+    assert entry_for(content, specialist_name) =~ ~s(vocation: "#{specialist_slug}")
+    assert entry_for(content, db_only_name) =~ ~s(vocation: "#{db_only_slug}")
   end
 
   test "agents-query tool sends a chat to a specialist and returns its response", %{vid: vid} do
@@ -453,6 +461,16 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
              tool_msg.parts
 
     assert content =~ "not found"
+  end
+
+  # The `agents-list` tool result content is `inspect/1` output of the
+  # listing, so an individual agent's entry is one `%{...}` map inside
+  # that string. `[^}]` keeps the match inside a single entry (there is
+  # no nested map in an entry) regardless of the key order `inspect/1`
+  # chooses.
+  defp entry_for(content, name) do
+    [entry] = Regex.run(~r/%\{[^}]*name: "#{name}"[^}]*\}/, content)
+    entry
   end
 
   # The coordinator's vocation exposes the sub-agent tools.

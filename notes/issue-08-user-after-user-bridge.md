@@ -66,7 +66,7 @@ It is simply never reached for the turn-opening append (the append is "live"), o
 | Terminal append (idle/stopping/blocked) | `message_appender.ex:180-185` → `Repair.decide(:terminal, …)` → `MessageList.pairing_bridge/2` | appends repair messages first |
 | Terminal recovery (stop/crash) | `turn/terminal.ex:37-56` | same bridge with `continuation_prompt/0` |
 | Worker death | `repair.ex:126-134` (`:worker_death`) | canonical error tool result |
-| Load | `repair.ex:103-124`, `persistence.ex:445-458`, `init/interrupted_tool_call.ex:30-43` | lone trailing orphan → error result + `repair_ack`; else `:needs_repair` |
+| Load | `repair.ex:148-163` (`classify_load/1`), `persistence.ex:445-458`, `init/load_heal.ex:36-57` | lone trailing orphan → error result + `repair_ack`; else `:needs_repair` |
 | Offline | `mix nest.repair_messages` → `planner.ex:421-431` | inserts `:ack` (user,user) / `:continuation` (assistant,assistant) |
 | Compaction request only | `turn/dispatch.ex:179-195` | non-persisted assistant bridge when the request tail is wire-`user` |
 

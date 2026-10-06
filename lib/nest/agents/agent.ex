@@ -131,10 +131,12 @@ defmodule Nest.Agents.Agent do
   - `:model` - Model configuration map with :name key
 
   Pure spawn. Pre-spawn DB work (agent row + system message
-  inserts) is the caller's responsibility — call `Agent.pre_spawn/1`
-  in the caller's pid before `start_link/1`. The supervisor pid
-  (or any pid that wraps `start_link/1` via `DynamicSupervisor`)
-  has no DB work to do, so it doesn't need a Sandbox checkout.
+  inserts, and the load-time sequence heal) is the caller's
+  responsibility — call `Agent.pre_spawn/1` and
+  `Agent.pre_load_heal/1` in the caller's pid before
+  `start_link/1`. The supervisor pid (or any pid that wraps
+  `start_link/1` via `DynamicSupervisor`) has no DB work to do,
+  so it doesn't need a Sandbox checkout.
 
   The agent registers itself in the Registry under its name.
   """
@@ -237,6 +239,77 @@ defmodule Nest.Agents.Agent do
       _ ->
         {:error, :missing_system_prompt}
     end
+  end
+
+  @doc """
+  Apply the load-time sequence heal in the *caller's* DB context.
+
+  `Persistence.build_attrs_for_start/2` classifies the restored active
+  slice and puts the heal in `:load_heal` — either a trailing orphan
+  `tool_use` (a turn that died mid-tool) or the user-tail bridge (see
+  `Init.LoadHeal`). Applying it appends and persists real rows through the
+  canonical append path, so it MUST run in a pid with DB access: the
+  caller's, before `GenServer.start_link/1`. It must never run in `init/1`
+  (see the hard rule there).
+
+  Idempotent: the classification is re-derived from a fresh read
+  immediately before the append (`Init.LoadHeal.refresh/1`), so a caller
+  that raced another one for the same tail appends nothing.
+
+  Returns `attrs` with the healed rows folded into `:preloaded_messages`
+  and `:load_heal` cleared, so the child only has to seed from attrs. A
+  caller whose tail is already healed gets
+  the freshly-read attrs back instead (nothing appended), and `attrs`
+  unchanged when the agent row is gone or the model no longer resolves —
+  the latter boots `init/1` in `:model_missing`, matching the
+  pre-refactor behavior.
+  """
+  @spec pre_load_heal(map()) :: map()
+  def pre_load_heal(attrs) do
+    case Map.get(attrs, :load_heal) do
+      nil -> attrs
+      _heal -> heal_if_still_needed(attrs)
+    end
+  end
+
+  # Idempotent heal: `Init.LoadHeal.refresh/1` re-derives the
+  # classification from a fresh read, so a caller that lost a race for the
+  # same tail sees `load_heal: nil` and starts its child from the freshly
+  # read rows instead of appending a second heal. See that function for why
+  # the re-check is preferred over serialization.
+  defp heal_if_still_needed(attrs) do
+    case Init.LoadHeal.refresh(attrs) do
+      nil -> attrs
+      %{load_heal: nil} = fresh -> fresh
+      %{load_heal: heal} = fresh -> apply_load_heal(fresh, heal)
+    end
+  end
+
+  defp apply_load_heal(attrs, heal) do
+    case Config.create_client_config(Map.fetch!(attrs, :model)) do
+      {:ok, client_config} ->
+        state = build_active_state(attrs, client_config)
+        healed = Init.LoadHeal.heal(state, heal)
+        healed_attrs(attrs, state, healed)
+
+      {:error, _reason} ->
+        attrs
+    end
+  end
+
+  # Fold the rows the heal appended (already persisted by the append
+  # path) into the attrs the child seeds from, so `init/1` reconstructs
+  # the healed sequence without any DB work of its own. The index is not
+  # carried here: `Init.seed_from_db/4` recomputes `highest_index + 1`
+  # from `:preloaded_messages`, and `Persistence.insert_agent/1` (the
+  # only reader of an attrs `:next_message_index`) only ever runs for a
+  # brand-new agent via `pre_spawn/1`.
+  defp healed_attrs(attrs, before, healed) do
+    appended = Enum.drop(healed.chat_state.messages, length(before.chat_state.messages))
+
+    attrs
+    |> Map.put(:preloaded_messages, Map.get(attrs, :preloaded_messages, []) ++ appended)
+    |> Map.put(:load_heal, nil)
   end
 
   @doc """
@@ -357,14 +430,16 @@ defmodule Nest.Agents.Agent do
   def retry_compaction(pid), do: GenServer.call(pid, :retry_compaction, :infinity)
 
   @doc """
-  Stage a compaction turn now (the user's `/compact` command).
+  Stage a compaction turn now (the user's `/compact <focus>` command).
 
   Only valid from `:idle`; the handler replies `{:error, {:not_idle, status}}`
-  for any other status without touching the machine. Synchronous so the
-  channel's reply lands after the agent has actually staged the compaction.
+  for any other status without touching the machine. `focus` is the optional
+  operator guidance for the summary (`nil` when the command had no args).
+  Synchronous so the channel's reply lands after the agent has actually staged
+  the compaction.
   """
-  @spec compact(pid()) :: :ok | {:error, {:not_idle, atom()}}
-  def compact(pid), do: GenServer.call(pid, :compact, :infinity)
+  @spec compact(pid(), String.t() | nil) :: :ok | {:error, {:not_idle, atom()}}
+  def compact(pid, focus), do: GenServer.call(pid, {:compact, focus}, :infinity)
 
   @doc """
   Acknowledge a `:compaction_loop_detected` status. Handler
@@ -456,6 +531,24 @@ defmodule Nest.Agents.Agent do
 
   @impl true
   def init(attrs) do
+    # ---------------------------------------------------------------------
+    # HARD RULE — NO DB ACCESS IN THIS CALLBACK. EVER. FOR ANY REASON.
+    #
+    # Not a read, not a write, not a "tiny lookup" — `init/1` and every
+    # function it calls must be DB-free. This is not a note; it is the
+    # rule, and it is not negotiable.
+    #
+    # Why: `init/1` runs in the pid the *supervisor* spawned. That pid has
+    # no Ecto Sandbox `$callers` chain back to whoever owns the connection
+    # (the test pid, or the channel/request pid in production), so a DB
+    # call here either crashes an async test or silently checks out a
+    # different connection inside a caller-owned transaction.
+    #
+    # All pre-spawn DB work belongs to the CALLER, before `start_link/1`:
+    # `Agent.pre_spawn/1` (agent row + system message) and
+    # `Agent.pre_load_heal/1` (the load-time sequence heal). `init/1` only
+    # builds in-memory state from the attrs it is handed.
+    # ---------------------------------------------------------------------
     # Trap exits to ensure cleanup runs when agent is stopped
     Process.flag(:trap_exit, true)
 
@@ -472,7 +565,6 @@ defmodule Nest.Agents.Agent do
 
         case Map.get(attrs, :sequence_violations, []) do
           [] ->
-            state = maybe_heal_interrupted_tool_call(state, attrs)
             log_active_start(state)
             {:ok, state}
 
@@ -506,10 +598,11 @@ defmodule Nest.Agents.Agent do
   # start banner. Extracted from `init/1` so the top-level
   # case statement stays readable.
   #
-  # Pure: no DB writes here. `start_link/1` pre-persists the
-  # agent row and the system message in the calling process
-  # so the child pid's `init/1` doesn't need `$callers`
-  # propagation back to a Sandbox owner.
+  # Pure: no DB access at all. The caller pre-persists the agent row
+  # and the system message (`pre_spawn/1`) and applies the load-time
+  # sequence heal (`pre_load_heal/1`) in its own DB context, so this
+  # child pid's `init/1` never needs `$callers` propagation back to a
+  # Sandbox owner. See the hard rule in `init/1`.
   defp build_active_state(attrs, client_config) do
     state = Init.build_state(attrs, client_config)
 
@@ -519,17 +612,6 @@ defmodule Nest.Agents.Agent do
       Map.get(attrs, :last_compaction_index, -1),
       Map.get(attrs, :compaction_count, 0)
     )
-  end
-
-  # A lone trailing assistant `tool_use` with no result is a turn that
-  # died mid-tool; the run-time owner is gone, so heal it before coming
-  # up idle (see `Init.InterruptedToolCall`). Real corruption has already
-  # routed to `Init.NeedsRepair` and never reaches here.
-  defp maybe_heal_interrupted_tool_call(state, attrs) do
-    case Map.get(attrs, :interrupted_tool_call) do
-      nil -> state
-      tool_uses -> Init.InterruptedToolCall.heal(state, tool_uses)
-    end
   end
 
   defp log_active_start(state) do

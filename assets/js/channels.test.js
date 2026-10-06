@@ -1798,6 +1798,39 @@ describe("channels", () => {
         0,
       );
     });
+
+    it("full-syncs when a compaction boundary sits below a drifted cached tail", async () => {
+      // The count matches and the new boundary (3) is below the cached
+      // lastIndex (4), so the `>=` guard alone misses it. The boundary
+      // also differs from the one the cache was built around (-1), so
+      // the cache is stale and must be rebuilt from -1.
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 5,
+        messages: contiguous(5),
+      });
+
+      setNextJoinResult("agent:1:agent-1", {
+        autoInit: {
+          id: "agent-1",
+          model: { name: "gpt-4" },
+          messageCount: 5,
+          status: "idle",
+          lastCompactionIndex: 3,
+          compactionCount: 1,
+        },
+      });
+
+      const pushPromise = captureNextPush("agent:1:agent-1", "chat:sync");
+      joinAgent("agent-1", 1);
+
+      const pushPayload = await pushPromise;
+      assert.deepStrictEqual(pushPayload, { lastIndex: -1 });
+      assert.strictEqual(
+        useStore.getState().agentsCache["agent-1"].messages.length,
+        0,
+      );
+    });
   });
 
   describe("defensive error paths", () => {
@@ -3901,7 +3934,7 @@ describe("channels", () => {
   describe("compactAgent", () => {
     it("should call onError when not connected to agent", async () => {
       let errorCalled = false;
-      compactAgent("missing-agent", (_err) => {
+      compactAgent("missing-agent", "", (_err) => {
         errorCalled = true;
       });
 
@@ -3916,7 +3949,7 @@ describe("channels", () => {
       });
     });
 
-    it("pushes chat:compact without adding a user message or a waiting flag", async () => {
+    it("pushes chat:compact (with an optional focus) without adding a user message or a waiting flag", async () => {
       setNextJoinResult("agent:1:agent-1", {
         autoInit: {
           id: "agent-1",
@@ -3934,11 +3967,13 @@ describe("channels", () => {
         );
       });
 
-      const pushCapture = captureNextPush("agent:1:agent-1", "chat:compact");
-
+      const noFocusCapture = captureNextPush("agent:1:agent-1", "chat:compact");
       compactAgent("agent-1");
+      assert.deepStrictEqual(await noFocusCapture, {});
 
-      assert.deepStrictEqual(await pushCapture, {});
+      const focusCapture = captureNextPush("agent:1:agent-1", "chat:compact");
+      compactAgent("agent-1", "focus on tests");
+      assert.deepStrictEqual(await focusCapture, { focus: "focus on tests" });
 
       // A command is control-plane: unlike sendMessage it must not
       // optimistically append a user message or mark the agent as
@@ -3971,7 +4006,7 @@ describe("channels", () => {
       });
 
       let errorCalled = false;
-      compactAgent("agent-1", (_err) => {
+      compactAgent("agent-1", "", (_err) => {
         errorCalled = true;
       });
 
@@ -4262,14 +4297,13 @@ describe("channels", () => {
     });
   });
 
-  describe("requestSync coalescing", () => {
-    // The `requestSync` function holds per-agent state in a
-    // `Map<agentId, {inFlight, queued, lastIndex}>` and
-    // coalesces overlapping requests: only one push is in
-    // flight at a time, and the queued re-fire uses the
-    // latest `lastIndex` (so the freshest lower bound wins).
+  describe("requestSync pushes", () => {
+    // `requestSync` holds no per-agent state: every call fires
+    // its own `chat:sync` push, so overlapping requests race.
+    // The response merge is idempotent (it dedupes by index),
+    // which is why overlapping pushes are harmless.
 
-    it("coalesces two rapid chat:compaction events: each fires its own push, and the second uses the latest lastIndex", async () => {
+    it("pushes one chat:sync per chat:compaction event, using the latest lastIndex", async () => {
       joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {

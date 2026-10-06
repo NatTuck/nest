@@ -27,11 +27,22 @@ import { renderWithRouter } from "./test/render_with_router";
 // `vi.mock` is hoisted, so the import path must be a
 // literal — Vitest will replace the module before any test
 // code runs.
-vi.mock("./channels", () => ({
-  initChannels: vi.fn(),
-  joinLobby: vi.fn(),
-  leaveLobby: vi.fn(),
-}));
+//
+// App.jsx pulls in the whole router (and therefore every page),
+// so the mock has to carry the real module's exports: a page
+// that references one at module scope (e.g. `ChatPage`'s
+// `compactAgent`) fails to import when the mock omits it.
+// Spread the actual module and override only the three calls
+// this file spies on.
+vi.mock("./channels", async () => {
+  const actual = await vi.importActual("./channels");
+  return {
+    ...actual,
+    initChannels: vi.fn(),
+    joinLobby: vi.fn(),
+    leaveLobby: vi.fn(),
+  };
+});
 
 import { initChannels, joinLobby, leaveLobby } from "./channels";
 

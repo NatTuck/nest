@@ -321,16 +321,18 @@ defmodule Nest.Agents do
   end
 
   @doc """
-  Stage a compaction now for the named agent (the user's `/compact`).
+  Stage a compaction now for the named agent (the user's `/compact <focus>`).
 
-  Only valid while the agent is `:idle`; any other status returns
-  `{:error, {:not_idle, status}}`. The Agent is the authority on the
-  status check (no channel-side pre-check).
+  `focus` is the optional operator guidance for the summary (`nil` when the
+  command had no args). Only valid while the agent is `:idle`; any other
+  status returns `{:error, {:not_idle, status}}`. The Agent is the authority
+  on the status check (no channel-side pre-check).
   """
-  @spec compact(integer(), String.t()) :: :ok | {:error, :not_found | {:not_idle, atom()}}
-  def compact(space_id, name) do
+  @spec compact(integer(), String.t(), String.t() | nil) ::
+          :ok | {:error, :not_found | {:not_idle, atom()}}
+  def compact(space_id, name, focus) do
     case Supervisor.get_agent(space_id, name) do
-      {:ok, pid} -> Agent.compact(pid)
+      {:ok, pid} -> Agent.compact(pid, focus)
       {:error, _} = err -> err
     end
   end

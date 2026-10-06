@@ -368,17 +368,34 @@ defmodule Nest.AgentsTest do
     end
   end
 
-  describe "compact/2" do
+  describe "compact/3" do
     test "returns {:error, :not_found} for a nonexistent agent" do
-      assert Agents.compact(AgentTestHelpers.current_space_id(), "nonexistent") ==
+      assert Agents.compact(AgentTestHelpers.current_space_id(), "nonexistent", nil) ==
                {:error, :not_found}
+    end
+
+    test "forwards the focus to the agent's compact handler" do
+      # `Agents.compact/3` resolves the pid and hands the focus straight to
+      # `Agent.compact/2`; stub the agent call so we assert the forwarded
+      # argument without running a real compaction turn.
+      {pid, name} = AgentTestHelpers.start_agent(%{name: fresh_name()})
+      space_id = AgentTestHelpers.current_space_id()
+
+      Agent
+      |> stub(:compact, fn ^pid, focus ->
+        send(self(), {:agent_compact, focus})
+        :ok
+      end)
+
+      assert :ok = Agents.compact(space_id, name, "keep the API decisions")
+      assert_receive {:agent_compact, "keep the API decisions"}
     end
 
     test "rejects a non-idle agent without starting a compaction" do
       {agent_pid, name} = AgentTestHelpers.start_agent(%{name: fresh_name()})
       space_id = AgentTestHelpers.current_space_id()
 
-      # Fabricate a streaming agent: `compact/2` must refuse rather than
+      # Fabricate a streaming agent: `compact/3` must refuse rather than
       # stage a compaction on a turn that is already in flight.
       :sys.replace_state(agent_pid, fn state ->
         %{
@@ -390,13 +407,15 @@ defmodule Nest.AgentsTest do
         }
       end)
 
-      assert Agents.compact(space_id, name) == {:error, {:not_idle, :streaming}}
+      assert Agents.compact(space_id, name, "keep the API decisions") ==
+               {:error, {:not_idle, :streaming}}
 
       # No compaction was staged: the machine is still the fabricated
-      # streaming state and the loop counter is untouched.
+      # streaming state, the loop counter and focus are untouched.
       machine = :sys.get_state(agent_pid).live.machine
       assert Machine.status_for(machine) == :streaming
       assert machine.loop_count == 0
+      assert machine.work.focus == nil
 
       # Restore idle so the teardown's zero-in-flight-agents assertion holds.
       :sys.replace_state(agent_pid, fn state ->

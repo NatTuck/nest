@@ -720,16 +720,20 @@ describe("ChatInput", () => {
     ];
 
     it("shows a click-selectable suggestion menu for a slash partial", () => {
-      const { onChange, onSend } = setup({ value: "/", commands });
+      const { onChange, onSend, textarea } = setup({ value: "/", commands });
 
-      const listbox = screen.getByRole("listbox", {
-        name: /slash command suggestions/i,
-      });
-      expect(listbox).toBeInTheDocument();
+      expect(
+        screen.getByRole("listbox", { name: "Slash command suggestions" }),
+      ).toBeInTheDocument();
+      const suggestion = screen.getByRole("option", { name: /\/compact/ });
+      // Selection is click-only, so no option is ever the selected one.
+      expect(suggestion).toHaveAttribute("aria-selected", "false");
 
-      // Selecting fills the input and never sends.
-      fireEvent.click(screen.getByRole("option", { name: /\/compact/ }));
+      // Selecting fills the input, returns focus to the textarea, and
+      // never sends.
+      fireEvent.click(suggestion);
       expect(onChange).toHaveBeenCalledWith("/compact");
+      expect(textarea).toHaveFocus();
       expect(onSend).not.toHaveBeenCalled();
     });
 

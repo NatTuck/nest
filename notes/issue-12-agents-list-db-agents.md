@@ -57,7 +57,7 @@ Make the `agents-list` tool enumerate every **non-archived** agent in the callin
 - JS: no changes needed (sidebar logic untouched); `Sidebar.test.jsx` should be unaffected.
 
 ## Edge cases / risks
-- **`vocation_slug` missing** on persisted maps — must use `Map.get` (task 3); DB-only rows will show `vocation: nil`. Optional: resolve from `vocation_id` via a batched `Vocations.list_vocations/0` lookup if a non-nil vocation is desired.
+- **`vocation_slug` on persisted maps** — must use `Map.get` (task 3); the shipped merge resolves it from the row's `vocation_id` via a batched `Vocations.list_vocations/0` lookup (`Visibility.vocation_slugs_by_id/0`), so DB-only rows report their real slug (`nil` only when the row has no resolvable vocation).
 - **De-duplication** — a running agent has both a registry entry and a DB row; `Enum.uniq_by(& &1.name)` (visibility.ex:44) is required or it appears twice.
 - **Archived exclusion** — relies on `persisted_visible`'s `archived == false` filter (visibility.ex:149); the generalized no-user version must keep it.
 - **Broken agents** — `list_broken_agents/1` (agents.ex:392-394) only reports rows that are *not alive* **and** whose model won't resolve (agents.ex:397-417). Those rows are still non-archived, and the sidebar's main tree already includes them via `persisted_visible`; the amber "Needs Repair" block (`assets/js/components/SidebarSpaceRow.jsx:315-321`) is a separate UI affordance. So the merged listing will include them (matching the sidebar). See Open Questions.
@@ -74,6 +74,6 @@ Make the `agents-list` tool enumerate every **non-archived** agent in the callin
 1. **Visibility scope.** The sidebar filters by user (`created_by_user_id == user_id or shared`), but the tool has no user id in `ctx` (turn.ex:186-209) and the sibling tools `agents-query`/`agents-send`/`agents-archive` are already space-scoped (agents.ex:288-296, tool_loop.ex:420-437). **Recommendation:** space-scoped (all non-archived agents in the space) — confirm this is intended over mirroring the per-user filter.
 2. **Do broken/`model_missing` agents count?** They are non-archived, so the merge includes them (as the sidebar's main tree does), but they can't be queried. Confirm whether to include them as-is (recommended, consistent) or exclude `status == :model_missing` / unloadable rows from the tool result.
 3. **Fate of `Nest.Agents.list_agents_info_for_space/1`.** It is used only by this tool (lib) and tests. Either repurpose it (recommended — single space-listing entry point, no dead code) or keep it registry-only and add a separate `list_non_archived_agents_for_space/1` (leaves a lib-unused function; note AGENTS.md forbids removing tests without your request).
-4. **Vocation for DB-only rows:** accept `nil` (minimal) or resolve `vocation_slug` from the persisted `vocation_id` for a richer tool result?
+4. **Vocation for DB-only rows — resolved:** `vocation_slug` is resolved from the persisted `vocation_id` (`Visibility.vocation_slugs_by_id/0`), so DB-only rows report the real slug rather than `nil`.
 
 No dependency on other open issues was found; this is self-contained in `Nest.Agents.Visibility`, `Nest.Agents`, `ToolLoop`, and `lib/nest/tools.ex`.

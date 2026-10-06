@@ -181,7 +181,8 @@ defmodule Nest.Messages.MessageList do
   tail is either a `{:tool, _}` result (wire role `user`) or a
   `{:user, _}` whose turn was interrupted before any assistant response
   was committed. In both cases the bridge returns the assistant
-  acknowledgement alone to restore alternation.
+  acknowledgement alone (`idle_bridge_ack(:live)`) to restore
+  alternation.
 
   Returns `[]` when nothing needs repairing. This is the append-time
   half of the sequence invariants (`notes/enforce-mesages-seq-invariants.md`);
@@ -199,7 +200,7 @@ defmodule Nest.Messages.MessageList do
         repair_messages(missing, incoming)
 
       {wire_user, _} when wire_user in [:user, :tool] ->
-        if match?({:user, _}, incoming), do: [repair_ack()], else: []
+        if match?({:user, _}, incoming), do: [idle_bridge_ack(:live)], else: []
 
       _ ->
         []
@@ -301,6 +302,54 @@ defmodule Nest.Messages.MessageList do
        ],
        api_logs: []
      }}
+  end
+
+  @doc """
+  The synthetic assistant acknowledgement that closes an idle
+  sequence which would otherwise end on a `user` wire role.
+
+  An idle agent must never end on a user message: the next user turn
+  would then need the live-path bridge (`Repair.classify_live/2`). Both
+  the compaction commit (`Turn.Commit.active_segment/6`) and the
+  load-time heal (`Repair.classify_load/1`) append this ack so the
+  invariant is enforced upstream and the live exception is unreachable
+  in production.
+
+  The wording is case-specific so the ack reads sensibly in context:
+
+    * `:compaction` — a compaction just finished;
+    * `:load` — we were interrupted before an assistant response;
+    * `:live` — the alternation bridge (`MessageList.pairing_bridge/2`),
+      where nothing was interrupted: a second user message simply
+      follows a user tail.
+
+  Same shape as `repair_ack/0`: an assistant text message with no
+  `index` (the append path stamps it) and no `api_logs`.
+  """
+  @spec idle_bridge_ack(atom()) :: term()
+  def idle_bridge_ack(:compaction) do
+    build_idle_bridge_ack("Compaction complete. What would you like to do next?")
+  end
+
+  def idle_bridge_ack(:load) do
+    build_idle_bridge_ack(
+      "We were interrupted before I could respond. Ready to continue when you are."
+    )
+  end
+
+  def idle_bridge_ack(:live) do
+    build_idle_bridge_ack("Okay, continuing from here.")
+  end
+
+  # The tag set is closed (`:compaction`, `:load`, `:live`). An unknown tag is
+  # a programming error, so fail loudly with a clear message rather than
+  # quietly picking a default wording for a case nobody thought about.
+  def idle_bridge_ack(other) do
+    raise ArgumentError, "unknown idle_bridge_ack kind: #{inspect(other)}"
+  end
+
+  defp build_idle_bridge_ack(text) do
+    {:assistant, %Assistant{parts: [%Part.Text{text: text}], api_logs: []}}
   end
 
   @doc """
