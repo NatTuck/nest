@@ -519,35 +519,40 @@ defmodule Nest.Agents.Agent.ToolLoop do
 
   # Block for the target's reply, one `@wait_slice_ms` slice at a time,
   # returning `{:ok, text}` once it produced a readable reply.
-  # Running out of slices is `{:error, {:timeout, timeout}}`; a turn that
-  # finished with no text is `{:error, :no_text}`. The two must stay
-  # distinct — and neither may collapse into a bare `""`.
+  # Passing the wall-clock deadline is `{:error, {:timeout, timeout}}`; a
+  # turn that finished with no text is `{:error, :no_text}`. The two must
+  # stay distinct — and neither may collapse into a bare `""`.
   defp await_query_result(space_id, target, pre_count, timeout) do
-    attempts = div(timeout, @wait_slice_ms)
-    wait_for_idle(space_id, target, pre_count, 0, attempts, timeout)
+    deadline = System.monotonic_time(:millisecond) + timeout
+    wait_for_idle(space_id, target, pre_count, deadline, timeout)
   end
 
-  defp wait_for_idle(_space_id, _target, _pre_count, attempts, attempts, timeout) do
-    Logger.warning("agents-query: target did not go idle within #{timeout}ms")
-    {:error, {:timeout, timeout}}
-  end
+  # The wait is bounded by a wall-clock deadline, not a message count:
+  # the target's own streaming traffic (`chat:delta`, `chat:message`,
+  # `shell:jobs`, ...) lands in this mailbox too, so counting messages
+  # would let a chatty target exhaust a long timeout in seconds.
+  # Unrelated messages are drained without touching the deadline; only
+  # elapsed time ends the wait.
+  defp wait_for_idle(space_id, target, pre_count, deadline, timeout) do
+    remaining = deadline - System.monotonic_time(:millisecond)
 
-  defp wait_for_idle(space_id, target, pre_count, attempts, max_attempts, timeout) do
-    receive do
-      {:chat_status, %{status: "idle"}} ->
-        case read_last_assistant_after(space_id, target, pre_count) do
-          :pending ->
-            wait_for_idle(space_id, target, pre_count, attempts + 1, max_attempts, timeout)
+    if remaining <= 0 do
+      Logger.warning("agents-query: target did not go idle within #{timeout}ms")
+      {:error, {:timeout, timeout}}
+    else
+      receive do
+        {:chat_status, %{status: "idle"}} ->
+          case read_last_assistant_after(space_id, target, pre_count) do
+            :pending -> wait_for_idle(space_id, target, pre_count, deadline, timeout)
+            reply -> reply
+          end
 
-          reply ->
-            reply
-        end
-
-      _other ->
-        wait_for_idle(space_id, target, pre_count, attempts + 1, max_attempts, timeout)
-    after
-      @wait_slice_ms ->
-        wait_for_idle(space_id, target, pre_count, attempts + 1, max_attempts, timeout)
+        _other ->
+          wait_for_idle(space_id, target, pre_count, deadline, timeout)
+      after
+        min(@wait_slice_ms, remaining) ->
+          wait_for_idle(space_id, target, pre_count, deadline, timeout)
+      end
     end
   end
 
