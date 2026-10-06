@@ -165,25 +165,36 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
     end
 
     test "adds an assistant ack before a user message appended after a wire-user tail" do
+      {:assistant, %Assistant{parts: [%Part.Text{text: ack_text}]}} = MessageList.repair_ack()
+
       cases = [
         {[system(0), user(1), assistant_tool_use(2, "call_1"), tool_result(3, "call_1")],
          :tool_result},
         {[system(0), user(1)], :interrupted_user}
       ]
 
-      for {initial, label} <- cases do
-        name = unique_name("append-wire-user-#{label}")
+      # Both boundaries: the idle (terminal) boundary and the production
+      # live shape — `start_chat` flips the machine to `:generating`
+      # before the turn-opening append, so the live path must apply the
+      # same bridge.
+      for {initial, label} <- cases, machine <- [:idle, :streaming] do
+        name = unique_name("append-wire-user-#{label}-#{machine}")
         {:ok, _} = Persistence.insert_agent(agent_attrs(name))
         insert_messages(name, initial)
 
         state = state(name, initial)
+        state = if machine == :streaming, do: live(state, :streaming), else: state
+
         {:ok, stamped_user, state} = MessageAppender.append_one(state, user("next question"))
 
         assert {:user, %User{}} = stamped_user
 
         assert Enum.map(state.chat_state.messages, &role/1) ==
                  Enum.map(initial, &role/1) ++ [:assistant, :user],
-               "in-memory roles for #{label}"
+               "in-memory roles for #{label} (#{machine})"
+
+        assert {:assistant, %Assistant{parts: [%Part.Text{text: ^ack_text}]}} =
+                 Enum.at(state.chat_state.messages, -2)
 
         assert :ok = Preflight.validate(state.chat_state.messages)
 
@@ -191,7 +202,10 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
 
         assert Enum.map(persisted, &role/1) ==
                  Enum.map(initial, &role/1) ++ [:assistant, :user],
-               "persisted roles for #{label}"
+               "persisted roles for #{label} (#{machine})"
+
+        assert Enum.map(persisted, &index/1) == Enum.map(state.chat_state.messages, &index/1),
+               "persisted indices for #{label} (#{machine})"
       end
     end
 

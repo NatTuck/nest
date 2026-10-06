@@ -31,6 +31,12 @@ defmodule Nest.Agents.Agent.WireInvariantTest do
       user stops before the first delta arrives. No empty message is
       ever persisted, and the list stays alternation-valid.
 
+    * **User-after-user**: an idle agent whose active list ends on a
+      `user` message (a turn interrupted before its first delta) gets
+      the canonical assistant bridge from `MessageList.pairing_bridge/2`
+      on the next turn-opening append, so the new user message does not
+      create two consecutive `user` roles.
+
   These tests pin each of those scenarios at the unit level, using the
   pure `build_pair/3` the machine emits as `{:append_many, _}` actions.
   """

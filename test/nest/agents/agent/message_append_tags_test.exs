@@ -6,10 +6,11 @@ defmodule Nest.Agents.Agent.MessageAppendTagsTest do
   `MessageAppender` returns `{:ok, stamped, state} | {:stale, state} |
   {:invalid, reason, state}` and never raises on a sequence mismatch.
   `Nest.Agents.Agent.Repair.decide/3` is the one decision table; the
-  live context classifies (no repair), the terminal/worker-death/load
-  contexts heal. These tests pin the `Repair` decision table and the
-  caller behavior for `:stale` (drop with a notice) and `:invalid` (fail
-  the turn to idle with `chat:error`).
+  live context classifies (no repair, except the user-onto-user-tail
+  bridge), the terminal/worker-death/load contexts heal. These tests pin
+  the `Repair` decision table and the caller behavior for `:stale` (drop
+  with a notice) and `:invalid` (fail the turn to idle with
+  `chat:error`).
   """
 
   use Nest.DataCase, async: true
@@ -32,7 +33,7 @@ defmodule Nest.Agents.Agent.MessageAppendTagsTest do
   alias Nest.Persistence
 
   describe "Repair.decide/3" do
-    test ":live classifies ok, stale, and invalid without repairing" do
+    test ":live classifies ok, stale, and invalid, bridging only user-after-user" do
       assert :ok = Repair.decide(:live, [user(0)], assistant_text(1))
 
       assert :stale = Repair.decide(:live, [assistant_tool_use(0, "a")], tool_result(1, "b"))
@@ -46,6 +47,17 @@ defmodule Nest.Agents.Agent.MessageAppendTagsTest do
                Repair.decide(:live, [user(0), assistant_text(1)], assistant_text(2))
 
       assert reason =~ "second consecutive assistant"
+
+      # The one live-path repair: a user message onto a wire-user tail is
+      # bridged (this can only be the turn-opening append).
+      assert {:repair, [{:assistant, %Assistant{parts: [%Part.Text{text: text}]}}]} =
+               Repair.decide(:live, [user(0)], user(1))
+
+      assert text =~ "interrupted"
+
+      # A `{:tool, _}` tail is wire-user too: same single ack.
+      assert {:repair, [{:assistant, %Assistant{}}]} =
+               Repair.decide(:live, [assistant_tool_use(0, "a"), tool_result(1, "a")], user(2))
     end
 
     test ":worker_death answers an unpaired tail, or :none when clean" do

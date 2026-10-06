@@ -128,14 +128,24 @@ The single writer is `Nest.Agents.Agent.MessageAppender`. Every live
 append flows through it (`append_one/2`, `handle_batch/2`,
 `append_in_process/2`); `history` appends (`append_history_one/2`) are exempt.
 
-**Repair never runs on the live path.** Sequence validity is a function of
-the live turn, not of the message list in isolation:
+**Repair never runs on the live path, with one documented exception.**
+Sequence validity is a function of the live turn, not of the message list in
+isolation:
 
 - While a turn is live (`:streaming`, `:executing_tools`, `:compacting`) the
   turn owns the sequence. `MessageAppender` appends the requested message
   directly — no bridge. A trailing `tool_use` is *expected* while its tool
   worker runs (the real `tool_result` is the next message), so it must never
   be answered synthetically.
+- **The exception** is an incoming `user` message onto a wire-`user` tail
+  (a `{:tool, _}` result, or a `{:user, _}` whose turn was interrupted before
+  any assistant response). `Repair.classify_live/2` returns the
+  `pairing_bridge/2` assistant acknowledgement so the turn-opening append is
+  bridged instead of failing the turn. A user message is only accepted at
+  idle — the channel and `Callbacks.chat_or_drop/3` reject it mid-turn — so
+  this append can only be the turn-opening append and cannot race a live
+  turn. The unanswered-`tool_use` clause still wins, so no synthetic
+  `tool_result` is ever fabricated on the live path.
 - A live append that does not fit the turn's wire sequence (a non-result
   appended while a live `tool_use` is unanswered, or two consecutive
   same-role messages) is a bug. `MessageAppender` **fails loudly** (raises)
@@ -145,7 +155,8 @@ the live turn, not of the message list in isolation:
   requested message lands.
 
 `Nest.Messages.MessageList.pairing_bridge(messages, incoming) :: [message]`
-(terminal use only) returns the repair messages to append before `incoming`:
+(terminal use, plus the live turn-opening-user exception above) returns the
+repair messages to append before `incoming`:
 
 - If the trailing message is an assistant with `Part.ToolUse` parts, compute
   the ids not answered by `incoming`.
