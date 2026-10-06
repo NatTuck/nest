@@ -233,13 +233,18 @@ defmodule Nest.AgentsTest do
 
     test "skips agents whose process dies during enumeration" do
       # Regression for the race where a sibling test's agent
-      # is alive at `Supervisor.get_agent/1` time but exits
-      # with `:crash` (or any non-graceful reason) between
-      # the alive-check and the `GenServer.call`. The
-      # catch clause in `Agents.fetch_public_info/1` and
-      # `Agents.build_agent_data/1` must treat any exit as
-      # `:not_found` rather than propagating the `:crash`
+      # is alive at registry-lookup time but exits with
+      # `:crash` (or any non-graceful reason) before
+      # `Agent.get_public_info/1` lands. The catch in
+      # `Visibility.fetch_from_registry/3` must treat any exit
+      # as "not found" rather than propagating the `:crash`
       # and aborting the whole listing.
+      #
+      # `list_agents_info_for_space/1` now also backfills from
+      # the `agents` table, so delete both rows first: otherwise
+      # the persisted branch would return the two agents and the
+      # empty-list assertion below could pass even if the exit
+      # were NOT swallowed.
       {_pid1, id1} = AgentTestHelpers.start_agent(%{name: fresh_name()})
       space_id = AgentTestHelpers.current_space_id()
       id2 = fresh_name()
@@ -252,12 +257,15 @@ defmodule Nest.AgentsTest do
 
       AgentTestHelpers.ensure_cleanup(id2)
 
+      :ok = Nest.Persistence.delete_agent(space_id, id1)
+      :ok = Nest.Persistence.delete_agent(space_id, id2)
+
       # Stub `Agent.get_public_info/1` to `exit(:crash)` for
       # every agent — simulates the case where every
       # registered agent's GenServer crashed between the
-      # supervisor lookup and the call landing. The widened
-      # catch should swallow every `:crash` exit and the
-      # list should come back empty.
+      # registry lookup and the call landing. The catch should
+      # swallow every `:crash` exit and the list should come
+      # back empty.
       Mimic.copy(Nest.Agents.Agent)
       Mimic.stub(Nest.Agents.Agent, :get_public_info, fn _pid -> exit(:crash) end)
 

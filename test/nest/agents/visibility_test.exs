@@ -13,6 +13,7 @@ defmodule Nest.Agents.VisibilityTest do
 
   use Nest.DataCase, async: true
 
+  alias Nest.Agents
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Supervisor
   alias Nest.Agents.Visibility
@@ -149,6 +150,56 @@ defmodule Nest.Agents.VisibilityTest do
 
     visible = Visibility.list_visible_agents_for(AgentTestHelpers.current_space_id(), alice.id)
     assert Enum.all?(visible, &(&1.name != name))
+  end
+
+  test "list_non_archived_agents_for_space/1 lists running and persisted-only agents, excluding archived" do
+    # The merged, no-user-filter listing behind `agents-list`.
+    model = %{name: "qwen3.5-plus", provider: "model-studio"}
+
+    {_pid, running_name} =
+      AgentTestHelpers.start_agent(%{
+        name: "running-#{System.unique_integer([:positive])}",
+        model: model
+      })
+
+    space_id = AgentTestHelpers.current_space_id()
+
+    # A second agent in the same space, stopped so only its
+    # non-archived DB row remains. The merged listing must backfill
+    # it even though the registry has no live pid for it.
+    stopped_name = "stopped-#{System.unique_integer([:positive])}"
+
+    {:ok, ^stopped_name} =
+      Agents.create_agent(space_id, model,
+        name: stopped_name,
+        vocation_id: AgentTestHelpers.vocation_id_for_test()
+      )
+
+    AgentTestHelpers.ensure_cleanup(stopped_name)
+    Supervisor.stop_agent(space_id, stopped_name)
+    AgentTestHelpers.wait_for_pid_down(space_id, stopped_name)
+
+    # An archived row must never appear.
+    archived_name = "archived-#{System.unique_integer([:positive])}"
+
+    {:ok, _row} =
+      Nest.Persistence.insert_agent(%{
+        space_id: space_id,
+        name: archived_name,
+        model: model,
+        vocation_id: AgentTestHelpers.vocation_id_for_test()
+      })
+
+    assert :ok = Nest.Persistence.archive_agent(space_id, archived_name)
+
+    names =
+      Visibility.list_non_archived_agents_for_space(space_id) |> Enum.map(& &1.name)
+
+    # The running agent's registry entry and its DB row de-dupe to
+    # one entry.
+    assert Enum.count(names, &(&1 == running_name)) == 1
+    assert stopped_name in names
+    refute archived_name in names
   end
 
   test "list_archived_agents_for/2 returns archived rows with resolved parent_name" do

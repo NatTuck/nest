@@ -213,18 +213,16 @@ defmodule Nest.Agents do
   end
 
   @doc """
-  Lists public info for all running agents in `space_id`.
+  Lists public info for all non-archived agents in `space_id`,
+  whether or not they currently have a live process.
+
+  Merges the registry-resident agents with the persisted rows
+  (de-duplicated by name), so an agent whose BEAM pid is down is
+  still listed.
   """
   @spec list_agents_info_for_space(integer()) :: list(map())
   def list_agents_info_for_space(space_id) do
-    space_id
-    |> list_agents_for_space()
-    |> Enum.map(&get_info(space_id, &1))
-    |> Enum.filter(fn
-      {:ok, info} -> info
-      _ -> nil
-    end)
-    |> Enum.map(fn {:ok, info} -> info end)
+    Visibility.list_non_archived_agents_for_space(space_id)
   end
 
   @doc """

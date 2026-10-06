@@ -201,7 +201,9 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     assert content =~ "invalid_model"
   end
 
-  test "agents-list tool returns the space's running agents", %{vid: vid} do
+  test "agents-list tool returns the space's running and persisted non-archived agents", %{
+    vid: vid
+  } do
     {coordinator_pid, _name} =
       AgentTestHelpers.start_agent(%{
         model: %{name: "qwen3.5-plus", provider: "model-studio"},
@@ -210,7 +212,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
 
     space_id = AgentTestHelpers.current_space_id()
 
-    # Pre-seed a specialist so `agents-list` has something to show.
+    # Pre-seed a running specialist so `agents-list` has something to show.
     specialist_name = "listed-#{System.unique_integer([:positive])}"
     specialist_slug = specialist_vocation_slug()
     state = coordinator_state(space_id)
@@ -219,6 +221,33 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
              Supervisor.spawn_agent_in_space(state, specialist_name, specialist_slug)
 
     on_exit(fn -> _ = Supervisor.stop_agent(space_id, specialist_name) end)
+
+    # A persisted-only (no live pid) non-archived row: the merged
+    # listing must include it even though nothing is running for it.
+    # Its DB row has no `vocation_slug`, so the tool must not raise.
+    model = %{name: "qwen3.5-plus", provider: "model-studio"}
+    db_only_name = "db-only-#{System.unique_integer([:positive])}"
+
+    {:ok, _row} =
+      Nest.Persistence.insert_agent(%{
+        space_id: space_id,
+        name: db_only_name,
+        model: model,
+        vocation_id: AgentTestHelpers.vocation_id_for_test()
+      })
+
+    # An archived row must never appear.
+    archived_name = "archived-#{System.unique_integer([:positive])}"
+
+    {:ok, _row} =
+      Nest.Persistence.insert_agent(%{
+        space_id: space_id,
+        name: archived_name,
+        model: model,
+        vocation_id: AgentTestHelpers.vocation_id_for_test()
+      })
+
+    assert :ok = Nest.Persistence.archive_agent(space_id, archived_name)
 
     MockClient.set_tool_response(%{
       text: "listing",
@@ -252,6 +281,8 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
            ] = tool_msg.parts
 
     assert content =~ specialist_name
+    assert content =~ db_only_name
+    refute content =~ archived_name
   end
 
   test "agents-query tool sends a chat to a specialist and returns its response", %{vid: vid} do

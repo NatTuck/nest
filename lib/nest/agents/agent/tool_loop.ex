@@ -238,16 +238,20 @@ defmodule Nest.Agents.Agent.ToolLoop do
     end
   end
 
-  # `agents-list`: read the space's live agents and serialize
-  # their name, vocation, status, and depth. Pure read — no
-  # GenServer round-trip needed.
+  # `agents-list`: read the space's non-archived agents —
+  # running or persisted-only — and serialize their name,
+  # vocation, status, and depth. Pure read — no GenServer
+  # round-trip needed.
   defp run_list_agents(ctx, %ToolCall{} = tc) do
     listing =
       Nest.Agents.list_agents_info_for_space(ctx.space_id)
       |> Enum.map(fn info ->
         %{
           name: info.name,
-          vocation: info.vocation_slug,
+          # Persisted-only rows carry no `:vocation_slug` (the DB
+          # row stores only `vocation_id`), so it's nil for them;
+          # running rows keep their slug.
+          vocation: Map.get(info, :vocation_slug),
           status: info.status,
           depth: info.depth
         }
