@@ -144,21 +144,14 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
   end
 
   describe "Turn.Commit.active_segment/6" do
-    test "the committed active segment never ends on a user wire role" do
+    test "a compaction that finalizes idle closes on an assistant tail" do
+      # The idle invariant: when the commit finalizes (no carried entry,
+      # or a carried assistant response), the segment must not end on a
+      # user wire role, so the next user turn appends cleanly.
       carried_assistant = assistant_text(nil)
 
-      # The carried-entry shapes that can produce a terminal (idle)
-      # segment: no carried entry (the summary user is the tail), a
-      # carried tool pair whose tail is a tool result (wire role user),
-      # and a carried assistant (already a valid tail). A
-      # `{:user_message, _}` carried entry is never staged (the in-flight
-      # user is a `pending_user_message`), and a `{:tool_call, _}` entry
-      # resumes the live turn rather than idling, so neither is asserted
-      # here.
       cases = [
         {nil, [:user, :assistant], :ack},
-        {{:compact_tool, [assistant_tool_use(nil, "c1"), tool_result(nil, "c1")], 1, 5},
-         [:user, :assistant, :tool, :assistant], :ack},
         {{:assistant_response, carried_assistant, 1, 5}, [:user, :assistant], :carried}
       ]
 
@@ -180,6 +173,27 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
             assert List.last(messages) == carried_assistant
         end
       end
+    end
+
+    test "a compact_tool carried entry keeps its tool-result tail (resumes generation)" do
+      # Regression: a `context-compact`'s carried tail ends on a tool
+      # result, whose wire role is `user`. The `{:compact_tool, ...}`
+      # entry resumes generation, so this segment is the generation
+      # request's input and must keep ending on the tool result. An idle
+      # bridge ack here would ship a trailing assistant request (DeepSeek
+      # 400s "content[].thinking ... must be passed back"; Anthropic
+      # rejects a prefilled assistant when thinking is enabled).
+      carried = {:compact_tool, [assistant_tool_use(nil, "c1"), tool_result(nil, "c1")], 1, 5}
+
+      {messages, {:compaction, marker}} =
+        Turn.Commit.active_segment(commit_state(), "summary", carried, 10, 1, nil)
+
+      assert marker.index == 10
+      assert Enum.map(messages, &role/1) == [:user, :assistant, :tool]
+      assert MessageList.last_wire_role(messages) == :user
+      assert {:tool, %Tool{}} = List.last(messages)
+      assert :ok = Preflight.validate(messages)
+      assert :ok = Preflight.validate_request(messages)
     end
   end
 

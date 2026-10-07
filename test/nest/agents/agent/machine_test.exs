@@ -490,6 +490,57 @@ defmodule MachineTest do
     end
   end
 
+  describe "outgoing wire validation" do
+    test ":iterate with a trailing assistant fails the turn instead of shipping it" do
+      # Regression: an outgoing request must never end on an assistant
+      # role. `Preflight.validate_request/1` catches it and fails the turn
+      # with a visible error rather than letting the provider 400.
+      base = state_at(:generating)
+      ack = {:assistant, %Nest.Messages.Assistant{parts: [%Nest.Messages.Part.Text{text: "ack"}]}}
+      ctx = %{base.work.ctx | messages: base.work.ctx.messages ++ [{:user, user()}, ack]}
+      m = %{base | work: %{base.work | ctx: ctx}}
+
+      {:ok, actions, next} = Machine.step(m, :iterate)
+
+      assert Enum.any?(actions, &match?({:fail_turn, %ArgumentError{}, []}, &1))
+      refute Enum.any?(actions, &match?({:spawn_http, _}, &1))
+      assert next.phase == :idle
+    end
+
+    test ":iterate with a valid tool-result tail still spawns the request" do
+      base = state_at(:generating)
+
+      tool = %Nest.Messages.Tool{
+        parts: [
+          %Nest.Messages.Part.ToolResult{
+            tool_call_id: "c1",
+            name: "shell-cmd",
+            content: "ok",
+            is_error: false
+          }
+        ]
+      }
+
+      calls = [
+        %Nest.Messages.Part.ToolUse{id: "c1", name: "shell-cmd", arguments: %{}},
+        %Part.Text{text: "working"}
+      ]
+
+      assistant = {:assistant, %Nest.Messages.Assistant{parts: calls}}
+
+      ctx = %{
+        base.work.ctx
+        | messages: base.work.ctx.messages ++ [{:user, user()}, assistant, {:tool, tool}]
+      }
+
+      m = %{base | work: %{base.work | ctx: ctx}}
+
+      {:ok, actions, _next} = Machine.step(m, :iterate)
+
+      assert Enum.any?(actions, &match?({:spawn_http, _}, &1))
+    end
+  end
+
   # --- helpers ---
 
   defp action_tag(:iterate), do: :iterate

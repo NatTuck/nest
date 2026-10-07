@@ -49,7 +49,10 @@ defmodule Nest.Agents.Agent.Turn.Messages do
         do: [%Part.Refusal{refusal: response.refusal}],
         else: []
 
-    text_part ++ thinking_part ++ tool_use_parts ++ refusal_part
+    # Thinking must lead the content block array: Anthropic rejects an
+    # assistant message whose `thinking` block does not come first, and
+    # DeepSeek's Anthropic-compatible endpoint validates the same way.
+    thinking_part ++ text_part ++ tool_use_parts ++ refusal_part
   end
 
   defp tool_call_to_part(%Nest.Messages.ToolCall{} = tc) do

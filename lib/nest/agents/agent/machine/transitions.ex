@@ -30,6 +30,7 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   alias Nest.Agents.Agent.Turn.Messages, as: TurnMessages
   alias Nest.Agents.Agent.Turn.Terminal
   alias Nest.Agents.Agent.WorkspaceHandler
+  alias Nest.LLM.Preflight
   alias Nest.Messages.MessageList
 
   # Compile-time copies of the blocked phases so guards stay valid.
@@ -354,9 +355,21 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
 
   # The staged compaction request was assembled; spawn the compactor.
   def do_step(%{phase: :generating, kind: :compaction} = m, :iterate) do
-    provisional = m.work.active_message_index
-    ctx = Dispatch.spawn_ctx(m, Dispatch.request_messages(m))
-    {:ok, [{:set_streaming, provisional}, {:stage_compaction, ctx}], m}
+    messages = Dispatch.request_messages(m)
+
+    case Preflight.validate_request(messages) do
+      :ok ->
+        provisional = m.work.active_message_index
+        ctx = Dispatch.spawn_ctx(m, messages)
+        {:ok, [{:set_streaming, provisional}, {:stage_compaction, ctx}], m}
+
+      {:error, violations} ->
+        Compaction.compaction_failed(
+          m,
+          Preflight.format_violations(violations),
+          Compaction.carried(m)
+        )
+    end
   end
 
   # --- committing ---
@@ -461,6 +474,16 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   end
 
   defp dispatch_http(m) do
+    case Preflight.validate_request(messages(m)) do
+      :ok ->
+        do_dispatch_http(m)
+
+      {:error, violations} ->
+        fail_turn(m, %ArgumentError{message: Preflight.format_violations(violations)}, [])
+    end
+  end
+
+  defp do_dispatch_http(m) do
     pre_iteration = m.work.iteration
     notice = BudgetReminder.notice_text(m.work.max_iterations - pre_iteration)
     pending_notice = m.work.pending_notice || notice

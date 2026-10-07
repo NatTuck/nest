@@ -59,7 +59,7 @@ defmodule Nest.Agents.Agent.Turn.Commit do
         sys -> [sys | append_entry_tail([summary_user], carried_entry)]
       end
       |> Enum.map(&drop_pre_compaction_usage/1)
-      |> ensure_assistant_tail()
+      |> ensure_assistant_tail(carried_entry)
 
     marker =
       Marker.build_marker(
@@ -96,13 +96,23 @@ defmodule Nest.Agents.Agent.Turn.Commit do
   # all of which would make the next user turn need the live-path bridge.
   # Close the segment with the compaction-specific assistant ack instead;
   # a carried assistant tail is already valid and gets no extra message.
-  defp ensure_assistant_tail(messages) do
+  #
+  # Only the `nil` carried entry (a post-turn compaction that finalizes
+  # idle, or resumes a held user message) needs the ack. A carried entry
+  # resumes generation (`Compaction.resume/1`), and its segment is the
+  # generation request's input: it must keep ending on the user/tool tail,
+  # otherwise we ship a *trailing assistant* request (Anthropic rejects a
+  # prefilled assistant when thinking is enabled; DeepSeek 400s with
+  # "content[].thinking ... must be passed back").
+  defp ensure_assistant_tail(messages, nil) do
     if MessageList.last_wire_role(messages) == :user do
       messages ++ [MessageList.idle_bridge_ack(:compaction)]
     else
       messages
     end
   end
+
+  defp ensure_assistant_tail(messages, _carried_entry), do: messages
 
   defp build_rebuilt_system(system_prompt, context_limit, now) do
     cond do

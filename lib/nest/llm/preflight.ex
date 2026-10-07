@@ -21,6 +21,15 @@ defmodule Nest.LLM.Preflight do
     * `:no_trailing_orphan` — the list must not end with an assistant
       whose `tool_use` is unanswered.
 
+  `validate_request/1` is the outgoing-request counterpart: it runs every
+  `validate/1` rule and adds `:no_trailing_assistant` — a request must not
+  end on an assistant message (a request never intentionally prefills an
+  assistant turn; Anthropic rejects a prefilled assistant when thinking is
+  enabled, and DeepSeek's Anthropic-compatible endpoint 400s on a trailing
+  assistant without a `thinking` block). A persisted *history* may legitimately
+  end on an assistant (that is an idle agent's rest state), so the rule is
+  request-only.
+
   `validate_tool_call_pairing/1` is the legacy wrapper used by
   `Nest.LLM.MockClient` for its 400-parody. It returns the original
   `kind`-based error shape without the `:rule` tag.
@@ -47,6 +56,7 @@ defmodule Nest.LLM.Preflight do
           | :no_orphan_tool_results
           | :alternation
           | :no_trailing_orphan
+          | :no_trailing_assistant
 
   @type error_kind ::
           :unknown_role
@@ -54,6 +64,7 @@ defmodule Nest.LLM.Preflight do
           | :missing_tool_responses
           | :unclosed_tool_responses
           | :alternation_violation
+          | :trailing_assistant
 
   @type violation :: %{
           optional(:role) => atom(),
@@ -100,6 +111,24 @@ defmodule Nest.LLM.Preflight do
     case violations do
       [] -> :ok
       _ -> {:error, violations}
+    end
+  end
+
+  @doc """
+  Validate a message list about to be sent as an LLM request.
+
+  Runs every `validate/1` rule, then the request-only
+  `:no_trailing_assistant` check: a request must not end on an
+  assistant message. Returns `:ok` or `{:error, [violation()]}` with
+  every violation from both passes.
+  """
+  @spec validate_request([Message.t()]) :: :ok | {:error, [violation()]}
+  def validate_request(messages) do
+    case {validate(messages), trailing_assistant_violation(messages)} do
+      {:ok, :ok} -> :ok
+      {:ok, {:error, violations}} -> {:error, violations}
+      {{:error, violations}, :ok} -> {:error, violations}
+      {{:error, violations}, {:error, more}} -> {:error, violations ++ more}
     end
   end
 
@@ -172,6 +201,37 @@ defmodule Nest.LLM.Preflight do
     end)
   end
 
+  # A trailing assistant with an unanswered `tool_use` is already reported
+  # by `:no_trailing_orphan`; this request-only rule covers the other case —
+  # a trailing assistant with no pending tool call (e.g. a synthetic bridge
+  # ack that leaked to the tail). The two are mutually exclusive: a tool
+  # result can never follow the final message.
+  defp trailing_assistant_violation(messages) do
+    visible = reject_compaction(messages)
+
+    case List.last(visible) do
+      {:assistant, %Assistant{parts: parts}} ->
+        if has_tool_use?(parts) do
+          :ok
+        else
+          {:error,
+           [
+             %{
+               rule: :no_trailing_assistant,
+               kind: :trailing_assistant,
+               position: length(visible) - 1,
+               orphan_ids: [],
+               missing_ids: [],
+               expected_ids: []
+             }
+           ]}
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
   defp format_violation(%{rule: :known_roles, position: pos, role: role}) do
     "known_roles: unknown role #{inspect(role)} at #{pos}"
   end
@@ -188,6 +248,10 @@ defmodule Nest.LLM.Preflight do
 
   defp format_violation(%{rule: :no_trailing_orphan} = v) do
     "no_trailing_orphan: unpaired tool_use at #{v.position} for #{inspect(v.expected_ids)}"
+  end
+
+  defp format_violation(%{rule: :no_trailing_assistant, position: pos}) do
+    "no_trailing_assistant: the message list ends with an assistant message at #{pos}"
   end
 
   defp format_violation(%{rule: :alternation, position: pos}) do

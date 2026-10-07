@@ -254,4 +254,51 @@ defmodule Nest.LLM.PreflightTest do
       assert text =~ "a"
     end
   end
+
+  describe "validate_request/1" do
+    test "ok: a request ending on a user message" do
+      assert Preflight.validate_request([system_text("s"), user_text("hi")]) == :ok
+    end
+
+    test "ok: a request ending on a tool result (wire role user)" do
+      messages = [user_text("hi"), assistant_tool_use("a"), tool_result("a")]
+      assert Preflight.validate_request(messages) == :ok
+    end
+
+    test "no_trailing_assistant: rejects a text-only trailing assistant" do
+      assert {:error, violations} =
+               Preflight.validate_request([user_text("hi"), assistant_text("done")])
+
+      assert [%{rule: :no_trailing_assistant, kind: :trailing_assistant, position: 1}] =
+               violations
+    end
+
+    test "no_trailing_assistant: a trailing unpaired tool_use stays no_trailing_orphan" do
+      # The two trailing rules are mutually exclusive; an unpaired
+      # tool_use must not be double-reported.
+      assert {:error, violations} =
+               Preflight.validate_request([user_text("hi"), assistant_tool_use("a")])
+
+      assert [%{rule: :no_trailing_orphan, expected_ids: ["a"]}] = violations
+    end
+
+    test "unions the request rule with the history rules" do
+      assert {:error, violations} =
+               Preflight.validate_request([
+                 user_text("a"),
+                 assistant_text("b"),
+                 assistant_text("c")
+               ])
+
+      rules = Enum.map(violations, & &1.rule)
+      assert :alternation in rules
+      assert :no_trailing_assistant in rules
+    end
+
+    test "validate/1 still allows a history that ends on an assistant" do
+      # An idle agent's rest state legitimately ends on an assistant;
+      # only the request path forbids it.
+      assert Preflight.validate([user_text("hi"), assistant_text("done")]) == :ok
+    end
+  end
 end
