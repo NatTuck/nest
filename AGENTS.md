@@ -20,6 +20,12 @@ head, or tail. This behavior is **NEVER** acceptable. If you do it even once,
 stop running commands for *any reason*, explain how to avoid the error in the
 future, and stop.
 
+## Important: Core Process Rules
+
+* Never `git stash`, at all.
+- Never revert stuff, not even temporarily, without an explicit human request. 
+If the tree is so screwed up that reverting is the only option then stop and report.
+
 ## Project Design
 
 ### LLM Calls
