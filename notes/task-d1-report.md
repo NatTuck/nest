@@ -430,3 +430,68 @@ File caps after this round (credo caps 500 code / 700 total): `agent_channel.ex`
 **694 total** (6 lines of headroom — the reviewer's warning about this file
 stands), `inbox.ex` 261, `transitions.ex` 662, `machine/boundary.ex` 75,
 `turn_acceptance_test.exs` 687, `machine_boundary_delivery_test.exs` 376.
+
+---
+
+# review-pr28 follow-ups
+
+The lead's triage of `notes/review-pr28.md`: findings 1 and 2 plus nits 5 and 6 were
+ours to fix; nits 3/4 (the design note), 7/8 (process/artefacts) and observations 9/10
+were left to the lead. `assets/**` untouched — finding 1's fix is server-side.
+
+| # | item | what was done |
+| --- | --- | --- |
+| 1 | **Finding 1 — `pendingMessageCount` never on the `chat:status` broadcast** | `Broadcasts.status_payload/1` now carries `pendingMessageCount: length(state.live.inbox)` beside `currentMode:` (with a comment: a client that missed a `chat:inbox` frame recovers the count from the next status), so the client's `statusExtras` branch, its test and the PR-body claim are real. The payload function's `state.live`/`state.llm_metrics` reads were hoisted into `live`/`metrics` locals because the extra field pushed the function over credo's ABC cap (33 → clean). Test: the existing `agent_channel_test.exs` "chat:status broadcast carries currentMode (sticky mode)" assertion pattern was extended to `%{status: "idle", currentMode: "chat", pendingMessageCount: 0}` (no new test/setup), and the new composed test below asserts a **non-zero** count on a broadcast (`%{status: "streaming", pendingMessageCount: 2}`). |
+| 2 | **Finding 2 — no test covers the composed channel → queue → drain → append → broadcast path** | New test `"a message pushed while a tool batch runs is queued, drained and broadcast as the turn"` in `agent_channel_queued_message_test.exs`: a dedicated agent on a multi-mode vocation is joined through the real channel; a real tool batch is parked in a `Mimic.stub(Nest.Agents, :send_message, …)` release valve (the `turn_acceptance_test.exs` trick, 1 s valve); the socket pushes `chat:message` while the agent is genuinely `:executing_tools`; after release it asserts the queued entry (`kind`/`from`/`mode`/verbatim `content`), the delivered `chat:message` **payload** the client receives (`"mode" => "plan"` distinguishes it from the turn-opening message, `"index"` equals the transcript row's index, one text part with `[mode: plan]`, `[Message from the user "<username>"]\nhuman note` then `[Message from agent "<name>"]\npeer note` in queue order), the transcript `[:system, :user, :assistant, :tool, :assistant, :user, :assistant]` with the bridge ack before the delivered row, the emptied inbox and unique indices. Per the reviewer's caution the test asserts payloads/transcript only — never a status sequence (the helper double-subscribes). |
+| 5 | **Nit 5 — no compat cast clause** | `Callbacks`'s chat-cast clause now carries a comment saying the 4-tuple arity is deliberate and that the old 2-/3-tuple shape fails loudly with a `FunctionClauseError` instead of being silently dropped. No dead compat clause added. |
+| 6 | **Nit 6 — the escalation consequence** | `Inbox`'s "One mode per delivery" section gained one sentence: with two queued human messages that asked for different modes, the *older* one executes under the newer one's caps and the model sees a single `[mode: X]` prefix for the whole batch (only the inbox panel shows each entry's requested mode). |
+
+Verification (full output, logs under `notes/test-runs/`):
+
+```
+$ mix format <changed files>            # clean
+$ mix compile --force --warnings-as-errors
+Compiling 186 files (.ex)
+Generated nest app
+
+$ mix test <the 46 touched/related files>     # notes/test-runs/task-d1.log
+Running ExUnit with seed: 186329, max_cases: 24
+
+...................................................................................................................................................................................................................................................................................................................................................................................
+Finished in 1.9 seconds (1.9s async, 0.00s sync)
+371 tests, 0 failures
+
+$ mix credo                                   # notes/test-runs/task-d1-credo.log
+Checking 406 source files (this might take a while) ...
+
+Please report incorrect results: https://github.com/rrrene/credo/issues
+
+Analysis took 0.9 seconds (0.1s load, 0.8s running 72 checks on 406 files)
+4050 mods/funs, found no issues.
+
+Use `mix credo explain` to explain issues or `mix credo --help` for options.
+```
+
+Negative controls (each reverted in place, the file verified byte-identical, then the
+suite re-run green):
+
+```
+# (a) finding 1: drop the field from the broadcast payload
+$ mix test test/nest_web/channels/agent_channel_test.exs \
+           test/nest_web/channels/agent_channel_queued_message_test.exs
+   pattern: %{status: "idle", currentMode: "chat", pendingMessageCount: 0}
+   pattern: %{status: "streaming", pendingMessageCount: 2}
+32 tests, 2 failures
+
+# (b) finding 2: the queued entry loses its sender (Inbox.put_entry/5 from -> nil)
+$ mix test test/nest_web/channels/agent_channel_queued_message_test.exs
+     Assertion with == failed
+     code:  assert from == user.username
+3 tests, 2 failures
+```
+
+File caps after this round (credo caps 500 code / 700 total):
+`test/nest_web/channels/agent_channel_test.exs` is now **699/700 total** (459 code) — the
+one-line-comment extension of the existing pattern is what took it there, so the next
+change to that file must split it; `agent_channel_queued_message_test.exs` 277/182;
+`broadcasts.ex` 367/221; `callbacks.ex` 266/130; `inbox.ex` 265/208.

@@ -50,7 +50,11 @@ defmodule Nest.Agents.Agent.Inbox do
 
   Every queued entry is combined into ONE user message, so the batch runs
   in one mode: the most recent human-sourced entry that carries a mode wins
-  (`drain_mode/1`), and `nil` leaves the agent's current mode unchanged.
+  (`drain_mode/1`), and `nil` leaves the agent's current mode unchanged. The
+  consequence is worth stating: with two queued human messages that asked for
+  different modes, the *older* one executes under the newer one's caps, and
+  the model sees a single `[mode: X]` prefix for the whole batch (only the
+  inbox panel shows each entry's requested mode).
   The executor applies the winning mode when it drains — never when the
   entry is queued, because `state.live.mode` feeds `ctx.mode`/`ctx.caps`,
   which are rebuilt on every settle; setting it on arrival would re-resolve

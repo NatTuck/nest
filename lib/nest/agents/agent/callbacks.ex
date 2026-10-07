@@ -58,6 +58,12 @@ defmodule Nest.Agents.Agent.Callbacks do
   # A human chat message (`Agent.chat/4`). The disposition is decided here,
   # in the agent process, so the status check and the enqueue cannot race:
   # this read is the authority, and the channel's own read is UX only.
+  #
+  # The 4-tuple arity is deliberate and there is no compatibility clause for
+  # the old 2-/3-tuple casts: an out-of-tree caller still using that shape
+  # fails loudly with a `FunctionClauseError` in the agent process instead of
+  # being silently dropped, which is what this project prefers for a shape it
+  # no longer knows.
   # `:idle` starts the turn now (the requested mode applies immediately); a
   # busy status queues the message on the agent's own inbox for the next
   # turn boundary; a broken status drops it (logged — the channel's

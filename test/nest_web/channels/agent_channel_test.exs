@@ -306,7 +306,10 @@ defmodule NestWeb.AgentChannelTest do
       # idle status both arrive.
       assert_push "chat:message", %{"role" => "assistant"}, 500
 
-      assert_push "chat:status", %{status: "idle", currentMode: "chat"}, 500
+      # The broadcast carries the queued count too (here 0: nothing is queued).
+      assert_push "chat:status",
+                  %{status: "idle", currentMode: "chat", pendingMessageCount: 0},
+                  500
     end
 
     test "calls LLM and broadcasts response with deltas and index", %{socket: socket} do

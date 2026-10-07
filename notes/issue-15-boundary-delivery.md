@@ -269,10 +269,12 @@ longer reject the working ones.
   The fix keys off the authoritative signal instead of a status guess:
   the agent broadcasts `chat:inbox` when it queues the message (with
   `kind: "user"`, the verbatim content, the mode and the sender), and
-  `setAgentInbox` retracts the oldest still-present optimistic row whose
+  `setAgentInbox` retracts the newest still-present optimistic row whose
   content matches a user-sourced entry — re-anchoring `lastIndex` on the
-  newest surviving real row and clearing the fabricated placeholder only
-  when it belongs to that send. The optimistic row is tagged
+  highest surviving row and clearing the fabricated placeholder only when
+  it belongs to that send. (Newest, not oldest: an older matching row may
+  belong to a send whose `chat:message` has not arrived yet, so retracting
+  it would delete or mis-index that send.) The optimistic row is tagged
   `optimistic: true` so a real row can never be retracted. The queued
   message is then visible in the inbox panel (which already renders the
   list) until the drain delivers it as a normal `chat:message`.
@@ -296,7 +298,7 @@ longer reject the working ones.
   *is* a taken boundary, though: `Compaction.resume/1` re-enters
   `:generating`/`:chat` and emits `:iterate` with the synthetic
   `tool_result` as the tail (`Response.compact_only/5` appends neither
-  carried message; `Turn.Commit` puts the pair at the head of the new
+  carried message; `Turn.Commit` appends the pair at the end of the new
   segment), so a message queued during such a compaction is drained
   there, before the post-compaction request. That is safe — the wire
   stays legal, the delivered message gets a fresh budget, and delivering
@@ -326,15 +328,16 @@ longer reject the working ones.
   refactor that breaks the coupling fails loudly instead of wedging.
 - **The status can leave `:streaming`** on the delivery path when the
   new turn does not fit and `Compaction.stage/3` runs: the agent goes
-  `:compacting` (and, with task D, `chat_or_drop/3` would queue rather
-  than start). That is correct, just not the "never leaves `:streaming`"
-  claim the first draft made.
+  `:compacting` (and, with task D, a human message sent while it is
+  compacting is queued rather than started). That is correct, just not the
+  "never leaves `:streaming`" claim the first draft made.
 - **Idle-based waits are unaffected but can be starved.** `agents-query`
-  (`ToolLoop.wait_for_idle/5`) and `agents-wait` (`Agent.WaitLoop`) both
-  wait for a peer to go idle, and a peer that keeps receiving messages
-  keeps starting new turns. Neither is resolved *falsely* by this design
-  (no transient idle is broadcast), but both can now wait longer.
-  Worth a test on the delivery side; not a behaviour change to the waits.
+  (`ToolLoop.wait_for_idle/5`) waits for a peer to go idle, and a peer that
+  keeps receiving messages keeps starting new turns. It is not resolved
+  *falsely* by this design (no transient idle is broadcast), but it can now
+  wait longer. (`agents-wait`, the blocking peer wait, arrives with #17 on
+  its own branch and has the same property.) Worth a test on the delivery
+  side; not a behaviour change to the waits.
 - **The inbox signal is `ctx.inbox_count`, read through one documented
   accessor that defaults to 0.** `build_ctx/2` always sets it (from
   `length(state.live.inbox)`), so the default only ever applies to the
