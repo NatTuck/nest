@@ -74,11 +74,24 @@ defmodule Nest.Agents.Agent.ChatState do
   its own mtime check). Cleared on successful compaction
   (the LLM is summarized and shouldn't carry pre-summary reads forward)
   and on agent restart.
+
+  The `agent_row_id` field caches the integer `agents.id` this
+  process owns — the `messages.agent_id` FK every append writes.
+  Callers above the persistence layer identify an agent by
+  `{space_id, name}`, and resolving that name to the row id is a
+  SELECT; caching it here means the append hot path pays that
+  resolution once per process instead of twice per message (see
+  `Nest.Agents.Agent.Persistence`). It is seeded from the start attrs
+  when `Persistence.build_attrs_for_start/2` already read the row, and
+  lazily resolved (then cached) on the first append otherwise. `nil`
+  means "not resolved yet" — not "no row" — so every read of it goes
+  through the resolver.
   """
   defstruct messages: [],
             last_compaction_index: -1,
             compaction_count: 0,
             next_message_index: 0,
+            agent_row_id: nil,
             read_files: %{}
 end
 

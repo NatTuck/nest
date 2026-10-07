@@ -42,6 +42,7 @@ defmodule Nest.Agents.Agent do
   alias Nest.Agents.Agent.SubAgent
   alias Nest.Agents.Agent.SystemPrompt
   alias Nest.Agents.Agent.TmpSpace
+  alias Nest.Agents.PersistedAgent
   alias Nest.Agents.Registry
   alias Nest.LLM.ClientConfig
   alias Nest.Messages.Assistant
@@ -171,8 +172,11 @@ defmodule Nest.Agents.Agent do
     # Refuse an agent without a non-empty system message (validate first).
     case build_initial_system_message(attrs) do
       {:ok, system_message} ->
-        with {:ok, _} <- Persistence.insert_agent(attrs),
-             {:ok, _} <- Persistence.insert_message(attrs.space_id, attrs.name, system_message) do
+        # `insert_agent/1` returns the row, so the system message is
+        # written by id: resolving `{space_id, name}` again here would
+        # be a second SELECT for a row we are holding.
+        with {:ok, %PersistedAgent{id: agent_id}} <- Persistence.insert_agent(attrs),
+             {:ok, _} <- Persistence.insert_message_by_agent_id(agent_id, system_message) do
           :ok
         end
 
@@ -191,14 +195,14 @@ defmodule Nest.Agents.Agent do
       |> Map.get(:preloaded_messages, [])
       |> Enum.filter(fn {_role, %{index: idx}} -> idx >= fork_index end)
 
-    with {:ok, _} <- Persistence.insert_agent(attrs) do
-      persist_own_messages(attrs, own_messages)
+    with {:ok, %PersistedAgent{id: agent_id}} <- Persistence.insert_agent(attrs) do
+      persist_own_messages(agent_id, own_messages)
     end
   end
 
-  defp persist_own_messages(attrs, messages) do
+  defp persist_own_messages(agent_id, messages) do
     Enum.reduce_while(messages, :ok, fn message, :ok ->
-      case Persistence.insert_message(attrs.space_id, attrs.name, message) do
+      case Persistence.insert_message_by_agent_id(agent_id, message) do
         {:ok, _} -> {:cont, :ok}
         {:error, reason} -> {:halt, {:error, reason}}
       end

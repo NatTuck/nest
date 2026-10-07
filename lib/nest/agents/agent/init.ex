@@ -72,7 +72,7 @@ defmodule Nest.Agents.Agent.Init do
       created_by_user_id: Map.get(attrs, :created_by_user_id),
       shared: Map.get(attrs, :shared, false),
       depth: Map.get(attrs, :depth, 0),
-      chat_state: build_chat_state(initial_messages, next_index),
+      chat_state: build_chat_state(initial_messages, next_index, Map.get(attrs, :agent_row_id)),
       live: build_live_state(mode)
     }
   end
@@ -126,12 +126,12 @@ defmodule Nest.Agents.Agent.Init do
   def persist_initial_system_message(state) do
     case state.chat_state.messages do
       [{:system, sys_struct} | _] when is_struct(sys_struct, System) ->
-        AgentPersistence.append_message(
-          state.space_id,
-          state.name,
-          {:system, sys_struct},
-          state.chat_state.next_message_index
-        )
+        _state =
+          AgentPersistence.append_message(
+            state,
+            {:system, sys_struct},
+            state.chat_state.next_message_index
+          )
 
         :ok
 
@@ -353,10 +353,15 @@ defmodule Nest.Agents.Agent.Init do
     }
   end
 
-  defp build_chat_state(messages, next_index) do
+  defp build_chat_state(messages, next_index, agent_row_id) do
     %Nest.Agents.Agent.ChatState{
       messages: messages,
-      next_message_index: next_index
+      next_message_index: next_index,
+      # The `agents.id` the start attrs were read with, when the
+      # caller had the row in hand (`build_attrs_for_start/2`).
+      # `nil` for a freshly pre-spawned agent; the append path
+      # resolves and caches it on first use.
+      agent_row_id: agent_row_id
     }
   end
 

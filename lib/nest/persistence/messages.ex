@@ -6,9 +6,10 @@ defmodule Nest.Persistence.Messages do
 
   Owns the per-agent reads (`load_messages/2`,
   `load_full_messages/2`, `last_compaction_index/2`) and the
-  `update_next_message_index/3` / `update_fork_message_index/3`
-  counter bumps. All functions take `space_id` as the first
-  argument since agent names are unique within a space.
+  `update_next_message_index/2` / `update_fork_message_index/3`
+  counter bumps. The counter bumps key on the agent's integer
+  `agents.id`; everything else takes `space_id` first since agent
+  names are unique within a space.
 
   `load_messages/2` returns only the rows the agent *owns*.
   `load_full_messages/2` returns the agent's full logical
@@ -190,26 +191,29 @@ defmodule Nest.Persistence.Messages do
     end
   end
 
-  @spec update_next_message_index(integer(), String.t(), non_neg_integer()) ::
-          :ok | {:error, term()}
-  def update_next_message_index(space_id, agent_name, new_index) do
-    case Nest.Persistence.fetch_agent(space_id, agent_name) do
-      {:ok, %PersistedAgent{id: agent_id}} ->
-        now = Nest.Persistence.now()
+  @doc """
+  Bump the `next_message_index` counter on the agent row whose
+  `agents.id` is `agent_id`.
 
-        from(a in PersistedAgent, where: a.id == ^agent_id)
-        |> Repo.update_all(
-          set: [
-            next_message_index: new_index,
-            updated_at: now
-          ]
-        )
+  Keyed on the integer id, not `{space_id, name}`: the append hot
+  path resolves that id once per process and caches it, so the
+  counter bump costs one UPDATE and no resolution SELECT.
+  Returns `{:error, :agent_not_found}` when no row matches.
+  """
+  @spec update_next_message_index(integer(), non_neg_integer()) :: :ok | {:error, term()}
+  def update_next_message_index(agent_id, new_index) do
+    now = Nest.Persistence.now()
 
-        :ok
+    {count, _} =
+      from(a in PersistedAgent, where: a.id == ^agent_id)
+      |> Repo.update_all(
+        set: [
+          next_message_index: new_index,
+          updated_at: now
+        ]
+      )
 
-      {:error, :not_found} ->
-        {:error, :agent_not_found}
-    end
+    if count == 0, do: {:error, :agent_not_found}, else: :ok
   end
 
   @doc """

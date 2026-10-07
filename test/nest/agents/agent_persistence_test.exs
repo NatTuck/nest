@@ -4,20 +4,31 @@ defmodule Nest.Agents.Agent.PersistenceTest do
   wrapper around `Nest.Persistence` that the Agent's `init/1`
   and `__append_message__/2` paths use.
 
-  The wrapper forwards to the real `Persistence.insert_message/2` /
-  `update_next_message_index/2` calls.
+  The wrapper forwards to the real `Persistence.insert_message_by_agent_id/2`
+  / `update_next_message_index/2` calls, resolving (and caching) the
+  agent's `agents.id` on the state it is handed.
   """
   use Nest.DataCase, async: true
 
+  import ExUnit.CaptureLog
   import Nest.PersistenceTestHelpers
 
+  alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Persistence, as: AgentPersistence
   alias Nest.Agents.PersistedAgent
   alias Nest.Agents.PersistedMessage
   alias Nest.Messages.Part
   alias Nest.Messages.System, as: MsgSystem
+  alias Nest.Messages.User
   alias Nest.Persistence
   alias Nest.Vocations
+
+  # The minimum `Agent.t()` the wrapper reads: `space_id`, `name`, and
+  # `chat_state`. `agent_row_id` starts unresolved, so the wrapper
+  # exercises its own resolution.
+  defp append_state(name) do
+    %Agent{space_id: test_space_id(), name: name, chat_state: %Agent.ChatState{}}
+  end
 
   defp local_vocation_id do
     {:ok, %Vocations.Vocation{id: id}} =
@@ -47,7 +58,7 @@ defmodule Nest.Agents.Agent.PersistenceTest do
       # agent channel caused `Agent.init/1` to re-insert the
       # system message at index 0, which collided with the
       # already-persisted row. With `on_conflict: :nothing` in
-      # `Persistence.insert_message/2`, the second insert is a
+      # `Persistence.insert_message_by_agent_id/2`, the second insert is a
       # silent no-op; the wrapper must not raise.
       name = "dup-#{System.unique_integer([:positive])}"
 
@@ -62,11 +73,16 @@ defmodule Nest.Agents.Agent.PersistenceTest do
       system_msg = {:system, %MsgSystem{index: 0, parts: [%Part.Text{text: "sys"}]}}
       assert {:ok, _} = Persistence.insert_message(test_space_id(), name, system_msg)
 
-      # The Agent's `init/1` calls `persist_initial_system_message/1`
-      # which routes through `AgentPersistence.append_message/3`.
-      # The second call (the one that triggered the production
-      # crash) must succeed without raising.
-      assert :ok = AgentPersistence.append_message(test_space_id(), name, system_msg, 1)
+      # The Agent's append path calls `AgentPersistence.append_message/3`
+      # with its state. The second call (the one that triggered the
+      # production crash) must succeed without raising, and must hand
+      # back the state with the agent's row id resolved onto it.
+      state = append_state(name)
+
+      assert %Agent{chat_state: %{agent_row_id: agent_row_id}} =
+               AgentPersistence.append_message(state, system_msg, 1)
+
+      assert is_integer(agent_row_id)
     end
 
     test "bumps next_message_index on a fresh insert" do
@@ -81,11 +97,54 @@ defmodule Nest.Agents.Agent.PersistenceTest do
         })
 
       system_msg = {:system, %MsgSystem{index: 0, parts: [%Part.Text{text: "x"}]}}
-      assert :ok = AgentPersistence.append_message(test_space_id(), name, system_msg, 1)
+      assert %Agent{} = AgentPersistence.append_message(append_state(name), system_msg, 1)
 
       assert [%PersistedAgent{next_message_index: 1}] =
                Nest.Repo.all(PersistedAgent)
                |> Enum.filter(&(&1.name == name))
+    end
+
+    test "a cached agents.id never writes to a row that took over the name" do
+      # The invalidation question for the cached id: the row is deleted
+      # (the space-teardown path) while the process is still alive, and a
+      # *different* agent row takes over the name. `agents.id` is a
+      # `bigserial`, so the replacement gets a fresh id — the cached one
+      # can never resolve to it. The append must therefore be dropped,
+      # not silently re-targeted at the new agent.
+      name = "reused-#{System.unique_integer([:positive])}"
+      attrs = agent_attrs(name)
+      {:ok, %PersistedAgent{id: original_id}} = Persistence.insert_agent(attrs)
+
+      system_msg = {:system, %MsgSystem{index: 0, parts: [%Part.Text{text: "x"}]}}
+
+      state =
+        append_state(name)
+        |> AgentPersistence.append_message(system_msg, 1)
+
+      assert state.chat_state.agent_row_id == original_id
+
+      assert :ok = Persistence.delete_agent(test_space_id(), name)
+      {:ok, %PersistedAgent{id: replacement_id}} = Persistence.insert_agent(attrs)
+      assert replacement_id != original_id
+
+      log =
+        capture_log(fn ->
+          assert %Agent{chat_state: %{agent_row_id: ^original_id}} =
+                   AgentPersistence.append_message(
+                     state,
+                     {:user, %User{index: 1, parts: [%Part.Text{text: "hi"}]}},
+                     2
+                   )
+        end)
+
+      assert log =~ "Failed to persist message for agent #{name}"
+
+      # Nothing landed on the replacement row: no messages, and its
+      # counter is untouched.
+      assert Persistence.load_messages(test_space_id(), name) == []
+
+      assert {:ok, %PersistedAgent{next_message_index: 0}} =
+               Persistence.fetch_agent(test_space_id(), name)
     end
   end
 

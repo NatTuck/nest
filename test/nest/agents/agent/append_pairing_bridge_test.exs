@@ -431,18 +431,23 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
       name = unique_name("append-order")
       test_pid = self()
 
-      Mimic.stub(Nest.Persistence, :insert_message, fn _space, _agent, _message ->
+      Mimic.stub(Nest.Persistence, :insert_message_by_agent_id, fn _agent_id, _message ->
         send(test_pid, :persisted)
         {:ok, :row}
       end)
 
-      Mimic.stub(Nest.Persistence, :update_next_message_index, fn _space, _agent, _index ->
+      Mimic.stub(Nest.Persistence, :update_next_message_index, fn _agent_id, _index ->
         :ok
       end)
 
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{test_space_id()}:#{name}")
 
+      # The append path writes by the cached `agents.id`, and this test
+      # stubs both writes, so hand the state a resolved id rather than
+      # inserting a real agent row.
       state = state(name, [system(0), user(1)])
+      state = %{state | chat_state: %{state.chat_state | agent_row_id: 1}}
+
       {:ok, _stamped, _state} = MessageAppender.append_one(state, assistant_text(nil))
 
       {:messages, messages} = Process.info(self(), :messages)

@@ -38,7 +38,7 @@ defmodule Nest.Agents.AgentTest do
       tool_msg = {:tool, %Tool{parts: [], index: nil}}
       system_msg = {:system, %Nest.Messages.System{parts: [], index: nil}}
       # Plain map (not a `%Compaction{}` struct) so
-      # `Persistence.insert_message/2` logs a warning
+      # `Persistence.insert_message_by_agent_id/2` logs a warning
       # rather than inserting a row. The counter logic
       # under test doesn't care which branch fires.
       compaction_msg = {:compaction, %{parts: [], index: nil}}

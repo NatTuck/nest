@@ -108,7 +108,7 @@ defmodule Nest.Persistence do
   `attrs` carries `:space_id`, `:name`, `:model`,
   `:vocation_id`, `:workspace_path`. `:next_message_index`
   defaults to 0 and the runtime bumps it via
-  `update_next_message_index/3` when messages are appended.
+  `update_next_message_index/2` when messages are appended.
 
   Returns `{:ok, %PersistedAgent{}}` on success,
   `{:error, :duplicate_name}` when the `(space_id, name)`
@@ -238,6 +238,11 @@ defmodule Nest.Persistence do
   The agent's integer FK (`agents.id`) is resolved
   internally.
 
+  Callers that already hold the resolved `agents.id` (the append
+  hot path — see `Nest.Agents.Agent.Persistence`) should call
+  `insert_message_by_agent_id/2` instead and skip the resolution
+  SELECT.
+
   Returns `{:ok, %PersistedMessage{}}` on success, or
   `{:error, term()}` on failure.
   """
@@ -249,11 +254,28 @@ defmodule Nest.Persistence do
         {:error, :agent_not_found}
 
       {:ok, %PersistedAgent{id: agent_id}} ->
-        insert_message_with_agent_id(agent_id, agent_name, message)
+        insert_message_by_agent_id(agent_id, message)
     end
   end
 
-  defp insert_message_with_agent_id(agent_id, agent_name, {:compaction, _} = message) do
+  @doc """
+  Persist a runtime message for the agent whose `agents.id` is
+  `agent_id`, without resolving `{space_id, name}` first.
+
+  `agent_id` is the `messages.agent_id` FK. This is the write the
+  append hot path uses: the id is cached on the agent's state, so a
+  message append is the INSERT here plus the
+  `update_next_message_index/2` counter bump and nothing else.
+
+  Returns `{:ok, %PersistedMessage{}}` on success, or
+  `{:error, term()}` on failure. A `{:compaction, %Compaction{}}`
+  message is routed to the marker writer
+  (`Nest.Persistence.CompactionMarker.record/6`), which inserts the
+  marker row and bumps the boundary in one transaction.
+  """
+  @spec insert_message_by_agent_id(integer(), Message.t()) ::
+          {:ok, PersistedMessage.t()} | {:error, term()}
+  def insert_message_by_agent_id(agent_id, {:compaction, _} = message) do
     case message do
       {:compaction, %Compaction{} = marker} ->
         CompactionMarker.record(
@@ -268,12 +290,12 @@ defmodule Nest.Persistence do
       other ->
         Logger.warning(
           "Compaction tuple without %Compaction{} struct: #{inspect(other)}. " <>
-            "agent=#{agent_name}"
+            "agent_id=#{agent_id}"
         )
     end
   end
 
-  defp insert_message_with_agent_id(agent_id, _agent_name, message) do
+  def insert_message_by_agent_id(agent_id, message) do
     attrs = PersistedMessage.from_runtime(agent_id, message)
 
     %PersistedMessage{}
@@ -325,9 +347,10 @@ defmodule Nest.Persistence do
   end
 
   @doc """
-  Bump the `next_message_index` column on the agent row.
+  Bump the `next_message_index` column on the agent row whose
+  `agents.id` is `agent_id`.
   """
-  defdelegate update_next_message_index(space_id, name, new_index),
+  defdelegate update_next_message_index(agent_id, new_index),
     to: Nest.Persistence.Messages,
     as: :update_next_message_index
 
@@ -418,6 +441,10 @@ defmodule Nest.Persistence do
       vocation_id: row.vocation_id,
       workspace_path: row.workspace_path,
       next_message_index: row.next_message_index,
+      # The row id this restore already read, handed to the agent so
+      # its append path never re-resolves `{space_id, name}`. See
+      # `Nest.Agents.Agent.Persistence`.
+      agent_row_id: row.id,
       last_compaction_index: boundary,
       parent_id: row.parent_id,
       parent_name: parent_name,
