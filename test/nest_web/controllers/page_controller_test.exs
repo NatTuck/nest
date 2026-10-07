@@ -12,6 +12,10 @@ defmodule NestWeb.PageControllerTest do
   The wildcard must NOT redirect to `/register` when the
   user is already at `/register` — that produces an
   infinite 302 loop. The tests below pin that behavior.
+
+  The shell is also where an instance's identity lives (tab
+  title, favicon, `window.NEST_CONFIG.host`), so the last
+  describe pins that here too.
   """
 
   use NestWeb.ConnCase, async: false
@@ -90,6 +94,38 @@ defmodule NestWeb.PageControllerTest do
       conn = put_req_header(conn, "authorization", "Bearer #{token}")
       conn = get(conn, ~p"/chat/abc")
       assert html_response(conn, 200)
+    end
+  end
+
+  describe "instance identity" do
+    test "titles the shell for this instance, declares its favicon, and exposes the host to the client",
+         %{conn: conn} do
+      body = conn |> get(~p"/register") |> html_response(200)
+      document = LazyHTML.from_document(body)
+
+      # Exact equality, not just "contains the host": no "Nest" and no
+      # "Phoenix Framework" may survive in the tab.
+      assert LazyHTML.text(LazyHTML.query(document, "title")) == "testhost"
+      assert body =~ ~s(host: "testhost")
+
+      icon = LazyHTML.query(document, ~s(link[rel="icon"]))
+      assert LazyHTML.attribute(icon, "type") == ["image/svg+xml"]
+      assert LazyHTML.attribute(icon, "href") == ["/favicon.svg"]
+    end
+
+    test "serves the favicon that static_paths/0 advertises", %{conn: conn} do
+      assert "favicon.svg" in NestWeb.static_paths()
+      # The stock Phoenix icon is gone and must not be advertised again.
+      refute "favicon.ico" in NestWeb.static_paths()
+
+      # `Plug.Static` serves from `priv/static`, so the list and the file must
+      # agree; a mismatch makes the request fall through to the React shell.
+      assert File.exists?(Application.app_dir(:nest, "priv/static/favicon.svg"))
+
+      # End to end: the icon the shell advertises is really served as an SVG.
+      # (Without it the request returns the HTML shell, so `~p"/favicon.svg"`
+      # would only ever fail in a browser tab.)
+      assert conn |> get(~p"/favicon.svg") |> response(200) =~ "<svg"
     end
   end
 end

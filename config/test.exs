@@ -33,6 +33,11 @@ config :nest, stop_fallback_ms: 1
 # `hardware_test.exs` exercises detection against a `dev_root` fixture.
 config :nest, hpu_device_paths: []
 
+# `Nest.Hostname.get/0` titles every page (and feeds
+# `window.NEST_CONFIG.host`). Pin it so the layout tests assert on a
+# fixed name instead of whatever machine they happen to run on.
+config :nest, :hostname, "testhost"
+
 # We don't run a server during test. If one is required,
 # you can enable the server option below.
 config :nest, NestWeb.Endpoint,

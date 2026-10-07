@@ -48,6 +48,7 @@ defmodule Nest.Sandbox.ShellJobs do
   use GenServer
 
   alias Nest.PubSub
+  alias Nest.Tools.Exec
   alias Nest.Tools.ShellCmd
 
   @name __MODULE__
@@ -108,7 +109,13 @@ defmodule Nest.Sandbox.ShellJobs do
   the sandbox, or `{:error, reason}`.
   """
   @spec start_job(map()) :: {:ok, job_id(), String.t()} | {:error, String.t()}
-  def start_job(attrs), do: GenServer.call(@name, {:start_job, attrs}, 30_000)
+  def start_job(attrs) do
+    # `:erlexec` is started lazily outside prod (see `Nest.Tools.Exec`).
+    # Start it in the caller so the one-off 350ms never blocks this
+    # server's mailbox.
+    Exec.ensure_started()
+    GenServer.call(@name, {:start_job, attrs}, 30_000)
+  end
 
   @doc "Metadata for every job belonging to `agent_key`, oldest first."
   @spec list(agent_key()) :: [info()]

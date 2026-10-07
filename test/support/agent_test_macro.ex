@@ -24,10 +24,23 @@ defmodule Nest.TestSupport.AgentTestMacro do
   `Nest.Agents.AgentTestLifecycle.stop_test_agents/0` and
   `assert_zero_remaining!/1`.
 
-  The wrapper captures the body's exception (if any) and asserts the
-  zero-remaining invariant *after* cleanup, but only re-raises the
-  invariant failure when the body itself succeeded — so cleanup can
-  never mask the real cause of an already-failing test.
+  The wrapper is a single `try/catch/else`: when the body succeeds it
+  stops the test's agents and asserts the zero-remaining invariant;
+  when the body fails it still runs the teardown *in this process* —
+  before the sandbox connection is checked in — and then re-raises the
+  body's exception untouched, with its original stacktrace. The
+  invariant is asserted only on the success path, so cleanup can never
+  mask the real cause of an already-failing test.
+
+  Only `catch` is used: `catch kind, reason` already covers `:error`, so a
+  `rescue` clause buys only a compile-time cost — and a bare `rescue`
+  inside a quoted test body is the single most expensive construct in this
+  suite (~2.7 ms per test, per clause). The one difference it makes is
+  invisible: `rescue` binds `Exception.normalize/3`, so a raw Erlang reason
+  came back as `%ArithmeticError{}` rather than `:badarith`, and ExUnit
+  normalizes it for display either way — failure output is byte-identical,
+  verified against deliberately-broken `Nest.DataCase` and
+  `NestWeb.ChannelCase` tests. See `notes/test-compile-cost.md`.
   """
 
   alias Nest.Agents.AgentTestLifecycle
@@ -59,27 +72,15 @@ defmodule Nest.TestSupport.AgentTestMacro do
 
   defp wrap(block) do
     quote do
-      outcome =
-        try do
-          {:ok, unquote(block)}
-        rescue
-          exception -> {:error, :rescue, exception, __STACKTRACE__}
-        catch
-          kind, reason -> {:error, kind, reason, __STACKTRACE__}
-        end
-
-      violations = AgentTestLifecycle.stop_test_agents()
-
-      case outcome do
-        {:ok, value} ->
-          AgentTestLifecycle.assert_zero_remaining!(violations)
+      try do
+        unquote(block)
+      catch
+        kind, reason ->
+          AgentTestLifecycle.reraise_after_teardown(kind, reason, __STACKTRACE__)
+      else
+        value ->
+          AgentTestLifecycle.assert_zero_remaining!(AgentTestLifecycle.stop_test_agents())
           value
-
-        {:error, :rescue, exception, stacktrace} ->
-          reraise(exception, stacktrace)
-
-        {:error, kind, reason, stacktrace} ->
-          :erlang.raise(kind, reason, stacktrace)
       end
     end
   end

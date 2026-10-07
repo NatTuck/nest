@@ -68,6 +68,10 @@ describe("RootGate", () => {
     localStorage.removeItem("nest_token");
     useStore.getState()._reset();
     initChannels.mockClear();
+    // The host the server injects into `window.NEST_CONFIG`, plus the
+    // shell's default title: the gate proves it *replaces* it.
+    window.NEST_CONFIG = { host: "vampire" };
+    document.title = "Nest · Phoenix Framework";
   });
 
   afterEach(() => {
@@ -82,6 +86,8 @@ describe("RootGate", () => {
 
     expect(screen.getByText(/loading/i)).toBeInTheDocument();
     expect(initChannels).toHaveBeenCalledTimes(1);
+    // The gate has no page-specific parts yet: the tab is just the host.
+    expect(document.title).toBe("vampire");
   });
 
   it("redirects to /login when no token is in localStorage", async () => {

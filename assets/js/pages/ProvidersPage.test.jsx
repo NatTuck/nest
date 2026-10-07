@@ -75,6 +75,11 @@ const sampleProvider = {
 
 describe("ProvidersPage", () => {
   beforeEach(() => {
+    // The host the server injects into `window.NEST_CONFIG`, plus the
+    // shell's default title: a page test proves the page *replaces* it.
+    window.NEST_CONFIG = { host: "vampire" };
+    document.title = "Nest · Phoenix Framework";
+
     saveProviders.mockReset();
     setStore({
       isConnected: true,
@@ -113,6 +118,7 @@ describe("ProvidersPage", () => {
     expect(
       screen.getByRole("button", { name: /add provider/i }),
     ).toBeInTheDocument();
+    expect(document.title).toBe("vampire · Providers");
   });
 
   it("renders configured providers from the store", async () => {

@@ -38,6 +38,11 @@ async function renderPage() {
 
 describe("LoginPage", () => {
   beforeEach(() => {
+    // The host the server injects into `window.NEST_CONFIG`, plus the
+    // shell's default title: a page test proves the page *replaces* it.
+    window.NEST_CONFIG = { host: "vampire" };
+    document.title = "Nest · Phoenix Framework";
+
     login.mockReset();
   });
 
@@ -60,6 +65,7 @@ describe("LoginPage", () => {
       "href",
       "/register",
     );
+    expect(document.title).toBe("vampire · Sign in");
   });
 
   it("submits the form and navigates to /spaces on success", async () => {

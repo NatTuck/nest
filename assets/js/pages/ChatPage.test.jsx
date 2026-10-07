@@ -146,6 +146,10 @@ beforeEach(() => {
   scroll.isAtBottom = true;
   scroll.hasNewContent = false;
   scroll.jumpToBottom.mockClear();
+  // The host the server injects into `window.NEST_CONFIG`, plus the
+  // shell's default title: a page test proves the page *replaces* it.
+  window.NEST_CONFIG = { host: "vampire" };
+  document.title = "Nest · Phoenix Framework";
 });
 
 describe("ChatPage chat header", () => {
@@ -166,6 +170,8 @@ describe("ChatPage chat header", () => {
     renderChat();
 
     expect(screen.getByText("model-studio: qwen3.5-plus")).toBeInTheDocument();
+    // Host, then the space's human-readable name, then the agent.
+    expect(document.title).toBe("vampire · My Space · test-agent");
   });
 
   it("renders only the model name when provider is missing", () => {
@@ -2149,5 +2155,38 @@ describe("ChatPage jump to latest button", () => {
     );
 
     expect(scroll.jumpToBottom).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ChatPage page title", () => {
+  beforeEach(() => {
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "idle",
+        messages: [],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+  });
+
+  it("falls back to the route slug when the store has no matching space", () => {
+    // Hard load of a deep URL: the store's `spaces` list doesn't have
+    // this slug yet, so the title carries the slug itself (real
+    // information) rather than going blank or showing a placeholder.
+    mockSpaces = [{ id: 2, slug: "some-other-space", name: "Other Space" }];
+
+    render(
+      <MemoryRouter initialEntries={["/space/ghost-space/agent/test-agent"]}>
+        <Routes>
+          <Route path="/space/:spaceSlug/agent/:name" element={<ChatPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(document.title).toBe("vampire · ghost-space · test-agent");
+    expect(
+      screen.getByRole("heading", { name: /test-agent/ }),
+    ).toBeInTheDocument();
   });
 });

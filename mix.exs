@@ -78,7 +78,20 @@ defmodule Nest.MixProject do
       {:mimic, "~> 2.3", only: :test},
       {:phoenix_copy, "~> 0.1.4", only: :dev},
       {:unique_names_generator, "~> 0.2.0"},
-      {:erlexec, "~> 2.0"},
+      # `:erlexec`'s `exec` gen_server sleeps a hardcoded 350ms in `init/1`
+      # (deps/erlexec/src/exec.erl) to see whether its port program dies
+      # immediately. Starting the app via the application controller would
+      # therefore add 350ms to *every* `mix test` boot, so in test we leave
+      # the app out of `applications` and let `Nest.Tools.Exec.ensure_started/0`
+      # start it on the first shell command instead.
+      #
+      # ONLY `:test` skips the auto-start. Every other env keeps the default
+      # (`runtime: true`), so the app stays in `applications` and a release
+      # built in *any* env still ships it. Do not "simplify" this to a bare
+      # `runtime: false` (that drops the app from releases), and do not widen
+      # the exclusion past `:test` (a non-prod release would then ship without
+      # `:erlexec` and the first shell command would fail).
+      {:erlexec, "~> 2.0", runtime: Mix.env() != :test},
       {:mustache, "~> 0.5"},
       {:tokenizers, "~> 0.5"},
       {:exprof, "~> 0.2", only: :test},

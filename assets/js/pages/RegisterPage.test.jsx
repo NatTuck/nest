@@ -43,6 +43,11 @@ async function renderPage(search = "?token=invite-abc") {
 
 describe("RegisterPage", () => {
   beforeEach(() => {
+    // The host the server injects into `window.NEST_CONFIG`, plus the
+    // shell's default title: a page test proves the page *replaces* it.
+    window.NEST_CONFIG = { host: "vampire" };
+    document.title = "Nest · Phoenix Framework";
+
     register.mockReset();
   });
 
@@ -66,6 +71,7 @@ describe("RegisterPage", () => {
       "href",
       "/login",
     );
+    expect(document.title).toBe("vampire · Register");
   });
 
   it("hides the invite-token input on the first-user bootstrap path", async () => {

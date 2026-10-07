@@ -123,4 +123,49 @@ defmodule Nest.Agents.Agent.ToolLoopQueryErrorTest do
     assert result.content == "Could not query peer: could not read its messages: :not_found"
     assert log =~ "BatchSizer produced is_error=true tool result"
   end
+
+  # The wait is bounded by elapsed time, not by how many messages land in
+  # the caller's mailbox. The target's own streaming traffic is broadcast
+  # on the same topic we subscribed to, so counting messages let a chatty
+  # target exhaust the old `div(timeout, @wait_slice_ms)` attempt budget
+  # in seconds and report a bogus timeout long before the reply arrived.
+  test "unrelated messages on the target's topic do not consume the wait budget" do
+    stub_peer({:ok, [text_reply("pong")]})
+
+    # More messages than the old budget (`div(30_000, 250)` == 120), so the
+    # attempt-counting wait gave up before it ever reached the idle
+    # broadcast. The reply is already in the mailbox, so this completes
+    # immediately and never waits out the (generous) timeout.
+    flood_unrelated_messages(200)
+    send(self(), {:chat_status, %{status: "idle"}})
+
+    {result, _log} = run(%{"name" => "peer", "prompt" => "hi", "timeout" => 30_000})
+
+    assert %ToolResult{is_error: false, content: "pong"} = result
+  end
+
+  # A flooded mailbox must not extend (or otherwise perturb) the deadline:
+  # with no idle broadcast the wait still ends as a timeout, and promptly.
+  test "a flooded mailbox still expires on the deadline" do
+    stub_peer({:ok, []})
+
+    flood_unrelated_messages(200)
+
+    {result, log} = run(%{"name" => "peer", "prompt" => "hi", "timeout" => 1})
+
+    assert result.is_error == true
+
+    assert result.content ==
+             "Could not query peer: timed out after 1ms waiting for its turn to finish."
+
+    assert log =~ "agents-query: target did not go idle within 1ms"
+  end
+
+  # Streaming traffic shapes, as broadcast on the target's topic.
+  defp flood_unrelated_messages(count) do
+    for n <- 1..count do
+      send(self(), {:chat_delta, %{agent: "peer", index: n, text: "..."}})
+      send(self(), {:chat_message, %{agent: "peer", index: n}})
+    end
+  end
 end

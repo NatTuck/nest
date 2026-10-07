@@ -22,9 +22,12 @@ import { useNavigate } from "react-router-dom";
 
 import { ApiError } from "../api/client";
 import { login } from "../api/auth";
+import { useDocumentTitle } from "../hooks/useDocumentTitle";
 
 export function LoginPage() {
   const navigate = useNavigate();
+
+  useDocumentTitle(["Sign in"]);
 
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");

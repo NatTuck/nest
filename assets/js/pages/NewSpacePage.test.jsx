@@ -161,6 +161,11 @@ describe("validateNewSpaceForm", () => {
 
 describe("NewSpacePage", () => {
   beforeEach(() => {
+    // The host the server injects into `window.NEST_CONFIG`, plus the
+    // shell's default title: a page test proves the page *replaces* it.
+    window.NEST_CONFIG = { host: "vampire" };
+    document.title = "Nest · Phoenix Framework";
+
     mockState = {
       models: sampleModels,
       blueprints: sampleBlueprints,
@@ -205,6 +210,8 @@ describe("NewSpacePage", () => {
     expect(
       screen.getByRole("option", { name: "gpt-4o (openai)" }),
     ).toBeInTheDocument();
+
+    expect(document.title).toBe("vampire · New space");
   });
 
   it("shows the selected blueprint's root agent vocation", () => {

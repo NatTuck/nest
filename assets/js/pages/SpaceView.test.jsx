@@ -2,8 +2,9 @@
  * Tests for the SpaceView Main View page.
  *
  * Covers rendering the space + blueprint header, filtering agents by
- * `space_id`, agent links + depth badge + status, and the empty and
- * not-found states.
+ * `space_id`, agent links + depth badge + status, the empty and
+ * not-found states, and the page title (host + space name, falling back
+ * to the route slug when the store has no matching space).
  *
  * The store is mocked with a selector-based `useStore`; `spaceSlug`
  * comes from the route params via a real MemoryRouter.
@@ -31,6 +32,11 @@ function renderView(spaceSlug = "my-space") {
 }
 
 beforeEach(() => {
+  // The host the server injects into `window.NEST_CONFIG`, plus the
+  // shell's default title: a page test proves the page *replaces* it.
+  window.NEST_CONFIG = { host: "vampire" };
+  document.title = "Nest · Phoenix Framework";
+
   mockState = {
     spaces: [
       { id: 1, name: "My Space", slug: "my-space", blueprint_id: 10 },
@@ -65,6 +71,7 @@ describe("SpaceView", () => {
       screen.getByRole("heading", { name: "My Space" }),
     ).toBeInTheDocument();
     expect(screen.getByText("Blueprint: Tabletop RPG")).toBeInTheDocument();
+    expect(document.title).toBe("vampire · My Space");
   });
 
   it("only lists agents in the current space", () => {
@@ -124,5 +131,9 @@ describe("SpaceView", () => {
     expect(
       screen.getByRole("link", { name: "Back to spaces" }),
     ).toHaveAttribute("href", "/spaces");
+    // The store has no space for this slug (a hard load of a deep URL),
+    // so the title falls back to the slug itself rather than going
+    // blank or showing a placeholder.
+    expect(document.title).toBe("vampire · nope");
   });
 });

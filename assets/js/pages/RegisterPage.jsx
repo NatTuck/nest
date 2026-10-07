@@ -21,10 +21,13 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { ApiError } from "../api/client";
 import { register } from "../api/auth";
+import { useDocumentTitle } from "../hooks/useDocumentTitle";
 
 export function RegisterPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+
+  useDocumentTitle(["Register"]);
 
   const initialToken = searchParams.get("token") ?? "";
   const [username, setUsername] = useState("");
