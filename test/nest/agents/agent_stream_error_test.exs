@@ -50,8 +50,9 @@ defmodule Nest.Agents.AgentStreamErrorTest do
 
       capture_log(fn ->
         :ok = Agent.chat(pid, "Hello")
+        await_idle(pid)
 
-        assert_receive {:chat_status, %{status: "idle"}}, 500
+        assert_receive {:chat_status, %{status: "idle"}}
 
         # The single assistant message carries the partial text AND the
         # error, tagged as an error.
@@ -90,7 +91,9 @@ defmodule Nest.Agents.AgentStreamErrorTest do
 
       capture_log(fn ->
         :ok = Agent.chat(pid, "Hello")
-        assert_receive {:chat_status, %{status: "idle"}}, 500
+        await_idle(pid)
+
+        assert_receive {:chat_status, %{status: "idle"}}
 
         assert_received {:chat_message,
                          {:assistant,
@@ -104,5 +107,23 @@ defmodule Nest.Agents.AgentStreamErrorTest do
         assert content =~ "no output from the model for 300s"
       end)
     end
+  end
+
+  # Sync on the machine reaching `:idle` rather than fencing the status
+  # broadcast with a wall-clock timeout. `Turn.run/5` runs the turn's
+  # effects (append the message, broadcast `chat:error`) and then broadcasts
+  # the new status, all before the handler returns — so once
+  # `:sys.get_state/1` reports `:idle`, the broadcasts are already in this
+  # process's mailbox and the assertions below cannot race a slow error path.
+  #
+  # The 1s is a failure deadline for the poll (matching the sibling test's
+  # `eventually`), not an expected duration: the condition holds as soon as
+  # the error is handled. `eventually/2`'s default timeout is 10ms, so it has
+  # to be given explicitly.
+  defp await_idle(pid) do
+    assert eventually(
+             fn -> Machine.status_for(:sys.get_state(pid).live.machine) == :idle end,
+             timeout: 1_000
+           )
   end
 end

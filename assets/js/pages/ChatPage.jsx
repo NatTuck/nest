@@ -41,6 +41,7 @@ import { ModelMissingBanner } from "../components/ModelMissingBanner";
 import { NeedsRepairBanner } from "../components/NeedsRepairBanner";
 import { ShellJobsPanel } from "../components/ShellJobsPanel";
 import { useScrollToBottom } from "../hooks/useScrollToBottom";
+import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import { buildChatHistory } from "../utils/chatHistory.js";
 import { describeEditError, getStatusLabel } from "../utils/chatErrors.js";
 import { parseSlashCommand, SLASH_COMMANDS } from "../utils/slashCommands.js";
@@ -70,9 +71,15 @@ const SLASH_COMMAND_ACTIONS = {
 export function ChatPage() {
   const { spaceSlug, name } = useParams();
   const spaces = useStore((state) => state.spaces) ?? [];
-  // Resolve the current space id from the route's slug. The
+  // Resolve the current space from the route's slug. The
   // sidebar and channel joins all key off the integer space id.
-  const spaceId = spaces.find((s) => s.slug === spaceSlug)?.id ?? null;
+  const space = spaces.find((s) => s.slug === spaceSlug);
+  const spaceId = space?.id ?? null;
+  // The tab names the host, the space, and the agent. The space name
+  // falls back to the slug when the store hasn't loaded it yet (a hard
+  // load of a deep URL) -- the slug is real information, so it beats a
+  // blank or a placeholder.
+  useDocumentTitle([space?.name ?? spaceSlug, name]);
   const [scrollContainerEl, setScrollContainerEl] = useState(null);
   const [messagesEndEl, setMessagesEndEl] = useState(null);
   // Which chat-page view is showing: the conversation or the agent's

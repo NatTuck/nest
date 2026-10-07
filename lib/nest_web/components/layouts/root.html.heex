@@ -4,7 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="csrf-token" content={get_csrf_token()} />
-    <.live_title default="Nest" suffix=" · Phoenix Framework" phx-no-format>{assigns[:page_title]}</.live_title>
+    <title>{Nest.Hostname.get()}</title>
+    <link rel="icon" type="image/svg+xml" href={~p"/favicon.svg"} />
     <link phx-track-static rel="stylesheet" href={~p"/assets/css/app.css"} />
     <script defer phx-track-static type="module" src={~p"/assets/js/app.js"}>
     </script>
@@ -29,7 +30,8 @@
     </script>
     <script>
       window.NEST_CONFIG = {
-        sourceUrl: "<%= Application.get_env(:nest, :source_url, "") %>"
+        sourceUrl: "<%= Application.get_env(:nest, :source_url, "") %>",
+        host: "<%= Nest.Hostname.get() %>"
       };
     </script>
   </head>

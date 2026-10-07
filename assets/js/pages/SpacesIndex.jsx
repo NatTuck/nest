@@ -6,6 +6,7 @@
 
 import { Link } from "react-router-dom";
 import { useStore } from "../store";
+import { useDocumentTitle } from "../hooks/useDocumentTitle";
 
 /**
  * Spaces Index component
@@ -13,6 +14,8 @@ import { useStore } from "../store";
 export function SpacesIndex() {
   const spaces = useStore((s) => s.spaces);
   const agents = useStore((s) => s.agents);
+
+  useDocumentTitle(["Spaces"]);
 
   return (
     <div className="max-w-4xl mx-auto py-12">

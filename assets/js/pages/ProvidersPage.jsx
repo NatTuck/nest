@@ -9,6 +9,7 @@
 import { useEffect, useState } from "react";
 import { Navigate } from "react-router-dom";
 import { useStore } from "../store";
+import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import { saveProviders } from "../channels";
 import { ProviderEditor } from "../components/ProviderEditor";
 import { emptyProvider, makeId } from "../components/providerConstants";
@@ -16,6 +17,8 @@ import { emptyProvider, makeId } from "../components/providerConstants";
 export function ProvidersPage() {
   const providers = useStore((state) => state.providers);
   const isAdmin = useStore((state) => state.currentUser?.is_admin);
+
+  useDocumentTitle(["Providers"]);
 
   // Seed the editable draft immediately so the first render already
   // carries stable ids (the effect below keeps it in sync with the

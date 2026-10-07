@@ -10,6 +10,7 @@
 
 import { Link, useParams } from "react-router-dom";
 import { useStore } from "../store";
+import { useDocumentTitle } from "../hooks/useDocumentTitle";
 
 /**
  * Space View component
@@ -21,6 +22,11 @@ export function SpaceView() {
   const blueprints = useStore((s) => s.blueprints);
 
   const space = spaces.find((s) => s.slug === spaceSlug);
+  // The tab names the host and the space. The name falls back to the
+  // slug when the store hasn't loaded the space yet (a hard load of a
+  // deep URL) -- the slug is real information, so it beats a blank or
+  // a placeholder.
+  useDocumentTitle([space?.name ?? spaceSlug]);
   const blueprint = space
     ? blueprints.find((b) => b.id === space.blueprint_id)
     : null;

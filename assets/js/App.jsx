@@ -41,6 +41,7 @@ import {
 import { useStore } from "./store";
 import { initChannels, joinLobby, leaveLobby } from "./channels";
 import { readAuthToken } from "./socket";
+import { useDocumentTitle } from "./hooks/useDocumentTitle";
 import { Sidebar } from "./components/Sidebar";
 import { ChatPage } from "./pages/ChatPage";
 import { SpaceView } from "./pages/SpaceView";
@@ -75,6 +76,9 @@ import { ProvidersPage } from "./pages/ProvidersPage";
 function RootGate() {
   const navigate = useNavigate();
   const isConnected = useStore((s) => s.isConnected);
+
+  // No page-specific parts yet: the tab just names the host.
+  useDocumentTitle([]);
 
   // We use a ref to capture `navigate` so the mount-once
   // effect can stay dependency-free. `navigate` is a stable

@@ -10,6 +10,7 @@
 
 import { useState } from "react";
 import mascotImage from "../../images/nest-mascots.jpg";
+import { useDocumentTitle } from "../hooks/useDocumentTitle";
 
 /**
  * Get the source URL from the global config
@@ -28,6 +29,8 @@ function getSourceUrl() {
 export function AboutPage() {
   const [isFlipped, setIsFlipped] = useState(false);
   const sourceUrl = getSourceUrl();
+
+  useDocumentTitle(["About"]);
 
   const toggleImage = () => {
     setIsFlipped(!isFlipped);

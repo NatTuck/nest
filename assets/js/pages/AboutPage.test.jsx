@@ -13,9 +13,12 @@ describe("AboutPage", () => {
   const originalConfig = global.window?.NEST_CONFIG;
 
   beforeEach(() => {
-    // Reset NEST_CONFIG before each test
+    // Reset NEST_CONFIG before each test. `host` is what the server
+    // injects for the page title; `document.title` is reset to the
+    // shell's default so each test proves the page replaces it.
     if (typeof window !== "undefined") {
-      window.NEST_CONFIG = { sourceUrl: "" };
+      window.NEST_CONFIG = { sourceUrl: "", host: "vampire" };
+      document.title = "Nest · Phoenix Framework";
     }
   });
 
@@ -47,6 +50,8 @@ describe("AboutPage", () => {
     // Image should not be flipped initially (scale-x-100)
     expect(image.className).toContain("scale-x-100");
     expect(image.className).not.toContain("-scale-x-100");
+
+    expect(document.title).toBe("vampire · About");
   });
 
   it("renders the flip button with correct initial text", () => {
@@ -179,5 +184,8 @@ describe("AboutPage", () => {
     expect(screen.getByTestId("source-url-error")).toHaveTextContent(
       "Error: Misconfigured Source URL",
     );
+    // With no config there is no host either, and a missing value is
+    // shown rather than dropped (AGENTS.md transparency rule).
+    expect(document.title).toBe("[missing host] · About");
   });
 });

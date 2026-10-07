@@ -27,6 +27,7 @@ import { Navigate } from "react-router-dom";
 import { CopyButton } from "../components/CopyButton";
 import { createInvite, revokeInvite } from "../channels";
 import { useStore } from "../store";
+import { useDocumentTitle } from "../hooks/useDocumentTitle";
 
 function formatDate(iso) {
   if (!iso) return "—";
@@ -51,6 +52,8 @@ export function InvitesPage() {
   const invites = useStore((state) => state.invites);
   const invitesError = useStore((state) => state.invitesError);
   const setInvitesError = useStore((state) => state.setInvitesError);
+
+  useDocumentTitle(["Invites"]);
 
   if (!isConnected) {
     return <Navigate to="/login" replace />;

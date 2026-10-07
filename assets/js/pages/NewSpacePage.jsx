@@ -15,6 +15,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useStore } from "../store";
+import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import { createSpace, rescanModels, suggestSpaceName } from "../channels";
 import { RescanButton } from "../components/RescanButton";
 import { vocationRequiresWorkspace } from "../utils/vocationWorkspace";
@@ -35,6 +36,7 @@ export function NewSpacePage() {
   const blueprints = useStore((s) => s.blueprints);
   const vocations = useStore((s) => s.vocations);
   const suggestedName = useStore((s) => s.suggestedName);
+  useDocumentTitle(["New space"]);
   const [name, setName] = useState("");
   const [selectedBlueprint, setSelectedBlueprint] = useState("");
   const [selectedModel, setSelectedModel] = useState("");

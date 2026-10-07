@@ -2,7 +2,8 @@
  * Tests for the SpacesIndex landing page.
  *
  * Covers the heading + "New Space" action, the empty state, space card
- * rendering with links, and the per-space agent count (singular/plural).
+ * rendering with links, the per-space agent count (singular/plural),
+ * and the page title (host + "Spaces").
  *
  * The store is mocked with a selector-based `useStore`.
  */
@@ -27,6 +28,11 @@ function renderIndex() {
 }
 
 beforeEach(() => {
+  // The host the server injects into `window.NEST_CONFIG`, plus the
+  // shell's default title: a page test proves the page *replaces* it.
+  window.NEST_CONFIG = { host: "vampire" };
+  document.title = "Nest · Phoenix Framework";
+
   mockState = {
     spaces: [
       { id: 1, name: "My Space", slug: "my-space", blueprint_id: null },
@@ -49,6 +55,7 @@ describe("SpacesIndex", () => {
       "href",
       "/spaces/new",
     );
+    expect(document.title).toBe("vampire · Spaces");
   });
 
   it("links each space to its main view", () => {
