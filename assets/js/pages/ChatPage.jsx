@@ -182,12 +182,14 @@ export function ChatPage() {
   const compacting = agentState === "compacting";
   // `isAgentBusy` is true whenever the agent is doing work that
   // can be interrupted: streaming an LLM response, or executing
-  // a tool call between LLM turns. The "busy" state replaces
-  // Send with Stop. We deliberately exclude `waitingForResponse`
-  // here — that's a transient client-side flag that flips on
-  // for a few milliseconds right after `chat:message` push and
-  // before the first `chat:status` arrives; showing Stop during
-  // that window would flicker the button.
+  // a tool call between LLM turns. While busy the composer stays
+  // interactive and the Stop button is rendered alongside Send,
+  // so a message can be queued for the next turn boundary. We
+  // deliberately exclude `waitingForResponse` here — that's a
+  // transient client-side flag that flips on for a few
+  // milliseconds right after `chat:message` push and before the
+  // first `chat:status` arrives; showing Stop during that window
+  // would flicker the button.
   const isAgentBusy = streaming || executingTools;
 
   // Sub-agent identity. `parentName` is the readable id of
@@ -330,14 +332,20 @@ export function ChatPage() {
   }, [name, spaceId]);
 
   const handleSendMessage = () => {
-    if (!inputValue.trim() || isAgentBusy) {
+    if (!inputValue.trim()) {
       return;
     }
 
     // Slash commands are control-plane: they push a dedicated event
     // instead of a chat message (no optimistic user bubble). Unknown
     // `/foo` parses to `null` and falls through to a normal message.
-    const parsed = parseSlashCommand(inputValue);
+    //
+    // While the agent is busy the branch is skipped: the composer is in
+    // "queue a message" mode (the suggestion menu is hidden too), and
+    // every control-plane command is rejected mid-turn — pushing one
+    // would clear the input and answer with an error banner. The text is
+    // queued as ordinary chat instead.
+    const parsed = isAgentBusy ? null : parseSlashCommand(inputValue);
     const action = parsed ? SLASH_COMMAND_ACTIONS[parsed.name] : undefined;
 
     if (action) {
@@ -457,10 +465,10 @@ export function ChatPage() {
     return <ChatLoading />;
   }
 
-  // Input is disabled when not connected or when the agent is
-  // busy (the user shouldn't be able to type into the textarea
-  // while the model is responding or tools are running).
-  const isInputDisabled = status !== "connected" || isAgentBusy;
+  // Input is disabled only when the connection is down. While the
+  // agent is busy the composer stays interactive: the message is
+  // queued on the server and delivered at the next turn boundary.
+  const isInputDisabled = status !== "connected";
 
   return (
     <div className="flex flex-col h-full max-w-6xl mx-auto">
@@ -608,6 +616,7 @@ export function ChatPage() {
               agentState === "compaction_failed" ||
               agentState === "compaction_loop_detected" ||
               agentState === "context_overflow" ||
+              agentState === "model_missing" ||
               agentState === "needs_repair"
             }
             placeholder={

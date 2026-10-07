@@ -129,14 +129,20 @@ defmodule Nest.Agents.Agent.ChatState.Live do
   `%{}` when the streaming accumulator resets (start of a new
   LLM iteration).
 
-  The `inbox` field holds async agent-to-agent messages that
-  arrived while the agent was busy (`agents-send`). Each entry is
-  `%{from: name, content: text, timestamp: DateTime.t()}`, in
-  arrival order. When the agent next goes idle the entries are
-  combined into a single user message (offloaded to the agent tmp
-  dir when over `max-async-message-tokens`) and drained by
-  `Nest.Agents.Agent.Inbox`. In-memory only: a BEAM restart drops
-  undrained messages.
+  The `inbox` field holds messages that arrived while the agent was
+  busy: an `agents-send` from another agent (`kind: :agent`) or a human
+  chat message (`kind: :user`, carrying the human's requested `mode`).
+  Each entry is
+  `%{from: name | nil, content: text, timestamp: DateTime.t(), kind: kind, mode: mode}`
+  in arrival order; `content` is stored verbatim and the `[mode: ...]`
+  prefix is added when the entry is delivered. The entries are combined
+  into a single user message (offloaded to the agent tmp dir when over
+  `max-async-message-tokens`) and drained by the turn executor
+  (`Turn.Executor`'s `:drain_inbox` action / `Turn.drain_inbox/1`) at the
+  next turn boundary — the `:generating`/`:chat` `:iterate` transition
+  delivers them before the next request (issue #15), and anything still
+  queued when the agent reaches `:idle` is drained there. In-memory only: a
+  BEAM restart drops undrained messages.
 
   The `repair` map (`%{violations: [...], command: ...}`) carries
   the `:needs_repair` payload while a restored agent's active
@@ -169,8 +175,10 @@ defmodule Nest.Agents.Agent.ChatState.Live do
             # failed wire preflight. Carries the violations and the
             # offline repair command surfaced to the operator.
             repair: %{violations: [], command: nil},
-            # Async agent-to-agent messages queued while busy. See the
-            # moduledoc. Entries are `%{from: name, content: text,
-            # timestamp: DateTime.t()}` in arrival order.
+            # Queued while busy: an `agents-send` from another agent
+            # (`kind: :agent`) or a human chat message (`kind: :user`).
+            # See the moduledoc. Entries are
+            # `%{from: name | nil, content: text, timestamp: DateTime.t(),
+            # kind: :agent | :user, mode: mode | nil}` in arrival order.
             inbox: []
 end

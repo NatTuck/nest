@@ -322,16 +322,22 @@ defmodule Nest.Agents.Agent.Broadcasts do
   #     display reads from this; the JS never needs to add
   #     them itself (drift-free).
   defp status_payload(%Nest.Agents.Agent{} = state) do
-    direct = state.llm_metrics.usage_totals
-    descendant = state.llm_metrics.descendant_usage
+    live = state.live
+    metrics = state.llm_metrics
+    direct = metrics.usage_totals
+    descendant = metrics.descendant_usage
 
     %{
-      status: to_string(Machine.status_for(state.live.machine)),
-      currentMode: state.live.mode,
+      status: to_string(Machine.status_for(live.machine)),
+      currentMode: live.mode,
+      # The queued-message count rides the status broadcast as well as
+      # `chat:inbox`, so a client that missed an inbox frame recovers the count
+      # from the next status instead of leaving the panel stale.
+      pendingMessageCount: length(live.inbox),
       model: model_payload(state.model),
       workspacePath: state.workspace_path,
-      contextLimit: state.llm_metrics.context_limit,
-      contextLimitSource: state.llm_metrics.context_limit_source,
+      contextLimit: metrics.context_limit,
+      contextLimitSource: metrics.context_limit_source,
       parentId: state.tree_position.parent_id,
       parentName: state.tree_position.parent_name,
       depth: state.depth,
@@ -339,8 +345,8 @@ defmodule Nest.Agents.Agent.Broadcasts do
         __MODULE__.Usage.context_usage_map(
           direct,
           state.chat_state.messages,
-          state.llm_metrics.context_limit,
-          state.live.context_projection
+          metrics.context_limit,
+          live.context_projection
         ),
       descendantUsage: descendant,
       totalUsage: total_usage(direct, descendant)

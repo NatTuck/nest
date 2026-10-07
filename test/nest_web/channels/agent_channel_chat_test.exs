@@ -433,8 +433,8 @@ defmodule NestWeb.AgentChannelChatTest do
     end
   end
 
-  describe "handle_in(chat:message) compaction-frozen state rejection" do
-    test "rejects chat:message when the agent is :compacting", %{
+  describe "handle_in(chat:message) status dispositions" do
+    test "queues chat:message when the agent is :compacting", %{
       socket: socket,
       agent_id: id,
       space_id: space_id
@@ -453,17 +453,24 @@ defmodule NestWeb.AgentChannelChatTest do
 
       ref = push(socket, "chat:message", %{"content" => "during compaction"})
 
-      assert_reply ref, :error, %{"reason" => "agent_status_compacting"}
+      # A busy agent queues the message for its next turn boundary; the
+      # channel no longer rejects `:compacting`.
+      assert_reply ref, :ok, %{}
 
-      # The `:compacting` status was fabricated for the rejection
-      # check (there is no real turn). Restore idle so the teardown's
+      state = :sys.get_state(agent_pid)
+      assert [%{content: "during compaction", kind: :user}] = state.live.inbox
+      assert Machine.status_for(state.live.machine) == :compacting
+
+      # The `:compacting` status was fabricated for the disposition check
+      # (there is no real turn). Restore idle so the teardown's
       # zero-in-flight-agents assertion holds.
       :sys.replace_state(agent_pid, fn state ->
         %{
           state
           | live: %{
               state.live
-              | machine: Machine.status_to_machine(state.live.machine, :idle)
+              | inbox: [],
+                machine: Machine.status_to_machine(state.live.machine, :idle)
             }
         }
       end)

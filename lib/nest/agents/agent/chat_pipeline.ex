@@ -35,18 +35,6 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     {:noreply, state}
   end
 
-  @doc """
-  The pending user message as a `{:user, User.t()}` tuple, or `nil`.
-  """
-  @spec pending_user_message_struct(Nest.Agents.Agent.t()) :: {:user, User.t()} | nil
-  def pending_user_message_struct(state) do
-    case state.live.machine.pending_user_message do
-      {:user_message, %User{} = user} -> {:user, user}
-      {:user, %User{} = user} -> {:user, user}
-      _ -> nil
-    end
-  end
-
   # Build the persisted user message. The mode is encoded both on
   # `metadata.mode` (UI badge) and as a `[mode: <name>]\n` prefix on the
   # text part (source of truth for the LLM). `index: nil` — the appender

@@ -30,6 +30,20 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       },
       live: %Agent.ChatState.Live{
         machine: %Machine{work: %Machine.Work{ctx: ctx()}}
+      },
+      vocation: vocation()
+    }
+  end
+
+  # A vocation defining the modes the drain tests request, so
+  # `ChatPipeline.resolve_mode_and_caps/4` resolves "plan" to "plan" and an
+  # unknown mode to the "chat" default.
+  defp vocation do
+    %Nest.Vocations.Vocation{
+      modes: %{
+        "chat" => %{"caps" => %{}},
+        "plan" => %{"caps" => %{}},
+        "review" => %{"caps" => %{}}
       }
     }
   end
@@ -79,6 +93,11 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
   end
 
   defp run(action, state \\ state()), do: Executor.run_all(List.wrap(action), state)
+
+  defp inbox_state(entries, mode) do
+    base = state()
+    %{base | live: %{base.live | inbox: entries, mode: mode}}
+  end
 
   describe "bookkeeping actions" do
     test "merge_metrics folds usage into the totals" do
@@ -275,10 +294,64 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       assert {_state, nil} = run({:drain_inbox})
     end
 
+    test "drain_inbox applies the batch's human mode and otherwise leaves the mode alone" do
+      # intentional: one mode per combined message, chosen by
+      # `Inbox.drain_mode/1` and applied here (never at enqueue time, where
+      # it would re-resolve the ongoing turn's caps).
+      peer = %{
+        from: "peer",
+        content: "peer note",
+        timestamp: DateTime.utc_now(),
+        kind: :agent,
+        mode: nil
+      }
+
+      human = %{
+        from: "alice",
+        content: "human note",
+        timestamp: DateTime.utc_now(),
+        kind: :user,
+        mode: "plan"
+      }
+
+      # A human mode in the batch wins, and the combined text labels both kinds.
+      {state, {:inbox_drain, [^peer, ^human], content}} =
+        run({:drain_inbox}, inbox_state([peer, human], "chat"))
+
+      assert state.live.inbox == []
+      assert state.live.mode == "plan"
+      assert content =~ "[Message from the user \"alice\"]\nhuman note"
+      assert content =~ "[Message from agent \"peer\"]\npeer note"
+
+      # An agent-only batch leaves the agent's current mode alone.
+      {state, {:inbox_drain, [^peer], _content}} =
+        run({:drain_inbox}, inbox_state([peer], "chat"))
+
+      assert state.live.mode == "chat"
+
+      # A mode the vocation does not define resolves to its default, exactly
+      # as an idle chat's request would, so `currentMode` never holds a mode
+      # the vocation does not define.
+      bogus = %{human | mode: "bogus"}
+
+      {state, {:inbox_drain, [^bogus], _content}} =
+        run({:drain_inbox}, inbox_state([bogus], "chat"))
+
+      assert state.live.mode == "chat"
+    end
+
     test "restore_inbox restores entries and broadcasts" do
       state = state()
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.space_id}:#{state.name}")
-      entry = %{from: "a", content: "c", timestamp: DateTime.utc_now()}
+
+      entry = %{
+        from: "a",
+        content: "c",
+        timestamp: DateTime.utc_now(),
+        kind: :agent,
+        mode: nil
+      }
+
       {state, nil} = run({:restore_inbox, [entry]}, state)
       assert state.live.inbox == [entry]
     end

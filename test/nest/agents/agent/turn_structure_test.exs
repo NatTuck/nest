@@ -51,7 +51,12 @@ defmodule Nest.Agents.Agent.TurnStructureTest do
   describe "single status authority" do
     test "Broadcasts.status_payload derives via Machine.status_for/1" do
       body = function_body(File.read!("lib/nest/agents/agent/broadcasts.ex"), "status_payload")
-      assert body =~ "Machine.status_for(state.live.machine)"
+
+      # The receiver is deliberately not pinned: `status_payload/1` may hoist
+      # `state.live` into a local to stay under credo's ABC cap. What matters is
+      # that the payload *asks the machine* for the status instead of mirroring
+      # one, so the assertion pins the derivation shape, not the receiver.
+      assert body =~ ~r/status:\s*to_string\(Machine\.status_for\(/
     end
   end
 

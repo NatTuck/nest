@@ -17,7 +17,11 @@ import { agentCacheSetters } from "./slices/agentCache";
 import { agentCacheStreamingSetters } from "./slices/agentCacheStreaming";
 import { agentInboxSetters } from "./slices/agentInbox";
 import { addChatDelta } from "./slices/agentCacheDeltas";
-import { addChatMessage, addUserMessage } from "./slices/agentCacheMessages";
+import {
+  addChatMessage,
+  addUserMessage,
+  retractUserMessage,
+} from "./slices/agentCacheMessages";
 
 export const useStore = create(
   devtools(
@@ -33,6 +37,7 @@ export const useStore = create(
       addChatMessage: (id, message) => addChatMessage(set, get, id, message),
       addUserMessage: (id, content, mode) =>
         addUserMessage(set, id, content, mode),
+      retractUserMessage: (id, content) => retractUserMessage(set, id, content),
     }),
     { name: "nest-store" },
   ),

@@ -206,10 +206,9 @@ defmodule Nest.Agents.AgentContextWarningTest do
     # `assistant+tool_use` and its upcoming `tool_result`,
     # breaking the tool_use/tool_result pairing invariant.
     #
-    # The defense-in-depth guard in `Agent.handle_cast({:chat, _})`
-    # rejects user messages that arrive while the agent is
-    # `:streaming` or `:executing_tools` — so the user-during-
-    # tool scenario never reaches the pipeline in production.
+    # `Callbacks.chat_or_queue/4` queues a user message that arrives
+    # while the agent is busy instead of running the pipeline — so the
+    # user-during-tool scenario never reaches the pipeline in production.
     # This test verifies the pipeline's `inject_notice` guard
     # at the unit level: it must not fire for trailing
     # assistant+tool_use regardless of how the message arrives.
@@ -251,10 +250,10 @@ defmodule Nest.Agents.AgentContextWarningTest do
     end)
 
     # Simulate a user message that crosses the threshold by
-    # setting the pending user message directly. We bypass the
-    # defense-in-depth guard (which would reject the message
-    # in a real scenario) so the test exercises the pipeline's
-    # injection guard specifically.
+    # setting the pending user message directly. We bypass
+    # `chat_or_queue/4` (which would queue the message while the
+    # agent is busy, in a real scenario) so the test exercises the
+    # pipeline's injection guard specifically.
     state = :sys.get_state(pid)
     state = put_in(state.live.machine.pending_user_message, {"New request", "chat"})
 

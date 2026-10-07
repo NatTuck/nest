@@ -31,12 +31,18 @@ const MAX_HEIGHT_PX = 240;
  * - When `modes` has more than one entry, renders a ModeSelector next
  *   to the send button. The current selection is `mode`; the user can
  *   change it via `onModeChange`.
- * - When `isBusy` is true (agent is streaming or executing tools),
- *   the Send button is replaced with a Stop button that calls
- *   `onStop`. If `stopping` is also true, the button shows
- *   "Stopping..." (with a spinner) until the next `chat:status`
- *   push transitions the agent back to idle and the page
- *   re-renders with `isBusy=false`.
+ * - When `isBusy` is true (agent is streaming or executing tools) the
+ *   composer stays interactive so the human can queue a message for
+ *   the next turn boundary: the textarea and the mode selector stay
+ *   enabled, Ctrl/Cmd+Enter still sends, and the Send button is
+ *   rendered alongside a Stop button that calls `onStop`. If
+ *   `stopping` is also true, the Stop button shows "Stopping..." (with
+ *   a spinner) and is disabled until the next `chat:status` push
+ *   transitions the agent back to idle and the page re-renders with
+ *   `isBusy=false`.
+ * - The slash-command suggestion menu is suppressed while `isBusy`:
+ *   the queued path carries ordinary chat text, and a slash command is
+ *   a control-plane push that cannot take effect mid-turn.
  *
  * Props:
  * - `history`: array of `{ content: string, mode: string | null }`,
@@ -59,10 +65,12 @@ export function ChatInput({
   stopping,
   disabled,
   // When `true`, the input is hidden entirely and the StatusBanner
-  // takes over the chat footer area. Used while the agent is in a
-  // compaction-frozen state (`:compacting` / `:compaction_failed`).
-  // Distinct from `disabled` (which greys out the textarea but keeps
-  // it visible — used for transient reasons like `isBusy`).
+  // takes over the chat footer area. Used for the machine's blocked
+  // statuses that need an operator action (`:model_missing`,
+  // `:needs_repair`, `:context_overflow`, `:compaction_failed`,
+  // `:compaction_loop_detected`), where a send could only be rejected.
+  // Distinct from `disabled`, which means "not connected": it greys
+  // out the textarea but keeps it visible.
   frozen = false,
   placeholder,
   modes,
@@ -127,7 +135,9 @@ export function ChatInput({
 
   const handleKeyDown = (e) => {
     if (e.nativeEvent.isComposing) return;
-    if (disabled || isBusy) return;
+    // Only "not connected" blocks the keyboard: while the agent is busy
+    // the composer stays interactive so a message can be queued.
+    if (disabled) return;
 
     // Enter handling — unchanged.
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
@@ -197,12 +207,33 @@ export function ChatInput({
     setCursor(nextCursor);
   };
 
-  // Three-way button: when the agent is busy, show a Stop button
-  // (or a "Stopping..." disabled placeholder once the click has
-  // been issued). When the agent is idle, show the normal Send
-  // button.
-  const renderActionButton = () => {
-    if (isBusy && stopping) {
+  // Send stays available while the agent is busy: the server queues
+  // the message and delivers it at the next turn boundary. Only
+  // `disabled` ("not connected") removes it.
+  const renderSendButton = () => {
+    const sendDisabled = disabled || !value.trim();
+    return (
+      <button
+        type="submit"
+        disabled={sendDisabled}
+        className={`px-6 py-3 rounded-lg font-semibold text-white transition-all duration-200 leading-tight ${
+          sendDisabled
+            ? "bg-gray-400 cursor-not-allowed"
+            : "bg-blue-600 hover:bg-blue-700 active:bg-blue-800"
+        }`}
+      >
+        Send
+        <span className="block text-xs font-normal opacity-75">Ctrl+Enter</span>
+      </button>
+    );
+  };
+
+  // Stop is rendered next to Send while the agent is busy, so the
+  // human can either queue a message or halt the turn. Once the click
+  // has been issued the button becomes a disabled "Stopping..."
+  // placeholder until the next `chat:status` push settles the agent.
+  const renderStopButton = () => {
+    if (stopping) {
       return (
         <button
           type="button"
@@ -235,48 +266,33 @@ export function ChatInput({
       );
     }
 
-    if (isBusy) {
-      return (
-        <button
-          type="button"
-          onClick={onStop}
-          aria-label="Stop"
-          className="px-6 py-3 rounded-lg font-semibold text-white bg-red-600 hover:bg-red-700 active:bg-red-800 transition-all duration-200 leading-tight"
-        >
-          Stop
-          <span className="block text-xs font-normal opacity-75">
-            Halt response
-          </span>
-        </button>
-      );
-    }
-
     return (
       <button
-        type="submit"
-        disabled={disabled || !value.trim()}
-        className={`px-6 py-3 rounded-lg font-semibold text-white transition-all duration-200 leading-tight ${
-          disabled || !value.trim()
-            ? "bg-gray-400 cursor-not-allowed"
-            : "bg-blue-600 hover:bg-blue-700 active:bg-blue-800"
-        }`}
+        type="button"
+        onClick={onStop}
+        aria-label="Stop"
+        className="px-6 py-3 rounded-lg font-semibold text-white bg-red-600 hover:bg-red-700 active:bg-red-800 transition-all duration-200 leading-tight"
       >
-        Send
-        <span className="block text-xs font-normal opacity-75">Ctrl+Enter</span>
+        Stop
+        <span className="block text-xs font-normal opacity-75">
+          Halt response
+        </span>
       </button>
     );
   };
 
   // When `frozen` is true, the entire input is hidden — the
   // StatusBanner takes over the chat footer area. This is the
-  // compaction-frozen state (`:compacting` or `:compaction_failed`).
+  // blocked-status state (see the `frozen` prop).
   if (frozen) {
     return null;
   }
 
   // Slash-command autocomplete suggestions. Only while the input is
   // interactive and the text is a `/<partial>`; empty otherwise (so the
-  // menu is absent for ordinary messages).
+  // menu is absent for ordinary messages). Suppressed while `isBusy`:
+  // the queued path carries ordinary chat text, and a slash command is
+  // a control-plane push that cannot take effect mid-turn.
   const suggestions =
     !disabled && !isBusy ? commandSuggestions(value, commands) : [];
 
@@ -284,7 +300,7 @@ export function ChatInput({
     <form
       onSubmit={(e) => {
         e.preventDefault();
-        if (disabled || isBusy) return;
+        if (disabled) return;
         if (!value.trim()) return;
         onSend();
       }}
@@ -330,12 +346,12 @@ export function ChatInput({
             onChange={(e) => handleChange(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder={placeholder}
-            disabled={disabled || isBusy}
+            disabled={disabled}
             rows={2}
             aria-label="Message"
             aria-keyshortcuts="Control+ArrowUp Control+ArrowDown Meta+ArrowUp Meta+ArrowDown Control+Enter Meta+Enter Control+m Meta+m"
             title="Enter to newline • Ctrl/Cmd+Enter to send • Ctrl/Cmd+Up/Down to walk previous prompts • Ctrl/Cmd+M to cycle modes"
-            className="flex-1 px-4 py-3 border border-gray-300 rounded-lg resize-none overflow-y-auto leading-snug focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none disabled:bg-gray-100 disabled:cursor-not-allowed"
+            className="flex-1 min-w-0 px-4 py-3 border border-gray-300 rounded-lg resize-none overflow-y-auto leading-snug focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none disabled:bg-gray-100 disabled:cursor-not-allowed"
             style={{ maxHeight: `${MAX_HEIGHT_PX}px` }}
           />
           {modes && modes.length > 1 && onModeChange && (
@@ -343,10 +359,11 @@ export function ChatInput({
               modes={modes}
               value={mode}
               onChange={onModeChange}
-              disabled={disabled || isBusy}
+              disabled={disabled}
             />
           )}
-          {renderActionButton()}
+          {renderSendButton()}
+          {isBusy && renderStopButton()}
         </div>
       </div>
       <p className="mt-1 px-1 text-xs text-gray-400" aria-hidden="true">

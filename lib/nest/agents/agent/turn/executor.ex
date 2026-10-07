@@ -26,6 +26,7 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.Agents.Agent.Broadcasts
+  alias Nest.Agents.Agent.ChatPipeline
   alias Nest.Agents.Agent.Compaction.Overflow
   alias Nest.Agents.Agent.Handlers.LLMStreamHandler.FileAccess
   alias Nest.Agents.Agent.Inbox
@@ -309,8 +310,18 @@ defmodule Nest.Agents.Agent.Turn.Executor do
 
       entries ->
         content = Inbox.combine_and_offload(entries, state)
-        state = %{state | live: %{state.live | inbox: []}}
+        mode = applied_mode(state, entries)
+        mode_changed? = mode != state.live.mode
+        state = %{state | live: %{state.live | inbox: [], mode: mode}}
         Broadcasts.inbox(state, [])
+
+        # `Broadcasts.status/1` is the only carrier of `currentMode`, and the
+        # settle loop broadcasts only on a status *change* — which this drain
+        # deliberately does not cause (the phase stays `:generating`) — so
+        # publish the new mode here or the UI's mode selector keeps the old one
+        # until the turn ends.
+        if mode_changed?, do: Broadcasts.status(state)
+
         {state, {:follow, {:inbox_drain, entries, content}}}
     end
   end
@@ -362,6 +373,36 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   end
 
   # --- helpers ---
+
+  # One mode per combined message: the most recent human-sourced entry that
+  # carries a mode wins (`Inbox.drain_mode/1`), and the agent's current mode
+  # stands when no entry does. The winner is resolved against the vocation
+  # exactly as `ChatPipeline.handle_chat/3` resolves an idle turn's request
+  # (falling back to the vocation's default mode), so `state.live.mode` — and
+  # with it the status payload's `currentMode`, which the UI's mode selector
+  # renders — never holds a mode the vocation does not define.
+  #
+  # Applied here, never when the entry was queued: `state.live.mode` feeds
+  # `ctx.mode`/`ctx.caps`, which `Turn.prepare/1` rebuilds on every settle, so
+  # setting it on arrival would re-resolve the caps of the *ongoing* turn's
+  # remaining tool calls.
+  defp applied_mode(state, entries) do
+    case Inbox.drain_mode(entries) do
+      nil ->
+        state.live.mode
+
+      requested ->
+        {resolved, _caps} =
+          ChatPipeline.resolve_mode_and_caps(
+            requested,
+            state.vocation,
+            state.workspace_path,
+            state.tmp_path
+          )
+
+        resolved
+    end
+  end
 
   defp spawn_worker(state, kind, fun) do
     ref = make_ref()

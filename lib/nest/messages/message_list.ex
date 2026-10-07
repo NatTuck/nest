@@ -178,7 +178,9 @@ defmodule Nest.Messages.MessageList do
 
   A trailing message whose wire role is already `user` followed by an
   `incoming` user message would be two consecutive `user` roles. That
-  tail is either a `{:tool, _}` result (wire role `user`) or a
+  tail is either a `{:tool, _}` result (wire role `user`) — the common
+  case at the turn-boundary inbox delivery (issue #15), where a queued
+  message is appended mid-turn onto a just-answered tool call — or a
   `{:user, _}` whose turn was interrupted before any assistant response
   was committed. In both cases the bridge returns the assistant
   acknowledgement alone (`idle_bridge_ack(:live)`) to restore
@@ -312,8 +314,7 @@ defmodule Nest.Messages.MessageList do
   would then need the live-path bridge (`Repair.classify_live/2`). Both
   the compaction commit (`Turn.Commit.active_segment/6`) and the
   load-time heal (`Repair.classify_load/1`) append this ack so the
-  invariant is enforced upstream and the live exception is unreachable
-  in production.
+  invariant is enforced upstream and the turn-opening append is clean.
 
   The wording is case-specific so the ack reads sensibly in context:
 
@@ -321,7 +322,8 @@ defmodule Nest.Messages.MessageList do
     * `:load` — we were interrupted before an assistant response;
     * `:live` — the alternation bridge (`MessageList.pairing_bridge/2`),
       where nothing was interrupted: a second user message simply
-      follows a user tail.
+      follows a user tail. The turn-boundary inbox delivery (issue #15)
+      appends exactly that shape mid-turn.
 
   Same shape as `repair_ack/0`: an assistant text message with no
   `index` (the append path stamps it) and no `api_logs`.
