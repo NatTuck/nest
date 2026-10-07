@@ -7,10 +7,10 @@ defmodule Nest.Agents.Agent.ToolLoop do
   response with `tool_calls` is received. Responsibilities:
 
     * Split the batch by tool — sub-agent tools (`agents-spawn`,
-      `agents-query`, `agents-list`, `agents-archive`) are routed
-      through their `run_*` handlers (synchronous spawn/query/
-      archive through the agent GenServer; `agents-list` reads the
-      space inline); everything else is delegated to
+      `agents-query`, `agents-send`, `agents-wait`, `agents-list`,
+      `agents-archive`, `agents-batch`, `models-list`) are routed
+      through their `run_*` handlers, which run in this worker and
+      never in the agent GenServer; everything else is delegated to
       `Nest.Agents.Agent.BatchSizer`.
     * Merge the two halves back into input order.
 
@@ -28,7 +28,9 @@ defmodule Nest.Agents.Agent.ToolLoop do
   alias Nest.Agents.Agent.BatchLoop
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.Agents.Agent.BatchSizer.Overflow
+  alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.CapCalculator
+  alias Nest.Agents.Agent.WaitLoop
   alias Nest.Agents.Registry
   alias Nest.DotConfig
   alias Nest.Messages.Part
@@ -135,6 +137,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
               "agents-archive",
               "agents-batch",
               "agents-send",
+              "agents-wait",
               "models-list"
             ],
        do: true
@@ -144,6 +147,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-spawn"} = tc), do: run_spawn_agent(ctx, tc)
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-query"} = tc), do: run_query_agent(ctx, tc)
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-send"} = tc), do: run_send_agent(ctx, tc)
+  defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-wait"} = tc), do: run_wait_agents(ctx, tc)
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-list"} = tc), do: run_list_agents(ctx, tc)
   defp run_sub_agent_tool(_ctx, %ToolCall{name: "models-list"} = tc), do: run_models_list(tc)
 
@@ -374,7 +378,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
   defp query_peer(space_id, target, prompt, timeout) do
     case Nest.Agents.get_messages(space_id, target) do
       {:ok, messages} ->
-        topic = "agent:#{space_id}:#{target}"
+        topic = Broadcasts.topic(space_id, target)
         Phoenix.PubSub.subscribe(Nest.PubSub, topic)
 
         try do
@@ -480,6 +484,17 @@ defmodule Nest.Agents.Agent.ToolLoop do
   end
 
   defp send_error_message(target, reason), do: "Could not send to #{target}: #{inspect(reason)}"
+
+  # `agents-wait`: block in this worker until one of the target agents
+  # goes idle (or the wall-clock `timeout` expires), then report that
+  # agent and its stop message. The wait lives in `WaitLoop` so the
+  # agent GenServer is never blocked by it.
+  defp run_wait_agents(ctx, %ToolCall{} = tc) do
+    case WaitLoop.run(ctx, tc) do
+      {:ok, content} -> build_tool_result(tc, "agents-wait", bound_content(content, tc, ctx))
+      {:error, content} -> build_tool_result(tc, "agents-wait", content, true)
+    end
+  end
 
   # `agents-archive`: stop + mark an existing agent in this
   # space archived. Routes through the parent GenServer so the

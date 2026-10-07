@@ -5,6 +5,7 @@ defmodule Nest.Messages.MessageList do
   importing turn-internal functions.
   """
 
+  alias Nest.LLM.Client
   alias Nest.Messages.Assistant
   alias Nest.Messages.Part
   alias Nest.Messages.Tool
@@ -375,6 +376,24 @@ defmodule Nest.Messages.MessageList do
   end
 
   defp answered_tool_ids(_incoming), do: []
+
+  @doc """
+  The text of the list's trailing assistant message — the agent's
+  "stop message", the final thing it said before its turn ended.
+
+  Returns `""` when the list does not end on an assistant message (or
+  that message has no text parts). Shared by `Turn.Terminal` (the
+  parent's `:child_completed` payload) and `Agent.WaitLoop` (reading a
+  peer's final message across processes), so both report exactly the
+  same content for the same sequence.
+  """
+  @spec last_assistant_text([term()]) :: String.t()
+  def last_assistant_text(messages) do
+    case List.last(messages) do
+      {:assistant, %Assistant{parts: parts}} when is_list(parts) -> Client.text_from_parts(parts)
+      _ -> ""
+    end
+  end
 
   @doc """
   Return the Anthropic wire role of the last non-system,

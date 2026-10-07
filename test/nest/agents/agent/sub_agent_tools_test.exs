@@ -463,6 +463,52 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     assert content =~ "not found"
   end
 
+  test "agents-wait returns immediately when every other agent is idle", %{vid: vid} do
+    {coordinator_pid, coordinator_name} =
+      AgentTestHelpers.start_agent(%{
+        model: %{name: "qwen3.5-plus", provider: "model-studio"},
+        vocation_id: vid
+      })
+
+    space_id = AgentTestHelpers.current_space_id()
+
+    specialist_name = "specialist-#{System.unique_integer([:positive])}"
+    start_mocked_specialist(space_id, specialist_name, "the specialist answer")
+
+    # No `names` argument: every other agent in the space, which here is
+    # the (idle) specialist (plus the helper's own coordinator row). The
+    # caller is never a target.
+    MockClient.set_tool_response(%{
+      text: "waiting",
+      tool_calls: [%{id: "call_wait_1", name: "agents-wait", arguments: %{}}]
+    })
+
+    MockClient.set_response("coordinator done")
+
+    :ok = Agent.chat(coordinator_pid, "wait for the specialist")
+
+    assert_receive {:chat_status, %{status: "idle"}}, 500
+
+    coordinator_state = :sys.get_state(coordinator_pid)
+    AgentTestHelpers.assert_unique_message_indices(coordinator_state)
+
+    {:tool, tool_msg} =
+      Enum.find(coordinator_state.chat_state.messages, fn
+        {:tool, %{parts: parts}} ->
+          Enum.any?(parts, &match?(%Part.ToolResult{name: "agents-wait"}, &1))
+
+        _ ->
+          false
+      end)
+
+    assert [%Part.ToolResult{name: "agents-wait", content: content, is_error: false}] =
+             tool_msg.parts
+
+    assert content =~ "All agents are already idle:"
+    assert content =~ specialist_name
+    refute content =~ coordinator_name
+  end
+
   # The `agents-list` tool result content is `inspect/1` output of the
   # listing, so an individual agent's entry is one `%{...}` map inside
   # that string. `[^}]` keeps the match inside a single entry (there is

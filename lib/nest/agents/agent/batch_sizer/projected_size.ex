@@ -95,6 +95,9 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
   def project(%ToolCall{name: "agents-send"}, _ctx),
     do: estimator_overhead("Message queued for clever-raven.")
 
+  def project(%ToolCall{name: "agents-wait"}, _ctx),
+    do: summary_baseline_size() * @safety_padding
+
   # Catch-all for tools the LLM hallucinates or spells
   # incorrectly. These calls never reach execution; they return
   # small error strings ("Unknown tool: X", "Tool X not
@@ -119,7 +122,7 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
     file-read shell-cmd file-write file-edit file-inspect context-check
     shell-wait shell-list shell-kill
     agents-spawn agents-query agents-batch agents-list models-list agents-archive
-    agents-send
+    agents-send agents-wait
   )
 
   @doc false

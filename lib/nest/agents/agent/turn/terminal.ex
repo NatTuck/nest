@@ -15,7 +15,6 @@ defmodule Nest.Agents.Agent.Turn.Terminal do
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Repair
-  alias Nest.LLM.Client
   alias Nest.Messages.Assistant
   alias Nest.Messages.MessageList
   alias Nest.Messages.Streaming
@@ -99,10 +98,7 @@ defmodule Nest.Agents.Agent.Turn.Terminal do
   @doc "The last assistant text in the active conversation, or `\"\"`."
   @spec last_assistant_text(Agent.t()) :: String.t()
   def last_assistant_text(state) do
-    case Enum.reverse(state.chat_state.messages) do
-      [{:assistant, %{parts: parts}} | _] when is_list(parts) -> Client.text_from_parts(parts)
-      _ -> ""
-    end
+    MessageList.last_assistant_text(state.chat_state.messages)
   end
 
   @doc "The `{:child_completed, ...}` payload a parent receives on clean idle."

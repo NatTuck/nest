@@ -18,7 +18,7 @@ defmodule Nest.Tools do
   alias Nest.LLM.Tool
   alias Nest.Sandbox
   alias Nest.Tokens.ConversationSize
-  alias Nest.Tools.{FileTools, InspectFile, ShellJobs}
+  alias Nest.Tools.{FileTools, InspectFile, ShellJobs, WaitAgents}
 
   @doc """
   Returns a list of `Nest.LLM.Tool` structs for the given tool names.
@@ -60,6 +60,7 @@ defmodule Nest.Tools do
              "agents-archive",
              "agents-batch",
              "agents-send",
+             "agents-wait",
              "models-list"
            ] ->
         sub_agent_tool_function(name)
@@ -78,6 +79,7 @@ defmodule Nest.Tools do
   defp sub_agent_tool_function("agents-archive"), do: archive_agent_function()
   defp sub_agent_tool_function("agents-batch"), do: batch_agent_function()
   defp sub_agent_tool_function("agents-send"), do: send_agent_function()
+  defp sub_agent_tool_function("agents-wait"), do: WaitAgents.function()
 
   # Dispatch the models-list tool.
   defp sub_agent_tool_function("models-list"), do: models_list_function()
@@ -470,6 +472,13 @@ defmodule Nest.Tools do
       end
     }
   end
+
+  # The `agents-wait` tool: block until one of the given agents (or,
+  # with an empty list, every other agent in this space) finishes its
+  # turn and goes idle. The spec lives in `Nest.Tools.WaitAgents` (this
+  # file is at the source-file line cap); execution lives in
+  # `Nest.Agents.Agent.ToolLoop.run_wait_agents/2`, which delegates to
+  # `Nest.Agents.Agent.WaitLoop` in the turn's tool worker.
 
   # The `agents-archive` tool: stop + mark an existing agent in
   # this space archived. It is then excluded from `agents-list`

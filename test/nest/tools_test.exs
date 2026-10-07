@@ -113,6 +113,23 @@ defmodule Nest.ToolsTest do
       assert function.parameters_schema["properties"]["message"]["type"] == "string"
       assert function.description =~ "without waiting"
     end
+
+    test "agents-wait schema takes an optional names list and timeout" do
+      function = Tools.get_function("agents-wait", "/tmp")
+      assert function.name == "agents-wait"
+
+      props = function.parameters_schema["properties"]
+      assert props["names"]["type"] == "array"
+      assert props["names"]["items"] == %{"type" => "string"}
+      assert props["timeout"]["type"] == "integer"
+
+      # An empty list is meaningful ("every other agent"), so nothing is
+      # required at the schema level.
+      assert (function.parameters_schema["required"] || []) == []
+
+      assert function.description =~ "already idle"
+      assert function.description =~ "not an error"
+    end
   end
 
   describe "file-read tool" do
