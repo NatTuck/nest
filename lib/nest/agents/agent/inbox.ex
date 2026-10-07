@@ -10,9 +10,13 @@ defmodule Nest.Agents.Agent.Inbox do
       executor (`Nest.Agents.Agent.Turn.drain_inbox/1`), the single drain
       path.
     * **Busy target** (`:streaming`, `:executing_tools`, `:compacting`) —
-      the message is queued on `state.live.inbox`. When the target next
-      goes idle the machine's `:idle` transition emits the `:drain_inbox`
-      action, which drains every queued entry into a single user message.
+      the message is queued on `state.live.inbox`. The machine drains it at
+      the next turn boundary: `Transitions.iterate/1` emits the
+      `:drain_inbox` action from `:generating`/`:chat` once the wire
+      sequence is complete and nothing is in flight (issue #15), and
+      anything still queued when the target reaches `:idle` is drained by
+      the `:idle` transition. Either way every queued entry is combined
+      into a single user message.
     * **Broken target** (`:model_missing`, `:needs_repair`,
       `:context_overflow`, `:compaction_failed`,
       `:compaction_loop_detected`) — the sender gets an error and

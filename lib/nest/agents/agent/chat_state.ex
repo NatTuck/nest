@@ -132,10 +132,13 @@ defmodule Nest.Agents.Agent.ChatState.Live do
   The `inbox` field holds async agent-to-agent messages that
   arrived while the agent was busy (`agents-send`). Each entry is
   `%{from: name, content: text, timestamp: DateTime.t()}`, in
-  arrival order. When the agent next goes idle the entries are
-  combined into a single user message (offloaded to the agent tmp
-  dir when over `max-async-message-tokens`) and drained by
-  `Nest.Agents.Agent.Inbox`. In-memory only: a BEAM restart drops
+  arrival order. The entries are combined into a single user message
+  (offloaded to the agent tmp dir when over
+  `max-async-message-tokens`) and drained by
+  `Nest.Agents.Agent.Inbox` at the next turn boundary — the
+  `:generating`/`:chat` `:iterate` transition delivers them before the
+  next request (issue #15), and anything still queued when the agent
+  reaches `:idle` is drained there. In-memory only: a BEAM restart drops
   undrained messages.
 
   The `repair` map (`%{violations: [...], command: ...}`) carries

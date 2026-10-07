@@ -203,6 +203,9 @@ defmodule Nest.Agents.Agent.Turn do
       crossed_thresholds: state.live.crossed_thresholds,
       context_projection: state.live.context_projection,
       api_log_sequences: state.live.api_log_sequences,
+      # Read by `Machine.Transitions` to decide whether a queued inbox message
+      # is delivered at the turn boundary (issue #15).
+      inbox_count: length(state.live.inbox),
       vocation: state.vocation,
       depth: state.depth
     }

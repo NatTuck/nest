@@ -13,19 +13,20 @@ defmodule Nest.Agents.Agent.Repair do
       (fail the turn cleanly). Repair must never race a live turn.
 
       There is exactly one exception: an incoming `user` message onto a
-      wire-`user` tail is bridged (`MessageList.pairing_bridge/2`). A
-      user message is only accepted at idle — the channel and
-      `Callbacks.chat_or_drop/3` reject it mid-turn — so this append is
-      necessarily the turn-opening append and cannot race a live turn.
-      The `pending != []` clause still wins, so no synthetic
-      `tool_result` is ever fabricated on the live path, and
-      assistant-after-assistant still fails loudly.
+      wire-`user` tail is bridged (`MessageList.pairing_bridge/2`). That
+      shape is produced by the turn-boundary inbox delivery (issue #15):
+      a message queued while the turn ran is drained at the
+      `:generating` boundary and appended mid-turn, and a `{:tool, _}`
+      tail *is* a wire-`user` message. The `pending != []` clause still
+      wins, so no synthetic `tool_result` is ever fabricated on the live
+      path, and assistant-after-assistant still fails loudly.
 
-      That exception is a last-resort guard only: the "idle agent never
-      ends on a user message" invariant is now enforced upstream, by the
-      compaction commit (`Turn.Commit.active_segment/6`) and the load
-      heal (`classify_load/1`), so an idle tail should already be an
-      assistant. This branch should be unreachable in production.
+      The bridge is a normal path, not a last-resort guard. The "an idle
+      agent never ends on a user message" invariant is still enforced
+      upstream by the compaction commit (`Turn.Commit.active_segment/6`)
+      and the load heal (`classify_load/1`), which keeps the
+      turn-opening append clean, but the boundary delivery can append a
+      user message onto a wire-`user` tail at any iteration.
     * `:worker_death` — a tool worker died without a result; answer the
       unanswered tail `tool_use`(s) with the canonical error result.
     * `:terminal` — the turn is ending; heal the tail with the pairing
@@ -88,16 +89,11 @@ defmodule Nest.Agents.Agent.Repair do
   result), or `{:invalid, reason}` for a genuinely broken sequence.
 
   The single exception is an incoming `user` message onto a wire-`user`
-  tail: that is only reachable as the turn-opening append (a user message
-  is rejected mid-turn), so it is bridged rather than failed. The
-  unanswered-`tool_use` clause is checked first, so no synthetic
-  `tool_result` is ever produced here. `incoming` is the message about to
-  be appended.
-
-  The exception is a last-resort guard: the compaction commit
-  (`Turn.Commit.active_segment/6`) and the load heal (`classify_load/1`)
-  now enforce "an idle agent never ends on a user message" upstream, so
-  this branch should be unreachable in production.
+  tail: the turn-boundary inbox delivery (issue #15) appends a queued
+  message mid-turn, and a `{:tool, _}` tail is a wire-`user` message, so
+  this bridge is a normal path. The unanswered-`tool_use` clause is
+  checked first, so no synthetic `tool_result` is ever produced here.
+  `incoming` is the message about to be appended.
   """
   @spec classify_live([term()], term()) :: live_decision()
   def classify_live(messages, incoming) do
@@ -110,9 +106,9 @@ defmodule Nest.Agents.Agent.Repair do
       pending != [] ->
         {:invalid, unanswered_tool_use_reason(incoming, pending)}
 
-      # Upstream invariant guard: compaction and load both leave the idle
-      # tail on an assistant, so this bridge should never fire in
-      # production. Kept as a last-resort heal for restored/legacy state.
+      # The live bridge: the turn-boundary inbox delivery (issue #15)
+      # appends a queued user message mid-turn, and a `{:tool, _}` tail is
+      # a wire-`user` message. Not a last-resort heal.
       same_wire_role?(messages, incoming) and match?({:user, _}, incoming) ->
         {:repair, MessageList.pairing_bridge(messages, incoming)}
 

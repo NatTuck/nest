@@ -303,6 +303,16 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
 
   def do_step(%{phase: :generating, kind: :chat} = m, :iterate), do: iterate(m)
 
+  # The boundary delivery (issue #15): a drained inbox message lands here as
+  # a user turn and the turn continues in place — same body as the `:idle`
+  # clause, but the phase stays `:generating`, so no transient idle is ever
+  # broadcast (an idle-based `agents-query` wait would resolve early, and a
+  # `{:finalize, :clean}` would report a partial result to a parent).
+  def do_step(%{phase: :generating, kind: :chat} = m, {:inbox_drain, entries, content}) do
+    user = Dispatch.build_user_message(content, m.work.ctx.mode)
+    start_chat(m, {:user_message, user}, entries)
+  end
+
   def do_step(%{phase: :generating, kind: :chat} = m, {:append_result, :invalid, reason}) do
     fail_turn(m, %ArgumentError{message: reason}, [])
   end
@@ -468,10 +478,43 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
 
   defp iterate(m) do
     case MessageList.unpaired_tail_tool_uses(messages(m)) do
-      [] -> dispatch_http(m)
+      [] -> deliver_at_boundary_or_dispatch(m)
       uses -> preflight_pending_tools(m, uses)
     end
   end
+
+  # Deliver queued inbox entries instead of starting the next request when
+  # the wire sequence is complete and nothing is in flight (issue #15). The
+  # position inside the `[]` branch is load-bearing: an assistant tail can
+  # still carry unanswered `Part.ToolUse` (a carried compaction continuation),
+  # and appending a user message onto one would be refused by `Repair` and
+  # fail the turn. Emitting `{:drain_inbox}` keeps the phase `:generating`:
+  # the follow event starts the delivered message's turn in place.
+  defp deliver_at_boundary_or_dispatch(m) do
+    if deliver_at_boundary?(m), do: {:ok, [{:drain_inbox}], m}, else: dispatch_http(m)
+  end
+
+  # Conditions: something is queued, the turn is not being wrapped up
+  # (`force_finalize` keeps its "finish now" meaning, so the queued message
+  # waits for the turn end), and the tail is a `{:tool, _}` or
+  # `{:assistant, _}` message. The tail check must read the tag, not
+  # `MessageList.last_wire_role/1` (which maps `:tool` to `:user`) — and it
+  # excludes the just-opened-turn shape, where the machine itself just
+  # appended the tail.
+  defp deliver_at_boundary?(m) do
+    inbox_count(m.work.ctx) > 0 and not m.work.force_finalize and
+      deliverable_tail?(List.last(messages(m)))
+  end
+
+  defp deliverable_tail?({tag, _msg}) when tag in [:tool, :assistant], do: true
+  defp deliverable_tail?(_last), do: false
+
+  # `Turn.build_ctx/2` always sets `inbox_count` from `length(state.live.inbox)`;
+  # the 0 default only covers the tests that hand-build a `ctx` map, where
+  # "nothing queued" is the intended state. Guarded with `is_integer/1` because
+  # `nil > 0` is true in Erlang term order.
+  defp inbox_count(%{inbox_count: n}) when is_integer(n), do: n
+  defp inbox_count(_ctx), do: 0
 
   defp dispatch_http(m) do
     case Preflight.validate_request(messages(m)) do
