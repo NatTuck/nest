@@ -64,11 +64,20 @@ lands, and at its turn end before that.
 
 Delivery is `Agent.deliver_message/3` (`{:deliver_async, sender,
 content}` → `Inbox.handle_delivery/3`), which already queues for a busy
-target and starts a turn for an idle one. The content carries a prefix
-note naming the call that produced it, e.g.
+target and starts a turn for an idle one. The sender is the child/target
+name, so the inbox's own `[Message from agent "<name>"]` prefix identifies
+who it came from, and the content carries a one-line note naming the call
+plus the body:
 
-    [agents-spawn result for "worker-1"]
+    [Message from agent "worker-1"]
+    [agents-spawn result]
     <the child's final text>
+
+The note is `[agents-spawn result]` / `[agents-query result]` on success,
+`... failed` for a failure, and `... timed out` for the wall-clock
+timeout. The body is **exactly the text the blocking path would have
+returned as the tool result** for the same outcome — the two paths share
+one builder module so they cannot drift.
 
 **Mechanism.** The wait must not run in the calling agent's process (the
 turn worker is the blocking surface), so an async call starts a
@@ -98,6 +107,19 @@ by its timeout. It must not outlive a test and print to the console.
 The tool descriptions and the `tools.ex` stubs must state the async
 behaviour, and `agents-wait` (A) is the natural companion: "spawn async,
 then wait for it".
+
+### Known limitation: a Stop does not cancel a waiter
+
+Stopping a turn stops the caller's children and clears its child
+bookkeeping, but nothing tells an in-flight async waiter to give up. Its
+wait stays bounded by `timeout`, and when it finishes it delivers to the
+caller's inbox like any `agents-send` message — which means a queued
+result can start a new turn after a Stop, exactly as a peer's message
+would. That is consistent with the inbox contract, but the spawn case
+additionally delivers a `[agents-spawn timed out]` notice once the
+stopped child's timeout elapses, which is pure noise. Cancelling a
+waiter on Stop needs a worker notification on the abandon/stop path in
+`Machine.Children`/`SubAgent`; it is deliberately left out of #17.
 
 ## Acceptance
 

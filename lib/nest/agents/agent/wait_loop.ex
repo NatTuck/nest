@@ -43,8 +43,9 @@ defmodule Nest.Agents.Agent.WaitLoop do
   alias Nest.Messages.MessageList
   alias Nest.Messages.ToolCall
 
-  # Mirrors `ToolLoop`'s `@wait_slice_ms` / `@default_wait_ms`: both
-  # bound the same kind of blocking sub-agent wait.
+  # Mirrors `PeerQuery`'s `@wait_slice_ms` and `ToolLoop`'s
+  # `@default_wait_ms`: they bound the same kind of blocking sub-agent
+  # wait.
   @default_wait_ms 300_000
   @wait_slice_ms 250
 

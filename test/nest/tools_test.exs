@@ -73,7 +73,7 @@ defmodule Nest.ToolsTest do
       assert function.description =~ "expose_models"
     end
 
-    test "agents-spawn schema exposes the optional vocation slug and model arguments" do
+    test "agents-spawn schema exposes the optional vocation, model, and async arguments" do
       function = Tools.get_function("agents-spawn", "/tmp")
       assert function.name == "agents-spawn"
 
@@ -85,6 +85,25 @@ defmodule Nest.ToolsTest do
       assert props["model"]["type"] == "string"
       assert props["model"]["description"] =~ "provider/model-name"
       refute "model" in (function.parameters_schema["required"] || [])
+
+      assert props["async"]["type"] == "boolean"
+      assert props["async"]["default"] == false
+      assert props["async"]["description"] =~ "message in your inbox"
+      assert function.description =~ "arrives later as a message"
+    end
+
+    test "agents-query schema takes an optional async flag and timeout" do
+      function = Tools.get_function("agents-query", "/tmp")
+      assert function.name == "agents-query"
+
+      props = function.parameters_schema["properties"]
+      assert props["async"]["type"] == "boolean"
+      assert props["async"]["default"] == false
+      assert props["async"]["description"] =~ "message in your inbox"
+      assert props["timeout"]["type"] == "integer"
+
+      assert function.parameters_schema["required"] == ["name", "prompt"]
+      assert function.description =~ "arrives later as a message"
     end
 
     test "agents-batch schema exposes items/glob/template with no required args" do

@@ -31,8 +31,8 @@ defmodule Nest.Agents.Agent.Broadcasts do
   @doc """
   The per-agent PubSub topic. The single source for the
   `"agent:<space_id>:<name>"` format, so subscribers
-  (`ToolLoop`'s `agents-query` wait, `Agent.WaitLoop`) and
-  broadcasters cannot drift.
+  (`Nest.Agents.Agent.PeerQuery`'s `agents-query` wait,
+  `Agent.WaitLoop`) and broadcasters cannot drift.
   """
   @spec topic(integer(), String.t()) :: String.t()
   def topic(space_id, name), do: "agent:#{space_id}:#{name}"

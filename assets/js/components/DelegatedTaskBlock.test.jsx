@@ -106,6 +106,98 @@ describe("DelegatedTaskBlock", () => {
       "Child agent reached max depth",
     );
   });
+
+  it("renders an explicit 'Async' state and never the confirmation as the child response", () => {
+    render(
+      <MemoryRouter>
+        <DelegatedTaskBlock
+          toolCallId="call-1"
+          instruction="do X in the background"
+          childName={null}
+          response="Spawned agent worker-1 asynchronously. Its response will arrive later as a message in your inbox; use `agents-wait` to wait for it."
+          isAsync
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText("Async")).toBeInTheDocument();
+    expect(screen.getByTestId("delegated-task-async-note")).toHaveTextContent(
+      "The response will arrive later as a message.",
+    );
+    expect(screen.getByTestId("delegated-task-instruction")).toHaveTextContent(
+      "do X in the background",
+    );
+
+    // The confirmation is shown, but never as the child's response.
+    expect(screen.queryByText("Completed")).toBeNull();
+    expect(screen.queryByText("Child response")).toBeNull();
+    expect(screen.queryByTestId("delegated-task-response")).toBeNull();
+    expect(screen.getByTestId("delegated-task-confirmation")).toHaveTextContent(
+      "Spawned agent worker-1 asynchronously",
+    );
+  });
+
+  it("renders 'Failed' for an async spawn that errored before it started", () => {
+    // A bad spawn comes back as an immediate error even with
+    // `async: true` — no later message will arrive, so the card
+    // must show the failure rather than an async state.
+    render(
+      <MemoryRouter>
+        <DelegatedTaskBlock
+          toolCallId="call-1"
+          instruction="spawn a bad specialist"
+          childName={null}
+          response="Could not spawn agent: no vocation with slug ..."
+          isError
+          isAsync
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText("Failed")).toBeInTheDocument();
+    expect(screen.getByText("Error")).toBeInTheDocument();
+    expect(screen.getByTestId("delegated-task-response")).toHaveTextContent(
+      "no vocation with slug",
+    );
+    expect(screen.queryByTestId("delegated-task-async-note")).toBeNull();
+  });
+
+  it("links the child's name to its chat page", () => {
+    render(
+      <MemoryRouter>
+        <DelegatedTaskBlock
+          toolCallId="call-1"
+          instruction="count the primes"
+          childName="worker-1"
+          response={null}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole("link", { name: "worker-1" })).toHaveAttribute(
+      "href",
+      "/agent/worker-1",
+    );
+    expect(screen.queryByTestId("delegated-task-child-missing")).toBeNull();
+  });
+
+  it("shows an explicit missing indicator when the child name is absent", () => {
+    render(
+      <MemoryRouter>
+        <DelegatedTaskBlock
+          toolCallId="call-1"
+          instruction="count the primes"
+          childName={null}
+          response={null}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(
+      screen.getByTestId("delegated-task-child-missing"),
+    ).toHaveTextContent("child name unavailable");
+    expect(screen.queryByRole("link")).toBeNull();
+  });
 });
 
 describe("DelegatedTask", () => {
@@ -176,6 +268,66 @@ describe("DelegatedTask", () => {
       "child says X is done",
     );
     expect(screen.getByText("Completed")).toBeInTheDocument();
+  });
+
+  it("reads async: true from object, parsed-JSON, and partial-buffer arguments", () => {
+    seedCache({ messages: [] });
+
+    const argumentShapes = [
+      { query: "do X", async: true },
+      '{"query":"do X","async":true}',
+      '{"query":"do X","async":true',
+    ];
+
+    for (const args of argumentShapes) {
+      const message = {
+        index: 1,
+        role: "assistant",
+        toolCalls: [
+          { id: "call-async", name: "agents-spawn", arguments: args },
+        ],
+      };
+
+      const { unmount, getByText, getByTestId } = render(
+        <MemoryRouter>
+          <DelegatedTask message={message} agentName={AGENT_NAME} />
+        </MemoryRouter>,
+      );
+
+      expect(getByText("Async")).toBeInTheDocument();
+      expect(getByTestId("delegated-task-async-note")).toBeInTheDocument();
+      unmount();
+    }
+  });
+
+  it("reads the child's name from the call arguments and links to its chat page", () => {
+    seedCache({ messages: [] });
+
+    const argumentShapes = [
+      [{ name: "worker-obj", query: "do X" }, "worker-obj"],
+      ['{"name":"worker-json","query":"do X"}', "worker-json"],
+      ['{"name":"worker-partial","query":"do X', "worker-partial"],
+    ];
+
+    for (const [args, expectedName] of argumentShapes) {
+      const message = {
+        index: 1,
+        role: "assistant",
+        toolCalls: [{ id: "call-name", name: "agents-spawn", arguments: args }],
+      };
+
+      const { unmount, getByRole } = render(
+        <MemoryRouter>
+          <DelegatedTask message={message} agentName={AGENT_NAME} />
+        </MemoryRouter>,
+      );
+
+      expect(getByRole("link", { name: expectedName })).toHaveAttribute(
+        "href",
+        `/agent/${expectedName}`,
+      );
+      unmount();
+    }
   });
 
   it("accepts both `toolCalls`/`toolResults` and the camelCase aliases", () => {

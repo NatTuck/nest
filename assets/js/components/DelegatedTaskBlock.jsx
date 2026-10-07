@@ -10,9 +10,11 @@
  *   - The child's name (linked to its chat page so the user
  *     can drill down into the child's full conversation).
  *   - Status: "running" while the parent is blocked on the
- *     tool worker; "completed" once the matching
- *     `:tool_result` lands next to it; "error" if the result
- *     came back with `is_error: true`.
+ *     tool worker; "async" when the call passed `async: true`
+ *     (the paired result is only a confirmation, the real
+ *     answer arrives later as a message); "completed" once
+ *     the matching `:tool_result` lands next to it; "error"
+ *     if the result came back with `is_error: true`.
  *   - The child's response content (truncated to a
  *     reasonable preview; the full text is in the
  *     `:tool` message right next to the tool call).
@@ -69,6 +71,66 @@ function extractCloneInstruction(args) {
   // regex is just for visual streaming UX — the finalized
   // `addChatMessage` reassembles the full string.
   const match = args.match(/"query"\s*:\s*"((?:[^"\\]|\\.)*)/);
+  if (match) return match[1];
+  return null;
+}
+
+/**
+ * Read the `async` flag out of an `agents-spawn` tool call's
+ * arguments, tolerating the same shapes as
+ * `extractCloneInstruction`: a parsed object, a fully-formed
+ * streaming JSON string, or a partial buffer.
+ *
+ * With `async: true` the paired tool result is only a
+ * confirmation — the child's real response arrives later as a
+ * separate inbox message — so the card must not present that
+ * confirmation as the child's response.
+ */
+function extractAsyncFlag(args) {
+  if (args == null) return false;
+  if (typeof args === "object") {
+    return args.async === true;
+  }
+  if (typeof args !== "string") return false;
+
+  try {
+    const parsed = JSON.parse(args);
+    if (parsed && typeof parsed === "object") {
+      return parsed.async === true;
+    }
+  } catch {
+    // fall through — partial buffer; use the regex fallback
+  }
+
+  return /"async"\s*:\s*true/.test(args);
+}
+
+/**
+ * Read the child's `name` out of an `agents-spawn` tool call's
+ * arguments, tolerating the same shapes as
+ * `extractCloneInstruction`/`extractAsyncFlag`: a parsed
+ * object, a fully-formed streaming JSON string, or a partial
+ * buffer. `name` is a required argument, so a committed call
+ * always resolves; a `null` result means the call is still
+ * mid-stream or genuinely malformed.
+ */
+function extractChildName(args) {
+  if (args == null) return null;
+  if (typeof args === "object") {
+    return args.name ?? null;
+  }
+  if (typeof args !== "string") return null;
+
+  try {
+    const parsed = JSON.parse(args);
+    if (parsed && typeof parsed === "object" && parsed.name) {
+      return parsed.name;
+    }
+  } catch {
+    // fall through — partial buffer; use the regex fallback
+  }
+
+  const match = args.match(/"name"\s*:\s*"((?:[^"\\]|\\.)*)/);
   if (match) return match[1];
   return null;
 }
@@ -146,10 +208,12 @@ export function DelegatedTask({ message, agentName }) {
             key={call.id}
             toolCallId={call.id}
             instruction={instruction}
+            childName={extractChildName(rawArgs)}
             response={result ? resultContent : null}
             isError={
               result ? (result.is_error ?? result.isError ?? false) : false
             }
+            isAsync={extractAsyncFlag(rawArgs)}
           />
         );
       })}
@@ -163,17 +227,26 @@ export function DelegatedTask({ message, agentName }) {
  * @param {string} props.instruction
  *   The query that was passed to `agents-spawn`.
  * @param {string|null} props.childName
- *   The child's name (parsed from the matching
- *   `:tool_result` if the parent stored it; `null` while
- *   the tool worker is still blocked or if the spawn
- *   failed).
+ *   The child's name, read from the `agents-spawn` call's
+ *   `arguments.name`. `null` while the call is still
+ *   streaming (or if it is malformed); the card then shows
+ *   an explicit "missing" indicator rather than hiding the
+ *   row, so the drill-down affordance is never silently
+ *   absent.
  * @param {string|null} props.response
  *   The child's final assistant text (or the error
  *   string). `null` while the tool worker is still
- *   blocked.
+ *   blocked. With `isAsync` this is only the spawn
+ *   confirmation, not the child's answer.
  * @param {boolean} [props.isError]
  *   True when the synthetic tool result came back with
  *   `is_error: true`. Default false.
+ * @param {boolean} [props.isAsync]
+ *   True when the call passed `async: true`. The paired
+ *   result is then only a confirmation; the child's real
+ *   response arrives later as a separate inbox message, so
+ *   the card shows an "Async" state instead of a
+ *   "Completed" child response. Default false.
  */
 export function DelegatedTaskBlock({
   toolCallId,
@@ -181,17 +254,26 @@ export function DelegatedTaskBlock({
   childName,
   response,
   isError = false,
+  isAsync = false,
 }) {
-  const status = isError ? "error" : response ? "completed" : "running";
+  const status = isError
+    ? "error"
+    : isAsync
+      ? "async"
+      : response
+        ? "completed"
+        : "running";
 
   const statusLabel = {
     running: "Running",
+    async: "Async",
     completed: "Completed",
     error: "Failed",
   }[status];
 
   const statusClasses = {
     running: "bg-amber-100 text-amber-700",
+    async: "bg-sky-100 text-sky-700",
     completed: "bg-emerald-100 text-emerald-700",
     error: "bg-red-100 text-red-700",
   }[status];
@@ -224,16 +306,23 @@ export function DelegatedTaskBlock({
           {statusLabel}
         </span>
       </div>
-      {childName && (
-        <p className="mt-2 text-xs text-indigo-700">
+      <p className="mt-2 text-xs text-indigo-700">
+        {childName ? (
           <Link
             to={`/agent/${encodeURIComponent(childName)}`}
             className="text-indigo-600 hover:underline font-mono"
           >
             {childName}
           </Link>
-        </p>
-      )}
+        ) : (
+          <span
+            data-testid="delegated-task-child-missing"
+            className="text-amber-700"
+          >
+            child name unavailable
+          </span>
+        )}
+      </p>
       {instruction && (
         <>
           <p className="mt-2 text-xs text-indigo-700 font-medium">
@@ -247,7 +336,28 @@ export function DelegatedTaskBlock({
           </pre>
         </>
       )}
-      {response && status !== "running" && (
+      {status === "async" && (
+        <p
+          data-testid="delegated-task-async-note"
+          className="mt-2 text-xs text-sky-700"
+        >
+          The response will arrive later as a message.
+        </p>
+      )}
+      {response && status === "async" && (
+        <>
+          <p className="mt-2 text-xs text-indigo-700 font-medium">
+            Confirmation
+          </p>
+          <pre
+            data-testid="delegated-task-confirmation"
+            className="mt-1 text-xs whitespace-pre-wrap break-words bg-white border border-indigo-100 rounded p-2 text-indigo-800"
+          >
+            {response}
+          </pre>
+        </>
+      )}
+      {response && (status === "completed" || status === "error") && (
         <>
           <p
             className={`mt-2 text-xs font-medium ${isError ? "text-red-700" : "text-indigo-700"}`}

@@ -247,8 +247,8 @@ defmodule Nest.Agents.ChildRegistry do
         {space_id, child_name} ->
           # Tell the parent its child died, *before* unregistering
           # (unregister deletes the reverse mapping we need). A parent
-          # blocked on this child's response (an `agents-spawn` /
-          # `agents-batch` worker waiting in `pending_children`) can
+          # waiting on this child's response (an `agents-spawn` /
+          # `agents-batch` caller parked in `pending_children`) can
           # then fail that slot immediately instead of waiting out the
           # per-item timeout. A death that follows a normal completion
           # is ignored by the parent (its pending entry is already
