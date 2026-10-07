@@ -116,10 +116,26 @@ defmodule Nest.Agents.AgentStreamErrorTest do
   # `:sys.get_state/1` reports `:idle`, the broadcasts are already in this
   # process's mailbox and the assertions below cannot race a slow error path.
   #
-  # The 1s is a failure deadline for the poll (matching the sibling test's
-  # `eventually`), not an expected duration: the condition holds as soon as
-  # the error is handled. `eventually/2`'s default timeout is 10ms, so it has
-  # to be given explicitly.
+  # Why a 1s failure deadline, spelled out because this is a raised budget
+  # (`SMELLS.md`: "any increase in a timeout is a likely smell"):
+  #
+  #   * The wait cannot be removed. `Agent.chat/3` is a `GenServer.cast`
+  #     (`agent.ex:389`; `handle_cast` only, `callbacks.ex:59-60`), so no call
+  #     returns once the turn is finished, and the idle broadcast is itself
+  #     part of the contract under test. An unbounded wait would be worse: it
+  #     turns a clear failure into a hang bounded only by ExUnit's 60s test
+  #     timeout, which blows the 5s budget in `scripts/precommit-test.sh`.
+  #   * The signal inherits the whole latency. The idle broadcast is emitted
+  #     last in the turn (after the stream is consumed, usage merged, and the
+  #     assistant message appended): 76ms in isolation vs 700-1000ms at
+  #     `max_cases: 24` (measured; see `notes/test-suite-speedup.md`).
+  #
+  # So 1s is a failure deadline for the poll, not an expected duration — the
+  # condition holds as soon as the error has been handled, and `eventually/2`'s
+  # default is 10ms, hence the explicit value. The underlying slowness is real
+  # and tracked in #21 (Elixir test timeout audit); this should drop back to
+  # 500ms when the turn latency is fixed. The sibling test below carries the
+  # same budget.
   defp await_idle(pid) do
     assert eventually(
              fn -> Machine.status_for(:sys.get_state(pid).live.machine) == :idle end,

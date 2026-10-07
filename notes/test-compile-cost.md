@@ -31,15 +31,21 @@ cut it further is to compile less often.
 
 `Nest.TestSupport.AgentTestMacro` replaces `test` for every module that
 uses `Nest.DataCase` / `NestWeb.ChannelCase` (88 of 192 test files; 747 of the
-1890 `test "` declarations, a grep count — ExUnit reports 1905 once generated
+1892 `test "` declarations, a grep count — ExUnit reports 1907 once generated
 tests are counted). Whatever it quotes is compiled into *every* test body.
 
 Per-test compile cost, 400 synthetic trivial tests per variant. These are
-*ratios* from one harness, not absolute costs: the numbers move with the test
-body used, and an independent re-measurement of the same table on the same box
-came out roughly an order of magnitude smaller in absolute terms. What the fix
-removed is the *gap* between the shapes, and that gap is what the A/B
-measurements below confirm independently of this table.
+*ratios* from one harness, not absolute costs: the numbers move with the body
+used, and an independent re-measurement on the same box reproduced the gap
+between the shapes while landing at slightly different absolutes (6.21ms/test
+for the `rescue` variant against the 5.73ms below). What the fix removed is that
+gap, which is what the A/B measurements further down confirm without relying on
+this table.
+
+The arithmetic that ties this table to the suite: 747 tests x ~5.7ms is ~4.3s of
+*serial* CPU, and the parallel test-file load runs at roughly 12x effective on
+this box, so the table predicts ~0.35s of wall clock — which is what the
+interleaved A/B measured. Nothing here implies a 4s wall-clock win.
 
 | test body shape | ms/test |
 | --- | --- |

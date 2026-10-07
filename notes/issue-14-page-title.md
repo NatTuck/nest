@@ -101,6 +101,32 @@ turn latency under full-suite load is 700-1000ms against 76ms in isolation (see
 `notes/test-suite-speedup.md`), so a 500ms fence on a single message was
 guaranteed to fire on a slow-but-healthy turn.
 
+### The 1000ms budget is a recorded exception, not a silent one
+
+`notes/test-suite-speedup.md` says the opposite — "Do not raise the fences…
+treat the 500ms fences as a canary" — and that guidance is not withdrawn here.
+This section exists to record why it is not being applied to this one wait.
+
+- **The wait cannot be removed.** `Agent.chat/3` is a `GenServer.cast`
+  (`agent.ex:389`; `handle_cast` only, `callbacks.ex:59-60`), so no call returns
+  once the turn has finished, and the idle broadcast is itself part of the
+  contract under test (moduledoc point 3).
+- **An unbounded wait is strictly worse.** It converts a clear failure into a
+  hang bounded only by ExUnit's 60s test timeout, which blows the 5s budget in
+  `scripts/precommit-test.sh` on the reference host.
+- **The signal inherits the whole latency.** The idle broadcast is emitted last
+  in the turn — after the stream is consumed, usage merged, and the assistant
+  message appended — so 76ms isolated becomes 700-1000ms at `max_cases: 24`.
+  1000ms is therefore the smallest *failure deadline* that does not fire on a
+  healthy-but-loaded run; a 500ms bound is a latency assertion, and this test
+  asserts effects, not latency.
+
+The premise behind the rule is right, though: this is a slow test. The latency
+is real and is tracked in #21 (Elixir test timeout audit), and this budget
+should come back down to 500ms once the turn latency is fixed. Note that this
+file already carried a 1000ms `eventually` (`active_worker == nil`) before this
+change, so the same question applies there.
+
 ## Known gaps
 
 - The `[missing host]` branch of `Nest.Hostname.get/0` is untested: forcing
