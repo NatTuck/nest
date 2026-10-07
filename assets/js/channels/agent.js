@@ -53,6 +53,11 @@ function statusExtras(payload) {
   if (payload.compactionCount !== undefined) {
     extra.compactionCount = payload.compactionCount;
   }
+  // The queued-message count rides `chat:status` too, so a missed
+  // `chat:inbox` broadcast does not leave the panel's count stale.
+  if (payload.pendingMessageCount !== undefined) {
+    extra.pendingMessageCount = payload.pendingMessageCount;
+  }
 
   return extra;
 }
@@ -486,7 +491,12 @@ export function sendMessage(agentId, content, mode, onError) {
       store.setWaitingForResponse(agentId, true);
     })
     .receive("error", (err) => {
-      store.clearPartial(agentId);
+      // The push was rejected, so the optimistic echo is a phantom: no
+      // `chat:message` will ever reconcile it and no `chat:inbox` entry
+      // will retract it. This also clears the fabricated assistant
+      // placeholders, and only those — a live `partial` from a stream
+      // that is still running is left alone.
+      store.retractUserMessage(agentId, content);
       if (onError) onError(err);
     });
 }

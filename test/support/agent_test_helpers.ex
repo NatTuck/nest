@@ -391,6 +391,39 @@ defmodule Nest.Agents.AgentTestHelpers do
     vocation.id
   end
 
+  @doc """
+  Returns a fresh `vocation_id` with three modes: `"chat"` (the default,
+  since `Vocations.default_mode/1` is the lexicographically first mode),
+  `"plan"`, and `"review"`. For tests that need a mode the agent is not
+  already in — e.g. asserting that a queued message's requested mode is
+  applied when it is delivered.
+  """
+  def multi_mode_vocation_id_for_test do
+    {:ok, vocation} =
+      Vocations.create_vocation(%{
+        name: "Test Multi Mode (#{Elixir.System.unique_integer([:positive])})",
+        description: "Multi-mode vocation for mode-delivery tests",
+        system_prompt: "Test multi-mode prompt.",
+        tools: @tool_groups,
+        modes: %{
+          "chat" => %{
+            "description" => "General conversation.",
+            "caps" => %{"net" => false, "fs" => %{"read" => ["/"], "write" => ["/tmp"]}}
+          },
+          "plan" => %{
+            "description" => "Planning.",
+            "caps" => %{"net" => false, "fs" => %{"read" => ["/"], "write" => ["/tmp"]}}
+          },
+          "review" => %{
+            "description" => "Review.",
+            "caps" => %{"net" => false, "fs" => %{"read" => ["/"], "write" => ["/tmp"]}}
+          }
+        }
+      })
+
+    vocation.id
+  end
+
   defp build_attrs(agent_name, space_id, attrs) do
     defaults = %{
       name: agent_name,

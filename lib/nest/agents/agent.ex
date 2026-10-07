@@ -383,10 +383,17 @@ defmodule Nest.Agents.Agent do
   message's tool calls. When `nil`, the agent falls back to its
   default mode (first key in the vocation's `modes` map, or `"chat"`
   if no modes are defined).
+
+  `sender` identifies the human behind the message (the channel passes
+  the socket's username). It is recorded on a queued inbox entry so the
+  delivered prompt names the sender; it is ignored for an idle agent,
+  which starts the turn immediately. When the agent is busy the message
+  and the requested `mode` are queued and delivered at the next turn
+  boundary instead of being dropped.
   """
-  @spec chat(pid(), String.t(), String.t() | nil) :: :ok
-  def chat(pid, content, mode \\ nil) do
-    GenServer.cast(pid, {:chat, content, mode})
+  @spec chat(pid(), String.t(), String.t() | nil, String.t() | nil) :: :ok
+  def chat(pid, content, mode \\ nil, sender \\ nil) do
+    GenServer.cast(pid, {:chat, content, mode, sender})
   end
 
   @doc """

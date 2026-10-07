@@ -28,6 +28,20 @@ function isLiveCache(cache) {
 }
 
 /**
+ * Drop the client-only `optimistic` marker from a cached message row.
+ * Applied to the rows a join keeps: the server has just told us its
+ * state, so a row we still hold is either a real message or a send whose
+ * rejection we already surfaced, and it must not be retractable as a
+ * queued echo later.
+ */
+function withoutOptimistic(message) {
+  if (!message.optimistic) return message;
+  const copy = { ...message };
+  delete copy.optimistic;
+  return copy;
+}
+
+/**
  * Drop the least-recently-viewed agent caches once `agentsCache`
  * exceeds `MAX_CACHED_AGENTS`, mutating the passed copy. The agent
  * being joined and any protected (connecting/connected) entry are
@@ -89,10 +103,15 @@ export function agentCacheSetters(set) {
       set((state) => {
         const existing = state.agentsCache[id];
         const messages = payload.messages || [];
-        const finalMessages =
+        const kept =
           existing?.messages?.length > messages.length
             ? existing.messages
             : messages;
+        // A reconnect confirms the server's state, so any `optimistic`
+        // echo we are still holding stops being retractable.
+        const finalMessages = kept.some((m) => m.optimistic)
+          ? kept.map(withoutOptimistic)
+          : kept;
         const lastIndex =
           finalMessages.length > 0
             ? Math.max(...finalMessages.map((m) => m.index))

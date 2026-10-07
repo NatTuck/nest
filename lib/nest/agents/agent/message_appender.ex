@@ -36,8 +36,8 @@ defmodule Nest.Agents.Agent.MessageAppender do
   While a turn is live (`:streaming`, `:executing_tools`, `:compacting`)
   the turn owns the sequence: `Repair.decide(:live, ...)` classifies the
   append and this module only repairs the single shape `Repair` allows —
-  an incoming `user` message onto a wire-`user` tail, which can only be
-  the turn-opening append because a user message is rejected mid-turn.
+  an incoming `user` message onto a wire-`user` tail, which is either the
+  turn-opening append or the turn-boundary inbox delivery (issue #15).
   At a terminal boundary (idle/stopping/blocked)
   `Repair.decide(:terminal, ...)` heals the tail with
   `MessageList.pairing_bridge/2` before the requested message lands.
@@ -69,11 +69,12 @@ defmodule Nest.Agents.Agent.MessageAppender do
   # A turn owns the sequence while the machine is `:generating` or
   # `:executing_tools`, so `Repair.decide(:live, ...)` classifies the
   # append instead of healing it — except the one shape `Repair` permits
-  # on the live path (a user message onto a wire-user tail, which can only
-  # be the turn-opening append). The compactor's `:committing` phase is
-  # terminal for repair purposes: the compactor turn is over and the
-  # commit writes a fresh segment, so the tail may need a bridge (the
-  # legacy commit reset to idle before appending for the same reason).
+  # on the live path (a user message onto a wire-user tail: the
+  # turn-opening append or the turn-boundary inbox delivery, issue #15).
+  # The compactor's `:committing` phase is terminal for repair purposes:
+  # the compactor turn is over and the commit writes a fresh segment, so
+  # the tail may need a bridge (the legacy commit reset to idle before
+  # appending for the same reason).
   @live_phases [:generating, :executing_tools]
 
   @type append_result ::

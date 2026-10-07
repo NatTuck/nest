@@ -314,7 +314,10 @@ describe("ChatPage stop button", () => {
 
     renderChat();
 
+    // Stop joins Send (which stays available so a message can be
+    // queued for the next turn boundary).
     expect(screen.getByRole("button", { name: /stop/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /send/i })).toBeInTheDocument();
   });
 
   it("shows the Stop button when the agent is executing tools", () => {
@@ -330,6 +333,7 @@ describe("ChatPage stop button", () => {
     renderChat();
 
     expect(screen.getByRole("button", { name: /stop/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /send/i })).toBeInTheDocument();
   });
 
   it("does not show the Stop button when the agent is only waiting for response (avoids flicker)", () => {
@@ -441,6 +445,104 @@ describe("ChatPage stop button", () => {
     expect(screen.queryByRole("button", { name: /stopping/i })).toBeNull();
     expect(screen.getByRole("button", { name: /stop/i })).toBeInTheDocument();
   });
+});
+
+describe("ChatPage sending while the agent is busy", () => {
+  beforeEach(() => {
+    mockAgentsCache = {};
+    sendMessage.mockClear();
+  });
+
+  it("sends the message while the agent is streaming (the server queues it)", () => {
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "streaming",
+        messages: [],
+        currentMode: "build",
+        defaultMode: "build",
+        modes: ["build", "plan"],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+
+    renderChat();
+
+    const textarea = screen.getByLabelText("Message");
+    fireEvent.change(textarea, { target: { value: "queue this" } });
+    fireEvent.click(screen.getByRole("button", { name: /send/i }));
+
+    // The push still goes out; the server queues it on the agent's
+    // inbox and delivers it at the next turn boundary.
+    expect(sendMessage).toHaveBeenCalledWith(
+      "test-agent",
+      "queue this",
+      "build",
+      expect.any(Function),
+    );
+    // The composer clears so the next message can be typed.
+    expect(screen.getByLabelText("Message").value).toBe("");
+  });
+
+  it("does not send while the agent is busy but the channel is not connected", () => {
+    mockAgentsCache = {
+      "test-agent": {
+        status: "disconnected",
+        agentState: "streaming",
+        messages: [],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+
+    renderChat();
+
+    // "Not connected" still disables the composer...
+    const textarea = screen.getByLabelText("Message");
+    expect(textarea).toBeDisabled();
+    const sendButton = screen.getByRole("button", { name: /send/i });
+    expect(sendButton).toBeDisabled();
+
+    // ...and neither path into `handleSendMessage` actually sends: a
+    // click on the disabled Send button and a direct form submit (which
+    // bypasses the button) are both no-ops.
+    fireEvent.change(textarea, { target: { value: "should not go" } });
+    fireEvent.click(sendButton);
+    fireEvent.submit(document.querySelector("form"));
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe("ChatPage composer freeze", () => {
+  beforeEach(() => {
+    mockAgentsCache = {};
+    sendMessage.mockClear();
+  });
+
+  // The machine's five blocked statuses all need an operator action, so
+  // the composer is hidden for each of them.
+  for (const agentState of [
+    "model_missing",
+    "needs_repair",
+    "context_overflow",
+    "compaction_failed",
+    "compaction_loop_detected",
+  ]) {
+    it(`hides the composer in the blocked status ${agentState}`, () => {
+      mockAgentsCache = {
+        "test-agent": {
+          status: "connected",
+          agentState,
+          messages: [],
+          model: { name: "qwen3.5-plus" },
+        },
+      };
+
+      renderChat();
+
+      expect(screen.queryByLabelText("Message")).toBeNull();
+      expect(screen.queryByRole("button", { name: /send/i })).toBeNull();
+    });
+  }
 });
 
 describe("ChatPage loading and empty states", () => {
@@ -1390,7 +1492,7 @@ describe("ChatPage mode selector", () => {
     expect(leaveAgent).not.toHaveBeenCalled();
   });
 
-  it("disables the mode dropdown when the agent is busy (locked with the input)", () => {
+  it("keeps the textarea and mode dropdown enabled while the agent is busy (messages are queued)", () => {
     mockAgentsCache = {
       "test-agent": {
         status: "connected",
@@ -1405,10 +1507,10 @@ describe("ChatPage mode selector", () => {
 
     renderChat();
 
-    // The textarea is disabled when busy; so is the mode
-    // dropdown.
-    expect(screen.getByLabelText("Message")).toBeDisabled();
-    expect(screen.getByLabelText("Mode")).toBeDisabled();
+    // The composer stays interactive while busy so a message can be
+    // queued for the next turn boundary.
+    expect(screen.getByLabelText("Message")).not.toBeDisabled();
+    expect(screen.getByLabelText("Mode")).not.toBeDisabled();
   });
 });
 
@@ -2046,6 +2148,35 @@ describe("ChatPage slash commands", () => {
     );
     expect(sendMessage).not.toHaveBeenCalled();
     expect(screen.getByLabelText("Message").value).toBe("");
+  });
+
+  it("queues a slash command as chat text while the agent is busy", () => {
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "streaming",
+        messages: [],
+        currentMode: "build",
+        defaultMode: "build",
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+    renderChat();
+
+    const textarea = screen.getByLabelText("Message");
+    fireEvent.change(textarea, { target: { value: "/compact" } });
+    fireEvent.click(screen.getByRole("button", { name: /send/i }));
+
+    // A control-plane command is rejected mid-turn, so the text is
+    // queued as ordinary chat instead of being pushed (and cleared) for
+    // an error banner.
+    expect(compactAgent).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledWith(
+      "test-agent",
+      "/compact",
+      "build",
+      expect.any(Function),
+    );
   });
 
   it("passes the parsed args through to compactAgent", () => {

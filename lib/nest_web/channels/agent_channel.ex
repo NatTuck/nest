@@ -20,6 +20,7 @@ defmodule NestWeb.AgentChannel do
   require Logger
 
   alias Nest.Agents
+  alias Nest.Agents.Agent.Machine
   alias Nest.Agents.PersistedAgent
   alias Nest.Messages.Message
   alias Nest.Messages.Streaming
@@ -27,6 +28,12 @@ defmodule NestWeb.AgentChannel do
   alias Nest.Spaces
   alias NestWeb.AgentChannel.ShellLog
   alias NestWeb.AgentChannel.Sync
+
+  # The statuses that cannot accept a chat message at all: the machine's
+  # declared blocked phases, which need an operator action (repair, model
+  # change, compaction retry/ack) before the agent can work again. Every
+  # other status is the agent's call — a busy agent queues the message.
+  @broken_statuses Machine.blocked_phases()
 
   @impl true
   def join("agent:" <> rest, _payload, socket) do
@@ -304,42 +311,38 @@ defmodule NestWeb.AgentChannel do
   defp source_to_string(atom) when is_atom(atom), do: Atom.to_string(atom)
   defp source_to_string(other), do: other
 
+  # A human chat message. The status read here is UX only — a nicer error
+  # for the statuses that cannot accept a message at all. The authority is
+  # the agent's own read in `Callbacks.chat_or_queue/4`, which runs in the
+  # agent process, so the check-and-enqueue cannot race. A busy agent
+  # (`:streaming`, `:executing_tools`, `:compacting`) queues the message and
+  # delivers it at its next turn boundary.
   @impl true
-  def handle_in("chat:message", %{"content" => content} = payload, socket) do
+  def handle_in("chat:message", %{"content" => content} = payload, socket)
+      when is_binary(content) do
     space_id = socket.assigns.space_id
     name = socket.assigns.name
-    mode = Map.get(payload, "mode")
+    mode = requested_mode(payload)
+    sender = socket.assigns.current_user.username
 
     case Agents.get_info(space_id, name) do
-      {:ok, %{status: status}}
-      when status in [
-             :compacting,
-             :compaction_failed,
-             :compaction_loop_detected,
-             :context_overflow,
-             :model_missing,
-             :needs_repair
-           ] ->
+      {:ok, %{status: status}} when status in @broken_statuses ->
         {:reply, {:error, %{"reason" => "agent_status_#{status}"}}, socket}
 
-      {:ok, %{status: status}} when status in [:streaming, :executing_tools] ->
-        {:reply, {:error, %{"reason" => "agent_busy"}}, socket}
-
       {:ok, _agent} ->
-        case Agents.chat(space_id, name, content, mode) do
-          :ok ->
-            {:reply, {:ok, %{}}, socket}
-
-          {:error, :not_found} ->
-            {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
-
-          {:error, reason} ->
-            {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
-        end
+        reply_chat(socket, Agents.chat(space_id, name, content, mode, sender))
 
       {:error, :not_found} ->
         {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
     end
+  end
+
+  # A payload whose `content` is missing or not a string. Without this clause
+  # `handle_in/3` has no match and the channel server raises; a map content
+  # would instead reach the agent and crash it when the message is built or
+  # the queue is combined.
+  def handle_in("chat:message", _payload, socket) do
+    {:reply, {:error, %{"reason" => "invalid_content"}}, socket}
   end
 
   @impl true
@@ -595,6 +598,25 @@ defmodule NestWeb.AgentChannel do
   end
 
   # Reply shaper shared by the control-plane `chat:*` handlers.
+  # A non-binary mode is "no mode requested" rather than a value on the wire
+  # (the browser contract is string-or-null; `Inbox.put_entry/5` also guards).
+  defp requested_mode(payload) do
+    case Map.get(payload, "mode") do
+      mode when is_binary(mode) -> mode
+      _ -> nil
+    end
+  end
+
+  # The channel only maps the agent's reply: the agent is the disposition
+  # authority (it queues the message while it is busy).
+  defp reply_chat(socket, :ok), do: {:reply, {:ok, %{}}, socket}
+
+  defp reply_chat(socket, {:error, :not_found}),
+    do: {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
+
+  defp reply_chat(socket, {:error, reason}),
+    do: {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
+
   defp reply_control(:ok, socket), do: {:reply, {:ok, %{}}, socket}
   defp reply_control({:error, :not_found}, socket), do: reply_err("agent_not_found", socket)
   defp reply_control({:error, {:not_idle, s}}, socket), do: reply_err("agent_status_#{s}", socket)

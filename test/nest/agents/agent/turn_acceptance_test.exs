@@ -45,6 +45,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
   end
 
   import Nest.Agents.AgentTestHelpers
+  import Nest.Agents.AgentTurnTestHelpers
 
   defp message_indices(state) do
     state.chat_state.messages
@@ -391,6 +392,266 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
       assert second_output >= first_output,
              "second chat's output_tokens (#{second_output}) " <>
                "should not be less than first chat's (#{first_output}) — nil usage should be a no-op"
+    end
+  end
+
+  describe "turn-boundary inbox delivery" do
+    test "1.1.9 a message queued during a tool batch lands before the next request, with no idle" do
+      test_pid = self()
+
+      {pid, name} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: programmer_vocation_id_for_test()
+        })
+
+      # Record the message list of every request the turn makes, then hand off
+      # to the scripted MockClient so the turn behaves exactly as the other
+      # fixtures do.
+      Mimic.stub(MockClient, :run, fn request, opts ->
+        send(test_pid, {:llm_request, request.messages})
+        Mimic.call_original(MockClient, :run, [request, opts])
+      end)
+
+      Mimic.allow(MockClient, self(), pid)
+
+      # Request 1: the model sends *itself* two messages. The tool batch runs
+      # while the agent is `:executing_tools`, so both are queued and never
+      # delivered mid-batch — the "message arrived while the turn was running"
+      # case, with no timing dependence.
+      MockClient.set_tool_response(%{
+        text: "Queueing",
+        tool_calls: [
+          %{
+            id: "send_1",
+            name: "agents-send",
+            arguments: %{"name" => name, "message" => "first"}
+          },
+          %{
+            id: "send_2",
+            name: "agents-send",
+            arguments: %{"name" => name, "message" => "second"}
+          }
+        ]
+      })
+
+      MockClient.set_response("Done")
+
+      :ok = Agent.chat(pid, "queue some messages")
+
+      # The turn stays busy across the delivery: streaming -> executing_tools
+      # -> streaming (back from the tool batch; the delivery itself changes no
+      # status) -> idle. An `idle` in between would mean the delivery waited
+      # for the turn end (the rejected alternative), which resolves an
+      # idle-based wait with the pre-delivery answer and reports a partial
+      # result to a parent.
+      assert statuses_until_idle() == ["streaming", "executing_tools", "streaming", "idle"]
+
+      # The two messages were queued (count 1, then 2) and then drained
+      # (count 0) — not delivered into the running batch.
+      assert_received {:chat_inbox, %{count: 1}}
+      assert_received {:chat_inbox, %{count: 2}}
+      assert_received {:chat_inbox, %{count: 0}}
+
+      # Both requests the turn made, in order.
+      first = assert_request()
+      second = assert_request()
+
+      # The next request already carried the delivered message, before the
+      # final response was requested: that is the boundary delivery's whole
+      # contract ("deliver before starting a new thing").
+      assert Enum.any?(user_texts(first), &(&1 =~ "queue some messages"))
+      refute Enum.any?(user_texts(first), &(&1 =~ "second"))
+
+      assert Enum.any?(user_texts(second), &(&1 =~ "queue some messages"))
+      assert Enum.any?(user_texts(second), &(&1 =~ "[Message from agent"))
+      assert Enum.any?(user_texts(second), &(&1 =~ "first"))
+      assert Enum.any?(user_texts(second), &(&1 =~ "second"))
+
+      # Exactly two: the delivery did not end the turn and start a new one.
+      refute_receive {:llm_request, _}, 50
+
+      state = :sys.get_state(pid)
+
+      assert Machine.status_for(state.live.machine) == :idle
+      assert state.live.machine.work.active_worker == nil
+      assert state.live.inbox == []
+
+      messages = state.chat_state.messages
+
+      tool_index = Enum.find_index(messages, &match?({:tool, _}, &1))
+      ack_index = Enum.find_index(messages, &(text_of(&1) =~ "continuing from here"))
+      drained_index = Enum.find_index(messages, &(text_of(&1) =~ "[Message from agent"))
+      final_index = Enum.find_index(messages, &(text_of(&1) =~ "Done"))
+
+      assert is_integer(tool_index), "expected a tool-result message"
+      assert is_integer(ack_index), "expected the live bridge ack"
+      assert is_integer(drained_index), "expected the delivered user message"
+      assert is_integer(final_index), "expected the final assistant response"
+
+      # The delivered user message was bridged: the tail was the tool result
+      # (a wire-`user` message), so `MessageAppender` inserted the live
+      # alternation ack first, then the drained user message.
+      assert tool_index < ack_index
+      assert ack_index < drained_index
+
+      # The delivery landed mid-turn: before the response to the request that
+      # carried it, with nothing else appended in between.
+      assert drained_index < final_index
+      assert drained_index == final_index - 1
+
+      # The drained order is preserved, and the combined text is the inbox's
+      # canonical per-entry framing.
+      drained = text_of(Enum.at(messages, drained_index))
+      assert drained =~ "[Message from agent \"#{name}\"]\nfirst"
+      assert {first_at, _} = :binary.match(drained, "first")
+      assert {second_at, _} = :binary.match(drained, "second")
+      assert first_at < second_at
+
+      # The tool results report the queueing (the messages were not delivered
+      # into the running batch).
+      assert Enum.any?(
+               tool_texts(Enum.at(messages, tool_index)),
+               &(&1 =~ "Message queued for #{name} (busy)")
+             )
+
+      AgentTestHelpers.assert_unique_message_indices(state)
+    end
+  end
+
+  describe "human messages during a turn" do
+    test "1.1.10 a human message queued inside a tool batch lands before the next request in its mode" do
+      test_pid = self()
+
+      {pid, name} =
+        start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: multi_mode_vocation_id_for_test()
+        })
+
+      # Record every request's message list, then hand off to the scripted
+      # MockClient so the turn behaves exactly as the other fixtures do.
+      Mimic.stub(MockClient, :run, fn request, opts ->
+        send(test_pid, {:llm_request, request.messages})
+        Mimic.call_original(MockClient, :run, [request, opts])
+      end)
+
+      Mimic.allow(MockClient, self(), pid)
+
+      # Park the tool batch inside `Agents.send_message/4` (the `agents-send`
+      # entry point) until the test releases it, so the human message is
+      # queued while the agent is genuinely `:executing_tools` — no timing
+      # dependence. The `after` is a safety valve for a failing test.
+      Mimic.stub(Nest.Agents, :send_message, fn space_id, from, target, content ->
+        send(test_pid, {:tool_batch_blocked, self()})
+
+        receive do
+          :release_tools -> :ok
+        after
+          # Safety valve only: it exists so a failing test cannot leave the
+          # tool worker (and with it the teardown) parked for long.
+          1_000 -> :ok
+        end
+
+        Mimic.call_original(Nest.Agents, :send_message, [space_id, from, target, content])
+      end)
+
+      Mimic.allow(Nest.Agents, self(), pid)
+
+      MockClient.set_tool_response(%{
+        text: "Calling a tool",
+        tool_calls: [
+          %{
+            id: "send_1",
+            name: "agents-send",
+            arguments: %{"name" => name, "message" => "peer note"}
+          }
+        ]
+      })
+
+      MockClient.set_response("Done")
+      :ok = Agent.chat(pid, "start the turn")
+
+      # The turn reached the tool batch: the agent is `:executing_tools` and
+      # the batch is parked. A human message with a mode now queues — never
+      # dropped — and the mode is NOT applied yet, so the ongoing turn's caps
+      # cannot change under it.
+      assert_receive {:tool_batch_blocked, worker}, 500
+      :ok = Agent.chat(pid, "human note", "plan", "alice")
+      assert_receive {:chat_inbox, %{count: 1}}, 500
+
+      state = :sys.get_state(pid)
+
+      assert [%{kind: :user, from: "alice", mode: "plan", content: "human note"}] =
+               state.live.inbox
+
+      assert Machine.status_for(state.live.machine) == :executing_tools
+      assert state.live.mode == "chat"
+
+      # Releasing the batch queues the `agents-send` entry too; the boundary
+      # drain delivers both as one user message before the next request.
+      send(worker, :release_tools)
+      assert_receive {:chat_inbox, %{count: 2}}, 500
+
+      # The second `streaming` is the delivery publishing the new mode
+      # (`currentMode` rides the status payload), not a status change — the
+      # phase stays `:generating` throughout. The exact list also pins that no
+      # `idle` appears before the end.
+      assert statuses_until_idle() == [
+               "streaming",
+               "executing_tools",
+               "streaming",
+               "streaming",
+               "idle"
+             ]
+
+      first = assert_request()
+      second = assert_request()
+
+      assert Enum.any?(user_texts(first), &(&1 =~ "start the turn"))
+      refute Enum.any?(user_texts(first), &(&1 =~ "human note"))
+
+      delivered = Enum.find(user_texts(second), &(&1 =~ "human note"))
+
+      assert delivered =~ "[mode: plan]"
+      assert delivered =~ "[Message from the user \"alice\"]\nhuman note"
+      assert delivered =~ "[Message from agent \"#{name}\"]\npeer note"
+
+      assert {human_at, _} = :binary.match(delivered, "human note")
+      assert {peer_at, _} = :binary.match(delivered, "peer note")
+      assert human_at < peer_at, "the drained order is the queue order"
+
+      # Exactly two requests: the delivery did not end the turn and start a
+      # new one.
+      refute_receive {:llm_request, _}, 50
+
+      state = :sys.get_state(pid)
+
+      assert Machine.status_for(state.live.machine) == :idle
+      assert state.live.inbox == []
+      # The human's mode is now the agent's mode.
+      assert state.live.mode == "plan"
+
+      messages = state.chat_state.messages
+
+      tool_index = Enum.find_index(messages, &match?({:tool, _}, &1))
+      ack_index = Enum.find_index(messages, &(text_of(&1) =~ "continuing from here"))
+      drained_index = Enum.find_index(messages, &(text_of(&1) =~ "[Message from the user"))
+      final_index = Enum.find_index(messages, &(text_of(&1) =~ "Done"))
+
+      assert is_integer(tool_index), "expected a tool-result message"
+      assert is_integer(ack_index), "expected the live bridge ack"
+      assert is_integer(drained_index), "expected the delivered user message"
+      assert is_integer(final_index), "expected the final assistant response"
+
+      # Bridged (the tail was the tool result) and landed before the response
+      # to the request that carried it.
+      assert tool_index < ack_index
+      assert ack_index < drained_index
+      assert drained_index == final_index - 1
+      assert text_of(Enum.at(messages, drained_index)) =~ "[mode: plan]"
+
+      AgentTestHelpers.assert_unique_message_indices(state)
     end
   end
 

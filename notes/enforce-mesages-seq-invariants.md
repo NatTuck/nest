@@ -141,10 +141,12 @@ isolation:
   (a `{:tool, _}` result, or a `{:user, _}` whose turn was interrupted before
   any assistant response). `Repair.classify_live/2` returns the
   `pairing_bridge/2` assistant acknowledgement so the turn-opening append is
-  bridged instead of failing the turn. A user message is only accepted at
-  idle — the channel and `Callbacks.chat_or_drop/3` reject it mid-turn — so
-  this append can only be the turn-opening append and cannot race a live
-  turn. The unanswered-`tool_use` clause still wins, so no synthetic
+  bridged instead of failing the turn. **Superseded by #15** (see
+  `notes/issue-15-boundary-delivery.md`): a queued inbox message is now
+  appended mid-turn at the `:generating` turn boundary, and a human message
+  sent while the agent is busy is queued rather than rejected, so this
+  append is no longer the turn-opening append alone and the bridge is a
+  normal path. The unanswered-`tool_use` clause still wins, so no synthetic
   `tool_result` is ever fabricated on the live path.
 - A live append that does not fit the turn's wire sequence (a non-result
   appended while a live `tool_use` is unanswered, or a second consecutive

@@ -257,12 +257,17 @@ defmodule Nest.Agents do
 
   @doc """
   Sends a chat message to an agent in `space_id`.
+
+  `sender` identifies the human behind the message (the channel passes the
+  socket's username); the agent records it on a queued inbox entry when it
+  is busy. `mode` is the human's requested mode.
   """
-  @spec chat(integer(), String.t(), String.t(), String.t() | nil) :: :ok | {:error, :not_found}
-  def chat(space_id, name, content, mode \\ nil) do
+  @spec chat(integer(), String.t(), String.t(), String.t() | nil, String.t() | nil) ::
+          :ok | {:error, :not_found}
+  def chat(space_id, name, content, mode \\ nil, sender \\ nil) do
     case Supervisor.get_agent(space_id, name) do
       {:ok, pid} ->
-        Agent.chat(pid, content, mode)
+        Agent.chat(pid, content, mode, sender)
         :ok
 
       {:error, :not_found} ->

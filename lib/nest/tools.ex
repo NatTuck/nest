@@ -300,8 +300,10 @@ defmodule Nest.Tools do
   # response. If the target is idle the message becomes its next user
   # message (starting a turn); if the target is busy the message is
   # queued, and all queued messages are combined into one user message
-  # when the target next goes idle (offloaded to a scratch file when
-  # over the configured `max-async-message-tokens` cap).
+  # and delivered at the target's next turn boundary — before it starts
+  # its next LLM request, or when it goes idle if the turn ends first
+  # (offloaded to a scratch file when over the configured
+  # `max-async-message-tokens` cap).
   #
   # The `function` here is a stub. Real execution lives in
   # `Nest.Agents.Agent.ToolLoop.run_send_agent/2`, which looks up the
@@ -314,7 +316,9 @@ defmodule Nest.Tools do
         "Send a message to another agent in this space without waiting for a " <>
           "reply. If that agent is idle the message becomes its next user " <>
           "message; if it is busy the message is queued and delivered together " <>
-          "with any other queued messages once it finishes its current turn. " <>
+          "with any other queued messages at its next turn boundary — before " <>
+          "it starts its next request, or when it goes idle if the turn ends " <>
+          "first. " <>
           "Use this to hand off work or share information with a peer or " <>
           "sub-agent; use `agents-query` when you need the response now.",
       parameters_schema: %{

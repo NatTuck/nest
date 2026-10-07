@@ -6,7 +6,7 @@ defmodule Nest.Agents.Agent.Init.NeedsRepair do
 
   The agent process still starts so its history stays viewable, but the
   observable status becomes `:needs_repair` (via a `{:blocked, :needs_repair, _}` machine event):
-  `Nest.Agents.Agent.Callbacks.chat_or_drop/3` and the agent channel
+  `Nest.Agents.Agent.Callbacks.chat_or_queue/4` and the agent channel
   both refuse `chat:message`, and a `chat:status` broadcast tells the
   UI to show the repair banner. Recovery is offline: run
   `mix nest.repair_messages`, then reload the agent.
