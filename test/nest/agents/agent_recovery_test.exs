@@ -116,7 +116,7 @@ defmodule Nest.Agents.Agent.RecoveryTest do
             )
 
           # Sanity: the agent is alive. The chat:message drop happens
-          # in `chat_or_drop/3` so the message counter never
+          # in `chat_or_queue/4` so the message counter never
           # advances. We assert that the GenServer returns
           # {:noreply, state} and the in-memory `messages` list
           # stays at the initial `[{:system, _}]`.

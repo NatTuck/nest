@@ -2511,6 +2511,9 @@ describe("store", () => {
         index: 0,
         role: "user",
         content: "Hello",
+        // Marks the row as a client-side echo so a later `chat:inbox`
+        // can retract it when the message was only queued.
+        optimistic: true,
       });
       expect(cache.lastIndex).toBe(0);
       expect(cache.partial).toMatchObject({
@@ -4487,6 +4490,396 @@ describe("store", () => {
       useStore.getState().setAgentInbox("ghost", []);
 
       expect(useStore.getState().agentsCache).toBe(initialCache);
+    });
+
+    it("retracts the optimistic row when a matching kind: 'user' entry arrives", () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        messages: [
+          {
+            index: 0,
+            role: "assistant",
+            parts: [{ kind: "text", text: "hi" }],
+          },
+        ],
+        messageCount: 1,
+        status: "streaming",
+      });
+
+      // The optimistic send: user row at index 1, assistant
+      // placeholder at index 2.
+      useStore.getState().addUserMessage("agent-1", "queue this", "build");
+
+      useStore.getState().setAgentInbox("agent-1", [
+        {
+          from: "alice",
+          content: "queue this",
+          timestamp: "t1",
+          kind: "user",
+          mode: "build",
+        },
+      ]);
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      // The fabricated row is gone: the queued message renders from the
+      // inbox instead, so the fabricated index cannot collide with a
+      // real row later.
+      expect(cache.messages.map((m) => m.index)).toEqual([0]);
+      // `lastIndex` re-anchors on the newest surviving real row.
+      expect(cache.lastIndex).toBe(0);
+      // The placeholders belonged to the retracted send, so they go too.
+      expect(cache.streaming).toBeNull();
+      expect(cache.partial).toBeNull();
+      expect(cache.inbox).toHaveLength(1);
+      expect(cache.pendingMessageCount).toBe(1);
+    });
+
+    it("retracts nothing for an agents-send entry or a non-matching user entry (guard, not a feature path)", () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        messages: [],
+        messageCount: 0,
+        status: "streaming",
+      });
+      useStore.getState().addUserMessage("agent-1", "queue this", "build");
+
+      // Purely a guard: this test would pass with the retraction removed
+      // entirely, so it only pins that the retraction does not overreach.
+      // `agents-send` entries were never sent from this client, so even
+      // an identical content must not retract the echo.
+      useStore.getState().setAgentInbox("agent-1", [
+        {
+          from: "alice",
+          content: "queue this",
+          timestamp: "t1",
+          kind: "agent",
+          mode: null,
+        },
+      ]);
+      let cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.messages.map((m) => m.index)).toEqual([0]);
+      expect(cache.messages[0].optimistic).toBe(true);
+
+      // Nor does a user entry whose content differs from the echo's.
+      useStore.getState().setAgentInbox("agent-1", [
+        {
+          from: "alice",
+          content: "something else",
+          timestamp: "t2",
+          kind: "user",
+          mode: "build",
+        },
+      ]);
+      cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.messages.map((m) => m.index)).toEqual([0]);
+      expect(cache.lastIndex).toBe(0);
+      expect(cache.streaming?.messageIndex).toBe(1);
+      expect(cache.partial?.index).toBe(1);
+    });
+
+    it("pairs each queued user entry with the newest matching optimistic row, at most once", () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        messages: [
+          {
+            index: 0,
+            role: "assistant",
+            parts: [{ kind: "text", text: "hi" }],
+          },
+        ],
+        messageCount: 1,
+        status: "streaming",
+      });
+
+      // Two sends of the same text while busy: rows at index 1 and 2.
+      useStore.getState().addUserMessage("agent-1", "dup", "build");
+      useStore.getState().addUserMessage("agent-1", "dup", "plan");
+
+      // One entry: the NEWEST row goes, because it is the one the entry
+      // belongs to — the older row may be a send whose `chat:message` is
+      // still in flight. The surviving optimistic row is the older send.
+      useStore.getState().setAgentInbox("agent-1", [
+        {
+          from: "u",
+          content: "dup",
+          timestamp: "t1",
+          kind: "user",
+          mode: "plan",
+        },
+      ]);
+
+      let cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.messages.map((m) => m.index)).toEqual([0, 1]);
+      expect(cache.messages[1].mode).toBe("build");
+      // `lastIndex` includes the surviving optimistic row: its index is
+      // the last one the client knows about, and lowering it would make
+      // the next optimistic send reuse that index.
+      expect(cache.lastIndex).toBe(1);
+
+      // A second entry consumes the remaining row (at most once each);
+      // both queued sends end up retracted.
+      useStore.getState().setAgentInbox("agent-1", [
+        {
+          from: "u",
+          content: "dup",
+          timestamp: "t1",
+          kind: "user",
+          mode: "build",
+        },
+        {
+          from: "u",
+          content: "dup",
+          timestamp: "t2",
+          kind: "user",
+          mode: "plan",
+        },
+      ]);
+
+      cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.messages.map((m) => m.index)).toEqual([0]);
+      expect(cache.lastIndex).toBe(0);
+      expect(cache.streaming).toBeNull();
+      expect(cache.partial).toBeNull();
+    });
+
+    it("leaves a streaming/partial placeholder that points elsewhere alone", () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        messages: [
+          {
+            index: 0,
+            role: "assistant",
+            parts: [{ kind: "text", text: "hi" }],
+          },
+        ],
+        messageCount: 1,
+        status: "streaming",
+      });
+      useStore.getState().addUserMessage("agent-1", "queue this", "build");
+
+      // A newer send has already moved the placeholders past the row
+      // being retracted, so they must survive.
+      const streaming = {
+        messageIndex: 9,
+        role: "assistant",
+        nextDeltaIndex: 0,
+        parts: [],
+        currentKind: null,
+      };
+      const partial = {
+        index: 9,
+        role: "assistant",
+        charsReceived: 0,
+        parts: [],
+        currentKind: null,
+      };
+      useStore.setState((state) => ({
+        agentsCache: {
+          ...state.agentsCache,
+          "agent-1": {
+            ...state.agentsCache["agent-1"],
+            streaming,
+            partial,
+          },
+        },
+      }));
+
+      useStore.getState().setAgentInbox("agent-1", [
+        {
+          from: "alice",
+          content: "queue this",
+          timestamp: "t1",
+          kind: "user",
+          mode: "build",
+        },
+      ]);
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.messages.map((m) => m.index)).toEqual([0]);
+      expect(cache.streaming).toBe(streaming);
+      expect(cache.partial).toBe(partial);
+    });
+
+    it("resets lastIndex to -1 when no row survives the retraction", () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        messages: [],
+        messageCount: 0,
+        status: "streaming",
+      });
+      useStore.getState().addUserMessage("agent-1", "queue this", "build");
+
+      useStore.getState().setAgentInbox("agent-1", [
+        {
+          from: "alice",
+          content: "queue this",
+          timestamp: "t1",
+          kind: "user",
+          mode: "build",
+        },
+      ]);
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.messages).toEqual([]);
+      // `lastIndex` is derived from real rows everywhere else in the
+      // store, so with no real row left it must be -1 rather than the
+      // retracted row's index. Otherwise the fabricated index would be
+      // reused as the anchor for the next optimistic send, and
+      // `addChatMessage`'s gap check would stop treating the cache as
+      // "no known rows".
+      expect(cache.lastIndex).toBe(-1);
+    });
+
+    it("does not clobber an in-flight accumulator when a queued send arrives mid-stream", () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        messages: [
+          {
+            index: 5,
+            role: "user",
+            parts: [{ kind: "text", text: "hi" }],
+          },
+        ],
+        status: "streaming",
+        partial: {
+          index: 6,
+          charsEnd: 3,
+          parts: [{ kind: "text", text: "abc" }],
+          currentKind: "text",
+        },
+      });
+      const live = useStore.getState().agentsCache["agent-1"].partial;
+
+      useStore.getState().addUserMessage("agent-1", "queue this", "build");
+
+      let cache = useStore.getState().agentsCache["agent-1"];
+      // The live stream is untouched (the very same accumulator object):
+      // replacing it would drop the streaming text and make every later
+      // delta look like a gap.
+      expect(cache.partial).toBe(live);
+      expect(cache.partial.index).toBe(6);
+      expect(cache.partial.charsReceived).toBe(3);
+
+      // So the next delta still applies in place.
+      expect(
+        useStore.getState().addChatDelta("agent-1", {
+          index: 6,
+          charsStart: 3,
+          charsEnd: 6,
+          content: "def",
+          partType: "text",
+        }),
+      ).toMatchObject({ applied: true, needsSync: false });
+
+      // The queued entry then retracts only the fabricated user row, and
+      // leaves the accumulator alone (it is not that send's placeholder).
+      useStore.getState().setAgentInbox("agent-1", [
+        {
+          from: "alice",
+          content: "queue this",
+          timestamp: "t1",
+          kind: "user",
+          mode: "build",
+        },
+      ]);
+
+      cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.messages.map((m) => m.index)).toEqual([5]);
+      expect(cache.partial.index).toBe(6);
+      expect(cache.partial.charsReceived).toBe(6);
+    });
+
+    it("stops treating a row kept across a reconnect as retractable", () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        messages: [],
+        messageCount: 0,
+        status: "streaming",
+      });
+      useStore.getState().addUserMessage("agent-1", "hello", "build");
+      expect(
+        useStore.getState().agentsCache["agent-1"].messages[0].optimistic,
+      ).toBe(true);
+
+      // Reconnect: the init payload carries no `messages`, so the cache
+      // keeps the row it already had.
+      useStore.getState().setAgentConnected("agent-1", {
+        messageCount: 1,
+        status: "idle",
+      });
+
+      let cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.messages).toHaveLength(1);
+      expect(cache.messages[0].optimistic).toBeUndefined();
+
+      // A later same-content queued entry can no longer delete it: the
+      // join confirmed the server's state, so the row stands for a real
+      // (or already-rejected) message.
+      useStore.getState().setAgentInbox("agent-1", [
+        {
+          from: "bob",
+          content: "hello",
+          timestamp: "t1",
+          kind: "user",
+          mode: "build",
+        },
+      ]);
+
+      cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.messages.map((m) => m.content)).toEqual(["hello"]);
+      expect(cache.lastIndex).toBe(0);
+    });
+
+    it("retractUserMessage removes the rejected send's optimistic row", () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        messages: [
+          {
+            index: 0,
+            role: "assistant",
+            parts: [{ kind: "text", text: "hi" }],
+          },
+        ],
+        messageCount: 1,
+        status: "idle",
+      });
+      useStore.getState().addUserMessage("agent-1", "rejected", "build");
+
+      useStore.getState().retractUserMessage("agent-1", "rejected");
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.messages.map((m) => m.index)).toEqual([0]);
+      expect(cache.lastIndex).toBe(0);
+      // The fabricated assistant placeholders belong to that send.
+      expect(cache.streaming).toBeNull();
+      expect(cache.partial).toBeNull();
+    });
+
+    it("retractUserMessage leaves a live stream and other rows alone", () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        messages: [
+          {
+            index: 0,
+            role: "assistant",
+            content: "hi",
+            parts: [{ kind: "text", text: "hi" }],
+          },
+        ],
+        status: "streaming",
+        partial: {
+          index: 1,
+          charsEnd: 2,
+          parts: [{ kind: "text", text: "ab" }],
+          currentKind: "text",
+        },
+      });
+      useStore.getState().addUserMessage("agent-1", "rejected", "build");
+
+      // A different send's row (not the retracted one) must survive, and
+      // the accumulator at index 1 is not `row.index + 1`, so it stays.
+      useStore.getState().addUserMessage("agent-1", "keep me", "plan");
+      useStore.getState().retractUserMessage("agent-1", "rejected");
+
+      const cache = useStore.getState().agentsCache["agent-1"];
+      expect(cache.messages.map((m) => m.content)).toEqual(["hi", "keep me"]);
+      expect(cache.partial.index).toBe(1);
+
+      // Retracting an unknown content is a no-op (same cache reference).
+      const before = useStore.getState().agentsCache["agent-1"];
+      useStore.getState().retractUserMessage("agent-1", "never sent");
+      expect(useStore.getState().agentsCache["agent-1"]).toBe(before);
     });
   });
 });

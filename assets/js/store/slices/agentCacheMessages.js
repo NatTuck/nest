@@ -111,6 +111,29 @@ export function addChatMessage(set, get, id, message) {
   return { applied: true, needsSync, snapshotLastIndex };
 }
 
+/**
+ * Optimistic add for the user's own message, used before the
+ * `chat:message` push resolves.
+ *
+ * The row is fabricated at `cache.lastIndex + 1`, with an assistant
+ * `streaming`/`partial` placeholder at `lastIndex + 2` when no
+ * accumulator is already in flight — the normal case appends the
+ * server's real message at that index and `addChatMessage` reconciles
+ * the two. A send while the agent is streaming must not overwrite the
+ * live accumulator: that would drop the streaming text and make the next
+ * `chat:delta` look like a gap.
+ *
+ * When the agent is busy the server only *queues* the message instead,
+ * so the fabricated row is retracted once `chat:inbox` confirms it is
+ * waiting (`setAgentInbox`), or when the push is rejected
+ * (`retractUserMessage`). The row carries `optimistic: true`, a plain
+ * bookkeeping field no renderer reads, which marks it as a client-side
+ * echo that may still be retracted. The marker is dropped as soon as the
+ * row stops being an echo: `addChatMessage` reconciles it with the
+ * server's copy (the merge spreads the incoming message), and
+ * `setAgentConnected` clears it on the rows a reconnect keeps, because
+ * those stand for server state the join just confirmed.
+ */
 export function addUserMessage(set, id, content, mode) {
   set((state) => {
     const cache = state.agentsCache[id];
@@ -123,24 +146,31 @@ export function addUserMessage(set, id, content, mode) {
       parts: [{ kind: "text", text: content }],
       content,
       mode,
+      optimistic: true,
       timestamp: new Date().toISOString(),
     };
 
-    const streamingState = {
-      messageIndex: newIndex + 1,
-      role: "assistant",
-      nextDeltaIndex: 0,
-      parts: [],
-      currentKind: null,
-    };
-
-    const partialState = {
-      index: newIndex + 1,
-      role: "assistant",
-      charsReceived: 0,
-      parts: [],
-      currentKind: null,
-    };
+    // Only fabricate the assistant accumulator when none is in flight.
+    // A queued send during a stream must leave the live `partial` alone.
+    const inFlight = cache.streaming || cache.partial;
+    const placeholders = inFlight
+      ? null
+      : {
+          streaming: {
+            messageIndex: newIndex + 1,
+            role: "assistant",
+            nextDeltaIndex: 0,
+            parts: [],
+            currentKind: null,
+          },
+          partial: {
+            index: newIndex + 1,
+            role: "assistant",
+            charsReceived: 0,
+            parts: [],
+            currentKind: null,
+          },
+        };
 
     return {
       agentsCache: {
@@ -150,10 +180,78 @@ export function addUserMessage(set, id, content, mode) {
           messages: [...cache.messages, userMessage],
           lastIndex: newIndex,
           waitingForResponse: true,
-          streaming: streamingState,
-          partial: partialState,
+          ...(placeholders ?? {}),
           notification: null,
         },
+      },
+    };
+  });
+}
+
+/**
+ * Remove the newest still-`optimistic` row whose `content` matches,
+ * returning the cache fields to patch, or `null` when there is no match.
+ *
+ * The NEWEST matching row is the one the caller's send belongs to: an
+ * older row with the same text may belong to a send whose `chat:message`
+ * has not arrived yet, so retracting it would delete (or mis-index) that
+ * send.
+ *
+ * `lastIndex` re-anchors on the highest surviving row — optimistic rows
+ * included, because an optimistic row's index is the last index the
+ * client knows about — or `-1` when no row survives. The assistant
+ * `streaming`/`partial` placeholders are cleared only when they sit
+ * immediately after the removed row, i.e. when they are that send's own.
+ */
+export function retractOptimisticRow(cache, content) {
+  const rows = Array.isArray(cache.messages) ? cache.messages : [];
+  let position = -1;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (rows[i].optimistic === true && rows[i].content === content) {
+      position = i;
+      break;
+    }
+  }
+  if (position === -1) return null;
+
+  const removed = rows[position];
+  const messages = rows.filter((_, i) => i !== position);
+
+  let lastIndex = -1;
+  for (const m of messages) {
+    if (typeof m.index === "number" && m.index > lastIndex) {
+      lastIndex = m.index;
+    }
+  }
+
+  const placeholderIndex = removed.index + 1;
+  return {
+    messages,
+    lastIndex,
+    streaming:
+      cache.streaming?.messageIndex === placeholderIndex
+        ? null
+        : cache.streaming,
+    partial: cache.partial?.index === placeholderIndex ? null : cache.partial,
+  };
+}
+
+/**
+ * Retract the optimistic row `addUserMessage` inserted for a send the
+ * server never accepted, so a phantom bubble is not left behind. A no-op
+ * when no matching optimistic row exists (the row was already reconciled
+ * with the server's copy, or retracted by `setAgentInbox`).
+ */
+export function retractUserMessage(set, id, content) {
+  set((state) => {
+    const cache = state.agentsCache[id];
+    if (!cache) return state;
+    const retracted = retractOptimisticRow(cache, content);
+    if (!retracted) return state;
+    return {
+      agentsCache: {
+        ...state.agentsCache,
+        [id]: { ...cache, ...retracted },
       },
     };
   });

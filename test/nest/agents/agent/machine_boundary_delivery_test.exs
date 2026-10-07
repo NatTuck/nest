@@ -7,6 +7,8 @@ defmodule MachineBoundaryDeliveryTest do
 
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Turn.Dispatch
   alias Nest.Messages.Part
@@ -116,15 +118,23 @@ defmodule MachineBoundaryDeliveryTest do
     test "a delivered message that needs compaction is held for the compaction turn" do
       # intentional: `start_chat/3` owns the fits decision. When the projected
       # turn needs a compaction the drained message is held on
-      # `pending_user_message` (not appended and not restored), so the
-      # compaction runs first and the delivered content is not lost.
+      # `pending_user_message` — on the machine only, not on the wire (the
+      # executor has already emptied and rebroadcast the inbox), until the
+      # compaction commits and `resume_with_pending/1` appends it — so the
+      # compaction runs first and the content is not lost.
       m = boundary_state(two_turn_tool_tail(), inbox_count: 1)
 
       # The window between "the system prompt alone fits" and "everything
       # fits" is a few tokens wide; derive the limit from the same estimator
-      # the transition uses so the branch is forced, not guessed.
+      # the transition uses (8_191 is one token under `Reserve`'s 8_192 floor).
+      # The precondition assertion below fails loudly if that floor moves,
+      # instead of surfacing as an unrelated `next.kind` mismatch.
       projected = m.work.ctx.messages ++ [Dispatch.build_user_message("queued", "chat")]
       limit = ConversationSize.size(projected) + 8_191
+
+      assert Dispatch.preflight_decision(projected, limit) == :needs_compaction,
+             "the fixture must force the :needs_compaction branch"
+
       m = %{m | work: %{m.work | ctx: %{m.work.ctx | context_limit: limit}}}
 
       {:ok, actions, next} = Machine.step(m, {:inbox_drain, [inbox_entry()], "queued"})
@@ -159,7 +169,81 @@ defmodule MachineBoundaryDeliveryTest do
     end
   end
 
+  describe "compaction loop ack keeps a held message" do
+    test "a parked message is appended before the drain; without one it is a bare drain" do
+      # intentional: `start_chat/3`'s `:needs_compaction` branch parks the
+      # drained message on `pending_user_message` while the executor has
+      # already consumed `state.live.inbox`, so `:loop_ack` must re-append it
+      # — a bare `{:drain_inbox}` would drop the content silently.
+      #
+      # Every shape `Phase.unwrap_user/1` accepts is re-appended, not dropped:
+      # the drain path stores `{:user_message, {:user, user}}` (the executor's
+      # `Dispatch.build_user_message/2` tuple), a chat request stores
+      # `{:user_message, user}` (a bare struct), and `{content, mode}` is the
+      # legacy held shape this repo's fixtures still use.
+      {:user, user} = Dispatch.build_user_message("held message", "chat")
+
+      held_shapes = [
+        {{:user_message, {:user, user}}, "held message"},
+        {{:user_message, user}, "held message"},
+        {{"legacy held message", "chat"}, "legacy held message"}
+      ]
+
+      for {held, expected} <- held_shapes do
+        {:ok, actions, next} = Machine.step(loop_detected_state(held), :loop_ack)
+
+        assert [
+                 {:append, {:user, %Nest.Messages.User{parts: [%Part.Text{text: text}]}}},
+                 {:drain_inbox}
+               ] =
+                 actions
+
+        assert text =~ expected
+        assert next.phase == :idle and next.kind == :chat
+        assert next.pending_user_message == nil
+        assert next.loop_count == 0
+        Machine.validate!(next)
+      end
+
+      # A value `Phase.unwrap_user/1` cannot unwrap is logged and treated as
+      # nothing held, so a declared event never raises and the drop is visible.
+      log =
+        capture_log(fn ->
+          {:ok, actions, next} = Machine.step(loop_detected_state({:bogus, :shape}), :loop_ack)
+
+          assert actions == [{:drain_inbox}]
+          assert next.pending_user_message == nil
+        end)
+
+      assert log =~ "unrecognized pending_user_message"
+      assert log =~ "{:bogus, :shape}"
+
+      # Nothing parked: the loop breaker is still just the idle transition
+      # plus the drain.
+      {:ok, actions, next} = Machine.step(loop_detected_state(nil), :loop_ack)
+
+      assert actions == [{:drain_inbox}]
+      assert next.phase == :idle
+      assert next.pending_user_message == nil
+      Machine.validate!(next)
+    end
+  end
+
   # --- helpers ---
+
+  # A machine in the loop-breaker's blocked phase, holding `held` (or nothing)
+  # on the pending-message slot. Blocked phases carry no worker kind.
+  defp loop_detected_state(held) do
+    base = generating_state()
+
+    %{
+      base
+      | phase: :compaction_loop_detected,
+        loop_count: 3,
+        pending_user_message: held,
+        work: %{base.work | worker_kind: nil}
+    }
+  end
 
   # A `:generating` machine whose ctx ends on `tail`. `inbox_count` is
   # omitted unless asked for, so the tests cover the hand-built-ctx shape
@@ -194,7 +278,14 @@ defmodule MachineBoundaryDeliveryTest do
   # assistant's tool call, so nothing is unanswered and nothing is in flight.
   defp tool_tail, do: [{:user, user()}, assistant_tool_call(), tool_result()]
 
-  # The boundary after a final assistant ack (the other deliverable tail).
+  # An `{:assistant, _}` tail. Defensive today, not a live boundary: every
+  # `:iterate` site was enumerated and none reaches it (a carried tool call
+  # has a `Part.ToolUse` so it preflights, a carried assistant response
+  # finalizes instead of iterating, the truncation/silent re-prompt nudges
+  # with a user message). Keeping the drain correct for it matters anyway:
+  # without the drain `dispatch_http/1` would ship the assistant tail and
+  # `Preflight.validate_request/1` would fail the turn on
+  # `:no_trailing_assistant`.
   defp assistant_tail, do: [{:user, user()}, assistant_text()]
 
   # Two user turns, so a compaction has a non-empty head to summarize: the
@@ -265,13 +356,18 @@ defmodule MachineBoundaryDeliveryTest do
     }
   end
 
+  # `worker_ref`/`active_worker` are nil, matching every real `:iterate`
+  # boundary: `Phase.enter/4` clears them on the transition into `:generating`
+  # and `:iterate` is only emitted after the append that follows it, so
+  # "nothing is in flight" is the fixture's real precondition.
   defp generating_state do
     Machine.new(
       phase: :generating,
       kind: :chat,
       work: %Machine.Work{
         worker_kind: :http,
-        worker_ref: make_ref(),
+        worker_ref: nil,
+        active_worker: nil,
         ctx: ctx(),
         max_iterations: 10
       }

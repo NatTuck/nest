@@ -78,6 +78,14 @@ re-enters `:generating` from `:idle` and calls `:iterate`).
 wire), and the tool tail is exactly the case we want to allow. Match the
 message tag instead.
 
+The `{:assistant, _}` half of condition 3 is defensive rather than a live
+boundary: every path that reaches `:iterate` with an assistant tail either
+carries an unanswered `Part.ToolUse` (preflighted) or goes to `:idle`
+first. It is admitted anyway because an assistant tail is legal for an
+append, and because without the drain the only other outcome for that
+shape is `dispatch_http/1` → `Preflight.validate_request/1` →
+`:no_trailing_assistant` → a failed turn.
+
 The `unpaired_tail_tool_uses/1` position is load-bearing, not
 stylistic. A `{:assistant, _}` tail *can* still carry unanswered
 `Part.ToolUse`: `Compaction.resume/1` re-enters `:generating` with a
@@ -105,6 +113,44 @@ pending-entries slot on the machine, i.e. new state for a case that
 cannot be constructed — rejected in favour of one drain path and a
 comment. If it ever does happen, the honest fix is a restore action
 before `fail_turn/3`, not a silent drop.
+
+### Also fixed here: a held message and the compaction loop breaker
+
+`start_chat/3`'s `:needs_compaction` branch parks the drained message on
+`pending_user_message`. That is lossless on every normal path, but the
+compaction loop breaker used to clear it while the executor had already
+consumed `state.live.inbox`, so the message existed nowhere afterwards
+(reachable after three `:retry_compaction`s leave `loop_count` above the
+breaker's threshold). `:loop_ack` now appends the held message before its
+`{:drain_inbox}`, so the operator's acknowledgement keeps it in the
+transcript instead of dropping it; a refused append surfaces as a turn
+failure rather than a silent loss. No turn is dispatched by that append —
+that would re-enter the compaction decision which just gave up — so the
+message is answered by the next turn. The same drop predates this work on
+the human-chat path, which is why it is fixed here rather than only
+documented.
+
+### Known limits found in review (tracked, not fixed here)
+
+* **A parked message is invisible on the wire while it waits.** When a
+  drained message does not fit, `start_chat/3` parks the built message on
+  `pending_user_message` and the executor has already cleared and
+  rebroadcast the inbox (`chat:inbox` count 0), so between the drain and
+  the compaction's resume the human's message is in no payload — not in
+  the inbox list, not in the transcript, not in `pendingMessageCount` —
+  even though the agent is visibly `:compacting`. Making it visible needs
+  either the parked entry in the inbox payload or a peek-then-consume
+  drain (new state, or a second drain shape), which is more than this
+  change should carry.
+* **The human queue bypasses `@max_inbox_size` and is unbounded.** The cap
+  bounds a runaway *agent* producer; a human message is queued even at the
+  cap so a click cannot silently vanish. The queue is in-memory and grows
+  for the whole turn, and `Broadcasts.inbox/2` re-sends the whole
+  serialized list on every enqueue, so `n` queued frames cost `~n²·s/2`
+  bytes of PubSub traffic. Human typing self-limits this in practice, and
+  the app has no rate limiting on any channel event today (an idle agent
+  can be spammed into unbounded DB growth just as easily), but it deserves
+  a bound of its own.
 
 ### Why this shape (and not "end the turn, then start a new one")
 
@@ -201,21 +247,39 @@ longer reject the working ones.
   carries the human's mode, prefix and caps. One mode per combined
   message; when entries disagree, the most recent user-sourced entry
   wins, and that rule is documented in `Inbox`.
-- The UI: a queued message must not look like a failure, and — the
-  blocker — **`sendMessage`'s optimistic bubble must not be inserted
-  when the message is only queued.** It is inserted with a fabricated
-  index plus fabricated `streaming`/`partial` state before the push
-  (`assets/js/channels/agent.js:470-491`,
-  `store/slices/agentCacheMessages.js:114-160`); under late delivery the
-  fabricated index is later occupied by a real row, `addChatMessage`
-  matches by index first and `buildMerged` overwrites the user's text
-  (`agentCacheMessages.js:47-50`, `messageHelpers.js:109-130`), the
-  content fallback fails for long turns → duplicate bubble and duplicate
-  React key, and `syncAgentMessages/2` then skips the real row forever.
-  The queued case must render from `chat:inbox` (the inbox panel already
-  does) and only a confirmed turn start may add the optimistic bubble.
-  The composer is also disabled while busy (`ChatInput.jsx`), so the
-  queued path has to be reachable from the UI at all.
+- The composer *was* disabled while the agent is busy (`ChatInput.jsx`)
+  and `isAgentBusy` gated the send (`ChatPage.jsx`), so the queued path
+  had to be made reachable at all: while busy the textarea and mode
+  selector stay enabled and Send is rendered next to Stop. The
+  slash-command menu stays suppressed there, and a slash command typed
+  while busy is queued as ordinary chat text rather than dispatched (a
+  control-plane push cannot take effect mid-turn).
+- A queued message must not leave the optimistic bubble behind.
+  `sendMessage` inserts the user's row before the push at a *fabricated*
+  index, plus a fabricated assistant `streaming`/`partial` placeholder
+  after it (`channels/agent.js`, `store/slices/agentCacheMessages.js`) —
+  that is the optimistic echo for the normal case, where the server
+  appends the real row at the same index moments later. When the message
+  is only queued, no real row arrives until the drain (a long turn
+  later), so the fabricated index is eventually occupied by an unrelated
+  real row: `addChatMessage` matches by index first, `buildMerged`
+  overwrites the user's text, the content fallback misses for a long
+  turn → duplicate bubble, duplicate React key, and `syncAgentMessages/2`
+  then skips the real row forever.
+  The fix keys off the authoritative signal instead of a status guess:
+  the agent broadcasts `chat:inbox` when it queues the message (with
+  `kind: "user"`, the verbatim content, the mode and the sender), and
+  `setAgentInbox` retracts the oldest still-present optimistic row whose
+  content matches a user-sourced entry — re-anchoring `lastIndex` on the
+  newest surviving real row and clearing the fabricated placeholder only
+  when it belongs to that send. The optimistic row is tagged
+  `optimistic: true` so a real row can never be retracted. The queued
+  message is then visible in the inbox panel (which already renders the
+  list) until the drain delivers it as a normal `chat:message`.
+  `kind`/`mode` are additive on the `chat:inbox` payload; the panel
+  labels an `agents-send` entry by its sender, a human entry "From you"
+  only when the sender is the current user, and shows the requested mode
+  with an explicit missing marker.
 
 ## Boundaries deliberately not taken
 
@@ -226,10 +290,20 @@ longer reject the working ones.
   condition 3 excludes it. It is a genuine "nothing in flight" point and
   a missed optimisation; it is rare, and delivering there would append a
   user message onto a synthetic user message for no benefit.
-- **The compaction turn's `:iterate`**: it does not call `iterate/1` at
-  all, and a user message cannot be injected into a compaction request.
-  A message arriving during a compaction is delivered when the
-  compaction turn ends (unchanged).
+- **The compaction *request* turn's `:iterate`**: it does not call
+  `iterate/1` at all, and a user message cannot be injected into a
+  compaction request. The **resume** after a `context-compact` commit
+  *is* a taken boundary, though: `Compaction.resume/1` re-enters
+  `:generating`/`:chat` and emits `:iterate` with the synthetic
+  `tool_result` as the tail (`Response.compact_only/5` appends neither
+  carried message; `Turn.Commit` puts the pair at the head of the new
+  segment), so a message queued during such a compaction is drained
+  there, before the post-compaction request. That is safe — the wire
+  stays legal, the delivered message gets a fresh budget, and delivering
+  before the next request is the whole point — but it *is* a behaviour
+  change, not "unchanged". On the `resume_with_pending/1` path the
+  resume appends the *held* user message first, so the tail is a
+  `{:user, _}` and the drain waits for the next boundary.
 - **`{:preflight_result, :fits}`**: the batch is about to run and must
   answer the `tool_use`.
 
@@ -266,9 +340,15 @@ longer reject the working ones.
   `length(state.live.inbox)`), so the default only ever applies to the
   ~34 test files that build a `ctx` map by hand, where "no queued
   messages" is the intended state. A strict read would force a
-  mechanical fixture edit across all of them for no signal, and the
-  machine struct itself is at its field cap (`Machine.Work` exists for
-  that reason), so it cannot live there.
+  mechanical fixture edit across all of them for no signal. It lives on
+  `ctx` rather than on the machine (or `Machine.Work`) for a freshness
+  reason, not a cap reason: `Turn.build_ctx/2` is its single producer and
+  `Turn.prepare/1` rebuilds `ctx` immediately before every step, so the
+  value can never be stale. (The structs are not at their caps — credo
+  allows 16 fields, `Machine` has 10 and `Machine.Work` 12 — so this is
+  not forced by the field cap; the accessor's 0 default is what keeps the
+  hand-built fixtures honest, and the integration test pins that a
+  production `ctx` always carries the key.)
 - **Stale comments to correct** (beyond the two named above):
   `repair.ex:24-28,97-100,113-115`,
   `message_appender.ex:38-41`, `message_list.ex:192-201,309-350`,
@@ -287,8 +367,12 @@ longer reject the working ones.
 
 - `ctx` carries the inbox size (`build_ctx/2`); the machine stays pure.
 - A message queued during a tool batch is appended as a user message
-  **before** the next HTTP request, with the status never leaving
-  `:streaming`.
+  **before** the next HTTP request, and the delivery itself changes no
+  status: it does not pass through `:idle`. (The status can still move
+  for reasons that are not the delivery — the
+  `:executing_tools → :generating` transition that precedes it, or
+  `:compacting` when the delivered message does not fit and a compaction
+  is staged; see "Other decisions".)
 - No message is lost, and the drained order is preserved.
 - `mix precommit` clean; the Elixir suite stays under 5s.
 - Tests: machine-level (tail guard, fits, needs-compaction,

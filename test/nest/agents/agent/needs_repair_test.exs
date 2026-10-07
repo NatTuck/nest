@@ -204,7 +204,7 @@ defmodule Nest.Agents.Agent.NeedsRepairTest do
           assert state.live.repair.violations == attrs.sequence_violations
           assert state.live.repair.command == attrs.repair_command
 
-          # The cast is dropped in `chat_or_drop/3`, so the active
+          # The cast is dropped in `chat_or_queue/4`, so the active
           # message list is untouched.
           before = state.chat_state.messages
           _ref = Agent.chat(pid, "hello?")
@@ -213,6 +213,10 @@ defmodule Nest.Agents.Agent.NeedsRepairTest do
         end)
 
       assert log =~ "invalid active message sequence"
+
+      # The drop is logged too: `Agents.chat/4` is public and has non-channel
+      # callers, whose message would otherwise vanish without trace.
+      assert log =~ "dropping a chat message while status=:needs_repair"
 
       space_name = Nest.Spaces.get_space(space_id).name
 

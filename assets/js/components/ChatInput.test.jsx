@@ -33,8 +33,8 @@ function setup(props = {}) {
     />,
   );
   const textarea = props.frozen ? null : screen.getByLabelText("Message");
-  // The action button is one of: Send (idle), Stop (busy), or
-  // Stopping... (busy && stopping). Look it up by aria-label.
+  // Send is always rendered (busy or not); Stop joins it while the
+  // agent is busy. The Stop/Stopping button is looked up by aria-label.
   const sendButton = screen.queryByRole("button", { name: /send/i });
   const stopButton = screen.queryByRole("button", { name: /stop/i });
   return {
@@ -208,7 +208,7 @@ describe("ChatInput", () => {
       expect(onModeChange).not.toHaveBeenCalled();
     });
 
-    it("does not cycle on Ctrl+M when isBusy", () => {
+    it("cycles on Ctrl+M while the agent is busy (the composer stays interactive)", () => {
       const onModeChange = vi.fn();
       const { textarea } = setup({
         value: "hello",
@@ -218,7 +218,7 @@ describe("ChatInput", () => {
         isBusy: true,
       });
       fireEvent.keyDown(textarea, { key: "m", ctrlKey: true });
-      expect(onModeChange).not.toHaveBeenCalled();
+      expect(onModeChange).toHaveBeenCalledWith("build");
     });
 
     it("does not cycle on plain m without modifier", () => {
@@ -404,15 +404,19 @@ describe("ChatInput", () => {
       expect(stopButton).toBeNull();
     });
 
-    it("renders a Stop button when the agent is busy", () => {
-      const { sendButton, stopButton } = setup({
+    it("keeps the composer interactive while busy: Send alongside Stop, textarea enabled", () => {
+      const { sendButton, stopButton, textarea } = setup({
         value: "hello",
         isBusy: true,
       });
-      expect(sendButton).toBeNull();
+      // Send stays available so the human can queue a message for the
+      // next turn boundary, and the textarea stays typeable.
+      expect(sendButton).toBeInTheDocument();
+      expect(sendButton).not.toBeDisabled();
       expect(stopButton).toBeInTheDocument();
       expect(stopButton).toHaveTextContent(/stop/i);
       expect(stopButton).not.toBeDisabled();
+      expect(textarea).not.toBeDisabled();
     });
 
     it("calls onStop when the Stop button is clicked", () => {
@@ -421,13 +425,15 @@ describe("ChatInput", () => {
       expect(onStop).toHaveBeenCalledTimes(1);
     });
 
-    it("renders a disabled 'Stopping...' button when isBusy && stopping", () => {
+    it("renders a disabled 'Stopping...' button alongside Send when isBusy && stopping", () => {
       const { sendButton, stopButton } = setup({
         value: "hello",
         isBusy: true,
         stopping: true,
       });
-      expect(sendButton).toBeNull();
+      // Send is unaffected by the in-flight stop: a message typed
+      // during the stop is queued like any other busy-state send.
+      expect(sendButton).toBeInTheDocument();
       expect(stopButton).toBeInTheDocument();
       expect(stopButton).toHaveTextContent(/stopping/i);
       expect(stopButton).toBeDisabled();
@@ -443,34 +449,38 @@ describe("ChatInput", () => {
       expect(onStop).not.toHaveBeenCalled();
     });
 
-    it("disables the textarea when isBusy is true (no typing while busy)", () => {
-      const { textarea } = setup({ value: "hello", isBusy: true });
-      expect(textarea).toBeDisabled();
-    });
+    it("sends while busy through every path, but not when not connected", () => {
+      const { textarea, sendButton, onSend, rerender } = setup({
+        value: "hello",
+        isBusy: true,
+      });
 
-    it("does not call onSend on form submit when isBusy is true", () => {
-      const { onSend, rerender } = setup({ value: "hello", isBusy: true });
+      // Form submit, the Send button and Ctrl+Enter all reach onSend:
+      // the message is queued for the next turn boundary.
+      fireEvent.submit(document.querySelector("form"));
+      expect(onSend).toHaveBeenCalledTimes(1);
+      fireEvent.click(sendButton);
+      expect(onSend).toHaveBeenCalledTimes(2);
+      fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: true });
+      expect(onSend).toHaveBeenCalledTimes(3);
+
+      // "Not connected" wins over "busy": nothing is queued.
       rerender(
         <ChatInput
           value="hello"
           onChange={vi.fn()}
           onSend={onSend}
           isBusy={true}
+          disabled={true}
           placeholder="Type a message..."
         />,
       );
-      const form = document.querySelector("form");
-      fireEvent.submit(form);
-      expect(onSend).not.toHaveBeenCalled();
-    });
-
-    it("does not call onSend on Ctrl+Enter when isBusy is true", () => {
-      const { textarea, onSend } = setup({
-        value: "hello",
-        isBusy: true,
+      fireEvent.click(screen.getByRole("button", { name: /send/i }));
+      fireEvent.keyDown(screen.getByLabelText("Message"), {
+        key: "Enter",
+        ctrlKey: true,
       });
-      fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: true });
-      expect(onSend).not.toHaveBeenCalled();
+      expect(onSend).toHaveBeenCalledTimes(3);
     });
   });
 
@@ -648,11 +658,11 @@ describe("ChatInput", () => {
       expect(onChange).not.toHaveBeenCalled();
     });
 
-    it("is a no-op when isBusy is true", () => {
+    it("navigates history while isBusy is true (the composer stays interactive)", () => {
       const { textarea, onChange } = setupWithHistory({ isBusy: true });
 
       fireEvent.keyDown(textarea, { key: "ArrowUp", ctrlKey: true });
-      expect(onChange).not.toHaveBeenCalled();
+      expect(onChange).toHaveBeenLastCalledWith("third sent");
     });
 
     it("is a no-op when disabled", () => {
@@ -754,6 +764,11 @@ describe("ChatInput", () => {
 
     it("hides the menu when the input is disabled", () => {
       setup({ value: "/", commands, disabled: true });
+      expect(screen.queryByRole("listbox")).toBeNull();
+    });
+
+    it("suppresses the menu while the agent is busy (queued sends are chat text)", () => {
+      setup({ value: "/", commands, isBusy: true });
       expect(screen.queryByRole("listbox")).toBeNull();
     });
 

@@ -18,6 +18,7 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
 
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Machine
+  alias Nest.Agents.Agent.Machine.Boundary
   alias Nest.Agents.Agent.Machine.Children
   alias Nest.Agents.Agent.Machine.Compaction
   alias Nest.Agents.Agent.Machine.Phase
@@ -32,6 +33,8 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   alias Nest.Agents.Agent.WorkspaceHandler
   alias Nest.LLM.Preflight
   alias Nest.Messages.MessageList
+
+  require Logger
 
   # Compile-time copies of the blocked phases so guards stay valid.
   @blocked [
@@ -91,7 +94,20 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
     machine =
       enter(%{m | loop_count: 0, pending_user_message: nil, mid_turn_entry: nil}, :chat, :idle)
 
-    {:ok, [{:drain_inbox}], machine}
+    case held_user(m) do
+      # The loop breaker must not swallow a message the `:needs_compaction`
+      # branch of `start_chat/3` parked: the executor already consumed
+      # `state.live.inbox`, so re-append it here, before the drain (an
+      # `{:append, _}` returns `:continue`, so the drain still runs). At
+      # `:idle` the appender uses the terminal repair path, so the message
+      # lands in the transcript and is answered by the next turn; no turn is
+      # dispatched here (dispatching would re-enter the compaction decision
+      # that just gave up), and a refused append surfaces as
+      # `{:append_result, :invalid, _}` — a visible turn failure instead of a
+      # silent drop.
+      nil -> {:ok, [{:drain_inbox}], machine}
+      user -> {:ok, [{:append, {:user, user}}, {:drain_inbox}], machine}
+    end
   end
 
   # --- blocked-enter / unblocked (before the generic blocked catch-all) ---
@@ -208,10 +224,8 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
     Compaction.stage(%{m | loop_count: 0, work: %{m.work | focus: focus}}, nil, nil)
   end
 
-  def do_step(%{phase: :idle} = m, {:inbox_drain, entries, content}) do
-    user = Dispatch.build_user_message(content, m.work.ctx.mode)
-    start_chat(m, {:user_message, user}, entries)
-  end
+  def do_step(%{phase: :idle} = m, {:inbox_drain, entries, content}),
+    do: deliver_inbox(m, entries, content)
 
   def do_step(%{phase: :idle} = m, {:http_ok, _ref, _response}), do: {:ignore, :stale_result, m}
 
@@ -304,14 +318,12 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   def do_step(%{phase: :generating, kind: :chat} = m, :iterate), do: iterate(m)
 
   # The boundary delivery (issue #15): a drained inbox message lands here as
-  # a user turn and the turn continues in place — same body as the `:idle`
+  # a user turn and the turn continues in place — the same body as the `:idle`
   # clause, but the phase stays `:generating`, so no transient idle is ever
   # broadcast (an idle-based `agents-query` wait would resolve early, and a
   # `{:finalize, :clean}` would report a partial result to a parent).
-  def do_step(%{phase: :generating, kind: :chat} = m, {:inbox_drain, entries, content}) do
-    user = Dispatch.build_user_message(content, m.work.ctx.mode)
-    start_chat(m, {:user_message, user}, entries)
-  end
+  def do_step(%{phase: :generating, kind: :chat} = m, {:inbox_drain, entries, content}),
+    do: deliver_inbox(m, entries, content)
 
   def do_step(%{phase: :generating, kind: :chat} = m, {:append_result, :invalid, reason}) do
     fail_turn(m, %ArgumentError{message: reason}, [])
@@ -404,6 +416,16 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
 
   # --- chat start / preflight ---
 
+  # Both `{:inbox_drain, …}` boundaries — `:idle` and the `:generating`/`:chat`
+  # turn boundary from issue #15 — start the delivered message's turn the same
+  # way: build the user message in the agent's current mode and hand it to
+  # `start_chat/3`, which owns the fits / needs-compaction / cannot-compact
+  # decision (including the `{:restore_inbox, entries}` path).
+  defp deliver_inbox(m, entries, content) do
+    user = Dispatch.build_user_message(content, m.work.ctx.mode)
+    start_chat(m, {:user_message, user}, entries)
+  end
+
   defp start_chat(m, entry, inbox_entries) do
     user = unwrap_user(entry)
     projected = messages(m) ++ [user]
@@ -478,43 +500,18 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
 
   defp iterate(m) do
     case MessageList.unpaired_tail_tool_uses(messages(m)) do
-      [] -> deliver_at_boundary_or_dispatch(m)
-      uses -> preflight_pending_tools(m, uses)
+      # Deliver queued inbox entries instead of dispatching when nothing is in
+      # flight (issue #15). The rule, and why this position inside the `[]`
+      # branch is load-bearing, live in `Machine.Boundary`. Returning the
+      # machine unchanged keeps the phase `:generating`, so the executor's
+      # follow event starts the delivered message's turn in place.
+      [] ->
+        if Boundary.drain?(m), do: {:ok, [{:drain_inbox}], m}, else: dispatch_http(m)
+
+      uses ->
+        preflight_pending_tools(m, uses)
     end
   end
-
-  # Deliver queued inbox entries instead of starting the next request when
-  # the wire sequence is complete and nothing is in flight (issue #15). The
-  # position inside the `[]` branch is load-bearing: an assistant tail can
-  # still carry unanswered `Part.ToolUse` (a carried compaction continuation),
-  # and appending a user message onto one would be refused by `Repair` and
-  # fail the turn. Emitting `{:drain_inbox}` keeps the phase `:generating`:
-  # the follow event starts the delivered message's turn in place.
-  defp deliver_at_boundary_or_dispatch(m) do
-    if deliver_at_boundary?(m), do: {:ok, [{:drain_inbox}], m}, else: dispatch_http(m)
-  end
-
-  # Conditions: something is queued, the turn is not being wrapped up
-  # (`force_finalize` keeps its "finish now" meaning, so the queued message
-  # waits for the turn end), and the tail is a `{:tool, _}` or
-  # `{:assistant, _}` message. The tail check must read the tag, not
-  # `MessageList.last_wire_role/1` (which maps `:tool` to `:user`) — and it
-  # excludes the just-opened-turn shape, where the machine itself just
-  # appended the tail.
-  defp deliver_at_boundary?(m) do
-    inbox_count(m.work.ctx) > 0 and not m.work.force_finalize and
-      deliverable_tail?(List.last(messages(m)))
-  end
-
-  defp deliverable_tail?({tag, _msg}) when tag in [:tool, :assistant], do: true
-  defp deliverable_tail?(_last), do: false
-
-  # `Turn.build_ctx/2` always sets `inbox_count` from `length(state.live.inbox)`;
-  # the 0 default only covers the tests that hand-build a `ctx` map, where
-  # "nothing queued" is the intended state. Guarded with `is_integer/1` because
-  # `nil > 0` is true in Erlang term order.
-  defp inbox_count(%{inbox_count: n}) when is_integer(n), do: n
-  defp inbox_count(_ctx), do: 0
 
   defp dispatch_http(m) do
     case Preflight.validate_request(messages(m)) do
@@ -624,6 +621,26 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   end
 
   defp messages(m), do: m.work.ctx.messages
+
+  # The `%User{}` a `:needs_compaction` staging parked on the machine, or nil.
+  # Normalized through `Phase.unwrap_user/1` — the single held-shape table
+  # (the drain path parks `{:user_message, {:user, user}}`, a chat request
+  # parks `{:user_message, user}`, and the legacy `{content, mode}` fixture
+  # shape is accepted too). A value it cannot unwrap is logged and treated as
+  # nothing held: a declared event must not raise, and a drop must not be
+  # silent.
+  defp held_user(%{pending_user_message: nil}), do: nil
+
+  defp held_user(%{pending_user_message: entry}) do
+    case unwrap_user(entry) do
+      {:user, %Nest.Messages.User{} = user} -> user
+      _ -> nil
+    end
+  rescue
+    FunctionClauseError ->
+      Logger.warning("[turn] unrecognized pending_user_message: #{inspect(entry)}")
+      nil
+  end
 
   defp child_event(m, event) do
     case Children.step(m.children, event) do

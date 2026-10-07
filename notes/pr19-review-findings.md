@@ -82,6 +82,9 @@ NO BLOCKERS
   after a stop/crash the tail is an assistant too. The live-path `{:repair, _}` clause in
   `Repair.classify_live/2` really is a last-resort guard, and it cannot fire mid-turn because
   `agent_channel.ex:313-321` rejects `chat:message` for `:streaming`/`:executing_tools`/`:compacting`/etc.
+  — **superseded by #15**: the turn-boundary inbox delivery appends a user message onto a wire-`user`
+  tail mid-turn by design, and a busy agent queues `chat:message` instead of rejecting it, so that
+  clause is a normal path (`notes/issue-15-boundary-delivery.md`).
 - Claim "a blocking wait never returns an empty result": `agents-query` has three distinct tagged
   errors (`tool_loop.ex:397-420`) and no path yields `{:ok, ""}` (`assistant_reply/1` maps `""` →
   `{:error, :no_text}`); `agents-spawn`'s `spawn_reply_result/4` and its existing timeout clause both

@@ -2491,6 +2491,34 @@ describe("channels", () => {
       });
     });
 
+    it("forwards pendingMessageCount from chat:status so a missed inbox push does not stale the count", async () => {
+      useStore.getState().setAgentConnected("agent-1", {
+        model: { name: "gpt-4" },
+        messageCount: 0,
+        status: "idle",
+      });
+
+      joinAgent("agent-1", 1);
+
+      await vi.waitFor(() => {
+        assert.strictEqual(
+          useStore.getState().agentsCache["agent-1"]?.status,
+          "connected",
+        );
+      });
+
+      simulateServerEvent("agent:1:agent-1", "chat:status", {
+        status: "streaming",
+        pendingMessageCount: 2,
+      });
+
+      await vi.waitFor(() => {
+        const cache = useStore.getState().agentsCache["agent-1"];
+        assert.strictEqual(cache?.agentState, "streaming");
+        assert.strictEqual(cache?.pendingMessageCount, 2);
+      });
+    });
+
     it("resets and full-syncs the cache when chat:status reports needs_repair", async () => {
       useStore.getState().setAgentConnected("agent-1", {
         model: { name: "gpt-4" },
@@ -3237,7 +3265,7 @@ describe("channels", () => {
       });
     });
 
-    it("should handle message send error - clear partial and call onError", async () => {
+    it("should handle message send error - retract the optimistic echo, clear partial, and call onError", async () => {
       setNextJoinResult("agent:1:agent-1", {
         autoInit: {
           id: "agent-1",
@@ -3265,10 +3293,13 @@ describe("channels", () => {
       });
 
       await vi.waitFor(() => {
-        assert.strictEqual(
-          useStore.getState().agentsCache["agent-1"]?.partial,
-          null,
-        );
+        const cache = useStore.getState().agentsCache["agent-1"];
+        // The rejected send never reaches the transcript, so its
+        // optimistic row and fabricated placeholders are gone: the user
+        // sees the error banner, not a phantom bubble.
+        assert.deepStrictEqual(cache?.messages, []);
+        assert.strictEqual(cache?.partial, null);
+        assert.strictEqual(cache?.streaming, null);
         assert.strictEqual(errorCalled, true);
       });
     });
@@ -4480,6 +4511,42 @@ describe("channels", () => {
         assert.strictEqual(cache.inbox.length, 1);
         assert.strictEqual(cache.inbox[0].from, "alice");
         assert.strictEqual(cache.pendingMessageCount, 1);
+      });
+    });
+
+    it("retracts the optimistic row when a queued human message arrives on chat:inbox", async () => {
+      await connectedAgent();
+
+      // The optimistic send fabricates a user row plus an assistant
+      // placeholder before the push resolves.
+      setNextPushResult("agent:1:agent-1", "chat:message", { ok: {} });
+      sendMessage("agent-1", "queue this", "build");
+      assert.strictEqual(
+        useStore.getState().agentsCache["agent-1"].messages.length,
+        1,
+      );
+
+      // The server only queued it, and says so on `chat:inbox`.
+      simulateServerEvent("agent:1:agent-1", "chat:inbox", {
+        messages: [
+          {
+            from: "alice",
+            content: "queue this",
+            timestamp: "t1",
+            kind: "user",
+            mode: "build",
+          },
+        ],
+        count: 1,
+      });
+
+      await vi.waitFor(() => {
+        const cache = useStore.getState().agentsCache["agent-1"];
+        assert.strictEqual(cache.messages.length, 0);
+        assert.strictEqual(cache.streaming, null);
+        assert.strictEqual(cache.partial, null);
+        assert.strictEqual(cache.pendingMessageCount, 1);
+        assert.strictEqual(cache.inbox[0].kind, "user");
       });
     });
 
