@@ -11,10 +11,14 @@ defmodule Nest.Tools.Exec do
   first shell command. In prod the app is still started by the
   application controller, so `ensure_started/0` is a cheap no-op there.
 
-  Every call site that reaches an `:exec` function backed by the `exec`
-  process (`:exec.run/2`, `:exec.send/2`, `:exec.stop/1`,
-  `:exec.kill/2`) must call `ensure_started/0` first. (`:exec.status/1`
-  is a pure decoder and needs nothing.)
+  Every call site that can *create* a process must call `ensure_started/0`
+  first, i.e. every `:exec.run/2` site: `Nest.Tools.ShellCmd.run_with_erlexec/3`
+  and `Nest.Sandbox.ShellJobs.start_job/1` (which starts it in the caller, so
+  the one-off 350ms never blocks that server's mailbox). The calls that act
+  on a process `:exec.run/2` already handed back (`:exec.send/2`,
+  `:exec.stop/1`, `:exec.kill/2`) need nothing: reaching them at all required
+  a successful run. `:exec.status/1` is a pure decoder of the raw wait status
+  and touches no process.
   """
 
   @doc """

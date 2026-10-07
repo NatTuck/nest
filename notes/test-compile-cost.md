@@ -30,10 +30,16 @@ cut it further is to compile less often.
 ## The pathology: a bare `rescue` in a quoted test body
 
 `Nest.TestSupport.AgentTestMacro` replaces `test` for every module that
-uses `Nest.DataCase` / `NestWeb.ChannelCase` (88 of 192 test files, 747
-of 1890 tests). Whatever it quotes is compiled into *every* test body.
+uses `Nest.DataCase` / `NestWeb.ChannelCase` (88 of 192 test files; 747 of the
+1890 `test "` declarations, a grep count — ExUnit reports 1905 once generated
+tests are counted). Whatever it quotes is compiled into *every* test body.
 
-Per-test compile cost, 400 synthetic tests per variant:
+Per-test compile cost, 400 synthetic trivial tests per variant. These are
+*ratios* from one harness, not absolute costs: the numbers move with the test
+body used, and an independent re-measurement of the same table on the same box
+came out roughly an order of magnitude smaller in absolute terms. What the fix
+removed is the *gap* between the shapes, and that gap is what the A/B
+measurements below confirm independently of this table.
 
 | test body shape | ms/test |
 | --- | --- |

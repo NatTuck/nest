@@ -51,7 +51,7 @@ runs more than one Nest instance against different projects — `vampire` and
 | `assets/static/favicon.ico`, `priv/static/favicon.ico` | deleted: the stock Phoenix icon, so no Phoenix branding can appear in a tab |
 | `lib/nest_web.ex` | `static_paths/0` → `~w(assets favicon.svg robots.txt)` |
 | `assets/js/hooks/useDocumentTitle.js` | new: pure `buildDocumentTitle/2` + the hook |
-| 10 page modules + `RootGate` | one wiring line each |
+| 9 page modules + `RootGate` | one wiring line each |
 
 ### The `assets/static` trap
 
@@ -88,8 +88,18 @@ convention for `favicon.ico`/`robots.txt`.
 with a 500ms wall-clock timeout and failed under full-suite load (the mailbox
 still held `{:chat_status, %{status: "streaming"}}`). Both fences now sync on
 the machine actually reaching `:idle` via `eventually/2` and only then assert,
-with no timeout — which is what the file's other test already did. Not a
-timeout bump: the wait no longer depends on wall-clock timing at all.
+which is what the file's other test already did.
+
+To be precise about the budget, since this is the kind of change that must not
+be smuggled in: the poll budget is **1000ms, up from the 500ms fence**. It is a
+failure deadline for the poll, not an expected duration — the condition holds
+as soon as the error has been handled, and `eventually/2`'s default is 10ms, so
+the budget has to be given explicitly. What changed is the instrument: a fence
+that waited for one specific message and then failed is now a poll of the
+machine's actual state. The old shape was measuring the wrong thing — measured
+turn latency under full-suite load is 700-1000ms against 76ms in isolation (see
+`notes/test-suite-speedup.md`), so a 500ms fence on a single message was
+guaranteed to fire on a slow-but-healthy turn.
 
 ## Known gaps
 
@@ -101,3 +111,11 @@ timeout bump: the wait no longer depends on wall-clock timing at all.
   keeps whatever the last page set. Pre-existing, and out of scope here.
 - The stale untracked `priv/static/cache_manifest.json` still lists the deleted
   `favicon.ico`; `mix phx.digest` regenerates it.
+- `root.html.heex` interpolates the host into the `NEST_CONFIG` `<script>`
+  exactly as the pre-existing `sourceUrl` is interpolated, so HEEx HTML-escapes
+  it: a hostname containing `&` would reach the title as `&amp;`. Real
+  hostnames cannot contain `&`, and the value is server-configured rather than
+  user input, so this is latent rather than live. The right fix is to serialize
+  the whole config with `Jason.encode!/2` (`escape: :html_safe`) instead of
+  interpolating values into a script body — a change to the pre-existing
+  pattern, so it belongs in its own commit rather than this one.
