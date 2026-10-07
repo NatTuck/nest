@@ -29,6 +29,7 @@ defmodule Nest.Tools.ShellCmd do
 
   alias Nest.Sandbox
   alias Nest.Sandbox.ShellJobs
+  alias Nest.Tools.Exec
 
   @default_timeout_ms 60_000
   @default_grace_ms 200
@@ -284,6 +285,11 @@ defmodule Nest.Tools.ShellCmd do
 
   defp run_with_erlexec(command, timeout, stdin) do
     stdin_opt = if stdin, do: :stdin, else: {:stdin, :null}
+
+    # `:erlexec` is kept out of the boot-time `applications` list outside
+    # prod (see `mix.exs`); start it here so the first shell command pays
+    # its one-off 350ms instead of every boot.
+    Exec.ensure_started()
 
     case :exec.run(
            to_charlist(command),

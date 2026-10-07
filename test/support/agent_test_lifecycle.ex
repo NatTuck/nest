@@ -10,7 +10,7 @@ defmodule Nest.Agents.AgentTestLifecycle do
       by `AgentTestHelpers` to synchronize GenServer shutdown before
       the test exits its sandbox checkout. (Drain loops are explicitly
       forbidden here — see the impl for the rationale.)
-    * `teardown_agents!/0` — the in-process teardown that runs before
+    * `stop_test_agents/0` — the in-process teardown that runs before
       the test process (the sandbox connection owner) exits. It
       *discovers* every agent belonging to the current test via the
       global `Nest.Agents.Registry` (every agent registers itself in
@@ -18,6 +18,11 @@ defmodule Nest.Agents.AgentTestLifecycle do
       `start_supervised!` pids), scoped to the spaces the test created
       (visible in the test's sandbox transaction). No per-test
       registration is required.
+    * `assert_zero_remaining!/1` — asserts that the teardown left
+      nothing behind. The caller decides whether to assert, so cleanup
+      can never mask an unrelated body failure.
+    * `reraise_after_teardown/3` — the failing path of a wrapped test
+      body: teardown, then re-raise the body's failure untouched.
 
   ## Why this cannot be an `on_exit`
 
@@ -134,10 +139,35 @@ defmodule Nest.Agents.AgentTestLifecycle do
     end
   end
 
+  @doc """
+  Teardown for the *failing* path of a wrapped test body: stop the
+  test's agents, then re-raise the body's failure untouched.
+
+  `Nest.TestSupport.AgentTestMacro` wraps every test body, so this runs
+  in the test process (the sandbox owner) while the connection is still
+  checked out. Without it, a test that failed while an agent was still
+  mid-turn would leave that agent running past the sandbox check-in
+  (`Nest.DataCase.setup_sandbox/2` does it in `on_exit`, i.e. after this
+  process exits) and its next insert would fail with a Postgrex "owner
+  exited" error — noise that would obscure the real failure. Agents
+  trap exits (`Nest.Agents.Agent.init/1`), so a dying test process does
+  not stop them synchronously.
+
+  The zero-remaining invariant is deliberately NOT asserted here: the
+  body already failed, and cleanup must never mask that. `:erlang.raise/3`
+  (not `reraise/2`) is used so `:throw`/`:exit` failures are re-raised
+  too, with the original stacktrace.
+  """
+  @spec reraise_after_teardown(:error | :exit | :throw, term(), Exception.stacktrace()) ::
+          no_return()
+  def reraise_after_teardown(kind, reason, stacktrace) do
+    _ = stop_test_agents()
+    :erlang.raise(kind, reason, stacktrace)
+  end
+
   # Every agent the current test owns: registered live agents whose
   # space was created inside this test's sandbox transaction.
-  @spec owned_agents() :: list({integer(), String.t(), pid()})
-  def owned_agents do
+  defp owned_agents do
     all = Registry.list_all()
     visible = visible_space_ids(all)
 
