@@ -7,8 +7,11 @@
  * The block shows:
  *
  *   - The query text the parent sent to the child.
- *   - The child's name (linked to its chat page so the user
- *     can drill down into the child's full conversation).
+ *   - The child's name, linked to its chat page. The only
+ *     route that renders a chat is
+ *     `/space/:spaceSlug/agent/:name`, so the link is
+ *     space-scoped and the slug comes from the route (see
+ *     `DelegatedTaskBlock` below).
  *   - Status: "running" while the parent is blocked on the
  *     tool worker; "async" when the call passed `async: true`
  *     (the paired result is only a confirmation, the real
@@ -28,7 +31,7 @@
  * with their results by `tool_call_id`.
  */
 
-import { Link } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { useStore } from "../store";
 
 const EMPTY_MESSAGES = [];
@@ -136,6 +139,37 @@ function extractChildName(args) {
 }
 
 /**
+ * The child's name, linked to its chat page inside the current
+ * space. The only route that renders a chat is
+ * `/space/:spaceSlug/agent/:name`, so the link needs the space
+ * slug and a link without one (`/agent/:name`) matches no route
+ * at all and renders a blank page. When the slug is unavailable
+ * (the card is being rendered outside its route) the name is
+ * shown with an explicit indicator instead of a dead link.
+ */
+function ChildNameLink({ childName, spaceSlug }) {
+  if (!spaceSlug) {
+    return (
+      <span
+        data-testid="delegated-task-space-missing"
+        className="text-amber-700"
+      >
+        {childName} — chat link unavailable: no space in the route
+      </span>
+    );
+  }
+
+  return (
+    <Link
+      to={`/space/${encodeURIComponent(spaceSlug)}/agent/${encodeURIComponent(childName)}`}
+      className="text-indigo-600 hover:underline font-mono"
+    >
+      {childName}
+    </Link>
+  );
+}
+
+/**
  * Render one `DelegatedTaskBlock` per `agents-spawn` tool
  * call (with a `query`) in a single assistant message. Mounted
  * inside `MessageBubble`, between `<ToolCalls />` and
@@ -222,6 +256,15 @@ export function DelegatedTask({ message, agentName }) {
 }
 
 /**
+ * The space slug used to build the child's chat link comes from
+ * the route (`useParams`) rather than from a prop: this card is
+ * only ever mounted under `ChatPage`'s
+ * `/space/:spaceSlug/agent/:name` route, and reading the route
+ * param is how `ChatPage`/`SpaceView` resolve the slug. A link
+ * to `/agent/:name` (no space) matches no route at all and
+ * renders a blank page, so a missing slug renders an explicit
+ * "link unavailable" indicator instead of a dead link.
+ *
  * @param {Object} props
  * @param {string} props.toolCallId
  * @param {string} props.instruction
@@ -244,8 +287,9 @@ export function DelegatedTask({ message, agentName }) {
  * @param {boolean} [props.isAsync]
  *   True when the call passed `async: true`. The paired
  *   result is then only a confirmation; the child's real
- *   response arrives later as a separate inbox message, so
- *   the card shows an "Async" state instead of a
+ *   response arrives later as a separate inbox message (see
+ *   the async note below for the two ways that delivery can
+ *   fail), so the card shows an "Async" state instead of a
  *   "Completed" child response. Default false.
  */
 export function DelegatedTaskBlock({
@@ -256,6 +300,8 @@ export function DelegatedTaskBlock({
   isError = false,
   isAsync = false,
 }) {
+  const { spaceSlug } = useParams();
+
   const status = isError
     ? "error"
     : isAsync
@@ -308,12 +354,7 @@ export function DelegatedTaskBlock({
       </div>
       <p className="mt-2 text-xs text-indigo-700">
         {childName ? (
-          <Link
-            to={`/agent/${encodeURIComponent(childName)}`}
-            className="text-indigo-600 hover:underline font-mono"
-          >
-            {childName}
-          </Link>
+          <ChildNameLink childName={childName} spaceSlug={spaceSlug} />
         ) : (
           <span
             data-testid="delegated-task-child-missing"
@@ -336,12 +377,22 @@ export function DelegatedTaskBlock({
           </pre>
         </>
       )}
+      {/* The async note is deliberately static: the waiter
+          delivers the child's answer as an ordinary inbox
+          message with no `tool_call_id` on it, so there is
+          nothing to correlate with this card and no way to flip
+          it to a "done" state once the answer lands. Issue #31
+          reworks this delivery path; until then the card can
+          only state what is expected to happen, not whether it
+          did. */}
       {status === "async" && (
         <p
           data-testid="delegated-task-async-note"
           className="mt-2 text-xs text-sky-700"
         >
-          The response will arrive later as a message.
+          The response arrives later as a message. A Stop does not cancel the
+          waiter, so a timeout notice may arrive instead; a result this agent
+          refuses is lost.
         </p>
       )}
       {response && status === "async" && (

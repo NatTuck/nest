@@ -24,14 +24,17 @@ defmodule Nest.Tools.QueryAgent do
     %Tool{
       name: "agents-query",
       description:
-        "Send a chat message to a sub-agent in this space and wait for its " <>
-          "response. Use this to delegate a question to a specialist you have " <>
-          "already spawned (see `agents-spawn` and `agents-list`). By default " <>
-          "your turn blocks until the target responds; set `async` to true to " <>
-          "return immediately instead, in which case the response arrives later " <>
-          "as a message in your inbox, prefixed `[agents-query result]` (or " <>
-          "`[agents-query failed]` / `[agents-query timed out]`). Use " <>
-          "`agents-wait` to wait for it.",
+        "Send a chat message to a sub-agent in this space and wait for it to " <>
+          "finish its current turn, returning its latest assistant text. A " <>
+          "message sent to a target that is mid-turn is queued for its next " <>
+          "turn, so the text returned can be the target's current turn output " <>
+          "rather than a reply to your message. Use this to delegate a question " <>
+          "to a specialist you have already spawned (see `agents-spawn` and " <>
+          "`agents-list`). By default your turn blocks until the target " <>
+          "responds; set `async` to true to return immediately instead, in " <>
+          "which case the response arrives later as a message in your inbox, " <>
+          "prefixed `[agents-query result]` (or `[agents-query failed]` / " <>
+          "`[agents-query timed out]`). Use `agents-wait` to wait for it.",
       parameters_schema: %{
         "type" => "object",
         "properties" => %{

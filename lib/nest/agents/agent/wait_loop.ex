@@ -25,6 +25,18 @@ defmodule Nest.Agents.Agent.WaitLoop do
       persisted row) is an error — almost certainly a typo — rather
       than silently counting as idle.
 
+  ## A read-only wait
+
+  `agents-wait` never starts an agent. Statuses come from
+  `Nest.Agents.list_agents_info_for_space/1`, which merges live agents
+  with their persisted rows and reports a persisted-only agent as `:idle`
+  without starting it. This is deliberately *not* `Nest.Agents.get_info/2`:
+  that on-demand-loads a persisted-only agent (`Supervisor.get_agent/2`
+  starts it), so a wait that used it would start the very agent it is only
+  observing, and would disagree with the empty-list path (which reads the
+  listing). Both paths use the listing, so a given agent gets the same
+  disposition however it is named.
+
   ## Bounded by elapsed time, never by a message count
 
   The target's own streaming traffic (`chat:delta`, `chat_message`,
@@ -40,26 +52,24 @@ defmodule Nest.Agents.Agent.WaitLoop do
   require Logger
 
   alias Nest.Agents.Agent.Broadcasts
+  alias Nest.Agents.Agent.WaitBudget
   alias Nest.Messages.MessageList
   alias Nest.Messages.ToolCall
-
-  # Mirrors `PeerQuery`'s `@wait_slice_ms` and `ToolLoop`'s
-  # `@default_wait_ms`: they bound the same kind of blocking sub-agent
-  # wait.
-  @default_wait_ms 300_000
-  @wait_slice_ms 250
 
   @doc """
   Run one `agents-wait` call. Returns `{:ok, content}` for the
   immediate, first-idle, and timeout results, and `{:error, content}`
-  only when a named target does not exist.
+  for an invalid argument or a named target that does not exist.
   """
   @spec run(map(), ToolCall.t()) :: {:ok, String.t()} | {:error, String.t()}
   def run(ctx, %ToolCall{} = tc) do
-    case initial_statuses(ctx, extract_names(tc)) do
-      {:error, content} -> {:error, content}
-      {:ok, []} -> {:ok, "No other agents in this space to wait for."}
-      {:ok, statuses} -> wait_for_first_idle(ctx, statuses, extract_timeout(tc))
+    with {:ok, names} <- extract_names(tc),
+         {:ok, timeout} <- extract_timeout(tc) do
+      case initial_statuses(ctx, names) do
+        {:error, content} -> {:error, content}
+        {:ok, []} -> {:ok, "No other agents in this space to wait for."}
+        {:ok, statuses} -> wait_for_first_idle(ctx, statuses, timeout)
+      end
     end
   end
 
@@ -73,17 +83,27 @@ defmodule Nest.Agents.Agent.WaitLoop do
   defp initial_statuses(ctx, []) do
     statuses =
       ctx.space_id
-      |> Nest.Agents.list_agents_info_for_space()
+      |> listing()
       |> Enum.reject(&(&1.name == ctx.agent_name))
       |> Enum.map(&{&1.name, &1.status})
 
     {:ok, statuses}
   end
 
+  # Named targets resolve against the same listing, so a name that is not
+  # in the space (no live process and no persisted row) is an error rather
+  # than a silent idle.
   defp initial_statuses(ctx, names) do
     names = names |> Enum.uniq() |> List.delete(ctx.agent_name)
-    read_statuses(ctx.space_id, names)
+    listed = Map.new(listing(ctx.space_id), &{&1.name, &1.status})
+
+    case Enum.find(names, &(not Map.has_key?(listed, &1))) do
+      nil -> {:ok, Enum.map(names, &{&1, Map.fetch!(listed, &1)})}
+      missing -> {:error, not_found_message(missing)}
+    end
   end
+
+  defp listing(space_id), do: Nest.Agents.list_agents_info_for_space(space_id)
 
   # -- the wait --
 
@@ -103,8 +123,8 @@ defmodule Nest.Agents.Agent.WaitLoop do
   end
 
   # Subscribing happens after the initial status read, so a target that
-  # goes idle in between misses its broadcast; the `@wait_slice_ms`
-  # recheck in `await_idle/4` catches that within one slice.
+  # goes idle in between misses its broadcast; the slice recheck in
+  # `await_idle/4` catches that within one `WaitBudget.wait_slice_ms/0`.
   defp subscribe(space_id, names) do
     Enum.each(names, &Phoenix.PubSub.subscribe(Nest.PubSub, Broadcasts.topic(space_id, &1)))
   end
@@ -117,22 +137,6 @@ defmodule Nest.Agents.Agent.WaitLoop do
     for {name, status} <- statuses, status != :idle, do: name
   end
 
-  # One status read per target. A name that resolves to nothing is
-  # reported as an error rather than treated as idle.
-  defp read_statuses(space_id, names) do
-    names
-    |> Enum.reduce_while([], fn name, acc ->
-      case status(space_id, name) do
-        {:ok, status} -> {:cont, [{name, status} | acc]}
-        {:error, :not_found} -> {:halt, {:error, not_found_message(name)}}
-      end
-    end)
-    |> case do
-      {:error, content} -> {:error, content}
-      pairs -> {:ok, Enum.reverse(pairs)}
-    end
-  end
-
   defp await_idle(ctx, busy, deadline, timeout) do
     remaining = deadline - System.monotonic_time(:millisecond)
 
@@ -141,44 +145,70 @@ defmodule Nest.Agents.Agent.WaitLoop do
       {:ok, timeout_message(busy, timeout)}
     else
       receive do
-        {:chat_status, %{status: "idle"}} -> check_idle(ctx, busy, deadline, timeout)
-        _other -> await_idle(ctx, busy, deadline, timeout)
+        {:chat_status, %{status: "idle"}} ->
+          check_idle(ctx, busy, deadline, timeout)
+
+        # Every non-status message is discarded. The target's own
+        # streaming traffic (`chat:delta`, `chat_message`, `shell:jobs`,
+        # ...) lands on this topic too, and so can a late
+        # `{:spawn_agent_result, ...}` from a sibling blocking
+        # `agents-spawn` in the same batch that timed out first (the batch
+        # runs sequentially in this worker, so that result is no longer
+        # ours to deliver). None of them changes a target's status, so
+        # none can end the wait.
+        _other ->
+          await_idle(ctx, busy, deadline, timeout)
       after
-        min(@wait_slice_ms, remaining) -> check_idle(ctx, busy, deadline, timeout)
+        min(WaitBudget.wait_slice_ms(), remaining) ->
+          check_idle(ctx, busy, deadline, timeout)
       end
     end
   end
 
+  # A status broadcast is only a *hint*: it can be the transient `:idle`
+  # that issue #15's turn-end inbox drain publishes (`streaming → idle →
+  # streaming`) before the target's queued work starts. Never decide on the
+  # payload alone. The listing re-read is the authority, and the target's
+  # status read is a synchronous call into the target (`Agent.get_public_info/1`,
+  # the call `Nest.Agents.get_info/2` wraps), serialized behind the whole
+  # settle — so it observes the final phase, not the transient one.
+  # "Optimizing" this to trust the broadcast the way `PeerQuery` does would
+  # inherit the same transient-idle bug (issue #31 removes the query path
+  # that has it).
   defp check_idle(ctx, busy, deadline, timeout) do
-    case Enum.find_value(busy, &idle_target(ctx.space_id, &1)) do
+    listed = Map.new(listing(ctx.space_id), &{&1.name, &1.status})
+
+    case Enum.find_value(busy, &idle_target(listed, &1)) do
       nil -> await_idle(ctx, busy, deadline, timeout)
       {:idle, name} -> {:ok, idle_message(name, stop_message(ctx.space_id, name))}
       {:gone, name} -> {:ok, gone_message(name)}
     end
   end
 
-  # A busy target "went idle" when its status is `:idle`, or when it is
-  # no longer present at all (a vanished agent cannot be busy).
-  defp idle_target(space_id, name) do
-    case status(space_id, name) do
+  # A busy target "went idle" when its status is `:idle`, or when it is no
+  # longer in the space at all (a vanished agent cannot be busy).
+  defp idle_target(listed, name) do
+    case Map.fetch(listed, name) do
+      :error -> {:gone, name}
       {:ok, :idle} -> {:idle, name}
-      {:error, :not_found} -> {:gone, name}
       {:ok, _busy} -> nil
     end
   end
 
   # -- reads --
 
-  defp status(space_id, name) do
-    case Nest.Agents.get_info(space_id, name) do
-      {:ok, %{status: status}} -> {:ok, status}
-      {:error, _reason} -> {:error, :not_found}
+  # The target's stop message: the text of its final assistant message,
+  # or `""` when it ended its turn without one. Only a *live* target is
+  # read: `Nest.Agents.get_messages/2` on-demand-loads a persisted-only
+  # agent, and this wait must never start one.
+  defp stop_message(space_id, name) do
+    case Nest.Agents.Registry.lookup(space_id, name) do
+      {:ok, _pid} -> read_stop_message(space_id, name)
+      {:error, :not_found} -> ""
     end
   end
 
-  # The target's stop message: the text of its final assistant message,
-  # or `""` when it ended its turn without one.
-  defp stop_message(space_id, name) do
+  defp read_stop_message(space_id, name) do
     case Nest.Agents.get_messages(space_id, name) do
       {:ok, messages} -> MessageList.last_assistant_text(messages)
       {:error, _reason} -> ""
@@ -187,27 +217,54 @@ defmodule Nest.Agents.Agent.WaitLoop do
 
   # -- args --
 
+  # `names` must be a list of agent-name strings when present. A bare string
+  # (a model that typos the type) or a list with a non-string element is
+  # rejected rather than silently filtered, which would mean "every other
+  # agent in the space" — a wait on unrelated agents. `nil` (omitted) and
+  # `[]` both mean the same thing.
   defp extract_names(%ToolCall{arguments: args}) when is_map(args) do
     case Map.get(args, "names") do
-      names when is_list(names) -> Enum.filter(names, &is_binary/1)
-      _ -> []
+      nil ->
+        {:ok, []}
+
+      names when is_list(names) ->
+        if Enum.all?(names, &is_binary/1) do
+          {:ok, names}
+        else
+          {:error, invalid_names_message(names)}
+        end
+
+      other ->
+        {:error, invalid_names_message(other)}
     end
   end
 
-  defp extract_names(_tc), do: []
+  defp extract_names(_tc), do: {:ok, []}
 
+  # A timeout must be a positive integer of milliseconds. A non-positive
+  # one would produce "No agent went idle within -1ms" — reject it loudly.
   defp extract_timeout(%ToolCall{arguments: args}) when is_map(args) do
     case Map.get(args, "timeout") do
-      ms when is_integer(ms) -> ms
-      _ -> @default_wait_ms
+      nil -> {:ok, WaitBudget.default_wait_ms()}
+      ms when is_integer(ms) and ms > 0 -> {:ok, ms}
+      other -> {:error, invalid_timeout_message(other)}
     end
   end
 
-  defp extract_timeout(_tc), do: @default_wait_ms
+  defp extract_timeout(_tc), do: {:ok, WaitBudget.default_wait_ms()}
 
   # -- messages --
 
   defp not_found_message(name), do: "Agent #{name} not found in this space."
+
+  defp invalid_names_message(value) do
+    "Invalid `names` argument: expected a list of agent names, got: #{inspect(value)}."
+  end
+
+  defp invalid_timeout_message(value) do
+    "Invalid `timeout` argument: expected a positive integer of milliseconds, got: " <>
+      inspect(value) <> "."
+  end
 
   defp all_idle_message(targets) do
     "All agents are already idle: #{Enum.join(targets, ", ")}."

@@ -9,8 +9,30 @@ defmodule Nest.Agents.Agent.PeerQuery do
   to the target's PubSub topic, trigger its turn with `Agents.chat/3`, and
   watch for the idle `:chat_status` broadcast. We capture the target's
   message count BEFORE sending so the first idle we see is only accepted
-  once a NEW assistant message (index >= pre_count) exists — this guards
-  against reading a stale, pre-query response.
+  once a NEW assistant message (index >= pre_count) exists.
+
+  ## Known limitation: the pre-count guard does not cover a busy peer
+
+  The guard above only holds when the target was idle and the query's own
+  turn is the next thing it does. For a **busy** target the query is now
+  *queued* rather than dropped (issue #15 changed that), but the target's
+  *own* turn still ends by publishing a transient `:idle`: the turn-end
+  inbox drain broadcasts `streaming → idle → streaming` before the queued
+  query starts its new turn (`Turn.run/5` broadcasts the status, then
+  settles the `{:inbox_drain}` follow event). That idle arrives with the
+  target's own final answer already appended at `index >= pre_count`, so
+  `read_last_assistant_after/3` accepts the target's answer to its
+  *previous* turn as the reply to this query; the target then answers the
+  query too, but nobody reads that answer. The same happens while the
+  target is compacting and its summary lands at `index >= pre_count`.
+
+  This module is scheduled for removal by issue #31 (agent messaging
+  becomes async-only: `agents-query` will deliver a message that marks a
+  reply obligation, and the answer will arrive as an addressed
+  `agents-send` message). Until that lands, treat the guard above as
+  unreliable for a busy target. `agents-wait`
+  (`Nest.Agents.Agent.WaitLoop`) does not share the problem: it re-reads
+  the target's own status rather than trusting the broadcast payload.
 
   The wait is tagged: a timeout, a failed read, or a turn that finished
   without text all come back as errors with distinct reasons, never as a
@@ -27,11 +49,8 @@ defmodule Nest.Agents.Agent.PeerQuery do
   require Logger
 
   alias Nest.Agents.Agent.Broadcasts
+  alias Nest.Agents.Agent.WaitBudget
   alias Nest.Messages.Part
-
-  # Keep the poll loop responsive to late-arriving broadcasts. Mirrors
-  # `WaitLoop`'s slice.
-  @wait_slice_ms 250
 
   @type result ::
           {:ok, String.t()}
@@ -108,7 +127,7 @@ defmodule Nest.Agents.Agent.PeerQuery do
         _other ->
           wait_for_idle(space_id, target, pre_count, deadline, timeout, parent)
       after
-        min(@wait_slice_ms, remaining) ->
+        min(WaitBudget.wait_slice_ms(), remaining) ->
           wait_for_idle(space_id, target, pre_count, deadline, timeout, parent)
       end
     end

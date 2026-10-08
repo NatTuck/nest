@@ -30,6 +30,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.Agents.Agent.PeerQuery
   alias Nest.Agents.Agent.SubAgentResults
+  alias Nest.Agents.Agent.WaitBudget
   alias Nest.Agents.Agent.WaitLoop
   alias Nest.Agents.Registry
   alias Nest.DotConfig
@@ -38,13 +39,6 @@ defmodule Nest.Agents.Agent.ToolLoop do
   alias Nest.Models
 
   require Logger
-
-  # Default cap for blocking sub-agent waits (`agents-spawn`
-  # with a `query`, and `agents-query`), and for the async waiters
-  # those tools start. Agent work can be slow, so this is generous
-  # (5 minutes). Both tools accept a `timeout` argument to override
-  # it.
-  @default_wait_ms 300_000
 
   # Cap for the `agents-list` tool result. A space with many
   # agents could produce a huge serialized list; truncating
@@ -253,7 +247,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
       model: extract_string_arg(tc, "model"),
       query: extract_string_arg(tc, "query"),
       archive: extract_bool_arg(tc, "archive", false),
-      timeout: extract_int_arg(tc, "timeout") || @default_wait_ms
+      timeout: extract_int_arg(tc, "timeout") || WaitBudget.default_wait_ms()
     }
   end
 
@@ -385,7 +379,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
   defp run_query_agent(ctx, %ToolCall{} = tc) do
     target = extract_string_arg(tc, "name")
     prompt = extract_string_arg(tc, "prompt")
-    timeout = extract_int_arg(tc, "timeout") || @default_wait_ms
+    timeout = extract_int_arg(tc, "timeout") || WaitBudget.default_wait_ms()
 
     if extract_bool_arg(tc, "async", false) do
       run_query_async(ctx, tc, target, prompt, timeout)

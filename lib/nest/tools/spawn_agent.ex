@@ -45,8 +45,10 @@ defmodule Nest.Tools.SpawnAgent do
       "blocking: the spawn is confirmed right away (a bad spawn still comes " <>
       "back as an error you can fix) and the agent's response arrives later " <>
       "as a message in your inbox, prefixed `[agents-spawn result]` (or " <>
-      "`[agents-spawn failed]` / `[agents-spawn timed out]`). Use " <>
-      "`agents-wait` to wait for it. " <>
+      "`[agents-spawn failed]` / `[agents-spawn timed out]`). A Stop does " <>
+      "not cancel the waiter, so the eventual message may be a timeout " <>
+      "notice, and a refused delivery (a broken caller status or a full " <>
+      "inbox) loses the result. Use `agents-wait` to wait for it. " <>
       "Spawned vocations may be restricted by this space's blueprint. " <>
       "Sub-agents can be spawned down to a maximum depth of " <>
       "#{Config.configured_max_depth()}. Set `model` to a " <>
