@@ -99,12 +99,12 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
     {:reply, system_prompt_from_messages(state.chat_state.messages), state}
   end
 
-  # Test-friendly: returns the running-children map (name => blocked
-  # tool worker pid) so a test can assert which workers are currently
-  # parked on an `agents-spawn` (with `query`) tool call. The
-  # bookkeeping lives in the machine's `Children` sub-machine.
-  # Production code should use `:get_total_usage` / `get_public_info`
-  # instead.
+  # Test-friendly: returns the running-children map (name => waiting
+  # caller pid — the blocking tool worker, or the async waiter it
+  # started) so a test can assert which callers are currently parked on
+  # an `agents-spawn` (with `query`) tool call. The bookkeeping lives in
+  # the machine's `Children` sub-machine. Production code should use
+  # `:get_total_usage` / `get_public_info` instead.
   def handle(:get_pending_children, _from, state) do
     {:reply, Machine.pending_children(state.live.machine), state}
   end

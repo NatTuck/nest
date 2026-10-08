@@ -28,7 +28,14 @@ defmodule Nest.Agents.Agent.Broadcasts do
   # truncate the user-facing source tag to keep it copy-pastable.
   @log_snippet_bytes 500
 
-  defp topic(space_id, name), do: "agent:#{space_id}:#{name}"
+  @doc """
+  The per-agent PubSub topic. The single source for the
+  `"agent:<space_id>:<name>"` format, so subscribers
+  (`Nest.Agents.Agent.PeerQuery`'s `agents-query` wait,
+  `Agent.WaitLoop`) and broadcasters cannot drift.
+  """
+  @spec topic(integer(), String.t()) :: String.t()
+  def topic(space_id, name), do: "agent:#{space_id}:#{name}"
 
   def message(state, message) do
     Phoenix.PubSub.broadcast(PubSub, topic(state.space_id, state.name), {:chat_message, message})

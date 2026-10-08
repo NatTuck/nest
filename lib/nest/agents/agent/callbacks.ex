@@ -129,14 +129,13 @@ defmodule Nest.Agents.Agent.Callbacks do
     reply_append(MessageAppender.handle_batch(state, messages))
   end
 
-  # Sub-agent: a tool worker (running in the chat turn) is
-  # blocked on the tool dispatch and has hit an `agents-spawn`
-  # tool call. `opts` carries `name`, `vocation` (slug),
-  # `clone_context`, `query`, and `archive`. Spawn the child
-  # (fresh or context-cloned), kick off its chat turn with the
-  # `query` (if any), remember the worker's pid so we can
-  # forward the eventual `:spawn_agent_result`, and reply
-  # synchronously with the child's name so the worker can match
+  # Sub-agent: a tool worker (running in the chat turn) has hit an
+  # `agents-spawn` tool call. `opts` carries `name`, `vocation` (slug),
+  # `clone_context`, `query`, and `archive`. Spawn the child (fresh or
+  # context-cloned), kick off its chat turn with the `query` (if any),
+  # remember the caller's pid — the blocking worker, or the async waiter
+  # it started — so we can forward the eventual `:spawn_agent_result`,
+  # and reply synchronously with the child's name so the caller can match
   # its `receive` on child identity.
   def handle_call({:spawn_agent_request, task_pid, opts}, _from, state) do
     SubAgent.handle_spawn_request(state, task_pid, opts)

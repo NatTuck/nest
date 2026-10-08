@@ -4,13 +4,14 @@ defmodule Nest.Agents.Agent.SubAgent do
 
   Owns two concerns:
 
-    * `handle_spawn_request/3` — a tool worker blocked on an
+    * `handle_spawn_request/3` — a tool worker running an
       `agents-spawn` tool call asked this agent to spawn a
       child. We delegate to the supervisor (fresh or
       context-cloned), register the child in the machine's
       `Nest.Agents.Agent.Machine.Children` sub-machine when a
       `query` is present, kick off `Agents.chat(child_name,
-      query)`, then reply with the child's name (the worker
+      query)`, then reply with the child's name (the caller —
+      the blocking worker, or the async waiter it started —
       matches its eventual `:spawn_agent_result` on it).
 
     * `handle_child_completed/4` — a child cast up the
@@ -18,7 +19,7 @@ defmodule Nest.Agents.Agent.SubAgent do
       total usage. We run the child event through the
       `Children` sub-machine, merge the reported usage into
       the parent's `descendant_usage`, forward
-      `:spawn_agent_result` to the blocked worker (archiving
+      `:spawn_agent_result` to the waiting caller (archiving
       the child if it was spawned with `archive: true`), and
       broadcast an updated status (so the token chip's total
       updates mid-stream).
@@ -28,7 +29,7 @@ defmodule Nest.Agents.Agent.SubAgent do
   The child reaches the parent by `GenServer.cast`-ing to
   `Nest.Agents.Registry.via_tuple(space_id, parent_name)`. The
   parent looks the child up in the children sub-machine by name
-  (the `task_pid` is the only pid we hold; the worker has no
+  (the `task_pid` is the only pid we hold; the caller has no
   registered name, so `:spawn_agent_result` reaches it via
   `send/2` from the parent).
 
@@ -191,11 +192,12 @@ defmodule Nest.Agents.Agent.SubAgent do
   end
 
   # Register the child in the machine's children sub-machine only when
-  # it has a `query` to answer (the worker is blocked awaiting the
-  # result). A child spawned without a query runs independently and
-  # never calls back, so there's nothing to track. The `archive` flag
-  # is carried on the child entry so the terminal transition can emit
-  # a single archive action after the response is forwarded.
+  # it has a `query` to answer (the caller — the blocking worker or the
+  # async waiter — is waiting for the result). A child spawned without a
+  # query runs independently and never calls back, so there's nothing to
+  # track. The `archive` flag is carried on the child entry so the
+  # terminal transition can emit a single archive action after the
+  # response is forwarded.
   defp track_child(state, child_name, task_pid, opts) do
     if Map.get(opts, :query, "") != "" do
       archive = Map.get(opts, :archive, false)
@@ -283,7 +285,7 @@ defmodule Nest.Agents.Agent.SubAgent do
   @doc """
   Merge the child's reported usage into
   `state.llm_metrics.descendant_usage`, forward
-  `:spawn_agent_result` to the blocked worker, archive the child if it
+  `:spawn_agent_result` to the waiting caller, archive the child if it
   was spawned with `archive: true`, and broadcast the updated status.
   Returns the GenServer reply tuple (which for a `handle_cast` is just
   `{:noreply, new_state}`).
@@ -297,7 +299,7 @@ defmodule Nest.Agents.Agent.SubAgent do
   @doc """
   A child ended its turn without a normal completion (its
   chat crashed or was stopped). Run the failure through the
-  `Children` sub-machine so the blocked tool worker (an
+  `Children` sub-machine so the waiting caller (an
   `agents-spawn` / `agents-batch`) fails fast instead of waiting out
   its timeout. Never archives a failed child — a crashed/stopped child
   is left in place for inspection. Returns the GenServer reply tuple.

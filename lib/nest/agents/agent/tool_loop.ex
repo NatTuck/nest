@@ -7,10 +7,10 @@ defmodule Nest.Agents.Agent.ToolLoop do
   response with `tool_calls` is received. Responsibilities:
 
     * Split the batch by tool — sub-agent tools (`agents-spawn`,
-      `agents-query`, `agents-list`, `agents-archive`) are routed
-      through their `run_*` handlers (synchronous spawn/query/
-      archive through the agent GenServer; `agents-list` reads the
-      space inline); everything else is delegated to
+      `agents-query`, `agents-send`, `agents-wait`, `agents-list`,
+      `agents-archive`, `agents-batch`, `models-list`) are routed
+      through their `run_*` handlers, which run in this worker and
+      never in the agent GenServer; everything else is delegated to
       `Nest.Agents.Agent.BatchSizer`.
     * Merge the two halves back into input order.
 
@@ -25,27 +25,20 @@ defmodule Nest.Agents.Agent.ToolLoop do
   BatchSizer doesn't try to project a per-tool size for it.
   """
 
+  alias Nest.Agents.Agent.AsyncWaiter
   alias Nest.Agents.Agent.BatchLoop
   alias Nest.Agents.Agent.BatchSizer
-  alias Nest.Agents.Agent.BatchSizer.Overflow
-  alias Nest.Agents.Agent.CapCalculator
+  alias Nest.Agents.Agent.PeerQuery
+  alias Nest.Agents.Agent.SubAgentResults
+  alias Nest.Agents.Agent.WaitBudget
+  alias Nest.Agents.Agent.WaitLoop
   alias Nest.Agents.Registry
   alias Nest.DotConfig
-  alias Nest.Messages.Part
   alias Nest.Messages.ToolCall
   alias Nest.Messages.ToolResult
   alias Nest.Models
-  alias Nest.Tokens.Estimator
 
   require Logger
-
-  # Default cap for blocking sub-agent waits (`agents-spawn`
-  # with a `query`, and `agents-query`). Agent work can be
-  # slow, so this is generous (5 minutes). Both tools accept a
-  # `timeout` argument to override it. The 250ms slice keeps
-  # the poll loop responsive to late-arriving broadcasts.
-  @default_wait_ms 300_000
-  @wait_slice_ms 250
 
   # Cap for the `agents-list` tool result. A space with many
   # agents could produce a huge serialized list; truncating
@@ -101,7 +94,8 @@ defmodule Nest.Agents.Agent.ToolLoop do
   #
   # Sub-agent tool families are split out of the regular batch:
   # `agents-spawn` (synchronous spawn, optional query-wait +
-  # archive), `agents-query` (block on a peer), `agents-list`
+  # archive, or `async` to hand the wait to a waiter),
+  # `agents-query` (block on a peer, or `async`), `agents-list`
   # (inline read), and `agents-archive` (stop + mark archived).
   # Everything else is delegated to `BatchSizer`.
   defp run_batch(ctx, calls) do
@@ -135,6 +129,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
               "agents-archive",
               "agents-batch",
               "agents-send",
+              "agents-wait",
               "models-list"
             ],
        do: true
@@ -144,6 +139,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-spawn"} = tc), do: run_spawn_agent(ctx, tc)
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-query"} = tc), do: run_query_agent(ctx, tc)
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-send"} = tc), do: run_send_agent(ctx, tc)
+  defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-wait"} = tc), do: run_wait_agents(ctx, tc)
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-list"} = tc), do: run_list_agents(ctx, tc)
   defp run_sub_agent_tool(_ctx, %ToolCall{name: "models-list"} = tc), do: run_models_list(tc)
 
@@ -157,31 +153,71 @@ defmodule Nest.Agents.Agent.ToolLoop do
   # old `clone_agent` (via `clone_context`) and `spawn_agent`.
   # Ask the coordinator GenServer to spawn a child (fresh or
   # context-cloned), optionally send it a `query` and block for
-  # the response, and optionally `archive` it afterward.
+  # the response, and optionally `archive` it afterward. With
+  # `async: true` (and a `query`) the wait is handed to a
+  # supervised waiter and the response arrives later as a message.
   defp run_spawn_agent(ctx, %ToolCall{} = tc) do
     opts = spawn_opts_from_args(tc)
-    query = opts.query
-    timeout = opts.timeout
 
+    if extract_bool_arg(tc, "async", false) and opts.query != "" do
+      run_spawn_async(ctx, tc, opts)
+    else
+      run_spawn_blocking(ctx, tc, opts)
+    end
+  end
+
+  # The default path: this worker owns the blocking wait.
+  defp run_spawn_blocking(ctx, tc, opts) do
     parent_via_tuple = Registry.via_tuple(ctx.space_id, ctx.agent_name)
 
-    case GenServer.call(parent_via_tuple, {:spawn_agent_request, self(), opts}, timeout) do
+    case GenServer.call(parent_via_tuple, {:spawn_agent_request, self(), opts}, opts.timeout) do
       {:ok, spawned_name} ->
-        if query == "" do
+        if opts.query == "" do
           build_tool_result(tc, "agents-spawn", "Spawned agent #{spawned_name}.")
         else
-          await_spawn_result(ctx, tc, spawned_name, timeout)
+          await_spawn_result(ctx, tc, spawned_name, opts.timeout)
         end
 
       {:error, reason} ->
-        build_tool_result(
-          tc,
-          "agents-spawn",
-          spawn_error_message(reason),
-          true
-        )
+        build_tool_result(tc, "agents-spawn", spawn_error_message(reason), true)
     end
   end
+
+  # The async path: start the supervised waiter first (so an early
+  # completion can never be forwarded to a not-yet-existing process),
+  # then do the spawn call synchronously so a bad spawn still comes
+  # back to the model as an immediate error it can fix. On success the
+  # worker returns the confirmation and the waiter owns the receive;
+  # on failure the worker abandons the waiter so it cannot wait out its
+  # timeout.
+  defp run_spawn_async(ctx, tc, opts) do
+    case AsyncWaiter.start_spawn(ctx.agent_pid, ctx, tc, opts.timeout) do
+      {:ok, waiter} -> await_spawn_async(ctx, tc, opts, waiter)
+      {:error, reason} -> build_tool_result(tc, "agents-spawn", waiter_start_error(reason), true)
+    end
+  end
+
+  defp await_spawn_async(ctx, tc, opts, waiter) do
+    parent_via_tuple = Registry.via_tuple(ctx.space_id, ctx.agent_name)
+
+    case GenServer.call(parent_via_tuple, {:spawn_agent_request, waiter, opts}, opts.timeout) do
+      {:ok, spawned_name} ->
+        send(waiter, {:spawn_agent_go, spawned_name})
+        build_tool_result(tc, "agents-spawn", spawn_async_confirmation(spawned_name))
+
+      {:error, reason} ->
+        send(waiter, :spawn_agent_abandon)
+        build_tool_result(tc, "agents-spawn", spawn_error_message(reason), true)
+    end
+  end
+
+  defp spawn_async_confirmation(spawned_name) do
+    "Spawned agent #{spawned_name} asynchronously. Its response will arrive " <>
+      "later as a message in your inbox; use `agents-wait` to wait for it."
+  end
+
+  defp waiter_start_error(reason),
+    do: "Could not start the async waiter: #{inspect(reason)}"
 
   # Format a spawn failure for the model. `:vocation_not_spawnable`
   # carries the whitelisted `{name, slug}` vocations so the model can
@@ -211,7 +247,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
       model: extract_string_arg(tc, "model"),
       query: extract_string_arg(tc, "query"),
       archive: extract_bool_arg(tc, "archive", false),
-      timeout: extract_int_arg(tc, "timeout") || @default_wait_ms
+      timeout: extract_int_arg(tc, "timeout") || WaitBudget.default_wait_ms()
     }
   end
 
@@ -221,37 +257,26 @@ defmodule Nest.Agents.Agent.ToolLoop do
   defp await_spawn_result(ctx, tc, spawned_name, timeout) do
     receive do
       {:spawn_agent_result, ^spawned_name, response} ->
-        spawn_reply_result(ctx, tc, spawned_name, response)
+        build_tool_result(
+          tc,
+          "agents-spawn",
+          SubAgentResults.spawn_completed(ctx, tc, spawned_name, response),
+          response == ""
+        )
 
       {:spawn_agent_error, ^spawned_name, reason} ->
         build_tool_result(
           tc,
           "agents-spawn",
-          "Child agent #{spawned_name} failed: #{inspect(reason)}",
+          SubAgentResults.spawn_child_failed(spawned_name, reason),
           true
         )
     after
       timeout ->
         Logger.warning("agents-spawn: child #{spawned_name} did not complete within #{timeout}ms")
 
-        build_tool_result(tc, "agents-spawn", "Child agent did not complete in time.", true)
+        build_tool_result(tc, "agents-spawn", SubAgentResults.spawn_timeout(), true)
     end
-  end
-
-  # The child's final text is the tool result. A child that finished its
-  # turn without any text must not come back as a successful empty
-  # result: say so explicitly instead.
-  defp spawn_reply_result(_ctx, tc, spawned_name, "") do
-    build_tool_result(
-      tc,
-      "agents-spawn",
-      "Child agent #{spawned_name} finished its turn without producing any text.",
-      true
-    )
-  end
-
-  defp spawn_reply_result(ctx, tc, _spawned_name, response) do
-    build_tool_result(tc, "agents-spawn", bound_content(response, tc, ctx))
   end
 
   # `agents-list`: read the space's non-archived agents —
@@ -345,94 +370,45 @@ defmodule Nest.Agents.Agent.ToolLoop do
   # space and block until its turn goes idle, returning the
   # target's final assistant text as the tool result.
   #
-  # Unlike `agents-spawn` (a child the parent tracks in
-  # `pending_children`), the queried agent is independent and
-  # has no relationship to the caller, so there is no
-  # `:child_completed` cast to wait on. Instead we subscribe to
-  # the target's PubSub topic, trigger its turn with
-  # `Agents.chat/3`, and watch for the idle `:chat_status`
-  # broadcast. We capture the target's message count BEFORE
-  # sending so the first idle we see is only accepted once a
-  # NEW assistant message (index >= pre_count) exists — this
-  # guards against reading a stale, pre-query response.
-  #
-  # The wait is tagged: a timeout, a failed read, or a turn that
-  # finished without text all come back as errors with distinct
-  # messages, never as a successful empty result.
+  # The wait itself lives in `Nest.Agents.Agent.PeerQuery` (shared with
+  # the async waiter). The wait is tagged: a timeout, a failed read, or
+  # a turn that finished without text all come back as errors with
+  # distinct messages, never as a successful empty result. With
+  # `async: true` the waiter owns the wait and delivers the same content
+  # later as a message.
   defp run_query_agent(ctx, %ToolCall{} = tc) do
     target = extract_string_arg(tc, "name")
     prompt = extract_string_arg(tc, "prompt")
-    timeout = extract_int_arg(tc, "timeout") || @default_wait_ms
+    timeout = extract_int_arg(tc, "timeout") || WaitBudget.default_wait_ms()
 
-    query_peer(ctx.space_id, target, prompt, timeout)
-    |> build_query_result(tc, target, ctx)
-  end
-
-  # Send a chat to a peer and block for its response. Returns
-  # `{:ok, content}` or `{:error, reason}`. Kept separate so
-  # `run_query_agent/2` stays under the credo ABC cap.
-  defp query_peer(space_id, target, prompt, timeout) do
-    case Nest.Agents.get_messages(space_id, target) do
-      {:ok, messages} ->
-        topic = "agent:#{space_id}:#{target}"
-        Phoenix.PubSub.subscribe(Nest.PubSub, topic)
-
-        try do
-          case Nest.Agents.chat(space_id, target, prompt) do
-            :ok -> await_query_result(space_id, target, length(messages), timeout)
-            {:error, reason} -> {:error, {:chat, reason}}
-          end
-        after
-          Phoenix.PubSub.unsubscribe(Nest.PubSub, topic)
-        end
-
-      {:error, reason} ->
-        {:error, {:not_found, reason}}
+    if extract_bool_arg(tc, "async", false) do
+      run_query_async(ctx, tc, target, prompt, timeout)
+    else
+      PeerQuery.run(ctx.space_id, target, prompt, timeout)
+      |> build_query_result(tc, target, ctx)
     end
   end
 
+  # The async path: the waiter owns the whole query (subscribe, chat,
+  # wait for idle, read the reply) and delivers the same content the
+  # blocking path would have returned as a tool result.
+  defp run_query_async(ctx, tc, target, prompt, timeout) do
+    case AsyncWaiter.start_query(ctx.agent_pid, ctx, tc, target, prompt, timeout) do
+      {:ok, _waiter} -> build_tool_result(tc, "agents-query", query_async_confirmation(target))
+      {:error, reason} -> build_tool_result(tc, "agents-query", waiter_start_error(reason), true)
+    end
+  end
+
+  defp query_async_confirmation(target) do
+    "Querying #{target} asynchronously. Its response will arrive later as a " <>
+      "message in your inbox; use `agents-wait` to wait for it."
+  end
+
   defp build_query_result({:ok, content}, tc, _target, ctx),
-    do: build_tool_result(tc, "agents-query", bound_content(content, tc, ctx))
+    do: build_tool_result(tc, "agents-query", SubAgentResults.query_success(ctx, tc, content))
 
-  defp build_query_result({:error, {:timeout, timeout}}, tc, target, _ctx),
-    do:
-      build_tool_result(
-        tc,
-        "agents-query",
-        "Could not query #{target}: timed out after #{timeout}ms waiting for its turn to finish.",
-        true
-      )
-
-  defp build_query_result({:error, :no_text}, tc, target, _ctx),
-    do:
-      build_tool_result(
-        tc,
-        "agents-query",
-        "Could not query #{target}: it finished its turn without producing any text.",
-        true
-      )
-
-  defp build_query_result({:error, {:read_failed, reason}}, tc, target, _ctx),
-    do:
-      build_tool_result(
-        tc,
-        "agents-query",
-        "Could not query #{target}: could not read its messages: #{inspect(reason)}",
-        true
-      )
-
-  defp build_query_result({:error, {:chat, reason}}, tc, target, _ctx),
-    do:
-      build_tool_result(tc, "agents-query", "Could not query #{target}: #{inspect(reason)}", true)
-
-  defp build_query_result({:error, {:not_found, reason}}, tc, target, _ctx),
-    do:
-      build_tool_result(
-        tc,
-        "agents-query",
-        "Agent #{target} not found in this space: #{inspect(reason)}",
-        true
-      )
+  defp build_query_result({:error, reason}, tc, target, _ctx),
+    do: build_tool_result(tc, "agents-query", SubAgentResults.query_failure(reason, target), true)
 
   # `agents-send`: asynchronously deliver a message to another agent in
   # this space. Unlike `agents-query`, it never waits for a turn: the
@@ -481,6 +457,20 @@ defmodule Nest.Agents.Agent.ToolLoop do
 
   defp send_error_message(target, reason), do: "Could not send to #{target}: #{inspect(reason)}"
 
+  # `agents-wait`: block in this worker until one of the target agents
+  # goes idle (or the wall-clock `timeout` expires), then report that
+  # agent and its stop message. The wait lives in `WaitLoop` so the
+  # agent GenServer is never blocked by it.
+  defp run_wait_agents(ctx, %ToolCall{} = tc) do
+    case WaitLoop.run(ctx, tc) do
+      {:ok, content} ->
+        build_tool_result(tc, "agents-wait", SubAgentResults.bound(content, tc, ctx))
+
+      {:error, content} ->
+        build_tool_result(tc, "agents-wait", content, true)
+    end
+  end
+
   # `agents-archive`: stop + mark an existing agent in this
   # space archived. Routes through the parent GenServer so the
   # stop/DB write happens in the same process context as other
@@ -517,85 +507,6 @@ defmodule Nest.Agents.Agent.ToolLoop do
     end
   end
 
-  # Block for the target's reply, one `@wait_slice_ms` slice at a time,
-  # returning `{:ok, text}` once it produced a readable reply.
-  # Passing the wall-clock deadline is `{:error, {:timeout, timeout}}`; a
-  # turn that finished with no text is `{:error, :no_text}`. The two must
-  # stay distinct — and neither may collapse into a bare `""`.
-  defp await_query_result(space_id, target, pre_count, timeout) do
-    deadline = System.monotonic_time(:millisecond) + timeout
-    wait_for_idle(space_id, target, pre_count, deadline, timeout)
-  end
-
-  # The wait is bounded by a wall-clock deadline, not a message count:
-  # the target's own streaming traffic (`chat:delta`, `chat:message`,
-  # `shell:jobs`, ...) lands in this mailbox too, so counting messages
-  # would let a chatty target exhaust a long timeout in seconds.
-  # Unrelated messages are drained without touching the deadline; only
-  # elapsed time ends the wait.
-  defp wait_for_idle(space_id, target, pre_count, deadline, timeout) do
-    remaining = deadline - System.monotonic_time(:millisecond)
-
-    if remaining <= 0 do
-      Logger.warning("agents-query: target did not go idle within #{timeout}ms")
-      {:error, {:timeout, timeout}}
-    else
-      receive do
-        {:chat_status, %{status: "idle"}} ->
-          case read_last_assistant_after(space_id, target, pre_count) do
-            :pending -> wait_for_idle(space_id, target, pre_count, deadline, timeout)
-            reply -> reply
-          end
-
-        _other ->
-          wait_for_idle(space_id, target, pre_count, deadline, timeout)
-      after
-        min(@wait_slice_ms, remaining) ->
-          wait_for_idle(space_id, target, pre_count, deadline, timeout)
-      end
-    end
-  end
-
-  # The target's newest assistant message that arrived after the
-  # query was sent (index >= pre_count). Returns `:pending` when the
-  # turn hasn't produced one yet (so the idle wait keeps going),
-  # `{:ok, text}` when it produced text, and `{:error, :no_text}` when it
-  # finished with an assistant message that carries no text parts.
-  defp read_last_assistant_after(space_id, target, pre_count) do
-    case Nest.Agents.get_messages(space_id, target) do
-      {:ok, messages} ->
-        messages
-        |> Enum.reverse()
-        |> Enum.find_value(:pending, fn
-          {:assistant, %{index: idx, parts: parts}} when idx >= pre_count ->
-            assistant_reply(parts)
-
-          _ ->
-            nil
-        end)
-
-      {:error, reason} ->
-        {:error, {:read_failed, reason}}
-    end
-  end
-
-  # A reply of `""` (an assistant message with no text parts) is not a
-  # successful answer: report it as `{:error, :no_text}` so the tool
-  # surfaces an explicit error instead of an empty result.
-  defp assistant_reply(parts) do
-    case assistant_text(parts) do
-      "" -> {:error, :no_text}
-      text -> {:ok, text}
-    end
-  end
-
-  defp assistant_text(parts) do
-    Enum.map_join(parts, fn
-      %Part.Text{text: text} -> text
-      _ -> ""
-    end)
-  end
-
   defp extract_string_arg(%ToolCall{arguments: args}, key) when is_map(args) do
     case Map.get(args, key) do
       value when is_binary(value) -> value
@@ -622,31 +533,6 @@ defmodule Nest.Agents.Agent.ToolLoop do
   end
 
   defp extract_bool_arg(_tc, _key, default), do: default
-
-  # Bound an unbounded sub-agent result to the per-call inline cap. Sub-agent
-  # tools bypass `BatchSizer`, so this is where their results get an
-  # in-budget substitute: if the response exceeds `max_result_tokens`, the
-  # full text is written to the agent scratch dir and a pointer + head is
-  # returned inline. `ToolLoop.run_batch/2` then cooks the whole batch
-  # (`BatchSizer.cook/2`) so mixed regular + sub batches stay in budget.
-  defp bound_content(content, %ToolCall{} = tc, %{context_limit: limit, messages: _} = ctx)
-       when is_integer(limit) and limit > 0 do
-    usable = CapCalculator.usable_remaining(ctx)
-
-    if usable > 0 and
-         Estimator.estimate(content) > CapCalculator.effective_max_result_tokens(tc, usable) do
-      budget = CapCalculator.effective_max_result_tokens(tc, usable)
-      Overflow.substitute(content, ctx, sub_label(tc), budget, "agents")
-    else
-      content
-    end
-  end
-
-  defp bound_content(content, _tc, _ctx), do: content
-
-  defp sub_label(%ToolCall{name: "agents-query"}), do: "Response from agents-query"
-  defp sub_label(%ToolCall{name: "agents-spawn"}), do: "Response from agents-spawn"
-  defp sub_label(%ToolCall{name: name}), do: "Output of #{name}"
 
   defp build_tool_result(%ToolCall{} = tc, name, content, is_error \\ false) do
     %ToolResult{

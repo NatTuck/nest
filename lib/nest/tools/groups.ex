@@ -24,7 +24,7 @@ defmodule Nest.Tools.Groups do
     "shell" => ~w(shell-cmd shell-list shell-wait shell-kill),
     "context" => ~w(context-check context-compact),
     "agents" =>
-      ~w(agents-spawn agents-query agents-send agents-list agents-archive agents-batch models-list)
+      ~w(agents-spawn agents-query agents-send agents-wait agents-list agents-archive agents-batch models-list)
   }
 
   # Canonical order. Expansion follows this order (and the tool order

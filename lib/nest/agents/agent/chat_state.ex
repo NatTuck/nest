@@ -56,9 +56,10 @@ defmodule Nest.Agents.Agent.ChatState do
   Outstanding child agents spawned via `agents-spawn` (with a
   `query`) are tracked by the machine's
   `Nest.Agents.Agent.Machine.Children` sub-machine, not here:
-  each entry carries the blocked tool worker's pid and the
-  `archive` flag, and transitions exactly once to a terminal
-  state. See `Nest.Agents.Agent.SubAgent`.
+  each entry carries the waiting caller's pid (the blocking tool
+  worker, or the async waiter it started) and the `archive` flag,
+  and transitions exactly once to a terminal state. See
+  `Nest.Agents.Agent.SubAgent`.
 
   The `read_files` map gates the `file-write` tool: every
   successful `file-read` and `file-write` is recorded here as

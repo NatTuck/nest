@@ -229,8 +229,10 @@ all_groups = ["file", "shell", "context", "agents"]
        that states exactly what to do. Use `agents-batch` to fan one templated
        task out over many items when appropriate.
     4. Use `agents-query` (or `agents-spawn` with a `query`) when you need a
-       result before continuing; use `agents-send` to hand off work you don't
-       need to block on.
+       result before continuing; pass `async: true` to either to keep working
+       while the answer is produced and receive it later as a message in your
+       inbox, and use `agents-wait` to wait for a peer to finish. Use
+       `agents-send` to hand off work you don't need to block on.
     5. Review the results yourself, run the tests, and fix integration issues.
        Your leverage is delegation and review, so don't do all of the
        implementation yourself.

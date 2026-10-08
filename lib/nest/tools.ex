@@ -18,7 +18,7 @@ defmodule Nest.Tools do
   alias Nest.LLM.Tool
   alias Nest.Sandbox
   alias Nest.Tokens.ConversationSize
-  alias Nest.Tools.{FileTools, InspectFile, ShellJobs}
+  alias Nest.Tools.{FileTools, InspectFile, QueryAgent, ShellJobs, SpawnAgent, WaitAgents}
 
   @doc """
   Returns a list of `Nest.LLM.Tool` structs for the given tool names.
@@ -60,6 +60,7 @@ defmodule Nest.Tools do
              "agents-archive",
              "agents-batch",
              "agents-send",
+             "agents-wait",
              "models-list"
            ] ->
         sub_agent_tool_function(name)
@@ -72,12 +73,13 @@ defmodule Nest.Tools do
   # Dispatch the sub-agent tool stubs. Kept as its own function
   # so `get_function/3` stays under the credo cyclomatic-
   # complexity cap.
-  defp sub_agent_tool_function("agents-spawn"), do: spawn_agent_function()
-  defp sub_agent_tool_function("agents-query"), do: query_agent_function()
+  defp sub_agent_tool_function("agents-spawn"), do: SpawnAgent.function()
+  defp sub_agent_tool_function("agents-query"), do: QueryAgent.function()
   defp sub_agent_tool_function("agents-list"), do: list_agents_function()
   defp sub_agent_tool_function("agents-archive"), do: archive_agent_function()
   defp sub_agent_tool_function("agents-batch"), do: batch_agent_function()
   defp sub_agent_tool_function("agents-send"), do: send_agent_function()
+  defp sub_agent_tool_function("agents-wait"), do: WaitAgents.function()
 
   # Dispatch the models-list tool.
   defp sub_agent_tool_function("models-list"), do: models_list_function()
@@ -269,98 +271,6 @@ defmodule Nest.Tools do
     }
   end
 
-  # The `agents-spawn` tool: the general sub-agent spawn API.
-  # Unifies the old `clone_agent` (via `clone_context`) and
-  # `spawn_agent`. A child is created in this space and (if
-  # `query` is given) immediately asked a task, blocking for its
-  # response. `vocation` (a slug) defaults to the parent's vocation;
-  # it's only needed to differ. `clone_context: true` inherits
-  # the parent's full context (the old `clone_agent` behavior).
-  # `archive` (only meaningful with `query`) stops + marks the
-  # child archived after its response, making the spawn a
-  # one-shot. `timeout` caps how long the call blocks on the
-  # query response (default 5 minutes).
-  #
-  # The `function` here is a stub. Real execution lives in
-  # `Nest.Agents.Agent.ToolLoop`, which intercepts the batch,
-  # sends a `:spawn_agent_request` to the coordinator GenServer,
-  # and returns the child's name (and, if `query` was given, its
-  # response). Spawning is whitelist-checked against the space's
-  # blueprint `spawnable_vocations`.
-  defp spawn_agent_function do
-    %Tool{
-      name: "agents-spawn",
-      description:
-        "Create a sub-agent in this space and optionally delegate a task to it. " <>
-          "Returns the new agent's name; if `query` is given, additionally blocks " <>
-          "and returns the agent's response. `vocation` (a slug like " <>
-          "\"programmer\") defaults to your own " <>
-          "vocation (or the space's sole allowed vocation when your own isn't " <>
-          "allowed) — set it to spawn a specialist with a different role. Set " <>
-          "`clone_context` to true to spawn the agent with a copy of this " <>
-          "conversation instead of a fresh context. Set `archive` to true (with " <>
-          "`query`) to stop and archive the agent after it responds (one-shot). " <>
-          "Spawned vocations may be restricted by this space's blueprint. " <>
-          "Sub-agents can be spawned down to a maximum depth of " <>
-          "#{Config.configured_max_depth()}. Set `model` to a " <>
-          "\"provider/model-name\" string (e.g. as returned by `models-list`) " <>
-          "to spawn the child on a specific model; it inherits your own model " <>
-          "when omitted.",
-      parameters_schema: %{
-        "type" => "object",
-        "properties" => %{
-          "name" => %{
-            "type" => "string",
-            "description" => "The unique name of the new sub-agent within this space."
-          },
-          "vocation" => %{
-            "type" => "string",
-            "description" =>
-              "The vocation slug defining the specialist's role and tools " <>
-                "(for example \"programmer\"). Defaults to your own " <>
-                "vocation when omitted (or the space's sole allowed vocation if " <>
-                "your own isn't allowed)."
-          },
-          "clone_context" => %{
-            "type" => "boolean",
-            "description" =>
-              "When true, spawn the agent with a copy of this conversation " <>
-                "instead of a fresh context."
-          },
-          "query" => %{
-            "type" => "string",
-            "description" =>
-              "When given, sends this as the agent's first task and blocks " <>
-                "for its response."
-          },
-          "archive" => %{
-            "type" => "boolean",
-            "description" =>
-              "When true (with `query`), stop and archive the agent after it " <>
-                "responds. Makes the spawn one-shot."
-          },
-          "timeout" => %{
-            "type" => "integer",
-            "description" =>
-              "Maximum milliseconds to block for the response (only used with " <>
-                "`query`). Defaults to 300000 (5 minutes)."
-          },
-          "model" => %{
-            "type" => "string",
-            "description" =>
-              "The model for the new sub-agent as a \"provider/model-name\" string " <>
-                "(see `models-list`). Inherits your own model when omitted."
-          },
-          "max_result_tokens" => max_result_tokens_schema()
-        },
-        "required" => ["name"]
-      },
-      function: fn _args, _context ->
-        {:ok, "Spawn agent request received."}
-      end
-    }
-  end
-
   # The `agents-list` tool: enumerate the non-archived agents in
   # this space, whether or not they currently have a live
   # process. Returns each agent's name, vocation, status, and
@@ -381,50 +291,6 @@ defmodule Nest.Tools do
       },
       function: fn _args, _context ->
         {:ok, "List agents request received."}
-      end
-    }
-  end
-
-  # The `agents-query` tool: send a chat message to a peer
-  # sub-agent in this space and return its final response.
-  # `timeout` caps how long the call blocks (default 5 minutes).
-  #
-  # The `function` here is a stub. Real execution lives in
-  # `Nest.Agents.Agent.ToolLoop.run_query_agent/2`, which
-  # subscribes to the target's PubSub topic, triggers its turn
-  # via `Agents.chat/3`, and waits for the idle status before
-  # returning the target's latest assistant text.
-  defp query_agent_function do
-    %Tool{
-      name: "agents-query",
-      description:
-        "Send a chat message to a sub-agent in this space and wait for its " <>
-          "response. Use this to delegate a question to a specialist you have " <>
-          "already spawned (see `agents-spawn` and `agents-list`). Your turn " <>
-          "blocks until the target responds.",
-      parameters_schema: %{
-        "type" => "object",
-        "properties" => %{
-          "name" => %{
-            "type" => "string",
-            "description" => "The name of the sub-agent to query."
-          },
-          "prompt" => %{
-            "type" => "string",
-            "description" => "The message to send to the sub-agent."
-          },
-          "timeout" => %{
-            "type" => "integer",
-            "description" =>
-              "Maximum milliseconds to block for the response. Defaults to " <>
-                "300000 (5 minutes)."
-          },
-          "max_result_tokens" => max_result_tokens_schema()
-        },
-        "required" => ["name", "prompt"]
-      },
-      function: fn _args, _context ->
-        {:ok, "Query agent request received."}
       end
     }
   end
@@ -474,6 +340,13 @@ defmodule Nest.Tools do
       end
     }
   end
+
+  # The `agents-wait` tool: block until one of the given agents (or,
+  # with an empty list, every other agent in this space) finishes its
+  # turn and goes idle. The spec lives in `Nest.Tools.WaitAgents` (this
+  # file is at the source-file line cap); execution lives in
+  # `Nest.Agents.Agent.ToolLoop.run_wait_agents/2`, which delegates to
+  # `Nest.Agents.Agent.WaitLoop` in the turn's tool worker.
 
   # The `agents-archive` tool: stop + mark an existing agent in
   # this space archived. It is then excluded from `agents-list`

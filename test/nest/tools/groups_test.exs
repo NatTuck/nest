@@ -12,7 +12,7 @@ defmodule Nest.Tools.GroupsTest do
       assert Groups.expand(["context"]) == ~w(context-check context-compact)
 
       assert Groups.expand(["agents"]) ==
-               ~w(agents-spawn agents-query agents-send agents-list agents-archive agents-batch models-list)
+               ~w(agents-spawn agents-query agents-send agents-wait agents-list agents-archive agents-batch models-list)
     end
 
     test "orders groups canonically regardless of input order and dedupes" do

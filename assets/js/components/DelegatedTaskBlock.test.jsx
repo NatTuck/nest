@@ -7,6 +7,11 @@
  *      (`tool_call_id`) keys from `toolResults`/`toolCalls`,
  *      which both shapes exist in the cache depending on
  *      which message batch populated it.
+ *   4. The child's name links to the space-scoped chat route
+ *      (`/space/:spaceSlug/agent/:name`, resolved via
+ *      `useParams` from the surrounding route), and shows an
+ *      explicit indicator rather than a dead link when no
+ *      space slug is in scope.
  *
  * `DelegatedTask` (singular) is the per-message wrapper that
  * lives inside `MessageBubble`. It self-subscribes to
@@ -18,12 +23,32 @@
 
 import { afterEach, beforeEach, describe, it, expect } from "vitest";
 import { render, screen, act } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { useStore } from "../store";
 import { DelegatedTaskBlock, DelegatedTask } from "./DelegatedTaskBlock";
 
 const AGENT_NAME = "test-agent";
+const SPACE_SLUG = "demo";
+
+/**
+ * Render `ui` inside the real chat route
+ * (`/space/:spaceSlug/agent/:name`) so `useParams` resolves the
+ * space slug exactly the way it does in the app. Any test that
+ * asserts the child's chat link must use this helper: a bare
+ * `MemoryRouter` matches no route, leaves the slug undefined,
+ * and the card then (correctly) renders its "link unavailable"
+ * indicator instead of a link.
+ */
+function renderInSpaceRoute(ui) {
+  return render(
+    <MemoryRouter initialEntries={[`/space/${SPACE_SLUG}/agent/coordinator`]}>
+      <Routes>
+        <Route path="/space/:spaceSlug/agent/:name" element={ui} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
 
 function seedCache({ messages = [] } = {}) {
   act(() => {
@@ -106,6 +131,122 @@ describe("DelegatedTaskBlock", () => {
       "Child agent reached max depth",
     );
   });
+
+  it("renders an explicit 'Async' state and never the confirmation as the child response", () => {
+    render(
+      <MemoryRouter>
+        <DelegatedTaskBlock
+          toolCallId="call-1"
+          instruction="do X in the background"
+          childName={null}
+          response="Spawned agent worker-1 asynchronously. Its response will arrive later as a message in your inbox; use `agents-wait` to wait for it."
+          isAsync
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText("Async")).toBeInTheDocument();
+    expect(screen.getByTestId("delegated-task-async-note")).toHaveTextContent(
+      "The response arrives later as a message. A Stop does not cancel the waiter, so a timeout notice may arrive instead; a result this agent refuses is lost.",
+    );
+    expect(screen.getByTestId("delegated-task-instruction")).toHaveTextContent(
+      "do X in the background",
+    );
+
+    // The confirmation is shown, but never as the child's response.
+    expect(screen.queryByText("Completed")).toBeNull();
+    expect(screen.queryByText("Child response")).toBeNull();
+    expect(screen.queryByTestId("delegated-task-response")).toBeNull();
+    expect(screen.getByTestId("delegated-task-confirmation")).toHaveTextContent(
+      "Spawned agent worker-1 asynchronously",
+    );
+  });
+
+  it("renders 'Failed' for an async spawn that errored before it started", () => {
+    // A bad spawn comes back as an immediate error even with
+    // `async: true` — no later message will arrive, so the card
+    // must show the failure rather than an async state.
+    render(
+      <MemoryRouter>
+        <DelegatedTaskBlock
+          toolCallId="call-1"
+          instruction="spawn a bad specialist"
+          childName={null}
+          response="Could not spawn agent: no vocation with slug ..."
+          isError
+          isAsync
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText("Failed")).toBeInTheDocument();
+    expect(screen.getByText("Error")).toBeInTheDocument();
+    expect(screen.getByTestId("delegated-task-response")).toHaveTextContent(
+      "no vocation with slug",
+    );
+    expect(screen.queryByTestId("delegated-task-async-note")).toBeNull();
+  });
+
+  it("links the child's name to its space-scoped chat page", () => {
+    renderInSpaceRoute(
+      <DelegatedTaskBlock
+        toolCallId="call-1"
+        instruction="count the primes"
+        childName="worker-1"
+        response={null}
+      />,
+    );
+
+    expect(screen.getByRole("link", { name: "worker-1" })).toHaveAttribute(
+      "href",
+      `/space/${SPACE_SLUG}/agent/worker-1`,
+    );
+    expect(screen.queryByTestId("delegated-task-child-missing")).toBeNull();
+    expect(screen.queryByTestId("delegated-task-space-missing")).toBeNull();
+  });
+
+  it("shows an explicit 'link unavailable' indicator when no space slug is in scope", () => {
+    // The card is only ever mounted under
+    // `/space/:spaceSlug/agent/:name`. Anywhere else `spaceSlug`
+    // is undefined and `/agent/worker-1` alone matches no route,
+    // i.e. a blank page — so the missing data is surfaced
+    // explicitly instead of rendering a dead link.
+    render(
+      <MemoryRouter>
+        <DelegatedTaskBlock
+          toolCallId="call-1"
+          instruction="count the primes"
+          childName="worker-1"
+          response={null}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(
+      screen.getByTestId("delegated-task-space-missing"),
+    ).toHaveTextContent(
+      "worker-1 — chat link unavailable: no space in the route",
+    );
+    expect(screen.queryByRole("link")).toBeNull();
+  });
+
+  it("shows an explicit missing indicator when the child name is absent", () => {
+    render(
+      <MemoryRouter>
+        <DelegatedTaskBlock
+          toolCallId="call-1"
+          instruction="count the primes"
+          childName={null}
+          response={null}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(
+      screen.getByTestId("delegated-task-child-missing"),
+    ).toHaveTextContent("child name unavailable");
+    expect(screen.queryByRole("link")).toBeNull();
+  });
 });
 
 describe("DelegatedTask", () => {
@@ -176,6 +317,64 @@ describe("DelegatedTask", () => {
       "child says X is done",
     );
     expect(screen.getByText("Completed")).toBeInTheDocument();
+  });
+
+  it("reads async: true from object, parsed-JSON, and partial-buffer arguments", () => {
+    seedCache({ messages: [] });
+
+    const argumentShapes = [
+      { query: "do X", async: true },
+      '{"query":"do X","async":true}',
+      '{"query":"do X","async":true',
+    ];
+
+    for (const args of argumentShapes) {
+      const message = {
+        index: 1,
+        role: "assistant",
+        toolCalls: [
+          { id: "call-async", name: "agents-spawn", arguments: args },
+        ],
+      };
+
+      const { unmount, getByText, getByTestId } = render(
+        <MemoryRouter>
+          <DelegatedTask message={message} agentName={AGENT_NAME} />
+        </MemoryRouter>,
+      );
+
+      expect(getByText("Async")).toBeInTheDocument();
+      expect(getByTestId("delegated-task-async-note")).toBeInTheDocument();
+      unmount();
+    }
+  });
+
+  it("reads the child's name from the call arguments and links to its chat page", () => {
+    seedCache({ messages: [] });
+
+    const argumentShapes = [
+      [{ name: "worker-obj", query: "do X" }, "worker-obj"],
+      ['{"name":"worker-json","query":"do X"}', "worker-json"],
+      ['{"name":"worker-partial","query":"do X', "worker-partial"],
+    ];
+
+    for (const [args, expectedName] of argumentShapes) {
+      const message = {
+        index: 1,
+        role: "assistant",
+        toolCalls: [{ id: "call-name", name: "agents-spawn", arguments: args }],
+      };
+
+      const { unmount, getByRole } = renderInSpaceRoute(
+        <DelegatedTask message={message} agentName={AGENT_NAME} />,
+      );
+
+      expect(getByRole("link", { name: expectedName })).toHaveAttribute(
+        "href",
+        `/space/${SPACE_SLUG}/agent/${expectedName}`,
+      );
+      unmount();
+    }
   });
 
   it("accepts both `toolCalls`/`toolResults` and the camelCase aliases", () => {
