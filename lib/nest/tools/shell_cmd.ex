@@ -45,7 +45,7 @@ defmodule Nest.Tools.ShellCmd do
       owned by `Nest.Sandbox.ShellJobs` and return a job handle instead of
       waiting. Requires a `tmp_path` (the log lives under it on the host;
       the path reported to the agent is the sandbox's
-      `/tmp/shell-jobs/<id>.log`). Additional
+      `/tmp/<agent-name>/shell-jobs/<id>.log`). Additional
       opts: `:agent_key` (`{space_id, agent_name}`), `:agent_pid`, and
       `:grace_ms` (how long to wait for an immediate exit before reporting
       the job as running).
@@ -212,10 +212,12 @@ defmodule Nest.Tools.ShellCmd do
   end
 
   # Write the command to a script file and run it with bash. With a tmp dir
-  # (the usual case) the script lives in the directory the sandbox binds at
-  # /tmp, so it is referenced as /tmp/<name> inside; without one it goes to the
-  # host tmp dir and is read through the read-only root bind. Nest writes it as
-  # the same uid the sandbox runs as, so both sides see the same file.
+  # (the usual case) the script lives in the agent's own scratch dir, which
+  # the sandbox exposes at `/tmp/<agent-name>` (the *space* dir is bound at
+  # `/tmp`), so it is referenced through that sandbox path inside. Without a
+  # tmp dir it goes to the host tmp dir and is read through the read-only root
+  # bind. Nest writes it as the same uid the sandbox runs as, so both sides
+  # see the same file.
   defp stage_script(command, nil) do
     path = Path.join(System.tmp_dir!(), script_name())
     File.write!(path, command)
@@ -225,7 +227,7 @@ defmodule Nest.Tools.ShellCmd do
   defp stage_script(command, tmp_path) do
     host = Path.join(tmp_path, script_name())
     File.write!(host, command)
-    {host, Path.join("/tmp", Path.basename(host))}
+    {host, Path.join(Sandbox.sandbox_tmp_path(tmp_path), Path.basename(host))}
   end
 
   defp script_name do

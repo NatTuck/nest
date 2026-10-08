@@ -51,11 +51,12 @@ defmodule Nest.Sandbox.ShellJobsTest do
     assert {:ok, message} = start_background("sleep 30", tmp, key)
     assert [%{id: id, log_path: log_path}] = ShellJobs.list(key)
 
-    assert log_path == "/tmp/shell-jobs/#{id}.log"
+    # The space dir is bound at /tmp and the agent's own dir is its
+    # basename, so the log the sandbox sees is /tmp/<agent>/shell-jobs/...
+    assert log_path == "/tmp/#{Path.basename(tmp)}/shell-jobs/#{id}.log"
     assert message =~ "(log: #{log_path})"
 
-    # The manager still writes the log under the host tmp dir, which the
-    # sandbox sees as /tmp.
+    # The manager still writes the log under the host tmp dir.
     assert File.exists?(Path.join([tmp, "shell-jobs", "#{id}.log"]))
   end
 

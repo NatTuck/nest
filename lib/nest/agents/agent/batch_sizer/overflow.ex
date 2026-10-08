@@ -7,10 +7,11 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
   summarization path used by `BatchSizer` (regular tools), `BatchLoop`
   (`agents-batch`), and `ToolLoop` (sub-agent tools).
 
-  The scratch dir is `ctx.tmp_path` — the same per-agent directory the
-  sandbox binds read-write at `/tmp`. Writing on the host directly (rather
-  than through the sandbox gatekeeper) is intentional internal scratch
-  management, mirroring `BatchSizer`.
+  The scratch dir is `ctx.tmp_path` — the agent's own sub-directory of the
+  space scratch dir (which the sandbox binds read-write at `/tmp`, so the
+  agent sees it at `/tmp/<agent-name>`). Writing on the host directly
+  (rather than through the sandbox gatekeeper) is intentional internal
+  scratch management, mirroring `BatchSizer`.
   """
 
   alias Nest.Tokens.Estimator

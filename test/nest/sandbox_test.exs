@@ -22,7 +22,7 @@ defmodule Nest.SandboxTest do
 
   describe "build_default/2" do
     test "produces args for the build profile (workspace + /tmp writable)" do
-      {:ok, args} = Sandbox.build_default("/workspace", "/tmp/agent-1")
+      {:ok, args} = Sandbox.build_default("/workspace", "/tmp/nest-123/space-7/agent-1")
       assert "--unshare-all" in args
       assert "--unshare-net" in args
       assert "--ro-bind" in args
@@ -36,10 +36,16 @@ defmodule Nest.SandboxTest do
       assert Enum.at(args, workspace_idx + 1) == "/workspace"
     end
 
-    test "includes --bind tmp_path /tmp when tmp_path is provided" do
-      {:ok, args} = Sandbox.build_default("/workspace", "/tmp/foo")
+    test "includes --bind space_dir /tmp when tmp_path is provided" do
+      {:ok, args} = Sandbox.build_default("/workspace", "/tmp/nest-123/space-7/agent-1")
       assert "--bind" in args
-      assert "/tmp/foo" in args
+
+      # The *space* dir (the parent of the agent's own tmp_path) is what
+      # gets bound at /tmp, so every agent in the space shares one /tmp.
+      idx = Enum.find_index(args, &(&1 == "/tmp/nest-123/space-7"))
+      assert idx != nil
+      assert Enum.at(args, idx - 1) == "--bind"
+      assert Enum.at(args, idx + 1) == "/tmp"
     end
 
     test "does not include --bind tmp_path /tmp when tmp_path is nil" do
@@ -100,17 +106,17 @@ defmodule Nest.SandboxTest do
       assert Enum.at(args, workspace_idx + 1) == "/Users/me/proj"
     end
 
-    test ~s(write=[":workspace", "/tmp"] binds workspace + tmp via tmp_path) do
+    test ~s(write=[":workspace", "/tmp"] binds workspace + the space dir at /tmp) do
       caps = build_caps(write: ["/tmp", ":workspace"])
-      {:ok, args} = Sandbox.build(caps, "/workspace", "/tmp/agent-1")
+      {:ok, args} = Sandbox.build(caps, "/workspace", "/tmp/nest-123/space-7/agent-1")
 
-      # Two --bind directives: workspace and tmp
+      # Two --bind directives: workspace and the space dir bound at /tmp
       assert Enum.count(args, &(&1 == "--bind")) == 2
-      # The /tmp in args is the tmp_path bind (NOT a caps-derived bind)
+      # The /tmp in args is the space-dir bind (NOT a caps-derived bind)
       tmp_indices = args |> Enum.with_index() |> Enum.filter(&match?({"/tmp", _}, &1))
       assert length(tmp_indices) == 1
       {_, idx} = hd(tmp_indices)
-      assert Enum.at(args, idx - 1) == "/tmp/agent-1"
+      assert Enum.at(args, idx - 1) == "/tmp/nest-123/space-7"
     end
 
     test "write=[\"/some/extra\"] binds the extra path, NOT the workspace" do
@@ -136,9 +142,9 @@ defmodule Nest.SandboxTest do
       # The /tmp symbolic entry is resolved by append_tmp_bind/2; the
       # write list entry should be rejected to avoid a double bind.
       caps = build_caps(write: ["/tmp"])
-      {:ok, args} = Sandbox.build(caps, "/workspace", "/tmp/agent-1")
+      {:ok, args} = Sandbox.build(caps, "/workspace", "/tmp/nest-123/space-7/agent-1")
 
-      # Only the tmp_path bind; no extra --bind /tmp /tmp
+      # Only the space-dir bind; no extra --bind /tmp /tmp
       assert Enum.count(args, &(&1 == "--bind")) == 1
     end
 
@@ -158,15 +164,15 @@ defmodule Nest.SandboxTest do
       refute "/tmp" in args
     end
 
-    test "tmp_path provided produces --bind tmp_path /tmp" do
+    test "tmp_path provided binds its space dir at /tmp" do
       caps = build_caps(write: [":workspace"])
-      {:ok, args} = Sandbox.build(caps, "/workspace", "/tmp/agent-1")
+      {:ok, args} = Sandbox.build(caps, "/workspace", "/tmp/nest-123/space-7/agent-1")
       tmp_indices = args |> Enum.with_index() |> Enum.filter(&match?({"/tmp", _}, &1))
 
       assert length(tmp_indices) == 1
       {_, idx} = hd(tmp_indices)
       assert Enum.at(args, idx - 2) == "--bind"
-      assert Enum.at(args, idx - 1) == "/tmp/agent-1"
+      assert Enum.at(args, idx - 1) == "/tmp/nest-123/space-7"
     end
   end
 

@@ -17,10 +17,11 @@ defmodule Nest.ProjectConfig do
   relative to the project root) and a `mode`:
 
     * `"rw"` — bind the host path read-write at its own path.
-    * `"tmp"` — bind a directory under the agent's per-agent `/tmp`
-      scratch at `path`. Writes never touch the host; the backing
-      directory persists for the agent's lifetime (and is visible
-      inside the sandbox under `/tmp/project/<slug>`).
+    * `"tmp"` — bind a directory under the agent's scratch dir (the
+      agent's own sub-directory of the space scratch dir) at `path`.
+      Writes never touch the host; the backing directory persists for
+      the agent's lifetime (and is visible inside the sandbox under
+      `/tmp/<agent-name>/project/<slug>`).
 
   `create = true` makes Nest `mkdir_p` the path before mounting, so a
   project can declare a scratch path whose parents don't exist yet.

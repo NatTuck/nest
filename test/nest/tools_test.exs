@@ -351,32 +351,37 @@ defmodule Nest.ToolsTest do
     end
 
     test "can write to /tmp when tmp_path is provided", %{workspace: workspace} do
-      # Create a dedicated tmp directory for this test
-      agent_tmp =
-        Path.join(System.tmp_dir!(), "test_agent_tmp_#{System.unique_integer([:positive])}")
+      # Space-scoped scratch layout: <space_dir>/<agent-name>, with the
+      # space dir bound at /tmp inside the sandbox.
+      space_dir =
+        Path.join([System.tmp_dir!(), "nest_tools_space_#{System.unique_integer([:positive])}"])
 
+      agent_name = "agent-#{System.unique_integer([:positive])}"
+      agent_tmp = Path.join(space_dir, agent_name)
       File.mkdir_p!(agent_tmp)
 
       on_exit(fn ->
-        File.rm_rf(agent_tmp)
+        File.rm_rf(space_dir)
       end)
 
       function = Tools.get_function("shell-cmd", workspace, agent_tmp)
 
-      # Try to write to /tmp - this should succeed when tmp_path is provided
+      # Try to write to the agent's own /tmp subdir - this should succeed
+      # when tmp_path is provided (the space dir is bound at /tmp).
       assert {:ok, result} =
                Function.execute(
                  function,
                  %{
                    "command" =>
-                     "echo 'test content' > /tmp/test_file.txt && cat /tmp/test_file.txt"
+                     "echo 'test content' > /tmp/#{agent_name}/test_file.txt && " <>
+                       "cat /tmp/#{agent_name}/test_file.txt"
                  },
                  nil
                )
 
       assert result =~ "test content"
 
-      # Verify the file was actually written to the agent's tmp directory
+      # Verify the file was actually written to the agent's scratch dir.
       assert File.exists?(Path.join(agent_tmp, "test_file.txt"))
       assert File.read!(Path.join(agent_tmp, "test_file.txt")) == "test content\n"
     end
