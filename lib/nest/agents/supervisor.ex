@@ -17,6 +17,7 @@ defmodule Nest.Agents.Supervisor do
 
   alias Nest.Agents.{Agent, ChildRegistry, NameGenerator, Registry}
   alias Nest.Agents.Agent.Config
+  alias Nest.Agents.Agent.Turn.GiveUpDelivery
   alias Nest.Agents.PersistedAgent
   alias Nest.Persistence
   alias Nest.Spaces
@@ -321,7 +322,7 @@ defmodule Nest.Agents.Supervisor do
   """
   @spec stop_agent(integer(), String.t()) :: :ok | {:error, :not_found}
   def stop_agent(space_id, name) do
-    stop_one(space_id, name)
+    stop_one(space_id, name, :stopped)
   end
 
   @doc """
@@ -358,7 +359,7 @@ defmodule Nest.Agents.Supervisor do
       _ = archive_agent(space_id, child_name)
     end
 
-    _ = stop_one(space_id, name)
+    _ = stop_one(space_id, name, :archive)
     result = Persistence.archive_agent(space_id, name)
 
     if result == :ok do
@@ -380,9 +381,17 @@ defmodule Nest.Agents.Supervisor do
     })
   end
 
-  defp stop_one(space_id, name) do
+  # `reason` names the site for the give-up's log line and its timeline event
+  # (`:stopped` for a plain Stop, `:archive` for an archive) — `stop_one/3`
+  # serves both, so a hardcoded atom would misreport one of them.
+  defp stop_one(space_id, name, reason) do
     case Registry.lookup(space_id, name) do
       {:ok, pid} ->
+        # A stop ends the agent, so the replies it still owes are given up
+        # *before* the process goes away (issue #31 decision 12). A reload
+        # (`restart_agent/2`) deliberately skips this: the agent comes back with
+        # a fresh machine, and the loss is logged instead.
+        _ = GiveUpDelivery.give_up_before_stop(pid, reason)
         Process.exit(pid, :shutdown)
         :ok
 
@@ -393,19 +402,36 @@ defmodule Nest.Agents.Supervisor do
 
   @doc """
   Get the pid of an agent by its `{space_id, name}`.
+
+  Loads the agent from the database when it is not running (`on_demand_load/2`).
+  A caller that must not resurrect a stopped agent wants
+  `get_running_agent/2` instead.
   """
   @spec get_agent(integer(), String.t()) :: {:ok, pid()} | {:error, :not_found}
   def get_agent(space_id, name) do
+    case get_running_agent(space_id, name) do
+      {:ok, pid} -> {:ok, pid}
+      {:error, :not_found} -> on_demand_load(space_id, name)
+    end
+  end
+
+  @doc """
+  Get the pid of an agent that is *already running*, without loading one.
+
+  Never reads the database, never starts a process: a name that is not running
+  (or whose pid is dead) is `{:error, :not_found}`. The reply give-up resolves
+  its requesters through this — a peer that sent us a query was running by
+  definition, and "tell the requester no answer is coming" must never bring a
+  stopped peer back to life and start a turn on it.
+  """
+  @spec get_running_agent(integer(), String.t()) :: {:ok, pid()} | {:error, :not_found}
+  def get_running_agent(space_id, name) do
     case Registry.lookup(space_id, name) do
       {:ok, pid} ->
-        if Process.alive?(pid) do
-          {:ok, pid}
-        else
-          {:error, :not_found}
-        end
+        if Process.alive?(pid), do: {:ok, pid}, else: {:error, :not_found}
 
       {:error, :not_found} ->
-        on_demand_load(space_id, name)
+        {:error, :not_found}
     end
   end
 

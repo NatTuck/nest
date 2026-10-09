@@ -25,6 +25,14 @@ defmodule Nest.Agents.Agent.Callbacks do
   alias Nest.Agents.Agent.SubAgent
   alias Nest.Agents.Agent.Turn
 
+  # A tool worker's "my `agents-send` reached its target": a turn event for this
+  # agent, translated by `Turn.handle/2` like the other worker results. The
+  # worker casts it *before* its `{:tool_results, …}`, so the debt is discharged
+  # before the response that settles the turn (issue #31 §1.4).
+  def handle_cast({:reply_sent, sender}, state) do
+    Turn.handle({:reply_sent, sender}, state)
+  end
+
   # Sub-agent: child finished its turn. Merge usage, drop the
   # pending-child entry, forward the result, broadcast status.
   def handle_cast({:child_completed, child_name, response, child_total_usage}, state) do
@@ -132,11 +140,9 @@ defmodule Nest.Agents.Agent.Callbacks do
   # Sub-agent: a tool worker (running in the chat turn) has hit an
   # `agents-spawn` tool call. `opts` carries `name`, `vocation` (slug),
   # `clone_context`, `query`, and `archive`. Spawn the child (fresh or
-  # context-cloned), kick off its chat turn with the `query` (if any),
-  # remember the caller's pid — the blocking worker, or the async waiter
-  # it started — so we can forward the eventual `:spawn_agent_result`,
-  # and reply synchronously with the child's name so the caller can match
-  # its `receive` on child identity.
+  # context-cloned), kick off its chat turn with the `query` (if any), and
+  # reply synchronously with the child's name. The child's outcome goes to
+  # this agent's own inbox (issue #31 §2.1), not back to the caller's pid.
   def handle_call({:spawn_agent_request, task_pid, opts}, _from, state) do
     SubAgent.handle_spawn_request(state, task_pid, opts)
   end
@@ -147,12 +153,23 @@ defmodule Nest.Agents.Agent.Callbacks do
     SubAgent.handle_archive_request(state, task_pid, name)
   end
 
-  # Async agent-to-agent delivery (`agents-send`). The caller (a tool
-  # worker in another agent) hands us a message; we either start a turn
-  # (idle), queue it (busy), or refuse (broken state). See
+  # Async agent-to-agent delivery (`agents-send`, `agents-query`, and the
+  # runtime's own `:notice`). The caller (a tool worker in another agent)
+  # hands us a message; we either start a turn (idle), queue it (busy), or
+  # refuse (broken state). `kind` is the entry's provenance and only decides
+  # how it renders (a `:query` additionally owes a reply). See
   # `Nest.Agents.Agent.Inbox`.
-  def handle_call({:deliver_async, sender, content}, _from, state) do
-    Inbox.handle_delivery(state, sender, content)
+  def handle_call({:deliver_async, sender, content, kind}, _from, state) do
+    Inbox.handle_delivery(state, sender, content, kind)
+  end
+
+  # The runtime's own result for this agent, handed over by the process that
+  # produced it — a batch coordinator enqueueing its aggregate. Unlike
+  # `{:deliver_async, …}` this never refuses: the inbox cap bounds a runaway
+  # *peer* producer, and the aggregate is this agent's own result, so refusing
+  # it would lose the batch's whole output. See `Nest.Agents.Agent.Inbox`.
+  def handle_call({:deliver_internal, sender, content, kind}, _from, state) do
+    Inbox.deliver_internal(state, sender, content, kind)
   end
 
   # Sub-agent: a tool worker running `agents-batch` hit a per-item

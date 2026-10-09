@@ -271,6 +271,10 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
       # list for the UI viewer plus a count. See `Inbox`.
       pending_messages: Inbox.serialize(state.live.inbox),
       pending_message_count: length(state.live.inbox),
+      # The peers this agent still owes a reply to (issue #31 §1.8): the
+      # debtors, sorted, `[]` when nothing is owed — never nil and never
+      # absent, so a client cannot mistake "not serialized" for "no debt".
+      owed_replies: Machine.owed_senders(state.live.machine),
       # Direct usage (this agent's own LLM calls), plus the
       # context-window fields the chip needs (see
       # `Broadcasts.Usage.context_usage_map/4`).

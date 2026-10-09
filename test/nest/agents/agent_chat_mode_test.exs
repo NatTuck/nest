@@ -9,7 +9,20 @@ defmodule Nest.Agents.AgentChatModeTest do
 
   import Mimic
 
+  # `Agent.chat/2` is a `GenServer.cast`, so a fence placed after it covers the
+  # *whole* turn: here a mocked LLM call, a real tool execution and a second
+  # mocked LLM call. 500 ms is not a bound for that under load — a whole mocked
+  # turn measured p50 18.7 ms / max 34.3 ms across 40 samples in the full
+  # suite, but p50 926 ms / max 1534 ms (39 of 40 over 500 ms) under 48 CPU
+  # burners. 2000 ms is ~100x the in-suite median and stays under ExUnit's 5 s
+  # per-test timeout, so a genuinely stuck turn still fails — as a stuck turn,
+  # not as a flake. (Measured on the spawn turn in `sub_agent_tools_test.exs`;
+  # the turns in this file are the same class.)
+  @turn_fence_ms 2_000
+
   alias Nest.Agents.Agent
+  alias Nest.Agents.Agent.Machine
+
   alias Nest.LLM.MockClient
   alias Nest.Messages.Part
   alias Nest.Vocations
@@ -43,7 +56,7 @@ defmodule Nest.Agents.AgentChatModeTest do
                        }}},
                      500
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      await_idle(pid)
     end
 
     test "falls back to default mode when requested mode is unknown" do
@@ -59,7 +72,7 @@ defmodule Nest.Agents.AgentChatModeTest do
                        }}},
                      500
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      await_idle(pid)
     end
 
     test "uses agent's current mode when no mode is passed" do
@@ -75,7 +88,7 @@ defmodule Nest.Agents.AgentChatModeTest do
                        }}},
                      500
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      await_idle(pid)
     end
 
     test "vocation with modes: requested mode is preserved when valid" do
@@ -112,7 +125,7 @@ defmodule Nest.Agents.AgentChatModeTest do
                        }}},
                      500
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      await_idle(pid)
     end
 
     test "vocation with modes: unknown mode falls back to the vocation's default" do
@@ -149,7 +162,7 @@ defmodule Nest.Agents.AgentChatModeTest do
                        }}},
                      500
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      await_idle(pid)
     end
 
     test "user messages carry the resolved mode in metadata" do
@@ -219,7 +232,7 @@ defmodule Nest.Agents.AgentChatModeTest do
       # Send a chat with mode "plan". The agent's state.live.mode
       # should update to "plan".
       :ok = Agent.chat(pid, "Plan this", "plan")
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      await_idle(pid)
       state = :sys.get_state(pid)
       assert state.live.mode == "plan"
 
@@ -228,7 +241,7 @@ defmodule Nest.Agents.AgentChatModeTest do
       # through handle_chat's `mode = requested_mode || state.live.mode`
       # fallback.
       :ok = Agent.chat(pid, "And another")
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      await_idle(pid)
       state = :sys.get_state(pid)
       assert state.live.mode == "plan"
     end
@@ -296,7 +309,18 @@ defmodule Nest.Agents.AgentChatModeTest do
                        }}},
                      500
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      await_idle(pid)
     end
+  end
+
+  # Wait until the agent has settled to `:idle`, on the machine's own status
+  # rather than the `chat:status` broadcast: a missed or reordered broadcast can
+  # never be the reason this fails, and the condition waited on is exactly the
+  # one the test-teardown invariant checks. See `@turn_fence_ms` for the budget.
+  defp await_idle(pid) do
+    assert Eventually.eventually(
+             fn -> Machine.status_for(:sys.get_state(pid).live.machine) == :idle end,
+             timeout: @turn_fence_ms
+           )
   end
 end

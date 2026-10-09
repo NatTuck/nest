@@ -92,6 +92,69 @@ defmodule Nest.Agents.Agent.InboxTest do
     wait_idle(pid)
   end
 
+  test "deliver_internal delivers the runtime's own result to an idle agent", %{pid: pid} do
+    # The runtime's own result (a batch aggregate): bare — no agent said it, so
+    # no `[Message from agent …]` label — and drained through the turn executor
+    # when the target is idle, exactly like a peer delivery.
+    assert {:ok, :delivered} = Agent.deliver_internal(pid, "agents-batch", ~s(["done"]), :notice)
+
+    state = :sys.get_state(pid)
+    assert [text] = Enum.filter(user_texts(state), &(&1 =~ ~s(["done"])))
+    refute text =~ "Message from agent"
+
+    # The delivery is a synchronous `GenServer.call`, but the turn it starts is
+    # not: this waits for that turn to end, on the machine's own status (the
+    # file's `wait_idle/1`) rather than on the `chat:status` broadcast, so a
+    # missed or reordered broadcast can never be the reason it fails. The
+    # budget is unchanged: this turn is a single mocked iteration with no tool
+    # call and no spawn, and delivery-to-idle measured p50 4.3 ms / max 11.2 ms
+    # over 30 samples at 24-way concurrency — ~45x inside the 500 ms fence.
+    wait_idle(pid)
+    assert state.live.inbox == []
+  end
+
+  test "deliver_internal is never refused, even at the peer cap", %{pid: pid} do
+    set_status(pid, :streaming)
+
+    # Fill the queue to the peer cap: the next peer delivery is refused...
+    Enum.each(1..100, fn n ->
+      assert {:ok, :queued} = Agent.deliver_message(pid, "peer-#{n}", "queued #{n}")
+    end)
+
+    assert {:error, :inbox_full} = Agent.deliver_message(pid, "peer", "one too many")
+
+    # ...while the runtime's own result queues anyway. Refusing it would lose
+    # the batch's whole output (the coordinator has nowhere else to put it).
+    assert {:ok, :queued} = Agent.deliver_internal(pid, "agents-batch", ~s(["done"]), :notice)
+    assert List.last(:sys.get_state(pid).live.inbox).content == ~s(["done"])
+
+    reset_to_idle(pid)
+  end
+
+  test "deliver_internal to a parent that is gone exits with :noproc" do
+    # The contract the batch coordinator's delivery relies on: a missing parent
+    # is an exit the caller must handle, and `:noproc` is the only shape that
+    # means "certainly not delivered" (a timeout leaves the request queued).
+    #
+    # The death is forced and *observed* before the call, so the pid is
+    # certainly gone: a process spawned to exit immediately can be dead before
+    # the monitor is attached, and its DOWN reason is then `:noproc`, not
+    # `:killed`.
+    gone =
+      spawn(fn ->
+        receive do
+          :never -> :ok
+        end
+      end)
+
+    ref = Process.monitor(gone)
+    Process.exit(gone, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^gone, :killed}, 500
+
+    assert {:noproc, _reason} =
+             catch_exit(Agent.deliver_internal(gone, "agents-batch", "x", :notice))
+  end
+
   test "an over-cap combined message is offloaded to a scratch file and replaced by a pointer", %{
     pid: pid
   } do
@@ -125,10 +188,16 @@ defmodule Nest.Agents.Agent.InboxTest do
   end
 
   test "delivery to a broken agent returns an error and queues nothing", %{pid: pid} do
+    # intentional: the disposition is the target's status, not the entry's
+    # kind — every kind is refused alike, and nothing is queued.
     set_status(pid, :needs_repair)
 
-    assert {:error, {:status, :needs_repair}} = Agent.deliver_message(pid, "peer", "hello")
-    assert :sys.get_state(pid).live.inbox == []
+    for kind <- [:agent, :query, :notice] do
+      assert {:error, {:status, :needs_repair}} =
+               Agent.deliver_message(pid, "peer", "hello", kind)
+
+      assert :sys.get_state(pid).live.inbox == []
+    end
   end
 
   test "a delivery whose drain parks still broadcasts the queued entry", %{pid: pid} do
@@ -175,7 +244,11 @@ defmodule Nest.Agents.Agent.InboxTest do
 
     :sys.replace_state(pid, fn state -> %{state | live: %{state.live | inbox: full}} end)
 
-    assert {:error, :inbox_full} = Agent.deliver_message(pid, "peer", "one too many")
+    for kind <- [:agent, :query, :notice] do
+      assert {:error, :inbox_full} = Agent.deliver_message(pid, "peer", "one too many", kind)
+    end
+
+    assert length(:sys.get_state(pid).live.inbox) == 100
   end
 
   test "self-delivery is allowed", %{pid: pid, name: name} do
@@ -192,154 +265,105 @@ defmodule Nest.Agents.Agent.InboxTest do
              Agents.send_message(space_id, "alice", "does-not-exist", "hello")
   end
 
-  describe "entry shape and serialization" do
-    test "serialize/1 emits the wire shape the browser renders, for both kinds" do
-      # intentional: the channel/browser contract is exactly these five
-      # keys; `kind` distinguishes a peer from a human and `mode` carries
-      # the human's requested mode (nil for an `agents-send` entry).
-      at = ~U[2026-01-02 03:04:05Z]
+  describe "query entries and the reply obligation" do
+    test "a query to an idle agent is delivered as the peer's words and owes a reply", %{pid: pid} do
+      # intentional: a query is delivered exactly like a peer message (decision
+      # 7 — the requester is an agent, so the target reads `[Message from agent
+      # "X"]`), and the delivery is what incurs the obligation, on the machine.
+      # The whole turn — mock LLM, the gate's reminder, a second mock LLM and
+      # the give-up — runs as soon as the delivery starts, and it can finish
+      # before a `capture_log` installed afterwards. So the delivery and the
+      # assertions about what it did go *inside* the capture: the give-up cannot
+      # precede the window that is supposed to catch its warning. (Measured: a
+      # 50 ms gap between the debt assertion and the capture reproduced the
+      # failure exactly — `left: ""` with the warning landing in a concurrent
+      # test's capture.)
+      log =
+        capture_log(fn ->
+          assert {:ok, :delivered} = Agent.deliver_message(pid, "peer", "summarize this", :query)
 
-      entries = [
-        %{from: "peer", content: "from an agent", timestamp: at, kind: :agent, mode: nil},
-        %{from: "alice", content: "from a human", timestamp: at, kind: :user, mode: "plan"},
-        %{from: nil, content: "from nobody", timestamp: at, kind: :user, mode: nil}
-      ]
+          state = :sys.get_state(pid)
 
-      assert Inbox.serialize(entries) == [
-               %{
-                 "from" => "peer",
-                 "content" => "from an agent",
-                 "timestamp" => "2026-01-02T03:04:05Z",
-                 "kind" => "agent",
-                 "mode" => nil
-               },
-               %{
-                 "from" => "alice",
-                 "content" => "from a human",
-                 "timestamp" => "2026-01-02T03:04:05Z",
-                 "kind" => "user",
-                 "mode" => "plan"
-               },
-               %{
-                 "from" => nil,
-                 "content" => "from nobody",
-                 "timestamp" => "2026-01-02T03:04:05Z",
-                 "kind" => "user",
-                 "mode" => nil
-               }
-             ]
+          assert Enum.any?(
+                   user_texts(state),
+                   &(&1 =~ "[Message from agent \"peer\"]" and &1 =~ "summarize this")
+                 )
+
+          assert Machine.owed_senders(state.live.machine) == ["peer"]
+
+          # The debt rides the status broadcast (decision 15): the turn started,
+          # so the idle -> streaming frame is the client's first sight of it.
+          #
+          # The turn then ends with the debt unpaid, so the gate gives up on it
+          # and tries to tell the requester. "peer" is a name, not a running
+          # agent, so that notice is *refused*: expected here, captured and
+          # asserted rather than left to print. The notification is asserted
+          # inside the capture because it is broadcast after the warning, which
+          # is what proves the warning landed before the block ended.
+          assert_receive {:chat_status, %{status: "streaming", owedReplies: ["peer"]}}, 500
+          wait_idle(pid)
+          assert_receive {:chat_notification, %{type: "reply_give_up_failed"}}, 500
+        end)
+
+      assert log =~ "reply give-up (no_reminder) could not reach peer: :not_found"
     end
 
-    test "batch/1 delivers a human head alone and a leading agent run together" do
-      # intentional: a human message is delivered alone — it never merges into
-      # a batch and nothing merges into it (issue #31 decision 8) — so a queued
-      # human message keeps its own turn and its own mode, while peer traffic
-      # still batches. The selection only ever takes a prefix, so the FIFO
-      # order is untouched.
-      alice = entry(:user, "alice", "human note", "plan")
-      peer = entry(:agent, "peer", "peer note")
-      bob = entry(:agent, "bob", "second peer note")
+    test "a busy agent queues every delivery kind, kind-tagged, owing nothing yet", %{pid: pid} do
+      # intentional: the disposition is the same for every kind — the kind is
+      # provenance, not a routing decision — and the wire tag is what the panel
+      # renders. Only a delivered query owes a reply, so a query queued behind a
+      # busy agent that never drains creates no debt.
+      set_status(pid, :streaming)
+      kinds = [:agent, :query, :notice]
 
-      assert Inbox.batch([alice, peer, bob]) == [alice]
-      assert Inbox.batch([peer, bob, alice]) == [peer, bob]
-      assert Inbox.batch([peer, alice, bob]) == [peer]
-      assert Inbox.batch([]) == []
+      for {kind, n} <- Enum.with_index(kinds, 1) do
+        assert {:ok, :queued} = Agent.deliver_message(pid, "peer", "msg #{n}", kind)
+        assert_receive {:chat_inbox, %{count: ^n, messages: messages}}, 500
 
-      # A kind that is neither `:agent` nor `:user` — `:query` is what W2
-      # introduces — batches with peer entries instead of raising: the
-      # selection is total on purpose, so a new entry kind cannot crash the
-      # drain inside the Agent process.
-      query = %{entry(:agent, "peer", "query note") | kind: :query}
+        assert Enum.map(messages, & &1["kind"]) ==
+                 kinds |> Enum.take(n) |> Enum.map(&Atom.to_string/1)
+      end
 
-      assert Inbox.batch([query, bob]) == [query, bob]
-      assert Inbox.batch([peer, query, alice]) == [peer, query]
+      state = :sys.get_state(pid)
+
+      assert Enum.map(state.live.inbox, & &1.kind) == kinds
+      assert Enum.map(state.live.inbox, & &1.from) == ["peer", "peer", "peer"]
+      assert Enum.map(state.live.inbox, & &1.mode) == [nil, nil, nil]
+      assert Machine.owed_senders(state.live.machine) == []
+
+      # The fabricated busy status is test-only: leave the agent idle and the
+      # queue empty so the teardown's zero-in-flight assertion holds.
+      reset_to_idle(pid)
     end
 
-    test "combine_and_offload/2 renders a lone human message bare and labels an agent batch" do
-      # intentional: the rendered text is LLM-facing. A human entry is its bare
-      # content (its `[mode: X]` prefix is added when the message is built), so
-      # a queued human message reads exactly like one that arrived while the
-      # agent was idle. Agent entries keep `[Message from agent "X"]`, which is
-      # what disambiguates a batch; a missing or blank sender drops the quoted
-      # name rather than printing `nil` or `""`.
-      state = %Agent{tmp_path: nil}
+    test "a stop reports both the debt and the query that never set one", %{pid: pid} do
+      # intentional: a query owes nothing until it is *delivered* (issue #31
+      # §1.3), so a process that dies with one still queued fires no give-up and
+      # tells the requester nothing at all — the requester waits on an answer
+      # that cannot come, and this warning is the only trace of it. A debt, by
+      # contrast, was delivered: the two losses are reported on their own lines
+      # because they are not the same loss.
+      set_status(pid, :streaming)
+      assert {:ok, :queued} = Agent.deliver_message(pid, "bob", "queued question", :query)
 
-      assert Inbox.combine_and_offload([entry(:user, "alice", "from a human", "plan")], state) ==
-               "from a human"
+      state = :sys.get_state(pid)
+      assert Machine.owed_senders(state.live.machine) == []
 
-      assert Inbox.combine_and_offload([entry(:user, nil, "from nobody")], state) ==
-               "from nobody"
+      state = %{
+        state
+        | live: %{state.live | machine: Machine.owe_replies(state.live.machine, ["peer"])}
+      }
 
-      assert Inbox.combine_and_offload(
-               [
-                 entry(:agent, "peer", "from an agent"),
-                 entry(:agent, "", "from a blank agent"),
-                 entry(:agent, nil, "from nobody")
-               ],
-               state
-             ) ==
-               "[Message from agent \"peer\"]\nfrom an agent\n\n" <>
-                 "[Message from agent]\nfrom a blank agent\n\n" <>
-                 "[Message from agent]\nfrom nobody"
-    end
+      log = capture_log(fn -> assert :ok = Inbox.log_lost_replies(state) end)
 
-    test "enqueue_user_message/4 normalizes a non-binary sender and mode to nil" do
-      # intentional: `serialize/1`'s contract is string-or-null, so a malformed
-      # payload cannot put a number/map on the wire.
-      state = %Agent{name: "wire-shape", space_id: 1}
+      # Both are inclusions: `capture_log` also returns lines from concurrent
+      # tests, so only the presence of each line can be asserted.
+      assert log =~ "stopping with undelivered queued queries from [\"bob\"]"
+      assert log =~ "the queue is in-process state and is lost"
+      assert log =~ "stopping with unpaid replies to [\"peer\"]"
+      assert log =~ "the obligation is in-process state and is lost"
 
-      state = Inbox.enqueue_user_message(state, %{"not" => "a string"}, "hi", 123)
-
-      assert [%{from: nil, mode: nil, content: "hi", kind: :user}] = state.live.inbox
-
-      assert [serialized] = Inbox.serialize(state.live.inbox)
-      assert serialized["from"] == nil
-      assert serialized["mode"] == nil
-      assert serialized["kind"] == "user"
-      assert serialized["content"] == "hi"
-      assert is_binary(serialized["timestamp"])
-    end
-
-    test "enqueue_internal/4 queues the runtime's own result even at the cap" do
-      # intentional: the cap exists to bound a runaway *peer* producer, so the
-      # runtime enqueuing its own result (W2's async spawn/batch completion)
-      # must never be refused by its own cap — it always queues and broadcasts,
-      # exactly like the human path.
-      full = for n <- 1..100, do: entry(:agent, "peer", "msg #{n}")
-      state = %Agent{name: "internal", space_id: 1}
-      state = %{state | live: %{state.live | inbox: full}}
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.space_id}:#{state.name}")
-
-      state = Inbox.enqueue_internal(state, "runtime", "child finished", :agent)
-
-      assert length(state.live.inbox) == 101
-      assert_receive {:chat_inbox, %{count: 101, messages: messages}}
-      assert List.last(messages)["content"] == "child finished"
-
-      assert %{from: "runtime", content: "child finished", kind: :agent, mode: nil} =
-               List.last(state.live.inbox)
-    end
-
-    test "drain_mode/1 picks the most recent human mode and ignores the rest" do
-      # intentional: `drain_mode/1` is total over any entry list and returns the
-      # most recent human-sourced mode, `nil` meaning "leave the agent's mode
-      # alone". A real batch is either a lone human entry or a run of non-human
-      # ones (`Inbox.batch/1`), so the mixed lists below are defensive-input
-      # coverage for the rule, not a shape a drain can produce.
-      assert Inbox.drain_mode([entry(:agent, "peer", "no mode")]) == nil
-      assert Inbox.drain_mode([entry(:user, "alice", "plan", "plan")]) == "plan"
-
-      assert Inbox.drain_mode([
-               entry(:user, "alice", "plan", "plan"),
-               entry(:agent, "peer", "no mode"),
-               entry(:user, "bob", "review", "review")
-             ]) == "review"
-
-      assert Inbox.drain_mode([
-               entry(:user, "alice", "plan", "plan"),
-               entry(:user, "bob", "no mode"),
-               entry(:agent, "peer", "no mode")
-             ]) == "plan"
+      reset_to_idle(pid)
     end
   end
 

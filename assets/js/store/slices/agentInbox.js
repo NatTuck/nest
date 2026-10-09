@@ -2,10 +2,14 @@
  * Async inbox cache setters.
  *
  * The full queued-message list rides the `chat:inbox` event and the
- * `init` payload; `chat:status` carries only the count. The list holds
- * both sources: `kind: "agent"` entries from `agents-send` and
- * `kind: "user"` entries a human sent while the agent was busy. Split
- * into its own slice so `agentCache.js` stays under the file-size cap.
+ * `init` payload; `chat:status` carries only the count (and, separately,
+ * the reply debt, which lives on the cache as `owedReplies`). The list
+ * holds all four entry kinds: `"agent"` from an `agents-send` or a child
+ * agent's completed turn, `"user"` from a human who wrote while the agent
+ * was busy, `"query"` from `agents-query`, and `"notice"` from the runtime
+ * (a give-up on an unanswered query, or a child that failed, was stopped
+ * or produced nothing). Split into its own slice so `agentCache.js` stays
+ * under the file-size cap.
  */
 
 import { retractOptimisticRow } from "./agentCacheMessages";
@@ -23,8 +27,9 @@ import { retractOptimisticRow } from "./agentCacheMessages";
  * `optimistic` row of the same `content` — the entry belongs to the most
  * recent matching send, and an older matching row may belong to a send
  * whose `chat:message` is still in flight — with each row consumed at
- * most once, in list order. `agents-send` entries (`kind: "agent"`) were
- * never sent from this client, so they retract nothing.
+ * most once, in list order. Entries this client never sent retract
+ * nothing: `agents-send` (`kind: "agent"`), `agents-query`
+ * (`kind: "query"`) and runtime notices (`kind: "notice"`).
  *
  * Returns the patch to apply, or `null` when nothing was retracted so
  * the caller can leave `messages`/`lastIndex`/`streaming`/`partial`

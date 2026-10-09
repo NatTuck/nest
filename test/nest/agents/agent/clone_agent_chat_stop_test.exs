@@ -64,9 +64,8 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
         5_000
       )
 
-    # Sanity: the parent registered us under the child's name
-    # in pending_children.
-    assert GenServer.call(parent_pid, :get_pending_children)[child_name] == self()
+    # Sanity: the parent is waiting on the child's answer.
+    assert GenServer.call(parent_pid, :get_pending_children) == %{child_name => true}
 
     # Drive the chat_stopped handler directly (see module doc).
     send(parent_pid, {:chat_stopped, parent_pid})
@@ -141,7 +140,7 @@ defmodule Nest.Agents.Agent.CloneAgentChatStopTest do
            ]
 
     # Drive chat_stopped on the parent. `stop_pending_children/1`
-    # iterates pending_children (which has child_a_name → self),
+    # iterates pending_children (which holds child_a_name),
     # calls `Supervisor.stop_agent(child_a_name)`, which walks
     # ChildRegistry to find child_b_name and terminates it via
     # child_a's own `cascade_children_only` call on terminate.

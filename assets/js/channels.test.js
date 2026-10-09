@@ -1346,16 +1346,18 @@ describe("channels", () => {
         ok: {
           model: { name: "claude-3", provider: "anthropic" },
           messageCount: 0,
+          owedReplies: ["alice"],
         },
       });
 
       joinAgent("agent-1", 1);
 
       await vi.waitFor(() => {
-        assert.strictEqual(
-          useStore.getState().agentsCache["agent-1"]?.model?.name,
-          "claude-3",
-        );
+        const cache = useStore.getState().agentsCache["agent-1"];
+        assert.strictEqual(cache?.model?.name, "claude-3");
+        // The reply carries the debt too, so a rejoin cannot leave a
+        // stale list behind.
+        assert.deepStrictEqual(cache?.owedReplies, ["alice"]);
       });
     });
 
@@ -2491,7 +2493,7 @@ describe("channels", () => {
       });
     });
 
-    it("forwards pendingMessageCount from chat:status so a missed inbox push does not stale the count", async () => {
+    it("forwards pendingMessageCount and owedReplies from chat:status so a missed inbox push does not stale the panel", async () => {
       useStore.getState().setAgentConnected("agent-1", {
         model: { name: "gpt-4" },
         messageCount: 0,
@@ -2510,12 +2512,14 @@ describe("channels", () => {
       simulateServerEvent("agent:1:agent-1", "chat:status", {
         status: "streaming",
         pendingMessageCount: 2,
+        owedReplies: ["alice", "carol"],
       });
 
       await vi.waitFor(() => {
         const cache = useStore.getState().agentsCache["agent-1"];
         assert.strictEqual(cache?.agentState, "streaming");
         assert.strictEqual(cache?.pendingMessageCount, 2);
+        assert.deepStrictEqual(cache?.owedReplies, ["alice", "carol"]);
       });
     });
 
@@ -2985,7 +2989,7 @@ describe("channels", () => {
   });
 
   describe("agent chat:notification events", () => {
-    it("should handle chat:notification event - set notification", async () => {
+    it("stores the notification without disturbing the connection status or the reply debt", async () => {
       useStore.getState().setAgentConnected("agent-1", {
         model: { name: "gpt-4" },
         messageCount: 0,
@@ -2998,6 +3002,20 @@ describe("channels", () => {
         assert.strictEqual(
           useStore.getState().agentsCache["agent-1"]?.status,
           "connected",
+        );
+      });
+
+      // The agent is mid-turn and owes a reply. A runtime notification is
+      // unrelated to both facts, so it must disturb neither.
+      simulateServerEvent("agent:1:agent-1", "chat:status", {
+        status: "streaming",
+        owedReplies: ["alice"],
+      });
+
+      await vi.waitFor(() => {
+        assert.deepStrictEqual(
+          useStore.getState().agentsCache["agent-1"]?.owedReplies,
+          ["alice"],
         );
       });
 
@@ -3013,36 +3031,9 @@ describe("channels", () => {
           cache?.notification?.message,
           "Max tool iterations reached",
         );
-      });
-    });
-
-    it("should not change connection status when notification arrives", async () => {
-      useStore.getState().setAgentConnected("agent-1", {
-        model: { name: "gpt-4" },
-        messageCount: 0,
-        status: "idle",
-      });
-
-      joinAgent("agent-1", 1);
-
-      await vi.waitFor(() => {
-        assert.strictEqual(
-          useStore.getState().agentsCache["agent-1"]?.status,
-          "connected",
-        );
-      });
-
-      simulateServerEvent("agent:1:agent-1", "chat:notification", {
-        type: "max_iterations",
-        message: "Max tool iterations reached",
-      });
-
-      await vi.waitFor(() => {
-        const cache = useStore.getState().agentsCache["agent-1"];
-        // Status should remain connected (not error)
+        // Status stays connected (not error), and the debt still stands.
         assert.strictEqual(cache?.status, "connected");
-        // Notification should be set
-        assert.strictEqual(cache?.notification?.type, "max_iterations");
+        assert.deepStrictEqual(cache?.owedReplies, ["alice"]);
       });
     });
   });
@@ -4502,7 +4493,14 @@ describe("channels", () => {
       await connectedAgent();
 
       simulateServerEvent("agent:1:agent-1", "chat:inbox", {
-        messages: [{ from: "alice", content: "review this", timestamp: "t1" }],
+        messages: [
+          {
+            from: "alice",
+            content: "review this",
+            timestamp: "t1",
+            kind: "agent",
+          },
+        ],
         count: 1,
       });
 
@@ -4554,7 +4552,14 @@ describe("channels", () => {
       await connectedAgent();
 
       simulateServerEvent("agent:1:agent-1", "chat:inbox", {
-        messages: [{ from: "alice", content: "review this", timestamp: "t1" }],
+        messages: [
+          {
+            from: "alice",
+            content: "review this",
+            timestamp: "t1",
+            kind: "agent",
+          },
+        ],
         count: 1,
       });
       simulateServerEvent("agent:1:agent-1", "chat:inbox", {
@@ -4569,21 +4574,31 @@ describe("channels", () => {
       });
     });
 
-    it("init populates the inbox from the join payload", async () => {
+    it("init populates the inbox and the reply debt from the join payload", async () => {
       joinAgent("agent-1", 1);
 
       simulateServerEvent("agent:1:agent-1", "init", {
         model: { name: "gpt-4" },
         messageCount: 0,
         status: "idle",
-        inbox: [{ from: "bob", content: "hi", timestamp: "t1" }],
+        inbox: [
+          {
+            from: "bob",
+            content: "hi",
+            timestamp: "t1",
+            kind: "query",
+          },
+        ],
         pendingMessageCount: 1,
+        owedReplies: ["bob"],
       });
 
       await vi.waitFor(() => {
         const cache = useStore.getState().agentsCache["agent-1"];
         assert.strictEqual(cache.inbox.length, 1);
         assert.strictEqual(cache.inbox[0].from, "bob");
+        assert.strictEqual(cache.inbox[0].kind, "query");
+        assert.deepStrictEqual(cache.owedReplies, ["bob"]);
       });
     });
 
@@ -4592,7 +4607,9 @@ describe("channels", () => {
 
       setNextPushResult("agent:1:agent-1", "chat:inbox", {
         ok: {
-          messages: [{ from: "carol", content: "ping", timestamp: "t2" }],
+          messages: [
+            { from: "carol", content: "ping", timestamp: "t2", kind: "agent" },
+          ],
           count: 1,
         },
       });

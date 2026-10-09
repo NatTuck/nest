@@ -230,11 +230,11 @@ defmodule Nest.Tools.InspectFile do
   defp max_line_length(lines), do: lines |> Enum.map(&String.length/1) |> Enum.max()
 
   # JSON schema fragment for the `max_result_tokens` call arg.
-  # The LLM sees this on every tool and learns it can request a
-  # specific cap. The BatchSizer treats this as an inline-vs-summary
-  # threshold; `file-inspect`'s output is bounded by construction so
-  # the cap is unreachable in practice, but the schema entry is kept
-  # consistent with the rest of the tool set.
+  # The LLM sees this on the tools that take it and learns it can
+  # request a specific cap. The BatchSizer treats this as an
+  # inline-vs-summary threshold; `file-inspect`'s output is bounded by
+  # construction so the cap is unreachable in practice, but the schema
+  # entry is kept consistent with the rest of the tool set.
   defp max_result_tokens_schema do
     %{
       "type" => "integer",

@@ -24,7 +24,20 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
   import Mimic
   import ExUnit.CaptureLog
 
+  # `Agent.chat/2` is a `GenServer.cast`, so a fence placed after it covers the
+  # *whole* turn: here a mocked LLM call, a real tool execution and a second
+  # mocked LLM call. 500 ms is not a bound for that under load — a whole mocked
+  # turn measured p50 18.7 ms / max 34.3 ms across 40 samples in the full
+  # suite, but p50 926 ms / max 1534 ms (39 of 40 over 500 ms) under 48 CPU
+  # burners. 2000 ms is ~100x the in-suite median and stays under ExUnit's 5 s
+  # per-test timeout, so a genuinely stuck turn still fails — as a stuck turn,
+  # not as a flake. (Measured on the spawn turn in `sub_agent_tools_test.exs`;
+  # the turns in this file are the same class.)
+  @turn_fence_ms 2_000
+
   alias Nest.Agents.Agent
+  alias Nest.Agents.Agent.Machine
+
   alias Nest.LLM.MockClient
   alias Nest.LLM.RunResponse
   alias Nest.Messages.Part
@@ -104,7 +117,7 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
         capture_log(fn ->
           :ok = Agent.chat(pid, "List the files")
 
-          assert_receive {:chat_status, %{status: "idle"}}, 500
+          await_idle(pid)
 
           msg1 = wait_for_assistant_with_tool_use(5_000)
           assert msg1 != nil
@@ -307,7 +320,7 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
           assert response_log.payload.content == "Result: success"
           refute response_log.payload.content =~ "interpret"
 
-          assert_receive {:chat_status, %{status: "idle"}}, 500
+          await_idle(pid)
         end)
 
       # `call_x` arguments `{}` fails shell_cmd validation. The
@@ -373,7 +386,7 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
 
           # Wait for the final message before asserting the terminal
           # status; racing a short timeout up front is flaky under load.
-          assert_receive {:chat_status, %{status: "idle"}}, 500
+          await_idle(pid)
 
           MockClient.clear()
         end)
@@ -453,7 +466,7 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
 
           assert Enum.any?(parts, &match?(%Part.ToolUse{}, &1))
 
-          assert_receive {:chat_status, %{status: "idle"}}, 500
+          await_idle(pid)
         end)
 
       # Same incidental shell_cmd validation failure.
@@ -461,5 +474,16 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
 
       MockClient.clear()
     end
+  end
+
+  # Wait until the agent has settled to `:idle`, on the machine's own status
+  # rather than the `chat:status` broadcast: a missed or reordered broadcast can
+  # never be the reason this fails, and the condition waited on is exactly the
+  # one the test-teardown invariant checks. See `@turn_fence_ms` for the budget.
+  defp await_idle(pid) do
+    assert Eventually.eventually(
+             fn -> Machine.status_for(:sys.get_state(pid).live.machine) == :idle end,
+             timeout: @turn_fence_ms
+           )
   end
 end

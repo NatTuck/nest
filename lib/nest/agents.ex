@@ -142,7 +142,8 @@ defmodule Nest.Agents do
       repair_command: info.repair_command,
       vocation_slug: info.vocation_slug,
       pending_messages: info.pending_messages,
-      pending_message_count: info.pending_message_count
+      pending_message_count: info.pending_message_count,
+      owed_replies: info.owed_replies
     }
 
     {:ok, agent}
@@ -280,17 +281,23 @@ defmodule Nest.Agents do
 
   @doc """
   Asynchronously deliver `content` from `from_name` to the agent
-  `{space_id, name}` (`agents-send`).
+  `{space_id, name}` (`agents-send`, `agents-query`, and the runtime's
+  own `:notice`).
+
+  `kind` is the entry's provenance (`Nest.Agents.Agent.Inbox.t:kind/0`)
+  and decides only how the target renders the entry — a `:query` also
+  obliges the target to answer it. It is carried positionally, like the
+  identity tuple.
 
   Returns `{:ok, :delivered}` when the target was idle and a turn
   started, `{:ok, :queued}` when it was busy, or `{:error, reason}` when
   the target is missing or in a broken state.
   """
-  @spec send_message(integer(), String.t(), String.t(), String.t()) ::
+  @spec send_message(integer(), String.t(), String.t(), String.t(), Agent.Inbox.kind()) ::
           {:ok, :delivered | :queued} | {:error, term()}
-  def send_message(space_id, from_name, name, content) do
+  def send_message(space_id, from_name, name, content, kind \\ :agent) do
     case Supervisor.get_agent(space_id, name) do
-      {:ok, pid} -> Agent.deliver_message(pid, from_name, content)
+      {:ok, pid} -> Agent.deliver_message(pid, from_name, content, kind)
       {:error, _} = err -> err
     end
   end

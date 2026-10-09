@@ -20,6 +20,11 @@ Mimic.copy(Phoenix.Channel)
 # exercised by other tests, so they belong in this list.
 Mimic.copy(Nest.ChatModel)
 Mimic.copy(Nest.Agents.Registry)
+# `Task.Supervisor` is copied here for the same reason, and because it is used
+# concurrently by other tests: the give-up's delivery stubs it to force a
+# refusal, and a per-test copy would swap the module out from under whatever
+# else is starting a task.
+Mimic.copy(Task.Supervisor)
 
 # `max_cases` defaults to `schedulers_online * 2`. The suite is
 # DB- and message-passing-bound, and over-subscribing the schedulers

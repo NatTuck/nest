@@ -28,7 +28,9 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Machine.Boundary
   alias Nest.Agents.Agent.Machine.Phase
+  alias Nest.Agents.Agent.Machine.ReplyReminder
   alias Nest.Agents.Agent.Machine.Response
+  alias Nest.Agents.Agent.Turn.ContextReminder
   alias Nest.Agents.Agent.Turn.Dispatch
   alias Nest.Agents.Agent.WorkspaceHandler
 
@@ -41,13 +43,11 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
     count = m.loop_count + 1
 
     if count > @max_consecutive_compactions do
-      machine = Phase.enter_blocked(m, :compaction_loop_detected)
       reason = "compaction isn't reducing the conversation"
 
-      {:ok,
-       [
-         {:broadcast, {:compaction_loop, reason, m.loop_count, @max_consecutive_compactions}, nil}
-       ], machine}
+      Phase.block(m, :compaction_loop_detected, :compaction_loop, [
+        {:broadcast, {:compaction_loop, reason, m.loop_count, @max_consecutive_compactions}, nil}
+      ])
     else
       m = %{m | loop_count: count, pending_user_message: pending_user || m.pending_user_message}
       do_stage(m, carried_entry)
@@ -60,8 +60,9 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
         stage_request(m, staged, carried_entry)
 
       {:error, :system_oversized} ->
-        machine = Phase.enter_blocked(m, :context_overflow)
-        {:ok, [{:broadcast, {:overflow, :system_oversized, "compact"}, nil}], machine}
+        Phase.block(m, :context_overflow, :system_oversized, [
+          {:broadcast, {:overflow, :system_oversized, "compact"}, nil}
+        ])
 
       {:error, :reserve_exhausted} ->
         reserve_exhausted(m)
@@ -109,24 +110,24 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
       # queue a drain would re-preflight → `start_chat/3` →
       # `:needs_compaction` → `stage/3` → this branch again.
       (user = Phase.held_user(m)) != nil ->
-        machine = Phase.enter(%{m | pending_user_message: nil}, :chat, :idle)
-        {:ok, [overflow, {:append, {:user, user}}], machine}
+        Phase.rest(%{m | pending_user_message: nil}, :chat, :reserve_exhausted, [
+          overflow,
+          {:append, {:user, user}}
+        ])
 
       # The inbox arm: under peek-then-consume (#26) the drain never consumed
       # the entries, so they are still queued and visible — and a drain here
       # would re-stage the failing compaction. Block instead; `{:unblocked}`
       # re-attempts the drain once the operator has acted.
       Boundary.inbox_count(m.work.ctx) > 0 ->
-        machine = Phase.enter_blocked(m, :context_overflow)
-        {:ok, [overflow], machine}
+        Phase.block(m, :context_overflow, :reserve_exhausted, [overflow])
 
       # Nothing queued and nothing parked (a manual `/compact`, the workspace
-      # notice, a retry with an empty inbox): enter `:idle`, as before. (The
+      # notice, a retry with an empty inbox): rest in `:idle`, as before. (The
       # arms above are reachable from `:compaction_failed` and `:generating`
       # too, so they *enter* `:idle` rather than "stay" there.)
       true ->
-        machine = Phase.enter(m, :chat, :idle)
-        {:ok, [overflow], machine}
+        Phase.rest(m, :chat, :reserve_exhausted, [overflow])
     end
   end
 
@@ -162,19 +163,18 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
           {:ok, [term()], Machine.t()}
   def compaction_failed(m, reason, carried_entry) do
     msg = "Compaction failed: #{format_failure(reason)}"
+    error = {:broadcast, {:compaction_error, msg}, nil}
 
     cond do
       match?({:assistant_response, _, _, _}, carried_entry) ->
-        machine = Phase.enter_blocked(m, :compaction_failed)
-        {:ok, [{:broadcast, {:compaction_error, msg}, nil}], machine}
+        Phase.block(m, :compaction_failed, :compaction_failed, [error])
 
       carried_entry != nil ->
         machine = resume_machine(m, carried_entry)
-        {:ok, [{:broadcast, {:compaction_error, msg}, nil}, :iterate], machine}
+        {:ok, [error, :iterate], machine}
 
       true ->
-        machine = Phase.enter_blocked(m, :compaction_failed)
-        {:ok, [{:broadcast, {:compaction_error, msg}, nil}], machine}
+        Phase.block(m, :compaction_failed, :compaction_failed, [error])
     end
   end
 
@@ -186,8 +186,7 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
         resume_notice(m)
 
       match?({:assistant_response, _, _, _}, carried) ->
-        machine = Phase.enter(%{m | entry: nil}, :chat, :idle)
-        {:ok, [{:finalize, :clean}, {:drain_inbox}], machine}
+        resume_carried_reply(m, carried)
 
       carried == nil ->
         resume_with_pending(m)
@@ -195,6 +194,26 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
       true ->
         machine = resume_machine(m, carried)
         {:ok, [{:broadcast, :status, nil}, :iterate], machine}
+    end
+  end
+
+  # The reply was carried across the compaction because persisting it would have
+  # spent the reserve. The commit put it in the active segment, so the turn is
+  # not over and the reply gate gets the same say it gets at any would-be-idle
+  # settle: remind (and continue the turn), or rest — which gives the debt up.
+  defp resume_carried_reply(m, carried) do
+    m = %{m | entry: nil}
+
+    # The reply is already in the committed segment, so the machine's own
+    # messages are what the reminder would be appended to.
+    case ReplyReminder.decision(m) do
+      {:remind, text, m} ->
+        reminder = ContextReminder.build_user_notice(text, nil)
+        machine = Phase.init_turn(Phase.enter(m, :chat, :generating, :http), carried)
+        {:ok, [{:append, reminder}, :iterate], machine}
+
+      :settle ->
+        Phase.rest(m, :chat, :compaction_carry, [{:finalize, :clean}, {:drain_inbox}])
     end
   end
 
@@ -210,8 +229,7 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
           machine = Phase.enter(%{m | entry: nil}, :chat, :generating, :http)
           {:ok, [{:drain_inbox}], machine}
         else
-          machine = Phase.enter(%{m | entry: nil}, :chat, :idle)
-          {:ok, [{:finalize, :clean}, {:drain_inbox}], machine}
+          Phase.rest(%{m | entry: nil}, :chat, :resume, [{:finalize, :clean}, {:drain_inbox}])
         end
 
       entry ->
@@ -220,9 +238,17 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
         # The committed segment already ends on the compaction ack
         # (`Turn.Commit.ensure_assistant_tail/1`), so this append lands on
         # an assistant tail and `pairing_bridge/2` has nothing to repair.
-        # The following `:iterate` promotes the machine to `:generating`
-        # and dispatches the request.
-        machine = %{Phase.enter(%{m | entry: entry}, :chat, :idle) | pending_user_message: nil}
+        # The `:iterate` dispatches the request.
+        #
+        # Deliberately not a rest: the turn continues on the held message, so
+        # the reply this machine may still owe stays live and the gate owns the
+        # real settle. Resting here would broadcast a transient idle *and* give
+        # the debt up for a turn that is about to carry on. (`entry` rides along
+        # because the compaction's own resume may not have cleared it.)
+        machine =
+          Phase.enter(%{m | entry: entry}, :chat, :generating, :http)
+          |> Map.put(:pending_user_message, nil)
+
         {:ok, [{:append, user}, :iterate], machine}
     end
   end
@@ -230,8 +256,12 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
   defp resume_notice(m) do
     pair = WorkspaceHandler.notice_pair(m.work.pending_notice)
 
-    machine = Phase.enter(%{m | entry: nil, work: %{m.work | pending_notice: nil}}, :chat, :idle)
-    {:ok, [{:append_many, pair}, {:drain_inbox}], machine}
+    Phase.rest(
+      %{m | entry: nil, work: %{m.work | pending_notice: nil}},
+      :chat,
+      :workspace_notice,
+      [{:append_many, pair}, {:drain_inbox}]
+    )
   end
 
   defp resume_machine(m, entry) do

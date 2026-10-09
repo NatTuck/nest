@@ -18,9 +18,12 @@ defmodule Nest.Agents.Agent.Turn do
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.ChatPipeline
   alias Nest.Agents.Agent.Config
+  alias Nest.Agents.Agent.Inbox
   alias Nest.Agents.Agent.Machine
+  alias Nest.Agents.Agent.Machine.Children
   alias Nest.Agents.Agent.Machine.Phase
   alias Nest.Agents.Agent.SubAgent
+  alias Nest.Agents.Agent.Timeline
   alias Nest.Agents.Agent.Turn.Executor
 
   @max_settle_depth 200
@@ -39,20 +42,25 @@ defmodule Nest.Agents.Agent.Turn do
     state = prepare(state)
     machine = state.live.machine
     old_status = Machine.status_for(machine)
+    # The indices a turn appends are stamped by the executor, so they are only
+    # knowable after the actions have run; the snapshot is the other half of
+    # that diff (`Timeline.added/2`).
+    before = Timeline.snapshot(state)
 
     case Machine.step(machine, event) do
       :quarantine ->
         {:ok, quarantine!(state, event)}
 
       {:ok, actions, next} ->
-        run(state, old_status, next, actions, depth)
+        Timeline.tools(state, event, machine)
+        run(state, old_status, next, actions, depth, {machine, event, before})
 
       {:ignore, _reason, next} ->
-        run(state, old_status, next, [], depth)
+        run(state, old_status, next, [], depth, {machine, event, before})
     end
   end
 
-  defp run(state, old_status, next, actions, depth) do
+  defp run(state, old_status, next, actions, depth, trace) do
     state = put_machine(state, next)
 
     # Effects land before the status change is announced, matching the old
@@ -60,6 +68,13 @@ defmodule Nest.Agents.Agent.Turn do
     # broadcast that preceded the append would let a subscriber observe the
     # new status before the message that motivated it.
     {state, follow} = Executor.run_all(actions, state)
+
+    # The transition is recorded before the broadcast it causes: a subscriber
+    # woken by the status frame must not find the timeline still missing the
+    # transition behind it.
+    {machine, event, before} = trace
+    Timeline.turn(state, event, machine, next, Timeline.added(before, state))
+    Timeline.debt_changes(state, machine, next)
 
     if Machine.status_for(state.live.machine) != old_status, do: Broadcasts.status(state)
 
@@ -77,14 +92,31 @@ defmodule Nest.Agents.Agent.Turn do
 
     Logger.error("[agent:#{state.name}] quarantined undeclared turn event: #{inspect(event)}")
 
+    # The quarantine is the one turn outcome with no `turn` event (there was no
+    # transition), so the timeline's `error` type carries it.
+    Timeline.error(
+      state.space_id,
+      state.name,
+      "quarantined turn event: #{inspect(event)}",
+      "Turn.quarantine!/2"
+    )
+
     if state.live.machine.phase == :idle do
       state
     else
-      machine = Phase.enter(state.live.machine, state.live.machine.kind, :idle)
-      state = %{state | live: %{state.live | machine: machine}}
-
       error = %RuntimeError{message: "quarantined turn event: #{inspect(event)}"}
-      {state, _follow} = Executor.run_all([{:fail_turn, error, []}], state)
+
+      # The turn is over, so a reply it still owes is given up with it. The
+      # funnel computes that (`Phase.rest/4`), and its give-up is prepended to
+      # the failure action — the executor runs the list in order, so the
+      # requesters hear first and the turn fails second.
+      {:ok, actions, machine} =
+        Phase.rest(state.live.machine, state.live.machine.kind, :quarantine, [
+          {:fail_turn, error, []}
+        ])
+
+      state = %{state | live: %{state.live | machine: machine}}
+      {state, _follow} = Executor.run_all(actions, state)
       Broadcasts.status(state)
       state
     end
@@ -120,13 +152,61 @@ defmodule Nest.Agents.Agent.Turn do
     reply(settle(state, {:tool_results, ref, results}))
   end
 
+  # A tool worker's "my `agents-send` reached its target". Sent before its
+  # `{:tool_results, …}`, so the debt is discharged before the response that
+  # would settle the turn (issue #31 §1.4).
+  def handle({:reply_sent, sender}, state), do: reply(settle(state, {:reply_sent, sender}))
+
   def handle({:DOWN, _mref, :process, pid, reason}, state) do
-    reply(settle(state, {:worker_down, pid, reason}))
+    reply(settle(state, {:worker_down, pid, reason}) |> notice_lost_batch(pid, reason))
   end
 
   def handle({:llm_error, error_msg}, state) do
     ref = state.live.machine.work.worker_ref
     reply(settle(state, {:llm_error, ref, error_msg}))
+  end
+
+  # A batch coordinator that died before its aggregate is a batch that will never
+  # complete: the parent is told rather than left waiting. Only the aggregate is
+  # lost — a child that has not reported yet is unaffected, because with the
+  # target gone its delivery falls back to this agent's inbox. (An outcome the
+  # coordinator had already received dies with it; see
+  # `BatchCoordinator`'s "What a killed coordinator loses".)
+  #
+  # A Stop never reaches here. The load-bearing reason is that the stop clears
+  # the children map before the coordinators' `:DOWN`s arrive, so there is no
+  # reporting target left to report; the `cancelled` check is belt-and-braces
+  # insurance for the same window (it is true for the whole stop, and no
+  # reachable state was found where it is the only thing preventing a notice —
+  # it is kept because it says the intent outright: a stop the parent asked for
+  # is not a lost batch).
+  defp notice_lost_batch({:ok, state} = settled, pid, reason) do
+    # `:normal` is a coordinator that finished (it delivered its aggregate on the
+    # way out): nothing to report.
+    if reason != :normal and not state.live.cancelled and
+         Children.reporting_target?(state.live.machine.children, pid) do
+      state =
+        Inbox.enqueue_internal(
+          state,
+          "agents-batch",
+          "The batch coordinator stopped before reporting its aggregate " <>
+            "(#{inspect(reason)}). The answers of any children still running will " <>
+            "arrive as messages instead.",
+          :notice
+        )
+
+      state =
+        if Machine.status_for(state.live.machine) == :idle do
+          {state, _result} = drain_inbox(state)
+          state
+        else
+          state
+        end
+
+      {:ok, state}
+    else
+      settled
+    end
   end
 
   defp reply({:ok, state}), do: {:noreply, state}

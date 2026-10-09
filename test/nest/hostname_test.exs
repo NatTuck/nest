@@ -5,8 +5,10 @@ defmodule Nest.HostnameTest do
 
   # `get/0` reads the global `:nest, :hostname` config, which the root layout
   # also reads via `NestWeb.Layouts.root/1`. Mutating it must not overlap the
-  # conn tests that render that layout, so this module runs in the serial
-  # phase alongside them.
+  # conn tests that render that layout. Those conn tests are `async: true`
+  # (`test/nest_web/controllers/page_controller_test.exs`), and ExUnit runs
+  # every sync module only after the whole async phase is finished, so this
+  # writer is still serialised against them by construction.
   use ExUnit.Case, async: false
 
   alias Nest.Hostname

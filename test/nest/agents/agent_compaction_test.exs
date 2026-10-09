@@ -332,10 +332,12 @@ defmodule Nest.Agents.AgentCompactionTest do
 
       send(pid, {:preflight_request, fake_task, state_before.chat_state.messages || []})
 
-      # Wait briefly to ensure the Agent (if it had a handler) would have
-      # processed the message and replied. There should be NO
-      # `:preflight_result` reply.
-      refute_receive {:preflight_result, _, _}, 200
+      # There should be NO `:preflight_result` reply. `:sys.get_state/1` is a
+      # synchronous call, and the Agent processes its mailbox in order, so by
+      # the time it returns the `send/2` above has been handled — a handler,
+      # if one existed, would already have replied. That makes this a
+      # deterministic check instead of a 200 ms timing window.
+      refute_no_preflight_reply(pid)
 
       Agent.terminate(pid)
     end
@@ -351,7 +353,7 @@ defmodule Nest.Agents.AgentCompactionTest do
 
       send(pid, {:compaction_failed_for_preflight, fake_task, :llm_returned_empty})
 
-      refute_receive {:preflight_result, _, _}, 200
+      refute_no_preflight_reply(pid)
 
       Agent.terminate(pid)
     end
@@ -521,5 +523,13 @@ defmodule Nest.Agents.AgentCompactionTest do
 
       Agent.terminate(pid)
     end
+  end
+
+  # Assert the Agent produced no `:preflight_result` reply for a message it was
+  # just sent. See the call sites: the `:sys.get_state/1` is what makes this
+  # sound (and is why it needs no wait).
+  defp refute_no_preflight_reply(pid) do
+    _ = :sys.get_state(pid)
+    refute_receive {:preflight_result, _, _}, 0
   end
 end

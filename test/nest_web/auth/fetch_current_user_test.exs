@@ -8,7 +8,13 @@ defmodule NestWeb.Auth.FetchCurrentUserTest do
   plugs can branch on it.
   """
 
-  use NestWeb.ConnCase, async: false
+  # Async: the plug is pure. It reads the `authorization` header and
+  # resolves the token's user through the DB; nothing global is mutated,
+  # and every row the tests write lives in that test's sandbox
+  # transaction. The `delete_all/1`s below are belt-and-braces for the
+  # magic `first-user` token (which needs `user_count/0 == 0`), not a
+  # shared-state requirement.
+  use NestWeb.ConnCase, async: true
 
   alias Nest.Accounts
   alias Nest.Accounts.AuthToken

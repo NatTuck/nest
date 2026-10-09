@@ -39,7 +39,9 @@ defmodule Nest.Agents.Agent.Init.Recovery do
     }
 
     state = Init.build_state(attrs, recovery_client)
-    machine = Phase.enter_blocked(state.live.machine, :model_missing)
+    # Same resting funnel as `NeedsRepair`: a fresh machine owes nothing, so
+    # there is no give-up to run (asserted rather than assumed).
+    {:ok, [], machine} = Phase.block(state.live.machine, :model_missing, :startup, [])
     state = %{state | live: %{state.live | machine: machine}}
 
     state =

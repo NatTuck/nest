@@ -19,55 +19,51 @@ defmodule NestWeb.AgentChannelTest do
   setup :verify_on_exit!
 
   describe "join/3" do
-    test "joins agent channel and returns state with messageCount", %{
+    test "the init payload describes the agent, its model, its mode and its usage", %{
       socket: socket,
       agent_id: id,
       space_id: space_id
     } do
+      # One assertion per field of the same join payload (five tests merged).
       assert socket.topic == "agent:#{space_id}:#{id}"
       assert_push "init", payload
+
+      # Identity and the join-time counters.
       assert payload["name"] == id
-      assert payload["model"]["name"] == "qwen3.5-plus"
       assert payload["messageCount"] == 1
       assert payload["status"] == "idle"
       # Init includes partial (nil when not streaming)
       assert Map.has_key?(payload, "partial")
       assert payload["partial"] == nil
       refute Map.has_key?(payload, "messages")
-    end
 
-    test "init includes modes, defaultMode, and currentMode", %{socket: _socket} do
-      assert_push "init", payload
+      # The model map must carry both :name and :provider so the
+      # frontend can render "provider: model-name" in the chat
+      # header (assets/js/pages/ChatPage.jsx).
+      assert payload["model"]["name"] == "qwen3.5-plus"
+      assert payload["model"]["provider"] == "model-studio"
+
       # Vocation-less agent defaults to "chat"
       assert payload["modes"] == ["chat"]
       assert payload["defaultMode"] == "chat"
       assert payload["currentMode"] == "chat"
-    end
-
-    test "init carries the compaction boundary numbers but NOT the archive", %{socket: _socket} do
-      assert_push "init", payload
 
       # The archive is fetched lazily over `chat:history`; only the
       # boundary numbers ride the join payload.
       assert payload["lastCompactionIndex"] == -1
       assert payload["compactionCount"] == 0
       refute Map.has_key?(payload, "history")
-    end
-
-    test "init includes contextLimit, contextLimitSource, and usage", %{socket: _socket} do
-      assert_push "init", payload
 
       # qwen3.5-plus has a configured context-limit of 512_000
       # in test/data/config.toml.
       assert payload["contextLimit"] == 512_000
       assert payload["contextLimitSource"] == "config"
+
       # `context_input_tokens` is computed from the messages list
       # (real-valued `tokens` from prior LLM responses as a floor,
-      # estimator for the suffix). For a fresh agent with just a
-      # system prompt in the messages list, it's the system
-      # prompt's estimated size — non-zero, so the chip displays
-      # a meaningful fill rate from the moment the page loads.
-      # The other usage fields stay at 0 (no LLM call has run).
+      # estimator for the suffix); for a fresh agent that is the system
+      # prompt's estimated size — non-zero, so the chip shows a fill rate
+      # from page load. The other usage fields stay at 0 (no LLM call has run).
       assert payload["usage"] == %{
                input_tokens: 0,
                cache_read_input_tokens: 0,
@@ -88,16 +84,6 @@ defmodule NestWeb.AgentChannelTest do
              "expected context_input_tokens > 0 (system prompt estimated size), got #{payload["usage"][:context_input_tokens]}"
     end
 
-    test "init payload includes provider in the model map", %{socket: _socket} do
-      assert_push "init", payload
-
-      # The model map must carry both :name and :provider so the
-      # frontend can render "provider: model-name" in the chat
-      # header (assets/js/pages/ChatPage.jsx).
-      assert payload["model"]["name"] == "qwen3.5-plus"
-      assert payload["model"]["provider"] == "model-studio"
-    end
-
     test "returns error for non-existent agent" do
       token = Process.get(:agent_test_token)
       {:ok, connected} = connect(NestWeb.UserSocket, %{"token" => token})
@@ -111,14 +97,10 @@ defmodule NestWeb.AgentChannelTest do
     end
 
     test "returns agent_unavailable (not a crash) for non-:not_found errors" do
-      # `Agents.get_agent/1` propagates whatever
-      # `Supervisor.get_agent/1` returns. To exercise the
-      # non-`:not_found` branch, stub it to return a tuple
-      # other than `:not_found`.
-      #
-      # The channel's catch-all path logs a `Logger.warning`
-      # via `agent_channel.ex:47` — capture it and assert
-      # it's the expected error path, not noise.
+      # `Agents.get_agent/1` propagates whatever `Supervisor.get_agent/1`
+      # returns, so stubbing it to a non-`:not_found` error exercises the
+      # catch-all branch. That path logs a `Logger.warning` — capture it
+      # and assert it is the expected error path, not noise.
       log =
         ExUnit.CaptureLog.capture_log(fn ->
           Nest.Agents
@@ -165,6 +147,7 @@ defmodule NestWeb.AgentChannelTest do
     end
 
     test "receives a topic broadcast exactly once (no double subscription)", %{
+      socket: socket,
       agent_id: id,
       space_id: space_id
     } do
@@ -190,7 +173,14 @@ defmodule NestWeb.AgentChannelTest do
       )
 
       assert_push "chat:delta", %{"content" => "x"}, 500
-      refute_push "chat:delta", %{"content" => "x"}, 200
+
+      # A duplicate would come from the *same* PubSub delivery (a doubled
+      # subscription), so it is already in this mailbox once the channel has
+      # handled the broadcast. `:sys.get_state/1` is a synchronous call to the
+      # channel process, so the check below is deterministic rather than a
+      # 200 ms window.
+      _ = :sys.get_state(socket.channel_pid)
+      refute_push "chat:delta", %{"content" => "x"}, 0
     end
   end
 
@@ -483,13 +473,13 @@ defmodule NestWeb.AgentChannelTest do
     } do
       seed_archive(space_id, name)
 
-      ref = push(socket, "chat:history", %{"limit" => 2})
-      assert_reply ref, :ok, %{"messages" => page}
+      ref = push_history(socket, %{"limit" => 2})
+      assert_reply ref, :ok, %{"messages" => page}, 0
       # Ascending order; the newest page sits at the boundary.
       assert Enum.map(page, & &1["index"]) == [2, 3]
 
-      ref = push(socket, "chat:history", %{"role" => "user"})
-      assert_reply ref, :ok, %{"messages" => users}
+      ref = push_history(socket, %{"role" => "user"})
+      assert_reply ref, :ok, %{"messages" => users}, 0
       assert Enum.map(users, & &1["index"]) == [1]
       assert Enum.all?(users, &(&1["role"] == "user"))
     end
@@ -501,34 +491,44 @@ defmodule NestWeb.AgentChannelTest do
     } do
       seed_archive(space_id, name)
 
-      ref = push(socket, "chat:history", %{"before" => 2, "limit" => 2})
-      assert_reply ref, :ok, %{"messages" => page}
+      ref = push_history(socket, %{"before" => 2, "limit" => 2})
+      assert_reply ref, :ok, %{"messages" => page}, 0
       assert Enum.map(page, & &1["index"]) == [0, 1]
 
-      ref = push(socket, "chat:history", %{"before" => 0})
-      assert_reply ref, :ok, %{"messages" => []}
+      ref = push_history(socket, %{"before" => 0})
+      assert_reply ref, :ok, %{"messages" => []}, 0
     end
 
     test "rejects invalid before / limit / role", %{socket: socket} do
-      ref = push(socket, "chat:history", %{"before" => -1})
-      assert_reply ref, :error, %{"reason" => "invalid_before"}
+      ref = push_history(socket, %{"before" => -1})
+      assert_reply ref, :error, %{"reason" => "invalid_before"}, 0
 
-      ref = push(socket, "chat:history", %{"limit" => 0})
-      assert_reply ref, :error, %{"reason" => "invalid_limit"}
+      ref = push_history(socket, %{"limit" => 0})
+      assert_reply ref, :error, %{"reason" => "invalid_limit"}, 0
 
-      ref = push(socket, "chat:history", %{"role" => "bogus"})
-      assert_reply ref, :error, %{"reason" => "invalid_role"}
+      ref = push_history(socket, %{"role" => "bogus"})
+      assert_reply ref, :error, %{"reason" => "invalid_role"}, 0
     end
 
     test "returns [] for a never-compacted agent", %{socket: socket} do
-      ref = push(socket, "chat:history", %{})
-      assert_reply ref, :ok, %{"messages" => []}
+      ref = push_history(socket, %{})
+      assert_reply ref, :ok, %{"messages" => []}, 0
     end
   end
 
-  # Seed a small archive: system at 0, a user at 1, an assistant at 2,
-  # then a compaction boundary (and marker row) at 3. The agent already
-  # owns the system row.
+  # Push `chat:history` and wait for the channel to handle it: `gen_server`
+  # handles this system message only after the push, and the channel sends the
+  # reply before answering it, so the reply is already in our mailbox and the
+  # 0 ms `assert_reply` below is a mailbox read, not a race. The reply is
+  # DB-backed with a rare 130-160 ms tail under 24-way concurrency.
+  defp push_history(socket, payload) do
+    ref = push(socket, "chat:history", payload)
+    _ = :sys.get_state(socket.channel_pid)
+    ref
+  end
+
+  # Seed a small archive: system at 0, user at 1, assistant at 2, then a
+  # compaction boundary (and marker row) at 3. The agent owns the system row.
   defp seed_archive(space_id, name) do
     for message <- [
           {:user, %User{index: 1, parts: [%Part.Text{text: "archived question"}]}},

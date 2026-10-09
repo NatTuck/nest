@@ -171,6 +171,44 @@ defmodule MachineTest do
       Process.exit(pid, :kill)
     end
 
+    test "a stop kills the batch coordinators the machine is reporting to" do
+      # A batch coordinator is an unlinked task, so killing only the turn's own
+      # worker would leave it spawning children and later delivering an
+      # aggregate into a parent that asked to stop. Every distinct reporting
+      # target is killed, once each, in name order.
+      coordinator =
+        spawn(fn ->
+          receive do
+            :stop -> :ok
+          end
+        end)
+
+      other =
+        spawn(fn ->
+          receive do
+            :stop -> :ok
+          end
+        end)
+
+      machine =
+        Enum.reduce(
+          [{"alpha", coordinator}, {"beta", coordinator}, {"gamma", other}, {"delta", nil}],
+          Machine.new(phase: :generating),
+          fn {name, target}, m ->
+            {:ok, [], m} = Machine.step(m, {:child_spawned, name, false, target})
+            m
+          end
+        )
+
+      {:ok, actions, _stopping} = Machine.step(machine, {:stop, self()})
+
+      assert Enum.filter(actions, &match?({:kill, _}, &1)) ==
+               [{:kill, coordinator}, {:kill, other}]
+
+      Process.exit(coordinator, :kill)
+      Process.exit(other, :kill)
+    end
+
     test "blocked phases ignore ordinary work" do
       blocked = Machine.new(phase: :needs_repair)
 
@@ -648,7 +686,8 @@ defmodule MachineTest do
   defp sample_event(:unblocked), do: {:unblocked}
   defp sample_event(:workspace_notice), do: :workspace_notice
   defp sample_event(:tool_results), do: {:tool_results, make_ref(), []}
-  defp sample_event(:child_spawned), do: {:child_spawned, "kid", make_ref(), false}
+  defp sample_event(:reply_sent), do: {:reply_sent, "peer"}
+  defp sample_event(:child_spawned), do: {:child_spawned, "kid", false, nil}
   defp sample_event(:child_completed), do: {:child_completed, "kid", "resp", %{}}
   defp sample_event(:child_failed), do: {:child_failed, "kid", :crashed}
   defp sample_event(:child_terminated), do: {:child_terminated, "kid", :killed}

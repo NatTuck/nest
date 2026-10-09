@@ -18,6 +18,12 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     4. The coordinator's next MockClient run produces the
        final text; A goes `:idle`.
 
+  `agents-query` is the one tool whose result is *not* the peer's answer:
+  it delivers the message (the peer then owes the coordinator a reply) and
+  its tool result is that delivery confirmation. The peer's answer arrives
+  later as a message in the coordinator's inbox, which is what its own test
+  below pins.
+
   ## What's stubbed
 
     * Nothing chats with the spawned specialist, so no
@@ -42,6 +48,22 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
   setup do
     {:ok, vid: upsert_tools_vocation()}
   end
+
+  # A turn in this file is: a mocked LLM call, a real sub-agent spawn or peer
+  # delivery (DB writes, a registry insert, a new process), and a second mocked
+  # LLM call. `Agent.chat/2` is a `GenServer.cast`, so a fence after it covers
+  # that *whole* turn — which is why a 500 ms fence here was a race, not a
+  # check. Measured for the scenario in "agents-spawn with a model argument":
+  #
+  #   * full suite, 24-way concurrency, 40 samples: p50 18.7 ms, max 34.3 ms
+  #   * 48 CPU burners, 40 samples: p50 926 ms, max 1534 ms; 39/40 over 500 ms
+  #   * the observed 1-in-40 gate failure (seed 200984, load 5.60) missed a
+  #     500 ms fence outright
+  #
+  # 2000 ms is ~100x the in-suite median and 4x the 500 ms fence the observed
+  # failure missed, and it stays under ExUnit's 5 s per-test timeout, so a stuck
+  # turn still fails — as a stuck turn, not as a flake.
+  @turn_fence_ms 2_000
 
   test "agents-spawn tool creates a specialist and returns its name", %{vid: vid} do
     {coordinator_pid, _name} =
@@ -73,8 +95,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     MockClient.set_response("coordinator done")
 
     :ok = Agent.chat(coordinator_pid, "spin up a specialist")
-
-    assert_receive {:chat_status, %{status: "idle"}}, 500
+    await_idle(coordinator_pid)
 
     # The live-add broadcast carries the space_id the sidebar groups by.
     assert_receive %Phoenix.Socket.Broadcast{
@@ -139,8 +160,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     MockClient.set_response("coordinator done")
 
     :ok = Agent.chat(coordinator_pid, "spin up a specialist on pegasus")
-
-    assert_receive {:chat_status, %{status: "idle"}}, 500
+    await_idle(coordinator_pid)
 
     space_id = AgentTestHelpers.current_space_id()
     {:ok, specialist_pid} = Supervisor.get_agent(space_id, specialist_name)
@@ -173,7 +193,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     log =
       capture_log(fn ->
         :ok = Agent.chat(coordinator_pid, "spin up a specialist on a bad model")
-        assert_receive {:chat_status, %{status: "idle"}}, 500
+        await_idle(coordinator_pid)
       end)
 
     assert log =~ "is_error=true tool result"
@@ -259,8 +279,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     MockClient.set_response("coordinator done")
 
     :ok = Agent.chat(coordinator_pid, "who is here?")
-
-    assert_receive {:chat_status, %{status: "idle"}}, 500
+    await_idle(coordinator_pid)
 
     coordinator_state = :sys.get_state(coordinator_pid)
     AgentTestHelpers.assert_unique_message_indices(coordinator_state)
@@ -293,19 +312,33 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     assert entry_for(content, db_only_name) =~ ~s(vocation: "#{db_only_slug}")
   end
 
-  test "agents-query tool sends a chat to a specialist and returns its response", %{vid: vid} do
-    {coordinator_pid, _name} =
+  test "agents-query delivers the query and the answer arrives as a message", %{vid: vid} do
+    {coordinator_pid, coordinator_name} =
       AgentTestHelpers.start_agent(%{
         model: %{name: "qwen3.5-plus", provider: "model-studio"},
         vocation_id: vid
       })
 
     space_id = AgentTestHelpers.current_space_id()
-
-    # Create a specialist in the coordinator's space, swapped to
-    # MockClient so it can answer the query's chat turn.
     specialist_name = "specialist-#{System.unique_integer([:positive])}"
-    start_mocked_specialist(space_id, specialist_name, "the specialist answer")
+
+    # The specialist answers the way an agent is asked to: with `agents-send` back
+    # to the requester, which is what discharges the reply it owes. Nothing waits
+    # for that, so its turn runs alongside the coordinator's.
+    start_mocked_specialist(space_id, specialist_name, [
+      {:tool,
+       %{
+         text: "replying",
+         tool_calls: [
+           %{
+             id: "reply_1",
+             name: "agents-send",
+             arguments: %{"name" => coordinator_name, "message" => "the specialist answer"}
+           }
+         ]
+       }},
+      {:text, "specialist done"}
+    ])
 
     MockClient.set_tool_response(%{
       text: "querying",
@@ -319,32 +352,49 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     })
 
     MockClient.set_response("coordinator done")
+    MockClient.set_response("coordinator read the answer")
 
     :ok = Agent.chat(coordinator_pid, "ask the specialist")
 
-    assert_receive {:chat_status, %{status: "idle"}}, 500
+    # The tool result is the delivery confirmation, never the answer: there is no
+    # wait to return one from.
+    assert Eventually.eventually(
+             fn -> query_results(coordinator_pid) != [] end,
+             timeout: @turn_fence_ms
+           )
 
-    coordinator_state = :sys.get_state(coordinator_pid)
-    AgentTestHelpers.assert_unique_message_indices(coordinator_state)
+    assert [%Part.ToolResult{name: "agents-query", content: content, is_error: false}] =
+             query_results(coordinator_pid)
 
-    {:tool, tool_msg} =
-      Enum.find(coordinator_state.chat_state.messages, fn
-        {:tool, %{parts: parts}} ->
-          Enum.any?(parts, &match?(%Part.ToolResult{name: "agents-query"}, &1))
+    assert content =~ "Query delivered to #{specialist_name}"
+    assert content =~ "owes you a reply"
 
-        _ ->
-          false
-      end)
+    # The specialist was asked with the peer framing (the query is a peer's
+    # message, decision 7)...
+    assert Eventually.eventually(
+             fn ->
+               Enum.any?(
+                 agent_texts(specialist_pid(space_id, specialist_name)),
+                 &(&1 =~ "[Message from agent \"#{coordinator_name}\"]" and &1 =~ "what is 2+2?")
+               )
+             end,
+             timeout: @turn_fence_ms
+           )
 
-    assert [
-             %Part.ToolResult{
-               name: "agents-query",
-               content: content,
-               is_error: false
-             }
-           ] = tool_msg.parts
+    # ...and its answer arrives later as a message in the coordinator's inbox.
+    assert Eventually.eventually(
+             fn -> Enum.any?(agent_texts(coordinator_pid), &(&1 =~ "the specialist answer")) end,
+             timeout: @turn_fence_ms
+           )
 
-    assert content =~ "the specialist answer"
+    # Both turns are over, and the reply discharged the obligation the query
+    # created (a give-up notice would be in the coordinator's inbox instead).
+    await_idle([coordinator_pid, specialist_pid(space_id, specialist_name)])
+
+    state = :sys.get_state(coordinator_pid)
+    AgentTestHelpers.assert_unique_message_indices(state)
+    assert Machine.owed_senders(state.live.machine) == []
+    refute Enum.any?(agent_texts(coordinator_pid), &(&1 =~ "did not reply"))
   end
 
   test "agents-send tool delivers a message to a peer asynchronously", %{vid: vid} do
@@ -373,8 +423,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     MockClient.set_response("coordinator done")
 
     :ok = Agent.chat(coordinator_pid, "hand this off")
-
-    assert_receive {:chat_status, %{status: "idle"}}, 500
+    await_idle(coordinator_pid)
 
     coordinator_state = :sys.get_state(coordinator_pid)
 
@@ -409,13 +458,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
                false
            end)
 
-    assert Eventually.eventually(
-             fn ->
-               Machine.status_for(:sys.get_state(specialist_pid).live.machine) ==
-                 :idle
-             end,
-             timeout: 500
-           )
+    await_idle(specialist_pid)
   end
 
   test "agents-send to a missing agent reports an error", %{vid: vid} do
@@ -441,7 +484,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     log =
       capture_log(fn ->
         :ok = Agent.chat(coordinator_pid, "try to send")
-        assert_receive {:chat_status, %{status: "idle"}}, 500
+        await_idle(coordinator_pid)
       end)
 
     assert log =~ "is_error=true tool result"
@@ -486,8 +529,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     MockClient.set_response("coordinator done")
 
     :ok = Agent.chat(coordinator_pid, "wait for the specialist")
-
-    assert_receive {:chat_status, %{status: "idle"}}, 500
+    await_idle(coordinator_pid)
 
     coordinator_state = :sys.get_state(coordinator_pid)
     AgentTestHelpers.assert_unique_message_indices(coordinator_state)
@@ -565,7 +607,11 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
   #     doesn't inherit the test's `$callers` — without this its
   #     message-append DB writes would raise
   #     `DBConnection.OwnershipError`.
-  defp start_mocked_specialist(space_id, name, response) do
+  defp start_mocked_specialist(space_id, name, response) when is_binary(response) do
+    start_mocked_specialist(space_id, name, [{:text, response}])
+  end
+
+  defp start_mocked_specialist(space_id, name, pending) do
     vocation_slug = specialist_vocation_slug()
     state = coordinator_state(space_id)
 
@@ -579,9 +625,60 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     end)
 
     MockClient.start_link(pid)
-    MockClient.put_pending(pid, {:text, response})
+    Enum.each(pending, &MockClient.put_pending(pid, &1))
 
     on_exit(fn -> _ = Supervisor.stop_agent(space_id, name) end)
+    pid
+  end
+
+  defp specialist_pid(space_id, name) do
+    {:ok, pid} = Nest.Agents.Registry.lookup(space_id, name)
+    pid
+  end
+
+  defp idle?(pid), do: Machine.status_for(:sys.get_state(pid).live.machine) == :idle
+
+  # Wait until every given agent has settled to `:idle`.
+  #
+  # Polls the machine's own status rather than the `chat:status` broadcast: a
+  # missed or reordered broadcast can never be the reason a test fails, and the
+  # condition waited on is exactly the one the test-teardown invariant checks.
+  # (Not a timing change — over 118 samples the broadcast is delivered at or
+  # before the phase flips, so the two observe the same instant.)
+  defp await_idle(pids) when is_list(pids) do
+    assert Eventually.eventually(
+             fn -> Enum.all?(pids, &idle?/1) end,
+             timeout: @turn_fence_ms
+           )
+  end
+
+  defp await_idle(pid), do: await_idle([pid])
+
+  # The `agents-query` tool results the coordinator's transcript holds.
+  defp query_results(pid) do
+    state = :sys.get_state(pid)
+
+    Enum.flat_map(state.chat_state.messages, fn
+      {:tool, %{parts: parts}} ->
+        Enum.filter(parts, &match?(%Part.ToolResult{name: "agents-query"}, &1))
+
+      _ ->
+        []
+    end)
+  end
+
+  # The text of every `{:user, _}` message in an agent's transcript.
+  defp agent_texts(pid) do
+    state = :sys.get_state(pid)
+
+    for {:user, %{parts: parts}} <- state.chat_state.messages, do: text_of(parts)
+  end
+
+  defp text_of(parts) do
+    Enum.map_join(parts || [], "", fn
+      %Part.Text{text: text} -> text || ""
+      _ -> ""
+    end)
   end
 
   # Start a real coordinator agent in `space_id` and return its

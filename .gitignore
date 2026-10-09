@@ -13,6 +13,11 @@
 # Test outputs
 /notes/test-runs/
 
+# W5 timeline dumps (`mix nest.timeline` reads these). The `notes/*.log`
+# rule below does not cover the `*.jsonl` they write, and the timestamped
+# run directories are throwaway observations, not source.
+notes/usage-runs/
+
 # Stray debug dumps in notes/ (raw API request logs). An ignore rule does
 # not untrack files that are already committed, so the two that were
 # committed before this rule (notes/token-issue.log, notes/max-tool-calls.log)

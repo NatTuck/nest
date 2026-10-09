@@ -58,8 +58,8 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
     MockClient.start_link(parent_pid)
 
     # The worker is the test process. The agent should
-    # reply with `{:ok, child_name}` and remember our pid
-    # under `pending_children[child_name]`.
+    # reply with `{:ok, child_name}` and remember the child
+    # under `pending_children`.
     {:ok, child_name} =
       GenServer.call(
         parent_pid,
@@ -77,12 +77,11 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
     assert row.depth == 1
     _ = parent_id
 
-    # The parent's pending_children contains our pid under
-    # the new child's name. (Without this, the parent's
-    # worker dispatcher wouldn't know where to forward
-    # `:spawn_agent_result`.)
+    # The parent is waiting on the child's answer. (The entry is the name
+    # alone: the outcome is delivered into the parent's own inbox, so no
+    # worker pid is tracked.)
     pending_children = GenServer.call(parent_pid, :get_pending_children)
-    assert pending_children[child_name] == self()
+    assert pending_children == %{child_name => true}
 
     on_exit_cleanup(parent_name, child_name)
   end

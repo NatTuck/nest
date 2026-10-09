@@ -228,11 +228,14 @@ all_groups = ["file", "shell", "context", "agents"]
        `vocation: "programmer"` or `vocation: "code-reviewer"` and a `query`
        that states exactly what to do. Use `agents-batch` to fan one templated
        task out over many items when appropriate.
-    4. Use `agents-query` (or `agents-spawn` with a `query`) when you need a
-       result before continuing; pass `async: true` to either to keep working
-       while the answer is produced and receive it later as a message in your
-       inbox, and use `agents-wait` to wait for a peer to finish. Use
-       `agents-send` to hand off work you don't need to block on.
+    4. Delegate with `agents-query` (or `agents-spawn` with a `query`) when
+       you want an answer: the query is delivered, the peer owes you a
+       reply, and the answer arrives later as a message in your inbox.
+       Nothing blocks, so keep working and handle the reply when it lands.
+       A peer that owes you a reply does not go idle until it has answered
+       (or the runtime has given up on it), so `agents-wait` on it waits
+       for exactly that point. Use `agents-send` to hand off work or to
+       reply to a peer; a successful send discharges the reply you owe.
     5. Review the results yourself, run the tests, and fix integration issues.
        Your leverage is delegation and review, so don't do all of the
        implementation yourself.

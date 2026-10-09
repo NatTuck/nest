@@ -3,7 +3,7 @@ defmodule Nest.Tools.WaitAgents do
   The `agents-wait` tool spec.
 
   Kept in its own module (like `FileTools`, `InspectFile`, and
-  `ShellJobs`) because `Nest.Tools` is at the source-file line cap.
+  `ShellJobs`) so `Nest.Tools`'s own functions stay small.
 
   The `function` here is a stub: real execution lives in
   `Nest.Agents.Agent.ToolLoop.run_wait_agents/2`, which delegates to
@@ -26,9 +26,13 @@ defmodule Nest.Tools.WaitAgents do
           "this workspace. Returns immediately if all of them are already " <>
           "idle; otherwise it returns as soon as the first busy agent goes " <>
           "idle, with that agent's name and the final message of its turn. " <>
+          "An idle peer owes no replies: a peer you queried does not go idle " <>
+          "until it has answered you or the runtime has given up on it. A " <>
+          "give-up reaches you as a runtime notice — unless the runtime cannot " <>
+          "reach you, in which case it only records the refusal. " <>
           "The wait is bounded by `timeout` (milliseconds); reaching it is a " <>
-          "normal result, not an error. Use this after `agents-send` to " <>
-          "collect a peer's result.",
+          "normal result, not an error. Use this when you cannot continue " <>
+          "until a peer has finished.",
       parameters_schema: %{
         "type" => "object",
         "properties" => %{

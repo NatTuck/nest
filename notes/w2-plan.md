@@ -315,8 +315,11 @@ the wall-clock deadlines and the `[agents-spawn timed out]` /
 `async_delivery_failed` notification path (the runtime now enqueues its own
 result, which `enqueue_internal/4` never refuses).
 
-`WaitBudget` survives only for `WaitLoop`; its moduledoc and
-`default_wait_ms/0`'s phrasing must be corrected.
+`WaitBudget` did not survive: it was deleted outright, and its two constants
+(`@default_wait_ms`, `@wait_slice_ms`) were folded into `WaitLoop` as module
+attributes, which is where `default_wait_ms/0` and `wait_slice_ms/0` read them.
+(That plan expected a correction to `WaitBudget`'s own moduledoc; what happened
+instead is that the module went away.)
 
 **Acceptance:** spawn returns a confirmation immediately; the child's turn-final
 text arrives as a message.

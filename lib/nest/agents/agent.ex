@@ -1,26 +1,3 @@
-defmodule Nest.Agents.Agent.TreePosition do
-  @moduledoc """
-  Sub-struct holding the agent's position in the spawned
-  child tree. Extracted from the parent `Agent` struct so
-  the parent doesn't push past the 16-field cap.
-
-  `parent_id` is the integer `agents.id` of the agent that
-  spawned this one via `agents-spawn` (with `clone_context`). `nil` for root agents.
-  `parent_name` is the parent's readable identifier (a
-  String), held so the child can dispatch messages to the
-  parent's GenServer through `Agents.Registry.via_tuple/2`
-  without an integer→name lookup at completion time.
-
-  `fork_message_index` is the clone's first own `message_index`.
-  The clone shares its ancestors' rows below it and owns from it
-  up (see `notes/shared-message-structure.md`). `nil` for a root
-  or a fresh child (owns from index 0); a clone keeps an integer
-  fork index for life.
-  """
-
-  defstruct parent_id: nil, parent_name: nil, fork_message_index: nil
-end
-
 defmodule Nest.Agents.Agent do
   @moduledoc """
   GenServer that manages an individual agent's state and chat.
@@ -37,6 +14,7 @@ defmodule Nest.Agents.Agent do
   alias Nest.Agents.Agent.Callbacks
   alias Nest.Agents.Agent.ClientAPI
   alias Nest.Agents.Agent.Config
+  alias Nest.Agents.Agent.Inbox
   alias Nest.Agents.Agent.Init
   alias Nest.Agents.Agent.MessageAppender
   alias Nest.Agents.Agent.SubAgent
@@ -397,17 +375,34 @@ defmodule Nest.Agents.Agent do
   end
 
   @doc """
-  Deliver an async agent-to-agent message (`agents-send`) to this agent.
-
-  Returns `{:ok, :delivered}` when the agent was idle and a turn
-  started, `{:ok, :queued}` when the agent was busy (or the turn could
-  not start), or `{:error, reason}` when the agent is in a broken state
-  or the inbox is full. Does not block on a response.
+  Deliver an async agent-to-agent message to this agent. `kind` is the entry's
+  provenance (`Inbox.t:kind/0`): `:agent` for another agent's words, `:query`
+  for `agents-query` (which obliges this agent to answer), and `:notice` for the
+  runtime speaking for itself, which no agent said.
+  Returns `{:ok, :delivered}` for an idle target, `{:ok, :queued}` for a busy
+  one, `{:error, reason}` for a broken target or a full inbox.
   """
-  @spec deliver_message(pid(), String.t(), String.t()) ::
+  @spec deliver_message(pid(), String.t(), String.t(), Inbox.kind()) ::
           {:ok, :delivered | :queued} | {:error, term()}
-  def deliver_message(pid, sender, content) do
-    GenServer.call(pid, {:deliver_async, sender, content}, 5_000)
+  def deliver_message(pid, sender, content, kind \\ :agent) do
+    GenServer.call(pid, {:deliver_async, sender, content, kind}, 5_000)
+  end
+
+  @doc """
+  Deliver the runtime's own result to this agent, from the process that produced
+  it — a batch coordinator enqueueing its aggregate. `kind` is the entry's
+  provenance (`Inbox.t:kind/0`); the coordinator passes `:notice`, because the
+  runtime is speaking, not an agent.
+
+  Unlike `deliver_message/4` this is never refused by the peer-inbox cap: the cap
+  bounds a runaway *peer* producer, and this is the agent's own result (the same
+  guarantee `Inbox.enqueue_internal/4` gives an in-process caller). Returns
+  `{:ok, :delivered}` for an idle target, `{:ok, :queued}` otherwise.
+  """
+  @spec deliver_internal(pid(), String.t() | nil, String.t(), Inbox.kind()) ::
+          {:ok, :delivered | :queued}
+  def deliver_internal(pid, sender, content, kind) do
+    GenServer.call(pid, {:deliver_internal, sender, content, kind}, 5_000)
   end
 
   @doc """
@@ -426,10 +421,9 @@ defmodule Nest.Agents.Agent do
   Re-run the compactor after a `:compaction_failed` status.
   Handler no-ops when the agent isn't in `:compaction_failed`.
 
-  Synchronous: the channel's `handle_in("chat:retry-compaction", ...)`
-  reply now lands after the agent has actually handled the
-  retry, not the moment the message queued. `GenServer.call/3`
-  with `:infinity` timeout matches `set_model/2`'s call
+  Synchronous: the channel's `handle_in("chat:retry-compaction", ...)` reply
+  lands after the agent has actually handled the retry, not the moment the
+  message queued. `GenServer.call/3` with `:infinity` matches `set_model/2`'s
   contract; the retry handler is fast (log + state return) so
   the unbounded wait is fine.
   """
@@ -629,6 +623,10 @@ defmodule Nest.Agents.Agent do
 
   @impl true
   def terminate(_reason, state) do
+    # An owed reply cannot be given up from here (the notices need a live
+    # settle): it is lost with the process, so say so in the log.
+    Inbox.log_lost_replies(state)
+
     # Stop any outstanding queries (children in
     # `pending_children`) before teardown. Defensive against
     # the case where the supervisor gave up because we
