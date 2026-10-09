@@ -133,7 +133,7 @@ defmodule Nest.Tools.ShellCmdTest do
 
     # The transcript is temporary either way: the caller gets the output.
     assert {:ok, _} = ShellCmd.execute("echo bye", "/tmp", tmp, nil, [])
-    assert Path.wildcard(Path.join(tmp, ".nest-cmd-*.sh")) == []
+    assert Path.wildcard(Path.join(tmp, ".nest-cmd-*.sh"), match_dot: true) == []
   end
 
   test "there is no set -e, and the exit code of the last statement is what is reported" do

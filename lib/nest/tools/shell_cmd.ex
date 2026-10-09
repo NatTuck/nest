@@ -77,7 +77,7 @@ defmodule Nest.Tools.ShellCmd do
     sandboxed_cmd = build_sandboxed_command(script_path, workspace, tmp_path, caps)
 
     if Keyword.get(opts, :background, false) do
-      run_background(command, script, script_path, sandboxed_cmd, workspace, tmp_path, caps, opts)
+      run_background(command, script, sandboxed_cmd, workspace, tmp_path, caps, opts)
     else
       Logger.info(
         "Executing sandboxed script #{script_path} in #{workspace}: #{truncate_log(command)}"
@@ -104,11 +104,11 @@ defmodule Nest.Tools.ShellCmd do
 
   # Start the command as a background job and either report an immediate
   # exit (within the grace window) as a normal result, or hand the caller a
-  # job handle. The job's script is removed by `ShellJobs` when the job ends.
+  # job handle. `ShellJobs` removes the job's *host* script when the job
+  # ends; the sandbox spelling is only used to build the bwrap command line.
   defp run_background(
          command,
          script,
-         script_path,
          sandboxed_cmd,
          workspace,
          tmp_path,
@@ -129,7 +129,7 @@ defmodule Nest.Tools.ShellCmd do
              agent_pid: Keyword.get(opts, :agent_pid),
              command: command,
              bwrap: sandboxed_cmd,
-             script_path: script_path,
+             script_path: script,
              tmp_path: tmp_path,
              max_jobs: background_cap(caps)
            }) do

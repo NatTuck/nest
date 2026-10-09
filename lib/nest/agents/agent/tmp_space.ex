@@ -55,11 +55,13 @@ defmodule Nest.Agents.Agent.TmpSpace do
     path = agent_dir(space_id, agent_name)
     space = space_dir(space_id)
 
-    # Guard: `rm_rf` must only run on a path under the known prefix AND
-    # exactly one level below the space directory. A string-handling bug
-    # that produced an unexpected prefix — or, worse, that resolved to
-    # the space directory (or its parent) itself — must log an error
-    # instead of wiping `/tmp`, `/`, or a sibling's files.
+    # Backstop guard, not the protection: `agent_dir/2` already guarantees
+    # a single non-dot segment (see `safe_segment/1`), so this refusal
+    # branch is unreachable for any name. It is a *syntactic* check
+    # (`Path.dirname/1`) and is sound only because the encoder guarantees
+    # that shape; if a future caller built the path without `agent_dir/2`,
+    # this would be the last line of defence against `rm_rf`-ing `/tmp`,
+    # `/`, or a sibling's files.
     if String.starts_with?(path, @tmp_prefix) and Path.dirname(path) == space do
       File.rm_rf(path)
       Logger.info("Cleaned up tmp space for agent #{space_id}/#{agent_name}: #{path}")
@@ -96,13 +98,18 @@ defmodule Nest.Agents.Agent.TmpSpace do
     Path.join(space_dir(space_id), safe_segment(agent_name))
   end
 
-  # Encode an agent name to a single safe path segment. A name containing
-  # `/` (or `.`/`..`) would otherwise escape the space dir; `..` in
-  # particular resolves the scratch dir to the shared `nest-<ospid>` root
-  # and would make `Nest.Sandbox` bind the whole host `/tmp` at `/tmp`,
-  # leaking every space's scratch. Percent-encoding (with `%` itself
-  # encoded) keeps the mapping collision-free and leaves ordinary
-  # slug-like names untouched.
+  # Encode an agent name to a single safe path segment. This is the
+  # load-bearing safety property of the scratch layout: `cleanup/2`
+  # decides "is this a single agent sub-directory?" with the *syntactic*
+  # check `Path.dirname(path) == space`, so an unencoded `..` would pass
+  # it and `File.rm_rf("<space>/..")` would wipe the whole shared
+  # `nest-<ospid>` root — every space, every agent's scratch.
+  # Percent-encoding anything outside `[A-Za-z0-9_-]` (with `%` itself
+  # encoded) guarantees a single non-dot segment and keeps the mapping
+  # collision-free; ordinary slug-like names are unchanged. The guard in
+  # `cleanup/2` is sound only because every path is built through here —
+  # a caller that joined the name onto `space_dir/1` directly would
+  # silently reopen the hole.
   defp safe_segment(name) do
     case URI.encode(to_string(name), &safe_segment_char?/1) do
       "" -> "%00"
