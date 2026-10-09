@@ -136,10 +136,11 @@ defmodule Nest.Agents.Agent.ChatState.Live do
   Each entry is
   `%{from: name | nil, content: text, timestamp: DateTime.t(), kind: kind, mode: mode}`
   in arrival order; `content` is stored verbatim and the `[mode: ...]`
-  prefix is added when the entry is delivered. The entries are combined
+  prefix is added when the entry is delivered. A drain delivers the FIFO
+  head batch — a lone human message, or a run of peer messages combined
   into a single user message (offloaded to the agent tmp dir when over
-  `max-async-message-tokens`) and drained by the turn executor
-  (`Turn.Executor`'s `:drain_inbox` action / `Turn.drain_inbox/1`) at the
+  `max-async-message-tokens`) — via the turn executor
+  (`Turn.Executor`'s drain actions / `Turn.drain_inbox/1`) at the
   next turn boundary — the `:generating`/`:chat` `:iterate` transition
   delivers them before the next request (issue #15), and anything still
   queued when the agent reaches `:idle` is drained there. In-memory only: a

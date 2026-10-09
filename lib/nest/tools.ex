@@ -328,10 +328,11 @@ defmodule Nest.Tools do
   # agent in this space. Unlike `agents-query`, it does not wait for a
   # response. If the target is idle the message becomes its next user
   # message (starting a turn); if the target is busy the message is
-  # queued, and all queued messages are combined into one user message
-  # and delivered at the target's next turn boundary — before it starts
-  # its next LLM request, or when it goes idle if the turn ends first
-  # (offloaded to a scratch file when over the configured
+  # queued and delivered at the target's next turn boundary — before it
+  # starts its next LLM request, or when it goes idle if the turn ends
+  # first. A delivery carries the FIFO head batch: a queued human message
+  # is delivered alone, a run of peer messages is combined into one user
+  # message (offloaded to a scratch file when over the configured
   # `max-async-message-tokens` cap).
   #
   # The `function` here is a stub. Real execution lives in
@@ -344,10 +345,11 @@ defmodule Nest.Tools do
       description:
         "Send a message to another agent in this space without waiting for a " <>
           "reply. If that agent is idle the message becomes its next user " <>
-          "message; if it is busy the message is queued and delivered together " <>
-          "with any other queued messages at its next turn boundary — before " <>
-          "it starts its next request, or when it goes idle if the turn ends " <>
-          "first. " <>
+          "message; if it is busy the message is queued and delivered at its " <>
+          "next turn boundary — before it starts its next request, or when it " <>
+          "goes idle if the turn ends first. A queued message is delivered on " <>
+          "its own, ahead of anything queued behind it (peer messages sent in " <>
+          "the same window are delivered together as one message). " <>
           "Use this to hand off work or share information with a peer or " <>
           "sub-agent; use `agents-query` when you need the response now.",
       parameters_schema: %{

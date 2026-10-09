@@ -15,11 +15,6 @@ defmodule Nest.Agents.Agent.ConfigTest do
 
   setup :verify_on_exit!
 
-  setup do
-    Mimic.copy(Nest.ChatModel)
-    :ok
-  end
-
   test "returns the configured value when DotConfig has one" do
     Mimic.stub(Nest.DotConfig, :load, fn ->
       {:ok, %{providers: %{}, models: %{}, max_tool_iterations: 7}}

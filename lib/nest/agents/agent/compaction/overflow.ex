@@ -15,9 +15,13 @@ defmodule Nest.Agents.Agent.Compaction.Overflow do
       budget computation (in
       `Nest.Agents.Agent.Machine.Compaction`) finds the
       system + suffix would overflow the compaction reserve.
-      The agent stays in its current status (no
-      spawn) and the user is told why compaction can't
-      proceed.
+      No compactor is spawned, and what happens to the message that
+      caused the attempt depends on which arm of
+      `Compaction.reserve_exhausted/1` ran: a parked chat request is
+      appended to the transcript and the agent enters `:idle`; a still-queued
+      inbox batch stays queued and the agent enters `:context_overflow`
+      (so the message is visible on the wire either way); with neither, the
+      agent enters `:idle`. The user is told why compaction can't proceed.
 
   Both paths share the same message structure (model
   context limit, system prompt size in tokens, compaction

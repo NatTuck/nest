@@ -11,10 +11,12 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Turn
+  alias Nest.Agents.Agent.Turn.Dispatch
   alias Nest.Agents.Agent.Turn.Executor
   alias Nest.Messages.Assistant
   alias Nest.Messages.Part
   alias Nest.Messages.User
+  alias Nest.Tokens.ConversationSize
 
   defp state do
     %Agent{
@@ -94,9 +96,17 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
 
   defp run(action, state \\ state()), do: Executor.run_all(List.wrap(action), state)
 
-  defp inbox_state(entries, mode) do
-    base = state()
+  defp inbox_state(entries, mode, base \\ nil) do
+    base = base || state()
     %{base | live: %{base.live | inbox: entries, mode: mode}}
+  end
+
+  defp entry(kind, from, content, mode \\ nil) do
+    %{from: from, content: content, timestamp: DateTime.utc_now(), kind: kind, mode: mode}
+  end
+
+  defp system_msg do
+    {:system, %Nest.Messages.System{index: 0, parts: [%Part.Text{text: "sys"}], api_logs: []}}
   end
 
   describe "bookkeeping actions" do
@@ -290,44 +300,119 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       assert state.llm_metrics.descendant_usage.output_tokens == 4
     end
 
+    test "drain_inbox peeks: the queue is untouched and no inbox frame is sent" do
+      # intentional: peek-then-consume (#26). The drain computes the batch's
+      # content and applies its mode, but leaves `state.live.inbox` alone and
+      # broadcasts nothing: the machine decides what to do with the content and
+      # `{:consume_inbox, _}` is what clears the queue. A delivery that cannot
+      # proceed (a compaction, a block) therefore leaves the message queued and
+      # visible instead of in no payload at all.
+      peer = entry(:agent, "peer", "peer note")
+      state = inbox_state([peer], "chat")
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.space_id}:#{state.name}")
+
+      {state, {:inbox_drain, [^peer], content}} = run({:drain_inbox}, state)
+
+      assert content == "[Message from agent \"peer\"]\npeer note"
+      assert state.live.inbox == [peer]
+      refute_receive {:chat_inbox, _}, 50
+    end
+
+    test "consume_inbox clears exactly the peeked batch and sends one frame per consume" do
+      # intentional: the consume half is emitted by the branch that actually
+      # appended the message, and it clears only the batch the peek delivered —
+      # anything the peek did not take stays queued and stays on the wire. One
+      # consume is one `chat:inbox` frame, carrying the remaining queue.
+      peer = entry(:agent, "peer", "peer note")
+      alice = entry(:user, "alice", "human note", "plan")
+      state = inbox_state([peer, alice], "chat")
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.space_id}:#{state.name}")
+
+      {state, nil} = run({:consume_inbox, [peer]}, state)
+
+      assert state.live.inbox == [alice]
+
+      assert_receive {:chat_inbox, %{count: 1, messages: [%{"content" => "human note"}]}}
+      refute_receive {:chat_inbox, _}, 50
+
+      # The batch was the whole queue: the frame reports an empty inbox.
+      {state, nil} = run({:consume_inbox, [alice]}, state)
+
+      assert state.live.inbox == []
+      assert_receive {:chat_inbox, %{count: 0, messages: []}}
+      refute_receive {:chat_inbox, _}, 50
+    end
+
+    test "drain_inbox :append appends the batch and consumes it without a preflight" do
+      # intentional: the loop breaker's give-up shape (#26). The executor builds
+      # the message from the peeked batch and appends it directly — no
+      # `start_chat/3`, so the ack cannot re-enter the compaction decision it
+      # just gave up on — then consumes exactly the batch it appended.
+      peer = entry(:agent, "peer", "peer note")
+      state = inbox_state([peer], "chat")
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.space_id}:#{state.name}")
+
+      # The fixture agent has no DB row, so the persist step warns; capturing it
+      # keeps the suite's console clean and pins that the append really went
+      # through `MessageAppender` rather than around it.
+      log =
+        capture_log(fn ->
+          {state, nil} = run({:drain_inbox, :append}, state)
+          send(self(), {:appended, state})
+        end)
+
+      assert log =~ "Failed to persist message"
+      assert_receive {:appended, state}
+
+      assert state.live.inbox == []
+
+      assert [
+               {:user,
+                %User{
+                  parts: [
+                    %Part.Text{text: "[mode: chat]\n[Message from agent \"peer\"]\npeer note"}
+                  ]
+                }}
+             ] = state.chat_state.messages
+
+      assert_receive {:chat_inbox, %{count: 0, messages: []}}
+      refute_receive {:chat_inbox, _}, 50
+    end
+
     test "drain_inbox is a no-op on an empty inbox" do
       assert {_state, nil} = run({:drain_inbox})
+      assert {_state, nil} = run({:drain_inbox, :append})
+      assert {_state, nil} = run({:consume_inbox, []})
     end
 
     test "drain_inbox applies the batch's human mode and otherwise leaves the mode alone" do
-      # intentional: one mode per combined message, chosen by
-      # `Inbox.drain_mode/1` and applied here (never at enqueue time, where
-      # it would re-resolve the ongoing turn's caps).
-      peer = %{
-        from: "peer",
-        content: "peer note",
-        timestamp: DateTime.utc_now(),
-        kind: :agent,
-        mode: nil
-      }
+      # intentional: one mode per delivered batch, chosen by `Inbox.drain_mode/1`
+      # and applied at the peek (never at enqueue time, where it would
+      # re-resolve the ongoing turn's caps). The batch is the queue's head — an
+      # agent run, or a lone human message — so a human entry behind an agent
+      # run is not part of this delivery at all.
+      peer = entry(:agent, "peer", "peer note")
+      human = entry(:user, "alice", "human note", "plan")
 
-      human = %{
-        from: "alice",
-        content: "human note",
-        timestamp: DateTime.utc_now(),
-        kind: :user,
-        mode: "plan"
-      }
-
-      # A human mode in the batch wins, and the combined text labels both kinds.
-      {state, {:inbox_drain, [^peer, ^human], content}} =
+      # An agent-run head is delivered under the agent's current mode; the peek
+      # consumes nothing, so the queue is untouched (including the human entry
+      # behind the batch).
+      {state, {:inbox_drain, [^peer], content}} =
         run({:drain_inbox}, inbox_state([peer, human], "chat"))
 
-      assert state.live.inbox == []
-      assert state.live.mode == "plan"
-      assert content =~ "[Message from the user \"alice\"]\nhuman note"
-      assert content =~ "[Message from agent \"peer\"]\npeer note"
-
-      # An agent-only batch leaves the agent's current mode alone.
-      {state, {:inbox_drain, [^peer], _content}} =
-        run({:drain_inbox}, inbox_state([peer], "chat"))
-
+      assert state.live.inbox == [peer, human]
       assert state.live.mode == "chat"
+      assert content == "[Message from agent \"peer\"]\npeer note"
+
+      # A lone human message runs in its own mode, and its text is bare: a
+      # queued human message must read like one typed while the agent was idle
+      # (issue #31 decision 8).
+      {state, {:inbox_drain, [^human], content}} =
+        run({:drain_inbox}, inbox_state([human], "chat"))
+
+      assert state.live.inbox == [human]
+      assert state.live.mode == "plan"
+      assert content == "human note"
 
       # A mode the vocation does not define resolves to its default, exactly
       # as an idle chat's request would, so `currentMode` never holds a mode
@@ -340,20 +425,36 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       assert state.live.mode == "chat"
     end
 
-    test "restore_inbox restores entries and broadcasts" do
-      state = state()
-      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.space_id}:#{state.name}")
+    test "Turn.drain_inbox/1 reports :queued when the delivery parks for a compaction" do
+      # intentional: under peek-then-consume the executor leaves the queue
+      # alone, so "the inbox is empty" no longer means "delivered". A drain
+      # whose delivery parked — here a compaction it needed before it could
+      # fit — still holds the message, so the reply to `handle_delivery/3` is
+      # `:queued`, not the `:delivered` the consume-first design reported.
+      messages = [system_msg(), user_msg(), assistant_msg(), user_msg()]
+      base = state()
 
-      entry = %{
-        from: "a",
-        content: "c",
-        timestamp: DateTime.utc_now(),
-        kind: :agent,
-        mode: nil
+      content = "[Message from agent \"peer\"]\npeer note"
+      projected = messages ++ [Dispatch.build_user_message(content, "chat")]
+      limit = ConversationSize.size(projected) + 8_191
+
+      state = %{
+        base
+        | chat_state: %{base.chat_state | messages: messages},
+          llm_metrics: %{base.llm_metrics | context_limit: limit}
       }
 
-      {state, nil} = run({:restore_inbox, [entry]}, state)
-      assert state.live.inbox == [entry]
+      assert Dispatch.preflight_decision(projected, limit) == :needs_compaction,
+             "the fixture must force the :needs_compaction branch"
+
+      peer = entry(:agent, "peer", "peer note")
+      state = inbox_state([peer], "chat", state)
+
+      {state, :queued} = Turn.drain_inbox(state)
+
+      assert state.live.inbox == [peer]
+      assert state.live.machine.kind == :compaction
+      assert state.live.machine.pending_user_message == nil
     end
 
     test "stop_all_children clears the children sub-machine" do
@@ -407,6 +508,85 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
         {_state, nil} =
           run({:fail_turn, %RuntimeError{message: "boom"}, [{__MODULE__, :test, 1, []}]}, state())
       end)
+    end
+  end
+
+  describe "give-up paths through the settle loop" do
+    test "a refused append on the loop ack's drain leaves the batch queued and fails loudly" do
+      # intentional: `{:drain_inbox, :append}` must never consume a batch it
+      # did not append — that would be the "in neither the queue nor the
+      # transcript" state #26 exists to eliminate. Driven through the real
+      # settle loop with a context limit that refuses every append, so the
+      # appender's `:invalid` refusal is the branch the path actually hits.
+      base = state()
+      peer = entry(:agent, "peer", "peer note")
+
+      state = inbox_state([peer], "chat", base)
+      state = %{state | llm_metrics: %{base.llm_metrics | context_limit: 1}}
+
+      machine = %{state.live.machine | phase: :compaction_loop_detected, loop_count: 3}
+      state = %{state | live: %{state.live | machine: machine}}
+
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.space_id}:#{state.name}")
+
+      {result, log} = with_log(fn -> Turn.settle(state, :loop_ack) end)
+
+      assert {:ok, settled} = result
+
+      # Nothing consumed the batch: it is still queued, and no `chat:inbox`
+      # frame was emitted at all (a consume is the only thing that sends one),
+      # while the status payload keeps the queue visible to a client.
+      assert settled.live.inbox == [peer]
+      refute_receive {:chat_inbox, _}, 50
+      assert_receive {:chat_status, %{status: "context_overflow", pendingMessageCount: 1}}
+
+      # And the refusal is visible: the turn fails with `chat:error` rather
+      # than dropping the message, and the agent ends in a defined status.
+      assert_receive {:chat_error, %{content: content}}
+      assert content =~ "refusing to send/store"
+
+      assert log =~ "chat_crashed"
+      assert log =~ "refusing to send/store"
+      assert Machine.status_for(settled.live.machine) == :context_overflow
+    end
+
+    test ":reserve_exhausted appends the parked chat request instead of stranding it" do
+      # intentional: #29's whole claim is that the message ends up on a payload.
+      # This drives the real settle loop (machine decision, executor append,
+      # derived status) rather than only asserting an action list. The
+      # compaction plan cannot be staged at all when there is no system message
+      # and no vocation (`{:error, :reserve_exhausted}`), which is the arm's
+      # precondition.
+      base = %{state() | vocation: nil}
+
+      machine = %{
+        base.live.machine
+        | phase: :compaction_failed,
+          pending_user_message:
+            {:user_message, Dispatch.build_user_message("held message", "chat")}
+      }
+
+      state = %{base | live: %{base.live | machine: machine}}
+
+      # The fixture agent has no DB row, so the append's persist step warns;
+      # capturing it keeps the suite's console clean and pins that the append
+      # went through `MessageAppender`.
+      log =
+        capture_log(fn ->
+          {:ok, settled} = Turn.settle(state, :retry_compaction)
+          send(self(), {:settled, settled})
+        end)
+
+      assert log =~ "Failed to persist message"
+      assert_receive {:settled, settled}
+
+      # A defined status, the slot cleared (so a later resume cannot append the
+      # message twice) and the message in the transcript.
+      assert Machine.status_for(settled.live.machine) == :idle
+      assert settled.live.machine.pending_user_message == nil
+
+      assert [{:user, %User{parts: [%Part.Text{text: text}]}}] = settled.chat_state.messages
+      assert text == "[mode: chat]\nheld message"
     end
   end
 

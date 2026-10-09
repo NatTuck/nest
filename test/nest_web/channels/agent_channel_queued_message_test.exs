@@ -125,7 +125,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
   end
 
   describe "composed channel -> queue -> drain path" do
-    test "a message pushed while a tool batch runs is queued, drained and broadcast as the turn",
+    test "a human message pushed while a tool batch runs is queued and delivered alone",
          %{
            user: user
          } do
@@ -199,48 +199,179 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       # client that missed a `chat:inbox` frame can recover it.
       assert_push "chat:status", %{status: "streaming", pendingMessageCount: 2}, 500
 
-      # The boundary drain delivers both entries as ONE user message, pushed to
-      # the client as the transcript row: `"mode" => "plan"` distinguishes it
-      # from the turn-opening message (`"mode" => "chat"`). The test process is
-      # subscribed twice (the helper's `start_agent/1` plus this join), so every
-      # broadcast arrives twice — assertions match payloads, never sequences.
-      assert_push "chat:message", %{"role" => "user", "mode" => "plan"} = delivered, 500
+      # The boundary drain delivers the human message ALONE — it never merges
+      # with the peer entry that arrived behind it (issue #31 decision 8) — as
+      # bare human text in the human's mode, with no sender framing: a queued
+      # human message must read exactly like one typed while the agent was idle.
+      # `"mode" => "plan"` distinguishes it from the turn-opening message
+      # (`"mode" => "chat"`). The test process is subscribed twice (the helper's
+      # `start_agent/1` plus this join), so every broadcast arrives twice —
+      # assertions match payloads, never sequences.
+      assert_push "chat:message",
+                  %{"role" => "user", "mode" => "plan", "parts" => [%{"text" => human_text}]} =
+                    delivered,
+                  500
 
       assert is_integer(delivered["index"])
-      assert [%{"kind" => "text", "text" => text}] = delivered["parts"]
-      assert text =~ "[mode: plan]"
-      assert text =~ "[Message from the user \"#{user.username}\"]\nhuman note"
-      assert text =~ "[Message from agent \"#{name}\"]\npeer note"
+      assert human_text == "[mode: plan]\nhuman note"
 
-      assert {human_at, _} = :binary.match(text, "human note")
-      assert {peer_at, _} = :binary.match(text, "peer note")
-      assert human_at < peer_at, "the queue order is preserved"
+      # The peer's entry is delivered as its own batch at the next turn
+      # boundary, with the agent label that disambiguates it.
+      assert_push "chat:message",
+                  %{
+                    "role" => "user",
+                    "parts" => [%{"text" => "[mode: plan]\n[Message from agent \"" <> rest}]
+                  },
+                  500
 
-      # The delivered turn runs to completion (its own response), then the
-      # transcript is: the turn-opening user message, the tool call and its
-      # result, the live bridge ack, the delivered combined message, and the
-      # final response — with the delivered row carrying the pushed index.
-      assert_push "chat:status", %{status: "idle"}, 500
+      assert rest == "#{name}\"]\npeer note"
+
+      # Both delivered turns ran to completion, so the transcript is: the
+      # turn-opening user message, the tool call and its result, the live bridge
+      # ack, the delivered human message, its response, the delivered peer
+      # message, and its response.
+      assert Eventually.eventually(
+               fn ->
+                 :sys.get_state(agent_pid).chat_state.messages
+                 |> Enum.map(&elem(&1, 0)) ==
+                   [
+                     :system,
+                     :user,
+                     :assistant,
+                     :tool,
+                     :assistant,
+                     :user,
+                     :assistant,
+                     :user,
+                     :assistant
+                   ]
+               end,
+               timeout: 500
+             )
 
       state = :sys.get_state(agent_pid)
       messages = state.chat_state.messages
 
-      assert Enum.map(messages, &elem(&1, 0)) ==
-               [:system, :user, :assistant, :tool, :assistant, :user, :assistant]
-
       ack_index = Enum.find_index(messages, &(text_of(&1) =~ "continuing from here"))
-      delivered_index = Enum.find_index(messages, &(text_of(&1) =~ "[Message from the user"))
+      human_index = Enum.find_index(messages, &(text_of(&1) =~ "human note"))
+      peer_index = Enum.find_index(messages, &(text_of(&1) =~ "peer note"))
 
       assert is_integer(ack_index), "expected the bridge ack"
-      assert is_integer(delivered_index), "expected the delivered message"
-      assert ack_index < delivered_index
-      assert delivered_index == delivered["index"]
-      assert text_of(Enum.at(messages, delivered_index)) =~ "[mode: plan]"
+      assert is_integer(human_index), "expected the delivered human message"
+      assert is_integer(peer_index), "expected the delivered peer message"
+      assert ack_index < human_index
+      assert human_index < peer_index
+      assert human_index == delivered["index"]
+      assert text_of(Enum.at(messages, human_index)) == "[mode: plan]\nhuman note"
 
       assert state.live.inbox == []
       assert Machine.status_for(state.live.machine) == :idle
       AgentTestHelpers.assert_unique_message_indices(state)
     end
+  end
+
+  describe "a queued message across a compaction (#26)" do
+    test "the queue survives the compaction and clears only when the message is delivered",
+         %{user: user} do
+      test_pid = self()
+
+      # A dedicated agent on a multi-mode vocation: the queued message asks for
+      # `plan`, which only resolves if the vocation defines it.
+      {agent_pid, name} =
+        AgentTestHelpers.start_agent(%{
+          model: %{name: "qwen3.5-plus"},
+          vocation_id: AgentTestHelpers.multi_mode_vocation_id_for_test(),
+          created_by_user_id: user.id
+        })
+
+      space_id = AgentTestHelpers.current_space_id()
+      {:ok, connected} = connect(UserSocket, %{"token" => Process.get(:agent_test_token)})
+      {:ok, _, socket} = subscribe_and_join(connected, AgentChannel, "agent:#{space_id}:#{name}")
+
+      # Park the compactor's LLM call, so the agent stays `:compacting` while the
+      # human push lands — no timing dependence. The `after` is a safety valve
+      # so a failing test cannot leave the compactor parked.
+      Mimic.stub(MockClient, :run, fn request, opts ->
+        if compaction_request?(request) do
+          send(test_pid, {:compactor_blocked, self()})
+
+          receive do
+            :release_compactor -> :ok
+          after
+            1_000 -> :ok
+          end
+        end
+
+        Mimic.call_original(MockClient, :run, [request, opts])
+      end)
+
+      Mimic.allow(MockClient, self(), agent_pid)
+
+      # The model asks for a compaction: staging it refuses the tool batch and
+      # carries the turn's continuation, so the agent reports `:compacting`.
+      MockClient.set_tool_response(%{
+        text: "compacting",
+        tool_calls: [%{id: "c1", name: "context-compact", arguments: %{}}]
+      })
+
+      MockClient.set_response("Done")
+
+      ref = push(socket, "chat:message", %{"content" => "start the turn"})
+      assert_reply ref, :ok, %{}
+      assert_receive {:compactor_blocked, compactor}, 500
+
+      # The human push queues while the agent is compacting. Nothing consumes it
+      # — the compaction's resume is what delivers it — so the count stays at 1
+      # for the whole compaction, and no count-0 frame is ever sent for it.
+      ref = push(socket, "chat:message", %{"content" => "human note", "mode" => "plan"})
+      assert_reply ref, :ok, %{}
+
+      assert_push "chat:inbox", %{count: 1}, 500
+      refute_push "chat:inbox", %{count: 0}, 100
+
+      state = :sys.get_state(agent_pid)
+
+      assert Machine.status_for(state.live.machine) == :compacting
+      assert [%{content: "human note", kind: :user, mode: "plan"}] = state.live.inbox
+
+      # Releasing the compactor commits the compaction: the resume re-runs the
+      # carried continuation and the next turn boundary drains the queue, so the
+      # message is delivered and the queue clears. The only count-0 frame in
+      # this test is that consume.
+      send(compactor, :release_compactor)
+
+      assert_push "chat:inbox", %{count: 0, messages: []}, 500
+
+      assert_push "chat:message",
+                  %{"role" => "user", "mode" => "plan", "parts" => [%{"text" => text}]},
+                  500
+
+      assert text == "[mode: plan]\nhuman note"
+
+      # The turn the delivered message started runs to completion.
+      assert_push "chat:status", %{status: "idle"}, 500
+
+      state = :sys.get_state(agent_pid)
+
+      assert state.live.inbox == []
+      assert Machine.status_for(state.live.machine) == :idle
+      AgentTestHelpers.assert_unique_message_indices(state)
+    end
+  end
+
+  # The compactor's request ends on the `[mode: compact]` suffix, which is what
+  # distinguishes it from a chat request.
+  defp compaction_request?(request) do
+    Enum.any?(request.messages, fn
+      {:user, %{parts: parts}} ->
+        Enum.any?(
+          parts || [],
+          &match?(%Nest.Messages.Part.Text{text: "[mode: compact]" <> _}, &1)
+        )
+
+      _ ->
+        false
+    end)
   end
 
   # Fabricate an observable status (there is no real turn behind it). The

@@ -232,6 +232,14 @@ Machine (`machine_boundary_delivery_test.exs`, or a new sibling at the file cap)
 * `:fits` from a drain emits `{:consume_inbox, entries}` **before** `{:append, _}`
   and `:iterate`; from a chat request (`inbox_entries == nil`) it emits no
   consume.
+
+  **Implementation note (W1).** The ordering was flipped during implementation:
+  the consume now *follows* the append (`Transitions.start_chat/3`'s `:fits`
+  branch, via `consume_actions/1`). An append the appender refuses halts the
+  action list with `{:append_result, :invalid | :stale, _}`, so the consume never
+  runs and the entries stay queued and visible — which is what makes "visible in
+  the queue or the transcript, never in neither" true by construction rather
+  than by argument. The machine test asserts the append-then-consume order.
 * `:needs_compaction` from a drain emits neither consume nor restore and leaves
   `pending_user_message == nil`; from a chat request it sets `pending_user_message`.
 * `:cannot_compact` from a drain emits **no** `{:restore_inbox, _}` (pin the

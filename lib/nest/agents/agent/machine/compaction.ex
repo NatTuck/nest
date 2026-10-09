@@ -6,10 +6,27 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
   file-length budget. `stage/3` runs the loop-breaker and plans the
   request; `resume/1` dispatches the carried entry after a commit; and
   `compaction_failed/3` enters the retryable blocked state.
+
+  ## Give-up paths and the drain shapes
+
+  Every `stage/3` caller can hit `{:error, :reserve_exhausted}`, and each arm
+  of that branch keeps the message that caused the attempt on a wire payload
+  (issue #29) rather than stranding it. The shapes it and the loop breaker
+  use are the action vocabulary's two ways of disposing of a queued message
+  without starting a turn from it:
+
+    * `{:append, {:user, user}}` — the machine already holds the built
+      message (the chat-request path parked it);
+    * `{:drain_inbox, :append}` — the message is still queued (the drain path
+      under peek-then-consume), so the executor builds it from the batch,
+      appends it, and consumes it without `start_chat/3`. A bare
+      `{:drain_inbox}` would re-preflight the batch and re-enter the
+      compaction decision that just gave up.
   """
 
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Machine
+  alias Nest.Agents.Agent.Machine.Boundary
   alias Nest.Agents.Agent.Machine.Phase
   alias Nest.Agents.Agent.Machine.Response
   alias Nest.Agents.Agent.Turn.Dispatch
@@ -40,36 +57,76 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
   defp do_stage(m, carried_entry) do
     case Dispatch.compaction_plan(m) do
       {:ok, staged} ->
-        provisional = m.work.ctx.next_message_index + length(staged)
-
-        machine =
-          Phase.enter(
-            %{m | entry: {:compaction, staged, carried_entry}},
-            :compaction,
-            :generating,
-            :http
-          )
-
-        machine = %{
-          machine
-          | work: %{
-              machine.work
-              | iteration: 0,
-                max_iterations: Config.configured_max_tool_iterations(),
-                force_finalize: false,
-                active_message_index: provisional
-            }
-        }
-
-        {:ok, [:iterate], machine}
+        stage_request(m, staged, carried_entry)
 
       {:error, :system_oversized} ->
         machine = Phase.enter_blocked(m, :context_overflow)
         {:ok, [{:broadcast, {:overflow, :system_oversized, "compact"}, nil}], machine}
 
       {:error, :reserve_exhausted} ->
+        reserve_exhausted(m)
+    end
+  end
+
+  defp stage_request(m, staged, carried_entry) do
+    provisional = m.work.ctx.next_message_index + length(staged)
+
+    machine =
+      Phase.enter(
+        %{m | entry: {:compaction, staged, carried_entry}},
+        :compaction,
+        :generating,
+        :http
+      )
+
+    machine = %{
+      machine
+      | work: %{
+          machine.work
+          | iteration: 0,
+            max_iterations: Config.configured_max_tool_iterations(),
+            force_finalize: false,
+            active_message_index: provisional
+        }
+    }
+
+    {:ok, [:iterate], machine}
+  end
+
+  # `:reserve_exhausted` means the model cannot fit the system prompt plus the
+  # compaction request into its reserve, so re-draining would re-run
+  # `start_chat/3` → `:needs_compaction` → `stage/3` → here in a tight
+  # synchronous loop. Each arm keeps the message that caused the attempt on a
+  # wire payload instead of stranding it (issue #29).
+  defp reserve_exhausted(m) do
+    overflow = {:broadcast, {:overflow, :reserve_exhausted, "compact"}, nil}
+
+    cond do
+      # The chat-request arm: the built message is parked on the machine and no
+      # queue holds it, so append it (the `:loop_ack` precedent) before
+      # anything else, and clear the slot so a later resume cannot append it
+      # twice. Deliberately no trailing `{:drain_inbox}`: with a non-empty
+      # queue a drain would re-preflight → `start_chat/3` →
+      # `:needs_compaction` → `stage/3` → this branch again.
+      (user = Phase.held_user(m)) != nil ->
+        machine = Phase.enter(%{m | pending_user_message: nil}, :chat, :idle)
+        {:ok, [overflow, {:append, {:user, user}}], machine}
+
+      # The inbox arm: under peek-then-consume (#26) the drain never consumed
+      # the entries, so they are still queued and visible — and a drain here
+      # would re-stage the failing compaction. Block instead; `{:unblocked}`
+      # re-attempts the drain once the operator has acted.
+      Boundary.inbox_count(m.work.ctx) > 0 ->
+        machine = Phase.enter_blocked(m, :context_overflow)
+        {:ok, [overflow], machine}
+
+      # Nothing queued and nothing parked (a manual `/compact`, the workspace
+      # notice, a retry with an empty inbox): enter `:idle`, as before. (The
+      # arms above are reachable from `:compaction_failed` and `:generating`
+      # too, so they *enter* `:idle` rather than "stay" there.)
+      true ->
         machine = Phase.enter(m, :chat, :idle)
-        {:ok, [{:broadcast, {:overflow, :reserve_exhausted, "compact"}, nil}], machine}
+        {:ok, [overflow], machine}
     end
   end
 
@@ -144,8 +201,18 @@ defmodule Nest.Agents.Agent.Machine.Compaction do
   defp resume_with_pending(m) do
     case m.pending_user_message do
       nil ->
-        machine = Phase.enter(%{m | entry: nil}, :chat, :idle)
-        {:ok, [{:finalize, :clean}, {:drain_inbox}], machine}
+        if Boundary.inbox_count(m.work.ctx) > 0 do
+          # Peek-then-consume (#26): the message that needed this compaction is
+          # still queued, so re-drain it in place. Entering `:idle` first would
+          # broadcast a transient idle (which resolves an idle-based wait with
+          # the pre-delivery answer) and `{:finalize, :clean}` a turn that is
+          # really continuing — the #15 property this path must preserve.
+          machine = Phase.enter(%{m | entry: nil}, :chat, :generating, :http)
+          {:ok, [{:drain_inbox}], machine}
+        else
+          machine = Phase.enter(%{m | entry: nil}, :chat, :idle)
+          {:ok, [{:finalize, :clean}, {:drain_inbox}], machine}
+        end
 
       entry ->
         user = Phase.unwrap_user(entry)

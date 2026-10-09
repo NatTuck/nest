@@ -91,7 +91,6 @@ defmodule MachineStructureTest do
                  :mid_turn_entry,
                  :pending_user_message,
                  :phase,
-                 :resume,
                  :stop_timer,
                  :work
                ])

@@ -22,6 +22,8 @@ defmodule Nest.Agents.Agent.Machine.Phase do
   alias Nest.Agents.Agent.Turn.Dispatch
   alias Nest.Messages.User
 
+  require Logger
+
   @doc "Enter a kind/phase with an optional in-flight worker kind."
   @spec enter(Machine.t(), Machine.kind(), Machine.phase(), :http | :tools | nil) :: Machine.t()
   def enter(m, kind, phase, worker_kind \\ nil) do
@@ -103,6 +105,32 @@ defmodule Nest.Agents.Agent.Machine.Phase do
   # Legacy held-message shape `{content, mode}` (pre-machine fixtures).
   def unwrap_user({content, mode}) when is_binary(content) and is_binary(mode) do
     Dispatch.build_user_message(content, mode)
+  end
+
+  @doc """
+  The `%User{}` parked on `pending_user_message`, or nil.
+  """
+  @spec held_user(Machine.t()) :: User.t() | nil
+  def held_user(%{pending_user_message: nil}), do: nil
+
+  def held_user(%{pending_user_message: entry}) do
+    # Normalized through `unwrap_user/1` — the single held-shape table (the
+    # drain path parks `{:user_message, {:user, user}}`, a chat request parks
+    # `{:user_message, user}`, and the legacy `{content, mode}` fixture shape
+    # is accepted too). A value it cannot unwrap is logged and treated as
+    # nothing held: a declared event never raises, and a drop is never silent.
+    #
+    # Lives here rather than in `Machine.Transitions` because two transition
+    # modules need it: the `:loop_ack` loop breaker and `Compaction.do_stage/2`'s
+    # `:reserve_exhausted` give-up path.
+    case unwrap_user(entry) do
+      {:user, %User{} = user} -> user
+      _ -> nil
+    end
+  rescue
+    FunctionClauseError ->
+      Logger.warning("[turn] unrecognized pending_user_message: #{inspect(entry)}")
+      nil
   end
 
   @doc "Seed a turn's iteration/max-iteration bookkeeping from the entry."

@@ -46,6 +46,13 @@ defmodule Nest.Agents.Agent.InboxTest do
            )
 
     assert_receive {:chat_status, %{status: "idle"}}, 500
+
+    # The delivery consumed the entry, so the only queue frame due is the
+    # consume's own empty one — never an enqueue frame (see the parked-drain
+    # test below for the other half of this contract).
+    assert state.live.inbox == []
+    assert_receive {:chat_inbox, %{count: 0, messages: []}}
+    refute_receive {:chat_inbox, _}, 50
   end
 
   test "delivery to a busy agent queues and drains all queued messages together on idle", %{
@@ -124,6 +131,36 @@ defmodule Nest.Agents.Agent.InboxTest do
     assert :sys.get_state(pid).live.inbox == []
   end
 
+  test "a delivery whose drain parks still broadcasts the queued entry", %{pid: pid} do
+    # intentional: the idle path enqueues and drains in one step, and a drain
+    # that parks the message (here a `:cannot_compact` block, forced by a
+    # context limit nothing can fit) leaves it queued. Without a frame for it
+    # the entry's content would be reachable only by a client refetch — the
+    # #26 visibility hole. So: whenever the entry is still queued after the
+    # drain, a `chat:inbox` frame must have gone out for it.
+    :sys.replace_state(pid, fn state ->
+      %{state | llm_metrics: %{state.llm_metrics | context_limit: 1}}
+    end)
+
+    # The overflow broadcast is the visible half of the block; capture it so the
+    # suite's console stays clean and assert it actually happened.
+    log =
+      capture_log(fn ->
+        assert {:ok, :queued} = Agent.deliver_message(pid, "peer", "does not fit")
+      end)
+
+    assert log =~ "cannot fit the system prompt"
+
+    state = :sys.get_state(pid)
+
+    assert [%{content: "does not fit", kind: :agent}] = state.live.inbox
+    assert_receive {:chat_inbox, %{count: 1}}, 500
+    # Nothing was consumed, so the enqueue frame above is the only one: a
+    # consume's empty frame would mean the entry had been delivered.
+    refute_receive {:chat_inbox, %{count: 0}}, 50
+    assert Machine.status_for(state.live.machine) == :context_overflow
+  end
+
   test "delivery is rejected when the inbox is full", %{pid: pid} do
     full =
       for n <- 1..100 do
@@ -193,23 +230,57 @@ defmodule Nest.Agents.Agent.InboxTest do
              ]
     end
 
-    test "combine_and_offload/2 labels each entry by kind and drops a missing/blank sender" do
-      # intentional: the combined text is LLM-facing, so a nil or blank sender
-      # must read sensibly rather than printing `nil` or `""`.
-      entries = [
-        entry(:agent, "peer", "from an agent"),
-        entry(:user, "alice", "from a human", "plan"),
-        entry(:user, nil, "from nobody"),
-        entry(:agent, "", "from a blank agent"),
-        entry(:user, "", "from a blank human")
-      ]
+    test "batch/1 delivers a human head alone and a leading agent run together" do
+      # intentional: a human message is delivered alone — it never merges into
+      # a batch and nothing merges into it (issue #31 decision 8) — so a queued
+      # human message keeps its own turn and its own mode, while peer traffic
+      # still batches. The selection only ever takes a prefix, so the FIFO
+      # order is untouched.
+      alice = entry(:user, "alice", "human note", "plan")
+      peer = entry(:agent, "peer", "peer note")
+      bob = entry(:agent, "bob", "second peer note")
 
-      assert Inbox.combine_and_offload(entries, %Agent{tmp_path: nil}) ==
+      assert Inbox.batch([alice, peer, bob]) == [alice]
+      assert Inbox.batch([peer, bob, alice]) == [peer, bob]
+      assert Inbox.batch([peer, alice, bob]) == [peer]
+      assert Inbox.batch([]) == []
+
+      # A kind that is neither `:agent` nor `:user` — `:query` is what W2
+      # introduces — batches with peer entries instead of raising: the
+      # selection is total on purpose, so a new entry kind cannot crash the
+      # drain inside the Agent process.
+      query = %{entry(:agent, "peer", "query note") | kind: :query}
+
+      assert Inbox.batch([query, bob]) == [query, bob]
+      assert Inbox.batch([peer, query, alice]) == [peer, query]
+    end
+
+    test "combine_and_offload/2 renders a lone human message bare and labels an agent batch" do
+      # intentional: the rendered text is LLM-facing. A human entry is its bare
+      # content (its `[mode: X]` prefix is added when the message is built), so
+      # a queued human message reads exactly like one that arrived while the
+      # agent was idle. Agent entries keep `[Message from agent "X"]`, which is
+      # what disambiguates a batch; a missing or blank sender drops the quoted
+      # name rather than printing `nil` or `""`.
+      state = %Agent{tmp_path: nil}
+
+      assert Inbox.combine_and_offload([entry(:user, "alice", "from a human", "plan")], state) ==
+               "from a human"
+
+      assert Inbox.combine_and_offload([entry(:user, nil, "from nobody")], state) ==
+               "from nobody"
+
+      assert Inbox.combine_and_offload(
+               [
+                 entry(:agent, "peer", "from an agent"),
+                 entry(:agent, "", "from a blank agent"),
+                 entry(:agent, nil, "from nobody")
+               ],
+               state
+             ) ==
                "[Message from agent \"peer\"]\nfrom an agent\n\n" <>
-                 "[Message from the user \"alice\"]\nfrom a human\n\n" <>
-                 "[Message from the user]\nfrom nobody\n\n" <>
                  "[Message from agent]\nfrom a blank agent\n\n" <>
-                 "[Message from the user]\nfrom a blank human"
+                 "[Message from agent]\nfrom nobody"
     end
 
     test "enqueue_user_message/4 normalizes a non-binary sender and mode to nil" do
@@ -229,10 +300,32 @@ defmodule Nest.Agents.Agent.InboxTest do
       assert is_binary(serialized["timestamp"])
     end
 
+    test "enqueue_internal/4 queues the runtime's own result even at the cap" do
+      # intentional: the cap exists to bound a runaway *peer* producer, so the
+      # runtime enqueuing its own result (W2's async spawn/batch completion)
+      # must never be refused by its own cap — it always queues and broadcasts,
+      # exactly like the human path.
+      full = for n <- 1..100, do: entry(:agent, "peer", "msg #{n}")
+      state = %Agent{name: "internal", space_id: 1}
+      state = %{state | live: %{state.live | inbox: full}}
+      Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{state.space_id}:#{state.name}")
+
+      state = Inbox.enqueue_internal(state, "runtime", "child finished", :agent)
+
+      assert length(state.live.inbox) == 101
+      assert_receive {:chat_inbox, %{count: 101, messages: messages}}
+      assert List.last(messages)["content"] == "child finished"
+
+      assert %{from: "runtime", content: "child finished", kind: :agent, mode: nil} =
+               List.last(state.live.inbox)
+    end
+
     test "drain_mode/1 picks the most recent human mode and ignores the rest" do
-      # intentional: every queued entry shares one delivered message, so the
-      # mode rule is "most recent human-sourced mode wins, nil means leave
-      # the agent's mode alone".
+      # intentional: `drain_mode/1` is total over any entry list and returns the
+      # most recent human-sourced mode, `nil` meaning "leave the agent's mode
+      # alone". A real batch is either a lone human entry or a run of non-human
+      # ones (`Inbox.batch/1`), so the mixed lists below are defensive-input
+      # coverage for the rule, not a shape a drain can produce.
       assert Inbox.drain_mode([entry(:agent, "peer", "no mode")]) == nil
       assert Inbox.drain_mode([entry(:user, "alice", "plan", "plan")]) == "plan"
 
@@ -336,31 +429,28 @@ defmodule Nest.Agents.Agent.InboxTest do
       assert log =~ "dropping a chat message while status=:compaction_loop_detected"
     end
 
-    test "a drain applies the most recent human mode and otherwise leaves the agent's mode alone",
-         %{pid: pid} do
-      # intentional: the mode is applied when the batch is delivered, never
-      # when an entry is queued (`state.live.mode` feeds the ongoing turn's
-      # `ctx.caps`). `chat` is the vocation default each case starts from, so
-      # the expected value proves the rule rather than the previous case.
+    test "a drain delivers each batch in its own mode, applying it at delivery time", %{pid: pid} do
+      # intentional: the mode is applied when the batch is delivered, never when
+      # an entry is queued (`state.live.mode` feeds the ongoing turn's
+      # `ctx.caps`). A human message is delivered alone, so each human message
+      # runs in the mode it asked for — the old "two queued human messages, the
+      # older one runs under the newer one's caps" wart is gone — and the
+      # winner is resolved afresh at each delivery attempt.
       cases = [
-        {[entry(:agent, "peer", "peer note")], "chat",
-         "an agent-only batch keeps the agent's mode"},
-        {[entry(:agent, "peer", "peer note"), entry(:user, "alice", "please plan", "plan")],
-         "plan", "a human mode applies at drain time"},
+        {[entry(:agent, "peer", "peer note")], ["chat"], "an agent batch keeps the agent's mode"},
+        {[entry(:user, "alice", "plan please", "plan")], ["plan"],
+         "a human message runs in its own mode"},
         {[
            entry(:user, "alice", "plan please", "plan"),
            entry(:user, "bob", "review please", "review")
-         ], "review", "the most recent human mode wins"},
-        {[
-           entry(:user, "alice", "plan please", "plan"),
-           entry(:agent, "peer", "no mode"),
-           entry(:user, "bob", "no mode either")
-         ], "plan", "a later agent entry or nil mode does not clear it"},
-        {[entry(:user, "alice", "bogus please", "bogus")], "chat",
+         ], ["plan", "review"], "two human messages are two batches, each in its own mode"},
+        {[entry(:agent, "peer", "no mode"), entry(:user, "alice", "plan please", "plan")],
+         ["chat", "plan"], "a human message never merges into the agent run ahead of it"},
+        {[entry(:user, "alice", "bogus please", "bogus")], ["chat"],
          "an unknown mode falls back to the vocation default, like an idle chat"}
       ]
 
-      for {entries, expected, label} <- cases do
+      for {entries, expected_modes, label} <- cases do
         before = length(:sys.get_state(pid).chat_state.messages)
         stage_drain(pid, entries)
 
@@ -371,16 +461,15 @@ defmodule Nest.Agents.Agent.InboxTest do
                  timeout: 500
                )
 
-        state = :sys.get_state(pid)
-
-        assert state.live.mode == expected, label
+        wait_idle(pid)
 
         delivered =
-          state.chat_state.messages |> Enum.drop(before) |> Enum.find(&match?({:user, _}, &1))
+          :sys.get_state(pid).chat_state.messages
+          |> Enum.drop(before)
+          |> Enum.filter(&match?({:user, _}, &1))
+          |> Enum.map(&mode_of/1)
 
-        assert text_of(delivered) =~ "[mode: #{expected}]", label
-
-        wait_idle(pid)
+        assert delivered == expected_modes, label
       end
     end
 
@@ -478,6 +567,16 @@ defmodule Nest.Agents.Agent.InboxTest do
 
   defp text_of({_tag, %{parts: parts}}), do: parts_text(parts)
   defp text_of(_message), do: ""
+
+  # The `[mode: X]` prefix `Dispatch.build_user_message/2` puts on a delivered
+  # message, or nil when the message has none. Any mode name (dashes, uppercase)
+  # is accepted, so the helper cannot silently report nil for a real mode.
+  defp mode_of(message) do
+    case Regex.run(~r/^\[mode: ([^\]]+)\]/, text_of(message)) do
+      [_, mode] -> mode
+      nil -> nil
+    end
+  end
 
   defp parts_text(parts) do
     Enum.map_join(parts, "", fn

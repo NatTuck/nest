@@ -89,8 +89,9 @@ defmodule Nest.Agents.Agent.Machine do
     :abandon_child
   ]
 
-  # The declared action vocabulary. Every action must have exactly one
-  # `Turn.Executor` clause (pinned by `turn/executor_test.exs`).
+  # The declared action vocabulary. Every action must have a `Turn.Executor`
+  # clause (pinned by `guard_test.exs`); `:drain_inbox` has two, one per drain
+  # shape (peek, and peek-and-append for the loop breaker's give-up path).
   @actions [
     :append,
     :append_many,
@@ -114,7 +115,7 @@ defmodule Nest.Agents.Agent.Machine do
     :fail_turn,
     :finalize,
     :drain_inbox,
-    :restore_inbox,
+    :consume_inbox,
     :notify_worker,
     :merge_usage,
     :stop_child,
@@ -156,7 +157,6 @@ defmodule Nest.Agents.Agent.Machine do
             phase: :idle,
             work: %Nest.Agents.Agent.Machine.Work{},
             entry: nil,
-            resume: nil,
             loop_count: 0,
             pending_user_message: nil,
             mid_turn_entry: nil,
@@ -168,7 +168,6 @@ defmodule Nest.Agents.Agent.Machine do
           phase: phase(),
           work: Nest.Agents.Agent.Machine.Work.t(),
           entry: term(),
-          resume: term(),
           loop_count: non_neg_integer(),
           pending_user_message: term(),
           mid_turn_entry: term(),

@@ -133,24 +133,40 @@ defmodule Nest.Agents.Agent.Turn do
 
   @doc """
   Drain queued async messages through the executor (the single drain
-  path). Returns `{state, :delivered | :queued}`; a no-op when the inbox
-  is empty. Used by `Inbox.handle_delivery/3` (idle target).
+  path). Returns `{state, :delivered | :queued}`. Used by
+  `Inbox.handle_delivery/3` (idle target).
+
+  `:delivered` means nothing this drain found queued is still queued: the
+  entries it peeked were consumed, so the batch reached the transcript.
+  `:queued` means at least one of them survived — the delivery parked on a
+  compaction it needed before it could fit, or on a `:cannot_compact` block —
+  so the message is still queued and visible on the wire. The reply is
+  computed from the queue this drain peeked, not from "the inbox is empty":
+  under peek-then-consume (#26) the executor leaves the queue alone, so a
+  delivery that did not consume anything must report `:queued`.
   """
   @spec drain_inbox(Agent.t()) :: {Agent.t(), :delivered | :queued}
   def drain_inbox(state) do
-    if state.live.inbox == [] do
-      {state, :delivered}
-    else
-      {state, follow} = Executor.run_all([{:drain_inbox}], state)
+    # The empty-inbox clause and the `nil` follow-event clause below are
+    # unreachable from the only caller (`handle_delivery/3` enqueues first, and
+    # a non-empty queue always yields the `{:inbox_drain, …}` follow event).
+    # They are kept as the total-function shape, not as a contract.
+    case state.live.inbox do
+      [] ->
+        {state, :delivered}
 
-      case follow do
-        nil ->
-          {state, :delivered}
+      entries ->
+        {state, follow} = Executor.run_all([{:drain_inbox}], state)
 
-        event ->
-          {:ok, state} = settle(state, event)
-          {state, if(state.live.inbox == [], do: :delivered, else: :queued)}
-      end
+        case follow do
+          nil ->
+            {state, :delivered}
+
+          event ->
+            {:ok, state} = settle(state, event)
+            delivered? = not Enum.any?(entries, &(&1 in state.live.inbox))
+            {state, if(delivered?, do: :delivered, else: :queued)}
+        end
     end
   end
 
