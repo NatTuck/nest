@@ -60,6 +60,13 @@ reply does.
 6. **`clone_context` stays as-is**, not optimized for; decide from real usage.
 7. The query is delivered as an **agent** message with `from:` set, so the target
    sees `[Message from agent "X"]` instead of `[Message from the user]`.
+8. **A queued human message is delivered with no sender framing.** It looks
+   exactly like a message the human typed while the agent was idle — its content
+   plus the usual `[mode: X]` prefix — so the model never has to reason about
+   whether a human message was queued or immediate. The sender stays on the wire
+   entry (the panel shows it); only the LLM-facing text changes. Agent entries
+   keep their `[Message from agent "X"]` label, which is what disambiguates a
+   combined agent batch.
 
 ## What gets deleted
 
@@ -89,9 +96,11 @@ The inbox becomes the result channel, so it must be trustworthy first.
   never in neither.**
 - **A user message is delivered by itself.** `Inbox.combine/1` becomes batch
   selection over the FIFO head: a `kind: :user` head is delivered alone; a run of
-  leading `:agent` entries still batches. This also removes the documented
-  "the older human message runs under the newer one's caps" wart, since each
-  human message now runs in its own mode.
+  leading `:agent` entries still batches. A user entry delivered alone carries
+  **no** `[Message from the user "…"]` framing (decision 8), so a queued human
+  message is textually identical to one that arrived while the agent was idle.
+  This also removes the documented "the older human message runs under the newer
+  one's caps" wart, since each human message now runs in its own mode.
 - **#29.** `:reserve_exhausted` must not strand a message: reuse `:loop_ack`'s
   `held_user/1` precedent for the chat-request arm; under peek-then-consume the
   inbox arm keeps the entries queued and enters a blocked phase instead of idling.

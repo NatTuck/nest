@@ -53,7 +53,7 @@ defmodule Nest.Sandbox do
     produces `--ro-bind / /`.
   * `"fs.write"` — the explicit list of paths bound read-write. The
     `":workspace"` and `"/tmp"` entries are symbolic (resolved to the
-    canonical workspace and the per-agent scratch dir); any other path
+    canonical workspace and the space's scratch dir); any other path
     is bound at its canonical path. Anything not in the write list
     stays read-only via `--ro-bind / /`.
   * `"shell.background"` (optional) — the per-agent ceiling on
@@ -191,7 +191,10 @@ defmodule Nest.Sandbox do
   canonical workspace (when `:workspace` is in the write list) plus
   each extra `fs.write` path, canonicalized and deduplicated. The
   `"/tmp"` entry is excluded here because it is bound at `/tmp` inside
-  the sandbox, not at a user-facing host path.
+  the sandbox, not at a user-facing host path: the space's scratch
+  directory is bound there by `append_tmp_bind/2` (derived from the
+  agent's `tmp_path`, not from caps), so it is not a path a caller
+  addresses directly.
   """
   @spec writable_roots(map(), String.t() | nil) :: [String.t()]
   def writable_roots(caps, workspace) do
@@ -248,6 +251,25 @@ defmodule Nest.Sandbox do
   """
   @spec resolve(String.t(), String.t() | nil) :: {:ok, String.t()} | {:error, String.t()}
   def resolve(path, workspace), do: FSPath.resolve(path, workspace)
+
+  @doc """
+  The host directory bound at `/tmp` for a given agent scratch dir.
+
+  `tmp_path` is the agent's own scratch directory
+  (`<space_dir>/<agent-name>`); the whole space directory is what gets
+  bound at `/tmp`, so the bind root is its parent. Callers that need to
+  translate a host path under `tmp_path` into the path the sandbox sees
+  (or vice-versa) derive it from here.
+  """
+  @spec tmp_bind_root(String.t()) :: String.t()
+  def tmp_bind_root(tmp_path), do: Path.dirname(tmp_path)
+
+  @doc """
+  The path an agent's own scratch dir (`tmp_path`) appears at inside the
+  sandbox: `/tmp/<agent-name>` (the space dir is bound at `/tmp`).
+  """
+  @spec sandbox_tmp_path(String.t()) :: String.t()
+  def sandbox_tmp_path(tmp_path), do: Path.join("/tmp", Path.basename(tmp_path))
 
   # ---- Executors ----
 
@@ -629,14 +651,16 @@ defmodule Nest.Sandbox do
       Enum.map(protected_list(caps), & &1["path"])
   end
 
-  # Bind the runtime tmp_path (e.g. /tmp/nest-123/agent-456) at /tmp
-  # inside the sandbox. This is what makes "/tmp" symbolic — every
-  # agent gets its own scratch directory, but the path inside the
-  # sandbox is always /tmp.
+  # Bind the *space* scratch directory at /tmp inside the sandbox. The
+  # agent's own scratch dir is `<space_dir>/<agent-name>`, so the space
+  # dir (its parent) is what gets bound. This is what makes "/tmp"
+  # symbolic AND shared: every agent in a space sees the same /tmp, so a
+  # file path handed from one agent to a sibling resolves for the
+  # recipient. The agent's own dir appears at `/tmp/<agent-name>` inside.
   defp append_tmp_bind(args, nil), do: args
 
   defp append_tmp_bind(args, tmp_path) do
-    args ++ ["--bind", FSPath.canonical(tmp_path), "/tmp"]
+    args ++ ["--bind", FSPath.canonical(tmp_bind_root(tmp_path)), "/tmp"]
   end
 
   defp append_chdir(args, chdir_path) do

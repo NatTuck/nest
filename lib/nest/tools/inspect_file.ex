@@ -58,7 +58,7 @@ defmodule Nest.Tools.InspectFile do
         "properties" => %{
           "path" => %{
             "type" => "string",
-            "description" => "Relative path to the file from the workspace root"
+            "description" => "Path to the file: absolute, or relative to the workspace root."
           },
           "max_result_tokens" => max_result_tokens_schema()
         },
@@ -268,6 +268,9 @@ defmodule Nest.Tools.InspectFile do
     end
   end
 
+  # No scratch-dir note: `file-inspect` mixes the host read fast-path
+  # (`stat`/`read`) with a bwrap `file` sub-call, so no single spelling is
+  # correct for a `/tmp` file. A wrong hint is worse than none.
   defp caps_from_context(%{caps: caps}) when is_map(caps), do: caps
   defp caps_from_context(_), do: Nest.Sandbox.default_caps()
 

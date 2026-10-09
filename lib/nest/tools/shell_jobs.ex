@@ -15,15 +15,16 @@ defmodule Nest.Tools.ShellJobs do
   @kill_wait_ms 2_000
 
   @doc "The `shell-list` tool: enumerate this agent's background jobs."
-  @spec list_function() :: Tool.t()
-  def list_function do
+  @spec list_function(String.t() | nil) :: Tool.t()
+  def list_function(tmp_path \\ nil) do
     %Tool{
       name: "shell-list",
       description:
         "List your background shell jobs (started with `shell-cmd`'s " <>
           "`background: true`), with each job's status, exit code, and log " <>
           "path. Use `shell-wait` to block for one to finish and `shell-kill` " <>
-          "to stop one.",
+          "to stop one." <>
+          Nest.Tools.scratch_note(tmp_path, :sandbox),
       parameters_schema: %{
         "type" => "object",
         "properties" => %{"max_result_tokens" => Nest.Tools.max_result_tokens_schema()},

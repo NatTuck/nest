@@ -160,7 +160,7 @@ defmodule Nest.Tools.ShellJobsTest do
 
     # The agent is told the path it can actually read from inside the
     # sandbox, not the host path the manager writes.
-    assert log_path == "/tmp/shell-jobs/#{id}.log"
+    assert log_path == "/tmp/#{Path.basename(tmp)}/shell-jobs/#{id}.log"
     assert content =~ "(log: #{log_path})"
 
     assert ShellJobs.list({nil, nil}) == []

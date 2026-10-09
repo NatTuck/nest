@@ -641,7 +641,7 @@ defmodule Nest.Agents.Agent do
     stop_shell_jobs(state)
 
     # Cleanup /tmp per design specification
-    cleanup_tmp(state.name)
+    cleanup_tmp(state.space_id, state.name)
 
     # Note: workspace is preserved for review/debugging (per design)
     :ok
@@ -658,10 +658,11 @@ defmodule Nest.Agents.Agent do
 
   # Private functions
 
-  # Clean up the per-agent tmp directory and parent if empty.
-  # Delegates to `Nest.Agents.Agent.TmpSpace.cleanup/1` so this
-  # module doesn't carry the boilerplate.
-  defp cleanup_tmp(agent_id), do: TmpSpace.cleanup(agent_id)
+  # Clean up this agent's own tmp sub-directory. Never touches the
+  # space directory or a sibling's files. Delegates to
+  # `Nest.Agents.Agent.TmpSpace.cleanup/2` so this module doesn't carry
+  # the boilerplate.
+  defp cleanup_tmp(space_id, agent_name), do: TmpSpace.cleanup(space_id, agent_name)
 
   defp stop_shell_jobs(state) do
     ShellJobs.stop_all({state.space_id, state.name})
@@ -676,7 +677,7 @@ defmodule Nest.Agents.Agent do
   # `__` prefix marks these as internal. See that module for
   # why.
   @doc false
-  defdelegate __create_tmp_space__(agent_id), to: TmpSpace, as: :create
+  defdelegate __create_tmp_space__(space_id, agent_name), to: TmpSpace, as: :create
 
   @doc false
   # In-process variant of `handle_call({:append_message, _})`.

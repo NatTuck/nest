@@ -92,7 +92,7 @@ defmodule Nest.Tools do
   defp regular_tool_function("file-edit", ws, tmp), do: FileTools.edit_function(ws, tmp)
   defp regular_tool_function("file-inspect", ws, tmp), do: InspectFile.build(ws, tmp)
   defp regular_tool_function("shell-cmd", ws, tmp), do: shell_cmd_function(ws, tmp)
-  defp regular_tool_function("shell-list", _ws, _tmp), do: ShellJobs.list_function()
+  defp regular_tool_function("shell-list", _ws, tmp), do: ShellJobs.list_function(tmp)
   defp regular_tool_function("shell-wait", _ws, _tmp), do: ShellJobs.wait_function()
   defp regular_tool_function("shell-kill", _ws, _tmp), do: ShellJobs.kill_function()
   defp regular_tool_function("context-check", _ws, _tmp), do: context_check_function()
@@ -129,6 +129,34 @@ defmodule Nest.Tools do
   end
 
   @doc """
+  The "your own scratch directory" sentence appended to tool descriptions.
+
+  `spelling` selects the path the tool actually takes:
+
+    * `:sandbox` — the space dir is bound at `/tmp`, so the agent's own
+      dir is `/tmp/<agent-name>`. Used by tools that run inside the
+      sandbox (`shell-cmd`, `shell-list`, `file-write`).
+    * `:host` — the agent's `tmp_path`. Used by tools that address host
+      paths (`file-read`).
+
+  Returns `""` when no tmp dir is configured. Defined once so the wording
+  cannot drift between tools.
+  """
+  @spec scratch_note(String.t() | nil, :host | :sandbox) :: String.t()
+  def scratch_note(nil, _spelling), do: ""
+
+  def scratch_note(tmp_path, :host), do: scratch_sentence(tmp_path)
+
+  def scratch_note(tmp_path, :sandbox),
+    do: scratch_sentence(Sandbox.sandbox_tmp_path(tmp_path))
+
+  defp scratch_sentence(scratch_dir) do
+    " Your own scratch directory is `#{scratch_dir}/`; the `/tmp` root is shared " <>
+      "with your siblings in this space, so put anything that must not be clobbered " <>
+      "under your own directory."
+  end
+
+  @doc """
   The `{space_id, agent_name}` ownership key for the calling agent.
 
   Tools that manage per-agent resources (background shell jobs) read
@@ -155,7 +183,8 @@ defmodule Nest.Tools do
           "a statement that exits non-zero still reports its output and later " <>
           "statements still run, so guard steps explicitly (for example " <>
           "`cmd || exit 1`, or put your own `set -e` on the first line) when a " <>
-          "failure must stop the rest.",
+          "failure must stop the rest." <>
+          scratch_note(tmp_path, :sandbox),
       parameters_schema: %{
         "type" => "object",
         "properties" => %{

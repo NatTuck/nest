@@ -241,6 +241,12 @@ all_groups = ["file", "shell", "context", "agents"]
 
     You should not be doing significant work on the project yourself. Any codebase 
     investigation or non-trivial code changes must be delegated to a minion.
+
+    To reiterate:
+
+    - **NEVER** write code yourself.
+    - **NEVER** review code yourself to justify a commit, push, PR, or merge.
+    - You generally should not be reading code. Delegate it.
     """,
     tools: all_groups,
     modes: %{

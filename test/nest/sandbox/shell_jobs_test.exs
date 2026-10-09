@@ -51,12 +51,42 @@ defmodule Nest.Sandbox.ShellJobsTest do
     assert {:ok, message} = start_background("sleep 30", tmp, key)
     assert [%{id: id, log_path: log_path}] = ShellJobs.list(key)
 
-    assert log_path == "/tmp/shell-jobs/#{id}.log"
+    # The space dir is bound at /tmp and the agent's own dir is its
+    # basename, so the log the sandbox sees is /tmp/<agent>/shell-jobs/...
+    assert log_path == "/tmp/#{Path.basename(tmp)}/shell-jobs/#{id}.log"
     assert message =~ "(log: #{log_path})"
 
-    # The manager still writes the log under the host tmp dir, which the
-    # sandbox sees as /tmp.
+    # The manager still writes the log under the host tmp dir.
     assert File.exists?(Path.join([tmp, "shell-jobs", "#{id}.log"]))
+  end
+
+  test "removes the staged script from the host once the job exits (nested tmp)" do
+    key = {:test, "script-cleanup-#{System.unique_integer([:positive])}"}
+
+    # The real scratch shape is <root>/space-<id>/<agent-name>. With a
+    # flat tmp dir the sandbox spelling of the script happens to equal its
+    # host path, which is exactly why a flat-dir test cannot catch a
+    # broken removal (the manager would `File.rm` a path that happens to
+    # exist).
+    root = Path.join(System.tmp_dir!(), "nest_jobs_script_#{System.unique_integer([:positive])}")
+    tmp = Path.join([root, "space-1", "agent-scripts"])
+    File.mkdir_p!(tmp)
+
+    on_exit(fn ->
+      ShellJobs.stop_all(key)
+      File.rm_rf(root)
+    end)
+
+    {:ok, _message} = start_background("true", tmp, key)
+    assert [%{id: id}] = ShellJobs.list(key)
+
+    # Wait for the job to exit, then synchronize with the manager so its
+    # `finish_job/3` (which removes the host script) has run to completion.
+    assert :ok = ShellJobs.subscribe(key, id, self())
+    assert_receive {:shell_job_exit, ^id, 0}, 500
+    _ = :sys.get_state(ShellJobs)
+
+    assert Path.wildcard(Path.join(tmp, ".nest-cmd-*.sh"), match_dot: true) == []
   end
 
   test "enforces the per-agent cap and frees a slot on exit", %{key: key, tmp: tmp} do

@@ -28,13 +28,15 @@ defmodule Nest.Tools.FileTools do
   def read_file_function(workspace_path, tmp_path) do
     %Tool{
       name: "file-read",
-      description: "Read the contents of a file from the workspace",
+      description:
+        "Read the contents of a file from the workspace." <>
+          Nest.Tools.scratch_note(tmp_path, :host),
       parameters_schema: %{
         "type" => "object",
         "properties" => %{
           "path" => %{
             "type" => "string",
-            "description" => "Relative path to the file from the workspace root"
+            "description" => "Path to the file: absolute, or relative to the workspace root."
           },
           "max_result_tokens" => Nest.Tools.max_result_tokens_schema()
         },
@@ -53,13 +55,15 @@ defmodule Nest.Tools.FileTools do
   def write_file_function(workspace_path, tmp_path) do
     %Tool{
       name: "file-write",
-      description: "Write content to a file in the workspace",
+      description:
+        "Write content to a file in the workspace." <>
+          Nest.Tools.scratch_note(tmp_path, :sandbox),
       parameters_schema: %{
         "type" => "object",
         "properties" => %{
           "path" => %{
             "type" => "string",
-            "description" => "Relative path to the file from the workspace root"
+            "description" => "Path to the file: absolute, or relative to the workspace root."
           },
           "content" => %{
             "type" => "string",
@@ -75,6 +79,8 @@ defmodule Nest.Tools.FileTools do
     }
   end
 
+  # No scratch-dir note: `file-edit` reads via the host fast path and writes
+  # through bwrap, so neither spelling works for a scratch file today.
   @doc """
   Build the `file-edit` `Nest.LLM.Tool` struct. The closure captures
   the workspace + tmp paths and routes through `edit/5`
@@ -94,7 +100,7 @@ defmodule Nest.Tools.FileTools do
         "properties" => %{
           "path" => %{
             "type" => "string",
-            "description" => "Relative path to the file from the workspace root"
+            "description" => "Path to the file: absolute, or relative to the workspace root."
           },
           "old_text" => %{
             "type" => "string",
@@ -294,6 +300,10 @@ defmodule Nest.Tools.FileTools do
     end
   end
 
+  # `file-read` takes a host path; `file-write` writes through
+  # `Sandbox.write/5` (bwrap), where the host spelling does not resolve.
+  # The shared sentence lives in `Nest.Tools.scratch_note/2` so the wording
+  # cannot drift between tools.
   defp caps_from_context(%{caps: caps}) when is_map(caps), do: caps
   defp caps_from_context(_), do: Nest.Sandbox.default_caps()
 end

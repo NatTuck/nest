@@ -48,14 +48,15 @@ defmodule Nest.Agents.Agent.Init do
       build_vocation_pipeline(attrs)
 
     name = Map.fetch!(attrs, :name)
-    tmp_path = create_tmp_space(name)
+    space_id = Map.fetch!(attrs, :space_id)
+    tmp_path = create_tmp_space(space_id, name)
     tools = Tools.get_functions(tool_names, Map.get(attrs, :workspace_path), tmp_path)
 
     {initial_messages, next_index} = initial_messages_with_system(system_prompt)
 
     %Nest.Agents.Agent{
       name: name,
-      space_id: Map.fetch!(attrs, :space_id),
+      space_id: space_id,
       model: Map.fetch!(attrs, :model),
       client_config: client_config,
       vocation: cached_vocation,
@@ -365,7 +366,7 @@ defmodule Nest.Agents.Agent.Init do
     %Nest.Agents.Agent.ChatState.Live{mode: mode}
   end
 
-  defp create_tmp_space(agent_name) do
-    Nest.Agents.Agent.__create_tmp_space__(agent_name)
+  defp create_tmp_space(space_id, agent_name) do
+    Nest.Agents.Agent.__create_tmp_space__(space_id, agent_name)
   end
 end

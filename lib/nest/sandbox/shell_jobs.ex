@@ -13,11 +13,13 @@ defmodule Nest.Sandbox.ShellJobs do
 
   A job's log has two names. The manager reads and writes the host path
   (`<tmp_path>/shell-jobs/<id>.log`); the sandbox sees the same file at
-  `/tmp/shell-jobs/<id>.log`, because the agent's tmp dir is bound at
-  `/tmp` inside it. Everything an agent is told — the "started" message,
-  `shell-list`, the `shell:jobs` broadcast — uses the sandbox path, since
-  that is the only one that resolves inside a `shell-cmd`. A host path
-  handed to an agent is unusable (and leaks the harness's layout).
+  `/tmp/<agent-name>/shell-jobs/<id>.log`, because the *space* scratch
+  dir is bound at `/tmp` inside it and the agent's own dir is
+  `<agent-name>` beneath that. Everything an agent is told — the
+  "started" message, `shell-list`, the `shell:jobs` broadcast — uses the
+  sandbox path, since that is the only one that resolves inside a
+  `shell-cmd`. A host path handed to an agent is unusable (and leaks the
+  harness's layout).
 
   ## Limits and lifetime
 
@@ -48,6 +50,7 @@ defmodule Nest.Sandbox.ShellJobs do
   use GenServer
 
   alias Nest.PubSub
+  alias Nest.Sandbox
   alias Nest.Tools.Exec
   alias Nest.Tools.ShellCmd
 
@@ -57,8 +60,8 @@ defmodule Nest.Sandbox.ShellJobs do
   # How long after a kill to force a terminal state if the exec port's
   # DOWN never arrives (SIGKILL + monitor should make it prompt).
   @kill_finalize_ms 5_000
-  # Where the agent's tmp dir is mounted inside the sandbox, and the
-  # subdirectory the job logs live in beneath it.
+  # Where the *space* scratch dir is mounted inside the sandbox, and the
+  # subdirectory the job logs live in beneath the agent's own dir.
   @sandbox_tmp "/tmp"
   @log_subdir "shell-jobs"
 
@@ -71,8 +74,9 @@ defmodule Nest.Sandbox.ShellJobs do
           status: :running | :exited,
           exit_code: integer() | nil,
           killed: boolean(),
-          # The path inside the sandbox (`/tmp/shell-jobs/<id>.log`), not
-          # the host path the manager writes the log to.
+          # The path inside the sandbox
+          # (`/tmp/<agent-name>/shell-jobs/<id>.log`), not the host path
+          # the manager writes the log to.
           log_path: String.t(),
           started_at: DateTime.t()
         }
@@ -100,9 +104,11 @@ defmodule Nest.Sandbox.ShellJobs do
     * `:agent_pid` — monitored; all the agent's jobs die with it
     * `:command` — the original command (for display)
     * `:bwrap` — the full bwrap command line to run
-    * `:script_path` — the staged script to remove once the job ends
-    * `:tmp_path` — the host dir the log lives under (the sandbox sees it
-      at `#{@sandbox_tmp}`)
+    * `:script_path` — the staged script's **host** path, removed once
+      the job ends
+    * `:tmp_path` — the host dir the log lives under (the agent's own
+      scratch dir; the sandbox sees it at
+      `#{@sandbox_tmp}/<agent-name>`)
     * `:max_jobs` — the per-agent ceiling (default #{@default_max_jobs})
 
   Returns `{:ok, job_id, log_path}`, where `log_path` is the path inside
@@ -305,7 +311,9 @@ defmodule Nest.Sandbox.ShellJobs do
     tmp_path = Map.fetch!(attrs, :tmp_path)
     log_dir = Path.join(tmp_path, @log_subdir)
     log_path = Path.join(log_dir, "#{job_id}.log")
-    sandbox_log_path = Path.join([@sandbox_tmp, @log_subdir, "#{job_id}.log"])
+
+    sandbox_log_path =
+      Path.join([Sandbox.sandbox_tmp_path(tmp_path), @log_subdir, "#{job_id}.log"])
 
     with :ok <- File.mkdir_p(log_dir),
          :ok <- File.write(log_path, ""),
@@ -454,6 +462,10 @@ defmodule Nest.Sandbox.ShellJobs do
 
   # ---- Retention / cleanup ----
 
+  # Remove the job's staged script. `script_path` is the *host* path
+  # (`ShellCmd.stage_script/2` writes it there); the sandbox spelling the
+  # bwrap command line uses is not a host path and must never be passed
+  # here.
   defp remove_script(%{script_path: nil}), do: :ok
 
   defp remove_script(%{script_path: path}) do
