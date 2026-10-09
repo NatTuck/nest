@@ -34,8 +34,6 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   alias Nest.LLM.Preflight
   alias Nest.Messages.MessageList
 
-  require Logger
-
   # Compile-time copies of the blocked phases so guards stay valid.
   @blocked [
     :needs_repair,
@@ -50,6 +48,7 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   defdelegate enter_blocked(m, phase), to: Phase
   defdelegate clear_worker(m), to: Phase
   defdelegate unwrap_user(entry), to: Phase
+  defdelegate held_user(m), to: Phase
   defdelegate init_turn(machine, entry), to: Phase
   defdelegate put_ctx(m, changes), to: Phase
 
@@ -94,20 +93,34 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
     machine =
       enter(%{m | loop_count: 0, pending_user_message: nil, mid_turn_entry: nil}, :chat, :idle)
 
-    case held_user(m) do
-      # The loop breaker must not swallow a message the `:needs_compaction`
-      # branch of `start_chat/3` parked: the executor already consumed
-      # `state.live.inbox`, so re-append it here, before the drain (an
-      # `{:append, _}` returns `:continue`, so the drain still runs). At
-      # `:idle` the appender uses the terminal repair path, so the message
-      # lands in the transcript and is answered by the next turn; no turn is
-      # dispatched here (dispatching would re-enter the compaction decision
-      # that just gave up), and a refused append surfaces as
-      # `{:append_result, :invalid, _}` — a visible turn failure instead of a
-      # silent drop.
-      nil -> {:ok, [{:drain_inbox}], machine}
-      user -> {:ok, [{:append, {:user, user}}, {:drain_inbox}], machine}
-    end
+    # The loop breaker must not swallow a message the machine was holding, and
+    # must not re-enter the compaction decision it just gave up on. Both
+    # dispositions append the message to the transcript *before* anything else
+    # runs; a refused append surfaces as `{:append_result, :invalid, _}` — a
+    # visible turn failure instead of a silent drop.
+    #
+    #  * A parked chat request (`pending_user_message`) is appended directly:
+    #    the machine holds the built `%User{}`, exactly as before.
+    #  * Queued inbox entries are appended by the executor's
+    #    `{:drain_inbox, :append}` shape, which builds the combined message
+    #    from the entries and consumes them **without** calling
+    #    `start_chat/3`. Under peek-then-consume (#26) the entries of a drain
+    #    that needed a compaction are still queued — nothing was parked — so a
+    #    bare `{:drain_inbox}` would re-preflight them, re-`stage/3` the same
+    #    failing compaction, and loop (operator-gated by the `loop_count`
+    #    reset, but still the loop the ack exists to break).
+    #
+    # A bare `{:drain_inbox}` is therefore only the shape for "nothing held
+    # and nothing queued"; it is kept as the empty-inbox case's no-op.
+    actions =
+      case {held_user(m), Boundary.inbox_count(m.work.ctx)} do
+        {nil, 0} -> [{:drain_inbox}]
+        {nil, _queued} -> [{:drain_inbox, :append}]
+        {user, 0} -> [{:append, {:user, user}}, {:drain_inbox}]
+        {user, _queued} -> [{:append, {:user, user}}, {:drain_inbox, :append}]
+      end
+
+    {:ok, actions, machine}
   end
 
   # --- blocked-enter / unblocked (before the generic blocked catch-all) ---
@@ -420,12 +433,16 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   # turn boundary from issue #15 — start the delivered message's turn the same
   # way: build the user message in the agent's current mode and hand it to
   # `start_chat/3`, which owns the fits / needs-compaction / cannot-compact
-  # decision (including the `{:restore_inbox, entries}` path).
+  # decision.
   defp deliver_inbox(m, entries, content) do
     user = Dispatch.build_user_message(content, m.work.ctx.mode)
     start_chat(m, {:user_message, user}, entries)
   end
 
+  # `inbox_entries` is the batch the drain *peeked* (issue #26): the executor
+  # leaves `state.live.inbox` untouched, so the entries are still queued (and
+  # on the wire) until this branch consumes them. `nil` means the message came
+  # from the human `{:chat_request, …}` path, which has no queue behind it.
   defp start_chat(m, entry, inbox_entries) do
     user = unwrap_user(entry)
     projected = messages(m) ++ [user]
@@ -435,26 +452,38 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
       :fits ->
         {notice_actions, m} = user_notice_actions(m, projected)
         machine = init_turn(enter(m, :chat, :generating, :http), entry)
-        {:ok, notice_actions ++ [{:append, user}, :iterate], machine}
+
+        {:ok, notice_actions ++ [{:append, user}] ++ consume_actions(inbox_entries) ++ [:iterate],
+         machine}
 
       :needs_compaction ->
-        Compaction.stage(%{m | pending_user_message: entry}, nil, nil)
+        # Only the chat-request path parks. The drain path keeps its entries
+        # queued (peek-then-consume), so the compaction's `resume/1` re-drains
+        # them in place once the context has shrunk.
+        parked = if inbox_entries in [nil, []], do: %{m | pending_user_message: entry}, else: m
+        Compaction.stage(parked, nil, nil)
 
       :cannot_compact ->
+        # The drained entries stay queued (nothing consumed them) and the
+        # agent blocks; `{:unblocked}`'s existing `{:drain_inbox}` re-attempts
+        # them once the operator has acted (model change/repair).
         machine = enter_blocked(m, :context_overflow)
-
-        # Restore the drained inbox so the queued messages are not lost;
-        # they retry once the agent returns to idle (model change/repair).
         actions = [{:broadcast, {:overflow, :reserve_exhausted, "start a conversation"}, nil}]
-
-        actions =
-          if inbox_entries in [nil, []],
-            do: actions,
-            else: actions ++ [{:restore_inbox, inbox_entries}]
-
         {:ok, actions, machine}
     end
   end
+
+  # The drain's consume half (issue #26): emitted *after* the append, in the
+  # same settle, so the wire sees the message land and then the queue empty.
+  # The order is defensive: an append refused by the appender halts the action
+  # list (`{:append_result, :invalid | :stale, _}`), so the consume never runs
+  # and the entries stay queued and visible. (On this branch the append cannot
+  # actually be refused — `:fits` plus a monotone size function implies the
+  # preflight passes — but the consume's position keeps the invariant true by
+  # construction rather than by that argument.) Nothing for a chat request,
+  # which never queued anything.
+  defp consume_actions(inbox_entries) when inbox_entries in [nil, []], do: []
+  defp consume_actions(inbox_entries), do: [{:consume_inbox, inbox_entries}]
 
   defp user_notice_actions(m, projected) do
     limit = m.work.ctx.context_limit
@@ -621,26 +650,6 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   end
 
   defp messages(m), do: m.work.ctx.messages
-
-  # The `%User{}` a `:needs_compaction` staging parked on the machine, or nil.
-  # Normalized through `Phase.unwrap_user/1` — the single held-shape table
-  # (the drain path parks `{:user_message, {:user, user}}`, a chat request
-  # parks `{:user_message, user}`, and the legacy `{content, mode}` fixture
-  # shape is accepted too). A value it cannot unwrap is logged and treated as
-  # nothing held: a declared event must not raise, and a drop must not be
-  # silent.
-  defp held_user(%{pending_user_message: nil}), do: nil
-
-  defp held_user(%{pending_user_message: entry}) do
-    case unwrap_user(entry) do
-      {:user, %Nest.Messages.User{} = user} -> user
-      _ -> nil
-    end
-  rescue
-    FunctionClauseError ->
-      Logger.warning("[turn] unrecognized pending_user_message: #{inspect(entry)}")
-      nil
-  end
 
   defp child_event(m, event) do
     case Children.step(m.children, event) do

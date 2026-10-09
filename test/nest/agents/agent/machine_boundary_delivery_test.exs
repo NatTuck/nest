@@ -1,15 +1,19 @@
 defmodule MachineBoundaryDeliveryTest do
   @moduledoc false
-  # The turn-boundary inbox delivery contract (issue #15). It lives beside
-  # `machine_test.exs` rather than inside it because that file is at the
-  # credo source-file cap. Behavior contract carried by the tests + inline
-  # `#` comments, same as the rest of the machine contract.
+  # The turn-boundary inbox delivery contract (issue #15) and the parked /
+  # queued-message visibility contract that peek-then-consume establishes
+  # (#26): which drain outcome consumes the queue, what the give-up paths do
+  # with the message, and what the post-compaction resume does with it. It
+  # lives beside `machine_test.exs` rather than inside it because that file is
+  # at the credo source-file cap. Behavior contract carried by the tests +
+  # inline `#` comments, same as the rest of the machine contract.
 
   use ExUnit.Case, async: true
 
   import ExUnit.CaptureLog
 
   alias Nest.Agents.Agent.Machine
+  alias Nest.Agents.Agent.Machine.Compaction
   alias Nest.Agents.Agent.Turn.Dispatch
   alias Nest.Messages.Part
   alias Nest.Tokens.ConversationSize
@@ -115,55 +119,108 @@ defmodule MachineBoundaryDeliveryTest do
       Machine.validate!(next)
     end
 
-    test "a delivered message that needs compaction is held for the compaction turn" do
+    test "a delivered message that fits appends first and consumes the queue after" do
+      # intentional: the drain only *peeks* (issue #26) — the executor leaves
+      # `state.live.inbox` alone — so the entries are still queued and still on
+      # the wire until the branch that actually appended them consumes them.
+      # The consume therefore rides in the same action list as the `{:append,
+      # _}` and the `:iterate`, and its position AFTER the append is
+      # load-bearing: an append the appender refuses halts the list with
+      # `{:append_result, :invalid, _}`, so the consume never runs and the
+      # entries stay queued and visible — the message is never in neither the
+      # queue nor the transcript. A chat request (which never queued anything)
+      # emits no consume at all.
+      entries = [inbox_entry()]
+      m = boundary_state(tool_tail(), inbox_count: 1)
+
+      {:ok, actions, next} = Machine.step(m, {:inbox_drain, entries, "queued payload"})
+
+      append_at = index_of(actions, &match?({:append, _}, &1))
+
+      assert append_at < index_of(actions, &match?({:consume_inbox, _}, &1))
+      assert append_at < index_of(actions, &(&1 == :iterate))
+      assert {:consume_inbox, ^entries} = List.last(actions -- [:iterate])
+
+      assert next.phase == :generating and next.kind == :chat
+
+      # A chat request has no queue behind it, so there is nothing to consume.
+      {:ok, request_actions, _next} =
+        Machine.step(idle_state(), {:chat_request, {:user_message, user()}})
+
+      refute Enum.any?(request_actions, &match?({:consume_inbox, _}, &1))
+      assert Enum.any?(request_actions, &match?({:append, _}, &1))
+    end
+
+    test "a delivered message that needs compaction stays queued and parks nothing" do
       # intentional: `start_chat/3` owns the fits decision. When the projected
-      # turn needs a compaction the drained message is held on
-      # `pending_user_message` — on the machine only, not on the wire (the
-      # executor has already emptied and rebroadcast the inbox), until the
-      # compaction commits and `resume_with_pending/1` appends it — so the
-      # compaction runs first and the content is not lost.
-      m = boundary_state(two_turn_tool_tail(), inbox_count: 1)
+      # turn needs a compaction the drained batch is NOT consumed — under
+      # peek-then-consume the executor never cleared it — so the message stays
+      # queued and visible (count > 0) for the whole compaction, and the
+      # resume's in-place drain re-delivers it once the context has shrunk.
+      # Nothing is parked on `pending_user_message`: that slot belongs to the
+      # chat-request path, which has no queue to re-deliver from.
+      base = boundary_state(two_turn_tool_tail(), inbox_count: 1)
+      projected = base.work.ctx.messages ++ [Dispatch.build_user_message("queued", "chat")]
 
-      # The window between "the system prompt alone fits" and "everything
-      # fits" is a few tokens wide; derive the limit from the same estimator
-      # the transition uses (8_191 is one token under `Reserve`'s 8_192 floor).
-      # The precondition assertion below fails loudly if that floor moves,
-      # instead of surfacing as an unrelated `next.kind` mismatch.
-      projected = m.work.ctx.messages ++ [Dispatch.build_user_message("queued", "chat")]
-      limit = ConversationSize.size(projected) + 8_191
-
-      assert Dispatch.preflight_decision(projected, limit) == :needs_compaction,
-             "the fixture must force the :needs_compaction branch"
-
-      m = %{m | work: %{m.work | ctx: %{m.work.ctx | context_limit: limit}}}
+      m = %{
+        base
+        | work: %{
+            base.work
+            | ctx: %{base.work.ctx | context_limit: needs_compaction_limit(projected)}
+          }
+      }
 
       {:ok, actions, next} = Machine.step(m, {:inbox_drain, [inbox_entry()], "queued"})
 
+      refute Enum.any?(actions, &match?({:consume_inbox, _}, &1))
       refute Enum.any?(actions, &match?({:append, _}, &1))
       refute Enum.any?(actions, &match?({:restore_inbox, _}, &1))
       assert next.kind == :compaction
       assert {:compaction, staged, nil} = next.entry
       assert is_list(staged)
-
-      assert {:user_message, {:user, %Nest.Messages.User{parts: [%Part.Text{text: text}]}}} =
-               next.pending_user_message
-
-      assert text =~ "queued"
+      assert next.pending_user_message == nil
       Machine.validate!(next)
     end
 
-    test "a delivered message that cannot compact is restored to the inbox" do
-      # intentional: when the turn cannot fit and cannot be compacted, the
-      # agent blocks on `:context_overflow` and the drained entries go back to
-      # the inbox (`{:restore_inbox, entries}`) rather than being dropped with
-      # the drain that already consumed them.
+    test "a chat request that needs compaction still parks its message" do
+      # intentional: the chat request path has no inbox entries to re-deliver,
+      # so it keeps the parking contract: the built message rides on
+      # `pending_user_message` and `resume_with_pending/1` appends it after the
+      # commit.
+      base = idle_state(two_turn_tool_tail())
+      projected = base.work.ctx.messages ++ [user()]
+
+      m = %{
+        base
+        | work: %{
+            base.work
+            | ctx: %{base.work.ctx | context_limit: needs_compaction_limit(projected)}
+          }
+      }
+
+      {:ok, actions, next} = Machine.step(m, {:chat_request, {:user_message, user()}})
+
+      refute Enum.any?(actions, &match?({:consume_inbox, _}, &1))
+      assert next.kind == :compaction
+      assert {:user_message, %Nest.Messages.User{}} = next.pending_user_message
+      Machine.validate!(next)
+    end
+
+    test "a delivered message that cannot compact blocks and stays queued" do
+      # intentional: when the turn cannot fit and cannot be compacted the agent
+      # blocks on `:context_overflow`. Nothing is consumed and nothing is
+      # restored — the entries were never cleared, so `{:restore_inbox, _}` is
+      # gone from the vocabulary — and the message stays queued on the wire.
+      # `{:unblocked}`'s existing `{:drain_inbox}` re-attempts it once the
+      # operator has acted.
       entries = [inbox_entry()]
       m = boundary_state(tool_tail(), inbox_count: 1, context_limit: 1)
 
       {:ok, actions, next} = Machine.step(m, {:inbox_drain, entries, "queued"})
 
-      assert Enum.any?(actions, &match?({:restore_inbox, ^entries}, &1))
+      refute Enum.any?(actions, &match?({:consume_inbox, _}, &1))
       refute Enum.any?(actions, &match?({:append, _}, &1))
+      refute Enum.any?(actions, &match?({:restore_inbox, _}, &1))
       assert next.phase == :context_overflow
       assert Machine.status_for(next) == :context_overflow
     end
@@ -227,22 +284,174 @@ defmodule MachineBoundaryDeliveryTest do
       assert next.pending_user_message == nil
       Machine.validate!(next)
     end
+
+    test "queued entries are appended and consumed without re-entering the compaction decision" do
+      # intentional: under peek-then-consume the entries of a drain that needed
+      # a compaction are still queued — nothing was parked — so a bare
+      # `{:drain_inbox}` here would re-preflight them and re-stage the very
+      # compaction the ack just gave up on (operator-gated by the `loop_count`
+      # reset, but still the loop the ack exists to break). `{:drain_inbox,
+      # :append}` builds the combined message from the batch and consumes it
+      # without `start_chat/3`.
+      {:ok, actions, next} = Machine.step(loop_detected_state(nil, inbox_count: 2), :loop_ack)
+
+      assert actions == [{:drain_inbox, :append}]
+      assert next.phase == :idle
+      assert next.loop_count == 0
+      Machine.validate!(next)
+
+      # Both held and queued: the parked message is appended first (the machine
+      # holds it), then the queued batch is appended and consumed.
+      {:user, _user} = held = Dispatch.build_user_message("held message", "chat")
+      entry = {:user_message, held}
+
+      {:ok, actions, next} = Machine.step(loop_detected_state(entry, inbox_count: 1), :loop_ack)
+
+      assert [{:append, {:user, %Nest.Messages.User{}}}, {:drain_inbox, :append}] = actions
+      assert next.phase == :idle
+      assert next.pending_user_message == nil
+      Machine.validate!(next)
+    end
+  end
+
+  describe "compaction give-up and resume keep the message visible" do
+    test ":reserve_exhausted does not strand the message in any of its three arms" do
+      # intentional: `:reserve_exhausted` means the model cannot fit the system
+      # prompt plus the compaction request into its reserve, so re-draining
+      # would loop (start_chat -> :needs_compaction -> stage -> here). The
+      # parked chat request is appended before anything else and its slot
+      # cleared; the drain path's entries stay queued and the agent blocks (a
+      # drain would re-stage the failing compaction); with nothing held and
+      # nothing queued the agent idles as before.
+      overflow = {:broadcast, {:overflow, :reserve_exhausted, "compact"}, nil}
+
+      # The chat-request arm: the built message is parked on the machine and no
+      # queue holds it, so it must be appended (the `:loop_ack` precedent).
+      held = %{reserve_state() | pending_user_message: {:user_message, user()}}
+      {:ok, actions, next} = Compaction.stage(held, nil, nil)
+
+      assert [^overflow, {:append, {:user, %Nest.Messages.User{}}}] = actions
+      refute Enum.any?(actions, &match?({:restore_inbox, _}, &1))
+      assert next.phase == :idle
+      assert next.pending_user_message == nil
+      Machine.validate!(next)
+
+      # The inbox arm: the entries are still queued, so block instead of
+      # draining — a drain would re-run the decision that just failed.
+      {:ok, actions, next} = Compaction.stage(reserve_state(inbox_count: 1), nil, nil)
+
+      assert [^overflow] = actions
+      assert next.phase == :context_overflow
+      assert Machine.status_for(next) == :context_overflow
+      Machine.validate!(next)
+
+      # Nothing held and nothing queued: idle, as before.
+      {:ok, actions, next} = Compaction.stage(reserve_state(), nil, nil)
+
+      assert [^overflow] = actions
+      assert next.phase == :idle
+      Machine.validate!(next)
+
+      # A held shape `Phase.unwrap_user/1` cannot unwrap is logged and treated
+      # as nothing held — the `:loop_ack` contract, asserted for this branch
+      # too: a declared event never raises, and the drop is visible.
+      log =
+        capture_log(fn ->
+          bogus = %{reserve_state() | pending_user_message: {:bogus, :shape}}
+          {:ok, actions, next} = Compaction.stage(bogus, nil, nil)
+
+          assert [^overflow] = actions
+          assert next.phase == :idle
+        end)
+
+      assert log =~ "unrecognized pending_user_message"
+      assert log =~ "{:bogus, :shape}"
+    end
+
+    test "the post-compaction resume re-drains in place while the queue still holds the message" do
+      # intentional: under peek-then-consume the message that needed the
+      # compaction is still queued, so the resume delivers it straight from
+      # `:generating`. Entering `:idle` first would broadcast a transient idle
+      # (which resolves an idle-based wait with the pre-delivery answer) and
+      # `{:finalize, :clean}` a turn that is really continuing — the #15
+      # property this path preserves.
+      queued = %{reserve_state(inbox_count: 1) | entry: {:compaction, [], nil}}
+      {:ok, actions, next} = Compaction.resume(queued)
+
+      assert actions == [{:drain_inbox}]
+      assert next.phase == :generating and next.kind == :chat
+      assert Machine.status_for(next) == :streaming
+      assert next.entry == nil
+      Machine.validate!(next)
+
+      # Nothing queued: the resume settles to idle and finalizes as before.
+      empty = %{reserve_state() | entry: {:compaction, [], nil}}
+      {:ok, actions, next} = Compaction.resume(empty)
+
+      assert actions == [{:finalize, :clean}, {:drain_inbox}]
+      assert next.phase == :idle
+      Machine.validate!(next)
+    end
   end
 
   # --- helpers ---
 
   # A machine in the loop-breaker's blocked phase, holding `held` (or nothing)
   # on the pending-message slot. Blocked phases carry no worker kind.
-  defp loop_detected_state(held) do
+  defp loop_detected_state(held, opts \\ []) do
     base = generating_state()
+    ctx = put_opt(base.work.ctx, opts, :inbox_count)
 
     %{
       base
       | phase: :compaction_loop_detected,
         loop_count: 3,
         pending_user_message: held,
-        work: %{base.work | worker_kind: nil}
+        work: %{base.work | worker_kind: nil, ctx: ctx}
     }
+  end
+
+  # The same fixture in `:idle`: the chat-request path's entry point.
+  defp idle_state(tail \\ []) do
+    base = boundary_state(tail, [])
+    %{base | phase: :idle, work: %{base.work | worker_kind: nil}}
+  end
+
+  # The window between "the system prompt alone fits" and "everything fits" is
+  # a few tokens wide; derive the limit from the same estimator the transition
+  # uses (8_191 is one token under `Reserve`'s 8_192 floor). The precondition
+  # assertion fails loudly if that floor moves, instead of surfacing as an
+  # unrelated `next.kind` mismatch.
+  defp needs_compaction_limit(projected) do
+    limit = ConversationSize.size(projected) + 8_191
+
+    assert Dispatch.preflight_decision(projected, limit) == :needs_compaction,
+           "the fixture must force the :needs_compaction branch"
+
+    limit
+  end
+
+  # `Enum.find_index/2` returns nil for "not found", and every integer is
+  # `< nil` in Erlang term order, so an ordering assertion built on it passes
+  # vacuously when the action is absent. Flunk instead.
+  defp index_of(actions, fun) do
+    Enum.find_index(actions, fun) || flunk("no action matching in #{inspect(actions)}")
+  end
+
+  # A machine whose compaction plan cannot even be staged: with no system
+  # message and no vocation, `Dispatch.compaction_plan/1` reports
+  # `{:error, :reserve_exhausted}`.
+  defp reserve_state(opts \\ []) do
+    base = idle_state()
+    ctx = put_opt(%{base.work.ctx | messages: []}, opts, :inbox_count)
+    %{base | work: %{base.work | ctx: ctx}}
+  end
+
+  defp put_opt(ctx, opts, key) do
+    case Keyword.fetch(opts, key) do
+      {:ok, value} -> Map.put(ctx, key, value)
+      :error -> ctx
+    end
   end
 
   # A `:generating` machine whose ctx ends on `tail`. `inbox_count` is
@@ -258,11 +467,7 @@ defmodule MachineBoundaryDeliveryTest do
         context_limit: Keyword.get(opts, :context_limit, ctx.context_limit)
     }
 
-    ctx =
-      case Keyword.fetch(opts, :inbox_count) do
-        {:ok, count} -> Map.put(ctx, :inbox_count, count)
-        :error -> ctx
-      end
+    ctx = put_opt(ctx, opts, :inbox_count)
 
     %{
       base
@@ -316,7 +521,13 @@ defmodule MachineBoundaryDeliveryTest do
   end
 
   defp inbox_entry do
-    %{from: "peer", content: "queued payload", timestamp: DateTime.utc_now()}
+    %{
+      from: "peer",
+      content: "queued payload",
+      timestamp: DateTime.utc_now(),
+      kind: :agent,
+      mode: nil
+    }
   end
 
   defp user do

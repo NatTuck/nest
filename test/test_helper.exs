@@ -12,6 +12,15 @@ Mimic.copy(Nest.Agents)
 Mimic.copy(Nest.Agents.Supervisor)
 Mimic.copy(Phoenix.Channel)
 
+# Copied here, never per-test: Mimic's copy swaps the module for its proxy and
+# re-imports coverdata around the swap, so a copy that runs *during* the suite
+# (from an async module's `setup`) makes that module's coverage depend on test
+# order — enough to swing the total across the `minimum_coverage` gate in
+# ./coveralls.json. `Nest.ChatModel` and `Nest.Agents.Registry` are both
+# exercised by other tests, so they belong in this list.
+Mimic.copy(Nest.ChatModel)
+Mimic.copy(Nest.Agents.Registry)
+
 # `max_cases` defaults to `schedulers_online * 2`. The suite is
 # DB- and message-passing-bound, and over-subscribing the schedulers
 # (32 cases on a 32-scheduler host) causes enough contention that the

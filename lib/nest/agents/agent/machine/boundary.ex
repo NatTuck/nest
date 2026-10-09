@@ -63,12 +63,21 @@ defmodule Nest.Agents.Agent.Machine.Boundary do
       deliverable_tail?(List.last(m.work.ctx.messages))
   end
 
-  # `Turn.build_ctx/2` always sets `inbox_count` from `length(state.live.inbox)`;
-  # the 0 default only covers the tests that hand-build a `ctx` map, where
-  # "nothing queued" is the intended state. Guarded with `is_integer/1` because
-  # `nil > 0` is true in Erlang term order.
-  defp inbox_count(%{inbox_count: n}) when is_integer(n), do: n
-  defp inbox_count(_ctx), do: 0
+  @doc """
+  How many entries the agent has queued, from a turn context.
+
+  `Turn.build_ctx/2` always sets `inbox_count` from `length(state.live.inbox)`;
+  the 0 default only covers the tests that hand-build a `ctx` map, where
+  "nothing queued" is the intended state. Guarded with `is_integer/1` because
+  `nil > 0` is true in Erlang term order.
+
+  Public because `Compaction` reads the same field for the paths that give up
+  on a drain without emptying the queue (`:reserve_exhausted`, the
+  post-compaction resume).
+  """
+  @spec inbox_count(map()) :: non_neg_integer()
+  def inbox_count(%{inbox_count: n}) when is_integer(n), do: n
+  def inbox_count(_ctx), do: 0
 
   defp deliverable_tail?({tag, _msg}) when tag in [:tool, :assistant], do: true
   defp deliverable_tail?(_last), do: false

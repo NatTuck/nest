@@ -37,6 +37,7 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   alias Nest.Agents.Agent.ToolFilter
   alias Nest.Agents.Agent.ToolLoop
   alias Nest.Agents.Agent.Turn.Commit
+  alias Nest.Agents.Agent.Turn.Dispatch
   alias Nest.Agents.Agent.Turn.HTTPWorker
   alias Nest.Agents.Agent.Turn.Terminal
   alias Nest.Messages.Streaming
@@ -304,33 +305,42 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   defp execute({:stop_all_children}, state), do: {stop_running_children(state), :continue}
 
   defp execute({:drain_inbox}, state) do
-    case state.live.inbox do
-      [] ->
-        {state, :continue}
-
-      entries ->
-        content = Inbox.combine_and_offload(entries, state)
-        mode = applied_mode(state, entries)
-        mode_changed? = mode != state.live.mode
-        state = %{state | live: %{state.live | inbox: [], mode: mode}}
-        Broadcasts.inbox(state, [])
-
-        # `Broadcasts.status/1` is the only carrier of `currentMode`, and the
-        # settle loop broadcasts only on a status *change* — which this drain
-        # deliberately does not cause (the phase stays `:generating`) — so
-        # publish the new mode here or the UI's mode selector keeps the old one
-        # until the turn ends.
-        if mode_changed?, do: Broadcasts.status(state)
-
-        {state, {:follow, {:inbox_drain, entries, content}}}
+    case peek_inbox(state) do
+      :empty -> {state, :continue}
+      {state, batch, content} -> {state, {:follow, {:inbox_drain, batch, content}}}
     end
   end
 
-  defp execute({:restore_inbox, entries}, state) do
-    state = %{state | live: %{state.live | inbox: entries}}
-    Broadcasts.inbox(state, Inbox.serialize(entries))
-    {state, :continue}
+  # The loop breaker's give-up shape (issue #26): build the message from the
+  # peeked batch, append it, and consume it — without `start_chat/3`, so the
+  # ack cannot re-enter the compaction decision it just gave up on. Mirrors
+  # `Transitions`'s `{:append, {:user, _}}` arm, which does the same for a
+  # parked chat request.
+  defp execute({:drain_inbox, :append}, state) do
+    case peek_inbox(state) do
+      :empty ->
+        {state, :continue}
+
+      {state, batch, content} ->
+        user = Dispatch.build_user_message(content, state.live.mode)
+
+        # `:stale` is the appender's "this message does not answer the live
+        # sequence" refusal. Consuming the batch on it would drop the message
+        # with nothing in the transcript — the "in neither" state #26 exists to
+        # eliminate — so the batch stays queued and the refusal rides back to
+        # the machine as a follow event, exactly as the `{:append, _}` clause's
+        # failure does.
+        case MessageAppender.handle_single(state, user) do
+          {:ok, _stamped, state} -> consume_inbox(state, batch)
+          {:stale, state} -> {state, {:follow, {:append_result, :stale, nil}}}
+          {:invalid, reason, state} -> {state, {:follow, {:append_result, :invalid, reason}}}
+        end
+    end
   end
+
+  # The consume half of peek-then-consume, emitted by the branch that actually
+  # appended the message (issue #26).
+  defp execute({:consume_inbox, entries}, state), do: consume_inbox(state, entries)
 
   defp execute({:broadcast, :compaction, marker}, state) do
     Broadcasts.compaction(state, marker)
@@ -374,7 +384,47 @@ defmodule Nest.Agents.Agent.Turn.Executor do
 
   # --- helpers ---
 
-  # One mode per combined message: the most recent human-sourced entry that
+  # The peek half of peek-then-consume (issue #26): the drain computes the
+  # batch's content and applies its mode, but leaves `state.live.inbox` alone
+  # and rebroadcasts nothing. The machine decides what to do with the content,
+  # and `{:consume_inbox, _}` is what clears the queue — emitted only by the
+  # branch that actually appended the message. A delivery that parks (a
+  # compaction, a `:cannot_compact` block) therefore leaves the message queued
+  # and visible rather than in no payload at all.
+  defp peek_inbox(state) do
+    case Inbox.batch(state.live.inbox) do
+      [] ->
+        :empty
+
+      batch ->
+        content = Inbox.combine_and_offload(batch, state)
+        mode = applied_mode(state, batch)
+        mode_changed? = mode != state.live.mode
+        state = %{state | live: %{state.live | mode: mode}}
+
+        # `Broadcasts.status/1` is the only carrier of `currentMode`, and the
+        # settle loop broadcasts only on a status *change* — which this drain
+        # deliberately does not cause (the phase stays `:generating`) — so
+        # publish the new mode here or the UI's mode selector keeps the old one
+        # until the turn ends.
+        if mode_changed?, do: Broadcasts.status(state)
+
+        {state, batch, content}
+    end
+  end
+
+  defp consume_inbox(state, entries) do
+    # Drop exactly the peeked batch, not the whole queue: the executor runs
+    # synchronously inside one settle, so nothing can be enqueued between the
+    # peek and the consume, and anything the peek did not deliver stays queued
+    # and stays on the wire.
+    inbox = state.live.inbox -- entries
+    state = %{state | live: %{state.live | inbox: inbox}}
+    Broadcasts.inbox(state, Inbox.serialize(inbox))
+    {state, :continue}
+  end
+
+  # One mode per delivered batch: the most recent human-sourced entry that
   # carries a mode wins (`Inbox.drain_mode/1`), and the agent's current mode
   # stands when no entry does. The winner is resolved against the vocation
   # exactly as `ChatPipeline.handle_chat/3` resolves an idle turn's request

@@ -73,8 +73,6 @@ defmodule Nest.Agents.Agent.WaitLoopTest do
   # persisted-only target is never started. Stub liveness for the tests that
   # report a stop message.
   defp stub_live(names) do
-    Mimic.copy(Nest.Agents.Registry)
-
     Mimic.stub(Nest.Agents.Registry, :lookup, fn _space_id, name ->
       if name in names, do: {:ok, self()}, else: {:error, :not_found}
     end)

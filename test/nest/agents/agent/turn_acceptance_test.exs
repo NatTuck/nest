@@ -520,7 +520,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
   end
 
   describe "human messages during a turn" do
-    test "1.1.10 a human message queued inside a tool batch lands before the next request in its mode" do
+    test "1.1.10 a human message queued inside a tool batch lands alone, in its own mode" do
       test_pid = self()
 
       {pid, name} =
@@ -588,22 +588,13 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
       assert Machine.status_for(state.live.machine) == :executing_tools
       assert state.live.mode == "chat"
 
-      # Releasing the batch queues the `agents-send` entry too; the boundary
-      # drain delivers both as one user message before the next request.
+      # Releasing the batch queues the `agents-send` entry too, behind the
+      # human's. The boundary drain then delivers the human message ALONE — it
+      # never merges with the entry that arrived behind it (issue #31 decision
+      # 8) — so the peer's entry stays queued and the count drops to 1, not 0.
       send(worker, :release_tools)
       assert_receive {:chat_inbox, %{count: 2}}, 500
-
-      # The second `streaming` is the delivery publishing the new mode
-      # (`currentMode` rides the status payload), not a status change — the
-      # phase stays `:generating` throughout. The exact list also pins that no
-      # `idle` appears before the end.
-      assert statuses_until_idle() == [
-               "streaming",
-               "executing_tools",
-               "streaming",
-               "streaming",
-               "idle"
-             ]
+      assert_receive {:chat_inbox, %{count: 1}}, 500
 
       first = assert_request()
       second = assert_request()
@@ -613,17 +604,38 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
 
       delivered = Enum.find(user_texts(second), &(&1 =~ "human note"))
 
-      assert delivered =~ "[mode: plan]"
-      assert delivered =~ "[Message from the user \"alice\"]\nhuman note"
-      assert delivered =~ "[Message from agent \"#{name}\"]\npeer note"
+      # The human's mode rides the message and there is no sender framing: a
+      # queued human message reads exactly like one typed while the agent was
+      # idle. The peer's entry is not in this request at all.
+      assert delivered == "[mode: plan]\nhuman note"
+      refute Enum.any?(user_texts(second), &(&1 =~ "peer note"))
 
-      assert {human_at, _} = :binary.match(delivered, "human note")
-      assert {peer_at, _} = :binary.match(delivered, "peer note")
-      assert human_at < peer_at, "the drained order is the queue order"
+      # The peer's entry is delivered as its own batch at the next turn
+      # boundary, with the agent label that disambiguates it.
+      assert_receive {:chat_inbox, %{count: 0}}, 500
+      third = assert_request()
 
-      # Exactly two requests: the delivery did not end the turn and start a
-      # new one.
+      assert Enum.any?(
+               user_texts(third),
+               &(&1 =~ "[Message from agent \"#{name}\"]\npeer note")
+             )
+
+      # Exactly three requests: the two deliveries did not each end the turn and
+      # start a fresh one beyond the peer's own turn.
       refute_receive {:llm_request, _}, 50
+
+      # The delivery publishes the new mode (`currentMode` rides the status
+      # payload) without changing the status; the turn ends when the model
+      # answers the human message, and the peer's entry starts the next one.
+      assert statuses_until_idle() == [
+               "streaming",
+               "executing_tools",
+               "streaming",
+               "streaming",
+               "idle"
+             ]
+
+      assert statuses_until_idle() == ["streaming", "idle"]
 
       state = :sys.get_state(pid)
 
@@ -636,20 +648,20 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
 
       tool_index = Enum.find_index(messages, &match?({:tool, _}, &1))
       ack_index = Enum.find_index(messages, &(text_of(&1) =~ "continuing from here"))
-      drained_index = Enum.find_index(messages, &(text_of(&1) =~ "[Message from the user"))
-      final_index = Enum.find_index(messages, &(text_of(&1) =~ "Done"))
+      human_index = Enum.find_index(messages, &(text_of(&1) =~ "human note"))
+      peer_index = Enum.find_index(messages, &(text_of(&1) =~ "peer note"))
 
       assert is_integer(tool_index), "expected a tool-result message"
       assert is_integer(ack_index), "expected the live bridge ack"
-      assert is_integer(drained_index), "expected the delivered user message"
-      assert is_integer(final_index), "expected the final assistant response"
+      assert is_integer(human_index), "expected the delivered human message"
+      assert is_integer(peer_index), "expected the delivered peer message"
 
-      # Bridged (the tail was the tool result) and landed before the response
-      # to the request that carried it.
+      # Bridged (the tail was the tool result), then the human message, then
+      # the peer's: each delivery lands after the one before it.
       assert tool_index < ack_index
-      assert ack_index < drained_index
-      assert drained_index == final_index - 1
-      assert text_of(Enum.at(messages, drained_index)) =~ "[mode: plan]"
+      assert ack_index < human_index
+      assert human_index < peer_index
+      assert text_of(Enum.at(messages, human_index)) == "[mode: plan]\nhuman note"
 
       AgentTestHelpers.assert_unique_message_indices(state)
     end
