@@ -12,8 +12,10 @@ surrounding how system messages are sent to the LLM:
    The system prompt should be stable per turn — mutating it mid-flight
    is exactly the kind of thing that breaks prompt caching on providers
    that hash the system prompt. Inspection of the LLM request payloads
-   (e.g. `notes/max-tool-calls.log`) confirms the warning never actually
-   reaches the LLM in the wire format.
+   (e.g. `notes/max-tool-calls.log`, a raw API request dump that is no
+   longer committed — recoverable from history via
+   `git show cfd19eb:notes/max-tool-calls.log`) confirms the warning
+   never actually reaches the LLM in the wire format.
 
 2. **The max-iterations final call crashes hard when the LLM ignores
    `tool_choice: :none`.** When the LLM hits the iteration cap, the

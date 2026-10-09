@@ -13,6 +13,14 @@
 # Test outputs
 /notes/test-runs/
 
+# Stray debug dumps in notes/ (raw API request logs). An ignore rule does
+# not untrack files that are already committed, so the two that were
+# committed before this rule (notes/token-issue.log, notes/max-tool-calls.log)
+# were removed from tracking with `git rm --cached`. Merging that removal
+# deletes them from a checkout; they stay recoverable from history at
+# cfd19eb, e.g. `git show cfd19eb:notes/max-tool-calls.log`.
+notes/*.log
+
 # Ignore .fetch files in case you like to edit your project deps locally.
 /.fetch
 
