@@ -94,8 +94,15 @@ errors or warnings. NO EXCEPTIONS, NO EXCUSES.
 similar. If you expect long output, redirect to a temporary file (e.g.
 /tmp/opencode/test-runs/test-run.log).
 - **ALL** test run output should go under notes/test-runs.
-- The Elixir test suite must take less than 5 seconds to run. If it ever takes
-longer, that's a major issue that needs to be addressed immediately.
+- The Elixir suite runs **exactly once** per `mix precommit` (under coverage) and
+that single run is split into four budgeted phases by
+`scripts/precommit-test.sh`: **setup <= 4s**, **load <= 4s**, **run <= 3s**,
+**post <= 3s** on the fast reference host ("vampire"), and **x3** on every other
+host. A phase over budget fails the gate and names the phase, so a regression
+says which part moved. See notes/precommit-time-limits.md.
+- Do not confuse those phase budgets with ExUnit's **per-test** timeout, which is
+also 5 seconds. A single slow test timing out is a different failure from a
+phase blowing its budget; the gate's own numbers never come from that timeout.
 - If something noteworthy and bad happens or an unexpected error occurs, the program
 *should* log a warning or error to the console.
 - Tests must not print to the console except during debugging. If logger output
