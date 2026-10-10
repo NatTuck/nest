@@ -9,17 +9,18 @@ defmodule Eventually do
 
   ## Options
 
-    * `:timeout` - Maximum time to wait in milliseconds (default: 1000)
+    * `:timeout` - Maximum time to wait in milliseconds (default: 500)
     * `:interval` - Delay between retries in milliseconds (default: 10)
 
-  **The 1000 ms default is the suite's wide bound, not a tight one**, and most
-  call sites omit `:timeout` and inherit it. A call site that needs a tighter
-  bound — a property that must hold within a known short window — has to pass
-  its own: the default will not do it for you.
+  The 500 ms default is a floor for *new* call sites, not something any existing
+  test relies on: every one of the 49 `eventually/2` calls in `test/` (24 files)
+  passes its own `:timeout`. A call site that needs a tighter bound — a property
+  that must hold within a known short window — still has to pass its own: the
+  default will not do it for you.
 
   ## Examples
 
-      assert eventually(fn -> Agents.get_agent(id) == {:error, :not_found} end)
+      assert eventually(fn -> Agents.get_agent(id) == {:error, :not_found} end, timeout: 500)
 
       assert eventually(fn ->
         length(Agents.list_agents()) == 0
@@ -27,7 +28,7 @@ defmodule Eventually do
 
   """
   def eventually(fun, opts \\ []) do
-    timeout = opts[:timeout] || 1_000
+    timeout = opts[:timeout] || 500
     interval = opts[:interval] || 10
     deadline = System.monotonic_time(:millisecond) + timeout
 
