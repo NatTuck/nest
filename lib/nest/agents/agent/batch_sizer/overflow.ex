@@ -2,10 +2,11 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
   @moduledoc """
   Shared "write an oversized result to the agent's scratch dir" helpers.
 
-  `write/4` saves the full bytes; `substitute/5` turns an oversized result
-  into an in-budget inline block (a pointer + head) and is the single
-  summarization path used by `BatchSizer` (regular tools), `BatchLoop`
-  (`agents-batch`), and `ToolLoop` (sub-agent tools).
+  `write/4` saves the full bytes and is what `BatchSizer` and `Inbox` use to
+  offload; `substitute/5` turns an oversized result into an in-budget inline
+  block (a pointer + head) and is the single summarization path used by
+  `BatchSizer` (regular tools), `BatchPlan` (the `agents-batch` aggregate) and
+  `SubAgentResults` (the sub-agent tools' results).
 
   The scratch dir is `ctx.tmp_path` — the agent's own sub-directory of the
   space scratch dir (which the sandbox binds read-write at `/tmp`, so the

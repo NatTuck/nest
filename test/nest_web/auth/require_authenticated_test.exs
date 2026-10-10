@@ -10,7 +10,10 @@ defmodule NestWeb.Auth.RequireAuthenticatedTest do
   blocks.
   """
 
-  use NestWeb.ConnCase, async: false
+  # Async: the plug only branches on `conn.assigns.current_user` and
+  # halts; it touches no global state. The users each test creates are
+  # confined to that test's sandbox transaction.
+  use NestWeb.ConnCase, async: true
 
   alias Nest.Accounts
   alias Nest.Accounts.AuthToken

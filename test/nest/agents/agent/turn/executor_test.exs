@@ -96,6 +96,14 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
 
   defp run(action, state \\ state()), do: Executor.run_all(List.wrap(action), state)
 
+  # The same state with a child registered against `target`.
+  defp with_target(state, target) do
+    {:ok, [], machine} =
+      Machine.step(state.live.machine, {:child_spawned, "kid", false, target})
+
+    %{state | live: %{state.live | machine: machine}}
+  end
+
   defp inbox_state(entries, mode, base \\ nil) do
     base = base || state()
     %{base | live: %{base.live | inbox: entries, mode: mode}}
@@ -290,9 +298,24 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
       assert [{:assistant, %{metadata: %{"error" => true}}}] = state.chat_state.messages
     end
 
-    test "notify_worker sends to the worker pid" do
-      {_state, nil} = run({:notify_worker, "kid", self(), {:ok, "resp"}})
-      assert_received {:spawn_agent_result, "kid", "resp"}
+    test "child_message delivers to the child's reporting target, or to the inbox" do
+      # No target (a plain spawn): the parent's own inbox.
+      {state, nil} = run({:child_message, "kid", {:ok, "resp"}})
+      assert [%{from: "kid", content: "resp", kind: :agent}] = state.live.inbox
+
+      # A live target (a batch coordinator): the outcome is sent, not enqueued.
+      {live, nil} = run({:child_message, "kid", {:ok, "resp"}}, with_target(state(), self()))
+      assert_received {:child_message, "kid", {:ok, "resp"}}
+      assert live.live.inbox == []
+
+      # A dead target: the fallback, so a crashed coordinator degrades to
+      # per-child messages instead of silence.
+      dead = spawn(fn -> :ok end)
+      dead_ref = Process.monitor(dead)
+      assert_receive {:DOWN, ^dead_ref, :process, ^dead, _reason}
+
+      {fallback, nil} = run({:child_message, "kid", {:ok, "resp"}}, with_target(state(), dead))
+      assert [%{from: "kid", content: "resp", kind: :agent}] = fallback.live.inbox
     end
 
     test "merge_usage folds descendant usage" do
@@ -604,15 +627,28 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
           work: %{base.live.machine.work | worker_kind: :http}
       }
 
+      machine = Machine.owe_replies(machine, ["peer"])
       busy = %{base | space_id: nil, live: %{base.live | machine: machine}}
 
       Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{busy.space_id}:#{busy.name}")
 
-      {result, log} = with_log(fn -> Turn.settle(busy, {:totally_unknown_event}) end)
+      {result, log} =
+        with_log(fn ->
+          settled = Turn.settle(busy, {:totally_unknown_event})
+
+          # The quarantine is a terminal site, so a reply the turn was holding is
+          # given up with it. The requester is unreachable here (`space_id: nil`),
+          # so the give-up is refused — and the notification that proves the
+          # warning was written arrives after it, inside this capture.
+          assert_receive {:chat_notification, %{type: "reply_give_up_failed"}}, 500
+          settled
+        end)
 
       assert {:ok, settled} = result
       assert Machine.status_for(settled.live.machine) == :idle
+      assert settled.live.machine.owed_replies == %{}
       assert log =~ "quarantined"
+      assert log =~ "reply give-up (quarantine) could not reach peer"
       assert_received {:chat_error, %{content: content}}
       assert content =~ "quarantined"
     end

@@ -89,6 +89,7 @@ defmodule MachineStructureTest do
                  :kind,
                  :loop_count,
                  :mid_turn_entry,
+                 :owed_replies,
                  :pending_user_message,
                  :phase,
                  :stop_timer,
@@ -257,7 +258,8 @@ defmodule MachineStructureTest do
   defp sample_event(:unblocked), do: {:unblocked}
   defp sample_event(:workspace_notice), do: :workspace_notice
   defp sample_event(:tool_results), do: {:tool_results, %{results: []}}
-  defp sample_event(:child_spawned), do: {:child_spawned, "kid", make_ref(), false}
+  defp sample_event(:reply_sent), do: {:reply_sent, "peer"}
+  defp sample_event(:child_spawned), do: {:child_spawned, "kid", false, nil}
   defp sample_event(:child_completed), do: {:child_completed, "kid", "resp", %{}}
   defp sample_event(:child_failed), do: {:child_failed, "kid", :crashed}
   defp sample_event(:child_terminated), do: {:child_terminated, "kid", :killed}

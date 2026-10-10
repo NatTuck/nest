@@ -1,4 +1,6 @@
 defmodule Nest.Agents.Agent.Turn.Dispatch do
+  require Logger
+
   @moduledoc """
   Pure request-staging math for a turn, shared by the machine's
   `step/2` transitions and the executor.
@@ -86,8 +88,34 @@ defmodule Nest.Agents.Agent.Turn.Dispatch do
     max(1, min(work.ctx.context_limit - Budget.size(input), sane_default(work.ctx)))
   end
 
-  @doc "The user-turn preflight decision for a projected message list."
-  @spec preflight_decision([term()], pos_integer()) :: :fits | :needs_compaction | :cannot_compact
+  @doc """
+  The user-turn preflight decision for a projected message list.
+
+  A machine with **no** known limit (a hand-built fixture, or a config that sets
+  none) has nothing to measure against, so everything fits — the same reading
+  `Response.reply_fits?/2` and the reply gate's fit guard use.
+
+  A limit that is present but **not positive** is a misconfiguration, not
+  "unlimited": `context_limit` is resolved from the dot config's
+  `context-limit` (`Nest.DotConfig`) or a provider's `default_context_limit`
+  (`Nest.Models`), and neither should ever be 0. Treating it as unlimited would
+  hide the misconfiguration until the provider rejected the request, so the turn
+  takes the visible overflow path instead: the agent blocks on
+  `:context_overflow` and the operator gets the banner.
+  """
+  @spec preflight_decision([term()], integer() | nil) ::
+          :fits | :needs_compaction | :cannot_compact
+  def preflight_decision(_messages, nil), do: :fits
+
+  def preflight_decision(_messages, limit) when is_integer(limit) and limit <= 0 do
+    Logger.warning(
+      "[preflight] context limit #{limit} is not usable (a misconfigured " <>
+        "`context-limit` or provider default); blocking the turn on :context_overflow"
+    )
+
+    :cannot_compact
+  end
+
   def preflight_decision(messages, limit) do
     PreFlight.check_messages(messages, limit, Reserve.compaction_reserve(limit))
   end

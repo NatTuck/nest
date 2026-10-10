@@ -58,6 +58,12 @@ function statusExtras(payload) {
   if (payload.pendingMessageCount !== undefined) {
     extra.pendingMessageCount = payload.pendingMessageCount;
   }
+  // The peers this agent still owes a reply (`agents-query`). Assigned
+  // unconditionally, matching the store: the wire always carries the key
+  // (an empty list when nothing is owed), so a payload that omits it
+  // becomes `null` — which the inbox panel renders as a missing value —
+  // rather than silently keeping a debt this payload did not confirm.
+  extra.owedReplies = payload.owedReplies ?? null;
 
   return extra;
 }

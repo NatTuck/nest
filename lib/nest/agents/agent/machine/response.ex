@@ -9,6 +9,10 @@ defmodule Nest.Agents.Agent.Machine.Response do
   and nudge content, the API log, and the continuation, then returns the
   actions the executor runs. No effects happen here.
 
+  A final reply is also where the reply obligation is checked (issue #31
+  §1.5): while the agent still owes a peer an answer, the runtime injects
+  one reminder and continues the turn instead of settling.
+
   Rooted in `Machine.Turn.classify_response/1` so the decision table
   has one home.
   """
@@ -18,6 +22,7 @@ defmodule Nest.Agents.Agent.Machine.Response do
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Machine.Compaction
   alias Nest.Agents.Agent.Machine.Phase
+  alias Nest.Agents.Agent.Machine.ReplyReminder
   alias Nest.Agents.Agent.Machine.Turn, as: ResponseClassifier
   alias Nest.Agents.Agent.NoticePairInjector
   alias Nest.Agents.Agent.Turn.BudgetReminder
@@ -117,9 +122,8 @@ defmodule Nest.Agents.Agent.Machine.Response do
   end
 
   defp branch(:empty_assistant, m, _response, _assistant_msg, base) do
-    machine = Phase.enter(m, :chat, :idle)
     msg = "The model returned a response with no content."
-    {:ok, base ++ [{:llm_error, msg}, {:drain_inbox}], machine}
+    Phase.rest(m, :chat, :empty_assistant, base ++ [{:llm_error, msg}, {:drain_inbox}])
   end
 
   defp branch(kind, m, _response, assistant_msg, base) when kind in [:truncated, :silent] do
@@ -155,8 +159,25 @@ defmodule Nest.Agents.Agent.Machine.Response do
   # fits branch (e.g. a finalize warning log).
   defp finalize_or_defer(m, assistant_msg, base, tail) do
     if reply_fits?(m, assistant_msg) do
-      machine = Phase.enter(m, :chat, :idle)
-      {:ok, base ++ [{:append, assistant_msg} | tail], machine}
+      case ReplyReminder.decision(m, m.work.ctx.messages ++ [assistant_msg]) do
+        {:remind, text, m} ->
+          # The gate (issue #31 §1.5): the turn is NOT over — the agent still
+          # owes a peer a reply — so the reminder is appended and the turn
+          # continues. The phase is entered as `:generating`/`:http`, exactly
+          # like the truncation/silent re-prompt above: entering `:idle` would
+          # broadcast the transient idle that #15 exists to prevent, and an
+          # idle peer is by construction one with no unpaid debt.
+          #
+          # The reminder is a synthetic user message — no sender label, no
+          # `[mode: X]` prefix, no metadata — because the runtime is not a
+          # peer and must not read as one.
+          reminder = ContextReminder.build_user_notice(text, nil)
+          machine = Phase.enter(m, :chat, :generating, :http)
+          {:ok, base ++ [{:append, assistant_msg}, {:append, reminder}, :iterate], machine}
+
+        :settle ->
+          settle(m, assistant_msg, base, tail)
+      end
     else
       continuation =
         {:assistant_response, assistant_msg, m.work.iteration, m.work.max_iterations}
@@ -164,6 +185,10 @@ defmodule Nest.Agents.Agent.Machine.Response do
       {:ok, actions, machine} = Compaction.stage(m, continuation, nil)
       {:ok, base ++ actions, machine}
     end
+  end
+
+  defp settle(m, assistant_msg, base, tail) do
+    Phase.rest(m, :chat, :no_reminder, base ++ [{:append, assistant_msg} | tail])
   end
 
   defp reply_fits?(m, assistant_msg) do

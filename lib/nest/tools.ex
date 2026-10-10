@@ -101,15 +101,24 @@ defmodule Nest.Tools do
 
   @doc """
   JSON schema fragment for the `max_result_tokens` call arg.
-  The LLM sees this on every tool and learns it can request a
-  specific cap. The BatchSizer treats this as an inline-vs-summary
-  threshold:
+  The LLM sees this on the tools that take it and learns it can
+  request a specific cap. The BatchSizer treats this as an
+  inline-vs-summary threshold:
 
     * `shell-cmd` → if exceeded, write the full output to a
       tmp file and return a path-and-head summary inline.
     * `file-read` → if exceeded, return an error result with
       the actual vs. requested token counts.
     * Other tools → bounded output by construction (cap unreachable).
+
+  Tools whose result is already a fixed-size confirmation or a
+  pointer (`agents-query`, `agents-spawn`, `agents-send`,
+  `agents-archive`, `context-compact`, `shell-kill`) do not take it,
+  and neither does `agents-batch`: its aggregate is an inbox message,
+  not a tool result, so there is no inline result left to cap.
+  (Decision 14 named only `agents-query` and `agents-spawn` because
+  that is where the analysis happened to be done; the rationale
+  applies to every tool whose result stops being a tool result.)
 
   The default is 80% of the remaining usable context window.
   The LLM may only lower the cap (e.g. to force a summary/error
@@ -324,16 +333,19 @@ defmodule Nest.Tools do
     }
   end
 
-  # The `agents-send` tool: asynchronously send a message to another
-  # agent in this space. Unlike `agents-query`, it does not wait for a
-  # response. If the target is idle the message becomes its next user
-  # message (starting a turn); if the target is busy the message is
-  # queued and delivered at the target's next turn boundary — before it
-  # starts its next LLM request, or when it goes idle if the turn ends
-  # first. A delivery carries the FIFO head batch: a queued human message
-  # is delivered alone, a run of peer messages is combined into one user
-  # message (offloaded to a scratch file when over the configured
-  # `max-async-message-tokens` cap).
+  # The `agents-send` tool: send a message to another agent in this
+  # space. Unlike `agents-query`, it creates no reply obligation — the
+  # target owes nothing back. If the target is idle the message becomes
+  # its next user message (starting a turn); if the target is busy the
+  # message is queued and delivered at the target's next turn boundary —
+  # before it starts its next LLM request, or when it goes idle if the
+  # turn ends first. A delivery carries the FIFO head batch: a queued
+  # human message is delivered alone, a run of peer messages is combined
+  # into one user message (offloaded to a scratch file when over the
+  # configured `max-async-message-tokens` cap).
+  #
+  # A *successful* send also discharges any reply the caller owes the
+  # target, so this is how a peer answers an `agents-query`.
   #
   # The `function` here is a stub. Real execution lives in
   # `Nest.Agents.Agent.ToolLoop.run_send_agent/2`, which looks up the
@@ -343,15 +355,18 @@ defmodule Nest.Tools do
     %Tool{
       name: "agents-send",
       description:
-        "Send a message to another agent in this space without waiting for a " <>
-          "reply. If that agent is idle the message becomes its next user " <>
-          "message; if it is busy the message is queued and delivered at its " <>
-          "next turn boundary — before it starts its next request, or when it " <>
-          "goes idle if the turn ends first. A queued message is delivered on " <>
-          "its own, ahead of anything queued behind it (peer messages sent in " <>
-          "the same window are delivered together as one message). " <>
+        "Send a message to another agent in this space. This creates no " <>
+          "reply obligation: the target owes you nothing. If that agent is " <>
+          "idle the message becomes its next user message; if it is busy the " <>
+          "message is queued and delivered at its next turn boundary — " <>
+          "before it starts its next request, or when it goes idle if the " <>
+          "turn ends first. A queued message is delivered on its own, ahead " <>
+          "of anything queued behind it (peer messages sent in the same " <>
+          "window are delivered together as one message). " <>
           "Use this to hand off work or share information with a peer or " <>
-          "sub-agent; use `agents-query` when you need the response now.",
+          "sub-agent, and to reply to a peer that queried you with " <>
+          "`agents-query`: a successful send discharges the reply you owe " <>
+          "that peer.",
       parameters_schema: %{
         "type" => "object",
         "properties" => %{
@@ -374,8 +389,8 @@ defmodule Nest.Tools do
 
   # The `agents-wait` tool: block until one of the given agents (or,
   # with an empty list, every other agent in this space) finishes its
-  # turn and goes idle. The spec lives in `Nest.Tools.WaitAgents` (this
-  # file is at the source-file line cap); execution lives in
+  # turn and goes idle. The spec lives in `Nest.Tools.WaitAgents`;
+  # execution lives in
   # `Nest.Agents.Agent.ToolLoop.run_wait_agents/2`, which delegates to
   # `Nest.Agents.Agent.WaitLoop` in the turn's tool worker.
 
@@ -446,8 +461,9 @@ defmodule Nest.Tools do
 
   # The `agents-batch` tool: the fork-join sub-agent API. The model
   # makes ONE call that fans a single templated instruction out over a
-  # set of items to concurrent sub-agents, and gets back ONE aggregated
-  # result (a JSON array of each child's final response, in item order).
+  # set of items to concurrent sub-agents; the aggregate — a JSON array
+  # of each child's final response, in item order — arrives later as a
+  # message in the caller's inbox, not as this call's return value.
   # It never enumerates per-item prompts or tracks child names — that
   # bookkeeping is the runtime's job.
   #
@@ -459,7 +475,7 @@ defmodule Nest.Tools do
   # responding). `max_concurrency` is clamped to a configured ceiling.
   #
   # The `function` here is a stub. Real execution lives in
-  # `Nest.Agents.Agent.BatchLoop.run/2`, dispatched from
+  # `Nest.Agents.Agent.BatchCoordinator.run/2`, dispatched from
   # `ToolLoop.run_agents_batch/2`. There is no `required` field — the
   # items/XOR/glob shape is validated at runtime so a descriptive error
   # reaches the model.
@@ -468,8 +484,10 @@ defmodule Nest.Tools do
       name: "agents-batch",
       description:
         "Fan ONE instruction out over a set of items to concurrent sub-agents " <>
-          "and get back ONE aggregated result: a JSON array of each child's " <>
-          "final response string, in item order. Use this instead of many " <>
+          "and receive the aggregate later as a message in your inbox: a JSON " <>
+          "array of each child's final response string, in item order. " <>
+          "Nothing waits — this call returns as soon as the batch is " <>
+          "launched. Use this instead of many " <>
           "separate agents-spawn calls when every item gets the same task. " <>
           "Provide `items` (a non-empty list) OR `glob` (a pattern expanded " <>
           "to readable files — preferred for large sets, so you never list " <>
@@ -544,10 +562,10 @@ defmodule Nest.Tools do
             "enum" => ["collect", "fail_fast"],
             "description" =>
               "\"collect\" (default) keeps a failed/timed-out item as an " <>
-                "error marker in its slot and still returns the rest; " <>
-                "\"fail_fast\" stops at the first failure."
-          },
-          "max_result_tokens" => max_result_tokens_schema()
+                "error marker in its slot and still includes the rest; " <>
+                "\"fail_fast\" stops the rest at the first failure and " <>
+                "reports it."
+          }
         },
         "required" => []
       },

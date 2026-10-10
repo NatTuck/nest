@@ -20,6 +20,7 @@ defmodule Nest.Agents.Agent.Broadcasts do
   require Logger
 
   alias Nest.Agents.Agent.Machine
+  alias Nest.Agents.Agent.Timeline
   alias Nest.Messages.Compaction
   alias Nest.PubSub
 
@@ -30,9 +31,8 @@ defmodule Nest.Agents.Agent.Broadcasts do
 
   @doc """
   The per-agent PubSub topic. The single source for the
-  `"agent:<space_id>:<name>"` format, so subscribers
-  (`Nest.Agents.Agent.PeerQuery`'s `agents-query` wait,
-  `Agent.WaitLoop`) and broadcasters cannot drift.
+  `"agent:<space_id>:<name>"` format, so subscribers (`Agent.WaitLoop`,
+  `Agent.WaitAgents`) and broadcasters cannot drift.
   """
   @spec topic(integer(), String.t()) :: String.t()
   def topic(space_id, name), do: "agent:#{space_id}:#{name}"
@@ -46,6 +46,7 @@ defmodule Nest.Agents.Agent.Broadcasts do
   # to append a `[Source: ...]` tag to the user-facing message
   # so the UI shows where the error originated.
   def error(space_id, name, message_index, error_msg, source) do
+    Timeline.error(space_id, name, error_msg, source)
     tagged = tag_source(error_msg, source)
     log_error(space_id, name, message_index, error_msg, source)
     broadcast_error(space_id, name, message_index, tagged)
@@ -56,6 +57,7 @@ defmodule Nest.Agents.Agent.Broadcasts do
   # Internally still logs at error level so server-side
   # observability isn't lost.
   def error(space_id, name, message_index, error_msg) do
+    Timeline.error(space_id, name, error_msg, nil)
     log_error(space_id, name, message_index, error_msg, nil)
     broadcast_error(space_id, name, message_index, error_msg)
   end
@@ -159,10 +161,13 @@ defmodule Nest.Agents.Agent.Broadcasts do
   defp truncate_for_log(other), do: inspect(other)
 
   def status(state) do
+    payload = status_payload(state)
+    Timeline.status(state, payload)
+
     Phoenix.PubSub.broadcast(
       PubSub,
       topic(state.space_id, state.name),
-      {:chat_status, status_payload(state)}
+      {:chat_status, payload}
     )
   end
 
@@ -210,6 +215,7 @@ defmodule Nest.Agents.Agent.Broadcasts do
   end
 
   def notification(space_id, name, payload) do
+    Timeline.notification(space_id, name, payload)
     Phoenix.PubSub.broadcast(PubSub, topic(space_id, name), {:chat_notification, payload})
   end
 
@@ -341,6 +347,12 @@ defmodule Nest.Agents.Agent.Broadcasts do
       # `chat:inbox`, so a client that missed an inbox frame recovers the count
       # from the next status instead of leaving the panel stale.
       pendingMessageCount: length(live.inbox),
+      # The peers this agent still owes a reply to (issue #31 §1.8, decision
+      # 15): a status broadcast is the only frame a client sees for a debt
+      # that was set or cleared mid-turn, and state the user cannot see is
+      # state we are hiding. Always a list — `[]` when nothing is owed — so a
+      # missing key can never render as "no debt".
+      owedReplies: Machine.owed_senders(live.machine),
       model: model_payload(state.model),
       workspacePath: state.workspace_path,
       contextLimit: metrics.context_limit,

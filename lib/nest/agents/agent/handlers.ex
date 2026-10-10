@@ -44,6 +44,7 @@ defmodule Nest.Agents.Agent.Handlers do
   defp route_for({:http_error, _, _}), do: {:ok, Turn}
   defp route_for({:worker_crashed, _, _, _}), do: {:ok, Turn}
   defp route_for({:tool_results, _, _}), do: {:ok, Turn}
+  defp route_for({:reply_sent, _}), do: {:ok, Turn}
   defp route_for({:DOWN, _, :process, _, _}), do: {:ok, Turn}
 
   defp route_for(_), do: :no_match

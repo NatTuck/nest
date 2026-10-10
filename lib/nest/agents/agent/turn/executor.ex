@@ -2,19 +2,17 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   @moduledoc """
   The single place the Agent's turn work causes effects.
 
-  `Machine.step/2` is pure and returns a list of actions. This module
-  runs them, in order, against the live Agent state. It owns every
-  effect a turn performs: sequence appends, worker spawns, timer arm/
-  cancel, channel acks, broadcasts, usage merges, inbox drains, and
-  sub-agent notifications.
+  `Machine.step/2` is pure and returns a list of actions. This module runs
+  them, in order, against the live Agent state. It owns every effect a turn
+  performs: sequence appends, worker spawns, timer arm/cancel, channel acks,
+  broadcasts, usage merges, inbox drains, reply give-ups, and sub-agent
+  notifications.
 
-  ## Facts round-trip into events
-
-  Some facts only exist after an effect runs (an append's tagged result,
-  a preflight decision, a spawned worker's pid/ref). `run_all/2` executes
-  until an action produces a follow-up event, then returns it so the
-  settle loop can feed it back through `Machine.step/2`. This keeps
-  `step/2` pure while still reacting to the real world.
+  Some facts only exist after an effect runs (an append's tagged result, a
+  preflight decision, a spawned worker's pid/ref). `run_all/2` executes until
+  an action produces a follow-up event, then returns it so the settle loop can
+  feed it back through `Machine.step/2`: that round trip keeps `step/2` pure
+  while still reacting to the real world.
 
   `:iterate` is deliberately deferred through the mailbox (never run
   inline): the old driver advanced a turn with `send(self(), :iterate)`,
@@ -33,11 +31,14 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Machine.Children
   alias Nest.Agents.Agent.MessageAppender
+  alias Nest.Agents.Agent.SubAgentResults
   alias Nest.Agents.Agent.SystemPrompt
+  alias Nest.Agents.Agent.Timeline
   alias Nest.Agents.Agent.ToolFilter
   alias Nest.Agents.Agent.ToolLoop
   alias Nest.Agents.Agent.Turn.Commit
   alias Nest.Agents.Agent.Turn.Dispatch
+  alias Nest.Agents.Agent.Turn.GiveUpDelivery
   alias Nest.Agents.Agent.Turn.HTTPWorker
   alias Nest.Agents.Agent.Turn.Terminal
   alias Nest.Messages.Streaming
@@ -85,6 +86,8 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   end
 
   defp execute({:merge_metrics, usage}, state) do
+    Timeline.usage(state, usage)
+
     # The usage totals merge; the status broadcast (with the updated chip)
     # is emitted by the settle loop after the turn's effects land.
     state = %{
@@ -186,6 +189,8 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   end
 
   defp execute({:spawn_http, ctx}, state) do
+    Timeline.llm_request(state, ctx)
+
     spawn_worker(state, :http, fn ref, pid ->
       Process.put(:"$callers", [pid])
       HTTPWorker.run(ctx, ref)
@@ -201,6 +206,8 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   end
 
   defp execute({:stage_compaction, ctx}, state) do
+    Timeline.compaction_staged(state, ctx)
+
     spawn_worker(state, :http, fn ref, pid ->
       Process.put(:"$callers", [pid])
       HTTPWorker.run(ctx, ref)
@@ -269,18 +276,36 @@ defmodule Nest.Agents.Agent.Turn.Executor do
     end
   end
 
-  defp execute({:notify_worker, name, pid, result}, state) when is_pid(pid) do
-    case result do
-      {:ok, response} -> send(pid, {:spawn_agent_result, name, response})
-      {:error, reason} -> send(pid, {:spawn_agent_error, name, reason})
-    end
+  # A child's outcome is delivered here, in the parent's process, so a child
+  # whose worker is already gone cannot lose the result — there is no `send/2`
+  # to a pid left to fail (issue #31 §2.1). It goes to the child's *reporting
+  # target* when it has one that is still alive: a batch child reports to its
+  # coordinator, so the parent reads the batch's aggregate once instead of every
+  # child's answer as well. A target that has died falls back to the parent's
+  # own inbox, so a batch whose coordinator crashed degrades to per-child
+  # messages rather than to silence. The completion arrives as the child's own
+  # words; a child that produced nothing, failed, or was stopped arrives as a
+  # runtime notice.
+  defp execute({:child_message, name, result}, state) do
+    Timeline.child_message(state, name, result)
 
-    {state, :continue}
+    case Children.target(state.live.machine.children, name) do
+      target when is_pid(target) ->
+        if Process.alive?(target) do
+          send(target, {:child_message, name, result})
+          {state, :continue}
+        else
+          enqueue_child_message(state, name, result)
+        end
+
+      nil ->
+        enqueue_child_message(state, name, result)
+    end
   end
 
-  defp execute({:notify_worker, _name, _pid, _result}, state), do: {state, :continue}
+  defp execute({:merge_usage, name, usage}, state) do
+    Timeline.child_usage(state, name, usage)
 
-  defp execute({:merge_usage, _name, usage}, state) do
     state = %{
       state
       | llm_metrics: %{
@@ -293,11 +318,13 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   end
 
   defp execute({:stop_child, name}, state) do
+    Timeline.child_action(state, "stopped", name)
     _ = Nest.Agents.Supervisor.stop_agent(state.space_id, name)
     {state, :continue}
   end
 
   defp execute({:archive_child, name}, state) do
+    Timeline.child_action(state, "archived", name)
     _ = Nest.Agents.Supervisor.archive_agent(state.space_id, name)
     {state, :continue}
   end
@@ -312,10 +339,9 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   end
 
   # The loop breaker's give-up shape (issue #26): build the message from the
-  # peeked batch, append it, and consume it — without `start_chat/3`, so the
-  # ack cannot re-enter the compaction decision it just gave up on. Mirrors
-  # `Transitions`'s `{:append, {:user, _}}` arm, which does the same for a
-  # parked chat request.
+  # peeked batch, append it, and consume it — without `start_chat/3`, so the ack
+  # cannot re-enter the compaction decision it just gave up on (the
+  # `{:append, {:user, _}}` arm's shape, for a parked chat request).
   defp execute({:drain_inbox, :append}, state) do
     case peek_inbox(state) do
       :empty ->
@@ -327,9 +353,8 @@ defmodule Nest.Agents.Agent.Turn.Executor do
         # `:stale` is the appender's "this message does not answer the live
         # sequence" refusal. Consuming the batch on it would drop the message
         # with nothing in the transcript — the "in neither" state #26 exists to
-        # eliminate — so the batch stays queued and the refusal rides back to
-        # the machine as a follow event, exactly as the `{:append, _}` clause's
-        # failure does.
+        # eliminate — so the batch stays queued and the refusal rides back as a
+        # follow event, exactly as the `{:append, _}` clause's failure does.
         case MessageAppender.handle_single(state, user) do
           {:ok, _stamped, state} -> consume_inbox(state, batch)
           {:stale, state} -> {state, {:follow, {:append_result, :stale, nil}}}
@@ -341,6 +366,25 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   # The consume half of peek-then-consume, emitted by the branch that actually
   # appended the message (issue #26).
   defp execute({:consume_inbox, entries}, state), do: consume_inbox(state, entries)
+
+  # The reply give-up (issue #31 §1.6): the agent is settling or blocking while it
+  # still owes a reply, so each requester is told no answer is coming and the debt
+  # is discharged. The resting funnel (`Machine.Phase.rest/4` / `block/4`) is the
+  # only emitter of the action.
+  defp execute({:give_up_replies, reason}, state) do
+    case Machine.owed_senders(state.live.machine) do
+      [] ->
+        {state, :continue}
+
+      senders ->
+        # The give-up is recorded before the notices are attempted: the
+        # decision is the event, and a notice that could not be delivered is
+        # its own `give_up_refused` line next to it.
+        Timeline.gave_up(state, senders, reason)
+        GiveUpDelivery.deliver(state, senders, reason)
+        {put_machine(state, Machine.discharge_all(state.live.machine)), :continue}
+    end
+  end
 
   defp execute({:broadcast, :compaction, marker}, state) do
     Broadcasts.compaction(state, marker)
@@ -385,12 +429,15 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   # --- helpers ---
 
   # The peek half of peek-then-consume (issue #26): the drain computes the
-  # batch's content and applies its mode, but leaves `state.live.inbox` alone
-  # and rebroadcasts nothing. The machine decides what to do with the content,
-  # and `{:consume_inbox, _}` is what clears the queue — emitted only by the
-  # branch that actually appended the message. A delivery that parks (a
-  # compaction, a `:cannot_compact` block) therefore leaves the message queued
-  # and visible rather than in no payload at all.
+  # batch's content and applies its mode, but leaves `state.live.inbox` alone and
+  # rebroadcasts nothing. `{:consume_inbox, _}` is what clears the queue —
+  # emitted only by the branch that appended the message — so a delivery that
+  # parks (a compaction, a block) leaves the message queued and visible.
+  defp enqueue_child_message(state, name, result) do
+    {content, kind} = SubAgentResults.child_message(name, result)
+    {Inbox.enqueue_internal(state, name, content, kind), :continue}
+  end
+
   defp peek_inbox(state) do
     case Inbox.batch(state.live.inbox) do
       [] ->
@@ -404,9 +451,9 @@ defmodule Nest.Agents.Agent.Turn.Executor do
 
         # `Broadcasts.status/1` is the only carrier of `currentMode`, and the
         # settle loop broadcasts only on a status *change* — which this drain
-        # deliberately does not cause (the phase stays `:generating`) — so
-        # publish the new mode here or the UI's mode selector keeps the old one
-        # until the turn ends.
+        # deliberately does not cause (the phase stays `:generating`) — so the
+        # new mode is published here or the UI keeps the old one until the turn
+        # ends.
         if mode_changed?, do: Broadcasts.status(state)
 
         {state, batch, content}
@@ -416,26 +463,23 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   defp consume_inbox(state, entries) do
     # Drop exactly the peeked batch, not the whole queue: the executor runs
     # synchronously inside one settle, so nothing can be enqueued between the
-    # peek and the consume, and anything the peek did not deliver stays queued
-    # and stays on the wire.
+    # peek and the consume, and anything the peek did not deliver stays queued.
     inbox = state.live.inbox -- entries
     state = %{state | live: %{state.live | inbox: inbox}}
     Broadcasts.inbox(state, Inbox.serialize(inbox))
+    Timeline.drained(state, entries)
     {state, :continue}
   end
 
   # One mode per delivered batch: the most recent human-sourced entry that
   # carries a mode wins (`Inbox.drain_mode/1`), and the agent's current mode
   # stands when no entry does. The winner is resolved against the vocation
-  # exactly as `ChatPipeline.handle_chat/3` resolves an idle turn's request
-  # (falling back to the vocation's default mode), so `state.live.mode` — and
-  # with it the status payload's `currentMode`, which the UI's mode selector
-  # renders — never holds a mode the vocation does not define.
-  #
-  # Applied here, never when the entry was queued: `state.live.mode` feeds
-  # `ctx.mode`/`ctx.caps`, which `Turn.prepare/1` rebuilds on every settle, so
-  # setting it on arrival would re-resolve the caps of the *ongoing* turn's
-  # remaining tool calls.
+  # exactly as `ChatPipeline.handle_chat/3` resolves an idle turn's request, so
+  # `state.live.mode` — and with it the UI's `currentMode` — never holds a mode
+  # the vocation does not define. Applied here, never when the entry was queued:
+  # `state.live.mode` feeds `ctx.mode`/`ctx.caps`, which `Turn.prepare/1`
+  # rebuilds on every settle, so setting it on arrival would re-resolve the caps
+  # of the *ongoing* turn's remaining tool calls.
   defp applied_mode(state, entries) do
     case Inbox.drain_mode(entries) do
       nil ->
@@ -460,9 +504,8 @@ defmodule Nest.Agents.Agent.Turn.Executor do
 
     case Task.Supervisor.start_child(Nest.Agents.TaskSupervisor, fn ->
            # Wait for the executor's go-ahead so the monitor is established
-           # while the worker is still alive. Otherwise a worker that dies
-           # immediately yields a `:noproc` DOWN instead of its real exit
-           # reason.
+           # while the worker is still alive: otherwise a worker that dies at
+           # once yields a `:noproc` DOWN instead of its real exit reason.
            receive do
              {:worker_go, ^ref} -> :ok
            after
@@ -590,6 +633,7 @@ defmodule Nest.Agents.Agent.Turn.Executor do
         system_prompt
       )
 
+    Timeline.compaction_committed(state, marker_index, new_messages)
     state = archive_active_segment(state)
 
     with {:ok, _marker, state} <- MessageAppender.append_marker(state, marker),

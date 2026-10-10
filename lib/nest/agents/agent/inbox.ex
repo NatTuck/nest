@@ -5,7 +5,7 @@ defmodule Nest.Agents.Agent.Inbox do
   Three producers queue here:
 
     * an `agents-send` tool call from another agent
-      (`Agent.deliver_message/3` → `handle_delivery/3`), recorded with
+      (`Agent.deliver_message/4` → `handle_delivery/4`), recorded with
       `kind: :agent`,
     * a human chat message that arrived while the agent was busy
       (`Agent.chat/4` → `Callbacks.chat_or_queue/4` →
@@ -17,6 +17,21 @@ defmodule Nest.Agents.Agent.Inbox do
   stored **verbatim** (no `[mode: ...]` prefix — that is added when the
   entry is delivered) and `mode` is the human's requested mode, always
   `nil` for an `agents-send` entry.
+
+  ## Kinds
+
+  `kind` is the *provenance* of an entry, and the delivery path is the
+  same for every one of them:
+
+    * `:agent` — a peer's words, delivered as `[Message from agent "X"]`.
+    * `:query` — `agents-query`: the same peer framing (the requester is an
+      agent, so the target reads it as one), plus a **reply obligation** on
+      the target (`Machine.owe_replies/2`, set at delivery).
+    * `:notice` — the runtime speaking for itself, not an agent's words
+      (issue #31 decision 9). It is rendered **bare**, never under a
+      `[Message from agent …]` label, because no agent said it.
+    * `:user` — a human's words, rendered bare (its `[mode: X]` prefix is
+      added when the message is built).
 
   ## Disposition
 
@@ -34,18 +49,19 @@ defmodule Nest.Agents.Agent.Inbox do
       selection — see "Delivery" below.
     * **Broken target** (`:model_missing`, `:needs_repair`,
       `:context_overflow`, `:compaction_failed`,
-      `:compaction_loop_detected`) — `handle_delivery/3` replies with an
+      `:compaction_loop_detected`) — `handle_delivery/4` replies with an
       error and nothing is queued; a human message is dropped, since the
       channel has already told the operator why.
 
   ## Delivery
 
   `batch/1` selects what a drain delivers: a human message at the FIFO head is
-  delivered **alone**, a run of leading `:agent` entries is delivered as one
+  delivered **alone**, a run of leading non-human entries is delivered as one
   batch. `combine/1` then renders the batch: a human entry is its bare content
   (so a queued human message reads exactly like one that arrived while the
   agent was idle, and its own `[mode: X]` prefix is added when the message is
-  built), while each `:agent` entry keeps `[Message from agent "<from>"]` —
+  built), a `:notice` is bare because the runtime — not an agent — said it,
+  while each `:agent`/`:query` entry keeps `[Message from agent "<from>"]` —
   that label is what disambiguates a batch of peer messages — and an unknown
   sender (`nil`) drops the quoted name rather than putting `nil` in the prompt.
   A batch over `Config.configured_async_message_max_tokens/0` is written to
@@ -70,8 +86,8 @@ defmodule Nest.Agents.Agent.Inbox do
   the caps of the *ongoing* turn's remaining tool calls.
 
   The inbox is in-memory (`ChatState.Live`), so a BEAM restart drops
-  undrained messages. `@max_inbox_size` bounds a runaway *agent* producer
-  (`handle_delivery/3`); the two self-produced paths — a human message
+  undrained messages. `@max_inbox_size` bounds a runaway *peer* producer
+  (`handle_delivery/4`); the two self-produced paths — a human message
   (`enqueue_user_message/4`) and the runtime's own result
   (`enqueue_internal/4`) — always queue rather than silently dropping, so each
   enqueue rebroadcasts the whole serialized list.
@@ -82,6 +98,7 @@ defmodule Nest.Agents.Agent.Inbox do
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Machine
+  alias Nest.Agents.Agent.Timeline
   alias Nest.Agents.Agent.Turn
   alias Nest.Tokens.Estimator
 
@@ -97,7 +114,7 @@ defmodule Nest.Agents.Agent.Inbox do
   # an `:inbox_full` error and nothing is queued.
   @max_inbox_size 100
 
-  @type kind :: :agent | :user
+  @type kind :: :agent | :user | :query | :notice
 
   @type entry :: %{
           from: String.t() | nil,
@@ -116,8 +133,12 @@ defmodule Nest.Agents.Agent.Inbox do
   def busy_status?(status), do: status in @busy_statuses
 
   @doc """
-  `handle_call/3` body for `Agent.deliver_message/3` (the `agents-send`
-  path).
+  `handle_call/3` body for `Agent.deliver_message/4` (the `agents-send` and
+  `agents-query` paths, and the runtime's own `:notice`).
+
+  `kind` is the entry's provenance (`t:kind/0`); it is stored on the entry
+  and decides only how the entry renders. The disposition is the same for
+  every kind.
 
   Returns the GenServer reply tuple:
     * `{:ok, :delivered}` — the target was idle; a turn started.
@@ -126,42 +147,97 @@ defmodule Nest.Agents.Agent.Inbox do
     * `{:error, reason}` — the target is in a broken state or the inbox
       is full.
   """
-  @spec handle_delivery(Agent.t(), String.t(), String.t()) ::
+  @spec handle_delivery(Agent.t(), String.t(), String.t(), kind()) ::
           {:reply, {:ok, :delivered | :queued} | {:error, term()}, Agent.t()}
-  def handle_delivery(state, sender, content) do
+  def handle_delivery(state, sender, content, kind \\ :agent) do
     status = Machine.status_for(state.live.machine)
 
     cond do
       length(state.live.inbox) >= @max_inbox_size ->
+        record_inbox(state, :refused, sender, kind, content, disposition: :inbox_full)
         {:reply, {:error, :inbox_full}, state}
 
       busy_status?(status) ->
-        state = state |> put_entry(sender, content, :agent, nil) |> broadcast()
+        state = state |> put_entry(sender, content, kind, nil) |> broadcast()
+
+        record_inbox(state, :queued, sender, kind, content,
+          count: length(state.live.inbox),
+          disposition: :queued
+        )
+
         {:reply, {:ok, :queued}, state}
 
       status == :idle ->
-        state = put_entry(state, sender, content, :agent, nil)
-        queued_before = length(state.live.inbox)
-        {state, result} = Turn.drain_inbox(state)
-
-        # Peek-then-consume (#26): the drain only consumes the queue when it
-        # actually appended the message, so a drain that parks it (a compaction
-        # it needs, or a `:cannot_compact` block) leaves it queued. The busy
-        # branch broadcasts on enqueue; this one must not leave the entry
-        # reachable only by a client refetch. The consume only ever *removes*
-        # entries, so an unchanged length means nothing was consumed: this
-        # entry is still queued and this frame is the only way the client learns
-        # about it. When the consume did run it has already broadcast the
-        # remainder — this entry included — so broadcasting here would send a
-        # duplicate frame.
-        state =
-          if length(state.live.inbox) == queued_before, do: broadcast(state), else: state
-
-        {:reply, {:ok, result}, state}
+        idle_delivery(state, sender, content, kind)
 
       true ->
+        record_inbox(state, :refused, sender, kind, content, disposition: {:status, status})
         {:reply, {:error, {:status, status}}, state}
     end
+  end
+
+  @doc """
+  `handle_call/3` body for `Agent.deliver_internal/4`: the runtime's own result
+  for this agent, delivered from the process that produced it.
+
+  This is `enqueue_internal/4`'s guarantee (the runtime's own result must never
+  be refused by the peer cap) for a caller in *another* process — a batch
+  coordinator delivering its aggregate — which cannot enqueue into this agent's
+  state itself. Like `handle_delivery/4`'s idle arm it queues and, when the
+  target is idle, drains; unlike it, it never refuses, whatever the target's
+  status: the cap exists to bound a runaway *peer* producer, and there is no
+  other process to hand an error to — refusing would lose the batch's whole
+  output.
+
+  Always replies `{:ok, :delivered | :queued}`: `:delivered` when the target was
+  idle and the drain consumed the entry, `:queued` otherwise.
+  """
+  @spec deliver_internal(Agent.t(), String.t() | nil, String.t(), kind()) ::
+          {:reply, {:ok, :delivered | :queued}, Agent.t()}
+  def deliver_internal(state, sender, content, kind) do
+    if Machine.status_for(state.live.machine) == :idle do
+      idle_delivery(state, sender, content, kind)
+    else
+      state = state |> put_entry(sender, content, kind, nil) |> broadcast()
+
+      record_inbox(state, :queued, sender, kind, content,
+        count: length(state.live.inbox),
+        disposition: :queued
+      )
+
+      {:reply, {:ok, :queued}, state}
+    end
+  end
+
+  # The idle arm: enqueue, drain through the turn executor, and report the
+  # disposition the drain resolved.
+  defp idle_delivery(state, sender, content, kind) do
+    state = put_entry(state, sender, content, kind, nil)
+    queued_before = length(state.live.inbox)
+    {state, result} = Turn.drain_inbox(state)
+
+    # Peek-then-consume (#26): the drain only consumes the queue when it
+    # actually appended the message, so a drain that parks it (a compaction
+    # it needs, or a `:cannot_compact` block) leaves it queued. The busy
+    # branch broadcasts on enqueue; this one must not leave the entry
+    # reachable only by a client refetch. The consume only ever *removes*
+    # entries, so an unchanged length means nothing was consumed: this
+    # entry is still queued and this frame is the only way the client learns
+    # about it. When the consume did run it has already broadcast the
+    # remainder — this entry included — so broadcasting here would send a
+    # duplicate frame.
+    state =
+      if length(state.live.inbox) == queued_before, do: broadcast(state), else: state
+
+    # `result` is the disposition the sender is given, and the action the
+    # entry took: a drain that parked the message queued it, so it is
+    # recorded as `queued` and not as a delivery that did not happen.
+    record_inbox(state, result, sender, kind, content,
+      count: queued_before,
+      disposition: result
+    )
+
+    {:reply, {:ok, result}, state}
   end
 
   @doc """
@@ -173,20 +249,28 @@ defmodule Nest.Agents.Agent.Inbox do
   requested mode (`nil` when the caller picked none). Broadcasts the new
   inbox and returns the updated state.
 
-  Unlike `handle_delivery/3` this never refuses: the sender is a human and
-  the cap exists to bound a runaway *agent* producer, so a human message is
+  Unlike `handle_delivery/4` this never refuses: the sender is a human and
+  the cap exists to bound a runaway *peer* producer, so a human message is
   queued even when the cap is reached instead of being silently dropped.
   """
   @spec enqueue_user_message(Agent.t(), String.t() | nil, String.t(), String.t() | nil) ::
           Agent.t()
   def enqueue_user_message(state, from, content, mode) do
-    state |> put_entry(from, content, :user, mode) |> broadcast()
+    state = state |> put_entry(from, content, :user, mode) |> broadcast()
+
+    record_inbox(state, :enqueued, from, :user, content,
+      mode: mode,
+      count: length(state.live.inbox),
+      disposition: :queued
+    )
+
+    state
   end
 
   @doc """
   Queue an entry the runtime produced for this agent itself.
 
-  The cap exists to bound a runaway *peer* producer (`handle_delivery/3`), so
+  The cap exists to bound a runaway *peer* producer (`handle_delivery/4`), so
   the runtime's own result — an async spawn/batch completion (W2) — must never
   be refused by its own cap: like the human path this bypasses
   `@max_inbox_size` and always queues, broadcasting the new inbox. `kind`
@@ -194,8 +278,62 @@ defmodule Nest.Agents.Agent.Inbox do
   always `nil` (the runtime asks for no mode).
   """
   @spec enqueue_internal(Agent.t(), String.t() | nil, String.t(), kind()) :: Agent.t()
-  def enqueue_internal(state, from, content, kind) when kind in [:agent, :user] do
-    state |> put_entry(from, content, kind, nil) |> broadcast()
+  def enqueue_internal(state, from, content, kind)
+      when kind in [:agent, :user, :query, :notice] do
+    state = state |> put_entry(from, content, kind, nil) |> broadcast()
+
+    record_inbox(state, :enqueued, from, kind, content,
+      count: length(state.live.inbox),
+      disposition: :queued
+    )
+
+    state
+  end
+
+  @doc """
+  Log the reply obligations this agent loses with its process.
+
+  Two kinds of loss, both in-process state that goes away with the process:
+
+    * a **debt** (`Machine.owed_replies`) — a query that was delivered, so the
+      requester is owed an answer and its `agents-wait` simply times out;
+    * a **queued `:query` entry** — a query that was never delivered, so it set
+      no debt at all (issue #31 §1.3: the obligation is incurred at delivery)
+      and no give-up will ever fire for it. The requester waits for an answer
+      that cannot come, and this warning is the only trace of it.
+
+  A stop — an archive, a reload, a crash, a supervisor shutdown — is the
+  accepted disposition for a process that is going away (issue #31 decision
+  12), but the server log must show what went with it.
+  """
+  @spec log_lost_replies(Agent.t()) :: :ok
+  def log_lost_replies(state) do
+    warn_unpaid_replies(state, Machine.owed_senders(state.live.machine))
+    warn_queued_queries(state, queued_query_senders(state))
+  end
+
+  defp warn_unpaid_replies(_state, []), do: :ok
+
+  defp warn_unpaid_replies(state, senders) do
+    Logger.warning(
+      "[agent:#{state.name}] stopping with unpaid replies to #{inspect(senders)}: " <>
+        "the obligation is in-process state and is lost"
+    )
+  end
+
+  defp warn_queued_queries(_state, []), do: :ok
+
+  defp warn_queued_queries(state, senders) do
+    Logger.warning(
+      "[agent:#{state.name}] stopping with undelivered queued queries from " <>
+        "#{inspect(senders)}: the queue is in-process state and is lost"
+    )
+  end
+
+  # One name per requester with a query still queued (a sender that queued two
+  # has one loss), sorted so the line is stable.
+  defp queued_query_senders(state) do
+    state.live.inbox |> query_senders() |> Enum.uniq() |> Enum.sort()
   end
 
   @doc """
@@ -219,8 +357,8 @@ defmodule Nest.Agents.Agent.Inbox do
 
   @doc """
   JSON-safe view of the queued entries, for the wire (channel/status)
-  and tests. `"kind"` is `"agent"` or `"user"`; `"mode"` is a string or
-  `nil`.
+  and tests. `"kind"` is one of `"agent"`, `"user"`, `"query"`,
+  `"notice"`; `"mode"` is a string or `nil`.
   """
   @spec serialize([entry()]) :: [map()]
   def serialize(entries) do
@@ -255,15 +393,40 @@ defmodule Nest.Agents.Agent.Inbox do
   still batches: a run of leading non-human entries is delivered as one
   message. The selection never reorders anything; it only takes a prefix.
 
-  Total over any entry list on purpose: a future entry kind (W2's `:query`)
-  must not be able to crash the drain inside the Agent process, so anything
-  that is not a human message batches exactly like a peer message does today.
+  Total over any entry list on purpose: a future entry kind must not be
+  able to crash the drain inside the Agent process, so anything that is
+  not a human message batches exactly like a peer message does today —
+  `:agent`, `:query` and `:notice` entries all take the second clause.
   """
   @spec batch([entry()]) :: [entry()]
   def batch([%{kind: :user} = head | _rest]), do: [head]
   def batch(entries), do: Enum.take_while(entries, &(&1.kind != :user))
 
+  @doc """
+  The senders a delivered batch obliges this agent to answer: one name per
+  `kind: :query` entry in it (issue #31 decision 1 — a name, not a record:
+  there is no query id and no requester-side state).
+
+  Total over any entry list, like `batch/1`, and `nil`-tolerant because the
+  chat-request path has no batch behind it. A query entry whose sender is
+  missing or blank contributes nothing: the obligation is keyed by name
+  (`Machine.owe_replies/2`), so an unnamed sender has no key to owe.
+  """
+  @spec query_senders([entry()] | nil) :: [String.t()]
+  def query_senders(entries) when is_list(entries) do
+    for %{kind: :query, from: from} <- entries, is_binary(from) and from != "", do: from
+  end
+
+  def query_senders(_entries), do: []
+
   # ---- private ----
+
+  # One `inbox` timeline event. The four delivery dispositions and the two
+  # enqueue paths carry the same `from`/`kind`/`content` and differ only in what
+  # they add to it.
+  defp record_inbox(state, action, sender, kind, content, extra) do
+    Timeline.inbox(state, action, [from: sender, kind: kind, content: content] ++ extra)
+  end
 
   # `from`/`mode` are normalized here, the single write point, so a malformed
   # payload can never put a number/map on the wire (`serialize/1`'s contract is
@@ -290,11 +453,14 @@ defmodule Nest.Agents.Agent.Inbox do
   # `Dispatch.build_user_message/2` adds — because a queued human message must
   # read exactly like one that arrived while the agent was idle (issue #31
   # decision 8): the model never has to reason about whether it was queued.
-  # `:agent` entries keep their `[Message from agent "X"]` label, which is what
-  # disambiguates a batch of peer messages (from each other and from a human's).
+  # A `:notice` is bare for a different reason: it is the runtime speaking,
+  # and a `[Message from agent "X"]` label would impersonate X (decision 9).
+  # Every other kind keeps its `[Message from agent "X"]` label, which is what
+  # disambiguates a batch of peer messages (from each other and from a human's)
+  # — including a `:query`, whose requester really is that agent (decision 7).
   defp combine(entries) do
     Enum.map_join(entries, "\n\n", fn
-      %{kind: :user, content: content} -> content
+      %{kind: kind, content: content} when kind in [:user, :notice] -> content
       %{content: content} = entry -> "#{agent_label(entry)}\n#{content}"
     end)
   end

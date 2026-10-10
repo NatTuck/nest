@@ -12,7 +12,12 @@ defmodule NestWeb.AuthControllerTest do
   operation in v1 (no server state to clear).
   """
 
-  use NestWeb.ConnCase, async: false
+  # Async: the controller's only cross-request state is the DB, and every
+  # row these tests write lives in that test's sandbox transaction. The
+  # `delete_all/1`s below exist so the magic `first-user` token sees
+  # `user_count/0 == 0`, which is true for any transaction that has not
+  # itself inserted a user — they are not a shared-state requirement.
+  use NestWeb.ConnCase, async: true
 
   import Ecto.Query
 

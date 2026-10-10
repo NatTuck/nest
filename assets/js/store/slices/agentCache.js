@@ -91,6 +91,11 @@ export function agentCacheSetters(set) {
                 contextLimit: null,
                 contextLimitSource: null,
                 usage: null,
+                // No payload has arrived yet, so there is no reply debt to
+                // report. `setAgentConnected` replaces this with the
+                // payload's list, or `null` when the payload omitted it
+                // (which the inbox panel renders as a contract violation).
+                owedReplies: [],
                 lastViewedAt,
               },
         };
@@ -185,6 +190,12 @@ export function agentCacheSetters(set) {
                 payload.pendingMessageCount ??
                 existing?.pendingMessageCount ??
                 (payload.inbox ?? existing?.inbox ?? []).length,
+              // The peers this agent owes a reply (`agents-query`). The
+              // wire contract always carries the key (`[]` when nothing
+              // is owed), so it is taken verbatim: a payload that omits
+              // it leaves `null`, which the inbox panel renders as an
+              // explicit "missing" marker rather than as "nothing owed".
+              owedReplies: payload.owedReplies ?? null,
               waitingForResponse: false,
             },
           },
@@ -295,6 +306,9 @@ export function agentCacheSetters(set) {
                   contextLimit: null,
                   contextLimitSource: null,
                   usage: null,
+                  // The channel never delivered a payload, so there is no
+                  // reply debt to report (see `setAgentConnecting`).
+                  owedReplies: [],
                 },
           },
         };

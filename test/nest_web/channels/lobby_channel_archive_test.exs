@@ -54,16 +54,16 @@ defmodule NestWeb.LobbyChannelArchiveTest do
       assert Enum.any?(init.spaces, &(&1.id == space_id))
       refute Enum.any?(init.archived_spaces, &(&1.id == space_id))
 
-      ref = push(socket, "archive_space", %{"space_id" => space_id})
-      assert_reply ref, :ok, %{}
+      ref = push_and_settle(socket, "archive_space", %{"space_id" => space_id})
+      assert_reply ref, :ok, %{}, 0
       assert_broadcast "space:archived", %{"space_id" => ^space_id}
 
       assert %Space{id: ^space_id, archived: true} = Spaces.get_space(space_id)
       assert Spaces.list_for_user(user.id) |> Enum.map(& &1.id) |> Enum.member?(space_id) == false
       assert Spaces.list_archived_for_user(user.id) |> Enum.map(& &1.id) == [space_id]
 
-      ref = push(socket, "unarchive_space", %{"space_id" => space_id})
-      assert_reply ref, :ok, %{}
+      ref = push_and_settle(socket, "unarchive_space", %{"space_id" => space_id})
+      assert_reply ref, :ok, %{}, 0
       assert_broadcast "space:unarchived", %{"space_id" => ^space_id}
 
       assert %Space{id: ^space_id, archived: false} = Spaces.get_space(space_id)
@@ -83,21 +83,21 @@ defmodule NestWeb.LobbyChannelArchiveTest do
 
       {socket, _init} = join_lobby()
 
-      ref = push(socket, "archive_space", %{"space_id" => space_id})
-      assert_reply ref, :error, %{"reason" => "forbidden"}
+      ref = push_and_settle(socket, "archive_space", %{"space_id" => space_id})
+      assert_reply ref, :error, %{"reason" => "forbidden"}, 0
 
-      ref = push(socket, "unarchive_space", %{"space_id" => space_id})
-      assert_reply ref, :error, %{"reason" => "forbidden"}
+      ref = push_and_settle(socket, "unarchive_space", %{"space_id" => space_id})
+      assert_reply ref, :error, %{"reason" => "forbidden"}, 0
     end
 
     test "returns not_found for a missing space" do
       {socket, _init} = join_lobby()
 
-      ref = push(socket, "archive_space", %{"space_id" => -1})
-      assert_reply ref, :error, %{"reason" => "not_found"}
+      ref = push_and_settle(socket, "archive_space", %{"space_id" => -1})
+      assert_reply ref, :error, %{"reason" => "not_found"}, 0
 
-      ref = push(socket, "unarchive_space", %{"space_id" => -1})
-      assert_reply ref, :error, %{"reason" => "not_found"}
+      ref = push_and_settle(socket, "unarchive_space", %{"space_id" => -1})
+      assert_reply ref, :error, %{"reason" => "not_found"}, 0
     end
 
     test "returns invalid_payload for a missing space_id" do
@@ -105,21 +105,21 @@ defmodule NestWeb.LobbyChannelArchiveTest do
 
       # `archive_space` — no `space_id` key (pattern fails to match
       # the integer-guarded head).
-      ref = push(socket, "archive_space", %{})
-      assert_reply ref, :error, %{"reason" => "invalid_payload"}
+      ref = push_and_settle(socket, "archive_space", %{})
+      assert_reply ref, :error, %{"reason" => "invalid_payload"}, 0
 
       # `archive_space` — `space_id` present but not an integer
       # (guard fails, falls through to the catch-all head).
-      ref = push(socket, "archive_space", %{"space_id" => "not-an-int"})
-      assert_reply ref, :error, %{"reason" => "invalid_payload"}
+      ref = push_and_settle(socket, "archive_space", %{"space_id" => "not-an-int"})
+      assert_reply ref, :error, %{"reason" => "invalid_payload"}, 0
 
       # `unarchive_space` — no `space_id` key.
-      ref = push(socket, "unarchive_space", %{})
-      assert_reply ref, :error, %{"reason" => "invalid_payload"}
+      ref = push_and_settle(socket, "unarchive_space", %{})
+      assert_reply ref, :error, %{"reason" => "invalid_payload"}, 0
 
       # `unarchive_space` — `space_id` present but not an integer.
-      ref = push(socket, "unarchive_space", %{"space_id" => "not-an-int"})
-      assert_reply ref, :error, %{"reason" => "invalid_payload"}
+      ref = push_and_settle(socket, "unarchive_space", %{"space_id" => "not-an-int"})
+      assert_reply ref, :error, %{"reason" => "invalid_payload"}, 0
     end
 
     test "change_model is rejected on an archived space", %{user: user} do
@@ -131,26 +131,26 @@ defmodule NestWeb.LobbyChannelArchiveTest do
       {socket, _init} = join_lobby()
 
       ref =
-        push(socket, "change_model", %{
+        push_and_settle(socket, "change_model", %{
           "name" => "any-agent",
           "space_id" => space_id,
           "model" => %{"name" => "yolo", "provider" => "yolo"}
         })
 
-      assert_reply ref, :error, %{"reason" => "space_archived"}
+      assert_reply ref, :error, %{"reason" => "space_archived"}, 0
     end
 
     test "change_model on a nonexistent space returns not_found" do
       {socket, _init} = join_lobby()
 
       ref =
-        push(socket, "change_model", %{
+        push_and_settle(socket, "change_model", %{
           "name" => "any-agent",
           "space_id" => 9_999_999,
           "model" => %{"name" => "yolo", "provider" => "yolo"}
         })
 
-      assert_reply ref, :error, %{"reason" => "not_found"}
+      assert_reply ref, :error, %{"reason" => "not_found"}, 0
     end
 
     test "change_model on a nonexistent agent in a valid space returns not_found", %{user: user} do
@@ -162,27 +162,59 @@ defmodule NestWeb.LobbyChannelArchiveTest do
       {socket, _init} = join_lobby()
 
       ref =
-        push(socket, "change_model", %{
+        push_and_settle(socket, "change_model", %{
           "name" => "no-such-agent",
           "space_id" => space_id,
           "model" => %{"name" => "yolo", "provider" => "yolo"}
         })
 
-      assert_reply ref, :error, %{"reason" => "not_found"}
+      assert_reply ref, :error, %{"reason" => "not_found"}, 0
     end
   end
 
-  # Join the lobby and BLOCK until the `:after_join` async
-  # broken-agents fetch delivers its follow-up push (mirrors the
-  # canonical helper; see `LobbyChannelTest.join_lobby/0`).
+  # Join the lobby, read the `init` push, then block until the `:after_join`
+  # async broken-agents fetch delivers its follow-up push.
+  #
+  # The `init` push needs no barrier: `subscribe_and_join/3` returns only after
+  # `Phoenix.ChannelTest.join/4`'s trailing `Server.socket(pid)` — a
+  # `GenServer.call/3` to the channel — and `gen_server` drains its mailbox in
+  # order (`gen_server:loop/7` -> `decode_msg/9`), so that call is handled after
+  # the `{:after_join, _}` self-send from `join/3`, i.e. after the channel has
+  # pushed `init` to this process. `init` is already in this mailbox, so the
+  # 0 ms fence below is a plain mailbox read, not a race.
+  #
+  # The broken-agents wait is genuinely asynchronous — a supervised `Task` doing
+  # `Repo.all/1` on this test pid's sandbox checkout — so it keeps its fence.
+  # Without it the Task outlives the pid's `Sandbox.checkin/1` and Postgrex logs
+  # "client is still using a connection from owner".
   defp join_lobby do
     {:ok, connected} =
       connect(NestWeb.UserSocket, %{"token" => Process.get(:lobby_archive_test_token)})
 
     {:ok, _, socket} = subscribe_and_join(connected, LobbyChannel, "lobby")
 
-    assert_push "init", init_payload
+    assert_push "init", init_payload, 0
     assert_push "broken_agents_updated", %{broken_agents: _list}, 1_000
     {socket, init_payload}
+  end
+
+  # Push an event and return its ref only once the channel has *handled* it, so
+  # the reply can be read with a non-blocking `assert_reply` 0 ms fence.
+  # `gen_server` drains its mailbox in order (`gen_server:loop/7` ->
+  # `decode_msg/9`), so this system message is handled only after the push — and
+  # the channel sends the reply to this process before it answers the system
+  # message, so the reply is already in the mailbox.
+  #
+  # These handlers (`archive_space` / `unarchive_space` / `change_model`) answer
+  # from the database: the channel process is a sandbox proxy, so each reply
+  # costs an ownership handshake plus SQL, and the 100 ms default fence is not a
+  # bound on anything real. The same-shaped `chat:history` path on the agent
+  # channel was measured with a rare 130-160 ms tail under the suite's 24-way
+  # concurrency (see notes/test-runs/flake-*.log), so a 0 ms fence — a plain
+  # mailbox read — is the honest way to await it.
+  defp push_and_settle(socket, event, payload) do
+    ref = push(socket, event, payload)
+    _ = :sys.get_state(socket.channel_pid)
+    ref
   end
 end

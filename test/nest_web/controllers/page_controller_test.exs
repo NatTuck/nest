@@ -18,7 +18,12 @@ defmodule NestWeb.PageControllerTest do
   describe pins that here too.
   """
 
-  use NestWeb.ConnCase, async: false
+  # Async: the shell reads `Nest.Hostname.get/0`, which is pinned to
+  # `"testhost"` by `config/test.exs`. The only module that *mutates* that
+  # config is `Nest.HostnameTest`, which is deliberately `async: false` and
+  # therefore runs in the serial phase after every async module has
+  # finished — so a reader here can never overlap that writer.
+  use NestWeb.ConnCase, async: true
 
   alias Nest.Accounts
   alias Nest.Accounts.AuthToken

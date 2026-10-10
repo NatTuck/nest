@@ -111,7 +111,7 @@ defmodule Nest.ToolsTest do
       assert function.description =~ "expose_models"
     end
 
-    test "agents-spawn schema exposes the optional vocation, model, and async arguments" do
+    test "agents-spawn schema exposes the optional vocation and model arguments" do
       function = Tools.get_function("agents-spawn", "/tmp")
       assert function.name == "agents-spawn"
 
@@ -124,24 +124,38 @@ defmodule Nest.ToolsTest do
       assert props["model"]["description"] =~ "provider/model-name"
       refute "model" in (function.parameters_schema["required"] || [])
 
-      assert props["async"]["type"] == "boolean"
-      assert props["async"]["default"] == false
-      assert props["async"]["description"] =~ "message in your inbox"
+      # Nothing waits any more, so neither the blocking controls nor the
+      # result-size override (the answer is an inbox message now) apply.
+      for gone <- ["async", "timeout", "max_result_tokens"] do
+        refute Map.has_key?(props, gone),
+               "agents-spawn still offers `#{gone}`, which the async contract removed"
+      end
+
       assert function.description =~ "arrives later as a message"
+      refute function.description =~ "blocks"
+      refute function.description =~ "agents-spawn result"
+      # A child that fails, is stopped or produces nothing sends a message
+      # too, so the description must not promise an answer unconditionally
+      # — and that message is a runtime notice naming the reason, not the
+      # child's words.
+      assert function.description =~ "fails, is stopped or produces nothing"
+      assert function.description =~ "a runtime notice naming the reason"
     end
 
-    test "agents-query schema takes an optional async flag and timeout" do
+    test "agents-query schema takes name and prompt and nothing that waits" do
       function = Tools.get_function("agents-query", "/tmp")
       assert function.name == "agents-query"
 
       props = function.parameters_schema["properties"]
-      assert props["async"]["type"] == "boolean"
-      assert props["async"]["default"] == false
-      assert props["async"]["description"] =~ "message in your inbox"
-      assert props["timeout"]["type"] == "integer"
+      assert Map.keys(props) |> Enum.sort() == ["name", "prompt"]
 
       assert function.parameters_schema["required"] == ["name", "prompt"]
+
+      assert function.description =~ "owes you a reply"
       assert function.description =~ "arrives later as a message"
+      # The debtor does go idle after a give-up, so the description must
+      # not promise an answer unconditionally.
+      assert function.description =~ "runtime gives up"
     end
 
     test "agents-batch schema exposes items/glob/template with no required args" do
@@ -158,7 +172,14 @@ defmodule Nest.ToolsTest do
       # required at the schema level.
       assert (function.parameters_schema["required"] || []) == []
 
-      assert function.description =~ "aggregated result"
+      # The aggregate is a message now; `timeout` stays as the
+      # coordinator's per-item deadline. The result-size cap is gone
+      # (decision 14, extended to batch): there is no inline result left
+      # to bound.
+      assert function.description =~ "receive the aggregate later as a message"
+      refute function.description =~ "get back ONE aggregated result"
+      assert props["timeout"]["type"] == "integer"
+      refute Map.has_key?(props, "max_result_tokens")
     end
 
     test "agents-send schema requires name and message" do
@@ -168,7 +189,11 @@ defmodule Nest.ToolsTest do
       assert function.parameters_schema["required"] == ["name", "message"]
       assert function.parameters_schema["properties"]["name"]["type"] == "string"
       assert function.parameters_schema["properties"]["message"]["type"] == "string"
-      assert function.description =~ "without waiting"
+
+      # Replying is what discharges an owed reply, so the description
+      # must say so rather than pointing at `agents-query`.
+      assert function.description =~ "discharges the reply you owe"
+      refute function.description =~ "when you need the response now"
     end
 
     test "agents-wait schema takes an optional names list and timeout" do
@@ -186,6 +211,14 @@ defmodule Nest.ToolsTest do
 
       assert function.description =~ "already idle"
       assert function.description =~ "not an error"
+      assert function.description =~ "owes no replies"
+      # Only a peer this agent queried owes it anything; a peer that owes
+      # someone else nothing relevant to this caller may be idle too.
+      assert function.description =~ "a peer you queried"
+      # A give-up is announced, but only if the runtime can reach the requester:
+      # a refusal is recorded, not promised away.
+      assert function.description =~ "give-up reaches you as a runtime notice"
+      assert function.description =~ "only records the refusal"
     end
   end
 
@@ -640,6 +673,22 @@ defmodule Nest.ToolsTest do
       function = Tools.get_function("file-read", "/tmp")
       required = function.parameters_schema["required"] || []
       refute "max_result_tokens" in required
+    end
+
+    test "the tools that take the cap are exactly the ones the schema doc lists" do
+      # Re-derived from the schemas rather than copied from the doc, so a
+      # tool whose result stops being a tool result (decision 14: an
+      # inbox message now) cannot keep advertising a cap that bounds
+      # nothing. `agents-batch` is the case that caught this.
+      takers =
+        for name <- Tools.Groups.expand(Tools.Groups.all()),
+            function = Tools.get_function(name, "/tmp"),
+            Map.has_key?(function.parameters_schema["properties"], "max_result_tokens"),
+            do: name
+
+      assert takers ==
+               ~w(file-read file-write file-edit file-inspect shell-cmd shell-list shell-wait
+                  context-check agents-wait agents-list models-list)
     end
   end
 end

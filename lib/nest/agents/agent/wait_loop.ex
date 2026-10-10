@@ -52,9 +52,14 @@ defmodule Nest.Agents.Agent.WaitLoop do
   require Logger
 
   alias Nest.Agents.Agent.Broadcasts
-  alias Nest.Agents.Agent.WaitBudget
   alias Nest.Messages.MessageList
   alias Nest.Messages.ToolCall
+
+  # The shared time budget for the blocking sub-agent wait. Folded in here when
+  # `agents-spawn` stopped blocking: `agents-wait` is the only wait left, so a
+  # separate budget module had a single caller.
+  @default_wait_ms 300_000
+  @wait_slice_ms 250
 
   @doc """
   Run one `agents-wait` call. Returns `{:ok, content}` for the
@@ -124,7 +129,7 @@ defmodule Nest.Agents.Agent.WaitLoop do
 
   # Subscribing happens after the initial status read, so a target that
   # goes idle in between misses its broadcast; the slice recheck in
-  # `await_idle/4` catches that within one `WaitBudget.wait_slice_ms/0`.
+  # `await_idle/4` catches that within one `wait_slice_ms/0`.
   defp subscribe(space_id, names) do
     Enum.each(names, &Phoenix.PubSub.subscribe(Nest.PubSub, Broadcasts.topic(space_id, &1)))
   end
@@ -150,16 +155,15 @@ defmodule Nest.Agents.Agent.WaitLoop do
 
         # Every non-status message is discarded. The target's own
         # streaming traffic (`chat:delta`, `chat_message`, `shell:jobs`,
-        # ...) lands on this topic too, and so can a late
-        # `{:spawn_agent_result, ...}` from a sibling blocking
-        # `agents-spawn` in the same batch that timed out first (the batch
-        # runs sequentially in this worker, so that result is no longer
-        # ours to deliver). None of them changes a target's status, so
-        # none can end the wait.
+        # ...) lands on this topic too, and so can a late delivery meant
+        # for a sibling call in the same batch that timed out first (the
+        # batch runs sequentially in this worker, so that result is no
+        # longer ours to deliver). None of them changes a target's status,
+        # so none can end the wait.
         _other ->
           await_idle(ctx, busy, deadline, timeout)
       after
-        min(WaitBudget.wait_slice_ms(), remaining) ->
+        min(wait_slice_ms(), remaining) ->
           check_idle(ctx, busy, deadline, timeout)
       end
     end
@@ -172,9 +176,8 @@ defmodule Nest.Agents.Agent.WaitLoop do
   # status read is a synchronous call into the target (`Agent.get_public_info/1`,
   # the call `Nest.Agents.get_info/2` wraps), serialized behind the whole
   # settle — so it observes the final phase, not the transient one.
-  # "Optimizing" this to trust the broadcast the way `PeerQuery` does would
-  # inherit the same transient-idle bug (issue #31 removes the query path
-  # that has it).
+  # "Optimizing" this to trust the broadcast would inherit the same
+  # transient-idle bug the payload can carry.
   defp check_idle(ctx, busy, deadline, timeout) do
     listed = Map.new(listing(ctx.space_id), &{&1.name, &1.status})
 
@@ -245,13 +248,13 @@ defmodule Nest.Agents.Agent.WaitLoop do
   # one would produce "No agent went idle within -1ms" — reject it loudly.
   defp extract_timeout(%ToolCall{arguments: args}) when is_map(args) do
     case Map.get(args, "timeout") do
-      nil -> {:ok, WaitBudget.default_wait_ms()}
+      nil -> {:ok, default_wait_ms()}
       ms when is_integer(ms) and ms > 0 -> {:ok, ms}
       other -> {:error, invalid_timeout_message(other)}
     end
   end
 
-  defp extract_timeout(_tc), do: {:ok, WaitBudget.default_wait_ms()}
+  defp extract_timeout(_tc), do: {:ok, default_wait_ms()}
 
   # -- messages --
 
@@ -283,4 +286,12 @@ defmodule Nest.Agents.Agent.WaitLoop do
   defp idle_message(name, content) do
     "Agent #{name} is idle. Final message:\n#{content}"
   end
+
+  # The default wall-clock wait for a sub-agent result, in milliseconds.
+  @spec default_wait_ms() :: pos_integer()
+  defp default_wait_ms, do: @default_wait_ms
+
+  # The `receive ... after` slice used while polling for a wait, in milliseconds.
+  @spec wait_slice_ms() :: pos_integer()
+  defp wait_slice_ms, do: @wait_slice_ms
 end

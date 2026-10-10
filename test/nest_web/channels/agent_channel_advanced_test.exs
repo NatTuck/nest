@@ -9,6 +9,7 @@ defmodule NestWeb.AgentChannelAdvancedTest do
   import Mimic
 
   alias Nest.Agents
+  alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Supervisor
   alias Nest.LLM.MockClient
   alias Nest.Messages.Assistant
@@ -115,6 +116,43 @@ defmodule NestWeb.AgentChannelAdvancedTest do
 
       assert messages2 != []
       assert last_complete2 == last_complete
+    end
+  end
+
+  describe "the reply debt on the wire" do
+    test "init and chat:status carry owedReplies, and a debt shows up on both", %{
+      socket: socket,
+      agent_id: id,
+      space_id: space_id
+    } do
+      # intentional: the debt reaches the browser (issue #31 decision 15 — state
+      # the user cannot see is state we are hiding). Both carriers are asserted
+      # because a reconnect may only see one: the join payload and the
+      # `chat:status` reply. `[]` when nothing is owed, never nil and never
+      # absent, so a missing field can never render as "no debt".
+      assert_push "init", init_payload
+      assert init_payload["owedReplies"] == []
+
+      ref = push(socket, "chat:status", %{})
+      assert_reply ref, :ok, %{"owedReplies" => []}
+
+      {:ok, pid} = Supervisor.get_agent(space_id, id)
+
+      :sys.replace_state(pid, fn state ->
+        %{
+          state
+          | live: %{state.live | machine: Machine.owe_replies(state.live.machine, ["peer"])}
+        }
+      end)
+
+      ref = push(socket, "chat:status", %{})
+      assert_reply ref, :ok, %{"owedReplies" => ["peer"]}
+
+      # Discharge the debt before the test ends: the teardown stops the agent,
+      # and a stop with an unpaid reply logs the accepted loss of it.
+      :sys.replace_state(pid, fn state ->
+        %{state | live: %{state.live | machine: Machine.discharge_all(state.live.machine)}}
+      end)
     end
   end
 

@@ -12,15 +12,20 @@
  *     `/space/:spaceSlug/agent/:name`, so the link is
  *     space-scoped and the slug comes from the route (see
  *     `DelegatedTaskBlock` below).
- *   - Status: "running" while the parent is blocked on the
- *     tool worker; "async" when the call passed `async: true`
- *     (the paired result is only a confirmation, the real
- *     answer arrives later as a message); "completed" once
- *     the matching `:tool_result` lands next to it; "error"
- *     if the result came back with `is_error: true`.
- *   - The child's response content (truncated to a
- *     reasonable preview; the full text is in the
- *     `:tool` message right next to the tool call).
+ *   - Status: "running" while the spawn call is still in
+ *     flight; "awaiting reply" once the spawn is confirmed and
+ *     the call carried a `query` (the paired result is only a
+ *     confirmation — the child's answer arrives later as a
+ *     separate inbox message); "delegated" when the spawn is
+ *     confirmed and no `query` was given, so no answer is
+ *     coming; "error" if the result came back with
+ *     `is_error: true`.
+ *   - The paired result text: the spawn confirmation, or the
+ *     error. It is never the child's answer, which the runtime
+ *     delivers as an ordinary message — or, for a child that
+ *     fails, is stopped or produces nothing, as a notice — with
+ *     no `tool_call_id` on it (so this card cannot be updated
+ *     when it lands).
  *
  * The block is rendered inside the assistant message's
  * `MessageBubble`, after its `ToolCalls` block. This puts
@@ -79,43 +84,12 @@ function extractCloneInstruction(args) {
 }
 
 /**
- * Read the `async` flag out of an `agents-spawn` tool call's
- * arguments, tolerating the same shapes as
- * `extractCloneInstruction`: a parsed object, a fully-formed
- * streaming JSON string, or a partial buffer.
- *
- * With `async: true` the paired tool result is only a
- * confirmation — the child's real response arrives later as a
- * separate inbox message — so the card must not present that
- * confirmation as the child's response.
- */
-function extractAsyncFlag(args) {
-  if (args == null) return false;
-  if (typeof args === "object") {
-    return args.async === true;
-  }
-  if (typeof args !== "string") return false;
-
-  try {
-    const parsed = JSON.parse(args);
-    if (parsed && typeof parsed === "object") {
-      return parsed.async === true;
-    }
-  } catch {
-    // fall through — partial buffer; use the regex fallback
-  }
-
-  return /"async"\s*:\s*true/.test(args);
-}
-
-/**
  * Read the child's `name` out of an `agents-spawn` tool call's
  * arguments, tolerating the same shapes as
- * `extractCloneInstruction`/`extractAsyncFlag`: a parsed
- * object, a fully-formed streaming JSON string, or a partial
- * buffer. `name` is a required argument, so a committed call
- * always resolves; a `null` result means the call is still
- * mid-stream or genuinely malformed.
+ * `extractCloneInstruction`: a parsed object, a fully-formed
+ * streaming JSON string, or a partial buffer. `name` is a required
+ * argument, so a committed call always resolves; a `null` result
+ * means the call is still mid-stream or genuinely malformed.
  */
 function extractChildName(args) {
   if (args == null) return null;
@@ -171,7 +145,7 @@ function ChildNameLink({ childName, spaceSlug }) {
 
 /**
  * Render one `DelegatedTaskBlock` per `agents-spawn` tool
- * call (with a `query`) in a single assistant message. Mounted
+ * call in a single assistant message. Mounted
  * inside `MessageBubble`, between `<ToolCalls />` and
  * `<ToolResults />`, so the card sits inline with the
  * conversation flow rather than stacking at the bottom of
@@ -247,7 +221,7 @@ export function DelegatedTask({ message, agentName }) {
             isError={
               result ? (result.is_error ?? result.isError ?? false) : false
             }
-            isAsync={extractAsyncFlag(rawArgs)}
+            hasQuery={extracted != null}
           />
         );
       })}
@@ -277,20 +251,17 @@ export function DelegatedTask({ message, agentName }) {
  *   row, so the drill-down affordance is never silently
  *   absent.
  * @param {string|null} props.response
- *   The child's final assistant text (or the error
- *   string). `null` while the tool worker is still
- *   blocked. With `isAsync` this is only the spawn
- *   confirmation, not the child's answer.
+ *   The spawn confirmation, or the error string. `null` while
+ *   the spawn call is still in flight. It is never the child's
+ *   answer: every spawn is asynchronous, so the answer arrives
+ *   later as a separate inbox message with no `tool_call_id`.
  * @param {boolean} [props.isError]
- *   True when the synthetic tool result came back with
+ *   True when the tool result came back with
  *   `is_error: true`. Default false.
- * @param {boolean} [props.isAsync]
- *   True when the call passed `async: true`. The paired
- *   result is then only a confirmation; the child's real
- *   response arrives later as a separate inbox message (see
- *   the async note below for the two ways that delivery can
- *   fail), so the card shows an "Async" state instead of a
- *   "Completed" child response. Default false.
+ * @param {boolean} [props.hasQuery]
+ *   True when the call passed a `query`, so the child's answer
+ *   is coming. False for a bare spawn, which has nothing to
+ *   wait for. Default false.
  */
 export function DelegatedTaskBlock({
   toolCallId,
@@ -298,29 +269,29 @@ export function DelegatedTaskBlock({
   childName,
   response,
   isError = false,
-  isAsync = false,
+  hasQuery = false,
 }) {
   const { spaceSlug } = useParams();
 
   const status = isError
     ? "error"
-    : isAsync
-      ? "async"
-      : response
-        ? "completed"
-        : "running";
+    : !response
+      ? "running"
+      : hasQuery
+        ? "awaiting"
+        : "delegated";
 
   const statusLabel = {
     running: "Running",
-    async: "Async",
-    completed: "Completed",
+    awaiting: "Awaiting reply",
+    delegated: "Delegated",
     error: "Failed",
   }[status];
 
   const statusClasses = {
     running: "bg-amber-100 text-amber-700",
-    async: "bg-sky-100 text-sky-700",
-    completed: "bg-emerald-100 text-emerald-700",
+    awaiting: "bg-sky-100 text-sky-700",
+    delegated: "bg-slate-200 text-slate-700",
     error: "bg-red-100 text-red-700",
   }[status];
 
@@ -377,25 +348,28 @@ export function DelegatedTaskBlock({
           </pre>
         </>
       )}
-      {/* The async note is deliberately static: the waiter
-          delivers the child's answer as an ordinary inbox
-          message with no `tool_call_id` on it, so there is
-          nothing to correlate with this card and no way to flip
-          it to a "done" state once the answer lands. Issue #31
-          reworks this delivery path; until then the card can
-          only state what is expected to happen, not whether it
-          did. */}
-      {status === "async" && (
+      {/* The note is deliberately static: the runtime delivers the
+          child's answer as an ordinary inbox message with no
+          `tool_call_id` on it, so there is nothing to correlate
+          with this card and no way to flip it to a "done" state
+          once the answer lands. A child that fails, is stopped or
+          produces nothing gets a runtime notice instead — which is
+          where the reason appears, and which is just as
+          uncorrelatable. The card can only state what is expected
+          to happen, not whether it did. */}
+      {status === "awaiting" && (
         <p
-          data-testid="delegated-task-async-note"
+          data-testid="delegated-task-awaiting-note"
           className="mt-2 text-xs text-sky-700"
         >
-          The response arrives later as a message. A Stop does not cancel the
-          waiter, so a timeout notice may arrive instead; a result this agent
-          refuses is lost.
+          The child's answer arrives later as a message in your inbox — or, if
+          the child fails, is stopped or produces nothing, a runtime notice
+          naming the reason. This card records the delegation, not the answer:
+          neither message carries a tool-call id, so the card cannot be updated
+          when it lands.
         </p>
       )}
-      {response && status === "async" && (
+      {response && (status === "awaiting" || status === "delegated") && (
         <>
           <p className="mt-2 text-xs text-indigo-700 font-medium">
             Confirmation
@@ -408,20 +382,12 @@ export function DelegatedTaskBlock({
           </pre>
         </>
       )}
-      {response && (status === "completed" || status === "error") && (
+      {response && status === "error" && (
         <>
-          <p
-            className={`mt-2 text-xs font-medium ${isError ? "text-red-700" : "text-indigo-700"}`}
-          >
-            {isError ? "Error" : "Child response"}
-          </p>
+          <p className="mt-2 text-xs font-medium text-red-700">Error</p>
           <pre
             data-testid="delegated-task-response"
-            className={`mt-1 text-xs whitespace-pre-wrap break-words bg-white border rounded p-2 ${
-              isError
-                ? "border-red-100 text-red-800"
-                : "border-indigo-100 text-indigo-900"
-            }`}
+            className="mt-1 text-xs whitespace-pre-wrap break-words bg-white border border-red-100 rounded p-2 text-red-800"
           >
             {response}
           </pre>

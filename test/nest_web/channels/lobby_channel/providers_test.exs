@@ -179,7 +179,11 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
     test "does not broadcast on failure", %{socket: socket} do
       ref = push(socket, "save_providers", %{"providers" => %{}})
       assert_reply ref, :error, %{"reason" => "invalid_payload"}
-      refute_push "providers_updated", _, 50
+
+      # The handler has already returned its error reply (`assert_reply`
+      # above), and a channel broadcasts before it replies — so a broadcast
+      # would already be in this mailbox. No wait is needed.
+      refute_push "providers_updated", _, 0
     end
   end
 end

@@ -2,11 +2,21 @@ defmodule Nest.Agents.Agent.Machine.Phase do
   @moduledoc """
   Shared pure phase/working-set helpers for the machine transition table.
 
-  `enter/4`, `enter_blocked/2`, and `clear_worker/1` are the only functions
-  that write `phase:` on a machine; grouping them here (along with the
-  entry/context helpers) keeps `Machine.Transitions` and
-  `Machine.Compaction` within the file-length budget and makes the single
-  writer obvious.
+  `enter/4` and `enter_blocked/2` are the only functions that write `phase:` on a
+  machine; `clear_worker/1` clears the in-flight worker bookkeeping and leaves
+  the phase alone. Grouping them here (along with the entry/context helpers)
+  keeps `Machine.Transitions` and `Machine.Compaction` within the file-length
+  budget and makes the phase writers obvious.
+
+  ## The resting funnel
+
+  A phase that is *resting* — `:idle`, or any blocked phase — ends the turn, so
+  a reply the agent still owes is given up with it (`Machine.GiveUp`). That is
+  not something a transition should be able to forget, so entering a resting
+  phase has exactly two doors, `rest/4` and `block/4`, and both of them compute
+  the give-up themselves. `enter_blocked/2` is private to this module for that
+  reason: every other entry point would be a way to rest with the obligation
+  still standing. `GuardTest` scans the sources and fails on any other writer.
 
   `enter/4` is also the turn boundary, so it is where the turn-scoped
   `work.focus` is dropped: entering a chat turn, or entering any `:idle`
@@ -19,6 +29,7 @@ defmodule Nest.Agents.Agent.Machine.Phase do
 
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Machine
+  alias Nest.Agents.Agent.Machine.GiveUp
   alias Nest.Agents.Agent.Turn.Dispatch
   alias Nest.Messages.User
 
@@ -64,9 +75,46 @@ defmodule Nest.Agents.Agent.Machine.Phase do
   defp turn_focus(_kind, :idle, _focus), do: nil
   defp turn_focus(_kind, _phase, focus), do: focus
 
-  @doc "Enter an externally-unstuck blocked phase."
-  @spec enter_blocked(Machine.t(), Machine.phase()) :: Machine.t()
-  def enter_blocked(m, phase) do
+  @doc """
+  Rest the machine in `:idle`.
+
+  The give-up is computed *here*, not by the caller, so no site can rest while
+  it still owes a peer a reply: any debt the machine holds becomes a
+  `{:give_up_replies, reason}` action, **prepended** to the site's own actions.
+  The ordering is load-bearing — the executor halts its action list at the first
+  follow-up event, so a `{:drain_inbox}` that ran first would start a turn from
+  the drained message and the give-up for the old debt would never run. The
+  drained message's turn gets its own gate.
+
+  A machine that owes nothing emits no give-up at all, so a debt-free rest is
+  exactly the site's own action list.
+
+  `reason` names the site for the log line a refused notice writes, so the
+  server log says why the runtime gave up and not merely that it did.
+  """
+  @spec rest(Machine.t(), Machine.kind(), atom(), [Machine.action()]) ::
+          {:ok, [Machine.action()], Machine.t()}
+  def rest(m, kind, reason, actions) do
+    machine = enter(m, kind, :idle)
+    {:ok, GiveUp.actions(machine, reason) ++ actions, machine}
+  end
+
+  @doc """
+  Block the machine in `phase` — the only door to a blocked phase, with the same
+  give-up contract as `rest/4`: blocking ends the turn, so the reply it was
+  carrying is given up with it.
+  """
+  @spec block(Machine.t(), Machine.phase(), atom(), [Machine.action()]) ::
+          {:ok, [Machine.action()], Machine.t()}
+  def block(m, phase, reason, actions) do
+    machine = enter_blocked(m, phase)
+    {:ok, GiveUp.actions(machine, reason) ++ actions, machine}
+  end
+
+  # Private on purpose: `block/4` is the door. A caller reaching for this
+  # directly would rest the machine without the give-up (the `GuardTest` scan
+  # fails on it).
+  defp enter_blocked(m, phase) do
     Machine.validate!(%{m | phase: phase, work: %{m.work | worker_kind: nil}})
   end
 

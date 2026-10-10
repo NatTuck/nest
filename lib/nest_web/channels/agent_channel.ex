@@ -284,6 +284,8 @@ defmodule NestWeb.AgentChannel do
       "usage" => agent.usage,
       "inbox" => agent.pending_messages,
       "pendingMessageCount" => agent.pending_message_count,
+      # The reply debt (issue #31 §1.8): always present, `[]` when nothing is owed.
+      "owedReplies" => agent.owed_replies,
       "shellJobs" => ShellJobs.list({agent.space_id, agent.name})
     }
   end
@@ -470,6 +472,8 @@ defmodule NestWeb.AgentChannel do
           "currentMode" => agent.current_mode,
           "usage" => agent.usage,
           "pendingMessageCount" => agent.pending_message_count,
+          # The reply debt travels here as well as on the status broadcast.
+          "owedReplies" => agent.owed_replies,
           # The archive boundary travels on every status reply so a
           # reconnect that missed a `chat:compaction` broadcast can still
           # reconcile the collapsed-history card (see `setAgentConnected`).

@@ -11,18 +11,24 @@ defmodule Nest.Agents.Agent.SubAgentTest do
 
   The outstanding-children bookkeeping now lives in the
   machine's `Nest.Agents.Agent.Machine.Children` sub-machine, so
-  these tests build running-child entries through
-  `Machine.spawn_child/4` rather than poking a struct field.
+  these tests build running-child entries through the machine's
+  `{:child_spawned, name, archive, target}` event rather than poking a struct
+  field.
 
   ## What's covered
 
     * `handle_child_completed/4` merges the child's total
       usage into `descendant_usage`, removes the running
-      entry, and forwards `:spawn_agent_result` to the
-      blocked worker.
+      entry, and enqueues the child's answer into the parent's
+      own inbox (`kind: :agent`).
+    * A failed or stopped child reaches the parent as a runtime
+      `:notice` naming the child, so the parent learns the answer
+      is not coming instead of waiting it out.
     * When `handle_child_completed/4` arrives for an
       unknown child (e.g. double-completion), the
-      handler is a no-op (defensive).
+      handler is a no-op (defensive). A late termination after a
+      parent stop is the same no-op, because the stop cleared the
+      children map.
     * Cascaded children accumulate into a single
       `descendant_usage` map.
 
@@ -40,11 +46,10 @@ defmodule Nest.Agents.Agent.SubAgentTest do
   alias Nest.Agents.Agent.SubAgent
 
   describe "handle_child_completed/4" do
-    test "merges child usage, drops the running entry, forwards :spawn_agent_result" do
+    test "merges child usage, drops the running entry, and enqueues the answer" do
       parent = build_parent_state()
-      task_pid = self()
       child_name = "completed-child-#{System.unique_integer([:positive])}"
-      state = with_running_child(parent, child_name, task_pid)
+      state = with_running_child(parent, child_name)
 
       child_total = %{
         Broadcasts.empty_usage_totals()
@@ -56,9 +61,9 @@ defmodule Nest.Agents.Agent.SubAgentTest do
       result = SubAgent.handle_child_completed(state, child_name, "done", child_total)
       assert {:noreply, new_state} = result
 
-      # Forwarded to the worker — the test process is the
-      # worker.
-      assert_receive {:spawn_agent_result, ^child_name, "done"}, 200
+      # The child's own words land in the parent's own inbox, framed as an
+      # agent message: the child said it, so it is not a runtime notice.
+      assert [%{from: ^child_name, content: "done", kind: :agent}] = new_state.live.inbox
 
       # Running entry removed; the child is terminal.
       assert Machine.pending_children(new_state.live.machine) == %{}
@@ -85,21 +90,21 @@ defmodule Nest.Agents.Agent.SubAgentTest do
 
     test "cascades the merge: descendant usage accumulates across children" do
       parent = build_parent_state()
-      task_pid = self()
       child_a = "child-a-#{System.unique_integer([:positive])}"
       child_b = "child-b-#{System.unique_integer([:positive])}"
 
-      state = with_running_child(parent, child_a, task_pid)
+      state = with_running_child(parent, child_a)
 
       total_a = %{Broadcasts.empty_usage_totals() | output_tokens: 10, total_input_tokens: 50}
       {:noreply, state} = SubAgent.handle_child_completed(state, child_a, "a", total_a)
-      assert_receive {:spawn_agent_result, ^child_a, "a"}, 200
 
-      state = with_running_child(state, child_b, task_pid)
+      state = with_running_child(state, child_b)
 
       total_b = %{Broadcasts.empty_usage_totals() | output_tokens: 20, total_input_tokens: 70}
       {:noreply, state} = SubAgent.handle_child_completed(state, child_b, "b", total_b)
-      assert_receive {:spawn_agent_result, ^child_b, "b"}, 200
+
+      # Both answers are queued, in completion order.
+      assert [%{from: ^child_a, content: "a"}, %{from: ^child_b, content: "b"}] = state.live.inbox
 
       # Cumulative: 10 + 20 = 30 output, 50 + 70 = 120 input.
       assert state.llm_metrics.descendant_usage.output_tokens == 30
@@ -115,35 +120,29 @@ defmodule Nest.Agents.Agent.SubAgentTest do
   end
 
   describe "handle_child_failed/3 and handle_child_terminated/3" do
-    test "handle_child_failed/3 forwards :spawn_agent_error and never archives" do
-      parent = build_parent_state()
-      task_pid = self()
-      child_name = "failed-child-#{System.unique_integer([:positive])}"
-      state = with_running_child(parent, child_name, task_pid, true)
+    test "a failed or stopped child reaches the parent as a runtime notice" do
+      for {handle, tag, reason, status, news} <- [
+            {&SubAgent.handle_child_failed/3, "failed", {:crashed, "boom"}, :failed,
+             "failed before it answered: {:crashed, \"boom\"}"},
+            {&SubAgent.handle_child_terminated/3, "stopped", :shutdown, :terminated,
+             "was stopped before it answered: :shutdown"}
+          ] do
+        parent = build_parent_state()
+        child_name = "#{tag}-child-#{System.unique_integer([:positive])}"
+        state = with_running_child(parent, child_name, true)
 
-      assert {:noreply, new_state} =
-               SubAgent.handle_child_failed(state, child_name, {:crashed, "boom"})
+        assert {:noreply, new_state} = handle.(state, child_name, reason)
 
-      assert_receive {:spawn_agent_error, ^child_name, {:crashed, "boom"}}, 200
+        # The runtime speaks, not the child — a `:notice` (rendered bare),
+        # naming the child and quoting why the answer is not coming. The
+        # child's slot is dropped and terminal; whether a terminal transition
+        # emits an archive is pinned in `Machine.ChildrenTest`.
+        assert [%{from: ^child_name, kind: :notice, content: content}] = new_state.live.inbox
+        assert content == "Child agent #{child_name} #{news}"
 
-      # Slot dropped, terminal, and the child is NOT left queued for
-      # archival (the `:failed` terminal transition emits no archive).
-      assert Machine.pending_children(new_state.live.machine) == %{}
-      assert Children.status(new_state.live.machine.children, child_name) == :failed
-    end
-
-    test "handle_child_terminated/3 forwards :spawn_agent_error and never archives" do
-      parent = build_parent_state()
-      task_pid = self()
-      child_name = "terminated-child-#{System.unique_integer([:positive])}"
-      state = with_running_child(parent, child_name, task_pid, true)
-
-      assert {:noreply, new_state} =
-               SubAgent.handle_child_terminated(state, child_name, :shutdown)
-
-      assert_receive {:spawn_agent_error, ^child_name, :shutdown}, 200
-      assert Machine.pending_children(new_state.live.machine) == %{}
-      assert Children.status(new_state.live.machine.children, child_name) == :terminated
+        assert Machine.pending_children(new_state.live.machine) == %{}
+        assert Children.status(new_state.live.machine.children, child_name) == status
+      end
     end
 
     test "a failure for an unknown child is a no-op" do
@@ -160,14 +159,13 @@ defmodule Nest.Agents.Agent.SubAgentTest do
   describe "stop_pending_children/1" do
     test "clears the children sub-machine and walks Supervisor.stop_agent for each running entry" do
       parent = build_parent_state()
-      task_pid = self()
       child_a = "stop-child-a-#{System.unique_integer([:positive])}"
       child_b = "stop-child-b-#{System.unique_integer([:positive])}"
 
       state =
         parent
-        |> with_running_child(child_a, task_pid)
-        |> with_running_child(child_b, task_pid)
+        |> with_running_child(child_a)
+        |> with_running_child(child_b)
 
       # The two fake names aren't registered in the live
       # ChildRegistry, so `Supervisor.stop_agent/1` returns
@@ -185,13 +183,28 @@ defmodule Nest.Agents.Agent.SubAgentTest do
       assert Machine.status_for(new_state.live.machine) ==
                Machine.status_for(state.live.machine)
     end
+
+    test "a child that dies after the stop is a no-op, not a second notice" do
+      # The parent's Stop clears the children map, so the registry `:DOWN` that
+      # follows it finds nothing to apply: no notice, no second delivery. The
+      # notice a parent *does* get for a stopped child is the one the child's
+      # own death produces while it is still registered.
+      parent = build_parent_state()
+      child = "late-child-#{System.unique_integer([:positive])}"
+      stopped = parent |> with_running_child(child) |> SubAgent.stop_pending_children()
+
+      assert {:noreply, after_event} = SubAgent.handle_child_terminated(stopped, child, :shutdown)
+
+      assert after_event.live.inbox == []
+      assert after_event.live.machine.children == Children.new()
+    end
   end
 
   # Helpers
 
-  defp with_running_child(state, name, task_pid, archive \\ false) do
+  defp with_running_child(state, name, archive \\ false) do
     {:ok, _actions, machine} =
-      Machine.step(state.live.machine, {:child_spawned, name, task_pid, archive})
+      Machine.step(state.live.machine, {:child_spawned, name, archive, nil})
 
     %{state | live: %{state.live | machine: machine}}
   end
@@ -209,7 +222,12 @@ defmodule Nest.Agents.Agent.SubAgentTest do
         usage_totals: Broadcasts.empty_usage_totals(),
         descendant_usage: Broadcasts.empty_usage_totals()
       },
-      chat_state: %Agent.ChatState{}
+      # Mid-turn, as a parent is whenever it spawned the child it is hearing
+      # back from. (An *idle* parent also drains the answer into a turn — the
+      # wake-up the boundary-delivery test pins — which needs a real agent and a
+      # database; these are unit tests for the handler's bookkeeping.)
+      chat_state: %Agent.ChatState{},
+      live: %Agent.ChatState.Live{machine: %Machine{phase: :executing_tools}}
     }
   end
 end

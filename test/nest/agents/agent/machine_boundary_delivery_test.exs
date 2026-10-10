@@ -62,6 +62,55 @@ defmodule MachineBoundaryDeliveryTest do
       end
     end
 
+    test "a child's answer drains the queue when the parent is already idle" do
+      # intentional: a peer's message wakes an idle agent (its delivery drains
+      # it), and a child's answer has to as well — otherwise a parent that ended
+      # its turn before its child answered would leave the answer queued until
+      # something else woke it. While the parent is busy the `:iterate` boundary
+      # drains it instead, so the drain action belongs to the idle case alone.
+      {:ok, [], spawned} = Machine.step(idle_state(), {:child_spawned, "kid", false, nil})
+
+      {:ok, actions, next} =
+        Machine.step(spawned, {:child_completed, "kid", "the answer", %{total_tokens: 7}})
+
+      assert [
+               {:child_message, "kid", {:ok, "the answer"}},
+               {:merge_usage, "kid", _},
+               {:broadcast, :status, nil},
+               {:drain_inbox}
+             ] = actions
+
+      assert next.phase == :idle
+      Machine.validate!(next)
+
+      # Busy: the answer is queued, and the turn boundary owns the drain.
+      {:ok, [], busy} =
+        Machine.step(boundary_state(tool_tail(), []), {:child_spawned, "kid", false, nil})
+
+      {:ok, busy_actions, _next} =
+        Machine.step(busy, {:child_completed, "kid", "the answer", %{total_tokens: 7}})
+
+      refute {:drain_inbox} in busy_actions
+    end
+
+    test "a non-positive context limit is a misconfiguration, not unlimited" do
+      # `context_limit` is resolved from the dot config's `context-limit` or a
+      # provider's `default_context_limit`; 0 is neither "no limit" (nil) nor a
+      # usable window. Treating it as unlimited would hide the misconfiguration
+      # until the provider rejected the request, so the turn takes the visible
+      # overflow path.
+      assert Dispatch.preflight_decision([], nil) == :fits
+
+      log =
+        capture_log(fn ->
+          assert Dispatch.preflight_decision([], 0) == :cannot_compact
+          assert Dispatch.preflight_decision([], -5) == :cannot_compact
+        end)
+
+      assert log =~ "context limit 0 is not usable"
+      assert log =~ "context limit -5 is not usable"
+    end
+
     test "no boundary delivery onto a just-opened turn or an unanswered tool_use" do
       # intentional: the tail-tag check excludes the just-opened-turn shape
       # (the machine itself just appended the user message, e.g. the
@@ -149,6 +198,34 @@ defmodule MachineBoundaryDeliveryTest do
 
       refute Enum.any?(request_actions, &match?({:consume_inbox, _}, &1))
       assert Enum.any?(request_actions, &match?({:append, _}, &1))
+
+      # Only a delivered `:query` incurs a reply obligation (§1.3): a peer's
+      # ordinary message is not a question that expects an answer.
+      assert next.owed_replies == %{}
+    end
+
+    test "a delivered query batch owes a reply to each named sender" do
+      # intentional: the obligation is keyed by the *sender's name*, one key per
+      # distinct peer (decision 1/10) — not per query, not per message. An
+      # unnamed sender contributes nothing (there is no key to owe), and an
+      # `:agent` entry in the same batch is not a question at all.
+      entries = [
+        query_entry("alice"),
+        inbox_entry(),
+        query_entry("bob"),
+        query_entry(nil)
+      ]
+
+      m = boundary_state(tool_tail(), inbox_count: 4)
+
+      {:ok, actions, next} = Machine.step(m, {:inbox_drain, entries, "queued"})
+
+      assert Enum.any?(actions, &match?({:append, _}, &1))
+      assert {:consume_inbox, ^entries} = List.last(actions -- [:iterate])
+      assert next.owed_replies == %{"alice" => 0, "bob" => 0}
+      assert Machine.owed_senders(next) == ["alice", "bob"]
+      assert Machine.due_senders(next) == ["alice", "bob"]
+      Machine.validate!(next)
     end
 
     test "a delivered message that needs compaction stays queued and parks nothing" do
@@ -170,7 +247,7 @@ defmodule MachineBoundaryDeliveryTest do
           }
       }
 
-      {:ok, actions, next} = Machine.step(m, {:inbox_drain, [inbox_entry()], "queued"})
+      {:ok, actions, next} = Machine.step(m, {:inbox_drain, [query_entry("peer")], "queued"})
 
       refute Enum.any?(actions, &match?({:consume_inbox, _}, &1))
       refute Enum.any?(actions, &match?({:append, _}, &1))
@@ -179,6 +256,10 @@ defmodule MachineBoundaryDeliveryTest do
       assert {:compaction, staged, nil} = next.entry
       assert is_list(staged)
       assert next.pending_user_message == nil
+
+      # The query was never delivered, so it owes nothing yet (§1.3): a query
+      # queued behind a compaction that never finishes creates no debt.
+      assert next.owed_replies == %{}
       Machine.validate!(next)
     end
 
@@ -213,7 +294,7 @@ defmodule MachineBoundaryDeliveryTest do
       # gone from the vocabulary — and the message stays queued on the wire.
       # `{:unblocked}`'s existing `{:drain_inbox}` re-attempts it once the
       # operator has acted.
-      entries = [inbox_entry()]
+      entries = [query_entry("peer")]
       m = boundary_state(tool_tail(), inbox_count: 1, context_limit: 1)
 
       {:ok, actions, next} = Machine.step(m, {:inbox_drain, entries, "queued"})
@@ -223,6 +304,7 @@ defmodule MachineBoundaryDeliveryTest do
       refute Enum.any?(actions, &match?({:restore_inbox, _}, &1))
       assert next.phase == :context_overflow
       assert Machine.status_for(next) == :context_overflow
+      assert next.owed_replies == %{}
     end
   end
 
@@ -526,6 +608,16 @@ defmodule MachineBoundaryDeliveryTest do
       content: "queued payload",
       timestamp: DateTime.utc_now(),
       kind: :agent,
+      mode: nil
+    }
+  end
+
+  defp query_entry(from) do
+    %{
+      from: from,
+      content: "queued query",
+      timestamp: DateTime.utc_now(),
+      kind: :query,
       mode: nil
     }
   end

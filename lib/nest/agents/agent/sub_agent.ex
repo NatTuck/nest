@@ -10,28 +10,27 @@ defmodule Nest.Agents.Agent.SubAgent do
       context-cloned), register the child in the machine's
       `Nest.Agents.Agent.Machine.Children` sub-machine when a
       `query` is present, kick off `Agents.chat(child_name,
-      query)`, then reply with the child's name (the caller —
-      the blocking worker, or the async waiter it started —
-      matches its eventual `:spawn_agent_result` on it).
+      query)`, then reply with the child's name.
 
     * `handle_child_completed/4` — a child cast up the
       tree carrying its last assistant content and its
       total usage. We run the child event through the
       `Children` sub-machine, merge the reported usage into
-      the parent's `descendant_usage`, forward
-      `:spawn_agent_result` to the waiting caller (archiving
-      the child if it was spawned with `archive: true`), and
-      broadcast an updated status (so the token chip's total
-      updates mid-stream).
+      the parent's `descendant_usage`, enqueue the child's
+      answer (or the news that it will not come) into the
+      parent's *own* inbox (issue #31 §2.1 — archiving the child
+      if it was spawned with `archive: true`), and broadcast an
+      updated status (so the token chip's total updates
+      mid-stream).
 
   ## Address strategy
 
   The child reaches the parent by `GenServer.cast`-ing to
   `Nest.Agents.Registry.via_tuple(space_id, parent_name)`. The
-  parent looks the child up in the children sub-machine by name
-  (the `task_pid` is the only pid we hold; the caller has no
-  registered name, so `:spawn_agent_result` reaches it via
-  `send/2` from the parent).
+  parent looks the child up in the children sub-machine by name,
+  and the outcome is delivered by the parent's own process into
+  its own inbox: the caller's pid is not needed for the result,
+  so a worker that has already gone cannot lose it.
 
   ## Usage accounting
 
@@ -46,6 +45,8 @@ defmodule Nest.Agents.Agent.SubAgent do
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Machine
+  alias Nest.Agents.Agent.Machine.Children
+  alias Nest.Agents.Agent.Timeline
   alias Nest.Agents.Agent.Turn
   alias Nest.Agents.Registry, as: AgentsRegistry
   alias Nest.Agents.Supervisor
@@ -97,19 +98,41 @@ defmodule Nest.Agents.Agent.SubAgent do
   end
 
   @doc """
-  Spawn a child of `state` and remember the `task_pid` so the
-  eventual completion can be forwarded. Unifies the old
-  `clone_agent` (via `clone_context: true`) and the fresh
-  `spawn_agent`. `opts` carries `name`, `vocation` (slug),
-  `clone_context`, `query`, and `archive`.
+  Spawn a child of `state` and register it when it has a `query` to answer.
+  Unifies the old `clone_agent` (via `clone_context: true`) and the fresh
+  `spawn_agent`. `opts` carries `name`, `vocation` (slug), `clone_context`,
+  `query`, and `archive`.
 
-  Returns the GenServer reply tuple.
+  The caller's pid is part of the call's shape but is no longer stored: the
+  child's outcome goes to the parent's own inbox (§2.1), so nothing has to be
+  sent back to the caller. Returns the GenServer reply tuple.
   """
+  # A Stop is in flight. A batch coordinator's request can still be in this
+  # mailbox (it was sent before the stop's kill reached that process), and
+  # spawning for it now would start a child the parent has just stopped — and
+  # register the dead coordinator as a reporting target, which is exactly what
+  # makes the late `:DOWN` read as a lost batch.
+  #
+  # `:stopping` is the whole window, for every interleaving: the stop transition
+  # kills every reporting target during its own settle, *before* the timer that
+  # ends `:stopping` is armed, and a process with a pending `:kill` cannot run
+  # again — so a request from a stopped batch is always enqueued ahead of that
+  # timer's message and is therefore processed while the phase is `:stopping`
+  # (mailbox order), not after the rest.
   @spec handle_spawn_request(Agent.t(), pid(), map()) :: {:reply, term(), Agent.t()}
-  def handle_spawn_request(state, task_pid, opts) do
+  def handle_spawn_request(
+        %Agent{live: %{machine: %{phase: :stopping}}} = state,
+        _task_pid,
+        _opts
+      ) do
+    {:reply, {:error, :stopping}, state}
+  end
+
+  def handle_spawn_request(state, _task_pid, opts) do
     case spawn_child(state, opts) do
-      {:ok, child_name} ->
-        state = track_child(state, child_name, task_pid, opts)
+      {:ok, child_name, model} ->
+        state = track_child(state, child_name, opts)
+        Timeline.child_spawned(state, child_name, model, opts)
 
         broadcast_subagent_creation(state, child_name)
 
@@ -153,20 +176,25 @@ defmodule Nest.Agents.Agent.SubAgent do
 
   defp do_spawn_child(state, opts) do
     with {:ok, model_override} <- resolve_model_override(Map.get(opts, :model, "")) do
-      if Map.get(opts, :clone_context, false) do
-        Supervisor.start_agent_with_parent(state, Map.get(opts, :query, ""), model_override)
-      else
-        # The supervisor resolves `vocation` (a slug) against the
-        # space's blueprint whitelist: omitted defaults to the
-        # parent's vocation (or the space's sole allowed vocation when
-        # the parent's isn't allowed).
-        Supervisor.spawn_agent_in_space(
-          state,
-          Map.get(opts, :name, ""),
-          Map.get(opts, :vocation),
-          model_override
-        )
-      end
+      result =
+        if Map.get(opts, :clone_context, false) do
+          Supervisor.start_agent_with_parent(state, Map.get(opts, :query, ""), model_override)
+        else
+          # The supervisor resolves `vocation` (a slug) against the
+          # space's blueprint whitelist: omitted defaults to the
+          # parent's vocation (or the space's sole allowed vocation when
+          # the parent's isn't allowed).
+          Supervisor.spawn_agent_in_space(
+            state,
+            Map.get(opts, :name, ""),
+            Map.get(opts, :vocation),
+            model_override
+          )
+        end
+
+      # The resolved model rides back with the name so the spawn's timeline
+      # event reports what the child actually runs on, not what was asked for.
+      with {:ok, child_name} <- result, do: {:ok, child_name, model_override || state.model}
     end
   end
 
@@ -192,18 +220,27 @@ defmodule Nest.Agents.Agent.SubAgent do
   end
 
   # Register the child in the machine's children sub-machine only when
-  # it has a `query` to answer (the caller — the blocking worker or the
-  # async waiter — is waiting for the result). A child spawned without a
-  # query runs independently and never calls back, so there's nothing to
-  # track. The `archive` flag is carried on the child entry so the
-  # terminal transition can emit a single archive action after the
-  # response is forwarded.
-  defp track_child(state, child_name, task_pid, opts) do
+  # it has a `query` to answer, so its answer is worth delivering. A child
+  # spawned without a query runs independently and never calls back, so
+  # there's nothing to track. The `archive` flag is carried on the child entry
+  # so the terminal transition can emit a single archive action alongside the
+  # answer, and `report_to` — set only by the batch coordinator — names the pid
+  # the outcome goes to instead of this agent's own inbox.
+  defp track_child(state, child_name, opts) do
     if Map.get(opts, :query, "") != "" do
       archive = Map.get(opts, :archive, false)
+      target = Map.get(opts, :report_to)
 
-      {:ok, state} =
-        Turn.settle(state, {:child_spawned, child_name, task_pid, archive})
+      # A reporting target (a batch coordinator) is monitored so that a
+      # coordinator which dies before its aggregate is *reported*, not silently
+      # missed. Once per target — a batch's other children report to the same
+      # pid, and a second monitor would deliver a second `:DOWN`. The ref is
+      # deliberately dropped: the `:DOWN` is matched by pid in `Turn.handle/2`.
+      if is_pid(target) and not Children.reporting_target?(state.live.machine.children, target) do
+        Process.monitor(target)
+      end
+
+      {:ok, state} = Turn.settle(state, {:child_spawned, child_name, archive, target})
 
       state
     else
@@ -284,11 +321,10 @@ defmodule Nest.Agents.Agent.SubAgent do
 
   @doc """
   Merge the child's reported usage into
-  `state.llm_metrics.descendant_usage`, forward
-  `:spawn_agent_result` to the waiting caller, archive the child if it
-  was spawned with `archive: true`, and broadcast the updated status.
-  Returns the GenServer reply tuple (which for a `handle_cast` is just
-  `{:noreply, new_state}`).
+  `state.llm_metrics.descendant_usage`, enqueue the child's answer into the
+  parent's own inbox, archive the child if it was spawned with
+  `archive: true`, and broadcast the updated status. Returns the GenServer
+  reply tuple (which for a `handle_cast` is just `{:noreply, new_state}`).
   """
   @spec handle_child_completed(Agent.t(), String.t(), String.t(), map()) ::
           {:noreply, Agent.t()}
@@ -299,10 +335,10 @@ defmodule Nest.Agents.Agent.SubAgent do
   @doc """
   A child ended its turn without a normal completion (its
   chat crashed or was stopped). Run the failure through the
-  `Children` sub-machine so the waiting caller (an
-  `agents-spawn` / `agents-batch`) fails fast instead of waiting out
-  its timeout. Never archives a failed child — a crashed/stopped child
-  is left in place for inspection. Returns the GenServer reply tuple.
+  `Children` sub-machine, which enqueues a runtime notice into the parent's
+  own inbox so the caller learns the answer is not coming instead of waiting
+  it out. Never archives a failed child — a crashed/stopped child is left in
+  place for inspection. Returns the GenServer reply tuple.
   """
   @spec handle_child_failed(Agent.t(), String.t(), term()) :: {:noreply, Agent.t()}
   def handle_child_failed(state, child_name, reason) do
@@ -320,10 +356,9 @@ defmodule Nest.Agents.Agent.SubAgent do
     {:noreply, apply_child_event(state, {:terminated, child_name, reason})}
   end
 
-  # Apply one child lifecycle event to the machine, then run the actions
-  # the pure `Children` sub-machine returned. Worker notifications need
-  # the pre-transition entry (the terminal state clears `worker_ref`), so
-  # the executor captures the running map before stepping.
+  # Apply one child lifecycle event to the machine, then run the actions the
+  # pure `Children` sub-machine returned (the inbox enqueue, the usage merge,
+  # the archive).
   defp apply_child_event(state, event) do
     event =
       case event do

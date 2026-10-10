@@ -82,6 +82,7 @@ defmodule Nest.Agents.Agent.Machine do
     :unblocked,
     :workspace_notice,
     :tool_results,
+    :reply_sent,
     :child_spawned,
     :child_completed,
     :child_failed,
@@ -91,7 +92,9 @@ defmodule Nest.Agents.Agent.Machine do
 
   # The declared action vocabulary. Every action must have a `Turn.Executor`
   # clause (pinned by `guard_test.exs`); `:drain_inbox` has two, one per drain
-  # shape (peek, and peek-and-append for the loop breaker's give-up path).
+  # shape (peek, and peek-and-append for the loop breaker's give-up path), and
+  # `:give_up_replies` is emitted by every terminal transition that can leave a
+  # reply owed (`Machine.GiveUp`).
   @actions [
     :append,
     :append_many,
@@ -116,7 +119,8 @@ defmodule Nest.Agents.Agent.Machine do
     :finalize,
     :drain_inbox,
     :consume_inbox,
-    :notify_worker,
+    :give_up_replies,
+    :child_message,
     :merge_usage,
     :stop_child,
     :archive_child,
@@ -160,6 +164,7 @@ defmodule Nest.Agents.Agent.Machine do
             loop_count: 0,
             pending_user_message: nil,
             mid_turn_entry: nil,
+            owed_replies: %{},
             children: %Nest.Agents.Agent.Machine.Children{},
             stop_timer: nil
 
@@ -171,6 +176,7 @@ defmodule Nest.Agents.Agent.Machine do
           loop_count: non_neg_integer(),
           pending_user_message: term(),
           mid_turn_entry: term(),
+          owed_replies: %{String.t() => non_neg_integer()},
           children: Nest.Agents.Agent.Machine.Children.t(),
           stop_timer: reference() | nil
         }
@@ -216,10 +222,10 @@ defmodule Nest.Agents.Agent.Machine do
 
   # --- children readers ---
 
-  @doc "The running children as a `%{name => worker_ref}` map (test/status view)."
-  @spec pending_children(t()) :: %{String.t() => reference() | pid() | nil}
+  @doc "The running children, as a `%{name => true}` map (test/status view)."
+  @spec pending_children(t()) :: %{String.t() => true}
   def pending_children(%__MODULE__{children: %Children{children: children}}) do
-    for {name, %{state: :running, worker_ref: ref}} <- children, into: %{}, do: {name, ref}
+    for {name, %{state: :running}} <- children, into: %{}, do: {name, true}
   end
 
   @doc "The names of currently-running children."
@@ -229,6 +235,91 @@ defmodule Nest.Agents.Agent.Machine do
   @doc "Drop all child bookkeeping (used by the stop/cascade paths)."
   @spec clear_children(t()) :: t()
   def clear_children(%__MODULE__{} = m), do: %{m | children: Children.new()}
+
+  # --- owed replies (the reply obligation, issue #31 §1.2) ---
+
+  # One reminder per debt, then the runtime gives up on it (issue #31
+  # decision 3). The budget lives here rather than being counted from the
+  # transcript: a transcript scan resets across a compaction (the commit
+  # empties `chat_state.messages`) and would remind forever.
+  @max_reminders 1
+
+  @doc """
+  The peers this agent still owes a reply, sorted by name.
+
+  The obligation is a `%{sender => reminders_sent}` map (issue #31 decision
+  10): a set of names, not a per-query record — no query id, no FIFO, no
+  requester-side state (decision 1). It lives on the machine rather than in
+  `chat_state` because compaction never rebuilds the machine: the debt
+  outlives the conversation segment it was incurred in, and nothing the
+  model is shown carries it.
+  """
+  @spec owed_senders(t()) :: [String.t()]
+  def owed_senders(%__MODULE__{owed_replies: owed}), do: owed |> Map.keys() |> Enum.sort()
+
+  @doc """
+  The debtors whose own reminder budget is unspent, sorted by name.
+
+  The gate reminds *these* senders and no others (decision 10's budget is per
+  debt): a sender already reminded is not named again, so a query that arrives
+  after a reminder cannot buy that debt a second one — the runtime gives up on
+  it at the next rest instead.
+  """
+  @spec due_senders(t()) :: [String.t()]
+  def due_senders(%__MODULE__{owed_replies: owed}) do
+    owed
+    |> Enum.filter(fn {_sender, sent} -> sent < @max_reminders end)
+    |> Enum.map(&elem(&1, 0))
+    |> Enum.sort()
+  end
+
+  @doc """
+  Record a reply obligation for each named sender.
+
+  Idempotent: a second query from the same sender is the same debt (decision
+  1), so it neither duplicates the key nor resets a reminder already sent. A
+  missing or blank name contributes nothing — the obligation is keyed by
+  name, so an unnamed sender has no key to owe.
+  """
+  @spec owe_replies(t(), [String.t() | nil]) :: t()
+  def owe_replies(m, senders) do
+    owed = Enum.reduce(senders, m.owed_replies, &put_new_sender/2)
+    %{m | owed_replies: owed}
+  end
+
+  @doc """
+  Discharge the obligation to one sender — the clear a successful outbound
+  `agents-send` to that sender performs (issue #31 §1.4).
+  """
+  @spec discharge_reply(t(), String.t() | nil) :: t()
+  def discharge_reply(m, sender) do
+    if named?(sender), do: %{m | owed_replies: Map.delete(m.owed_replies, sender)}, else: m
+  end
+
+  @doc """
+  Discharge every outstanding obligation — the give-up, when the runtime can
+  no longer remind (its budget is spent, or the reminder will not fit).
+  """
+  @spec discharge_all(t()) :: t()
+  def discharge_all(m), do: %{m | owed_replies: %{}}
+
+  @doc """
+  Count one delivered reminder for each of `senders` (the budget is per debt).
+
+  The caller passes the senders it actually named — the ones `due_senders/1`
+  reports — so a debt whose budget is spent is not counted a second time.
+  """
+  @spec count_reminders(t(), [String.t()]) :: t()
+  def count_reminders(m, senders) do
+    owed = Enum.reduce(senders, m.owed_replies, &Map.update(&2, &1, 1, fn n -> n + 1 end))
+    %{m | owed_replies: owed}
+  end
+
+  defp put_new_sender(sender, owed) do
+    if named?(sender), do: Map.put_new(owed, sender, 0), else: owed
+  end
+
+  defp named?(sender), do: is_binary(sender) and sender != ""
 
   @doc """
   Apply one event. Pure: returns the actions the executor must run and the

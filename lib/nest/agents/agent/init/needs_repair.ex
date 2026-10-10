@@ -21,7 +21,12 @@ defmodule Nest.Agents.Agent.Init.NeedsRepair do
   @spec block(Nest.Agents.Agent.t(), [Preflight.violation()], String.t() | nil) ::
           Nest.Agents.Agent.t()
   def block(state, violations, repair_command) do
-    machine = Phase.enter_blocked(state.live.machine, :needs_repair)
+    # The resting funnel (`Phase.block/4`) is the only door to a blocked phase.
+    # The machine here is freshly built by `Init.build_state/2`, so it owes no
+    # reply and the funnel emits no give-up — the empty action list is asserted,
+    # not assumed: a restore that ever carried a debt would fail loudly instead
+    # of dropping a requester's notice.
+    {:ok, [], machine} = Phase.block(state.live.machine, :needs_repair, :startup, [])
 
     state = %{
       state
