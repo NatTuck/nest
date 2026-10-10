@@ -231,8 +231,11 @@ defmodule Nest.Agents.Agent.NeedsRepairTest do
           assert {:ok, _name} = Agents.reload_agent(space_id, name)
         end)
 
+      # The bridge ran. That a "could not heal" line is *absent* is not
+      # asserted: `capture_log` collects every process's logs, including
+      # concurrent tests', so an absence assertion there flakes and tests
+      # nothing.
       assert reload_log =~ "idle sequence ending on a user message"
-      refute reload_log =~ "could not heal"
 
       assert {:ok, info} = Agents.get_info(space_id, name)
       assert info.status == :idle

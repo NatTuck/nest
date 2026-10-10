@@ -21,6 +21,10 @@ defmodule Nest.Tools.FileTools do
   # BatchSizer's preflight can refuse before doing the read work.
   @max_read_file_bytes 100 * 1_000_000
 
+  # A broken sandbox is a Nest configuration problem, not a missing file, so
+  # the caller is told that plainly rather than "file not found".
+  @sandbox_setup_failed "The sandbox failed to start; this is a Nest configuration problem, not a missing file."
+
   @doc """
   Build the `file-read` `Nest.LLM.Tool` struct.
   """
@@ -29,7 +33,8 @@ defmodule Nest.Tools.FileTools do
     %Tool{
       name: "file-read",
       description:
-        "Read the contents of a file from the workspace." <>
+        "Read the contents of a file from the workspace. The read resolves " <>
+          "inside the sandbox, so only files the sandbox exposes are visible." <>
           Nest.Tools.scratch_note(tmp_path),
       parameters_schema: %{
         "type" => "object",
@@ -157,23 +162,13 @@ defmodule Nest.Tools.FileTools do
     # the sandbox spelling; neither host path is returned.
     case Sandbox.stat(full_path, caps, workspace_path, tmp_path) do
       {:ok, %{size: size}} when size > @max_read_file_bytes ->
-        mb = div(size, 1_000_000)
-
-        {:error,
-         "File is #{mb} MB; file-read is capped at 100 MB. " <>
-           "Use file-inspect or shell-cmd with head/tail/sed for partial reads."}
+        too_large_error(size)
 
       {:ok, _} ->
         read_file_content(full_path, workspace_path, caps, tmp_path)
 
-      {:error, :read_permission_denied} ->
-        {:error, "Not permitted to read file by sandbox caps: #{original_path}"}
-
-      {:error, :enoent} ->
-        {:error, "File not found: #{original_path}"}
-
       {:error, reason} ->
-        {:error, "Cannot stat file: #{inspect(reason)}"}
+        read_error(reason, original_path)
     end
   end
 
@@ -181,16 +176,28 @@ defmodule Nest.Tools.FileTools do
     # `workspace_path`/`tmp_path` are HOST paths passed only to build the
     # sandbox for the read. The agent must only ever see the sandbox spelling.
     case Sandbox.read(full_path, caps, workspace_path, tmp_path) do
-      {:ok, content} ->
-        validate_utf8(content)
-
-      {:error, :read_permission_denied} ->
-        {:error, "Not permitted to read file by sandbox caps"}
-
-      {:error, reason} ->
-        {:error, "Read failed: #{inspect(reason)}"}
+      {:ok, content} -> validate_utf8(content)
+      {:error, reason} -> read_error(reason, full_path)
     end
   end
+
+  defp too_large_error(size) do
+    mb = div(size, 1_000_000)
+
+    {:error,
+     "File is #{mb} MB; file-read is capped at 100 MB. " <>
+       "Use file-inspect or shell-cmd with head/tail/sed for partial reads."}
+  end
+
+  defp read_error(:read_permission_denied, path),
+    do: {:error, "Not permitted to read file by sandbox caps: #{path}"}
+
+  defp read_error(:enoent, path), do: {:error, "File not found: #{path}"}
+  defp read_error(:eisdir, path), do: {:error, "Not a file: #{path}"}
+  defp read_error(:sandbox_setup_failed, _path), do: {:error, @sandbox_setup_failed}
+  defp read_error(:read_timeout, path), do: {:error, "Timed out reading file: #{path}"}
+  defp read_error(:read_cancelled, path), do: {:error, "Read cancelled: #{path}"}
+  defp read_error(reason, _path), do: {:error, "Cannot read file: #{inspect(reason)}"}
 
   defp validate_utf8(content) do
     if Sanitize.text?(content) do

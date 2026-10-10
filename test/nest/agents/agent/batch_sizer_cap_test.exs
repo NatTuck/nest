@@ -59,10 +59,12 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
   describe "max_result_tokens cap" do
     setup do
       tmp_dir =
-        Path.join(
-          System.tmp_dir!(),
+        Path.join([
+          File.cwd!(),
+          "_build",
+          "tmp",
           "batchsizer-cap-#{System.unique_integer([:positive])}"
-        )
+        ])
 
       File.mkdir_p!(tmp_dir)
       on_exit(fn -> File.rm_rf!(tmp_dir) end)

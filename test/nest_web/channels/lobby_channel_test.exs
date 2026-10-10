@@ -447,6 +447,27 @@ defmodule NestWeb.LobbyChannelTest do
       assert {:ok, info} = Agents.get_info(space_id, name)
       assert info.vocation_id == vocation.id
     end
+
+    test "names the workspace refusal instead of a generic failure" do
+      {socket, _payload} = join_lobby()
+
+      # A path under /tmp is refused because the scratch dir is bound there, and
+      # a path that is not there at all cannot be bound. Both used to collapse to
+      # `failed_to_create`, which told the user nothing about what they typed.
+      for {workspace_path, reason} <- [
+            {"/tmp/some-project", "workspace_under_tmp"},
+            {"/nope/missing-project", "workspace_missing"}
+          ] do
+        ref =
+          push(socket, "create_space", %{
+            "name" => "ws-refused-#{System.unique_integer([:positive])}",
+            "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"},
+            "workspace_path" => workspace_path
+          })
+
+        assert_reply ref, :error, %{"reason" => ^reason}, 500
+      end
+    end
   end
 
   describe "handle_in(suggest_space_name)" do

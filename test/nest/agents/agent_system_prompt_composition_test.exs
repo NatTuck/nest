@@ -48,11 +48,13 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
           }
         })
 
+      workspace = new_ws("test-workspace")
+
       {pid, _agent_id} =
         start_agent(%{
           model: %{name: "qwen3.5-plus"},
           vocation_id: vocation.id,
-          workspace_path: "/tmp/test-workspace-#{System.unique_integer([:positive])}"
+          workspace_path: workspace
         })
 
       # The system prompt isn't on any broadcast; only the agent's
@@ -65,7 +67,7 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
       assert system_prompt =~ ~s(- build: Read only "/")
       assert system_prompt =~ "Network disabled"
       assert system_prompt =~ "You're clear to edit the project in the workspace."
-      assert system_prompt =~ "\n\nWorkspace and tool working directory: /tmp/test-workspace-"
+      assert system_prompt =~ "\n\nWorkspace and tool working directory: #{workspace}"
       # `compact` is rendered into the catalog alongside the
       # user-configured modes, with `Vocations.compact_description/0`
       # as the body. The `[mode: compact]` prefix lives only in
@@ -129,7 +131,7 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
         start_agent(%{
           model: %{name: "qwen3.5-plus"},
           vocation_id: vocation.id,
-          workspace_path: "/tmp/test-notools-#{System.unique_integer([:positive])}"
+          workspace_path: new_ws("test-notools")
         })
 
       system_prompt = get_system_prompt(pid)
@@ -168,7 +170,7 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
         start_agent(%{
           model: %{name: "qwen3.5-plus"},
           vocation_id: vocation.id,
-          workspace_path: "/tmp/test-compact-#{System.unique_integer([:positive])}"
+          workspace_path: new_ws("test-compact")
         })
 
       system_prompt = get_system_prompt(pid)
@@ -268,5 +270,21 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
       assert system_prompt =~ "resolved from default"
       refute system_prompt =~ "may differ"
     end
+  end
+
+  # A real workspace directory outside /tmp: the scratch dir is bound at /tmp,
+  # so a /tmp-rooted workspace is rejected, and a non-existent one too.
+  defp new_ws(label) do
+    dir =
+      Path.join([
+        File.cwd!(),
+        "_build",
+        "tmp",
+        "#{label}-#{System.unique_integer([:positive])}"
+      ])
+
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf(dir) end)
+    dir
   end
 end

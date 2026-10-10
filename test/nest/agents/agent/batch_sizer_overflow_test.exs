@@ -12,15 +12,18 @@ defmodule Nest.Agents.Agent.BatchSizer.OverflowTest do
   use ExUnit.Case, async: true
 
   alias Nest.Agents.Agent.BatchSizer.Overflow
+  alias Nest.Sandbox
   alias Nest.Tokens.Estimator
 
   setup do
-    dir = Path.join(System.tmp_dir!(), "nest-tmp-overflow-#{System.unique_integer([:positive])}")
+    unique = System.unique_integer([:positive])
+    root = Path.join(System.tmp_dir!(), "nest-tmp-overflow-#{unique}")
+    dir = Path.join([root, "space-1", "agent-#{unique}"])
 
     File.mkdir_p!(dir)
 
     on_exit(fn ->
-      if String.contains?(dir, "nest-tmp-overflow"), do: File.rm_rf!(dir)
+      if String.contains?(root, "nest-tmp-overflow"), do: File.rm_rf!(root)
     end)
 
     {:ok, dir: dir}
@@ -57,7 +60,8 @@ defmodule Nest.Agents.Agent.BatchSizer.OverflowTest do
         out = Overflow.substitute(content, ctx, "Command output", budget, "exec")
 
         assert out =~ "elided"
-        assert out =~ dir
+        assert out =~ Sandbox.sandbox_tmp_path(dir)
+        refute out =~ dir
         assert String.valid?(out)
       end
     end
@@ -73,7 +77,8 @@ defmodule Nest.Agents.Agent.BatchSizer.OverflowTest do
         )
 
       assert out =~ "saved to"
-      assert out =~ dir
+      assert out =~ Sandbox.sandbox_tmp_path(dir)
+      refute out =~ dir
       assert out =~ "line of content"
       assert Estimator.estimate(out) <= 200
     end

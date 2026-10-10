@@ -243,10 +243,12 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
       vocation = create_vocation(%{})
 
       workspace_path =
-        Path.join(
-          System.tmp_dir!(),
+        Path.join([
+          File.cwd!(),
+          "_build",
+          "tmp",
           "nest-tmp-system-repeat-#{System.unique_integer([:positive])}"
-        )
+        ])
 
       File.mkdir_p!(workspace_path)
       on_exit(fn -> safe_rm_rf(workspace_path) end)

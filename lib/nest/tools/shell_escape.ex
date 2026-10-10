@@ -7,7 +7,9 @@ defmodule Nest.Tools.ShellEscape do
   ending the quote, adding an escaped quote, and resuming the
   quote — the standard portable shell-quoting idiom. Used by
   the `file-read`, `file-write`, and `file-edit` tools when they
-  build `cat '<path>'` commands.
+  build `cat '<path>'` commands, and by `Nest.Sandbox.read/4`,
+  `Nest.Sandbox.stat/5`, and the glob script to quote paths
+  before running them inside bwrap.
   """
 
   @doc """

@@ -217,9 +217,16 @@ defmodule Nest.ToolsInspectFileTest do
   end
 
   setup do
-    # Use a unique tmp directory per test so parallel tests don't
-    # collide on the same file path.
-    dir = Path.join(System.tmp_dir!(), "nest_inspect_test_#{System.unique_integer([:positive])}")
+    # A workspace outside /tmp (the scratch dir is bound at /tmp, so a
+    # /tmp-rooted workspace is rejected). Unique per test.
+    dir =
+      Path.join([
+        File.cwd!(),
+        "_build",
+        "tmp",
+        "nest_inspect_test_#{System.unique_integer([:positive])}"
+      ])
+
     File.mkdir_p!(dir)
     on_exit(fn -> File.rm_rf!(dir) end)
     %{tmp: dir}
@@ -227,13 +234,13 @@ defmodule Nest.ToolsInspectFileTest do
 
   # Helper to invoke a tool's function with permissive sandbox caps.
   # The inspect_file tool never writes, but it does read; the caps
-  # map must include a readable path (the test's tmp dir).
+  # map must include a readable path (the test's workspace).
   defp invoke(%Function{function: fun}, args) do
     fun.(args, %{
       caps: %{
         "fs" => %{
           "read" => ["/"],
-          "write" => ["/tmp", "/", ":workspace"]
+          "write" => ["/", ":workspace"]
         },
         "net" => true
       }

@@ -292,9 +292,8 @@ defmodule Nest.ProjectConfig do
   # The `.nest` file is always protected (read-only) in a writable
   # workspace. When the file is absent we mask `/dev/null` over the
   # path so an agent can't create one (which would be picked up on the
-  # next spawn and grant it extra host access). `read_source/2` maps
-  # the mask to `/dev/null` so the host fast-path stays identical to
-  # what bwrap exposes.
+  # next spawn and grant it extra host access). The mask is a real bind
+  # inside bwrap, so `stat`/`read` see the char device directly.
   defp protected_entries(workspace) do
     nest = Path.join(canonical_ws(workspace), @file_name)
     source = if File.exists?(nest), do: nest, else: "/dev/null"
@@ -318,23 +317,6 @@ defmodule Nest.ProjectConfig do
   end
 
   @doc """
-  Map `path` to the host path the read-only fast-path should read so it
-  stays byte-identical to what bwrap exposes. A protected path (the
-  `.nest` file, or `/dev/null` when masked) maps to its source; a
-  project `tmp` mount maps to its backing dir under the agent tmp.
-  Everything else reads at its own path.
-  """
-  @spec read_source(String.t(), map()) :: String.t()
-  def read_source(path, caps) do
-    canonical = FSPath.canonical(path)
-
-    case mount_for(canonical, caps) do
-      nil -> path
-      {dest, source} -> source <> String.replace_prefix(canonical, dest, "")
-    end
-  end
-
-  @doc """
   `mkdir_p` project-mount backing dirs before bwrap runs: `tmp` sources
   must exist to be bind sources, and `create = true` dirs must exist to
   be mount points.
@@ -353,34 +335,7 @@ defmodule Nest.ProjectConfig do
     end)
   end
 
-  defp mount_for(canonical, caps) do
-    case protected_for(canonical, caps) do
-      %{"path" => dest, "source" => source} -> {dest, source}
-      nil -> shadow_mount(canonical, caps)
-    end
-  end
-
-  defp protected_for(canonical, caps) do
-    Enum.find(protected_paths(caps), fn p -> p["path"] == canonical end)
-  end
-
-  defp shadow_mount(canonical, caps) do
-    case shadow_for(canonical, caps) do
-      %{"dest" => dest, "source" => source} -> {dest, source}
-      nil -> nil
-    end
-  end
-
-  defp shadow_for(canonical, caps) do
-    caps
-    |> project_mounts()
-    |> Enum.filter(&is_binary(&1["source"]))
-    |> Enum.find(fn m -> FSPath.under?(m["dest"], canonical) end)
-  end
-
   defp project_mounts(caps), do: get_in(caps, ["fs", "project"]) || []
-
-  defp protected_paths(caps), do: get_in(caps, ["fs", "protected"]) || []
 
   @doc """
   The system-prompt section describing the project sandbox config, or a

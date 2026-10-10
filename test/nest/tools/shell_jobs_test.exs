@@ -27,7 +27,11 @@ defmodule Nest.Tools.ShellJobsTest do
 
   defp start_job!(command, tmp, key) do
     {:ok, _} =
-      ShellCmd.execute(command, "/tmp", tmp, nil, background: true, agent_key: key, grace_ms: 0)
+      ShellCmd.execute(command, File.cwd!(), tmp, nil,
+        background: true,
+        agent_key: key,
+        grace_ms: 0
+      )
 
     assert [%{id: id}] = ShellJobs.list(key)
     id
@@ -134,7 +138,7 @@ defmodule Nest.Tools.ShellJobsTest do
     key: {space_id, name},
     tmp: tmp
   } do
-    tool = Tools.get_function("shell-cmd", "/tmp", tmp)
+    tool = Tools.get_function("shell-cmd", File.cwd!(), tmp)
 
     ctx = %{
       tools: [tool],

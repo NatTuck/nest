@@ -12,8 +12,15 @@ defmodule Nest.Agents.Agent.BatchPlanTest do
   alias Nest.Messages.ToolCall
 
   setup do
+    # A workspace outside /tmp: the scratch dir is bound at /tmp, so a
+    # /tmp-rooted workspace is rejected.
     dir =
-      Path.join(System.tmp_dir!(), "nest_batch_plan_test_#{System.unique_integer([:positive])}")
+      Path.join([
+        File.cwd!(),
+        "_build",
+        "tmp",
+        "nest_batch_plan_test_#{System.unique_integer([:positive])}"
+      ])
 
     File.mkdir_p!(dir)
     on_exit(fn -> File.rm_rf(dir) end)

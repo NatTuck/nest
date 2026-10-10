@@ -307,7 +307,10 @@ defmodule Nest.Agents.Agent.FilePolicyTest do
   # ---- helpers ----
 
   defp start_agent_with_workspace do
-    workspace_root = Path.join(System.tmp_dir!(), "file_policy_workspace_#{unique_int()}")
+    # Project-relative workspace outside /tmp: the sandbox scratch dir is
+    # bound at /tmp, so a workspace under it would be shadowed.
+    workspace_root =
+      Path.join([File.cwd!(), "_build", "tmp", "file_policy_workspace_#{unique_int()}"])
 
     File.mkdir_p!(workspace_root)
 
@@ -323,7 +326,10 @@ defmodule Nest.Agents.Agent.FilePolicyTest do
         vocation_id: vid
       })
 
-    on_exit(fn -> File.rm_rf!(workspace_root) end)
+    on_exit(fn ->
+      if String.contains?(workspace_root, "file_policy_workspace"),
+        do: File.rm_rf!(workspace_root)
+    end)
 
     {pid, name}
   end

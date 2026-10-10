@@ -4,7 +4,16 @@ defmodule Nest.SandboxProjectTest do
   alias Nest.Sandbox
 
   setup do
-    dir = Path.join(System.tmp_dir!(), "nest_sbproj_#{System.unique_integer([:positive])}")
+    # A workspace outside /tmp: the scratch dir is bound at /tmp, so a
+    # /tmp-rooted workspace is rejected.
+    dir =
+      Path.join([
+        File.cwd!(),
+        "_build",
+        "tmp",
+        "nest_sbproj_#{System.unique_integer([:positive])}"
+      ])
+
     File.mkdir_p!(dir)
     on_exit(fn -> if String.contains?(dir, "nest_sbproj_"), do: File.rm_rf(dir) end)
     %{dir: dir}
@@ -63,15 +72,6 @@ defmodule Nest.SandboxProjectTest do
     prot = [%{"path" => nest, "source" => "/dev/null"}]
     {:ok, args} = Sandbox.build(caps([], prot), ws, nil)
     assert ["--ro-bind", "/dev/null", ^nest] = find_bind(args, "--ro-bind", "/dev/null")
-  end
-
-  test "write_allowed? is false for the protected .nest", %{dir: dir} do
-    ws = Path.join(dir, "ws")
-    File.mkdir_p!(ws)
-    nest = Path.join(ws, ".nest")
-    prot = [%{"path" => nest, "source" => nest}]
-    refute Sandbox.write_allowed?(nest, caps([], prot), ws)
-    assert Sandbox.write_allowed?(Path.join(ws, "other"), caps([], prot), ws)
   end
 
   test "read maps a tmp project path to its source", %{dir: dir} do

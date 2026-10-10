@@ -375,6 +375,9 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
            time: :posix
          ) do
       {:error, :enoent} -> :ok
+      # A broken sandbox is not a read-before-write problem; let the actual
+      # write attempt surface the real error instead of a bogus `:never_read`.
+      {:error, :sandbox_setup_failed} -> :ok
       {:ok, %File.Stat{} = stat} -> check_cached_read(full_path, stat, state)
       _ -> {:error, :never_read}
     end

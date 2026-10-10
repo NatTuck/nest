@@ -60,9 +60,7 @@ defmodule Nest.Sandbox.ShellJobs do
   # How long after a kill to force a terminal state if the exec port's
   # DOWN never arrives (SIGKILL + monitor should make it prompt).
   @kill_finalize_ms 5_000
-  # Where the *space* scratch dir is mounted inside the sandbox, and the
-  # subdirectory the job logs live in beneath the agent's own dir.
-  @sandbox_tmp "/tmp"
+  # The subdirectory the job logs live in beneath the agent's own dir.
   @log_subdir "shell-jobs"
 
   @type job_id :: String.t()
@@ -108,7 +106,7 @@ defmodule Nest.Sandbox.ShellJobs do
       the job ends
     * `:tmp_path` — the host dir the log lives under (the agent's own
       scratch dir; the sandbox sees it at
-      `#{@sandbox_tmp}/<agent-name>`)
+      `/tmp/<agent-name>`)
     * `:max_jobs` — the per-agent ceiling (default #{@default_max_jobs})
 
   Returns `{:ok, job_id, log_path}`, where `log_path` is the path inside

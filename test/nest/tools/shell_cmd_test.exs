@@ -19,8 +19,26 @@ defmodule Nest.Tools.ShellCmdTest do
 
   alias Nest.Tools.ShellCmd
 
+  setup do
+    # A workspace outside /tmp: the scratch dir is bound at /tmp, so a
+    # /tmp-rooted workspace is rejected unconditionally.
+    ws =
+      Path.join([
+        File.cwd!(),
+        "_build",
+        "tmp",
+        "nest_shellcmd_ws_#{System.unique_integer([:positive])}"
+      ])
+
+    File.mkdir_p!(ws)
+    on_exit(fn -> if String.contains?(ws, "nest_shellcmd_ws"), do: File.rm_rf(ws) end)
+    %{ws: ws}
+  end
+
   @tag :bwrap
-  test "collect_output/3's {:stop_chat, _} clause calls :exec.stop and returns exit 130" do
+  test "collect_output/3's {:stop_chat, _} clause calls :exec.stop and returns exit 130", %{
+    ws: ws
+  } do
     # Pre-seed the mailbox so the receive clause matches on
     # the first iteration. Without this, `collect_output/3`
     # would block on `:stdout` / `:stderr` / `:DOWN` until
@@ -34,7 +52,7 @@ defmodule Nest.Tools.ShellCmdTest do
     # `:exec.stop/1`.
     log =
       capture_log(fn ->
-        assert {:error, message} = ShellCmd.execute("true", "/tmp", nil, nil, [])
+        assert {:error, message} = ShellCmd.execute("true", ws, nil, nil, [])
 
         assert message =~ "Exit code 130"
         assert message =~ "[Command cancelled]"
@@ -47,12 +65,12 @@ defmodule Nest.Tools.ShellCmdTest do
     assert log =~ "exit_code=130"
   end
 
-  test "execute/5 returns the natural output for a successful command" do
+  test "execute/5 returns the natural output for a successful command", %{ws: ws} do
     # Sanity check that the receive doesn't match the
     # pre-seeded stop when none is in the mailbox. A trivial
     # `true` command exits 0 immediately and bwrap reports
     # the success path.
-    assert {:ok, output} = ShellCmd.execute("true", "/tmp", nil, nil, [])
+    assert {:ok, output} = ShellCmd.execute("true", ws, nil, nil, [])
 
     # The output is the "no output" placeholder because
     # `true` produces no stdout/stderr.
@@ -60,12 +78,12 @@ defmodule Nest.Tools.ShellCmdTest do
   end
 
   @tag :bwrap
-  test "a symlinked workspace is bound at its canonical path; read and write work through the symlink" do
+  test "a symlinked workspace is bound at its canonical path; read and write work through the symlink",
+       %{ws: base} do
     # Include the OS pid so paths are unique across BEAM runs — a
     # previously killed run can leave these behind, and
     # `System.unique_integer/1` restarts per BEAM so it can collide.
     uniq = "#{System.pid()}_#{System.unique_integer([:positive])}"
-    base = System.tmp_dir!()
     real = Path.join(base, "nest_bwrap_#{uniq}_real")
     link = Path.join(base, "nest_bwrap_#{uniq}_link")
 
@@ -89,39 +107,49 @@ defmodule Nest.Tools.ShellCmdTest do
     assert File.read!(Path.join(real, "out.txt")) =~ "written"
   end
 
-  test "a missing workspace fails without bwrap creating it" do
-    missing = Path.join(System.tmp_dir!(), "nest_missing_#{System.unique_integer([:positive])}")
+  test "a missing workspace returns an error without bwrap creating it", %{ws: ws} do
+    missing = Path.join(ws, "nest_missing_#{System.unique_integer([:positive])}")
 
     # The workspace is validated before bwrap runs, so a missing
-    # directory surfaces as a failure and is never auto-created.
-    assert_raise RuntimeError, ~r/does not exist/, fn ->
-      ShellCmd.execute("true", missing, nil, nil, [])
-    end
+    # directory surfaces as a clean error and is never auto-created.
+    assert {:error, message} = ShellCmd.execute("true", missing, nil, nil, [])
+    assert message =~ "does not exist"
 
     refute File.exists?(missing)
   end
 
   # The point of staging a script: the shell reads a file, so nothing in the
   # command text has to survive as one quoted argv element.
-  test "a multi-line command runs unescaped: quotes, dollars and pipes survive" do
+  test "a multi-line command runs unescaped: quotes, dollars and pipes survive", %{ws: ws} do
     command = """
     greeting='hello "world" ${UNSET_VAR}'
     echo "$greeting" | tr a-z A-Z
     """
 
-    assert {:ok, output} = ShellCmd.execute(command, "/tmp", nil, nil, [])
+    assert {:ok, output} = ShellCmd.execute(command, ws, nil, nil, [])
     assert output =~ ~s{HELLO "WORLD" }
   end
 
-  test "stdin is delivered over a pipe, and an absent stdin gives an immediate EOF" do
-    assert {:ok, output} = ShellCmd.execute("wc -c", "/tmp", nil, nil, stdin: "abcde")
+  test "stdin is delivered over a pipe, and an absent stdin gives an immediate EOF", %{ws: ws} do
+    assert {:ok, output} = ShellCmd.execute("wc -c", ws, nil, nil, stdin: "abcde")
     assert String.trim(output) == "5"
 
-    assert {:ok, output} = ShellCmd.execute("wc -c", "/tmp", nil, nil, [])
+    assert {:ok, output} = ShellCmd.execute("wc -c", ws, nil, nil, [])
     assert String.trim(output) == "0"
   end
 
-  test "the script is staged under the tmp dir (visible as /tmp) and removed after" do
+  test "a timeout places its annotation in stderr so raw callers see it", %{ws: ws} do
+    # `execute_raw` discards the combined output; the marker must reach it via
+    # stderr, or a timed-out glob/read would classify as an empty `:read_failed`
+    # with no signal at all.
+    assert {:ok, 1, _stdout, stderr} =
+             ShellCmd.execute_raw("sleep 5", ws, nil, nil, timeout: 50)
+
+    assert stderr =~ "[Command timed out after 50ms]"
+  end
+
+  test "the transcript is staged in the scratch staging dir (visible as /tmp/.cmds) and removed after",
+       %{ws: ws} do
     tmp =
       Path.join([
         System.tmp_dir!(),
@@ -136,25 +164,28 @@ defmodule Nest.Tools.ShellCmdTest do
       if String.contains?(tmp, "nest_stage"), do: File.rm_rf(Path.dirname(Path.dirname(tmp)))
     end)
 
-    # $0 is the staged script, as seen from inside the sandbox. `basename` is
-    # enough to prove it lived under the bound /tmp.
-    assert {:ok, output} = ShellCmd.execute(~s{basename "$0"}, "/tmp", tmp, nil, [])
-    assert output =~ ".nest-cmd-"
+    stage = Path.join(Path.dirname(tmp), ".cmds")
+
+    # $0 is the staged script, as seen from inside the sandbox.
+    assert {:ok, output} = ShellCmd.execute(~s{basename "$0"}, ws, tmp, nil, [])
+    assert output =~ "nest-cmd-"
 
     # The transcript is temporary either way: the caller gets the output.
-    assert {:ok, _} = ShellCmd.execute("echo bye", "/tmp", tmp, nil, [])
-    assert Path.wildcard(Path.join(tmp, ".nest-cmd-*.sh"), match_dot: true) == []
+    assert {:ok, _} = ShellCmd.execute("echo bye", ws, tmp, nil, [])
+    assert Path.wildcard(Path.join(stage, "nest-cmd-*.sh")) == []
   end
 
-  test "there is no set -e, and the exit code of the last statement is what is reported" do
-    assert {:ok, output} = ShellCmd.execute("false\necho survived", "/tmp", nil, nil, [])
+  test "there is no set -e, and the exit code of the last statement is what is reported", %{
+    ws: ws
+  } do
+    assert {:ok, output} = ShellCmd.execute("false\necho survived", ws, nil, nil, [])
     assert output =~ "survived"
 
     # A non-zero exit is a deliberate diagnostic — capture it so it
     # doesn't escape into the test log.
     log =
       capture_log(fn ->
-        assert {:error, output} = ShellCmd.execute("echo before\nexit 3", "/tmp", nil, nil, [])
+        assert {:error, output} = ShellCmd.execute("echo before\nexit 3", ws, nil, nil, [])
         assert output =~ "before"
         assert output =~ "Exit code 3"
       end)
@@ -163,14 +194,10 @@ defmodule Nest.Tools.ShellCmdTest do
     assert log =~ "exit_code=3"
   end
 
-  test "large stdin streams over the pipe and never hits an ARG_MAX ceiling" do
-    tmp = Path.join(System.tmp_dir!(), "nest_big_#{System.unique_integer([:positive])}")
-    File.mkdir_p!(tmp)
-    on_exit(fn -> File.rm_rf(tmp) end)
-
+  test "large stdin streams over the pipe and never hits an ARG_MAX ceiling", %{ws: ws} do
     payload = :binary.copy("abcdefgh", 400_000)
 
-    assert {:ok, _} = ShellCmd.execute("cat > big.bin", tmp, nil, nil, stdin: payload)
-    assert File.stat!(Path.join(tmp, "big.bin")).size == byte_size(payload)
+    assert {:ok, _} = ShellCmd.execute("cat > big.bin", ws, nil, nil, stdin: payload)
+    assert File.stat!(Path.join(ws, "big.bin")).size == byte_size(payload)
   end
 end

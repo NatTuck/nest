@@ -97,8 +97,12 @@ defmodule Nest.Agents.AgentChatTest do
           assert_received {:chat_error, _error}
         end)
 
-      refute log =~ "MatchError"
-      refute log =~ "no match of right hand side value"
+      # The error path logged its diagnostic and the Task body destructured its
+      # RunState: a `MatchError` would have left the messages above unarrived.
+      # (The absence of a `MatchError` in the log is not assertable —
+      # `capture_log` collects every process's output, including concurrent
+      # tests'.)
+      assert log =~ "Connection failed"
     end
 
     test "user and error assistant messages carry empty api_logs (request logs rebuilt on demand)" do

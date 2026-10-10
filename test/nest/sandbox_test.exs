@@ -5,9 +5,22 @@ defmodule Nest.SandboxTest do
   alias Nest.Sandbox
 
   setup do
-    dir = Path.join(System.tmp_dir!(), "nest_sandbox_test_#{System.unique_integer([:positive])}")
+    # A workspace outside /tmp: the scratch dir is bound at /tmp, so a
+    # workspace under /tmp is rejected unconditionally.
+    dir =
+      Path.join([
+        File.cwd!(),
+        "_build",
+        "tmp",
+        "nest_sandbox_test_#{System.unique_integer([:positive])}"
+      ])
+
     File.mkdir_p!(dir)
-    on_exit(fn -> File.rm_rf(dir) end)
+
+    on_exit(fn ->
+      if String.contains?(dir, "nest_sandbox_test"), do: File.rm_rf(dir)
+    end)
+
     %{tmp: dir}
   end
 
@@ -21,8 +34,8 @@ defmodule Nest.SandboxTest do
   end
 
   describe "build_default/2" do
-    test "produces args for the build profile (workspace + /tmp writable)" do
-      {:ok, args} = Sandbox.build_default("/workspace", "/tmp/nest-123/space-7/agent-1")
+    test "produces args for the build profile (workspace + /tmp writable)", %{tmp: dir} do
+      {:ok, args} = Sandbox.build_default(dir, "/tmp/nest-123/space-7/agent-1")
       assert "--unshare-all" in args
       assert "--unshare-net" in args
       assert "--ro-bind" in args
@@ -30,14 +43,14 @@ defmodule Nest.SandboxTest do
       assert "--dev" in args
 
       # Workspace is bound RW because the default caps include :workspace.
-      workspace_idx = Enum.find_index(args, &(&1 == "/workspace"))
+      workspace_idx = Enum.find_index(args, &(&1 == dir))
       assert workspace_idx != nil
       assert Enum.at(args, workspace_idx - 1) == "--bind"
-      assert Enum.at(args, workspace_idx + 1) == "/workspace"
+      assert Enum.at(args, workspace_idx + 1) == dir
     end
 
-    test "includes --bind space_dir /tmp when tmp_path is provided" do
-      {:ok, args} = Sandbox.build_default("/workspace", "/tmp/nest-123/space-7/agent-1")
+    test "includes --bind space_dir /tmp when tmp_path is provided", %{tmp: dir} do
+      {:ok, args} = Sandbox.build_default(dir, "/tmp/nest-123/space-7/agent-1")
       assert "--bind" in args
 
       # The *space* dir (the parent of the agent's own tmp_path) is what
@@ -48,67 +61,67 @@ defmodule Nest.SandboxTest do
       assert Enum.at(args, idx + 1) == "/tmp"
     end
 
-    test "does not include --bind tmp_path /tmp when tmp_path is nil" do
-      {:ok, args} = Sandbox.build_default("/workspace", nil)
+    test "does not include --bind tmp_path /tmp when tmp_path is nil", %{tmp: dir} do
+      {:ok, args} = Sandbox.build_default(dir, nil)
       # /tmp appears nowhere in args when there's no tmp_path to bind
       refute "/tmp" in args
     end
   end
 
   describe "build/3 with net caps" do
-    test "net=true includes --share-net and omits --unshare-net" do
+    test "net=true includes --share-net and omits --unshare-net", %{tmp: dir} do
       caps = build_caps(net: true, write: [":workspace"])
-      {:ok, args} = Sandbox.build(caps, "/workspace", nil)
+      {:ok, args} = Sandbox.build(caps, dir, nil)
       assert "--share-net" in args
       refute "--unshare-net" in args
     end
 
-    test "net=false includes --unshare-net" do
+    test "net=false includes --unshare-net", %{tmp: dir} do
       caps = build_caps(net: false, write: [":workspace"])
-      {:ok, args} = Sandbox.build(caps, "/workspace", nil)
+      {:ok, args} = Sandbox.build(caps, dir, nil)
       assert "--unshare-net" in args
     end
   end
 
   describe "build/3 with fs.read caps" do
-    test "read=['/'] includes --ro-bind / /" do
+    test "read=['/'] includes --ro-bind / /", %{tmp: dir} do
       caps = build_caps(read: ["/"], write: [":workspace"])
-      {:ok, args} = Sandbox.build(caps, "/workspace", nil)
+      {:ok, args} = Sandbox.build(caps, dir, nil)
       assert "--ro-bind" in args
       assert "/" in args
     end
 
-    test "read=[] returns an error (bwrap needs /bin/sh)" do
+    test "read=[] returns an error (bwrap needs /bin/sh)", %{tmp: dir} do
       caps = build_caps(read: [], write: [":workspace"])
-      assert {:error, msg} = Sandbox.build(caps, "/workspace", nil)
+      assert {:error, msg} = Sandbox.build(caps, dir, nil)
       assert msg =~ "caps.fs.read must include"
     end
   end
 
   describe "build/3 with fs.write caps" do
-    test "write=[] (no extras) does NOT bind the workspace" do
+    test "write=[] (no extras) does NOT bind the workspace", %{tmp: dir} do
       # Plan mode: workspace stays read-only via the / ro-bind.
       caps = build_caps(write: [])
-      {:ok, args} = Sandbox.build(caps, "/workspace", nil)
+      {:ok, args} = Sandbox.build(caps, dir, nil)
 
       # No --bind at all (workspace not bound, no /tmp bind, no extras).
       refute "--bind" in args
     end
 
-    test "write=[\":workspace\"] binds the workspace read-write" do
+    test "write=[\":workspace\"] binds the workspace read-write", %{tmp: dir} do
       caps = build_caps(write: [":workspace"])
-      {:ok, args} = Sandbox.build(caps, "/Users/me/proj", nil)
+      {:ok, args} = Sandbox.build(caps, dir, nil)
 
       # The workspace is bound at its actual path.
-      workspace_idx = Enum.find_index(args, &(&1 == "/Users/me/proj"))
+      workspace_idx = Enum.find_index(args, &(&1 == dir))
       assert workspace_idx != nil
       assert Enum.at(args, workspace_idx - 1) == "--bind"
-      assert Enum.at(args, workspace_idx + 1) == "/Users/me/proj"
+      assert Enum.at(args, workspace_idx + 1) == dir
     end
 
-    test ~s(write=[":workspace", "/tmp"] binds workspace + the space dir at /tmp) do
+    test ~s(write=[":workspace", "/tmp"] binds workspace + the space dir at /tmp), %{tmp: dir} do
       caps = build_caps(write: ["/tmp", ":workspace"])
-      {:ok, args} = Sandbox.build(caps, "/workspace", "/tmp/nest-123/space-7/agent-1")
+      {:ok, args} = Sandbox.build(caps, dir, "/tmp/nest-123/space-7/agent-1")
 
       # Two --bind directives: workspace and the space dir bound at /tmp
       assert Enum.count(args, &(&1 == "--bind")) == 2
@@ -119,9 +132,9 @@ defmodule Nest.SandboxTest do
       assert Enum.at(args, idx - 1) == "/tmp/nest-123/space-7"
     end
 
-    test "write=[\"/some/extra\"] binds the extra path, NOT the workspace" do
+    test "write=[\"/some/extra\"] binds the extra path, NOT the workspace", %{tmp: dir} do
       caps = build_caps(write: ["/some/extra"])
-      {:ok, args} = Sandbox.build(caps, "/workspace", nil)
+      {:ok, args} = Sandbox.build(caps, dir, nil)
 
       # /some/extra is bound
       assert Enum.count(args, &(&1 == "--bind")) == 1
@@ -131,42 +144,55 @@ defmodule Nest.SandboxTest do
         args
         |> Enum.with_index()
         |> Enum.count(fn
-          {"/workspace", i} -> Enum.at(args, i - 1) == "--bind"
+          {^dir, i} -> Enum.at(args, i - 1) == "--bind"
           _ -> false
         end)
 
       assert bind_count == 0
     end
 
-    test "write=[\"/tmp\"] does not produce a redundant /tmp --bind" do
-      # The /tmp symbolic entry is resolved by append_tmp_bind/2; the
+    test "write=[\"/tmp\"] does not produce a redundant /tmp --bind", %{tmp: dir} do
+      # The /tmp symbolic entry is resolved by append_tmp_bind/3; the
       # write list entry should be rejected to avoid a double bind.
       caps = build_caps(write: ["/tmp"])
-      {:ok, args} = Sandbox.build(caps, "/workspace", "/tmp/nest-123/space-7/agent-1")
+      {:ok, args} = Sandbox.build(caps, dir, "/tmp/nest-123/space-7/agent-1")
 
       # Only the space-dir bind; no extra --bind /tmp /tmp
       assert Enum.count(args, &(&1 == "--bind")) == 1
     end
 
-    test "write includes the literal workspace_path: no double bind" do
-      caps = build_caps(write: ["/workspace"])
-      {:ok, args} = Sandbox.build(caps, "/workspace", nil)
-      # The literal /workspace matches the rejection list (it equals
+    test "write includes the literal workspace_path: no double bind", %{tmp: dir} do
+      caps = build_caps(write: [dir])
+      {:ok, args} = Sandbox.build(caps, dir, nil)
+      # The literal workspace path matches the rejection list (it equals
       # workspace_path), so no --bind is produced.
       refute "--bind" in args
     end
   end
 
   describe "build/3 tmp_path" do
-    test "tmp_path=nil produces no /tmp bind" do
+    test "tmp_path=nil produces no /tmp bind", %{tmp: dir} do
       caps = build_caps(write: [":workspace"])
-      {:ok, args} = Sandbox.build(caps, "/workspace", nil)
+      {:ok, args} = Sandbox.build(caps, dir, nil)
       refute "/tmp" in args
     end
 
-    test "tmp_path provided binds its space dir at /tmp" do
+    test "a mode without /tmp grant binds its space dir at /tmp read-only", %{tmp: dir} do
+      # The scratch is only writable when the mode grants the symbolic /tmp
+      # write; otherwise it stays readable but read-only.
       caps = build_caps(write: [":workspace"])
-      {:ok, args} = Sandbox.build(caps, "/workspace", "/tmp/nest-123/space-7/agent-1")
+      {:ok, args} = Sandbox.build(caps, dir, "/tmp/nest-123/space-7/agent-1")
+      tmp_indices = args |> Enum.with_index() |> Enum.filter(&match?({"/tmp", _}, &1))
+
+      assert length(tmp_indices) == 1
+      {_, idx} = hd(tmp_indices)
+      assert Enum.at(args, idx - 2) == "--ro-bind"
+      assert Enum.at(args, idx - 1) == "/tmp/nest-123/space-7"
+    end
+
+    test "a mode with /tmp grant binds its space dir at /tmp read-write", %{tmp: dir} do
+      caps = build_caps(write: [":workspace", "/tmp"])
+      {:ok, args} = Sandbox.build(caps, dir, "/tmp/nest-123/space-7/agent-1")
       tmp_indices = args |> Enum.with_index() |> Enum.filter(&match?({"/tmp", _}, &1))
 
       assert length(tmp_indices) == 1
@@ -177,10 +203,10 @@ defmodule Nest.SandboxTest do
   end
 
   describe "build/5 HPU passthrough" do
-    test "binds host /dev and the Habana log dir read-write when HPUs are present" do
+    test "binds host /dev and the Habana log dir read-write when HPUs are present", %{tmp: dir} do
       caps = build_caps(write: [":workspace"])
       log_dir = Hardware.habana_log_dir()
-      {:ok, args} = Sandbox.build(caps, "/workspace", nil, "/workspace", ["/dev/accel"])
+      {:ok, args} = Sandbox.build(caps, dir, nil, dir, ["/dev/accel"])
 
       # No fresh devtmpfs; the host /dev is bound so accelerator nodes
       # are present and usable.
@@ -191,9 +217,9 @@ defmodule Nest.SandboxTest do
       assert Enum.chunk_every(args, 3, 1) |> Enum.member?(["--bind", log_dir, log_dir])
     end
 
-    test "uses a fresh --dev devtmpfs and no Habana bind without HPUs" do
+    test "uses a fresh --dev devtmpfs and no Habana bind without HPUs", %{tmp: dir} do
       caps = build_caps(write: [":workspace"])
-      {:ok, args} = Sandbox.build(caps, "/workspace", nil, "/workspace", [])
+      {:ok, args} = Sandbox.build(caps, dir, nil, dir, [])
 
       assert "--dev" in args
       refute "--dev-bind" in args
@@ -202,7 +228,7 @@ defmodule Nest.SandboxTest do
   end
 
   describe "arg ordering (regression)" do
-    test "--dev /dev and --proc /proc appear AFTER --ro-bind / /" do
+    test "--dev /dev and --proc /proc appear AFTER --ro-bind / /", %{tmp: dir} do
       # The / ro-bind must come before --dev so the devtmpfs overlays the
       # read-only bind (not the other way around), and before --proc so
       # the freshly-mounted /proc does NOT inherit the parent's
@@ -211,7 +237,7 @@ defmodule Nest.SandboxTest do
       # inside the sandbox. See scripts/probe-bwrap-flags.sh for the
       # probe that exposed it.
       caps = build_caps(write: [":workspace"])
-      {:ok, args} = Sandbox.build(caps, "/workspace", nil)
+      {:ok, args} = Sandbox.build(caps, dir, nil)
       ro_bind_idx = Enum.find_index(args, &(&1 == "--ro-bind"))
       dev_idx = Enum.find_index(args, &(&1 == "--dev"))
       proc_idx = Enum.find_index(args, &(&1 == "--proc"))
@@ -225,55 +251,40 @@ defmodule Nest.SandboxTest do
     end
   end
 
-  describe "rule helpers (single source of truth)" do
-    test "readable_roots canonicalizes the read list" do
+  describe "readable_roots/1" do
+    test "canonicalizes the read list" do
       assert Sandbox.readable_roots(build_caps(read: ["/"])) == ["/"]
-    end
-
-    test "writable_roots includes canonical workspace + extras, not /tmp" do
-      caps = build_caps(write: [":workspace", "/tmp", "/data"])
-      assert Sandbox.writable_roots(caps, "/workspace") == ["/workspace", "/data"]
-    end
-
-    test "writable_roots omits the workspace when :workspace is absent" do
-      assert Sandbox.writable_roots(build_caps(write: ["/data"]), "/workspace") == ["/data"]
-    end
-
-    test "read_allowed? is true for any path under read='/'", %{tmp: dir} do
-      assert Sandbox.read_allowed?(Path.join(dir, "x.txt"), build_caps())
-    end
-
-    test "write_allowed? honors the :workspace marker", %{tmp: dir} do
-      assert Sandbox.write_allowed?(
-               Path.join(dir, "x.txt"),
-               build_caps(write: [":workspace"]),
-               dir
-             )
-
-      refute Sandbox.write_allowed?(Path.join(dir, "x.txt"), build_caps(write: []), dir)
-    end
-
-    test "write_allowed? resolves symlinks before the containment check", %{tmp: dir} do
-      target = Path.join(dir, "real")
-      File.mkdir_p!(target)
-      link = Path.join(dir, "link")
-      File.ln_s!(target, link)
-
-      in_link = Path.join(link, "x.txt")
-      assert Sandbox.write_allowed?(in_link, build_caps(write: [":workspace"]), link)
     end
   end
 
-  describe "equivalence (binds == rule helpers)" do
-    test "the --bind/--ro-bind mounts are derived from writable/readable roots" do
-      caps = build_caps(write: [":workspace", "/tmp", "/data"])
-      {:ok, args} = Sandbox.build(caps, "/workspace", "/tmp/nest-equivalence/space-1/agent-1")
+  describe "workspace validation" do
+    test "rejects a workspace at or under the scratch bind", %{tmp: dir} do
+      caps = build_caps(write: [":workspace", "/tmp"])
 
-      {ro_targets, bind_targets} = collect_bind_targets(args)
+      assert {:error, msg} = Sandbox.build(caps, "/tmp/ws", "/tmp/nest-1/space-1/agent-1")
+      assert msg =~ "must not be at or under /tmp"
 
-      assert ro_targets == Sandbox.readable_roots(caps)
-      # tmp is bound at /tmp (not a host writable root); the rest match.
-      assert bind_targets -- ["/tmp"] == Sandbox.writable_roots(caps, "/workspace")
+      assert {:error, _} = Sandbox.build(caps, "/tmp", "/tmp/nest-1/space-1/agent-1")
+
+      # The rejection is unconditional: no scratch bind is needed.
+      assert {:error, _} = Sandbox.build(caps, "/tmp/ws", nil)
+
+      # A workspace that does not exist is rejected too.
+      assert {:error, msg} = Sandbox.build(caps, Path.join(dir, "missing"), nil)
+      assert msg =~ "does not exist"
+    end
+
+    test "nil workspace binds no workspace and chdirs to the scratch root" do
+      caps = build_caps(write: ["/tmp"])
+      {:ok, args} = Sandbox.build(caps, nil, "/tmp/nest-1/space-1/agent-1")
+
+      assert ["--chdir", "/tmp" | _] = after_flag(args, "--chdir", "/tmp")
+    end
+
+    test "workspace_error/1 classifies missing and /tmp-rooted paths" do
+      assert :ok = Sandbox.workspace_error(nil)
+      assert {:error, :workspace_under_tmp} = Sandbox.workspace_error("/tmp/ws")
+      assert {:error, :workspace_missing} = Sandbox.workspace_error("/nope/does/not/exist")
     end
   end
 
@@ -460,12 +471,29 @@ defmodule Nest.SandboxTest do
       assert msg =~ "No workspace configured"
     end
 
-    test "matches are filtered to files readable under the caps", %{root: root} do
-      # Read only the `sub` subtree: files under `deep/` are matched by
-      # the walk but dropped by the read-authorization filter.
-      caps = build_caps(read: [Path.join(root, "sub")])
-      expected = [Path.join(root, "sub/a.txt"), Path.join(root, "sub/b.txt")]
-      assert {:ok, ^expected} = Sandbox.glob("**/*.txt", caps, root, nil)
+    test "matches resolve through the bwrap mounts, not the host", %{root: root} do
+      # Mask one matched file with /dev/null. Inside bwrap the path is a char
+      # device, so the regular-file filter drops it — proof that the glob
+      # resolves through the mounts rather than the host file underneath.
+      masked = Path.join(root, "sub/a.txt")
+
+      caps =
+        build_caps(read: ["/"])
+        |> put_in(["fs", "protected"], [%{"path" => masked, "source" => "/dev/null"}])
+
+      pattern = Path.join(root, "**/*.txt")
+      assert {:ok, files} = Sandbox.glob(pattern, caps, root, nil)
+
+      refute masked in files
+      assert Path.join(root, "sub/b.txt") in files
+    end
+
+    test "a terminal ** is refused (bash would expand the whole subtree)", %{root: root} do
+      caps = build_caps(read: ["/"])
+      pattern = Path.join(root, "**")
+
+      assert {:error, :glob_terminal_double_star} =
+               Sandbox.glob(pattern, caps, root, nil)
     end
 
     test "an over-broad expansion is rejected with :glob_too_broad", %{root: root} do
@@ -493,24 +521,6 @@ defmodule Nest.SandboxTest do
       }
     }
   end
-
-  # Collect the destination paths of every --ro-bind and --bind
-  # directive in the arg list, in order, ignoring flags with their own
-  # arguments (--chdir/--dev/--proc) and bare flags.
-  defp collect_bind_targets(args), do: do_collect(args, [], [])
-
-  defp do_collect([], ro, bind), do: {Enum.reverse(ro), Enum.reverse(bind)}
-
-  defp do_collect(["--ro-bind", _src, dst | rest], ro, bind),
-    do: do_collect(rest, [dst | ro], bind)
-
-  defp do_collect(["--bind", _src, dst | rest], ro, bind), do: do_collect(rest, ro, [dst | bind])
-  defp do_collect(["--chdir", _ | rest], ro, bind), do: do_collect(rest, ro, bind)
-  defp do_collect(["--dev", _ | rest], ro, bind), do: do_collect(rest, ro, bind)
-  defp do_collect(["--proc", _ | rest], ro, bind), do: do_collect(rest, ro, bind)
-  defp do_collect(["--share-net" | rest], ro, bind), do: do_collect(rest, ro, bind)
-  defp do_collect(["--unshare-net" | rest], ro, bind), do: do_collect(rest, ro, bind)
-  defp do_collect([_ | rest], ro, bind), do: do_collect(rest, ro, bind)
 
   # The 2- or 3-arg directive starting at the first occurrence of
   # `flag` in `args`, or [] when absent.

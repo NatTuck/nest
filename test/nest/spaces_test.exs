@@ -397,4 +397,51 @@ defmodule Nest.SpacesTest do
       model: %{name: "qwen3.5-plus", provider: "model-studio"}
     }
   end
+
+  describe "create_space_with_root_agent/2 workspace validation" do
+    setup do
+      {:ok, vocation} =
+        Nest.Vocations.create_vocation(%{
+          name: "WS Root #{System.unique_integer([:positive])}",
+          description: "writes workspace",
+          system_prompt: "ws",
+          tools: [],
+          modes: %{
+            "build" => %{
+              "description" => "writes workspace",
+              "caps" => %{
+                "net" => false,
+                "fs" => %{"read" => ["/"], "write" => [":workspace"]}
+              }
+            }
+          }
+        })
+
+      base = %{
+        name: "ws-root-#{System.unique_integer([:positive])}",
+        slug: "ws-root-#{System.unique_integer([:positive])}",
+        vocation: vocation.slug,
+        model: %{name: "qwen3.5-plus", provider: "model-studio"}
+      }
+
+      %{base: base}
+    end
+
+    test "rejects a missing or /tmp-rooted workspace", %{user_id: user_id, base: base} do
+      assert {:error, :workspace_required} =
+               Spaces.create_space_with_root_agent(user_id, base)
+
+      assert {:error, :workspace_under_tmp} =
+               Spaces.create_space_with_root_agent(
+                 user_id,
+                 Map.put(base, :workspace_path, "/tmp/ws")
+               )
+
+      assert {:error, :workspace_missing} =
+               Spaces.create_space_with_root_agent(
+                 user_id,
+                 Map.put(base, :workspace_path, "/nope/missing-ws")
+               )
+    end
+  end
 end

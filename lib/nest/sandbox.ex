@@ -5,57 +5,54 @@ defmodule Nest.Sandbox do
   Everything an agent reads, writes, stats, or executes goes through
   this module. It has three facets:
 
-  ## Rule helpers (shared single source of truth)
+  ## The sandbox's filesystem view is bwrap's view
 
-  `readable_roots/1`, `writable_roots/2`, `read_allowed?/2`,
-  `write_allowed?/3`, and `resolve/2` are pure predicates built on
-  `Nest.FSPath` (canonicalization + containment). These are the ONLY
-  place the sandbox rules live: the bwrap argument builder derives its
-  mounts from them, and the stat/glob host fast-path authorizes from
-  them, so the fast-path can never permit something the mounts deny
-  (and vice-versa).
+  There is **no host-side emulation** of `read`, `stat`, or `glob`: all three
+  execute a command inside bwrap via `ShellCmd.execute_raw/5`, so their bytes
+  and metadata come from exactly the mounts bwrap exposes and can never
+  disagree with what a shell inside the sandbox sees. The only path mapping
+  that remains is the scratch bind source and the reported sandbox spelling,
+  both defined once in `Nest.Sandbox.Paths`.
+
+  The agent-facing path domain is the *sandbox* domain: the space scratch dir
+  is bound at `/tmp`, so an agent's own scratch directory is
+  `/tmp/<agent-name>/...`. Every public executor accepts and returns paths in
+  that domain only. The host scratch spelling
+  (`/tmp/nest-<ospid>/space-<id>/<agent>/...`) is internal to this module and
+  must never reach the LLM.
 
   ## bwrap argument builder
 
-  `build/3` and `build/4` translate caps into a bwrap command line.
+  `build/3`, `build/4`, and `build/5` translate caps into a bwrap command line.
   Paths are canonicalized (symlinks resolved) for bind *mounts* so a
-  symlink-traversing workspace binds to its real target; `--chdir`
-  stays on the user-provided path so the LLM and tools keep addressing
-  files exactly as the user gave them.
+  symlink-traversing workspace binds to its real target; `--chdir` stays on
+  the user-provided path so the LLM and tools keep addressing files exactly as
+  the user gave them.
+
+  A workspace at or under `/tmp` is rejected **unconditionally**: the scratch
+  dir is bound at `/tmp`, so it would shadow the workspace and every
+  read/stat/glob would silently resolve against the wrong tree. A missing
+  workspace is rejected too (bwrap never creates one). A `nil` workspace means
+  "no workspace": no workspace bind, and the sandbox chdirs to the scratch root
+  (`/tmp`) when one is bound.
 
   ## Executors
 
-  The agent-facing path domain is the *sandbox* domain: the space
-  scratch dir is bound at `/tmp`, so an agent's own scratch directory
-  is `/tmp/<agent-name>/...`. Every public executor accepts and returns
-  paths in that domain only.
+  `read/4` runs `cat -- <path>` inside bwrap, `stat/5` runs
+  `stat -L -c '%s|%Y|%f'`, and `glob/5` runs a bash glob loop. `write/5` and
+  `run/5` go through `ShellCmd` too, so write/execute permissions are enforced
+  by the mounts.
 
-  `read/4` runs `cat -- <path>` inside bwrap via
-  `ShellCmd.execute_raw/5`, so the bytes come from exactly the mounts
-  bwrap exposes and the host spelling of the scratch dir is never
-  computed or named by a caller.
-
-  `stat/4` and `glob/5` keep a host fast-path, but it is a private
-  implementation detail of this module: `Nest.Sandbox.Paths.to_host/3`
-  maps a sandbox path onto its host backing path using the *same*
-  `Nest.Sandbox.Paths.scratch_root/1` that `append_tmp_bind/2` uses for
-  the `/tmp` mount, and `to_sandbox/2` maps results back. Because the
-  mount and the translation derive from one definition, a bind-layout
-  change cannot silently make a stat/glob read the wrong file.
-
-  **Host paths must never escape this module.** The host scratch
-  spelling (`/tmp/nest-<ospid>/space-<id>/<agent>/...`) is an internal
-  detail; the LLM must only ever see sandbox paths (`/tmp/<agent>/...`).
-  Every point where a host path is used carries a comment restating
-  this rule.
-
-  `write/5` and `run/5` go through bwrap (`ShellCmd`), so
-  write/execute permissions are enforced by the mounts.
+  On failure, `read/4`, `stat/5`, and `glob/5` classify bwrap's stderr into an
+  error atom: bwrap setup failures (`:sandbox_setup_failed`), timeouts
+  (`:read_timeout`), cancellation (`:read_cancelled`), permission denials
+  (`:read_permission_denied`), missing paths (`:enoent`), and directories passed
+  to a file read (`:eisdir`). Unexpected failures are logged; ordinary tool
+  outcomes are not.
 
   ## Caps shape
 
-  Caps are a raw map matching the JSONB shape stored on
-  `Vocation.modes`:
+  Caps are a raw map matching the JSONB shape stored on `Vocation.modes`:
 
       %{
         "net" => boolean(),
@@ -66,42 +63,46 @@ defmodule Nest.Sandbox do
         "shell" => %{"background" => non_neg_integer()}
       }
 
-  * `"net"` — when `true`, the sandbox shares the host's network
-    namespace (`--share-net`); when `false`, network is unshared.
-  * `"fs.read"` — must include `"/"` to run any command. `["/"]`
-    produces `--ro-bind / /`.
+  * `"net"` — when `true`, the sandbox shares the host's network namespace
+    (`--share-net`); when `false`, network is unshared.
+  * `"fs.read"` — must include `"/"` to run any command. `["/"]` produces
+    `--ro-bind / /`.
   * `"fs.write"` — the explicit list of paths bound read-write. The
-    `":workspace"` and `"/tmp"` entries are symbolic (resolved to the
-    canonical workspace and the space's scratch dir); any other path
-    is bound at its canonical path. Anything not in the write list
-    stays read-only via `--ro-bind / /`.
-  * `"shell.background"` (optional) — the per-agent ceiling on
-    concurrent background shell jobs (default 1; 0 disables). Set by a
-    project's `.nest` `[shell] background`. Enforced by
-    `Nest.Sandbox.ShellJobs`, not by the mounts.
+    `":workspace"` and `"/tmp"` entries are symbolic (resolved to the canonical
+    workspace and the space's scratch dir); any other path is bound at its
+    canonical path. Anything not in the write list stays read-only via
+    `--ro-bind / /`. The symbolic `"/tmp"` entry is what makes the agent's
+    scratch dir writable; with no scratch dir to honor it, `/tmp` stays the
+    read-only host `/tmp` and a write there fails at the kernel like any other
+    write outside the write list.
+  * `"shell.background"` (optional) — the per-agent ceiling on concurrent
+    background shell jobs (default 1; 0 disables). Set by a project's `.nest`
+    `[shell] background`. Enforced by `Nest.Sandbox.ShellJobs`, not by the
+    mounts.
 
   ## Missing paths
 
-  A non-existent workspace is rejected before bwrap runs (bwrap never
-  creates it). A non-existent `fs.write` path fails at bwrap time as a
-  missing source rather than being created: any operation that would
-  fail on a missing directory fails, it is never auto-created.
+  A non-existent workspace is rejected before bwrap runs (bwrap never creates
+  it). A non-existent `fs.write` path fails at bwrap time as a missing source
+  rather than being created: any operation that would fail on a missing
+  directory fails, it is never auto-created.
 
   ## Device passthrough / HPU
 
-  bwrap runs with `--unshare-all` and a fresh `--dev` devtmpfs by
-  default. On a host with Habana Gaudi (HPU) devices, the sandbox
-  instead binds the host's `/dev` with `--dev-bind` (a fresh devtmpfs
-  has no accelerator nodes) and binds `Hardware.habana_log_dir/0`
-  read-write (the driver logs there and the path is read-only under the
-  root `--ro-bind / /`). Everything else about the sandbox is unchanged.
+  bwrap runs with `--unshare-all` and a fresh `--dev` devtmpfs by default. On a
+  host with Habana Gaudi (HPU) devices, the sandbox instead binds the host's
+  `/dev` with `--dev-bind` (a fresh devtmpfs has no accelerator nodes) and
+  binds `Hardware.habana_log_dir/0` read-write (the driver logs there and the
+  path is read-only under the root `--ro-bind / /`). Everything else about the
+  sandbox is unchanged.
   """
+
+  import Bitwise
 
   alias Nest.FSPath
   alias Nest.Hardware
-  alias Nest.Sandbox.{Caps, Glob, Paths}
-  alias Nest.Tools.ShellCmd
-  alias Nest.Tools.ShellEscape
+  alias Nest.Sandbox.{Caps, Failure, Glob, Paths}
+  alias Nest.Tools.{ShellCmd, ShellEscape}
 
   @doc """
   The default "build" profile (full host read, workspace + /tmp
@@ -122,10 +123,9 @@ defmodule Nest.Sandbox do
   @doc """
   Build bwrap args using `default_caps/0`.
   """
-  @spec build_default(String.t(), String.t() | nil) :: {:ok, [String.t()]}
+  @spec build_default(String.t(), String.t() | nil) :: {:ok, [String.t()]} | {:error, String.t()}
   def build_default(workspace_path, tmp_path) do
-    {:ok, args} = build(default_caps(), workspace_path, tmp_path)
-    {:ok, args}
+    build(default_caps(), workspace_path, tmp_path)
   end
 
   @doc """
@@ -133,7 +133,7 @@ defmodule Nest.Sandbox do
   path. The workspace is bound at its canonical (symlink-resolved)
   path and `--chdir` targets `workspace_path` (the user-provided path).
   """
-  @spec build(map(), String.t(), String.t() | nil) ::
+  @spec build(map(), String.t() | nil, String.t() | nil) ::
           {:ok, [String.t()]} | {:error, String.t()}
   def build(caps, workspace_path, tmp_path) do
     build(caps, workspace_path, tmp_path, workspace_path)
@@ -148,7 +148,7 @@ defmodule Nest.Sandbox do
   Habana log dir exists when we're on an HPU host, then delegates to
   `build/5`.
   """
-  @spec build(map(), String.t(), String.t() | nil, String.t()) ::
+  @spec build(map(), String.t() | nil, String.t() | nil, String.t() | nil) ::
           {:ok, [String.t()]} | {:error, String.t()}
   def build(caps, workspace_path, tmp_path, chdir_path) do
     hpu_device_paths = Hardware.hpu_device_paths()
@@ -168,10 +168,11 @@ defmodule Nest.Sandbox do
   global `:hpu_device_paths` config. Unlike `build/4`, this arity does
   not ensure the log dir exists.
   """
-  @spec build(map(), String.t(), String.t() | nil, String.t(), [String.t()]) ::
+  @spec build(map(), String.t() | nil, String.t() | nil, String.t() | nil, [String.t()]) ::
           {:ok, [String.t()]} | {:error, String.t()}
   def build(caps, workspace_path, tmp_path, chdir_path, hpu_device_paths) do
-    with :ok <- validate_caps(caps) do
+    with :ok <- validate_caps(caps),
+         :ok <- validate_workspace(workspace_path) do
       Nest.ProjectConfig.ensure_dirs(caps)
 
       args =
@@ -179,10 +180,10 @@ defmodule Nest.Sandbox do
         |> append_net_flag(caps)
         |> append_workspace_bind(caps, workspace_path)
         |> append_write_binds(caps, workspace_path)
-        |> append_tmp_bind(tmp_path)
+        |> append_tmp_bind(tmp_path, caps)
         |> append_project_binds(caps)
         |> append_protected_binds(caps)
-        |> append_chdir(chdir_path)
+        |> append_chdir(chdir_path, tmp_path)
 
       {:ok, args}
     end
@@ -194,8 +195,6 @@ defmodule Nest.Sandbox do
   @spec validate_caps(map()) :: :ok | {:error, String.t()}
   defdelegate validate_caps(caps), to: Caps, as: :validate
 
-  # ---- Rule helpers (shared single source of truth) ----
-
   @doc """
   The canonical host paths the sandbox exposes read-only (from
   `caps.fs.read`).
@@ -203,66 +202,6 @@ defmodule Nest.Sandbox do
   @spec readable_roots(map()) :: [String.t()]
   def readable_roots(caps) do
     caps |> read_list() |> Enum.map(&FSPath.canonical/1) |> Enum.uniq()
-  end
-
-  @doc """
-  The canonical host paths the sandbox exposes read-write: the
-  canonical workspace (when `:workspace` is in the write list) plus
-  each extra `fs.write` path, canonicalized and deduplicated. The
-  `"/tmp"` entry is excluded here because it is bound at `/tmp` inside
-  the sandbox, not at a user-facing host path: the space's scratch
-  directory is bound there by `append_tmp_bind/2` (derived from the
-  agent's `tmp_path`, not from caps), so it is not a path a caller
-  addresses directly.
-  """
-  @spec writable_roots(map(), String.t() | nil) :: [String.t()]
-  def writable_roots(caps, workspace) do
-    writes = write_list(caps)
-
-    workspace_root =
-      if ":workspace" in writes and is_binary(workspace),
-        do: [FSPath.canonical(workspace)],
-        else: []
-
-    extras =
-      writes |> Enum.reject(&(&1 in [":workspace", "/tmp"])) |> Enum.map(&FSPath.canonical/1)
-
-    project = caps |> project_list() |> Enum.map(& &1["dest"])
-    protected = caps |> protected_list() |> Enum.map(& &1["path"])
-
-    (workspace_root ++ extras ++ project)
-    |> Enum.reject(&(&1 in protected))
-    |> Enum.uniq()
-  end
-
-  @doc """
-  True when `path` is readable under `caps` — i.e. its canonical path
-  lies beneath a readable root. Produces the same result bwrap's
-  read-only binds would.
-  """
-  @spec read_allowed?(String.t(), map()) :: boolean()
-  def read_allowed?(path, caps) do
-    canonical = FSPath.canonical(path)
-
-    roots =
-      readable_roots(caps) ++
-        Enum.map(project_list(caps), & &1["dest"]) ++
-        Enum.map(protected_list(caps), & &1["path"])
-
-    Enum.any?(roots, &FSPath.under?(&1, canonical))
-  end
-
-  @doc """
-  True when `path` is writable under `caps` — i.e. its canonical path
-  lies beneath a writable root (canonical workspace or an extra write
-  path). Produces the same result bwrap's read-write binds would.
-  """
-  @spec write_allowed?(String.t(), map(), String.t() | nil) :: boolean()
-  def write_allowed?(path, caps, workspace) do
-    canonical = FSPath.canonical(path)
-
-    not protected?(canonical, caps) and
-      Enum.any?(writable_roots(caps, workspace), &FSPath.under?(&1, canonical))
   end
 
   @doc """
@@ -279,7 +218,7 @@ defmodule Nest.Sandbox do
   back; the host backing path is internal to this module.
   """
   @spec sandbox_tmp_path(String.t()) :: String.t()
-  def sandbox_tmp_path(tmp_path), do: Path.join("/tmp", Path.basename(tmp_path))
+  defdelegate sandbox_tmp_path(tmp_path), to: Paths
 
   # ---- Executors ----
 
@@ -295,19 +234,16 @@ defmodule Nest.Sandbox do
   @spec read(String.t(), map(), String.t() | nil, String.t() | nil) ::
           {:ok, binary()} | {:error, atom() | term()}
   def read(path, caps, workspace, tmp_path) do
-    command = "cat -- " <> ShellEscape.escape(path)
-
-    # HOST PATH: `workspace` is the optional host workspace to bind into the
-    # sandbox. Drop it when it isn't a directory so a missing workspace can't
-    # raise here; it is only used to build the sandbox and is never returned.
-    workspace = if is_binary(workspace) and File.dir?(workspace), do: workspace, else: nil
+    command = "LC_ALL=C cat -- " <> ShellEscape.escape(path)
 
     case ShellCmd.execute_raw(command, workspace, tmp_path, caps) do
       {:ok, 0, stdout, _stderr} ->
         {:ok, stdout}
 
-      {:ok, _exit_code, _stdout, _stderr} ->
-        {:error, classify_read_failure(path, caps, workspace, tmp_path)}
+      {:ok, _exit_code, _stdout, stderr} ->
+        reason = Failure.classify(stderr)
+        Failure.log(:read, path, reason, stderr)
+        {:error, reason}
 
       {:error, reason} ->
         {:error, reason}
@@ -315,115 +251,65 @@ defmodule Nest.Sandbox do
   end
 
   @doc """
-  Stat `path` (a sandbox-domain path) after authorizing it via
-  `read_allowed?/2`. Keeps a host fast-path, but the host path is computed
-  by `Nest.Sandbox.Paths.to_host/3` from the same bind definition as the
-  `/tmp` mount and never leaves this module. `opts` are passed to
-  `File.stat/2` (e.g. `time: :posix`). Returns `{:ok, stat}`,
-  `{:error, reason}`, or `{:error, :read_permission_denied}`.
+  Stat `path` (a sandbox-domain path) inside the bwrap sandbox.
+
+  Runs `stat -L -c '%s|%Y|%f'` through `ShellCmd.execute_raw/5` and returns a
+  partial `%File.Stat{}`: `size`, `type`, and `mode` are populated; `mtime` is
+  a POSIX integer when `opts` requests `time: :posix` and a
+  `{{y, m, d}, {h, mi, s}}` tuple otherwise. The remaining `%File.Stat{}`
+  fields are `nil` — no consumer reads them.
+
+  Returns `{:ok, stat}`, `{:error, reason}`, or
+  `{:error, :read_permission_denied}`.
   """
   @spec stat(String.t(), map(), String.t() | nil, String.t() | nil, keyword()) ::
           {:ok, File.Stat.t()} | {:error, atom() | term()}
   def stat(path, caps, workspace, tmp_path, opts \\ []) do
-    # HOST PATH: computed here, used only for the `File.stat/2` below, and
-    # never returned. The LLM must only ever see the sandbox spelling.
-    host = Paths.to_host(path, workspace, tmp_path)
+    command = "LC_ALL=C stat -L -c '%s|%Y|%f' -- " <> ShellEscape.escape(path)
 
-    if read_permitted?(host, caps, tmp_path) do
-      File.stat(Nest.ProjectConfig.read_source(host, caps), opts)
-    else
-      {:error, :read_permission_denied}
+    case ShellCmd.execute_raw(command, workspace, tmp_path, caps) do
+      {:ok, 0, stdout, _stderr} ->
+        parse_stat(stdout, opts)
+
+      {:ok, _exit_code, _stdout, stderr} ->
+        reason = Failure.classify(stderr)
+        Failure.log(:stat, path, reason, stderr)
+        {:error, reason}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
-
-  # True when a HOST path is readable under the caps, or lives in the agent's
-  # scratch bind root (which bwrap always exposes read-write, regardless of
-  # the mode's read list). The host path stays internal to this module.
-  defp read_permitted?(host, caps, tmp_path) do
-    read_allowed?(host, caps) or
-      (is_binary(tmp_path) and FSPath.under?(Paths.scratch_root(tmp_path), host))
-  end
-
-  # Classify a failed sandbox read for the caller's error message. `path` is
-  # the sandbox-domain path; `Paths.to_host/3` yields the HOST backing path,
-  # which is kept internal and never returned.
-  defp classify_read_failure(path, caps, workspace, tmp_path) do
-    host = Paths.to_host(path, workspace, tmp_path)
-
-    cond do
-      not read_permitted?(host, caps, tmp_path) -> :read_permission_denied
-      not File.exists?(host) -> :enoent
-      true -> :read_failed
-    end
-  end
-
-  # Hard ceiling on how many files `glob/5` will expand. A glob is a
-  # scatter target (e.g. `agents-batch`); an unbounded match count would
-  # fork unbounded children, so we cap expansion and surface a
-  # `:glob_too_broad` error so a caller can tell the model to narrow it.
-  @glob_limit 1_000
 
   @doc """
   Expand a glob `pattern` (a sandbox-domain path) to readable regular
-  files, honoring the same read caps as `read/4`. The pattern is resolved
-  against `workspace` (an absolute pattern is used as-is), expanded via a
-  host fast-path, filtered to regular files whose canonical path is
-  readable under `caps`, then returned sorted and deduplicated **in the
-  sandbox spelling** (`/tmp/<agent>/...`). The host spelling never leaves
-  this module.
+  files by running a bash glob loop inside bwrap. Because the glob runs
+  inside the sandbox, it sees exactly the mounts bwrap exposes — including
+  the `/tmp` scratch bind and any project mounts — and returns the matches
+  in the sandbox spelling (`/tmp/<agent>/...`). The host spelling never
+  leaves this module.
 
-  Glob metacharacters: `*` (any run of non-`/` chars), `?` (one
-  non-`/` char), and `**` (any run of path segments, including none —
-  matched across directory boundaries when it occupies a full segment).
+  Glob metacharacters: `*` (any run of non-`/` chars), `?` (one non-`/`
+  char), and `**` (any run of path segments when it occupies a full
+  segment). A pattern ending in a full-segment `**` is refused
+  (`{:error, :glob_terminal_double_star}`): bash would eagerly expand the
+  whole subtree, and the file-only filter would then apply recursively
+  rather than to the matched directories.
 
-  `opts` accepts `limit:` (default `@glob_limit`), the max number of
-  files the pattern may match before the call returns
-  `{:error, :glob_too_broad}` (so a scatter caller can ask the model to
-  narrow the pattern rather than fork an unbounded set). A resolve
-  failure for a relative pattern with no workspace returns
-  `{:error, reason}`.
+  `opts` accepts `limit:` (default 1 000), the max number of raw matches the
+  pattern may produce before the call returns `{:error, :glob_too_broad}` (so a
+  scatter caller can ask the model to narrow the pattern rather than fork an
+  unbounded set). A resolve failure for a relative pattern with no workspace
+  returns `{:error, reason}`.
+
+  Runs inside bwrap and returns matches in the sandbox spelling; see
+  `Nest.Sandbox.Glob`.
   """
   @spec glob(String.t(), map(), String.t() | nil, String.t() | nil, keyword()) ::
           {:ok, [String.t()]} | {:error, atom() | term()}
   def glob(pattern, caps, workspace, tmp_path, opts \\ [])
       when is_binary(pattern) and is_map(caps) do
-    limit = Keyword.get(opts, :limit, @glob_limit)
-
-    with {:ok, full} <- FSPath.resolve(pattern, workspace) do
-      # `Glob.walk/3` `throw`s `:glob_too_broad` when the match count
-      # exceeds the limit (unwinding the recursion early). The per-segment
-      # matcher is total (it never raises on a malformed pattern), so this
-      # `:error` arm is a defensive backstop: translate any unexpected error
-      # into a `:invalid_glob` result rather than crashing the agent's tool
-      # worker. `e` may be a raw (non-exception) term, so `inspect` it.
-      try do
-        {:ok, collect_matches(full, caps, workspace, tmp_path, limit)}
-      catch
-        :throw, :glob_too_broad -> {:error, :glob_too_broad}
-        :error, e -> {:error, {:invalid_glob, inspect(e)}}
-      end
-    end
-  end
-
-  # Expand a resolved absolute glob `full` (sandbox spelling) to readable
-  # regular files in the sandbox spelling: translate the literal base to its
-  # HOST backing path, walk the host, keep only readable regular files, then
-  # translate every match back. `Glob.walk/3` may `throw` `:glob_too_broad`
-  # from here (propagated to the caller's `catch`).
-  #
-  # HOST PATH: the translated base and walked matches are host spellings and
-  # must not escape this module (see the moduledoc).
-  defp collect_matches(full, caps, workspace, tmp_path, limit) do
-    {base, rest} = Glob.split(full)
-
-    base
-    |> Paths.to_host(workspace, tmp_path)
-    |> FSPath.canonical()
-    |> Glob.walk(rest, limit)
-    |> Enum.filter(fn host -> File.regular?(host) and read_permitted?(host, caps, tmp_path) end)
-    |> Enum.map(&Paths.to_sandbox(&1, tmp_path))
-    |> Enum.sort()
-    |> Enum.uniq()
+    Glob.run(pattern, caps, workspace, tmp_path, opts)
   end
 
   @doc """
@@ -439,10 +325,10 @@ defmodule Nest.Sandbox do
 
   @doc """
   Write `content` to `path` inside the bwrap sandbox. Write
-  permissions are enforced by the bind mounts (which are derived from
-  `writable_roots/2`), so a write outside the permitted paths fails at
-  the kernel level (read-only file system) rather than being
-  pre-authorized here. Returns `{:ok, output}` or `{:error, reason}`.
+  permissions are enforced by the bind mounts, so a write outside the
+  permitted paths fails at the kernel level (read-only file system)
+  rather than being pre-authorized here. Returns `{:ok, output}` or
+  `{:error, reason}`.
   """
   @spec write(String.t(), binary(), map(), String.t() | nil, String.t() | nil) ::
           {:ok, String.t()} | {:error, String.t()}
@@ -456,7 +342,94 @@ defmodule Nest.Sandbox do
     )
   end
 
-  # ---- Internal arg-builder helpers ----
+  # ---- stat ----
+
+  defp parse_stat(stdout, opts) do
+    case stdout |> String.trim() |> String.split("|") do
+      [size, mtime, mode] ->
+        mode = String.to_integer(mode, 16)
+
+        {:ok,
+         %File.Stat{
+           size: String.to_integer(size),
+           mtime: format_mtime(String.to_integer(mtime), opts),
+           mode: mode,
+           type: type_from_mode(mode)
+         }}
+
+      _ ->
+        {:error, :read_failed}
+    end
+  end
+
+  defp format_mtime(seconds, opts) do
+    if Keyword.get(opts, :time) == :posix do
+      seconds
+    else
+      seconds
+      |> Kernel.+(62_167_219_200)
+      |> :calendar.gregorian_seconds_to_datetime()
+      |> :calendar.universal_time_to_local_time()
+    end
+  end
+
+  defp type_from_mode(mode) do
+    case band(mode, 0xF000) do
+      0x8000 -> :regular
+      0x4000 -> :directory
+      0xA000 -> :symlink
+      0x2000 -> :device
+      0x6000 -> :device
+      _ -> :other
+    end
+  end
+
+  # ---- workspace policy ----
+
+  @doc """
+  Validate an agent workspace path.
+
+  Returns `:ok`, `{:error, :workspace_missing}` (the path is not an existing
+  directory), or `{:error, :workspace_under_tmp}` (the path is at or under
+  `#{Paths.sandbox_root()}`, which the scratch bind shadows). `nil` means "no
+  workspace" and is always `:ok`; whether a workspace is *required* is the
+  caller's policy (see `Nest.Vocations.requires_workspace?/1`).
+  """
+  @spec workspace_error(String.t() | nil) ::
+          :ok | {:error, :workspace_missing | :workspace_under_tmp}
+  def workspace_error(nil), do: :ok
+
+  def workspace_error(workspace) when is_binary(workspace) do
+    cond do
+      FSPath.under?(Paths.sandbox_root(), FSPath.canonical(workspace)) ->
+        {:error, :workspace_under_tmp}
+
+      not File.dir?(workspace) ->
+        {:error, :workspace_missing}
+
+      true ->
+        :ok
+    end
+  end
+
+  # The final gate for anything that reaches the sandbox. A workspace at or
+  # under the scratch bind's mount point (`/tmp`) would be shadowed, and a
+  # non-existent workspace cannot be bound, so both are rejected here
+  # unconditionally.
+  defp validate_workspace(workspace) do
+    case workspace_error(workspace) do
+      :ok ->
+        :ok
+
+      {:error, :workspace_under_tmp} ->
+        {:error,
+         "workspace must not be at or under #{Paths.sandbox_root()}: " <>
+           "the sandbox scratch dir is bound there and would shadow it"}
+
+      {:error, :workspace_missing} ->
+        {:error, "Workspace directory does not exist: #{workspace}"}
+    end
+  end
 
   defp base_args(caps, hpu_device_paths) do
     read_args =
@@ -571,18 +544,26 @@ defmodule Nest.Sandbox do
   # file path handed from one agent to a sibling resolves for the
   # recipient. The agent's own dir appears at `/tmp/<agent-name>` inside.
   #
-  # HOST PATH: `Paths.scratch_root/1` yields the host bind source — the same
-  # definition the stat/glob translation uses. It must not escape this
-  # module or be named to the agent (see the moduledoc).
-  defp append_tmp_bind(args, nil), do: args
+  # The scratch is writable only when the mode grants the symbolic `"/tmp"`
+  # write; otherwise it is bound read-only, so a read-only mode's scratch stays
+  # readable at `/tmp/<agent>` but cannot be written through the sandbox. A
+  # `nil` tmp_path means no scratch bind at all.
+  #
+  # HOST PATH: `Paths.scratch_root/1` yields the host bind source. It must not
+  # escape this module or be named to the agent (see the moduledoc).
+  defp append_tmp_bind(args, nil, _caps), do: args
 
-  defp append_tmp_bind(args, tmp_path) do
-    args ++ ["--bind", Paths.scratch_root(tmp_path), "/tmp"]
+  defp append_tmp_bind(args, tmp_path, caps) do
+    flag = if "/tmp" in write_list(caps), do: "--bind", else: "--ro-bind"
+    args ++ [flag, Paths.scratch_root(tmp_path), Paths.sandbox_root()]
   end
 
-  defp append_chdir(args, chdir_path) do
-    args ++ ["--chdir", chdir_path]
-  end
+  # `nil` chdir means "no workspace": land in the scratch root when one is
+  # bound (the effective cwd before the workspace was made explicit), else
+  # the read-only root.
+  defp append_chdir(args, nil, nil), do: args ++ ["--chdir", "/"]
+  defp append_chdir(args, nil, _tmp_path), do: args ++ ["--chdir", Paths.sandbox_root()]
+  defp append_chdir(args, chdir_path, _tmp_path), do: args ++ ["--chdir", chdir_path]
 
   defp read_list(caps), do: get_in(caps, ["fs", "read"]) || []
 
@@ -591,8 +572,4 @@ defmodule Nest.Sandbox do
   defp project_list(caps), do: get_in(caps, ["fs", "project"]) || []
 
   defp protected_list(caps), do: get_in(caps, ["fs", "protected"]) || []
-
-  defp protected?(canonical, caps) do
-    Enum.any?(protected_list(caps), fn p -> FSPath.under?(p["path"], canonical) end)
-  end
 end

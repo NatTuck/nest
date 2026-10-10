@@ -359,10 +359,12 @@ defmodule Nest.Spaces do
   end
 
   defp ensure_workspace_for(%Nest.Vocations.Vocation{} = vocation, attrs) do
-    if Vocations.requires_workspace?(vocation) and is_nil(attrs[:workspace_path]) do
+    workspace = attrs[:workspace_path]
+
+    if Vocations.requires_workspace?(vocation) and is_nil(workspace) do
       {:error, :workspace_required}
     else
-      :ok
+      Nest.Sandbox.workspace_error(workspace)
     end
   end
 

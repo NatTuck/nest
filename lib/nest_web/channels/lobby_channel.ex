@@ -140,8 +140,7 @@ defmodule NestWeb.LobbyChannel do
          socket}
 
       {:error, reason} ->
-        Logger.error("Failed to create space: #{inspect(reason)}")
-        {:reply, {:error, %{"reason" => "failed_to_create"}}, socket}
+        {:reply, AgentErrors.create_payload(reason), socket}
     end
   end
 

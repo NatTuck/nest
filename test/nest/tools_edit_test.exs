@@ -185,24 +185,31 @@ defmodule Nest.ToolsEditTest do
   end
 
   setup do
-    # Use a unique tmp directory per test so parallel tests don't
-    # collide on the same file path. The %{} returns the context
-    # map (with `tmp:` key) injected into each test.
-    dir = Path.join(System.tmp_dir!(), "nest_edit_test_#{System.unique_integer([:positive])}")
+    # A workspace outside /tmp (the scratch dir is bound at /tmp, so a
+    # /tmp-rooted workspace is rejected). Unique per test so parallel tests
+    # don't collide on the same file path.
+    dir =
+      Path.join([
+        File.cwd!(),
+        "_build",
+        "tmp",
+        "nest_edit_test_#{System.unique_integer([:positive])}"
+      ])
+
     File.mkdir_p!(dir)
     on_exit(fn -> File.rm_rf!(dir) end)
     %{tmp: dir}
   end
 
   # Helper to invoke a tool's function with the given args, using
-  # permissive sandbox caps that allow the test's tmp dir for both
+  # permissive sandbox caps that allow the test's workspace for both
   # read and write. Tools get `caps` from their `context` arg.
   defp invoke(%Function{function: fun}, args) do
     fun.(args, %{
       caps: %{
         "fs" => %{
           "read" => ["/"],
-          "write" => ["/tmp", "/", ":workspace"]
+          "write" => ["/", ":workspace"]
         },
         "net" => true
       }
