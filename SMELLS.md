@@ -16,6 +16,13 @@ Here are some things to watch for in code reviews:
 - Avoid useless delegation or abstraction.
   - A helper function that just calls a function in another module should
   typically be eliminated in favor of just calling the function directly.
+- **A `refute` against captured log output, and any capture nobody asserts on.**
+  `capture_log` is *not* process-scoped: it collects every process's logs in
+  the window (other tests' agents, Tasks from earlier tests still shutting
+  down) *and* swallows prints the code is not supposed to make. So an absence
+  assertion there flakes and tests nothing, and an unasserted capture can only
+  hide prints — the "tests must not print" rule cannot be enforced through a
+  capture. Both fail review, every time — see "Testing" below.
 
 OTP Usage:
 
@@ -37,6 +44,27 @@ outside of that).
 
 Testing:
 
+- **Never assert the *absence* of a log line against `capture_log` output** —
+  no `refute log =~ ...`, no `assert log == ""`, and no filtered version of
+  either. `capture_log` captures globally, not per process, so such an
+  assertion can be tripped by any concurrent test's logging (or by a Task from
+  an earlier test still shutting down) while never actually testing the
+  subject it names. It has already cost us a flaky suite run.
+  - Assert the **positive observable** instead: the message the peer received,
+    the broadcast, the process/registry/DB state. If a log line's absence is
+    the only observable, the property is not assertable — say so in a comment
+    instead of pretending to test it.
+  - **A capture is a mask.** `capture_log` swallows *every* line in the window,
+    so it also hides prints the code is not supposed to make at all — which
+    means the "tests must not print to the console" rule cannot be enforced
+    through a capture. So: never capture merely to silence output. A capture
+    whose result is unused is a bug, because it can only hide prints. A capture
+    must assert on the line it expects (`assert log =~ ...`), and even then it
+    is no evidence that nothing *else* printed. Prefer asserting on the real
+    observable and not capturing at all — if a test captures only to keep the
+    output quiet, that is a sign the code should not be logging there.
+  - `capture_io` *is* process-scoped (it swaps the calling process's group
+    leader), so `capture_io` is fine for both presence and absence assertions.
 - Sleeps in tests are strictly disallowed.
 - Timeouts in tests should be as low as possible. Typically 50ms, absolutely
 no more than 500ms unless there are comments describing the concrete timings

@@ -18,6 +18,7 @@ import { useStore } from "../store";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import { createSpace, rescanModels, suggestSpaceName } from "../channels";
 import { RescanButton } from "../components/RescanButton";
+import { describeCreateError } from "../utils/chatErrors.js";
 import { vocationRequiresWorkspace } from "../utils/vocationWorkspace";
 import {
   resolveThinkingOptions,
@@ -123,7 +124,7 @@ export function NewSpacePage() {
         navigate(`/space/${encodeURIComponent(resp.slug)}`);
       },
       (err) => {
-        setError(err.message || "Failed to create space");
+        setError(describeCreateError(err));
         setIsCreating(false);
       },
       {

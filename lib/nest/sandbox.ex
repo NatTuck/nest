@@ -72,8 +72,9 @@ defmodule Nest.Sandbox do
     workspace and the space's scratch dir); any other path is bound at its
     canonical path. Anything not in the write list stays read-only via
     `--ro-bind / /`. The symbolic `"/tmp"` entry is what makes the agent's
-    scratch writable; without a scratch dir it cannot be honored, so a write to
-    `/tmp` fails with a clear error rather than silently doing nothing.
+    scratch dir writable; with no scratch dir to honor it, `/tmp` stays the
+    read-only host `/tmp` and a write there fails at the kernel like any other
+    write outside the write list.
   * `"shell.background"` (optional) — the per-agent ceiling on concurrent
     background shell jobs (default 1; 0 disables). Set by a project's `.nest`
     `[shell] background`. Enforced by `Nest.Sandbox.ShellJobs`, not by the
@@ -332,15 +333,13 @@ defmodule Nest.Sandbox do
   @spec write(String.t(), binary(), map(), String.t() | nil, String.t() | nil) ::
           {:ok, String.t()} | {:error, String.t()}
   def write(path, content, caps, workspace, tmp_path) do
-    with :ok <- validate_scratch_write(path, caps, tmp_path) do
-      ShellCmd.execute(
-        "cat > #{ShellEscape.escape(path)}",
-        workspace,
-        tmp_path,
-        caps,
-        stdin: content
-      )
-    end
+    ShellCmd.execute(
+      "cat > #{ShellEscape.escape(path)}",
+      workspace,
+      tmp_path,
+      caps,
+      stdin: content
+    )
   end
 
   # ---- stat ----
@@ -431,21 +430,6 @@ defmodule Nest.Sandbox do
         {:error, "Workspace directory does not exist: #{workspace}"}
     end
   end
-
-  # `fs.write` lists `/tmp` (the symbolic scratch grant) but this call has no
-  # scratch dir to honor it. Fail loudly with the real reason rather than let
-  # the write land on the read-only host `/tmp` and surface as a kernel error.
-  defp validate_scratch_write(path, caps, nil) do
-    if "/tmp" in write_list(caps) and FSPath.under?(Paths.sandbox_root(), Path.expand(path)) do
-      {:error,
-       "caps.fs.write lists #{Paths.sandbox_root()} but this agent has no scratch " <>
-         "directory, so #{Paths.sandbox_root()} cannot be written"}
-    else
-      :ok
-    end
-  end
-
-  defp validate_scratch_write(_path, _caps, _tmp_path), do: :ok
 
   defp base_args(caps, hpu_device_paths) do
     read_args =

@@ -155,25 +155,33 @@ defmodule Nest.SandboxHostPathTest do
              Sandbox.read(nest, caps, ctx.workspace, ctx.tmp_path)
   end
 
-  test "reading a directory is :eisdir and is not logged", ctx do
+  test "reading a directory is :eisdir", ctx do
     dir = Path.join(ctx.workspace, "a-dir")
     File.mkdir_p!(dir)
 
-    log =
-      capture_log(fn ->
-        assert {:error, :eisdir} = Sandbox.read(dir, ctx.caps, ctx.workspace, ctx.tmp_path)
-      end)
-
-    # A directory read is an ordinary tool outcome; nothing named `eisdir`
-    # should be logged (the only way it could appear is our own classifier).
-    refute log =~ "eisdir"
+    # A directory read is an ordinary tool outcome, so the classifier reports it
+    # without logging. That quiet half of the policy is deliberately not
+    # asserted — a `refute` on captured logs is unsound (`capture_log` collects
+    # every process's logs) — and the loud half is asserted positively by the
+    # sandbox-setup-failure test above.
+    assert {:error, :eisdir} = Sandbox.read(dir, ctx.caps, ctx.workspace, ctx.tmp_path)
   end
 
-  test "writing a scratch path with no scratch dir is an explicit error", ctx do
-    # default_caps grants the symbolic /tmp write, but there is no scratch dir
-    # to honor it. A write to /tmp fails loudly; a workspace write is fine.
-    assert {:error, msg} = Sandbox.write("/tmp/thing.txt", "x", ctx.caps, ctx.workspace, nil)
-    assert msg =~ "no scratch"
+  test "a /tmp write with no scratch dir is refused by the mount, not by a host check", ctx do
+    # `default_caps` grants the symbolic /tmp write, but there is no scratch dir
+    # to honor it, so /tmp stays the read-only host /tmp. The refusal comes from
+    # the mount: bwrap is the only validator for what a path may do.
+    log =
+      capture_log(fn ->
+        assert {:error, msg} =
+                 Sandbox.write("/tmp/thing.txt", "x", ctx.caps, ctx.workspace, nil)
+
+        # The kernel's read-only failure, not a Nest-authored message. Assert
+        # the exit code rather than the (locale-dependent) kernel text.
+        assert msg =~ "Exit code"
+      end)
+
+    assert log =~ "bwrap exited non-zero"
 
     assert {:ok, _} =
              Sandbox.write(Path.join(ctx.workspace, "ok.txt"), "x", ctx.caps, ctx.workspace, nil)

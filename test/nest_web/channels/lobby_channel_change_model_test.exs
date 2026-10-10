@@ -223,6 +223,35 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
                        200
     end
 
+    test "rejects a missing or under-/tmp workspace with a named reason", %{socket: socket} do
+      {:ok, space_id, name} = create_test_agent(socket, "qwen3.5-plus")
+
+      model = %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+
+      # Under /tmp is rejected because the scratch dir is bound there, and a path
+      # that is not there at all is rejected because bwrap cannot bind it. Both
+      # name their reason so the UI can explain the refusal.
+      ref =
+        push(socket, "edit_agent", %{
+          "name" => name,
+          "space_id" => space_id,
+          "model" => model,
+          "workspace_path" => "/tmp/edited-ws"
+        })
+
+      assert_reply ref, :error, %{"reason" => "workspace_under_tmp"}, 750
+
+      ref =
+        push(socket, "edit_agent", %{
+          "name" => name,
+          "space_id" => space_id,
+          "model" => model,
+          "workspace_path" => "/nope/missing-ws"
+        })
+
+      assert_reply ref, :error, %{"reason" => "workspace_missing"}, 750
+    end
+
     test "returns :invalid_model for an unknown model", %{socket: socket} do
       {:ok, space_id, name} = create_test_agent(socket, "qwen3.5-plus")
 

@@ -318,29 +318,32 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
         }
       end)
 
-      log =
-        capture_log(fn ->
-          assert :ok = Supervisor.archive_agent(current_space_id(), name)
+      # The debt was discharged on the way out, so the peer is told before the
+      # process goes away. That notice is the observable this pins, and the
+      # sibling test below pins the other half (a death outside the stop path
+      # has nothing to tell the peer, and logs the lost obligation).
+      #
+      # The *absence* of that warning here is deliberately not asserted:
+      # `capture_log` collects every process's logs — including concurrent
+      # tests' agents, which log the same sentence for their own peers — so an
+      # absence assertion there flakes and tests nothing.
+      assert :ok = Supervisor.archive_agent(current_space_id(), name)
 
-          # The process is gone, so its `terminate/2` has run: the registry
-          # entry goes with the process, and the capture is closed only after it.
-          assert Eventually.eventually(
-                   fn ->
-                     Supervisor.get_running_agent(current_space_id(), name) ==
-                       {:error, :not_found}
-                   end,
-                   timeout: 500
-                 )
+      # The process is gone, so its `terminate/2` has run: the registry entry
+      # goes with the process.
+      assert Eventually.eventually(
+               fn ->
+                 Supervisor.get_running_agent(current_space_id(), name) ==
+                   {:error, :not_found}
+               end,
+               timeout: 500
+             )
 
-          assert Eventually.eventually(
-                   fn -> Enum.any?(peer_texts(peer), &(&1 =~ "did not reply")) end,
-                   timeout: 500
-                 )
-        end)
+      assert Eventually.eventually(
+               fn -> Enum.any?(peer_texts(peer), &(&1 =~ "did not reply")) end,
+               timeout: 500
+             )
 
-      # The debt was discharged on the way out, so the terminate that followed
-      # does not report the peer as lost — it was told.
-      refute log =~ "unpaid replies"
       wait_idle(peer)
     end
 

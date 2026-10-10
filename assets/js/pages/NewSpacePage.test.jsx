@@ -385,7 +385,7 @@ describe("NewSpacePage", () => {
     expect(model).toEqual({ name: "gpt-4", thinking_level: "medium" });
   });
 
-  it("falls back to a generic message when the error has no message", () => {
+  it("shows the server's reason, or a generic message when it sent none", () => {
     renderPage();
 
     fireEvent.change(screen.getByLabelText("Space Name"), {
@@ -401,9 +401,14 @@ describe("NewSpacePage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create Space" }));
 
     const onError = mocks.createSpace.mock.calls[0][3];
-    act(() => onError({}));
 
-    expect(screen.getByText("Failed to create space")).toBeInTheDocument();
+    // The channel replies `{reason: <code>}`, so reading `err.message` here
+    // would silently drop the only explanation the server sent.
+    act(() => onError({ reason: "workspace_under_tmp" }));
+    expect(screen.getByText(/can't be under \/tmp/i)).toBeInTheDocument();
+
+    act(() => onError({}));
+    expect(screen.getByText("Failed to create space.")).toBeInTheDocument();
   });
 
   it("shows the error and re-enables the button on failure", () => {

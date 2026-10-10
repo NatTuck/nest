@@ -59,7 +59,7 @@ defmodule Nest.Agents do
     # "hd(messages) is always a system message" invariant was broken.
     attrs = Persistence.build_agent_attrs(attrs)
 
-    with :ok <- Nest.Sandbox.workspace_error(Keyword.get(opts, :workspace_path)),
+    with :ok <- Nest.Sandbox.workspace_error(attrs.workspace_path),
          :ok <- Agent.pre_spawn(attrs) do
       Supervisor.fetch_or_start_agent(space_id, attrs)
     end
