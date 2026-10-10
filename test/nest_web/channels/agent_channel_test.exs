@@ -383,15 +383,13 @@ defmodule NestWeb.AgentChannelTest do
       space_id: space_id
     } do
       key = {space_id, name}
-
-      tmp =
-        Path.join(System.tmp_dir!(), "nest_channel_jobs_#{System.unique_integer([:positive])}")
-
+      id = System.unique_integer([:positive])
+      tmp = Path.join([System.tmp_dir!(), "nest_ch_jobs_#{id}", "space-1", name])
       File.mkdir_p!(tmp)
+      on_exit(fn -> ShellJobs.stop_all(key) end)
 
       on_exit(fn ->
-        ShellJobs.stop_all(key)
-        File.rm_rf(tmp)
+        if String.contains?(tmp, "nest_ch"), do: File.rm_rf(Path.dirname(Path.dirname(tmp)))
       end)
 
       assert {:ok, _} =
@@ -428,15 +426,13 @@ defmodule NestWeb.AgentChannelTest do
       space_id: space_id
     } do
       key = {space_id, name}
-
-      tmp =
-        Path.join(System.tmp_dir!(), "nest_channel_log_#{System.unique_integer([:positive])}")
-
+      id = System.unique_integer([:positive])
+      tmp = Path.join([System.tmp_dir!(), "nest_ch_log_#{id}", "space-1", name])
       File.mkdir_p!(tmp)
+      on_exit(fn -> ShellJobs.stop_all(key) end)
 
       on_exit(fn ->
-        ShellJobs.stop_all(key)
-        File.rm_rf(tmp)
+        if String.contains?(tmp, "nest_ch"), do: File.rm_rf(Path.dirname(Path.dirname(tmp)))
       end)
 
       assert {:ok, _} =

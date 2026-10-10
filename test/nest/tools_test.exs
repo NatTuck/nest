@@ -65,36 +65,37 @@ defmodule Nest.ToolsTest do
   end
 
   describe "scratch-path descriptions" do
-    test "names the scratch dir in the spelling each tool takes" do
+    test "names the sandbox scratch dir for every file tool" do
       tmp_path = "/tmp/nest-1/space-7/agent-x"
       sandbox_path = "/tmp/agent-x/"
 
-      # Shell tools run inside the sandbox; `file-write` also writes
-      # through bwrap (`Sandbox.write/5`), so all name the sandbox path the
-      # space dir is bound at — and never the host path.
-      for name <- ["shell-cmd", "shell-list", "file-write"] do
+      # Every file tool addresses the same sandbox-domain scratch spelling
+      # the space dir is bound at — and never the host backing path.
+      for name <- [
+            "shell-cmd",
+            "shell-list",
+            "file-write",
+            "file-read",
+            "file-edit",
+            "file-inspect"
+          ] do
         description = Tools.get_function(name, "/tmp", tmp_path).description
 
         assert description =~ sandbox_path
         assert description =~ "shared with your siblings"
         refute description =~ tmp_path
       end
-
-      # `file-read` addresses a host path — and never the sandbox path.
-      description = Tools.get_function("file-read", "/tmp", tmp_path).description
-      assert description =~ tmp_path
-      assert description =~ "shared with your siblings"
-      refute description =~ sandbox_path
-
-      # `file-edit`/`file-inspect` mix the host read fast-path and bwrap
-      # writes/calls, so no single spelling is right and they carry no note.
-      for name <- ["file-edit", "file-inspect"] do
-        refute Tools.get_function(name, "/tmp", tmp_path).description =~ "scratch directory"
-      end
     end
 
     test "omits the scratch note when no tmp dir is configured" do
-      for name <- ["shell-cmd", "shell-list", "file-read", "file-write"] do
+      for name <- [
+            "shell-cmd",
+            "shell-list",
+            "file-read",
+            "file-write",
+            "file-edit",
+            "file-inspect"
+          ] do
         description = Tools.get_function(name, "/tmp", nil).description
 
         refute description =~ "scratch directory"

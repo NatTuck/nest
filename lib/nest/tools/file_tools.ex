@@ -30,7 +30,7 @@ defmodule Nest.Tools.FileTools do
       name: "file-read",
       description:
         "Read the contents of a file from the workspace." <>
-          Nest.Tools.scratch_note(tmp_path, :host),
+          Nest.Tools.scratch_note(tmp_path),
       parameters_schema: %{
         "type" => "object",
         "properties" => %{
@@ -57,7 +57,7 @@ defmodule Nest.Tools.FileTools do
       name: "file-write",
       description:
         "Write content to a file in the workspace." <>
-          Nest.Tools.scratch_note(tmp_path, :sandbox),
+          Nest.Tools.scratch_note(tmp_path),
       parameters_schema: %{
         "type" => "object",
         "properties" => %{
@@ -79,8 +79,6 @@ defmodule Nest.Tools.FileTools do
     }
   end
 
-  # No scratch-dir note: `file-edit` reads via the host fast path and writes
-  # through bwrap, so neither spelling works for a scratch file today.
   @doc """
   Build the `file-edit` `Nest.LLM.Tool` struct. The closure captures
   the workspace + tmp paths and routes through `edit/5`
@@ -94,7 +92,8 @@ defmodule Nest.Tools.FileTools do
         "Perform an exact string replacement in a file. Reads the file, " <>
           "replaces the first (or all) occurrence(s) of `old_text` with " <>
           "`new_text`, and writes it back. With `replace_all: false` " <>
-          "(the default), `old_text` must match exactly once or the call fails.",
+          "(the default), `old_text` must match exactly once or the call fails." <>
+          Nest.Tools.scratch_note(tmp_path),
       parameters_schema: %{
         "type" => "object",
         "properties" => %{
@@ -130,16 +129,16 @@ defmodule Nest.Tools.FileTools do
     }
   end
 
-  # Read the file through the sandbox's read-only fast-path. Reads
-  # are authorized via the shared `Nest.Sandbox` rule helpers before
-  # touching the host filesystem.
+  # Read the file through the sandbox. The path is in the sandbox domain
+  # (the spelling the agent was told); the host backing path stays inside
+  # `Nest.Sandbox` and is never returned.
   # Failed reads return bounded error strings whose sizes are
   # tracked accurately via `Estimator`.
-  defp read_file(path, workspace_path, _tmp_path, context) do
+  defp read_file(path, workspace_path, tmp_path, context) do
     caps = caps_from_context(context)
 
     case resolve_read_path(path, workspace_path) do
-      {:ok, full_path} -> read_after_stat(full_path, path, caps)
+      {:ok, full_path} -> read_after_stat(full_path, path, workspace_path, caps, tmp_path)
       {:error, _} = err -> err
     end
   end
@@ -152,8 +151,11 @@ defmodule Nest.Tools.FileTools do
     end
   end
 
-  defp read_after_stat(full_path, original_path, caps) do
-    case Sandbox.stat(full_path, caps) do
+  defp read_after_stat(full_path, original_path, workspace_path, caps, tmp_path) do
+    # `workspace_path`/`tmp_path` are HOST paths passed only so `Sandbox.stat/4`
+    # can resolve the agent's sandbox-domain path. The agent must only ever see
+    # the sandbox spelling; neither host path is returned.
+    case Sandbox.stat(full_path, caps, workspace_path, tmp_path) do
       {:ok, %{size: size}} when size > @max_read_file_bytes ->
         mb = div(size, 1_000_000)
 
@@ -162,7 +164,7 @@ defmodule Nest.Tools.FileTools do
            "Use file-inspect or shell-cmd with head/tail/sed for partial reads."}
 
       {:ok, _} ->
-        read_file_content(full_path, caps)
+        read_file_content(full_path, workspace_path, caps, tmp_path)
 
       {:error, :read_permission_denied} ->
         {:error, "Not permitted to read file by sandbox caps: #{original_path}"}
@@ -175,8 +177,10 @@ defmodule Nest.Tools.FileTools do
     end
   end
 
-  defp read_file_content(full_path, caps) do
-    case Sandbox.read(full_path, caps) do
+  defp read_file_content(full_path, workspace_path, caps, tmp_path) do
+    # `workspace_path`/`tmp_path` are HOST paths passed only to build the
+    # sandbox for the read. The agent must only ever see the sandbox spelling.
+    case Sandbox.read(full_path, caps, workspace_path, tmp_path) do
       {:ok, content} ->
         validate_utf8(content)
 
@@ -239,7 +243,7 @@ defmodule Nest.Tools.FileTools do
     Logger.info("Tool file-edit: #{path} (replace_all: #{replace_all})")
 
     with {:ok, full_path} <- resolve_full_path(path, workspace_path),
-         {:ok, current} <- read_file_via_shell(full_path, caps),
+         {:ok, current} <- read_file_via_shell(full_path, workspace_path, caps, tmp_path),
          {:ok, replacement_count, updated} <-
            compute_replacement(current, old_text, new_text, replace_all) do
       case Sandbox.write(full_path, updated, caps, workspace_path, tmp_path) do
@@ -249,8 +253,10 @@ defmodule Nest.Tools.FileTools do
     end
   end
 
-  defp read_file_via_shell(full_path, caps) do
-    case Sandbox.read(full_path, caps) do
+  defp read_file_via_shell(full_path, workspace_path, caps, tmp_path) do
+    # `workspace_path`/`tmp_path` are HOST paths passed only to build the
+    # sandbox for the read. Never returned; the agent sees sandbox spellings.
+    case Sandbox.read(full_path, caps, workspace_path, tmp_path) do
       {:ok, content} -> {:ok, content}
       {:error, :read_permission_denied} -> {:error, "Not permitted to read file by sandbox caps"}
       {:error, :enoent} -> {:error, "File not found: #{full_path}"}
@@ -300,9 +306,9 @@ defmodule Nest.Tools.FileTools do
     end
   end
 
-  # `file-read` takes a host path; `file-write` writes through
-  # `Sandbox.write/5` (bwrap), where the host spelling does not resolve.
-  # The shared sentence lives in `Nest.Tools.scratch_note/2` so the wording
+  # Every file tool now addresses the same sandbox-domain scratch spelling
+  # (`/tmp/<agent>/...`); `Sandbox.read/4` resolves it inside bwrap. The
+  # shared sentence lives in `Nest.Tools.scratch_note/1` so the wording
   # cannot drift between tools.
   defp caps_from_context(%{caps: caps}) when is_map(caps), do: caps
   defp caps_from_context(_), do: Nest.Sandbox.default_caps()

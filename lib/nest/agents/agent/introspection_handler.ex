@@ -364,7 +364,16 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
   # "recreate deleted file" semantics). Otherwise consult
   # the cache.
   defp check_against_on_disk_and_cache(full_path, state) do
-    case Sandbox.stat(full_path, Agent.resolve_caps(state), time: :posix) do
+    # `full_path` is the sandbox-domain path the agent used. `state.tmp_path`
+    # is a HOST path passed only so `Sandbox.stat/4` can resolve it; the host
+    # spelling must never be shown to the LLM.
+    case Sandbox.stat(
+           full_path,
+           Agent.resolve_caps(state),
+           Map.get(state, :workspace_path),
+           Map.get(state, :tmp_path),
+           time: :posix
+         ) do
       {:error, :enoent} -> :ok
       {:ok, %File.Stat{} = stat} -> check_cached_read(full_path, stat, state)
       _ -> {:error, :never_read}
@@ -384,7 +393,7 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
   end
 
   # Read-time and write-time mtime records both come from the
-  # sandbox's read-only stat (`Sandbox.stat/3, time: :posix`), so
+  # sandbox's read-only stat (`Sandbox.stat/4, time: :posix`), so
   # `mtime` is a POSIX microsecond integer tuple. Comparison is
   # structural.
   defp recorded_matches?(%{mtime: m1, size: s1}, m2, s2),

@@ -78,8 +78,15 @@ defmodule Nest.SandboxProjectTest do
     src = Path.join(dir, "src")
     File.mkdir_p!(src)
     File.write!(Path.join(src, "f.txt"), "hello")
-    mount = %{"dest" => "/data/y", "mode" => "tmp", "create" => false, "source" => src}
-    assert {:ok, "hello"} = Sandbox.read("/data/y/f.txt", caps([mount], []))
-    assert {:ok, _} = Sandbox.stat("/data/y/f.txt", caps([mount], []))
+
+    # The mount destination must be creatable inside the sandbox: put it under
+    # the (rw-bound) workspace so bwrap can create the mount point.
+    ws = Path.join(dir, "ws")
+    File.mkdir_p!(ws)
+    dest = Path.join(ws, "y")
+    mount = %{"dest" => dest, "mode" => "tmp", "create" => false, "source" => src}
+    caps = caps([mount], [])
+    assert {:ok, "hello"} = Sandbox.read(Path.join(dest, "f.txt"), caps, ws, nil)
+    assert {:ok, _} = Sandbox.stat(Path.join(dest, "f.txt"), caps, ws, nil)
   end
 end

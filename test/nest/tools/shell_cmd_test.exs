@@ -122,9 +122,19 @@ defmodule Nest.Tools.ShellCmdTest do
   end
 
   test "the script is staged under the tmp dir (visible as /tmp) and removed after" do
-    tmp = Path.join(System.tmp_dir!(), "nest_stage_#{System.unique_integer([:positive])}")
+    tmp =
+      Path.join([
+        System.tmp_dir!(),
+        "nest_stage_#{System.unique_integer([:positive])}",
+        "space-1",
+        "agent"
+      ])
+
     File.mkdir_p!(tmp)
-    on_exit(fn -> File.rm_rf(tmp) end)
+
+    on_exit(fn ->
+      if String.contains?(tmp, "nest_stage"), do: File.rm_rf(Path.dirname(Path.dirname(tmp)))
+    end)
 
     # $0 is the staged script, as seen from inside the sandbox. `basename` is
     # enough to prove it lived under the bound /tmp.

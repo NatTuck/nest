@@ -19,6 +19,10 @@ root, something is wrong - delete them immediately
 head, or tail. This behavior is **NEVER** acceptable. If you do it even once,
 stop running commands for *any reason*, explain how to avoid the error in the
 future, and stop.
+- **ABSOLUTELY NEVER** run the tests more than three times during a task unless
+the user explicitly requests it or you are in a run the test once, fix all newly
+discovered issues, repeat loop. We've lost *hours* to random "I'll just run the
+tests 20 times to collect stats" bullshit. This is **ABSOLUTELY prohibited**.
 
 ## Important: Core Process Rules
 

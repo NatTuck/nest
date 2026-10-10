@@ -12,12 +12,13 @@ defmodule Nest.Tools.ShellJobsTest do
   setup do
     name = "agent-#{System.unique_integer([:positive])}"
     key = {:test, name}
-    tmp = Path.join(System.tmp_dir!(), "nest_tools_jobs_#{System.unique_integer([:positive])}")
+    root = Path.join(System.tmp_dir!(), "nest_tools_jobs_#{System.unique_integer([:positive])}")
+    tmp = Path.join([root, "space-1", name])
     File.mkdir_p!(tmp)
 
     on_exit(fn ->
       ShellJobs.stop_all(key)
-      File.rm_rf(tmp)
+      if String.contains?(root, "nest_tools_jobs"), do: File.rm_rf(root)
     end)
 
     context = %{space_id: :test, agent_name: name, agent_pid: self(), caps: nil}

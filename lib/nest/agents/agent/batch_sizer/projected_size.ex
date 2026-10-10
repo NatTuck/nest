@@ -139,10 +139,19 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
   # against the workspace (an absolute path is used as-is). Any
   # failure falls back to the conservative summary size.
   def read_file_projection(%ToolCall{arguments: args} = _tc, ctx) do
+    # `full_path` is the sandbox-domain path the agent used; `ctx.tmp_path`
+    # is a HOST path passed only so `Sandbox.stat/3` can resolve it. The host
+    # spelling must never be shown to the LLM.
     with %{"path" => path} <- args,
          true <- is_binary(path) and path != "",
          {:ok, full_path} <- Sandbox.resolve(path, Map.get(ctx, :workspace_path)),
-         {:ok, %{size: size}} <- Sandbox.stat(full_path, caps_of(ctx)) do
+         {:ok, %{size: size}} <-
+           Sandbox.stat(
+             full_path,
+             caps_of(ctx),
+             Map.get(ctx, :workspace_path),
+             Map.get(ctx, :tmp_path)
+           ) do
       # Estimate from the byte size alone. Synthesizing a same-size
       # string to feed the tokenizer is wasteful and pathological for
       # BPE tokenization (quadratic on repeated characters).

@@ -8,12 +8,13 @@ defmodule Nest.Sandbox.ShellJobsTest do
 
   setup do
     key = {:test, "agent-#{System.unique_integer([:positive])}"}
-    tmp = Path.join(System.tmp_dir!(), "nest_jobs_#{System.unique_integer([:positive])}")
+    root = Path.join(System.tmp_dir!(), "nest_jobs_#{System.unique_integer([:positive])}")
+    tmp = Path.join([root, "space-1", elem(key, 1)])
     File.mkdir_p!(tmp)
 
     on_exit(fn ->
       ShellJobs.stop_all(key)
-      File.rm_rf(tmp)
+      if String.contains?(root, "nest_jobs_"), do: File.rm_rf(root)
     end)
 
     %{key: key, tmp: tmp}
@@ -203,12 +204,13 @@ defmodule Nest.Sandbox.ShellJobsTest do
   test "kill broadcasts an updated job list" do
     name = "bcast-agent-#{System.unique_integer([:positive])}"
     key = {7, name}
-    tmp = Path.join(System.tmp_dir!(), "nest_jobs_bcast_#{System.unique_integer([:positive])}")
+    root = Path.join(System.tmp_dir!(), "nest_jobs_bcast_#{System.unique_integer([:positive])}")
+    tmp = Path.join([root, "space-1", name])
     File.mkdir_p!(tmp)
 
     on_exit(fn ->
       ShellJobs.stop_all(key)
-      File.rm_rf(tmp)
+      if String.contains?(root, "nest_jobs_bcast"), do: File.rm_rf(root)
     end)
 
     Phoenix.PubSub.subscribe(Nest.PubSub, "agent:7:#{name}")

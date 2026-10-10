@@ -52,7 +52,8 @@ defmodule Nest.Tools.InspectFile do
           "full read fits in your context budget, or whether to use " <>
           "`shell-cmd` with `head`, `tail`, or `sed -n` for a partial read. " <>
           "Files larger than 100 MB are rejected; use `shell-cmd` with " <>
-          "`wc -l` or `head` for those.",
+          "`wc -l` or `head` for those." <>
+          Nest.Tools.scratch_note(tmp_path),
       parameters_schema: %{
         "type" => "object",
         "properties" => %{
@@ -77,7 +78,7 @@ defmodule Nest.Tools.InspectFile do
     Logger.info("Tool file-inspect: #{path} (workspace: #{workspace_path || "none"})")
 
     with {:ok, full_path} <- resolve_full_path(path, workspace_path),
-         {:ok, byte_size} <- safe_byte_size(full_path, caps),
+         {:ok, byte_size} <- safe_byte_size(full_path, workspace_path, caps, tmp_path),
          :ok <- check_size_cap(byte_size, path),
          {:ok, type_description} <- run_file_type(full_path, workspace_path, tmp_path, caps) do
       if text_type?(type_description) do
@@ -88,8 +89,10 @@ defmodule Nest.Tools.InspectFile do
     end
   end
 
-  defp safe_byte_size(path, caps) do
-    case Sandbox.stat(path, caps) do
+  defp safe_byte_size(path, workspace_path, caps, tmp_path) do
+    # `workspace_path`/`tmp_path` are HOST paths passed only so `Sandbox.stat/4`
+    # can resolve the agent's sandbox-domain path; never returned.
+    case Sandbox.stat(path, caps, workspace_path, tmp_path) do
       {:ok, %{size: size}} -> {:ok, size}
       {:error, :read_permission_denied} -> {:error, "Not permitted to stat file by sandbox caps"}
       {:error, :enoent} -> {:error, "File not found: #{path}"}
@@ -260,17 +263,19 @@ defmodule Nest.Tools.InspectFile do
     end
   end
 
-  defp read_file_via_shell(full_path, _workspace_path, _tmp_path, caps) do
-    case Sandbox.read(full_path, caps) do
+  defp read_file_via_shell(full_path, workspace_path, tmp_path, caps) do
+    # `workspace_path`/`tmp_path` are HOST paths passed only to build the
+    # sandbox for the read. Never returned; the agent sees sandbox spellings.
+    case Sandbox.read(full_path, caps, workspace_path, tmp_path) do
       {:ok, content} -> {:ok, content}
       {:error, :read_permission_denied} -> {:error, "Not permitted to read file by sandbox caps"}
       {:error, reason} -> {:error, "Read failed: #{inspect(reason)}"}
     end
   end
 
-  # No scratch-dir note: `file-inspect` mixes the host read fast-path
-  # (`stat`/`read`) with a bwrap `file` sub-call, so no single spelling is
-  # correct for a `/tmp` file. A wrong hint is worse than none.
+  # All tools address the same sandbox-domain scratch spelling
+  # (`/tmp/<agent>/...`); `Sandbox.stat/4` and `Sandbox.read/4` resolve it
+  # internally and never expose the host path.
   defp caps_from_context(%{caps: caps}) when is_map(caps), do: caps
   defp caps_from_context(_), do: Nest.Sandbox.default_caps()
 
