@@ -30,6 +30,20 @@ tests 20 times to collect stats" bullshit. This is **ABSOLUTELY prohibited**.
 - Never revert stuff, not even temporarily, without an explicit human request. 
 If the tree is so screwed up that reverting is the only option then stop and report.
 
+### Sandbox reads always go through bwrap
+
+- The sandbox's filesystem view *is* bwrap's view. There is **no host-side
+  emulation** of `read`, `stat`, or `glob`: all three execute inside bwrap, so
+  their results come from exactly the mounts bwrap exposes and can never
+  disagree with what a shell inside the sandbox sees.
+- Do **not** add a host fast path for any of them. A host path (the scratch
+  bind source) is internal to `Nest.Sandbox`; the only spelling an agent is
+  ever told about or hands back is the sandbox spelling (`/tmp/<agent>/...`).
+- The path mapping lives in exactly one place: `Nest.Sandbox.Paths`.
+- A workspace at or under `/tmp` is rejected when a scratch bind is present
+  (the scratch dir is bound there and would shadow it). A workspace can never
+  live under `/tmp`.
+
 ## Project Design
 
 ### LLM Calls

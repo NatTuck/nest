@@ -25,11 +25,19 @@ defmodule NestWeb.AgentChannelWorkspaceTest do
     end
 
     test "carries the agent workspace_path", %{user: user} do
+      workspace =
+        Path.join([
+          File.cwd!(),
+          "_build",
+          "tmp",
+          "agent-ws-#{System.unique_integer([:positive])}"
+        ])
+
       {_pid, agent_name} =
         AgentTestHelpers.start_agent(%{
           model: %{name: "qwen3.5-plus", provider: "model-studio"},
           vocation_id: AgentTestHelpers.programmer_vocation_id_for_test(),
-          workspace_path: "/tmp/agent-ws",
+          workspace_path: workspace,
           created_by_user_id: user.id
         })
 
@@ -47,7 +55,7 @@ defmodule NestWeb.AgentChannelWorkspaceTest do
       # workspace), then assert our new agent's.
       assert_push "init", _setup_init, 2000
       assert_push "init", payload
-      assert payload["workspace_path"] == "/tmp/agent-ws"
+      assert payload["workspace_path"] == workspace
     end
   end
 end

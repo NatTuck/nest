@@ -29,7 +29,8 @@ defmodule Nest.Tools.FileTools do
     %Tool{
       name: "file-read",
       description:
-        "Read the contents of a file from the workspace." <>
+        "Read the contents of a file from the workspace. The read resolves " <>
+          "inside the sandbox, so only files the sandbox exposes are visible." <>
           Nest.Tools.scratch_note(tmp_path),
       parameters_schema: %{
         "type" => "object",

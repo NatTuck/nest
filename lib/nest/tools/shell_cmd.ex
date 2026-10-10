@@ -71,19 +71,16 @@ defmodule Nest.Tools.ShellCmd do
 
     workspace = resolve_workspace(workspace_path)
 
-    if tmp_path, do: File.mkdir_p!(tmp_path)
+    with {:ok, sandboxed_cmd, script} <- build_command(command, workspace, tmp_path, caps) do
+      if Keyword.get(opts, :background, false) do
+        run_background(command, script, sandboxed_cmd, workspace, tmp_path, caps, opts)
+      else
+        Logger.info(
+          "Executing sandboxed script #{script} in #{workspace}: #{truncate_log(command)}"
+        )
 
-    {script, script_path} = stage_script(command, tmp_path)
-    sandboxed_cmd = build_sandboxed_command(script_path, workspace, tmp_path, caps)
-
-    if Keyword.get(opts, :background, false) do
-      run_background(command, script, sandboxed_cmd, workspace, tmp_path, caps, opts)
-    else
-      Logger.info(
-        "Executing sandboxed script #{script_path} in #{workspace}: #{truncate_log(command)}"
-      )
-
-      exec_staged(script, sandboxed_cmd, timeout, stdin, command, {workspace, tmp_path})
+        exec_staged(script, sandboxed_cmd, timeout, stdin, command, {workspace, tmp_path})
+      end
     end
   end
 
@@ -98,6 +95,11 @@ defmodule Nest.Tools.ShellCmd do
   # `workspace_path` / `tmp_path` are HOST paths used only to build the bwrap
   # argument list; they must never be handed back to a caller (see
   # `Nest.Sandbox`'s "host spelling must not escape" rule).
+  #
+  # The command itself runs inside bwrap, so `read`/`stat`/`glob` all execute
+  # against the sandbox's mounts, never the host. There is no host-side fast
+  # path to reintroduce (see `AGENTS.md` "Sandbox reads always go through
+  # bwrap").
   @spec execute_raw(String.t(), String.t() | nil, String.t() | nil, map() | nil, keyword()) ::
           {:ok, non_neg_integer(), binary(), binary()} | {:error, String.t()}
   def execute_raw(command, workspace_path, tmp_path \\ nil, caps \\ nil, opts \\ []) do
@@ -106,15 +108,29 @@ defmodule Nest.Tools.ShellCmd do
 
     workspace = resolve_workspace(workspace_path)
 
+    with {:ok, sandboxed_cmd, script} <- build_command(command, workspace, tmp_path, caps) do
+      try do
+        run_with_erlexec_raw(sandboxed_cmd, timeout, stdin)
+      after
+        File.rm(script)
+      end
+    end
+  end
+
+  # Stage the command's transcript, then build the bwrap command line. When
+  # the sandbox cannot be built (e.g. a workspace under the scratch bind), the
+  # staged script is removed and the reason is returned rather than raised.
+  defp build_command(command, workspace, tmp_path, caps) do
     if tmp_path, do: File.mkdir_p!(tmp_path)
-
     {script, script_path} = stage_script(command, tmp_path)
-    sandboxed_cmd = build_sandboxed_command(script_path, workspace, tmp_path, caps)
 
-    try do
-      run_with_erlexec_raw(sandboxed_cmd, timeout, stdin)
-    after
-      File.rm(script)
+    case build_sandboxed_command(script_path, workspace, tmp_path, caps) do
+      {:ok, sandboxed_cmd} ->
+        {:ok, sandboxed_cmd, script}
+
+      {:error, reason} ->
+        File.rm(script)
+        {:error, reason}
     end
   end
 
@@ -281,18 +297,19 @@ defmodule Nest.Tools.ShellCmd do
   with a read-only /dev where even opening /dev/null for writing
   fails with "Permission denied".
   """
-  @spec build_bwrap_args(String.t(), String.t() | nil, map() | nil) :: [String.t()]
+  @spec build_bwrap_args(String.t() | nil, String.t() | nil, map() | nil) ::
+          {:ok, [String.t()]} | {:error, String.t()}
   def build_bwrap_args(workspace_path, tmp_path \\ nil, caps \\ nil) do
     effective_caps = caps || Sandbox.default_caps()
-    {:ok, args} = Sandbox.build(effective_caps, workspace_path, tmp_path)
-    args
+    Sandbox.build(effective_caps, workspace_path, tmp_path)
   end
 
   # Private functions
 
   defp resolve_workspace(nil) do
-    # Use a temporary directory if no workspace specified
-    System.tmp_dir!()
+    # No workspace: `Nest.Sandbox.build/3` binds no workspace and chdirs to
+    # the scratch root (or `/`).
+    nil
   end
 
   defp resolve_workspace(path) do
@@ -304,8 +321,10 @@ defmodule Nest.Tools.ShellCmd do
   end
 
   defp build_sandboxed_command(command, workspace_path, tmp_path, caps) do
-    bwrap_args = build_bwrap_args(workspace_path, tmp_path, caps)
-    build_bwrap_command(command, bwrap_args)
+    case build_bwrap_args(workspace_path, tmp_path, caps) do
+      {:ok, bwrap_args} -> {:ok, build_bwrap_command(command, bwrap_args)}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   # Run the staged script with bash. Passing a file to the shell is what

@@ -65,15 +65,6 @@ defmodule Nest.SandboxProjectTest do
     assert ["--ro-bind", "/dev/null", ^nest] = find_bind(args, "--ro-bind", "/dev/null")
   end
 
-  test "write_allowed? is false for the protected .nest", %{dir: dir} do
-    ws = Path.join(dir, "ws")
-    File.mkdir_p!(ws)
-    nest = Path.join(ws, ".nest")
-    prot = [%{"path" => nest, "source" => nest}]
-    refute Sandbox.write_allowed?(nest, caps([], prot), ws)
-    assert Sandbox.write_allowed?(Path.join(ws, "other"), caps([], prot), ws)
-  end
-
   test "read maps a tmp project path to its source", %{dir: dir} do
     src = Path.join(dir, "src")
     File.mkdir_p!(src)

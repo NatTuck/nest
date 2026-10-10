@@ -393,7 +393,7 @@ defmodule NestWeb.AgentChannelTest do
       end)
 
       assert {:ok, _} =
-               ShellCmd.execute("sleep 30", "/tmp", tmp, nil,
+               ShellCmd.execute("sleep 30", File.cwd!(), tmp, nil,
                  background: true,
                  agent_key: key,
                  grace_ms: 0
@@ -436,7 +436,7 @@ defmodule NestWeb.AgentChannelTest do
       end)
 
       assert {:ok, _} =
-               ShellCmd.execute("sleep 30", "/tmp", tmp, nil,
+               ShellCmd.execute("sleep 30", File.cwd!(), tmp, nil,
                  background: true,
                  agent_key: key,
                  grace_ms: 0

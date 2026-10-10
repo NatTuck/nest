@@ -48,11 +48,19 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
           }
         })
 
+      workspace =
+        Path.join([
+          File.cwd!(),
+          "_build",
+          "tmp",
+          "test-workspace-#{System.unique_integer([:positive])}"
+        ])
+
       {pid, _agent_id} =
         start_agent(%{
           model: %{name: "qwen3.5-plus"},
           vocation_id: vocation.id,
-          workspace_path: "/tmp/test-workspace-#{System.unique_integer([:positive])}"
+          workspace_path: workspace
         })
 
       # The system prompt isn't on any broadcast; only the agent's
@@ -65,7 +73,7 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
       assert system_prompt =~ ~s(- build: Read only "/")
       assert system_prompt =~ "Network disabled"
       assert system_prompt =~ "You're clear to edit the project in the workspace."
-      assert system_prompt =~ "\n\nWorkspace and tool working directory: /tmp/test-workspace-"
+      assert system_prompt =~ "\n\nWorkspace and tool working directory: #{workspace}"
       # `compact` is rendered into the catalog alongside the
       # user-configured modes, with `Vocations.compact_description/0`
       # as the body. The `[mode: compact]` prefix lives only in
@@ -129,7 +137,13 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
         start_agent(%{
           model: %{name: "qwen3.5-plus"},
           vocation_id: vocation.id,
-          workspace_path: "/tmp/test-notools-#{System.unique_integer([:positive])}"
+          workspace_path:
+            Path.join([
+              File.cwd!(),
+              "_build",
+              "tmp",
+              "test-notools-#{System.unique_integer([:positive])}"
+            ])
         })
 
       system_prompt = get_system_prompt(pid)
@@ -168,7 +182,13 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
         start_agent(%{
           model: %{name: "qwen3.5-plus"},
           vocation_id: vocation.id,
-          workspace_path: "/tmp/test-compact-#{System.unique_integer([:positive])}"
+          workspace_path:
+            Path.join([
+              File.cwd!(),
+              "_build",
+              "tmp",
+              "test-compact-#{System.unique_integer([:positive])}"
+            ])
         })
 
       system_prompt = get_system_prompt(pid)

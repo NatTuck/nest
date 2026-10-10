@@ -26,6 +26,7 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
   alias Nest.Agents.Agent.BatchSizer.ProjectedSize
   alias Nest.LLM.Tool
   alias Nest.Messages.{Part, ToolCall, ToolResult}
+  alias Nest.Sandbox
   alias Nest.TextFixtures
   alias Nest.Tools
   alias Nest.Tools.Groups
@@ -205,15 +206,13 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
 
   describe "Phase 3: keep-or-summarize for shell_cmd" do
     setup do
-      tmp_dir =
-        Path.join(
-          System.tmp_dir!(),
-          "batchsizer-test-#{System.unique_integer([:positive])}"
-        )
+      unique = System.unique_integer([:positive])
+      root = Path.join(System.tmp_dir!(), "batchsizer-test-#{unique}")
+      dir = Path.join([root, "space-1", "agent-#{unique}"])
 
-      File.mkdir_p!(tmp_dir)
-      on_exit(fn -> File.rm_rf!(tmp_dir) end)
-      {:ok, tmp_dir: tmp_dir}
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(root) end)
+      {:ok, tmp_dir: dir}
     end
 
     test "single small shell_cmd keeps full", %{tmp_dir: dir} do
@@ -251,7 +250,8 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       assert result.is_error == false
       assert result.content =~ "Command output of 'cat foo'"
       assert result.content =~ "saved to"
-      assert result.content =~ "/batchsizer-test-"
+      assert result.content =~ Sandbox.sandbox_tmp_path(dir)
+      refute result.content =~ dir
 
       [exec_file] = Enum.filter(File.ls!(dir), &String.starts_with?(&1, "exec-"))
       assert File.read!(Path.join(dir, exec_file)) == big_output
@@ -454,15 +454,14 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
     end
 
     defp tmp_dir_for_test do
-      dir =
-        Path.join(System.tmp_dir!(), "nest-tmp-batchsizer-#{System.unique_integer([:positive])}")
+      unique = System.unique_integer([:positive])
+      root = Path.join(System.tmp_dir!(), "nest-tmp-batchsizer-#{unique}")
+      dir = Path.join([root, "space-1", "agent-#{unique}"])
 
       File.mkdir_p!(dir)
 
       on_exit(fn ->
-        if String.contains?(dir, "nest-tmp-batchsizer") do
-          File.rm_rf(dir)
-        end
+        if String.contains?(root, "nest-tmp-batchsizer"), do: File.rm_rf(root)
       end)
 
       dir
@@ -472,6 +471,12 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
     defp saved_path(content) do
       [_, path] = Regex.run(~r/saved to (\/[^\s]+\.txt)/, content)
       path
+    end
+
+    # The pointer is the sandbox spelling (`/tmp/<agent>/...`); the bytes live
+    # at the same basename under the host scratch dir.
+    defp read_saved(dir, content) do
+      File.read!(Path.join(dir, Path.basename(saved_path(content))))
     end
 
     test "a small binary is written to the scratch file with an inline lossy view", %{} do
@@ -493,7 +498,7 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       assert content =~ <<0xEF, 0xBF, 0xBD>>
 
       # The scratch file preserves the ORIGINAL raw bytes.
-      assert File.read!(saved_path(content)) == raw
+      assert read_saved(dir, content) == raw
     end
 
     test "a large binary returns a pointer only, with the raw bytes saved", %{} do
@@ -512,7 +517,7 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       refute content =~ <<0xEF, 0xBF, 0xBD>>
       refute content =~ <<0xFF>>
 
-      assert File.read!(saved_path(content)) == raw
+      assert read_saved(dir, content) == raw
     end
 
     test "valid UTF-8 containing NUL is treated as non-text output", %{} do
@@ -535,7 +540,7 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       assert content =~ <<0xEF, 0xBF, 0xBD>>
 
       # The scratch file preserves the ORIGINAL raw bytes (including NUL).
-      assert File.read!(saved_path(content)) == raw
+      assert read_saved(dir, content) == raw
     end
 
     test "an exhausted batch budget keeps the pointer and drops the inline view", %{} do
@@ -559,13 +564,14 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       assert String.valid?(content)
       assert content =~ "(non-text binary output, 7 bytes)"
       assert content =~ "saved to "
-      assert content =~ dir
+      assert content =~ Sandbox.sandbox_tmp_path(dir)
+      refute content =~ dir
       assert content =~ "inline view elided"
       # The inline lossy view is exactly what got dropped.
       refute content =~ Overflow.to_valid_utf8(raw)
 
       # The scratch file still holds the original raw bytes.
-      assert File.read!(saved_path(content)) == raw
+      assert read_saved(dir, content) == raw
     end
   end
 

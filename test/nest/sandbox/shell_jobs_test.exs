@@ -22,7 +22,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
 
   defp start_background(command, tmp, key, opts \\ []) do
     opts = Keyword.merge([background: true, agent_key: key, grace_ms: 0], opts)
-    ShellCmd.execute(command, "/tmp", tmp, nil, opts)
+    ShellCmd.execute(command, File.cwd!(), tmp, nil, opts)
   end
 
   # Start a job that stays running past the grace window and return its id.
@@ -124,7 +124,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
     }
 
     assert {:error, message} =
-             ShellCmd.execute("sleep 30", "/tmp", tmp, caps,
+             ShellCmd.execute("sleep 30", File.cwd!(), tmp, caps,
                background: true,
                agent_key: key,
                grace_ms: 0

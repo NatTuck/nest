@@ -225,55 +225,32 @@ defmodule Nest.SandboxTest do
     end
   end
 
-  describe "rule helpers (single source of truth)" do
-    test "readable_roots canonicalizes the read list" do
+  describe "readable_roots/1" do
+    test "canonicalizes the read list" do
       assert Sandbox.readable_roots(build_caps(read: ["/"])) == ["/"]
-    end
-
-    test "writable_roots includes canonical workspace + extras, not /tmp" do
-      caps = build_caps(write: [":workspace", "/tmp", "/data"])
-      assert Sandbox.writable_roots(caps, "/workspace") == ["/workspace", "/data"]
-    end
-
-    test "writable_roots omits the workspace when :workspace is absent" do
-      assert Sandbox.writable_roots(build_caps(write: ["/data"]), "/workspace") == ["/data"]
-    end
-
-    test "read_allowed? is true for any path under read='/'", %{tmp: dir} do
-      assert Sandbox.read_allowed?(Path.join(dir, "x.txt"), build_caps())
-    end
-
-    test "write_allowed? honors the :workspace marker", %{tmp: dir} do
-      assert Sandbox.write_allowed?(
-               Path.join(dir, "x.txt"),
-               build_caps(write: [":workspace"]),
-               dir
-             )
-
-      refute Sandbox.write_allowed?(Path.join(dir, "x.txt"), build_caps(write: []), dir)
-    end
-
-    test "write_allowed? resolves symlinks before the containment check", %{tmp: dir} do
-      target = Path.join(dir, "real")
-      File.mkdir_p!(target)
-      link = Path.join(dir, "link")
-      File.ln_s!(target, link)
-
-      in_link = Path.join(link, "x.txt")
-      assert Sandbox.write_allowed?(in_link, build_caps(write: [":workspace"]), link)
     end
   end
 
-  describe "equivalence (binds == rule helpers)" do
-    test "the --bind/--ro-bind mounts are derived from writable/readable roots" do
-      caps = build_caps(write: [":workspace", "/tmp", "/data"])
-      {:ok, args} = Sandbox.build(caps, "/workspace", "/tmp/nest-equivalence/space-1/agent-1")
+  describe "workspace validation" do
+    test "rejects a workspace at or under the scratch bind" do
+      caps = build_caps(write: [":workspace", "/tmp"])
 
-      {ro_targets, bind_targets} = collect_bind_targets(args)
+      assert {:error, msg} = Sandbox.build(caps, "/tmp/ws", "/tmp/nest-1/space-1/agent-1")
+      assert msg =~ "must not be at or under /tmp"
 
-      assert ro_targets == Sandbox.readable_roots(caps)
-      # tmp is bound at /tmp (not a host writable root); the rest match.
-      assert bind_targets -- ["/tmp"] == Sandbox.writable_roots(caps, "/workspace")
+      assert {:error, _} = Sandbox.build(caps, "/tmp", "/tmp/nest-1/space-1/agent-1")
+    end
+
+    test "allows a workspace under /tmp when no scratch bind is present" do
+      caps = build_caps(write: [":workspace"])
+      assert {:ok, _args} = Sandbox.build(caps, "/tmp/ws", nil)
+    end
+
+    test "nil workspace binds no workspace and chdirs to the scratch root" do
+      caps = build_caps(write: ["/tmp"])
+      {:ok, args} = Sandbox.build(caps, nil, "/tmp/nest-1/space-1/agent-1")
+
+      assert ["--chdir", "/tmp" | _] = after_flag(args, "--chdir", "/tmp")
     end
   end
 
@@ -460,12 +437,29 @@ defmodule Nest.SandboxTest do
       assert msg =~ "No workspace configured"
     end
 
-    test "matches are filtered to files readable under the caps", %{root: root} do
-      # Read only the `sub` subtree: files under `deep/` are matched by
-      # the walk but dropped by the read-authorization filter.
-      caps = build_caps(read: [Path.join(root, "sub")])
-      expected = [Path.join(root, "sub/a.txt"), Path.join(root, "sub/b.txt")]
-      assert {:ok, ^expected} = Sandbox.glob("**/*.txt", caps, root, nil)
+    test "matches resolve through the bwrap mounts, not the host", %{root: root} do
+      # Mask one matched file with /dev/null. Inside bwrap the path is a char
+      # device, so the regular-file filter drops it — proof that the glob
+      # resolves through the mounts rather than the host file underneath.
+      masked = Path.join(root, "sub/a.txt")
+
+      caps =
+        build_caps(read: ["/"])
+        |> put_in(["fs", "protected"], [%{"path" => masked, "source" => "/dev/null"}])
+
+      pattern = Path.join(root, "**/*.txt")
+      assert {:ok, files} = Sandbox.glob(pattern, caps, root, nil)
+
+      refute masked in files
+      assert Path.join(root, "sub/b.txt") in files
+    end
+
+    test "a terminal ** is refused (bash would expand the whole subtree)", %{root: root} do
+      caps = build_caps(read: ["/"])
+      pattern = Path.join(root, "**")
+
+      assert {:error, :glob_terminal_double_star} =
+               Sandbox.glob(pattern, caps, root, nil)
     end
 
     test "an over-broad expansion is rejected with :glob_too_broad", %{root: root} do
@@ -493,24 +487,6 @@ defmodule Nest.SandboxTest do
       }
     }
   end
-
-  # Collect the destination paths of every --ro-bind and --bind
-  # directive in the arg list, in order, ignoring flags with their own
-  # arguments (--chdir/--dev/--proc) and bare flags.
-  defp collect_bind_targets(args), do: do_collect(args, [], [])
-
-  defp do_collect([], ro, bind), do: {Enum.reverse(ro), Enum.reverse(bind)}
-
-  defp do_collect(["--ro-bind", _src, dst | rest], ro, bind),
-    do: do_collect(rest, [dst | ro], bind)
-
-  defp do_collect(["--bind", _src, dst | rest], ro, bind), do: do_collect(rest, ro, [dst | bind])
-  defp do_collect(["--chdir", _ | rest], ro, bind), do: do_collect(rest, ro, bind)
-  defp do_collect(["--dev", _ | rest], ro, bind), do: do_collect(rest, ro, bind)
-  defp do_collect(["--proc", _ | rest], ro, bind), do: do_collect(rest, ro, bind)
-  defp do_collect(["--share-net" | rest], ro, bind), do: do_collect(rest, ro, bind)
-  defp do_collect(["--unshare-net" | rest], ro, bind), do: do_collect(rest, ro, bind)
-  defp do_collect([_ | rest], ro, bind), do: do_collect(rest, ro, bind)
 
   # The 2- or 3-arg directive starting at the first occurrence of
   # `flag` in `args`, or [] when absent.

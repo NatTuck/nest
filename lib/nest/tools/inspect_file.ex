@@ -52,7 +52,8 @@ defmodule Nest.Tools.InspectFile do
           "full read fits in your context budget, or whether to use " <>
           "`shell-cmd` with `head`, `tail`, or `sed -n` for a partial read. " <>
           "Files larger than 100 MB are rejected; use `shell-cmd` with " <>
-          "`wc -l` or `head` for those." <>
+          "`wc -l` or `head` for those. Metadata is collected inside the " <>
+          "sandbox, so only files the sandbox exposes are visible." <>
           Nest.Tools.scratch_note(tmp_path),
       parameters_schema: %{
         "type" => "object",

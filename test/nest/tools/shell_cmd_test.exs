@@ -130,19 +130,29 @@ defmodule Nest.Tools.ShellCmdTest do
         "agent"
       ])
 
+    ws =
+      Path.join([
+        File.cwd!(),
+        "_build",
+        "tmp",
+        "nest_stage_ws_#{System.unique_integer([:positive])}"
+      ])
+
     File.mkdir_p!(tmp)
+    File.mkdir_p!(ws)
 
     on_exit(fn ->
       if String.contains?(tmp, "nest_stage"), do: File.rm_rf(Path.dirname(Path.dirname(tmp)))
+      File.rm_rf(ws)
     end)
 
     # $0 is the staged script, as seen from inside the sandbox. `basename` is
     # enough to prove it lived under the bound /tmp.
-    assert {:ok, output} = ShellCmd.execute(~s{basename "$0"}, "/tmp", tmp, nil, [])
+    assert {:ok, output} = ShellCmd.execute(~s{basename "$0"}, ws, tmp, nil, [])
     assert output =~ ".nest-cmd-"
 
     # The transcript is temporary either way: the caller gets the output.
-    assert {:ok, _} = ShellCmd.execute("echo bye", "/tmp", tmp, nil, [])
+    assert {:ok, _} = ShellCmd.execute("echo bye", ws, tmp, nil, [])
     assert Path.wildcard(Path.join(tmp, ".nest-cmd-*.sh"), match_dot: true) == []
   end
 
