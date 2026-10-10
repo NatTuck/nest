@@ -1,12 +1,9 @@
 defmodule Nest.FSPath do
   @moduledoc """
-  Pure filesystem-path helpers shared by the sandbox rule helpers.
+  Pure filesystem-path helpers shared by the sandbox.
 
   These are the single source of truth for path canonicalization and
-  containment so that the read-only host fast-path in `Nest.Sandbox`
-  authorizes *exactly* the same paths the bwrap bind mounts expose:
-  both sides derive from the same `canonical/1` + `under?/2`
-  primitives.
+  containment.
 
   ## Canonicalization
 
@@ -16,6 +13,12 @@ defmodule Nest.FSPath do
   write to a path whose parent doesn't exist must fail in the sandbox
   rather than be silently bound-and-created, and non-existent
   `fs.write` entries surface as bwrap "source not found" failures.
+
+  ## Containment
+
+  `under?/2` is the directory-boundary containment check used to reject a
+  workspace at or under the scratch mount (`/tmp`) and to resolve tool paths
+  against the workspace root.
 
   These helpers intentionally avoid touching the filesystem except
   for the single `realpath` call in `canonical/1`.

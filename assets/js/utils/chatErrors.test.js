@@ -51,6 +51,9 @@ describe("describeEditError", () => {
     expect(describeEditError("context_overflow")).toMatch(/compact/i);
     expect(describeEditError("not_found")).toMatch(/not found/i);
     expect(describeEditError("invalid_payload")).toMatch(/try again/i);
+    expect(describeEditError("workspace_required")).toMatch(/required/i);
+    expect(describeEditError("workspace_missing")).toMatch(/doesn't exist/i);
+    expect(describeEditError("workspace_under_tmp")).toMatch(/under \/tmp/i);
   });
 
   it("falls back to the raw reason, or a generic message when absent", () => {

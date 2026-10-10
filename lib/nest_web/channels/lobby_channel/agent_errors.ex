@@ -33,6 +33,12 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
       :workspace_required ->
         {:error, %{"reason" => "workspace_required"}}
 
+      :workspace_missing ->
+        {:error, %{"reason" => "workspace_missing"}}
+
+      :workspace_under_tmp ->
+        {:error, %{"reason" => "workspace_under_tmp"}}
+
       :context_overflow ->
         {:error, %{"reason" => "context_overflow"}}
 

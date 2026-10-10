@@ -48,13 +48,7 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
           }
         })
 
-      workspace =
-        Path.join([
-          File.cwd!(),
-          "_build",
-          "tmp",
-          "test-workspace-#{System.unique_integer([:positive])}"
-        ])
+      workspace = new_ws("test-workspace")
 
       {pid, _agent_id} =
         start_agent(%{
@@ -137,13 +131,7 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
         start_agent(%{
           model: %{name: "qwen3.5-plus"},
           vocation_id: vocation.id,
-          workspace_path:
-            Path.join([
-              File.cwd!(),
-              "_build",
-              "tmp",
-              "test-notools-#{System.unique_integer([:positive])}"
-            ])
+          workspace_path: new_ws("test-notools")
         })
 
       system_prompt = get_system_prompt(pid)
@@ -182,13 +170,7 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
         start_agent(%{
           model: %{name: "qwen3.5-plus"},
           vocation_id: vocation.id,
-          workspace_path:
-            Path.join([
-              File.cwd!(),
-              "_build",
-              "tmp",
-              "test-compact-#{System.unique_integer([:positive])}"
-            ])
+          workspace_path: new_ws("test-compact")
         })
 
       system_prompt = get_system_prompt(pid)
@@ -288,5 +270,21 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
       assert system_prompt =~ "resolved from default"
       refute system_prompt =~ "may differ"
     end
+  end
+
+  # A real workspace directory outside /tmp: the scratch dir is bound at /tmp,
+  # so a /tmp-rooted workspace is rejected, and a non-existent one too.
+  defp new_ws(label) do
+    dir =
+      Path.join([
+        File.cwd!(),
+        "_build",
+        "tmp",
+        "#{label}-#{System.unique_integer([:positive])}"
+      ])
+
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf(dir) end)
+    dir
   end
 end

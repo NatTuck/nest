@@ -29,6 +29,12 @@ defmodule Nest.Sandbox.Paths do
 
   alias Nest.FSPath
 
+  # The staging directory name, relative to the space scratch root (when a
+  # scratch bind exists) or to `System.tmp_dir!()`/`@sandbox_root` (when it
+  # does not). See `stage_dir/1`.
+  @stage_subdir ".cmds"
+  @no_scratch_stage_subdir ".nest-cmds"
+
   @doc """
   The mount point the space scratch dir is bound at inside the sandbox.
   """
@@ -63,4 +69,29 @@ defmodule Nest.Sandbox.Paths do
   """
   @spec sandbox_tmp_path(String.t()) :: String.t()
   def sandbox_tmp_path(tmp_path), do: Path.join(@sandbox_root, Path.basename(tmp_path))
+
+  @doc """
+  The HOST directory `Nest.Tools.ShellCmd` stages command transcripts in.
+
+  With a scratch bind, it lives *inside* the bound space dir
+  (`<space_dir>/#{@stage_subdir}`) but in its own subdirectory, so a glob over
+  the scratch tree can skip the staging dir rather than hide real files by
+  name. Without a scratch bind, it lives under `System.tmp_dir!()`
+  (`#{@no_scratch_stage_subdir}`), visible inside the sandbox at the same host
+  spelling through the root read-only bind.
+
+  HOST PATH result — internal staging only; never advertised to the agent.
+  """
+  @spec stage_dir(String.t() | nil) :: String.t()
+  def stage_dir(nil), do: Path.join(System.tmp_dir!(), @no_scratch_stage_subdir)
+  def stage_dir(tmp_path), do: Path.join(scratch_root(tmp_path), @stage_subdir)
+
+  @doc """
+  The spelling of `stage_dir/1` inside the sandbox: `#{@sandbox_root}/#{@stage_subdir}`
+  when a scratch bind exists, otherwise the host path unchanged (no scratch bind
+  means the host `#{@sandbox_root}` is the sandbox's `#{@sandbox_root}`).
+  """
+  @spec stage_dir_sandbox(String.t() | nil) :: String.t()
+  def stage_dir_sandbox(nil), do: stage_dir(nil)
+  def stage_dir_sandbox(_tmp_path), do: Path.join(@sandbox_root, @stage_subdir)
 end

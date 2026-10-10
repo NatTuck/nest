@@ -4,7 +4,16 @@ defmodule Nest.SandboxProjectTest do
   alias Nest.Sandbox
 
   setup do
-    dir = Path.join(System.tmp_dir!(), "nest_sbproj_#{System.unique_integer([:positive])}")
+    # A workspace outside /tmp: the scratch dir is bound at /tmp, so a
+    # /tmp-rooted workspace is rejected.
+    dir =
+      Path.join([
+        File.cwd!(),
+        "_build",
+        "tmp",
+        "nest_sbproj_#{System.unique_integer([:positive])}"
+      ])
+
     File.mkdir_p!(dir)
     on_exit(fn -> if String.contains?(dir, "nest_sbproj_"), do: File.rm_rf(dir) end)
     %{dir: dir}

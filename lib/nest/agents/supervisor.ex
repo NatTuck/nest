@@ -308,7 +308,7 @@ defmodule Nest.Agents.Supervisor do
         if Vocations.requires_workspace?(vocation) and is_nil(parent_state.workspace_path) do
           {:error, :workspace_required}
         else
-          :ok
+          Nest.Sandbox.workspace_error(parent_state.workspace_path)
         end
     end
   end

@@ -108,9 +108,14 @@ defmodule Nest.SandboxHostPathTest do
     on_exit(fn -> File.rm_rf(ws) end)
 
     target = Path.join(ws, "f.txt")
-    assert {:error, _} = Sandbox.stat(target, ctx.caps, ws, ctx.tmp_path)
-    assert {:error, _} = Sandbox.read(target, ctx.caps, ws, ctx.tmp_path)
-    assert {:error, _} = Sandbox.glob(Path.join(ws, "*"), ctx.caps, ws, ctx.tmp_path)
+
+    assert {:error, stat_msg} = Sandbox.stat(target, ctx.caps, ws, ctx.tmp_path)
+    assert {:error, read_msg} = Sandbox.read(target, ctx.caps, ws, ctx.tmp_path)
+    assert {:error, glob_msg} = Sandbox.glob(Path.join(ws, "*"), ctx.caps, ws, ctx.tmp_path)
+
+    for msg <- [stat_msg, read_msg, glob_msg] do
+      assert msg =~ "must not be at or under /tmp"
+    end
   end
 
   test "a project tmp mount with an absent out-of-workspace destination fails every op", ctx do
@@ -118,17 +123,23 @@ defmodule Nest.SandboxHostPathTest do
     mount = %{"dest" => "/absent-dir/mnt", "mode" => "tmp", "create" => false, "source" => source}
     caps = put_in(ctx.caps, ["fs", "project"], [mount])
 
-    assert {:error, _} = Sandbox.stat("/etc/hostname", caps, ctx.workspace, ctx.tmp_path)
-    assert {:error, _} = Sandbox.glob("/etc/*", caps, ctx.workspace, ctx.tmp_path)
-
-    # A bwrap setup failure is the unexpected case, so `read` logs it rather
-    # than failing silently; capture the warning so it doesn't escape.
+    # A bwrap setup failure is the unexpected case, so read/stat/glob all log
+    # it (and report it) rather than failing silently.
     log =
       capture_log(fn ->
-        assert {:error, _} = Sandbox.read("/etc/hostname", caps, ctx.workspace, ctx.tmp_path)
+        assert {:error, :sandbox_setup_failed} =
+                 Sandbox.stat("/etc/hostname", caps, ctx.workspace, ctx.tmp_path)
+
+        assert {:error, :sandbox_setup_failed} =
+                 Sandbox.glob("/etc/*", caps, ctx.workspace, ctx.tmp_path)
+
+        assert {:error, :sandbox_setup_failed} =
+                 Sandbox.read("/etc/hostname", caps, ctx.workspace, ctx.tmp_path)
       end)
 
-    assert log =~ "Nest.Sandbox.read: failed to read"
+    assert log =~ "Nest.Sandbox.stat: sandbox_setup_failed"
+    assert log =~ "Nest.Sandbox.glob: sandbox_setup_failed"
+    assert log =~ "Nest.Sandbox.read: sandbox_setup_failed"
   end
 
   test "a masked .nest is a char device for stat; reading it is denied", ctx do
@@ -144,6 +155,30 @@ defmodule Nest.SandboxHostPathTest do
              Sandbox.read(nest, caps, ctx.workspace, ctx.tmp_path)
   end
 
+  test "reading a directory is :eisdir and is not logged", ctx do
+    dir = Path.join(ctx.workspace, "a-dir")
+    File.mkdir_p!(dir)
+
+    log =
+      capture_log(fn ->
+        assert {:error, :eisdir} = Sandbox.read(dir, ctx.caps, ctx.workspace, ctx.tmp_path)
+      end)
+
+    # A directory read is an ordinary tool outcome; nothing named `eisdir`
+    # should be logged (the only way it could appear is our own classifier).
+    refute log =~ "eisdir"
+  end
+
+  test "writing a scratch path with no scratch dir is an explicit error", ctx do
+    # default_caps grants the symbolic /tmp write, but there is no scratch dir
+    # to honor it. A write to /tmp fails loudly; a workspace write is fine.
+    assert {:error, msg} = Sandbox.write("/tmp/thing.txt", "x", ctx.caps, ctx.workspace, nil)
+    assert msg =~ "no scratch"
+
+    assert {:ok, _} =
+             Sandbox.write(Path.join(ctx.workspace, "ok.txt"), "x", ctx.caps, ctx.workspace, nil)
+  end
+
   # The sandbox's filesystem view is bwrap's view: `read`, `stat`, and `glob`
   # must execute inside bwrap, never against the host. A source scan is a weak
   # guard (it cannot see `apply/3`, an aliased `File`, `System.cmd`, or
@@ -152,7 +187,9 @@ defmodule Nest.SandboxHostPathTest do
   # spelling the call differently.
   @sandbox_sources [
     "lib/nest/sandbox.ex",
+    "lib/nest/sandbox/glob.ex",
     "lib/nest/sandbox/paths.ex",
+    "lib/nest/sandbox/shell_jobs.ex",
     "lib/nest/tools/shell_cmd.ex"
   ]
 
@@ -175,13 +212,23 @@ defmodule Nest.SandboxHostPathTest do
     {:io, :binread}
   ]
 
+  # The only host reads allowed in the scanned files. `Sandbox.ShellJobs` reads
+  # its own job log: a Nest artifact written by Nest and exposed with the same
+  # bytes by the mount, not an agent-visible read, so it is allowlisted
+  # explicitly. A *second* host read in that file still fails the guard.
+  @allowed_host_reads %{
+    "lib/nest/sandbox/shell_jobs.ex" => [{:file, :read}]
+  }
+
   test "read/stat/glob execute inside bwrap, not against the host (AST guard)" do
     for path <- @sandbox_sources do
       ast = path |> File.read!() |> Code.string_to_quoted!()
-      offenders = host_read_calls(ast)
+      offenders = ast |> host_read_calls() |> Enum.sort()
+      allowed = Map.get(@allowed_host_reads, path, [])
 
-      assert offenders == [],
-             "#{path} must not use host filesystem reads/stats; found: #{inspect(offenders)}"
+      assert offenders == allowed,
+             "#{path}: prohibited host filesystem reads/stats " <>
+               "#{inspect(offenders -- allowed)} (allowed: #{inspect(allowed)})"
     end
   end
 
@@ -194,9 +241,9 @@ defmodule Nest.SandboxHostPathTest do
     Enum.reverse(calls)
   end
 
-  defp host_read_call({{:., meta, [mod, fun]}, _call_meta, _args}, acc) do
+  defp host_read_call({{:., _meta, [mod, fun]}, _call_meta, _args}, acc) do
     if {module_of(mod), fun} in @host_read_calls do
-      [{module_of(mod), fun, line_of(meta)} | acc]
+      [{module_of(mod), fun} | acc]
     else
       acc
     end
@@ -209,8 +256,6 @@ defmodule Nest.SandboxHostPathTest do
   defp module_of(:file), do: :file
   defp module_of(:io), do: :io
   defp module_of(_), do: nil
-
-  defp line_of(meta), do: Keyword.get(meta, :line)
 
   defp bind_source_for(args, dest) do
     args

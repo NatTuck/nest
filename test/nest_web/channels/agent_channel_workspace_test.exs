@@ -33,6 +33,9 @@ defmodule NestWeb.AgentChannelWorkspaceTest do
           "agent-ws-#{System.unique_integer([:positive])}"
         ])
 
+      File.mkdir_p!(workspace)
+      on_exit(fn -> File.rm_rf(workspace) end)
+
       {_pid, agent_name} =
         AgentTestHelpers.start_agent(%{
           model: %{name: "qwen3.5-plus", provider: "model-studio"},

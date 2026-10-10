@@ -48,14 +48,14 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
   # Validate → persist → mutate → broadcast → reply. Returns the
   # GenServer reply tuple so the pipeline reads straight-line.
   defp perform_workspace_change(state, path) do
-    case Persistence.update_agent_workspace(state.space_id, state.name, path) do
+    with :ok <- Nest.Sandbox.workspace_error(path),
+         :ok <- Persistence.update_agent_workspace(state.space_id, state.name, path) do
+      {state, _reply} = apply_workspace(state, path)
+      Broadcasts.status(state)
+      {:reply, :ok, state}
+    else
       {:error, reason} ->
         {:reply, {:error, reason}, state}
-
-      :ok ->
-        {state, _reply} = apply_workspace(state, path)
-        Broadcasts.status(state)
-        {:reply, :ok, state}
     end
   end
 

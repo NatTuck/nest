@@ -40,9 +40,12 @@ If the tree is so screwed up that reverting is the only option then stop and rep
   bind source) is internal to `Nest.Sandbox`; the only spelling an agent is
   ever told about or hands back is the sandbox spelling (`/tmp/<agent>/...`).
 - The path mapping lives in exactly one place: `Nest.Sandbox.Paths`.
-- A workspace at or under `/tmp` is rejected when a scratch bind is present
-  (the scratch dir is bound there and would shadow it). A workspace can never
-  live under `/tmp`.
+- A workspace at or under `/tmp` is rejected **unconditionally**, because the
+  space scratch dir is bound at `/tmp` and would shadow it. A workspace can
+  never live under `/tmp`. A workspace that does not exist is rejected too.
+  Both are rejected at the point the workspace is chosen (create-space,
+  create-agent, `set_workspace`, edit-agent) and again at the final gate in
+  `Nest.Sandbox.build/5`.
 
 ## Project Design
 

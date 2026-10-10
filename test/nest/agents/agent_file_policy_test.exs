@@ -326,7 +326,10 @@ defmodule Nest.Agents.Agent.FilePolicyTest do
         vocation_id: vid
       })
 
-    on_exit(fn -> File.rm_rf!(workspace_root) end)
+    on_exit(fn ->
+      if String.contains?(workspace_root, "file_policy_workspace"),
+        do: File.rm_rf!(workspace_root)
+    end)
 
     {pid, name}
   end

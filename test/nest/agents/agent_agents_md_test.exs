@@ -70,7 +70,12 @@ defmodule Nest.Agents.AgentAgentsMdTest do
       vocation = create_vocation()
 
       workspace_path =
-        Path.join(System.tmp_dir!(), "nest-tmp-agents-md-#{System.unique_integer([:positive])}")
+        Path.join([
+          File.cwd!(),
+          "_build",
+          "tmp",
+          "nest-tmp-agents-md-#{System.unique_integer([:positive])}"
+        ])
 
       File.mkdir_p!(workspace_path)
       on_exit(fn -> safe_rm_rf(workspace_path) end)

@@ -339,4 +339,41 @@ defmodule Nest.Agents.SupervisorSpawnTest do
       assert row.archived == true
     end
   end
+
+  describe "spawn workspace validation" do
+    test "rejects a child whose inherited workspace is under /tmp", %{space_id: space_id} do
+      {:ok, vocation} =
+        Vocations.upsert_vocation(%{
+          name: "WSSpawn-#{System.unique_integer([:positive])}",
+          description: "needs a workspace",
+          system_prompt: "ws",
+          tools: [],
+          modes: %{
+            "build" => %{
+              "description" => "writes workspace",
+              "caps" => %{"net" => false, "fs" => %{"read" => ["/"], "write" => [":workspace"]}}
+            }
+          }
+        })
+
+      name = "ws-child-#{System.unique_integer([:positive])}"
+      state = coordinator_state(space_id)
+
+      # The parent inherited a /tmp-rooted workspace; a child that needs one
+      # must not start against it.
+      state = %{state | workspace_path: "/tmp/ws"}
+
+      assert {:error, :workspace_under_tmp} =
+               Supervisor.spawn_agent_in_space(state, name, vocation.slug)
+
+      # A parent with no workspace and a workspace-requiring child is the
+      # pre-existing `:workspace_required` case.
+      assert {:error, :workspace_required} =
+               Supervisor.spawn_agent_in_space(
+                 %{state | workspace_path: nil},
+                 name,
+                 vocation.slug
+               )
+    end
+  end
 end

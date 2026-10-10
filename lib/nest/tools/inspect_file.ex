@@ -38,6 +38,9 @@ defmodule Nest.Tools.InspectFile do
 
   @max_bytes 100 * 1_000_000
 
+  # A broken sandbox is a Nest configuration problem, not a missing file.
+  @sandbox_setup_failed "The sandbox failed to start; this is a Nest configuration problem, not a missing file."
+
   @doc """
   Build the `file-inspect` `Nest.LLM.Tool` struct.
   """
@@ -97,6 +100,10 @@ defmodule Nest.Tools.InspectFile do
       {:ok, %{size: size}} -> {:ok, size}
       {:error, :read_permission_denied} -> {:error, "Not permitted to stat file by sandbox caps"}
       {:error, :enoent} -> {:error, "File not found: #{path}"}
+      {:error, :eisdir} -> {:error, "Not a file: #{path}"}
+      {:error, :sandbox_setup_failed} -> {:error, @sandbox_setup_failed}
+      {:error, :read_timeout} -> {:error, "Timed out reading file: #{path}"}
+      {:error, :read_cancelled} -> {:error, "Read cancelled: #{path}"}
       {:error, reason} -> {:error, "Cannot stat file: #{inspect(reason)}"}
     end
   end
@@ -270,6 +277,10 @@ defmodule Nest.Tools.InspectFile do
     case Sandbox.read(full_path, caps, workspace_path, tmp_path) do
       {:ok, content} -> {:ok, content}
       {:error, :read_permission_denied} -> {:error, "Not permitted to read file by sandbox caps"}
+      {:error, :eisdir} -> {:error, "Not a file: #{full_path}"}
+      {:error, :sandbox_setup_failed} -> {:error, @sandbox_setup_failed}
+      {:error, :read_timeout} -> {:error, "Timed out reading file: #{full_path}"}
+      {:error, :read_cancelled} -> {:error, "Read cancelled: #{full_path}"}
       {:error, reason} -> {:error, "Read failed: #{inspect(reason)}"}
     end
   end

@@ -190,12 +190,23 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
     test "edits the model and workspace and broadcasts agent:updated", %{socket: socket} do
       {:ok, space_id, name} = create_test_agent(socket, "qwen3.5-plus")
 
+      ws =
+        Path.join([
+          File.cwd!(),
+          "_build",
+          "tmp",
+          "edited-ws-#{System.unique_integer([:positive])}"
+        ])
+
+      File.mkdir_p!(ws)
+      on_exit(fn -> File.rm_rf(ws) end)
+
       ref =
         push(socket, "edit_agent", %{
           "name" => name,
           "space_id" => space_id,
           "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"},
-          "workspace_path" => "/tmp/edited-ws"
+          "workspace_path" => ws
         })
 
       assert_reply ref, :ok, %{}, 750
@@ -207,7 +218,7 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
                        %{
                          "name" => ^name,
                          "space_id" => ^space_id,
-                         "workspace_path" => "/tmp/edited-ws"
+                         "workspace_path" => ^ws
                        },
                        200
     end

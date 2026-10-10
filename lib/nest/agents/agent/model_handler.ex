@@ -92,7 +92,7 @@ defmodule Nest.Agents.Agent.ModelHandler do
     if Nest.Vocations.requires_workspace?(state.vocation) and is_nil(workspace_path) do
       {:error, :workspace_required}
     else
-      :ok
+      Nest.Sandbox.workspace_error(workspace_path)
     end
   end
 

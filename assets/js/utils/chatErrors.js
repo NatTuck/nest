@@ -11,6 +11,10 @@ export function describeEditError(reason) {
       return "That model isn't configured on the server.";
     case "workspace_required":
       return "A working directory is required for this agent.";
+    case "workspace_missing":
+      return "That working directory doesn't exist on the server.";
+    case "workspace_under_tmp":
+      return "The working directory can't be under /tmp. Choose a directory outside /tmp.";
     case "context_overflow":
       return "The conversation is too full to record the change. Compact or start a new session.";
     case "not_found":

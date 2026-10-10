@@ -211,7 +211,7 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       dir = Path.join([root, "space-1", "agent-#{unique}"])
 
       File.mkdir_p!(dir)
-      on_exit(fn -> File.rm_rf!(root) end)
+      on_exit(fn -> if String.contains?(root, "batchsizer-test"), do: File.rm_rf!(root) end)
       {:ok, tmp_dir: dir}
     end
 
@@ -272,10 +272,12 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
   describe "read_file sizing policy" do
     setup do
       tmp_dir =
-        Path.join(
-          System.tmp_dir!(),
+        Path.join([
+          File.cwd!(),
+          "_build",
+          "tmp",
           "batchsizer-read-#{System.unique_integer([:positive])}"
-        )
+        ])
 
       File.mkdir_p!(tmp_dir)
       on_exit(fn -> File.rm_rf!(tmp_dir) end)
