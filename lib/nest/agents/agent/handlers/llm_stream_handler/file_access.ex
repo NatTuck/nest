@@ -124,7 +124,16 @@ defmodule Nest.Agents.Agent.Handlers.LLMStreamHandler.FileAccess do
   end
 
   defp record_stat(read_files, full_path, state) do
-    case Sandbox.stat(full_path, Agent.resolve_caps(state), time: :posix) do
+    # `full_path` is the sandbox-domain path the agent used. `state.tmp_path`
+    # is a HOST path passed only so `Sandbox.stat/4` can resolve that path;
+    # the host spelling must never be recorded or shown to the LLM.
+    case Sandbox.stat(
+           full_path,
+           Agent.resolve_caps(state),
+           Map.get(state, :workspace_path),
+           Map.get(state, :tmp_path),
+           time: :posix
+         ) do
       {:ok, %File.Stat{mtime: mtime, size: size}} when is_integer(mtime) ->
         Map.put(read_files, full_path, %{mtime: mtime, size: size})
 

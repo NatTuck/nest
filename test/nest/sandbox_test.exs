@@ -267,7 +267,7 @@ defmodule Nest.SandboxTest do
   describe "equivalence (binds == rule helpers)" do
     test "the --bind/--ro-bind mounts are derived from writable/readable roots" do
       caps = build_caps(write: [":workspace", "/tmp", "/data"])
-      {:ok, args} = Sandbox.build(caps, "/workspace", "/tmp/agent-1")
+      {:ok, args} = Sandbox.build(caps, "/workspace", "/tmp/nest-equivalence/space-1/agent-1")
 
       {ro_targets, bind_targets} = collect_bind_targets(args)
 
@@ -404,7 +404,7 @@ defmodule Nest.SandboxTest do
       caps = build_caps(read: ["/"])
       pattern = Path.join(root, "sub/*.txt")
       expected = [Path.join(root, "sub/a.txt"), Path.join(root, "sub/b.txt")]
-      assert {:ok, ^expected} = Sandbox.glob(pattern, caps, nil)
+      assert {:ok, ^expected} = Sandbox.glob(pattern, caps, nil, nil)
     end
 
     test "star matches names with a dot in them", %{root: root} do
@@ -417,7 +417,7 @@ defmodule Nest.SandboxTest do
         Path.join(root, "sub/c.md")
       ]
 
-      assert {:ok, ^expected} = Sandbox.glob(pattern, caps, nil)
+      assert {:ok, ^expected} = Sandbox.glob(pattern, caps, nil, nil)
     end
 
     test "double star crosses directory boundaries (zero-or-more segments)", %{
@@ -427,36 +427,36 @@ defmodule Nest.SandboxTest do
       pattern = Path.join(root, "**/c.txt")
       expected = [Path.join(root, "deep/c.txt"), Path.join(root, "deep/x/c.txt")]
 
-      assert {:ok, ^expected} = Sandbox.glob(pattern, caps, nil)
+      assert {:ok, ^expected} = Sandbox.glob(pattern, caps, nil, nil)
     end
 
     test "a literal path with no metacharacters matches exactly", %{root: root} do
       caps = build_caps(read: ["/"])
       file = Path.join(root, "sub/a.txt")
-      assert {:ok, [^file]} = Sandbox.glob(file, caps, nil)
+      assert {:ok, [^file]} = Sandbox.glob(file, caps, nil, nil)
     end
 
     test "a non-matching pattern returns an empty list", %{root: root} do
       caps = build_caps(read: ["/"])
       pattern = Path.join(root, "sub/*.xyz")
-      assert {:ok, []} = Sandbox.glob(pattern, caps, nil)
+      assert {:ok, []} = Sandbox.glob(pattern, caps, nil, nil)
     end
 
     test "a pattern rooted at a nonexistent directory matches nothing", %{root: root} do
       caps = build_caps(read: ["/"])
       pattern = Path.join(root, "missing/*.txt")
-      assert {:ok, []} = Sandbox.glob(pattern, caps, nil)
+      assert {:ok, []} = Sandbox.glob(pattern, caps, nil, nil)
     end
 
     test "a relative pattern is resolved against the workspace", %{root: root} do
       caps = build_caps(read: ["/"])
       expected = [Path.join(root, "sub/a.txt"), Path.join(root, "sub/b.txt")]
-      assert {:ok, ^expected} = Sandbox.glob("sub/*.txt", caps, root)
+      assert {:ok, ^expected} = Sandbox.glob("sub/*.txt", caps, root, nil)
     end
 
     test "a relative pattern with no workspace is an error" do
       caps = build_caps(read: ["/"])
-      assert {:error, msg} = Sandbox.glob("sub/*.txt", caps, nil)
+      assert {:error, msg} = Sandbox.glob("sub/*.txt", caps, nil, nil)
       assert msg =~ "No workspace configured"
     end
 
@@ -465,7 +465,7 @@ defmodule Nest.SandboxTest do
       # the walk but dropped by the read-authorization filter.
       caps = build_caps(read: [Path.join(root, "sub")])
       expected = [Path.join(root, "sub/a.txt"), Path.join(root, "sub/b.txt")]
-      assert {:ok, ^expected} = Sandbox.glob("**/*.txt", caps, root)
+      assert {:ok, ^expected} = Sandbox.glob("**/*.txt", caps, root, nil)
     end
 
     test "an over-broad expansion is rejected with :glob_too_broad", %{root: root} do
@@ -478,7 +478,7 @@ defmodule Nest.SandboxTest do
       end
 
       pattern = Path.join(broad, "*.txt")
-      assert {:error, :glob_too_broad} = Sandbox.glob(pattern, caps, nil, limit: 5)
+      assert {:error, :glob_too_broad} = Sandbox.glob(pattern, caps, nil, nil, limit: 5)
     end
   end
 

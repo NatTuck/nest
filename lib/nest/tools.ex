@@ -140,24 +140,16 @@ defmodule Nest.Tools do
   @doc """
   The "your own scratch directory" sentence appended to tool descriptions.
 
-  `spelling` selects the path the tool actually takes:
-
-    * `:sandbox` — the space dir is bound at `/tmp`, so the agent's own
-      dir is `/tmp/<agent-name>`. Used by tools that run inside the
-      sandbox (`shell-cmd`, `shell-list`, `file-write`).
-    * `:host` — the agent's `tmp_path`. Used by tools that address host
-      paths (`file-read`).
+  Every tool addresses the same sandbox spelling: the space dir is bound
+  at `/tmp`, so the agent's own dir is `/tmp/<agent-name>`. The host
+  backing path is internal to `Nest.Sandbox` and must never be shown.
 
   Returns `""` when no tmp dir is configured. Defined once so the wording
   cannot drift between tools.
   """
-  @spec scratch_note(String.t() | nil, :host | :sandbox) :: String.t()
-  def scratch_note(nil, _spelling), do: ""
-
-  def scratch_note(tmp_path, :host), do: scratch_sentence(tmp_path)
-
-  def scratch_note(tmp_path, :sandbox),
-    do: scratch_sentence(Sandbox.sandbox_tmp_path(tmp_path))
+  @spec scratch_note(String.t() | nil) :: String.t()
+  def scratch_note(nil), do: ""
+  def scratch_note(tmp_path), do: scratch_sentence(Sandbox.sandbox_tmp_path(tmp_path))
 
   defp scratch_sentence(scratch_dir) do
     " Your own scratch directory is `#{scratch_dir}/`; the `/tmp` root is shared " <>
@@ -193,7 +185,7 @@ defmodule Nest.Tools do
           "statements still run, so guard steps explicitly (for example " <>
           "`cmd || exit 1`, or put your own `set -e` on the first line) when a " <>
           "failure must stop the rest." <>
-          scratch_note(tmp_path, :sandbox),
+          scratch_note(tmp_path),
       parameters_schema: %{
         "type" => "object",
         "properties" => %{

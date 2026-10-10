@@ -11,7 +11,7 @@ defmodule Nest.Sandbox do
   `write_allowed?/3`, and `resolve/2` are pure predicates built on
   `Nest.FSPath` (canonicalization + containment). These are the ONLY
   place the sandbox rules live: the bwrap argument builder derives its
-  mounts from them, and the read-only host fast-path authorizes from
+  mounts from them, and the stat/glob host fast-path authorizes from
   them, so the fast-path can never permit something the mounts deny
   (and vice-versa).
 
@@ -25,13 +25,32 @@ defmodule Nest.Sandbox do
 
   ## Executors
 
-  `read/3` and `stat/3` are read-only fast-paths: they authorize via
-  the shared helpers and then hit the host filesystem directly, so
-  bwrap is not spawned for pure reads. Because bwrap runs as the same
-  uid with no uid remap and binds paths derived from the same helpers,
-  a host read is byte- and permission-identical to what bwrap would
-  expose. `write/5` and `run/5` always go through bwrap (`ShellCmd`),
-  so write/execute permissions are enforced by the mounts.
+  The agent-facing path domain is the *sandbox* domain: the space
+  scratch dir is bound at `/tmp`, so an agent's own scratch directory
+  is `/tmp/<agent-name>/...`. Every public executor accepts and returns
+  paths in that domain only.
+
+  `read/4` runs `cat -- <path>` inside bwrap via
+  `ShellCmd.execute_raw/5`, so the bytes come from exactly the mounts
+  bwrap exposes and the host spelling of the scratch dir is never
+  computed or named by a caller.
+
+  `stat/4` and `glob/5` keep a host fast-path, but it is a private
+  implementation detail of this module: `Nest.Sandbox.Paths.to_host/3`
+  maps a sandbox path onto its host backing path using the *same*
+  `Nest.Sandbox.Paths.scratch_root/1` that `append_tmp_bind/2` uses for
+  the `/tmp` mount, and `to_sandbox/2` maps results back. Because the
+  mount and the translation derive from one definition, a bind-layout
+  change cannot silently make a stat/glob read the wrong file.
+
+  **Host paths must never escape this module.** The host scratch
+  spelling (`/tmp/nest-<ospid>/space-<id>/<agent>/...`) is an internal
+  detail; the LLM must only ever see sandbox paths (`/tmp/<agent>/...`).
+  Every point where a host path is used carries a comment restating
+  this rule.
+
+  `write/5` and `run/5` go through bwrap (`ShellCmd`), so
+  write/execute permissions are enforced by the mounts.
 
   ## Caps shape
 
@@ -80,7 +99,7 @@ defmodule Nest.Sandbox do
 
   alias Nest.FSPath
   alias Nest.Hardware
-  alias Nest.Sandbox.Caps
+  alias Nest.Sandbox.{Caps, Glob, Paths}
   alias Nest.Tools.ShellCmd
   alias Nest.Tools.ShellEscape
 
@@ -253,20 +272,11 @@ defmodule Nest.Sandbox do
   def resolve(path, workspace), do: FSPath.resolve(path, workspace)
 
   @doc """
-  The host directory bound at `/tmp` for a given agent scratch dir.
-
-  `tmp_path` is the agent's own scratch directory
-  (`<space_dir>/<agent-name>`); the whole space directory is what gets
-  bound at `/tmp`, so the bind root is its parent. Callers that need to
-  translate a host path under `tmp_path` into the path the sandbox sees
-  (or vice-versa) derive it from here.
-  """
-  @spec tmp_bind_root(String.t()) :: String.t()
-  def tmp_bind_root(tmp_path), do: Path.dirname(tmp_path)
-
-  @doc """
   The path an agent's own scratch dir (`tmp_path`) appears at inside the
   sandbox: `/tmp/<agent-name>` (the space dir is bound at `/tmp`).
+
+  This is the only spelling an agent should ever be told about or hand
+  back; the host backing path is internal to this module.
   """
   @spec sandbox_tmp_path(String.t()) :: String.t()
   def sandbox_tmp_path(tmp_path), do: Path.join("/tmp", Path.basename(tmp_path))
@@ -274,46 +284,93 @@ defmodule Nest.Sandbox do
   # ---- Executors ----
 
   @doc """
-  Read `path` after authorizing it via `read_allowed?/2`. Uses the
-  read-only host fast-path (no bwrap). Returns `{:ok, content}`,
-  `{:error, reason}`, or `{:error, :read_permission_denied}`.
+  Read `path` (a sandbox-domain path) inside the bwrap sandbox and return
+  its contents. The read is resolved by exactly the mounts bwrap builds,
+  so the host spelling of the scratch dir is never involved.
+
+  Returns `{:ok, content}`, `{:error, :read_permission_denied}`,
+  `{:error, :enoent}`, or `{:error, reason}`. `workspace` and `tmp_path`
+  are HOST paths used only to build the sandbox; they are never returned.
   """
-  @spec read(String.t(), map(), keyword()) :: {:ok, binary()} | {:error, atom() | term()}
-  def read(path, caps, _opts \\ []) do
-    if read_allowed?(path, caps) do
-      File.read(Nest.ProjectConfig.read_source(path, caps))
-    else
-      {:error, :read_permission_denied}
+  @spec read(String.t(), map(), String.t() | nil, String.t() | nil) ::
+          {:ok, binary()} | {:error, atom() | term()}
+  def read(path, caps, workspace, tmp_path) do
+    command = "cat -- " <> ShellEscape.escape(path)
+
+    # HOST PATH: `workspace` is the optional host workspace to bind into the
+    # sandbox. Drop it when it isn't a directory so a missing workspace can't
+    # raise here; it is only used to build the sandbox and is never returned.
+    workspace = if is_binary(workspace) and File.dir?(workspace), do: workspace, else: nil
+
+    case ShellCmd.execute_raw(command, workspace, tmp_path, caps) do
+      {:ok, 0, stdout, _stderr} ->
+        {:ok, stdout}
+
+      {:ok, _exit_code, _stdout, _stderr} ->
+        {:error, classify_read_failure(path, caps, workspace, tmp_path)}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
   @doc """
-  Stat `path` after authorizing it via `read_allowed?/2`. Uses the
-  read-only host fast-path (no bwrap). `opts` are passed to
+  Stat `path` (a sandbox-domain path) after authorizing it via
+  `read_allowed?/2`. Keeps a host fast-path, but the host path is computed
+  by `Nest.Sandbox.Paths.to_host/3` from the same bind definition as the
+  `/tmp` mount and never leaves this module. `opts` are passed to
   `File.stat/2` (e.g. `time: :posix`). Returns `{:ok, stat}`,
   `{:error, reason}`, or `{:error, :read_permission_denied}`.
   """
-  @spec stat(String.t(), map(), keyword()) :: {:ok, File.Stat.t()} | {:error, atom() | term()}
-  def stat(path, caps, opts \\ []) do
-    if read_allowed?(path, caps) do
-      File.stat(Nest.ProjectConfig.read_source(path, caps), opts)
+  @spec stat(String.t(), map(), String.t() | nil, String.t() | nil, keyword()) ::
+          {:ok, File.Stat.t()} | {:error, atom() | term()}
+  def stat(path, caps, workspace, tmp_path, opts \\ []) do
+    # HOST PATH: computed here, used only for the `File.stat/2` below, and
+    # never returned. The LLM must only ever see the sandbox spelling.
+    host = Paths.to_host(path, workspace, tmp_path)
+
+    if read_permitted?(host, caps, tmp_path) do
+      File.stat(Nest.ProjectConfig.read_source(host, caps), opts)
     else
       {:error, :read_permission_denied}
     end
   end
 
-  # Hard ceiling on how many files `glob/4` will expand. A glob is a
+  # True when a HOST path is readable under the caps, or lives in the agent's
+  # scratch bind root (which bwrap always exposes read-write, regardless of
+  # the mode's read list). The host path stays internal to this module.
+  defp read_permitted?(host, caps, tmp_path) do
+    read_allowed?(host, caps) or
+      (is_binary(tmp_path) and FSPath.under?(Paths.scratch_root(tmp_path), host))
+  end
+
+  # Classify a failed sandbox read for the caller's error message. `path` is
+  # the sandbox-domain path; `Paths.to_host/3` yields the HOST backing path,
+  # which is kept internal and never returned.
+  defp classify_read_failure(path, caps, workspace, tmp_path) do
+    host = Paths.to_host(path, workspace, tmp_path)
+
+    cond do
+      not read_permitted?(host, caps, tmp_path) -> :read_permission_denied
+      not File.exists?(host) -> :enoent
+      true -> :read_failed
+    end
+  end
+
+  # Hard ceiling on how many files `glob/5` will expand. A glob is a
   # scatter target (e.g. `agents-batch`); an unbounded match count would
   # fork unbounded children, so we cap expansion and surface a
   # `:glob_too_broad` error so a caller can tell the model to narrow it.
   @glob_limit 1_000
 
   @doc """
-  Expand a glob `pattern` to readable regular files, honoring the same
-  read caps as `read/3`. The pattern is resolved against `workspace`
-  (an absolute pattern is used as-is), expanded on the host filesystem,
-  filtered to regular files whose canonical path is readable under
-  `caps`, then returned sorted and deduplicated.
+  Expand a glob `pattern` (a sandbox-domain path) to readable regular
+  files, honoring the same read caps as `read/4`. The pattern is resolved
+  against `workspace` (an absolute pattern is used as-is), expanded via a
+  host fast-path, filtered to regular files whose canonical path is
+  readable under `caps`, then returned sorted and deduplicated **in the
+  sandbox spelling** (`/tmp/<agent>/...`). The host spelling never leaves
+  this module.
 
   Glob metacharacters: `*` (any run of non-`/` chars), `?` (one
   non-`/` char), and `**` (any run of path segments, including none —
@@ -322,24 +379,25 @@ defmodule Nest.Sandbox do
   `opts` accepts `limit:` (default `@glob_limit`), the max number of
   files the pattern may match before the call returns
   `{:error, :glob_too_broad}` (so a scatter caller can ask the model to
-  narrow the pattern rather than fork an bounded set). A resolve
+  narrow the pattern rather than fork an unbounded set). A resolve
   failure for a relative pattern with no workspace returns
   `{:error, reason}`.
   """
-  @spec glob(String.t(), map(), String.t() | nil, keyword()) ::
+  @spec glob(String.t(), map(), String.t() | nil, String.t() | nil, keyword()) ::
           {:ok, [String.t()]} | {:error, atom() | term()}
-  def glob(pattern, caps, workspace, opts \\ []) when is_binary(pattern) and is_map(caps) do
+  def glob(pattern, caps, workspace, tmp_path, opts \\ [])
+      when is_binary(pattern) and is_map(caps) do
     limit = Keyword.get(opts, :limit, @glob_limit)
 
     with {:ok, full} <- FSPath.resolve(pattern, workspace) do
-      # `do_glob_walk/4` `throw`s `:glob_too_broad` when the match count
+      # `Glob.walk/3` `throw`s `:glob_too_broad` when the match count
       # exceeds the limit (unwinding the recursion early). The per-segment
       # matcher is total (it never raises on a malformed pattern), so this
       # `:error` arm is a defensive backstop: translate any unexpected error
       # into a `:invalid_glob` result rather than crashing the agent's tool
       # worker. `e` may be a raw (non-exception) term, so `inspect` it.
       try do
-        {:ok, collect_matches(full, caps, limit)}
+        {:ok, collect_matches(full, caps, workspace, tmp_path, limit)}
       catch
         :throw, :glob_too_broad -> {:error, :glob_too_broad}
         :error, e -> {:error, {:invalid_glob, inspect(e)}}
@@ -347,171 +405,26 @@ defmodule Nest.Sandbox do
     end
   end
 
-  # Expand a resolved absolute glob `full` to readable regular files:
-  # walk the pattern, keep only files whose canonical path is readable
-  # under `caps`, then sort + dedupe. `do_glob_walk/4` may `throw`
-  # `:glob_too_broad` from here (propagated to the caller's `catch`).
-  defp collect_matches(full, caps, limit) do
-    {base_dir, rest} = split_glob_segments(full)
+  # Expand a resolved absolute glob `full` (sandbox spelling) to readable
+  # regular files in the sandbox spelling: translate the literal base to its
+  # HOST backing path, walk the host, keep only readable regular files, then
+  # translate every match back. `Glob.walk/3` may `throw` `:glob_too_broad`
+  # from here (propagated to the caller's `catch`).
+  #
+  # HOST PATH: the translated base and walked matches are host spellings and
+  # must not escape this module (see the moduledoc).
+  defp collect_matches(full, caps, workspace, tmp_path, limit) do
+    {base, rest} = Glob.split(full)
 
-    base_dir
-    |> do_glob_walk(rest, [], limit)
-    |> Enum.filter(fn path -> File.regular?(path) and read_allowed?(path, caps) end)
+    base
+    |> Paths.to_host(workspace, tmp_path)
+    |> FSPath.canonical()
+    |> Glob.walk(rest, limit)
+    |> Enum.filter(fn host -> File.regular?(host) and read_permitted?(host, caps, tmp_path) end)
+    |> Enum.map(&Paths.to_sandbox(&1, tmp_path))
     |> Enum.sort()
     |> Enum.uniq()
   end
-
-  # Split a resolved absolute glob pattern into a `{base_dir, rest}`
-  # pair. `base_dir` is the longest leading literal prefix (no `*` or
-  # `?`), canonicalized via `realpath` so the walk starts at the real
-  # directory; `rest` are the remaining glob segments. The leading empty
-  # segment of an absolute path is preserved so `Path.join/1` yields the
-  # absolute base. When the pattern's first segment is itself a glob,
-  # the base collapses to the filesystem root.
-  defp split_glob_segments(full) do
-    segments = String.split(full, "/", trim: false)
-
-    # The leading literal prefix (up to the FIRST glob segment) is the base
-    # directory; everything from the first glob onward is `rest`. `split_while`
-    # (unlike `split_with`) stops at the first glob, so a pattern like
-    # `src/*/file.txt` keeps `file.txt` in `rest` — `do_glob_walk/4` matches
-    # any later literal segment exactly via `fnmatch?/2`.
-    {literal, glob} = Enum.split_while(segments, &(!glob_segment?(&1)))
-
-    # `Path.join/1` drops the leading empty segment of an absolute path
-    # (`["", "tmp", "x"]` → `"tmp/x"`), which would silently turn the base
-    # into a CWD-relative path. Re-prepend `/` when the source was absolute.
-    base =
-      literal
-      |> Path.join()
-      |> maybe_make_absolute?(full)
-
-    {base_dir_or_root(base), glob}
-  end
-
-  # Re-absolute a base that lost its leading `/` during `Path.join/1`.
-  defp maybe_make_absolute?(base, full) do
-    if String.starts_with?(full, "/") and not String.starts_with?(base, "/") do
-      "/" <> base
-    else
-      base
-    end
-  end
-
-  # The literal prefix joined is a full path; canonicalize it, falling
-  # back to the root when it's empty (pattern starts with a glob).
-  defp base_dir_or_root(""), do: "/"
-
-  defp base_dir_or_root(path), do: FSPath.canonical(path)
-
-  # A segment is a "glob" when it contains `*` or `?`.
-  defp glob_segment?(seg), do: String.contains?(seg, "*") or String.contains?(seg, "?")
-
-  # All segments consumed: the current `dir` is a full match.
-  defp do_glob_walk(dir, [], acc, limit) do
-    acc = [dir | acc]
-    if length(acc) > limit, do: throw(:glob_too_broad)
-    acc
-  end
-
-  # `**` occupies a full segment: match zero or more path segments.
-  # We try each remaining segment against the directory contents and
-  # recurse both one-level-deeper (into each subdir) and skipping
-  # (treating `**` as matching zero segments).
-  defp do_glob_walk(dir, ["**" | rest], acc, limit) do
-    entries = safe_readdir(dir)
-
-    # `**` may match zero segments: continue with `rest` in the same dir.
-    acc = do_glob_walk(dir, rest, acc, limit)
-
-    # `**` matches one-or-more segments: recurse into each subdir.
-    acc =
-      Enum.reduce(entries, acc, fn name, a ->
-        child = Path.join(dir, name)
-
-        if File.dir?(child) do
-          do_glob_walk(child, ["**" | rest], a, limit)
-        else
-          a
-        end
-      end)
-
-    acc
-  end
-
-  # A normal segment: match it against the directory contents.
-  defp do_glob_walk(dir, [seg | rest], acc, limit) do
-    entries = safe_readdir(dir)
-
-    Enum.reduce_while(entries, acc, fn name, a ->
-      if fnmatch?(seg, name) do
-        child = Path.join(dir, name)
-        {:cont, do_glob_walk(child, rest, a, limit)}
-      else
-        {:cont, a}
-      end
-    end)
-  end
-
-  # Return the directory's entries as basenames, or `[]` when the
-  # directory doesn't exist / isn't readable (the glob simply matches
-  # nothing there).
-  defp safe_readdir(dir) do
-    case File.ls(dir) do
-      {:ok, names} -> names
-      {:error, _} -> []
-    end
-  end
-
-  # Match a single glob segment (no `/`) against a basename. Supports
-  # `*` (any run of characters) and `?` (exactly one character); every
-  # other character is literal. `**` never reaches here — it occupies a
-  # whole path segment and is handled by its own `do_glob_walk/4` clause.
-  defp fnmatch?(pat, name), do: seg_match(pat, name)
-
-  # Both exhausted: matched.
-  defp seg_match(<<>>, <<>>), do: true
-  # Pattern exhausted but name remains: only matches if the leftover
-  # pattern was all stars (handled by the `*` clause below).
-  defp seg_match(<<>>, _name), do: false
-  # Name exhausted with a non-empty pattern remaining: no match (a
-  # trailing `*` was already collapsed into the `*` clause).
-  defp seg_match(_pat, <<>>), do: false
-  # Leading `*`: collapse consecutive stars, then let the star consume
-  # 0..N characters of the name.
-  defp seg_match(<<"*"::utf8, rest::binary>>, name) do
-    star_match(skip_stars(rest), name)
-  end
-
-  # `?` matches any single character.
-  defp seg_match(<<"?"::utf8, rest::binary>>, <<_c::utf8, name_rest::binary>>) do
-    seg_match(rest, name_rest)
-  end
-
-  # Literal character match.
-  defp seg_match(<<p::utf8, rest::binary>>, <<n::utf8, name_rest::binary>>) when p == n do
-    seg_match(rest, name_rest)
-  end
-
-  defp seg_match(_pat, _name), do: false
-
-  # The star has consumed `k` characters of `name`; try to match the
-  # remainder of the pattern (`rest`) against the leftover name. The
-  # star may consume zero characters first, then one more, etc.
-  defp star_match(rest, name) do
-    if seg_match(rest, name) do
-      true
-    else
-      case name do
-        <<_c::utf8, name_rest::binary>> -> star_match(rest, name_rest)
-        <<>> -> false
-      end
-    end
-  end
-
-  # Collapse consecutive leading stars into one (they're redundant).
-  defp skip_stars(<<"*"::utf8, rest::binary>>), do: skip_stars(rest)
-  defp skip_stars(seg), do: seg
 
   @doc """
   Run `command` inside the bwrap sandbox. Authorizes nothing further
@@ -657,10 +570,14 @@ defmodule Nest.Sandbox do
   # symbolic AND shared: every agent in a space sees the same /tmp, so a
   # file path handed from one agent to a sibling resolves for the
   # recipient. The agent's own dir appears at `/tmp/<agent-name>` inside.
+  #
+  # HOST PATH: `Paths.scratch_root/1` yields the host bind source — the same
+  # definition the stat/glob translation uses. It must not escape this
+  # module or be named to the agent (see the moduledoc).
   defp append_tmp_bind(args, nil), do: args
 
   defp append_tmp_bind(args, tmp_path) do
-    args ++ ["--bind", FSPath.canonical(tmp_bind_root(tmp_path)), "/tmp"]
+    args ++ ["--bind", Paths.scratch_root(tmp_path), "/tmp"]
   end
 
   defp append_chdir(args, chdir_path) do

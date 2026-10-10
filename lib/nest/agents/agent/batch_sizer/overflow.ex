@@ -12,7 +12,9 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
   space scratch dir (which the sandbox binds read-write at `/tmp`, so the
   agent sees it at `/tmp/<agent-name>`). Writing on the host directly
   (rather than through the sandbox gatekeeper) is intentional internal
-  scratch management, mirroring `BatchSizer`.
+  scratch management, mirroring `BatchSizer`. The HOST backing path stays
+  internal: `write/4` returns the sandbox spelling the agent must use, so
+  the host layout never reaches the LLM.
   """
 
   alias Nest.Tokens.Estimator
@@ -35,11 +37,16 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
         nil
 
       dir ->
-        path = Path.join(dir, "#{prefix}-#{token()}.#{ext}")
+        name = "#{prefix}-#{token()}.#{ext}"
+        # HOST PATH: `dir` is the agent's host scratch directory, and `path`
+        # is where the bytes are written. Neither is ever returned — the LLM
+        # must only ever see the sandbox spelling (`/tmp/<agent>/...`), which
+        # is what `Nest.Sandbox.sandbox_tmp_path/1` produces below.
+        path = Path.join(dir, name)
 
         try do
           File.write!(path, content)
-          path
+          Path.join(Nest.Sandbox.sandbox_tmp_path(dir), name)
         rescue
           _ -> nil
         end

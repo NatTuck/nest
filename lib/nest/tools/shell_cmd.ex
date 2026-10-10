@@ -87,6 +87,37 @@ defmodule Nest.Tools.ShellCmd do
     end
   end
 
+  @doc false
+  # Low-level sibling of `execute/5` for callers that need the raw exit code and
+  # the separated stdout/stderr streams instead of the decorated combined
+  # output. `Nest.Sandbox.read/5` uses this to fetch a file's bytes through the
+  # sandbox: it must see stdout exactly (an empty file is a valid read, so the
+  # `"[Command executed successfully with no output]"` placeholder `execute/5`
+  # emits is wrong here) and it must inspect stderr to classify failures.
+  #
+  # `workspace_path` / `tmp_path` are HOST paths used only to build the bwrap
+  # argument list; they must never be handed back to a caller (see
+  # `Nest.Sandbox`'s "host spelling must not escape" rule).
+  @spec execute_raw(String.t(), String.t() | nil, String.t() | nil, map() | nil, keyword()) ::
+          {:ok, non_neg_integer(), binary(), binary()} | {:error, String.t()}
+  def execute_raw(command, workspace_path, tmp_path \\ nil, caps \\ nil, opts \\ []) do
+    timeout = Keyword.get(opts, :timeout, @default_timeout_ms)
+    stdin = normalize_stdin(Keyword.get(opts, :stdin))
+
+    workspace = resolve_workspace(workspace_path)
+
+    if tmp_path, do: File.mkdir_p!(tmp_path)
+
+    {script, script_path} = stage_script(command, tmp_path)
+    sandboxed_cmd = build_sandboxed_command(script_path, workspace, tmp_path, caps)
+
+    try do
+      run_with_erlexec_raw(sandboxed_cmd, timeout, stdin)
+    after
+      File.rm(script)
+    end
+  end
+
   # Run the staged script and remove it afterwards: it is only a transcript of
   # the command, and all the caller keeps is the output, so it goes on every
   # path - success, failure, timeout or crash.
@@ -286,6 +317,20 @@ defmodule Nest.Tools.ShellCmd do
   end
 
   defp run_with_erlexec(command, timeout, stdin) do
+    case run_with_erlexec_streams(command, timeout, stdin) do
+      {:ok, exit_code, combined, _stdout, _stderr} -> {:ok, exit_code, combined}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp run_with_erlexec_raw(command, timeout, stdin) do
+    case run_with_erlexec_streams(command, timeout, stdin) do
+      {:ok, exit_code, _combined, stdout, stderr} -> {:ok, exit_code, stdout, stderr}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp run_with_erlexec_streams(command, timeout, stdin) do
     stdin_opt = if stdin, do: :stdin, else: {:stdin, :null}
 
     # `:erlexec` is kept out of the boot-time `applications` list outside
@@ -306,8 +351,8 @@ defmodule Nest.Tools.ShellCmd do
       {:ok, _pid, os_pid} ->
         send_stdin(os_pid, stdin)
 
-        # Buffers are IO lists (prepend in O(1)); `combine_output/1`
-        # flattens to a single binary at the end.
+        # Buffers are IO lists (prepend in O(1)); the terminal handler
+        # flattens each stream to a binary.
         collect_output(os_pid, timeout, %{stdout: [], stderr: [], exit_code: nil})
 
       {:error, reason} ->
@@ -367,11 +412,11 @@ defmodule Nest.Tools.ShellCmd do
     output = combine_output(acc) <> "\n[Command cancelled]"
     # 130 = 128 + SIGINT(2), the conventional shell cancellation
     # exit code (Ctrl-C).
-    {:ok, 130, output}
+    {:ok, 130, output, stdout_bin(acc), stderr_bin(acc)}
   end
 
   defp handle_down(acc, reason) do
-    {:ok, exit_code(reason), combine_output(acc)}
+    {:ok, exit_code(reason), combine_output(acc), stdout_bin(acc), stderr_bin(acc)}
   end
 
   @doc false
@@ -395,18 +440,22 @@ defmodule Nest.Tools.ShellCmd do
   defp handle_timeout(os_pid, timeout, acc) do
     :exec.stop(os_pid)
     output = combine_output(acc) <> "\n[Command timed out after #{timeout}ms]"
-    {:ok, 1, output}
+    {:ok, 1, output, stdout_bin(acc), stderr_bin(acc)}
   end
 
   defp combine_output(acc) do
-    output = acc.stdout |> Enum.reverse() |> IO.iodata_to_binary()
+    output = stdout_bin(acc)
 
     if acc.stderr == [] do
       output
     else
-      output <> "\n[stderr]\n" <> (acc.stderr |> Enum.reverse() |> IO.iodata_to_binary())
+      output <> "\n[stderr]\n" <> stderr_bin(acc)
     end
   end
+
+  defp stdout_bin(acc), do: acc.stdout |> Enum.reverse() |> IO.iodata_to_binary()
+
+  defp stderr_bin(acc), do: acc.stderr |> Enum.reverse() |> IO.iodata_to_binary()
 
   defp escape_shell(command) do
     # Escape single quotes by ending the quote, adding escaped quote, resuming quote

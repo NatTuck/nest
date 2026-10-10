@@ -206,7 +206,11 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   defp agents_md_section(nil, _caps), do: ""
 
   defp agents_md_section(workspace_path, caps) do
-    case Sandbox.read(Path.join(workspace_path, "AGENTS.md"), caps) do
+    # `AGENTS.md` lives at the workspace root, which is the same spelling in
+    # both domains, so no scratch tmp is needed (the `nil` fourth arg). The
+    # read still runs through the sandbox; the host path is internal to
+    # `Nest.Sandbox` and must never be shown to the LLM.
+    case Sandbox.read(Path.join(workspace_path, "AGENTS.md"), caps, workspace_path, nil) do
       {:ok, content} ->
         # The file is arbitrary user bytes: NUL / invalid UTF-8 cannot be
         # stored in the system message's jsonb row. Replace them rather

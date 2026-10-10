@@ -24,7 +24,7 @@ defmodule Nest.Tools.ShellJobs do
           "`background: true`), with each job's status, exit code, and log " <>
           "path. Use `shell-wait` to block for one to finish and `shell-kill` " <>
           "to stop one." <>
-          Nest.Tools.scratch_note(tmp_path, :sandbox),
+          Nest.Tools.scratch_note(tmp_path),
       parameters_schema: %{
         "type" => "object",
         "properties" => %{"max_result_tokens" => Nest.Tools.max_result_tokens_schema()},
