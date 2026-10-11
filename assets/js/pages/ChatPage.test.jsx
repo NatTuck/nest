@@ -1590,7 +1590,7 @@ describe("ChatPage message copy button", () => {
     expect(writeText).toHaveBeenCalledWith("Hello world");
   });
 
-  it("clicking an assistant message's copy button writes the content (including thinking, separated by a horizontal rule)", async () => {
+  it("clicking an assistant message's copy button writes the markdown body with thinking excluded", async () => {
     mockAgentsCache = {
       "test-agent": {
         status: "connected",
@@ -1625,9 +1625,7 @@ describe("ChatPage message copy button", () => {
       fireEvent.click(buttons[1]);
     });
 
-    expect(writeText).toHaveBeenCalledWith(
-      "Reasoning here.\n\n---\n\nAnswer here.",
-    );
+    expect(writeText).toHaveBeenCalledWith("Answer here.");
   });
 
   it("the copy button on a message flips to 'Copied' after a successful click", async () => {

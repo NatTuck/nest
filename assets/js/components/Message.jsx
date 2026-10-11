@@ -20,10 +20,13 @@
  * re-render is the `messageToMarkdown` closure wired to the
  * `CopyButton` — but it's stored as a `getText` callback, not
  * eagerly materialized, so the markdown join is deferred
- * until the user actually clicks. The `toolCalls` /
- * `toolResults` JSON.stringify calls inside `ToolCalls` and
- * `ToolResults` are still eager; those are the next biggest
- * perf wins if this ever needs to go further.
+ * until the user actually clicks. That join serialises the
+ * whole message in part order and deliberately omits thinking
+ * (issue #51): the UI still renders thinking via
+ * `ThinkingBlock`, only the clipboard leaves it out. The
+ * `toolCalls` / `toolResults` JSON.stringify calls inside
+ * `ToolCalls` and `ToolResults` are still eager; those are the
+ * next biggest perf wins if this ever needs to go further.
  */
 import { memo } from "react";
 
