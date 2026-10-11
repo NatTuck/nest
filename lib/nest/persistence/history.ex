@@ -43,8 +43,10 @@ defmodule Nest.Persistence.History do
 
   @doc """
   One page of the archive: the most recent `:limit` rows at or below the
-  compaction boundary, restricted to rows before `:before` (exclusive)
-  and to `:roles` when given.
+  compaction boundary, restricted to rows before `:before` (exclusive),
+  to `:roles` when given, and to a `metadata["origin"]` value when `:origin`
+  is given (the recall projection asks for `"human"` so delivered peer
+  messages and notices do not consume its page budget).
 
   Returns rows in ascending index order, so the page's first row is the
   oldest one in it and a follow-up call pages further back with
@@ -60,7 +62,8 @@ defmodule Nest.Persistence.History do
         Messages.load_slice(space_id, agent_name,
           cap: cap(boundary, before),
           limit: limit,
-          roles: Keyword.get(opts, :roles)
+          roles: Keyword.get(opts, :roles),
+          origin: Keyword.get(opts, :origin)
         )
 
       _ ->

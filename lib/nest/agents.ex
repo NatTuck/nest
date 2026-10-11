@@ -286,13 +286,17 @@ defmodule Nest.Agents do
   `sender` identifies the human behind the message (the channel passes the
   socket's username); the agent records it on a queued inbox entry when it
   is busy. `mode` is the human's requested mode.
+
+  `human?` says whether the content is the human's own words (the channel
+  passes `true`; `agents-spawn`'s `query` kickoff passes `false`). Only a
+  human message is tagged `origin: "human"` for the Ctrl/Cmd+Up recall list.
   """
-  @spec chat(integer(), String.t(), String.t(), String.t() | nil, String.t() | nil) ::
+  @spec chat(integer(), String.t(), String.t(), String.t() | nil, String.t() | nil, boolean()) ::
           :ok | {:error, :not_found}
-  def chat(space_id, name, content, mode \\ nil, sender \\ nil) do
+  def chat(space_id, name, content, mode \\ nil, sender \\ nil, human? \\ false) do
     case Supervisor.get_agent(space_id, name) do
       {:ok, pid} ->
-        Agent.chat(pid, content, mode, sender)
+        Agent.chat(pid, content, mode, sender, human?)
         :ok
 
       {:error, :not_found} ->

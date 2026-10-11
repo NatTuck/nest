@@ -336,7 +336,7 @@ defmodule NestWeb.AgentChannel do
         {:reply, {:error, %{"reason" => "agent_status_#{status}"}}, socket}
 
       {:ok, _agent} ->
-        reply_chat(socket, Agents.chat(space_id, name, content, mode, sender))
+        reply_chat(socket, Agents.chat(space_id, name, content, mode, sender, true))
 
       {:error, :not_found} ->
         {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}

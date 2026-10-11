@@ -63,32 +63,38 @@ defmodule Nest.Agents.Agent.Callbacks do
     {:noreply, SubAgent.stop_pending_children(state)}
   end
 
-  # A human chat message (`Agent.chat/4`). The disposition is decided here,
+  # A chat message (`Agent.chat/5`). The disposition is decided here,
   # in the agent process, so the status check and the enqueue cannot race:
   # this read is the authority, and the channel's own read is UX only.
   #
-  # The 4-tuple arity is deliberate and there is no compatibility clause for
-  # the old 2-/3-tuple casts: an out-of-tree caller still using that shape
+  # The 5-tuple arity is deliberate and there is no compatibility clause for
+  # the old 2-/3-/4-tuple casts: an out-of-tree caller still using that shape
   # fails loudly with a `FunctionClauseError` in the agent process instead of
   # being silently dropped, which is what this project prefers for a shape it
   # no longer knows.
+  #
+  # `human?` says whether the content is the human's own words (the channel)
+  # or a kickoff nobody typed (`agents-spawn`'s `query`). It is threaded
+  # explicitly rather than inferred from the idle path, because *both* arms
+  # tag the message the human's Ctrl/Cmd+Up recall list keys off.
+  #
   # `:idle` starts the turn now (the requested mode applies immediately); a
   # busy status queues the message on the agent's own inbox for the next
   # turn boundary; a broken status drops it (logged — the channel's
   # `agent_status_<status>` reply only covers channel callers).
-  def handle_cast({:chat, content, mode, sender}, state) do
-    chat_or_queue(state, content, mode, sender)
+  def handle_cast({:chat, content, mode, sender, human?}, state) do
+    chat_or_queue(state, content, mode, sender, human?)
   end
 
-  defp chat_or_queue(state, content, mode, sender) do
+  defp chat_or_queue(state, content, mode, sender, human?) do
     status = Machine.status_for(state.live.machine)
 
     cond do
       status == :idle ->
-        ChatPipeline.handle_chat(state, content, mode)
+        ChatPipeline.handle_chat(state, content, mode, human?)
 
       Inbox.busy_status?(status) ->
-        {state, _disposition} = Inbox.deliver_user_message(state, sender, content, mode)
+        {state, _disposition} = Inbox.deliver_user_message(state, sender, content, mode, human?)
         {:noreply, state}
 
       true ->

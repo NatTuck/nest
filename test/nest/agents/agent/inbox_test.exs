@@ -18,7 +18,6 @@ defmodule Nest.Agents.Agent.InboxTest do
   alias Nest.LLM.MockClient
   alias Nest.Messages.MessageList
   alias Nest.Messages.Part
-  alias Nest.Messages.User
 
   # A big-enough body to exceed the default 8000-token cap.
   @oversized String.duplicate("hello world ", 4_000)
@@ -530,10 +529,15 @@ defmodule Nest.Agents.Agent.InboxTest do
     } do
       # A human message that arrives mid-turn is queued and later delivered
       # through the same `build_drained_message/3` a peer batch uses, so the
-      # `origin: "human"` marker has to come from the batch's kind. Without it
-      # the prompt would drop out of the Ctrl/Cmd+Up recall list.
+      # `origin: "human"` marker has to come from the entry's `human?` flag.
+      # Without it the prompt would drop out of the Ctrl/Cmd+Up recall list.
+      #
+      # The entry is injected with `:sys.replace_state`, so this pins
+      # `origin_metadata/1` and the drain — not `deliver_user_message/4`'s own
+      # wiring of the flag (covered by the `build_drained_message/3` cases
+      # below and by the `Agent.chat/5` test in `agent_chat_mode_test.exs`).
       before = length(:sys.get_state(pid).chat_state.messages)
-      stage_drain(pid, [entry(:user, "alice", "queued prompt", "plan")])
+      stage_drain(pid, [entry(:user, "alice", "queued prompt", "plan", true)])
 
       Agent.stop_chat(pid, self())
 
@@ -558,11 +562,11 @@ defmodule Nest.Agents.Agent.InboxTest do
 
   describe "build_drained_message/3 origin marker" do
     test "a human batch is tagged as the human's own words" do
-      entries = [entry(:user, "alice", "hi", "plan")]
+      entries = [entry(:user, "alice", "hi", "plan", true)]
 
       assert {:user, %{metadata: metadata}} = Inbox.build_drained_message(entries, "hi", "plan")
 
-      assert metadata == Map.merge(%{"mode" => "plan"}, User.human_metadata())
+      assert metadata == %{"mode" => "plan", "origin" => "human"}
     end
 
     test "a delivered batch is left untagged and keeps its fulfilled ids" do
@@ -631,8 +635,16 @@ defmodule Nest.Agents.Agent.InboxTest do
     end)
   end
 
-  defp entry(kind, from, content, mode \\ nil) do
-    %{from: from, content: content, timestamp: DateTime.utc_now(), kind: kind, mode: mode}
+  defp entry(kind, from, content, mode \\ nil, human? \\ false) do
+    %{
+      from: from,
+      content: content,
+      timestamp: DateTime.utc_now(),
+      kind: kind,
+      mode: mode,
+      human?: human?,
+      fulfilled_ids: []
+    }
   end
 
   defp wait_idle(pid) do

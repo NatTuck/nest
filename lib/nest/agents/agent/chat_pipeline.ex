@@ -19,17 +19,20 @@ defmodule Nest.Agents.Agent.ChatPipeline do
 
   @doc """
   Handle an incoming chat turn. Returns the GenServer reply tuple.
+
+  `human?` says whether `content` is the human's own words; only then is the
+  built message tagged `origin: "human"` for the Ctrl/Cmd+Up recall list.
   """
-  @spec handle_chat(Nest.Agents.Agent.t(), String.t(), String.t() | nil) ::
+  @spec handle_chat(Nest.Agents.Agent.t(), String.t(), String.t() | nil, boolean()) ::
           {:noreply, Nest.Agents.Agent.t()}
-  def handle_chat(state, content, requested_mode) do
+  def handle_chat(state, content, requested_mode, human? \\ false) do
     mode = requested_mode || state.live.mode
 
     {effective_mode, _caps} =
       resolve_mode_and_caps(mode, state.vocation, state.workspace_path, state.tmp_path)
 
     state = %{state | live: %{state.live | mode: effective_mode, cancelled: false}}
-    user = build_user_message(content, effective_mode)
+    user = build_user_message(content, effective_mode, human?)
 
     {:ok, state} = Turn.settle(state, {:chat_request, {:user_message, user}})
     {:noreply, state}
@@ -38,18 +41,24 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   # Build the persisted user message. The mode is encoded both on
   # `metadata.mode` (UI badge) and as a `[mode: <name>]\n` prefix on the
   # text part (source of truth for the LLM). `index: nil` — the appender
-  # stamps the actual index. `origin: "human"` marks it as the human's own
-  # words, which is what the Ctrl/Cmd+Up recall list keys off (see
-  # `Nest.Messages.User.human_metadata/0`).
-  defp build_user_message(content, mode) do
+  # stamps the actual index.
+  #
+  # `origin: "human"` is added only when `human?` — it marks the message as
+  # the human's own words, which is what the Ctrl/Cmd+Up recall list keys off
+  # (see `Nest.Messages.User.human_metadata/0`). A kickoff nobody typed
+  # (`agents-spawn`'s `query`) is left untagged, so it never reaches that list.
+  defp build_user_message(content, mode, human?) do
     %User{
       index: nil,
       timestamp: DateTime.utc_now(),
       parts: [%Part.Text{text: "[mode: #{mode}]\n#{content}"}],
-      metadata: Map.merge(%{"mode" => mode}, User.human_metadata()),
+      metadata: maybe_put_human(%{"mode" => mode}, human?),
       api_logs: []
     }
   end
+
+  defp maybe_put_human(metadata, true), do: Map.merge(metadata, User.human_metadata())
+  defp maybe_put_human(metadata, _human?), do: metadata
 
   @doc """
   The user-turn preflight decision, used by callers that need the same

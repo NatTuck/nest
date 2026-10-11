@@ -139,7 +139,10 @@ defmodule Nest.Agents.Agent.SubAgent do
         maybe_test_swap_to_mock(state.space_id, child_name)
 
         if Map.get(opts, :query, "") != "" do
-          Nest.Agents.chat(state.space_id, child_name, Map.get(opts, :query))
+          # The spawn's `query` kickoff is not the human's own words, so it is
+          # explicitly *not* tagged `origin: "human"` — it must never appear in
+          # the child's Ctrl/Cmd+Up recall list.
+          Nest.Agents.chat(state.space_id, child_name, Map.get(opts, :query), nil, nil, false)
         end
 
         {:reply, {:ok, child_name}, state}

@@ -369,10 +369,14 @@ defmodule Nest.Agents.Agent do
   which starts the turn immediately. When the agent is busy the message
   and the requested `mode` are queued and delivered at the next turn
   boundary instead of being dropped.
+
+  `human?` says whether the content is the human's own words: only a human
+  message is tagged `origin: "human"` for the Ctrl/Cmd+Up recall list, so
+  `agents-spawn`'s `query` kickoff (`false`) never appears there.
   """
-  @spec chat(pid(), String.t(), String.t() | nil, String.t() | nil) :: :ok
-  def chat(pid, content, mode \\ nil, sender \\ nil) do
-    GenServer.cast(pid, {:chat, content, mode, sender})
+  @spec chat(pid(), String.t(), String.t() | nil, String.t() | nil, boolean()) :: :ok
+  def chat(pid, content, mode \\ nil, sender \\ nil, human? \\ false) do
+    GenServer.cast(pid, {:chat, content, mode, sender, human?})
   end
 
   @doc """

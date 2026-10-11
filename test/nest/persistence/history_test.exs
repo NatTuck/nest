@@ -72,6 +72,37 @@ defmodule Nest.Persistence.HistoryTest do
     end
   end
 
+  describe "load_slice/3 origin filter" do
+    test "restricts the page to rows carrying the requested origin" do
+      # The `role: "user"` recall projection also filters on `origin`, so
+      # delivered peer messages and notices — user rows with no marker — cannot
+      # consume its page budget.
+      %{space_id: space_id, name: name} = compacted_agent(5)
+
+      for message <- [
+            human_user_message(0),
+            user_message(1),
+            human_user_message(2),
+            user_message(3),
+            assistant_message(4),
+            user_message(5)
+          ] do
+        {:ok, _} = Persistence.insert_message(space_id, name, message)
+      end
+
+      assert indexes(History.load_slice(space_id, name, roles: ["user"], origin: "human")) ==
+               [0, 2]
+
+      # The limit bounds the *filtered* rows, not the raw user rows.
+      assert indexes(
+               History.load_slice(space_id, name, roles: ["user"], origin: "human", limit: 1)
+             ) == [2]
+
+      # An unmatched value (and every row with `nil` metadata) yields nothing.
+      assert History.load_slice(space_id, name, roles: ["user"], origin: "missing") == []
+    end
+  end
+
   describe "load_slice/3 boundaries" do
     test "returns [] for an agent that has never compacted" do
       attrs = agent_attrs(unique_name("never"))
@@ -149,6 +180,17 @@ defmodule Nest.Persistence.HistoryTest do
 
   defp user_message(index) do
     {:user, %User{index: index, parts: [%Part.Text{text: "user #{index}"}]}}
+  end
+
+  # A user row the human actually typed: the marker the recall projection
+  # filters on.
+  defp human_user_message(index) do
+    {:user,
+     %User{
+       index: index,
+       parts: [%Part.Text{text: "user #{index}"}],
+       metadata: User.human_metadata()
+     }}
   end
 
   defp assistant_message(index) do

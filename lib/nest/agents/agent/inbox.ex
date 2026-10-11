@@ -137,6 +137,7 @@ defmodule Nest.Agents.Agent.Inbox do
           timestamp: DateTime.t(),
           kind: kind(),
           mode: String.t() | nil,
+          human?: boolean(),
           fulfilled_ids: [String.t()]
         }
 
@@ -184,7 +185,7 @@ defmodule Nest.Agents.Agent.Inbox do
         {:reply, {:error, :inbox_full}, state}
 
       busy_status?(status) ->
-        {state, disposition} = busy_delivery(state, sender, content, kind, nil)
+        {state, disposition} = busy_delivery(state, sender, content, kind, nil, false)
         {:reply, {:ok, disposition}, state}
 
       status == :idle ->
@@ -221,7 +222,7 @@ defmodule Nest.Agents.Agent.Inbox do
     if Machine.status_for(state.live.machine) == :idle do
       idle_delivery(state, sender, content, kind)
     else
-      {state, disposition} = busy_delivery(state, sender, content, kind, nil)
+      {state, disposition} = busy_delivery(state, sender, content, kind, nil, false)
       {:reply, {:ok, disposition}, state}
     end
   end
@@ -235,8 +236,8 @@ defmodule Nest.Agents.Agent.Inbox do
   # result reads "Message delivered to …"). `mode` is the human's requested mode
   # and `nil` for every other producer; it rides the record, so a reader still
   # sees what the human asked for.
-  defp busy_delivery(state, sender, content, kind, mode) do
-    state = state |> put_entry(sender, content, kind, mode) |> broadcast()
+  defp busy_delivery(state, sender, content, kind, mode, human?) do
+    state = state |> put_entry(sender, content, kind, mode, human?) |> broadcast()
     queued_before = length(state.live.inbox)
     {state, disposition} = drain_backgroundable(state)
 
@@ -296,11 +297,22 @@ defmodule Nest.Agents.Agent.Inbox do
   Unlike `handle_delivery/4` this never refuses: the sender is a human and
   the cap exists to bound a runaway *peer* producer, so a human message is
   queued even when the cap is reached instead of being silently dropped.
+
+  `human?` rides the entry so `build_drained_message/3` can tag the delivered
+  message `origin: "human"` for the Ctrl/Cmd+Up recall list. It defaults to
+  `false`: the marker has to be earned, so a caller that forgets leaves the
+  message untagged rather than claiming the human typed it.
   """
-  @spec deliver_user_message(Agent.t(), String.t() | nil, String.t(), String.t() | nil) ::
+  @spec deliver_user_message(
+          Agent.t(),
+          String.t() | nil,
+          String.t(),
+          String.t() | nil,
+          boolean()
+        ) ::
           {Agent.t(), :delivered | :queued}
-  def deliver_user_message(state, from, content, mode) do
-    busy_delivery(state, from, content, :user, mode)
+  def deliver_user_message(state, from, content, mode, human? \\ false) do
+    busy_delivery(state, from, content, :user, mode, human?)
   end
 
   # Deliver a just-enqueued entry now when the machine is executing a tool batch
@@ -338,7 +350,7 @@ defmodule Nest.Agents.Agent.Inbox do
           Agent.t()
   def enqueue_internal(state, from, content, kind, fulfilled_ids \\ [])
       when kind in [:agent, :user, :query, :notice] do
-    state = state |> put_entry(from, content, kind, nil, fulfilled_ids) |> broadcast()
+    state = state |> put_entry(from, content, kind, nil, false, fulfilled_ids) |> broadcast()
 
     record_inbox(state, :enqueued, from, kind, content,
       count: length(state.live.inbox),
@@ -484,11 +496,14 @@ defmodule Nest.Agents.Agent.Inbox do
     Dispatch.build_user_message(content, mode, metadata)
   end
 
-  # The recall-list origin marker. A human message is delivered alone
-  # (`batch/1`), so a `:user` head means the human's own words and every other
-  # batch is a delivery. Delivered batches are deliberately left untagged: the
-  # client's Ctrl/Cmd+Up list is fail-closed and shows only `"human"` rows.
-  defp origin_metadata([%{kind: :user} | _]), do: User.human_metadata()
+  # The recall-list origin marker. It keys off the entry's explicit `human?`
+  # flag, never off `kind: :user` — a `:user` entry is also what an
+  # `agents-spawn` `query` kickoff produces, and a prompt nobody typed must not
+  # reach the Ctrl/Cmd+Up list. A human message is delivered alone (`batch/1`),
+  # so the batch head is the entry that decides; every other batch is a
+  # delivery and is deliberately left untagged (the client filter is
+  # fail-closed).
+  defp origin_metadata([%{human?: true} | _]), do: User.human_metadata()
   defp origin_metadata(_entries), do: %{}
 
   @doc """
@@ -538,13 +553,14 @@ defmodule Nest.Agents.Agent.Inbox do
   # `from`/`mode` are normalized here, the single write point, so a malformed
   # payload can never put a number/map on the wire (`serialize/1`'s contract is
   # string-or-null for both).
-  defp put_entry(state, from, content, kind, mode, fulfilled_ids \\ []) do
+  defp put_entry(state, from, content, kind, mode, human? \\ false, fulfilled_ids \\ []) do
     entry = %{
       from: if(is_binary(from), do: from, else: nil),
       content: content,
       timestamp: DateTime.utc_now(),
       kind: kind,
       mode: if(is_binary(mode), do: mode, else: nil),
+      human?: human? == true,
       fulfilled_ids: fulfilled_ids
     }
 
