@@ -113,9 +113,9 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
   `hold_result: true` it parks a second time *after* it, sending
   `{:send_delivered, worker}` and waiting for `:release_result` — so the batch is
   still in flight while the delivered message's turn runs, which is the shape
-  where the batch's own result arrives only once that turn has ended. Each
-  `after` is a safety valve so a failing test cannot leave the worker parked for
-  long.
+  where the batch's own result arrives only once that turn has ended. Each park's
+  `after` is a safety valve (3 s — see `park/3`) so a failing test cannot leave
+  the worker parked for long.
   """
   @spec park_agent_sends(pid(), keyword()) :: :ok
   def park_agent_sends(pid, opts \\ []) do
@@ -153,18 +153,12 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
   the caller's batch is still in flight — the batch is backgrounded, not the
   answer queued behind it.
 
-  `hold_ms` is that second park's safety valve, and it is deliberately longer
-  than the default: the hold has to outlast the *peer's* whole turn (the
-  delivery starts it), so a valve shorter than the caller's own turn fence
-  would release the batch and flip the outcome on a loaded host instead of
-  failing the test's fence. It stays well under ExUnit's 5 s per-test timeout,
-  so a failing test still cannot leave the worker parked for long.
+  Both parks use the 3 s safety valve documented on `park/3`.
   """
   @spec park_agent_queries(pid(), keyword()) :: :ok
   def park_agent_queries(pid, opts \\ []) do
     test_pid = self()
     hold_result? = Keyword.get(opts, :hold_result, false)
-    hold_ms = Keyword.get(opts, :hold_ms, 3_000)
 
     Mimic.stub(Nest.Agents, :send_message, fn space_id, from, target, content, kind ->
       if kind == :query, do: park(test_pid, :query_blocked, :release_query)
@@ -173,7 +167,7 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
         Mimic.call_original(Nest.Agents, :send_message, [space_id, from, target, content, kind])
 
       if kind == :query and hold_result? do
-        park(test_pid, :query_delivered, :release_result, hold_ms)
+        park(test_pid, :query_delivered, :release_result)
       end
 
       result
@@ -182,7 +176,15 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
     Mimic.allow(Nest.Agents, self(), pid)
   end
 
-  defp park(test_pid, blocked, release, timeout \\ 1_000) do
+  # Park the worker until the test releases it. The 3 s `after` is a safety
+  # valve, not a timing assumption: every release in these tests follows the
+  # park's own message immediately, so the valve only ever fires for a test that
+  # has already failed. It is deliberately longer than a turn fence (2 s,
+  # `Nest.Agents.SubAgentToolsHelpers.turn_fence_ms/0`) because a park can hold
+  # one agent while another's fenced turn runs — a valve shorter than the fence
+  # would release the worker mid-test and flip the outcome being pinned instead
+  # of failing the fence — and it stays under ExUnit's 5 s per-test timeout.
+  defp park(test_pid, blocked, release, timeout \\ 3_000) do
     send(test_pid, {blocked, self()})
 
     receive do
