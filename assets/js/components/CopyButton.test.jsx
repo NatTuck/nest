@@ -157,4 +157,27 @@ describe("CopyButton lazy resolution", () => {
       screen.queryByRole("button", { name: /copied/i }),
     ).not.toBeInTheDocument();
   });
+
+  it("does not call writeText when getText returns an empty string", async () => {
+    // An empty serialisation must not wipe the clipboard and report
+    // "Copied" — treat it like a non-string.
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+      writable: true,
+    });
+    const getText = vi.fn(() => "");
+
+    render(<CopyButton getText={getText} label="Copy" />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^copy$/i }));
+    });
+
+    expect(getText).toHaveBeenCalledTimes(1);
+    expect(writeText).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("button", { name: /copied/i }),
+    ).not.toBeInTheDocument();
+  });
 });

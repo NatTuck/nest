@@ -47,10 +47,10 @@ describe("messageToMarkdown — user messages", () => {
   });
 
   it("copies a user's own text verbatim, including a <think> they typed", () => {
-    // The UI shows a user message's text as-is (it is not routed
-    // through the think-splitting path), so the clipboard must not
-    // silently drop a `<think>` the user typed. Only assistant
-    // reasoning is omitted.
+    // A user message's body renders as-is (`Message.jsx` wraps its text
+    // in a single Part.Text with the mode prefix stripped; it is not
+    // routed through the think-splitting path), so the clipboard must
+    // not silently drop a `<think>` the user typed.
     expect(
       messageToMarkdown({
         role: "user",
@@ -171,8 +171,9 @@ describe("messageToMarkdown — whole message from parts", () => {
   });
 
   it("copies a system message's text verbatim, including <think> tags", () => {
-    // `SystemMessageContent` renders raw text parts with no split, so
-    // the clipboard must not drop tags the UI shows.
+    // `SystemMessageContent` renders a system message's raw text parts
+    // with no split, so the clipboard must not drop tags that renderer
+    // shows.
     expect(
       messageToMarkdown({
         role: "system",
@@ -184,8 +185,8 @@ describe("messageToMarkdown — whole message from parts", () => {
   });
 
   it("strips <think> tags from a tool message's text part", () => {
-    // `Message.jsx` renders a tool message's text via `textPartsFor`,
-    // which splits, so the clipboard splits too.
+    // A tool message's body goes through `textPartsFor`, which splits,
+    // so the clipboard splits too.
     expect(
       messageToMarkdown({
         role: "tool",
@@ -419,6 +420,41 @@ describe("messageToMarkdown — whole message from parts", () => {
     expect(messageToMarkdown({ role: "assistant", parts: [{}] })).toBe(
       "*[unsupported part omitted from copy: unknown]*",
     );
+  });
+
+  it("renders a streaming `tool_arguments` accumulator part", () => {
+    // `store/helpers.js` `newPart/2` produces this kind, carrying the
+    // arguments JSON in `text`; it must not be reported as unsupported.
+    const out = messageToMarkdown({
+      role: "assistant",
+      parts: [{ kind: "tool_arguments", text: '{"command":' }],
+    });
+    expect(out).toContain('{"command":');
+    expect(out).not.toContain("unsupported part");
+  });
+
+  it("calls out a `tool_arguments` part with no payload instead of dropping it", () => {
+    expect(
+      messageToMarkdown({
+        role: "assistant",
+        parts: [{ kind: "tool_arguments", text: "" }],
+      }),
+    ).toBe("*[tool arguments omitted from copy]*");
+  });
+
+  it("emits a refusal in position among the other parts", () => {
+    // Ordering is the core of the issue: a refusal sits where the
+    // model produced it, between the surrounding text.
+    expect(
+      messageToMarkdown({
+        role: "assistant",
+        parts: [
+          { kind: "text", text: "Before." },
+          { kind: "refusal", refusal: "I can't do that." },
+          { kind: "text", text: "After." },
+        ],
+      }),
+    ).toBe("Before.\n\nI can't do that.\n\nAfter.");
   });
 
   it("derives content from a text part when no legacy content is present", () => {

@@ -1628,6 +1628,82 @@ describe("ChatPage message copy button", () => {
     expect(writeText).toHaveBeenCalledWith("Answer here.");
   });
 
+  it("clicking a tool-call message's copy button writes the tool call and result to the clipboard", async () => {
+    mockAgentsCache = {
+      "test-agent": {
+        status: "connected",
+        agentState: "idle",
+        messages: [
+          { index: 0, role: "user", parts: [{ kind: "text", text: "Hi" }] },
+          {
+            index: 1,
+            role: "assistant",
+            parts: [
+              { kind: "text", text: "Running it." },
+              {
+                kind: "tool_use",
+                id: "call_1",
+                name: "shell-cmd",
+                arguments: { command: "ls" },
+              },
+            ],
+          },
+          {
+            index: 2,
+            role: "tool",
+            parts: [
+              {
+                kind: "tool_result",
+                toolCallId: "call_1",
+                name: "shell-cmd",
+                content: "file.txt",
+                isError: false,
+              },
+            ],
+          },
+        ],
+        model: { name: "qwen3.5-plus" },
+      },
+    };
+
+    renderChat();
+
+    // Three messages → three copy buttons: [user, assistant, tool].
+    const buttons = screen.getAllByRole("button", {
+      name: /copy message/i,
+    });
+
+    await act(async () => {
+      fireEvent.click(buttons[1]);
+    });
+    expect(writeText).toHaveBeenCalledWith(
+      [
+        "Running it.",
+        "",
+        "**Tool call: `shell-cmd`**",
+        "",
+        "```json",
+        "{",
+        '  "command": "ls"',
+        "}",
+        "```",
+      ].join("\n"),
+    );
+
+    await act(async () => {
+      fireEvent.click(buttons[2]);
+    });
+    expect(writeText).toHaveBeenLastCalledWith(
+      [
+        "**Tool result: `shell-cmd` — Success**",
+        "",
+        "```",
+        "file.txt",
+        "```",
+      ].join("\n"),
+    );
+  });
+
   it("the copy button on a message flips to 'Copied' after a successful click", async () => {
     mockAgentsCache = {
       "test-agent": {

@@ -8,14 +8,15 @@
  *     omitted from the clipboard (issue #51). That covers both a
  *     `thinking` part and reasoning embedded as `<think>…</think>` inside
  *     a `text` part. Which roles get that treatment is decided by
- *     `stripsThinkTags/1`, which mirrors what each role's UI actually
- *     renders (see its docs) — the clipboard must show what the UI shows.
- *     User messages also have their `[mode: X]\n` prefix stripped (the
- *     mode badge is rendered separately in the UI; the user does not want
- *     it re-pasted). Tool calls and tool results have no natural markdown
- *     form, so they are rendered as a bold header plus a fenced code
- *     block; a part kind this build does not recognise is called out in
- *     the output rather than silently dropped.
+ *     `stripsThinkTags/1`, which mirrors each role's *body* renderer
+ *     (`MessageContent` / `SystemMessageContent`; see its docs) — the
+ *     clipboard shows what that renderer shows. User messages also have
+ *     their `[mode: X]\n` prefix stripped (the mode badge is rendered
+ *     separately in the UI; the user does not want it re-pasted). Tool
+ *     calls and tool results have no natural markdown form, so they are
+ *     rendered as a bold header plus a fenced code block; a part kind this
+ *     build does not recognise is called out in the output rather than
+ *     silently dropped.
  *   - `formatApiLogsAsJson(apiLogs)` mirrors exactly what the
  *     `<ApiLogsBlock>` renders in its `<pre>` — a 2-space-indented
  *     JSON.stringify of each log entry's payload, in original order.
@@ -101,9 +102,16 @@ function partToMarkdown(part, role, mode) {
       // still renders it; only the copy omits it.
       return "";
     case "refusal":
-      return part.refusal || "";
+      return typeof part.refusal === "string" ? part.refusal : "";
     case "tool_use":
       return toolUseToMarkdown(part);
+    case "tool_arguments":
+      // A streaming accumulator part (`store/helpers.js` `newPart/2`)
+      // carrying the arguments JSON in `text`. Show it rather than
+      // calling it unsupported.
+      return (
+        argumentsToBlock(part.text) || "*[tool arguments omitted from copy]*"
+      );
     case "tool_result":
       return toolResultToMarkdown(part);
     default:
@@ -115,7 +123,7 @@ function partToMarkdown(part, role, mode) {
 /**
  * Whether a part produced no block because it was reasoning: a `thinking`
  * part, or a text part whose content was entirely `<think>…</think>`
- * (closed or unclosed) for a role whose UI splits those tags.
+ * (closed or unclosed) for a role whose body renderer splits those tags.
  */
 function partIsReasoning(part, role) {
   if (!part || typeof part !== "object") return false;
@@ -126,22 +134,24 @@ function partIsReasoning(part, role) {
 }
 
 /**
- * Whether the UI renders this role's text with `<think>` blocks split out
- * into the `ThinkingBlock`. Mirrors `Message.jsx`: a `user` message renders
- * its own text raw (`stripModePrefix(messageText(…))`) and a `system`
- * message renders raw through `SystemMessageContent`; every other role
- * (assistant, tool, …) goes through `textPartsFor` / `splitThinkFromParts`.
- * The clipboard shows what the UI shows, so it splits for exactly those
- * roles — reasoning is the one thing omitted, and only where the UI treats
- * it as reasoning.
+ * Whether this role's *body* renderer splits `<think>` blocks out of its
+ * text. `Message.jsx` sends a `user` message's own text through
+ * `stripModePrefix(messageText(…))` and a `system` message through
+ * `SystemMessageContent` (both raw), while every other role (assistant,
+ * tool, …) goes through `textPartsFor` / `splitThinkFromParts`.
+ *
+ * This concerns the body only. `Message.jsx` also renders a `ThinkingBlock`
+ * for every role via `thinkingFor`, but the copy does not consult it —
+ * reasoning is the one deliberate omission, and only where the body
+ * renderer treats it as reasoning.
  */
 function stripsThinkTags(role) {
   return role !== "user" && role !== "system";
 }
 
 /**
- * The visible text for a role, matching what that role's UI renders: the
- * `user`'s own text with the mode prefix stripped, a `system` message
+ * The visible body text for a role, matching that role's body renderer:
+ * the `user`'s own text with the mode prefix stripped, a `system` message
  * verbatim, and everyone else with `<think>` reasoning split out.
  */
 function visibleForRole(text, role, mode) {
