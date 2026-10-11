@@ -59,9 +59,9 @@ defmodule NestWeb.AgentChannel.History do
   # production consumer — so the page is filtered to the human's own prompts
   # here, not just on the client: delivered peer messages and notices are
   # user-role rows carrying no `origin` marker, and they must not eat the page
-  # budget. A caller that wants every `user` row asks for no `role` (or filters
-  # by `origin` itself). The rule is implicit in the projection on purpose, so a
-  # client cannot forget it and silently get deliveries back in the recall list.
+  # budget. The rule is implicit in the projection on purpose, so a client
+  # cannot forget it and silently get deliveries back; a caller that wants every
+  # user row asks for no role and filters client-side.
   defp recall_origin(["user"]), do: "human"
   defp recall_origin(_roles), do: nil
 
