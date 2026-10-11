@@ -145,6 +145,7 @@ defmodule Nest.Agents.Agent.SystemPrompt do
 
   defp build_suffix(workspace_path, context_limit_info, name, depth, tools) do
     identity_section(name, depth) <>
+      scratch_section(name) <>
       tool_sections(tools, workspace_path) <>
       context_limit_section(context_limit_info)
   end
@@ -172,6 +173,37 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   end
 
   defp identity_section(_name, _depth), do: ""
+
+  # Tell the agent where its own scratch directory is. The space directory
+  # is bound at `/tmp` inside the sandbox, so the agent's own directory is
+  # `/tmp/<agent-name>` — the host backing path is internal to
+  # `Nest.Sandbox` and must never be shown.
+  #
+  # This is stated HERE, once, rather than in the description of every
+  # path-taking tool: the tool schemas and the system message are both
+  # prefix-cache-visible, and repeating the sentence in six descriptions
+  # bought nothing. A clone inherits its ancestor's system message
+  # verbatim (see `identity_section/2`), so `MessageList.clone_notice/2`
+  # states the clone's own directory — its tools no longer do.
+  defp scratch_section(name) when is_binary(name) and name != "" do
+    "\n\nYour own scratch directory is `#{scratch_dir(name)}/`; the `/tmp` root is shared " <>
+      "with your siblings in this space, so put anything that must not be clobbered " <>
+      "under your own directory.\n"
+  end
+
+  defp scratch_section(_name), do: ""
+
+  @doc """
+  The spelling of an agent's own scratch directory inside the sandbox:
+  `#{Sandbox.sandbox_root()}/<agent-name>`.
+
+  Derived from the name alone (the scratch segment is the bare name; see
+  `Nest.Agents.PersistedAgent`), so callers that only have the name — the
+  prompt sections above, and the clone notice — can state it without a
+  host `tmp_path`.
+  """
+  @spec scratch_dir(String.t()) :: String.t()
+  def scratch_dir(name), do: Path.join(Sandbox.sandbox_root(), name)
 
   defp workspace_section(nil), do: ""
 

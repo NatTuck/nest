@@ -104,11 +104,16 @@ defmodule Nest.ToolsScratchPathTest do
     assert log =~ "bwrap exited non-zero"
   end
 
-  test "no tool description mentions the host scratch path", %{
+  test "no tool description advertises a scratch path any more", %{
     workspace: workspace,
     tmp_path: tmp_path,
     agent: agent
   } do
+    # The "your own scratch directory is /tmp/<agent>/" sentence used to be
+    # appended to every path-taking description. It now lives once in the
+    # agent's system prompt (`Nest.Agents.Agent.SystemPrompt`), so a
+    # description must neither mention the host scratch path nor the
+    # sandbox spelling — and must not depend on `tmp_path` at all.
     for name <- [
           "shell-cmd",
           "shell-list",
@@ -117,10 +122,12 @@ defmodule Nest.ToolsScratchPathTest do
           "file-edit",
           "file-inspect"
         ] do
-      description = Tools.get_function(name, workspace, tmp_path).description
+      with_tmp = Tools.get_function(name, workspace, tmp_path).description
+      without_tmp = Tools.get_function(name, workspace, nil).description
 
-      refute description =~ tmp_path, "#{name} leaked the host scratch path"
-      assert description =~ "/tmp/#{agent}/", "#{name} did not advertise the sandbox spelling"
+      assert with_tmp == without_tmp, "#{name}'s description still depends on tmp_path"
+      refute with_tmp =~ tmp_path, "#{name} leaked the host scratch path"
+      refute with_tmp =~ "/tmp/#{agent}/", "#{name} still advertises a scratch dir"
     end
   end
 end

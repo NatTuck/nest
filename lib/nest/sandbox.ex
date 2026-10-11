@@ -220,6 +220,15 @@ defmodule Nest.Sandbox do
   @spec sandbox_tmp_path(String.t()) :: String.t()
   defdelegate sandbox_tmp_path(tmp_path), to: Paths
 
+  @doc """
+  The host directory bound at `/tmp` inside the sandbox: `/tmp`.
+
+  The sandbox spelling of the scratch root. The host directory bound
+  *at* it is per-agent (see `sandbox_tmp_path/1`).
+  """
+  @spec sandbox_root() :: String.t()
+  defdelegate sandbox_root(), to: Paths
+
   # ---- Executors ----
 
   @doc """

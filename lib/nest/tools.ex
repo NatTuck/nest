@@ -101,7 +101,7 @@ defmodule Nest.Tools do
   defp regular_tool_function("file-edit", ws, tmp), do: FileTools.edit_function(ws, tmp)
   defp regular_tool_function("file-inspect", ws, tmp), do: InspectFile.build(ws, tmp)
   defp regular_tool_function("shell-cmd", ws, tmp), do: shell_cmd_function(ws, tmp)
-  defp regular_tool_function("shell-list", _ws, tmp), do: ShellJobs.list_function(tmp)
+  defp regular_tool_function("shell-list", _ws, _tmp), do: ShellJobs.list_function()
   defp regular_tool_function("shell-wait", _ws, _tmp), do: ShellJobs.wait_function()
   defp regular_tool_function("shell-kill", _ws, _tmp), do: ShellJobs.kill_function()
   defp regular_tool_function("context-check", _ws, _tmp), do: context_check_function()
@@ -147,26 +147,6 @@ defmodule Nest.Tools do
   end
 
   @doc """
-  The "your own scratch directory" sentence appended to tool descriptions.
-
-  Every tool addresses the same sandbox spelling: the space dir is bound
-  at `/tmp`, so the agent's own dir is `/tmp/<agent-name>`. The host
-  backing path is internal to `Nest.Sandbox` and must never be shown.
-
-  Returns `""` when no tmp dir is configured. Defined once so the wording
-  cannot drift between tools.
-  """
-  @spec scratch_note(String.t() | nil) :: String.t()
-  def scratch_note(nil), do: ""
-  def scratch_note(tmp_path), do: scratch_sentence(Sandbox.sandbox_tmp_path(tmp_path))
-
-  defp scratch_sentence(scratch_dir) do
-    " Your own scratch directory is `#{scratch_dir}/`; the `/tmp` root is shared " <>
-      "with your siblings in this space, so put anything that must not be clobbered " <>
-      "under your own directory."
-  end
-
-  @doc """
   The `{space_id, agent_name}` ownership key for the calling agent.
 
   Tools that manage per-agent resources (background shell jobs) read
@@ -185,7 +165,7 @@ defmodule Nest.Tools do
   defp shell_cmd_function(workspace_path, tmp_path) do
     %Tool{
       name: "shell-cmd",
-      description: shell_cmd_description(tmp_path),
+      description: shell_cmd_description(),
       parameters_schema: %{
         "type" => "object",
         "properties" => %{
@@ -210,7 +190,7 @@ defmodule Nest.Tools do
   # the enforced bound cannot drift apart.
   defp default_timeout_seconds, do: div(ShellCmd.default_timeout_ms(), 1000)
 
-  defp shell_cmd_description(tmp_path) do
+  defp shell_cmd_description do
     "Execute a shell command and return its output. The command is written " <>
       "to a temporary script and run with bash, so it may span several " <>
       "lines, use heredocs, quotes and metacharacters freely, and run " <>
@@ -221,8 +201,7 @@ defmodule Nest.Tools do
       "failure must stop the rest. A command runs under a wall-clock " <>
       "limit of `timeout` seconds (default #{default_timeout_seconds()}): one " <>
       "that outlives it is killed and its output so far is returned. The " <>
-      "limit does not apply to `background: true`." <>
-      scratch_note(tmp_path)
+      "limit does not apply to `background: true`."
   end
 
   defp shell_background_property do

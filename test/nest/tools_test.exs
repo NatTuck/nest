@@ -64,45 +64,6 @@ defmodule Nest.ToolsTest do
     end
   end
 
-  describe "scratch-path descriptions" do
-    test "names the sandbox scratch dir for every file tool" do
-      tmp_path = "/tmp/nest-1/space-7/agent-x"
-      sandbox_path = "/tmp/agent-x/"
-
-      # Every file tool addresses the same sandbox-domain scratch spelling
-      # the space dir is bound at — and never the host backing path.
-      for name <- [
-            "shell-cmd",
-            "shell-list",
-            "file-write",
-            "file-read",
-            "file-edit",
-            "file-inspect"
-          ] do
-        description = Tools.get_function(name, "/tmp", tmp_path).description
-
-        assert description =~ sandbox_path
-        assert description =~ "shared with your siblings"
-        refute description =~ tmp_path
-      end
-    end
-
-    test "omits the scratch note when no tmp dir is configured" do
-      for name <- [
-            "shell-cmd",
-            "shell-list",
-            "file-read",
-            "file-write",
-            "file-edit",
-            "file-inspect"
-          ] do
-        description = Tools.get_function(name, "/tmp", nil).description
-
-        refute description =~ "scratch directory"
-      end
-    end
-  end
-
   describe "sub-agent tools" do
     test "models-list resolves to a registered tool" do
       function = Tools.get_function("models-list", "/tmp")

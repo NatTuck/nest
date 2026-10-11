@@ -80,6 +80,29 @@ defmodule Nest.Agents.Agent.SystemPromptDepthFilterTest do
     assert prompt =~ "may change when cloned"
   end
 
+  test "states the agent's own scratch directory in the sandbox spelling",
+       %{vocation: vocation} do
+    {prompt, _mode, _tools, _vocation} =
+      SystemPrompt.compose_vocation_config(vocation, nil, {nil, nil}, "clever-raven", 0)
+
+    # The space dir is bound at /tmp, so the agent's own dir is
+    # /tmp/<name>. Stated here, once, instead of in every path-taking
+    # tool description.
+    assert prompt =~ "Your own scratch directory is `/tmp/clever-raven/`"
+    assert prompt =~ "shared with your siblings"
+
+    # The host backing path (`/tmp/nest-<ospid>/space-<id>/...`) must never
+    # appear in the prompt.
+    refute prompt =~ "nest-"
+  end
+
+  test "omits the scratch section when there is no name", %{vocation: vocation} do
+    {prompt, _mode, _tools, _vocation} =
+      SystemPrompt.compose_vocation_config(vocation, nil, {nil, nil}, "", 0)
+
+    refute prompt =~ "scratch directory"
+  end
+
   test "query/list/archive tools still appear in the tool list", %{vocation: vocation} do
     tools_vocation = %{
       vocation

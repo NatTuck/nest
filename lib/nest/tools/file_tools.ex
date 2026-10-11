@@ -34,8 +34,7 @@ defmodule Nest.Tools.FileTools do
       name: "file-read",
       description:
         "Read the contents of a file from the workspace. The read resolves " <>
-          "inside the sandbox, so only files the sandbox exposes are visible." <>
-          Nest.Tools.scratch_note(tmp_path),
+          "inside the sandbox, so only files the sandbox exposes are visible.",
       parameters_schema: %{
         "type" => "object",
         "properties" => %{
@@ -60,9 +59,7 @@ defmodule Nest.Tools.FileTools do
   def write_file_function(workspace_path, tmp_path) do
     %Tool{
       name: "file-write",
-      description:
-        "Write content to a file in the workspace." <>
-          Nest.Tools.scratch_note(tmp_path),
+      description: "Write content to a file in the workspace.",
       parameters_schema: %{
         "type" => "object",
         "properties" => %{
@@ -97,8 +94,7 @@ defmodule Nest.Tools.FileTools do
         "Perform an exact string replacement in a file. Reads the file, " <>
           "replaces the first (or all) occurrence(s) of `old_text` with " <>
           "`new_text`, and writes it back. With `replace_all: false` " <>
-          "(the default), `old_text` must match exactly once or the call fails." <>
-          Nest.Tools.scratch_note(tmp_path),
+          "(the default), `old_text` must match exactly once or the call fails.",
       parameters_schema: %{
         "type" => "object",
         "properties" => %{
@@ -313,10 +309,10 @@ defmodule Nest.Tools.FileTools do
     end
   end
 
-  # Every file tool now addresses the same sandbox-domain scratch spelling
-  # (`/tmp/<agent>/...`); `Sandbox.read/4` resolves it inside bwrap. The
-  # shared sentence lives in `Nest.Tools.scratch_note/1` so the wording
-  # cannot drift between tools.
+  # Every file tool addresses the same sandbox-domain scratch spelling
+  # (`/tmp/<agent>/...`); `Sandbox.read/4` resolves it inside bwrap. Where
+  # that spelling is stated (the agent's system prompt, not these
+  # descriptions) lives in `Nest.Agents.Agent.SystemPrompt`.
   defp caps_from_context(%{caps: caps}) when is_map(caps), do: caps
   defp caps_from_context(_), do: Nest.Sandbox.default_caps()
 end
