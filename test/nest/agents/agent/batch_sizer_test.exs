@@ -20,6 +20,7 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
   use ExUnit.Case, async: true
 
   import ExUnit.CaptureLog
+  import Mimic
 
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.Agents.Agent.BatchSizer.Overflow
@@ -30,6 +31,8 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
   alias Nest.TextFixtures
   alias Nest.Tools
   alias Nest.Tools.Groups
+
+  setup :verify_on_exit!
 
   # -- helpers --
 
@@ -68,6 +71,39 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       agent_pid: self(),
       agent_name: "test"
     }
+  end
+
+  # `ctx/2` carries no `workspace_path`, so a *relative* `file-read` path cannot
+  # resolve (and therefore never stats). Absolute paths resolve without one.
+  defp ctx_with_ws(ws, tools, opts \\ []) do
+    ctx(tools, opts) |> Map.put(:workspace_path, ws)
+  end
+
+  # Stub `Sandbox.stat/4` (one bwrap spawn per call) so a test can assert the
+  # *number* of stats rather than their real cost. `Mimic.copy/1` is per test
+  # process; other tests in this async file are unaffected.
+  defp stub_stat(size) do
+    Mimic.copy(Sandbox)
+
+    Mimic.stub(Sandbox, :stat, fn _path, _caps, _ws, _tmp ->
+      {:ok, %File.Stat{size: size}}
+    end)
+  end
+
+  # A real workspace under `_build/tmp` (not `/tmp`: the sandbox scratch dir is
+  # bound at /tmp, so a /tmp-rooted workspace is rejected).
+  defp tmp_ws!(label) do
+    dir =
+      Path.join([
+        File.cwd!(),
+        "_build",
+        "tmp",
+        "#{label}-#{System.unique_integer([:positive])}"
+      ])
+
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf!(dir) end)
+    dir
   end
 
   describe "Phase 1: preflight" do
@@ -128,6 +164,151 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       assert {:refuse, _} = BatchSizer.preflight(calls, c)
 
       assert :fits = BatchSizer.preflight(calls, ctx([], context_limit: 100_000))
+    end
+  end
+
+  describe "preflight stat batching (issue #48)" do
+    alias Nest.Tokens.{Budget, Estimator, Reserve}
+
+    # `Sandbox.stat/4` is one bwrap spawn, so every assertion here is the
+    # *call count* (Mimic), never a timing. `estimate_bytes(100) == 40`.
+    @per_call Estimator.estimate_bytes(100)
+
+    test "shares one stat across every call that targets the same path" do
+      stub_stat(100)
+      Mimic.expect(Sandbox, :stat, 1, fn _p, _c, _w, _t -> {:ok, %File.Stat{size: 100}} end)
+
+      calls = [
+        call("c1", "file-read", %{"path" => "a.txt"}),
+        call("c2", "file-read", %{"path" => "a.txt"}),
+        call("c3", "file-read", %{"path" => "a.txt"})
+      ]
+
+      # One stat, three projections: the dedupe is the stat, not the size.
+      assert BatchSizer.projected_content_size(calls, ctx_with_ws("/ws", [])) ==
+               Budget.size([]) + ceil(3 * @per_call)
+    end
+
+    test "stats each distinct path exactly once" do
+      stub_stat(100)
+      Mimic.expect(Sandbox, :stat, 2, fn _p, _c, _w, _t -> {:ok, %File.Stat{size: 100}} end)
+
+      calls = [
+        call("c1", "file-read", %{"path" => "a.txt"}),
+        call("c2", "file-read", %{"path" => "b.txt"}),
+        call("c3", "file-read", %{"path" => "a.txt"})
+      ]
+
+      assert BatchSizer.projected_content_size(calls, ctx_with_ws("/ws", [])) ==
+               Budget.size([]) + ceil(3 * @per_call)
+    end
+
+    test "only file-read calls are statted" do
+      stub_stat(100)
+      Mimic.expect(Sandbox, :stat, 1, fn _p, _c, _w, _t -> {:ok, %File.Stat{size: 100}} end)
+
+      calls = [
+        call("c1", "file-read", %{"path" => "a.txt"}),
+        call("c2", "shell-cmd", %{"command" => "ls"}),
+        call("c3", "file-write", %{"path" => "b.txt", "content" => "x"}),
+        call("c4", "agents-list", %{})
+      ]
+
+      assert BatchSizer.projected_content_size(calls, ctx_with_ws("/ws", [])) >
+               Budget.size([]) + ceil(@per_call)
+    end
+
+    test "issues no stat for a malformed or unresolvable file-read" do
+      Mimic.copy(Sandbox)
+      Mimic.reject(Sandbox, :stat, 4)
+
+      calls = [
+        call("c1", "file-read", %{}),
+        call("c2", "file-read", %{"path" => 42}),
+        call("c3", "file-read", %{"path" => ""}),
+        # A relative path with no workspace: `Sandbox.resolve/2` errors, so the
+        # projection must fall back without statting.
+        call("c4", "file-read", %{"path" => "a.txt"})
+      ]
+
+      c = ctx([])
+      fallback = ProjectedSize.summary_baseline_size() * 1.2
+
+      assert Enum.map(calls, &ProjectedSize.project(&1, c)) == List.duplicate(fallback, 4)
+
+      assert BatchSizer.projected_content_size(calls, c) ==
+               Budget.size([]) + ceil(4 * fallback)
+    end
+
+    test "different spellings of one file are statted separately (documented limit)" do
+      stub_stat(100)
+      Mimic.expect(Sandbox, :stat, 2, fn _p, _c, _w, _t -> {:ok, %File.Stat{size: 100}} end)
+
+      calls = [
+        call("c1", "file-read", %{"path" => "a.txt"}),
+        call("c2", "file-read", %{"path" => "./a.txt"})
+      ]
+
+      # `Sandbox.resolve/2` is lexical (`Path.join/2`), so `a.txt` and `./a.txt`
+      # resolve to different strings and are statted separately. Normalizing
+      # `..`/`.` lexically would be wrong when a component is a symlink, so the
+      # memo keys on the resolved string verbatim: at most one extra spawn,
+      # never a wrong size.
+      assert BatchSizer.projected_content_size(calls, ctx_with_ws("/ws", [])) ==
+               Budget.size([]) + ceil(2 * @per_call)
+    end
+
+    test "projection is byte-identical to the naive per-call sum" do
+      ws = tmp_ws!("batchsizer-statbatch-parity")
+      File.write!(Path.join(ws, "a.txt"), String.duplicate("x", 4_000))
+
+      calls = [
+        call("c1", "file-read", %{"path" => "a.txt"}),
+        call("c2", "file-read", %{"path" => "a.txt"}),
+        call("c3", "file-read", %{"path" => "b.txt"}),
+        call("c4", "shell-cmd", %{"command" => "ls"})
+      ]
+
+      c = ctx_with_ws(ws, [])
+
+      # The pre-change projection: sum `ProjectedSize.project/2` per call. A
+      # real bwrap stat for `a.txt` (the memo) and a fallback for `b.txt`.
+      naive = Budget.size([]) + ceil(Enum.sum(Enum.map(calls, &ProjectedSize.project(&1, c))))
+
+      assert BatchSizer.projected_content_size(calls, c) == naive
+    end
+
+    test "duplicate calls each still contribute to the refusal decision" do
+      ws = tmp_ws!("batchsizer-statbatch-refuse")
+      # 400_000 bytes -> `estimate_bytes/1` == 120_010 tokens per call.
+      File.write!(Path.join(ws, "big.txt"), String.duplicate("x", 400_000))
+
+      one = [call("c1", "file-read", %{"path" => "big.txt"})]
+
+      three = [
+        call("c1", "file-read", %{"path" => "big.txt"}),
+        call("c2", "file-read", %{"path" => "big.txt"}),
+        call("c3", "file-read", %{"path" => "big.txt"})
+      ]
+
+      c = ctx_with_ws(ws, [])
+
+      one_content = BatchSizer.projected_content_size(one, c)
+      three_content = BatchSizer.projected_content_size(three, c)
+
+      # Three reads of one file project three results even though they share a
+      # single stat; a dedupe that collapsed the projection would let an
+      # oversized batch through.
+      assert three_content == 3 * one_content
+
+      # `reserve(200_000) == 40_000`, so one read fits and three do not.
+      limit = 200_000
+      reserve = Reserve.compaction_reserve(limit)
+
+      assert one_content + reserve <= limit
+      assert three_content + reserve > limit
+      assert :fits = BatchSizer.preflight(one, %{c | context_limit: limit})
+      assert {:refuse, _} = BatchSizer.preflight(three, %{c | context_limit: limit})
     end
   end
 
