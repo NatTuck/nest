@@ -7,6 +7,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { archiveSpace } from "../channels";
+import { StatusDot } from "./StatusDot";
 
 /**
  * Build a tree from a flat agents list. Each agent's
@@ -180,13 +181,7 @@ function AgentTreeRow({ node, depth, location, spaceSlug }) {
           to={`/space/${spaceSlug}/agent/${encodeURIComponent(agent.name)}`}
           className="flex items-center gap-2 min-w-0 flex-1 py-2 pr-3"
         >
-          <div
-            className={`
-              w-2 h-2 rounded-full flex-shrink-0
-              ${agent.status === "streaming" ? "bg-green-500 animate-pulse" : "bg-gray-300"}
-              ${agent.status === "executing_tools" ? "bg-amber-500 animate-pulse" : ""}
-            `}
-          />
+          <StatusDot status={agent.status} className="w-2 h-2" />
           <span className="truncate text-sm font-medium">{agent.name}</span>
           {directChildren.length > 0 && (
             <span className="text-xs text-gray-400 ml-1">
