@@ -406,6 +406,59 @@ describe("channels", () => {
       });
     });
 
+    it("should apply a space-scoped agent:status frame to the flat list", async () => {
+      // #53: the sidebar dot reads `status` off the flat agents list, so a
+      // live status frame from the lobby must land there.
+      setNextJoinResult("lobby", {
+        autoInit: {
+          agents: [
+            { name: "child", space_id: 1, status: "idle" },
+            { name: "other", space_id: 1, status: "idle" },
+          ],
+          models: [],
+          broken_agents: [],
+        },
+      });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().agents.length, 2);
+      });
+
+      simulateServerEvent("lobby", "agent:status", {
+        space_id: 1,
+        name: "child",
+        status: "streaming",
+      });
+
+      await vi.waitFor(() => {
+        const agents = useStore.getState().agents;
+        assert.strictEqual(agents[0].status, "streaming");
+        assert.strictEqual(agents[1].status, "idle");
+      });
+    });
+
+    it("should ignore a malformed agent:status frame", async () => {
+      setNextJoinResult("lobby", {
+        autoInit: {
+          agents: [{ name: "child", space_id: 1, status: "idle" }],
+          models: [],
+          broken_agents: [],
+        },
+      });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().agents.length, 1);
+      });
+
+      simulateServerEvent("lobby", "agent:status", { name: "child" });
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().agents[0].status, "idle");
+      });
+    });
+
     it("should ignore agent:updated broadcasts without name or model", async () => {
       // Defensive guard — a malformed broadcast should not
       // crash the store. Without `name` or `model` we

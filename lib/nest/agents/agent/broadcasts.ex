@@ -37,6 +37,15 @@ defmodule Nest.Agents.Agent.Broadcasts do
   @spec topic(integer(), String.t()) :: String.t()
   def topic(space_id, name), do: "agent:#{space_id}:#{name}"
 
+  @doc """
+  The per-space PubSub topic. Frames a lobby client needs for the sidebar
+  (agent status, and — since #41 — agent lifecycle) are broadcast here so a
+  client only receives them for spaces it is subscribed to; see
+  `NestWeb.LobbyChannel`.
+  """
+  @spec space_topic(integer()) :: String.t()
+  def space_topic(space_id), do: "space:#{space_id}"
+
   def message(state, message) do
     Phoenix.PubSub.broadcast(PubSub, topic(state.space_id, state.name), {:chat_message, message})
   end
@@ -168,6 +177,15 @@ defmodule Nest.Agents.Agent.Broadcasts do
       PubSub,
       topic(state.space_id, state.name),
       {:chat_status, payload}
+    )
+
+    # The sidebar's flat agent list follows status from here: the per-agent
+    # topic above only reaches clients *viewing* this agent, so a client
+    # would otherwise never learn that another agent went busy (#53).
+    Phoenix.PubSub.broadcast(
+      PubSub,
+      space_topic(state.space_id),
+      {:agent_status, %{space_id: state.space_id, name: state.name, status: payload.status}}
     )
   end
 

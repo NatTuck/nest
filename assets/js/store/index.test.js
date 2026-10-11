@@ -4882,4 +4882,44 @@ describe("store", () => {
       expect(useStore.getState().agentsCache["agent-1"]).toBe(before);
     });
   });
+
+  describe("applyAgentStatus (#53)", () => {
+    const seed = () =>
+      useStore.getState().setAgents([
+        { name: "a", space_id: 1, status: "idle" },
+        { name: "b", space_id: 1, status: "idle" },
+        { name: "a", space_id: 2, status: "idle" },
+      ]);
+
+    it("updates only the matching {space_id, name} agent", () => {
+      seed();
+      const before = useStore.getState().agents;
+
+      useStore.getState().applyAgentStatus({
+        space_id: 1,
+        name: "a",
+        status: "streaming",
+      });
+
+      const after = useStore.getState().agents;
+      expect(after).not.toBe(before);
+      expect(after[0].status).toBe("streaming");
+      // Untouched rows keep their identity, so the tree can skip them.
+      expect(after[1]).toBe(before[1]);
+      expect(after[2]).toBe(before[2]);
+    });
+
+    it("is a no-op for an agent this client cannot see", () => {
+      seed();
+      const before = useStore.getState().agents;
+
+      useStore.getState().applyAgentStatus({
+        space_id: 9,
+        name: "ghost",
+        status: "streaming",
+      });
+
+      expect(useStore.getState().agents).toEqual(before);
+    });
+  });
 });

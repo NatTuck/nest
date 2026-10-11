@@ -101,6 +101,18 @@ export function joinLobby(onOk, onError) {
     }
   });
 
+  // A space-scoped status frame (#53). Only spaces this client is
+  // subscribed to deliver it, so a frame for an unknown agent is a no-op.
+  lobbyChannel.on("agent:status", (payload) => {
+    if (
+      payload?.name != null &&
+      payload?.space_id != null &&
+      payload?.status != null
+    ) {
+      getStore().applyAgentStatus(payload);
+    }
+  });
+
   lobbyChannel.on("models_updated", (payload) => {
     getStore().setModels(payload.models || []);
   });

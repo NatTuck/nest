@@ -106,6 +106,21 @@ export function catalogSetters(set) {
       });
     },
 
+    /**
+     * Apply a live status change from the lobby's `agent:status` frame
+     * (#53). The sidebar dot reads `status` off the flat list; only the
+     * matching `{space_id, name}` agent is replaced (with a new object, so
+     * the tree re-renders), and a frame for an agent this client cannot
+     * see is a no-op.
+     */
+    applyAgentStatus: ({ space_id, name, status }) => {
+      set((state) => ({
+        agents: state.agents.map((a) =>
+          a.name === name && a.space_id === space_id ? { ...a, status } : a,
+        ),
+      }));
+    },
+
     applyAgentModelUpdate: (name, model) => {
       set((state) => {
         const newAgents = state.agents.map((a) =>

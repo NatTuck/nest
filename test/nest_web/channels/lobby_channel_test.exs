@@ -489,6 +489,115 @@ defmodule NestWeb.LobbyChannelTest do
   defp model_name(model), do: model[:name] || model["name"]
   defp model_provider(model), do: model[:provider] || model["provider"]
 
+  # A space owned by the test user (`create_test_space/0` makes one with a
+  # `nil` owner, which is *not* in `Spaces.list_for_user/1`). The lobby
+  # channel subscribes only to the user's visible spaces, so tests about
+  # delivery need a space the user actually owns.
+  defp owned_space_id do
+    {:ok, %Nest.Spaces.Space{} = space} =
+      Nest.Spaces.create_space(Process.get(:lobby_test_user_id), %{
+        name: "owned-#{System.unique_integer([:positive])}",
+        slug: "owned-#{System.unique_integer([:positive])}"
+      })
+
+    space.id
+  end
+
+  describe "space-scoped agent status (#53)" do
+    test "forwards a status frame for a space the user can see" do
+      space_id = owned_space_id()
+      {_socket, _payload} = join_lobby()
+
+      Phoenix.PubSub.broadcast(
+        Nest.PubSub,
+        "space:#{space_id}",
+        {:agent_status, %{space_id: space_id, name: "child", status: "streaming"}}
+      )
+
+      assert_broadcast "agent:status", %{
+        space_id: ^space_id,
+        name: "child",
+        status: "streaming"
+      }
+    end
+
+    test "does NOT forward a status frame for a space the user cannot see" do
+      space_id = owned_space_id()
+      {_socket, _payload} = join_lobby()
+
+      # The channel subscribes only to the user's visible spaces
+      # (`Spaces.list_for_user/1` + `list_archived_for_user/1`), so a frame
+      # for someone else's space never reaches this client. That
+      # subscription set is the multi-user scoping guarantee: if the channel
+      # subscribed to every space, the frame below would arrive.
+      foreign_space_id = space_id + 1_000_000
+
+      Phoenix.PubSub.broadcast(
+        Nest.PubSub,
+        "space:#{foreign_space_id}",
+        {:agent_status, %{space_id: foreign_space_id, name: "theirs", status: "streaming"}}
+      )
+
+      refute_broadcast "agent:status", _, 200
+
+      # ...and the frame for the user's own space still arrives, so the
+      # `refute_broadcast` above is not vacuous.
+      Phoenix.PubSub.broadcast(
+        Nest.PubSub,
+        "space:#{space_id}",
+        {:agent_status, %{space_id: space_id, name: "mine", status: "idle"}}
+      )
+
+      assert_broadcast "agent:status", %{name: "mine", status: "idle"}
+    end
+
+    test "the frame is broadcast on the lobby topic, so every session of the user gets it" do
+      space_id = owned_space_id()
+      {_socket, _payload} = join_lobby()
+
+      # A second session is another lobby-channel subscriber. The push above
+      # is delivered by `broadcast(socket, "agent:status", …)` on the "lobby"
+      # topic, which is exactly how every joined session receives it.
+      Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
+
+      Phoenix.PubSub.broadcast(
+        Nest.PubSub,
+        "space:#{space_id}",
+        {:agent_status, %{space_id: space_id, name: "child", status: "executing_tools"}}
+      )
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "agent:status",
+                       payload: %{name: "child", status: "executing_tools"}
+                     },
+                     500
+    end
+
+    test "subscribes to a space created in this session before announcing its agent" do
+      {socket, _payload} = join_lobby()
+
+      ref =
+        push(socket, "create_space", %{
+          "name" => "later-space-#{System.unique_integer([:positive])}",
+          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+        })
+
+      assert_reply ref, :ok, %{"space_id" => new_space_id, "name" => new_name}, 500
+      AgentTestHelpers.ensure_cleanup(new_name)
+
+      # `handle_in("create_space")` reconciles synchronously before it
+      # replies, so the channel is already subscribed to the new space when
+      # the reply lands — a status frame for it now reaches this client.
+      Phoenix.PubSub.broadcast(
+        Nest.PubSub,
+        "space:#{new_space_id}",
+        {:agent_status, %{space_id: new_space_id, name: new_name, status: "streaming"}}
+      )
+
+      assert_broadcast "agent:status", %{space_id: ^new_space_id, name: ^new_name}
+    end
+  end
+
   # Join the lobby and BLOCK until the `:after_join` async
   # broken-agents fetch delivers its follow-up push. The wait
   # is critical: the spawned `Task.Supervisor` child does

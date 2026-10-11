@@ -21,6 +21,18 @@ defmodule Nest.Spaces do
   alias Nest.Spaces.Space
   alias Nest.Vocations
 
+  # The per-user PubSub topic: "this user's space *set* changed" (a space
+  # was created/archived/unarchived — and, once space sharing lands, a
+  # membership change). A channel process never sees its own
+  # `broadcast/3`, so `NestWeb.LobbyChannel` listens here to keep its
+  # space subscriptions in step with a change made by another session.
+  @spec user_topic(integer()) :: String.t()
+  def user_topic(user_id), do: "user:#{user_id}"
+
+  defp broadcast_spaces_changed(user_id) do
+    Phoenix.PubSub.broadcast(Nest.PubSub, user_topic(user_id), {:spaces_changed, user_id})
+  end
+
   @doc """
   List all non-archived spaces visible to the given user.
 
@@ -118,9 +130,13 @@ defmodule Nest.Spaces do
   """
   @spec create_space(integer(), map()) :: {:ok, Space.t()} | {:error, Ecto.Changeset.t()}
   def create_space(user_id, attrs) do
-    %Space{}
-    |> Space.changeset(Map.put(attrs, :created_by_user_id, user_id))
-    |> Repo.insert()
+    with {:ok, %Space{} = space} <-
+           %Space{}
+           |> Space.changeset(Map.put(attrs, :created_by_user_id, user_id))
+           |> Repo.insert() do
+      broadcast_spaces_changed(user_id)
+      {:ok, space}
+    end
   end
 
   @doc """
@@ -210,6 +226,7 @@ defmodule Nest.Spaces do
       space ->
         stop_space_agents(space.id)
         set_archived(space.id, true)
+        broadcast_spaces_changed(space.created_by_user_id)
     end
   end
 
@@ -231,6 +248,7 @@ defmodule Nest.Spaces do
 
       space ->
         set_archived(space.id, false)
+        broadcast_spaces_changed(space.created_by_user_id)
     end
   end
 
@@ -321,9 +339,15 @@ defmodule Nest.Spaces do
       end
     end)
     |> case do
-      {:ok, {space, agent_name}} -> {:ok, space, agent_name}
-      {:error, reason} -> {:error, reason}
-      other -> other
+      {:ok, {space, agent_name}} ->
+        broadcast_spaces_changed(user_id)
+        {:ok, space, agent_name}
+
+      {:error, reason} ->
+        {:error, reason}
+
+      other ->
+        other
     end
   end
 
