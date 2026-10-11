@@ -12,6 +12,7 @@ defmodule Nest.Agents.Agent.BroadcastsStatusTest do
   import Mimic
 
   alias Nest.Agents.Agent.Broadcasts
+  alias Nest.Agents.Agent.Machine
   alias Nest.LLM.MockClient
 
   import Nest.Agents.AgentTestHelpers
@@ -42,6 +43,9 @@ defmodule Nest.Agents.Agent.BroadcastsStatusTest do
 
     assert frame.space_id == state.space_id
     assert frame.name == name
+    # Pin the literal status rather than parity with the per-agent payload:
+    # parity alone would also hold if both frames carried the wrong value.
+    assert frame.status == to_string(Machine.status_for(state.live.machine))
     assert frame.status == payload.status
   end
 end

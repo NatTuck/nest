@@ -378,6 +378,42 @@ defmodule NestWeb.LobbyChannelScopingTest do
     # is the discriminator: a second copy means the other user's channel was
     # subscribed too.
 
+    test "a space created in one session is reconciled into the user's other session", ctx do
+      # Two sessions, one user. The session that does NOT push only learns
+      # about the new space by reconciling its subscription set from the
+      # per-user `{:spaces_changed, _}` frame — which is the path whose guard
+      # keys off `socket.assigns.user_id`. Both sockets push into this
+      # mailbox, so *two* frames is what proves both reconciled.
+      %{alice: alice} = ctx
+
+      first = join_as(alice)
+      second = join_as(alice)
+
+      ref =
+        push(second, "create_space", %{
+          "name" => "second-session-#{System.unique_integer([:positive])}",
+          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+        })
+
+      assert_reply ref, :ok, %{"space_id" => new_space_id, "name" => new_name}, 500
+      AgentTestHelpers.ensure_cleanup(new_name)
+
+      Phoenix.PubSub.broadcast(
+        Nest.PubSub,
+        "space:#{new_space_id}",
+        {:agent_status, %{space_id: new_space_id, name: new_name, status: "idle"}}
+      )
+
+      # One push per session. The second session reconciled synchronously in
+      # `handle_in("create_space")`; the first can only have got here through
+      # the user-topic frame.
+      assert_push "agent:status", %{space_id: ^new_space_id, name: ^new_name}, 500
+      assert_push "agent:status", %{space_id: ^new_space_id, name: ^new_name}, 500
+
+      settle(first)
+      settle(second)
+    end
+
     test "user B's socket receives nothing published for user A's space", ctx do
       %{alice: alice, bob: bob} = ctx
       space = owned_space(alice)

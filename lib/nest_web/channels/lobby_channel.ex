@@ -61,6 +61,17 @@ defmodule NestWeb.LobbyChannel do
   def handle_info(:after_join, socket) do
     user = socket.assigns.current_user
 
+    # Assign `user_id` before subscribing to anything. Every frame handler
+    # below keys off `socket.assigns.user_id` — notably the
+    # `{:spaces_changed, _}` guard, which would otherwise fall through to the
+    # drop clause — so the assign must not be something a later reader can
+    # outrun. Today nothing can be handled between here and the end of this
+    # function (`:after_join` is a single `handle_info/2`, and `join/3`
+    # self-sends it before any client push can arrive), but doing it first
+    # keeps that true by construction rather than by the accident that this
+    # body has not been split up yet.
+    socket = assign(socket, :user_id, user.id)
+
     # Subscribe BEFORE the reads below. A frame that lands while we are
     # reading is queued in this process's mailbox and handled after the
     # `init` push, so the client always applies the newer state last.
@@ -95,10 +106,7 @@ defmodule NestWeb.LobbyChannel do
 
     Phoenix.PubSub.subscribe(Nest.PubSub, "models")
 
-    socket =
-      socket
-      |> assign(:user_id, user.id)
-      |> assign(:space_subs, space_subs)
+    socket = assign(socket, :space_subs, space_subs)
 
     fetch_broken_agents_async(socket, spaces, user.id)
     {:noreply, socket}

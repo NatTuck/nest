@@ -137,6 +137,15 @@ defmodule Nest.Spaces do
            %Space{}
            |> Space.changeset(Map.put(attrs, :created_by_user_id, user_id))
            |> Repo.insert() do
+      # Announced here so `create_space/2` is self-contained: whoever creates a
+      # space announces it, whatever they do next. When the caller is
+      # `create_space_with_root_agent/2` this fires *inside* its transaction,
+      # before the commit, so a channel that reconciles on it reads committed
+      # state, does not see the new space, and is a no-op — and that wrapper
+      # announces again after the commit, which is the frame that carries the
+      # meaning for the lobby's create path. The duplicate is therefore
+      # harmless: `reconcile_space_subscriptions/1` is an idempotent diff, so
+      # running it twice costs one extra read and changes nothing.
       broadcast_spaces_changed(user_id)
       {:ok, space}
     end
@@ -347,6 +356,10 @@ defmodule Nest.Spaces do
     end)
     |> case do
       {:ok, {space, agent_name}} ->
+        # The frame that matters for this path: `create_space/2` already
+        # announced inside the transaction, but that one ran pre-commit, so a
+        # reconciling channel could not see the new space yet. This is the
+        # post-commit announcement the lobby's create path relies on.
         broadcast_spaces_changed(user_id)
         {:ok, space, agent_name}
 
