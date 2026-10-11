@@ -69,3 +69,25 @@ describe("Message API logs affordance", () => {
     expect(screen.queryByText(/API Logs \(/)).toBeNull();
   });
 });
+
+describe("Message copy control placement", () => {
+  it("renders the copy button in the bottom actions row, not the header", () => {
+    render(
+      <MessageBubble agentName="test-agent" message={assistantMessage()} />,
+    );
+
+    const actions = screen.getByTestId("message-actions");
+    const button = screen.getByRole("button", { name: /copy message/i });
+    expect(actions).toContainElement(button);
+
+    // The header row (which carries the role label) must not contain it.
+    const header = screen.getByText("test-agent").closest("div");
+    expect(header).not.toContainElement(button);
+
+    // And the actions row sits below the message body.
+    const body = screen.getByText("Hi there");
+    expect(
+      body.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+  });
+});
