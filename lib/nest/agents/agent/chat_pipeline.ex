@@ -38,13 +38,15 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   # Build the persisted user message. The mode is encoded both on
   # `metadata.mode` (UI badge) and as a `[mode: <name>]\n` prefix on the
   # text part (source of truth for the LLM). `index: nil` — the appender
-  # stamps the actual index.
+  # stamps the actual index. `origin: "human"` marks it as the human's own
+  # words, which is what the Ctrl/Cmd+Up recall list keys off (see
+  # `Nest.Messages.User.human_metadata/0`).
   defp build_user_message(content, mode) do
     %User{
       index: nil,
       timestamp: DateTime.utc_now(),
       parts: [%Part.Text{text: "[mode: #{mode}]\n#{content}"}],
-      metadata: %{"mode" => mode},
+      metadata: Map.merge(%{"mode" => mode}, User.human_metadata()),
       api_logs: []
     }
   end

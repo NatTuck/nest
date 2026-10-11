@@ -16,7 +16,9 @@ defmodule Nest.Agents.Agent.InboxTest do
   alias Nest.Agents.Agent.Inbox
   alias Nest.Agents.AgentTestHelpers
   alias Nest.LLM.MockClient
+  alias Nest.Messages.MessageList
   alias Nest.Messages.Part
+  alias Nest.Messages.User
 
   # A big-enough body to exceed the default 8000-token cap.
   @oversized String.duplicate("hello world ", 4_000)
@@ -521,6 +523,67 @@ defmodule Nest.Agents.Agent.InboxTest do
       assert File.read!(path) =~ "hello world"
 
       wait_idle(pid)
+    end
+
+    test "a human message drained behind a busy turn is tagged as the human's own words", %{
+      pid: pid
+    } do
+      # A human message that arrives mid-turn is queued and later delivered
+      # through the same `build_drained_message/3` a peer batch uses, so the
+      # `origin: "human"` marker has to come from the batch's kind. Without it
+      # the prompt would drop out of the Ctrl/Cmd+Up recall list.
+      before = length(:sys.get_state(pid).chat_state.messages)
+      stage_drain(pid, [entry(:user, "alice", "queued prompt", "plan")])
+
+      Agent.stop_chat(pid, self())
+
+      assert Eventually.eventually(
+               fn -> :sys.get_state(pid).live.inbox == [] end,
+               timeout: 500
+             )
+
+      wait_idle(pid)
+
+      appended_user_metadata =
+        :sys.get_state(pid).chat_state.messages
+        |> Enum.drop(before)
+        |> Enum.flat_map(fn
+          {:user, %{metadata: metadata}} -> [metadata]
+          _ -> []
+        end)
+
+      assert [%{"origin" => "human"}] = appended_user_metadata
+    end
+  end
+
+  describe "build_drained_message/3 origin marker" do
+    test "a human batch is tagged as the human's own words" do
+      entries = [entry(:user, "alice", "hi", "plan")]
+
+      assert {:user, %{metadata: metadata}} = Inbox.build_drained_message(entries, "hi", "plan")
+
+      assert metadata == Map.merge(%{"mode" => "plan"}, User.human_metadata())
+    end
+
+    test "a delivered batch is left untagged and keeps its fulfilled ids" do
+      # The marker is fail-closed on the client, so a delivered batch must
+      # carry no `origin` at all — and the backgrounded-promise metadata that
+      # already rides this message must survive the merge.
+      entries = [
+        entry(:agent, "peer", "do it")
+        |> Map.put(:fulfilled_ids, ["call-1", "call-2"])
+      ]
+
+      assert {:user, %{metadata: metadata}} =
+               Inbox.build_drained_message(entries, "do it", "chat")
+
+      assert metadata ==
+               Map.merge(
+                 %{"mode" => "chat"},
+                 MessageList.fulfilled_metadata(["call-1", "call-2"])
+               )
+
+      refute Map.has_key?(metadata, "origin")
     end
   end
 

@@ -475,12 +475,21 @@ defmodule Nest.Agents.Agent.Inbox do
   """
   @spec build_drained_message([entry()], String.t(), String.t()) :: {:user, User.t()}
   def build_drained_message(entries, content, mode) do
-    Dispatch.build_user_message(
-      content,
-      mode,
-      MessageList.fulfilled_metadata(fulfilled_ids(entries))
-    )
+    metadata =
+      entries
+      |> fulfilled_ids()
+      |> MessageList.fulfilled_metadata()
+      |> Map.merge(origin_metadata(entries))
+
+    Dispatch.build_user_message(content, mode, metadata)
   end
+
+  # The recall-list origin marker. A human message is delivered alone
+  # (`batch/1`), so a `:user` head means the human's own words and every other
+  # batch is a delivery. Delivered batches are deliberately left untagged: the
+  # client's Ctrl/Cmd+Up list is fail-closed and shows only `"human"` rows.
+  defp origin_metadata([%{kind: :user} | _]), do: User.human_metadata()
+  defp origin_metadata(_entries), do: %{}
 
   @doc """
   The batch a drain delivers, selected from the FIFO head of `entries`.

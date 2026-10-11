@@ -35,7 +35,7 @@ defmodule NestWeb.AgentChannelAdvancedTest do
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 500
+      assert_push "chat:message", %{"index" => 1, "role" => "user", "origin" => "human"}, 500
       assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 500
 
       assert_receive {:chat_status, %{status: "idle"}}, 500
