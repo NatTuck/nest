@@ -264,6 +264,22 @@ defmodule Nest.Agents.Agent.SubAgent do
     end
   end
 
+  @doc """
+  Restore an archived agent in `state`'s space to the active list.
+  Used by the `agents-unarchive` tool. Returns the GenServer reply
+  tuple.
+  """
+  @spec handle_unarchive_request(Agent.t(), pid(), String.t()) :: {:reply, term(), Agent.t()}
+  def handle_unarchive_request(state, _task_pid, name) do
+    case Nest.Agents.Supervisor.unarchive_agent(state.space_id, name) do
+      :ok ->
+        {:reply, {:ok, name}, state}
+
+      {:error, _reason} = err ->
+        {:reply, err, state}
+    end
+  end
+
   # A tool worker (running an `agents-batch`) hit a per-item deadline and
   # asked us to abandon one of its children. The `Children` sub-machine's
   # `:abandoned` transition is terminal (so a late `:child_completed`

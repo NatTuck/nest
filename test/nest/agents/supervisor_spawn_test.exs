@@ -340,6 +340,41 @@ defmodule Nest.Agents.SupervisorSpawnTest do
     end
   end
 
+  describe "unarchive_agent/2" do
+    test "flips the archived flag back and broadcasts agent:unarchived", %{space_id: space_id} do
+      name = "unarchive-me-#{System.unique_integer([:positive])}"
+
+      {:ok, _row} =
+        Nest.Persistence.insert_agent(%{
+          space_id: space_id,
+          name: name,
+          model: test_model(),
+          vocation_id: AgentTestHelpers.vocation_id_for_test()
+        })
+
+      assert :ok = Nest.Persistence.archive_agent(space_id, name)
+
+      Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
+
+      assert :ok = Supervisor.unarchive_agent(space_id, name)
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "agent:unarchived",
+                       payload: %{"space_id" => ^space_id, "name" => ^name}
+                     },
+                     1_000
+
+      {:ok, row} = Nest.Persistence.fetch_agent(space_id, name)
+      assert row.archived == false
+    end
+
+    test "returns not_found for a missing agent", %{space_id: space_id} do
+      name = "ghost-#{System.unique_integer([:positive])}"
+
+      assert {:error, :not_found} = Supervisor.unarchive_agent(space_id, name)
+    end
+  end
+
   describe "spawn workspace validation" do
     test "rejects a child whose inherited workspace is under /tmp", %{space_id: space_id} do
       {:ok, vocation} =

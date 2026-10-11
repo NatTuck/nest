@@ -537,6 +537,13 @@ defmodule Nest.Persistence do
     as: :archive_agent
 
   @doc """
+  Mark the agent row for `{space_id, name}` as not archived.
+  """
+  defdelegate unarchive_agent(space_id, name),
+    to: Nest.Persistence.AgentAttrs,
+    as: :unarchive_agent
+
+  @doc """
   Current UTC timestamp truncated to second precision.
   """
   @spec now() :: DateTime.t()

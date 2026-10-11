@@ -99,6 +99,25 @@ defmodule Nest.Agents.Visibility do
     |> Enum.map(&archived_public_info(&1, names_by_id))
   end
 
+  @doc """
+  Public-info map for every *archived* agent in `space_id`, with no
+  per-user filter. The `agents-list-archived` tool uses it, since a
+  tool call carries no user identity and archived agents are
+  space-scoped (same rationale as `list_non_archived_agents_for_space/1`).
+  """
+  @spec list_archived_agents_for_space(integer()) :: [map()]
+  def list_archived_agents_for_space(space_id) when is_integer(space_id) do
+    names_by_id = agent_names_by_id(space_id)
+
+    from(a in PersistedAgent,
+      where: a.space_id == ^space_id,
+      where: a.archived == true,
+      order_by: a.name
+    )
+    |> Repo.all()
+    |> Enum.map(&archived_public_info(&1, names_by_id))
+  end
+
   defp archived_public_info(
          %PersistedAgent{
            name: name,

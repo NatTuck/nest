@@ -6,7 +6,7 @@
 
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { archiveSpace } from "../channels";
+import { archiveSpace, unarchiveAgent } from "../channels";
 
 /**
  * Build a tree from a flat agents list. Each agent's
@@ -194,6 +194,17 @@ function AgentTreeRow({ node, depth, location, spaceSlug }) {
             </span>
           )}
         </Link>
+        {isArchived && (
+          <button
+            type="button"
+            onClick={() => unarchiveAgent(agent.name, agent.space_id)}
+            className="mr-2 rounded border border-gray-300 px-2 py-0.5 text-xs text-gray-600 hover:bg-gray-200 opacity-0 group-hover:opacity-100 transition-opacity"
+            aria-label={`Restore ${agent.name}`}
+            title="Restore agent"
+          >
+            Restore
+          </button>
+        )}
       </div>
       {hasChildren && expanded && (
         <ul className="space-y-1">

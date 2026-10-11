@@ -247,6 +247,26 @@ defmodule Nest.Agents do
   end
 
   @doc """
+  Lists public info for *every* archived agent in `space_id`, with
+  no per-user filter (the `agents-list-archived` tool's read).
+  """
+  @spec list_archived_agents_for_space(integer()) :: list(map())
+  def list_archived_agents_for_space(space_id) do
+    Visibility.list_archived_agents_for_space(space_id)
+  end
+
+  @doc """
+  Restores an archived agent in `space_id` to the active list:
+  flips the row's `archived` flag back and broadcasts
+  `agent:unarchived` on the lobby topic. The agent is rehydrated
+  on demand, not eagerly restarted.
+  """
+  @spec unarchive_agent(integer(), String.t()) :: :ok | {:error, :not_found}
+  def unarchive_agent(space_id, name) do
+    Supervisor.unarchive_agent(space_id, name)
+  end
+
+  @doc """
   Gets the messages for an agent by its `{space_id, name}`.
   """
   @spec get_messages(integer(), String.t()) :: {:ok, [map()]} | {:error, :not_found}

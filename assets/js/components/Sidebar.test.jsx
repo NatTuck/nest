@@ -911,6 +911,71 @@ describe("Sidebar space archiving", () => {
   });
 });
 
+describe("Sidebar agent unarchiving", () => {
+  function seedArchivedAgent(spaceId) {
+    act(() => {
+      useStore.setState({
+        agents: [],
+        archivedAgents: [
+          {
+            name: "old-agent",
+            space_id: spaceId,
+            parentId: null,
+            parentName: null,
+            depth: 0,
+            archived: true,
+          },
+        ],
+        spaces: [{ id: spaceId, slug: "my-space", name: "My Space" }],
+      });
+    });
+  }
+
+  function expandArchivedGroup() {
+    act(() => {
+      screen.getByRole("button", { name: /toggle archived agents/i }).click();
+    });
+  }
+
+  it("renders a Restore button on expanded archived agent rows", () => {
+    seedArchivedAgent(1);
+
+    render(
+      <MemoryRouter initialEntries={["/space/my-space"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    // The Archived group is collapsed by default; expanding it
+    // reveals the row and its Restore button.
+    expandArchivedGroup();
+
+    expect(
+      screen.getByRole("button", { name: /restore old-agent/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("clicking Restore pushes unarchive_agent with the agent name and space id", async () => {
+    seedArchivedAgent(7);
+
+    render(
+      <MemoryRouter initialEntries={["/space/my-space"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    expandArchivedGroup();
+
+    const pushPromise = captureNextPush("lobby", "unarchive_agent");
+    act(() => {
+      screen.getByRole("button", { name: /restore old-agent/i }).click();
+    });
+
+    const payload = await pushPromise;
+    expect(payload).toEqual({ name: "old-agent", space_id: 7 });
+  });
+});
+
 describe("Sidebar logout", () => {
   beforeEach(() => {
     useStore.getState()._reset();

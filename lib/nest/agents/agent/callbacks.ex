@@ -154,6 +154,12 @@ defmodule Nest.Agents.Agent.Callbacks do
     SubAgent.handle_archive_request(state, task_pid, name)
   end
 
+  # Sub-agent: a tool worker hit an `agents-unarchive` call.
+  # Restore the named archived agent in this space to the active list.
+  def handle_call({:unarchive_agent_request, task_pid, name}, _from, state) do
+    SubAgent.handle_unarchive_request(state, task_pid, name)
+  end
+
   # Async agent-to-agent delivery (`agents-send`, `agents-query`, and the
   # runtime's own `:notice`). The caller (a tool worker in another agent)
   # hands us a message; we either start a turn (idle), queue it (busy), or

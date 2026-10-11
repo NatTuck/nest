@@ -88,4 +88,23 @@ defmodule Nest.Persistence.AgentAttrs do
         {:error, :not_found}
     end
   end
+
+  @spec unarchive_agent(integer(), String.t()) :: :ok | {:error, :not_found}
+  def unarchive_agent(space_id, name) do
+    case Persistence.fetch_agent(space_id, name) do
+      {:ok, %PersistedAgent{id: agent_id}} ->
+        from(a in PersistedAgent, where: a.id == ^agent_id)
+        |> Repo.update_all(
+          set: [
+            archived: false,
+            updated_at: Persistence.now()
+          ]
+        )
+
+        :ok
+
+      {:error, :not_found} ->
+        {:error, :not_found}
+    end
+  end
 end

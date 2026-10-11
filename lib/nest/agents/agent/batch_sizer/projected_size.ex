@@ -27,8 +27,9 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
 
   @safety_padding 1.20
 
-  # `agents-list` / `models-list` are hard-sliced to this many chars in
-  # `Nest.Agents.Agent.ToolLoop`; their projection is bounded by it.
+  # `agents-list` / `agents-list-archived` / `models-list` are
+  # hard-sliced to this many chars in `Nest.Agents.Agent.ToolLoop`;
+  # their projection is bounded by it.
   @max_list_chars 4_000
 
   # Per-tool projections. The `BatchSizer.preflight/2` sums
@@ -86,11 +87,15 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
   def project(%ToolCall{name: "agents-batch"}, _ctx),
     do: summary_baseline_size() * @safety_padding
 
-  def project(%ToolCall{name: name}, _ctx) when name in ["agents-list", "models-list"],
-    do: Estimator.estimate_bytes(@max_list_chars)
+  def project(%ToolCall{name: name}, _ctx)
+      when name in ["agents-list", "agents-list-archived", "models-list"],
+      do: Estimator.estimate_bytes(@max_list_chars)
 
   def project(%ToolCall{name: "agents-archive"}, _ctx),
     do: estimator_overhead("Archived agent clever-raven.")
+
+  def project(%ToolCall{name: "agents-unarchive"}, _ctx),
+    do: estimator_overhead("Restored agent clever-raven.")
 
   def project(%ToolCall{name: "agents-send"}, _ctx),
     do: estimator_overhead("Message queued for clever-raven.")
@@ -121,8 +126,8 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
   @projected_tools ~w(
     file-read shell-cmd file-write file-edit file-inspect context-check
     shell-wait shell-list shell-kill
-    agents-spawn agents-query agents-batch agents-list models-list agents-archive
-    agents-send agents-wait
+    agents-spawn agents-query agents-batch agents-list agents-list-archived models-list
+    agents-archive agents-unarchive agents-send agents-wait
   )
 
   @doc false

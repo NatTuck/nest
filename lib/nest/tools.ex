@@ -66,7 +66,9 @@ defmodule Nest.Tools do
              "agents-spawn",
              "agents-query",
              "agents-list",
+             "agents-list-archived",
              "agents-archive",
+             "agents-unarchive",
              "agents-batch",
              "agents-send",
              "agents-wait",
@@ -85,7 +87,9 @@ defmodule Nest.Tools do
   defp sub_agent_tool_function("agents-spawn"), do: SpawnAgent.function()
   defp sub_agent_tool_function("agents-query"), do: QueryAgent.function()
   defp sub_agent_tool_function("agents-list"), do: list_agents_function()
+  defp sub_agent_tool_function("agents-list-archived"), do: list_archived_agents_function()
   defp sub_agent_tool_function("agents-archive"), do: archive_agent_function()
+  defp sub_agent_tool_function("agents-unarchive"), do: unarchive_agent_function()
   defp sub_agent_tool_function("agents-batch"), do: batch_agent_function()
   defp sub_agent_tool_function("agents-send"), do: send_agent_function()
   defp sub_agent_tool_function("agents-wait"), do: WaitAgents.function()
@@ -120,10 +124,11 @@ defmodule Nest.Tools do
       the actual vs. requested token counts.
     * Other tools → bounded output by construction (cap unreachable).
 
-  Tools whose result is already a fixed-size confirmation or a
-  pointer (`agents-query`, `agents-spawn`, `agents-send`,
-  `agents-archive`, `context-compact`, `shell-kill`) do not take it,
-  and neither does `agents-batch`: its aggregate is an inbox message,
+   Tools whose result is already a fixed-size confirmation or a
+   pointer (`agents-query`, `agents-spawn`, `agents-send`,
+   `agents-archive`, `agents-unarchive`, `context-compact`,
+   `shell-kill`) do not take it, and neither does `agents-batch`: its
+   aggregate is an inbox message,
   not a tool result, so there is no inline result left to cap.
   (Decision 14 named only `agents-query` and `agents-spawn` because
   that is where the analysis happened to be done; the rationale
@@ -487,6 +492,59 @@ defmodule Nest.Tools do
       },
       function: fn _args, _context ->
         {:ok, "Archive agent request received."}
+      end
+    }
+  end
+
+  # The `agents-unarchive` tool: restore an archived agent in this
+  # space to the active list. The agent is rehydrated on demand (not
+  # eagerly restarted) and becomes listable and queryable again.
+  #
+  # The `function` here is a stub. Real execution lives in
+  # `Nest.Agents.Agent.ToolLoop`, which routes through the agent
+  # GenServer to flip the row's archived flag.
+  defp unarchive_agent_function do
+    %Tool{
+      name: "agents-unarchive",
+      description:
+        "Restore an archived agent in this space to the active list. The agent " <>
+          "becomes listable and queryable again (it is rehydrated on demand the " <>
+          "next time it is addressed). Use this to bring back a specialist you " <>
+          "archived with `agents-archive`.",
+      parameters_schema: %{
+        "type" => "object",
+        "properties" => %{
+          "name" => %{
+            "type" => "string",
+            "description" => "The name of the archived agent to restore."
+          }
+        },
+        "required" => ["name"]
+      },
+      function: fn _args, _context ->
+        {:ok, "Unarchive agent request received."}
+      end
+    }
+  end
+
+  # The `agents-list-archived` tool: enumerate the archived agents
+  # in this space. Returns each agent's name, parent, and depth.
+  # Like `agents-list`, the `function` here is a stub — `ToolLoop`
+  # handles it inline by reading the space's archived rows.
+  defp list_archived_agents_function do
+    %Tool{
+      name: "agents-list-archived",
+      description:
+        "List the archived agents in this space, with their name, parent, and " <>
+          "depth. Use this to find an agent you (or a sibling) archived that " <>
+          "you want back — restore it with `agents-unarchive`.",
+      parameters_schema: %{
+        "type" => "object",
+        "properties" => %{"max_result_tokens" => max_result_tokens_schema()},
+        "required" => []
+      },
+      function: fn _args, _context ->
+        {:ok, "List archived agents request received."}
       end
     }
   end

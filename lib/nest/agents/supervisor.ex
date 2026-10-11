@@ -381,6 +381,39 @@ defmodule Nest.Agents.Supervisor do
     })
   end
 
+  @doc """
+  Restore an archived agent in `space_id` to the active list.
+
+  Flips the row's `archived` flag back to `false`. The agent is not
+  eagerly restarted — it is rehydrated on demand by `get_agent/2`
+  when it is next addressed (mirroring `Nest.Spaces.unarchive_space/1`).
+  Broadcasts `agent:unarchived` on the lobby topic so connected
+  clients can move the agent out of the per-space "Archived" group.
+
+  Returns `:ok` on success, `{:error, :not_found}` if the agent row
+  does not exist.
+  """
+  @spec unarchive_agent(integer(), String.t()) :: :ok | {:error, :not_found}
+  def unarchive_agent(space_id, name) do
+    case Persistence.unarchive_agent(space_id, name) do
+      :ok ->
+        broadcast_agent_unarchived(space_id, name)
+        :ok
+
+      {:error, _reason} = err ->
+        err
+    end
+  end
+
+  # Tell every connected lobby client that `name` was restored so the
+  # sidebar can move it back into the active tree without a reload.
+  defp broadcast_agent_unarchived(space_id, name) do
+    NestWeb.Endpoint.broadcast("lobby", "agent:unarchived", %{
+      "space_id" => space_id,
+      "name" => name
+    })
+  end
+
   # `reason` names the site for the give-up's log line and its timeline event
   # (`:stopped` for a plain Stop, `:archive` for an archive) — `stop_one/3`
   # serves both, so a hardcoded atom would misreport one of them.
