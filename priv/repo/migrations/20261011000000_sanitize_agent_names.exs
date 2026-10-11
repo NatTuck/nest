@@ -44,6 +44,14 @@ defmodule Nest.Repo.Migrations.SanitizeAgentNames do
   #   contradicting its name. Only those two exact renderings are replaced,
   #   only in the agent's own index-0 system row. See
   #   `rewrite_system_message/3`.
+  # * **Known gap: a renamed clone's notice row.** A clone's fork notice
+  #   (a tool-result row in the clone's own sequence, *not* its index-0
+  #   system row) names the clone and its scratch directory. A clone that
+  #   is renamed therefore keeps the old name there. It is deliberately not
+  #   rewritten: it is transcript prose rather than one of the renderings
+  #   the prompt composer emits, and the same is true of the agent's
+  #   on-disk scratch directory (below). Both are the same class of
+  #   staleness — historical text that named the agent before the rename.
   # * **Reversibility.** The mapping is recorded in
   #   `agent_name_migrations` (created here), which is what `down/0`
   #   restores from — an unsafe name is not reconstructible from its safe
@@ -198,11 +206,30 @@ defmodule Nest.Repo.Migrations.SanitizeAgentNames do
   # The readable fold of `old_name`, disambiguated against `taken` when
   # needed.
   #
-  # Length is already bounded: `agents.name` is `varchar(255)`, and this
-  # fold never grows a name (a run of any length collapses to one `-`, NFD
-  # only removes marks, and the result is ASCII, so characters == bytes).
-  # The `-<digest>` suffix is the one thing that can push it over, which is
-  # why `disambiguated/4` truncates before appending.
+  # Length is already bounded, so `base_name/1` does not truncate:
+  # `agents.name` is `varchar(255)`, and this fold never grows a name.
+  #
+  #   * The multi-character decompositions NFD *applies* are a base letter
+  #     plus combining marks (stripped by `@combining_marks`) and Hangul
+  #     syllables into jamo (`각` -> three jamo). Jamo are not `[a-z0-9]`,
+  #     so they collapse into the single `-` that `@unsafe_run` produces for
+  #     the run — never into ASCII letters.
+  #   * The multi-character *ligature* decompositions (`Ĳ`, `Ǆ`, `ǅ`, `ǆ`,
+  #     `Ǳ`, `ﬁ`, …) are **compatibility** mappings, which NFD does not
+  #     apply. Those characters stay single, are not `[a-z0-9]`, and
+  #     collapse to `-` as well.
+  #   * `String.downcase/1` can add a combining mark (`İ` -> `i` + U+0307),
+  #     which `@unsafe_run` then collapses to `-`.
+  #
+  # So a name of at most 255 characters folds to at most 255 ASCII
+  # characters, which are at most 255 bytes. The `-<digest>` suffix is the
+  # one thing that can push past that, which is why `disambiguated/4`
+  # truncates the base before appending.
+  #
+  # Do not "improve" this into an overflow: switching to NFKD (which does
+  # apply the compatibility mappings, so `Ĳ` becomes `ij` and a 255-char
+  # name can fold to 510 ASCII characters) or adding any prefix/suffix
+  # breaks the bound.
   defp folded_name(old_name, taken) do
     base = base_name(old_name)
 

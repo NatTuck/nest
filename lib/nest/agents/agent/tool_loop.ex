@@ -220,6 +220,24 @@ defmodule Nest.Agents.Agent.ToolLoop do
       "Retry with a valid `vocation` slug."
   end
 
+  # An unsafe `name` is the likeliest way an LLM trips validation
+  # (`"code reviewer"`, `"Reviewer 2"`): `Agents.create_agent/3` returns the
+  # changeset from `PersistedAgent.changeset/2`, whose name rule is
+  # `[A-Za-z0-9_-]+`. Render that rule plainly — the catch-all below would
+  # dump a whole `#Ecto.Changeset<…>` struct into the model's context, which
+  # is both noisy and useless to it. (A duplicate name never arrives here:
+  # `Persistence.do_insert/1` translates the unique violation to
+  # `{:error, :duplicate_name}`.)
+  defp spawn_error_message(%Ecto.Changeset{errors: errors}) do
+    if Keyword.has_key?(errors, :name) do
+      "Could not spawn agent: the name must be non-empty and contain only " <>
+        "letters, digits, `_` and `-` (no spaces or slashes). " <>
+        "Retry with a different `name`."
+    else
+      "Could not spawn agent: the request was rejected (#{inspect(errors)})."
+    end
+  end
+
   defp spawn_error_message(reason), do: "Could not spawn agent: #{inspect(reason)}"
 
   # `agents-list`: read the space's non-archived agents —

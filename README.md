@@ -9,6 +9,21 @@ To start your Phoenix server:
 
 Now you can visit [`localhost:4000`](http://localhost:4000) from your browser.
 
+## Migrations
+
+**Run migrations at boot, or with the server stopped.** `Nest.Application`
+starts `Ecto.Migrator` before `Nest.Agents.Supervisor`, so in a release
+(where migrations are not skipped) every migration completes before any
+agent process exists. That ordering is load-bearing for data migrations that
+rewrite agent state: a running agent keeps its name in memory and resolves
+its own row by name on every write, so a migration such as
+`20261011000000_sanitize_agent_names` — which renames `agents` rows in place
+— applied against a *live* server desynchronizes those agents (their
+messages stop persisting) until they are restarted.
+
+In development the boot-time migrator is skipped, so `mix ecto.migrate` is a
+manual step: stop `mix phx.server` first (or expect to restart it after).
+
 ## License
 
 Keep in mind that GNU AGPL means that if you host this software for

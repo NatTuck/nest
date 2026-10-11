@@ -7,6 +7,8 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
 
   require Logger
 
+  alias Nest.Agents.PersistedAgent
+
   @doc false
   def change_model_payload(name, reason) do
     case reason do
@@ -56,10 +58,11 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
   end
 
   # `Spaces.create_space_with_root_agent/2` returns a *heterogeneous* reason
-  # space: the workspace/vocation refusals a user can act on, plus changesets
-  # and internal terms from the space insert and the agent spawn. Only the
-  # first group gets a named code; the rest stay generic (and logged), because
-  # an `Ecto.Changeset` is neither `to_string/1`-able nor fit to show a user.
+  # space: the workspace/vocation refusals a user can act on, a root-agent
+  # name the client chose that is not filename-safe, plus changesets and
+  # internal terms from the space insert and the agent spawn. Everything
+  # except the first two groups stays generic (and logged), because an
+  # `Ecto.Changeset` is neither `to_string/1`-able nor fit to show a user.
   @doc false
   def create_payload(reason) do
     case reason do
@@ -84,9 +87,30 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
         Logger.warning("Blueprint root vocation #{inspect(slug)} no longer exists")
         {:error, %{"reason" => "vocation_not_found"}}
 
+      # The client named the root agent (`create_space`'s `agent_name`).
+      # Matching `data:` on the *agent* schema is what keeps this precise: a
+      # space changeset (blank `:name`, taken `:slug`) also carries
+      # `:name`/`:slug` errors and must stay generic. The New Space form never
+      # sends an `agent_name` (the root agent is named `<slug>-root`), so this
+      # is for custom clients.
+      %Ecto.Changeset{data: %PersistedAgent{}, errors: errors} ->
+        agent_changeset_payload(errors)
+
       other ->
         Logger.error("Failed to create space: #{inspect(other)}")
         {:error, %{"reason" => "failed_to_create"}}
+    end
+  end
+
+  # A root-agent name the client chose that is not filename-safe gets a code
+  # the client can show; any other agent-changeset error stays generic (and
+  # logged), like the rest of this module's unshowable reasons.
+  defp agent_changeset_payload(errors) do
+    if Keyword.has_key?(errors, :name) do
+      {:error, %{"reason" => "invalid_agent_name"}}
+    else
+      Logger.error("Failed to create space: #{inspect(errors)}")
+      {:error, %{"reason" => "failed_to_create"}}
     end
   end
 end

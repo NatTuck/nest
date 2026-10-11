@@ -14,6 +14,8 @@ defmodule NestWeb.LobbyChannel.AgentErrorsTest do
 
   import ExUnit.CaptureLog
 
+  alias Nest.Agents.PersistedAgent
+  alias Nest.Spaces.Space
   alias NestWeb.LobbyChannel.AgentErrors
 
   test "names every refusal a user can act on" do
@@ -36,6 +38,33 @@ defmodule NestWeb.LobbyChannel.AgentErrorsTest do
       end)
 
     assert log =~ "ghost-vocation"
+  end
+
+  test "names an unsafe client-supplied root-agent name" do
+    changeset =
+      PersistedAgent.changeset(%PersistedAgent{}, %{
+        name: "Code Reviewer",
+        space_id: 1,
+        model: %{name: "m", provider: "p"}
+      })
+
+    assert {:error, %{"reason" => "invalid_agent_name"}} =
+             AgentErrors.create_payload(changeset)
+  end
+
+  test "stays generic for a space changeset, even one with a :name error" do
+    # A blank space name is not an agent-name problem, and the agent's own
+    # `data:` match is what keeps the two apart.
+    changeset =
+      Space.changeset(%Space{}, %{name: "", created_by_user_id: 1})
+
+    log =
+      capture_log(fn ->
+        assert {:error, %{"reason" => "failed_to_create"}} =
+                 AgentErrors.create_payload(changeset)
+      end)
+
+    assert log =~ "Failed to create space"
   end
 
   test "stays generic and logs a reason it cannot show a user" do

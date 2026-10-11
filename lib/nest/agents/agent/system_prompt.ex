@@ -186,24 +186,12 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   # verbatim (see `identity_section/2`), so `MessageList.clone_notice/2`
   # states the clone's own directory — its tools no longer do.
   defp scratch_section(name) when is_binary(name) and name != "" do
-    "\n\nYour own scratch directory is `#{scratch_dir(name)}/`; the `/tmp` root is shared " <>
+    "\n\nYour own scratch directory is `#{Sandbox.scratch_dir(name)}/`; the `/tmp` root is shared " <>
       "with your siblings in this space, so put anything that must not be clobbered " <>
       "under your own directory.\n"
   end
 
   defp scratch_section(_name), do: ""
-
-  @doc """
-  The spelling of an agent's own scratch directory inside the sandbox:
-  `#{Sandbox.sandbox_root()}/<agent-name>`.
-
-  Derived from the name alone (the scratch segment is the bare name; see
-  `Nest.Agents.PersistedAgent`), so callers that only have the name — the
-  prompt sections above, and the clone notice — can state it without a
-  host `tmp_path`.
-  """
-  @spec scratch_dir(String.t()) :: String.t()
-  def scratch_dir(name), do: Path.join(Sandbox.sandbox_root(), name)
 
   defp workspace_section(nil), do: ""
 
