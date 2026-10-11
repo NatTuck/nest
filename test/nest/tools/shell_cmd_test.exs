@@ -336,6 +336,18 @@ defmodule Nest.Tools.ShellCmdTest do
     assert message =~ "will not pipe command output into `grep`"
   end
 
+  test "the tool rejects a non-string command instead of crashing ShellCmd", %{ws: ws} do
+    function = Tools.get_function("shell-cmd", ws)
+
+    # `Nest.LLM.Tools` only checks that the `command` key is present, so a list
+    # reaches the tool; it must come back as a tool error rather than crashing
+    # in `ShellCmd` (and leaking a staged script).
+    assert {:error, message} = function.function.(%{"command" => ["echo X | head"]}, nil)
+
+    assert message ==
+             ~s{Invalid `command` argument: expected a string, got: ["echo X | head"].}
+  end
+
   @tag :bwrap
   test "the tool still runs head/tail/grep directly and pipes into other commands", %{ws: ws} do
     function = Tools.get_function("shell-cmd", ws)

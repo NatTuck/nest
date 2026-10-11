@@ -44,10 +44,16 @@ defmodule Nest.Tools.ShellPipes do
   like ordinary shell code, so `` `ls | head` `` and `$(ls | head)` are
   rejected. A substitution inside double quotes (`"$(...)"`) is not.
 
-  Known limitations (misses, never false positives): a pager reached indirectly
-  is not caught — for example `ls | xargs head`, where `head` is an argument to
-  `xargs` rather than the stage's command word, or `ls | { head; }`, where the
-  pipe target is a brace group rather than a plain command.
+  Known limitations (misses, never false positives): the pager must be the
+  stage's own command word, so one reached indirectly is not caught — behind a
+  wrapper (`env`, `nice`, `sudo`, `command`, `timeout`, `stdbuf`, `busybox`, or
+  `sh -c '...'`), inside a brace group (`ls | { head; }`), or in an `if`/`case`
+  stage. `ls | xargs head` is likewise not caught, but it does not discard the
+  piped output the way a plain `| head` does.
+
+  A heredoc whose delimiter is a parameter expansion (`cat <<$F`) is not
+  recognised: its terminator cannot be known at token level, so the remainder of
+  the input is treated as the body (a miss, never a false positive).
   """
 
   # Command names whose pipeline use discards output.
@@ -65,11 +71,8 @@ defmodule Nest.Tools.ShellPipes do
   @assignment ~r/^[A-Za-z_][A-Za-z0-9_]*=/
 
   @doc """
-  Returns `:ok`, or `{:error, message}` when `command` pipes output into
-  `head`, `tail`, or `grep`.
-
-  A non-binary `command` returns `:ok`: the tool's schema requires a string, and
-  anything else is rejected elsewhere.
+  Returns `:ok`, or `{:error, message}` when `command` is not a string or pipes
+  output into `head`, `tail`, or `grep`.
   """
   @spec check(term()) :: :ok | {:error, String.t()}
   def check(command) when is_binary(command) do
@@ -79,7 +82,11 @@ defmodule Nest.Tools.ShellPipes do
     end
   end
 
-  def check(_command), do: :ok
+  # The tool's schema only checks that the `command` key is present, so a
+  # non-string value (a list, a number) reaches here. Reject it with the same
+  # shape as the `timeout` validation rather than letting `ShellCmd` crash on
+  # `String.length/1` and leak a staged script.
+  def check(other), do: {:error, invalid_command_message(other)}
 
   # ---- pipeline walk ----
 
@@ -104,34 +111,43 @@ defmodule Nest.Tools.ShellPipes do
 
   defp fd_number?(word), do: String.match?(word, ~r/^\d+$/)
 
-  # Walk the token stream. `expecting` is true immediately after a pipe; `skip`
-  # is true when the next word is a redirection target rather than a command.
-  defp find_pager([], _expecting, _skip), do: nil
+  # Walk the token stream. `stage` is:
+  #
+  #   * `false`    — not expecting a pipeline command
+  #   * `:fresh`   — immediately after a pipe with nothing consumed yet, so a
+  #                  newline is a continuation (`ls |` + newline + `head` is
+  #                  `ls | head`)
+  #   * `:started` — after the pipe but past an assignment or redirection, so a
+  #                  newline ends the stage (`ls | 2>/dev/null` + newline +
+  #                  `head` runs `head` as a separate command)
+  #
+  # `skip` is true when the next word is a redirection target, not a command.
+  defp find_pager([], _stage, _skip), do: nil
 
   # Every operator is a pipe, a redirection, or a stage separator (`;`, `&&`,
   # `||`, `&`, a newline, or a subshell paren), so the last branch is total.
-  #
-  # A newline or an opening paren while a command is still expected does not end
-  # the stage: a newline right after `|` is a continuation (`ls |` + newline +
-  # `head` is `ls | head`), and `ls | (head)` pipes into the subshell's first
-  # command. Both keep `expecting` so the pager is still found.
-  defp find_pager([{:op, op} | rest], expecting, _skip) do
+  defp find_pager([{:op, op} | rest], stage, _skip) do
     cond do
-      op in ["|", "|&"] -> find_pager(rest, true, false)
-      expecting and op in ["\n", "("] -> find_pager(rest, true, false)
-      op in @redirection_ops -> find_pager(rest, expecting, true)
+      op in ["|", "|&"] -> find_pager(rest, :fresh, false)
+      op == "\n" and stage == :fresh -> find_pager(rest, :fresh, false)
+      op == "(" and stage != false -> find_pager(rest, stage, false)
+      op in @redirection_ops -> find_pager(rest, consumed(stage), true)
       true -> find_pager(rest, false, false)
     end
   end
 
-  defp find_pager([{:word, word} | rest], expecting, skip) do
+  defp find_pager([{:word, word} | rest], stage, skip) do
     cond do
-      skip -> find_pager(rest, expecting, false)
-      not expecting -> find_pager(rest, false, false)
-      Regex.match?(@assignment, word) -> find_pager(rest, true, false)
+      skip -> find_pager(rest, stage, false)
+      stage == false -> find_pager(rest, false, false)
+      Regex.match?(@assignment, word) -> find_pager(rest, consumed(stage), false)
       true -> pager_name(word) || find_pager(rest, false, false)
     end
   end
+
+  # An assignment or redirection is content in the stage.
+  defp consumed(false), do: false
+  defp consumed(_stage), do: :started
 
   defp pager_name(word) do
     base = Path.basename(word)
@@ -141,8 +157,13 @@ defmodule Nest.Tools.ShellPipes do
   defp message(name) do
     "Refused: `shell-cmd` will not pipe command output into `#{name}`. " <>
       "Piping to head, tail, or grep discards most of the command's output, and " <>
-      "the tool already caps the result size (an oversized result is truncated " <>
-      "automatically). Re-run the command without the pipe."
+      "the tool already limits how much it returns: an oversized result is saved " <>
+      "to a scratch file and summarised by its path and head lines. " <>
+      "Re-run the command without the pipe."
+  end
+
+  defp invalid_command_message(other) do
+    "Invalid `command` argument: expected a string, got: " <> inspect(other) <> "."
   end
 
   # ---- tokenizer ----
@@ -180,6 +201,14 @@ defmodule Nest.Tools.ShellPipes do
   # the backtick onto the command word (`head` + backtick) and hiding the pager.
   defp scan(<<"`", rest::binary>>, :normal, word, tokens, pending),
     do: scan(rest, :normal, [], flush(word, tokens), pending)
+
+  # `$((...))` and `((...))` are arithmetic: a `<<` inside them is a shift, not
+  # a heredoc, and the expression is not shell code. Consume it whole.
+  defp scan(<<"$((", rest::binary>>, :normal, word, tokens, pending),
+    do: scan(skip_arith(rest, 0), :normal, [], flush(word, tokens), pending)
+
+  defp scan(<<"((", rest::binary>>, :normal, word, tokens, pending),
+    do: scan(skip_arith(rest, 0), :normal, [], flush(word, tokens), pending)
 
   # `#` starts a comment only at the start of a word, matching bash.
   defp scan(<<"#", rest::binary>>, :normal, [], tokens, pending),
@@ -238,8 +267,8 @@ defmodule Nest.Tools.ShellPipes do
 
   # ---- heredocs ----
 
-  # `<<`/`<<-` starts a heredoc only when a delimiter word follows; otherwise
-  # (for example `$((1 << 2))`) the operator is emitted as-is.
+  # `<<`/`<<-` starts a heredoc only when a delimiter follows; otherwise (for
+  # example `<< | head`) the operator is emitted as-is.
   defp heredoc(rest, strip_tabs, word, tokens, pending) do
     op = if strip_tabs, do: "<<-", else: "<<"
 
@@ -253,29 +282,60 @@ defmodule Nest.Tools.ShellPipes do
           pending ++ [{delim, strip_tabs}]
         )
 
+      :unknown ->
+        # The delimiter is a parameter expansion (`cat <<$F`), so the body's
+        # terminator cannot be known at token level. Stop scanning here: the
+        # remainder is treated as the body, so a pipe inside it is a miss,
+        # never a false positive.
+        Enum.reverse(push_op(flush(word, tokens), op))
+
       :error ->
         scan(rest, :normal, [], push_op(flush(word, tokens), op), pending)
     end
   end
 
+  # Returns `{:ok, delim, rest}` for a delimiter, `:unknown` when the delimiter
+  # is a parameter expansion (bash resolves it, so we cannot), or `:error` when
+  # this `<<` is not a heredoc at all. A leading `\` quotes the delimiter
+  # (`<<\EOF`), and a quoted delimiter is read to its matching quote so
+  # `<<'E OF'` works.
   defp take_heredoc_delim(input) do
     input = skip_blanks(input)
 
     case input do
-      <<quote, rest::binary>> when quote in [?', ?"] ->
-        case take_word(rest) do
-          {"", _rest} -> :error
-          {delim, <<^quote, tail::binary>>} -> {:ok, delim, tail}
-          {_delim, _rest} -> :error
-        end
-
-      _ ->
-        case take_word(input) do
-          {"", _rest} -> :error
-          {delim, rest} -> {:ok, delim, rest}
-        end
+      <<"\\", rest::binary>> -> unquoted_delim(rest)
+      <<quote, rest::binary>> when quote in [?', ?"] -> take_quoted_delim(quote, rest, [])
+      _ -> unquoted_delim(input)
     end
   end
+
+  defp unquoted_delim(<<?$, _rest::binary>>), do: :unknown
+
+  defp unquoted_delim(input) do
+    case take_word(input) do
+      {"", _rest} -> :error
+      {delim, rest} -> {:ok, delim, rest}
+    end
+  end
+
+  defp take_quoted_delim(?', <<"'", rest::binary>>, acc),
+    do: {:ok, IO.iodata_to_binary(acc), rest}
+
+  defp take_quoted_delim(?", <<"\"", rest::binary>>, acc),
+    do: {:ok, IO.iodata_to_binary(acc), rest}
+
+  defp take_quoted_delim(quote, <<char, rest::binary>>, acc),
+    do: take_quoted_delim(quote, rest, [acc, char])
+
+  defp take_quoted_delim(_quote, <<>>, _acc), do: :error
+
+  # Consume an arithmetic expression up to its closing `))`, tracking nested
+  # parens. Returns the input after the pair (or `<<>>` when unterminated).
+  defp skip_arith(<<"(", rest::binary>>, depth), do: skip_arith(rest, depth + 1)
+  defp skip_arith(<<")", ")", rest::binary>>, 0), do: rest
+  defp skip_arith(<<")", rest::binary>>, depth) when depth > 0, do: skip_arith(rest, depth - 1)
+  defp skip_arith(<<_char, rest::binary>>, depth), do: skip_arith(rest, depth)
+  defp skip_arith(<<>>, _depth), do: <<>>
 
   defp skip_blanks(<<char, rest::binary>>) when char in [?\s, ?\t], do: skip_blanks(rest)
   defp skip_blanks(input), do: input

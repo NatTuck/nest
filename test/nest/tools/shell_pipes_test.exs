@@ -27,8 +27,10 @@ defmodule Nest.Tools.ShellPipesTest do
             "a | b | head",
             "sort | uniq -c | sort -rn | head",
             "ls | /usr/bin/head",
-            "ls | headless | grep x",
-            "ls | grep"
+            "ls | sort | grep x",
+            "ls | grep",
+            "echo $((1 << 2))\nls | head",
+            "(( x << 1 ))\nls | head"
           ] do
         assert {:error, message} = ShellPipes.check(command),
                "expected #{inspect(command)} to be rejected"
@@ -118,7 +120,10 @@ defmodule Nest.Tools.ShellPipesTest do
             "echo # | head",
             "cat <<EOF\nls | head\nEOF",
             "cat <<'EOF'\nls | head\nEOF",
-            "cat <<-EOF\n\tls | head\n\tEOF"
+            "cat <<-EOF\n\tls | head\n\tEOF",
+            "cat <<\\EOF\nls | head\nEOF",
+            "cat <<'E OF'\nls | head\nE OF",
+            "cat <<$F\nls | head\n$F"
           ] do
         assert :ok = ShellPipes.check(command), "expected #{inspect(command)} to be allowed"
       end
@@ -140,6 +145,24 @@ defmodule Nest.Tools.ShellPipesTest do
       end
     end
 
+    test "a newline ends the stage once content was consumed after the pipe" do
+      # A bare `|` + newline is a continuation, but once the stage has an
+      # assignment or a redirection the newline ends it — bash runs `head` as a
+      # separate command.
+      for command <- ["ls | 2>/dev/null\nhead -1 g", "ls |\nVAR=x\nhead -1 f"] do
+        assert :ok = ShellPipes.check(command), "expected #{inspect(command)} to be allowed"
+      end
+    end
+
+    test "documents the known misses so the moduledoc cannot drift" do
+      # These are the limitations named in the moduledoc: the pager is not the
+      # stage's own command word (a wrapper, a brace group, or an argument), so
+      # the filter does not catch it.
+      for command <- ["ls | xargs head", "ls | { head; }", "ls | env head", "ls | timeout 5 head"] do
+        assert :ok = ShellPipes.check(command), "expected #{inspect(command)} to be allowed"
+      end
+    end
+
     test "allows command substitution that is double-quoted or has no pager pipe" do
       # A substitution inside double quotes is not inspected (a documented
       # limitation), and a substitution whose contents contain no pager pipe is
@@ -151,9 +174,15 @@ defmodule Nest.Tools.ShellPipesTest do
   end
 
   describe "check/1 edge cases" do
-    test "accepts a non-binary command, which the tool schema rejects elsewhere" do
-      assert :ok = ShellPipes.check(nil)
-      assert :ok = ShellPipes.check(123)
+    test "rejects a non-binary command with the same shape as the timeout error" do
+      # `Nest.LLM.Tools` only checks that the `command` key is present, so a
+      # non-string value reaches here; it must not crash `ShellCmd`.
+      for bad <- [nil, 123, ["echo X | head"], %{"a" => 1}] do
+        assert {:error, message} = ShellPipes.check(bad)
+
+        assert message ==
+                 "Invalid `command` argument: expected a string, got: #{inspect(bad)}."
+      end
     end
 
     test "returns :ok for an empty command" do
