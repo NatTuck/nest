@@ -265,9 +265,10 @@ defmodule Nest.Agents.Agent.SubAgent do
   end
 
   @doc """
-  Restore an archived agent in `state`'s space to the active list.
-  Used by the `agents-unarchive` tool. Returns the GenServer reply
-  tuple.
+  Restore an archived agent in `state`'s space — and its whole archived
+  subtree — to the active list. Used by the `agents-unarchive` tool.
+  Returns the GenServer reply tuple: `{:ok, name}` or the supervisor's
+  `{:error, reason}` (e.g. `{:error, {:parent_archived, parent}}`).
   """
   @spec handle_unarchive_request(Agent.t(), pid(), String.t()) :: {:reply, term(), Agent.t()}
   def handle_unarchive_request(state, _task_pid, name) do

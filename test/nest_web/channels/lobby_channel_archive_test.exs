@@ -267,6 +267,57 @@ defmodule NestWeb.LobbyChannelArchiveTest do
       assert_reply ref, :error, %{"reason" => "shared_read_only"}, 0
     end
 
+    test "returns parent_archived (naming the parent) for a child under an archived parent", %{
+      user: user
+    } do
+      {:ok, %Space{id: space_id}} =
+        Spaces.create_space(user.id, %{
+          name: "arch-nested-#{System.unique_integer([:positive])}"
+        })
+
+      suffix = System.unique_integer([:positive])
+      parent = "nested-parent-#{suffix}"
+      child = "nested-child-#{suffix}"
+      model = %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+      vid = AgentTestHelpers.vocation_id_for_test()
+
+      {:ok, parent_row} =
+        Nest.Persistence.insert_agent(%{
+          space_id: space_id,
+          name: parent,
+          model: model,
+          vocation_id: vid,
+          created_by_user_id: user.id
+        })
+
+      {:ok, _child_row} =
+        Nest.Persistence.insert_agent(%{
+          space_id: space_id,
+          name: child,
+          model: model,
+          vocation_id: vid,
+          created_by_user_id: user.id,
+          parent_id: parent_row.id,
+          depth: 1
+        })
+
+      assert :ok = Nest.Persistence.archive_agent(space_id, parent)
+      assert :ok = Nest.Persistence.archive_agent(space_id, child)
+
+      {socket, _init} = join_lobby()
+
+      ref =
+        push_and_settle(socket, "unarchive_agent", %{"name" => child, "space_id" => space_id})
+
+      # The refusal names the parent so the UI can say what to restore
+      # instead of silently doing nothing (the sidebar nests the child
+      # under the archived parent, so a restored child would look inert).
+      assert_reply ref, :error, %{"reason" => "parent_archived", "parent" => ^parent}, 0
+
+      {:ok, row} = Nest.Persistence.fetch_agent(space_id, child)
+      assert row.archived == true
+    end
+
     test "returns not_found for a missing agent" do
       {socket, _init} = join_lobby()
 

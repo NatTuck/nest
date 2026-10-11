@@ -89,22 +89,98 @@ defmodule Nest.Persistence.AgentAttrs do
     end
   end
 
-  @spec unarchive_agent(integer(), String.t()) :: :ok | {:error, :not_found}
+  @doc """
+  Restore the archived row for `{space_id, name}` **and its whole
+  archived subtree**, walking the persisted `parent_id` links.
+
+  `Nest.Agents.ChildRegistry` cannot be used here: archiving a parent
+  stops its descendants, so their registry entries are gone by the time
+  anyone wants them back. The rows are the only surviving record of the
+  tree's shape.
+
+  Returns `{:ok, names}` with the names actually restored, sorted by
+  name so the caller's broadcasts are deterministic. Restoring a row
+  that is already active is a no-op — `{:ok, []}`, not an error.
+
+  Restoring a child whose parent is still archived is refused with
+  `{:error, {:parent_archived, parent_name}}`: the sidebar nests the
+  tree by `parent_name`, so the restored child would render inside the
+  archived parent's collapsed `Archived` group — it would look exactly
+  like the restore did nothing.
+  """
+  @spec unarchive_agent(integer(), String.t()) ::
+          {:ok, [String.t()]}
+          | {:error, :not_found | {:parent_archived, String.t()}}
   def unarchive_agent(space_id, name) do
     case Persistence.fetch_agent(space_id, name) do
-      {:ok, %PersistedAgent{id: agent_id}} ->
-        from(a in PersistedAgent, where: a.id == ^agent_id)
-        |> Repo.update_all(
-          set: [
-            archived: false,
-            updated_at: Persistence.now()
-          ]
-        )
+      {:ok, %PersistedAgent{archived: true} = row} ->
+        case archived_parent_name(space_id, row) do
+          nil -> restore_subtree(space_id, row)
+          parent -> {:error, {:parent_archived, parent}}
+        end
 
-        :ok
+      {:ok, %PersistedAgent{}} ->
+        {:ok, []}
 
       {:error, :not_found} ->
         {:error, :not_found}
+    end
+  end
+
+  # The parent's name when this row's parent is itself still archived;
+  # `nil` for a root, and for a child whose parent row is gone (nothing
+  # left to nest it under, so it is restorable).
+  defp archived_parent_name(_space_id, %PersistedAgent{parent_id: nil}), do: nil
+
+  defp archived_parent_name(space_id, %PersistedAgent{parent_id: parent_id}) do
+    from(a in PersistedAgent,
+      where: a.space_id == ^space_id,
+      where: a.id == ^parent_id,
+      where: a.archived == true,
+      select: a.name
+    )
+    |> Repo.one()
+  end
+
+  # Clear `archived` for the whole subtree in one statement, and return
+  # the restored names in name order. The root row is archived by
+  # construction (the caller checked), so this always restores at least
+  # it.
+  defp restore_subtree(space_id, %PersistedAgent{id: root_id}) do
+    subtree = subtree_ids(space_id, [root_id], [root_id])
+
+    restored =
+      from(a in PersistedAgent,
+        where: a.space_id == ^space_id,
+        where: a.id in ^subtree,
+        where: a.archived == true,
+        order_by: a.name,
+        select: {a.name, a.id}
+      )
+      |> Repo.all()
+
+    from(a in PersistedAgent, where: a.id in ^Enum.map(restored, &elem(&1, 1)))
+    |> Repo.update_all(set: [archived: false, updated_at: Persistence.now()])
+
+    {:ok, Enum.map(restored, &elem(&1, 0))}
+  end
+
+  # Every row id in the subtree rooted at `level`, found by walking
+  # `parent_id` one level at a time. `seen` accumulates the result and
+  # also keeps a corrupt parent cycle from looping forever.
+  defp subtree_ids(space_id, level, seen) do
+    children =
+      from(a in PersistedAgent,
+        where: a.space_id == ^space_id,
+        where: a.parent_id in ^level,
+        select: a.id
+      )
+      |> Repo.all()
+      |> Enum.reject(&(&1 in seen))
+
+    case children do
+      [] -> seen
+      fresh -> subtree_ids(space_id, fresh, seen ++ fresh)
     end
   end
 end

@@ -493,10 +493,10 @@ defmodule Nest.Agents.Agent.ToolLoop do
     end
   end
 
-  # `agents-unarchive`: restore an archived agent in this space to
-  # the active list. Routes through the parent GenServer so the DB
-  # write happens in the same process context as other lifecycle
-  # operations.
+  # `agents-unarchive`: restore an archived agent in this space —
+  # together with its whole archived subtree — to the active list.
+  # Routes through the parent GenServer so the DB write happens in the
+  # same process context as other lifecycle operations.
   defp run_unarchive_agent(ctx, %ToolCall{} = tc) do
     target = extract_string_arg(tc, "name")
     parent_via_tuple = Registry.via_tuple(ctx.space_id, ctx.agent_name)
@@ -506,14 +506,20 @@ defmodule Nest.Agents.Agent.ToolLoop do
         build_tool_result(tc, "agents-unarchive", "Restored agent #{restored_name}.")
 
       {:error, reason} ->
-        build_tool_result(
-          tc,
-          "agents-unarchive",
-          "Could not restore #{target}: #{inspect(reason)}",
-          true
-        )
+        build_tool_result(tc, "agents-unarchive", unarchive_error(target, reason), true)
     end
   end
+
+  # A child under an archived parent is refused rather than restored:
+  # the sidebar nests by `parent_name`, so it would render inside the
+  # parent's collapsed Archived group and look like nothing happened.
+  # Name the parent so the model knows what to restore first.
+  defp unarchive_error(target, {:parent_archived, parent}) do
+    "Could not restore #{target}: its parent #{parent} is still archived. " <>
+      "Restore #{parent} first (restoring it also restores #{target})."
+  end
+
+  defp unarchive_error(target, reason), do: "Could not restore #{target}: #{inspect(reason)}"
 
   # `agents-batch`: fan ONE templated instruction out over a set of items to
   # concurrent sub-agents and receive the aggregate — a JSON array of each

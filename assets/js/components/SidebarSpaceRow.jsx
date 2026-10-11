@@ -114,6 +114,18 @@ function isSpaceActive(location, space) {
 }
 
 /**
+ * The message shown when a restore is refused. The backend names the
+ * still-archived parent (`parent_archived`) — the case the user can act
+ * on — and anything else falls back to the raw reason.
+ */
+function restoreErrorMessage(err) {
+  if (err?.reason === "parent_archived" && err.parent) {
+    return `Parent "${err.parent}" is still archived — restore it first.`;
+  }
+  return `Could not restore: ${err?.reason ?? "unknown error"}`;
+}
+
+/**
  * Recursive agent row. Renders the agent's name with the
  * current-agent styling plus a chevron toggle when the node has
  * children (so a busy parent can be collapsed). Leaves render an
@@ -123,6 +135,11 @@ function isSpaceActive(location, space) {
  * archived children render at the bottom behind a collapsed
  * `Archived (N)` group (so they stay nested under the active parent).
  * Inside an archived subtree, descendants are rendered directly.
+ *
+ * An archived node's label is not a link: its agent is stopped, so the
+ * backend refuses to start it for a chat join (`agent_archived`).
+ * Linking there would only ever produce that refusal, so the row says
+ * what to do instead (Restore).
  */
 function AgentTreeRow({ node, depth, location, spaceSlug }) {
   const { agent, children } = node;
@@ -139,6 +156,25 @@ function AgentTreeRow({ node, depth, location, spaceSlug }) {
   const directChildren = isArchived ? children : activeChildren;
   const hasChildren = activeChildren.length > 0 || archivedChildren.length > 0;
   const [expanded, setExpanded] = useState(true);
+  const [restoreError, setRestoreError] = useState(null);
+
+  const label = (
+    <>
+      <div
+        className={`
+          w-2 h-2 rounded-full flex-shrink-0
+          ${agent.status === "streaming" ? "bg-green-500 animate-pulse" : "bg-gray-300"}
+          ${agent.status === "executing_tools" ? "bg-amber-500 animate-pulse" : ""}
+        `}
+      />
+      <span className="truncate text-sm font-medium">{agent.name}</span>
+      {directChildren.length > 0 && (
+        <span className="text-xs text-gray-400 ml-1">
+          ({directChildren.length})
+        </span>
+      )}
+    </>
+  );
 
   return (
     <li key={agent.name}>
@@ -176,28 +212,29 @@ function AgentTreeRow({ node, depth, location, spaceSlug }) {
         ) : (
           <span className="w-4 h-4 flex-shrink-0" aria-hidden="true" />
         )}
-        <Link
-          to={`/space/${spaceSlug}/agent/${encodeURIComponent(agent.name)}`}
-          className="flex items-center gap-2 min-w-0 flex-1 py-2 pr-3"
-        >
+        {isArchived ? (
           <div
-            className={`
-              w-2 h-2 rounded-full flex-shrink-0
-              ${agent.status === "streaming" ? "bg-green-500 animate-pulse" : "bg-gray-300"}
-              ${agent.status === "executing_tools" ? "bg-amber-500 animate-pulse" : ""}
-            `}
-          />
-          <span className="truncate text-sm font-medium">{agent.name}</span>
-          {directChildren.length > 0 && (
-            <span className="text-xs text-gray-400 ml-1">
-              ({directChildren.length})
-            </span>
-          )}
-        </Link>
+            className="flex items-center gap-2 min-w-0 flex-1 py-2 pr-3"
+            title="Archived — restore this agent to open its chat"
+          >
+            {label}
+          </div>
+        ) : (
+          <Link
+            to={`/space/${spaceSlug}/agent/${encodeURIComponent(agent.name)}`}
+            className="flex items-center gap-2 min-w-0 flex-1 py-2 pr-3"
+          >
+            {label}
+          </Link>
+        )}
         {isArchived && (
           <button
             type="button"
-            onClick={() => unarchiveAgent(agent.name, agent.space_id)}
+            onClick={() =>
+              unarchiveAgent(agent.name, agent.space_id, null, (err) =>
+                setRestoreError(restoreErrorMessage(err)),
+              )
+            }
             className="mr-2 rounded border border-gray-300 px-2 py-0.5 text-xs text-gray-600 hover:bg-gray-200 opacity-0 group-hover:opacity-100 transition-opacity"
             aria-label={`Restore ${agent.name}`}
             title="Restore agent"
@@ -206,6 +243,11 @@ function AgentTreeRow({ node, depth, location, spaceSlug }) {
           </button>
         )}
       </div>
+      {restoreError && (
+        <p role="alert" className="pl-3 py-0.5 text-xs text-red-600">
+          {restoreError}
+        </p>
+      )}
       {hasChildren && expanded && (
         <ul className="space-y-1">
           {directChildren.map((child) => (

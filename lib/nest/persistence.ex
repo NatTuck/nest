@@ -384,11 +384,19 @@ defmodule Nest.Persistence do
   the boundary pointer, and the vocation struct. Returns
   `{:ok, attrs_map}` for `Agent.start_link/1`, or
   `{:error, :not_found}` when no row exists for the name.
+
+  An *archived* row is refused with `{:error, :archived}`: archiving
+  stops the process and means "out of service", so nothing may bring it
+  back by accident (visiting its chat URL, or messaging it from an
+  already-joined channel). The caller that really wants it running
+  restores it first (`agents-unarchive` / the sidebar's Restore button),
+  which clears the flag this checks.
   """
   @spec build_attrs_for_start(integer(), String.t()) ::
-          {:ok, map()} | {:error, :not_found}
+          {:ok, map()} | {:error, :not_found | :archived}
   def build_attrs_for_start(space_id, agent_name) do
     with {:ok, row} <- fetch_agent(space_id, agent_name),
+         :ok <- ensure_not_archived(row),
          {:ok, boundary} <- last_compaction_index(space_id, agent_name) do
       preloaded = load_full_messages(space_id, agent_name)
       {violations, load_heal} = classify_sequence(preloaded, boundary)
@@ -406,6 +414,12 @@ defmodule Nest.Persistence do
       {:ok, attrs}
     end
   end
+
+  # An archived row is out of service: starting it would resurrect an
+  # agent the sidebar shows under `Archived` (and that `agents-list`
+  # would then report as live). See `build_attrs_for_start/2`.
+  defp ensure_not_archived(%PersistedAgent{archived: true}), do: {:error, :archived}
+  defp ensure_not_archived(%PersistedAgent{}), do: :ok
 
   # The `Agent.start_link/1` attrs map. Extracted from
   # `build_attrs_for_start/2` so the load path stays under credo's ABC
@@ -537,7 +551,12 @@ defmodule Nest.Persistence do
     as: :archive_agent
 
   @doc """
-  Mark the agent row for `{space_id, name}` as not archived.
+  Clear the `archived` flag for the agent row at `{space_id, name}` and
+  for every archived descendant of it (the subtree is walked through the
+  persisted `parent_id` links — see
+  `Nest.Persistence.AgentAttrs.unarchive_agent/2`). Returns
+  `{:ok, restored_names}`, or `{:error, {:parent_archived, parent}}` when
+  the row's own parent is still archived.
   """
   defdelegate unarchive_agent(space_id, name),
     to: Nest.Persistence.AgentAttrs,

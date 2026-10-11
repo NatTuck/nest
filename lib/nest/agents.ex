@@ -256,12 +256,15 @@ defmodule Nest.Agents do
   end
 
   @doc """
-  Restores an archived agent in `space_id` to the active list:
-  flips the row's `archived` flag back and broadcasts
-  `agent:unarchived` on the lobby topic. The agent is rehydrated
-  on demand, not eagerly restarted.
+  Restores an archived agent in `space_id` (and its whole archived
+  subtree) to the active list: clears the rows' `archived` flag and
+  broadcasts `agent:unarchived` for each restored agent on the lobby
+  topic. The agents are rehydrated on demand, not eagerly restarted.
+  Restoring an already-active agent is a no-op; restoring a child whose
+  parent is still archived is refused with
+  `{:error, {:parent_archived, parent_name}}`.
   """
-  @spec unarchive_agent(integer(), String.t()) :: :ok | {:error, :not_found}
+  @spec unarchive_agent(integer(), String.t()) :: :ok | {:error, term()}
   def unarchive_agent(space_id, name) do
     Supervisor.unarchive_agent(space_id, name)
   end

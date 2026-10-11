@@ -249,8 +249,14 @@ defmodule NestWeb.LobbyChannel do
     case Authz.authorize_owner_or_shared(space_id, name, socket.assigns.current_user) do
       {:ok, :owner} ->
         case Agents.unarchive_agent(space_id, name) do
-          :ok -> {:reply, {:ok, %{}}, socket}
-          {:error, reason} -> {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
+          :ok ->
+            {:reply, {:ok, %{}}, socket}
+
+          {:error, {:parent_archived, parent}} ->
+            {:reply, {:error, %{"reason" => "parent_archived", "parent" => parent}}, socket}
+
+          {:error, reason} ->
+            {:reply, {:error, %{"reason" => to_string(reason)}}, socket}
         end
 
       {:ok, :shared} ->
