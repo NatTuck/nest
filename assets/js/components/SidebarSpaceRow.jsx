@@ -4,7 +4,7 @@
  * `Sidebar` to keep that file under the source-line cap.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { archiveSpace } from "../channels";
 import { StatusDot } from "./StatusDot";
@@ -232,7 +232,8 @@ function AgentTreeRow({ node, depth, location, spaceSlug }) {
  * — the URL already says which space you are in, so this mirrors the route
  * rather than remembering a choice. Every other space row starts collapsed,
  * and every agent row under it starts collapsed (see `AgentTreeRow`), so
- * expanding a space reveals exactly one level.
+ * expanding a space reveals exactly one level. Navigating between spaces
+ * moves the expansion with the route (see the `useEffect` below).
  */
 export function SpaceRow({
   space,
@@ -242,6 +243,16 @@ export function SpaceRow({
 }) {
   const selected = isSpaceActive(location, space);
   const [expanded, setExpanded] = useState(selected);
+
+  // `selected` is derived from the route, so it changes when the user
+  // navigates between spaces. Follow it: `useState` only reads its argument
+  // on mount, so without this the row the user just left would stay open and
+  // two space rows could be open at once. A manual toggle survives until the
+  // route moves again.
+  useEffect(() => {
+    setExpanded(selected);
+  }, [selected]);
+
   const tree = buildAgentTree([...spaceAgents, ...spaceArchivedAgents]);
   const activeRoots = tree.filter((node) => node.agent.archived !== true);
   const archivedRoots = tree.filter((node) => node.agent.archived === true);

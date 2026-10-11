@@ -84,25 +84,35 @@ describe("agentStatusDot", () => {
     }
   });
 
-  it("falls back to the neutral dot for an unknown status", () => {
-    assert.deepStrictEqual(agentStatusDot("something_new"), {
-      className: "bg-gray-300",
-      label: "Unknown status: something_new",
-    });
+  it("gives an unknown status its own colour, never the idle grey", () => {
+    const unknown = agentStatusDot("something_new");
+    assert.strictEqual(unknown.label, "Unknown status: something_new");
+    assert.notStrictEqual(unknown.className, agentStatusDot("idle").className);
+    assert.ok(!unknown.className.includes("animate-pulse"));
   });
 
-  it("falls back to the neutral dot for a missing status", () => {
+  it("gives a missing status the same distinct colour and a plain label", () => {
     for (const missing of [undefined, null, ""]) {
       const dot = agentStatusDot(missing);
-      assert.strictEqual(dot.className, "bg-gray-300");
+      assert.strictEqual(
+        dot.className,
+        agentStatusDot("something_new").className,
+      );
       assert.strictEqual(dot.label, "Unknown status");
     }
   });
 
   it("does not treat Object.prototype keys as known statuses", () => {
     assert.deepStrictEqual(agentStatusDot("toString"), {
-      className: "bg-gray-300",
+      className: agentStatusDot(undefined).className,
       label: "Unknown status: toString",
     });
+  });
+
+  it("keeps grey exclusive to idle", () => {
+    const greyUsers = SERVER_STATUSES.filter((s) =>
+      agentStatusDot(s).className.includes("bg-gray-300"),
+    );
+    assert.deepStrictEqual(greyUsers, ["idle"]);
   });
 });

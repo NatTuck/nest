@@ -162,10 +162,12 @@ defmodule NestWeb.LobbyChannel do
     {:noreply, socket}
   end
 
-  # This user's space *set* changed (another session created/archived a
-  # space, or — once sharing lands — a membership change). Re-read the
-  # visible set and make our subscriptions match. A channel process never
-  # sees its own broadcast, so this topic is how it learns.
+  # This user's space *set* changed — another session created/archived/
+  # unarchived/deleted a space (or, once sharing lands, a membership
+  # change). Re-read the visible set and make our subscriptions match.
+  # Unlike a `broadcast/3` on this channel's own topic, a PubSub frame
+  # arrives here as a plain message, so the session that made the change
+  # sees it too.
   @impl true
   def handle_info({:spaces_changed, user_id}, socket) when user_id == socket.assigns.user_id do
     {:noreply, reconcile_space_subscriptions(socket)}
@@ -191,6 +193,18 @@ defmodule NestWeb.LobbyChannel do
   @impl true
   def handle_info({:space_unarchived, payload}, socket) do
     push(socket, "space:unarchived", payload)
+    {:noreply, socket}
+  end
+
+  # Anything else on a topic we subscribed to is a frame we do not know.
+  # Without this clause a single unrecognised PubSub message would raise a
+  # `FunctionClauseError` in `handle_info/2` and take the whole channel
+  # down, disconnecting the client's lobby. The channel subscribes to two
+  # topic families now (per-space and per-user), so an unknown tag is a
+  # live possibility rather than a theoretical one: log it and carry on.
+  @impl true
+  def handle_info(message, socket) do
+    Logger.warning("LobbyChannel ignoring unknown PubSub frame: #{inspect(message)}")
     {:noreply, socket}
   end
 

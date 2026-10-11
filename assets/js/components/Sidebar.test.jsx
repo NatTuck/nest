@@ -191,6 +191,52 @@ describe("Sidebar tree", () => {
     expect(screen.getByText("root-a")).toBeInTheDocument();
   });
 
+  it("moves the expanded space row with the route", () => {
+    act(() => {
+      useStore.setState({
+        agents: [
+          {
+            name: "root-a",
+            space_id: 1,
+            parentId: null,
+            parentName: null,
+            depth: 0,
+          },
+          {
+            name: "root-b",
+            space_id: 2,
+            parentId: null,
+            parentName: null,
+            depth: 0,
+          },
+        ],
+        archivedAgents: [],
+        spaces: [
+          { id: 1, slug: "first", name: "First Space" },
+          { id: 2, slug: "second", name: "Second Space" },
+        ],
+      });
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/space/first"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText("root-a")).toBeInTheDocument();
+    expect(screen.queryByText("root-b")).not.toBeInTheDocument();
+
+    // The expansion follows the route rather than freezing at mount, so
+    // navigating away closes the row we left instead of leaving two open.
+    act(() => {
+      fireEvent.click(screen.getByRole("link", { name: /second space/i }));
+    });
+
+    expect(screen.getByText("root-b")).toBeInTheDocument();
+    expect(screen.queryByText("root-a")).not.toBeInTheDocument();
+  });
+
   it("renders no chevron for leaf nodes", () => {
     act(() => {
       withStore([

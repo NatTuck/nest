@@ -40,12 +40,19 @@ describe("StatusDot", () => {
     expect(dot.className).not.toContain("animate-pulse");
   });
 
-  it("falls back to the neutral dot for an unknown status", () => {
-    render(<StatusDot status="brand_new" />);
-    const dot = screen.getByRole("img", {
+  it("does not let an unknown status look like idle", () => {
+    render(
+      <>
+        <StatusDot status="brand_new" />
+        <StatusDot status="idle" />
+      </>,
+    );
+    const unknown = screen.getByRole("img", {
       name: "Unknown status: brand_new",
     });
-    expect(dot.className).toContain("bg-gray-300");
+    const idle = screen.getByRole("img", { name: "Idle" });
+    expect(unknown.className).not.toContain("bg-gray-300");
+    expect(unknown.className).not.toBe(idle.className);
   });
 
   it("works without a className", () => {

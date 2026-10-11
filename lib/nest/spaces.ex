@@ -22,10 +22,13 @@ defmodule Nest.Spaces do
   alias Nest.Vocations
 
   # The per-user PubSub topic: "this user's space *set* changed" (a space
-  # was created/archived/unarchived — and, once space sharing lands, a
-  # membership change). A channel process never sees its own
-  # `broadcast/3`, so `NestWeb.LobbyChannel` listens here to keep its
-  # space subscriptions in step with a change made by another session.
+  # was created/archived/unarchived/deleted — and, once space sharing
+  # lands, a membership change). `NestWeb.LobbyChannel` listens here to
+  # keep its space subscriptions in step with the change, whichever of the
+  # user's sessions made it (including the one that did: a PubSub
+  # subscription is delivered to `handle_info/2`, not routed through the
+  # channel's `handle_out/3` the way a `broadcast/3` on the channel's own
+  # topic would be).
   @spec user_topic(integer()) :: String.t()
   def user_topic(user_id), do: "user:#{user_id}"
 
@@ -167,6 +170,10 @@ defmodule Nest.Spaces do
           delete_agent_rows(space.id)
           Repo.delete!(space)
         end)
+
+        # The space is gone, so it can no longer be in anyone's visible set:
+        # tell the owner's channels to drop their subscription to its topic.
+        broadcast_spaces_changed(space.created_by_user_id)
 
         :ok
     end

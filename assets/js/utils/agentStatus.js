@@ -38,6 +38,14 @@ const STATUS_DOTS = {
 };
 
 /**
+ * The dot classes and label for a status the client does not recognise
+ * (or has not been told). Violet is deliberately outside the status
+ * palette: `bg-gray-300` already means `idle`, and an unknown status must
+ * not be able to impersonate it.
+ */
+const UNKNOWN_DOT_CLASS = "bg-violet-500";
+
+/**
  * The statuses this module knows about, in the order the tests and any
  * legend should present them.
  */
@@ -46,10 +54,11 @@ export const AGENT_STATUSES = Object.keys(STATUS_DOTS);
 /**
  * Resolve the dot for an agent status.
  *
- * An unrecognised (or missing) status falls back to the neutral idle dot so
- * a status the client has not learned yet renders as "no information"
- * rather than disappearing; the label still names the value so the tooltip
- * is not silently wrong.
+ * An unrecognised (or missing) status falls back to a neutral dot with its
+ * own colour, deliberately *not* the idle grey: grey must mean "idle" and
+ * nothing else, or a status the client has not learned yet would silently
+ * read as a healthy resting agent. The label names the value, so the
+ * tooltip is not silently wrong either.
  *
  * @param {string | null | undefined} status — the agent's observable status.
  * @returns {{ className: string, label: string }}
@@ -59,7 +68,7 @@ export function agentStatusDot(status) {
     return STATUS_DOTS[status];
   }
   return {
-    className: "bg-gray-300",
+    className: UNKNOWN_DOT_CLASS,
     label: status ? `Unknown status: ${status}` : "Unknown status",
   };
 }

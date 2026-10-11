@@ -42,7 +42,13 @@ defmodule NestWeb.LobbyChannelScopingTest do
     Process.put(:lobby_scoping_test_token, token)
     Process.put(:lobby_scoping_test_user_id, user.id)
 
-    {:ok, user: user, token: token}
+    # A second, real user. `create_user/2` only honours the magic token when
+    # the table is empty, so bob is a plain member; the multi-user cases below
+    # need a user who genuinely cannot see alice's spaces.
+    {:ok, bob, _role} =
+      Accounts.create_user(%{username: "lobby-scoping-bob", password: "password123"}, "member")
+
+    {:ok, user: user, token: token, alice: user, bob: bob}
   end
 
   # A space owned by the test user (`create_test_space/0` makes one with a
@@ -265,6 +271,166 @@ defmodule NestWeb.LobbyChannelScopingTest do
 
       _ = Spaces.unarchive_space(space_id)
     end
+  end
+
+  describe "unknown frames on a subscribed topic" do
+    test "an unrecognised frame does not take the channel down" do
+      space_id = owned_space_id()
+      {_socket, _payload} = join_lobby()
+
+      # The channel subscribes to two topic families now (per-space and
+      # per-user), so a frame whose tag it does not know is a live
+      # possibility. Without the catch-all `handle_info/2` clause this raises
+      # a `FunctionClauseError` in the channel process and disconnects the
+      # client's lobby.
+      Phoenix.PubSub.broadcast(Nest.PubSub, "space:#{space_id}", {:something_new, %{}})
+
+      # The channel is still alive, and still forwarding known frames.
+      Phoenix.PubSub.broadcast(
+        Nest.PubSub,
+        "space:#{space_id}",
+        {:agent_status, %{space_id: space_id, name: "still-here", status: "idle"}}
+      )
+
+      assert_push "agent:status", %{name: "still-here"}, 500
+    end
+
+    test "an unrecognised frame on the per-user topic does not take the channel down" do
+      # The space must exist before the join, so `after_join` subscribes to
+      # its topic; creating it afterwards would race the reconcile.
+      space_id = owned_space_id()
+      {_socket, _payload} = join_lobby()
+
+      Phoenix.PubSub.broadcast(
+        Nest.PubSub,
+        Spaces.user_topic(Process.get(:lobby_scoping_test_user_id)),
+        {:not_a_frame_we_know, %{}}
+      )
+
+      Phoenix.PubSub.broadcast(
+        Nest.PubSub,
+        "space:#{space_id}",
+        {:agent_status, %{space_id: space_id, name: "still-here", status: "idle"}}
+      )
+
+      assert_push "agent:status", %{name: "still-here"}, 500
+    end
+  end
+
+  describe "multi-user scoping, real spaces (#41)" do
+    # The `foreign_space_id = space_id + 1_000_000` cases above publish on a
+    # topic that belongs to no space at all, so they would pass under *any*
+    # subscription policy — including one that subscribed every client to
+    # every real space, which is exactly the leak these changes close. These
+    # cases use two real users and a real space owned by one of them. Both
+    # sockets push into this test process's mailbox, so the *count* of pushes
+    # is the discriminator: a second copy means the other user's channel was
+    # subscribed too.
+
+    test "user B's socket receives nothing published for user A's space", ctx do
+      %{alice: alice, bob: bob} = ctx
+      space = owned_space(alice)
+
+      _alice_socket = join_as(alice)
+      _bob_socket = join_as(bob)
+
+      # The premise: B cannot see A's space at all.
+      refute Enum.any?(Spaces.list_for_user(bob.id), &(&1.id == space.id))
+
+      Phoenix.PubSub.broadcast(
+        Nest.PubSub,
+        "space:#{space.id}",
+        {:agent_status, %{space_id: space.id, name: "secret", status: "streaming"}}
+      )
+
+      # A's socket gets it exactly once...
+      assert_push "agent:status", %{name: "secret", status: "streaming"}, 500
+      # ...and B's socket must not produce a second copy.
+      refute_push "agent:status", _, 300
+
+      # Same for an agent lifecycle frame.
+      Phoenix.PubSub.broadcast(
+        Nest.PubSub,
+        "space:#{space.id}",
+        {:agent_created, %{"name" => "secret-child", "space_id" => space.id}}
+      )
+
+      assert_push "agent:created", %{"name" => "secret-child"}, 500
+      refute_push "agent:created", _, 300
+
+      # And for a space-lifecycle frame on A's per-user topic.
+      Phoenix.PubSub.broadcast(
+        Nest.PubSub,
+        Spaces.user_topic(alice.id),
+        {:space_created, %{"agentName" => "x", "space" => %{"id" => space.id}}}
+      )
+
+      assert_push "space:created", %{"agentName" => "x"}, 500
+      refute_push "space:created", _, 300
+    end
+
+    test "the discriminator: two sockets' pushes share this mailbox", ctx do
+      # Proof that the `refute_push`es above are real assertions rather than
+      # no-ops: the "models" topic is global, so BOTH channels forward it and
+      # BOTH pushes land here. If B's channel were subscribed to A's space,
+      # its push would land in this same mailbox and trip the `refute_push`.
+      %{alice: alice, bob: bob} = ctx
+
+      _alice_socket = join_as(alice)
+      _bob_socket = join_as(bob)
+
+      Phoenix.PubSub.broadcast(Nest.PubSub, "models", {:models_updated, [%{"name" => "m1"}]})
+
+      assert_push "models_updated", _, 500
+      assert_push "models_updated", _, 500
+    end
+
+    test "a space created in A's session reaches B's socket not at all", ctx do
+      %{alice: alice, bob: bob} = ctx
+
+      alice_socket = join_as(alice)
+      _bob_socket = join_as(bob)
+
+      ref =
+        push(alice_socket, "create_space", %{
+          "name" => "alice-later-#{System.unique_integer([:positive])}",
+          "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+        })
+
+      assert_reply ref, :ok, %{"name" => new_name}, 500
+      AgentTestHelpers.ensure_cleanup(new_name)
+
+      assert_push "space:created", %{"agentName" => ^new_name}, 500
+      refute_push "space:created", _, 300
+
+      # The root agent's creation frame rides the new space's topic.
+      assert_push "agent:created", %{"name" => ^new_name}, 500
+      refute_push "agent:created", _, 300
+    end
+  end
+
+  # A real space owned by `user` — unlike the fabricated id above, this one
+  # exists in the owner's visible set, so an over-broad subscription would
+  # reach it.
+  defp owned_space(user) do
+    {:ok, %Space{} = space} =
+      Spaces.create_space(user.id, %{
+        name: "owned-#{System.unique_integer([:positive])}",
+        slug: "owned-#{System.unique_integer([:positive])}"
+      })
+
+    space
+  end
+
+  # Join the lobby as `user`, blocking until the `:after_join` async
+  # broken-agents fetch delivers its follow-up push (see `join_lobby/0`).
+  defp join_as(user) do
+    {:ok, connected} = connect(NestWeb.UserSocket, %{"token" => AuthToken.sign(user.id)})
+    {:ok, _, socket} = subscribe_and_join(connected, LobbyChannel, "lobby")
+
+    assert_push "init", _
+    assert_push "broken_agents_updated", %{broken_agents: _}, 1_000
+    socket
   end
 
   # Join the lobby and BLOCK until the `:after_join` async broken-agents fetch
