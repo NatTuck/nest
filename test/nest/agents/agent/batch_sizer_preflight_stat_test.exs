@@ -251,7 +251,7 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
       assert :fits = BatchSizer.preflight(calls, %{c | context_limit: 10_000_000})
     end
 
-    test "matches main's projection for every tool clause" do
+    test "matches the frozen oracle on the tool clauses it knows" do
       c = ctx_with_ws("/ws", [])
 
       names =
@@ -276,6 +276,14 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
 
       assert ProjectedSize.read_file_projection(:not_a_tool_call, c) ==
                ProjectedSizeOracle.read_file_projection(:not_a_tool_call, c)
+
+      # Tools added to `main` after the oracle was frozen (#57) have their own
+      # clauses on the real module. They are deliberately NOT compared to the
+      # oracle — it falls to its catch-all for them — but they are exercised so
+      # the real module's projections stay covered.
+      for name <- ~w(agents-unarchive agents-list-archived) do
+        assert ProjectedSize.project(call("c-#{name}", name, %{}), c) > 0
+      end
     end
 
     test "projection is byte-identical to the naive per-call sum" do
