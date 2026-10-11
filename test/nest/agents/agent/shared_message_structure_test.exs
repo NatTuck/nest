@@ -114,7 +114,7 @@ defmodule Nest.Agents.Agent.SharedMessageStructureTest do
 
       grandchild_name = unique_name("grandchild")
       attrs = Agent.build_child_attrs(child_state, "sub-task", grandchild_name, child_row.id)
-      assert :ok = Agent.pre_spawn(attrs)
+      assert {:ok, _id} = Agent.pre_spawn(attrs)
 
       grandchild_own = Persistence.load_messages(parent_state.space_id, grandchild_name)
       assert Enum.map(grandchild_own, &index_of/1) == [7, 8]
@@ -201,7 +201,7 @@ defmodule Nest.Agents.Agent.SharedMessageStructureTest do
         )
         |> Persistence.build_agent_attrs()
 
-      assert :ok = Agent.pre_spawn(attrs)
+      assert {:ok, _id} = Agent.pre_spawn(attrs)
 
       own = Persistence.load_messages(parent_attrs.space_id, child_name)
       assert Enum.map(own, &index_of/1) == [0]
@@ -241,7 +241,7 @@ defmodule Nest.Agents.Agent.SharedMessageStructureTest do
 
     child_name = unique_name("clone")
     attrs = Agent.build_child_attrs(parent_state, "compute", child_name, parent_id)
-    assert :ok = Agent.pre_spawn(attrs)
+    assert {:ok, _id} = Agent.pre_spawn(attrs)
 
     {parent_state, child_name}
   end

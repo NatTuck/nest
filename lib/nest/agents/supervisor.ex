@@ -147,7 +147,7 @@ defmodule Nest.Agents.Supervisor do
              parent_id,
              model_override
            ),
-         :ok <- Agent.pre_spawn(attrs),
+         {:ok, _id} <- Agent.pre_spawn(attrs),
          {:ok, _pid} <- start_under_supervisor(attrs, child_name),
          :ok <- ChildRegistry.register(space_id, parent_name, child_name) do
       {:ok, child_name}
@@ -282,7 +282,7 @@ defmodule Nest.Agents.Supervisor do
       )
       |> Persistence.build_agent_attrs()
 
-    with :ok <- Agent.pre_spawn(attrs),
+    with {:ok, _id} <- Agent.pre_spawn(attrs),
          {:ok, _pid} <- start_under_supervisor(attrs, name) do
       ChildRegistry.register(parent_state.space_id, parent_state.name, name)
     end

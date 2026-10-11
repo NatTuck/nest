@@ -219,6 +219,28 @@ defmodule Nest.Persistence do
   end
 
   @doc """
+  Delete the agent row with the given `id`, cascading to its
+  messages (`messages.agent_id` is `on_delete: :delete_all`).
+  Returns `:ok` whether or not the row existed.
+
+  This is the rollback for a create whose process never started:
+  `Agent.pre_spawn/1` writes the row (and the index-0 system
+  message) before `DynamicSupervisor.start_child/2` runs, so a
+  start that fails would otherwise leave an orphan row that also
+  blocks every retry with the same name
+  (`unique_constraint([:space_id, :name])`).
+
+  Keyed by `id`, not by name, on purpose: the caller must only
+  ever remove the row it inserted, never a row that has since
+  taken the same name.
+  """
+  @spec delete_agent_by_id(integer()) :: :ok
+  def delete_agent_by_id(id) when is_integer(id) do
+    {_count, _} = Repo.delete_all(from(a in PersistedAgent, where: a.id == ^id))
+    :ok
+  end
+
+  @doc """
   List every agent name in a space. Used by the
   `Supervisor`'s name generator to pre-load existing
   names into the in-process uniqueness `MapSet`, reducing

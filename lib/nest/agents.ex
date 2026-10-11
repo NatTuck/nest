@@ -15,6 +15,8 @@ defmodule Nest.Agents do
   alias Nest.Persistence
   alias Nest.Vocations
 
+  require Logger
+
   @doc """
   Creates a new agent with the given model in `space_id`.
 
@@ -60,8 +62,32 @@ defmodule Nest.Agents do
     attrs = Persistence.build_agent_attrs(attrs)
 
     with :ok <- Nest.Sandbox.workspace_error(attrs.workspace_path),
-         :ok <- Agent.pre_spawn(attrs) do
-      Supervisor.fetch_or_start_agent(space_id, attrs)
+         {:ok, agent_id} <- Agent.pre_spawn(attrs) do
+      start_created_agent(space_id, attrs, agent_id)
+    end
+  end
+
+  # Start the process for a row `pre_spawn/1` just inserted.
+  #
+  # The row (and its index-0 system message) is in the DB before the
+  # process exists, so a start that fails would leave an orphan row that
+  # also blocks every retry with the same name
+  # (`unique_constraint([:space_id, :name])`). Roll the row back — by
+  # `agent_id`, never by name, so this can only ever remove the row *this*
+  # call inserted.
+  defp start_created_agent(space_id, attrs, agent_id) do
+    case Supervisor.fetch_or_start_agent(space_id, attrs) do
+      {:ok, name} ->
+        {:ok, name}
+
+      {:error, reason} ->
+        Logger.warning(
+          "Agent #{attrs.space_id}/#{attrs.name} (id #{agent_id}) failed to start " <>
+            "(#{inspect(reason)}); removing the row it pre-spawned"
+        )
+
+        Persistence.delete_agent_by_id(agent_id)
+        {:error, reason}
     end
   end
 
