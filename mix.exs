@@ -119,6 +119,8 @@ defmodule Nest.MixProject do
         "phx.copy default",
         "phx.digest"
       ],
+      # `default`, not `verbose`: console output (stdout |/stderr | blocks) is
+      # printed either way, but verbose also lists every passing test name.
       "assets.test": [
         "cmd --cd assets '(pnpm vitest run --no-color --coverage --reporter=default) 2>&1'"
       ],
