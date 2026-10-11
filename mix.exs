@@ -120,7 +120,7 @@ defmodule Nest.MixProject do
         "phx.digest"
       ],
       "assets.test": [
-        "cmd --cd assets '(pnpm vitest run --no-color --coverage --reporter=verbose) 2>&1'"
+        "cmd --cd assets '(pnpm vitest run --no-color --coverage --reporter=default) 2>&1'"
       ],
       "assets.check": [
         "cmd --cd assets pnpm biome check",
