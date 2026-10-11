@@ -15,6 +15,7 @@ import { joinLobby } from "../channels";
 import {
   resetMockSocket,
   setNextJoinResult,
+  setNextPushResult,
   connectSocket,
   captureNextPush,
 } from "../__mocks__/phoenix";
@@ -1012,6 +1013,103 @@ describe("Sidebar space archiving", () => {
 
     const payload = await pushPromise;
     expect(payload).toEqual({ space_id: 3 });
+  });
+});
+
+describe("Sidebar agent unarchiving", () => {
+  function seedArchivedAgent(spaceId) {
+    act(() => {
+      useStore.setState({
+        agents: [],
+        archivedAgents: [
+          {
+            name: "old-agent",
+            space_id: spaceId,
+            parentId: null,
+            parentName: null,
+            depth: 0,
+            archived: true,
+          },
+        ],
+        spaces: [{ id: spaceId, slug: "my-space", name: "My Space" }],
+      });
+    });
+  }
+
+  function expandArchivedGroup() {
+    act(() => {
+      screen.getByRole("button", { name: /toggle archived agents/i }).click();
+    });
+  }
+
+  it("renders an archived row as a labelled non-link with a Restore button", () => {
+    seedArchivedAgent(1);
+
+    render(
+      <MemoryRouter initialEntries={["/space/my-space"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    // The Archived group is collapsed by default; expanding it
+    // reveals the row and its Restore button.
+    expandArchivedGroup();
+
+    expect(
+      screen.getByRole("button", { name: /restore old-agent/i }),
+    ).toBeInTheDocument();
+
+    // The agent is stopped, so its chat URL cannot be joined (the
+    // backend answers `agent_archived`). The row still names the agent
+    // but must not link there.
+    expect(screen.getByText("old-agent")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /old-agent/ })).toBeNull();
+  });
+
+  it("shows the refusal, naming the parent, when a restore is refused", async () => {
+    seedArchivedAgent(1);
+
+    render(
+      <MemoryRouter initialEntries={["/space/my-space"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    expandArchivedGroup();
+
+    setNextPushResult("lobby", "unarchive_agent", {
+      error: { reason: "parent_archived", parent: "root" },
+    });
+
+    act(() => {
+      screen.getByRole("button", { name: /restore old-agent/i }).click();
+    });
+
+    // A silent no-op is the bug this refusal replaces: the message
+    // names the parent that has to be restored first.
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /parent "root" is still archived/i,
+    );
+  });
+
+  it("clicking Restore pushes unarchive_agent with the agent name and space id", async () => {
+    seedArchivedAgent(7);
+
+    render(
+      <MemoryRouter initialEntries={["/space/my-space"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    expandArchivedGroup();
+
+    const pushPromise = captureNextPush("lobby", "unarchive_agent");
+    act(() => {
+      screen.getByRole("button", { name: /restore old-agent/i }).click();
+    });
+
+    const payload = await pushPromise;
+    expect(payload).toEqual({ name: "old-agent", space_id: 7 });
   });
 });
 

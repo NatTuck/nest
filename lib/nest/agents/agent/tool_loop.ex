@@ -8,9 +8,10 @@ defmodule Nest.Agents.Agent.ToolLoop do
 
     * Split the batch by tool — sub-agent tools (`agents-spawn`,
       `agents-query`, `agents-send`, `agents-wait`, `agents-list`,
-      `agents-archive`, `agents-batch`, `models-list`) are routed
-      through their `run_*` handlers, which run in this worker and
-      never in the agent GenServer; everything else is delegated to
+      `agents-list-archived`, `agents-archive`, `agents-unarchive`,
+      `agents-batch`, `models-list`) are routed through their
+      `run_*` handlers, which run in this worker and never in the
+      agent GenServer; everything else is delegated to
       `Nest.Agents.Agent.BatchSizer`.
     * Merge the two halves back into input order.
 
@@ -126,7 +127,9 @@ defmodule Nest.Agents.Agent.ToolLoop do
               "agents-spawn",
               "agents-query",
               "agents-list",
+              "agents-list-archived",
               "agents-archive",
+              "agents-unarchive",
               "agents-batch",
               "agents-send",
               "agents-wait",
@@ -141,6 +144,10 @@ defmodule Nest.Agents.Agent.ToolLoop do
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-send"} = tc), do: run_send_agent(ctx, tc)
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-wait"} = tc), do: run_wait_agents(ctx, tc)
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-list"} = tc), do: run_list_agents(ctx, tc)
+
+  defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-list-archived"} = tc),
+    do: run_list_archived_agents(ctx, tc)
+
   defp run_sub_agent_tool(_ctx, %ToolCall{name: "models-list"} = tc), do: run_models_list(tc)
 
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-batch"} = tc),
@@ -148,6 +155,9 @@ defmodule Nest.Agents.Agent.ToolLoop do
 
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-archive"} = tc),
     do: run_archive_agent(ctx, tc)
+
+  defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-unarchive"} = tc),
+    do: run_unarchive_agent(ctx, tc)
 
   # `agents-spawn`: the general sub-agent spawn API. Unifies the old
   # `clone_agent` (via `clone_context`) and `spawn_agent`: ask the parent
@@ -250,6 +260,30 @@ defmodule Nest.Agents.Agent.ToolLoop do
       end
 
     build_tool_result(tc, "agents-list", content)
+  end
+
+  # `agents-list-archived`: read the space's archived agents and
+  # serialize their name, parent, and depth. Pure read — no
+  # GenServer round-trip needed, like `agents-list`.
+  defp run_list_archived_agents(ctx, %ToolCall{} = tc) do
+    listing =
+      Nest.Agents.list_archived_agents_for_space(ctx.space_id)
+      |> Enum.map(fn info ->
+        %{
+          name: info.name,
+          parent: info.parent_name,
+          depth: info.depth
+        }
+      end)
+
+    content =
+      if listing == [] do
+        "No archived agents in this space."
+      else
+        listing |> inspect() |> String.slice(0, @list_agents_max_chars)
+      end
+
+    build_tool_result(tc, "agents-list-archived", content)
   end
 
   # `models-list`: list models from providers configured with
@@ -458,6 +492,34 @@ defmodule Nest.Agents.Agent.ToolLoop do
         )
     end
   end
+
+  # `agents-unarchive`: restore an archived agent in this space —
+  # together with its whole archived subtree — to the active list.
+  # Routes through the parent GenServer so the DB write happens in the
+  # same process context as other lifecycle operations.
+  defp run_unarchive_agent(ctx, %ToolCall{} = tc) do
+    target = extract_string_arg(tc, "name")
+    parent_via_tuple = Registry.via_tuple(ctx.space_id, ctx.agent_name)
+
+    case GenServer.call(parent_via_tuple, {:unarchive_agent_request, self(), target}) do
+      {:ok, restored_name} ->
+        build_tool_result(tc, "agents-unarchive", "Restored agent #{restored_name}.")
+
+      {:error, reason} ->
+        build_tool_result(tc, "agents-unarchive", unarchive_error(target, reason), true)
+    end
+  end
+
+  # A child under an archived parent is refused rather than restored:
+  # the sidebar nests by `parent_name`, so it would render inside the
+  # parent's collapsed Archived group and look like nothing happened.
+  # Name the parent so the model knows what to restore first.
+  defp unarchive_error(target, {:parent_archived, parent}) do
+    "Could not restore #{target}: its parent #{parent} is still archived. " <>
+      "Restore #{parent} first (restoring it also restores #{target})."
+  end
+
+  defp unarchive_error(target, reason), do: "Could not restore #{target}: #{inspect(reason)}"
 
   # `agents-batch`: fan ONE templated instruction out over a set of items to
   # concurrent sub-agents and receive the aggregate — a JSON array of each

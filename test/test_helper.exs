@@ -26,6 +26,13 @@ Mimic.copy(Nest.Agents.Registry)
 # else is starting a task.
 Mimic.copy(Task.Supervisor)
 
+# `Nest.Sandbox` and `Nest.Tools.ShellCmd` are copied here for the same reason:
+# the BatchSizer preflight tests stub their `stat`/`execute_raw` entry points,
+# and a per-test copy would re-import coverdata mid-suite — with `Sandbox`
+# exercised by many other tests, that is the worst module to swap per-test.
+Mimic.copy(Nest.Sandbox)
+Mimic.copy(Nest.Tools.ShellCmd)
+
 # `max_cases` defaults to `schedulers_online * 2`. The suite is
 # DB- and message-passing-bound, and over-subscribing the schedulers
 # (32 cases on a 32-scheduler host) causes enough contention that the

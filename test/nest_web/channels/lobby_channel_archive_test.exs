@@ -176,6 +176,186 @@ defmodule NestWeb.LobbyChannelArchiveTest do
     end
   end
 
+  describe "handle_in(unarchive_agent)" do
+    test "the owner restores an archived agent", %{user: user} do
+      {:ok, %Space{id: space_id}} =
+        Spaces.create_space(user.id, %{
+          name: "arch-restore-#{System.unique_integer([:positive])}"
+        })
+
+      name = "restore-me-#{System.unique_integer([:positive])}"
+
+      {:ok, _row} =
+        Nest.Persistence.insert_agent(%{
+          space_id: space_id,
+          name: name,
+          model: %{"name" => "qwen3.5-plus", "provider" => "model-studio"},
+          vocation_id: AgentTestHelpers.vocation_id_for_test(),
+          created_by_user_id: user.id
+        })
+
+      assert :ok = Nest.Persistence.archive_agent(space_id, name)
+
+      {socket, _init} = join_lobby()
+
+      ref =
+        push_and_settle(socket, "unarchive_agent", %{"name" => name, "space_id" => space_id})
+
+      assert_reply ref, :ok, %{}, 0
+
+      {:ok, row} = Nest.Persistence.fetch_agent(space_id, name)
+      assert row.archived == false
+    end
+
+    test "returns forbidden for an agent the user does not own", %{user: alice} do
+      {:ok, _invite, token} = Accounts.create_invite(alice.id)
+      {:ok, bob} = Accounts.redeem_invite(token, %{username: "bob", password: "password456"})
+
+      {:ok, %Space{id: space_id}} =
+        Spaces.create_space(alice.id, %{
+          name: "arch-foreign-agent-#{System.unique_integer([:positive])}"
+        })
+
+      name = "foreign-agent-#{System.unique_integer([:positive])}"
+
+      {:ok, _row} =
+        Nest.Persistence.insert_agent(%{
+          space_id: space_id,
+          name: name,
+          model: %{"name" => "qwen3.5-plus", "provider" => "model-studio"},
+          vocation_id: AgentTestHelpers.vocation_id_for_test(),
+          created_by_user_id: bob.id
+        })
+
+      assert :ok = Nest.Persistence.archive_agent(space_id, name)
+
+      {socket, _init} = join_lobby()
+
+      ref =
+        push_and_settle(socket, "unarchive_agent", %{"name" => name, "space_id" => space_id})
+
+      assert_reply ref, :error, %{"reason" => "forbidden"}, 0
+
+      {:ok, row} = Nest.Persistence.fetch_agent(space_id, name)
+      assert row.archived == true
+    end
+
+    test "returns shared_read_only for a shared agent the user does not own", %{user: alice} do
+      {:ok, _invite, token} = Accounts.create_invite(alice.id)
+      {:ok, bob} = Accounts.redeem_invite(token, %{username: "bob", password: "password456"})
+
+      {:ok, %Space{id: space_id}} =
+        Spaces.create_space(bob.id, %{
+          name: "arch-shared-agent-#{System.unique_integer([:positive])}"
+        })
+
+      name = "shared-agent-#{System.unique_integer([:positive])}"
+
+      {:ok, _row} =
+        Nest.Persistence.insert_agent(%{
+          space_id: space_id,
+          name: name,
+          model: %{"name" => "qwen3.5-plus", "provider" => "model-studio"},
+          vocation_id: AgentTestHelpers.vocation_id_for_test(),
+          created_by_user_id: bob.id,
+          shared: true
+        })
+
+      assert :ok = Nest.Persistence.archive_agent(space_id, name)
+
+      {socket, _init} = join_lobby()
+
+      ref =
+        push_and_settle(socket, "unarchive_agent", %{"name" => name, "space_id" => space_id})
+
+      assert_reply ref, :error, %{"reason" => "shared_read_only"}, 0
+    end
+
+    test "returns parent_archived (naming the parent) for a child under an archived parent", %{
+      user: user
+    } do
+      {:ok, %Space{id: space_id}} =
+        Spaces.create_space(user.id, %{
+          name: "arch-nested-#{System.unique_integer([:positive])}"
+        })
+
+      suffix = System.unique_integer([:positive])
+      parent = "nested-parent-#{suffix}"
+      child = "nested-child-#{suffix}"
+      model = %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
+      vid = AgentTestHelpers.vocation_id_for_test()
+
+      {:ok, parent_row} =
+        Nest.Persistence.insert_agent(%{
+          space_id: space_id,
+          name: parent,
+          model: model,
+          vocation_id: vid,
+          created_by_user_id: user.id
+        })
+
+      {:ok, _child_row} =
+        Nest.Persistence.insert_agent(%{
+          space_id: space_id,
+          name: child,
+          model: model,
+          vocation_id: vid,
+          created_by_user_id: user.id,
+          parent_id: parent_row.id,
+          depth: 1
+        })
+
+      assert :ok = Nest.Persistence.archive_agent(space_id, parent)
+      assert :ok = Nest.Persistence.archive_agent(space_id, child)
+
+      {socket, _init} = join_lobby()
+
+      ref =
+        push_and_settle(socket, "unarchive_agent", %{"name" => child, "space_id" => space_id})
+
+      # The refusal names the parent so the UI can say what to restore
+      # instead of silently doing nothing (the sidebar nests the child
+      # under the archived parent, so a restored child would look inert).
+      assert_reply ref, :error, %{"reason" => "parent_archived", "parent" => ^parent}, 0
+
+      {:ok, row} = Nest.Persistence.fetch_agent(space_id, child)
+      assert row.archived == true
+    end
+
+    test "returns not_found for a missing agent" do
+      {socket, _init} = join_lobby()
+
+      ref =
+        push_and_settle(
+          socket,
+          "unarchive_agent",
+          %{"name" => "no-such-agent", "space_id" => 9_999_999}
+        )
+
+      assert_reply ref, :error, %{"reason" => "not_found"}, 0
+    end
+
+    test "returns invalid_payload for a malformed payload" do
+      {socket, _init} = join_lobby()
+
+      # No `name` key.
+      ref = push_and_settle(socket, "unarchive_agent", %{"space_id" => 1})
+      assert_reply ref, :error, %{"reason" => "invalid_payload"}, 0
+
+      # `name` present but not a binary.
+      ref =
+        push_and_settle(socket, "unarchive_agent", %{"name" => 42, "space_id" => 1})
+
+      assert_reply ref, :error, %{"reason" => "invalid_payload"}, 0
+
+      # `space_id` present but not an integer.
+      ref =
+        push_and_settle(socket, "unarchive_agent", %{"name" => "a", "space_id" => "not-an-int"})
+
+      assert_reply ref, :error, %{"reason" => "invalid_payload"}, 0
+    end
+  end
+
   # Join the lobby, read the `init` push, then block until the `:after_join`
   # async broken-agents fetch delivers its follow-up push.
   #

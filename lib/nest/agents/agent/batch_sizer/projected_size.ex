@@ -27,8 +27,9 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
 
   @safety_padding 1.20
 
-  # `agents-list` / `models-list` are hard-sliced to this many chars in
-  # `Nest.Agents.Agent.ToolLoop`; their projection is bounded by it.
+  # `agents-list` / `agents-list-archived` / `models-list` are
+  # hard-sliced to this many chars in `Nest.Agents.Agent.ToolLoop`;
+  # their projection is bounded by it.
   @max_list_chars 4_000
 
   # Per-tool projections. The `BatchSizer.preflight/2` sums
@@ -86,11 +87,15 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
   def project(%ToolCall{name: "agents-batch"}, _ctx),
     do: summary_baseline_size() * @safety_padding
 
-  def project(%ToolCall{name: name}, _ctx) when name in ["agents-list", "models-list"],
-    do: Estimator.estimate_bytes(@max_list_chars)
+  def project(%ToolCall{name: name}, _ctx)
+      when name in ["agents-list", "agents-list-archived", "models-list"],
+      do: Estimator.estimate_bytes(@max_list_chars)
 
   def project(%ToolCall{name: "agents-archive"}, _ctx),
     do: estimator_overhead("Archived agent clever-raven.")
+
+  def project(%ToolCall{name: "agents-unarchive"}, _ctx),
+    do: estimator_overhead("Restored agent clever-raven.")
 
   def project(%ToolCall{name: "agents-send"}, _ctx),
     do: estimator_overhead("Message queued for clever-raven.")
@@ -121,15 +126,104 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
   @projected_tools ~w(
     file-read shell-cmd file-write file-edit file-inspect context-check
     shell-wait shell-list shell-kill
-    agents-spawn agents-query agents-batch agents-list models-list agents-archive
-    agents-send agents-wait
+    agents-spawn agents-query agents-batch agents-list agents-list-archived models-list
+    agents-archive agents-unarchive agents-send agents-wait
   )
 
   @doc false
   @spec projected?(String.t()) :: boolean()
   def projected?(name), do: name in @projected_tools
 
+  @doc """
+  Sum of `project/2` over `tool_calls`, sharing one `Sandbox.stat/4` per
+  distinct resolved `file-read` path (issue #48).
+
+  `BatchSizer.projected_content_size/2` and `preflight/2` both go through
+  here, so a batch never stats the same file twice: the preflight's per-call
+  stat used to be one bwrap spawn per `file-read` call.
+  """
+  @spec project_batch([ToolCall.t()], map()) :: number()
+  def project_batch(tool_calls, ctx) when is_list(tool_calls) do
+    ctx = Map.put(ctx, :file_read_sizes, read_file_sizes(tool_calls, ctx))
+    Enum.reduce(tool_calls, 0, fn tc, acc -> acc + project(tc, ctx) end)
+  end
+
   # ---- private helpers ----
+
+  # The stat result for every distinct path a `file-read` call in this batch
+  # targets. Keyed on the *resolved* path, so two spellings of one file share
+  # a stat; spellings that resolve differently are statted separately (never a
+  # wrong size, at most one extra spawn). `caps`, `workspace_path` and
+  # `tmp_path` are constant across a `ctx`, so a memo hit is exactly what a
+  # live `Sandbox.stat/4` would have returned.
+  #
+  # `Sandbox.stat_many/4` runs one `stat` invocation for the whole chunk of
+  # distinct paths, so the preflight costs a handful of bwrap spawns per batch
+  # instead of one per `file-read` call.
+  defp read_file_sizes(tool_calls, ctx) do
+    paths =
+      tool_calls
+      |> Enum.flat_map(fn
+        %ToolCall{name: "file-read"} = tc ->
+          case resolved_read_path(tc, ctx) do
+            {:ok, full_path} -> [full_path]
+            :error -> []
+          end
+
+        _ ->
+          []
+      end)
+      |> Enum.uniq()
+
+    Sandbox.stat_many(
+      paths,
+      caps_of(ctx),
+      Map.get(ctx, :workspace_path),
+      Map.get(ctx, :tmp_path)
+    )
+  end
+
+  # The path a `file-read` call targets, resolved against the workspace, or
+  # `:error` for a malformed call / a relative path with no workspace. Shared
+  # with `read_file_projection/2` so the memo can only ever hold paths the
+  # projection would itself have statted.
+  defp resolved_read_path(%ToolCall{arguments: args}, ctx) do
+    with %{"path" => path} <- args,
+         true <- is_binary(path) and path != "",
+         {:ok, full_path} <- Sandbox.resolve(path, Map.get(ctx, :workspace_path)) do
+      {:ok, full_path}
+    else
+      _ -> :error
+    end
+  end
+
+  # The size of one resolved path: from the batch memo when the caller supplied
+  # one (see `project_batch/2`), otherwise a live `Sandbox.stat/4`. A memo miss
+  # still stats, so `project/2` on its own keeps its old behaviour.
+  defp stat_size_for(full_path, ctx) do
+    case Map.get(ctx, :file_read_sizes) do
+      %{} = sizes -> Map.get_lazy(sizes, full_path, fn -> live_stat_size(full_path, ctx) end)
+      _ -> live_stat_size(full_path, ctx)
+    end
+  end
+
+  # `Sandbox.stat_many/4` returns sizes directly; `Sandbox.stat/4` returns a
+  # partial `%File.Stat{}` of which the projection reads only `size`.
+  #
+  # `full_path` is the sandbox-domain path the agent used; `ctx.tmp_path` is a
+  # HOST path passed only so the sandbox can resolve it. The host spelling must
+  # never be shown to the LLM.
+  defp live_stat_size(full_path, ctx) do
+    case Sandbox.stat(
+           full_path,
+           caps_of(ctx),
+           Map.get(ctx, :workspace_path),
+           Map.get(ctx, :tmp_path)
+         ) do
+      {:ok, %File.Stat{size: size}} -> {:ok, size}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   # read_file projection: stat-then-cap, then estimate from byte
   # size. The actual read happens in Phase 2; preflight does the
@@ -138,20 +232,9 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
   # honors the same caps the read would, and resolves the path
   # against the workspace (an absolute path is used as-is). Any
   # failure falls back to the conservative summary size.
-  def read_file_projection(%ToolCall{arguments: args} = _tc, ctx) do
-    # `full_path` is the sandbox-domain path the agent used; `ctx.tmp_path`
-    # is a HOST path passed only so `Sandbox.stat/3` can resolve it. The host
-    # spelling must never be shown to the LLM.
-    with %{"path" => path} <- args,
-         true <- is_binary(path) and path != "",
-         {:ok, full_path} <- Sandbox.resolve(path, Map.get(ctx, :workspace_path)),
-         {:ok, %{size: size}} <-
-           Sandbox.stat(
-             full_path,
-             caps_of(ctx),
-             Map.get(ctx, :workspace_path),
-             Map.get(ctx, :tmp_path)
-           ) do
+  def read_file_projection(%ToolCall{} = tc, ctx) do
+    with {:ok, full_path} <- resolved_read_path(tc, ctx),
+         {:ok, size} <- stat_size_for(full_path, ctx) do
       # Estimate from the byte size alone. Synthesizing a same-size
       # string to feed the tokenizer is wasteful and pathological for
       # BPE tokenization (quadratic on repeated characters).

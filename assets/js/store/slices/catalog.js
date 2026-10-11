@@ -106,6 +106,22 @@ export function catalogSetters(set) {
       });
     },
 
+    unarchiveAgent: ({ space_id, name }) => {
+      set((state) => {
+        const match = (a) => a.name === name && a.space_id === space_id;
+        const agent = state.archivedAgents.find(match);
+        if (!agent) return state;
+        const alreadyActive = state.agents.some(match);
+        const agents = alreadyActive
+          ? state.agents
+          : [...state.agents, { ...agent, archived: false, status: "idle" }];
+        return {
+          agents,
+          archivedAgents: state.archivedAgents.filter((a) => !match(a)),
+        };
+      });
+    },
+
     /**
      * Apply a live status change from the lobby's `agent:status` frame
      * (#53). The sidebar dot reads `status` off the flat list; only the

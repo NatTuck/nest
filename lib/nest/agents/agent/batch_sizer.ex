@@ -161,16 +161,20 @@ defmodule Nest.Agents.Agent.BatchSizer do
   Forward-looking content size after a batch's tool results, **excluding**
   the compaction reserve:
 
-      Budget.size(ctx.messages) + sum(ProjectedSize.project(tc, ctx))
+      Budget.size(ctx.messages) + ProjectedSize.project_batch(tool_calls, ctx)
 
   This is the canonical projection: `preflight/2` adds `C` and compares
   against `L`, while the context-usage reminder compares it against
   `L - C`. Both are the same predicate (`size + C <= L`), so they must
   share this one function rather than each re-deriving a projection.
+
+  The per-tool sum lives in `ProjectedSize.project_batch/2` so the whole
+  batch shares one `Sandbox.stat/4` per distinct `file-read` path
+  (issue #48).
   """
   @spec projected_content_size([ToolCall.t()], map()) :: non_neg_integer()
   def projected_content_size(tool_calls, ctx) do
-    projected = Enum.reduce(tool_calls, 0, fn tc, acc -> acc + projected_size(tc, ctx) end)
+    projected = ProjectedSize.project_batch(tool_calls, ctx)
 
     # `ProjectedSize.project/2` applies a float safety padding; round up so
     # the result is an integer token count (ceil keeps it conservative).
@@ -191,11 +195,9 @@ defmodule Nest.Agents.Agent.BatchSizer do
 
   # ---- Phase 1: per-tool projected sizes (pre-execution) ----
   #
-  # The per-tool projection lives in
-  # `Nest.Agents.Agent.BatchSizer.ProjectedSize.project/2`. This
-  # module just delegates to it.
-
-  defp projected_size(%ToolCall{} = tc, ctx), do: ProjectedSize.project(tc, ctx)
+  # The per-tool projection and the batch sum both live in
+  # `Nest.Agents.Agent.BatchSizer.ProjectedSize` (`project/2` and
+  # `project_batch/2`); `projected_content_size/2` above delegates to them.
 
   # ---- Phase 2: execute the batch ----
 

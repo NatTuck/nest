@@ -21,6 +21,8 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
   import ExUnit.CaptureLog
   import Mimic
 
+  import Nest.Test.TmpCleanup
+
   alias Nest.Agents
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Broadcasts
@@ -53,7 +55,7 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
       Application.delete_env(:nest, :timeline_dir)
       Application.delete_env(:nest, :timeline_enabled)
       Process.delete(:nest_test_agent_pid)
-      File.rm_rf(dir)
+      rm_tmp!(dir, "nest-timeline-emitters-")
     end)
 
     :ok

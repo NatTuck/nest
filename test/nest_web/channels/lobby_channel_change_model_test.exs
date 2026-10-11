@@ -10,6 +10,8 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
 
   import ExUnit.CaptureLog
 
+  import Nest.Test.TmpCleanup
+
   alias Ecto.Adapters.SQL.Sandbox
   alias Nest.Accounts
   alias Nest.Accounts.Invite, as: InviteSchema
@@ -200,7 +202,7 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
         ])
 
       File.mkdir_p!(ws)
-      on_exit(fn -> File.rm_rf(ws) end)
+      on_exit(fn -> rm_tmp!(ws, "edited-ws-") end)
 
       ref =
         push(socket, "edit_agent", %{

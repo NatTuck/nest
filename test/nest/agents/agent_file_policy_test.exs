@@ -26,6 +26,8 @@ defmodule Nest.Agents.Agent.FilePolicyTest do
 
   import Mimic
 
+  import Nest.Test.TmpCleanup
+
   alias Nest.Agents.AgentTestHelpers
   alias Nest.LLM.MockClient
 
@@ -314,6 +316,12 @@ defmodule Nest.Agents.Agent.FilePolicyTest do
 
     File.mkdir_p!(workspace_root)
 
+    # Arm cleanup before the risky `start_agent` below: if it raises, the
+    # workspace must still be removed.
+    on_exit(fn ->
+      rm_tmp!(workspace_root, "file_policy_workspace")
+    end)
+
     vid = AgentTestHelpers.vocation_id_for_test()
 
     # Use a real workspace path on the agent. The MockClient
@@ -325,11 +333,6 @@ defmodule Nest.Agents.Agent.FilePolicyTest do
         workspace_path: workspace_root,
         vocation_id: vid
       })
-
-    on_exit(fn ->
-      if String.contains?(workspace_root, "file_policy_workspace"),
-        do: File.rm_rf!(workspace_root)
-    end)
 
     {pid, name}
   end

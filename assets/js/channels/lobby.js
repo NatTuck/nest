@@ -75,6 +75,12 @@ export function joinLobby(onOk, onError) {
     }
   });
 
+  lobbyChannel.on("agent:unarchived", (payload) => {
+    if (payload?.name != null && payload?.space_id != null) {
+      getStore().unarchiveAgent(payload);
+    }
+  });
+
   lobbyChannel.on("space:created", (payload) => {
     if (payload?.space) {
       getStore().addSpace(payload.space);
@@ -194,6 +200,25 @@ export function unarchiveSpace(spaceId, onOk, onError) {
   if (!lobbyChannel) return;
   lobbyChannel
     .push("unarchive_space", { space_id: spaceId })
+    .receive("ok", (resp) => {
+      if (onOk) onOk(resp);
+    })
+    .receive("error", (err) => {
+      if (onError) onError(err);
+    });
+}
+
+/**
+ * Restore an archived agent to its space's active list.
+ */
+export function unarchiveAgent(name, spaceId, onOk, onError) {
+  if (!lobbyChannel) {
+    if (onError) onError(new Error("Not connected to lobby"));
+    return;
+  }
+
+  lobbyChannel
+    .push("unarchive_agent", { name, space_id: spaceId })
     .receive("ok", (resp) => {
       if (onOk) onOk(resp);
     })

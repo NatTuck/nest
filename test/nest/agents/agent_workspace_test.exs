@@ -14,6 +14,8 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
 
   import Mimic
 
+  import Nest.Test.TmpCleanup
+
   alias Ecto.Adapters.SQL.Sandbox
   alias Nest.Agents
   alias Nest.Agents.Agent.Config
@@ -88,7 +90,7 @@ defmodule Nest.Agents.Agent.WorkspaceTest do
       ])
 
     File.mkdir_p!(dir)
-    on_exit(fn -> File.rm_rf(dir) end)
+    on_exit(fn -> rm_tmp!(dir, "nest_ws_") end)
     dir
   end
 

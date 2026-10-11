@@ -4,6 +4,8 @@ defmodule Nest.DotConfig.WriterTest do
   """
   use ExUnit.Case, async: true
 
+  import Nest.Test.TmpCleanup
+
   alias Nest.DotConfig
   alias Nest.DotConfig.Model
   alias Nest.DotConfig.Provider
@@ -16,7 +18,7 @@ defmodule Nest.DotConfig.WriterTest do
         "#{label}_#{System.unique_integer([:positive])}.toml"
       )
 
-    on_exit(fn -> File.rm_rf(path) end)
+    on_exit(fn -> rm_tmp!(path, label) end)
     path
   end
 

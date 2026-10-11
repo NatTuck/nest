@@ -62,6 +62,39 @@ defmodule Nest.Agents.SupervisorSpawnTest do
 
   defp test_model, do: %{name: "qwen3.5-plus", provider: "model-studio"}
 
+  # Insert an agent row and archive it, returning the row. `parent_id`
+  # and `depth` are what set the subtree shape: once the processes are
+  # archived the `ChildRegistry` entries are gone, so the persisted
+  # `parent_id` links are the only record of the tree.
+  defp insert_archived_row(space_id, name, parent_id \\ nil, depth \\ 0) do
+    {:ok, row} =
+      Nest.Persistence.insert_agent(%{
+        space_id: space_id,
+        name: name,
+        model: test_model(),
+        vocation_id: AgentTestHelpers.vocation_id_for_test(),
+        parent_id: parent_id,
+        depth: depth
+      })
+
+    assert :ok = Nest.Persistence.archive_agent(space_id, name)
+    row
+  end
+
+  # Collect `count` `agent:unarchived` broadcasts for `space_id`, in the
+  # order they arrived.
+  defp unarchived_names(space_id, count) do
+    for _ <- 1..count do
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "agent:unarchived",
+                       payload: %{"space_id" => ^space_id, "name" => name}
+                     },
+                     1_000
+
+      name
+    end
+  end
+
   defp fresh_vocation do
     {:ok, vocation} =
       Vocations.upsert_vocation(%{
@@ -335,6 +368,135 @@ defmodule Nest.Agents.SupervisorSpawnTest do
 
       {:ok, row} = Nest.Persistence.fetch_agent(space_id, name)
       assert row.archived == true
+    end
+  end
+
+  describe "unarchive_agent/2" do
+    test "flips the archived flag back and broadcasts agent:unarchived", %{space_id: space_id} do
+      name = "unarchive-me-#{System.unique_integer([:positive])}"
+
+      {:ok, _row} =
+        Nest.Persistence.insert_agent(%{
+          space_id: space_id,
+          name: name,
+          model: test_model(),
+          vocation_id: AgentTestHelpers.vocation_id_for_test()
+        })
+
+      assert :ok = Nest.Persistence.archive_agent(space_id, name)
+
+      Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
+
+      assert :ok = Supervisor.unarchive_agent(space_id, name)
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "agent:unarchived",
+                       payload: %{"space_id" => ^space_id, "name" => ^name}
+                     },
+                     1_000
+
+      {:ok, row} = Nest.Persistence.fetch_agent(space_id, name)
+      assert row.archived == false
+    end
+
+    test "returns not_found for a missing agent", %{space_id: space_id} do
+      name = "ghost-#{System.unique_integer([:positive])}"
+
+      assert {:error, :not_found} = Supervisor.unarchive_agent(space_id, name)
+    end
+
+    test "restores a parent together with its archived children", %{space_id: space_id} do
+      suffix = System.unique_integer([:positive])
+      parent = "subtree-parent-#{suffix}"
+      child_a = "subtree-child-a-#{suffix}"
+      child_b = "subtree-child-b-#{suffix}"
+
+      parent_row = insert_archived_row(space_id, parent)
+      _child_a_row = insert_archived_row(space_id, child_a, parent_row.id, 1)
+      _child_b_row = insert_archived_row(space_id, child_b, parent_row.id, 1)
+
+      Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
+
+      assert :ok = Supervisor.unarchive_agent(space_id, parent)
+
+      # One broadcast per restored row, in name order (the subtree walk
+      # is sorted, not map-ordered), and none for anything outside it.
+      assert unarchived_names(space_id, 3) ==
+               Enum.sort([parent, child_a, child_b])
+
+      for name <- [parent, child_a, child_b] do
+        assert {:ok, %{archived: false}} = Nest.Persistence.fetch_agent(space_id, name)
+      end
+    end
+
+    test "restores a deep chain, not just the immediate children", %{space_id: space_id} do
+      suffix = System.unique_integer([:positive])
+      root = "chain-root-#{suffix}"
+      middle = "chain-middle-#{suffix}"
+      leaf = "chain-leaf-#{suffix}"
+
+      root_row = insert_archived_row(space_id, root)
+      middle_row = insert_archived_row(space_id, middle, root_row.id, 1)
+      _leaf_row = insert_archived_row(space_id, leaf, middle_row.id, 2)
+
+      Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
+
+      assert :ok = Supervisor.unarchive_agent(space_id, root)
+
+      assert unarchived_names(space_id, 3) == Enum.sort([root, middle, leaf])
+
+      for name <- [root, middle, leaf] do
+        assert {:ok, %{archived: false}} = Nest.Persistence.fetch_agent(space_id, name)
+      end
+    end
+
+    test "is a no-op for an agent that is already active", %{space_id: space_id} do
+      name = "already-active-#{System.unique_integer([:positive])}"
+
+      {:ok, _row} =
+        Nest.Persistence.insert_agent(%{
+          space_id: space_id,
+          name: name,
+          model: test_model(),
+          vocation_id: AgentTestHelpers.vocation_id_for_test()
+        })
+
+      Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
+
+      assert :ok = Supervisor.unarchive_agent(space_id, name)
+
+      # Nothing changed, so nothing is broadcast: the restore is
+      # synchronous, so a broadcast would already be in the mailbox.
+      refute_received %Phoenix.Socket.Broadcast{
+        event: "agent:unarchived",
+        payload: %{"space_id" => ^space_id, "name" => ^name}
+      }
+
+      assert {:ok, %{archived: false}} = Nest.Persistence.fetch_agent(space_id, name)
+    end
+
+    test "refuses a child whose parent is still archived, naming the parent", %{
+      space_id: space_id
+    } do
+      suffix = System.unique_integer([:positive])
+      parent = "blocked-parent-#{suffix}"
+      child = "blocked-child-#{suffix}"
+
+      parent_row = insert_archived_row(space_id, parent)
+      _child_row = insert_archived_row(space_id, child, parent_row.id, 1)
+
+      assert {:error, {:parent_archived, ^parent}} =
+               Supervisor.unarchive_agent(space_id, child)
+
+      # The refusal leaves both rows alone rather than half-restoring.
+      for name <- [parent, child] do
+        assert {:ok, %{archived: true}} = Nest.Persistence.fetch_agent(space_id, name)
+      end
+
+      # Restoring the parent is the way through, and it brings the
+      # child back with it.
+      assert :ok = Supervisor.unarchive_agent(space_id, parent)
+      assert {:ok, %{archived: false}} = Nest.Persistence.fetch_agent(space_id, child)
     end
   end
 
