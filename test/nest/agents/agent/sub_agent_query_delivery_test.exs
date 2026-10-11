@@ -105,7 +105,10 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
            )
 
     # ...and its answer, released only now, arrives as a message in the
-    # coordinator's inbox.
+    # coordinator's inbox. Decisive park's release: only the batch's own result
+    # is waited on between the park's message and this line (one fence), so the
+    # 3 s valve cannot fire first — see the invariant on
+    # `AgentTurnTestHelpers.park/3`.
     send(sender, :release_send)
 
     assert Eventually.eventually(
@@ -205,7 +208,10 @@ defmodule Nest.Agents.Agent.SubAgentQueryDeliveryTest do
 
     # The batch returns with no live worker to settle it, so its *real* result
     # arrives as a notice — which is where the confirmation the delivery
-    # produced shows up.
+    # produced shows up. Decisive park's release: between the hold and this line
+    # only the peer's turn is waited on (one fence); everything after the
+    # delivery handshake is already true, so the 3 s valve cannot fire first —
+    # see the invariant on `AgentTurnTestHelpers.park/3`.
     send(batch, :release_result)
 
     assert Eventually.eventually(

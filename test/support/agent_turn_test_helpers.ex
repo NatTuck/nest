@@ -115,7 +115,8 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
   still in flight while the delivered message's turn runs, which is the shape
   where the batch's own result arrives only once that turn has ended. Each park's
   `after` is a safety valve (3 s — see `park/3`) so a failing test cannot leave
-  the worker parked for long.
+  the worker parked for long; release a decisive park within one fence, as the
+  invariant on `park/3` requires.
   """
   @spec park_agent_sends(pid(), keyword()) :: :ok
   def park_agent_sends(pid, opts \\ []) do
@@ -153,7 +154,8 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
   the caller's batch is still in flight — the batch is backgrounded, not the
   answer queued behind it.
 
-  Both parks use the 3 s safety valve documented on `park/3`.
+  Both parks use the 3 s safety valve documented on `park/3`; release a decisive
+  park within one fence, as the invariant there requires.
   """
   @spec park_agent_queries(pid(), keyword()) :: :ok
   def park_agent_queries(pid, opts \\ []) do
@@ -176,14 +178,20 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
     Mimic.allow(Nest.Agents, self(), pid)
   end
 
-  # Park the worker until the test releases it. The 3 s `after` is a safety
-  # valve, not a timing assumption: every release in these tests follows the
-  # park's own message immediately, so the valve only ever fires for a test that
-  # has already failed. It is deliberately longer than a turn fence (2 s,
-  # `Nest.Agents.SubAgentToolsHelpers.turn_fence_ms/0`) because a park can hold
-  # one agent while another's fenced turn runs — a valve shorter than the fence
-  # would release the worker mid-test and flip the outcome being pinned instead
-  # of failing the fence — and it stays under ExUnit's 5 s per-test timeout.
+  # Park the worker until the test releases it.
+  #
+  # The 3 s `after` is a safety valve, not a timing assumption — it only ever
+  # fires for a test that has already failed — and it is deliberately longer than
+  # a turn fence (2 s, `Nest.Agents.SubAgentToolsHelpers.turn_fence_ms/0`) so a
+  # slow host fails a fence instead of silently flipping the outcome a park pins;
+  # it stays under ExUnit's 5 s per-test timeout.
+  #
+  # INVARIANT (do not break this when editing a parked test): a *decisive* park —
+  # one whose release decides which outcome the test observes — must be released
+  # within one fence, and this valve must stay longer than that fence. Inserting
+  # an extra wait (an `eventually`, another `assert_receive`) between a decisive
+  # park and its release spends the margin between the fence and the valve, and
+  # then a slow host flips the pinned outcome instead of failing the fence.
   defp park(test_pid, blocked, release, timeout \\ 3_000) do
     send(test_pid, {blocked, self()})
 
