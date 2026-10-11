@@ -440,7 +440,9 @@ describe("InboxPanel", () => {
     render(<InboxPanel name={NAME} />);
     fireEvent.click(screen.getByRole("button"));
 
-    expect(screen.getByTestId("inbox-delivery-id-missing").textContent).toContain("missing");
+    expect(
+      screen.getByTestId("inbox-delivery-id-missing").textContent,
+    ).toContain("missing");
     expect(screen.queryByTestId("inbox-delivery-id")).toBeNull();
     expect(screen.queryByTestId("inbox-retrieved")).toBeNull();
   });
