@@ -29,6 +29,7 @@ defmodule Nest.Test.TmpCleanupTest do
       ])
 
     File.mkdir_p!(dir)
+    on_exit(fn -> rm_tmp!(dir, "nest_tmp_cleanup_test_build_") end)
 
     assert :ok = rm_tmp!(dir, "nest_tmp_cleanup_test_build_")
     refute File.exists?(dir)

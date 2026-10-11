@@ -388,9 +388,10 @@ defmodule NestWeb.AgentChannelTest do
       id = System.unique_integer([:positive])
       tmp = Path.join([System.tmp_dir!(), "nest_ch_jobs_#{id}", "space-1", name])
       File.mkdir_p!(tmp)
-      on_exit(fn -> ShellJobs.stop_all(key) end)
-
+      # Combined so the jobs stop before the tree is removed: `on_exit` runs
+      # LIFO, and a `sleep 30` job must not outlive its directory.
       on_exit(fn ->
+        ShellJobs.stop_all(key)
         rm_tmp!(Path.dirname(Path.dirname(tmp)), "nest_ch")
       end)
 
@@ -431,9 +432,10 @@ defmodule NestWeb.AgentChannelTest do
       id = System.unique_integer([:positive])
       tmp = Path.join([System.tmp_dir!(), "nest_ch_log_#{id}", "space-1", name])
       File.mkdir_p!(tmp)
-      on_exit(fn -> ShellJobs.stop_all(key) end)
-
+      # Combined so the jobs stop before the tree is removed: `on_exit` runs
+      # LIFO, and a `sleep 30` job must not outlive its directory.
       on_exit(fn ->
+        ShellJobs.stop_all(key)
         rm_tmp!(Path.dirname(Path.dirname(tmp)), "nest_ch")
       end)
 
