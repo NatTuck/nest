@@ -51,9 +51,10 @@ defmodule Nest.Tools.ShellPipes do
   stage. `ls | xargs head` is likewise not caught, but it does not discard the
   piped output the way a plain `| head` does.
 
-  A heredoc whose delimiter is a parameter expansion (`cat <<$F`) is not
-  recognised: its terminator cannot be known at token level, so the remainder of
-  the input is treated as the body (a miss, never a false positive).
+  A heredoc whose delimiter is a parameter expansion (`cat <<$F`) has no
+  knowable terminator: the rest of the current line is still scanned (so
+  `cat <<$F | head` is caught), but everything from the next newline on is
+  treated as the body — a miss, never a false positive.
   """
 
   # Command names whose pipeline use discards output.
@@ -66,6 +67,12 @@ defmodule Nest.Tools.ShellPipes do
   # Shell operators, longest first so `&>>` wins over `&>`, `<<-` over `<<`, and
   # so on. `take_operator/1` returns the first prefix that matches.
   @operators ~w[&>> <<< <<- &> && >> >& << <& <> |& || & > < ; ( ) |]
+
+  # Characters that end a heredoc-delimiter word: blanks and the shell
+  # metacharacters, plus the quoting and expansion introducers (handled
+  # separately). Any other character is part of the delimiter, so `-EOF`,
+  # `.END`, and `+EOF` work like bash's `<<WORD`.
+  @delimiter_stops [?\s, ?\t, ?\n, ?|, ?&, ?;, ?(, ?), ?<, ?>, ?\\, ?', ?", ?`, ?$]
 
   # The `NAME=value` prefix of a simple command.
   @assignment ~r/^[A-Za-z_][A-Za-z0-9_]*=/
@@ -283,11 +290,11 @@ defmodule Nest.Tools.ShellPipes do
         )
 
       :unknown ->
-        # The delimiter is a parameter expansion (`cat <<$F`), so the body's
-        # terminator cannot be known at token level. Stop scanning here: the
-        # remainder is treated as the body, so a pipe inside it is a miss,
-        # never a false positive.
-        Enum.reverse(push_op(flush(word, tokens), op))
+        # The delimiter is a parameter expansion (`cat <<$F`), so its terminator
+        # cannot be known. Keep scanning the rest of the current line — a pipe
+        # there (`cat <<$F | head`) is real — and let `skip_heredocs/2` drop
+        # everything from the next newline on as the body.
+        scan(rest, :normal, [], push_op(flush(word, tokens), op), pending ++ [{:unknown, false}])
 
       :error ->
         scan(rest, :normal, [], push_op(flush(word, tokens), op), pending)
@@ -342,15 +349,18 @@ defmodule Nest.Tools.ShellPipes do
 
   defp take_word(input), do: take_word(input, [])
 
-  defp take_word(<<char, rest::binary>>, acc)
-       when char in ?a..?z or char in ?A..?Z or char in ?0..?9 or char == ?_,
-       do: take_word(rest, [acc, char])
+  defp take_word(<<char, rest::binary>>, acc) when char not in @delimiter_stops,
+    do: take_word(rest, [acc, char])
 
   defp take_word(rest, acc), do: {IO.iodata_to_binary(acc), rest}
 
   # After a newline, consume heredoc bodies: skip lines until each pending
   # delimiter is seen, in order.
   defp skip_heredocs(input, []), do: {input, []}
+
+  # A heredoc with an unknowable delimiter (`<<$F`): everything from here is
+  # treated as the body, so the scan stops.
+  defp skip_heredocs(_input, [{:unknown, _strip_tabs} | _pending]), do: {<<>>, []}
 
   defp skip_heredocs(input, [{delim, strip_tabs} | pending]) do
     case take_line(input) do

@@ -83,6 +83,21 @@ defmodule Nest.Tools.ShellPipesTest do
                "expected #{inspect(command)} to be rejected"
       end
     end
+
+    test "rejects a pipe on the heredoc line, even for an unresolvable delimiter" do
+      # Only the heredoc *body* is skipped, so a pipe on the `<<` line is a real
+      # pipeline. `<<$F` has no knowable terminator, but the same line still
+      # counts.
+      for command <- [
+            "cat <<EOF | head",
+            "cat <<-EOF | head",
+            "cat <<$F | head",
+            "cat <<$F && ls | head"
+          ] do
+        assert {:error, _message} = ShellPipes.check(command),
+               "expected #{inspect(command)} to be rejected"
+      end
+    end
   end
 
   describe "check/1 allows commands that do not pipe into a pager" do
@@ -123,7 +138,11 @@ defmodule Nest.Tools.ShellPipesTest do
             "cat <<-EOF\n\tls | head\n\tEOF",
             "cat <<\\EOF\nls | head\nEOF",
             "cat <<'E OF'\nls | head\nE OF",
-            "cat <<$F\nls | head\n$F"
+            "cat <<$F\nls | head\n$F",
+            "cat <<$F\nls | head\n$F\nls | head",
+            "cat <<\\-EOF\nls | head\nEOF",
+            "cat <<.END\nls | head\n.END",
+            "cat <<+EOF\nls | head\n+EOF"
           ] do
         assert :ok = ShellPipes.check(command), "expected #{inspect(command)} to be allowed"
       end
