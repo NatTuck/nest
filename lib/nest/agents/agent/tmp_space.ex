@@ -26,17 +26,31 @@ defmodule Nest.Agents.Agent.TmpSpace do
 
   @tmp_prefix "/tmp/nest-"
 
-  # Characters allowed verbatim in an agent's scratch-dir segment. Agent
-  # names are normally slugs, but a user-supplied name is not validated
-  # to be one, so everything else is percent-encoded (see `agent_dir/2`).
-  @safe_segment_chars ~c"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+  # An agent name must be usable verbatim as a single filename component:
+  # letters, digits, `_` and `-` only. No `/` (would nest a path), no `.`
+  # (a `..` component would escape the space dir), no whitespace, no
+  # control characters.
+  #
+  # This is the same rule `PersistedAgent.changeset/2` enforces at the DB
+  # boundary, re-checked here because this module is what turns a name
+  # into a path it later `rm_rf`s. It is the local backstop for a row that
+  # predates the changeset rule (see the `sanitize_agent_names`
+  # migration): without it, `cleanup/2` on a name of `..` would build
+  # `<space>/..` and wipe the whole shared `nest-<ospid>` root — every
+  # space, every agent's scratch.
+  @name_format ~r/\A[A-Za-z0-9_-]+\z/
 
   require Logger
 
   @doc """
   Create (on demand, idempotently) and return the agent's own scratch
-  directory, `<space_dir>/<agent-name>` (the name is percent-encoded to a
-  single safe path segment; see `agent_dir/2`).
+  directory, `<space_dir>/<agent-name>`.
+
+  Raises `ArgumentError` for a name that is not a single safe path
+  component (see `agent_dir/2`). `PersistedAgent.changeset/2` enforces the
+  same rule on every insert, so a name that came out of the DB always
+  passes; a raise here means a caller skipped that boundary, and failing
+  loudly is what keeps the scratch layout sound.
   """
   @spec create(integer(), String.t()) :: String.t()
   def create(space_id, agent_name) do
@@ -52,23 +66,17 @@ defmodule Nest.Agents.Agent.TmpSpace do
   """
   @spec cleanup(integer(), String.t()) :: :ok
   def cleanup(space_id, agent_name) do
-    path = agent_dir(space_id, agent_name)
-    space = space_dir(space_id)
-
-    # Backstop guard, not the protection: `agent_dir/2` already guarantees
-    # a single non-dot segment (see `safe_segment/1`), so this refusal
-    # branch is unreachable for any name. It is a *syntactic* check
-    # (`Path.dirname/1`) and is sound only because the encoder guarantees
-    # that shape; if a future caller built the path without `agent_dir/2`,
-    # this would be the last line of defence against `rm_rf`-ing `/tmp`,
-    # `/`, or a sibling's files.
-    if String.starts_with?(path, @tmp_prefix) and Path.dirname(path) == space do
+    if single_segment?(agent_name) do
+      path = agent_dir(space_id, agent_name)
       File.rm_rf(path)
       Logger.info("Cleaned up tmp space for agent #{space_id}/#{agent_name}: #{path}")
     else
+      # Refuse rather than raise: `cleanup/2` runs from `terminate/2`, and
+      # a name that cannot be a single directory component must never turn
+      # into an `rm_rf` of `/tmp`, `/`, or a sibling's files.
       Logger.error(
-        "TmpSpace.cleanup: refusing to rm_rf a path that is not a single agent " <>
-          "sub-directory: #{inspect(path)}"
+        "TmpSpace.cleanup: refusing to rm_rf for an unsafe agent name: " <>
+          inspect(agent_name)
       )
     end
 
@@ -94,28 +102,20 @@ defmodule Nest.Agents.Agent.TmpSpace do
     Path.join([@tmp_prefix <> Elixir.System.pid(), "space-#{space_id}"])
   end
 
+  # The agent's own directory: the bare name under the space dir. The name
+  # is validated rather than encoded — an unusable name is refused at the
+  # DB boundary instead of being rewritten into a path the user never
+  # chose, and the segment stays a single non-dot component (which is what
+  # makes the `rm_rf` in `cleanup/2` safe).
   defp agent_dir(space_id, agent_name) do
-    Path.join(space_dir(space_id), safe_segment(agent_name))
-  end
-
-  # Encode an agent name to a single safe path segment. This is the
-  # load-bearing safety property of the scratch layout: `cleanup/2`
-  # decides "is this a single agent sub-directory?" with the *syntactic*
-  # check `Path.dirname(path) == space`, so an unencoded `..` would pass
-  # it and `File.rm_rf("<space>/..")` would wipe the whole shared
-  # `nest-<ospid>` root — every space, every agent's scratch.
-  # Percent-encoding anything outside `[A-Za-z0-9_-]` (with `%` itself
-  # encoded) guarantees a single non-dot segment and keeps the mapping
-  # collision-free; ordinary slug-like names are unchanged. The guard in
-  # `cleanup/2` is sound only because every path is built through here —
-  # a caller that joined the name onto `space_dir/1` directly would
-  # silently reopen the hole.
-  defp safe_segment(name) do
-    case URI.encode(to_string(name), &safe_segment_char?/1) do
-      "" -> "%00"
-      segment -> segment
+    if single_segment?(agent_name) do
+      Path.join(space_dir(space_id), agent_name)
+    else
+      raise ArgumentError,
+            "refusing to build a scratch path for an unsafe agent name: " <>
+              inspect(agent_name)
     end
   end
 
-  defp safe_segment_char?(char), do: char in @safe_segment_chars
+  defp single_segment?(name), do: is_binary(name) and String.match?(name, @name_format)
 end
