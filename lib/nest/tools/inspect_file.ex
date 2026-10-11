@@ -7,8 +7,8 @@ defmodule Nest.Tools.InspectFile do
   length, and an estimated token count. Never returns file
   content, never modifies the file. The LLM should use this
   before `file-read` to decide whether a full read fits in
-  its context budget, or whether to use `shell-cmd` with
-  `head`, `tail`, or `sed -n` for a partial read.
+  its context budget, or whether to run `shell-cmd` directly
+  on the file (e.g. `head -1 <path>`) for a partial read.
 
   Text vs. binary classification:
     * ASCII or UTF-8 (per `file` output) AND bytes are storable
@@ -52,10 +52,13 @@ defmodule Nest.Tools.InspectFile do
         "Inspect a file's metadata (type, encoding, size, line count, " <>
           "char count, max line length, estimated tokens) without reading " <>
           "its contents. Use this before `file-read` to decide whether a " <>
-          "full read fits in your context budget, or whether to use " <>
-          "`shell-cmd` with `head`, `tail`, or `sed -n` for a partial read. " <>
-          "Files larger than 100 MB are rejected; use `shell-cmd` with " <>
-          "`wc -l` or `head` for those. Metadata is collected inside the " <>
+          "full read fits in your context budget, or whether to run " <>
+          "`shell-cmd` directly on the file (e.g. `head -1 <path>` or " <>
+          "`sed -n '1,20p' <path>`) for a partial read; call the tool on " <>
+          "the file, never piped into head/tail/grep (shell-cmd refuses " <>
+          "that). Files larger than 100 MB are rejected; use `shell-cmd` " <>
+          "with `wc -l <path>` or `head -1 <path>` for those. Metadata is " <>
+          "collected inside the " <>
           "sandbox, so only files the sandbox exposes are visible.",
       parameters_schema: %{
         "type" => "object",

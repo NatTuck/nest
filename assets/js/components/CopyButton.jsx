@@ -58,10 +58,10 @@ export function CopyButton({ getText, label = "Copy", feedbackMs = 2000 }) {
       return;
     }
     // `copyToClipboard` itself silently ignores non-string inputs
-    // (clipboard.js:30). Mirror that here so a caller returning
-    // `undefined` or `null` doesn't surface as a confusing "Copied"
-    // feedback with no actual write.
-    if (typeof text !== "string") return;
+    // (clipboard.js:30). Mirror that here — and treat an empty string
+    // the same way, so a message whose serialisation is empty does not
+    // wipe the clipboard and still report "Copied".
+    if (typeof text !== "string" || text === "") return;
     copy(text);
   };
 

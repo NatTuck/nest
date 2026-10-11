@@ -20,10 +20,16 @@
  * re-render is the `messageToMarkdown` closure wired to the
  * `CopyButton` — but it's stored as a `getText` callback, not
  * eagerly materialized, so the markdown join is deferred
- * until the user actually clicks. The `toolCalls` /
- * `toolResults` JSON.stringify calls inside `ToolCalls` and
- * `ToolResults` are still eager; those are the next biggest
- * perf wins if this ever needs to go further.
+ * until the user actually clicks. That join serialises the
+ * whole message in part order and deliberately omits thinking
+ * (issue #51): the UI still renders thinking via
+ * `ThinkingBlock`, only the clipboard leaves it out. The copy
+ * control sits in a bottom actions row, below everything it
+ * copies, so its position matches its payload; for a partial
+ * message the streaming indicator follows it. The
+ * `toolCalls` / `toolResults` JSON.stringify calls inside
+ * `ToolCalls` and `ToolResults` are still eager; those are the
+ * next biggest perf wins if this ever needs to go further.
  */
 import { memo } from "react";
 
@@ -110,12 +116,6 @@ function Message({ message, agentName }) {
           {isPartial && (
             <span className="text-xs text-gray-400">(typing...)</span>
           )}
-          <span className="ml-auto">
-            <CopyButton
-              getText={() => messageToMarkdown(message)}
-              label="Copy message"
-            />
-          </span>
         </div>
         {/* Thinking is rendered BEFORE the reply and stays in
             place across the partial → final transition. The box
@@ -163,6 +163,18 @@ function Message({ message, agentName }) {
             !message.metadata?.stopped_by_user
           }
         />
+        {/* Actions row. The copy control lives at the bottom of the
+            bubble, below everything it copies, so its position matches
+            its payload (the whole message except thinking). */}
+        <div
+          data-testid="message-actions"
+          className="mt-2 flex items-center justify-end"
+        >
+          <CopyButton
+            getText={() => messageToMarkdown(message)}
+            label="Copy message"
+          />
+        </div>
         {isPartial && (
           <div className="mt-2">
             <StreamingDots

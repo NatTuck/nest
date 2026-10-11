@@ -1,10 +1,1 @@
-[[mount]]
-path   = "~/.local/share/pnpm/store"
-mode   = "rw"
-create = true
-
-[[mount]]
-path   = "~/.hex"
-mode   = "rw"
-create = true
-
+# This is a real file.
