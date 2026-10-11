@@ -10,6 +10,8 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
 
   import Mimic
 
+  import Nest.Test.TmpCleanup
+
   alias Nest.LLM.MockClient
   alias Nest.Vocations
 
@@ -284,7 +286,7 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
       ])
 
     File.mkdir_p!(dir)
-    on_exit(fn -> File.rm_rf(dir) end)
+    on_exit(fn -> rm_tmp!(dir, label) end)
     dir
   end
 end

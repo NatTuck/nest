@@ -6,6 +6,8 @@ defmodule Nest.Agents.AgentAgentsMdTest do
 
   import Mimic
 
+  import Nest.Test.TmpCleanup
+
   alias Nest.Agents.AgentTestHelpers
   alias Nest.LLM.MockClient
   alias Nest.Messages.Part
@@ -43,9 +45,7 @@ defmodule Nest.Agents.AgentAgentsMdTest do
       # fixture (small, reviewed in PR) so this test doesn't
       # depend on the project's `AGENTS.md` — which other tests
       # mutate and back up — and doesn't need to be re-baselined
-      # when the project `AGENTS.md` drifts. Mirrors the
-      # `test/data/empty_workspace/` pattern used by the test
-      # below.
+      # when the project `AGENTS.md` drifts.
       vocation = create_vocation()
       workspace_path = Path.join([File.cwd!(), "test", "data", "agents_md_workspace"])
 
@@ -78,7 +78,7 @@ defmodule Nest.Agents.AgentAgentsMdTest do
         ])
 
       File.mkdir_p!(workspace_path)
-      on_exit(fn -> safe_rm_rf(workspace_path) end)
+      on_exit(fn -> rm_tmp!(workspace_path, "nest-tmp") end)
 
       File.write!(
         Path.join(workspace_path, "AGENTS.md"),
@@ -107,10 +107,18 @@ defmodule Nest.Agents.AgentAgentsMdTest do
 
     test "omits AGENTS.md section when workspace has no such file" do
       vocation = create_vocation()
-      workspace_path = Path.join([File.cwd!(), "test", "data", "empty_workspace"])
+
+      workspace_path =
+        Path.join([
+          File.cwd!(),
+          "_build",
+          "tmp",
+          "nest-tmp-agents-md-empty-#{System.unique_integer([:positive])}"
+        ])
+
       File.mkdir_p!(workspace_path)
 
-      on_exit(fn -> File.rm_rf(workspace_path) end)
+      on_exit(fn -> rm_tmp!(workspace_path, "nest-tmp") end)
 
       MockClient.set_response("OK")
 
@@ -159,7 +167,7 @@ defmodule Nest.Agents.AgentAgentsMdTest do
         ])
 
       File.mkdir_p!(workspace_path)
-      on_exit(fn -> safe_rm_rf(workspace_path) end)
+      on_exit(fn -> rm_tmp!(workspace_path, "nest-tmp") end)
 
       agents_md_path = Path.join(workspace_path, "AGENTS.md")
 
@@ -204,12 +212,6 @@ defmodule Nest.Agents.AgentAgentsMdTest do
       # finish it so the agent is idle when the test ends (the
       # teardown asserts zero in-flight agents).
       assert_receive {:chat_status, %{status: "idle"}}, 500
-    end
-  end
-
-  defp safe_rm_rf(path) do
-    if String.contains?(path, "nest-tmp") do
-      File.rm_rf!(path)
     end
   end
 end

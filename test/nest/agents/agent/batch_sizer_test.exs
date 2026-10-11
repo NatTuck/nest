@@ -21,6 +21,8 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
 
   import ExUnit.CaptureLog
 
+  import Nest.Test.TmpCleanup
+
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.Agents.Agent.BatchSizer.Overflow
   alias Nest.Agents.Agent.BatchSizer.ProjectedSize
@@ -280,7 +282,7 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
         ])
 
       File.mkdir_p!(tmp_dir)
-      on_exit(fn -> File.rm_rf!(tmp_dir) end)
+      on_exit(fn -> rm_tmp!(tmp_dir, "batchsizer-read-") end)
       {:ok, tmp_dir: tmp_dir, test_file: Path.join(tmp_dir, "test.txt")}
     end
 

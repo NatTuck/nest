@@ -27,6 +27,8 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
   """
   use Nest.DataCase, async: true
 
+  import Nest.Test.TmpCleanup
+
   alias Nest.LLM.AnthropicClient
   alias Nest.LLM.MockClient
   alias Nest.LLM.OpenAIClient
@@ -251,7 +253,7 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
         ])
 
       File.mkdir_p!(workspace_path)
-      on_exit(fn -> safe_rm_rf(workspace_path) end)
+      on_exit(fn -> rm_tmp!(workspace_path, "nest-tmp") end)
 
       agents_md_path = Path.join(workspace_path, "AGENTS.md")
 
@@ -277,12 +279,6 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
       post_text = text_from_parts(post_sys.parts)
 
       assert post_text =~ new_sentinel
-    end
-  end
-
-  defp safe_rm_rf(path) do
-    if String.contains?(path, "nest-tmp") do
-      File.rm_rf!(path)
     end
   end
 

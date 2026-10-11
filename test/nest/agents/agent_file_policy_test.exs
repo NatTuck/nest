@@ -26,6 +26,8 @@ defmodule Nest.Agents.Agent.FilePolicyTest do
 
   import Mimic
 
+  import Nest.Test.TmpCleanup
+
   alias Nest.Agents.AgentTestHelpers
   alias Nest.LLM.MockClient
 
@@ -327,8 +329,7 @@ defmodule Nest.Agents.Agent.FilePolicyTest do
       })
 
     on_exit(fn ->
-      if String.contains?(workspace_root, "file_policy_workspace"),
-        do: File.rm_rf!(workspace_root)
+      rm_tmp!(workspace_root, "file_policy_workspace")
     end)
 
     {pid, name}
