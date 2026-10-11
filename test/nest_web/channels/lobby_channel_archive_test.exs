@@ -56,7 +56,9 @@ defmodule NestWeb.LobbyChannelArchiveTest do
 
       ref = push_and_settle(socket, "archive_space", %{"space_id" => space_id})
       assert_reply ref, :ok, %{}, 0
-      assert_broadcast "space:archived", %{"space_id" => ^space_id}
+      # #41: the frame rides the per-user topic and is pushed to this
+      # client, not broadcast on the shared "lobby" topic.
+      assert_push "space:archived", %{"space_id" => ^space_id}
 
       assert %Space{id: ^space_id, archived: true} = Spaces.get_space(space_id)
       assert Spaces.list_for_user(user.id) |> Enum.map(& &1.id) |> Enum.member?(space_id) == false
@@ -64,7 +66,9 @@ defmodule NestWeb.LobbyChannelArchiveTest do
 
       ref = push_and_settle(socket, "unarchive_space", %{"space_id" => space_id})
       assert_reply ref, :ok, %{}, 0
-      assert_broadcast "space:unarchived", %{"space_id" => ^space_id}
+      # #41: the frame rides the per-user topic and is pushed to this
+      # client, not broadcast on the shared "lobby" topic.
+      assert_push "space:unarchived", %{"space_id" => ^space_id}
 
       assert %Space{id: ^space_id, archived: false} = Spaces.get_space(space_id)
     end

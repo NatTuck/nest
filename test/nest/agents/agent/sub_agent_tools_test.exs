@@ -39,6 +39,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Nest.Agents.Agent
+  alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Supervisor
   alias Nest.LLM.MockClient
@@ -76,10 +77,10 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     specialist_slug = specialist_vocation_slug()
     space_id = AgentTestHelpers.current_space_id()
 
-    # The spawn broadcasts `agent:created` on the lobby topic so the
+    # The spawn broadcasts `agent:created` on the space topic (#41) so the
     # sidebar can add the child live. Subscribe before the chat so the
     # broadcast can't slip past us.
-    Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
+    Phoenix.PubSub.subscribe(Nest.PubSub, Broadcasts.space_topic(space_id))
 
     MockClient.set_tool_response(%{
       text: "spawning",
@@ -98,10 +99,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     await_idle(coordinator_pid)
 
     # The live-add broadcast carries the space_id the sidebar groups by.
-    assert_receive %Phoenix.Socket.Broadcast{
-                     event: "agent:created",
-                     payload: %{"name" => ^specialist_name, "space_id" => ^space_id}
-                   },
+    assert_receive {:agent_created, %{"name" => ^specialist_name, "space_id" => ^space_id}},
                    500
 
     # The specialist exists in the space.

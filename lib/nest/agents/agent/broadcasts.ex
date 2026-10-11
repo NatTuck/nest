@@ -46,6 +46,36 @@ defmodule Nest.Agents.Agent.Broadcasts do
   @spec space_topic(integer()) :: String.t()
   def space_topic(space_id), do: "space:#{space_id}"
 
+  @doc """
+  Announce a newly spawned agent on its space's topic (#41).
+
+  Every lobby channel whose user can see `space_id` subscribes to that
+  topic and forwards the frame to its own client, so an agent's name
+  reaches exactly the clients that can see its space. The pre-#41 global
+  `"lobby"` broadcast reached every connected user, whatever space they
+  were in.
+  """
+  @spec agent_created(integer(), map()) :: :ok
+  def agent_created(space_id, payload), do: lifecycle(space_id, :agent_created, payload)
+
+  @doc """
+  Announce that an agent — and, because archiving recurses, its whole
+  subtree — was archived. See `agent_created/2` for the topic and audience.
+  """
+  @spec agent_archived(integer(), map()) :: :ok
+  def agent_archived(space_id, payload), do: lifecycle(space_id, :agent_archived, payload)
+
+  @doc """
+  Announce that an agent's model or workspace changed. See
+  `agent_created/2` for the topic and audience.
+  """
+  @spec agent_updated(integer(), map()) :: :ok
+  def agent_updated(space_id, payload), do: lifecycle(space_id, :agent_updated, payload)
+
+  defp lifecycle(space_id, tag, payload) do
+    Phoenix.PubSub.broadcast(PubSub, space_topic(space_id), {tag, payload})
+  end
+
   def message(state, message) do
     Phoenix.PubSub.broadcast(PubSub, topic(state.space_id, state.name), {:chat_message, message})
   end

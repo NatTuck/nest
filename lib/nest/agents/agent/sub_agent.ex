@@ -43,6 +43,7 @@ defmodule Nest.Agents.Agent.SubAgent do
   require Logger
 
   alias Nest.Agents.Agent
+  alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Machine.Children
@@ -372,13 +373,13 @@ defmodule Nest.Agents.Agent.SubAgent do
     state
   end
 
-  # Notify all connected lobby clients that a subagent has
-  # been spawned so the sidebar tree updates live without a
-  # page refresh. Uses the Phoenix Endpoint broadcast channel
-  # so the message arrives through the standard channel
-  # pipeline (no raw PubSub bypass needed by the lobby). The
-  # `space_id` is required — the frontend groups agents by it
-  # when adding one to the sidebar.
+  # Notify lobby clients that can see this agent's space that a subagent has
+  # been spawned, so the sidebar tree updates live without a page refresh.
+  # The frame rides the per-space topic (#41): the lobby channel forwards it
+  # to its own client, and the channel only subscribes to spaces its user can
+  # see, so an agent's name never reaches a client outside its space. The
+  # `space_id` is required — the frontend groups agents by it when adding one
+  # to the sidebar.
   defp broadcast_subagent_creation(state, child_name) do
     parent_db_id =
       case Persistence.fetch_agent(state.space_id, state.name) do
@@ -386,7 +387,7 @@ defmodule Nest.Agents.Agent.SubAgent do
         _ -> nil
       end
 
-    NestWeb.Endpoint.broadcast("lobby", "agent:created", %{
+    Broadcasts.agent_created(state.space_id, %{
       "name" => child_name,
       "space_id" => state.space_id,
       "model" => state.model,

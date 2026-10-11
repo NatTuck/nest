@@ -132,10 +132,33 @@ defmodule NestWeb.LobbyChannel do
   end
 
   # A space's agent changed status. The frame arrives on the space topic, so
-  # only clients subscribed to that space see it (#53).
+  # only clients whose user can see that space are reached (#53).
   @impl true
   def handle_info({:agent_status, payload}, socket) do
-    broadcast(socket, "agent:status", payload)
+    push(socket, "agent:status", payload)
+    {:noreply, socket}
+  end
+
+  # Agent lifecycle (#41). Same shape as `{:agent_status, _}`: the frame
+  # arrives on the space topic the channel subscribed to, and `push/3`
+  # delivers it to this client only. Every one of the user's sessions holds
+  # its own subscription, so they all get it — and no other user does, which
+  # is what the pre-#41 global `"lobby"` broadcast could not promise.
+  @impl true
+  def handle_info({:agent_created, payload}, socket) do
+    push(socket, "agent:created", payload)
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_info({:agent_archived, payload}, socket) do
+    push(socket, "agent:archived", payload)
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_info({:agent_updated, payload}, socket) do
+    push(socket, "agent:updated", payload)
     {:noreply, socket}
   end
 
@@ -149,6 +172,27 @@ defmodule NestWeb.LobbyChannel do
   end
 
   def handle_info({:spaces_changed, _user_id}, socket), do: {:noreply, socket}
+
+  # Space lifecycle rides the per-user topic (#41) for the same reason the
+  # agent frames ride the space topic: `space:archived` names a space, and
+  # only its owner's sessions should hear about it.
+  @impl true
+  def handle_info({:space_created, payload}, socket) do
+    push(socket, "space:created", payload)
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_info({:space_archived, payload}, socket) do
+    push(socket, "space:archived", payload)
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_info({:space_unarchived, payload}, socket) do
+    push(socket, "space:unarchived", payload)
+    {:noreply, socket}
+  end
 
   # All `handle_in` clauses grouped together so the compiler
   # is happy with the multi-head pattern matching.
@@ -405,19 +449,18 @@ defmodule NestWeb.LobbyChannel do
   defp maybe_vocation(_payload, vocation), do: vocation
 
   defp broadcast_space_archived(socket, space_id),
-    do: broadcast(socket, "space:archived", %{"space_id" => space_id})
+    do: broadcast_to_user(socket, :space_archived, %{"space_id" => space_id})
 
   defp broadcast_space_unarchived(socket, space_id),
-    do: broadcast(socket, "space:unarchived", %{"space_id" => space_id})
+    do: broadcast_to_user(socket, :space_unarchived, %{"space_id" => space_id})
 
   defp broadcast_space_created(socket, space, agent_name, model, vocation, attrs) do
-    push(socket, "space:created", %{
+    broadcast_to_user(socket, :space_created, %{
       "space" => space,
       "agentName" => agent_name
     })
 
     broadcast_agent_created(
-      socket,
       space.id,
       agent_name,
       model,
@@ -426,10 +469,22 @@ defmodule NestWeb.LobbyChannel do
     )
   end
 
+  # Announce a space-set change on the per-user topic (#41). Every lobby
+  # channel of this user is subscribed, so all of their sessions hear it and
+  # no other user does — the pre-#41 `broadcast(socket, …)` went to the shared
+  # `"lobby"` topic, which every connected user is on.
+  defp broadcast_to_user(socket, tag, payload) do
+    Phoenix.PubSub.broadcast(
+      Nest.PubSub,
+      Spaces.user_topic(socket.assigns.user_id),
+      {tag, payload}
+    )
+  end
+
   defp do_change_model(space_id, name, model_params, socket) do
     case Agents.change_model(space_id, name, build_model_map(model_params)) do
       :ok ->
-        broadcast(socket, "agent:updated", %{
+        Broadcasts.agent_updated(space_id, %{
           "name" => name,
           "model" => model_params,
           "space_id" => space_id
@@ -445,7 +500,7 @@ defmodule NestWeb.LobbyChannel do
   defp do_edit_agent(space_id, s, name, mp, workspace_path) do
     case Agents.edit_agent(space_id, name, build_model_map(mp), workspace_path) do
       :ok ->
-        broadcast(s, "agent:updated", %{
+        Broadcasts.agent_updated(space_id, %{
           "name" => name,
           "model" => mp,
           "workspace_path" => workspace_path,
@@ -487,8 +542,8 @@ defmodule NestWeb.LobbyChannel do
     |> maybe_add_opt(:workspace_path, workspace_path)
   end
 
-  defp broadcast_agent_created(socket, space_id, name, model, vocation, workspace_path) do
-    broadcast(socket, "agent:created", %{
+  defp broadcast_agent_created(space_id, name, model, vocation, workspace_path) do
+    Broadcasts.agent_created(space_id, %{
       "name" => name,
       "space_id" => space_id,
       "model" => %{"name" => model.name, "provider" => model.provider},
