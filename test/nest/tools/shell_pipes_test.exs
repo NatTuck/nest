@@ -84,15 +84,19 @@ defmodule Nest.Tools.ShellPipesTest do
       end
     end
 
-    test "rejects a pipe on the heredoc line, even for an unresolvable delimiter" do
-      # Only the heredoc *body* is skipped, so a pipe on the `<<` line is a real
-      # pipeline. `<<$F` has no knowable terminator, but the same line still
-      # counts.
+    test "rejects a pipe on the heredoc line, and code after the body" do
+      # Only the heredoc *body* is skipped: a pipe on the `<<` line is a real
+      # pipeline, and so is code after the closing delimiter. The delimiter
+      # undergoes quote removal only, so `$F` is literal and its body ends at a
+      # line `$F`.
       for command <- [
             "cat <<EOF | head",
             "cat <<-EOF | head",
             "cat <<$F | head",
-            "cat <<$F && ls | head"
+            "cat <<$F && ls | head",
+            "cat <<$F\nls | head\n$F\nls | head",
+            "cat <<EOF\nls | head\nEOF\nls | head",
+            "cat <<E'OF' | head"
           ] do
         assert {:error, _message} = ShellPipes.check(command),
                "expected #{inspect(command)} to be rejected"
@@ -139,7 +143,7 @@ defmodule Nest.Tools.ShellPipesTest do
             "cat <<\\EOF\nls | head\nEOF",
             "cat <<'E OF'\nls | head\nE OF",
             "cat <<$F\nls | head\n$F",
-            "cat <<$F\nls | head\n$F\nls | head",
+            "cat <<E'OF'\nls | head\nEOF",
             "cat <<\\-EOF\nls | head\nEOF",
             "cat <<.END\nls | head\n.END",
             "cat <<+EOF\nls | head\n+EOF"

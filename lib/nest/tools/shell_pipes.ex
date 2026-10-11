@@ -51,10 +51,13 @@ defmodule Nest.Tools.ShellPipes do
   stage. `ls | xargs head` is likewise not caught, but it does not discard the
   piped output the way a plain `| head` does.
 
-  A heredoc whose delimiter is a parameter expansion (`cat <<$F`) has no
-  knowable terminator: the rest of the current line is still scanned (so
-  `cat <<$F | head` is caught), but everything from the next newline on is
-  treated as the body — a miss, never a false positive.
+  A heredoc delimiter undergoes quote removal only (POSIX 2.7.4), so `$` and
+  backticks in it are literal: `cat <<$F` names the delimiter `$F`, and its body
+  is skipped exactly as bash skips it. The one shape this tokenizer cannot model
+  is an embedded quote (`cat <<E'OF'` is the delimiter `EOF`); there it falls
+  back to a conservative sentinel — the rest of the current line is still
+  scanned, and everything from the next newline on is treated as the body (a
+  miss, never a false positive).
   """
 
   # Command names whose pipeline use discards output.
@@ -69,10 +72,11 @@ defmodule Nest.Tools.ShellPipes do
   @operators ~w[&>> <<< <<- &> && >> >& << <& <> |& || & > < ; ( ) |]
 
   # Characters that end a heredoc-delimiter word: blanks and the shell
-  # metacharacters, plus the quoting and expansion introducers (handled
-  # separately). Any other character is part of the delimiter, so `-EOF`,
-  # `.END`, and `+EOF` work like bash's `<<WORD`.
-  @delimiter_stops [?\s, ?\t, ?\n, ?|, ?&, ?;, ?(, ?), ?<, ?>, ?\\, ?', ?", ?`, ?$]
+  # metacharacters, plus the quoting introducers (handled separately). Any other
+  # character is part of the delimiter, so `-EOF`, `.END`, `+EOF`, and even `$F`
+  # work like bash's `<<WORD` — a delimiter undergoes quote removal only
+  # (POSIX 2.7.4), so `$` and backticks in it are literal.
+  @delimiter_stops [?\s, ?\t, ?\n, ?|, ?&, ?;, ?(, ?), ?<, ?>, ?\\, ?', ?"]
 
   # The `NAME=value` prefix of a simple command.
   @assignment ~r/^[A-Za-z_][A-Za-z0-9_]*=/
@@ -316,11 +320,14 @@ defmodule Nest.Tools.ShellPipes do
     end
   end
 
-  defp unquoted_delim(<<?$, _rest::binary>>), do: :unknown
-
+  # A heredoc delimiter undergoes quote removal only (POSIX 2.7.4), so `$` and
+  # backticks are literal (`<<$F` names the delimiter `$F`). The one shape this
+  # tokenizer cannot model is an embedded quote (`<<E'OF'` is the delimiter
+  # `EOF`), which falls back to the conservative sentinel.
   defp unquoted_delim(input) do
     case take_word(input) do
       {"", _rest} -> :error
+      {_delim, <<quote, _rest::binary>>} when quote in [?', ?", ?(] -> :unknown
       {delim, rest} -> {:ok, delim, rest}
     end
   end
