@@ -445,7 +445,12 @@ defmodule Nest.Agents.Agent.Inbox do
   @doc """
   JSON-safe view of the queued entries, for the wire (channel/status)
   and tests. `"kind"` is one of `"agent"`, `"user"`, `"query"`,
-  `"notice"`; `"mode"` is a string or `nil`.
+  `"notice"`; `"mode"` is a string or `nil`; `"human"` is `true` only for
+  a prompt the human typed.
+
+  `"human"` is not derivable from `"kind"`: an `agents-spawn` `query`
+  kickoff is also a `"user"` entry, so the flag is what lets a reader tell
+  a queued human prompt from a queued kickoff nobody typed.
   """
   @spec serialize([entry()]) :: [map()]
   def serialize(entries) do
@@ -455,7 +460,8 @@ defmodule Nest.Agents.Agent.Inbox do
         "content" => entry.content,
         "timestamp" => DateTime.to_iso8601(entry.timestamp),
         "kind" => Atom.to_string(entry.kind),
-        "mode" => entry.mode
+        "mode" => entry.mode,
+        "human" => entry.human?
       }
     end)
   end
@@ -503,7 +509,14 @@ defmodule Nest.Agents.Agent.Inbox do
   # so the batch head is the entry that decides; every other batch is a
   # delivery and is deliberately left untagged (the client filter is
   # fail-closed).
-  defp origin_metadata([%{human?: true} | _]), do: User.human_metadata()
+  #
+  # Both halves are required. They agree by construction today: only
+  # `deliver_user_message/5` sets `human?: true`, and it always sets
+  # `kind: :user`, which `batch/1` delivers alone. Requiring both anyway means
+  # a future entry that claimed `human?` on another kind — a `:notice`, say —
+  # batches with its peers and stays untagged, instead of being silently
+  # mistagged as the human's own words.
+  defp origin_metadata([%{kind: :user, human?: true} | _]), do: User.human_metadata()
   defp origin_metadata(_entries), do: %{}
 
   @doc """

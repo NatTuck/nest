@@ -110,7 +110,15 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
   end
 
   defp entry(kind, from, content, mode \\ nil) do
-    %{from: from, content: content, timestamp: DateTime.utc_now(), kind: kind, mode: mode}
+    %{
+      from: from,
+      content: content,
+      timestamp: DateTime.utc_now(),
+      kind: kind,
+      mode: mode,
+      human?: false,
+      fulfilled_ids: []
+    }
   end
 
   defp system_msg do

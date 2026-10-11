@@ -13,21 +13,60 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
 
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Inbox
+  alias Nest.Messages.MessageList
 
   describe "entry shape and serialization" do
     test "serialize/1 emits the wire shape the browser renders, for every kind" do
-      # intentional: the channel/browser contract is exactly these five
-      # keys; `kind` is the entry's provenance (a peer's words, a query that
-      # owes a reply, the runtime speaking for itself, or a human's words) and
-      # `mode` carries the human's requested mode (nil for every other kind).
+      # intentional: the channel/browser contract is exactly these six keys;
+      # `kind` is the entry's provenance (a peer's words, a query that owes a
+      # reply, the runtime speaking for itself, or a human's words), `mode`
+      # carries the human's requested mode (nil for every other kind), and
+      # `human` is true only for a prompt the human typed — the `user` kind is
+      # shared with an `agents-spawn` `query` kickoff, so the flag is the only
+      # way a reader can tell them apart.
       at = ~U[2026-01-02 03:04:05Z]
 
       entries = [
-        %{from: "peer", content: "from an agent", timestamp: at, kind: :agent, mode: nil},
-        %{from: "alice", content: "from a human", timestamp: at, kind: :user, mode: "plan"},
-        %{from: nil, content: "from nobody", timestamp: at, kind: :user, mode: nil},
-        %{from: "peer", content: "a question", timestamp: at, kind: :query, mode: nil},
-        %{from: nil, content: "a notice", timestamp: at, kind: :notice, mode: nil}
+        %{
+          from: "peer",
+          content: "from an agent",
+          timestamp: at,
+          kind: :agent,
+          mode: nil,
+          human?: false
+        },
+        %{
+          from: "alice",
+          content: "from a human",
+          timestamp: at,
+          kind: :user,
+          mode: "plan",
+          human?: true
+        },
+        %{
+          from: nil,
+          content: "from nobody",
+          timestamp: at,
+          kind: :user,
+          mode: nil,
+          human?: false
+        },
+        %{
+          from: "peer",
+          content: "a question",
+          timestamp: at,
+          kind: :query,
+          mode: nil,
+          human?: false
+        },
+        %{
+          from: nil,
+          content: "a notice",
+          timestamp: at,
+          kind: :notice,
+          mode: nil,
+          human?: false
+        }
       ]
 
       assert Inbox.serialize(entries) == [
@@ -36,35 +75,40 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
                  "content" => "from an agent",
                  "timestamp" => "2026-01-02T03:04:05Z",
                  "kind" => "agent",
-                 "mode" => nil
+                 "mode" => nil,
+                 "human" => false
                },
                %{
                  "from" => "alice",
                  "content" => "from a human",
                  "timestamp" => "2026-01-02T03:04:05Z",
                  "kind" => "user",
-                 "mode" => "plan"
+                 "mode" => "plan",
+                 "human" => true
                },
                %{
                  "from" => nil,
                  "content" => "from nobody",
                  "timestamp" => "2026-01-02T03:04:05Z",
                  "kind" => "user",
-                 "mode" => nil
+                 "mode" => nil,
+                 "human" => false
                },
                %{
                  "from" => "peer",
                  "content" => "a question",
                  "timestamp" => "2026-01-02T03:04:05Z",
                  "kind" => "query",
-                 "mode" => nil
+                 "mode" => nil,
+                 "human" => false
                },
                %{
                  "from" => nil,
                  "content" => "a notice",
                  "timestamp" => "2026-01-02T03:04:05Z",
                  "kind" => "notice",
-                 "mode" => nil
+                 "mode" => nil,
+                 "human" => false
                }
              ]
     end
@@ -219,7 +263,61 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
     end
   end
 
-  defp entry(kind, from, content, mode \\ nil) do
-    %{from: from, content: content, timestamp: DateTime.utc_now(), kind: kind, mode: mode}
+  describe "build_drained_message/3 origin marker" do
+    test "a human batch is tagged as the human's own words" do
+      entries = [entry(:user, "alice", "hi", "plan", true)]
+
+      assert {:user, %{metadata: metadata}} = Inbox.build_drained_message(entries, "hi", "plan")
+
+      assert metadata == %{"mode" => "plan", "origin" => "human"}
+    end
+
+    test "a delivered batch is left untagged and keeps its fulfilled ids" do
+      # The marker is fail-closed on the client, so a delivered batch must
+      # carry no `origin` at all — and the backgrounded-promise metadata that
+      # already rides this message must survive the merge.
+      entries = [
+        entry(:agent, "peer", "do it")
+        |> Map.put(:fulfilled_ids, ["call-1", "call-2"])
+      ]
+
+      assert {:user, %{metadata: metadata}} =
+               Inbox.build_drained_message(entries, "do it", "chat")
+
+      assert metadata ==
+               Map.merge(
+                 %{"mode" => "chat"},
+                 MessageList.fulfilled_metadata(["call-1", "call-2"])
+               )
+
+      refute Map.has_key?(metadata, "origin")
+    end
+
+    test "a non-user entry that claims human? is left untagged" do
+      # `origin_metadata/1` requires `kind: :user` *and* `human?: true`. The two
+      # agree by construction today — only `deliver_user_message/5` sets the
+      # flag, and it always sets `kind: :user`, which `batch/1` delivers alone —
+      # so this is defensive-input coverage for the invariant: an entry that
+      # claimed `human?` on another kind must stay untagged rather than be
+      # mistagged as the human's own words.
+      entries = [entry(:notice, nil, "runtime note", nil, true)]
+
+      assert {:user, %{metadata: metadata}} =
+               Inbox.build_drained_message(entries, "runtime note", "chat")
+
+      refute Map.has_key?(metadata, "origin")
+    end
+  end
+
+  defp entry(kind, from, content, mode \\ nil, human? \\ false) do
+    %{
+      from: from,
+      content: content,
+      timestamp: DateTime.utc_now(),
+      kind: kind,
+      mode: mode,
+      human?: human?,
+      fulfilled_ids: []
+    }
   end
 end

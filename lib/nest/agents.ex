@@ -287,9 +287,12 @@ defmodule Nest.Agents do
   socket's username); the agent records it on a queued inbox entry when it
   is busy. `mode` is the human's requested mode.
 
-  `human?` says whether the content is the human's own words (the channel
-  passes `true`; `agents-spawn`'s `query` kickoff passes `false`). Only a
-  human message is tagged `origin: "human"` for the Ctrl/Cmd+Up recall list.
+  `human?` says whether the content is the human's own words. It has exactly
+  two production callers: the per-agent chat channel
+  (`NestWeb.AgentChannel`'s `chat:message` handler) passes `true`, and
+  `SubAgent.handle_spawn_request/3` passes `false` for an `agents-spawn`
+  `query` kickoff. Only a human message is tagged `origin: "human"` for the
+  Ctrl/Cmd+Up recall list.
   """
   @spec chat(integer(), String.t(), String.t(), String.t() | nil, String.t() | nil, boolean()) ::
           :ok | {:error, :not_found}

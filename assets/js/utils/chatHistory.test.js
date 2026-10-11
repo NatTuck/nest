@@ -123,7 +123,11 @@ describe("buildChatHistory", () => {
           content: '[mode: build]\n[Message from agent "X"]\nhi',
           mode: "build",
         },
-        { role: "user", content: "[mode: build]\nlegacy prompt", mode: "build" },
+        {
+          role: "user",
+          content: "[mode: build]\nlegacy prompt",
+          mode: "build",
+        },
         { role: "user", origin: "agent", content: "[mode: build]\npeer" },
         { role: "user", origin: "runtime", content: "[mode: build]\nnotice" },
         {

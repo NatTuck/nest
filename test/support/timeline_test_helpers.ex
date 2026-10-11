@@ -88,7 +88,9 @@ defmodule Nest.TimelineTestHelpers do
       content: "queued",
       timestamp: DateTime.utc_now(),
       kind: :agent,
-      mode: nil
+      mode: nil,
+      human?: false,
+      fulfilled_ids: []
     }
 
     :sys.replace_state(pid, fn state ->
