@@ -135,13 +135,60 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
     Mimic.allow(Nest.Agents, self(), pid)
   end
 
-  defp park(test_pid, blocked, release) do
+  @doc """
+  Park the tool worker inside `Nest.Agents.send_message/5` — the `agents-query`
+  entry point — so the test decides when the batch's query reaches its target
+  and when the batch returns.
+
+  `park_agent_sends/2`'s sibling for the querying tool: `agents-query` carries
+  its `kind` positionally, so it calls the five-arity clause while `agents-send`
+  calls the four-arity one, and both harnesses can be used in one test without
+  interfering. Only `kind: :query` calls park — anything else falls straight
+  through, so a runtime notice is never held.
+
+  The worker parks *before* the real delivery (sending `{:query_blocked,
+  worker}` and waiting for `:release_query`); with `hold_result: true` it parks
+  a second time *after* it (`{:query_delivered, worker}`, released by
+  `:release_result`), which is the shape where the peer's answer can land while
+  the caller's batch is still in flight — the batch is backgrounded, not the
+  answer queued behind it.
+
+  `hold_ms` is that second park's safety valve, and it is deliberately longer
+  than the default: the hold has to outlast the *peer's* whole turn (the
+  delivery starts it), so a valve shorter than the caller's own turn fence
+  would release the batch and flip the outcome on a loaded host instead of
+  failing the test's fence. It stays well under ExUnit's 5 s per-test timeout,
+  so a failing test still cannot leave the worker parked for long.
+  """
+  @spec park_agent_queries(pid(), keyword()) :: :ok
+  def park_agent_queries(pid, opts \\ []) do
+    test_pid = self()
+    hold_result? = Keyword.get(opts, :hold_result, false)
+    hold_ms = Keyword.get(opts, :hold_ms, 3_000)
+
+    Mimic.stub(Nest.Agents, :send_message, fn space_id, from, target, content, kind ->
+      if kind == :query, do: park(test_pid, :query_blocked, :release_query)
+
+      result =
+        Mimic.call_original(Nest.Agents, :send_message, [space_id, from, target, content, kind])
+
+      if kind == :query and hold_result? do
+        park(test_pid, :query_delivered, :release_result, hold_ms)
+      end
+
+      result
+    end)
+
+    Mimic.allow(Nest.Agents, self(), pid)
+  end
+
+  defp park(test_pid, blocked, release, timeout \\ 1_000) do
     send(test_pid, {blocked, self()})
 
     receive do
       ^release -> :ok
     after
-      1_000 -> :ok
+      timeout -> :ok
     end
   end
 
