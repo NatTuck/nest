@@ -328,10 +328,10 @@ defmodule Nest.Agents.Agent.Inbox do
   always `nil` (the runtime asks for no mode).
 
   `fulfilled_ids` is the one piece of entry metadata a producer supplies: the
-  tool-call ids a backgrounded batch's *result* answers (issue #36). It rides
-  the entry into the message the drain appends
-  (`build_drained_message/3`), which is what lets a later load tell a promise
-  that was kept from one the process died with
+  tool-call ids a backgrounded batch's outcome answers (issue #36) — a result's
+  own, or the calls a worker's death closes. It rides the entry into the message
+  the drain appends (`build_drained_message/3`), which is what lets a later load
+  tell a promise that was kept from one the process died with
   (`MessageList.backgrounded_results/1`). Empty for every other producer.
   """
   @spec enqueue_internal(Agent.t(), String.t() | nil, String.t(), kind(), [String.t()]) ::
@@ -356,9 +356,9 @@ defmodule Nest.Agents.Agent.Inbox do
   says it: no agent did this, so the entry renders bare (`kind: :notice`).
 
   `fulfilled_ids` is the delivery's own — the tool-call ids the notice answers
-  (`Backgrounding.fulfilled_ids/1`), empty for a worker's death, which answers
-  no call. It rides the entry onto the message the drain appends
-  (`build_drained_message/3`).
+  or closes (`Backgrounding.fulfilled_ids/1` for a result,
+  `Backgrounding.ids_for/2` for a worker's death). It rides the entry onto the
+  message the drain appends (`build_drained_message/3`).
   """
   @spec deliver_notice(Agent.t(), term(), [String.t()]) :: Agent.t()
   def deliver_notice(state, outcome, fulfilled_ids) do
@@ -465,9 +465,13 @@ defmodule Nest.Agents.Agent.Inbox do
   `content` is the batch's combined text (`combine_and_offload/2`) and `mode`
   the drain's winning mode; `Dispatch.build_user_message/3` builds the message
   itself. The batch's `fulfilled_ids` also ride it as message metadata
-  (`MessageList.fulfilled_metadata/1`): the notice a backgrounded batch's result
-  was delivered as answers those calls, so a later load can tell a promise that
-  was kept from one the process died with (`MessageList.backgrounded_results/1`).
+  (`MessageList.fulfilled_metadata/1`): a backgrounded batch's notice answers or
+  closes those calls, so a later load can tell a promise that was kept from one
+  the process died with (`MessageList.backgrounded_results/1`).
+
+  The single writer of that marker, so every drain shape builds its message here
+  — including the backgrounding path, which delivers a *notice* entry when one
+  was queued while another batch executed.
   """
   @spec build_drained_message([entry()], String.t(), String.t()) :: {:user, User.t()}
   def build_drained_message(entries, content, mode) do

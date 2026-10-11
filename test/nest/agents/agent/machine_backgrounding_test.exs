@@ -14,6 +14,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
   use ExUnit.Case, async: true
 
   alias Nest.Agents.Agent.Machine
+  alias Nest.Agents.Agent.Repair
   alias Nest.Agents.Agent.Turn.Dispatch
   alias Nest.LLM.Preflight
   alias Nest.LLM.RunResponse
@@ -57,9 +58,10 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
       assert text == "[mode: chat]\npeer note"
 
       # The batch moved out of the worker fields — which `Phase.enter/4` nulls —
-      # into the entry its late result is routed on. The calls are not kept:
-      # the synthetic result answered them, and the transcript holds that answer.
-      assert next.work.backgrounded == %{ref => %{pid: m.work.active_worker, calls: 1}}
+      # into the entry its late result is routed on, ids and all: the ids are
+      # what a worker's death names the promises it closes by (a result names
+      # its own), and what the stop's cancellation record counts.
+      assert next.work.backgrounded == %{ref => %{pid: m.work.active_worker, ids: ["c1"]}}
       assert next.work.worker_ref == nil
       assert next.work.active_worker == nil
 
@@ -82,6 +84,44 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
 
       assert Preflight.validate_request(transcript) == :ok
       assert Preflight.validate_tool_call_pairing(transcript) == :ok
+    end
+
+    test "a notice delivered by the backgrounding path keeps its fulfilled ids" do
+      # The delivery a restart would otherwise misread: batch A was backgrounded,
+      # A's result arrived while batch B was executing (so the notice queued),
+      # and the next message arrives while B still executes — `Inbox.batch/1`
+      # peeks the notice alone and *this* path delivers it. The message is built
+      # by `Inbox.build_drained_message/3`, the only writer of the fulfilled
+      # marker, so A's promise is marked kept. Built with
+      # `Dispatch.build_user_message/2` instead, A's synthetic
+      # `state: "backgrounded"` part stays unfulfilled and a later load appends
+      # "lost when this agent restarted" for a result already in the transcript.
+      base = put_messages(executing_state(), promised_tail())
+      m = %{base | work: %{base.work | worker_ref: make_ref()}}
+
+      entries = [notice_entry(["call_1"])]
+
+      {:ok, [{:append_many, [synthetic, ack, delivered]}, {:consume_inbox, ^entries}, :iterate],
+       _next} = Machine.step(m, {:inbox_drain, entries, "the backgrounded call finished"})
+
+      assert {:tool, _} = synthetic
+      assert {:assistant, _} = ack
+      assert {:user, %User{metadata: metadata}} = delivered
+      assert metadata["backgrounded_fulfilled_ids"] == ["call_1"]
+
+      # The load path agrees. The batch *this* delivery moved to the background
+      # (call_2) is still running, so its promise is the only one left open: the
+      # notice's call_1 is not reported, and the loss recorded is call_2's alone.
+      loaded = m.work.ctx.messages ++ [synthetic, ack, delivered]
+
+      assert Enum.map(MessageList.backgrounded_results(loaded), & &1.tool_call_id) == ["call_2"]
+
+      assert {:lost_promises, record} = Repair.classify_load(loaded)
+
+      assert Enum.any?(
+               record,
+               &match?({:assistant, %{metadata: %{"backgrounded_lost_ids" => ["call_2"]}}}, &1)
+             )
     end
 
     test "a :query mid-batch incurs the reply debt and fires the context notice" do
@@ -217,9 +257,9 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
 
       # One entry per *batch*, so the entry count says nothing about how many
       # promises the batch holds: the stop's cancellation record counts calls,
-      # and it reads this field.
+      # and it counts them off this field.
       assert next.work.backgrounded ==
-               %{m.work.worker_ref => %{pid: m.work.active_worker, calls: 3}}
+               %{m.work.worker_ref => %{pid: m.work.active_worker, ids: ["c1", "c2", "c3"]}}
     end
   end
 
@@ -318,6 +358,51 @@ defmodule Nest.Agents.Agent.MachineBackgroundingTest do
 
   defp put_messages(m, messages) do
     %{m | work: %{m.work | ctx: %{m.work.ctx | messages: messages}}}
+  end
+
+  # A transcript carrying an unfulfilled backgrounded promise (batch A) and a
+  # live batch's unanswered call (batch B): the shape a notice delivery happens
+  # in. The wire sequence is valid — assistant tool_use, its synthetic result,
+  # an ack, a user message, the live batch's tool_use.
+  defp promised_tail do
+    [
+      system_message(),
+      user_message(1, "hi"),
+      assistant_tool_call(2, ["call_1"]),
+      backgrounded_result(3, ["call_1"]),
+      assistant_text(4, "ok"),
+      user_message(5, "more"),
+      assistant_tool_call(6, ["call_2"])
+    ]
+  end
+
+  defp backgrounded_result(index, ids) do
+    parts =
+      for id <- ids do
+        %Part.ToolResult{
+          tool_call_id: id,
+          name: "shell-cmd",
+          arguments: %{},
+          content: "The shell-cmd call was moved to the background.",
+          is_error: false,
+          state: "backgrounded"
+        }
+      end
+
+    {:tool, %Tool{index: index, parts: parts, api_logs: []}}
+  end
+
+  # A runtime notice for a backgrounded batch's result, as the delivery queued it
+  # (`Inbox.deliver_notice/3`): the ids it answers ride the entry.
+  defp notice_entry(fulfilled_ids) do
+    %{
+      from: nil,
+      content: "Your backgrounded command (shell-cmd) finished.",
+      timestamp: DateTime.utc_now(),
+      kind: :notice,
+      mode: nil,
+      fulfilled_ids: fulfilled_ids
+    }
   end
 
   defp entry(content, kind \\ :agent, from \\ "peer") do

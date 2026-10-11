@@ -207,13 +207,12 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       assert is_integer(final_index), "expected the final assistant response"
 
       # Nothing is interleaved: the synthetic result, its ack, the delivered
-      # message, the response to the request that carried it, and only then the
-      # late result's own turn.
-      assert tool_index < ack_index
-      assert ack_index < drained_index
-      assert drained_index < done_index
-      assert done_index < late_index
-      assert late_index < final_index
+      # message, the response to the request that carried it, and the late
+      # result's own turn are *consecutive* — the exact adjacency, not merely the
+      # order. `final_index` is the last of the five, so the late notice is
+      # `final_index - 1`.
+      assert [tool_index, ack_index, drained_index, done_index, late_index] ==
+               Enum.to_list(tool_index..(final_index - 1))
 
       # The late notice carries the batch's *real* results, and the real
       # results report the disposition the deliveries resolved (issue #36
@@ -353,13 +352,13 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       assert is_integer(final_index), "expected the final assistant response"
 
       # The synthetic result, its ack, the human message, the response to the
-      # turn it started, and only then the peer's entry: the delivery did not
-      # merge the two, and it did not end the turn to start a fresh one.
-      assert tool_index < ack_index
-      assert ack_index < human_index
-      assert human_index < done_index
-      assert done_index < peer_index
-      assert peer_index < final_index
+      # turn it started, and the peer's entry are *consecutive* — the exact
+      # adjacency: the delivery did not merge the two, and it did not end the
+      # turn to start a fresh one. `final_index` is the last of the five, so the
+      # peer's entry is `final_index - 1`.
+      assert [tool_index, ack_index, human_index, done_index, peer_index] ==
+               Enum.to_list(tool_index..(final_index - 1))
+
       assert text_of(Enum.at(messages, human_index)) == "[mode: plan]\nhuman note"
 
       # The peer's entry arrives with the batch's late result, in one batch: the
@@ -590,7 +589,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
 
       backgrounded = :sys.get_state(pid).live.machine.work.backgrounded
       assert [ref] = Map.keys(backgrounded)
-      assert backgrounded[ref] == %{pid: tool, calls: 1}
+      assert backgrounded[ref] == %{pid: tool, ids: ["send_1"]}
 
       monitor = Process.monitor(tool)
 

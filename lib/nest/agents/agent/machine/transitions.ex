@@ -119,10 +119,16 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
         unowned_worker_down(m, pid, reason)
 
       refs ->
-        # A death delivers no result, so the notice answers no tool call and
-        # the delivery carries no fulfilled ids: the promise is void, and the
-        # load heal's own lost-promise record stays the honest close for it.
-        actions = Enum.map(refs, &{:deliver_backgrounded, &1, {:worker_down, reason}, []})
+        # A death delivers no result, so the calls it closes come from the
+        # entry (`Backgrounding.ids_for/2`): the notice carries them, and the
+        # message it becomes is marked fulfilled — without that a later load
+        # would append a second record for a promise the death notice already
+        # closed honestly.
+        actions =
+          Enum.map(refs, fn ref ->
+            {:deliver_backgrounded, ref, {:worker_down, reason}, Backgrounding.ids_for(m, ref)}
+          end)
+
         {:ok, Backgrounding.delivery_actions(m, actions), Backgrounding.clear(m, refs)}
     end
   end
@@ -474,10 +480,9 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   # `{:chat_request, …}` path, which has no queue behind it.
   defp start_chat(m, entry, inbox_entries) do
     user = unwrap_user(entry)
-    projected = messages(m) ++ [user]
     limit = m.work.ctx.context_limit
 
-    case Dispatch.preflight_decision(projected, limit) do
+    case Dispatch.preflight_decision(Delivery.projected(m, [], user), limit) do
       :fits ->
         # The action assembly (the notice, the reply debt, the consume, the
         # `:iterate`) is shared with the backgrounding path — `Machine.Delivery`.

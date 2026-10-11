@@ -6,10 +6,22 @@ defmodule Nest.Agents.Agent.Machine.Delivery do
   Two sites deliver a message into a turn: `Machine.Transitions.start_chat/3`
   (the `:idle` chat request and every inbox drain at a turn boundary) and
   `Machine.Backgrounding.background/3` (a message that arrives while a tool
-  batch is executing). They differ in exactly two things — what they append
-  before the delivered message (nothing, or the synthetic backgrounded result
-  and its acknowledgement) and which phase the machine enters — and share
-  everything else:
+  batch is executing). What is *not* shared is what makes them different
+  paths, and each caller keeps it:
+
+    * the message itself: the boundary delivers the one its caller built (a chat
+      request's own, or `Inbox.build_drained_message/3` for a drain), while the
+      backgrounding path builds it from the drained batch — with that same
+      builder, which is what keeps a delivered notice's `fulfilled_ids` from
+      being dropped;
+    * what is appended before it — nothing, or the synthetic backgrounded
+      result and its acknowledgement;
+    * the phase the machine enters, and whether the turn is *started*
+      (`init_turn/2`, absent mid-turn: a backgrounded batch's turn is already
+      running and keeps its iteration budget).
+
+  Everything the delivery *does* — the notice, the debt, the consume and the
+  iterate — is shared, and lives here:
 
     * the context-threshold notice,
     * the reply obligation the delivery incurs (`Machine.owe_replies/2`,
@@ -26,8 +38,8 @@ defmodule Nest.Agents.Agent.Machine.Delivery do
   divergence class cannot reappear.
 
   Pure: `fits/4` returns the actions and the machine with the notice
-  bookkeeping and the debt applied. The caller owns the phase, because the two
-  callers enter it from different shapes.
+  bookkeeping and the debt applied. The caller owns the phase and the message,
+  because the two callers build those differently.
 
   ## Where the notice pair lands
 
@@ -50,6 +62,16 @@ defmodule Nest.Agents.Agent.Machine.Delivery do
   alias Nest.Agents.Agent.Turn.ContextReminder
 
   @doc """
+  The transcript a delivery of `user` is decided against: the machine's own
+  messages, the caller's `pre` batch, and the delivered message.
+
+  Shared by the callers' fit decision and by `fits/4`, so the list a caller
+  decides on and the one the notice is estimated from cannot drift.
+  """
+  @spec projected(Machine.t(), [term()], term()) :: [term()]
+  def projected(m, pre, user), do: Phase.messages(m) ++ pre ++ [user]
+
+  @doc """
   Assemble the `:fits` delivery of `user` into `m`.
 
   `pre` is what the caller appends before the delivered message — the synthetic
@@ -64,7 +86,7 @@ defmodule Nest.Agents.Agent.Machine.Delivery do
   @spec fits(Machine.t(), [term()], [term()] | nil, term()) :: {[term()], Machine.t()}
   def fits(m, pre, entries, user) do
     base = Phase.messages(m) ++ pre
-    {notice_actions, m} = notice_actions(m, base, base ++ [user])
+    {notice_actions, m} = notice_actions(m, base, projected(m, pre, user))
     m = Machine.owe_replies(m, Inbox.query_senders(entries))
 
     {appends(pre, user, notice_actions) ++ consume_actions(entries) ++ [:iterate], m}

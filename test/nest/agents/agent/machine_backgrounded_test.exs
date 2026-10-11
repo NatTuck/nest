@@ -13,17 +13,22 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
 
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Broadcasts
+  alias Nest.Agents.Agent.Inbox
   alias Nest.Agents.Agent.Machine
+  alias Nest.Agents.Agent.Repair
   alias Nest.Agents.Agent.Turn
+  alias Nest.Agents.Agent.Turn.Executor
   alias Nest.Messages.Assistant
+  alias Nest.Messages.MessageList
   alias Nest.Messages.Part
+  alias Nest.Messages.Tool
   alias Nest.Messages.ToolResult
   alias Nest.Messages.User
 
   describe "a backgrounded batch's late result" do
     test "is delivered exactly once as a :notice and clears the entry" do
       ref = make_ref()
-      machine = backgrounded_machine(%{ref => %{pid: self(), calls: 1}})
+      machine = backgrounded_machine(%{ref => %{pid: self(), ids: ["c1"]}})
 
       {:ok, state} = Turn.settle(state(machine), {:tool_results, ref, [result("done")]})
 
@@ -40,7 +45,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
 
     test "a timed-out command's result is worded as a timeout, not a finish" do
       ref = make_ref()
-      machine = backgrounded_machine(%{ref => %{pid: self(), calls: 1}})
+      machine = backgrounded_machine(%{ref => %{pid: self(), ids: ["c1"]}})
       timed_out = result("partial output\n\n[stderr]\n[Command timed out after 60000ms]")
 
       {:ok, state} = Turn.settle(state(machine), {:tool_results, ref, [timed_out]})
@@ -55,7 +60,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
       live = make_ref()
 
       machine =
-        backgrounded_machine(%{ref => %{pid: self(), calls: 1}},
+        backgrounded_machine(%{ref => %{pid: self(), ids: ["c1"]}},
           phase: :generating,
           worker: {:http, live}
         )
@@ -77,7 +82,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
     test "produces a notice and clears the entry" do
       ref = make_ref()
       pid = self()
-      machine = backgrounded_machine(%{ref => %{pid: pid, calls: 1}})
+      machine = backgrounded_machine(%{ref => %{pid: pid, ids: ["c1"]}})
 
       {:ok, state} = Turn.settle(state(machine), {:worker_down, pid, :killed})
 
@@ -89,7 +94,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
 
     test "a different pid's :DOWN does not resolve the entry" do
       ref = make_ref()
-      machine = backgrounded_machine(%{ref => %{pid: self(), calls: 1}})
+      machine = backgrounded_machine(%{ref => %{pid: self(), ids: ["c1"]}})
 
       {:ok, state} = Turn.settle(state(machine), {:worker_down, spawn(fn -> :ok end), :killed})
 
@@ -102,7 +107,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
     test "every entry a dead pid owns is resolved, so none leaks" do
       refs = [make_ref(), make_ref()]
 
-      backgrounded = Map.new(refs, &{&1, %{pid: self(), calls: 1}})
+      backgrounded = Map.new(refs, &{&1, %{pid: self(), ids: ["c1"]}})
       machine = backgrounded_machine(backgrounded)
 
       {:ok, state} = Turn.settle(state(machine), {:worker_down, self(), :killed})
@@ -120,7 +125,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
       # while the compactor is in flight. The `:compaction` arm would answer
       # `:unknown_worker_down` — no notice, and the entry leaks for good.
       machine =
-        backgrounded_machine(%{ref => %{pid: self(), calls: 1}},
+        backgrounded_machine(%{ref => %{pid: self(), ids: ["c1"]}},
           phase: :generating,
           kind: :compaction,
           worker: {:http, make_ref()}
@@ -152,13 +157,14 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
       # A pid the entry *does* own is still resolved, whatever the phase: the
       # batch's promise is answered even though the turn is blocked.
       ref = make_ref()
-      with_batch = blocked_machine(%{ref => %{pid: self(), calls: 1}})
+      with_batch = blocked_machine(%{ref => %{pid: self(), ids: ["c1"]}})
 
       assert {:ok, [delivery], resolved} =
                Machine.step(with_batch, {:worker_down, self(), :normal})
 
-      # A death answers no call, so there is no fulfilled id to carry.
-      assert {:deliver_backgrounded, ^ref, {:worker_down, :normal}, []} = delivery
+      # The death names the calls it closes: the entry is the only place those
+      # ids exist (a result names its own).
+      assert {:deliver_backgrounded, ^ref, {:worker_down, :normal}, ["c1"]} = delivery
       assert resolved.work.backgrounded == %{}
     end
   end
@@ -174,7 +180,10 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
       ref = make_ref()
 
       machine =
-        backgrounded_machine(%{ref => %{pid: self(), calls: 1}}, phase: :idle, worker: {nil, nil})
+        backgrounded_machine(%{ref => %{pid: self(), ids: ["c1"]}},
+          phase: :idle,
+          worker: {nil, nil}
+        )
 
       results = [result("done")]
 
@@ -190,7 +199,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
       death = make_ref()
 
       dying =
-        backgrounded_machine(%{death => %{pid: self(), calls: 1}},
+        backgrounded_machine(%{death => %{pid: self(), ids: ["c1"]}},
           phase: :idle,
           worker: {nil, nil}
         )
@@ -198,7 +207,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
       assert {:ok, death_actions, dead} = Machine.step(dying, {:worker_down, self(), :killed})
 
       assert death_actions == [
-               {:deliver_backgrounded, death, {:worker_down, :killed}, []},
+               {:deliver_backgrounded, death, {:worker_down, :killed}, ["c1"]},
                {:drain_inbox}
              ]
 
@@ -211,7 +220,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
       ref = make_ref()
 
       stopping =
-        backgrounded_machine(%{ref => %{pid: self(), calls: 1}},
+        backgrounded_machine(%{ref => %{pid: self(), ids: ["c1"]}},
           phase: :stopping,
           worker: {nil, make_ref()}
         )
@@ -248,9 +257,9 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
         end)
 
       backgrounded = %{
-        make_ref() => %{pid: first, calls: 2},
-        make_ref() => %{pid: second, calls: 1},
-        make_ref() => %{pid: first, calls: 3}
+        make_ref() => %{pid: first, ids: ["c1", "c2"]},
+        make_ref() => %{pid: second, ids: ["c3"]},
+        make_ref() => %{pid: first, ids: ["c4", "c5", "c6"]}
       }
 
       machine = backgrounded_machine(backgrounded)
@@ -259,6 +268,23 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
 
       expected = Enum.map(Enum.sort([first, second]), &{:kill, &1})
       assert Enum.filter(actions, &match?({:kill, _}, &1)) == expected
+
+      # The *order* is load-bearing, not just the set: the backgrounded kills come
+      # before `{:stop_all_children}` (which clears the child map the coordinator
+      # kills were read from) and before the `{:arm_timer, …}` that owns the
+      # terminal transition — the arm is the stop's last action, and the executor
+      # halts the action list on its follow event, so anything after it would
+      # never run. The fixture has no coordinators, no timer and no active
+      # worker, so those slots are empty.
+      assert Enum.map(actions, &elem(&1, 0)) == [
+               :ack,
+               :set_cancelled,
+               :kill,
+               :kill,
+               :stop_all_children,
+               :append_many,
+               :arm_timer
+             ]
 
       assert stopping.phase == :stopping
       assert stopping.work.backgrounded == %{}
@@ -292,7 +318,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
       # runs, and the timer owns the single terminal transition: without it the
       # turn would sit in `:stopping` forever. The record cannot land, so the
       # warning is its only trace.
-      machine = backgrounded_machine(%{make_ref() => %{pid: self(), calls: 1}})
+      machine = backgrounded_machine(%{make_ref() => %{pid: self(), ids: ["c1"]}})
       assert {:ok, _actions, stopping} = Machine.step(machine, {:stop, self()})
 
       assert {:ok, actions, ^stopping} =
@@ -300,6 +326,55 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
 
       assert [{:log, :warning, message}, {:arm_timer, _, :stop_timer}] = actions
       assert message =~ "over the limit"
+    end
+  end
+
+  describe "a death's fulfilled ids" do
+    test "close the promise, so a load records no second loss" do
+      # A killed batch can never report a result, so the death notice closes its
+      # promise — and the ids it names come from the entry, since there is no
+      # result to name them from. Without them the notice's message carries no
+      # fulfilled marker and a later load appends a second record ("lost when
+      # this agent restarted") for a promise the death already closed.
+      ref = make_ref()
+
+      machine =
+        backgrounded_machine(
+          %{ref => %{pid: self(), ids: ["call_1"]}},
+          phase: :idle,
+          worker: {nil, nil}
+        )
+
+      assert {:ok, actions, dead} = Machine.step(machine, {:worker_down, self(), :killed})
+
+      assert actions == [
+               {:deliver_backgrounded, ref, {:worker_down, :killed}, ["call_1"]},
+               {:drain_inbox}
+             ]
+
+      assert dead.work.backgrounded == %{}
+
+      # The notice entry carries them, and the message the drain builds from it
+      # is the marker's only writer (`Inbox.build_drained_message/3`).
+      agent = %{
+        state(machine)
+        | chat_state: %{state(machine).chat_state | messages: promised_tail()}
+      }
+
+      {_agent, {:inbox_drain, [entry], content}} = Executor.run_all(actions, agent)
+
+      assert %{kind: :notice, fulfilled_ids: ["call_1"]} = entry
+
+      notice = Inbox.build_drained_message([entry], content, "chat")
+      loaded = promised_tail() ++ [notice]
+
+      # The promise the death closed is not reported — without the marker it is
+      # (the baseline assertion below), and a restart would append a record for a
+      # call whose outcome is already in the transcript. The notice's own user
+      # tail is a different heal: `{:bridge, …}`, the idle-agent rule.
+      assert {:lost_promises, _} = Repair.classify_load(promised_tail())
+      assert [] = MessageList.backgrounded_results(loaded)
+      assert {:bridge, _} = Repair.classify_load(loaded)
     end
   end
 
@@ -321,7 +396,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
 
   # --- helpers ---
 
-  # A machine holding `backgrounded` (`%{ref => %{pid: pid, calls: count}}`), in
+  # A machine holding `backgrounded` (`%{ref => %{pid: pid, ids: ids}}`), in
   # `opts`' phase/kind. Defaults to `:executing_tools`/`:chat` with a `:tools`
   # worker_kind and no `worker_ref`; tests override what they pin.
   defp backgrounded_machine(backgrounded, opts \\ []) do
@@ -374,6 +449,37 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
       chat_state: %Agent.ChatState{messages: [system(0)], next_message_index: 1},
       live: %Agent.ChatState.Live{machine: machine}
     }
+  end
+
+  # The transcript a backgrounded batch leaves behind: the call it answered and
+  # the synthetic result that promised a message, on a valid wire sequence.
+  defp promised_tail do
+    [
+      system(0),
+      {:user, %User{index: 1, parts: [%Part.Text{text: "hi"}]}},
+      {:assistant,
+       %Assistant{
+         index: 2,
+         parts: [%Part.ToolUse{id: "call_1", name: "shell-cmd", arguments: %{}}],
+         api_logs: []
+       }},
+      {:tool,
+       %Tool{
+         index: 3,
+         parts: [
+           %Part.ToolResult{
+             tool_call_id: "call_1",
+             name: "shell-cmd",
+             arguments: %{},
+             content: "The shell-cmd call was moved to the background.",
+             is_error: false,
+             state: "backgrounded"
+           }
+         ],
+         api_logs: []
+       }},
+      {:assistant, %Assistant{index: 4, parts: [%Part.Text{text: "ok"}], api_logs: []}}
+    ]
   end
 
   defp system(index) do

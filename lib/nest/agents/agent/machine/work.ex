@@ -14,13 +14,13 @@ defmodule Nest.Agents.Agent.Machine.Work do
   results are applied only when their ref and phase match the live turn.
   `backgrounded` holds the batches that were moved out of
   `worker_ref`/`active_worker` when a message arrived mid-batch (issue
-  #36), keyed by the batch's ref: `%{ref => %{pid: pid, calls: count}}`.
+  #36), keyed by the batch's ref: `%{ref => %{pid: pid, ids: ids}}`.
   The turn keeps working while the batch runs in the background, so the
   entry — not `worker_ref` — is what its eventual result or worker death
-  is routed on; `calls` is how many tool calls the batch answered, which
-  is the count the stop's cancellation record reports, and the calls
-  themselves are not kept, because the synthetic result has already
-  answered them in the transcript. `preflight` caches the pending
+  is routed on; `ids` are the tool calls the synthetic result answered,
+  which is what the stop's cancellation record counts and what a worker
+  death names the promises it closes by (a result names its own).
+  `preflight` caches the pending
   tool batch while its fit check runs. `focus` is the optional operator
   guidance for the summary
   (the `context-compact` tool's `focus` arg or `/compact <focus>`); it is
@@ -41,10 +41,10 @@ defmodule Nest.Agents.Agent.Machine.Work do
             pending_notice: nil,
             preflight: nil,
             # Batches moved to the background when a message arrived
-            # mid-batch (issue #36): `%{ref => %{pid: pid, calls: count}}`.
+            # mid-batch (issue #36): `%{ref => %{pid: pid, ids: ids}}`.
             # The ref key is the batch's `worker_ref`; the entry is what its
-            # late result or worker death is routed on, and `calls` is the
-            # number of calls the synthetic result answered.
+            # late result or worker death is routed on, and `ids` are the
+            # calls the synthetic result answered.
             backgrounded: %{},
             # Turn-scoped: `Machine.Phase.enter/4` clears it when the
             # compaction turn ends (a chat turn or idle begins).
@@ -62,7 +62,7 @@ defmodule Nest.Agents.Agent.Machine.Work do
           active_message_index: non_neg_integer(),
           pending_notice: String.t() | nil,
           preflight: map() | nil,
-          backgrounded: %{reference() => %{pid: pid(), calls: pos_integer()}},
+          backgrounded: %{reference() => %{pid: pid(), ids: [String.t()]}},
           focus: String.t() | nil
         }
 

@@ -22,13 +22,11 @@ defmodule Nest.Agents.Agent.Machine.Backgrounding do
   (`backgroundable?/1`), the machine update, and the `work.backgrounded`
   bookkeeping that both this transition and the late-result routing share.
 
-  The entry it records is `%{ref => %{pid: pid, calls: count}}`. The ref keys the
-  batch's eventual result and the pid is what its `:DOWN` is matched on; `calls`
-  is how many tool calls the batch answered, which is what the stop's
-  cancellation record reports (`Machine.Stopping`). The batch's *calls*
-  themselves are deliberately not kept, because the synthetic result has already
-  answered every one of them — a later reader that needs them reads them from
-  the transcript, where that answer is.
+  The entry it records is `%{ref => %{pid: pid, ids: ids}}`. The ref keys the
+  batch's eventual result and the pid is what its `:DOWN` is matched on; `ids`
+  are the tool calls the synthetic result answered — what the stop's
+  cancellation record counts (`Machine.Stopping`) and what a *death* closes: a
+  result names its own ids, while a death has only this entry to name them from.
 
   ## The guard (decision D3)
 
@@ -64,6 +62,7 @@ defmodule Nest.Agents.Agent.Machine.Backgrounding do
   own outcome as well would report the same call twice.
   """
 
+  alias Nest.Agents.Agent.Inbox
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Machine.Delivery
   alias Nest.Agents.Agent.Machine.Phase
@@ -122,6 +121,22 @@ defmodule Nest.Agents.Agent.Machine.Backgrounding do
   end
 
   @doc """
+  The tool-call ids the backgrounded batch `ref` answered — how a *death* names
+  the promises it closes.
+
+  A result names its own ids (`fulfilled_ids/1`); a worker that dies delivers
+  none, so the ids come from the entry the batch was recorded in. Total: an
+  unknown ref names nothing.
+  """
+  @spec ids_for(Machine.t(), reference()) :: [String.t()]
+  def ids_for(m, ref) do
+    case m.work.backgrounded do
+      %{^ref => %{ids: ids}} -> ids
+      _ -> []
+    end
+  end
+
+  @doc """
   The tool-call ids a backgrounded batch's *result* answers.
 
   The delivery's notice carries them onto the message the drain appends
@@ -129,10 +144,8 @@ defmodule Nest.Agents.Agent.Machine.Backgrounding do
   can tell a promise that was kept from one the process died with
   (`MessageList.backgrounded_results/1`).
 
-  Total over any result list — anything that is not a tool result answers no
-  call — and a worker's death passes `[]` outright: its notice says the result
-  will not arrive, so there is no id to mark fulfilled and the load heal's own
-  lost-promise record remains the honest close for that promise.
+  Total over any result list: anything that is not a tool result answers no
+  call.
   """
   @spec fulfilled_ids([term()]) :: [String.t()]
   def fulfilled_ids(results), do: for(%{tool_call_id: id} <- results, do: id)
@@ -148,14 +161,14 @@ defmodule Nest.Agents.Agent.Machine.Backgrounding do
   cancellation record reports (`Machine.Stopping`).
 
   A batch is *one* entry however many calls it carried, so `map_size/1` would
-  announce a three-call batch as one call; each entry's own `calls` is the
-  number the synthetic result answered, and the record's promise is about the
-  calls, not the entries.
+  announce a three-call batch as one call; each entry's own ids are the calls
+  the synthetic result answered, and the record's promise is about the calls,
+  not the entries.
   """
   @spec call_count(Machine.t()) :: non_neg_integer()
   def call_count(m) do
     m.work.backgrounded
-    |> Enum.map(fn {_ref, %{calls: calls}} -> calls end)
+    |> Enum.map(fn {_ref, %{ids: ids}} -> length(ids) end)
     |> Enum.sum()
   end
 
@@ -215,7 +228,14 @@ defmodule Nest.Agents.Agent.Machine.Backgrounding do
   # append a message the context cannot hold, with the batch's own result still
   # to come.
   defp deliver_or_decline(m, entries, content) do
-    user = user_message(m, content)
+    # The delivered message in the batch's own mode, built by the same
+    # `Inbox.build_drained_message/3` every other drain shape uses. The
+    # executor's peek has already applied the mode to `state.live.mode`, and
+    # `Turn.prepare/1` rebuilt the context from it, so `ctx.mode` is the winning
+    # mode — and the builder is what carries a drained batch's `fulfilled_ids`
+    # onto the message, so a notice delivered *here* marks its promise kept
+    # exactly as one drained at the turn boundary does.
+    user = Inbox.build_drained_message(entries, content, m.work.ctx.mode)
 
     if fits?(m, user) do
       background(m, entries, user)
@@ -225,7 +245,8 @@ defmodule Nest.Agents.Agent.Machine.Backgrounding do
   end
 
   defp fits?(m, user) do
-    Dispatch.preflight_decision(m.work.ctx.messages ++ [user], m.work.ctx.context_limit) == :fits
+    Dispatch.preflight_decision(Delivery.projected(m, [], user), m.work.ctx.context_limit) ==
+      :fits
   end
 
   defp background(m, entries, user) do
@@ -242,7 +263,10 @@ defmodule Nest.Agents.Agent.Machine.Backgrounding do
 
     machine =
       m
-      |> put_backgrounded(m.work.worker_ref, %{pid: m.work.active_worker, calls: length(calls)})
+      |> put_backgrounded(m.work.worker_ref, %{
+        pid: m.work.active_worker,
+        ids: Enum.map(calls, & &1.id)
+      })
       |> Phase.enter(:chat, :generating, :http)
 
     {:ok, actions, machine}
@@ -251,10 +275,4 @@ defmodule Nest.Agents.Agent.Machine.Backgrounding do
   defp put_backgrounded(m, ref, batch) do
     %{m | work: %{m.work | backgrounded: Map.put(m.work.backgrounded, ref, batch)}}
   end
-
-  # The delivered message in the batch's own mode. The executor's peek has
-  # already applied it to `state.live.mode`, and `Turn.prepare/1` rebuilt the
-  # context from that, so `ctx.mode` is the winning mode — the same
-  # `Dispatch.build_user_message/2` the other drain shapes use.
-  defp user_message(m, content), do: Dispatch.build_user_message(content, m.work.ctx.mode)
 end

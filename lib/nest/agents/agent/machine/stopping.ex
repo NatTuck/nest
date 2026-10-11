@@ -115,14 +115,12 @@ defmodule Nest.Agents.Agent.Machine.Stopping do
     if m.work.active_worker, do: [{:kill, m.work.active_worker}], else: []
   end
 
-  # One record for the whole stop, not one per killed batch: a `backgrounded`
-  # entry carries no call identity (the calls were dropped when the batch was
-  # moved; the entry keeps only their count), so per-batch records would repeat
-  # the same words — and two collapsed records are two consecutive assistant
-  # messages, which the wire rejects. The count is what tells the model how many
-  # promises were voided, and it counts the *calls* each entry answered, not the
-  # entries: a three-call batch backgrounded once is three calls, and
-  # `map_size/1` would call it one.
+  # One record for the whole stop, not one per killed batch: per-batch records
+  # would repeat the same words and land as two consecutive assistant messages,
+  # which the wire rejects. The count is what tells the model how many promises
+  # were voided, and it counts the *calls* each entry answered, not the entries:
+  # a three-call batch backgrounded once is three calls, and `map_size/1` would
+  # call it one.
   defp cancellation_record(m) do
     case Backgrounding.call_count(m) do
       0 ->
