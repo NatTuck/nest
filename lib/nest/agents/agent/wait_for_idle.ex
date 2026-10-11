@@ -195,17 +195,17 @@ defmodule Nest.Agents.Agent.WaitForIdle do
   @spec partition(integer(), [String.t()]) :: partition()
   def partition(space_id, names) do
     listed = Map.new(listing(space_id), &{&1.name, &1.status})
-
-    {idle, busy, gone} =
-      Enum.reduce(names, {[], [], []}, fn name, {idle, busy, gone} ->
-        case Map.fetch(listed, name) do
-          :error -> {idle, busy, [name | gone]}
-          {:ok, :idle} -> {[name | idle], busy, gone}
-          {:ok, _busy} -> {idle, [name | busy], gone}
-        end
-      end)
+    {idle, busy, gone} = Enum.reduce(names, {[], [], []}, &classify(&2, &1, listed))
 
     %{idle: Enum.reverse(idle), still_busy: Enum.reverse(busy), gone: Enum.reverse(gone)}
+  end
+
+  defp classify({idle, busy, gone}, name, listed) do
+    case Map.fetch(listed, name) do
+      :error -> {idle, busy, [name | gone]}
+      {:ok, :idle} -> {[name | idle], busy, gone}
+      {:ok, _busy} -> {idle, [name | busy], gone}
+    end
   end
 
   # -- target resolution --
@@ -285,14 +285,12 @@ defmodule Nest.Agents.Agent.WaitForIdle do
   """
   @spec watch_confirmation(partition()) :: String.t()
   def watch_confirmation(partition) do
-    cond do
-      partition.still_busy == [] ->
-        "All agents are already idle: #{names_or_none(partition.idle)}." <>
-          gone_suffix(partition.gone)
-
-      true ->
-        "Watching (you will be notified): #{names_or_none(partition.still_busy)}. " <>
-          "Already idle: #{names_or_none(partition.idle)}." <> gone_suffix(partition.gone)
+    if partition.still_busy == [] do
+      "All agents are already idle: #{names_or_none(partition.idle)}." <>
+        gone_suffix(partition.gone)
+    else
+      "Watching (you will be notified): #{names_or_none(partition.still_busy)}. " <>
+        "Already idle: #{names_or_none(partition.idle)}." <> gone_suffix(partition.gone)
     end
   end
 

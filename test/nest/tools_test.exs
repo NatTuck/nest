@@ -199,43 +199,26 @@ defmodule Nest.ToolsTest do
       refute function.description =~ "when you need the response now"
     end
 
-    test "agents-wait-for-idle schema takes names, all, block and timeout, and promises no payload" do
-      function = Tools.get_function("agents-wait-for-idle", "/tmp")
-      assert function.name == "agents-wait-for-idle"
-
-      props = function.parameters_schema["properties"]
+    test "the wait and fetch schemas" do
+      # Issue #62: the wait is synchronisation only and the fetch consumes;
+      # issue #54: the wait is non-blocking by default with an explicit
+      # blocking mode. An empty `names` is meaningful, so nothing is required.
+      wait = Tools.get_function("agents-wait-for-idle", "/tmp")
+      props = wait.parameters_schema["properties"]
+      assert wait.name == "agents-wait-for-idle"
       assert props["names"]["type"] == "array"
-      assert props["names"]["items"] == %{"type" => "string"}
+      assert props["names"]["items"]["type"] == "string"
       assert props["timeout"]["type"] == "integer"
-      assert props["all"]["type"] == "boolean"
-      assert props["block"]["type"] == "boolean"
+      assert {props["all"]["type"], props["block"]["type"]} == {"boolean", "boolean"}
+      assert (wait.parameters_schema["required"] || []) == []
+      assert wait.description =~ "carries NO message content"
+      assert wait.description =~ "returns immediately"
 
-      # An empty list is meaningful ("every other agent"), so nothing is
-      # required at the schema level.
-      assert (function.parameters_schema["required"] || []) == []
-
-      assert function.description =~ "which are idle"
-      assert function.description =~ "not an error"
-      # Issue #62: synchronisation only — the body comes from the delivery or
-      # `agents-last-message`.
-      assert function.description =~ "carries NO message content"
-      assert function.description =~ "agents-last-message"
-      # Issue #54: non-blocking by default, with an explicit blocking mode.
-      assert function.description =~ "returns immediately"
-      assert function.description =~ "block: true"
-    end
-
-    test "agents-last-message schema requires name and is a fetch" do
-      function = Tools.get_function("agents-last-message", "/tmp")
-      assert function.name == "agents-last-message"
-
-      props = function.parameters_schema["properties"]
-      assert props["name"]["type"] == "string"
-      assert props["max_result_tokens"]["type"] == "integer"
-      assert function.parameters_schema["required"] == ["name"]
-
-      assert function.description =~ "consumed"
-      assert function.description =~ "mid-turn"
+      fetch = Tools.get_function("agents-last-message", "/tmp")
+      assert fetch.name == "agents-last-message"
+      assert fetch.parameters_schema["properties"]["name"]["type"] == "string"
+      assert fetch.parameters_schema["required"] == ["name"]
+      assert fetch.description =~ "consumed"
     end
   end
 

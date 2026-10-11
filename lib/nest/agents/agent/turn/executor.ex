@@ -331,9 +331,6 @@ defmodule Nest.Agents.Agent.Turn.Executor do
 
   defp execute({:stop_all_children}, state), do: {stop_running_children(state), :continue}
 
-  # Kill every outstanding non-blocking wait (issue #54): a stopped turn must
-  # not be woken by a notice it no longer wants. Reads `live.watches`, the same
-  # way `{:stop_all_children}` reads the machine's children.
   defp execute({:stop_watchers}, state), do: {Watch.stop_all(state), :continue}
 
   defp execute({:drain_inbox}, state) do
@@ -344,9 +341,7 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   end
 
   # The loop breaker's give-up shape (issue #26): build the message from the
-  # peeked batch, append it, and consume it — without `start_chat/3`, so the ack
-  # cannot re-enter the compaction decision it just gave up on (the
-  # `{:append, {:user, _}}` arm's shape, for a parked chat request).
+  # peeked batch, append it, and consume it — without `start_chat/3`.
   defp execute({:drain_inbox, :append}, state) do
     case peek_inbox(state) do
       :empty ->
@@ -369,8 +364,7 @@ defmodule Nest.Agents.Agent.Turn.Executor do
     end
   end
 
-  # The consume half of peek-then-consume, emitted by the branch that actually
-  # appended the message (issue #26).
+  # The consume half of peek-then-consume, emitted by the appending branch.
   defp execute({:consume_inbox, entries}, state), do: consume_inbox(state, entries)
 
   # A backgrounded batch's outcome (issue #36): the batch has no live worker

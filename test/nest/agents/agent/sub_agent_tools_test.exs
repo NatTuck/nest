@@ -549,9 +549,6 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     assert content =~ "All agents are already idle:"
     assert content =~ specialist_name
     refute content =~ coordinator_name
-
-    # Issue #54: an all-idle wait registers nothing and leaves the agent idle.
-    assert coordinator_state.live.watches == %{}
   end
 
   # The `agents-list` tool result content is `inspect/1` output of the

@@ -228,7 +228,14 @@ defmodule Nest.Agents.Agent.WatchTest do
     # crash, an archive, a supervisor shutdown) leaves no watcher behind. Drive
     # it with a throwaway caller so the agent under test is untouched.
     stub_listing([[agent("caller", :idle), agent("bob", :streaming)]])
-    caller = spawn(fn -> Process.sleep(:infinity) end)
+
+    caller =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
     ref = make_ref()
 
     {:ok, task} = Watch.start(caller, ref, {:agent_idle, 1, ["bob"], 60_000, false})

@@ -64,21 +64,24 @@ defmodule Nest.Agents.Agent.Watch do
   """
   @spec satisfy(Agent.t(), String.t() | nil) :: Agent.t()
   def satisfy(state, name) when is_binary(name) do
-    if Enum.any?(state.live.watches, fn {_ref, watch} -> watching?(watch.spec, name) end) do
-      watches =
-        Map.new(state.live.watches, fn {ref, watch} ->
-          if watching?(watch.spec, name),
-            do: {ref, %{watch | satisfied: true}},
-            else: {ref, watch}
-        end)
-
-      %{state | live: %{state.live | watches: watches}}
+    if watching_any?(state.live.watches, name) do
+      put_watches(state, Map.new(state.live.watches, &satisfy_entry(&1, name)))
     else
       state
     end
   end
 
   def satisfy(state, _name), do: state
+
+  defp watching_any?(watches, name),
+    do: Enum.any?(watches, fn {_ref, watch} -> watching?(watch.spec, name) end)
+
+  defp satisfy_entry({ref, watch}, name) do
+    if watching?(watch.spec, name), do: {ref, %{watch | satisfied: true}}, else: {ref, watch}
+  end
+
+  defp put_watches(state, watches),
+    do: %{state | live: %{state.live | watches: watches}}
 
   @doc "Kill every outstanding watcher and clear the map (the Stop path)."
   @spec stop_all(Agent.t()) :: Agent.t()

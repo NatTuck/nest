@@ -102,6 +102,7 @@ defmodule Nest.Agents.Agent.Inbox do
   alias Nest.Agents.Agent.BatchSizer.Overflow
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Config
+  alias Nest.Agents.Agent.Inbox.Delivery
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Timeline
   alias Nest.Agents.Agent.Turn
@@ -462,7 +463,7 @@ defmodule Nest.Agents.Agent.Inbox do
         "timestamp" => DateTime.to_iso8601(entry.timestamp),
         "kind" => Atom.to_string(entry.kind),
         "mode" => entry.mode,
-        "retrieved" => retrieved?(entry)
+        "retrieved" => Delivery.retrieved?(entry)
       }
     end)
   end
@@ -518,69 +519,18 @@ defmodule Nest.Agents.Agent.Inbox do
   @spec batch([entry()]) :: [entry()]
   def batch(entries) do
     entries
-    |> Enum.reject(&retrieved?/1)
+    |> Enum.reject(&Delivery.retrieved?/1)
     |> select_batch()
   end
 
   defp select_batch([%{kind: :user} = head | _rest]), do: [head]
   defp select_batch(entries), do: Enum.take_while(entries, &(&1.kind != :user))
 
-  @doc """
-  The entries a drain consumes: the delivered `batch` plus every entry an
-  `agents-last-message` fetch already retrieved (issue #62). A retrieved entry
-  is never delivered — `batch/1` skipped it — so the consume must drop it too,
-  or it would sit in the queue forever.
-  """
-  @spec consume([entry()], [entry()]) :: [entry()]
-  def consume(entries, batch) do
-    entries |> Enum.reject(&(&1 in batch or retrieved?(&1)))
-  end
-
-  @doc """
-  True when an `agents-last-message` fetch already took this entry's body.
-  Total over a hand-built entry (the drain and the wire both call it).
-  """
-  @spec retrieved?(entry()) :: boolean()
-  def retrieved?(%{retrieved: true}), do: true
-  def retrieved?(_entry), do: false
-
-  @doc """
-  The newest pending entry a caller may fetch for `name` (issue #62): the last
-  entry whose `from` is `name` and which is not a human message. Returns the
-  entry list with that entry marked retrieved, and the entry itself (or `nil`).
-
-  A human message is never fetchable: `agents-last-message` is for a peer's or
-  child's delivery, and a `:user` entry is the human speaking, which the caller
-  must not be able to consume out from under the drain.
-  """
-  @spec take_last([entry()], String.t()) :: {[entry()], entry() | nil}
-  def take_last(entries, name) when is_binary(name) do
-    index = last_fetchable_index(entries, name)
-
-    case index do
-      nil ->
-        {entries, nil}
-
-      i ->
-        entry = Enum.at(entries, i)
-        {List.replace_at(entries, i, %{entry | retrieved: true}), entry}
-    end
-  end
-
-  def take_last(entries, _name), do: {entries, nil}
-
-  defp last_fetchable_index(entries, name) do
-    entries
-    |> Enum.with_index()
-    |> Enum.reduce(nil, fn
-      {%{from: ^name, kind: kind} = entry, i}, acc
-      when kind != :user ->
-        if retrieved?(entry), do: acc, else: i
-
-      {_other, _i}, acc ->
-        acc
-    end)
-  end
+  # The delivery-id and consume API lives in `Delivery` (issue #62); these
+  # delegates keep `Inbox` the one public surface for a queued entry.
+  defdelegate new_id, to: Delivery
+  defdelegate consume(entries, batch), to: Delivery
+  defdelegate take_last(entries, name), to: Delivery
 
   @doc """
   The senders a delivered batch obliges this agent to answer: one name per
@@ -620,7 +570,7 @@ defmodule Nest.Agents.Agent.Inbox do
   # string-or-null for both).
   defp put_entry(state, from, content, kind, mode, fulfilled_ids \\ []) do
     entry = %{
-      id: new_id(),
+      id: Delivery.new_id(),
       from: if(is_binary(from), do: from, else: nil),
       content: content,
       timestamp: DateTime.utc_now(),
@@ -632,21 +582,6 @@ defmodule Nest.Agents.Agent.Inbox do
 
     %{state | live: %{state.live | inbox: state.live.inbox ++ [entry]}}
   end
-
-  # The opaque per-delivery id (issue #62). It names the entry on the wire
-  # (`serialize/1`), on the fetched body (`agents-last-message`), on the drained
-  # message's metadata, and in the offload filename (`agent-inbox-<id>.txt`), so
-  # a caller can recognise a copy it already has. A random token: the id is a
-  # delivery identity, not a sequence, and nothing needs to sort or derive it.
-  @spec new_id() :: String.t()
-  def new_id, do: :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)
-
-  # The id the offload file is named after: the batch's first entry. The batch is
-  # a FIFO prefix (`batch/1`), so the first entry identifies it and the file the
-  # pointer names is traceable to a delivery the caller can recognise.
-  @spec batch_id([entry()]) :: String.t()
-  def batch_id([%{id: id} | _rest]), do: id
-  def batch_id(_entries), do: new_id()
 
   # `fulfilled_ids` is the entry's only producer-supplied metadata (see
   # `enqueue_internal/5`); every other producer leaves it empty. Total like the
@@ -710,7 +645,7 @@ defmodule Nest.Agents.Agent.Inbox do
              %{tmp_path: state.tmp_path},
              "agent-inbox",
              "txt",
-             batch_id(entries)
+             Delivery.batch_id(entries)
            ) do
         nil -> content
         path -> pointer(length(entries), path)

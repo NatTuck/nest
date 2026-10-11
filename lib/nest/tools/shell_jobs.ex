@@ -8,6 +8,7 @@ defmodule Nest.Tools.ShellJobs do
   operation to the calling agent.
   """
 
+  alias Nest.Agents.Agent.Watch
   alias Nest.LLM.Tool
   alias Nest.Sandbox.ShellJobs
 
@@ -109,7 +110,7 @@ defmodule Nest.Tools.ShellJobs do
         {:error, "No such background job: #{id}"}
 
       {:ok, _status} ->
-        Nest.Agents.Agent.Watch.register_shell_call(context, id, timeout)
+        Watch.register_shell_call(context, id, timeout)
     end
   end
 
