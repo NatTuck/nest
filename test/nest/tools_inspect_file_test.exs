@@ -13,6 +13,8 @@ defmodule Nest.ToolsInspectFileTest do
   """
   use ExUnit.Case, async: true
 
+  import Nest.Test.TmpCleanup
+
   alias Nest.LLM.Tool, as: Function
   alias Nest.Tools
 
@@ -228,7 +230,7 @@ defmodule Nest.ToolsInspectFileTest do
       ])
 
     File.mkdir_p!(dir)
-    on_exit(fn -> File.rm_rf!(dir) end)
+    on_exit(fn -> rm_tmp!(dir, "nest_inspect_test_") end)
     %{tmp: dir}
   end
 

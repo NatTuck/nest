@@ -3,6 +3,8 @@ defmodule Nest.ToolsTest do
 
   import ExUnit.CaptureLog
 
+  import Nest.Test.TmpCleanup
+
   alias Nest.LLM.Tool, as: Function
   alias Nest.Tools
 
@@ -237,7 +239,7 @@ defmodule Nest.ToolsTest do
       File.mkdir_p!(test_workspace)
 
       on_exit(fn ->
-        File.rm_rf!(test_workspace)
+        rm_tmp!(test_workspace, "nest_tools_test_")
       end)
 
       {:ok, workspace: test_workspace}
@@ -297,7 +299,7 @@ defmodule Nest.ToolsTest do
       File.mkdir_p!(test_workspace)
 
       on_exit(fn ->
-        File.rm_rf!(test_workspace)
+        rm_tmp!(test_workspace, "nest_tools_test_")
       end)
 
       {:ok, workspace: test_workspace}
@@ -379,7 +381,7 @@ defmodule Nest.ToolsTest do
       File.mkdir_p!(test_workspace)
 
       on_exit(fn ->
-        File.rm_rf!(test_workspace)
+        rm_tmp!(test_workspace, "nest_tools_test_")
       end)
 
       {:ok, workspace: test_workspace}
@@ -433,7 +435,7 @@ defmodule Nest.ToolsTest do
       File.mkdir_p!(agent_tmp)
 
       on_exit(fn ->
-        File.rm_rf(space_dir)
+        rm_tmp!(space_dir, "nest_tools_space_")
       end)
 
       function = Tools.get_function("shell-cmd", workspace, agent_tmp)
@@ -556,7 +558,7 @@ defmodule Nest.ToolsTest do
         ])
 
       File.mkdir_p!(test_workspace)
-      on_exit(fn -> File.rm_rf!(test_workspace) end)
+      on_exit(fn -> rm_tmp!(test_workspace, "nest_caps_test_") end)
       {:ok, workspace: test_workspace}
     end
 

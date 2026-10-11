@@ -3,6 +3,8 @@ defmodule Nest.Sandbox.ShellJobsTest do
 
   import Eventually
 
+  import Nest.Test.TmpCleanup
+
   alias Nest.Sandbox.ShellJobs
   alias Nest.Tools.ShellCmd
 
@@ -75,7 +77,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
 
     on_exit(fn ->
       ShellJobs.stop_all(key)
-      File.rm_rf(root)
+      rm_tmp!(root, "nest_jobs_script_")
     end)
 
     {:ok, _message} = start_background("true", tmp, key)
@@ -180,7 +182,7 @@ defmodule Nest.Sandbox.ShellJobsTest do
 
     on_exit(fn ->
       ShellJobs.stop_all(key)
-      File.rm_rf(tmp)
+      rm_tmp!(tmp, "nest_jobs_order_")
     end)
 
     ids =

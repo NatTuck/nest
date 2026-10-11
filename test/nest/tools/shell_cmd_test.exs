@@ -20,6 +20,7 @@ defmodule Nest.Tools.ShellCmdTest do
 
   import Eventually
   import ExUnit.CaptureLog
+  import Nest.Test.TmpCleanup
 
   alias Nest.Tools
   alias Nest.Tools.ShellCmd
@@ -377,19 +378,17 @@ defmodule Nest.Tools.ShellCmdTest do
 
     # `System.unique_integer/1` restarts per BEAM, so a previously
     # killed run can leave these paths behind and make `ln_s!` fail.
-    # Clear any stale entries first; the guard refuses to touch a path
-    # that does not carry the fixture's `nest_bwrap` marker. See issue #49
-    # for replacing this inline guard with a shared helper once it lands.
-    cleanup = fn ->
-      if String.contains?(real, "nest_bwrap") and String.contains?(link, "nest_bwrap") do
-        File.rm_rf([real, link])
-      end
-    end
-
-    cleanup.()
+    # Clear any stale entries first; `rm_tmp!/2` refuses to touch a path
+    # that does not carry the fixture's `nest_bwrap` marker.
+    rm_tmp!(real, "nest_bwrap")
+    rm_tmp!(link, "nest_bwrap")
     File.mkdir_p!(real)
     File.ln_s!(real, link)
-    on_exit(cleanup)
+
+    on_exit(fn ->
+      rm_tmp!(real, "nest_bwrap")
+      rm_tmp!(link, "nest_bwrap")
+    end)
 
     File.write!(Path.join(real, "hello.txt"), "symlink-ok\n")
 
