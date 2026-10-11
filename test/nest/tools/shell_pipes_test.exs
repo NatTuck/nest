@@ -102,6 +102,18 @@ defmodule Nest.Tools.ShellPipesTest do
                "expected #{inspect(command)} to be rejected"
       end
     end
+
+    test "rejects an unquoted | in a case pattern list and in an awk regex" do
+      # A `case` pattern list uses `|` to separate alternatives, not to pipe, so
+      # refusing `case $x in head|tail)` is the one documented false positive
+      # (the walk does not track command-word position). `awk /head|tail/ file`
+      # is refused for the same reason but there it is *correct*: bash tokenizes
+      # that `|` as a pipe and tries to run `tail/`, so the regex must be quoted.
+      for command <- ["case $x in head|tail) echo ok;; esac", "awk /head|tail/ file"] do
+        assert {:error, _message} = ShellPipes.check(command),
+               "expected #{inspect(command)} to be rejected"
+      end
+    end
   end
 
   describe "check/1 allows commands that do not pipe into a pager" do
@@ -112,7 +124,8 @@ defmodule Nest.Tools.ShellPipesTest do
             "grep foo file",
             "cat head.txt",
             "ls | headless",
-            "echo hi > head"
+            "echo hi > head",
+            "awk '/head|tail/' file"
           ] do
         assert :ok = ShellPipes.check(command), "expected #{inspect(command)} to be allowed"
       end
@@ -153,10 +166,11 @@ defmodule Nest.Tools.ShellPipesTest do
     end
 
     test "handles degenerate shell syntax without a false positive" do
-      # A comment with no newline, trailing backslashes (in and out of double
-      # quotes), an arithmetic `<<` that is not a heredoc, and `<<` with a
-      # missing or unclosed delimiter all stay `:ok`.
+      # An empty command, a comment with no newline, trailing backslashes (in
+      # and out of double quotes), an arithmetic `<<` that is not a heredoc, and
+      # `<<` with a missing or unclosed delimiter all stay `:ok`.
       for command <- [
+            "",
             "ls # comment",
             "ls \\",
             ~s{echo "a\\},
@@ -206,10 +220,6 @@ defmodule Nest.Tools.ShellPipesTest do
         assert message ==
                  "Invalid `command` argument: expected a string, got: #{inspect(bad)}."
       end
-    end
-
-    test "returns :ok for an empty command" do
-      assert :ok = ShellPipes.check("")
     end
   end
 end

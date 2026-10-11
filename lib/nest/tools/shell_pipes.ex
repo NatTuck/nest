@@ -44,12 +44,24 @@ defmodule Nest.Tools.ShellPipes do
   like ordinary shell code, so `` `ls | head` `` and `$(ls | head)` are
   rejected. A substitution inside double quotes (`"$(...)"`) is not.
 
-  Known limitations (misses, never false positives): the pager must be the
-  stage's own command word, so one reached indirectly is not caught — behind a
-  wrapper (`env`, `nice`, `sudo`, `command`, `timeout`, `stdbuf`, `busybox`, or
-  `sh -c '...'`), inside a brace group (`ls | { head; }`), or in an `if`/`case`
-  stage. `ls | xargs head` is likewise not caught, but it does not discard the
-  piped output the way a plain `| head` does.
+  Known limitations: the pager must be the stage's own command word, so one
+  reached indirectly is not caught — behind a wrapper (`env`, `nice`, `sudo`,
+  `command`, `timeout`, `stdbuf`, `busybox`, or `sh -c '...'`), inside a brace
+  group (`ls | { head; }`), or in an `if`/`case` stage. `ls | xargs head` is
+  likewise not caught, and that is a real miss rather than a harmless one:
+  `xargs` still discards output (`ls | xargs -n1 head -1` truncates each listed
+  command to one line).
+
+  There is one known false positive: an unquoted `|` in a `case` pattern list
+  separates alternative patterns rather than piping, but the walk does not
+  track command-word position, so it cannot tell the two apart and
+
+      case $x in head|tail) echo ok;; esac
+
+  is refused. Quote or avoid the pattern separator to work around it. (`awk
+  /head|tail/ file` is refused for the same reason, but there it is correct:
+  bash tokenizes the unquoted `|` as a pipe and tries to run `tail/`, so the
+  regex must be quoted — `awk '/head|tail/' file` is allowed.)
 
   A heredoc delimiter undergoes quote removal only (POSIX 2.7.4), so `$` and
   backticks in it are literal: `cat <<$F` names the delimiter `$F`, and its body

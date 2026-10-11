@@ -186,7 +186,8 @@ defmodule Nest.Tools.FileTools do
 
     {:error,
      "File is #{mb} MB; file-read is capped at 100 MB. " <>
-       "Use file-inspect or shell-cmd with head/tail/sed for partial reads."}
+       "Use file-inspect, or run shell-cmd directly on the file (e.g. " <>
+       "`head -1 <path>`) for a partial read — never piped into head/tail/grep."}
   end
 
   defp read_error(:read_permission_denied, path),
