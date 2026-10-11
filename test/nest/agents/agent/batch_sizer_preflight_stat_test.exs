@@ -14,6 +14,7 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
 
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.Agents.Agent.BatchSizer.ProjectedSize
+  alias Nest.Agents.Agent.BatchSizer.ProjectedSizeOracle
   alias Nest.Messages.ToolCall
   alias Nest.Sandbox
 
@@ -214,6 +215,67 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
 
       assert ProjectedSize.project(call("c1", "file-read", %{"path" => "a.txt"}), c) ==
                ProjectedSize.summary_baseline_size() * 1.2
+    end
+
+    test "matches main's projection module, path for path (independent oracle)" do
+      ws = tmp_ws!("batchsizer-statbatch-oracle")
+      File.write!(Path.join(ws, "a.txt"), String.duplicate("x", 4_000))
+      File.write!(Path.join(ws, "b.txt"), String.duplicate("y", 1_000))
+
+      calls = [
+        call("c1", "file-read", %{"path" => "a.txt"}),
+        call("c2", "file-read", %{"path" => "a.txt"}),
+        call("c3", "file-read", %{"path" => "b.txt"}),
+        call("c4", "file-read", %{"path" => "missing.txt"}),
+        call("c5", "file-read", %{"path" => ""}),
+        call("c6", "shell-cmd", %{"command" => "ls"}),
+        call("c7", "file-write", %{"path" => "a.txt", "content" => "x"})
+      ]
+
+      c = ctx_with_ws(ws, [])
+
+      # `ProjectedSizeOracle` is `main`'s `ProjectedSize`: live stats, one per
+      # call, no memo, no batching. It shares no code with the code under test,
+      # so this compares against the actual pre-change behaviour rather than
+      # against the new module's own `project/2`.
+      oracle = Enum.map(calls, &ProjectedSizeOracle.project(&1, c))
+
+      assert Enum.map(calls, &ProjectedSize.project(&1, c)) == oracle
+
+      content = Budget.size([]) + ceil(Enum.sum(oracle))
+      assert BatchSizer.projected_content_size(calls, c) == content
+
+      # Refusal decisions agree at a limit derived from the oracle's own total:
+      # `content` refuses (the reserve is always positive) and a huge limit fits.
+      assert {:refuse, _} = BatchSizer.preflight(calls, %{c | context_limit: content})
+      assert :fits = BatchSizer.preflight(calls, %{c | context_limit: 10_000_000})
+    end
+
+    test "matches main's projection for every tool clause" do
+      c = ctx_with_ws("/ws", [])
+
+      names =
+        ~w(file-read shell-cmd file-write file-edit file-inspect context-check
+           shell-wait shell-list shell-kill agents-spawn agents-query agents-batch
+           agents-list models-list agents-archive agents-send agents-wait)
+
+      for name <- names do
+        tc = call("c-#{name}", name, %{"path" => "a.txt", "command" => "ls"})
+
+        assert ProjectedSize.project(tc, c) == ProjectedSizeOracle.project(tc, c),
+               "projection differs for #{name}"
+      end
+
+      # The catch-all for a hallucinated name, plus the public helpers the real
+      # module also exposes.
+      unknown = call("c-unknown", "no-such-tool", %{})
+
+      assert ProjectedSize.project(unknown, c) == ProjectedSizeOracle.project(unknown, c)
+      assert ProjectedSize.projected?("file-read") == ProjectedSizeOracle.projected?("file-read")
+      assert ProjectedSize.projected?("nope") == ProjectedSizeOracle.projected?("nope")
+
+      assert ProjectedSize.read_file_projection(:not_a_tool_call, c) ==
+               ProjectedSizeOracle.read_file_projection(:not_a_tool_call, c)
     end
 
     test "projection is byte-identical to the naive per-call sum" do

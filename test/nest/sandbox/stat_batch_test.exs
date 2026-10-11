@@ -131,6 +131,19 @@ defmodule Nest.Sandbox.StatBatchTest do
     assert StatBatch.stat_many([path], ctx.caps, ctx.workspace, nil) == %{path => {:ok, 3}}
   end
 
+  test "the batched stat agrees with the sandbox view, not the host view", ctx do
+    # The host sees a regular file; the sandbox masks it with `/dev/null`, a
+    # char device of size 0. Reporting the sandbox's view (not the host's byte
+    # count) is the proof the batched command runs inside bwrap.
+    nest = Path.join(ctx.workspace, ".nest")
+    File.write!(nest, "host bytes")
+    assert File.stat!(nest).size == 10
+
+    caps = put_in(ctx.caps, ["fs", "protected"], [%{"path" => nest, "source" => "/dev/null"}])
+
+    assert StatBatch.stat_many([nest], caps, ctx.workspace, nil) == %{nest => {:ok, 0}}
+  end
+
   test "returns an error for every path when the sandbox cannot run", ctx do
     paths = [Path.join(ctx.workspace, "a.txt"), Path.join(ctx.workspace, "b.txt")]
 
