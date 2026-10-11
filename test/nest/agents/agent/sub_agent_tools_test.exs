@@ -506,7 +506,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     assert content =~ "not found"
   end
 
-  test "agents-wait returns immediately when every other agent is idle", %{vid: vid} do
+  test "agents-wait-for-idle returns immediately when every other agent is idle", %{vid: vid} do
     {coordinator_pid, coordinator_name} =
       AgentTestHelpers.start_agent(%{
         model: %{name: "qwen3.5-plus", provider: "model-studio"},
@@ -523,7 +523,7 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     # caller is never a target.
     MockClient.set_tool_response(%{
       text: "waiting",
-      tool_calls: [%{id: "call_wait_1", name: "agents-wait", arguments: %{}}]
+      tool_calls: [%{id: "call_wait_1", name: "agents-wait-for-idle", arguments: %{}}]
     })
 
     MockClient.set_response("coordinator done")
@@ -537,18 +537,21 @@ defmodule Nest.Agents.Agent.SubAgentToolsTest do
     {:tool, tool_msg} =
       Enum.find(coordinator_state.chat_state.messages, fn
         {:tool, %{parts: parts}} ->
-          Enum.any?(parts, &match?(%Part.ToolResult{name: "agents-wait"}, &1))
+          Enum.any?(parts, &match?(%Part.ToolResult{name: "agents-wait-for-idle"}, &1))
 
         _ ->
           false
       end)
 
-    assert [%Part.ToolResult{name: "agents-wait", content: content, is_error: false}] =
+    assert [%Part.ToolResult{name: "agents-wait-for-idle", content: content, is_error: false}] =
              tool_msg.parts
 
     assert content =~ "All agents are already idle:"
     assert content =~ specialist_name
     refute content =~ coordinator_name
+
+    # Issue #54: an all-idle wait registers nothing and leaves the agent idle.
+    assert coordinator_state.live.watches == %{}
   end
 
   # The `agents-list` tool result content is `inspect/1` output of the

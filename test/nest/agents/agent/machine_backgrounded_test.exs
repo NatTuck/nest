@@ -282,6 +282,7 @@ defmodule Nest.Agents.Agent.MachineBackgroundedTest do
                :kill,
                :kill,
                :stop_all_children,
+               :stop_watchers,
                :append_many,
                :arm_timer
              ]

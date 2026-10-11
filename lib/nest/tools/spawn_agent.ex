@@ -3,7 +3,7 @@ defmodule Nest.Tools.SpawnAgent do
   The `agents-spawn` tool spec.
 
   Kept in its own module (like `FileTools`, `InspectFile`, `ShellJobs`,
-  and `WaitAgents`) so `Nest.Tools`'s own functions stay small.
+  and `WaitForIdle`) so `Nest.Tools`'s own functions stay small.
 
   The `function` here is a stub: real execution lives in
   `Nest.Agents.Agent.ToolLoop.run_spawn_agent/2`, which sends a

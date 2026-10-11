@@ -257,7 +257,7 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
       names =
         ~w(file-read shell-cmd file-write file-edit file-inspect context-check
            shell-wait shell-list shell-kill agents-spawn agents-query agents-batch
-           agents-list models-list agents-archive agents-send agents-wait)
+           agents-list models-list agents-archive agents-send)
 
       for name <- names do
         tc = call("c-#{name}", name, %{"path" => "a.txt", "command" => "ls"})
@@ -283,6 +283,21 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
       # the real module's projections stay covered.
       for name <- ~w(agents-unarchive agents-list-archived) do
         assert ProjectedSize.project(call("c-#{name}", name, %{}), c) > 0
+      end
+
+      # Issue #62 renamed the oracle's `agents-wait` into `agents-wait-for-idle`
+      # + `agents-last-message`, both keeping that clause's projection, so the
+      # name above is gone from this tree and the `names` list can no longer
+      # carry it. The oracle itself stays frozen at the pre-rename name (its
+      # moduledoc: do not "fix" it to track the real module), so the parity
+      # check is made *through* that name: each replacement must project exactly
+      # what the oracle's frozen `agents-wait` clause projects — not its
+      # catch-all — which is the comparison the old name used to make.
+      frozen_wait = ProjectedSizeOracle.project(call("c-wait", "agents-wait", %{}), c)
+
+      for name <- ~w(agents-wait-for-idle agents-last-message) do
+        assert ProjectedSize.project(call("c-#{name}", name, %{}), c) == frozen_wait,
+               "projection differs for #{name}"
       end
     end
 

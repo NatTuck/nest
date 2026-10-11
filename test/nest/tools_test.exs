@@ -199,29 +199,43 @@ defmodule Nest.ToolsTest do
       refute function.description =~ "when you need the response now"
     end
 
-    test "agents-wait schema takes an optional names list and timeout" do
-      function = Tools.get_function("agents-wait", "/tmp")
-      assert function.name == "agents-wait"
+    test "agents-wait-for-idle schema takes names, all, block and timeout, and promises no payload" do
+      function = Tools.get_function("agents-wait-for-idle", "/tmp")
+      assert function.name == "agents-wait-for-idle"
 
       props = function.parameters_schema["properties"]
       assert props["names"]["type"] == "array"
       assert props["names"]["items"] == %{"type" => "string"}
       assert props["timeout"]["type"] == "integer"
+      assert props["all"]["type"] == "boolean"
+      assert props["block"]["type"] == "boolean"
 
       # An empty list is meaningful ("every other agent"), so nothing is
       # required at the schema level.
       assert (function.parameters_schema["required"] || []) == []
 
-      assert function.description =~ "already idle"
+      assert function.description =~ "which are idle"
       assert function.description =~ "not an error"
-      assert function.description =~ "owes no replies"
-      # Only a peer this agent queried owes it anything; a peer that owes
-      # someone else nothing relevant to this caller may be idle too.
-      assert function.description =~ "a peer you queried"
-      # A give-up is announced, but only if the runtime can reach the requester:
-      # a refusal is recorded, not promised away.
-      assert function.description =~ "give-up reaches you as a runtime notice"
-      assert function.description =~ "only records the refusal"
+      # Issue #62: synchronisation only — the body comes from the delivery or
+      # `agents-last-message`.
+      assert function.description =~ "carries NO message content"
+      assert function.description =~ "agents-last-message"
+      # Issue #54: non-blocking by default, with an explicit blocking mode.
+      assert function.description =~ "returns immediately"
+      assert function.description =~ "block: true"
+    end
+
+    test "agents-last-message schema requires name and is a fetch" do
+      function = Tools.get_function("agents-last-message", "/tmp")
+      assert function.name == "agents-last-message"
+
+      props = function.parameters_schema["properties"]
+      assert props["name"]["type"] == "string"
+      assert props["max_result_tokens"]["type"] == "integer"
+      assert function.parameters_schema["required"] == ["name"]
+
+      assert function.description =~ "consumed"
+      assert function.description =~ "mid-turn"
     end
   end
 
@@ -691,7 +705,8 @@ defmodule Nest.ToolsTest do
 
       assert takers ==
                ~w(file-read file-write file-edit file-inspect shell-cmd shell-list shell-wait
-                  context-check agents-wait agents-list agents-list-archived models-list)
+                  context-check agents-wait-for-idle agents-last-message agents-list
+                  agents-list-archived models-list)
     end
   end
 end

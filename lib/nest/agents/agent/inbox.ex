@@ -107,6 +107,7 @@ defmodule Nest.Agents.Agent.Inbox do
   alias Nest.Agents.Agent.Turn
   alias Nest.Agents.Agent.Turn.Backgrounded
   alias Nest.Agents.Agent.Turn.Dispatch
+  alias Nest.Agents.Agent.Watch
   alias Nest.Messages.MessageList
   alias Nest.Messages.User
   alias Nest.Tokens.Estimator
@@ -183,6 +184,7 @@ defmodule Nest.Agents.Agent.Inbox do
   @spec handle_delivery(Agent.t(), String.t(), String.t(), kind()) ::
           {:reply, {:ok, :delivered | :queued} | {:error, term()}, Agent.t()}
   def handle_delivery(state, sender, content, kind \\ :agent) do
+    state = satisfy_watch(state, sender, kind)
     status = Machine.status_for(state.live.machine)
 
     cond do
@@ -225,6 +227,8 @@ defmodule Nest.Agents.Agent.Inbox do
   @spec deliver_internal(Agent.t(), String.t() | nil, String.t(), kind()) ::
           {:reply, {:ok, :delivered | :queued}, Agent.t()}
   def deliver_internal(state, sender, content, kind) do
+    state = satisfy_watch(state, sender, kind)
+
     if Machine.status_for(state.live.machine) == :idle do
       idle_delivery(state, sender, content, kind)
     else
@@ -345,7 +349,11 @@ defmodule Nest.Agents.Agent.Inbox do
           Agent.t()
   def enqueue_internal(state, from, content, kind, fulfilled_ids \\ [])
       when kind in [:agent, :user, :query, :notice] do
-    state = state |> put_entry(from, content, kind, nil, fulfilled_ids) |> broadcast()
+    state =
+      state
+      |> satisfy_watch(from, kind)
+      |> put_entry(from, content, kind, nil, fulfilled_ids)
+      |> broadcast()
 
     record_inbox(state, :enqueued, from, kind, content,
       count: length(state.live.inbox),
@@ -565,8 +573,12 @@ defmodule Nest.Agents.Agent.Inbox do
     entries
     |> Enum.with_index()
     |> Enum.reduce(nil, fn
-      {%{from: ^name, kind: kind}, i}, _acc when kind != :user -> i
-      {_other, _i}, acc -> acc
+      {%{from: ^name, kind: kind} = entry, i}, acc
+      when kind != :user ->
+        if retrieved?(entry), do: acc, else: i
+
+      {_other, _i}, acc ->
+        acc
     end)
   end
 
@@ -588,6 +600,13 @@ defmodule Nest.Agents.Agent.Inbox do
   def query_senders(_entries), do: []
 
   # ---- private ----
+
+  # A delivery from a watched agent satisfies that watch (issue #62 requirement
+  # 1): the caller is being woken by the body, so the bare notice would be a
+  # second wake. A human entry never satisfies a watch — a human's name is not a
+  # watched agent — so this is kind-gated rather than name-only.
+  defp satisfy_watch(state, _sender, :user), do: state
+  defp satisfy_watch(state, sender, _kind), do: Watch.satisfy(state, sender)
 
   # One `inbox` timeline event. The four delivery dispositions and the two
   # enqueue paths carry the same `from`/`kind`/`content` and differ only in what
@@ -636,7 +655,13 @@ defmodule Nest.Agents.Agent.Inbox do
     Enum.flat_map(entries, &Map.get(&1, :fulfilled_ids, []))
   end
 
-  defp broadcast(state) do
+  @doc """
+  Broadcast the current inbox on the agent's topic. Public so the
+  `agents-last-message` fetch (which consumes an entry in place, issue #62) can
+  publish the change the same way every enqueue and drain does.
+  """
+  @spec broadcast(Agent.t()) :: Agent.t()
+  def broadcast(state) do
     Broadcasts.inbox(state, serialize(state.live.inbox))
     state
   end

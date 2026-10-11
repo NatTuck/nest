@@ -40,6 +40,7 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   alias Nest.Agents.Agent.Turn.GiveUpDelivery
   alias Nest.Agents.Agent.Turn.HTTPWorker
   alias Nest.Agents.Agent.Turn.Terminal
+  alias Nest.Agents.Agent.Watch
   alias Nest.Messages.Streaming
   alias Nest.Messages.ThinkTags
   alias Nest.Tokens.Compactor, as: TokensCompactor
@@ -329,6 +330,11 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   end
 
   defp execute({:stop_all_children}, state), do: {stop_running_children(state), :continue}
+
+  # Kill every outstanding non-blocking wait (issue #54): a stopped turn must
+  # not be woken by a notice it no longer wants. Reads `live.watches`, the same
+  # way `{:stop_all_children}` reads the machine's children.
+  defp execute({:stop_watchers}, state), do: {Watch.stop_all(state), :continue}
 
   defp execute({:drain_inbox}, state) do
     case peek_inbox(state) do

@@ -172,6 +172,17 @@ defmodule Nest.Agents.Agent.ChatState.Live do
             # default on `init/1` and changed at runtime by the
             # mode selector / `change_mode`.
             mode: "chat",
+            # The outstanding interest registrations (issue #54): a
+            # `agents-wait-for-idle` or `shell-wait` call that returned
+            # immediately and left the agent idle. Keyed by a `make_ref/0`
+            # the tool worker minted; each entry is
+            # `%{pid: pid | nil, spec: term(), satisfied: boolean}`. The
+            # watcher task delivers its notice through
+            # `Agent.watch_fired/3`; a delivery from a watched name marks
+            # the watch satisfied so the notice is suppressed (issue #62
+            # requirement 1 — the caller wakes exactly once). Cleared by the
+            # `{:stop_watchers}` action on Stop and on restart.
+            watches: %{},
             # Set when `Init.NeedsRepair.block/3` starts the agent in
             # the `:needs_repair` state: the active persisted sequence
             # failed wire preflight. Carries the violations and the

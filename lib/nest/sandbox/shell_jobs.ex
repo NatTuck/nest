@@ -162,6 +162,16 @@ defmodule Nest.Sandbox.ShellJobs do
   @spec stop_all(agent_key()) :: :ok
   def stop_all(agent_key), do: GenServer.call(@name, {:stop_all, agent_key}, 10_000)
 
+  @doc """
+  The result text for a finished job, shared by the blocking `shell-wait` and
+  the async watcher (issue #54) so the two wordings cannot drift.
+  """
+  @spec result_text(job_id(), integer(), binary()) :: String.t()
+  def result_text(id, 0, ""), do: "Background job #{id} exited 0 with no output."
+
+  def result_text(id, code, output),
+    do: "Background job #{id} exited with code #{code}:\n#{output}"
+
   # ---- Server callbacks ----
 
   @impl true
