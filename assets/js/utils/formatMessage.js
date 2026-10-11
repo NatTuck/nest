@@ -7,16 +7,15 @@
  *     serialises every part, with one deliberate exception: reasoning is
  *     omitted from the clipboard (issue #51). That covers both a
  *     `thinking` part and reasoning embedded as `<think>…</think>` inside
- *     a `text` part (the UI routes the latter to the `ThinkingBlock` via
- *     `splitThinkFromParts`; see `Message.jsx`). User messages are copied
- *     verbatim — the UI shows a user's own text as-is, so the clipboard
- *     must not silently drop a `<think>` they typed. User messages also
- *     have their `[mode: X]\n` prefix stripped (the mode badge is rendered
- *     separately in the UI; the user does not want it re-pasted). Tool
- *     calls and tool results have no natural markdown form, so they are
- *     rendered as a bold header plus a fenced code block; a part kind this
- *     build does not recognise is called out in the output rather than
- *     silently dropped.
+ *     a `text` part. Which roles get that treatment is decided by
+ *     `stripsThinkTags/1`, which mirrors what each role's UI actually
+ *     renders (see its docs) — the clipboard must show what the UI shows.
+ *     User messages also have their `[mode: X]\n` prefix stripped (the
+ *     mode badge is rendered separately in the UI; the user does not want
+ *     it re-pasted). Tool calls and tool results have no natural markdown
+ *     form, so they are rendered as a bold header plus a fenced code
+ *     block; a part kind this build does not recognise is called out in
+ *     the output rather than silently dropped.
  *   - `formatApiLogsAsJson(apiLogs)` mirrors exactly what the
  *     `<ApiLogsBlock>` renders in its `<pre>` — a 2-space-indented
  *     JSON.stringify of each log entry's payload, in original order.
@@ -56,25 +55,31 @@ export function messageToMarkdown(message) {
   const mode = message.mode ?? "";
 
   if (Array.isArray(message.parts) && message.parts.length > 0) {
-    const blocks = message.parts
-      .map((part) => partToMarkdown(part, role, mode))
-      .filter((block) => block !== "");
+    const blocks = [];
+    let droppedReasoning = false;
+    for (const part of message.parts) {
+      const block = partToMarkdown(part, role, mode);
+      if (block !== "") {
+        blocks.push(block);
+      } else if (partIsReasoning(part, role)) {
+        droppedReasoning = true;
+      }
+    }
     if (blocks.length > 0) return blocks.join("\n\n");
-    // Every part was reasoning (or otherwise unrenderable) — see above.
-    return message.parts.some((part) => part && part.kind === "thinking")
-      ? THINKING_OMITTED_MARKER
-      : "";
+    // Nothing copyable. When reasoning was actually omitted, say so rather
+    // than copying an empty string.
+    return droppedReasoning ? THINKING_OMITTED_MARKER : "";
   }
 
   const raw = typeof message.content === "string" ? message.content : "";
-  const out = role === "user" ? stripModePrefix(raw, mode) : visibleText(raw);
-  if (out !== "") return out;
-  // A legacy message (no `parts`) whose only content is its `thinking`
-  // field: same treatment as the parts path above.
-  if (typeof message.thinking === "string" && message.thinking !== "") {
-    return THINKING_OMITTED_MARKER;
-  }
-  return "";
+  const visible = visibleForRole(raw, role, mode);
+  if (visible !== "") return visible;
+  // Nothing visible. Say so when the content was reasoning: a legacy
+  // `thinking` field, or `content` that was entirely `<think>…</think>`.
+  const droppedReasoning =
+    (typeof message.thinking === "string" && message.thinking !== "") ||
+    (stripsThinkTags(role) && raw !== "");
+  return droppedReasoning ? THINKING_OMITTED_MARKER : "";
 }
 
 /**
@@ -85,12 +90,12 @@ function partToMarkdown(part, role, mode) {
   if (!part || typeof part !== "object") return "";
 
   switch (part.kind) {
-    case "text": {
-      const text = typeof part.text === "string" ? part.text : "";
-      // A user's own text is copied verbatim (that is what the UI shows);
-      // everyone else's text has embedded `<think>` reasoning removed.
-      return role === "user" ? stripModePrefix(text, mode) : visibleText(text);
-    }
+    case "text":
+      return visibleForRole(
+        typeof part.text === "string" ? part.text : "",
+        role,
+        mode,
+      );
     case "thinking":
       // Deliberately excluded from the clipboard (issue #51). The UI
       // still renders it; only the copy omits it.
@@ -108,10 +113,45 @@ function partToMarkdown(part, role, mode) {
 }
 
 /**
- * The user-visible text of a string: everything outside `<think>…</think>`.
- * Reasoning embedded in a text part is not copyable either — the UI already
- * routes it to the `ThinkingBlock`, so the clipboard must not leak it
- * (issue #51, requirement 2). Reuses `splitThinkFromParts`, the same split
+ * Whether a part produced no block because it was reasoning: a `thinking`
+ * part, or a text part whose content was entirely `<think>…</think>`
+ * (closed or unclosed) for a role whose UI splits those tags.
+ */
+function partIsReasoning(part, role) {
+  if (!part || typeof part !== "object") return false;
+  if (part.kind === "thinking") return true;
+  if (part.kind !== "text" || !stripsThinkTags(role)) return false;
+  const text = typeof part.text === "string" ? part.text : "";
+  return text !== "" && visibleText(text) === "";
+}
+
+/**
+ * Whether the UI renders this role's text with `<think>` blocks split out
+ * into the `ThinkingBlock`. Mirrors `Message.jsx`: a `user` message renders
+ * its own text raw (`stripModePrefix(messageText(…))`) and a `system`
+ * message renders raw through `SystemMessageContent`; every other role
+ * (assistant, tool, …) goes through `textPartsFor` / `splitThinkFromParts`.
+ * The clipboard shows what the UI shows, so it splits for exactly those
+ * roles — reasoning is the one thing omitted, and only where the UI treats
+ * it as reasoning.
+ */
+function stripsThinkTags(role) {
+  return role !== "user" && role !== "system";
+}
+
+/**
+ * The visible text for a role, matching what that role's UI renders: the
+ * `user`'s own text with the mode prefix stripped, a `system` message
+ * verbatim, and everyone else with `<think>` reasoning split out.
+ */
+function visibleForRole(text, role, mode) {
+  if (role === "user") return stripModePrefix(text, mode);
+  return stripsThinkTags(role) ? visibleText(text) : text;
+}
+
+/**
+ * The user-visible part of a string: everything outside `<think>…</think>`
+ * (or an orphan `</think>`). Reuses `splitThinkFromParts`, the same split
  * the UI renders through, rather than re-deriving the extraction.
  */
 function visibleText(text) {
@@ -134,7 +174,8 @@ function toolUseToMarkdown(part) {
  * A tool result: a bold header naming the tool and its outcome, then the
  * call's arguments (when present) and the result body. The outcome words
  * mirror the badges `ToolResults.jsx` renders, including the verbatim
- * handling of an unrecognised `state`.
+ * handling of an unrecognised `state`. The body is copied verbatim, as
+ * `ToolResults` renders it.
  */
 function toolResultToMarkdown(part) {
   const name = part.name || "unknown";

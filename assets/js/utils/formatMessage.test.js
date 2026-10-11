@@ -150,6 +150,50 @@ describe("messageToMarkdown — whole message from parts", () => {
     ).toBe("Visible.");
   });
 
+  it("returns the marker for a text part that is entirely <think> reasoning", () => {
+    // A text part whose whole content is reasoning is omitted like a
+    // `thinking` part, so the copy must be legible rather than empty.
+    expect(
+      messageToMarkdown({
+        role: "assistant",
+        parts: [{ kind: "text", text: "<think>only reasoning</think>" }],
+      }),
+    ).toBe("*[thinking omitted from copy]*");
+
+    // An unclosed `<think>` runs to the end of the string — also
+    // reasoning.
+    expect(
+      messageToMarkdown({
+        role: "assistant",
+        parts: [{ kind: "text", text: "<think>only reasoning" }],
+      }),
+    ).toBe("*[thinking omitted from copy]*");
+  });
+
+  it("copies a system message's text verbatim, including <think> tags", () => {
+    // `SystemMessageContent` renders raw text parts with no split, so
+    // the clipboard must not drop tags the UI shows.
+    expect(
+      messageToMarkdown({
+        role: "system",
+        parts: [
+          { kind: "text", text: "Use <think>tags</think> for reasoning." },
+        ],
+      }),
+    ).toBe("Use <think>tags</think> for reasoning.");
+  });
+
+  it("strips <think> tags from a tool message's text part", () => {
+    // `Message.jsx` renders a tool message's text via `textPartsFor`,
+    // which splits, so the clipboard splits too.
+    expect(
+      messageToMarkdown({
+        role: "tool",
+        parts: [{ kind: "text", text: "A<think>hidden</think>B" }],
+      }),
+    ).toBe("AB");
+  });
+
   it("serialises a refusal part", () => {
     expect(
       messageToMarkdown({
@@ -440,6 +484,9 @@ describe("messageToMarkdown — no-text messages", () => {
     expect(
       messageToMarkdown({ role: "assistant", parts: [{ kind: "refusal" }] }),
     ).toBe("");
+    expect(
+      messageToMarkdown({ role: "system", parts: [{ kind: "text" }] }),
+    ).toBe("");
   });
 });
 
@@ -461,6 +508,15 @@ describe("messageToMarkdown — legacy (no parts) shape", () => {
         content: "<think>secret</think>Answer.",
       }),
     ).toBe("Answer.");
+  });
+
+  it("returns the marker for legacy content that is entirely <think> reasoning", () => {
+    expect(
+      messageToMarkdown({
+        role: "assistant",
+        content: "<think>only reasoning</think>",
+      }),
+    ).toBe("*[thinking omitted from copy]*");
   });
 
   it("returns just the content when assistant thinking is empty", () => {
