@@ -188,16 +188,19 @@ export function InboxPanel({ name, onFetch }) {
         <ul className="max-h-64 space-y-2 overflow-y-auto border-t border-sky-200 px-3 py-2">
           {inbox.map((message) => (
             <li
-              // The wire shape carries no id, so the key is the whole
-              // entry. It stays stable across re-renders (the list is
-              // replaced wholesale by `chat:inbox`) and distinguishes
-              // the sources.
-              key={`${message.kind}-${message.from}-${message.timestamp}-${message.content}-${message.mode}`}
+              // The wire shape carries a delivery id (issue #62), so key on
+              // it when present; fall back to the whole entry so a
+              // pre-upgrade frame still renders stably.
+              key={
+                message.id ??
+                `${message.kind}-${message.from}-${message.timestamp}-${message.content}-${message.mode}`
+              }
               className="rounded bg-white/70 p-2"
             >
               <div className="mb-1 text-xs font-semibold text-sky-700">
                 {senderLabel(message, currentUsername)}
                 {message.kind === "user" && <ModeLabel mode={message.mode} />}
+                <DeliveryId id={message.id} retrieved={message.retrieved} />
               </div>
               <div className="whitespace-pre-wrap break-words text-sm text-gray-800">
                 {message.content}
@@ -207,5 +210,43 @@ export function InboxPanel({ name, onFetch }) {
         </ul>
       )}
     </div>
+  );
+}
+
+/**
+ * The delivery id of a queued entry, plus whether an `agents-last-message`
+ * fetch already consumed the body (issue #62).
+ *
+ * The id is what lets a caller recognise a copy it already has, so a frame
+ * that arrives without one is surfaced explicitly rather than rendered as
+ * nothing — a missing id is a contract violation, not "no id here".
+ */
+function DeliveryId({ id, retrieved }) {
+  return (
+    <>
+      {typeof id === "string" && id.length > 0 ? (
+        <span
+          data-testid="inbox-delivery-id"
+          className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] font-normal text-slate-600"
+        >
+          {id}
+        </span>
+      ) : (
+        <span
+          data-testid="inbox-delivery-id-missing"
+          className="ml-2 rounded bg-red-100 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-red-700"
+        >
+          id: (missing)
+        </span>
+      )}
+      {retrieved === true && (
+        <span
+          data-testid="inbox-retrieved"
+          className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-amber-800"
+        >
+          retrieved
+        </span>
+      )}
+    </>
   );
 }
