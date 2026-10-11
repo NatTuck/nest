@@ -129,15 +129,22 @@ defmodule Nest.Agents.Agent.Inbox do
   # an `:inbox_full` error and nothing is queued.
   @max_inbox_size 100
 
+  # The marker a re-delivery carries (issue #62 requirement 5). A retrieved
+  # entry is normally suppressed by `batch/1`; if one still reaches the renderer
+  # the body must never look like a fresh human turn.
+  @redelivery_tag "[re-delivery: this body was already retrieved with agents-last-message]"
+
   @type kind :: :agent | :user | :query | :notice
 
   @type entry :: %{
+          id: String.t(),
           from: String.t() | nil,
           content: String.t(),
           timestamp: DateTime.t(),
           kind: kind(),
           mode: String.t() | nil,
-          fulfilled_ids: [String.t()]
+          fulfilled_ids: [String.t()],
+          retrieved: boolean()
         }
 
   @doc """
@@ -433,17 +440,21 @@ defmodule Nest.Agents.Agent.Inbox do
   @doc """
   JSON-safe view of the queued entries, for the wire (channel/status)
   and tests. `"kind"` is one of `"agent"`, `"user"`, `"query"`,
-  `"notice"`; `"mode"` is a string or `nil`.
+  `"notice"`; `"mode"` is a string or `nil`; `"id"` is the delivery id
+  (issue #62); `"retrieved"` says an `agents-last-message` fetch already
+  consumed the body, so the UI can show the retrieval rather than hide it.
   """
   @spec serialize([entry()]) :: [map()]
   def serialize(entries) do
     Enum.map(entries, fn entry ->
       %{
+        "id" => Map.get(entry, :id),
         "from" => entry.from,
         "content" => entry.content,
         "timestamp" => DateTime.to_iso8601(entry.timestamp),
         "kind" => Atom.to_string(entry.kind),
-        "mode" => entry.mode
+        "mode" => entry.mode,
+        "retrieved" => retrieved?(entry)
       }
     end)
   end
@@ -497,8 +508,67 @@ defmodule Nest.Agents.Agent.Inbox do
   `:agent`, `:query` and `:notice` entries all take the second clause.
   """
   @spec batch([entry()]) :: [entry()]
-  def batch([%{kind: :user} = head | _rest]), do: [head]
-  def batch(entries), do: Enum.take_while(entries, &(&1.kind != :user))
+  def batch(entries) do
+    entries
+    |> Enum.reject(&retrieved?/1)
+    |> select_batch()
+  end
+
+  defp select_batch([%{kind: :user} = head | _rest]), do: [head]
+  defp select_batch(entries), do: Enum.take_while(entries, &(&1.kind != :user))
+
+  @doc """
+  The entries a drain consumes: the delivered `batch` plus every entry an
+  `agents-last-message` fetch already retrieved (issue #62). A retrieved entry
+  is never delivered — `batch/1` skipped it — so the consume must drop it too,
+  or it would sit in the queue forever.
+  """
+  @spec consume([entry()], [entry()]) :: [entry()]
+  def consume(entries, batch) do
+    entries |> Enum.reject(&(&1 in batch or retrieved?(&1)))
+  end
+
+  @doc """
+  True when an `agents-last-message` fetch already took this entry's body.
+  Total over a hand-built entry (the drain and the wire both call it).
+  """
+  @spec retrieved?(entry()) :: boolean()
+  def retrieved?(%{retrieved: true}), do: true
+  def retrieved?(_entry), do: false
+
+  @doc """
+  The newest pending entry a caller may fetch for `name` (issue #62): the last
+  entry whose `from` is `name` and which is not a human message. Returns the
+  entry list with that entry marked retrieved, and the entry itself (or `nil`).
+
+  A human message is never fetchable: `agents-last-message` is for a peer's or
+  child's delivery, and a `:user` entry is the human speaking, which the caller
+  must not be able to consume out from under the drain.
+  """
+  @spec take_last([entry()], String.t()) :: {[entry()], entry() | nil}
+  def take_last(entries, name) when is_binary(name) do
+    index = last_fetchable_index(entries, name)
+
+    case index do
+      nil ->
+        {entries, nil}
+
+      i ->
+        entry = Enum.at(entries, i)
+        {List.replace_at(entries, i, %{entry | retrieved: true}), entry}
+    end
+  end
+
+  def take_last(entries, _name), do: {entries, nil}
+
+  defp last_fetchable_index(entries, name) do
+    entries
+    |> Enum.with_index()
+    |> Enum.reduce(nil, fn
+      {%{from: ^name, kind: kind}, i}, _acc when kind != :user -> i
+      {_other, _i}, acc -> acc
+    end)
+  end
 
   @doc """
   The senders a delivered batch obliges this agent to answer: one name per
@@ -531,16 +601,33 @@ defmodule Nest.Agents.Agent.Inbox do
   # string-or-null for both).
   defp put_entry(state, from, content, kind, mode, fulfilled_ids \\ []) do
     entry = %{
+      id: new_id(),
       from: if(is_binary(from), do: from, else: nil),
       content: content,
       timestamp: DateTime.utc_now(),
       kind: kind,
       mode: if(is_binary(mode), do: mode, else: nil),
-      fulfilled_ids: fulfilled_ids
+      fulfilled_ids: fulfilled_ids,
+      retrieved: false
     }
 
     %{state | live: %{state.live | inbox: state.live.inbox ++ [entry]}}
   end
+
+  # The opaque per-delivery id (issue #62). It names the entry on the wire
+  # (`serialize/1`), on the fetched body (`agents-last-message`), on the drained
+  # message's metadata, and in the offload filename (`agent-inbox-<id>.txt`), so
+  # a caller can recognise a copy it already has. A random token: the id is a
+  # delivery identity, not a sequence, and nothing needs to sort or derive it.
+  @spec new_id() :: String.t()
+  def new_id, do: :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)
+
+  # The id the offload file is named after: the batch's first entry. The batch is
+  # a FIFO prefix (`batch/1`), so the first entry identifies it and the file the
+  # pointer names is traceable to a delivery the caller can recognise.
+  @spec batch_id([entry()]) :: String.t()
+  def batch_id([%{id: id} | _rest]), do: id
+  def batch_id(_entries), do: new_id()
 
   # `fulfilled_ids` is the entry's only producer-supplied metadata (see
   # `enqueue_internal/5`); every other producer leaves it empty. Total like the
@@ -565,11 +652,21 @@ defmodule Nest.Agents.Agent.Inbox do
   # disambiguates a batch of peer messages (from each other and from a human's)
   # — including a `:query`, whose requester really is that agent (decision 7).
   defp combine(entries) do
-    Enum.map_join(entries, "\n\n", fn
-      %{kind: kind, content: content} when kind in [:user, :notice] -> content
-      %{content: content} = entry -> "#{agent_label(entry)}\n#{content}"
-    end)
+    Enum.map_join(entries, "\n\n", &render_entry/1)
   end
+
+  # A retrieved entry is normally suppressed by `batch/1` before it can reach
+  # here, so this is the safety net issue #62 requirement 5 asks for: if both
+  # channels ever carry the body, the second copy is explicitly a re-delivery
+  # and can never read as a fresh human turn.
+  defp render_entry(%{kind: kind, content: content} = entry) when kind in [:user, :notice],
+    do: tag_redelivery(entry, content)
+
+  defp render_entry(%{content: content} = entry),
+    do: tag_redelivery(entry, "#{agent_label(entry)}\n#{content}")
+
+  defp tag_redelivery(%{retrieved: true}, body), do: "#{@redelivery_tag}\n#{body}"
+  defp tag_redelivery(_entry, body), do: body
 
   # The LLM-facing label for one `:agent` entry. A missing or blank sender
   # drops the quoted name rather than putting `nil`/`""` in the prompt.
@@ -583,7 +680,13 @@ defmodule Nest.Agents.Agent.Inbox do
   # the full text so no messages are lost.
   defp offload(content, entries, state) do
     if Estimator.estimate(content) > Config.configured_async_message_max_tokens() do
-      case Overflow.write(content, %{tmp_path: state.tmp_path}, "agent-inbox", "txt") do
+      case Overflow.write(
+             content,
+             %{tmp_path: state.tmp_path},
+             "agent-inbox",
+             "txt",
+             batch_id(entries)
+           ) do
         nil -> content
         path -> pointer(length(entries), path)
       end

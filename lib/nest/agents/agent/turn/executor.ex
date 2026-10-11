@@ -469,7 +469,9 @@ defmodule Nest.Agents.Agent.Turn.Executor do
     # Drop exactly the peeked batch, not the whole queue: the executor runs
     # synchronously inside one settle, so nothing can be enqueued between the
     # peek and the consume, and anything the peek did not deliver stays queued.
-    inbox = state.live.inbox -- entries
+    # A retrieved entry is dropped too (issue #62): `batch/1` skipped it, so the
+    # consume is the only thing that can clear it.
+    inbox = Inbox.consume(state.live.inbox, entries)
     state = %{state | live: %{state.live | inbox: inbox}}
     Broadcasts.inbox(state, Inbox.serialize(inbox))
     Timeline.drained(state, entries)
