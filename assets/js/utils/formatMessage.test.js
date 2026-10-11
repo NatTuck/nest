@@ -45,6 +45,19 @@ describe("messageToMarkdown — user messages", () => {
   it("returns the user content as-is when no mode field is present", () => {
     expect(messageToMarkdown({ role: "user", content: "Hello" })).toBe("Hello");
   });
+
+  it("copies a user's own text verbatim, including a <think> they typed", () => {
+    // The UI shows a user message's text as-is (it is not routed
+    // through the think-splitting path), so the clipboard must not
+    // silently drop a `<think>` the user typed. Only assistant
+    // reasoning is omitted.
+    expect(
+      messageToMarkdown({
+        role: "user",
+        parts: [{ kind: "text", text: "<think>not reasoning</think>hi" }],
+      }),
+    ).toBe("<think>not reasoning</think>hi");
+  });
 });
 
 describe("messageToMarkdown — whole message from parts", () => {
@@ -104,6 +117,39 @@ describe("messageToMarkdown — whole message from parts", () => {
     ).toBe("visible");
   });
 
+  it("excludes <think> tags embedded in an assistant text part", () => {
+    // The UI routes reasoning buried in a text part to the
+    // ThinkingBlock (see `splitThinkFromParts`), so the clipboard
+    // must not leak it.
+    expect(
+      messageToMarkdown({
+        role: "assistant",
+        parts: [{ kind: "text", text: "<think>secret</think>Answer." }],
+      }),
+    ).toBe("Answer.");
+
+    expect(
+      messageToMarkdown({
+        role: "assistant",
+        parts: [
+          { kind: "thinking", thinking: "hidden" },
+          { kind: "text", text: "A<think>also hidden</think>B" },
+        ],
+      }),
+    ).toBe("AB");
+  });
+
+  it("treats an orphan </think> in a text part as reasoning", () => {
+    // Mirrors `splitThinkTags`: an unmatched closing tag starts a
+    // thinking run to the end of the string.
+    expect(
+      messageToMarkdown({
+        role: "assistant",
+        parts: [{ kind: "text", text: "Visible.</think>Hidden." }],
+      }),
+    ).toBe("Visible.");
+  });
+
   it("serialises a refusal part", () => {
     expect(
       messageToMarkdown({
@@ -127,6 +173,33 @@ describe("messageToMarkdown — whole message from parts", () => {
         ],
       }),
     ).toBe("**Tool call: `agents-list`**");
+  });
+
+  it("renders a tool call whose arguments are still an empty streaming buffer as a header only", () => {
+    // The real `applyToolUseStart` shape: `arguments` is `""` until
+    // the first delta arrives.
+    expect(
+      messageToMarkdown({
+        role: "assistant",
+        parts: [
+          {
+            kind: "tool_use",
+            id: "call_1",
+            name: "agents-list",
+            arguments: "",
+          },
+        ],
+      }),
+    ).toBe("**Tool call: `agents-list`**");
+  });
+
+  it("renders a tool call with no name as `unknown`", () => {
+    expect(
+      messageToMarkdown({
+        role: "assistant",
+        parts: [{ kind: "tool_use", id: "call_1", arguments: {} }],
+      }),
+    ).toBe("**Tool call: `unknown`**");
   });
 
   it("renders a tool call whose arguments are still streaming as a string", () => {
@@ -160,6 +233,54 @@ describe("messageToMarkdown — whole message from parts", () => {
     });
     expect(out).toContain("**Tool call: `shell-cmd`**");
     expect(out).toContain('{"command":');
+  });
+
+  it("renders a tool result's own arguments", () => {
+    const out = messageToMarkdown({
+      role: "tool",
+      parts: [
+        {
+          kind: "tool_result",
+          toolCallId: "c1",
+          name: "shell-cmd",
+          arguments: { command: "ls" },
+          content: "ok",
+          isError: false,
+        },
+      ],
+    });
+    expect(out).toContain("**Tool result: `shell-cmd` — Success**");
+    expect(out).toContain('"command": "ls"');
+    expect(out).toContain("ok");
+  });
+
+  it("renders a tool result body carried only in `text`", () => {
+    const out = messageToMarkdown({
+      role: "tool",
+      parts: [
+        {
+          kind: "tool_result",
+          toolCallId: "c1",
+          name: "shell-cmd",
+          text: "streamed body",
+        },
+      ],
+    });
+    expect(out).toContain("**Tool result: `shell-cmd` — Success**");
+    expect(out).toContain("streamed body");
+  });
+
+  it("renders a tool result with no name as `unknown`", () => {
+    expect(
+      messageToMarkdown({
+        role: "tool",
+        parts: [{ kind: "tool_result", toolCallId: "c1", content: "x" }],
+      }),
+    ).toBe(
+      ["**Tool result: `unknown` — Success**", "", "```", "x", "```"].join(
+        "\n",
+      ),
+    );
   });
 
   it("labels an error tool result", () => {
@@ -241,13 +362,28 @@ describe("messageToMarkdown — whole message from parts", () => {
     );
   });
 
-  it("calls out an unrecognised part kind instead of dropping it", () => {
+  it("calls out a part kind this build does not know", () => {
     expect(
       messageToMarkdown({
         role: "assistant",
-        parts: [{ kind: "tool_arguments", text: "{}" }],
+        parts: [{ kind: "mystery" }],
       }),
-    ).toBe("*[unsupported part omitted from copy: tool_arguments]*");
+    ).toBe("*[unsupported part omitted from copy: mystery]*");
+  });
+
+  it("calls out a part with no `kind`", () => {
+    expect(messageToMarkdown({ role: "assistant", parts: [{}] })).toBe(
+      "*[unsupported part omitted from copy: unknown]*",
+    );
+  });
+
+  it("derives content from a text part when no legacy content is present", () => {
+    expect(
+      messageToMarkdown({
+        role: "assistant",
+        parts: [{ kind: "text", text: "from parts" }],
+      }),
+    ).toBe("from parts");
   });
 });
 
@@ -291,18 +427,23 @@ describe("messageToMarkdown — no-text messages", () => {
       ),
     );
   });
+
+  it("returns an empty string when every part contributes nothing", () => {
+    // Documented, not a bug: a malformed entry, a text part with no
+    // text, and a refusal with no text each contribute nothing. With
+    // no reasoning to explain the emptiness, the copy is legitimately
+    // empty (the `thinking`-only case gets the marker above instead).
+    expect(messageToMarkdown({ role: "assistant", parts: [null] })).toBe("");
+    expect(
+      messageToMarkdown({ role: "assistant", parts: [{ kind: "text" }] }),
+    ).toBe("");
+    expect(
+      messageToMarkdown({ role: "assistant", parts: [{ kind: "refusal" }] }),
+    ).toBe("");
+  });
 });
 
 describe("messageToMarkdown — legacy (no parts) shape", () => {
-  it("derives content from a text part when no legacy content is present", () => {
-    expect(
-      messageToMarkdown({
-        role: "assistant",
-        parts: [{ kind: "text", text: "from parts" }],
-      }),
-    ).toBe("from parts");
-  });
-
   it("excludes the legacy thinking field from an assistant message", () => {
     expect(
       messageToMarkdown({
@@ -311,6 +452,15 @@ describe("messageToMarkdown — legacy (no parts) shape", () => {
         content: "Here is the answer.",
       }),
     ).toBe("Here is the answer.");
+  });
+
+  it("excludes <think> tags from a legacy content string", () => {
+    expect(
+      messageToMarkdown({
+        role: "assistant",
+        content: "<think>secret</think>Answer.",
+      }),
+    ).toBe("Answer.");
   });
 
   it("returns just the content when assistant thinking is empty", () => {
@@ -343,6 +493,9 @@ describe("messageToMarkdown — legacy (no parts) shape", () => {
     expect(messageToMarkdown(undefined)).toBe("");
     expect(messageToMarkdown({ role: "user" })).toBe("");
     expect(messageToMarkdown({ role: "user", content: "" })).toBe("");
+    expect(
+      messageToMarkdown({ role: "assistant", content: "", thinking: "" }),
+    ).toBe("");
   });
 
   it("returns content as-is for unknown roles", () => {
