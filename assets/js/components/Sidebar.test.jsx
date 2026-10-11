@@ -592,32 +592,22 @@ describe("Sidebar tree", () => {
   });
 });
 
-describe("Sidebar Needs Repair rows", () => {
-  // "Needs Repair" rows surface `state.brokenAgents`, populated by the
-  // lobby's `init` payload + the `broken_agents_updated` follow-up.
-  // They render *inside their own space's* expanded tree (not as a
-  // top-level section), linking to the space-scoped chat route, because
-  // persistent agents whose GenServer is gone but whose model is still
-  // unresolvable can't appear in the regular agents list
-  // (`Registry.list/0` excludes them).
+describe("Sidebar broken-agent rows", () => {
+  // A persisted agent whose model no longer resolves has no live process,
+  // so nothing broadcasts a status for it. It still gets a flat-list row —
+  // the visibility query lists persisted rows on purpose, so the user can
+  // click through and repair it — and the lobby stamps the server's
+  // `model_missing` onto that row (see `applyAgentStatuses`). The sidebar
+  // therefore renders one ordinary row with a red dot, not a separate
+  // "Needs Repair" group.
 
-  beforeEach(() => {
-    // Start from a fully reset store so each test sees a
-    // clean `brokenAgents`. The beforeEach at the top sets up
-    // the lobby channel; the model-picker / store-isolation
-    // reset is the same `useStore.getState()._reset()` used
-    // elsewhere.
-    useStore.getState()._reset();
-  });
-
-  it("hides the repair rows when state.brokenAgents is empty", () => {
+  it("renders no 'Needs Repair' group", () => {
     act(() => {
       withStore([]);
     });
-    useStore.setState({ brokenAgents: [] });
 
     render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={["/space/my-space"]}>
         <Sidebar />
       </MemoryRouter>,
     );
@@ -625,25 +615,12 @@ describe("Sidebar Needs Repair rows", () => {
     expect(screen.queryByText(/needs repair/i)).toBeNull();
   });
 
-  it("renders broken-agent rows inside the expanded space with an amber pulsing dot", () => {
+  it("renders a stamped broken agent as a static red dot with a tooltip", () => {
     act(() => {
-      withStore([]);
-    });
-    useStore.setState({
-      brokenAgents: [
-        {
-          name: "ghost-agent",
-          space_id: 1,
-          model: { name: "ghost-model" },
-          status: "model_missing",
-        },
-        {
-          name: "second-ghost",
-          space_id: 1,
-          model: { name: "other-missing" },
-          status: "model_missing",
-        },
-      ],
+      withStore([
+        { name: "ghost-agent", status: "model_missing" },
+        { name: "second-ghost", status: "model_missing" },
+      ]);
     });
 
     render(
@@ -652,37 +629,20 @@ describe("Sidebar Needs Repair rows", () => {
       </MemoryRouter>,
     );
 
-    // The inline heading is visible inside the space's tree.
-    expect(screen.getByText(/needs repair/i)).toBeInTheDocument();
-    // Both names render as links pointing at the space-scoped route.
-    const ghostLinks = screen.getAllByRole("link", {
-      name: /ghost-agent/i,
-    });
-    expect(ghostLinks.length).toBeGreaterThan(0);
-    expect(ghostLinks[0].getAttribute("href")).toBe(
-      "/space/my-space/agent/ghost-agent",
-    );
-    expect(screen.getByText(/second-ghost/i)).toBeInTheDocument();
+    expect(screen.queryByText(/needs repair/i)).toBeNull();
 
-    // Each row carries the amber pulsing dot — one per broken agent
-    // (the agents list is empty here, so no executing_tools dots).
-    const amberDots = document.querySelectorAll(".animate-pulse.bg-amber-500");
-    expect(amberDots.length).toBe(2);
+    const dots = screen.getAllByRole("img", { name: "Model missing" });
+    expect(dots.length).toBe(2);
+    for (const dot of dots) {
+      expect(dot.className).toContain("bg-red-500");
+      expect(dot.className).not.toContain("animate-pulse");
+      expect(dot.getAttribute("title")).toBe("Model missing");
+    }
   });
 
-  it("clicking a broken-agent row navigates to the space-scoped chat path", () => {
+  it("keeps the broken agent reachable on its space-scoped chat path", () => {
     act(() => {
-      withStore([]);
-    });
-    useStore.setState({
-      brokenAgents: [
-        {
-          name: "ghost-agent",
-          space_id: 1,
-          model: { name: "ghost-model" },
-          status: "model_missing",
-        },
-      ],
+      withStore([{ name: "ghost-agent", status: "model_missing" }]);
     });
 
     render(
@@ -691,33 +651,45 @@ describe("Sidebar Needs Repair rows", () => {
       </MemoryRouter>,
     );
 
-    const link = screen.getByRole("link", { name: /ghost-agent/i });
+    const link = screen.getByRole("link", { name: /ghost-agent/ });
     expect(link.getAttribute("href")).toBe("/space/my-space/agent/ghost-agent");
   });
 
-  it("scopes broken agents to their own space", () => {
+  it("shows a healthy agent's dot unchanged next to a broken one", () => {
+    act(() => {
+      withStore([
+        { name: "ghost-agent", status: "model_missing" },
+        { name: "healthy", status: "streaming" },
+      ]);
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/space/my-space"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    expect(
+      screen.getByRole("img", { name: "Model missing" }),
+    ).toBeInTheDocument();
+    const healthy = screen.getByRole("img", { name: "Streaming" });
+    expect(healthy.className).toContain("bg-green-500");
+    expect(healthy.className).toContain("animate-pulse");
+  });
+
+  it("scopes a broken agent to its own space", () => {
     act(() => {
       withStore([]);
-    });
-    useStore.setState({
-      spaces: [
-        { id: 1, slug: "space-a", name: "Space A" },
-        { id: 2, slug: "space-b", name: "Space B" },
-      ],
-      brokenAgents: [
-        {
-          name: "broken-a",
-          space_id: 1,
-          model: { name: "ghost-model" },
-          status: "model_missing",
-        },
-        {
-          name: "broken-b",
-          space_id: 2,
-          model: { name: "ghost-model" },
-          status: "model_missing",
-        },
-      ],
+      useStore.setState({
+        spaces: [
+          { id: 1, slug: "space-a", name: "Space A" },
+          { id: 2, slug: "space-b", name: "Space B" },
+        ],
+        agents: [
+          { name: "broken-a", space_id: 1, status: "model_missing" },
+          { name: "broken-b", space_id: 2, status: "model_missing" },
+        ],
+      });
     });
 
     render(
@@ -726,9 +698,9 @@ describe("Sidebar Needs Repair rows", () => {
       </MemoryRouter>,
     );
 
-    // Space A is the route-selected/expanded space, so its broken
-    // agent renders with the correct space-scoped path.
-    const linkA = screen.getByRole("link", { name: /broken-a/i });
+    // Space A is the route-selected/expanded space, so its broken agent
+    // renders with the correct space-scoped path.
+    const linkA = screen.getByRole("link", { name: /broken-a/ });
     expect(linkA.getAttribute("href")).toBe("/space/space-a/agent/broken-a");
 
     // Space B is collapsed, so its broken agent is not rendered.

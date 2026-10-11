@@ -225,7 +225,6 @@ export function SpaceRow({
   space,
   spaceAgents,
   spaceArchivedAgents = [],
-  spaceBrokenAgents,
   location,
 }) {
   const selected = isSpaceActive(location, space);
@@ -307,44 +306,6 @@ export function SpaceRow({
               spaceSlug={space.slug}
             />
           ))}
-          {spaceBrokenAgents.length > 0 && (
-            <li className="pl-3 mt-2">
-              <p className="text-xs font-semibold text-amber-700 uppercase tracking-wider mb-1">
-                Needs Repair
-              </p>
-              <ul className="space-y-1">
-                {spaceBrokenAgents.map((entry) => {
-                  const path = `/space/${space.slug}/agent/${encodeURIComponent(entry.name)}`;
-                  const isCurrent = location.pathname === path;
-                  return (
-                    <li key={entry.name}>
-                      <div
-                        className={`
-                          flex items-center justify-between rounded-lg group
-                          transition-colors duration-200
-                          ${
-                            isCurrent
-                              ? "bg-amber-50 text-amber-800 border border-amber-200"
-                              : "text-gray-700 hover:bg-amber-50"
-                          }
-                        `}
-                      >
-                        <Link
-                          to={path}
-                          className="flex items-center gap-2 min-w-0 flex-1 px-3 py-2"
-                        >
-                          <div className="w-2 h-2 rounded-full flex-shrink-0 bg-amber-500 animate-pulse" />
-                          <span className="truncate text-sm font-medium">
-                            {entry.name}
-                          </span>
-                        </Link>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            </li>
-          )}
           <ArchivedGroup
             nodes={archivedRoots}
             depth={0}

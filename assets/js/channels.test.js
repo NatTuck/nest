@@ -379,18 +379,28 @@ describe("channels", () => {
       // follow-up — without it the broken agents would never
       // appear in the sidebar's broken list.
       setNextJoinResult("lobby", {
-        autoInit: { agents: [], models: [], broken_agents: [] },
+        autoInit: {
+          agents: [{ name: "ghost-agent", space_id: 7, status: "idle" }],
+          models: [],
+          broken_agents: [],
+        },
       });
       joinLobby();
 
       await vi.waitFor(() => {
-        assert.deepStrictEqual(useStore.getState().brokenAgents, []);
+        assert.strictEqual(useStore.getState().agents.length, 1);
       });
+
+      // A persisted agent with no live process is listed with a
+      // placeholder `idle`; the stamp is what makes it read as broken.
+      assert.strictEqual(useStore.getState().agents[0].status, "idle");
+      assert.deepStrictEqual(useStore.getState().brokenAgents, []);
 
       simulateServerEvent("lobby", "broken_agents_updated", {
         broken_agents: [
           {
             name: "ghost-agent",
+            space_id: 7,
             model: { name: "ghost-model" },
             status: "model_missing",
           },
@@ -404,6 +414,10 @@ describe("channels", () => {
           "ghost-agent",
         );
       });
+
+      // #53: the flat-list row carries the reason too, so the sidebar
+      // renders a red "Model missing" dot instead of a neutral "Idle".
+      assert.strictEqual(useStore.getState().agents[0].status, "model_missing");
     });
 
     it("should apply a space-scoped agent:status frame to the flat list", async () => {

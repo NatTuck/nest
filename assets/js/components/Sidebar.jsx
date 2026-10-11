@@ -28,7 +28,6 @@ export function Sidebar() {
   const {
     agents,
     archivedAgents,
-    brokenAgents,
     spaces,
     archivedSpaces,
     archivedCollapsed,
@@ -101,9 +100,6 @@ export function Sidebar() {
                   space={space}
                   spaceAgents={agents.filter((a) => a.space_id === space.id)}
                   spaceArchivedAgents={archivedAgents.filter(
-                    (a) => a.space_id === space.id,
-                  )}
-                  spaceBrokenAgents={brokenAgents.filter(
                     (a) => a.space_id === space.id,
                   )}
                   location={location}

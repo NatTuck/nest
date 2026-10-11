@@ -29,6 +29,7 @@ export function joinLobby(onOk, onError) {
     store.setAgents(payload.agents || []);
     store.setArchivedAgents(payload.archived_agents || []);
     store.setBrokenAgents(payload.broken_agents || []);
+    store.applyAgentStatuses(payload.broken_agents || []);
     store.setModels(payload.models || []);
     store.setVocations(payload.vocations || []);
     store.setProviders(payload.providers || []);
@@ -61,6 +62,7 @@ export function joinLobby(onOk, onError) {
   lobbyChannel.on("broken_agents_updated", (payload) => {
     const store = getStore();
     store.setBrokenAgents(payload.broken_agents || []);
+    store.applyAgentStatuses(payload.broken_agents || []);
   });
 
   lobbyChannel.on("agent:created", (payload) => {

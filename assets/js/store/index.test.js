@@ -4922,4 +4922,104 @@ describe("store", () => {
       expect(useStore.getState().agents).toEqual(before);
     });
   });
+
+  describe("applyAgentStatuses (#53)", () => {
+    // The lobby's `broken_agents` payload names the reason an agent cannot
+    // start. Stamping it onto the flat list is what turns a persisted
+    // agent's placeholder `idle` row into a red "Model missing" dot.
+    const seed = () =>
+      useStore.getState().setAgents([
+        { name: "ghost", space_id: 1, status: "idle" },
+        { name: "healthy", space_id: 1, status: "idle" },
+        { name: "ghost", space_id: 2, status: "idle" },
+      ]);
+
+    it("stamps the broken status onto the matching {space_id, name} row", () => {
+      seed();
+
+      useStore
+        .getState()
+        .applyAgentStatuses([
+          { name: "ghost", space_id: 1, status: "model_missing" },
+        ]);
+
+      const after = useStore.getState().agents;
+      expect(after[0].status).toBe("model_missing");
+    });
+
+    it("does not stamp the same name in another space", () => {
+      seed();
+
+      useStore
+        .getState()
+        .applyAgentStatuses([
+          { name: "ghost", space_id: 1, status: "model_missing" },
+        ]);
+
+      const after = useStore.getState().agents;
+      expect(after[2].status).toBe("idle");
+      expect(after[2].space_id).toBe(2);
+    });
+
+    it("leaves a healthy agent's row untouched", () => {
+      seed();
+      const before = useStore.getState().agents;
+
+      useStore
+        .getState()
+        .applyAgentStatuses([
+          { name: "ghost", space_id: 1, status: "model_missing" },
+        ]);
+
+      const after = useStore.getState().agents;
+      expect(after[1]).toBe(before[1]);
+      expect(after[2]).toBe(before[2]);
+    });
+
+    it("is a no-op for an empty payload", () => {
+      seed();
+      const before = useStore.getState().agents;
+
+      useStore.getState().applyAgentStatuses([]);
+
+      expect(useStore.getState().agents).toEqual(before);
+    });
+
+    it("is a no-op when no row matches the payload", () => {
+      seed();
+      const before = useStore.getState().agents;
+
+      useStore
+        .getState()
+        .applyAgentStatuses([
+          { name: "someone-elses-agent", space_id: 1, status: "model_missing" },
+        ]);
+
+      expect(useStore.getState().agents).toEqual(before);
+    });
+
+    it("keeps the row's identity when the status already matches", () => {
+      useStore
+        .getState()
+        .setAgents([{ name: "ghost", space_id: 1, status: "model_missing" }]);
+      const before = useStore.getState().agents;
+
+      useStore
+        .getState()
+        .applyAgentStatuses([
+          { name: "ghost", space_id: 1, status: "model_missing" },
+        ]);
+
+      expect(useStore.getState().agents[0]).toBe(before[0]);
+    });
+
+    it("tolerates a missing payload", () => {
+      seed();
+      const before = useStore.getState().agents;
+
+      useStore.getState().applyAgentStatuses(undefined);
+
+      expect(useStore.getState().agents).toEqual(before);
+    });
+  });
 });
