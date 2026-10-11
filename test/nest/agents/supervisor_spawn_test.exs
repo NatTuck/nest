@@ -30,6 +30,7 @@ defmodule Nest.Agents.SupervisorSpawnTest do
 
   alias Nest.Agents
   alias Nest.Agents.Agent.Config
+  alias Nest.Agents.Agent.TmpSpace
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Supervisor
   alias Nest.Blueprints
@@ -60,6 +61,21 @@ defmodule Nest.Agents.SupervisorSpawnTest do
   end
 
   defp test_model, do: %{name: "qwen3.5-plus", provider: "model-studio"}
+
+  defp agent_count(space_id) do
+    Nest.Repo.one(from(a in "agents", where: a.space_id == ^space_id, select: count(a.id)))
+  end
+
+  defp message_count(space_id) do
+    Nest.Repo.one(
+      from(m in "messages",
+        join: a in "agents",
+        on: m.agent_id == a.id,
+        where: a.space_id == ^space_id,
+        select: count(m.id)
+      )
+    )
+  end
 
   defp fresh_vocation do
     {:ok, vocation} =
@@ -305,6 +321,44 @@ defmodule Nest.Agents.SupervisorSpawnTest do
       assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name, vocation.slug)
 
       on_exit(fn -> _ = Supervisor.stop_agent(space.id, name) end)
+    end
+  end
+
+  describe "a failed spawn" do
+    test "leaves no orphan row, so the same name can be spawned again", %{space_id: space_id} do
+      state = coordinator_state(space_id)
+      name = "spawn-rollback-#{System.unique_integer([:positive])}"
+      space_dir = TmpSpace.space_dir(space_id)
+
+      # Make the child's `init/1` fail deterministically: `TmpSpace.create/2`
+      # does `File.mkdir_p!` on the child's own scratch dir, so a *file*
+      # where that directory belongs raises `File.Error` during the start.
+      File.mkdir_p!(space_dir)
+      blocker = Path.join(space_dir, name)
+      File.write!(blocker, "not a directory")
+
+      on_exit(fn -> File.rm(blocker) end)
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert {:error, _reason} = Supervisor.spawn_agent_in_space(state, name)
+        end)
+
+      # The row the spawn pre-spawned is gone (and its system message with
+      # it), so the space holds only the coordinator — and the name is free
+      # again rather than blocked by an orphan.
+      assert Nest.Persistence.fetch_agent(space_id, name) == {:error, :not_found}
+      assert agent_count(space_id) == 1
+      assert message_count(space_id) == 1
+      assert log =~ "failed to start"
+
+      File.rm!(blocker)
+
+      assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name)
+      on_exit(fn -> _ = Supervisor.stop_agent(space_id, name) end)
+
+      assert {:ok, _row} = Nest.Persistence.fetch_agent(space_id, name)
+      assert agent_count(space_id) == 2
     end
   end
 

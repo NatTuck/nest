@@ -28,6 +28,7 @@ defmodule Nest.Agents.SupervisorSubagentTest do
 
   import Eventually
 
+  alias Nest.Agents.Agent.TmpSpace
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.ChildRegistry
   alias Nest.Agents.Registry, as: AgentsRegistry
@@ -47,6 +48,41 @@ defmodule Nest.Agents.SupervisorSubagentTest do
   end
 
   describe "start_agent_with_parent/2" do
+    test "a failed clone leaves no orphan row, and a later clone still starts", %{vid: vid} do
+      {:ok, parent_name, parent_pid, _parent_id} = start_root_parent(vid)
+      parent_state = read_parent_state(parent_name, parent_pid)
+      space_id = AgentTestHelpers.current_space_id()
+      space_dir = TmpSpace.space_dir(space_id)
+
+      # A clone's name is generated, so the blocker has to catch *any* name:
+      # replacing the space directory with a file makes `TmpSpace.create/2`'s
+      # `File.mkdir_p!` raise `File.Error` for whichever child name comes out,
+      # so the clone's `init/1` fails before the process starts.
+      File.rm_rf!(space_dir)
+      File.write!(space_dir, "not a directory")
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert {:error, _reason} =
+                   Supervisor.start_agent_with_parent(parent_state, "do a thing")
+        end)
+
+      # Only the parent's row is left: the clone's pre-spawned row (and its
+      # system message) is gone, so nothing is left blocking a name.
+      assert agent_count(space_id) == 1
+      assert log =~ "failed to start"
+
+      # With the space dir back, a clone starts normally.
+      File.rm!(space_dir)
+      File.mkdir_p!(space_dir)
+
+      assert {:ok, child_name} = Supervisor.start_agent_with_parent(parent_state, "do a thing")
+      assert {:ok, _row} = Persistence.fetch_agent(space_id, child_name)
+      assert agent_count(space_id) == 2
+
+      safe_stop(space_id, child_name)
+    end
+
     test "spawns a child whose row carries the parent's id and depth+1", %{vid: vid} do
       {:ok, parent_name, parent_pid, parent_id} = start_root_parent(vid)
 
@@ -331,6 +367,10 @@ defmodule Nest.Agents.SupervisorSubagentTest do
   # to `AgentTestHelpers.wait_for_pid_down/2` so the
   # parallel-test ownership race window is closed (the agent's
   # mailbox can't fire DB calls after `terminate/2` finishes).
+  defp agent_count(space_id) do
+    Nest.Repo.one(from(a in "agents", where: a.space_id == ^space_id, select: count(a.id)))
+  end
+
   defp safe_stop(space_id, name) do
     _ = Supervisor.stop_agent(space_id, name)
     AgentTestHelpers.wait_for_pid_down(space_id, name)

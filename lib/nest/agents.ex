@@ -15,8 +15,6 @@ defmodule Nest.Agents do
   alias Nest.Persistence
   alias Nest.Vocations
 
-  require Logger
-
   @doc """
   Creates a new agent with the given model in `space_id`.
 
@@ -63,32 +61,19 @@ defmodule Nest.Agents do
 
     with :ok <- Nest.Sandbox.workspace_error(attrs.workspace_path),
          {:ok, agent_id} <- Agent.pre_spawn(attrs) do
-      start_created_agent(space_id, attrs, agent_id)
+      start_pre_spawned_agent(attrs, agent_id, space_id)
     end
   end
 
-  # Start the process for a row `pre_spawn/1` just inserted.
-  #
-  # The row (and its index-0 system message) is in the DB before the
-  # process exists, so a start that fails would leave an orphan row that
-  # also blocks every retry with the same name
-  # (`unique_constraint([:space_id, :name])`). Roll the row back — by
-  # `agent_id`, never by name, so this can only ever remove the row *this*
-  # call inserted.
-  defp start_created_agent(space_id, attrs, agent_id) do
-    case Supervisor.fetch_or_start_agent(space_id, attrs) do
-      {:ok, name} ->
-        {:ok, name}
-
-      {:error, reason} ->
-        Logger.warning(
-          "Agent #{attrs.space_id}/#{attrs.name} (id #{agent_id}) failed to start " <>
-            "(#{inspect(reason)}); removing the row it pre-spawned"
-        )
-
-        Persistence.delete_agent_by_id(agent_id)
-        {:error, reason}
-    end
+  # The row (and its index-0 system message) is in the DB before the process
+  # exists, so a start that fails — or raises, e.g. inside
+  # `Agent.pre_load_heal/1` — would leave an orphan row that also blocks every
+  # retry with the same name (`unique_constraint([:space_id, :name])`).
+  # `start_pre_spawned/3` rolls that row back, by `agent_id`.
+  defp start_pre_spawned_agent(attrs, agent_id, space_id) do
+    Supervisor.start_pre_spawned(attrs, agent_id, fn ->
+      Supervisor.fetch_or_start_agent(space_id, attrs)
+    end)
   end
 
   defp name_or_generate(space_id, opts) do

@@ -199,6 +199,28 @@ defmodule Nest.AgentsTest do
       assert {:ok, _row} = Nest.Persistence.fetch_agent(space_id, name)
       assert message_count(space_id) == 1
     end
+
+    test "rolls back the pre-spawned row when the start raises" do
+      # The cleanup is not only for `{:error, _}` returns: `fetch_or_start_agent`
+      # runs `Agent.pre_load_heal/1` between the pre-spawn and the start, and an
+      # exception there used to leave the row behind with no process to own it.
+      # The exception is re-raised untouched — it is the caller's failure to
+      # report, not the rollback's to swallow.
+      space_id = AgentTestHelpers.current_space_id()
+      name = fresh_name()
+
+      Mimic.stub(Nest.Agents.Agent, :pre_load_heal, fn _attrs -> raise "heal exploded" end)
+
+      assert_raise RuntimeError, "heal exploded", fn ->
+        Agents.create_agent(space_id, %{name: "qwen3.5-plus", provider: "model-studio"},
+          name: name,
+          vocation_id: AgentTestHelpers.vocation_id_for_test()
+        )
+      end
+
+      assert Nest.Persistence.fetch_agent(space_id, name) == {:error, :not_found}
+      assert message_count(space_id) == 0
+    end
   end
 
   # Every persisted message belonging to any agent in `space_id`.
