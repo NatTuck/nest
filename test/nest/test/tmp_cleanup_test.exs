@@ -12,20 +12,45 @@ defmodule Nest.Test.TmpCleanupTest do
     {:ok, dir: dir}
   end
 
-  test "removes a path that contains the marker", %{dir: dir} do
+  test "removes a path that contains the marker and sits under a temp root", %{dir: dir} do
     File.write!(Path.join(dir, "f"), "x")
 
     assert :ok = rm_tmp!(dir, "nest_tmp_cleanup_test_")
     refute File.exists?(dir)
   end
 
+  test "removes a path under the project-relative _build/tmp root" do
+    dir =
+      Path.join([
+        File.cwd!(),
+        "_build",
+        "tmp",
+        "nest_tmp_cleanup_test_build_#{System.unique_integer([:positive])}"
+      ])
+
+    File.mkdir_p!(dir)
+
+    assert :ok = rm_tmp!(dir, "nest_tmp_cleanup_test_build_")
+    refute File.exists?(dir)
+  end
+
   test "refuses a path without the marker, or an empty marker", %{dir: dir} do
-    assert_raise ArgumentError, ~r/refusing to rm_rf/, fn ->
+    assert_raise ArgumentError, ~r/does not contain the expected temp marker/, fn ->
       rm_tmp!(dir, "nope_")
     end
 
     assert_raise ArgumentError, ~r/non-empty/, fn ->
       rm_tmp!(dir, "")
+    end
+
+    assert File.dir?(dir)
+  end
+
+  test "refuses a path outside the permitted temp roots, even with a valid marker", %{dir: dir} do
+    outside = Path.join(File.cwd!(), "nest_tmp_cleanup_test_outside")
+
+    assert_raise ArgumentError, ~r/not under a permitted temp root/, fn ->
+      rm_tmp!(outside, "nest_tmp_cleanup_test_")
     end
 
     assert File.dir?(dir)

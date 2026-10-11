@@ -78,7 +78,7 @@ defmodule Nest.Agents.AgentAgentsMdTest do
         ])
 
       File.mkdir_p!(workspace_path)
-      on_exit(fn -> rm_tmp!(workspace_path, "nest-tmp") end)
+      on_exit(fn -> rm_tmp!(workspace_path, "nest-tmp-agents-md-") end)
 
       File.write!(
         Path.join(workspace_path, "AGENTS.md"),
@@ -118,7 +118,7 @@ defmodule Nest.Agents.AgentAgentsMdTest do
 
       File.mkdir_p!(workspace_path)
 
-      on_exit(fn -> rm_tmp!(workspace_path, "nest-tmp") end)
+      on_exit(fn -> rm_tmp!(workspace_path, "nest-tmp-agents-md-") end)
 
       MockClient.set_response("OK")
 
@@ -167,7 +167,7 @@ defmodule Nest.Agents.AgentAgentsMdTest do
         ])
 
       File.mkdir_p!(workspace_path)
-      on_exit(fn -> rm_tmp!(workspace_path, "nest-tmp") end)
+      on_exit(fn -> rm_tmp!(workspace_path, "nest-tmp-agents-md-") end)
 
       agents_md_path = Path.join(workspace_path, "AGENTS.md")
 

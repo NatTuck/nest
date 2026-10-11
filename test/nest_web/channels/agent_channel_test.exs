@@ -8,6 +8,8 @@ defmodule NestWeb.AgentChannelTest do
 
   import Mimic
 
+  import Nest.Test.TmpCleanup
+
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Messages.Assistant
   alias Nest.Messages.Part
@@ -389,7 +391,7 @@ defmodule NestWeb.AgentChannelTest do
       on_exit(fn -> ShellJobs.stop_all(key) end)
 
       on_exit(fn ->
-        if String.contains?(tmp, "nest_ch"), do: File.rm_rf(Path.dirname(Path.dirname(tmp)))
+        rm_tmp!(Path.dirname(Path.dirname(tmp)), "nest_ch")
       end)
 
       assert {:ok, _} =
@@ -432,7 +434,7 @@ defmodule NestWeb.AgentChannelTest do
       on_exit(fn -> ShellJobs.stop_all(key) end)
 
       on_exit(fn ->
-        if String.contains?(tmp, "nest_ch"), do: File.rm_rf(Path.dirname(Path.dirname(tmp)))
+        rm_tmp!(Path.dirname(Path.dirname(tmp)), "nest_ch")
       end)
 
       assert {:ok, _} =

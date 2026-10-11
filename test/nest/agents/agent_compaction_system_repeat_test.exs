@@ -253,7 +253,7 @@ defmodule Nest.Agents.AgentCompactionSystemRepeatTest do
         ])
 
       File.mkdir_p!(workspace_path)
-      on_exit(fn -> rm_tmp!(workspace_path, "nest-tmp") end)
+      on_exit(fn -> rm_tmp!(workspace_path, "nest-tmp-system-repeat-") end)
 
       agents_md_path = Path.join(workspace_path, "AGENTS.md")
 
