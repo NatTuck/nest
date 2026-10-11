@@ -54,7 +54,8 @@ defmodule Nest.Tools.ShellPipes do
   A heredoc delimiter undergoes quote removal only (POSIX 2.7.4), so `$` and
   backticks in it are literal: `cat <<$F` names the delimiter `$F`, and its body
   is skipped exactly as bash skips it. The one shape this tokenizer cannot model
-  is an embedded quote (`cat <<E'OF'` is the delimiter `EOF`); there it falls
+  is a delimiter with an embedded quote or `(` (`cat <<E'OF'` is the delimiter
+  `EOF` in bash, while `cat <<$(echo X)` is not resolved here); there it falls
   back to a conservative sentinel — the rest of the current line is still
   scanned, and everything from the next newline on is treated as the body (a
   miss, never a false positive).
@@ -294,9 +295,9 @@ defmodule Nest.Tools.ShellPipes do
         )
 
       :unknown ->
-        # The delimiter is a parameter expansion (`cat <<$F`), so its terminator
-        # cannot be known. Keep scanning the rest of the current line — a pipe
-        # there (`cat <<$F | head`) is real — and let `skip_heredocs/2` drop
+        # The delimiter has an embedded quote or `(` (`<<E'OF'`, `<<$(cmd)`), so
+        # its exact text is not knowable here. Keep scanning the rest of the
+        # current line — a pipe there is real — and let `skip_heredocs/2` drop
         # everything from the next newline on as the body.
         scan(rest, :normal, [], push_op(flush(word, tokens), op), pending ++ [{:unknown, false}])
 
@@ -306,10 +307,10 @@ defmodule Nest.Tools.ShellPipes do
   end
 
   # Returns `{:ok, delim, rest}` for a delimiter, `:unknown` when the delimiter
-  # is a parameter expansion (bash resolves it, so we cannot), or `:error` when
-  # this `<<` is not a heredoc at all. A leading `\` quotes the delimiter
-  # (`<<\EOF`), and a quoted delimiter is read to its matching quote so
-  # `<<'E OF'` works.
+  # has an embedded quote or `(` (`<<E'OF'`, `<<$(cmd)`) that this tokenizer
+  # cannot read as one word, or `:error` when this `<<` is not a heredoc at all.
+  # A leading `\` quotes the delimiter (`<<\EOF`), and a quoted delimiter is read
+  # to its matching quote so `<<'E OF'` works.
   defp take_heredoc_delim(input) do
     input = skip_blanks(input)
 
@@ -321,9 +322,9 @@ defmodule Nest.Tools.ShellPipes do
   end
 
   # A heredoc delimiter undergoes quote removal only (POSIX 2.7.4), so `$` and
-  # backticks are literal (`<<$F` names the delimiter `$F`). The one shape this
-  # tokenizer cannot model is an embedded quote (`<<E'OF'` is the delimiter
-  # `EOF`), which falls back to the conservative sentinel.
+  # backticks are literal (`<<$F` names the delimiter `$F`). A delimiter with an
+  # embedded quote or `(` (`<<E'OF'` is `EOF`, `<<$(cmd)` is not read as one
+  # word) falls back to the conservative sentinel.
   defp unquoted_delim(input) do
     case take_word(input) do
       {"", _rest} -> :error
@@ -365,8 +366,9 @@ defmodule Nest.Tools.ShellPipes do
   # delimiter is seen, in order.
   defp skip_heredocs(input, []), do: {input, []}
 
-  # A heredoc with an unknowable delimiter (`<<$F`): everything from here is
-  # treated as the body, so the scan stops.
+  # A heredoc whose delimiter has an embedded quote or `(` (`<<E'OF'`): the
+  # delimiter is not knowable here, so everything from this newline on is
+  # treated as the body and the scan stops.
   defp skip_heredocs(_input, [{:unknown, _strip_tabs} | _pending]), do: {<<>>, []}
 
   defp skip_heredocs(input, [{delim, strip_tabs} | pending]) do
