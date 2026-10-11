@@ -329,5 +329,5 @@ Eliminate the architectural mismatch between Phoenix Channels + Zustand + React 
 ## Verification steps (after all changes)
 
 1. `mix precommit` — backend changes, Elixir tests, credo, format.
-2. `pnpm vitest run --no-color --reporter=verbose > /tmp/vitest-final.log 2>&1` — JS tests. Grep `^stderr |` to count warnings.
+2. `pnpm vitest run --no-color --reporter=default > /tmp/vitest-final.log 2>&1` — JS tests. Grep `^stderr |` to count warnings.
 3. Manual smoke: load each route (`/`, `/login`, `/register`, `/new_agent`, `/agent/foo`, `/about`, `/invites`) and verify routing, login, register, invite list/create/revoke, logout.
