@@ -25,7 +25,7 @@ defmodule Nest.Test.TmpCleanup do
   `marker` is the fixture's own identifying name fragment (e.g.
   `"nest_tools_test_"`), which is also part of the path by construction.
   """
-  @spec rm_tmp!(Path.t(), String.t()) :: :ok
+  @spec rm_tmp!(String.t(), String.t()) :: :ok
   def rm_tmp!(path, marker) when is_binary(path) and is_binary(marker) do
     cond do
       marker == "" ->

@@ -47,13 +47,26 @@ defmodule Nest.Test.TmpCleanupTest do
     assert File.dir?(dir)
   end
 
-  test "refuses a path outside the permitted temp roots, even with a valid marker", %{dir: dir} do
-    outside = Path.join(File.cwd!(), "nest_tmp_cleanup_test_outside")
+  test "refuses a path outside the permitted temp roots, even with a valid marker" do
+    outside =
+      Path.join(
+        File.cwd!(),
+        "nest_tmp_cleanup_test_outside_#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(outside)
+
+    # `outside` is deliberately not under a permitted temp root, so the helper
+    # cannot remove it; guard the direct `rm_rf` with the marker instead.
+    on_exit(fn ->
+      if String.contains?(outside, "nest_tmp_cleanup_test_outside"), do: File.rm_rf(outside)
+    end)
 
     assert_raise ArgumentError, ~r/not under a permitted temp root/, fn ->
       rm_tmp!(outside, "nest_tmp_cleanup_test_")
     end
 
-    assert File.dir?(dir)
+    # The refusal must leave the path it refused to remove untouched.
+    assert File.dir?(outside)
   end
 end
