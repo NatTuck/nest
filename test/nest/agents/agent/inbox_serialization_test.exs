@@ -11,6 +11,8 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
 
   use ExUnit.Case, async: true
 
+  import Nest.Test.TmpCleanup
+
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Inbox
 
@@ -345,7 +347,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
       # caller that fetched the body recognises the file it names.
       dir = Path.join(System.tmp_dir!(), "inbox-id-#{System.unique_integer([:positive])}")
       File.mkdir_p!(dir)
-      on_exit(fn -> File.rm_rf!(dir) end)
+      on_exit(fn -> rm_tmp!(dir, "inbox-id-") end)
 
       state = %Agent{name: "offload-id", space_id: 1, tmp_path: dir}
       first = %{entry(:agent, "peer", "hello world", nil, "firstid") | content: @oversized}

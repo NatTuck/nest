@@ -231,14 +231,23 @@ defmodule Nest.Agents.Agent.Watch do
 
       {:shell_job_exit, ^id, code} ->
         ShellJobs.unsubscribe(key, id, self())
-        {:ok, output} = ShellJobs.output(key, id)
-        {:event, ShellJobs.result_text(id, code, output)}
+        {:event, shell_result(key, id, code)}
     after
       timeout ->
         ShellJobs.unsubscribe(key, id, self())
 
         {:event,
          "Timed out after #{timeout}ms waiting for background job #{id}; it is still running."}
+    end
+  end
+
+  # `output/2` returns `{:error, :not_found}` once the job is gone (it can be
+  # dropped as the agent stops), so this must not hard-match: a crash here would
+  # leave the watch uncleared and deliver no wake.
+  defp shell_result(key, id, code) do
+    case ShellJobs.output(key, id) do
+      {:ok, output} -> ShellJobs.result_text(id, code, output)
+      {:error, _} -> "Background job #{id} exited with code #{code} (output no longer available)."
     end
   end
 

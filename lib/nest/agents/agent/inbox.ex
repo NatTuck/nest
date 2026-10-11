@@ -529,8 +529,32 @@ defmodule Nest.Agents.Agent.Inbox do
   # The delivery-id and consume API lives in `Delivery` (issue #62); these
   # delegates keep `Inbox` the one public surface for a queued entry.
   defdelegate new_id, to: Delivery
+  defdelegate retrieved?(entry), to: Delivery
   defdelegate consume(entries, batch), to: Delivery
   defdelegate take_last(entries, name), to: Delivery
+
+  @doc """
+  Drop every retrieved entry from the queue, rebroadcasting when anything went.
+
+  A retrieved entry is already consumed (`agents-last-message` took its body),
+  so `batch/1` skips it; when it is all that is queued the drain peeks `:empty`
+  and never consumes. The executor calls this from its drain's empty branch so
+  the queue cannot fill with dead entries and eventually refuse peers at
+  `@max_inbox_size` (issue #62). Nothing is delivered, so it records no
+  `Timeline.drained` event.
+  """
+  @spec prune_retrieved(Agent.t()) :: Agent.t()
+  def prune_retrieved(state) do
+    remaining = Enum.reject(state.live.inbox, &Delivery.retrieved?/1)
+
+    if length(remaining) == length(state.live.inbox) do
+      state
+    else
+      state = %{state | live: %{state.live | inbox: remaining}}
+      broadcast(state)
+      state
+    end
+  end
 
   @doc """
   The senders a delivered batch obliges this agent to answer: one name per

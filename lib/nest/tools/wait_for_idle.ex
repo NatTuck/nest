@@ -37,8 +37,10 @@ defmodule Nest.Tools.WaitForIdle do
           "This call carries NO message content — use `agents-last-message` to " <>
           "read an agent's message once it is idle. An idle peer owes no " <>
           "replies: a peer you queried does not go idle until it has answered " <>
-          "you or the runtime has given up on it. Use this when you cannot " <>
-          "continue until a peer has finished.",
+          "you or the runtime has given up on it. A give-up reaches you as a " <>
+          "runtime notice — unless the runtime cannot reach you, in which case " <>
+          "it only records the refusal. Use this when you cannot continue " <>
+          "until a peer has finished.",
       parameters_schema: %{
         "type" => "object",
         "properties" => %{

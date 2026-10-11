@@ -213,6 +213,8 @@ defmodule Nest.ToolsTest do
       assert (wait.parameters_schema["required"] || []) == []
       assert wait.description =~ "carries NO message content"
       assert wait.description =~ "returns immediately"
+      assert wait.description =~ "give-up reaches you as a runtime notice"
+      assert wait.description =~ "only records the refusal"
 
       fetch = Tools.get_function("agents-last-message", "/tmp")
       assert fetch.name == "agents-last-message"

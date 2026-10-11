@@ -266,6 +266,13 @@ defmodule Nest.Agents.Agent.WatchTest do
   # target's own delivery wakes it with the report **exactly once**, and the
   # watch (satisfied by that delivery) fires only to be skipped — never a
   # second, bare wake.
+  #
+  # This rests on the settle loop's target-side ordering: the completion is sent
+  # *before* the status broadcast, so a delivery is always in the caller's inbox
+  # by the time idle is observable (`turn.ex:63-70` — "Effects land before the
+  # status change is announced"). A refactor that broadcast the status first
+  # would break the premise, so the assertion below is deliberately on the wake,
+  # not just on the watch being cleared.
   test "the target's delivery wakes the idle caller exactly once", %{
     pid: pid,
     name: name,
@@ -289,13 +296,17 @@ defmodule Nest.Agents.Agent.WatchTest do
     assert {:ok, :delivered} = Agent.deliver_internal(pid, "bob", "the report", :agent)
 
     # The watcher fires within a slice and finds the watch satisfied: the caller
-    # is not woken a second time.
+    # is not woken a second time. `fired/3` unregisters before delivering, so
+    # assert the wake itself too — exactly one user turn (the report), no bare
+    # notice in the transcript or still queued.
     assert Eventually.eventually(fn -> watchers(pid) == %{} end, timeout: 500)
     await_idle(pid)
 
     texts = notices(pid)
+    assert length(texts) == 1
     assert Enum.count(texts, &(&1 =~ "the report")) == 1
     refute Enum.any?(texts, &(&1 =~ "Agents now idle"))
+    refute Enum.any?(:sys.get_state(pid).live.inbox, &(&1.kind == :notice))
   end
 
   # The second variant: the caller is busy when the report arrives, so it

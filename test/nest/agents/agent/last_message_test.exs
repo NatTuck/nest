@@ -119,6 +119,34 @@ defmodule Nest.Agents.Agent.LastMessageTest do
     assert content == "No undelivered message from agent nobody."
   end
 
+  test "a fetched entry is pruned when the turn ends; fetch cycles do not accumulate", %{
+    pid: pid,
+    name: name,
+    space_id: space_id
+  } do
+    # M1 regression. `Inbox.batch/1` skips a retrieved entry, so a queue that
+    # holds only retrieved entries peeks `:empty` and the consume never runs.
+    # Without the executor's prune the entry would sit there forever and, at
+    # `@max_inbox_size` (100), `handle_delivery` would start refusing peers with
+    # `:inbox_full`. Drive the exact workflow that reaches it: mid-turn peer
+    # delivery → `agents-last-message` → the turn ends.
+    Enum.each(1..11, fn n ->
+      set_busy(pid)
+      assert {:ok, :queued} = Agent.deliver_message(pid, "bob", "report #{n}", :agent)
+      assert %ToolResult{is_error: false} = fetch(pid, name, space_id, %{"name" => "bob"})
+      assert [%{retrieved: true}] = :sys.get_state(pid).live.inbox
+
+      # The turn ends: the stop path's drain must prune the retrieved entry
+      # rather than leave it queued.
+      Agent.stop_chat(pid, self())
+
+      assert Eventually.eventually(
+               fn -> :sys.get_state(pid).live.inbox == [] end,
+               timeout: 500
+             )
+    end)
+  end
+
   test "a missing name is an error", %{pid: pid, name: name, space_id: space_id} do
     log =
       capture_log(fn ->

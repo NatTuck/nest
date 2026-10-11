@@ -335,7 +335,7 @@ defmodule Nest.Agents.Agent.Turn.Executor do
 
   defp execute({:drain_inbox}, state) do
     case peek_inbox(state) do
-      :empty -> {state, :continue}
+      :empty -> {Inbox.prune_retrieved(state), :continue}
       {state, batch, content} -> {state, {:follow, {:inbox_drain, batch, content}}}
     end
   end
@@ -345,7 +345,7 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   defp execute({:drain_inbox, :append}, state) do
     case peek_inbox(state) do
       :empty ->
-        {state, :continue}
+        {Inbox.prune_retrieved(state), :continue}
 
       {state, batch, content} ->
         # The batch's `fulfilled_ids` ride it too (`Inbox.build_drained_message/3`).
