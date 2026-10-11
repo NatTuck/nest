@@ -91,10 +91,18 @@ describe("Sidebar tree", () => {
     );
 
     expect(screen.getByText("parent")).toBeInTheDocument();
+
+    // A node starts collapsed, so its child is hidden until expanded.
+    expect(screen.queryByText("child-of-parent")).not.toBeInTheDocument();
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Toggle parent" }));
+    });
+
     expect(screen.getByText("child-of-parent")).toBeInTheDocument();
   });
 
-  it("collapses and expands the children of any interior node", () => {
+  it("expands one level at a time, never a whole subtree", () => {
     act(() => {
       withStore([
         { name: "root", parentId: null, parentName: null, depth: 0 },
@@ -109,14 +117,32 @@ describe("Sidebar tree", () => {
       </MemoryRouter>,
     );
 
-    // Expanded by default.
-    expect(screen.getByText("child")).toBeInTheDocument();
-    expect(screen.getByText("grandchild")).toBeInTheDocument();
+    // Every node starts collapsed: only the root is visible.
+    expect(screen.getByText("root")).toBeInTheDocument();
+    expect(screen.queryByText("child")).not.toBeInTheDocument();
+    expect(screen.queryByText("grandchild")).not.toBeInTheDocument();
 
     const rootToggle = screen.getByRole("button", { name: "Toggle root" });
+    expect(rootToggle).toHaveAttribute("aria-expanded", "false");
+
+    // Expanding the root reveals its direct children only — the
+    // grandchild stays behind the child's own collapsed toggle.
+    act(() => {
+      fireEvent.click(rootToggle);
+    });
+
+    expect(screen.getByText("child")).toBeInTheDocument();
+    expect(screen.queryByText("grandchild")).not.toBeInTheDocument();
     expect(rootToggle).toHaveAttribute("aria-expanded", "true");
 
-    // Collapsing the root hides its whole subtree.
+    // An interior node expands independently of its parent.
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Toggle child" }));
+    });
+
+    expect(screen.getByText("grandchild")).toBeInTheDocument();
+
+    // Collapsing the root hides its whole subtree again.
     act(() => {
       fireEvent.click(rootToggle);
     });
@@ -125,20 +151,44 @@ describe("Sidebar tree", () => {
     expect(screen.queryByText("child")).not.toBeInTheDocument();
     expect(screen.queryByText("grandchild")).not.toBeInTheDocument();
     expect(rootToggle).toHaveAttribute("aria-expanded", "false");
+  });
 
+  it("starts a space row collapsed when its route is not open", () => {
     act(() => {
-      fireEvent.click(rootToggle);
+      useStore.setState({
+        agents: [
+          {
+            name: "root-a",
+            space_id: 1,
+            parentId: null,
+            parentName: null,
+            depth: 0,
+          },
+        ],
+        archivedAgents: [],
+        spaces: [
+          { id: 1, slug: "first", name: "First Space" },
+          { id: 2, slug: "second", name: "Second Space" },
+        ],
+      });
     });
 
-    // An interior node collapses independently of its parent.
-    const childToggle = screen.getByRole("button", { name: "Toggle child" });
+    render(
+      <MemoryRouter initialEntries={["/space/second"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    // Only the route's own space row opens; the other stays closed.
+    expect(screen.queryByText("root-a")).not.toBeInTheDocument();
+
     act(() => {
-      fireEvent.click(childToggle);
+      fireEvent.click(
+        screen.getByRole("button", { name: "Toggle First Space" }),
+      );
     });
 
-    expect(screen.getByText("root")).toBeInTheDocument();
-    expect(screen.getByText("child")).toBeInTheDocument();
-    expect(screen.queryByText("grandchild")).not.toBeInTheDocument();
+    expect(screen.getByText("root-a")).toBeInTheDocument();
   });
 
   it("renders no chevron for leaf nodes", () => {
@@ -154,6 +204,10 @@ describe("Sidebar tree", () => {
         <Sidebar />
       </MemoryRouter>,
     );
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Toggle root" }));
+    });
 
     expect(screen.getByText("leaf")).toBeInTheDocument();
     expect(
@@ -216,9 +270,17 @@ describe("Sidebar tree", () => {
       fireEvent.click(toggle);
     });
 
-    // Expanded: the archived subtree renders with the same nesting as
-    // before archival.
+    // Expanded: the archived roots render, still one level at a time —
+    // the archived child stays behind its parent's own toggle.
     expect(screen.getByText("old-parent")).toBeInTheDocument();
+    expect(screen.queryByText("old-child")).not.toBeInTheDocument();
+
+    act(() => {
+      fireEvent.click(
+        screen.getByRole("button", { name: "Toggle old-parent" }),
+      );
+    });
+
     expect(screen.getByText("old-child")).toBeInTheDocument();
   });
 
@@ -255,6 +317,18 @@ describe("Sidebar tree", () => {
     );
 
     expect(screen.getByText("parent")).toBeInTheDocument();
+
+    // The parent starts collapsed, so its `Archived (1)` group is not
+    // rendered at all until the parent is expanded.
+    expect(
+      screen.queryByRole("button", {
+        name: "Toggle archived children of parent",
+      }),
+    ).not.toBeInTheDocument();
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Toggle parent" }));
+    });
 
     // The archived child stays nested under the active parent and is
     // hidden behind that parent's collapsed `Archived (1)` group.
@@ -322,7 +396,19 @@ describe("Sidebar tree", () => {
     });
 
     expect(screen.getByText("old-root")).toBeInTheDocument();
+    expect(screen.queryByText("old-mid")).not.toBeInTheDocument();
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Toggle old-root" }));
+    });
+
     expect(screen.getByText("old-mid")).toBeInTheDocument();
+    expect(screen.queryByText("old-leaf")).not.toBeInTheDocument();
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Toggle old-mid" }));
+    });
+
     expect(screen.getByText("old-leaf")).toBeInTheDocument();
   });
 

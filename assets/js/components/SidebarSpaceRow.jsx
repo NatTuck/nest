@@ -118,7 +118,13 @@ function isSpaceActive(location, space) {
  * Recursive agent row. Renders the agent's name with the
  * current-agent styling plus a chevron toggle when the node has
  * children (so a busy parent can be collapsed). Leaves render an
- * aligned spacer instead of a chevron. Default is expanded.
+ * aligned spacer instead of a chevron.
+ *
+ * Default is collapsed: expanding a node reveals exactly its direct
+ * children, and each of those starts collapsed too, so a click never
+ * unfolds a whole subtree at once and there is no remembered expansion
+ * state anywhere. The expansion is local component state only — remounting
+ * the row (navigating away and back) starts it collapsed again.
  *
  * Active nodes split their children: active children render inline,
  * archived children render at the bottom behind a collapsed
@@ -139,7 +145,7 @@ function AgentTreeRow({ node, depth, location, spaceSlug }) {
     : children.filter((child) => child.agent.archived === true);
   const directChildren = isArchived ? children : activeChildren;
   const hasChildren = activeChildren.length > 0 || archivedChildren.length > 0;
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(false);
 
   return (
     <li key={agent.name}>
@@ -220,6 +226,13 @@ function AgentTreeRow({ node, depth, location, spaceSlug }) {
  * A collapsible space row: header (name + agent count) that expands to
  * the space's agent tree, plus archive. Clicking the name navigates to
  * `/space/:slug`; the chevron toggles the agent list.
+ *
+ * Root-level default: the space row for the space in the current route
+ * starts expanded, so opening a space shows its agent list without a click
+ * — the URL already says which space you are in, so this mirrors the route
+ * rather than remembering a choice. Every other space row starts collapsed,
+ * and every agent row under it starts collapsed (see `AgentTreeRow`), so
+ * expanding a space reveals exactly one level.
  */
 export function SpaceRow({
   space,
