@@ -134,13 +134,15 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
                "peer never answered"
     end
 
-    test "enqueue_user_message/4 normalizes a non-binary sender and mode to nil" do
+    test "deliver_user_message/4 normalizes a non-binary sender and mode to nil" do
       # intentional: `serialize/1`'s contract is string-or-null, so a malformed
       # payload cannot put a number/map on the wire.
       state = %Agent{name: "wire-shape", space_id: 1}
 
-      state = Inbox.enqueue_user_message(state, %{"not" => "a string"}, "hi", 123)
+      {state, disposition} = Inbox.deliver_user_message(state, %{"not" => "a string"}, "hi", 123)
 
+      # The idle machine cannot background anything, so the entry stays queued.
+      assert disposition == :queued
       assert [%{from: nil, mode: nil, content: "hi", kind: :user}] = state.live.inbox
 
       assert [serialized] = Inbox.serialize(state.live.inbox)

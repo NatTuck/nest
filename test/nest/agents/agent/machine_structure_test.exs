@@ -101,6 +101,7 @@ defmodule MachineStructureTest do
                  :active_message_index,
                  :active_worker,
                  :active_worker_kind,
+                 :backgrounded,
                  :ctx,
                  :focus,
                  :force_finalize,

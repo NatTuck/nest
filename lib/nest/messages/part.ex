@@ -19,7 +19,14 @@ defmodule Nest.Messages.Part do
       the call's `id`, the tool `name`, and the parsed `arguments`.
     * `ToolResult` — the result of a tool call. Carries the
       `tool_call_id` (matches the `ToolUse.id`), the tool `name`,
-      the `content` (string), and `is_error`.
+      the `content` (string), and `is_error`. The optional `state`
+      says something `is_error` cannot: a call the machine moved to
+      the background (issue #36) has no result yet, so it is neither
+      a success nor a failure, and the panel badges it as what it is
+      rather than inventing a verdict. `nil` is an ordinary finished
+      result and `"backgrounded"` is the one value written today; the
+      panel renders an unrecognised value as such instead of falling
+      back to a success/failure badge.
     * `Refusal` — the assistant refusing to comply. Carries the
       `refusal` text.
 
@@ -75,15 +82,24 @@ defmodule Nest.Messages.Part do
     the `ToolUse` part that triggered the call. `is_error` is true
     when the tool execution failed (the LLM should treat the
     `content` as an error message and retry or fall back).
+
+    `state` is the wire's own word for a result that is not a
+    verdict at all: `"backgrounded"` is the machine's synthetic
+    answer to a call it moved to the background (issue #36), whose
+    real result arrives later as a message. It is `nil` for a
+    result a tool produced, and the value is kept verbatim — a
+    value this version does not know is the panel's to render
+    explicitly, not this module's to map away.
     """
-    defstruct [:tool_call_id, :name, :content, :arguments, :is_error]
+    defstruct [:tool_call_id, :name, :content, :arguments, :is_error, :state]
 
     @type t :: %__MODULE__{
             tool_call_id: String.t(),
             name: String.t(),
             content: String.t(),
             arguments: map() | nil,
-            is_error: boolean()
+            is_error: boolean(),
+            state: String.t() | nil
           }
   end
 
@@ -136,8 +152,8 @@ defmodule Nest.Messages.Part do
   def to_json(%ToolUse{id: id, name: name, arguments: arguments}),
     do: %{"kind" => "tool_use", "id" => id, "name" => name, "arguments" => arguments}
 
-  def to_json(%ToolResult{} = r),
-    do: %{
+  def to_json(%ToolResult{} = r) do
+    %{
       "kind" => "tool_result",
       "toolCallId" => r.tool_call_id,
       "name" => r.name,
@@ -145,9 +161,16 @@ defmodule Nest.Messages.Part do
       "arguments" => r.arguments,
       "isError" => r.is_error || false
     }
+    |> maybe_put_state(r.state)
+  end
 
   def to_json(%Refusal{refusal: refusal}),
     do: %{"kind" => "refusal", "refusal" => refusal}
+
+  # Omitted for an ordinary result, so the persisted shape of every result a
+  # tool produced is unchanged; present verbatim when the result carries one.
+  defp maybe_put_state(map, nil), do: map
+  defp maybe_put_state(map, state), do: Map.put(map, "state", state)
 
   @doc """
   Build a part struct from a JSON-compatible map (the shape
@@ -172,7 +195,8 @@ defmodule Nest.Messages.Part do
       name: map["name"],
       content: map["content"],
       arguments: map["arguments"],
-      is_error: map["isError"] || false
+      is_error: map["isError"] || false,
+      state: map["state"]
     }
 
   def from_json(%{"kind" => "refusal", "refusal" => refusal}),

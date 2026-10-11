@@ -118,6 +118,7 @@ defmodule Nest.Agents.Agent.Machine do
     :fail_turn,
     :finalize,
     :drain_inbox,
+    :deliver_backgrounded,
     :consume_inbox,
     :give_up_replies,
     :child_message,

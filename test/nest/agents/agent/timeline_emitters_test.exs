@@ -29,10 +29,10 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
   alias Nest.LLM.MockClient
   alias Nest.Timeline
   alias Nest.Timeline.Digest
-  alias Nest.Vocations
 
   import Nest.Agents.AgentTestHelpers
   import Nest.Agents.AgentTurnTestHelpers
+  import Nest.TimelineTestHelpers
 
   setup :verify_on_exit!
 
@@ -188,11 +188,14 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
              }
            ] = inbox_action("delivered")
 
-    assert [%{"action" => "queued", "count" => 1, "disposition" => "queued"}] =
-             inbox_action("queued")
+    # Both busy arms record the disposition they resolved, so the peer's
+    # `queued` line and the human's are the same action, told apart by `kind`
+    # (the human path no longer records an `enqueued` line for a queueing).
+    assert [%{"action" => "queued", "count" => 1, "kind" => "agent", "disposition" => "queued"}] =
+             Enum.filter(inbox_action("queued"), &(&1["kind"] == "agent"))
 
-    assert [%{"action" => "enqueued", "from" => nil, "kind" => "user", "count" => 2}] =
-             inbox_action("enqueued")
+    assert [%{"action" => "queued", "from" => nil, "count" => 2, "kind" => "user"}] =
+             Enum.filter(inbox_action("queued"), &(&1["kind"] == "user"))
 
     # The refusals record the value the sender was given, not a re-derivation.
     assert [%{"action" => "refused", "from" => "peer", "count" => nil}] =
@@ -204,6 +207,135 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     # A drain's own line: the batch it delivered, with the mode it resolved.
     assert [%{"action" => "drained", "count" => 1, "from" => "peer", "mode" => "chat"}] =
              inbox_action("drained")
+  end
+
+  test "a delivery that backgrounds the batch records the disposition the sender was given" do
+    # The batch is parked inside its `agents-send`, so the delivery really
+    # arrives while the agent is `:executing_tools` with a live worker and an
+    # unanswered `tool_use`: the message is delivered *now* (decision D5) and the
+    # batch moves to the background. The record must say so — the sender's tool
+    # result reads "Message delivered to …", so a line claiming `queued` would
+    # contradict both the sender and the transcript.
+    {pid, name} =
+      start_agent(%{
+        model: %{name: "qwen3.5-plus"},
+        vocation_id: programmer_vocation_id_for_test()
+      })
+
+    track_agent(name)
+    park_agent_sends(pid)
+
+    MockClient.set_tool_response(%{
+      text: "Sending",
+      tool_calls: [
+        %{id: "send_1", name: "agents-send", arguments: %{"name" => name, "message" => "note"}}
+      ]
+    })
+
+    MockClient.set_response("After the note")
+    MockClient.set_response("After the notice")
+
+    :ok = Agent.chat(pid, "start the turn")
+
+    assert_receive {:send_blocked, tool}, 500
+    assert Machine.status_for(:sys.get_state(pid).live.machine) == :executing_tools
+
+    send(tool, :release_send)
+
+    # The record is a file append made by the agent process while it handled the
+    # delivery, so poll for it (this file's own idiom) rather than racing it.
+    assert Eventually.eventually(fn -> inbox_action("delivered") != [] end, timeout: 500)
+
+    assert [
+             %{
+               "action" => "delivered",
+               "from" => ^name,
+               "kind" => "agent",
+               "count" => 1,
+               "disposition" => "delivered"
+             }
+           ] = inbox_action("delivered")
+
+    # The delivery's turn ends, and the batch's late result then gets its own.
+    assert statuses_until_idle() == ["streaming", "executing_tools", "streaming", "idle"]
+    assert statuses_until_idle() == ["streaming", "idle"]
+  end
+
+  test "a human message that backgrounds the batch records the disposition it was given" do
+    # The human path is the other delivery entry point (`Callbacks.chat_or_queue/4`
+    # → `Inbox.deliver_user_message/4`) and takes the same busy arm as a peer's
+    # delivery, so it records the same way: the disposition the drain resolved.
+    # A `queued` line for a message the transcript already carries would
+    # contradict the transcript, and the human is told nothing at all.
+    {pid, name} =
+      start_agent(%{
+        model: %{name: "qwen3.5-plus"},
+        vocation_id: programmer_vocation_id_for_test()
+      })
+
+    track_agent(name)
+    park_llm_requests(pid)
+    park_agent_sends(pid, hold_result: true)
+
+    MockClient.set_tool_response(%{
+      text: "Sending",
+      tool_calls: [
+        %{id: "send_1", name: "agents-send", arguments: %{"name" => name, "message" => "note"}}
+      ]
+    })
+
+    MockClient.set_response("After the human note")
+    MockClient.set_response("After the batch")
+
+    :ok = Agent.chat(pid, "start the turn")
+
+    {_first, llm1} = next_request()
+    release_llm(llm1)
+
+    assert_receive {:send_blocked, tool}, 500
+    assert Machine.status_for(:sys.get_state(pid).live.machine) == :executing_tools
+
+    # The human's message backgrounds the batch, and its turn is parked: the
+    # delivery is the one the record is about.
+    :ok = Agent.chat(pid, "human note", "chat", "alice")
+    {_second, llm2} = next_request()
+
+    # The record is a file append made by the agent process while it handled the
+    # delivery, so poll for it (this file's own idiom) rather than racing it.
+    assert Eventually.eventually(fn -> inbox_action("delivered") != [] end, timeout: 500)
+
+    assert [
+             %{
+               "action" => "delivered",
+               "from" => "alice",
+               "kind" => "user",
+               "count" => 1,
+               "mode" => "chat",
+               "disposition" => "delivered"
+             }
+           ] = inbox_action("delivered")
+
+    # And no `enqueued` line for the human entry: the queueing the old shape
+    # recorded never happened (the batch was backgrounded instead). The batch's
+    # own late result still enqueues its notice, which is a different producer.
+    assert Enum.filter(inbox_action("enqueued"), &(&1["kind"] == "user")) == []
+
+    # The batch's own send and its late result both queue behind the parked
+    # delivered turn, so both are there before it ends and drain as one batch.
+    send(tool, :release_send)
+    assert_receive {:send_delivered, ^tool}, 500
+    assert_receive {:chat_inbox, %{count: 1}}, 500
+    send(tool, :release_result)
+    assert_receive {:chat_inbox, %{count: 2}}, 500
+
+    release_llm(llm2)
+
+    assert statuses_until_idle() == ["streaming", "executing_tools", "streaming", "idle"]
+
+    {_third, llm3} = next_request()
+    release_llm(llm3)
+
+    assert statuses_until_idle() == ["streaming", "idle"]
   end
 
   test "a spawn records the child, its tool result, its outcome, its cost and its archive" do
@@ -549,83 +681,5 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     assert log =~ "recording disabled"
 
     Application.put_env(:nest, :timeline_dir, dir)
-  end
-
-  # --- helpers ---
-
-  defp default_attrs do
-    %{model: %{name: "qwen3.5-plus"}, vocation_id: programmer_vocation_id_for_test()}
-  end
-
-  # Every event this test's agent recorded. The run file is per OS process, and
-  # recording is switched on globally, so a write from another test's process
-  # (a worker still finishing while this module runs) would otherwise land in
-  # the middle of an assertion. The digest is filtered the same way, through
-  # `Digest.render/2`'s own `:agent` option.
-  defp events do
-    {events, problems} = Timeline.load(Timeline.run_dir())
-    assert problems == []
-    Enum.filter(events, &(&1["agent"] == agent_name()))
-  end
-
-  defp agent_name, do: Process.get(:timeline_test_agent)
-
-  defp track_agent(name), do: Process.put(:timeline_test_agent, name)
-
-  defp events(type), do: Enum.filter(events(), &(&1["type"] == type))
-
-  defp child_action(action), do: Enum.filter(events("child"), &(&1["action"] == action))
-
-  defp inbox_action(action), do: Enum.filter(events("inbox"), &(&1["action"] == action))
-
-  defp inbox_disposition(value), do: Enum.filter(events("inbox"), &(&1["disposition"] == value))
-
-  defp child_usage_events(name), do: Enum.filter(events("usage"), &(&1["name"] == name))
-
-  defp child_usage do
-    %{
-      input_tokens: 30,
-      output_tokens: 4,
-      total_tokens: 34,
-      cache_read_input_tokens: 0,
-      cache_creation_input_tokens: 0
-    }
-  end
-
-  defp set_status(pid, status) do
-    :sys.replace_state(pid, fn state ->
-      %{
-        state
-        | live: %{state.live | machine: Machine.status_to_machine(state.live.machine, status)}
-      }
-    end)
-  end
-
-  defp fill_inbox(pid, count) do
-    entry = %{
-      from: "peer",
-      content: "queued",
-      timestamp: DateTime.utc_now(),
-      kind: :agent,
-      mode: nil
-    }
-
-    :sys.replace_state(pid, fn state ->
-      %{state | live: %{state.live | inbox: List.duplicate(entry, count)}}
-    end)
-  end
-
-  # A distinct vocation for the spawned specialist; returns its slug.
-  defp specialist_vocation_slug do
-    {:ok, %Vocations.Vocation{slug: slug}} =
-      Vocations.upsert_vocation(%{
-        name: "Timeline Specialist #{System.unique_integer([:positive])}",
-        description: "A specialist",
-        system_prompt: "You are a specialist.",
-        tools: ["context"],
-        modes: %{}
-      })
-
-    slug
   end
 end

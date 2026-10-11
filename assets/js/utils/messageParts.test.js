@@ -242,6 +242,29 @@ describe("toolResultsFromParts", () => {
         name: "shell-cmd",
         content: "ok",
         is_error: false,
+        state: null,
+      },
+    ]);
+
+    // A result that carries a state keeps it verbatim: the panel badges on it,
+    // so a value this build does not know must not be dropped here.
+    const backgrounded = toolResultsFromParts([
+      {
+        kind: "tool_result",
+        toolCallId: "call_2",
+        name: "shell-cmd",
+        content: "moved to the background",
+        isError: false,
+        state: "backgrounded",
+      },
+    ]);
+    expect(backgrounded).toEqual([
+      {
+        tool_call_id: "call_2",
+        name: "shell-cmd",
+        content: "moved to the background",
+        is_error: false,
+        state: "backgrounded",
       },
     ]);
   });

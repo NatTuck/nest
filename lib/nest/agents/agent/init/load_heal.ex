@@ -11,7 +11,7 @@ defmodule Nest.Agents.Agent.Init.LoadHeal do
   `refresh/1` is the idempotency guard that keeps concurrent callers from
   healing the same tail twice.
 
-  Two shapes are healed, both by appending real, persisted messages
+  Three shapes are healed, all by appending real, persisted messages
   before the agent comes up `:idle` (without spending an LLM call):
 
     * a trailing assistant `tool_use` with no result — a turn that died
@@ -26,7 +26,14 @@ defmodule Nest.Agents.Agent.Init.LoadHeal do
       compaction segment. The heal appends the load-specific assistant
       ack so an idle agent never ends on a user message.
 
-  Unlike `Init.NeedsRepair`, neither shape is a blocking state — they
+  A third shape, `{:lost_promises, messages}`, is the same append with a
+  different record: a slice that still carries a backgrounded call's promise
+  (`MessageList.backgrounded_results/1`), whose batch died with the process
+  that owned it. The promise is answered as lost — the model must not wait for
+  a message that can never arrive — and the record names the calls it voids, so
+  re-classifying the healed tail finds nothing left to record.
+
+  Unlike `Init.NeedsRepair`, none of these shapes is a blocking state — they
   are valid outcomes, not corruption.
   """
 
@@ -73,7 +80,10 @@ defmodule Nest.Agents.Agent.Init.LoadHeal do
     end
   end
 
-  @spec heal(Nest.Agents.Agent.t(), [Part.ToolUse.t()] | {:bridge, [term()]}) ::
+  @spec heal(
+          Nest.Agents.Agent.t(),
+          [Part.ToolUse.t()] | {:bridge, [term()]} | {:lost_promises, [term()]}
+        ) ::
           Nest.Agents.Agent.t()
   def heal(state, {:bridge, messages}) do
     Logger.warning(
@@ -82,6 +92,15 @@ defmodule Nest.Agents.Agent.Init.LoadHeal do
     )
 
     append_or_keep(state, messages, "load bridge")
+  end
+
+  def heal(state, {:lost_promises, messages}) do
+    Logger.warning(
+      "Agent #{state.name} (space #{state.space_id}) loaded a transcript promising a " <>
+        "backgrounded tool result the restart lost; recording the loss before idling."
+    )
+
+    append_or_keep(state, messages, "lost backgrounded call")
   end
 
   def heal(state, tool_uses) do

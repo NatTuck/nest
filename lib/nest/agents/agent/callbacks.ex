@@ -88,7 +88,8 @@ defmodule Nest.Agents.Agent.Callbacks do
         ChatPipeline.handle_chat(state, content, mode)
 
       Inbox.busy_status?(status) ->
-        {:noreply, Inbox.enqueue_user_message(state, sender, content, mode)}
+        {state, _disposition} = Inbox.deliver_user_message(state, sender, content, mode)
+        {:noreply, state}
 
       true ->
         require Logger

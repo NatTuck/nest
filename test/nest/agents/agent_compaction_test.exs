@@ -80,14 +80,25 @@ defmodule Nest.Agents.AgentCompactionTest do
 
       :ok = Agent.chat(pid, "Read a file")
 
-      assert_receive {:chat_status, %{status: "idle"}}, 500
+      # The batch's own broadcast is the barrier for the real work: the agent
+      # appends the tool results only after the `shell-cmd` run (a real bwrap
+      # process) has returned, so this is the fence that covers it and the
+      # end-of-turn wait below covers a mocked round trip only.
+      assert_receive {:chat_message, {:tool, %Tool{parts: [result_part | _]}}}, 500
+
+      # The end of the turn is read from the machine, the authority
+      # (`status_for/1`), not from the `chat:status` broadcast: a missed or
+      # reordered broadcast can never be the reason this fails.
+      await_idle(pid)
 
       assert_received {:chat_message, {:user, _}}
       assert_received {:chat_status, %{status: "streaming"}}
       assert_received {:chat_delta, %{content: "Reading file"}}
-      assert_received {:chat_message, {:tool, %Tool{parts: [result_part | _]}}}
       assert_received {:chat_delta, %{content: "Done"}}
       assert_received {:chat_message, {:assistant, _}}
+      # Zero fence: the agent broadcast this in the settle that went idle,
+      # before it could answer the `:sys.get_state/1` inside `await_idle/1`.
+      assert_received {:chat_status, %{status: "idle"}}
 
       %Part.ToolResult{content: content} = result_part
 
@@ -143,18 +154,34 @@ defmodule Nest.Agents.AgentCompactionTest do
           vocation_id: programmer_vocation_id_for_test()
         })
 
-      :ok = Agent.chat(pid, "Run two")
-
       log =
         capture_log(fn ->
-          assert_receive {:chat_status, %{status: "idle"}}, 500
+          # `Agent.chat/4` is a cast, so the "Missing required arguments"
+          # diagnostic (asserted below) can otherwise be emitted by the HTTP
+          # worker before `capture_log` installs its handler and be missed
+          # entirely — under load it lost the race. The chat belongs inside the
+          # capture.
+          :ok = Agent.chat(pid, "Run two")
+
+          # The batch's own broadcast is the barrier for the real work: the
+          # agent appends the tool results only after both `shell-cmd` runs
+          # (real bwrap processes) have returned, so this is the one fence that
+          # covers them and the end-of-turn wait below covers a mocked round
+          # trip only.
+          assert_receive {:chat_message, {:tool, %Tool{parts: parts}}}, 500
+
+          # The end of the turn is read from the machine, the authority
+          # (`status_for/1`), not from the `chat:status` broadcast.
+          await_idle(pid)
 
           assert_received {:chat_message, {:user, _}}
           assert_received {:chat_status, %{status: "streaming"}}
           assert_received {:chat_delta, %{content: "Running two commands"}}
-          assert_received {:chat_message, {:tool, %Tool{parts: parts}}}
           assert_received {:chat_delta, %{content: "All done"}}
           assert_received {:chat_message, {:assistant, _}}
+          # Zero fence: broadcast in the settle that went idle, before the
+          # agent could answer the `:sys.get_state/1` inside `await_idle/1`.
+          assert_received {:chat_status, %{status: "idle"}}
 
           assert length(parts) == 2
           assert Enum.map(parts, & &1.tool_call_id) == ["call_1", "call_2"]
@@ -531,5 +558,20 @@ defmodule Nest.Agents.AgentCompactionTest do
   defp refute_no_preflight_reply(pid) do
     _ = :sys.get_state(pid)
     refute_receive {:preflight_result, _, _}, 0
+  end
+
+  # Wait for the agent to settle to `:idle` on the machine's own status — the
+  # authority — rather than on the `chat:status` broadcast: a missed or
+  # reordered broadcast can never be the reason a test fails, and the condition
+  # is exactly the one the test-teardown invariant checks. `Eventually` polls
+  # at 10 ms and returns as soon as the turn is over, so the 500 ms budget is
+  # the project's fence and not a claim about how long the turn takes. Every
+  # call site first fences on the batch's own broadcast, so the sandbox work
+  # (real bwrap processes) is never inside this wait.
+  defp await_idle(pid) do
+    assert Eventually.eventually(
+             fn -> Machine.status_for(:sys.get_state(pid).live.machine) == :idle end,
+             timeout: 500
+           )
   end
 end

@@ -9,14 +9,16 @@ defmodule Nest.Agents.Agent.Inbox do
       `kind: :agent`,
     * a human chat message that arrived while the agent was busy
       (`Agent.chat/4` → `Callbacks.chat_or_queue/4` →
-      `enqueue_user_message/4`), recorded with `kind: :user`, and
+      `deliver_user_message/4`), recorded with `kind: :user`, and
     * the runtime's own result for this agent
       (`enqueue_internal/4`, W2's async spawn/batch completion).
 
-  An entry is `%{from, content, timestamp, kind, mode}`. `content` is
-  stored **verbatim** (no `[mode: ...]` prefix — that is added when the
-  entry is delivered) and `mode` is the human's requested mode, always
-  `nil` for an `agents-send` entry.
+  An entry is `%{from, content, timestamp, kind, mode, fulfilled_ids}`. `content`
+  is stored **verbatim** (no `[mode: ...]` prefix — that is added when the
+  entry is delivered), `mode` is the human's requested mode, always `nil` for
+  an `agents-send` entry, and `fulfilled_ids` is the one producer-supplied
+  field: the tool-call ids a backgrounded batch's result answers (issue #36,
+  `enqueue_internal/5`), empty for every other producer.
 
   ## Kinds
 
@@ -40,8 +42,11 @@ defmodule Nest.Agents.Agent.Inbox do
       (`Nest.Agents.Agent.Turn.drain_inbox/1`), the single drain path,
       which delivers `batch/1`'s selection.
     * **Busy target** (`:streaming`, `:executing_tools`, `:compacting`) —
-      the message is queued on `state.live.inbox`. The machine drains it at
-      the next turn boundary: `Transitions.iterate/1` emits the
+      the message is queued on `state.live.inbox`. A target executing a tool
+      batch is the one exception (issue #36): the batch is moved to the
+      background, the message is delivered immediately, and the batch's own
+      result arrives later as a `:notice`. Otherwise the machine drains the
+      queue at the next turn boundary: `Transitions.iterate/1` emits the
       `:drain_inbox` action from `:generating`/`:chat` once the wire
       sequence is complete and nothing is in flight (issue #15), and
       anything still queued when the target reaches `:idle` is drained by
@@ -88,7 +93,7 @@ defmodule Nest.Agents.Agent.Inbox do
   The inbox is in-memory (`ChatState.Live`), so a BEAM restart drops
   undrained messages. `@max_inbox_size` bounds a runaway *peer* producer
   (`handle_delivery/4`); the two self-produced paths — a human message
-  (`enqueue_user_message/4`) and the runtime's own result
+  (`deliver_user_message/4`) and the runtime's own result
   (`enqueue_internal/4`) — always queue rather than silently dropping, so each
   enqueue rebroadcasts the whole serialized list.
   """
@@ -100,6 +105,10 @@ defmodule Nest.Agents.Agent.Inbox do
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Timeline
   alias Nest.Agents.Agent.Turn
+  alias Nest.Agents.Agent.Turn.Backgrounded
+  alias Nest.Agents.Agent.Turn.Dispatch
+  alias Nest.Messages.MessageList
+  alias Nest.Messages.User
   alias Nest.Tokens.Estimator
 
   require Logger
@@ -109,6 +118,12 @@ defmodule Nest.Agents.Agent.Inbox do
   # so a message that arrives during a stop queues here and the stop
   # path's `{:drain_inbox}` delivers it.
   @busy_statuses [:streaming, :executing_tools, :compacting]
+
+  # The one busy status whose in-flight work can be moved to the background so
+  # the message is delivered *now* (issue #36): a tool batch has no partial
+  # state worth waiting for — its real result arrives as a notice either way —
+  # while a streaming response and a compaction both keep their message queued.
+  @backgroundable_statuses [:executing_tools]
 
   # Hard cap on queued agent-sourced messages. When full the sender gets
   # an `:inbox_full` error and nothing is queued.
@@ -121,7 +136,8 @@ defmodule Nest.Agents.Agent.Inbox do
           content: String.t(),
           timestamp: DateTime.t(),
           kind: kind(),
-          mode: String.t() | nil
+          mode: String.t() | nil,
+          fulfilled_ids: [String.t()]
         }
 
   @doc """
@@ -132,6 +148,14 @@ defmodule Nest.Agents.Agent.Inbox do
   @spec busy_status?(atom()) :: boolean()
   def busy_status?(status), do: status in @busy_statuses
 
+  # True for the busy statuses whose in-flight batch is moved to the background
+  # for the incoming message instead of queueing behind it (issue #36, decision
+  # D3). Status-only, and distinct from `Machine.Backgrounding.backgroundable?/1`
+  # despite the shared name: that one asks whether *this* machine can move its
+  # batch (a live worker and something left to answer), and the machine answers
+  # for itself. Private because `drain_backgroundable/1` is its only reader.
+  defp backgroundable?(status), do: status in @backgroundable_statuses
+
   @doc """
   `handle_call/3` body for `Agent.deliver_message/4` (the `agents-send` and
   `agents-query` paths, and the runtime's own `:notice`).
@@ -141,9 +165,11 @@ defmodule Nest.Agents.Agent.Inbox do
   every kind.
 
   Returns the GenServer reply tuple:
-    * `{:ok, :delivered}` — the target was idle; a turn started.
-    * `{:ok, :queued}` — the target was busy (or the turn could not
-      start) and the message is queued.
+    * `{:ok, :delivered}` — the target was idle, or was executing a tool batch
+      that the message moved to the background (issue #36), so the message
+      reached the transcript.
+    * `{:ok, :queued}` — the target was busy and the message is queued (a
+      backgrounded delivery that parked leaves it queued, exactly as before).
     * `{:error, reason}` — the target is in a broken state or the inbox
       is full.
   """
@@ -158,14 +184,8 @@ defmodule Nest.Agents.Agent.Inbox do
         {:reply, {:error, :inbox_full}, state}
 
       busy_status?(status) ->
-        state = state |> put_entry(sender, content, kind, nil) |> broadcast()
-
-        record_inbox(state, :queued, sender, kind, content,
-          count: length(state.live.inbox),
-          disposition: :queued
-        )
-
-        {:reply, {:ok, :queued}, state}
+        {state, disposition} = busy_delivery(state, sender, content, kind, nil)
+        {:reply, {:ok, disposition}, state}
 
       status == :idle ->
         idle_delivery(state, sender, content, kind)
@@ -184,13 +204,16 @@ defmodule Nest.Agents.Agent.Inbox do
   be refused by the peer cap) for a caller in *another* process — a batch
   coordinator delivering its aggregate — which cannot enqueue into this agent's
   state itself. Like `handle_delivery/4`'s idle arm it queues and, when the
-  target is idle, drains; unlike it, it never refuses, whatever the target's
-  status: the cap exists to bound a runaway *peer* producer, and there is no
-  other process to hand an error to — refusing would lose the batch's whole
-  output.
+  target is idle, drains; like its busy arm it also delivers *now* when the
+  target is executing a batch that can be moved to the background (issue #36
+  decision D1 — *any* incoming message preempts, the runtime's own included).
+  Unlike either, it never refuses, whatever the target's status: the cap exists
+  to bound a runaway *peer* producer, and there is no other process to hand an
+  error to — refusing would lose the batch's whole output.
 
-  Always replies `{:ok, :delivered | :queued}`: `:delivered` when the target was
-  idle and the drain consumed the entry, `:queued` otherwise.
+  Always replies `{:ok, :delivered | :queued}`: `:delivered` when the drain
+  consumed the entry (the target was idle, or its batch was backgrounded),
+  `:queued` otherwise.
   """
   @spec deliver_internal(Agent.t(), String.t() | nil, String.t(), kind()) ::
           {:reply, {:ok, :delivered | :queued}, Agent.t()}
@@ -198,15 +221,32 @@ defmodule Nest.Agents.Agent.Inbox do
     if Machine.status_for(state.live.machine) == :idle do
       idle_delivery(state, sender, content, kind)
     else
-      state = state |> put_entry(sender, content, kind, nil) |> broadcast()
-
-      record_inbox(state, :queued, sender, kind, content,
-        count: length(state.live.inbox),
-        disposition: :queued
-      )
-
-      {:reply, {:ok, :queued}, state}
+      {state, disposition} = busy_delivery(state, sender, content, kind, nil)
+      {:reply, {:ok, disposition}, state}
     end
+  end
+
+  # The busy arm, shared by every delivery entry point: queue the entry,
+  # broadcast it, and then let `drain_backgroundable/1` deliver it now when the
+  # in-flight batch can be moved to the background (issue #36). The disposition
+  # the drain resolved is the one the caller reports *and* the one recorded:
+  # recording `:queued` before the drain ran would put a `queued` line in the
+  # timeline for a delivery the sender was told was `:delivered` (and whose tool
+  # result reads "Message delivered to …"). `mode` is the human's requested mode
+  # and `nil` for every other producer; it rides the record, so a reader still
+  # sees what the human asked for.
+  defp busy_delivery(state, sender, content, kind, mode) do
+    state = state |> put_entry(sender, content, kind, mode) |> broadcast()
+    queued_before = length(state.live.inbox)
+    {state, disposition} = drain_backgroundable(state)
+
+    record_inbox(state, disposition, sender, kind, content,
+      mode: mode,
+      count: queued_before,
+      disposition: disposition
+    )
+
+    {state, disposition}
   end
 
   # The idle arm: enqueue, drain through the turn executor, and report the
@@ -241,30 +281,40 @@ defmodule Nest.Agents.Agent.Inbox do
   end
 
   @doc """
-  Queue a human chat message on the agent's own inbox.
+  Queue a human chat message on the agent's own inbox and deliver it now when
+  the in-flight batch can be moved to the background.
 
-  Called by `Callbacks.chat_or_queue/4` when the agent is busy. `from` is
-  the sender identity (the channel passes the socket's username; `nil` is
-  allowed), `content` is stored verbatim, and `mode` is the human's
-  requested mode (`nil` when the caller picked none). Broadcasts the new
-  inbox and returns the updated state.
+  Called by `Callbacks.chat_or_queue/4` when the agent is busy. `from` is the
+  sender identity (the channel passes the socket's username; `nil` is allowed),
+  `content` is stored verbatim, and `mode` is the human's requested mode (`nil`
+  when the caller picked none). This is the human path's whole busy arm —
+  `busy_delivery/5` for a `:user` entry — so the disposition it returns is the
+  one the timeline records, exactly as the peer paths do it: recording
+  `:queued` before the drain ran would log a queueing for a message the
+  transcript already carries.
 
   Unlike `handle_delivery/4` this never refuses: the sender is a human and
   the cap exists to bound a runaway *peer* producer, so a human message is
   queued even when the cap is reached instead of being silently dropped.
   """
-  @spec enqueue_user_message(Agent.t(), String.t() | nil, String.t(), String.t() | nil) ::
-          Agent.t()
-  def enqueue_user_message(state, from, content, mode) do
-    state = state |> put_entry(from, content, :user, mode) |> broadcast()
+  @spec deliver_user_message(Agent.t(), String.t() | nil, String.t(), String.t() | nil) ::
+          {Agent.t(), :delivered | :queued}
+  def deliver_user_message(state, from, content, mode) do
+    busy_delivery(state, from, content, :user, mode)
+  end
 
-    record_inbox(state, :enqueued, from, :user, content,
-      mode: mode,
-      count: length(state.live.inbox),
-      disposition: :queued
-    )
-
-    state
+  # Deliver a just-enqueued entry now when the machine is executing a tool batch
+  # (issue #36): the batch moves to the background and the entry lands in the
+  # transcript, so the caller reports `:delivered`. Every other busy status keeps
+  # its entry queued — the decision belongs to the machine
+  # (`Machine.Backgrounding`), which no-ops when there is no batch to move, and a
+  # no-op leaves the entry queued and this disposition `:queued`.
+  defp drain_backgroundable(state) do
+    if backgroundable?(Machine.status_for(state.live.machine)) do
+      Turn.drain_inbox(state)
+    else
+      {state, :queued}
+    end
   end
 
   @doc """
@@ -276,11 +326,19 @@ defmodule Nest.Agents.Agent.Inbox do
   `@max_inbox_size` and always queues, broadcasting the new inbox. `kind`
   distinguishes a peer-shaped result from a human one on the wire; `mode` is
   always `nil` (the runtime asks for no mode).
+
+  `fulfilled_ids` is the one piece of entry metadata a producer supplies: the
+  tool-call ids a backgrounded batch's outcome answers (issue #36) — a result's
+  own, or the calls a worker's death closes. It rides the entry into the message
+  the drain appends (`build_drained_message/3`), which is what lets a later load
+  tell a promise that was kept from one the process died with
+  (`MessageList.backgrounded_results/1`). Empty for every other producer.
   """
-  @spec enqueue_internal(Agent.t(), String.t() | nil, String.t(), kind()) :: Agent.t()
-  def enqueue_internal(state, from, content, kind)
+  @spec enqueue_internal(Agent.t(), String.t() | nil, String.t(), kind(), [String.t()]) ::
+          Agent.t()
+  def enqueue_internal(state, from, content, kind, fulfilled_ids \\ [])
       when kind in [:agent, :user, :query, :notice] do
-    state = state |> put_entry(from, content, kind, nil) |> broadcast()
+    state = state |> put_entry(from, content, kind, nil, fulfilled_ids) |> broadcast()
 
     record_inbox(state, :enqueued, from, kind, content,
       count: length(state.live.inbox),
@@ -288,6 +346,23 @@ defmodule Nest.Agents.Agent.Inbox do
     )
 
     state
+  end
+
+  @doc """
+  Queue a backgrounded batch's outcome as a runtime `:notice` (issue #36).
+
+  The notice's wording is `Turn.Backgrounded`'s (it keys off the outcome and the
+  command's own timeout marker); `Inbox` owns the entry and the enqueue. Nothing
+  says it: no agent did this, so the entry renders bare (`kind: :notice`).
+
+  `fulfilled_ids` is the delivery's own — the tool-call ids the notice answers
+  or closes (`Backgrounding.fulfilled_ids/1` for a result,
+  `Backgrounding.ids_for/2` for a worker's death). It rides the entry onto the
+  message the drain appends (`build_drained_message/3`).
+  """
+  @spec deliver_notice(Agent.t(), term(), [String.t()]) :: Agent.t()
+  def deliver_notice(state, outcome, fulfilled_ids) do
+    enqueue_internal(state, nil, Backgrounded.notice(outcome), :notice, fulfilled_ids)
   end
 
   @doc """
@@ -385,6 +460,29 @@ defmodule Nest.Agents.Agent.Inbox do
   end
 
   @doc """
+  The user message a drained batch is delivered as.
+
+  `content` is the batch's combined text (`combine_and_offload/2`) and `mode`
+  the drain's winning mode; `Dispatch.build_user_message/3` builds the message
+  itself. The batch's `fulfilled_ids` also ride it as message metadata
+  (`MessageList.fulfilled_metadata/1`): a backgrounded batch's notice answers or
+  closes those calls, so a later load can tell a promise that was kept from one
+  the process died with (`MessageList.backgrounded_results/1`).
+
+  The single writer of that marker, so every drain shape builds its message here
+  — including the backgrounding path, which delivers a *notice* entry when one
+  was queued while another batch executed.
+  """
+  @spec build_drained_message([entry()], String.t(), String.t()) :: {:user, User.t()}
+  def build_drained_message(entries, content, mode) do
+    Dispatch.build_user_message(
+      content,
+      mode,
+      MessageList.fulfilled_metadata(fulfilled_ids(entries))
+    )
+  end
+
+  @doc """
   The batch a drain delivers, selected from the FIFO head of `entries`.
 
   A human message is delivered **alone** — it never merges into a batch and
@@ -431,16 +529,24 @@ defmodule Nest.Agents.Agent.Inbox do
   # `from`/`mode` are normalized here, the single write point, so a malformed
   # payload can never put a number/map on the wire (`serialize/1`'s contract is
   # string-or-null for both).
-  defp put_entry(state, from, content, kind, mode) do
+  defp put_entry(state, from, content, kind, mode, fulfilled_ids \\ []) do
     entry = %{
       from: if(is_binary(from), do: from, else: nil),
       content: content,
       timestamp: DateTime.utc_now(),
       kind: kind,
-      mode: if(is_binary(mode), do: mode, else: nil)
+      mode: if(is_binary(mode), do: mode, else: nil),
+      fulfilled_ids: fulfilled_ids
     }
 
     %{state | live: %{state.live | inbox: state.live.inbox ++ [entry]}}
+  end
+
+  # `fulfilled_ids` is the entry's only producer-supplied metadata (see
+  # `enqueue_internal/5`); every other producer leaves it empty. Total like the
+  # rest of the inbox helpers, so a hand-built entry cannot crash a drain.
+  defp fulfilled_ids(entries) do
+    Enum.flat_map(entries, &Map.get(&1, :fulfilled_ids, []))
   end
 
   defp broadcast(state) do

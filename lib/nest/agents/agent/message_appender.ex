@@ -178,10 +178,11 @@ defmodule Nest.Agents.Agent.MessageAppender do
 
   # Append the requested message. While a turn is live the sequence is
   # owned by that turn and repair is limited to the one shape `Repair`
-  # allows on the live path (it must not race the turn and, e.g., answer a
-  # `tool_use` whose worker is still about to deliver the real result). At
-  # a terminal boundary the sequence is healed before the requested
-  # message lands.
+  # allows on the live path: this module must not race the turn, and in
+  # particular it never fabricates a `tool_result` (the machine does that
+  # itself when it backgrounds an in-flight batch — issue #36 — and emits
+  # it as an explicit action). At a terminal boundary the sequence is
+  # healed before the requested message lands.
   defp append_with_bridge(state, message) do
     if live_turn?(state) do
       append_live(state, message)

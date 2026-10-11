@@ -5,8 +5,8 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   `Machine.step/2` is pure and returns a list of actions. This module runs
   them, in order, against the live Agent state. It owns every effect a turn
   performs: sequence appends, worker spawns, timer arm/cancel, channel acks,
-  broadcasts, usage merges, inbox drains, reply give-ups, and sub-agent
-  notifications.
+  broadcasts, usage merges, inbox drains, backgrounded-batch notices, reply
+  give-ups, and sub-agent notifications.
 
   Some facts only exist after an effect runs (an append's tagged result, a
   preflight decision, a spawned worker's pid/ref). `run_all/2` executes until
@@ -37,7 +37,6 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   alias Nest.Agents.Agent.ToolFilter
   alias Nest.Agents.Agent.ToolLoop
   alias Nest.Agents.Agent.Turn.Commit
-  alias Nest.Agents.Agent.Turn.Dispatch
   alias Nest.Agents.Agent.Turn.GiveUpDelivery
   alias Nest.Agents.Agent.Turn.HTTPWorker
   alias Nest.Agents.Agent.Turn.Terminal
@@ -348,7 +347,8 @@ defmodule Nest.Agents.Agent.Turn.Executor do
         {state, :continue}
 
       {state, batch, content} ->
-        user = Dispatch.build_user_message(content, state.live.mode)
+        # The batch's `fulfilled_ids` ride it too (`Inbox.build_drained_message/3`).
+        user = Inbox.build_drained_message(batch, content, state.live.mode)
 
         # `:stale` is the appender's "this message does not answer the live
         # sequence" refusal. Consuming the batch on it would drop the message
@@ -366,6 +366,11 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   # The consume half of peek-then-consume, emitted by the branch that actually
   # appended the message (issue #26).
   defp execute({:consume_inbox, entries}, state), do: consume_inbox(state, entries)
+
+  # A backgrounded batch's outcome (issue #36): the batch has no live worker
+  # to settle it, so it arrives as a runtime `:notice` (no agent said it).
+  defp execute({:deliver_backgrounded, _ref, outcome, ids}, state),
+    do: {Inbox.deliver_notice(state, outcome, ids), :continue}
 
   # The reply give-up (issue #31 §1.6): the agent is settling or blocking while it
   # still owes a reply, so each requester is told no answer is coming and the debt

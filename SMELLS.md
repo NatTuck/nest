@@ -5,7 +5,7 @@ NOT FOR ANY REASON, NO EXCUSES.
 - **ABSOLUTELY NEVER** re-run the tests a bunch of times for any
 reason.
 
-Here are some things to watch for in code reviews:
+## General stuff to watch for in code reviews:
 
 - Avoid redundant code.
   - ex. If every call to a function has the same code next to it, that code should
@@ -24,7 +24,7 @@ Here are some things to watch for in code reviews:
   hide prints — the "tests must not print" rule cannot be enforced through a
   capture. Both fail review, every time — see "Testing" below.
 
-OTP Usage:
+## OTP Usage:
 
 - We shouldn't be using send to communicate with our own GenServers. The
 handle_info callback is only for interoperability with code that must
@@ -42,7 +42,26 @@ external interface function is that eventually leads to start_link being
 called. If there's a Supervisor.start_child in the chain, it needs to be
 outside of that).
 
-Testing:
+## Changes to check carefully:
+
+The `bwrap` sandbox and tools that access the file system:
+
+- The intent is that `bwrap` is the sandbox, and all file system access goes
+through `bwrap` to present a consistent view of the filesystem to agents.
+- Any attempt to skip a `bwrap` call must be flagged. It probably introduces
+critical bugs.
+- Any filesystem access from a tool that doesn't go through `bwrap` needs
+to get triple checked for *any* edge case differences from the `bwrap` view. Any
+differences presumptively fail code review.
+
+The Agent state machine:
+
+- This state machine is both the core of the system and a really easy place to
+introduce bugs.
+- Consider state machine changes carefully for behavior changes, design
+match, and common sense domain correctness.
+
+## Testing
 
 - **Never assert the *absence* of a log line against `capture_log` output** —
   no `refute log =~ ...`, no `assert log == ""`, and no filtered version of

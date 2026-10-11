@@ -18,7 +18,16 @@ defmodule Nest.Tools do
   alias Nest.LLM.Tool
   alias Nest.Sandbox
   alias Nest.Tokens.ConversationSize
-  alias Nest.Tools.{FileTools, InspectFile, QueryAgent, ShellJobs, SpawnAgent, WaitAgents}
+
+  alias Nest.Tools.{
+    FileTools,
+    InspectFile,
+    QueryAgent,
+    ShellCmd,
+    ShellJobs,
+    SpawnAgent,
+    WaitAgents
+  }
 
   @doc """
   Returns a list of `Nest.LLM.Tool` structs for the given tool names.
@@ -176,16 +185,7 @@ defmodule Nest.Tools do
   defp shell_cmd_function(workspace_path, tmp_path) do
     %Tool{
       name: "shell-cmd",
-      description:
-        "Execute a shell command and return its output. The command is written " <>
-          "to a temporary script and run with bash, so it may span several " <>
-          "lines, use heredocs, quotes and metacharacters freely, and run " <>
-          "multiple statements in one call. Note there is no implicit `set -e`: " <>
-          "a statement that exits non-zero still reports its output and later " <>
-          "statements still run, so guard steps explicitly (for example " <>
-          "`cmd || exit 1`, or put your own `set -e` on the first line) when a " <>
-          "failure must stop the rest." <>
-          scratch_note(tmp_path),
+      description: shell_cmd_description(tmp_path),
       parameters_schema: %{
         "type" => "object",
         "properties" => %{
@@ -193,14 +193,8 @@ defmodule Nest.Tools do
             "type" => "string",
             "description" => "Shell command to execute"
           },
-          "background" => %{
-            "type" => "boolean",
-            "description" =>
-              "When true, start the command as a background job and return a job id " <>
-                "immediately instead of waiting for output. Manage it with shell-list, " <>
-                "shell-wait, and shell-kill. Limited to a small number of concurrent " <>
-                "jobs per agent."
-          },
+          "background" => shell_background_property(),
+          "timeout" => shell_timeout_property(),
           "max_result_tokens" => max_result_tokens_schema()
         },
         "required" => ["command"]
@@ -211,21 +205,101 @@ defmodule Nest.Tools do
     }
   end
 
+  # The model-visible default is in seconds, derived from the module's
+  # millisecond constant (`ShellCmd.default_timeout_ms/0`) so the prose and
+  # the enforced bound cannot drift apart.
+  defp default_timeout_seconds, do: div(ShellCmd.default_timeout_ms(), 1000)
+
+  defp shell_cmd_description(tmp_path) do
+    "Execute a shell command and return its output. The command is written " <>
+      "to a temporary script and run with bash, so it may span several " <>
+      "lines, use heredocs, quotes and metacharacters freely, and run " <>
+      "multiple statements in one call. Note there is no implicit `set -e`: " <>
+      "a statement that exits non-zero still reports its output and later " <>
+      "statements still run, so guard steps explicitly (for example " <>
+      "`cmd || exit 1`, or put your own `set -e` on the first line) when a " <>
+      "failure must stop the rest. A command runs under a wall-clock " <>
+      "limit of `timeout` seconds (default #{default_timeout_seconds()}): one " <>
+      "that outlives it is killed and its output so far is returned. The " <>
+      "limit does not apply to `background: true`." <>
+      scratch_note(tmp_path)
+  end
+
+  defp shell_background_property do
+    %{
+      "type" => "boolean",
+      "description" =>
+        "When true, start the command as a background job instead of " <>
+          "waiting for it to finish, and return a job id to manage with " <>
+          "shell-list, shell-wait, and shell-kill. A command that exits " <>
+          "within the first 200ms is reported as its normal output " <>
+          "instead of a job id. Limited to a small number of concurrent " <>
+          "jobs per agent."
+    }
+  end
+
+  defp shell_timeout_property do
+    %{
+      "type" => "integer",
+      "description" =>
+        "Wall-clock limit in seconds on how long the command may run " <>
+          "before it is killed and the call returns its output so far " <>
+          "(default #{default_timeout_seconds()}). This one is in seconds; " <>
+          "the `timeout` of agents-wait and agents-batch is in milliseconds. " <>
+          "The deadline is fixed when the command starts, so a command " <>
+          "that keeps writing output cannot extend it. There is no upper " <>
+          "limit. Not applied with `background: true` (a background job " <>
+          "is managed with shell-kill instead), although the value is " <>
+          "still validated."
+    }
+  end
+
   defp shell_cmd(%{"command" => command} = args, workspace_path, tmp_path, context) do
     context = context || %{}
     caps = caps_from_context(context)
 
-    Logger.info(
-      "Tool shell-cmd: #{command} (workspace: #{workspace_path || "none"}, tmp: #{tmp_path || "none"}, background: #{args["background"] == true})"
-    )
+    case shell_timeout_ms(args["timeout"]) do
+      {:error, reason} ->
+        {:error, reason}
 
-    opts = [
-      background: args["background"] == true,
-      agent_key: agent_key(context),
-      agent_pid: Map.get(context, :agent_pid)
-    ]
+      {:ok, timeout} ->
+        Logger.info(
+          "Tool shell-cmd: #{command} (workspace: #{workspace_path || "none"}, tmp: #{tmp_path || "none"}, background: #{args["background"] == true})"
+        )
 
-    Sandbox.run(command, workspace_path, tmp_path, caps, opts)
+        opts =
+          [
+            background: args["background"] == true,
+            agent_key: agent_key(context),
+            agent_pid: Map.get(context, :agent_pid)
+          ]
+          |> put_timeout(timeout)
+
+        Sandbox.run(command, workspace_path, tmp_path, caps, opts)
+    end
+  end
+
+  # `nil` means the argument was omitted: leave `:timeout` off the opts so
+  # `ShellCmd.execute/5`'s own default applies (one source of truth for the
+  # default bound).
+  defp put_timeout(opts, nil), do: opts
+  defp put_timeout(opts, ms), do: Keyword.put(opts, :timeout, ms)
+
+  # The `timeout` argument is seconds of wall-clock time, and a positive
+  # integer is the only accepted form. A non-positive or non-integer value
+  # is rejected as a tool error (the shape `agents-wait`'s `timeout` uses)
+  # rather than silently falling back to the default, so the model is told
+  # what it got wrong.
+  defp shell_timeout_ms(nil), do: {:ok, nil}
+
+  defp shell_timeout_ms(seconds) when is_integer(seconds) and seconds > 0,
+    do: {:ok, seconds * 1000}
+
+  defp shell_timeout_ms(other), do: {:error, invalid_timeout_message(other)}
+
+  defp invalid_timeout_message(value) do
+    "Invalid `timeout` argument: expected a positive integer of seconds, got: " <>
+      inspect(value) <> "."
   end
 
   # The `context-check` tool reports current context usage. The
