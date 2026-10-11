@@ -25,6 +25,7 @@ defmodule Nest.Tools do
     QueryAgent,
     ShellCmd,
     ShellJobs,
+    ShellPipes,
     SpawnAgent,
     WaitAgents
   }
@@ -258,24 +259,21 @@ defmodule Nest.Tools do
     context = context || %{}
     caps = caps_from_context(context)
 
-    case shell_timeout_ms(args["timeout"]) do
-      {:error, reason} ->
-        {:error, reason}
+    with :ok <- ShellPipes.check(command),
+         {:ok, timeout} <- shell_timeout_ms(args["timeout"]) do
+      Logger.info(
+        "Tool shell-cmd: #{command} (workspace: #{workspace_path || "none"}, tmp: #{tmp_path || "none"}, background: #{args["background"] == true})"
+      )
 
-      {:ok, timeout} ->
-        Logger.info(
-          "Tool shell-cmd: #{command} (workspace: #{workspace_path || "none"}, tmp: #{tmp_path || "none"}, background: #{args["background"] == true})"
-        )
+      opts =
+        [
+          background: args["background"] == true,
+          agent_key: agent_key(context),
+          agent_pid: Map.get(context, :agent_pid)
+        ]
+        |> put_timeout(timeout)
 
-        opts =
-          [
-            background: args["background"] == true,
-            agent_key: agent_key(context),
-            agent_pid: Map.get(context, :agent_pid)
-          ]
-          |> put_timeout(timeout)
-
-        Sandbox.run(command, workspace_path, tmp_path, caps, opts)
+      Sandbox.run(command, workspace_path, tmp_path, caps, opts)
     end
   end
 
