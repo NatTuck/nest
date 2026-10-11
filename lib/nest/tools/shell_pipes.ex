@@ -46,7 +46,8 @@ defmodule Nest.Tools.ShellPipes do
 
   Known limitations (misses, never false positives): a pager reached indirectly
   is not caught — for example `ls | xargs head`, where `head` is an argument to
-  `xargs` rather than the stage's command word.
+  `xargs` rather than the stage's command word, or `ls | { head; }`, where the
+  pipe target is a brace group rather than a plain command.
   """
 
   # Command names whose pipeline use discards output.
