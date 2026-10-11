@@ -8,6 +8,8 @@ defmodule Nest.TimelineTest do
 
   import ExUnit.CaptureLog
 
+  import Nest.Test.TmpCleanup
+
   alias Nest.Timeline
   alias Nest.Timeline.Digest
 
@@ -18,7 +20,7 @@ defmodule Nest.TimelineTest do
     on_exit(fn ->
       Application.delete_env(:nest, :timeline_dir)
       Application.delete_env(:nest, :timeline_enabled)
-      File.rm_rf(dir)
+      rm_tmp!(dir, "nest-timeline-test-")
     end)
 
     {:ok, dir: dir}

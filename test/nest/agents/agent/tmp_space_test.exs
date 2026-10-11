@@ -13,6 +13,8 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
 
   import ExUnit.CaptureLog
 
+  import Nest.Test.TmpCleanup
+
   alias Nest.Agents.Agent.TmpSpace
   alias Nest.Sandbox
 
@@ -139,7 +141,7 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
         ])
 
       File.mkdir_p!(ws)
-      on_exit(fn -> File.rm_rf(ws) end)
+      on_exit(fn -> rm_tmp!(ws, "nest_tmp_space_ws_") end)
 
       capture_log(fn ->
         a = TmpSpace.create(space_id, "agent-a")

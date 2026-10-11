@@ -15,6 +15,8 @@ defmodule Nest.SandboxHostPathTest do
 
   import ExUnit.CaptureLog
 
+  import Nest.Test.TmpCleanup
+
   alias Nest.Agents.Agent.BatchSizer.Overflow
   alias Nest.Sandbox
 
@@ -105,7 +107,7 @@ defmodule Nest.SandboxHostPathTest do
   test "a workspace at or under /tmp is rejected for stat, read, and glob alike", ctx do
     ws = Path.join(System.tmp_dir!(), "nest_shadowed_ws_#{System.unique_integer([:positive])}")
     File.mkdir_p!(ws)
-    on_exit(fn -> File.rm_rf(ws) end)
+    on_exit(fn -> rm_tmp!(ws, "nest_shadowed_ws_") end)
 
     target = Path.join(ws, "f.txt")
 

@@ -20,6 +20,7 @@ defmodule Nest.Tools do
   alias Nest.Tokens.ConversationSize
 
   alias Nest.Tools.{
+    ArchivedAgents,
     FileTools,
     InspectFile,
     QueryAgent,
@@ -67,7 +68,9 @@ defmodule Nest.Tools do
              "agents-spawn",
              "agents-query",
              "agents-list",
+             "agents-list-archived",
              "agents-archive",
+             "agents-unarchive",
              "agents-batch",
              "agents-send",
              "agents-wait",
@@ -86,7 +89,12 @@ defmodule Nest.Tools do
   defp sub_agent_tool_function("agents-spawn"), do: SpawnAgent.function()
   defp sub_agent_tool_function("agents-query"), do: QueryAgent.function()
   defp sub_agent_tool_function("agents-list"), do: list_agents_function()
+
+  defp sub_agent_tool_function("agents-list-archived"),
+    do: ArchivedAgents.list_archived_function()
+
   defp sub_agent_tool_function("agents-archive"), do: archive_agent_function()
+  defp sub_agent_tool_function("agents-unarchive"), do: ArchivedAgents.unarchive_function()
   defp sub_agent_tool_function("agents-batch"), do: batch_agent_function()
   defp sub_agent_tool_function("agents-send"), do: send_agent_function()
   defp sub_agent_tool_function("agents-wait"), do: WaitAgents.function()
@@ -123,9 +131,10 @@ defmodule Nest.Tools do
 
   Tools whose result is already a fixed-size confirmation or a
   pointer (`agents-query`, `agents-spawn`, `agents-send`,
-  `agents-archive`, `context-compact`, `shell-kill`) do not take it,
-  and neither does `agents-batch`: its aggregate is an inbox message,
-  not a tool result, so there is no inline result left to cap.
+  `agents-archive`, `agents-unarchive`, `context-compact`,
+  `shell-kill`) do not take it, and neither does `agents-batch`: its
+  aggregate is an inbox message, not a tool result, so there is no
+  inline result left to cap.
   (Decision 14 named only `agents-query` and `agents-spawn` because
   that is where the analysis happened to be done; the rationale
   applies to every tool whose result stops being a tool result.)

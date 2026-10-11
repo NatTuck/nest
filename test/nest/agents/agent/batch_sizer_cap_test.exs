@@ -19,6 +19,8 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
 
   import ExUnit.CaptureLog
 
+  import Nest.Test.TmpCleanup
+
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.LLM.Tool
   alias Nest.Messages.ToolCall
@@ -67,7 +69,7 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
         ])
 
       File.mkdir_p!(tmp_dir)
-      on_exit(fn -> File.rm_rf!(tmp_dir) end)
+      on_exit(fn -> rm_tmp!(tmp_dir, "batchsizer-cap-") end)
       {:ok, tmp_dir: tmp_dir}
     end
 
@@ -233,7 +235,7 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
         )
 
       File.mkdir_p!(tmp_dir)
-      on_exit(fn -> File.rm_rf!(tmp_dir) end)
+      on_exit(fn -> rm_tmp!(tmp_dir, "batchsizer-sub-") end)
       {:ok, tmp_dir: tmp_dir}
     end
 
