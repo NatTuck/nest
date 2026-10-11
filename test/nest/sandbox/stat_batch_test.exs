@@ -52,8 +52,6 @@ defmodule Nest.Sandbox.StatBatchTest do
     missing = Path.join(ctx.workspace, "missing.txt")
     File.write!(present, String.duplicate("x", 7))
 
-    Mimic.copy(Sandbox)
-
     # Exactly one per-path `stat/4`, for the absent path only.
     Mimic.expect(Sandbox, :stat, 1, fn path, _caps, _ws, _tmp ->
       assert path == missing
@@ -66,9 +64,6 @@ defmodule Nest.Sandbox.StatBatchTest do
 
   test "a sandbox-level failure costs one spawn per chunk, not one per path", ctx do
     paths = for i <- 1..101, do: Path.join(ctx.workspace, "f#{i}.txt")
-
-    Mimic.copy(ShellCmd)
-    Mimic.copy(Sandbox)
 
     # 101 paths -> two chunks (100 + 1) -> two invocations, each producing no
     # stdout at all, so the whole chunk shares one classified reason.
@@ -94,8 +89,6 @@ defmodule Nest.Sandbox.StatBatchTest do
     newline = Path.join(ctx.workspace, "with\nnewline.txt")
     File.write!(plain, String.duplicate("x", 5))
 
-    Mimic.copy(Sandbox)
-
     # Line-framed batch output cannot carry it, so it goes through `stat/4`.
     Mimic.expect(Sandbox, :stat, 1, fn path, _caps, _ws, _tmp ->
       assert path == newline
@@ -108,9 +101,6 @@ defmodule Nest.Sandbox.StatBatchTest do
 
   test "skips the batched invocation entirely when every path has a newline", ctx do
     paths = [Path.join(ctx.workspace, "a\nb"), Path.join(ctx.workspace, "c\nd")]
-
-    Mimic.copy(ShellCmd)
-    Mimic.copy(Sandbox)
 
     # No operand can ride the batch, so nothing is spawned for it.
     Mimic.reject(ShellCmd, :execute_raw, 4)
@@ -126,9 +116,6 @@ defmodule Nest.Sandbox.StatBatchTest do
 
   test "re-stats a path whose line the batch output did not yield", ctx do
     path = Path.join(ctx.workspace, "a.txt")
-
-    Mimic.copy(ShellCmd)
-    Mimic.copy(Sandbox)
 
     # `stat` claimed success but printed nothing parseable, so the contract
     # ("an entry for every path") is kept by the per-path fallback.
@@ -146,9 +133,6 @@ defmodule Nest.Sandbox.StatBatchTest do
 
   test "returns an error for every path when the sandbox cannot run", ctx do
     paths = [Path.join(ctx.workspace, "a.txt"), Path.join(ctx.workspace, "b.txt")]
-
-    Mimic.copy(ShellCmd)
-    Mimic.copy(Sandbox)
 
     Mimic.expect(ShellCmd, :execute_raw, 1, fn _cmd, _ws, _tmp, _caps ->
       {:error, "No workspace configured for this agent"}

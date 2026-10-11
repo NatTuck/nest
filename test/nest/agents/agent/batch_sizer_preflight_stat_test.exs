@@ -46,11 +46,9 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
   # Stub the sandbox's two stat entry points so a test can assert *which*
   # distinct paths the preflight batched and how many spawns it took:
   # `stat_many/4` (one bwrap spawn for a whole chunk of paths) and `stat/4`
-  # (one per path — the per-path fallback). `Mimic.copy/1` is per test process;
-  # other tests in this async file are unaffected.
+  # (one per path — the per-path fallback). Both modules are copied in
+  # `test/test_helper.exs`, never per-test.
   defp stub_stats(size) do
-    Mimic.copy(Sandbox)
-
     Mimic.stub(Sandbox, :stat_many, fn paths, _caps, _ws, _tmp ->
       Map.new(paths, &{&1, {:ok, size}})
     end)
@@ -147,8 +145,6 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
     end
 
     test "hands the sandbox no path for a malformed or unresolvable file-read" do
-      Mimic.copy(Sandbox)
-
       # An empty list is all the preflight may ask for, and the per-path
       # fallback (`stat/4`) must never run.
       Mimic.expect(Sandbox, :stat_many, 1, fn [], _c, _w, _t -> %{} end)
@@ -210,8 +206,6 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
     end
 
     test "a memo that misses the path still stats, and a failed stat falls back" do
-      Mimic.copy(Sandbox)
-
       Mimic.expect(Sandbox, :stat, 1, fn _path, _c, _w, _t -> {:error, :enoent} end)
 
       # A memo that does not mention this path: the projection must stat rather

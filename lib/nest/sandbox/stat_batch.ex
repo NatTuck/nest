@@ -9,6 +9,12 @@ defmodule Nest.Sandbox.StatBatch do
   `Nest.Tools.ShellCmd.execute_raw/5`, and the path mapping stays in
   `Nest.Sandbox.Paths`.
 
+  The one case that does not collapse: a chunk that is mostly *absent* degrades
+  to one `stat/4` per absent path, because each absent path needs its own
+  reason and log line. 150 present + 5 missing paths cost 7 spawns (two chunk
+  invocations plus the five fallbacks), not 2 — still bounded by the number of
+  absent paths rather than by the batch.
+
   ## Framing
 
   The command is
@@ -92,6 +98,13 @@ defmodule Nest.Sandbox.StatBatch do
 
   # No output at all: the sandbox itself failed, so every path in the chunk
   # shares one reason and one log line instead of one of each per path.
+  #
+  # Attribution here is therefore chunk-level: where a chunk's paths would have
+  # failed for different reasons, the per-path `reason` and log line differ from
+  # what a per-path `stat/4` would have produced. That is a `reason`/logging
+  # detail only — the preflight projects every error identically, so no refusal
+  # decision moves. Attribution is exact on the fallback path
+  # (`per_path_sizes/4`).
   defp whole_chunk_failed(paths, stderr) do
     reason = Failure.classify(stderr)
     Failure.log(:stat, hd(paths), reason, stderr)
