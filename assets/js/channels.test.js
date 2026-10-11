@@ -977,9 +977,14 @@ describe("channels", () => {
   describe("unarchiveAgent", () => {
     it("is a no-op with an onError when not connected to the lobby", async () => {
       let captured = null;
-      unarchiveAgent("old", 1, () => {}, (err) => {
-        captured = err;
-      });
+      unarchiveAgent(
+        "old",
+        1,
+        () => {},
+        (err) => {
+          captured = err;
+        },
+      );
 
       await vi.waitFor(() => {
         assert.ok(captured);
