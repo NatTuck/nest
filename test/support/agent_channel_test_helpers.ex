@@ -19,12 +19,49 @@ defmodule NestWeb.AgentChannelTestHelpers do
   and teardown match `agent_*.exs` tests.
   """
 
+  alias Nest.Messages.Assistant
+  alias Nest.Messages.Part
+  alias Nest.Messages.User
+  alias Nest.Persistence
+
   # `connect/3` is a macro from `Phoenix.ChannelTest` that needs
   # `@endpoint` from the caller. Tests that need a fresh socket
   # connection just inline `connect(UserSocket, %{"token" =>
   # Process.get(:agent_test_token)})` from their own body — the
   # macro expansion happens at the call site where `@endpoint`
   # is set by `NestWeb.ChannelCase`.
+
+  @doc """
+  Seed a small archive for the `chat:history` tests.
+
+  System at 0, a human prompt at 1, a delivered peer message at 2 (user role,
+  no `origin`), assistant at 3, then a compaction boundary (and marker row) at
+  4. The agent owns the system row.
+
+  The peer row is there so the `role: "user"` recall projection is pinned to
+  exclude it: that projection filters on `origin: "human"`, and a delivered row
+  is untagged.
+  """
+  def seed_archive(space_id, name) do
+    for message <- [
+          {:user,
+           %User{
+             index: 1,
+             parts: [%Part.Text{text: "archived question"}],
+             metadata: User.human_metadata()
+           }},
+          {:user,
+           %User{
+             index: 2,
+             parts: [%Part.Text{text: "[Message from agent \"peer\"]\narchived delivery"}]
+           }},
+          {:assistant, %Assistant{index: 3, parts: [%Part.Text{text: "archived answer"}]}}
+        ] do
+      {:ok, _} = Persistence.insert_message(space_id, name, message)
+    end
+
+    {:ok, _} = Persistence.record_compaction(space_id, name, 4, 4)
+  end
 
   defmacro __using__(_opts) do
     quote do

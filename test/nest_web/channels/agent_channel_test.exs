@@ -11,10 +11,6 @@ defmodule NestWeb.AgentChannelTest do
   import Nest.Test.TmpCleanup
 
   alias Nest.Agents.AgentTestHelpers
-  alias Nest.Messages.Assistant
-  alias Nest.Messages.Part
-  alias Nest.Messages.User
-  alias Nest.Persistence
   alias Nest.Sandbox.ShellJobs
   alias Nest.Tools.ShellCmd
 
@@ -476,8 +472,11 @@ defmodule NestWeb.AgentChannelTest do
       ref = push_history(socket, %{"limit" => 2})
       assert_reply ref, :ok, %{"messages" => page}, 0
       # Ascending order; the newest page sits at the boundary.
-      assert Enum.map(page, & &1["index"]) == [2, 3]
+      assert Enum.map(page, & &1["index"]) == [3, 4]
 
+      # The `user` projection is the Ctrl/Cmd+Up recall list, so it returns only
+      # the human-tagged row. Index 2 is a delivered peer message (user role,
+      # no `origin`) and must not be recalled.
       ref = push_history(socket, %{"role" => "user"})
       assert_reply ref, :ok, %{"messages" => users}, 0
       assert Enum.map(users, & &1["index"]) == [1]
@@ -525,19 +524,6 @@ defmodule NestWeb.AgentChannelTest do
     ref = push(socket, "chat:history", payload)
     _ = :sys.get_state(socket.channel_pid)
     ref
-  end
-
-  # Seed a small archive: system at 0, user at 1, assistant at 2, then a
-  # compaction boundary (and marker row) at 3. The agent owns the system row.
-  defp seed_archive(space_id, name) do
-    for message <- [
-          {:user, %User{index: 1, parts: [%Part.Text{text: "archived question"}]}},
-          {:assistant, %Assistant{index: 2, parts: [%Part.Text{text: "archived answer"}]}}
-        ] do
-      {:ok, _} = Persistence.insert_message(space_id, name, message)
-    end
-
-    {:ok, _} = Persistence.record_compaction(space_id, name, 3, 3)
   end
 
   describe "handle_in(change_model)" do
