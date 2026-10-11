@@ -37,12 +37,22 @@ defmodule Nest.Repo.Migrations.SanitizeAgentNames do
   #   order, and a candidate that is taken gains a `-<6 hex of
   #   sha256(name + attempt)>` suffix (lengthening the digest only if even
   #   that is taken). `(space_id, name)` stays unique throughout.
+  # * **The agent's own system message is rewritten too.** The index-0
+  #   system prompt embeds the name twice (`Your name is "<name>"` and
+  #   `Your own scratch directory is `/tmp/<name>/``), so renaming the row
+  #   without it leaves the agent's own prompt — which the UI shows —
+  #   contradicting its name. Only those two exact renderings are replaced,
+  #   only in the agent's own index-0 system row. See
+  #   `rewrite_system_message/3`.
   # * **Reversibility.** The mapping is recorded in
   #   `agent_name_migrations` (created here), which is what `down/0`
   #   restores from — an unsafe name is not reconstructible from its safe
   #   form, so without the record the rewrite would be irreversible. It is
   #   also the only record of "this agent used to be called X", which is
-  #   what a future scratch-dir rename would need.
+  #   what a future scratch-dir rename would need. The system-message
+  #   rewrite is exactly invertible, so `down/0` reverses it in place
+  #   rather than storing a copy of the old prompt (see
+  #   `restore_names/0`).
   # * **Scratch directories on disk are not touched.** A scratch dir is
   #   `/tmp/nest-<BEAM os pid>/space-<space_id>/<name>`, and that OS pid
   #   belongs to the BEAM that created it — a migration running in some
@@ -64,6 +74,7 @@ defmodule Nest.Repo.Migrations.SanitizeAgentNames do
   @max_name_bytes 255
   @digest_length 6
   @fallback_name "agent"
+  @sandbox_root "/tmp"
 
   # Runs of characters that are not allowed in a name. Matched with the
   # `u` flag so a multi-byte character is one run, not one per byte.
@@ -117,8 +128,16 @@ defmodule Nest.Repo.Migrations.SanitizeAgentNames do
   # It runs inside the migration's transaction, so a failure (a row
   # hand-inserted with a raw name, say) rolls the whole migration back
   # rather than leaving names half-restored.
+  #
+  # The system message is restored by applying the same two-rendering
+  # rewrite backwards, not by storing a copy of the old prompt: an index-0
+  # system row is written once at create and never rewritten by the
+  # application, so the text the inverse rewrite produces is exactly the
+  # text this migration found. (For a row migrated before the scratch line
+  # existed, the inverse of the scratch rendering simply matches nothing.)
   def restore_names do
-    for {agent_id, _space_id, old_name} <- recorded_renames() do
+    for {agent_id, _space_id, old_name, new_name} <- recorded_renames() do
+      rewrite_system_message(agent_id, new_name, old_name)
       rename_agent(agent_id, old_name)
     end
   end
@@ -134,6 +153,7 @@ defmodule Nest.Repo.Migrations.SanitizeAgentNames do
       else
         new_name = folded_name(old_name, taken)
         rename_agent(id, new_name)
+        rewrite_system_message(id, old_name, new_name)
 
         record(%{
           agent_id: id,
@@ -166,7 +186,7 @@ defmodule Nest.Repo.Migrations.SanitizeAgentNames do
     Nest.Repo.all(
       from(m in "agent_name_migrations",
         order_by: [asc: m.id],
-        select: {m.agent_id, m.space_id, m.old_name}
+        select: {m.agent_id, m.space_id, m.old_name, m.new_name}
       )
     )
   end
@@ -227,6 +247,74 @@ defmodule Nest.Repo.Migrations.SanitizeAgentNames do
     :crypto.hash(:sha256, old_name <> Integer.to_string(attempt))
     |> Base.encode16(case: :lower)
     |> binary_part(0, @digest_length)
+  end
+
+  # Rewrite the two prompt renderings that embed the agent's name in its
+  # own index-0 system message: the identity sentence and the scratch-dir
+  # line, both composed by `Nest.Agents.Agent.SystemPrompt`.
+  #
+  # Only those two exact renderings are replaced, and only in this agent's
+  # own index-0 `system` row. A general search-and-replace of the old name
+  # would also rewrite prose that merely mentions it — an AGENTS.md excerpt,
+  # a sibling's name in a transcript, the agent's own name inside another
+  # sentence — which is why the needles are the composer's sentences.
+  #
+  # The walk runs on the *decoded* jsonb map and the write goes back through
+  # Ecto, so JSON escaping (a `"` in a name, a non-ASCII byte) is the
+  # driver's problem rather than a string-matching problem here. Rows whose
+  # text does not change are not written at all.
+  defp rewrite_system_message(agent_id, old_name, new_name) do
+    rows =
+      Nest.Repo.all(
+        from(m in "messages",
+          where: m.agent_id == ^agent_id and m.message_index == 0 and m.role == "system",
+          select: {m.id, m.content}
+        )
+      )
+
+    Enum.each(rows, fn {message_id, content} ->
+      case rewrite_content(content, old_name, new_name) do
+        nil -> :ok
+        new_content -> update_message_content(message_id, new_content)
+      end
+    end)
+
+    :ok
+  end
+
+  defp rewrite_content(%{"parts" => parts} = content, old_name, new_name) when is_list(parts) do
+    rewritten = Enum.map(parts, &rewrite_part(&1, old_name, new_name))
+
+    if rewritten == parts, do: nil, else: Map.put(content, "parts", rewritten)
+  end
+
+  defp rewrite_content(_content, _old_name, _new_name), do: nil
+
+  defp rewrite_part(%{"kind" => "text", "text" => text} = part, old_name, new_name)
+       when is_binary(text) do
+    Map.put(part, "text", rewrite_text(text, old_name, new_name))
+  end
+
+  defp rewrite_part(part, _old_name, _new_name), do: part
+
+  defp rewrite_text(text, old_name, new_name) do
+    text
+    |> String.replace(name_rendering(old_name), name_rendering(new_name))
+    |> String.replace(scratch_rendering(old_name), scratch_rendering(new_name))
+  end
+
+  defp name_rendering(name), do: ~s(Your name is "#{name}")
+
+  defp scratch_rendering(name), do: "Your own scratch directory is `#{scratch_dir(name)}/`"
+
+  # Mirrors `Nest.Sandbox.Paths.sandbox_root/0`; inlined with the rest of
+  # this migration's rules so the file stays self-contained.
+  defp scratch_dir(name), do: @sandbox_root <> "/" <> name
+
+  defp update_message_content(message_id, content) do
+    Nest.Repo.update_all(from(m in "messages", where: m.id == ^message_id),
+      set: [content: content]
+    )
   end
 
   defp rename_agent(agent_id, name) do

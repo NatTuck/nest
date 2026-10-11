@@ -17,6 +17,8 @@ defmodule Nest.Agents.AgentNameMigrationTest do
 
   import Ecto.Query
 
+  alias Nest.Agents.Agent.SystemPrompt
+
   @migration_file "priv/repo/migrations/20261011000000_sanitize_agent_names.exs"
 
   # The migration is a `.exs` script under `priv/`, so it is not compiled
@@ -150,6 +152,66 @@ defmodule Nest.Agents.AgentNameMigrationTest do
     end
   end
 
+  describe "the agent's own system message" do
+    test "is rewritten to the new name and scratch dir" do
+      space_id = space()
+      id = insert(space_id, "Foo Bar")
+      insert_system_message(id, "Foo Bar")
+
+      sanitize_names()
+
+      assert name(space_id, id) == "foo-bar"
+
+      text = system_text(id)
+      assert text =~ ~s(Your name is "foo-bar")
+      assert text =~ "Your own scratch directory is `/tmp/foo-bar/`"
+      refute text =~ "Foo Bar"
+      refute text =~ "/tmp/Foo Bar/"
+    end
+
+    test "leaves text that is not one of the two renderings alone" do
+      space_id = space()
+      id = insert(space_id, "Foo Bar")
+
+      insert_system_message(id, "Foo Bar",
+        extra: "\n\nAn AGENTS.md excerpt mentions the agent Foo Bar by name."
+      )
+
+      sanitize_names()
+
+      text = system_text(id)
+      assert text =~ ~s(Your name is "foo-bar")
+
+      # Prose is not a rendering the composer emits, so it is untouched: a
+      # general search-and-replace of the old name would have rewritten it.
+      assert text =~ "mentions the agent Foo Bar by name"
+    end
+
+    test "only the index-0 system row is touched" do
+      space_id = space()
+      id = insert(space_id, "Foo Bar")
+      insert_system_message(id, "Foo Bar")
+      # A later row that happens to carry the same sentence is a transcript,
+      # not the prompt: leave it alone.
+      insert_message(id, 1, "user", ~s(They said: Your name is "Foo Bar"))
+
+      sanitize_names()
+
+      assert system_text(id) =~ ~s(Your name is "foo-bar")
+      assert text_at(id, 1) =~ ~s(Your name is "Foo Bar")
+    end
+
+    test "is a no-op for an agent with no system row (a clone owns none)" do
+      space_id = space()
+      id = insert(space_id, "Clone Name")
+
+      sanitize_names()
+
+      assert name(space_id, id) == "clone-name"
+      assert Nest.Repo.all(from(m in "messages", where: m.agent_id == ^id, select: m.id)) == []
+    end
+  end
+
   describe "down (restoring the original names)" do
     test "restores every recorded name" do
       space_id = space()
@@ -161,6 +223,22 @@ defmodule Nest.Agents.AgentNameMigrationTest do
       restore_names()
 
       assert name(space_id, id) == "Restore Me"
+    end
+
+    test "restores the original system-message text" do
+      space_id = space()
+      id = insert(space_id, "Foo Bar")
+      insert_system_message(id, "Foo Bar")
+      original = system_text(id)
+
+      sanitize_names()
+      refute system_text(id) == original
+
+      restore_names()
+
+      assert name(space_id, id) == "Foo Bar"
+      assert system_text(id) == original
+      assert system_text(id) =~ ~s(Your name is "Foo Bar")
     end
 
     test "is a no-op for a row the migration never touched" do
@@ -215,8 +293,8 @@ defmodule Nest.Agents.AgentNameMigrationTest do
     id
   end
 
-  defp vocation_id do
-    {:ok, %Nest.Vocations.Vocation{id: id}} =
+  defp vocation do
+    {:ok, vocation} =
       Nest.Vocations.upsert_vocation(%{
         name: "Sanitize Names Test",
         description: "Default for the agent-name migration test",
@@ -230,7 +308,55 @@ defmodule Nest.Agents.AgentNameMigrationTest do
         }
       })
 
-    id
+    vocation
+  end
+
+  defp vocation_id, do: vocation().id
+
+  # The agent's own index-0 system message, composed the way the application
+  # composes it (`Nest.Agents.Agent.SystemPrompt`), so this suite fails if
+  # the composer's wording ever drifts away from the two renderings the
+  # migration rewrites. `opts[:extra]` appends text that is NOT one of those
+  # renderings.
+  defp insert_system_message(agent_id, name, opts \\ []) do
+    {prompt, _mode, _tools, _vocation} =
+      SystemPrompt.compose_vocation_config(
+        vocation(),
+        nil,
+        {nil, nil},
+        name,
+        0
+      )
+
+    insert_message(agent_id, 0, "system", prompt <> Keyword.get(opts, :extra, ""))
+  end
+
+  defp insert_message(agent_id, index, role, text) do
+    {1, _} =
+      Nest.Repo.insert_all("messages", [
+        %{
+          agent_id: agent_id,
+          message_index: index,
+          role: role,
+          content: %{"parts" => [%{"kind" => "text", "text" => text}]},
+          inserted_at: DateTime.utc_now()
+        }
+      ])
+
+    :ok
+  end
+
+  defp system_text(agent_id), do: text_at(agent_id, 0)
+
+  defp text_at(agent_id, index) do
+    Nest.Repo.one!(
+      from(m in "messages",
+        where: m.agent_id == ^agent_id and m.message_index == ^index,
+        select: m.content
+      )
+    )
+    |> Map.fetch!("parts")
+    |> Enum.map_join("", &Map.get(&1, "text", ""))
   end
 
   defp name(space_id, id) do
