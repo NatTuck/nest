@@ -25,7 +25,8 @@
  * (issue #51): the UI still renders thinking via
  * `ThinkingBlock`, only the clipboard leaves it out. The copy
  * control sits in a bottom actions row, below everything it
- * copies, so its position matches its payload. The
+ * copies, so its position matches its payload; for a partial
+ * message the streaming indicator follows it. The
  * `toolCalls` / `toolResults` JSON.stringify calls inside
  * `ToolCalls` and `ToolResults` are still eager; those are the
  * next biggest perf wins if this ever needs to go further.

@@ -5,7 +5,7 @@
  * must render a visible error indicator rather than silently vanishing.
  */
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { MessageBubble } from "./Message";
 
 vi.mock("../channels/state", () => ({
@@ -82,7 +82,9 @@ describe("Message copy control placement", () => {
 
     // The header row (which carries the role label) must not contain it.
     const header = screen.getByText("test-agent").closest("div");
-    expect(header).not.toContainElement(button);
+    expect(
+      within(header).queryByRole("button", { name: /copy message/i }),
+    ).toBeNull();
 
     // And the actions row sits below the message body.
     const body = screen.getByText("Hi there");
