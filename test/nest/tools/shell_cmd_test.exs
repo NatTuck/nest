@@ -304,6 +304,55 @@ defmodule Nest.Tools.ShellCmdTest do
     end
   end
 
+  test "the tool refuses to pipe output into head, tail, or grep", %{ws: ws} do
+    function = Tools.get_function("shell-cmd", ws)
+
+    # Rejected before anything runs, so no bwrap is needed and the tool error
+    # is the whole result. Each command pipes into a pager at some stage.
+    for command <- [
+          "ls | head",
+          "ls | head -n 5",
+          "cat big.log | tail -f",
+          "ps aux | grep beam",
+          "sort | uniq -c | sort -rn | head"
+        ] do
+      assert {:error, message} = function.function.(%{"command" => command}, nil)
+      assert message =~ "will not pipe command output into"
+      assert message =~ "head, tail, or grep"
+    end
+
+    # The offending command is named, so the model knows which pipe to drop.
+    assert {:error, message} = function.function.(%{"command" => "dmesg | tail"}, nil)
+    assert message =~ "will not pipe command output into `tail`"
+
+    # The guard runs before the background/foreground split, so a backgrounded
+    # command cannot smuggle a discarded pipe past it.
+    assert {:error, message} =
+             function.function.(
+               %{"command" => "tail -f app.log | grep ERROR", "background" => true},
+               nil
+             )
+
+    assert message =~ "will not pipe command output into `grep`"
+  end
+
+  @tag :bwrap
+  test "the tool still runs head/tail/grep directly and pipes into other commands", %{ws: ws} do
+    function = Tools.get_function("shell-cmd", ws)
+    File.write!(Path.join(ws, "sample.txt"), "alpha\nbeta\n")
+
+    # `head`/`grep` as the command word — no pipe into them — run normally.
+    assert {:ok, output} = function.function.(%{"command" => "head -1 sample.txt"}, nil)
+    assert output == "alpha\n"
+
+    assert {:ok, output} = function.function.(%{"command" => "grep beta sample.txt"}, nil)
+    assert output == "beta\n"
+
+    # A pipe into a command other than a pager is unaffected.
+    assert {:ok, output} = function.function.(%{"command" => "echo hi | tr a-z A-Z"}, nil)
+    assert output == "HI\n"
+  end
+
   @tag :bwrap
   test "a symlinked workspace is bound at its canonical path; read and write work through the symlink",
        %{ws: base} do
@@ -316,11 +365,19 @@ defmodule Nest.Tools.ShellCmdTest do
 
     # `System.unique_integer/1` restarts per BEAM, so a previously
     # killed run can leave these paths behind and make `ln_s!` fail.
-    # Clear any stale entries first (guarded by the `nest_bwrap` name).
-    File.rm_rf([real, link])
+    # Clear any stale entries first; the guard refuses to touch a path
+    # that does not carry the fixture's `nest_bwrap` marker. See issue #49
+    # for replacing this inline guard with a shared helper once it lands.
+    cleanup = fn ->
+      if String.contains?(real, "nest_bwrap") and String.contains?(link, "nest_bwrap") do
+        File.rm_rf([real, link])
+      end
+    end
+
+    cleanup.()
     File.mkdir_p!(real)
     File.ln_s!(real, link)
-    on_exit(fn -> File.rm_rf([real, link]) end)
+    on_exit(cleanup)
 
     File.write!(Path.join(real, "hello.txt"), "symlink-ok\n")
 
