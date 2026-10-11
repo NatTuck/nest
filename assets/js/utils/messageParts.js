@@ -170,6 +170,10 @@ function findLongStringField(parsed, threshold) {
 }
 
 // Derive the legacy `toolResults` shape from a message's `parts`.
+//
+// `state` is passed through verbatim (and is `null` for an ordinary
+// result): the panel badges on it, so a value this build does not know
+// must reach it rather than being mapped away here.
 export function toolResultsFromParts(parts) {
   if (!Array.isArray(parts)) return null;
   const trs = parts.filter((p) => p && p.kind === "tool_result");
@@ -179,5 +183,6 @@ export function toolResultsFromParts(parts) {
     name: p.name,
     content: p.content || "",
     is_error: !!p.isError,
+    state: p.state ?? null,
   }));
 }

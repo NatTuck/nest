@@ -13,6 +13,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
   use NestWeb.AgentChannelTestHelpers
 
   import Mimic
+  import Nest.Agents.AgentTurnTestHelpers
 
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.AgentTestHelpers
@@ -125,7 +126,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
   end
 
   describe "composed channel -> queue -> drain path" do
-    test "a human message pushed while a tool batch runs is queued and delivered alone",
+    test "a human push while a tool batch runs backgrounds it and is delivered alone",
          %{
            user: user
          } do
@@ -146,10 +147,13 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       {:ok, connected} = connect(UserSocket, %{"token" => Process.get(:agent_test_token)})
       {:ok, _, socket} = subscribe_and_join(connected, AgentChannel, "agent:#{space_id}:#{name}")
 
-      # Park a real tool batch inside `Agents.send_message/4` (the `agents-send`
-      # entry point) until we release it, so the human push below lands while
-      # the agent is genuinely `:executing_tools`. The `after` is a safety valve
-      # so a failing test cannot leave the tool worker parked.
+      # Park every LLM request and the tool batch itself, so the human push
+      # below lands while the agent is genuinely `:executing_tools` and the
+      # frames at each step are reproducible rather than a race between the
+      # tool worker and the HTTP worker. The `after` clauses are safety valves
+      # so a failing test cannot leave a worker parked.
+      park_llm_requests(agent_pid)
+
       Mimic.stub(Nest.Agents, :send_message, fn space, from, target, content ->
         send(test_pid, {:tool_batch_blocked, self()})
 
@@ -176,37 +180,48 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       })
 
       MockClient.set_response("Done")
+      MockClient.set_response("After the note")
 
       ref = push(socket, "chat:message", %{"content" => "start the turn"})
       assert_reply ref, :ok, %{}
+
+      {_first, llm1} = next_request()
+      release_llm(llm1)
+
       assert_receive {:tool_batch_blocked, worker}, 500
 
-      # The human push: accepted while busy, queued with the socket's username,
-      # the requested mode and the verbatim content (no mode prefix).
+      # The human push: accepted while busy, and delivered *now* — the batch is
+      # moved to the background for it.
       ref = push(socket, "chat:message", %{"content" => "human note", "mode" => "plan"})
       assert_reply ref, :ok, %{}
 
-      state = :sys.get_state(agent_pid)
+      # The delivery publishes the mode it applies (`currentMode` rides the
+      # status payload) while the batch is still executing, and the count it
+      # sees is the entry it is about to consume.
+      assert_push "chat:status",
+                  %{status: "executing_tools", currentMode: "plan", pendingMessageCount: 1},
+                  500
 
-      assert [%{kind: :user, from: from, mode: "plan", content: "human note"}] = state.live.inbox
-      assert from == user.username
-      assert Machine.status_for(state.live.machine) == :executing_tools
+      # The machine's synthetic result and its ack go out on the wire first, so
+      # a client sees why the call has no result yet.
+      assert_push "chat:message",
+                  %{
+                    "role" => "tool",
+                    "parts" => [%{"kind" => "tool_result", "name" => "agents-send"} = synthetic]
+                  },
+                  500
 
-      send(worker, :release_tools)
+      assert synthetic["content"] =~ "moved to the background"
+      assert synthetic["isError"] == false
 
-      # The batch completes (queueing the peer's `agents-send` entry behind the
-      # human's), and that status broadcast carries the queued count, so a
-      # client that missed a `chat:inbox` frame can recover it.
-      assert_push "chat:status", %{status: "streaming", pendingMessageCount: 2}, 500
+      assert_push "chat:message", %{"role" => "assistant", "parts" => [%{"text" => ack}]}, 500
+      assert ack =~ "running in the background"
 
-      # The boundary drain delivers the human message ALONE — it never merges
-      # with the peer entry that arrived behind it (issue #31 decision 8) — as
-      # bare human text in the human's mode, with no sender framing: a queued
-      # human message must read exactly like one typed while the agent was idle.
-      # `"mode" => "plan"` distinguishes it from the turn-opening message
-      # (`"mode" => "chat"`). The test process is subscribed twice (the helper's
-      # `start_agent/1` plus this join), so every broadcast arrives twice —
-      # assertions match payloads, never sequences.
+      # Then the human's message, delivered ALONE — it never merges with the
+      # entry that arrives behind it (issue #31 decision 8) — as bare human text
+      # in the human's mode, with no sender framing: a queued human message must
+      # read exactly like one typed while the agent was idle. `"mode" => "plan"`
+      # distinguishes it from the turn-opening message (`"mode" => "chat"`).
       assert_push "chat:message",
                   %{"role" => "user", "mode" => "plan", "parts" => [%{"text" => human_text}]} =
                     delivered,
@@ -215,8 +230,31 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       assert is_integer(delivered["index"])
       assert human_text == "[mode: plan]\nhuman note"
 
-      # The peer's entry is delivered as its own batch at the next turn
-      # boundary, with the agent label that disambiguates it.
+      # The backgrounding left `:executing_tools` for the delivered turn, and no
+      # idle went out with it: an idle here would resolve an idle-based
+      # `agents-wait` with the pre-delivery answer.
+      assert_push "chat:status", %{status: "streaming", pendingMessageCount: 0}, 500
+      refute_push "chat:status", %{status: "idle"}, 100
+
+      # The request the delivered message rides in on.
+      {_second, llm2} = next_request()
+
+      # Releasing the batch runs its `agents-send` while the agent is streaming,
+      # so the peer's entry queues behind the delivered message; the batch then
+      # returns, and its real result has no live worker to settle it, so it
+      # arrives as a queued notice.
+      send(worker, :release_tools)
+
+      assert_push "chat:inbox", %{count: 1}, 500
+      assert_push "chat:inbox", %{count: 2}, 500
+
+      # The delivered message's turn ends, and the boundary drain delivers the
+      # two queued entries as one batch: the peer's entry keeps the agent label
+      # that disambiguates it, and the notice reports the batch's real result.
+      release_llm(llm2)
+      {_third, llm3} = next_request()
+      release_llm(llm3)
+
       assert_push "chat:message",
                   %{
                     "role" => "user",
@@ -224,12 +262,15 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
                   },
                   500
 
-      assert rest == "#{name}\"]\npeer note"
+      assert rest =~ "#{name}\"]\npeer note"
+      assert rest =~ "Message queued for #{name} (busy)"
 
-      # Both delivered turns ran to completion, so the transcript is: the
-      # turn-opening user message, the tool call and its result, the live bridge
-      # ack, the delivered human message, its response, the delivered peer
-      # message, and its response.
+      assert_push "chat:status", %{status: "idle"}, 500
+
+      # The transcript is: the turn-opening user message, the tool call and the
+      # synthetic result the backgrounding appended, the backgrounding ack, the
+      # delivered human message, its response, the delivered peer message (with
+      # the batch's late result), and its response.
       assert Eventually.eventually(
                fn ->
                  :sys.get_state(agent_pid).chat_state.messages
@@ -252,13 +293,19 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       state = :sys.get_state(agent_pid)
       messages = state.chat_state.messages
 
-      ack_index = Enum.find_index(messages, &(text_of(&1) =~ "continuing from here"))
+      tool_index = Enum.find_index(messages, &match?({:tool, _}, &1))
+      ack_index = Enum.find_index(messages, &(text_of(&1) =~ "running in the background"))
       human_index = Enum.find_index(messages, &(text_of(&1) =~ "human note"))
       peer_index = Enum.find_index(messages, &(text_of(&1) =~ "peer note"))
 
-      assert is_integer(ack_index), "expected the bridge ack"
+      assert is_integer(tool_index), "expected the synthetic tool result"
+      assert is_integer(ack_index), "expected the backgrounding ack"
       assert is_integer(human_index), "expected the delivered human message"
       assert is_integer(peer_index), "expected the delivered peer message"
+
+      # The synthetic result, its ack, the human message, and only then the
+      # peer's entry: the delivery did not merge the two.
+      assert tool_index < ack_index
       assert ack_index < human_index
       assert human_index < peer_index
       assert human_index == delivered["index"]
@@ -388,8 +435,6 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
       }
     end)
   end
-
-  defp text_of({_tag, %{parts: parts}}), do: AgentTestHelpers.text_from_parts(parts)
 
   # Undo a fabricated status and the queue it collected, so the teardown's
   # zero-in-flight assertion holds.

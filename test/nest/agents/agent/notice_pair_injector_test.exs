@@ -16,6 +16,7 @@ defmodule Nest.Agents.Agent.NoticePairInjectorTest do
 
   alias Nest.Agents.Agent.NoticePairInjector
   alias Nest.Messages.Assistant
+  alias Nest.Messages.MessageList
   alias Nest.Messages.Part
   alias Nest.Messages.Tool
   alias Nest.Messages.User
@@ -71,6 +72,50 @@ defmodule Nest.Agents.Agent.NoticePairInjectorTest do
     test "defers when the trailing assistant carries an unpaired tool_use" do
       assert :deferred ==
                NoticePairInjector.build_pair([assistant_tool_use(0)], spec(), :user_agent)
+    end
+  end
+
+  describe "notice_record/3" do
+    test "collapses to one assistant message when the tail is user or tool" do
+      # A user-role notice on a wire-user tail is two consecutive user roles, so
+      # the appender's terminal bridge would insert an alternation ack of its own
+      # — the record would close with two acknowledgements. The collapsed shape
+      # is the same `:user_agent` rule `build_pair/3` uses, and lands the notice
+      # and its acknowledgement in one message.
+      for messages <- [[user(0)], [tool(0)]] do
+        assert [{:assistant, %Assistant{parts: [%Part.Text{text: "Notice. Ack."}]}}] =
+                 NoticePairInjector.notice_record(messages, "Notice.", "Ack.")
+      end
+    end
+
+    test "lands the full pair when the tail is an assistant or nothing at all" do
+      # An empty list has no tail to alternate with, so the pair is wire-legal
+      # there too (`[user, assistant]` is the opening shape of any conversation).
+      for messages <- [[assistant(0)], []] do
+        assert [
+                 {:user, %User{parts: [%Part.Text{text: "Notice."}]}},
+                 {:assistant, %Assistant{parts: [%Part.Text{text: "Ack."}]}}
+               ] = NoticePairInjector.notice_record(messages, "Notice.", "Ack.")
+      end
+    end
+
+    test "resolves a deferred tail to one assistant message the bridge repairs without an ack" do
+      # `build_pair/3` defers on an unpaired `tool_use` tail, because a caller
+      # there has a next safe boundary to retry at. A record that must land now
+      # does not, so it collapses to the single assistant message: the appender's
+      # terminal bridge answers the unpaired ids before it lands, and fabricates
+      # no acknowledgement of its own (its incoming message is an assistant).
+      messages = [assistant_tool_use(0)]
+
+      assert [{:assistant, _} = record] =
+               NoticePairInjector.notice_record(messages, "Notice.", "Ack.")
+
+      assert [
+               {:tool,
+                %Tool{
+                  parts: [%Part.ToolResult{tool_call_id: "call_0", is_error: true}]
+                }}
+             ] = MessageList.pairing_bridge(messages, record)
     end
   end
 

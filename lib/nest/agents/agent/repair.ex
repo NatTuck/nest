@@ -18,8 +18,12 @@ defmodule Nest.Agents.Agent.Repair do
       a message queued while the turn ran is drained at the
       `:generating` boundary and appended mid-turn, and a `{:tool, _}`
       tail *is* a wire-`user` message. The `pending != []` clause still
-      wins, so no synthetic `tool_result` is ever fabricated on the live
-      path, and assistant-after-assistant still fails loudly.
+      wins, so *this table* never fabricates a `tool_result` on the live
+      path, and assistant-after-assistant still fails loudly. (A synthetic
+      result does reach the live transcript when the machine backgrounds an
+      in-flight batch — issue #36 — but the machine builds it
+      (`MessageList.backgrounded_tool_result/1`) and emits it as an explicit
+      action; `classify_live/2` is not involved.)
 
       The bridge is a normal path, not a last-resort guard. The "an idle
       agent never ends on a user message" invariant is still enforced
@@ -34,7 +38,10 @@ defmodule Nest.Agents.Agent.Repair do
     * `:load` — classify a restored active slice; a lone trailing orphan
       is an interrupted turn (heal it), a valid slice that ends on a
       `user` wire role gets the load bridge (so an idle agent never ends
-      on a user message), and anything else blocks for the offline tool.
+      on a user message), a valid slice still carrying a backgrounded
+      call's promise gets the lost-promise record (the batch died with
+      the process, so the message it promised can never come), and
+      anything else blocks for the offline tool.
     * `:offline` — `mix nest.repair_messages` is the repair authority.
       It reuses the same synthetic builders (`load_heal/1`,
       `MessageList.repair_ack/0`, `MessageList.continuation_prompt/0`).
@@ -45,6 +52,8 @@ defmodule Nest.Agents.Agent.Repair do
   repair messages.
   """
 
+  alias Nest.Agents.Agent.NoticePairInjector
+  alias Nest.Agents.Agent.Turn.Backgrounded
   alias Nest.LLM.Preflight
   alias Nest.Messages.MessageList
   alias Nest.Messages.Part
@@ -59,6 +68,7 @@ defmodule Nest.Agents.Agent.Repair do
           | :none
           | {:interrupted, [Part.ToolUse.t()]}
           | {:bridge, [term()]}
+          | {:lost_promises, [term()]}
           | {:violations, [Preflight.violation()]}
           | :offline_authority
 
@@ -126,8 +136,15 @@ defmodule Nest.Agents.Agent.Repair do
   Returns `:ok` for a valid slice that already ends on an `assistant`
   (or is empty), `{:bridge, [ack]}` when the slice is valid but ends on
   a `user` wire role, `{:interrupted, tool_uses}` for a lone trailing
-  orphan (a turn that died mid-tool), or `{:violations, violations}` for
-  anything else (which blocks the agent for the offline tool).
+  orphan (a turn that died mid-tool), `{:lost_promises, messages}` when
+  the slice still carries a backgrounded call's promise, or
+  `{:violations, violations}` for anything else (which blocks the agent
+  for the offline tool).
+
+  A slice can need both heals at once — an unfulfilled promise *and* a
+  trailing orphan (a batch backgrounded, the delivered turn's own batch then
+  dying mid-tool) — and then `{:lost_promises, messages}` carries the pair in
+  one append, orphan answered first (`orphan_heal/2`).
 
   The bridge closes the "an idle agent never ends on a user message"
   invariant on the load path: a slice such as `[system, user]` (a crash
@@ -135,20 +152,25 @@ defmodule Nest.Agents.Agent.Repair do
   compaction segment) is valid on the wire but would force the live
   exception on the next user turn. Appending the load-specific ack and
   persisting it before idling keeps the invariant true at the boundary.
+
+  The lost-promise record closes the other half of the same problem: a
+  backgrounded call's promise ("its result will arrive later as a
+  message") is kept only by the process that owns the batch, so a
+  restored transcript keeps promising a message that can never come. The
+  record is the runtime's own words for it — `Backgrounded.lost/1` — and
+  it lands wire-safe whatever the tail (`NoticePairInjector.notice_record/3`),
+  so it also closes a `user` tail.
   """
   @spec classify_load([term()]) ::
           :ok
           | {:interrupted, [Part.ToolUse.t()]}
           | {:bridge, [term()]}
+          | {:lost_promises, [term()]}
           | {:violations, [Preflight.violation()]}
   def classify_load(active) do
     case Preflight.validate(active) do
       :ok ->
-        if MessageList.last_wire_role(active) == :user do
-          {:bridge, [MessageList.idle_bridge_ack(:load)]}
-        else
-          :ok
-        end
+        valid_slice(active)
 
       {:error, [%{rule: :no_trailing_orphan, expected_ids: expected_ids} = violation]} ->
         trailing_orphan(active, expected_ids, violation)
@@ -156,6 +178,34 @@ defmodule Nest.Agents.Agent.Repair do
       {:error, violations} ->
         {:violations, violations}
     end
+  end
+
+  # A valid slice still needs one of two records before it can rest. The
+  # lost-promise record is checked first and covers both: `notice_record/3`
+  # answers a `user` tail with a lone assistant, so the bridge is only for the
+  # promise-free case.
+  defp valid_slice(active) do
+    case MessageList.backgrounded_results(active) do
+      [] ->
+        if MessageList.last_wire_role(active) == :user,
+          do: {:bridge, [MessageList.idle_bridge_ack(:load)]},
+          else: :ok
+
+      lost ->
+        {:lost_promises, lost_record(active, lost)}
+    end
+  end
+
+  # The record carries the ids it voids, so a second classification of the
+  # healed tail finds nothing left to record (`Init.LoadHeal.refresh/1`
+  # re-classifies before appending, and the heal has to be idempotent).
+  defp lost_record(active, lost) do
+    ids = Enum.map(lost, & &1.tool_call_id)
+    {notice, ack} = Backgrounded.lost(length(ids))
+
+    active
+    |> NoticePairInjector.notice_record(notice, ack)
+    |> MessageList.tag_lost_promises(ids)
   end
 
   @doc """
@@ -192,7 +242,25 @@ defmodule Nest.Agents.Agent.Repair do
 
     case tool_uses do
       [] -> {:violations, [violation]}
-      uses -> {:interrupted, uses}
+      uses -> orphan_heal(active, uses)
+    end
+  end
+
+  # A lone orphan is healed on its own — unless the same slice also carries an
+  # unfulfilled backgrounded promise. Then both records travel in one heal: the
+  # orphan's answer lands first (the lost-promise record is built against a
+  # completed tail, and the whole heal is one append batch), and recording only
+  # the orphan would leave the promise unrecorded for the whole session that
+  # follows — the *next* load would catch it, which is too late for the model
+  # that is waiting on it.
+  defp orphan_heal(active, uses) do
+    case MessageList.backgrounded_results(active) do
+      [] ->
+        {:interrupted, uses}
+
+      lost ->
+        heal = load_heal(uses)
+        {:lost_promises, heal ++ lost_record(active ++ heal, lost)}
     end
   end
 

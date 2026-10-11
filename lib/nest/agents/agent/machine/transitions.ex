@@ -16,21 +16,20 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   boundary between appending and spawning a worker.
   """
 
-  alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Inbox
   alias Nest.Agents.Agent.Machine
+  alias Nest.Agents.Agent.Machine.Backgrounding
   alias Nest.Agents.Agent.Machine.Boundary
   alias Nest.Agents.Agent.Machine.Children
   alias Nest.Agents.Agent.Machine.Compaction
+  alias Nest.Agents.Agent.Machine.Delivery
+  alias Nest.Agents.Agent.Machine.Failure
   alias Nest.Agents.Agent.Machine.Phase
   alias Nest.Agents.Agent.Machine.Response
-  alias Nest.Agents.Agent.NoticePairInjector
-  alias Nest.Agents.Agent.Repair
+  alias Nest.Agents.Agent.Machine.Stopping
   alias Nest.Agents.Agent.Turn.BudgetReminder
-  alias Nest.Agents.Agent.Turn.ContextReminder
   alias Nest.Agents.Agent.Turn.Dispatch
   alias Nest.Agents.Agent.Turn.Messages, as: TurnMessages
-  alias Nest.Agents.Agent.Turn.Terminal
   alias Nest.Agents.Agent.WorkspaceHandler
   alias Nest.LLM.Preflight
   alias Nest.Messages.MessageList
@@ -75,6 +74,57 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
 
   def do_step(%Machine{} = m, {:abandon_child, name}) do
     child_event(m, {:abandoned, name})
+  end
+
+  # --- stop guards ---
+
+  # A stopped turn drops late results: the stop path kills the batch's worker
+  # and records the cancellation itself (`Machine.Stopping`, issue #36 step 4),
+  # so delivering a backgrounded result here as well would report the same call
+  # twice. These are the first clauses in the file, so nothing below can preempt
+  # a stop.
+  def do_step(%{phase: :stopping} = m, {:http_ok, _ref, _response}),
+    do: {:ignore, :late_result_after_stop, m}
+
+  def do_step(%{phase: :stopping} = m, {:tool_results, _ref, _results}),
+    do: {:ignore, :late_result_after_stop, m}
+
+  def do_step(%{phase: :stopping} = m, {:worker_down, _pid, _reason}),
+    do: {:ignore, :late_worker_down, m}
+
+  # --- backgrounded batches (issue #36) ---
+
+  # A late result for a batch that was moved to the background when a message
+  # arrived. It is keyed on `work.backgrounded`, not the phase: it must land
+  # whatever the phase or kind (a compaction keeps `work`), and even while a
+  # *new* batch is in flight. Below the stop guards and above every stale/late,
+  # blocked and phase clause; the entry is cleared here, so the ref answers once.
+  # `delivery_actions/2` adds the drain an already-idle machine needs.
+  def do_step(%{work: %{backgrounded: backgrounded}} = m, {:tool_results, ref, results})
+      when is_map_key(backgrounded, ref),
+      do:
+        {:ok,
+         Backgrounding.delivery_actions(m, [
+           {:deliver_backgrounded, ref, {:results, results}, Backgrounding.fulfilled_ids(results)}
+         ]), Backgrounding.clear(m, [ref])}
+
+  # A backgrounded worker that dies is not the `active_worker` (it was moved out
+  # when the batch was backgrounded), so it must be resolved here before either
+  # arm below can swallow it: the `:compaction` arm would answer
+  # `:unknown_worker_down`, leaking the entry with no notice. Every ref the dead
+  # pid owns is resolved (two entries can share a pid).
+  def do_step(%Machine{} = m, {:worker_down, pid, reason}) do
+    case Backgrounding.refs_for(m, pid) do
+      [] ->
+        unowned_worker_down(m, pid, reason)
+
+      refs ->
+        # A death delivers no result, so the notice answers no tool call and
+        # the delivery carries no fulfilled ids: the promise is void, and the
+        # load heal's own lost-promise record stays the honest close for it.
+        actions = Enum.map(refs, &{:deliver_backgrounded, &1, {:worker_down, reason}, []})
+        {:ok, Backgrounding.delivery_actions(m, actions), Backgrounding.clear(m, refs)}
+    end
   end
 
   # --- blocked exits ---
@@ -145,50 +195,19 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
 
   # --- stop ---
 
-  def do_step(%{phase: :stopping} = m, {:stop, _channel}), do: {:ignore, :already_stopping, m}
-  def do_step(%{phase: :idle} = m, {:stop, _channel}), do: {:ignore, :already_idle, m}
+  # The stop itself, its two no-op guards, and the single terminal transition
+  # its timer owns all live in `Machine.Stopping` (issue #36, step 4): a stop now
+  # kills every backgrounded batch and records the cancellation, which does not
+  # fit beside the transition table's line cap.
+  def do_step(%Machine{} = m, {:stop, channel}), do: Stopping.stop(m, channel)
+  def do_step(%{phase: :stopping} = m, :stop_timer), do: Stopping.stop_timer(m)
 
-  def do_step(%Machine{} = m, {:stop, channel}) do
-    # A batch coordinator is an unlinked task, so the stop must kill it too, or
-    # it keeps spawning children and later delivers an aggregate the parent
-    # asked not to have. Before `:stop_all_children` (which clears the map).
-    coordinator_kills = Enum.map(Children.reporting_targets(m.children), &{:kill, &1})
-
-    actions =
-      [{:ack, channel, :stopped}, {:set_cancelled, true}] ++
-        coordinator_kills ++ [{:stop_all_children}]
-
-    actions = if m.stop_timer, do: actions ++ [{:cancel_timer, m.stop_timer}], else: actions
-
-    actions =
-      if m.work.active_worker, do: actions ++ [{:kill, m.work.active_worker}], else: actions
-
-    actions = actions ++ [{:arm_timer, Config.configured_stop_fallback_ms(), :stop_timer}]
-
-    machine =
-      Machine.validate!(%{
-        m
-        | phase: :stopping,
-          stop_timer: nil,
-          work: %{m.work | worker_kind: nil, active_worker_kind: nil}
-      })
-
-    {:ok, actions, machine}
-  end
-
-  def do_step(%{phase: :stopping} = m, :stop_timer) do
-    Phase.rest(%{m | stop_timer: nil}, m.kind, :stopped, [
-      {:stop_all_children},
-      {:finalize, Terminal.stopped_metadata()},
-      {:drain_inbox}
-    ])
-  end
-
-  def do_step(%{phase: :stopping} = m, {:http_ok, _ref, _response}),
-    do: {:ignore, :late_result_after_stop, m}
-
-  def do_step(%{phase: :stopping} = m, {:tool_results, _ref, _results}),
-    do: {:ignore, :late_result_after_stop, m}
+  # A record the appender refused before the timer was armed. It is handled only
+  # in that window: once the timer is armed a refusal is the ordinary
+  # catch-all's business, and `Machine.Stopping` re-arms the timer for the case
+  # where the refused append was what stood between the stop and its timer.
+  def do_step(%{phase: :stopping, stop_timer: nil} = m, {:append_result, outcome, reason}),
+    do: Stopping.record_refused(m, outcome, reason)
 
   # --- timer bookkeeping ---
 
@@ -218,28 +237,6 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
     {:ok, [{:kill, pid}], m}
   end
 
-  def do_step(%{phase: :stopping} = m, {:worker_down, _pid, _reason}),
-    do: {:ignore, :late_worker_down, m}
-
-  # A compactor worker that dies without delivering a result is a
-  # compaction failure, not a turn crash: route it through the same
-  # retryable path as `:http_error`/`:worker_crashed` for the compactor.
-  def do_step(%{kind: :compaction} = m, {:worker_down, pid, reason}) do
-    if is_pid(pid) and pid == m.work.active_worker do
-      Compaction.compaction_failed(m, reason, Compaction.carried(m))
-    else
-      {:ignore, :unknown_worker_down, m}
-    end
-  end
-
-  def do_step(%Machine{} = m, {:worker_down, pid, reason}) do
-    if is_pid(pid) and pid == m.work.active_worker do
-      worker_down(m, reason)
-    else
-      {:ignore, :unknown_worker_down, m}
-    end
-  end
-
   # --- idle ---
 
   def do_step(%{phase: :idle} = m, {:chat_request, entry}), do: start_chat(m, entry, nil)
@@ -264,7 +261,7 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   def do_step(%{phase: :idle} = m, :stop_timer), do: {:ignore, :not_applicable, m}
 
   def do_step(%{phase: :idle} = m, {:append_result, :invalid, reason}) do
-    fail_turn(m, %ArgumentError{message: reason}, [])
+    Failure.fail_turn(m, %ArgumentError{message: reason}, [])
   end
 
   def do_step(%{phase: :idle} = m, {:append_result, :stale, _}), do: {:ignore, :stale_append, m}
@@ -323,11 +320,13 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   end
 
   def do_step(%{phase: :generating, kind: :chat} = m, {:http_error, ref, reason}) do
-    if valid_ref?(m, ref), do: fail_turn(m, reason, []), else: {:ignore, :stale_result, m}
+    if valid_ref?(m, ref), do: Failure.fail_turn(m, reason, []), else: {:ignore, :stale_result, m}
   end
 
   def do_step(%{phase: :generating, kind: :chat} = m, {:worker_crashed, ref, exception, st}) do
-    if valid_ref?(m, ref), do: fail_turn(m, exception, st), else: {:ignore, :stale_result, m}
+    if valid_ref?(m, ref),
+      do: Failure.fail_turn(m, exception, st),
+      else: {:ignore, :stale_result, m}
   end
 
   def do_step(
@@ -357,7 +356,7 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
     do: deliver_inbox(m, entries, content)
 
   def do_step(%{phase: :generating, kind: :chat} = m, {:append_result, :invalid, reason}) do
-    fail_turn(m, %ArgumentError{message: reason}, [])
+    Failure.fail_turn(m, %ArgumentError{message: reason}, [])
   end
 
   def do_step(%{phase: :generating, kind: :chat} = m, {:append_result, :stale, _}),
@@ -368,12 +367,22 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
 
   # --- executing tools ---
 
+  # A message that arrived while the batch was executing (issue #36):
+  # `Machine.Backgrounding` moves the batch to the background, answers its calls
+  # with a synthetic result, and continues the turn with the delivered message.
+  # Not backgroundable — no live worker, nothing left to answer, or a delivery
+  # that would not fit the context — is a no-op that leaves the entries queued
+  # for the turn boundary, so the boundary's own compaction/block decision is
+  # the one that runs for them.
+  def do_step(%{phase: :executing_tools} = m, {:inbox_drain, entries, content}),
+    do: Backgrounding.step(m, entries, content)
+
   def do_step(%{phase: :executing_tools} = m, {:tool_results, ref, results}) do
     if valid_ref?(m, ref), do: tool_results(m, results), else: {:ignore, :stale_result, m}
   end
 
   def do_step(%{phase: :executing_tools} = m, {:append_result, :invalid, reason}) do
-    fail_turn(m, %ArgumentError{message: reason}, [])
+    Failure.fail_turn(m, %ArgumentError{message: reason}, [])
   end
 
   def do_step(%{phase: :executing_tools} = m, {:append_result, :stale, _}),
@@ -450,9 +459,12 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   # Both `{:inbox_drain, …}` boundaries — `:idle` and the `:generating`/`:chat`
   # turn boundary from issue #15 — start the delivered message's turn the same
   # way: build the user message in the current mode and hand it to
-  # `start_chat/3`, which owns the fits / compaction / block decision.
+  # `start_chat/3`, which owns the fits / compaction / block decision. The
+  # message carries the batch's fulfilled ids (`Inbox.build_drained_message/3`):
+  # the notice answers the backgrounded calls it names, which is what lets a
+  # later load tell a kept promise from a lost one.
   defp deliver_inbox(m, entries, content) do
-    user = Dispatch.build_user_message(content, m.work.ctx.mode)
+    user = Inbox.build_drained_message(entries, content, m.work.ctx.mode)
     start_chat(m, {:user_message, user}, entries)
   end
 
@@ -467,17 +479,11 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
 
     case Dispatch.preflight_decision(projected, limit) do
       :fits ->
-        {notice_actions, m} = user_notice_actions(m, projected)
-
-        # The reply obligation is incurred here, at *delivery* — never at
-        # enqueue (issue #31 §1.3): a `:query` still queued behind a compaction,
-        # a block or a restart has not been delivered and owes nothing.
-        m = Machine.owe_replies(m, Inbox.query_senders(inbox_entries))
-
-        machine = init_turn(enter(m, :chat, :generating, :http), entry)
-
-        {:ok, notice_actions ++ [{:append, user}] ++ consume_actions(inbox_entries) ++ [:iterate],
-         machine}
+        # The action assembly (the notice, the reply debt, the consume, the
+        # `:iterate`) is shared with the backgrounding path — `Machine.Delivery`.
+        # No `pre` batch here: the delivered message is the only append.
+        {actions, m} = Delivery.fits(m, [], inbox_entries, user)
+        {:ok, actions, init_turn(enter(m, :chat, :generating, :http), entry)}
 
       :needs_compaction ->
         # Only the chat-request path parks. The drain path keeps its entries
@@ -492,56 +498,6 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
         # operator has acted.
         actions = [{:broadcast, {:overflow, :reserve_exhausted, "start a conversation"}, nil}]
         Phase.block(m, :context_overflow, :cannot_compact, actions)
-    end
-  end
-
-  # The drain's consume half (issue #26): emitted *after* the append, in the
-  # same settle, so the wire sees the message land and then the queue empty.
-  # The order is defensive: an append the appender refuses halts the action
-  # list (`{:append_result, :invalid | :stale, _}`), so the consume never runs
-  # and the entries stay queued and visible. (On this branch the append cannot
-  # be refused — `:fits` implies the preflight passes — but the position keeps
-  # the invariant true by construction.) Nothing for a chat request.
-  defp consume_actions(inbox_entries) when inbox_entries in [nil, []], do: []
-  defp consume_actions(inbox_entries), do: [{:consume_inbox, inbox_entries}]
-
-  defp user_notice_actions(m, projected) do
-    limit = m.work.ctx.context_limit
-
-    if is_integer(limit) and limit > 0 do
-      used = ContextReminder.estimate_messages(projected)
-      crossed = m.work.ctx.crossed_thresholds
-
-      case ContextReminder.highest_unannounced(used, limit, crossed) do
-        nil -> {[], m}
-        atom -> build_user_notice(m, atom, used, crossed)
-      end
-    else
-      {[], m}
-    end
-  end
-
-  defp build_user_notice(m, atom, used, crossed) do
-    compact? = ContextReminder.compact_available?(m.work.ctx.tools)
-    notice = ContextReminder.notice_text(atom, compact?)
-    ack = ContextReminder.ack_text_for(atom, compact?)
-
-    spec = %{kind: :context, attention: "Context?", notice: notice, ack: ack, threshold: atom}
-
-    case NoticePairInjector.build_pair(messages(m), spec, :user_agent) do
-      {:ok, pair} ->
-        set = MapSet.put(crossed, atom)
-
-        actions = [
-          {:append_many, pair},
-          {:set_crossed_thresholds, set},
-          {:set_context_projection, used}
-        ]
-
-        {actions, put_ctx(m, crossed_thresholds: set, context_projection: used)}
-
-      :deferred ->
-        {[], m}
     end
   end
 
@@ -568,7 +524,7 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
         do_dispatch_http(m)
 
       {:error, violations} ->
-        fail_turn(m, %ArgumentError{message: Preflight.format_violations(violations)}, [])
+        Failure.fail_turn(m, %ArgumentError{message: Preflight.format_violations(violations)}, [])
     end
   end
 
@@ -625,51 +581,32 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
 
   # --- worker death / terminal ---
 
-  defp worker_down(m, reason) do
-    cond do
-      m.work.active_worker_kind == :tools ->
-        recover_interrupted_tool(m)
-
-      reason == :normal ->
-        {:ok, [], clear_worker(m)}
-
-      reason in [:shutdown, :killed] or match?({:shutdown, _}, reason) ->
-        Phase.rest(clear_worker(m), :chat, :stopped, [
-          {:finalize, Terminal.stopped_metadata()},
-          {:drain_inbox}
-        ])
-
-      true ->
-        fail_turn(m, reason, [])
+  # The compactor's own worker that dies without delivering a result is a
+  # compaction failure, not a turn crash (the same retryable path as
+  # `:http_error`/`:worker_crashed` for the compactor); any other pid falls to
+  # the turn's own-worker identity test.
+  defp worker_down(%{kind: :compaction} = m, pid, reason) do
+    if is_pid(pid) and pid == m.work.active_worker do
+      Compaction.compaction_failed(m, reason, Compaction.carried(m))
+    else
+      {:ignore, :unknown_worker_down, m}
     end
   end
 
-  defp recover_interrupted_tool(m) do
-    case Repair.decide(:worker_death, messages(m), nil) do
-      :none ->
-        Phase.rest(clear_worker(m), :chat, :interrupted_tool, [
-          {:finalize, Terminal.stopped_metadata()},
-          {:drain_inbox}
-        ])
+  defp worker_down(m, pid, reason), do: Failure.worker_down(m, pid, reason)
 
-      {:repair, [tool_msg]} ->
-        machine = enter(clear_worker(m), :chat, :generating, :http)
+  # A pid the backgrounded map does not own keeps the blocked catch-all's
+  # precedence, which the clause above would otherwise preempt: a block clears
+  # only `worker_kind` (`Phase.enter_blocked/2`), so a compaction that blocked on
+  # `:compaction_failed` still holds its worker's pid, and its `:DOWN` would
+  # re-run `compaction_failed/3` — a second `{:compaction_error}` broadcast for a
+  # failure the block has already reported. The catch-all answers
+  # `{:ignore, :blocked, _}` for every other event, and it has always answered
+  # that for this one.
+  defp unowned_worker_down(%{phase: p} = m, _pid, _reason) when p in @blocked,
+    do: {:ignore, :blocked, m}
 
-        {:ok,
-         [
-           {:log, :warning, "tool worker died; answering tool_use with an error result"},
-           {:append, tool_msg},
-           :iterate
-         ], machine}
-    end
-  end
-
-  defp fail_turn(m, reason, stacktrace) do
-    Phase.rest(clear_worker(m), :chat, :turn_failed, [
-      {:fail_turn, reason, stacktrace},
-      {:drain_inbox}
-    ])
-  end
+  defp unowned_worker_down(m, pid, reason), do: worker_down(m, pid, reason)
 
   defp valid_ref?(m, ref) do
     not Machine.stopping?(m) and is_reference(m.work.worker_ref) and m.work.worker_ref == ref
@@ -682,15 +619,17 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   # wakes an idle agent (`Inbox.handle_delivery/4` drains it), and a child's
   # answer has to as well — otherwise a parent that ended its turn before its
   # child answered would leave the answer sitting in the queue until something
-  # else woke it. While the parent is busy, the `:iterate` turn boundary drains
-  # it instead, so the drain action is emitted for the idle case only.
+  # else woke it. While the parent is `:generating` the `:iterate` turn boundary
+  # drains it instead. `:executing_tools` needs the drain too (issue #36): an
+  # internal enqueue never passes through the delivery path, so this is the only
+  # thing that can background the parent's batch and deliver the answer now.
   defp child_event(m, event) do
     case Children.step(m.children, event) do
       {:ok, actions, children} ->
         actions = actions ++ [{:broadcast, :status, nil}]
 
-        {:ok, if(m.phase == :idle, do: actions ++ [{:drain_inbox}], else: actions),
-         %{m | children: children}}
+        drain = if m.phase in [:idle, :executing_tools], do: [{:drain_inbox}], else: []
+        {:ok, actions ++ drain, %{m | children: children}}
 
       {:ignore, reason, children} ->
         {:ignore, reason, %{m | children: children}}

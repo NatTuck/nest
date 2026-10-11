@@ -31,6 +31,11 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
   `tool_use` and its upcoming `tool_result` breaks Anthropic's
   tool-use/tool-result pairing invariant. The caller retries on the
   next safe boundary (the next LLM-response construction site).
+
+  `notice_record/3` is the same `:user_agent` shape for a notice that
+  has **no** next safe boundary — the Stop cancellation record (issue
+  #36, step 4) — so it resolves the `:deferred` tail instead of
+  deferring.
   """
 
   alias Nest.Agents.Agent.Turn.ContextReminder
@@ -40,7 +45,7 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
 
   @type spec :: %{
           required(:kind) => atom(),
-          required(:attention) => String.t(),
+          optional(:attention) => String.t(),
           required(:notice) => String.t(),
           optional(:threshold) => atom(),
           optional(:ack) => String.t()
@@ -123,6 +128,30 @@ defmodule Nest.Agents.Agent.NoticePairInjector do
            ),
            build_single_assistant(ack_text)
          ]}
+    end
+  end
+
+  @doc """
+  The messages that land `notice` and `ack` now, whatever the transcript tail is.
+
+  This is `build_pair/3`'s `:user_agent` shape for a notice with no next safe
+  boundary — the Stop cancellation record (issue #36, step 4), whose promise to
+  the model has to be answered in the same breath. Where `build_pair/3` answers
+  `:deferred` (a tail carrying an unpaired `tool_use`), this collapses to the
+  single assistant message: the appender's terminal bridge then answers the
+  unpaired ids with the canonical interrupted result *before* it lands, and
+  fabricates no acknowledgement of its own (its incoming message is an
+  assistant). So the record closes with exactly one.
+
+  Pure, and total on an empty message list (the shape a hand-built fixture has).
+  """
+  @spec notice_record([term()], String.t(), String.t()) :: [term()]
+  def notice_record(messages, notice, ack) do
+    spec = %{kind: :stop_cancellation, notice: notice, ack: ack}
+
+    case build_pair(messages, spec, :user_agent) do
+      {:ok, pair} -> pair
+      :deferred -> [build_single_assistant(notice <> " " <> ack)]
     end
   end
 

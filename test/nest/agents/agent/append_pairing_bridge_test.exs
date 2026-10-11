@@ -143,6 +143,46 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
     end
   end
 
+  describe "MessageList backgrounded builders" do
+    test "backgrounded_tool_result/1 answers every call with a deferred, non-error result" do
+      calls = [
+        %Part.ToolUse{id: "a", name: "shell-cmd", arguments: %{"timeout" => 300}},
+        %Part.ToolUse{id: "b", name: "file-read", arguments: %{}}
+      ]
+
+      assert {:tool, %Tool{parts: [a, b]}} = MessageList.backgrounded_tool_result(calls)
+
+      assert %Part.ToolResult{tool_call_id: "a", name: "shell-cmd", is_error: false} = a
+      assert a.content =~ "moved to the background"
+      assert a.content =~ "arrive later as a message"
+      assert a.content =~ "300 seconds"
+
+      assert %Part.ToolResult{tool_call_id: "b", name: "file-read", is_error: false} = b
+      assert b.content =~ "declared no timeout"
+    end
+
+    test "backgrounded_tool_result/1 accepts preflight ToolCall structs and is nil for []" do
+      assert MessageList.backgrounded_tool_result([]) == nil
+
+      call = %Nest.Messages.ToolCall{
+        id: "c",
+        name: "shell-cmd",
+        arguments: %{"timeout" => 5}
+      }
+
+      assert {:tool, %Tool{parts: [%Part.ToolResult{tool_call_id: "c", is_error: false}]}} =
+               MessageList.backgrounded_tool_result([call])
+    end
+
+    test "backgrounded_ack/0 builds a repair_ack-shaped assistant" do
+      assert {:assistant, %Assistant{parts: [%Part.Text{text: text}], api_logs: []}} =
+               MessageList.backgrounded_ack()
+
+      assert text =~ "running in the background"
+      assert text =~ "arrives as a message"
+    end
+  end
+
   describe "Turn.Commit.active_segment/6" do
     test "a compaction that finalizes idle closes on an assistant tail" do
       # The idle invariant: when the commit finalizes (no carried entry,

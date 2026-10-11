@@ -34,6 +34,48 @@ describe("ToolResults", () => {
     expect(screen.getByText(/Success: shell-cmd/)).toBeInTheDocument();
   });
 
+  it("renders 'Backgrounded: <name>' for a result whose call is still running", () => {
+    // The machine's synthetic answer to a call it moved to the background has
+    // `is_error: false` and no result yet. Badging it "Success" would assert
+    // something the data does not support, so the result's own state wins.
+    const toolResults = [
+      {
+        tool_call_id: "1",
+        name: "shell-cmd",
+        content: "The shell-cmd call was moved to the background.",
+        is_error: false,
+        state: "backgrounded",
+      },
+    ];
+
+    render(<ToolResults toolResults={toolResults} />);
+
+    expect(screen.getByText(/Backgrounded: shell-cmd/)).toBeInTheDocument();
+    expect(screen.queryByText(/Success: shell-cmd/)).toBeNull();
+    expect(screen.queryByText(/Error: shell-cmd/)).toBeNull();
+  });
+
+  it("renders an unknown state verbatim rather than a verdict", () => {
+    // A state this build cannot interpret is data, not an absent field: it must
+    // be shown as unknown instead of quietly reading as a success or a failure.
+    const toolResults = [
+      {
+        tool_call_id: "1",
+        name: "shell-cmd",
+        content: "x",
+        is_error: false,
+        state: "something-new",
+      },
+    ];
+
+    render(<ToolResults toolResults={toolResults} />);
+
+    expect(
+      screen.getByText(/Unknown state \(something-new\): shell-cmd/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Success: shell-cmd/)).toBeNull();
+  });
+
   it("renders 'Error: <name>' for error results", () => {
     const toolResults = [
       {

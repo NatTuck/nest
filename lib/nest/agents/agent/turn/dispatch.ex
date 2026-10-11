@@ -124,15 +124,19 @@ defmodule Nest.Agents.Agent.Turn.Dispatch do
   Build the persisted user message for `content` in `mode`. The mode is
   encoded both on `metadata.mode` and as a `[mode: <name>]\\n` prefix on
   the text part, so it round-trips through the store and the wire.
+
+  `extra_metadata` is merged over the mode: the drain's `fulfilled_ids` ride
+  there (`Inbox.build_drained_message/3`), which is how a restored transcript
+  tells a backgrounded promise that was kept from one that was lost.
   """
-  @spec build_user_message(String.t(), String.t()) :: {:user, User.t()}
-  def build_user_message(content, mode) do
+  @spec build_user_message(String.t(), String.t(), map()) :: {:user, User.t()}
+  def build_user_message(content, mode, extra_metadata \\ %{}) do
     {:user,
      %User{
        index: nil,
        timestamp: DateTime.utc_now(),
        parts: [%Part.Text{text: "[mode: #{mode}]\n#{content}"}],
-       metadata: %{"mode" => mode},
+       metadata: Map.merge(%{"mode" => mode}, extra_metadata),
        api_logs: []
      }}
   end

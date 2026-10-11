@@ -48,6 +48,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
   use Nest.DataCase, async: true
 
   import Mimic
+  import Nest.Agents.AgentTurnTestHelpers
 
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Machine
@@ -75,7 +76,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
   # genuinely stuck turn still fails — as a stuck turn, not as a flake.
   @turn_fence_ms 2_000
 
-  test "a spawn's tool result is the confirmation, and the child's answer arrives as a message",
+  test "a spawn's tool result is backgrounded, and the child's answer arrives as a message",
        %{vid: vid} do
     {parent_pid, parent_name} =
       AgentTestHelpers.start_agent(%{
@@ -89,6 +90,8 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
     # explicitly allow it to use the stub set in `self()`.
     Mimic.allow(Nest.Agents, self(), parent_pid)
 
+    park_llm_requests(parent_pid)
+
     MockClient.set_tool_response(%{
       text: "delegating",
       tool_calls: [
@@ -101,15 +104,22 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
     })
 
     MockClient.set_response("parent final")
+    MockClient.set_response("after the answer")
 
     :ok = Agent.chat(parent_pid, "delegate a thing")
 
+    {first, llm1} = next_request()
+    assert Enum.any?(user_texts(first), &(&1 =~ "delegate a thing"))
+    release_llm(llm1)
+
     # Deterministic wait: `broadcast_subagent_creation/2` broadcasts
     # `agent:created` right after the child is registered, inside the parent's
-    # `handle_spawn_request/3` — before the tool worker even gets its reply. So
-    # by the time we see it the child is registered *and* the completion we cast
-    # below is guaranteed to reach the parent before its tool result. Filter on
-    # `parentName` so concurrent tests' broadcasts don't match.
+    # `handle_spawn_request/3` — before the tool worker even gets its reply. The
+    # parent then parks in the stubbed `Nest.Agents.chat/3` (see
+    # `stub_child_chat/0`), so it is still `:executing_tools` when we cast the
+    # child's completion below, and the cast is in its mailbox before the tool
+    # worker can deliver the batch's result. Filter on `parentName` so
+    # concurrent tests' broadcasts don't match.
     Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
 
     assert_receive %Phoenix.Socket.Broadcast{
@@ -118,51 +128,79 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
                    },
                    5_000
 
+    assert_receive {:child_chat_blocked, parent_pid}, 5_000
+
     space_id = AgentTestHelpers.current_space_id()
     {:ok, child_pid} = AgentsRegistry.lookup(space_id, child_name)
 
+    # The parent processes this while the batch is still executing, so the
+    # child's answer backgrounds the batch instead of waiting for the turn end.
     cast_child_completed_to_parent(parent_name, child_name, "the answer is 4")
 
-    # It is the *final* idle: the child's answer is drained at the turn boundary
-    # the tool result opens, so the parent has already consumed (b) and appended
-    # its final text by then. This waits on the machine's own status rather than
-    # the `chat:status` broadcast, and its budget is `@turn_fence_ms` — not the
-    # 500 ms this suite uses for a mock-only chain, because this turn really
-    # does spawn a child.
+    # Release the spawn call. The batch returns, and the parent handles the cast.
+    send(parent_pid, :release_child_chat)
+
+    {second, llm2} = next_request()
+
+    mid = :sys.get_state(parent_pid)
+    AgentTestHelpers.assert_unique_message_indices(mid)
+
+    # The child's answer is already in the transcript, behind the machine's
+    # synthetic result and ack, and the batch's real result has not arrived.
+    assert Enum.map(mid.chat_state.messages, &elem(&1, 0)) ==
+             [:system, :user, :assistant, :tool, :assistant, :user]
+
+    assert [synthetic] = tool_results(mid, "agents-spawn")
+
+    # The spawn's tool result in the transcript is the *synthetic* one: the call
+    # was moved to the background, and the confirmation arrives later as a
+    # message. It does not name the child — nothing waited for the spawn.
+    assert synthetic.content =~ "moved to the background"
+    assert synthetic.content =~ "arrive later as a message"
+    refute synthetic.content =~ child_name
+
+    # The answer itself is delivered into the parent's own transcript as the
+    # child's words, labelled with the child it came from, in the same turn.
+    assert [delivered] = delivered_texts(mid, "the answer is 4")
+    assert delivered =~ ~s([Message from agent "#{child_name}"])
+    assert Enum.any?(user_texts(second), &(&1 =~ "the answer is 4"))
+
+    # The batch returns: its real result has no live worker to settle it, so it
+    # arrives as a queued notice.
+    assert_receive {:chat_inbox, %{count: 1}}, 500
+
+    # The response to the request the delivered answer rode in on, then the
+    # notice's own turn.
+    release_llm(llm2)
+    {_third, llm3} = next_request()
+    release_llm(llm3)
+
     await_idle(parent_pid)
 
     parent_state = :sys.get_state(parent_pid)
     AgentTestHelpers.assert_unique_message_indices(parent_state)
 
-    # The tool result of the spawn call is the confirmation: it names the child
-    # and says where the answer goes. The child's text is *not* here — nothing
-    # waited for it.
-    assert [
-             %Part.ToolResult{
-               tool_call_id: "call_clone_1",
-               name: "agents-spawn",
-               content: confirmation,
-               arguments: %{"query" => "compute 2+2", "clone_context" => true},
-               is_error: false
-             }
-           ] = tool_results(parent_state, "agents-spawn")
+    # The real confirmation arrives later as a message, and it names the child
+    # and says where the answer goes: the spawn's promise is kept, just not by
+    # the tool result the model read mid-batch.
+    assert [notice] = delivered_texts(parent_state, "Spawned agent")
 
-    assert confirmation =~ child_name
-    assert confirmation =~ "arrive as a message"
-    refute confirmation =~ "the answer is 4"
-
-    # The answer itself is delivered into the parent's own transcript as the
-    # child's words, labelled with the child it came from.
-    assert [delivered] = user_texts(parent_state, "the answer is 4")
-    assert delivered =~ ~s([Message from agent "#{child_name}"])
+    assert notice =~ child_name
+    assert notice =~ "arrive as a message"
+    refute notice =~ "the answer is 4"
 
     # The synthesized child's usage was merged into the parent's totals.
     assert parent_state.llm_metrics.descendant_usage.output_tokens > 0
 
-    # The parent's turn really ended: the last assistant message is the final
-    # text of the turn the delivery continued.
-    {_, %{parts: final_parts}} = List.last(parent_state.chat_state.messages)
-    assert [%Part.Text{text: "parent final"}] = final_parts
+    # The parent's turn really ended: the turn the delivery continued answered
+    # with its final text, and the notice's own turn answered after it.
+    texts =
+      for {:assistant, %{parts: parts}} <- parent_state.chat_state.messages,
+          %Part.Text{text: text} <- parts,
+          do: text
+
+    assert "parent final" in texts
+    assert "after the answer" in texts
 
     # The clone's fork notice carries its name and depth (its system message is
     # inherited verbatim from the parent, so this user-visible notice is the
@@ -227,7 +265,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
         do: result
   end
 
-  defp user_texts(state, needle) do
+  defp delivered_texts(state, needle) do
     for {:user, %{parts: parts}} <- state.chat_state.messages,
         %Part.Text{text: text} <- parts,
         text =~ needle,
@@ -237,10 +275,27 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
   # The child is spawned with a valid, paired origin story (its own "you are the
   # clone" tool result), but this test exercises the parent's chat pipeline, not
   # the child's, so `Agents.chat/2` is stubbed to no-op and the child's GenServer
-  # stays idle.
+  # stays idle. The stub parks the *parent* (it is called from the parent's own
+  # `handle_spawn_request/3`), so the test controls when the spawn call returns
+  # and the batch's result can follow — which is what makes the mid-batch state
+  # below reproducible. The `after` is a safety valve so a failing test cannot
+  # leave the parent parked for long.
   defp stub_child_chat do
+    test_pid = self()
+
     Mimic.copy(Nest.Agents)
-    Mimic.stub(Nest.Agents, :chat, fn _space_id, _name, _content -> :ok end)
+
+    Mimic.stub(Nest.Agents, :chat, fn _space_id, _name, _content ->
+      send(test_pid, {:child_chat_blocked, self()})
+
+      receive do
+        :release_child_chat -> :ok
+      after
+        1_000 -> :ok
+      end
+
+      :ok
+    end)
   end
 
   defp upsert_spawn_vocation do

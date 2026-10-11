@@ -22,6 +22,7 @@ defmodule Nest.Agents.Agent.LoadBridgeTest do
   alias Nest.Messages.Assistant
   alias Nest.Messages.Part
   alias Nest.Messages.System, as: MsgSystem
+  alias Nest.Messages.Tool
   alias Nest.Messages.User
   alias Nest.Persistence
 
@@ -41,6 +42,96 @@ defmodule Nest.Agents.Agent.LoadBridgeTest do
 
       assert :ok = Repair.classify_load([system(0), user(1, "hi"), assistant_text(2)])
       assert :ok = Repair.classify_load([])
+    end
+
+    test "records a restored backgrounded promise as lost, once" do
+      # The sequence a backgrounded batch leaves: the call, the machine's
+      # synthetic answer (which promises the real result will arrive as a
+      # message), and the ack. The promise is kept by the process that owns the
+      # batch, so a restored transcript would keep promising a message that can
+      # never come.
+      tail = [
+        system(0),
+        user(1, "hi"),
+        assistant_tool(2, "call_1"),
+        tool_result(3, "call_1", "backgrounded"),
+        assistant_text(4)
+      ]
+
+      assert {:lost_promises, [notice, ack]} = Repair.classify_load(tail)
+
+      assert {:user, %User{parts: [%Part.Text{text: notice_text}]}} = notice
+      assert notice_text =~ "lost when this agent restarted"
+      assert notice_text =~ "Call it again if you still need it"
+
+      assert {:assistant, %Assistant{parts: [%Part.Text{text: ack_text}], metadata: metadata}} =
+               ack
+
+      assert ack_text =~ "will not wait"
+      assert metadata == %{"backgrounded_lost_ids" => ["call_1"]}
+
+      # The record names the ids it voids, so re-classifying the healed tail
+      # finds nothing left to record — `Init.LoadHeal.refresh/1` re-classifies
+      # before appending, and a second record would repeat the same words.
+      assert :ok = Repair.classify_load(tail ++ [notice, ack])
+
+      # A `user` tail is covered by the same record (it lands as a lone
+      # assistant, so the bridge is not needed): the model's last word is not
+      # left waiting on a promise either way.
+      user_tail = tail ++ [user(5, "and then?")]
+      assert {:lost_promises, [record]} = Repair.classify_load(user_tail)
+      assert {:assistant, %Assistant{parts: [%Part.Text{text: text}]}} = record
+      assert text =~ "lost when this agent restarted"
+      assert :ok = Repair.classify_load(user_tail ++ [record])
+
+      # Two promises in one transcript: the record counts the *calls*, not the
+      # result messages that carried them.
+      two = [
+        system(0),
+        user(1, "hi"),
+        assistant_tool(2, ["call_1", "call_2"]),
+        tool_result(3, ["call_1", "call_2"], "backgrounded"),
+        assistant_text(4)
+      ]
+
+      assert {:lost_promises, [{:user, %User{parts: [%Part.Text{text: two_text}]}}, _]} =
+               Repair.classify_load(two)
+
+      assert two_text =~ "The 2 backgrounded tool calls were lost"
+    end
+
+    test "records a promise in the same heal as a trailing orphan" do
+      # A batch backgrounded, and then the delivered turn's own batch died
+      # mid-tool: the slice carries an unfulfilled promise *and* a trailing
+      # orphan. The orphan has to be answered before the record (the record is
+      # built against a completed tail, and the whole heal is one append), so
+      # both travel together. Recording only the orphan would leave the promise
+      # unrecorded for the whole session that follows — the *next* load would be
+      # the first to mention it, long after the model started waiting on it.
+      active = [
+        system(0),
+        user(1, "hi"),
+        assistant_tool(2, "call_1"),
+        tool_result(3, "call_1", "backgrounded"),
+        assistant_text(4),
+        user(5, "and then?"),
+        assistant_tool(6, "call_2")
+      ]
+
+      assert {:lost_promises, heal} = Repair.classify_load(active)
+
+      assert [
+               {:tool, %Tool{parts: [%Part.ToolResult{tool_call_id: "call_2", is_error: true}]}},
+               {:assistant, _ack},
+               {:user, %User{parts: [%Part.Text{text: notice}]}},
+               {:assistant, %Assistant{metadata: %{"backgrounded_lost_ids" => ["call_1"]}}}
+             ] = heal
+
+      assert notice =~ "lost when this agent restarted"
+
+      # The healed tail classifies clean: the orphan is answered and the promise
+      # is named, so a second load appends nothing.
+      assert :ok = Repair.classify_load(active ++ heal)
     end
   end
 
@@ -76,6 +167,31 @@ defmodule Nest.Agents.Agent.LoadBridgeTest do
 
       assert {:ok, orphan_attrs} = Persistence.build_attrs_for_start(space_id, orphan)
       assert [%Part.ToolUse{id: "call_1", name: "shell-cmd"}] = orphan_attrs.load_heal
+    end
+
+    test "attaches the lost-promise record for a restored backgrounded call" do
+      space_id = current_space_id()
+      name = unique_name("lost-promise")
+      {:ok, _} = Persistence.insert_agent(agent_attrs(space_id, name))
+
+      # Persisted through the JSON encoder, so this also pins that the
+      # synthetic result's `state` survives the round trip: without it a
+      # restored transcript is indistinguishable from a batch that answered.
+      insert_messages(space_id, name, [
+        system(0),
+        user(1, "hi"),
+        assistant_tool(2, "call_1"),
+        tool_result(3, "call_1", "backgrounded"),
+        assistant_text(4)
+      ])
+
+      assert {:ok, attrs} = Persistence.build_attrs_for_start(space_id, name)
+      assert attrs.sequence_violations == []
+
+      assert {:lost_promises, [{:user, %User{parts: [%Part.Text{text: notice}]}}, _]} =
+               attrs.load_heal
+
+      assert notice =~ "lost when this agent restarted"
     end
   end
 
@@ -221,6 +337,47 @@ defmodule Nest.Agents.Agent.LoadBridgeTest do
       assert again.load_heal == nil
     end
 
+    test "records a lost backgrounded promise, and the healed tail needs no second record" do
+      space_id = current_space_id()
+      name = unique_name("heal-lost-promise")
+      {:ok, _} = Persistence.insert_agent(agent_attrs(space_id, name))
+
+      initial = [
+        system(0),
+        user(1, "hi"),
+        assistant_tool(2, "call_1"),
+        tool_result(3, "call_1", "backgrounded"),
+        assistant_text(4)
+      ]
+
+      insert_messages(space_id, name, initial)
+      state = load_state(name, space_id, initial)
+
+      log =
+        capture_log(fn ->
+          assert {:lost_promises, record} = Repair.classify_load(initial)
+          healed = Init.LoadHeal.heal(state, {:lost_promises, record})
+
+          # The promise is answered in the transcript: the model reads that the
+          # call was lost rather than waiting for a message that cannot arrive.
+          assert [{:user, %User{parts: [%Part.Text{text: notice}]}}, {:assistant, _}] =
+                   Enum.take(healed.chat_state.messages, -2)
+
+          assert notice =~ "lost when this agent restarted"
+        end)
+
+      assert log =~ "backgrounded tool result the restart lost"
+
+      # Persisted, so the next load classifies clean: the record named the ids
+      # it voided, which is what makes the heal idempotent (`refresh/1`
+      # re-classifies the same tail before appending).
+      assert [:system, :user, :assistant, :tool, :assistant, :user, :assistant] =
+               Persistence.load_messages(space_id, name) |> Enum.map(&elem(&1, 0))
+
+      assert {:ok, again} = Persistence.build_attrs_for_start(space_id, name)
+      assert again.load_heal == nil
+    end
+
     test "two callers that both pass the re-check derive the same append index" do
       space_id = current_space_id()
       name = unique_name("heal-race")
@@ -318,13 +475,35 @@ defmodule Nest.Agents.Agent.LoadBridgeTest do
     {:assistant, %Assistant{index: index, parts: [%Part.Text{text: "ok"}], api_logs: []}}
   end
 
-  defp assistant_tool(index, id) do
-    {:assistant,
-     %Assistant{
-       index: index,
-       parts: [%Part.ToolUse{id: id, name: "shell-cmd", arguments: %{}}],
-       api_logs: []
-     }}
+  defp assistant_tool(index, id) when is_binary(id), do: assistant_tool(index, [id])
+
+  defp assistant_tool(index, ids) do
+    parts = Enum.map(ids, &%Part.ToolUse{id: &1, name: "shell-cmd", arguments: %{}})
+
+    {:assistant, %Assistant{index: index, parts: parts, api_logs: []}}
+  end
+
+  # A tool result, `state` included: `"backgrounded"` is the machine's synthetic
+  # answer to a call it moved to the background (issue #36), and it is what
+  # `MessageList.backgrounded_results/1` keys on.
+  defp tool_result(index, id, state) when is_binary(id), do: tool_result(index, [id], state)
+
+  defp tool_result(index, ids, state) do
+    {:tool,
+     %Tool{index: index, parts: Enum.map(ids, &backgrounded_part(&1, state)), api_logs: []}}
+  end
+
+  defp backgrounded_part(id, state) do
+    %Part.ToolResult{
+      tool_call_id: id,
+      name: "shell-cmd",
+      arguments: %{},
+      content:
+        "The shell-cmd call was moved to the background; its result " <>
+          "will arrive later as a message.",
+      is_error: false,
+      state: state
+    }
   end
 
   defp unique_name(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}"

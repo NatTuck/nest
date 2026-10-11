@@ -33,6 +33,9 @@ export function toolCallsFromParts(parts) {
   }));
 }
 
+// `state` rides through verbatim (`null` for an ordinary result): the
+// panel badges on it, so an unrecognised value must reach the panel
+// instead of being mapped away here.
 export function toolResultsFromParts(parts) {
   if (!Array.isArray(parts)) return null;
   const trs = parts.filter((p) => p && p.kind === "tool_result");
@@ -42,6 +45,7 @@ export function toolResultsFromParts(parts) {
     name: p.name,
     content: p.content || "",
     is_error: !!p.isError,
+    state: p.state ?? null,
   }));
 }
 
@@ -63,6 +67,7 @@ export function partsShape(m) {
       name: tr.name,
       content: tr.content || "",
       isError: !!tr.is_error,
+      state: tr.state ?? null,
     }));
   }
   return [];

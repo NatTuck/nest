@@ -223,11 +223,12 @@ defmodule Nest.Agents.Agent do
   Apply the load-time sequence heal in the *caller's* DB context.
 
   `Persistence.build_attrs_for_start/2` classifies the restored active
-  slice and puts the heal in `:load_heal` — either a trailing orphan
-  `tool_use` (a turn that died mid-tool) or the user-tail bridge (see
-  `Init.LoadHeal`). Applying it appends and persists real rows through the
-  canonical append path, so it MUST run in a pid with DB access: the
-  caller's, before `GenServer.start_link/1`. It must never run in `init/1`
+  slice and puts the heal in `:load_heal` — a trailing orphan
+  `tool_use` (a turn that died mid-tool), the user-tail bridge, or the
+  lost-promise record for a backgrounded call whose batch died with the
+  process (see `Init.LoadHeal`). Applying it appends and persists real rows
+  through the canonical append path, so it MUST run in a pid with DB access:
+  the caller's, before `GenServer.start_link/1`. It must never run in `init/1`
   (see the hard rule there).
 
   Idempotent: the classification is re-derived from a fresh read

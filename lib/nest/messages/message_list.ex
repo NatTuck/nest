@@ -9,6 +9,7 @@ defmodule Nest.Messages.MessageList do
   alias Nest.Messages.Assistant
   alias Nest.Messages.Part
   alias Nest.Messages.Tool
+  alias Nest.Messages.ToolCall
   alias Nest.Messages.User
 
   @doc """
@@ -353,6 +354,168 @@ defmodule Nest.Messages.MessageList do
 
   defp build_idle_bridge_ack(text) do
     {:assistant, %Assistant{parts: [%Part.Text{text: text}], api_logs: []}}
+  end
+
+  @doc """
+  Build the synthetic `{:tool, _}` that answers a batch moved to the
+  background (issue #36).
+
+  Every call in the batch is answered with an `is_error: false` result
+  whose wording says the call was backgrounded and that its result will
+  arrive later as a message. Each result also states the call's own
+  declared timeout bound (decision D4): the tool's timeout *is* the
+  promise's bound, so the model knows the call is still running and when
+  to expect its result rather than waiting on a call that has not
+  finished.
+
+  Each result carries `state: "backgrounded"` so the panel can badge it
+  as a call whose result has not arrived, rather than reading the
+  `is_error: false` flag as a success the data does not support.
+
+  Returns `nil` for an empty batch (nothing to answer), like
+  `interrupted_tool_result/1`. Accepts the `Part.ToolUse` structs of the
+  pending assistant message and the `ToolCall` structs of the preflight
+  batch alike — both carry the `id`/`name`/`arguments` a result needs.
+  """
+  @spec backgrounded_tool_result([Part.ToolUse.t() | ToolCall.t()]) :: {:tool, Tool.t()} | nil
+  def backgrounded_tool_result([]), do: nil
+
+  def backgrounded_tool_result(calls) do
+    parts = Enum.map(calls, &backgrounded_result/1)
+    {:tool, %Tool{parts: parts, api_logs: []}}
+  end
+
+  defp backgrounded_result(%{id: id, name: name, arguments: arguments}) do
+    %Part.ToolResult{
+      tool_call_id: id,
+      name: name,
+      content: backgrounded_text(name, arguments),
+      arguments: arguments || %{},
+      is_error: false,
+      # The panel must not badge this as a success: the call has produced no
+      # result yet, and its real one arrives later as a message. `is_error`
+      # stays false because the model's wire encoding reads it, and a
+      # backgrounded call is not an error.
+      state: "backgrounded"
+    }
+  end
+
+  defp backgrounded_text(name, arguments) do
+    "The #{name} call was moved to the background so your message could be " <>
+      "delivered now; its result will arrive later as a message. " <>
+      backgrounded_bound(arguments)
+  end
+
+  # The model declared the call's own timeout in its arguments (the
+  # `shell-cmd` tool's `timeout`, in seconds). State it: the bound is the
+  # promise's, and the model should not expect a result before it.
+  defp backgrounded_bound(%{"timeout" => seconds}) when is_integer(seconds) do
+    "The call's own timeout bound is #{seconds} seconds; it is killed at that bound."
+  end
+
+  defp backgrounded_bound(_arguments) do
+    "The call declared no timeout of its own, so it runs under its tool's default bound."
+  end
+
+  @doc """
+  The synthetic assistant acknowledgement that follows a backgrounded
+  batch's synthetic result (issue #36).
+
+  Same family as `idle_bridge_ack/1`: an assistant text message with no
+  `index` (the append path stamps it) and no `api_logs`. It tells the
+  model the call is running in the background and its result will arrive
+  as a message, so the turn reads coherently while the batch finishes.
+  """
+  @spec backgrounded_ack() :: term()
+  def backgrounded_ack do
+    build_idle_bridge_ack(
+      "Understood. The call is running in the background; I'll continue when its " <>
+        "result arrives as a message."
+    )
+  end
+
+  @lost_promise_key "backgrounded_lost_ids"
+  @fulfilled_promise_key "backgrounded_fulfilled_ids"
+
+  @doc """
+  The tool-result parts of `messages` that still promise a result which has not
+  arrived (issue #36): every result `backgrounded_tool_result/1` built carries
+  `state: "backgrounded"`.
+
+  The promise is kept only while the batch's entry is live in
+  `Machine.Work.backgrounded`, which dies with the process. A *restored*
+  transcript therefore still promises a message that can never come, so
+  `Repair.classify_load/1` records the loss (`tag_lost_promises/2`) — and a
+  promise an existing record already names is not reported again, which is what
+  makes the load heal idempotent (`Init.LoadHeal.refresh/1` re-classifies the
+  tail before appending).
+
+  A promise whose result *did* arrive is not reported either: the notice the
+  result was delivered as carries the ids it answers (`fulfilled_metadata/1`,
+  written onto the delivered message by `Inbox.build_drained_message/3`), so a
+  later load tells the two apart instead of recording a loss for a call whose
+  result arrived.
+  """
+  @spec backgrounded_results([term()]) :: [Part.ToolResult.t()]
+  def backgrounded_results(messages) do
+    recorded = promise_ids(messages, @lost_promise_key)
+    fulfilled = promise_ids(messages, @fulfilled_promise_key)
+
+    for {:tool, %Tool{parts: parts}} <- messages,
+        %Part.ToolResult{state: "backgrounded"} = result <- parts || [],
+        result.tool_call_id not in recorded,
+        result.tool_call_id not in fulfilled,
+        do: result
+  end
+
+  @doc """
+  The metadata that marks the tool calls a delivered notice answers as
+  fulfilled (issue #36).
+
+  `ids` are the calls a backgrounded batch's *result* answered; the metadata
+  rides the message the drain appends, so `backgrounded_results/1` does not
+  report those promises as lost on a later load. Empty for no ids, so an
+  ordinary delivery carries no marker at all.
+  """
+  @spec fulfilled_metadata([String.t()]) :: map()
+  def fulfilled_metadata([]), do: %{}
+  def fulfilled_metadata(ids), do: %{@fulfilled_promise_key => ids}
+
+  @doc """
+  Tag a lost-promise record with the tool call ids it voids, so
+  `backgrounded_results/1` does not report them again.
+
+  The tag rides the record's assistant message `metadata`, which persists and
+  round-trips exactly like any other message metadata.
+  """
+  @spec tag_lost_promises([term()], [String.t()]) :: [term()]
+  def tag_lost_promises(record, ids) do
+    Enum.map(record, fn
+      {:assistant, %Assistant{} = assistant} ->
+        {:assistant, %{assistant | metadata: put_lost_ids(assistant.metadata, ids)}}
+
+      other ->
+        other
+    end)
+  end
+
+  defp put_lost_ids(metadata, ids) when is_map(metadata),
+    do: Map.put(metadata, @lost_promise_key, ids)
+
+  defp put_lost_ids(_metadata, ids), do: %{@lost_promise_key => ids}
+
+  # Every id named under `key` by any message's metadata. Any role, because the
+  # two markers are written by different paths: the lost record is an assistant
+  # (`tag_lost_promises/2`) and the fulfilled marker rides the delivered user
+  # message (`fulfilled_metadata/1`). A message whose metadata is not a map
+  # names nothing.
+  defp promise_ids(messages, key) do
+    messages
+    |> Enum.flat_map(fn
+      {_role, %{metadata: %{} = metadata}} -> List.wrap(metadata[key])
+      _ -> []
+    end)
+    |> MapSet.new()
   end
 
   @doc """

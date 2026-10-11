@@ -442,12 +442,19 @@ defmodule Nest.Persistence do
   # died mid-tool, not corruption: the run-time owner is gone, so it is
   # recoverable at load (answer it with an error result and idle). A valid
   # slice that ends on a `user` wire role gets the load-specific assistant
-  # ack so an idle agent never ends on a user message. Every other
-  # violation blocks the agent in `:needs_repair` for the offline repair
-  # tool. Returns `{violations, heal | nil}`, where `heal` is a list of
-  # `%Part.ToolUse{}` to answer or `{:bridge, messages}` to append.
+  # ack so an idle agent never ends on a user message; one that still carries
+  # a backgrounded call's promise gets the lost-promise record instead (the
+  # batch died with the process, so the message it promised can never come).
+  # Every other violation blocks the agent in `:needs_repair` for the offline
+  # repair tool. Returns `{violations, heal | nil}`, where `heal` is a list of
+  # `%Part.ToolUse{}` to answer, `{:bridge, messages}` to append, or
+  # `{:lost_promises, messages}` to append.
   @spec classify_sequence([Message.t()], integer()) ::
-          {[Preflight.violation()], [Nest.Messages.Part.ToolUse.t()] | {:bridge, [term()]} | nil}
+          {[Preflight.violation()],
+           [Nest.Messages.Part.ToolUse.t()]
+           | {:bridge, [term()]}
+           | {:lost_promises, [term()]}
+           | nil}
   defp classify_sequence(preloaded, boundary) do
     active = Enum.filter(preloaded, fn {_role, %{index: idx}} -> idx > boundary end)
 
@@ -455,6 +462,7 @@ defmodule Nest.Persistence do
       :ok -> {[], nil}
       {:interrupted, tool_uses} -> {[], tool_uses}
       {:bridge, messages} -> {[], {:bridge, messages}}
+      {:lost_promises, messages} -> {[], {:lost_promises, messages}}
       {:violations, violations} -> {violations, nil}
     end
   end

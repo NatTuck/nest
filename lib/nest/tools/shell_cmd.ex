@@ -35,12 +35,35 @@ defmodule Nest.Tools.ShellCmd do
   @default_timeout_ms 60_000
   @default_grace_ms 200
 
+  # The largest value `receive ... after` accepts; anything above it raises
+  # `ErlangError: :timeout_value` at the `receive`. `:timeout` itself has no
+  # upper limit, so `collect_output/5` clamps only its *check-in interval* to
+  # this and re-checks the real deadline — a bound longer than this is still
+  # honoured in full.
+  @max_after_ms 4_294_967_295
+
+  @doc """
+  The default wall-clock bound in milliseconds, used when `:timeout` is not
+  given.
+
+  Public because the model-visible `shell-cmd` tool description interpolates
+  it (in seconds) rather than restating the number: one source of truth for
+  the default.
+  """
+  @spec default_timeout_ms() :: pos_integer()
+  def default_timeout_ms, do: @default_timeout_ms
+
   @doc """
   Executes a shell command in a sandboxed environment.
 
   ## Options
 
-    * `:timeout` - Maximum execution time in milliseconds (default: #{@default_timeout_ms})
+    * `:timeout` - Wall-clock limit in milliseconds for the whole command
+      (default: #{@default_timeout_ms}), ignored with `:background`. There is
+      no upper limit: a bound longer than `receive`'s `after` ceiling is
+      honoured in full (only the check-in interval is clamped). The deadline
+      is fixed when the command starts, so a command that keeps writing
+      output cannot move it: it is killed at the deadline either way.
     * `:stdin` - Binary data to send to the command's stdin over a real pipe (no base64) (default: "")
     * `:background` - when `true`, start the command as a background job
       owned by `Nest.Sandbox.ShellJobs` and return a job handle instead of
@@ -356,6 +379,13 @@ defmodule Nest.Tools.ShellCmd do
     # its one-off 350ms instead of every boot.
     Exec.ensure_started()
 
+    # The deadline is computed once, when the command starts, and never
+    # moves: `collect_output/5` re-derives the time left on every iteration,
+    # so a command that writes at least once per `timeout` is still killed
+    # at the deadline. (An idle timer re-armed by every chunk would let it
+    # run forever.)
+    deadline = System.monotonic_time(:millisecond) + timeout
+
     case :exec.run(
            to_charlist(command),
            [
@@ -366,12 +396,22 @@ defmodule Nest.Tools.ShellCmd do
              {:kill_timeout, 5000}
            ]
          ) do
-      {:ok, _pid, os_pid} ->
+      # erlexec's `:monitor` option emulates a monitor with a per-run
+      # lightweight process (`deps/erlexec/src/exec.erl`, `ospid_init/7`),
+      # returned here as `erl_pid`; its `:DOWN` names that pid, not `os_pid`.
+      # Only this call's own `:DOWN` may end this call: a previous call's
+      # `:DOWN` is left undrained by `handle_timeout/3`/`handle_stop_chat/2`
+      # and would otherwise be consumed as this call's result.
+      {:ok, erl_pid, os_pid} ->
         send_stdin(os_pid, stdin)
 
         # Buffers are IO lists (prepend in O(1)); the terminal handler
         # flattens each stream to a binary.
-        collect_output(os_pid, timeout, %{stdout: [], stderr: [], exit_code: nil})
+        collect_output(erl_pid, os_pid, deadline, timeout, %{
+          stdout: [],
+          stderr: [],
+          exit_code: nil
+        })
 
       {:error, reason} ->
         {:error, "Failed to start process: #{inspect(reason)}"}
@@ -394,22 +434,57 @@ defmodule Nest.Tools.ShellCmd do
     :exec.send(os_pid, :eof)
   end
 
-  defp collect_output(os_pid, timeout, acc) do
+  # `timeout` is the command's total bound; `deadline` is when it expires
+  # (monotonic ms). Each iteration re-derives the time left from the
+  # deadline, so stdout/stderr arriving in the meantime cannot push the
+  # expiry back. `timeout` rides along only to word the timeout marker.
+  # `erl_pid` is erlexec's per-run monitor process: only its `:DOWN` ends
+  # this call, so an earlier command's stale `:DOWN` — left in the tool
+  # worker's mailbox by a timeout or a Stop — is skipped instead of being
+  # returned as this command's result.
+  defp collect_output(erl_pid, os_pid, deadline, timeout, acc) do
     receive do
       {:stdout, ^os_pid, data} ->
-        collect_output(os_pid, timeout, append_stdout(acc, data))
+        check_deadline(erl_pid, os_pid, deadline, timeout, append_stdout(acc, data))
 
       {:stderr, ^os_pid, data} ->
-        collect_output(os_pid, timeout, append_stderr(acc, data))
+        check_deadline(erl_pid, os_pid, deadline, timeout, append_stderr(acc, data))
 
       {:stop_chat, _from} ->
         handle_stop_chat(os_pid, acc)
 
-      {:DOWN, _ref, :process, _pid, reason} ->
+      {:DOWN, _ref, :process, ^erl_pid, reason} ->
         handle_down(acc, reason)
     after
-      timeout -> handle_timeout(os_pid, timeout, acc)
+      remaining_ms(deadline) ->
+        check_deadline(erl_pid, os_pid, deadline, timeout, acc)
     end
+  end
+
+  # The deadline is consulted after *every* chunk, not only when the mailbox
+  # goes quiet. A command that floods stdout never leaves the mailbox empty,
+  # so an `after`-only check would never run and the bound would not be the
+  # wall-clock bound it is documented to be. `{:stop_chat, _}` and this run's
+  # `:DOWN` keep their existing precedence: they are matched by the `receive`
+  # above, and this check only runs after a chunk that already matched.
+  defp check_deadline(erl_pid, os_pid, deadline, timeout, acc) do
+    if System.monotonic_time(:millisecond) >= deadline do
+      handle_timeout(os_pid, timeout, acc)
+    else
+      collect_output(erl_pid, os_pid, deadline, timeout, acc)
+    end
+  end
+
+  # Time left before the deadline, floored at 0 (an expired deadline must fire
+  # the `after` immediately rather than raise) and capped at `@max_after_ms`
+  # (the largest `after` accepts; see the attribute). The floor is also what
+  # makes a directly-passed negative `:timeout` an immediate timeout, whose
+  # marker then reads `[Command timed out after -5ms]` — unreachable through
+  # the `shell-cmd` tool, which rejects non-positive values.
+  defp remaining_ms(deadline) do
+    (deadline - System.monotonic_time(:millisecond))
+    |> max(0)
+    |> min(@max_after_ms)
   end
 
   defp append_stdout(acc, data),
@@ -464,6 +539,11 @@ defmodule Nest.Tools.ShellCmd do
 
   defp handle_timeout(os_pid, timeout, acc) do
     :exec.stop(os_pid)
+    # `:exec.stop/1` is asynchronous: this returns before erlexec's `:DOWN`
+    # for the killed process arrives, so that `:DOWN` is left in the caller's
+    # mailbox. Harmless: the next `collect_output/5` matches only the erlexec
+    # pid of its own command, so it skips the stale one instead of reporting
+    # it as its own result.
     # Stderr, like `handle_stop_chat/2`, so `execute_raw/4,5` sees the marker.
     acc = append_stderr(acc, "[Command timed out after #{timeout}ms]")
     {:ok, 1, combine_output(acc), stdout_bin(acc), stderr_bin(acc)}
