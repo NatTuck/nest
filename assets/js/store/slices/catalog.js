@@ -106,6 +106,22 @@ export function catalogSetters(set) {
       });
     },
 
+    unarchiveAgent: ({ space_id, name }) => {
+      set((state) => {
+        const match = (a) => a.name === name && a.space_id === space_id;
+        const agent = state.archivedAgents.find(match);
+        if (!agent) return state;
+        const alreadyActive = state.agents.some(match);
+        const agents = alreadyActive
+          ? state.agents
+          : [...state.agents, { ...agent, archived: false, status: "idle" }];
+        return {
+          agents,
+          archivedAgents: state.archivedAgents.filter((a) => !match(a)),
+        };
+      });
+    },
+
     applyAgentModelUpdate: (name, model) => {
       set((state) => {
         const newAgents = state.agents.map((a) =>

@@ -8,6 +8,8 @@ defmodule NestWeb.AgentChannelTest do
 
   import Mimic
 
+  import Nest.Test.TmpCleanup
+
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Messages.Assistant
   alias Nest.Messages.Part
@@ -386,10 +388,11 @@ defmodule NestWeb.AgentChannelTest do
       id = System.unique_integer([:positive])
       tmp = Path.join([System.tmp_dir!(), "nest_ch_jobs_#{id}", "space-1", name])
       File.mkdir_p!(tmp)
-      on_exit(fn -> ShellJobs.stop_all(key) end)
-
+      # Combined so the jobs stop before the tree is removed: `on_exit` runs
+      # LIFO, and a `sleep 30` job must not outlive its directory.
       on_exit(fn ->
-        if String.contains?(tmp, "nest_ch"), do: File.rm_rf(Path.dirname(Path.dirname(tmp)))
+        ShellJobs.stop_all(key)
+        rm_tmp!(Path.dirname(Path.dirname(tmp)), "nest_ch")
       end)
 
       assert {:ok, _} =
@@ -429,10 +432,11 @@ defmodule NestWeb.AgentChannelTest do
       id = System.unique_integer([:positive])
       tmp = Path.join([System.tmp_dir!(), "nest_ch_log_#{id}", "space-1", name])
       File.mkdir_p!(tmp)
-      on_exit(fn -> ShellJobs.stop_all(key) end)
-
+      # Combined so the jobs stop before the tree is removed: `on_exit` runs
+      # LIFO, and a `sleep 30` job must not outlive its directory.
       on_exit(fn ->
-        if String.contains?(tmp, "nest_ch"), do: File.rm_rf(Path.dirname(Path.dirname(tmp)))
+        ShellJobs.stop_all(key)
+        rm_tmp!(Path.dirname(Path.dirname(tmp)), "nest_ch")
       end)
 
       assert {:ok, _} =

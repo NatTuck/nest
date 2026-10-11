@@ -11,6 +11,8 @@ defmodule NestWeb.AgentChannelWorkspaceTest do
 
   import Mimic
 
+  import Nest.Test.TmpCleanup
+
   alias Nest.Agents.AgentTestHelpers
 
   setup :verify_on_exit!
@@ -34,7 +36,7 @@ defmodule NestWeb.AgentChannelWorkspaceTest do
         ])
 
       File.mkdir_p!(workspace)
-      on_exit(fn -> File.rm_rf(workspace) end)
+      on_exit(fn -> rm_tmp!(workspace, "agent-ws-") end)
 
       {_pid, agent_name} =
         AgentTestHelpers.start_agent(%{

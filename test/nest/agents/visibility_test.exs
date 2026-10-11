@@ -335,4 +335,44 @@ defmodule Nest.Agents.VisibilityTest do
     refute child_name in bob_names
     assert shared_name in bob_names
   end
+
+  test "list_archived_agents_for_space/1 returns every archived row, no user filter" do
+    {:ok, alice, :admin} =
+      Accounts.create_user(%{username: "alice", password: "password123"}, "first-user")
+
+    space_id = AgentTestHelpers.current_space_id()
+    suffix = System.unique_integer([:positive])
+    private_name = "arch-space-private-#{suffix}"
+    active_name = "arch-space-active-#{suffix}"
+    model = %{name: "qwen3.5-plus", provider: "model-studio"}
+    vid = AgentTestHelpers.vocation_id_for_test()
+
+    {:ok, _private_row} =
+      Nest.Persistence.insert_agent(%{
+        space_id: space_id,
+        name: private_name,
+        model: model,
+        vocation_id: vid,
+        created_by_user_id: alice.id,
+        shared: false
+      })
+
+    assert :ok = Nest.Persistence.archive_agent(space_id, private_name)
+
+    {:ok, _active_row} =
+      Nest.Persistence.insert_agent(%{
+        space_id: space_id,
+        name: active_name,
+        model: model,
+        vocation_id: vid,
+        created_by_user_id: alice.id,
+        shared: false
+      })
+
+    archived = Visibility.list_archived_agents_for_space(space_id)
+
+    # The space-scoped read carries no user identity: even a
+    # private (non-shared) archived row is listed.
+    assert [%{name: ^private_name, archived: true}] = archived
+  end
 end

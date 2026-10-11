@@ -89,8 +89,12 @@ defmodule Nest.Agents.Supervisor do
       {:ok, attrs} ->
         {:ok, attrs}
 
-      {:error, :not_found} ->
-        {:error, :not_found}
+      # `:not_found` and `:archived` are both ordinary refusals of the
+      # caller's request, not fetch failures: a missing row, and a row
+      # that is deliberately out of service. The caller surfaces them
+      # (the agent channel answers `agent not found` / `agent_archived`).
+      {:error, reason} when reason in [:not_found, :archived] ->
+        {:error, reason}
 
       {:error, reason} ->
         Logger.warning("Failed to fetch agent #{name}: #{inspect(reason)}")
@@ -376,6 +380,49 @@ defmodule Nest.Agents.Supervisor do
   # `agent:created` notification style.
   defp broadcast_agent_archived(space_id, name) do
     NestWeb.Endpoint.broadcast("lobby", "agent:archived", %{
+      "space_id" => space_id,
+      "name" => name
+    })
+  end
+
+  @doc """
+  Restore an archived agent in `space_id` to the active list.
+
+  Restores the agent **and its whole archived subtree**: archiving a
+  parent stops *and* archives its descendants, so the rows are walked
+  through the persisted `parent_id` links (see
+  `Persistence.unarchive_agent/2`) and the flag is cleared for all of
+  them. None are eagerly restarted — each is rehydrated on demand by
+  `get_agent/2` when it is next addressed (mirroring
+  `Nest.Spaces.unarchive_space/1`).
+
+  Broadcasts `agent:unarchived` on the lobby topic once per restored
+  agent so connected clients can move them out of the per-space
+  "Archived" group.
+
+  Restoring an agent that is already active is a no-op (`:ok`).
+  Restoring a child whose parent is still archived is refused with
+  `{:error, {:parent_archived, parent_name}}` — the sidebar nests by
+  `parent_name`, so such a child would render inside the archived
+  parent's collapsed group and look like nothing happened. Returns
+  `{:error, :not_found}` if the agent row does not exist.
+  """
+  @spec unarchive_agent(integer(), String.t()) :: :ok | {:error, term()}
+  def unarchive_agent(space_id, name) do
+    case Persistence.unarchive_agent(space_id, name) do
+      {:ok, restored} ->
+        Enum.each(restored, &broadcast_agent_unarchived(space_id, &1))
+        :ok
+
+      {:error, _reason} = err ->
+        err
+    end
+  end
+
+  # Tell every connected lobby client that `name` was restored so the
+  # sidebar can move it back into the active tree without a reload.
+  defp broadcast_agent_unarchived(space_id, name) do
+    NestWeb.Endpoint.broadcast("lobby", "agent:unarchived", %{
       "space_id" => space_id,
       "name" => name
     })

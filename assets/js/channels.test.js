@@ -39,6 +39,7 @@ import {
   revokeInvite,
   archiveSpace,
   unarchiveSpace,
+  unarchiveAgent,
   clearAgentChannels,
   agentChannels,
 } from "./channels";
@@ -351,6 +352,42 @@ describe("channels", () => {
         assert.strictEqual(useStore.getState().archivedAgents.length, 1);
       });
       assert.strictEqual(useStore.getState().archivedAgents[0].name, "sub");
+    });
+
+    it("should move an agent back to agents on agent:unarchived event", async () => {
+      setNextJoinResult("lobby", {
+        autoInit: {
+          agents: [],
+          archived_agents: [
+            {
+              name: "sub",
+              space_id: 7,
+              model: { name: "gpt-4" },
+              parentName: "root",
+              depth: 1,
+              archived: true,
+            },
+          ],
+          models: [],
+        },
+      });
+      joinLobby();
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().archivedAgents.length, 1);
+      });
+
+      simulateServerEvent("lobby", "agent:unarchived", {
+        space_id: 7,
+        name: "sub",
+      });
+
+      await vi.waitFor(() => {
+        assert.strictEqual(useStore.getState().agents.length, 1);
+        assert.strictEqual(useStore.getState().archivedAgents.length, 0);
+      });
+      assert.strictEqual(useStore.getState().agents[0].name, "sub");
+      assert.strictEqual(useStore.getState().agents[0].archived, false);
     });
 
     it("should hydrate archivedAgents from the init payload", async () => {
@@ -933,6 +970,66 @@ describe("channels", () => {
 
       await vi.waitFor(() => {
         return true;
+      });
+    });
+  });
+
+  describe("unarchiveAgent", () => {
+    it("is a no-op with an onError when not connected to the lobby", async () => {
+      let captured = null;
+      unarchiveAgent(
+        "old",
+        1,
+        () => {},
+        (err) => {
+          captured = err;
+        },
+      );
+
+      await vi.waitFor(() => {
+        assert.ok(captured);
+        assert.match(captured.message, /not connected/i);
+      });
+    });
+
+    it("forwards the unarchive_agent payload and ok reply to onOk", async () => {
+      setNextJoinResult("lobby", { autoInit: { agents: [], models: [] } });
+      joinLobby();
+      setNextPushResult("lobby", "unarchive_agent", { ok: {} });
+
+      const pushPromise = captureNextPush("lobby", "unarchive_agent");
+      let captured = "not-called";
+      unarchiveAgent("old-specialist", 5, () => {
+        captured = "called";
+      });
+
+      const payload = await pushPromise;
+      assert.deepStrictEqual(payload, { name: "old-specialist", space_id: 5 });
+
+      await vi.waitFor(() => {
+        assert.strictEqual(captured, "called");
+      });
+    });
+
+    it("forwards the unarchive_agent error payload to onError", async () => {
+      setNextJoinResult("lobby", { autoInit: { agents: [], models: [] } });
+      joinLobby();
+      setNextPushResult("lobby", "unarchive_agent", {
+        error: { reason: "forbidden" },
+      });
+
+      let captured = null;
+      unarchiveAgent(
+        "old-specialist",
+        5,
+        () => {},
+        (err) => {
+          captured = err;
+        },
+      );
+
+      await vi.waitFor(() => {
+        assert.strictEqual(captured.reason, "forbidden");
       });
     });
   });

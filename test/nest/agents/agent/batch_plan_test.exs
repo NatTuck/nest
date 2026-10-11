@@ -8,6 +8,8 @@ defmodule Nest.Agents.Agent.BatchPlanTest do
   """
   use ExUnit.Case, async: true
 
+  import Nest.Test.TmpCleanup
+
   alias Nest.Agents.Agent.BatchPlan
   alias Nest.Messages.ToolCall
 
@@ -23,7 +25,7 @@ defmodule Nest.Agents.Agent.BatchPlanTest do
       ])
 
     File.mkdir_p!(dir)
-    on_exit(fn -> File.rm_rf(dir) end)
+    on_exit(fn -> rm_tmp!(dir, "nest_batch_plan_test_") end)
     %{tmp: dir}
   end
 
