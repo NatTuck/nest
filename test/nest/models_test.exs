@@ -30,6 +30,8 @@ defmodule Nest.ModelsTest do
   setup :set_mimic_global
 
   setup do
+    test_pid = self()
+
     # Stub the only auto-models provider in test/data/config.toml
     # (`pegasus`) to return a mix of:
     #   * 3 OpenAI-shape entries with only `id` (no limit field) — the
@@ -37,7 +39,18 @@ defmodule Nest.ModelsTest do
     #     even though `extract_limit_from_model/1` returns nil for all.
     #   * 1 vLLM-shape entry with `max_model_len` — limits must still
     #     get cached for providers that include recognized fields.
+    #   * 1 image-capable entry with NO limit field — the multi-modal
+    #     regression: an image-capable model that reports no context
+    #     limit must survive the scan with its capability intact.
+    #   * `pegasus-per-model-test` (static, `multi-modal` unset) and
+    #     `pegasus-static-audio` (static `multi-modal` set by one test
+    #     via `:sys.replace_state`) — the static-vs-detected fixtures.
+    #
+    # Every request is also reported to the test process so a test can
+    # assert how many `/models` requests a provider scan costs.
     stub(Req, :get, fn url, _opts ->
+      send(test_pid, {:models_req_get, url})
+
       if String.contains?(url, "pegasus") do
         {:ok,
          %{
@@ -66,6 +79,22 @@ defmodule Nest.ModelsTest do
                  "id" => "vllm-shape-model",
                  "object" => "model",
                  "max_model_len" => 16_384
+               },
+               %{
+                 "id" => "MiniMax-VL",
+                 "object" => "model",
+                 "owned_by" => "minimax",
+                 "input_modalities" => ["text", "image"]
+               },
+               %{
+                 "id" => "pegasus-per-model-test",
+                 "object" => "model",
+                 "architecture" => %{"input_modalities" => ["text", "image", "file"]}
+               },
+               %{
+                 "id" => "pegasus-static-audio",
+                 "object" => "model",
+                 "input_modalities" => ["text", "image"]
                }
              ]
            }
@@ -146,6 +175,95 @@ defmodule Nest.ModelsTest do
       assert per_model != nil
       assert per_model["provider"] == "pegasus"
       assert per_model["context_limit"] == 32_000
+    end
+  end
+
+  describe "multi_modal discovery" do
+    test "emits a detected multi_modal for an auto-discovered model with no context limit" do
+      # `MiniMax-VL` reports image input and no context limit. The
+      # capability must survive the scan — the limits pass keeps one
+      # entry per model — and its limit still resolves through the
+      # provider default.
+      vl = Enum.find(Models.list(), fn m -> m["name"] == "MiniMax-VL" end)
+
+      assert vl != nil
+      assert vl["provider"] == "pegasus"
+      assert vl["multi_modal"] == %{"input" => ["image"]}
+      assert vl["context_limit"] == 512_000
+    end
+
+    test "emits a static multi_modal verbatim, including for a model no scan covers" do
+      # `model-studio` is not an auto-models provider, so `qwen3.5-plus`
+      # appears in no scan at all: its static `multi-modal` is the only
+      # source and is emitted verbatim.
+      qwen = Enum.find(Models.list(), fn m -> m["name"] == "qwen3.5-plus" end)
+
+      assert qwen != nil
+      assert qwen["provider"] == "model-studio"
+      assert qwen["multi_modal"] == %{"input" => ["image"]}
+    end
+
+    test "fills in a static nil multi_modal from the same provider's scan" do
+      # `pegasus-per-model-test` is a static entry under the scanned
+      # `pegasus` provider with no `multi-modal`; the provider reports
+      # image input for it. The static context limit is untouched.
+      model = Enum.find(Models.list(), fn m -> m["name"] == "pegasus-per-model-test" end)
+
+      assert model != nil
+      assert model["provider"] == "pegasus"
+      assert model["multi_modal"] == %{"input" => ["image"]}
+      assert model["context_limit"] == 32_000
+    end
+
+    test "a static multi_modal is never overwritten by a differing discovery answer" do
+      # Inject a static `pegasus-static-audio` whose `multi-modal` uses
+      # a vocabulary the provider's answer ("image") does not match.
+      # The setup's scan has already cached that provider's answer for
+      # this name; the static value must be emitted verbatim rather
+      # than replaced by the detected one.
+      previous = :sys.get_state(Models).static_config
+
+      static_model = %Nest.DotConfig.Model{
+        name: "pegasus-static-audio",
+        provider_name: "pegasus",
+        multi_modal: %{"input" => ["audio"]}
+      }
+
+      :sys.replace_state(Models, fn state ->
+        static_config = %{
+          previous
+          | models: Map.put(previous.models, "pegasus-static-audio", static_model)
+        }
+
+        %{state | static_config: static_config}
+      end)
+
+      on_exit(fn ->
+        :sys.replace_state(Models, fn state -> %{state | static_config: previous} end)
+      end)
+
+      model = Enum.find(Models.list(), fn m -> m["name"] == "pegasus-static-audio" end)
+
+      assert model != nil
+      assert model["provider"] == "pegasus"
+      # The provider answered `["text", "image"]`; static config said
+      # `audio`, and static config wins.
+      assert model["multi_modal"] == %{"input" => ["audio"]}
+    end
+  end
+
+  describe "single /models request per provider (regression: duplicate GET)" do
+    test "a provider scan costs exactly one request" do
+      # `pegasus` is the only auto-models provider in the test config
+      # and the setup's scan has finished, so its discovery URL must
+      # have been fetched exactly once. Pre-fix `query_provider/1`
+      # called `ChatModel.list_models/1` *and*
+      # `list_models_with_limits/1`, each of which fetches the same
+      # `/models` URL: two requests per provider, per scan.
+      assert_received {:models_req_get, url}
+      assert String.contains?(url, "pegasus")
+      assert String.ends_with?(url, "/models")
+      refute_received {:models_req_get, _}
     end
   end
 
