@@ -62,9 +62,21 @@ defmodule Nest.Tools.ShellPipesTest do
             "ls |& tail",
             "ls\n| head",
             "ls \\\n| head",
+            "ls |\nhead",
+            "ps aux |\ngrep beam",
             "(ls | head)",
+            "ls | (head)",
             "ls | head && echo done"
           ] do
+        assert {:error, _message} = ShellPipes.check(command),
+               "expected #{inspect(command)} to be rejected"
+      end
+    end
+
+    test "rejects a pipe inside backticks or an unquoted command substitution" do
+      # A backtick or unquoted `$(...)` runs real shell code, so a pipe inside
+      # it is a real pipe into a pager.
+      for command <- ["`ls | head`", "`ls | head -n 5`", "$(ls | head)"] do
         assert {:error, _message} = ShellPipes.check(command),
                "expected #{inspect(command)} to be rejected"
       end
@@ -124,6 +136,15 @@ defmodule Nest.Tools.ShellPipesTest do
             "cat << $file",
             "cat <<'EOF"
           ] do
+        assert :ok = ShellPipes.check(command), "expected #{inspect(command)} to be allowed"
+      end
+    end
+
+    test "allows command substitution that is double-quoted or has no pager pipe" do
+      # A substitution inside double quotes is not inspected (a documented
+      # limitation), and a substitution whose contents contain no pager pipe is
+      # fine even when unquoted.
+      for command <- [~s{echo "$(ls | head)"}, "echo `ls`", "head `ls`"] do
         assert :ok = ShellPipes.check(command), "expected #{inspect(command)} to be allowed"
       end
     end

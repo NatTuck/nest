@@ -30,11 +30,23 @@ defmodule Nest.Tools.ShellPipes do
       ls | head
       EOF
 
-  `||` (logical or) and `&&`/`;`/`&` are not pipes and never match.
+  `||` (logical or) and `&&`/`;`/`&` are not pipes and never match. A newline or
+  an opening paren while a command is still expected does not end the stage —
+  bash reads
 
-  Known limitations (misses, never false positives): a pipeline nested inside a
-  double-quoted command substitution (`"$(...)"`) or inside backticks is not
-  inspected. An unquoted `$(...)` is.
+      ls |
+      head
+
+  as `ls | head`, and `ls | (head)` pipes into the subshell's first command.
+
+  Command substitution is inspected unless it sits inside double quotes: the
+  contents of a backtick substitution and of an unquoted `$(...)` are scanned
+  like ordinary shell code, so `` `ls | head` `` and `$(ls | head)` are
+  rejected. A substitution inside double quotes (`"$(...)"`) is not.
+
+  Known limitations (misses, never false positives): a pager reached indirectly
+  is not caught — for example `ls | xargs head`, where `head` is an argument to
+  `xargs` rather than the stage's command word.
   """
 
   # Command names whose pipeline use discards output.
@@ -97,9 +109,15 @@ defmodule Nest.Tools.ShellPipes do
 
   # Every operator is a pipe, a redirection, or a stage separator (`;`, `&&`,
   # `||`, `&`, a newline, or a subshell paren), so the last branch is total.
+  #
+  # A newline or an opening paren while a command is still expected does not end
+  # the stage: a newline right after `|` is a continuation (`ls |` + newline +
+  # `head` is `ls | head`), and `ls | (head)` pipes into the subshell's first
+  # command. Both keep `expecting` so the pager is still found.
   defp find_pager([{:op, op} | rest], expecting, _skip) do
     cond do
       op in ["|", "|&"] -> find_pager(rest, true, false)
+      expecting and op in ["\n", "("] -> find_pager(rest, true, false)
       op in @redirection_ops -> find_pager(rest, expecting, true)
       true -> find_pager(rest, false, false)
     end
@@ -154,6 +172,13 @@ defmodule Nest.Tools.ShellPipes do
 
   defp scan(<<"\"", rest::binary>>, :normal, word, tokens, pending),
     do: scan(rest, :double, word, tokens, pending)
+
+  # A backtick runs a command substitution whose contents are ordinary shell
+  # code. Treat it as a word boundary (the contents are scanned like any other
+  # code) so `` `ls | head` `` behaves like `$(ls | head)`, instead of gluing
+  # the backtick onto the command word (`head` + backtick) and hiding the pager.
+  defp scan(<<"`", rest::binary>>, :normal, word, tokens, pending),
+    do: scan(rest, :normal, [], flush(word, tokens), pending)
 
   # `#` starts a comment only at the start of a word, matching bash.
   defp scan(<<"#", rest::binary>>, :normal, [], tokens, pending),
