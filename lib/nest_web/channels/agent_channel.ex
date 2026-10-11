@@ -26,6 +26,7 @@ defmodule NestWeb.AgentChannel do
   alias Nest.Messages.Streaming
   alias Nest.Sandbox.ShellJobs
   alias Nest.Spaces
+  alias NestWeb.AgentChannel.History
   alias NestWeb.AgentChannel.ShellLog
   alias NestWeb.AgentChannel.Sync
 
@@ -45,22 +46,25 @@ defmodule NestWeb.AgentChannel do
          :ok <- authorize_join(space_id, name, current_user) do
       joined_join(space_id, name, agent, current_user, socket)
     else
-      {:error, :bad_topic} ->
-        {:error, %{"reason" => "bad_topic"}}
-
-      {:error, :not_found} ->
-        {:error, %{"reason" => "agent not found"}}
-
-      {:error, :forbidden} ->
-        {:error, %{"reason" => "forbidden"}}
-
-      {:error, :space_archived} ->
-        {:error, %{"reason" => "space_archived"}}
-
-      {:error, reason} ->
-        Logger.warning("agent:#{rest} channel join failed: #{inspect(reason)}")
-        {:error, %{"reason" => "agent_unavailable"}}
+      {:error, reason} -> {:error, join_refusal(rest, reason)}
     end
+  end
+
+  # The refusal a failed join is answered with. Each reason the `with`
+  # chain above can return has its own client-facing spelling; `:archived`
+  # is deliberately not "not found" — the row exists but the agent is
+  # stopped and out of service, so the client is told to restore it.
+  # Anything else is a bug or an unexpected error: log it (naming the
+  # topic, so the log says which agent) and report it generically.
+  defp join_refusal(_rest, :bad_topic), do: %{"reason" => "bad_topic"}
+  defp join_refusal(_rest, :not_found), do: %{"reason" => "agent not found"}
+  defp join_refusal(_rest, :archived), do: %{"reason" => "agent_archived"}
+  defp join_refusal(_rest, :forbidden), do: %{"reason" => "forbidden"}
+  defp join_refusal(_rest, :space_archived), do: %{"reason" => "space_archived"}
+
+  defp join_refusal(rest, reason) do
+    Logger.warning("agent:#{rest} channel join failed: #{inspect(reason)}")
+    %{"reason" => "agent_unavailable"}
   end
 
   defp joined_join(space_id, name, agent, current_user, socket) do
@@ -336,6 +340,12 @@ defmodule NestWeb.AgentChannel do
 
       {:error, :not_found} ->
         {:reply, {:error, %{"reason" => "agent_not_found"}}, socket}
+
+      # The agent was archived (stopped) after this channel joined it.
+      # Its row must not be resurrected to answer, so tell the client
+      # rather than crashing on an unhandled error.
+      {:error, :archived} ->
+        {:reply, {:error, %{"reason" => "agent_archived"}}, socket}
     end
   end
 
@@ -563,41 +573,14 @@ defmodule NestWeb.AgentChannel do
     end
   end
 
-  # Bounds for a single `chat:history` page. The archive holds the
-  # whole summarized prefix (thousands of rows for a long-lived agent),
-  # so it is only ever read a page at a time; the ceiling keeps a
-  # misbehaving client from asking for the lot.
-  @history_default_limit 50
-  @history_max_limit 200
-  @history_roles ~w(system user assistant tool compaction)
-
-  # A page of the agent's archived (pre-compaction) history.
-  #
-  # The archive is never part of the join payload: for a long-lived
-  # agent it is the whole summarized prefix — thousands of rows and
-  # megabytes of tool output. The client asks for the rows it is about
-  # to render (the collapsed-history card pages through them) and for
-  # the two small projections it needs up front (the latest compaction
-  # marker, and the user prompts behind the Ctrl/Cmd+Up recall list).
-  #
-  # This is a pure read against the caller's process, exactly like
-  # `chat:api-logs`: the archive lives in the DB, never in agent state,
-  # so resolving it here cannot block a live turn.
+  # A page of the agent's archived (pre-compaction) history — a pure
+  # DB read, never part of the join payload. See
+  # `NestWeb.AgentChannel.History`.
   @impl true
   def handle_in("chat:history", payload, socket) do
-    case history_opts(payload) do
-      {:ok, opts} ->
-        rows =
-          Nest.Persistence.load_history_slice(
-            socket.assigns.space_id,
-            socket.assigns.name,
-            opts
-          )
-
-        {:reply, {:ok, %{"messages" => Enum.map(rows, &Message.to_json/1)}}, socket}
-
-      {:error, reason} ->
-        {:reply, {:error, %{"reason" => reason}}, socket}
+    case History.page(socket.assigns.space_id, socket.assigns.name, payload) do
+      {:ok, reply} -> {:reply, {:ok, reply}, socket}
+      {:error, reason} -> {:reply, {:error, %{"reason" => reason}}, socket}
     end
   end
 
@@ -632,33 +615,6 @@ defmodule NestWeb.AgentChannel do
   # or a blank string all mean "no operator guidance".
   defp optional_focus(%{"focus" => focus}) when is_binary(focus) and focus != "", do: focus
   defp optional_focus(_payload), do: nil
-
-  # `before` walks backwards through the archive (`nil` starts at the
-  # boundary), `limit` bounds one page, and `role` selects a
-  # projection — the recall list wants only `user` rows, the card wants
-  # every role.
-  defp history_opts(payload) do
-    with {:ok, before} <- parse_history_before(payload["before"]),
-         {:ok, limit} <- parse_history_limit(payload["limit"]),
-         {:ok, roles} <- parse_history_role(payload["role"]) do
-      {:ok, [before: before, limit: limit, roles: roles]}
-    end
-  end
-
-  defp parse_history_before(nil), do: {:ok, nil}
-  defp parse_history_before(n) when is_integer(n) and n >= 0, do: {:ok, n}
-  defp parse_history_before(_other), do: {:error, "invalid_before"}
-
-  defp parse_history_limit(nil), do: {:ok, @history_default_limit}
-
-  defp parse_history_limit(n) when is_integer(n) and n > 0,
-    do: {:ok, min(n, @history_max_limit)}
-
-  defp parse_history_limit(_other), do: {:error, "invalid_limit"}
-
-  defp parse_history_role(nil), do: {:ok, nil}
-  defp parse_history_role(role) when role in @history_roles, do: {:ok, [role]}
-  defp parse_history_role(_other), do: {:error, "invalid_role"}
 
   # Filter helper for `chat:sync`: keep only messages whose
   # `index` is greater than `last_index`. The `chat_state.messages`
