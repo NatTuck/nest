@@ -120,6 +120,7 @@ defmodule Nest.Tools.SchemaTest do
       assert (wait.parameters_schema["required"] || []) == []
       assert wait.description =~ "carries NO message content"
       assert wait.description =~ "returns immediately"
+      assert wait.description =~ "not an error"
       # Only a peer this agent queried owes it anything; a peer that owes
       # someone else nothing relevant to this caller may be idle too.
       assert wait.description =~ "owes no replies"

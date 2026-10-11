@@ -529,7 +529,6 @@ defmodule Nest.Agents.Agent.Inbox do
   # The delivery-id and consume API lives in `Delivery` (issue #62); these
   # delegates keep `Inbox` the one public surface for a queued entry.
   defdelegate new_id, to: Delivery
-  defdelegate retrieved?(entry), to: Delivery
   defdelegate consume(entries, batch), to: Delivery
   defdelegate take_last(entries, name), to: Delivery
 
