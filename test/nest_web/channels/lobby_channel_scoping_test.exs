@@ -12,6 +12,8 @@ defmodule NestWeb.LobbyChannelScopingTest do
 
   use NestWeb.ChannelCase, async: true
 
+  import ExUnit.CaptureLog
+
   alias Nest.Accounts
   alias Nest.Accounts.AuthToken
   alias Nest.Accounts.Invite, as: InviteSchema
@@ -68,7 +70,7 @@ defmodule NestWeb.LobbyChannelScopingTest do
   describe "space-scoped agent status (#53)" do
     test "forwards a status frame for a space the user can see" do
       space_id = owned_space_id()
-      {_socket, _payload} = join_lobby()
+      {socket, _payload} = join_lobby()
 
       Phoenix.PubSub.broadcast(
         Nest.PubSub,
@@ -81,11 +83,13 @@ defmodule NestWeb.LobbyChannelScopingTest do
         name: "child",
         status: "streaming"
       }
+
+      settle(socket)
     end
 
     test "does NOT forward a status frame for a space the user cannot see" do
       space_id = owned_space_id()
-      {_socket, _payload} = join_lobby()
+      {socket, _payload} = join_lobby()
 
       # The channel subscribes only to the user's visible spaces
       # (`Spaces.list_for_user/1` + `list_archived_for_user/1`), so a frame
@@ -111,11 +115,13 @@ defmodule NestWeb.LobbyChannelScopingTest do
       )
 
       assert_push "agent:status", %{name: "mine", status: "idle"}
+
+      settle(socket)
     end
 
     test "the frame is pushed to this client, never broadcast on the shared lobby topic" do
       space_id = owned_space_id()
-      {_socket, _payload} = join_lobby()
+      {socket, _payload} = join_lobby()
 
       # The "lobby" topic is what every connected user is on. A
       # `broadcast(socket, "agent:status", …)` would fan the frame out to all
@@ -132,6 +138,8 @@ defmodule NestWeb.LobbyChannelScopingTest do
       assert_push "agent:status", %{name: "child", status: "executing_tools"}
 
       refute_receive %Phoenix.Socket.Broadcast{event: "agent:status"}, 200
+
+      settle(socket)
     end
 
     test "subscribes to a space created in this session before announcing its agent" do
@@ -156,6 +164,8 @@ defmodule NestWeb.LobbyChannelScopingTest do
       )
 
       assert_push "agent:status", %{space_id: ^new_space_id, name: ^new_name}
+
+      settle(socket)
     end
   end
 
@@ -171,7 +181,7 @@ defmodule NestWeb.LobbyChannelScopingTest do
         ] do
       test "forwards #{event} for a space the user can see" do
         space_id = owned_space_id()
-        {_socket, _payload} = join_lobby()
+        {socket, _payload} = join_lobby()
 
         payload = Map.put(unquote(Macro.escape(payload)), "space_id", space_id)
 
@@ -182,11 +192,13 @@ defmodule NestWeb.LobbyChannelScopingTest do
         )
 
         assert_push unquote(event), %{"name" => "child", "space_id" => ^space_id}
+
+        settle(socket)
       end
 
       test "does NOT forward #{event} for a space the user cannot see" do
         space_id = owned_space_id()
-        {_socket, _payload} = join_lobby()
+        {socket, _payload} = join_lobby()
 
         foreign_space_id = space_id + 1_000_000
 
@@ -197,11 +209,13 @@ defmodule NestWeb.LobbyChannelScopingTest do
         )
 
         refute_push unquote(event), _, 200
+
+        settle(socket)
       end
 
       test "does not broadcast #{event} on the shared lobby topic" do
         space_id = owned_space_id()
-        {_socket, _payload} = join_lobby()
+        {socket, _payload} = join_lobby()
 
         Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
 
@@ -213,6 +227,8 @@ defmodule NestWeb.LobbyChannelScopingTest do
 
         assert_push unquote(event), %{"name" => "child", "space_id" => ^space_id}
         refute_receive %Phoenix.Socket.Broadcast{event: unquote(event)}, 200
+
+        settle(socket)
       end
     end
   end
@@ -228,6 +244,8 @@ defmodule NestWeb.LobbyChannelScopingTest do
       assert_push "space:archived", %{"space_id" => ^space_id}
 
       _ = Spaces.unarchive_space(space_id)
+
+      settle(socket)
     end
 
     test "unarchiving a space pushes space:unarchived to this client" do
@@ -239,6 +257,8 @@ defmodule NestWeb.LobbyChannelScopingTest do
       assert_reply ref, :ok, %{}, 500
 
       assert_push "space:unarchived", %{"space_id" => ^space_id}
+
+      settle(socket)
     end
 
     test "creating a space pushes space:created to this client" do
@@ -255,6 +275,8 @@ defmodule NestWeb.LobbyChannelScopingTest do
 
       assert_push "space:created",
                   %{"agentName" => ^new_name, "space" => %Nest.Spaces.Space{}}
+
+      settle(socket)
     end
 
     test "does not broadcast the space frames on the shared lobby topic" do
@@ -270,50 +292,79 @@ defmodule NestWeb.LobbyChannelScopingTest do
       refute_receive %Phoenix.Socket.Broadcast{event: "space:archived"}, 200
 
       _ = Spaces.unarchive_space(space_id)
+
+      settle(socket)
     end
   end
 
   describe "unknown frames on a subscribed topic" do
-    test "an unrecognised frame does not take the channel down" do
+    # The catch-all `handle_info/2` clause is what keeps an unrecognised frame
+    # from raising a `FunctionClauseError` in the channel process and
+    # disconnecting the client's lobby. It logs the frame, so each case below
+    # captures and asserts on that line — both to keep the test console clean
+    # (AGENTS.md) and to pin the clause's contract. The follow-up round-trip
+    # goes *inside* the capture: the channel handles the frame
+    # asynchronously, so asserting on the log afterwards would race the
+    # emission (the same reason `Nest.Agents.Agent.InboxTest` nests its
+    # assertions). `capture_log` can also pick up lines from concurrent tests,
+    # so these assert on inclusion only.
+
+    test "an unrecognised frame on the space topic is logged, and the channel survives" do
       space_id = owned_space_id()
-      {_socket, _payload} = join_lobby()
+      {socket, _payload} = join_lobby()
 
       # The channel subscribes to two topic families now (per-space and
       # per-user), so a frame whose tag it does not know is a live
-      # possibility. Without the catch-all `handle_info/2` clause this raises
-      # a `FunctionClauseError` in the channel process and disconnects the
-      # client's lobby.
-      Phoenix.PubSub.broadcast(Nest.PubSub, "space:#{space_id}", {:something_new, %{}})
+      # possibility rather than a theoretical one.
+      log =
+        capture_log(fn ->
+          Phoenix.PubSub.broadcast(Nest.PubSub, "space:#{space_id}", {:something_new, %{}})
 
-      # The channel is still alive, and still forwarding known frames.
-      Phoenix.PubSub.broadcast(
-        Nest.PubSub,
-        "space:#{space_id}",
-        {:agent_status, %{space_id: space_id, name: "still-here", status: "idle"}}
-      )
+          # A known frame for the same channel. It is handled after the
+          # unknown one, so this push arriving proves the channel logged the
+          # unknown frame and stayed up.
+          Phoenix.PubSub.broadcast(
+            Nest.PubSub,
+            "space:#{space_id}",
+            {:agent_status, %{space_id: space_id, name: "still-here", status: "idle"}}
+          )
 
-      assert_push "agent:status", %{name: "still-here"}, 500
+          assert_push "agent:status", %{name: "still-here"}, 500
+        end)
+
+      assert log =~ "ignoring unknown PubSub frame"
+      assert log =~ ":something_new"
+
+      settle(socket)
     end
 
-    test "an unrecognised frame on the per-user topic does not take the channel down" do
+    test "an unrecognised frame on the per-user topic is logged, and the channel survives" do
       # The space must exist before the join, so `after_join` subscribes to
       # its topic; creating it afterwards would race the reconcile.
       space_id = owned_space_id()
-      {_socket, _payload} = join_lobby()
+      {socket, _payload} = join_lobby()
 
-      Phoenix.PubSub.broadcast(
-        Nest.PubSub,
-        Spaces.user_topic(Process.get(:lobby_scoping_test_user_id)),
-        {:not_a_frame_we_know, %{}}
-      )
+      log =
+        capture_log(fn ->
+          Phoenix.PubSub.broadcast(
+            Nest.PubSub,
+            Spaces.user_topic(Process.get(:lobby_scoping_test_user_id)),
+            {:not_a_frame_we_know, %{}}
+          )
 
-      Phoenix.PubSub.broadcast(
-        Nest.PubSub,
-        "space:#{space_id}",
-        {:agent_status, %{space_id: space_id, name: "still-here", status: "idle"}}
-      )
+          Phoenix.PubSub.broadcast(
+            Nest.PubSub,
+            "space:#{space_id}",
+            {:agent_status, %{space_id: space_id, name: "still-here", status: "idle"}}
+          )
 
-      assert_push "agent:status", %{name: "still-here"}, 500
+          assert_push "agent:status", %{name: "still-here"}, 500
+        end)
+
+      assert log =~ "ignoring unknown PubSub frame"
+      assert log =~ ":not_a_frame_we_know"
+
+      settle(socket)
     end
   end
 
@@ -331,8 +382,8 @@ defmodule NestWeb.LobbyChannelScopingTest do
       %{alice: alice, bob: bob} = ctx
       space = owned_space(alice)
 
-      _alice_socket = join_as(alice)
-      _bob_socket = join_as(bob)
+      alice_socket = join_as(alice)
+      bob_socket = join_as(bob)
 
       # The premise: B cannot see A's space at all.
       refute Enum.any?(Spaces.list_for_user(bob.id), &(&1.id == space.id))
@@ -367,6 +418,9 @@ defmodule NestWeb.LobbyChannelScopingTest do
 
       assert_push "space:created", %{"agentName" => "x"}, 500
       refute_push "space:created", _, 300
+
+      settle(alice_socket)
+      settle(bob_socket)
     end
 
     test "the discriminator: two sockets' pushes share this mailbox", ctx do
@@ -376,20 +430,23 @@ defmodule NestWeb.LobbyChannelScopingTest do
       # its push would land in this same mailbox and trip the `refute_push`.
       %{alice: alice, bob: bob} = ctx
 
-      _alice_socket = join_as(alice)
-      _bob_socket = join_as(bob)
+      alice_socket = join_as(alice)
+      bob_socket = join_as(bob)
 
       Phoenix.PubSub.broadcast(Nest.PubSub, "models", {:models_updated, [%{"name" => "m1"}]})
 
       assert_push "models_updated", _, 500
       assert_push "models_updated", _, 500
+
+      settle(alice_socket)
+      settle(bob_socket)
     end
 
     test "a space created in A's session reaches B's socket not at all", ctx do
       %{alice: alice, bob: bob} = ctx
 
       alice_socket = join_as(alice)
-      _bob_socket = join_as(bob)
+      bob_socket = join_as(bob)
 
       ref =
         push(alice_socket, "create_space", %{
@@ -406,8 +463,28 @@ defmodule NestWeb.LobbyChannelScopingTest do
       # The root agent's creation frame rides the new space's topic.
       assert_push "agent:created", %{"name" => ^new_name}, 500
       refute_push "agent:created", _, 300
+
+      settle(alice_socket)
+      settle(bob_socket)
     end
   end
+
+  # Block until the channel process has drained its mailbox, so nothing it
+  # started is still in flight when this test's sandbox owner exits.
+  #
+  # The test process owns the SQL-sandbox connection, so when it exits, any
+  # process still holding a checkout makes Postgrex log
+  # `disconnected: ** (DBConnection.ConnectionError) owner #PID<…> exited` —
+  # test output, which AGENTS.md forbids. Two paths do DB work from the
+  # channel process after the test's last assertion: the space-set reconcile
+  # (`broadcast_spaces_changed/1` -> `Spaces.list_for_user/1` and
+  # `list_archived_for_user/1`), and `handle_in("create_space")`'s own
+  # reconcile. `:sys.get_state/1` is a `GenServer.call`, and `gen_server`
+  # drains its mailbox in order (`gen_server:loop/7` -> `decode_msg/9`), so it
+  # is answered only after every frame queued before it — the same barrier
+  # `NestWeb.LobbyChannelArchiveTest.push_and_settle/3` uses, applied at the
+  # end of the test rather than around a single push.
+  defp settle(socket), do: :sys.get_state(socket.channel_pid)
 
   # A real space owned by `user` — unlike the fabricated id above, this one
   # exists in the owner's visible set, so an over-broad subscription would
