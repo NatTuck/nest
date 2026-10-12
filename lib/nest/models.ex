@@ -168,15 +168,13 @@ defmodule Nest.Models do
 
   Reads the synchronous cache; never blocks on a network call.
   """
-  # The context-limit cache is published to a public ETS table so readers never
-  # touch the `Nest.Models` process. `Agent.init/1` resolves a context limit on
-  # every agent start, and `DynamicSupervisor.start_child/2` runs that `init/1`
-  # inside the supervisor's own `handle_call` — so a `GenServer.call` here put a
-  # *second* single process in the path of every concurrent start, and N starts
-  # queued on it behind the supervisor's own queue. The table holds one row: the
-  # whole `context_limits` map, rewritten whenever the canonical map changes
-  # (`init/1` and `finalize_scan/1`). Reads are lock-free and see either the old
-  # or the new map, never a partial one.
+  # Published to a public ETS table so readers never touch the `Nest.Models`
+  # process: `Agent.init/1` resolves a context limit on every start, and
+  # `DynamicSupervisor.start_child/2` runs that `init/1` inside the supervisor's
+  # own `handle_call`, so a `GenServer.call` here put a second single process in
+  # the path of every concurrent start. One row — the whole `context_limits` map,
+  # rewritten whenever it changes (`init/1`, `finalize_scan/1`) — so reads are
+  # lock-free and see the old or the new map, never a partial one.
   @limits_table :nest_models_context_limits
 
   @spec context_limit(provider :: String.t() | nil, model_id :: String.t() | nil) ::
