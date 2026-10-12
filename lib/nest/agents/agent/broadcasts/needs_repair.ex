@@ -8,6 +8,12 @@ defmodule Nest.Agents.Agent.Broadcasts.NeedsRepair do
   The channel subscribers drive `NeedsRepairBanner` from the
   `payload.status === "needs_repair"` marker; the structured
   violations and the offline repair command ride along for display.
+
+  Like every other `chat:status` producer, the frame is
+  self-identifying: it carries the agent's own `name` and
+  `space_id`, so a subscriber to more than one agent's topic can
+  attribute it. A status broadcast that does not say whose status
+  it is is under-specified.
   """
 
   alias Nest.PubSub
@@ -18,6 +24,8 @@ defmodule Nest.Agents.Agent.Broadcasts.NeedsRepair do
       "agent:#{space_id}:#{name}",
       {:chat_status,
        %{
+         name: name,
+         space_id: space_id,
          status: "needs_repair",
          sequenceViolations: violations,
          repairCommand: repair_command
