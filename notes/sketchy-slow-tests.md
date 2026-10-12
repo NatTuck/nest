@@ -67,7 +67,10 @@ exists because an earlier version reported a negative remainder).
 
 The pass made every `:sys.get_state`/`:sys.replace_state` in this scope pass an
 explicit `500`, so a wedged agent now fails fast instead of hanging for OTP's
-implicit 5000 ms default. **292 call sites across 45 files.**
+implicit 5000 ms default. **241 call sites across 44 files.** (An earlier draft of
+this note and the commit message said 292 — that was the number of replacements
+the transformation script *made*, not the number of call sites, and it counted
+some lines twice where two calls share a line. 241 is the verified count.)
 
 Two sites are worth a human's eye because the synchronous state read is doing
 work that a test should not really need:
@@ -102,10 +105,11 @@ and changing them could silently weaken the test.
   (200 ms).
 - **`test/nest/agents/agent/watch_test.exs`** — the watch spec
   `{:agent_idle, 1, ["bob"], 2_000, false}`. The 4th element was `60_000` and was
-  reduced to satisfy the 2000 ms cap. The test kills the caller and asserts
-  `:DOWN` within 500 ms, so the deadline never fires and the reduction is
-  behaviour-neutral — **but confirm that 4th element really is a timeout and not
-  a semantic "far future" marker.**
+  reduced to satisfy the 2000 ms cap. **Verified it is a real timeout, not
+  data:** `Watch.await({:agent_idle, space_id, names, timeout, all?}, monitor)`
+  passes it to `WaitForIdle.await/6` and emits a `timeout_notice_text` when it
+  expires, so the cap applies. Behaviour-neutral in this test because the caller
+  is killed and `:caller_down` fires first.
 - **`test/nest/agents/agent/turn/executor_test.exs:181`** —
   `run({:arm_timer, 2_000, :stop_timer})`, reduced from `5_000`. This is the
   *duration being armed*, not a wait, and the test cancels the timer
