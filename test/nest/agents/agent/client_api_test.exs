@@ -71,9 +71,13 @@ defmodule Nest.Agents.Agent.ClientAPITest do
         |> Streaming.start_tool_call("call_abc", "shell-cmd")
         |> Streaming.append_tool_call_args("call_abc", ~s({"command":))
 
-      :sys.replace_state(pid, fn state ->
-        %{state | live: %{state.live | streaming_acc: acc}}
-      end)
+      :sys.replace_state(
+        pid,
+        fn state ->
+          %{state | live: %{state.live | streaming_acc: acc}}
+        end,
+        500
+      )
 
       info = ClientAPI.get_public_info(pid)
 
