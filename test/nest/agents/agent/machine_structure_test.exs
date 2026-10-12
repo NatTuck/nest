@@ -125,7 +125,8 @@ defmodule MachineStructureTest do
                  :pending_notice,
                  :repair,
                  :streaming_acc,
-                 :tool_index_map
+                 :tool_index_map,
+                 :watches
                ])
     end
   end

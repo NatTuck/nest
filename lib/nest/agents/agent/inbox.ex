@@ -102,11 +102,13 @@ defmodule Nest.Agents.Agent.Inbox do
   alias Nest.Agents.Agent.BatchSizer.Overflow
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Config
+  alias Nest.Agents.Agent.Inbox.Delivery
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Timeline
   alias Nest.Agents.Agent.Turn
   alias Nest.Agents.Agent.Turn.Backgrounded
   alias Nest.Agents.Agent.Turn.Dispatch
+  alias Nest.Agents.Agent.Watch
   alias Nest.Messages.MessageList
   alias Nest.Messages.User
   alias Nest.Tokens.Estimator
@@ -129,15 +131,22 @@ defmodule Nest.Agents.Agent.Inbox do
   # an `:inbox_full` error and nothing is queued.
   @max_inbox_size 100
 
+  # The marker a re-delivery carries (issue #62 requirement 5). A retrieved
+  # entry is normally suppressed by `batch/1`; if one still reaches the renderer
+  # the body must never look like a fresh human turn.
+  @redelivery_tag "[re-delivery: this body was already retrieved with agents-last-message]"
+
   @type kind :: :agent | :user | :query | :notice
 
   @type entry :: %{
+          id: String.t(),
           from: String.t() | nil,
           content: String.t(),
           timestamp: DateTime.t(),
           kind: kind(),
           mode: String.t() | nil,
-          fulfilled_ids: [String.t()]
+          fulfilled_ids: [String.t()],
+          retrieved: boolean()
         }
 
   @doc """
@@ -176,6 +185,7 @@ defmodule Nest.Agents.Agent.Inbox do
   @spec handle_delivery(Agent.t(), String.t(), String.t(), kind()) ::
           {:reply, {:ok, :delivered | :queued} | {:error, term()}, Agent.t()}
   def handle_delivery(state, sender, content, kind \\ :agent) do
+    state = satisfy_watch(state, sender, kind)
     status = Machine.status_for(state.live.machine)
 
     cond do
@@ -218,6 +228,8 @@ defmodule Nest.Agents.Agent.Inbox do
   @spec deliver_internal(Agent.t(), String.t() | nil, String.t(), kind()) ::
           {:reply, {:ok, :delivered | :queued}, Agent.t()}
   def deliver_internal(state, sender, content, kind) do
+    state = satisfy_watch(state, sender, kind)
+
     if Machine.status_for(state.live.machine) == :idle do
       idle_delivery(state, sender, content, kind)
     else
@@ -338,7 +350,11 @@ defmodule Nest.Agents.Agent.Inbox do
           Agent.t()
   def enqueue_internal(state, from, content, kind, fulfilled_ids \\ [])
       when kind in [:agent, :user, :query, :notice] do
-    state = state |> put_entry(from, content, kind, nil, fulfilled_ids) |> broadcast()
+    state =
+      state
+      |> satisfy_watch(from, kind)
+      |> put_entry(from, content, kind, nil, fulfilled_ids)
+      |> broadcast()
 
     record_inbox(state, :enqueued, from, kind, content,
       count: length(state.live.inbox),
@@ -371,7 +387,7 @@ defmodule Nest.Agents.Agent.Inbox do
   Two kinds of loss, both in-process state that goes away with the process:
 
     * a **debt** (`Machine.owed_replies`) — a query that was delivered, so the
-      requester is owed an answer and its `agents-wait` simply times out;
+      requester is owed an answer and its `agents-wait-for-idle` simply times out;
     * a **queued `:query` entry** — a query that was never delivered, so it set
       no debt at all (issue #31 §1.3: the obligation is incurred at delivery)
       and no give-up will ever fire for it. The requester waits for an answer
@@ -433,17 +449,21 @@ defmodule Nest.Agents.Agent.Inbox do
   @doc """
   JSON-safe view of the queued entries, for the wire (channel/status)
   and tests. `"kind"` is one of `"agent"`, `"user"`, `"query"`,
-  `"notice"`; `"mode"` is a string or `nil`.
+  `"notice"`; `"mode"` is a string or `nil`; `"id"` is the delivery id
+  (issue #62); `"retrieved"` says an `agents-last-message` fetch already
+  consumed the body, so the UI can show the retrieval rather than hide it.
   """
   @spec serialize([entry()]) :: [map()]
   def serialize(entries) do
     Enum.map(entries, fn entry ->
       %{
+        "id" => Map.get(entry, :id),
         "from" => entry.from,
         "content" => entry.content,
         "timestamp" => DateTime.to_iso8601(entry.timestamp),
         "kind" => Atom.to_string(entry.kind),
-        "mode" => entry.mode
+        "mode" => entry.mode,
+        "retrieved" => Delivery.retrieved?(entry)
       }
     end)
   end
@@ -497,8 +517,43 @@ defmodule Nest.Agents.Agent.Inbox do
   `:agent`, `:query` and `:notice` entries all take the second clause.
   """
   @spec batch([entry()]) :: [entry()]
-  def batch([%{kind: :user} = head | _rest]), do: [head]
-  def batch(entries), do: Enum.take_while(entries, &(&1.kind != :user))
+  def batch(entries) do
+    entries
+    |> Enum.reject(&Delivery.retrieved?/1)
+    |> select_batch()
+  end
+
+  defp select_batch([%{kind: :user} = head | _rest]), do: [head]
+  defp select_batch(entries), do: Enum.take_while(entries, &(&1.kind != :user))
+
+  # The delivery-id and consume API lives in `Delivery` (issue #62); these
+  # delegates keep `Inbox` the one public surface for a queued entry.
+  defdelegate new_id, to: Delivery
+  defdelegate consume(entries, batch), to: Delivery
+  defdelegate take_last(entries, name), to: Delivery
+
+  @doc """
+  Drop every retrieved entry from the queue, rebroadcasting when anything went.
+
+  A retrieved entry is already consumed (`agents-last-message` took its body),
+  so `batch/1` skips it; when it is all that is queued the drain peeks `:empty`
+  and never consumes. The executor calls this from its drain's empty branch so
+  the queue cannot fill with dead entries and eventually refuse peers at
+  `@max_inbox_size` (issue #62). Nothing is delivered, so it records no
+  `Timeline.drained` event.
+  """
+  @spec prune_retrieved(Agent.t()) :: Agent.t()
+  def prune_retrieved(state) do
+    remaining = Enum.reject(state.live.inbox, &Delivery.retrieved?/1)
+
+    if length(remaining) == length(state.live.inbox) do
+      state
+    else
+      state = %{state | live: %{state.live | inbox: remaining}}
+      broadcast(state)
+      state
+    end
+  end
 
   @doc """
   The senders a delivered batch obliges this agent to answer: one name per
@@ -519,6 +574,13 @@ defmodule Nest.Agents.Agent.Inbox do
 
   # ---- private ----
 
+  # A delivery from a watched agent satisfies that watch (issue #62 requirement
+  # 1): the caller is being woken by the body, so the bare notice would be a
+  # second wake. A human entry never satisfies a watch — a human's name is not a
+  # watched agent — so this is kind-gated rather than name-only.
+  defp satisfy_watch(state, _sender, :user), do: state
+  defp satisfy_watch(state, sender, _kind), do: Watch.satisfy(state, sender)
+
   # One `inbox` timeline event. The four delivery dispositions and the two
   # enqueue paths carry the same `from`/`kind`/`content` and differ only in what
   # they add to it.
@@ -531,12 +593,14 @@ defmodule Nest.Agents.Agent.Inbox do
   # string-or-null for both).
   defp put_entry(state, from, content, kind, mode, fulfilled_ids \\ []) do
     entry = %{
+      id: Delivery.new_id(),
       from: if(is_binary(from), do: from, else: nil),
       content: content,
       timestamp: DateTime.utc_now(),
       kind: kind,
       mode: if(is_binary(mode), do: mode, else: nil),
-      fulfilled_ids: fulfilled_ids
+      fulfilled_ids: fulfilled_ids,
+      retrieved: false
     }
 
     %{state | live: %{state.live | inbox: state.live.inbox ++ [entry]}}
@@ -549,7 +613,13 @@ defmodule Nest.Agents.Agent.Inbox do
     Enum.flat_map(entries, &Map.get(&1, :fulfilled_ids, []))
   end
 
-  defp broadcast(state) do
+  @doc """
+  Broadcast the current inbox on the agent's topic. Public so the
+  `agents-last-message` fetch (which consumes an entry in place, issue #62) can
+  publish the change the same way every enqueue and drain does.
+  """
+  @spec broadcast(Agent.t()) :: Agent.t()
+  def broadcast(state) do
     Broadcasts.inbox(state, serialize(state.live.inbox))
     state
   end
@@ -565,11 +635,21 @@ defmodule Nest.Agents.Agent.Inbox do
   # disambiguates a batch of peer messages (from each other and from a human's)
   # — including a `:query`, whose requester really is that agent (decision 7).
   defp combine(entries) do
-    Enum.map_join(entries, "\n\n", fn
-      %{kind: kind, content: content} when kind in [:user, :notice] -> content
-      %{content: content} = entry -> "#{agent_label(entry)}\n#{content}"
-    end)
+    Enum.map_join(entries, "\n\n", &render_entry/1)
   end
+
+  # A retrieved entry is normally suppressed by `batch/1` before it can reach
+  # here, so this is the safety net issue #62 requirement 5 asks for: if both
+  # channels ever carry the body, the second copy is explicitly a re-delivery
+  # and can never read as a fresh human turn.
+  defp render_entry(%{kind: kind, content: content} = entry) when kind in [:user, :notice],
+    do: tag_redelivery(entry, content)
+
+  defp render_entry(%{content: content} = entry),
+    do: tag_redelivery(entry, "#{agent_label(entry)}\n#{content}")
+
+  defp tag_redelivery(%{retrieved: true}, body), do: "#{@redelivery_tag}\n#{body}"
+  defp tag_redelivery(_entry, body), do: body
 
   # The LLM-facing label for one `:agent` entry. A missing or blank sender
   # drops the quoted name rather than putting `nil`/`""` in the prompt.
@@ -583,7 +663,13 @@ defmodule Nest.Agents.Agent.Inbox do
   # the full text so no messages are lost.
   defp offload(content, entries, state) do
     if Estimator.estimate(content) > Config.configured_async_message_max_tokens() do
-      case Overflow.write(content, %{tmp_path: state.tmp_path}, "agent-inbox", "txt") do
+      case Overflow.write(
+             content,
+             %{tmp_path: state.tmp_path},
+             "agent-inbox",
+             "txt",
+             Delivery.batch_id(entries)
+           ) do
         nil -> content
         path -> pointer(length(entries), path)
       end

@@ -74,7 +74,7 @@ defmodule Nest.Tools.ShellJobsTest do
     assert {:ok, text} =
              invoke(
                Tools.get_function("shell-wait", nil, nil),
-               %{"id" => id, "timeout" => 500},
+               %{"id" => id, "timeout" => 500, "block" => true},
                context
              )
 
@@ -93,7 +93,7 @@ defmodule Nest.Tools.ShellJobsTest do
     assert {:ok, text} =
              invoke(
                Tools.get_function("shell-wait", nil, nil),
-               %{"id" => id, "timeout" => 500},
+               %{"id" => id, "timeout" => 500, "block" => true},
                context
              )
 
@@ -108,7 +108,7 @@ defmodule Nest.Tools.ShellJobsTest do
     assert {:ok, text} =
              invoke(
                Tools.get_function("shell-wait", nil, nil),
-               %{"id" => id, "timeout" => 10},
+               %{"id" => id, "timeout" => 10, "block" => true},
                context
              )
 

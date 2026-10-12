@@ -7,7 +7,7 @@ defmodule Nest.Agents.Agent.SubAgentResults do
   runtime notice otherwise. `bound/3` caps an unbounded sub-agent result (a
   child's or peer's text) to the per-call inline budget, offloading the full
   text to the agent scratch dir when it doesn't fit — the same summarization
-  path `BatchSizer` and `BatchPlan` use, and what `agents-wait` returns through.
+  path `BatchSizer` and `BatchPlan` use, and what `agents-wait-for-idle` returns through.
   """
 
   alias Nest.Agents.Agent.BatchSizer.Overflow

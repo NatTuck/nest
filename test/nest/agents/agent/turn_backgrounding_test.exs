@@ -172,7 +172,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       # streaming -> executing_tools -> streaming (the backgrounding) -> idle.
       # The `idle` is the *delivered* turn's end, so no delivery waited for a
       # turn end: an `idle` before that third `streaming` would resolve an
-      # idle-based `agents-wait` with the pre-delivery answer and report a
+      # idle-based `agents-wait-for-idle` with the pre-delivery answer and report a
       # partial result to a parent.
       assert statuses_until_idle() == ["streaming", "executing_tools", "streaming", "idle"]
 
@@ -380,7 +380,7 @@ defmodule Nest.Agents.Agent.TurnBackgroundingTest do
       # is very reachable in production — a 60 s `shell-cmd` backgrounded by a
       # quick message whose turn ends in seconds — and nothing else wakes an
       # idle agent, so the notice would sit in the queue forever and an
-      # `agents-wait` would resolve with the pre-result answer.
+      # `agents-wait-for-idle` would resolve with the pre-result answer.
       {pid, name} =
         start_agent(%{
           model: %{name: "qwen3.5-plus"},

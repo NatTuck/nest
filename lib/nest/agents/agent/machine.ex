@@ -126,6 +126,7 @@ defmodule Nest.Agents.Agent.Machine do
     :stop_child,
     :archive_child,
     :stop_all_children,
+    :stop_watchers,
     :record_file_access,
     :log,
     :iterate

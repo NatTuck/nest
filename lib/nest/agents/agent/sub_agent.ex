@@ -49,6 +49,7 @@ defmodule Nest.Agents.Agent.SubAgent do
   alias Nest.Agents.Agent.Machine.Children
   alias Nest.Agents.Agent.Timeline
   alias Nest.Agents.Agent.Turn
+  alias Nest.Agents.Agent.Watch
   alias Nest.Agents.Registry, as: AgentsRegistry
   alias Nest.Agents.Supervisor
   alias Nest.LLM.MockClient
@@ -462,6 +463,11 @@ defmodule Nest.Agents.Agent.SubAgent do
   @spec cascade_terminate(Agent.t()) :: :ok
   def cascade_terminate(state) do
     _ = stop_pending_children(state)
+
+    # Kill any outstanding non-blocking waits (issue #54): a watcher must never
+    # outlive the agent it reports to. The watcher also monitors this process,
+    # but killing it here is immediate.
+    _ = Watch.stop_all(state)
     :ok
   catch
     # `rescue _ -> :ok` does NOT catch `:exit` — `catch :exit, _`
