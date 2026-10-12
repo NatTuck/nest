@@ -38,6 +38,10 @@ function clearAgents() {
 
 beforeEach(() => {
   resetMockSocket();
+  // The tree's disclosure lives in the store (see `expandedTreeNodes`), so it
+  // outlives a test the way `agents`/`spaces` would: every test starts with
+  // every node collapsed.
+  useStore.setState({ expandedTreeNodes: {} });
   // Connect socket and join lobby so the click reaches the
   // push path. The vite alias resolves "phoenix" to the
   // mock in test mode, so joinLobby() uses the mock channel
@@ -152,6 +156,500 @@ describe("Sidebar tree", () => {
     expect(screen.queryByText("child")).not.toBeInTheDocument();
     expect(screen.queryByText("grandchild")).not.toBeInTheDocument();
     expect(rootToggle).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("expands exactly the current agent's ancestors, and nothing else", () => {
+    act(() => {
+      withStore([
+        { name: "root", parentId: null, parentName: null, depth: 0 },
+        { name: "mid", parentId: 1, parentName: "root", depth: 1 },
+        { name: "deep", parentId: 1, parentName: "mid", depth: 2 },
+        { name: "other", parentId: null, parentName: null, depth: 0 },
+        { name: "other-child", parentId: 1, parentName: "other", depth: 1 },
+      ]);
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/space/my-space/agent/deep"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    // The selected agent is visible without a click: its whole ancestor chain
+    // opened for it.
+    expect(screen.getByText("deep")).toBeInTheDocument();
+
+    // The space row is the top of that chain, so it is open too.
+    expect(
+      screen.getByRole("button", { name: "Toggle My Space" }),
+    ).toHaveAttribute("aria-expanded", "true");
+
+    // ...and exactly the chain: the sibling branch is still closed, so its
+    // child is not rendered at all.
+    const otherToggle = screen.getByRole("button", { name: "Toggle other" });
+    expect(otherToggle).toHaveAttribute("aria-expanded", "false");
+    expect(otherToggle).not.toHaveAttribute("aria-disabled");
+    expect(screen.queryByText("other-child")).not.toBeInTheDocument();
+
+    expect(
+      screen
+        .getAllByRole("button", { expanded: true })
+        .map((button) => button.getAttribute("aria-label")),
+    ).toEqual(["Toggle My Space", "Toggle root", "Toggle mid"]);
+  });
+
+  it("matches the route's encoded slug when pinning the chain", () => {
+    act(() => {
+      useStore.setState({
+        agents: [
+          {
+            name: "root",
+            space_id: 1,
+            parentId: null,
+            parentName: null,
+            depth: 0,
+          },
+          {
+            name: "deep",
+            space_id: 1,
+            parentId: 1,
+            parentName: "root",
+            depth: 1,
+          },
+        ],
+        archivedAgents: [],
+        spaces: [{ id: 1, slug: "my space", name: "My Space" }],
+      });
+    });
+
+    // A slug with a space in it is spelled `my%20space` in the pathname, which
+    // is what the tree reads. Comparing against the raw slug would recognize
+    // neither the space nor the agent, and the agent the route names would be
+    // left behind a collapsed row — the one thing the pin promises not to do.
+    render(
+      <MemoryRouter initialEntries={["/space/my%20space/agent/deep"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    expect(
+      screen.getByRole("button", { name: "Toggle My Space" }),
+    ).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: "Toggle root" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(screen.getByText("deep")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /deep/ })).toHaveAttribute(
+      "href",
+      "/space/my%20space/agent/deep",
+    );
+  });
+
+  it("scopes a node's disclosure to its own space", () => {
+    act(() => {
+      useStore.setState({
+        agents: [
+          {
+            name: "root",
+            space_id: 1,
+            parentId: null,
+            parentName: null,
+            depth: 0,
+          },
+          {
+            name: "child",
+            space_id: 1,
+            parentId: 1,
+            parentName: "root",
+            depth: 1,
+          },
+          {
+            name: "root",
+            space_id: 2,
+            parentId: null,
+            parentName: null,
+            depth: 0,
+          },
+          {
+            name: "child",
+            space_id: 2,
+            parentId: 1,
+            parentName: "root",
+            depth: 1,
+          },
+        ],
+        archivedAgents: [],
+        spaces: [
+          { id: 1, slug: "first", name: "First Space" },
+          { id: 2, slug: "second", name: "Second Space" },
+        ],
+      });
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/space/first"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    act(() => {
+      fireEvent.click(
+        screen.getByRole("button", { name: "Toggle Second Space" }),
+      );
+    });
+
+    // Both spaces list an agent named `root` with a child named `child`, so
+    // the two rows agree on everything but their space. The store key carries
+    // the space id for exactly this reason: opening one must not open the
+    // other.
+    const [firstRoot, secondRoot] = screen.getAllByRole("button", {
+      name: "Toggle root",
+    });
+
+    act(() => {
+      fireEvent.click(firstRoot);
+    });
+
+    expect(firstRoot).toHaveAttribute("aria-expanded", "true");
+    expect(secondRoot).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getAllByText("child")).toHaveLength(1);
+  });
+
+  it("keeps a group's disclosure apart from an agent named after it", () => {
+    act(() => {
+      useStore.setState({
+        agents: [
+          {
+            name: "root",
+            space_id: 1,
+            parentId: null,
+            parentName: null,
+            depth: 0,
+          },
+          {
+            name: "root:archived",
+            space_id: 1,
+            parentId: null,
+            parentName: null,
+            depth: 0,
+          },
+          {
+            name: "kid",
+            space_id: 1,
+            parentId: 1,
+            parentName: "root:archived",
+            depth: 1,
+          },
+        ],
+        archivedAgents: [
+          {
+            name: "old-child",
+            space_id: 1,
+            parentId: 1,
+            parentName: "root",
+            depth: 1,
+            archived: true,
+          },
+        ],
+        spaces: [{ id: 1, slug: "my-space", name: "My Space" }],
+      });
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/space/my-space"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Toggle root" }));
+    });
+
+    // Three separate things share this space: the agent `root`, the agent
+    // `root:archived`, and the `Archived (1)` group hanging off `root`. The
+    // group's key is derived from the row's, so the row named after it must
+    // not be able to open it — the keys keep the two in separate namespaces.
+    const groupToggle = screen.getByRole("button", {
+      name: "Toggle archived children of root",
+    });
+    expect(groupToggle).toHaveAttribute("aria-expanded", "false");
+
+    act(() => {
+      fireEvent.click(
+        screen.getByRole("button", { name: "Toggle root:archived" }),
+      );
+    });
+
+    expect(groupToggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("old-child")).not.toBeInTheDocument();
+  });
+
+  it("keeps a subtree open when its ancestor is collapsed and expanded again", () => {
+    act(() => {
+      withStore([
+        { name: "root", parentId: null, parentName: null, depth: 0 },
+        { name: "child", parentId: 1, parentName: "root", depth: 1 },
+        { name: "grandchild", parentId: 1, parentName: "child", depth: 2 },
+      ]);
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/space/my-space"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Toggle root" }));
+    });
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Toggle child" }));
+    });
+    expect(screen.getByText("grandchild")).toBeInTheDocument();
+
+    // Collapsing the root unmounts the whole subtree, child row included.
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Toggle root" }));
+    });
+    expect(screen.queryByText("grandchild")).not.toBeInTheDocument();
+
+    // Re-opening it restores the subtree the user had opened: the child's
+    // disclosure survived the unmount because it is store state, not row state.
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Toggle root" }));
+    });
+    expect(
+      screen.getByRole("button", { name: "Toggle child" }),
+    ).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("grandchild")).toBeInTheDocument();
+  });
+
+  it("does not let a click hide the current agent behind a collapsed ancestor", () => {
+    act(() => {
+      withStore([
+        { name: "root", parentId: null, parentName: null, depth: 0 },
+        { name: "child", parentId: 1, parentName: "root", depth: 1 },
+        { name: "deep", parentId: 1, parentName: "child", depth: 2 },
+      ]);
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/space/my-space/agent/deep"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText("deep")).toBeInTheDocument();
+
+    // The chain is on the current agent's path, so its toggle cannot close it:
+    // the route's agent stays visible (the toggle says why it is pinned open,
+    // to the mouse and to a screen reader).
+    const rootToggle = screen.getByRole("button", { name: "Toggle root" });
+    expect(rootToggle).toHaveAttribute(
+      "title",
+      "On the current agent's path — stays expanded",
+    );
+    expect(rootToggle).toHaveAttribute("aria-disabled", "true");
+
+    act(() => {
+      fireEvent.click(rootToggle);
+    });
+
+    expect(screen.getByText("deep")).toBeInTheDocument();
+    expect(rootToggle).toHaveAttribute("aria-expanded", "true");
+
+    // The click is a no-op, not a deferred flip: writing the state it cannot
+    // show would surface later, on a route where this row is free to move.
+    expect(useStore.getState().expandedTreeNodes).toEqual({});
+
+    // The same holds one level up: the space row is the top of the chain, so
+    // collapsing it cannot hide the agent the route is on either. (It toggles
+    // freely when the route is the space's own overview — nothing to lose.)
+    const spaceToggle = screen.getByRole("button", { name: "Toggle My Space" });
+    expect(spaceToggle).toHaveAttribute(
+      "title",
+      "Holds the current agent — stays expanded",
+    );
+    expect(spaceToggle).toHaveAttribute("aria-disabled", "true");
+
+    act(() => {
+      fireEvent.click(spaceToggle);
+    });
+
+    expect(screen.getByText("deep")).toBeInTheDocument();
+    expect(spaceToggle).toHaveAttribute("aria-expanded", "true");
+    expect(useStore.getState().expandedTreeNodes).toEqual({});
+
+    // ...and that no-op is not a deferred flip either. This row's expansion is
+    // component state derived from the route, so a click that stored "closed"
+    // would surface the moment the route moved within this space: `selected`
+    // stays true on the way to the space's own page, so nothing re-derives the
+    // row and the user would land on a collapsed row for the space they are in.
+    act(() => {
+      fireEvent.click(screen.getByRole("link", { name: /my space/i }));
+    });
+
+    expect(
+      screen.getByRole("button", { name: "Toggle My Space" }),
+    ).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("lets a space row with no agent selected be collapsed", () => {
+    act(() => {
+      withStore([{ name: "root", parentId: null, parentName: null, depth: 0 }]);
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/space/my-space"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText("root")).toBeInTheDocument();
+
+    const spaceToggle = screen.getByRole("button", { name: "Toggle My Space" });
+    expect(spaceToggle).toHaveAttribute("aria-expanded", "true");
+    expect(spaceToggle).not.toHaveAttribute("title");
+    expect(spaceToggle).not.toHaveAttribute("aria-disabled");
+
+    act(() => {
+      fireEvent.click(spaceToggle);
+    });
+
+    expect(spaceToggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("root")).not.toBeInTheDocument();
+  });
+
+  it("survives an agent path the browser could not have produced", () => {
+    act(() => {
+      withStore([
+        { name: "root", parentId: null, parentName: null, depth: 0 },
+        { name: "child", parentId: 1, parentName: "root", depth: 1 },
+      ]);
+    });
+
+    // A truncated percent-escape is not a valid UTF-8 sequence, so decoding it
+    // throws. The tree reads the route to find the current agent, and a bad URL
+    // must not take the whole sidebar down with it: the space row still renders
+    // and nothing is expanded for an agent it cannot name.
+    render(
+      <MemoryRouter initialEntries={["/space/my-space/agent/%E0%A4%A"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText("My Space")).toBeInTheDocument();
+    expect(screen.getByText("root")).toBeInTheDocument();
+    expect(screen.queryByText("child")).not.toBeInTheDocument();
+  });
+
+  it("opens the Archived group holding an archived current agent", () => {
+    act(() => {
+      useStore.setState({
+        agents: [
+          {
+            name: "parent",
+            space_id: 1,
+            parentId: null,
+            parentName: null,
+            depth: 0,
+          },
+        ],
+        archivedAgents: [
+          {
+            name: "old-child",
+            space_id: 1,
+            parentId: 1,
+            parentName: "parent",
+            depth: 1,
+            archived: true,
+          },
+        ],
+        spaces: [{ id: 1, slug: "my-space", name: "My Space" }],
+      });
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/space/my-space/agent/old-child"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    // An archived child of an active parent renders inside that parent's
+    // `Archived (N)` group. The agent the route names is the one row the tree
+    // promises to keep visible, so the group hiding it opens with the chain
+    // above it — and the row it reveals is the one carrying the Restore button
+    // the user needs.
+    expect(
+      screen.getByRole("button", {
+        name: "Toggle archived children of parent",
+      }),
+    ).toHaveAttribute("aria-expanded", "true");
+    expect(
+      screen.getByRole("button", { name: "Toggle parent" }),
+    ).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("old-child")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /restore old-child/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("opens the space's Archived group for an archived current agent", () => {
+    act(() => {
+      useStore.setState({
+        agents: [],
+        archivedAgents: [
+          {
+            name: "old-root",
+            space_id: 1,
+            parentId: null,
+            parentName: null,
+            depth: 0,
+            archived: true,
+          },
+          {
+            name: "old-mid",
+            space_id: 1,
+            parentId: 1,
+            parentName: "old-root",
+            depth: 1,
+            archived: true,
+          },
+        ],
+        spaces: [{ id: 1, slug: "my-space", name: "My Space" }],
+      });
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/space/my-space/agent/old-mid"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    // An archived root lives in the space's own `Archived (N)` group, so that
+    // is the group pinned open here; its toggle is announced as pinned and a
+    // click on it writes nothing. The chain continues inside the group, where
+    // the archived rows render their children directly — the ancestor chain
+    // reaches down there too, or a current agent one level deeper would still
+    // be hidden.
+    const groupToggle = screen.getByRole("button", {
+      name: /toggle archived agents/i,
+    });
+    expect(groupToggle).toHaveAttribute("aria-expanded", "true");
+    expect(groupToggle).toHaveAttribute("aria-disabled", "true");
+    expect(
+      screen.getByRole("button", { name: "Toggle old-root" }),
+    ).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("old-mid")).toBeInTheDocument();
+
+    act(() => {
+      fireEvent.click(groupToggle);
+    });
+
+    expect(groupToggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("old-mid")).toBeInTheDocument();
+    expect(useStore.getState().expandedTreeNodes).toEqual({});
   });
 
   it("starts a space row collapsed when its route is not open", () => {

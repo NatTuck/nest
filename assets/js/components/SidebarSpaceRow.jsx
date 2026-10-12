@@ -7,56 +7,56 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { archiveSpace, unarchiveAgent } from "../channels";
+import { useStore } from "../store";
+import {
+  NO_ANCESTORS,
+  NO_ARCHIVED_GROUPS,
+  agentNodeKey,
+  ancestorGroupKeys,
+  ancestorNames,
+  archivedGroupKey,
+  buildAgentTree,
+  countArchived,
+  currentAgentName,
+  spaceNodeKey,
+} from "../utils/agentTree";
 import { StatusDot } from "./StatusDot";
-
-/**
- * Build a tree from a flat agents list. Each agent's
- * `parentName` is the parent's readable identifier
- * (or `null` for roots). The helper returns
- * `[{ agent, children: [...] }, ...]` for roots, with
- * children recursively nested. Siblings are alphabetized.
- */
-function buildAgentTree(agents) {
-  const byName = new Map();
-  for (const a of agents || []) {
-    byName.set(a.name, { agent: a, children: [] });
-  }
-  const roots = [];
-  for (const node of byName.values()) {
-    const parentName = node.agent.parentName;
-    if (parentName && byName.has(parentName)) {
-      byName.get(parentName).children.push(node);
-    } else {
-      roots.push(node);
-    }
-  }
-  const sortChildren = (nodes) => {
-    nodes.sort((a, b) => a.agent.name.localeCompare(b.agent.name));
-    for (const n of nodes) sortChildren(n.children);
-  };
-  sortChildren(roots);
-  return roots;
-}
-
-/**
- * Count every archived node in a built subtree (the node itself plus
- * all of its descendants). Drives the `Archived (N)` group labels.
- */
-function countArchived(nodes) {
-  return (nodes || []).reduce(
-    (total, node) => total + 1 + countArchived(node.children),
-    0,
-  );
-}
 
 /**
  * A collapsed-by-default `Archived (N)` group. Rendered at the bottom
  * of an active parent's children (nests archived children under the
  * parent) and at the bottom of a space (for archived roots). Expanding
  * renders the archived subtree through the normal tree rows.
+ *
+ * Its disclosure lives in the store like an agent row's, keyed off the
+ * node it belongs to.
+ *
+ * One group can be pinned open: the one on the current agent's path when that
+ * agent is archived (see `ancestorGroupKeys`). Its row is not a link — the
+ * agent is stopped, so the row offers Restore instead — and being archived is
+ * exactly why the row is worth showing, so the group that hides it opens and
+ * its toggle cannot close it. The rows inside get the same ancestor chain the
+ * rest of the tree does, so a current agent further down an archived subtree
+ * is reached by that chain the same way.
  */
-function ArchivedGroup({ nodes, depth, location, spaceSlug, toggleLabel }) {
-  const [expanded, setExpanded] = useState(false);
+function ArchivedGroup({
+  nodes,
+  depth,
+  location,
+  spaceSlug,
+  spaceId,
+  nodeKey,
+  ancestors,
+  openGroups,
+  toggleLabel,
+}) {
+  const groupKey = archivedGroupKey(nodeKey);
+  const forced = openGroups.has(groupKey);
+  const storedExpanded = useStore(
+    (state) => state.expandedTreeNodes[groupKey] === true,
+  );
+  const toggleTreeNode = useStore((state) => state.toggleTreeNode);
+  const expanded = forced || storedExpanded;
 
   if (nodes.length === 0) return null;
 
@@ -64,10 +64,14 @@ function ArchivedGroup({ nodes, depth, location, spaceSlug, toggleLabel }) {
     <li className="mt-2" style={{ paddingLeft: `${0.75 + depth * 0.875}rem` }}>
       <button
         type="button"
-        onClick={() => setExpanded((v) => !v)}
+        onClick={() => {
+          if (!forced) toggleTreeNode(groupKey);
+        }}
         className="flex items-center gap-1 text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1 hover:text-gray-600 transition-colors duration-200"
         aria-expanded={expanded}
+        aria-disabled={forced || undefined}
         aria-label={toggleLabel}
+        title={forced ? "Holds the current agent — stays expanded" : undefined}
       >
         <svg
           className={`w-3 h-3 transition-transform ${expanded ? "rotate-90" : ""}`}
@@ -94,6 +98,9 @@ function ArchivedGroup({ nodes, depth, location, spaceSlug, toggleLabel }) {
               depth={depth}
               location={location}
               spaceSlug={spaceSlug}
+              spaceId={spaceId}
+              ancestors={ancestors}
+              openGroups={openGroups}
             />
           ))}
         </ul>
@@ -108,10 +115,16 @@ function ArchivedGroup({ nodes, depth, location, spaceSlug, toggleLabel }) {
  * rows derive their "current" styling from the URL: the space's
  * name links to `/space/:slug`, so the pathname carries the
  * (encoded) slug for both `/space/:slug` and `/space/:slug/...`.
+ *
+ * `spaceBase` is that encoded `/space/:slug` prefix, so the encoding
+ * happens once in `SpaceRow` and every comparison here and below uses the
+ * same string the pathname does.
  */
-function isSpaceActive(location, space) {
-  const base = `/space/${encodeURIComponent(space.slug)}`;
-  return location.pathname === base || location.pathname.startsWith(`${base}/`);
+function isSpaceActive(location, spaceBase) {
+  return (
+    location.pathname === spaceBase ||
+    location.pathname.startsWith(`${spaceBase}/`)
+  );
 }
 
 /**
@@ -134,9 +147,16 @@ function restoreErrorMessage(err) {
  *
  * Default is collapsed: expanding a node reveals exactly its direct
  * children, and each of those starts collapsed too, so a click never
- * unfolds a whole subtree at once and there is no remembered expansion
- * state anywhere. The expansion is local component state only — remounting
- * the row (navigating away and back) starts it collapsed again.
+ * unfolds a whole subtree at once. The disclosure lives in the store
+ * (`expandedTreeNodes`), so collapsing an ancestor and expanding it again
+ * restores the subtree the user had opened — the rows were unmounted in
+ * between, which a row-local state could not survive.
+ *
+ * One exception: the current agent's ancestors are always open, so the agent
+ * the route selects is visible wherever it sits in the tree. Those toggles say
+ * so (`title` for the mouse, `aria-disabled` for everything else), and a click
+ * on one is a no-op rather than a deferred flip: storing the state it cannot
+ * show would only surface later, on a route where the row is free to move.
  *
  * Active nodes split their children: active children render inline,
  * archived children render at the bottom behind a collapsed
@@ -148,7 +168,15 @@ function restoreErrorMessage(err) {
  * Linking there would only ever produce that refusal, so the row says
  * what to do instead (Restore).
  */
-function AgentTreeRow({ node, depth, location, spaceSlug }) {
+function AgentTreeRow({
+  node,
+  depth,
+  location,
+  spaceSlug,
+  spaceId,
+  ancestors,
+  openGroups,
+}) {
   const { agent, children } = node;
   const isCurrent =
     location.pathname ===
@@ -162,7 +190,13 @@ function AgentTreeRow({ node, depth, location, spaceSlug }) {
     : children.filter((child) => child.agent.archived === true);
   const directChildren = isArchived ? children : activeChildren;
   const hasChildren = activeChildren.length > 0 || archivedChildren.length > 0;
-  const [expanded, setExpanded] = useState(false);
+  const nodeKey = agentNodeKey(spaceId, agent.name);
+  const storedExpanded = useStore(
+    (state) => state.expandedTreeNodes[nodeKey] === true,
+  );
+  const toggleTreeNode = useStore((state) => state.toggleTreeNode);
+  const onCurrentPath = ancestors.has(agent.name);
+  const expanded = onCurrentPath || storedExpanded;
   const [restoreError, setRestoreError] = useState(null);
 
   const label = (
@@ -190,10 +224,18 @@ function AgentTreeRow({ node, depth, location, spaceSlug }) {
         {hasChildren ? (
           <button
             type="button"
-            onClick={() => setExpanded((v) => !v)}
+            onClick={() => {
+              if (!onCurrentPath) toggleTreeNode(nodeKey);
+            }}
             className="w-4 h-4 flex items-center justify-center flex-shrink-0 rounded text-gray-400 hover:text-gray-700 transition-colors duration-200"
             aria-expanded={expanded}
+            aria-disabled={onCurrentPath || undefined}
             aria-label={`Toggle ${agent.name}`}
+            title={
+              onCurrentPath
+                ? "On the current agent's path — stays expanded"
+                : undefined
+            }
           >
             <svg
               className={`w-3 h-3 transition-transform ${expanded ? "rotate-90" : ""}`}
@@ -258,6 +300,9 @@ function AgentTreeRow({ node, depth, location, spaceSlug }) {
               depth={depth + 1}
               location={location}
               spaceSlug={spaceSlug}
+              spaceId={spaceId}
+              ancestors={ancestors}
+              openGroups={openGroups}
             />
           ))}
           {!isArchived && archivedChildren.length > 0 && (
@@ -266,6 +311,10 @@ function AgentTreeRow({ node, depth, location, spaceSlug }) {
               depth={depth + 1}
               location={location}
               spaceSlug={spaceSlug}
+              spaceId={spaceId}
+              nodeKey={nodeKey}
+              ancestors={ancestors}
+              openGroups={openGroups}
               toggleLabel={`Toggle archived children of ${agent.name}`}
             />
           )}
@@ -284,9 +333,21 @@ function AgentTreeRow({ node, depth, location, spaceSlug }) {
  * starts expanded, so opening a space shows its agent list without a click
  * — the URL already says which space you are in, so this mirrors the route
  * rather than remembering a choice. Every other space row starts collapsed,
- * and every agent row under it starts collapsed (see `AgentTreeRow`), so
- * expanding a space reveals exactly one level. Navigating between spaces
- * moves the expansion with the route (see the `useEffect` below).
+ * and every agent row under it starts collapsed except the current agent's
+ * ancestors (see `AgentTreeRow`), so expanding a space reveals exactly one
+ * level. Navigating between spaces moves the expansion with the route (see
+ * the `useEffect` below).
+ *
+ * A space row holding the current agent is pinned open, like that agent's
+ * ancestor rows: collapsing it would hide the agent the route is on, which is
+ * the one thing the expansion policy promises not to do. With no agent
+ * selected (the space's own overview page) the row toggles freely — there is
+ * nothing to lose sight of.
+ *
+ * This one row keeps its disclosure in component state on purpose: it is
+ * derived from the route rather than a choice to remember, and the effect
+ * re-derives it whenever the route moves. (The agent rows below it are the
+ * opposite case — their disclosure is a choice, so it lives in the store.)
  */
 export function SpaceRow({
   space,
@@ -294,8 +355,13 @@ export function SpaceRow({
   spaceArchivedAgents = [],
   location,
 }) {
-  const selected = isSpaceActive(location, space);
-  const [expanded, setExpanded] = useState(selected);
+  // The slug goes into links and into every route comparison below, so it is
+  // encoded once here: the pathname carries the encoded form, and a slug the
+  // browser had to escape (`my space`) would match nothing otherwise.
+  const spaceSlug = encodeURIComponent(space.slug);
+  const spaceBase = `/space/${spaceSlug}`;
+  const selected = isSpaceActive(location, spaceBase);
+  const [rowExpanded, setRowExpanded] = useState(selected);
 
   // `selected` is derived from the route, so it changes when the user
   // navigates between spaces. Follow it: `useState` only reads its argument
@@ -303,12 +369,30 @@ export function SpaceRow({
   // two space rows could be open at once. A manual toggle survives until the
   // route moves again.
   useEffect(() => {
-    setExpanded(selected);
+    setRowExpanded(selected);
   }, [selected]);
 
   const tree = buildAgentTree([...spaceAgents, ...spaceArchivedAgents]);
   const activeRoots = tree.filter((node) => node.agent.archived !== true);
   const archivedRoots = tree.filter((node) => node.agent.archived === true);
+
+  // The current agent's ancestor chain is forced open, so the agent the route
+  // selects is always visible. An active agent's ancestors are active too
+  // (archiving recurses, and restoring a child whose parent is archived is
+  // refused), so the only chain that can run through an `Archived (N)` group
+  // is an archived current agent's — and that group opens with it.
+  const currentName = currentAgentName(location, spaceSlug);
+  const ancestors = currentName
+    ? ancestorNames(tree, currentName)
+    : NO_ANCESTORS;
+  const openGroups = currentName
+    ? ancestorGroupKeys(space.id, tree, currentName)
+    : NO_ARCHIVED_GROUPS;
+
+  // The row is pinned while an agent below it is selected, so the chain cannot
+  // be closed out from under the agent the route is on.
+  const pinned = selected && currentName !== null;
+  const expanded = pinned || rowExpanded;
 
   return (
     <li key={space.id}>
@@ -320,7 +404,7 @@ export function SpaceRow({
         `}
       >
         <Link
-          to={`/space/${encodeURIComponent(space.slug)}`}
+          to={spaceBase}
           className="flex items-center gap-2 min-w-0 flex-1 px-3 py-2"
         >
           <span className="truncate text-sm font-medium">{space.name}</span>
@@ -330,9 +414,16 @@ export function SpaceRow({
         </Link>
         <button
           type="button"
-          onClick={() => setExpanded((v) => !v)}
+          onClick={() => {
+            if (!pinned) setRowExpanded((v) => !v);
+          }}
           className="p-1 mr-1 rounded hover:bg-gray-100 text-gray-400"
           aria-label={`Toggle ${space.name}`}
+          aria-expanded={expanded}
+          aria-disabled={pinned || undefined}
+          title={
+            pinned ? "Holds the current agent — stays expanded" : undefined
+          }
         >
           <svg
             className={`w-4 h-4 transition-transform ${expanded ? "rotate-90" : ""}`}
@@ -380,14 +471,21 @@ export function SpaceRow({
               node={node}
               depth={0}
               location={location}
-              spaceSlug={space.slug}
+              spaceSlug={spaceSlug}
+              spaceId={space.id}
+              ancestors={ancestors}
+              openGroups={openGroups}
             />
           ))}
           <ArchivedGroup
             nodes={archivedRoots}
             depth={0}
             location={location}
-            spaceSlug={space.slug}
+            spaceSlug={spaceSlug}
+            spaceId={space.id}
+            nodeKey={spaceNodeKey(space.id)}
+            ancestors={ancestors}
+            openGroups={openGroups}
             toggleLabel={`Toggle archived agents in ${space.name}`}
           />
         </ul>
