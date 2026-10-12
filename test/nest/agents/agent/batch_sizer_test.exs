@@ -60,6 +60,25 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
     %ToolCall{id: id, name: name, arguments: arguments}
   end
 
+  # A real 1x1 PNG, so the fixture cannot drift from `new_media/1`'s invariant
+  # that `data` decodes to exactly `bytes`.
+  defp media_part(tool_call_id) do
+    data =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=="
+
+    {:ok, part} =
+      Part.new_media(%{
+        tool_call_id: tool_call_id,
+        modality: :image,
+        media_type: "image/png",
+        data: data,
+        bytes: byte_size(Base.decode64!(data)),
+        path: "shot.png"
+      })
+
+    part
+  end
+
   defp ctx(tools, opts \\ []) do
     %{
       tools: tools,
@@ -582,7 +601,7 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
   end
 
   describe "tool context carries agent identity" do
-    test "forwards space_id/agent_name/agent_pid into the tool function" do
+    test "forwards space_id/agent_name/agent_pid, the caller's model, and the call id" do
       parent = self()
 
       tool =
@@ -590,7 +609,9 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
           {:ok,
            inspect(%{
              key: Nest.Tools.agent_key(context),
-             pid: context[:agent_pid] == parent
+             pid: context[:agent_pid] == parent,
+             model: context[:client_config] && context[:client_config].model,
+             call_id: context[:tool_call_id]
            })}
         end)
 
@@ -602,13 +623,23 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
         tmp_path: nil,
         agent_pid: parent,
         agent_name: "clever-raven",
-        space_id: 42
+        space_id: 42,
+        client_config: %Nest.LLM.ClientConfig{model: "vision-model"}
       }
 
       assert [%ToolResult{content: content}] =
                BatchSizer.run([call("c1", "identity-probe")], c)
 
-      assert content == inspect(%{key: {42, "clever-raven"}, pid: true})
+      # `client_config` is what `file-read`'s media gate reads to decide whether
+      # the model can accept an attachment, and the call id is what ties an
+      # attached media part to the result it answers.
+      assert content ==
+               inspect(%{
+                 key: {42, "clever-raven"},
+                 pid: true,
+                 model: "vision-model",
+                 call_id: "c1"
+               })
     end
   end
 
@@ -623,6 +654,93 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
 
       assert missing == [],
              "registered tools with only the catch-all projection: #{inspect(missing)}"
+    end
+  end
+
+  describe "media tool results" do
+    test "cook/2 emits the ToolResult and then its media part" do
+      media = media_part("c1")
+      tools = [make_tool("media-probe", fn _, _ -> {:ok, {:media, media}} end)]
+
+      assert [%ToolResult{} = result, ^media] =
+               BatchSizer.run([call("c1", "media-probe", %{"path" => "shot.png"})], ctx(tools))
+
+      assert result.tool_call_id == "c1"
+      assert result.name == "media-probe"
+      assert result.is_error == false
+
+      # The text anchor is what keeps `ToolResult.content` a string, and it
+      # tells the model what rode along without repeating a byte of it.
+      assert result.content =~ "attached below"
+      assert result.content =~ "image/png"
+      assert result.content =~ "shot.png"
+      refute result.content =~ "base64"
+    end
+
+    test "an over-cap media result errors instead of being summarized" do
+      media = media_part("c1")
+      tools = [make_tool("media-probe", fn _, _ -> {:ok, {:media, media}} end)]
+
+      over_cap = call("c1", "media-probe", %{"path" => "shot.png", "max_result_tokens" => 100})
+
+      log =
+        capture_log(fn ->
+          assert [%ToolResult{} = result] = BatchSizer.run([over_cap], ctx(tools))
+
+          # Media cannot be summarized or offloaded, so the only honest outcome
+          # is an error naming the cap. Attaching it anyway would blow the
+          # budget; offloading it would hand the model a pointer to something it
+          # cannot see.
+          assert result.is_error == true
+          assert result.content =~ "exceeds your requested limit of 100"
+          assert result.content =~ "cannot be summarized"
+          refute result.content =~ "base64"
+        end)
+
+      # `cook/2` logs every `is_error` result as a permanent diagnostic, so this
+      # path is one of them: pin the log rather than leaking it to the console.
+      assert log =~ "BatchSizer produced is_error=true tool result"
+      assert log =~ "media-probe"
+    end
+
+    test "a batch with two media reads keeps each result beside its own media" do
+      a = media_part("c1")
+      b = media_part("c2")
+
+      tools = [
+        make_tool("media-probe", fn %{"which" => which}, _ ->
+          {:ok, {:media, if(which == "a", do: a, else: b)}}
+        end)
+      ]
+
+      parts =
+        BatchSizer.run(
+          [
+            call("c1", "media-probe", %{"which" => "a"}),
+            call("c2", "media-probe", %{"which" => "b"})
+          ],
+          ctx(tools)
+        )
+
+      assert [r1, m1, r2, m2] = parts
+      assert r1.tool_call_id == "c1"
+      assert m1 == a
+      assert r2.tool_call_id == "c2"
+      assert m2 == b
+    end
+
+    test "a media part never reaches the binary or offload machinery" do
+      # It is not a binary, so it must not reach `handle_binary_shell` (which
+      # would write the base64 to a scratch file) or `offload` (which would
+      # replace it with a pointer).
+      media = media_part("c1")
+      tools = [make_tool("media-probe", fn _, _ -> {:ok, {:media, media}} end)]
+
+      parts = BatchSizer.run([call("c1", "media-probe", %{})], ctx(tools))
+
+      assert [%ToolResult{content: content}, %Part.Media{}] = parts
+      refute content =~ "saved to"
+      refute content =~ "scratch"
     end
   end
 

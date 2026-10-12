@@ -33,6 +33,7 @@ defmodule Nest.LLM.MockClient do
   alias Nest.LLM.Preflight
   alias Nest.LLM.RunRequest
   alias Nest.LLM.RunResponse
+  alias Nest.Messages.Part
 
   # Per-agent state. Each test starts a unique MockClient Agent
   # named after the agent pid. The chat task (spawned by the agent)
@@ -313,26 +314,73 @@ defmodule Nest.LLM.MockClient do
     end
   end
 
+  # A user message carrying media needs the content-array form; without media
+  # the plain string form is kept so every existing payload is unchanged.
   defp message_to_wire({:user, %{parts: parts}}) do
-    %{"role" => "user", "content" => Client.text_from_parts(parts)}
+    parts = parts || []
+
+    case Enum.filter(parts, &Part.media?/1) do
+      [] ->
+        %{"role" => "user", "content" => Client.text_from_parts(parts)}
+
+      media ->
+        # Text blocks for the message's text, then the media. An empty text
+        # block is omitted rather than emitted: the array form does not need
+        # the placeholder the string form uses, and an empty text part is not
+        # valid.
+        text = Client.text_from_parts(parts)
+        blocks = if text == "", do: [], else: [%{"type" => "text", "text" => text}]
+        %{"role" => "user", "content" => blocks ++ Enum.map(media, &media_block/1)}
+    end
   end
 
   defp message_to_wire({:system, %{parts: parts}}) do
     %{"role" => "system", "content" => Client.text_from_parts(parts)}
   end
 
+  # Models Anthropic's shape (a user-role message of `tool_result` blocks),
+  # including the media fold: a media part shares its `tool_call_id` with the
+  # result it answers, so it becomes an `image` block inside that result's
+  # content array. A media part with no result to fold into rides along as a
+  # bare block rather than being dropped. If the mock dropped media, the
+  # cross-provider replay harness would be lying about what the real clients
+  # send.
   defp message_to_wire({:tool, %{parts: parts}}) do
+    parts = parts || []
+    results = Enum.filter(parts, &match?(%Part.ToolResult{}, &1))
+    media = Enum.filter(parts, &Part.media?/1)
+    media_by_id = Enum.group_by(media, & &1.tool_call_id)
+    result_ids = MapSet.new(results, & &1.tool_call_id)
+
     content =
-      Enum.map(parts || [], fn tr ->
+      Enum.map(results, fn tr ->
         %{
           "type" => "tool_result",
           "tool_use_id" => tr.tool_call_id,
-          "content" => tr.content || "",
+          "content" => tool_result_content(tr, Map.get(media_by_id, tr.tool_call_id, [])),
           "is_error" => Map.get(tr, :is_error) || false
         }
       end)
 
-    %{"role" => "user", "content" => content}
+    orphans =
+      media
+      |> Enum.reject(&MapSet.member?(result_ids, &1.tool_call_id))
+      |> Enum.map(&media_block/1)
+
+    %{"role" => "user", "content" => content ++ orphans}
+  end
+
+  defp tool_result_content(tr, []), do: tr.content || ""
+
+  defp tool_result_content(tr, media) do
+    [%{"type" => "text", "text" => tr.content || ""} | Enum.map(media, &media_block/1)]
+  end
+
+  defp media_block(%Part.Media{modality: :image, media_type: media_type, data: data}) do
+    %{
+      "type" => "image",
+      "source" => %{"type" => "base64", "media_type" => media_type, "data" => data}
+    }
   end
 
   defp tool_call_to_wire(%{id: id, name: name, arguments: args}) do

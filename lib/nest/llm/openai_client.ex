@@ -134,8 +134,32 @@ defmodule Nest.LLM.OpenAIClient do
     [%{"role" => "system", "content" => wire_content(Client.text_from_parts(parts))}]
   end
 
+  # A user message carrying media needs the content-array form; without media
+  # the plain string form is kept, so every existing request stays
+  # byte-identical.
   defp message_to_wire({:user, %User{parts: parts}}) do
-    [%{"role" => "user", "content" => wire_content(Client.text_from_parts(parts))}]
+    parts = parts || []
+
+    case Enum.filter(parts, &Part.media?/1) do
+      [] ->
+        [%{"role" => "user", "content" => wire_content(Client.text_from_parts(parts))}]
+
+      media ->
+        # Text blocks for the message's text, then the media. An empty text
+        # block is omitted rather than emitted: the array form does not need
+        # the `" "` placeholder the string form uses, and an empty text part
+        # is not valid.
+        text = Client.text_from_parts(parts)
+
+        text_blocks =
+          if text == "" do
+            []
+          else
+            [%{"type" => "text", "text" => text}]
+          end
+
+        [%{"role" => "user", "content" => text_blocks ++ Enum.map(media, &media_part_to_wire/1)}]
+    end
   end
 
   defp message_to_wire({:assistant, %Assistant{parts: parts}}) do
@@ -147,10 +171,37 @@ defmodule Nest.LLM.OpenAIClient do
     end
   end
 
+  # OpenAI's `role: "tool"` message accepts TEXT content parts only — the
+  # OpenAPI spec says so outright for `ChatCompletionRequestToolMessage`
+  # ("For tool messages, only type `text` is supported") — so a media part
+  # answering a tool call cannot ride beside its result. It is hoisted into a
+  # trailing user message instead.
+  #
+  # This is a wire-only translation: the stored message keeps the media as a
+  # sibling of its `tool_result`, and `assistant(tool_calls) -> tool(results)
+  # -> user(images)` is a normal sequence for the API.
   defp message_to_wire({:tool, %Tool{parts: parts}}) do
-    Enum.map(parts || [], fn %Part.ToolResult{tool_call_id: id, content: content} ->
-      %{"role" => "tool", "tool_call_id" => id, "content" => wire_content(content)}
-    end)
+    parts = parts || []
+
+    results =
+      for %Part.ToolResult{tool_call_id: id, content: content} <- parts do
+        %{"role" => "tool", "tool_call_id" => id, "content" => wire_content(content)}
+      end
+
+    results ++ media_user_message(Enum.filter(parts, &Part.media?/1))
+  end
+
+  defp media_user_message([]), do: []
+
+  defp media_user_message(media) do
+    [%{"role" => "user", "content" => Enum.map(media, &media_part_to_wire/1)}]
+  end
+
+  # The image content part, per the spec's
+  # `ChatCompletionRequestMessageContentPartImage`. `detail` is omitted, which
+  # the API reads as `"auto"`.
+  defp media_part_to_wire(%Part.Media{modality: :image, media_type: media_type, data: data}) do
+    %{"type" => "image_url", "image_url" => %{"url" => "data:#{media_type};base64,#{data}"}}
   end
 
   # The provider requires every message to carry a non-empty

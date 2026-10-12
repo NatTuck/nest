@@ -75,6 +75,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
   alias Nest.Agents.Agent.BatchSizer.ProjectedSize
   alias Nest.Agents.Agent.CapCalculator
   alias Nest.LLM.Tools, as: LLMTools
+  alias Nest.Messages.Part
   alias Nest.Messages.Sanitize
   alias Nest.Messages.ToolCall
   alias Nest.Messages.ToolResult
@@ -93,7 +94,11 @@ defmodule Nest.Agents.Agent.BatchSizer do
   # decide whether to spend context examining the file.
   @small_binary_max_bytes 256
 
-  @type entry :: {ToolCall.t(), :ok | :error, String.t()}
+  # The third element is the raw result: a string for every ordinary tool, or
+  # a tagged media part for a `file-read` that attached an image. The shape is
+  # tagged rather than the string type being widened, so `ToolResult.content`
+  # stays `String.t()` and every `is_binary` branch below keeps working.
+  @type entry :: {ToolCall.t(), :ok | :error, String.t() | {:media, Part.Media.t()}}
 
   @doc """
   Run a batch of tool calls through preflight → execute →
@@ -109,7 +114,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
   `caps`, `agent_pid`, `tmp_path` (per-agent temp directory for
   summarized outputs), and `agent_name`.
   """
-  @spec run([ToolCall.t()], map()) :: [ToolResult.t()]
+  @spec run([ToolCall.t()], map()) :: [Part.t()]
   def run(tool_calls, ctx) when is_list(tool_calls) and is_map(ctx) do
     tool_calls |> execute(ctx) |> cook(ctx)
   end
@@ -245,7 +250,16 @@ defmodule Nest.Agents.Agent.BatchSizer do
            agent_pid: Map.get(ctx, :agent_pid),
            agent_name: Map.get(ctx, :agent_name),
            space_id: Map.get(ctx, :space_id),
-           tmp_path: Map.get(ctx, :tmp_path)
+           tmp_path: Map.get(ctx, :tmp_path),
+           # The caller's own model. `file-read`'s media gate consults it: a
+           # media part is re-sent on every later request, so whether this
+           # model accepts media input has to be settled before one is built.
+           client_config: Map.get(ctx, :client_config),
+           # `file-read` needs its own call id to tie an attached media part
+           # to the `ToolResult` it answers — Anthropic folds the media into
+           # that result's block, OpenAI hoists it into a following message,
+           # and both need to know which call it belongs to.
+           tool_call_id: tc.id
          }) do
       {:ok, content} ->
         {tc, :ok, ensure_non_empty(content)}
@@ -282,7 +296,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
   (once). When `ctx` has no positive `context_limit` (test callers), the
   entries are returned as `ToolResult`s unchanged, without error logging.
   """
-  @spec cook([entry()], map()) :: [ToolResult.t()]
+  @spec cook([entry()], map()) :: [Part.t()]
   def cook(entries, %{context_limit: limit, messages: _} = ctx)
       when is_integer(limit) and limit > 0 do
     entries |> reduce_entries(ctx) |> finalize(true)
@@ -306,7 +320,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
   end
 
   defp finalize(cooked, log_errors?) do
-    Enum.map(cooked, fn {tc, kind, content} ->
+    Enum.flat_map(cooked, fn {tc, kind, content} ->
       if log_errors? and kind == :error do
         # Permanent diagnostic. The LLM is going to see this error
         # as a tool result and decide what to do next, but we also
@@ -323,14 +337,32 @@ defmodule Nest.Agents.Agent.BatchSizer do
         )
       end
 
-      %ToolResult{
-        tool_call_id: tc.id,
-        name: tc.name,
-        arguments: tc.arguments,
-        content: content,
-        is_error: kind == :error
-      }
+      entry_parts(tc, kind, content)
     end)
+  end
+
+  # A media entry becomes two parts: the `ToolResult` that answers the call,
+  # then the media itself. The order matters. The Anthropic encoder groups
+  # media under the result sharing its `tool_call_id` by walking parts in
+  # order, and OpenAI's hoist appends after the results, so result-before-media
+  # is what both expect; it also keeps a batch with two media reads from
+  # interleaving their parts.
+  defp entry_parts(tc, :ok, {:media, part}) do
+    [tool_result_part(tc, media_summary(part), false), part]
+  end
+
+  defp entry_parts(tc, kind, content) do
+    [tool_result_part(tc, content, kind == :error)]
+  end
+
+  defp tool_result_part(tc, content, is_error?) do
+    %ToolResult{
+      tool_call_id: tc.id,
+      name: tc.name,
+      arguments: tc.arguments,
+      content: content,
+      is_error: is_error?
+    }
   end
 
   defp keep_full?(_tc, %{limit: limit, running: running}, full_size),
@@ -364,6 +396,25 @@ defmodule Nest.Agents.Agent.BatchSizer do
   # decide whether to inspect the file. When the binary is tiny
   # (<= `@small_binary_max_bytes`), a lossy UTF-8 view is included
   # inline too.
+  # A media result is priced at its modality's ceiling — the same number the
+  # preflight projects — and is NEVER substituted. You cannot summarize an
+  # image, so an over-cap attachment is an error the model can act on, exactly
+  # like `file-read`'s text over-cap path. Falling through to the binary
+  # machinery below would be worse than useless: it would write the base64 to
+  # a scratch file and hand the model a pointer to something it cannot see.
+  defp apply_one_with_acc({tc, :ok, {:media, part}}, _ctx, acc) do
+    price = Estimator.estimate_media(part) + per_message_overhead()
+    cap = effective_max_result_tokens(tc, acc.usable)
+
+    if cap && price > cap do
+      error = media_over_cap_error(part, price, cap)
+      error_size = Estimator.estimate(error) + per_message_overhead()
+      {{tc, :error, error}, advance(acc, error_size)}
+    else
+      {{tc, :ok, {:media, part}}, advance(acc, price)}
+    end
+  end
+
   defp apply_one_with_acc({tc, :ok, content} = entry, ctx, acc) do
     if is_binary(content) and not Sanitize.text?(content) do
       handle_binary_shell(tc, content, ctx, acc)
@@ -461,6 +512,27 @@ defmodule Nest.Agents.Agent.BatchSizer do
     offload(tc, content, ctx, acc)
   end
 
+  # Media gets its own wording because the remedy differs: the model cannot
+  # retry with a smaller `max_result_tokens` and get a summarized image, so it
+  # has to be told the attachment was dropped rather than shortened.
+  defp media_over_cap_error(%Part.Media{} = part, price, cap) do
+    "File is #{human_bytes(part.bytes)} of #{part.media_type} (~#{price} tokens), which " <>
+      "exceeds your requested limit of #{cap}. Media cannot be summarized or " <>
+      "offloaded, so it was not attached."
+  end
+
+  defp human_bytes(bytes) when bytes >= 1_000_000, do: "#{Float.round(bytes / 1_000_000, 1)} MB"
+  defp human_bytes(bytes) when bytes >= 1_000, do: "#{Float.round(bytes / 1_000, 1)} KB"
+  defp human_bytes(bytes), do: "#{bytes} bytes"
+
+  # The one-line text anchor that rides beside the media part. It is what
+  # keeps `ToolResult.content` a string — every `is_binary` branch above
+  # depends on that — and it tells the model what was attached without
+  # repeating a single byte of it.
+  defp media_summary(%Part.Media{} = part) do
+    "Read #{human_bytes(part.bytes)} #{part.media_type} from #{part.path}; attached below."
+  end
+
   # Replace an oversized result with an in-budget pointer + head. The
   # block is sized to the remaining batch budget, so it always fits.
   # This is the ONLY path for an over-budget result — keeping the full
@@ -514,5 +586,8 @@ defmodule Nest.Agents.Agent.BatchSizer do
 
   defp ensure_non_empty(""), do: @empty_output_placeholder
   defp ensure_non_empty(nil), do: @empty_output_placeholder
+  # A media result is not a string and has nothing to be empty of; the media
+  # clause in `apply_one_with_acc/3` is what sizes it.
+  defp ensure_non_empty({:media, _part} = media), do: media
   defp ensure_non_empty(s) when is_binary(s), do: s
 end
