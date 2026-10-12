@@ -1,5 +1,7 @@
 import { Markdown } from "@llamaindex/chat-ui/widgets";
 
+import { ToolMedia } from "./ToolMedia.jsx";
+import { mediaFromParts } from "../utils/messageParts.js";
 import { textFromParts } from "../utils/messageText.js";
 
 // Tailwind classes that tame the @llamaindex/chat-ui `<Markdown>`
@@ -86,9 +88,27 @@ export function parseBlocks(content) {
  */
 export function MessageContent({ parts, isPartial, className = "" }) {
   const text = textFromParts(parts);
+  const media = mediaFromParts(parts);
 
-  if (!text) return null;
+  if (!text && !media) return null;
 
+  const body = text ? renderText(text, isPartial, className) : null;
+
+  // A message with no media renders exactly what it did before — one
+  // element, not a fragment — so nothing about the existing output changes.
+  // Media is a sibling of the text rather than part of it: a `media` part
+  // has no text, and a message can carry one with no text at all.
+  if (!media) return body;
+
+  return (
+    <>
+      {body}
+      <ToolMedia media={media} />
+    </>
+  );
+}
+
+function renderText(text, isPartial, className) {
   // The wrapper applies `&_*` descendant selectors that tame the
   // @llamaindex/chat-ui `<Markdown>` component's HTML output —
   // code blocks (`<pre>`) wrap rather than overflow, prose

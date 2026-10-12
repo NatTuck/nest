@@ -49,6 +49,25 @@ export function toolResultsFromParts(parts) {
   }));
 }
 
+// Derive the media attachments from a message's `parts` (issue #40).
+// This is the store-side twin of `utils/messageParts.js`'s
+// `mediaFromParts`; both exist because the two paths derive their legacy
+// fields independently, and they must agree or one message renders
+// differently depending on which path built it.
+export function mediaFromParts(parts) {
+  if (!Array.isArray(parts)) return null;
+  const media = parts.filter((p) => p && p.kind === "media");
+  if (media.length === 0) return null;
+  return media.map((p) => ({
+    tool_call_id: p.toolCallId,
+    modality: p.modality,
+    mediaType: p.mediaType,
+    bytes: p.bytes,
+    data: p.data,
+    path: p.path ?? null,
+  }));
+}
+
 export function partsShape(m) {
   if (!m) return [];
   if (Array.isArray(m.parts)) return m.parts;
@@ -123,6 +142,10 @@ export function buildMerged(m, message, mergedThinking) {
   const mergedToolResults = newToolResults.length
     ? newToolResults
     : toolResultsFromParts(partsShape(m)) || [];
+  const newMedia = mediaFromParts(message.parts) || [];
+  const mergedMedia = newMedia.length
+    ? newMedia
+    : mediaFromParts(partsShape(m)) || [];
 
   return {
     ...message,
@@ -131,6 +154,7 @@ export function buildMerged(m, message, mergedThinking) {
     apiLogs: mergedApiLogs,
     toolCalls: mergedToolCalls,
     toolResults: mergedToolResults,
+    media: mergedMedia,
   };
 }
 

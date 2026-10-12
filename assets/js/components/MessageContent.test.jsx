@@ -454,3 +454,57 @@ describe("MessageContent", () => {
     });
   });
 });
+
+describe("MessageContent — media parts", () => {
+  const PNG =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==";
+
+  const imagePart = {
+    kind: "media",
+    toolCallId: "u1",
+    modality: "image",
+    mediaType: "image/png",
+    bytes: 68,
+    data: PNG,
+    path: "shot.png",
+  };
+
+  it("renders a media part alongside the text", () => {
+    render(
+      <MessageContent
+        parts={[{ kind: "text", text: "look at this" }, imagePart]}
+        isPartial={false}
+      />,
+    );
+
+    expect(screen.getByTestId("markdown-rendered")).toBeInTheDocument();
+    expect(screen.getByTestId("tool-media-image")).toHaveAttribute(
+      "src",
+      `data:image/png;base64,${PNG}`,
+    );
+  });
+
+  it("renders a media-only message rather than nothing", () => {
+    // A message whose only part is media has no text at all. Returning null
+    // here would make the attachment unrepresentable, which is the silent
+    // drop the project forbids — the render path has to be able to see it,
+    // not just the clipboard path.
+    const { container } = render(
+      <MessageContent
+        parts={[{ ...imagePart, path: null }]}
+        isPartial={false}
+      />,
+    );
+
+    expect(container.firstChild).not.toBeNull();
+    expect(screen.getByTestId("tool-media-image")).toBeInTheDocument();
+    expect(screen.queryByTestId("markdown-rendered")).toBeNull();
+  });
+
+  it("still renders nothing when there is neither text nor media", () => {
+    expect(
+      render(<MessageContent parts={[]} isPartial={false} />).container
+        .firstChild,
+    ).toBeNull();
+  });
+});

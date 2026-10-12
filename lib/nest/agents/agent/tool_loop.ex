@@ -34,6 +34,7 @@ defmodule Nest.Agents.Agent.ToolLoop do
   alias Nest.Agents.Agent.Watch
   alias Nest.Agents.Registry
   alias Nest.DotConfig
+  alias Nest.Messages.Part
   alias Nest.Messages.ToolCall
   alias Nest.Messages.ToolResult
   alias Nest.Models
@@ -55,13 +56,14 @@ defmodule Nest.Agents.Agent.ToolLoop do
   @list_models_max_chars 4_000
 
   @doc """
-  Run a tool-call batch. Returns a list of `ToolResult`
-  structs in input order.
+  Run a tool-call batch. Returns the batch's message parts in
+  input order — a `ToolResult` per call, plus a media part
+  beside any `file-read` that attached one.
 
   The `state` argument is unused; kept in the signature for
   symmetry with the call site.
   """
-  @spec execute(map(), term(), [ToolCall.t()]) :: [ToolResult.t()]
+  @spec execute(map(), term(), [ToolCall.t()]) :: [Part.t()]
   def execute(ctx, _state, tool_calls) do
     case tool_calls do
       [] -> []

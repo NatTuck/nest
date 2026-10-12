@@ -584,7 +584,7 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
   end
 
   describe "tool context carries agent identity" do
-    test "forwards space_id/agent_name/agent_pid into the tool function" do
+    test "forwards space_id/agent_name/agent_pid, the caller's model, and the call id" do
       parent = self()
 
       tool =
@@ -592,7 +592,9 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
           {:ok,
            inspect(%{
              key: Nest.Tools.agent_key(context),
-             pid: context[:agent_pid] == parent
+             pid: context[:agent_pid] == parent,
+             model: context[:client_config] && context[:client_config].model,
+             call_id: context[:tool_call_id]
            })}
         end)
 
@@ -604,13 +606,23 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
         tmp_path: nil,
         agent_pid: parent,
         agent_name: "clever-raven",
-        space_id: 42
+        space_id: 42,
+        client_config: %Nest.LLM.ClientConfig{model: "vision-model"}
       }
 
       assert [%ToolResult{content: content}] =
                BatchSizer.run([call("c1", "identity-probe")], c)
 
-      assert content == inspect(%{key: {42, "clever-raven"}, pid: true})
+      # `client_config` is what `file-read`'s media gate reads to decide whether
+      # the model can accept an attachment, and the call id is what ties an
+      # attached media part to the result it answers.
+      assert content ==
+               inspect(%{
+                 key: {42, "clever-raven"},
+                 pid: true,
+                 model: "vision-model",
+                 call_id: "c1"
+               })
     end
   end
 

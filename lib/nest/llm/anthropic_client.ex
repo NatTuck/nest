@@ -324,9 +324,37 @@ defmodule Nest.LLM.AnthropicClient do
   end
 
   # Tool results: Anthropic expects them in a user-role message with
-  # `tool_result` content blocks (not a dedicated tool role).
+  # `tool_result` content blocks (not a dedicated tool role). Unlike OpenAI,
+  # Anthropic's `tool_result` block accepts image content, so a media part
+  # folds INTO the result sharing its `tool_call_id` rather than being hoisted
+  # into a separate message.
   defp message_to_wire({:tool, %Tool{parts: parts}}, _thinking?) do
-    %{"role" => "user", "content" => Enum.map(parts || [], &tool_part_to_wire/1)}
+    %{"role" => "user", "content" => tool_blocks(parts || [])}
+  end
+
+  defp tool_blocks(parts) do
+    results = Enum.filter(parts, &match?(%Part.ToolResult{}, &1))
+    media = Enum.filter(parts, &Part.media?/1)
+    media_by_id = Enum.group_by(media, & &1.tool_call_id)
+
+    blocks =
+      Enum.map(results, fn result ->
+        tool_part_to_wire(result, Map.get(media_by_id, result.tool_call_id, []))
+      end)
+
+    blocks ++ orphan_media_blocks(media, results)
+  end
+
+  # A media part with no result to fold into is unreachable from the batch path,
+  # which always emits the pair. It still has to reach the model: an `image`
+  # block is valid in a user-role content array, so it rides along instead of
+  # being dropped.
+  defp orphan_media_blocks(media, results) do
+    result_ids = MapSet.new(results, & &1.tool_call_id)
+
+    media
+    |> Enum.reject(&MapSet.member?(result_ids, &1.tool_call_id))
+    |> Enum.map(&media_block/1)
   end
 
   # Thinking is "off" for `nil` and `:off` (matching
@@ -354,6 +382,12 @@ defmodule Nest.LLM.AnthropicClient do
   defp user_part_to_wire(%Part.Text{text: text}),
     do: %{"type" => "text", "text" => text}
 
+  # Without this clause a media part would fall to the catch-all below, which
+  # renders it through `inspect/1` — sending the entire base64 payload as a
+  # text block. A silent, expensive, wrong request is worse than a crash,
+  # which is why this is not left to the fallback.
+  defp user_part_to_wire(%Part.Media{} = media), do: media_block(media)
+
   defp user_part_to_wire(other), do: %{"type" => "text", "text" => part_to_text(other)}
 
   defp assistant_part_to_wire(%Part.Text{text: text}) when text != "" and not is_nil(text),
@@ -377,17 +411,60 @@ defmodule Nest.LLM.AnthropicClient do
     %{"type" => "text", "text" => text}
   end
 
-  defp tool_part_to_wire(%Part.ToolResult{
-         tool_call_id: id,
-         content: content,
-         is_error: is_error
-       }) do
+  # Media is only ever a sibling of a `tool_result`, which the tool role
+  # carries, so this is unreachable. It exists so a future bug cannot crash
+  # the encoder, and it emits an explicit marker rather than the payload,
+  # because an `image` block is not valid on the assistant role.
+  defp assistant_part_to_wire(%Part.Media{} = media) do
+    %{"type" => "text", "text" => "[#{media.media_type} attachment omitted from assistant role]"}
+  end
+
+  # A result with no media keeps today's string content, so every existing
+  # request stays byte-identical.
+  defp tool_part_to_wire(
+         %Part.ToolResult{tool_call_id: id, content: content, is_error: is_error},
+         []
+       ) do
     %{
       "type" => "tool_result",
       "tool_use_id" => id,
       "content" => content || "",
       "is_error" => is_error || false
     }
+  end
+
+  # With media, the block's content becomes an array: the result's own text
+  # first, then the image blocks. The text block is always present (even when
+  # the anchor is empty) because `tool_result` content must not be empty.
+  defp tool_part_to_wire(
+         %Part.ToolResult{tool_call_id: id, content: content, is_error: is_error},
+         media
+       ) do
+    %{
+      "type" => "tool_result",
+      "tool_use_id" => id,
+      "content" => [
+        %{"type" => "text", "text" => content || ""} | Enum.map(media, &media_block/1)
+      ],
+      "is_error" => is_error || false
+    }
+  end
+
+  defp media_block(%Part.Media{modality: :image, media_type: media_type, data: data})
+       when is_binary(media_type) and is_binary(data) do
+    %{
+      "type" => "image",
+      "source" => %{"type" => "base64", "media_type" => media_type, "data" => data}
+    }
+  end
+
+  # A restored part this build cannot send: an unknown modality, or one with no
+  # usable type or payload. It is still shown in the panel, so it cannot simply
+  # vanish from the request either — and a `text` block is valid both inside a
+  # `tool_result` content array and on the user role, so the request stays
+  # well-formed.
+  defp media_block(%Part.Media{} = media) do
+    %{"type" => "text", "text" => Client.media_omitted_note(media)}
   end
 
   # Render a non-text part as a string for the user-role's

@@ -14,13 +14,22 @@ defmodule Nest.Tools.FileTools do
   require Logger
 
   alias Nest.LLM.Tool
+  alias Nest.Messages.Part
   alias Nest.Messages.Sanitize
   alias Nest.Sandbox
   alias Nest.Sandbox.Mounts
+  alias Nest.Tools.MediaKind
 
-  # Stat-then-cap mirrors `InspectFile`'s 100 MB cap so the
-  # BatchSizer's preflight can refuse before doing the read work.
-  @max_read_file_bytes 100 * 1_000_000
+  # Stat-then-cap mirrors `InspectFile`'s cap so the BatchSizer's
+  # preflight can refuse before doing the read work.
+  #
+  # 10 MB is a sanity bound on how much a single tool result may pull
+  # into memory, NOT the real limit on a read: the real limit is the
+  # caller's token budget, enforced per call by the BatchSizer's
+  # `max_result_tokens` cap. The old 100 MB was never reachable for a
+  # text read (it is far past any context window) and it is a
+  # pathological amount of memory to hold for a media read.
+  @max_read_file_bytes 10 * 1_000_000
 
   # A broken sandbox is a Nest configuration problem, not a missing file, so
   # the caller is told that plainly rather than "file not found".
@@ -139,22 +148,137 @@ defmodule Nest.Tools.FileTools do
     caps = caps_from_context(context)
 
     case Mounts.resolve(path, mounts) do
-      {:ok, full_path} -> read_after_stat(full_path, path, caps, mounts)
-      {:error, _} = err -> err
+      {:ok, full_path} ->
+        read_after_stat(full_path, path, caps, mounts, context)
+
+      {:error, _} = err ->
+        err
     end
   end
 
-  defp read_after_stat(full_path, original_path, caps, mounts) do
+  defp read_after_stat(full_path, original_path, caps, mounts, context) do
     case Sandbox.stat(full_path, caps, mounts) do
       {:ok, %{size: size}} when size > @max_read_file_bytes ->
         too_large_error(size)
 
       {:ok, _} ->
-        read_file_content(full_path, caps, mounts)
+        read_classified(full_path, original_path, caps, mounts, context)
 
       {:error, reason} ->
         read_error(reason, original_path)
     end
+  end
+
+  # Media or text? The extension is only a filter, so a path that does not
+  # look like media never pays the extra `file --mime-type` spawn, and a path
+  # that does look like media is still confirmed by `MediaKind.detect/3`
+  # before anything is attached.
+  defp read_classified(full_path, original_path, caps, mounts, context) do
+    case MediaKind.from_path(full_path) do
+      :text ->
+        read_file_content(full_path, caps, mounts)
+
+      {:ok, modality} ->
+        read_media_file(full_path, original_path, caps, mounts, modality, context)
+    end
+  end
+
+  # The media path.
+  #
+  # The gate runs FIRST — before the `file` check, before the read, and
+  # before any part is built. A media part is re-sent on every subsequent
+  # request, so attaching one the caller's model cannot accept would break
+  # every later turn until the conversation is compacted. Refusing here, with
+  # a message the model can act on, is the only fail-fast point there is.
+  defp read_media_file(full_path, original_path, caps, mounts, modality, context) do
+    with :ok <- check_media_input(modality, context),
+         {:ok, modality, mime} <- MediaKind.detect(full_path, caps, mounts),
+         {:ok, bytes} <- read_media_bytes(full_path, caps, mounts),
+         {:ok, part} <- build_media_part(original_path, modality, mime, bytes, context) do
+      {:ok, {:media, part}}
+    else
+      # The extension said media and `file` disagreed, so this is not media
+      # after all. Fall back to the ordinary text read, which returns its own
+      # "non-text" error for a binary file. A failed `file` check is NOT this
+      # case: it comes back as an error and is surfaced, because treating
+      # "could not tell" as "not media" would read an image as text.
+      :text -> read_file_content(full_path, caps, mounts)
+      {:error, _} = error -> error
+    end
+  end
+
+  defp read_media_bytes(full_path, caps, mounts) do
+    case Sandbox.read(full_path, caps, mounts) do
+      {:ok, bytes} -> {:ok, bytes}
+      {:error, reason} -> read_error(reason, full_path)
+    end
+  end
+
+  # `data` carries no `data:` prefix; each provider encoder adds its own
+  # framing. `new_media/1` re-validates every field, so a malformed read
+  # becomes a tool error rather than a bad part on the wire.
+  defp build_media_part(original_path, modality, mime, bytes, context) do
+    Part.new_media(%{
+      tool_call_id: Map.get(context, :tool_call_id),
+      modality: modality,
+      media_type: mime,
+      data: Base.encode64(bytes),
+      bytes: byte_size(bytes),
+      path: original_path
+    })
+  end
+
+  # Fail closed on the caller's model: `multi_modal` is `nil` for a model that
+  # declares nothing, and "declares nothing" is not a claim of support.
+  defp check_media_input(modality, context) do
+    model = media_model(context)
+
+    cond do
+      is_nil(model) ->
+        {:error,
+         "file-read cannot attach #{modality} data: this agent's model is not known, " <>
+           "so Nest cannot tell whether it accepts #{modality} input."}
+
+      # `media_inputs/1` holds the strings `Discover` normalizes provider
+      # answers to (`%{"input" => ["image"]}`); the modality here is an atom.
+      Atom.to_string(modality) in media_inputs(model) ->
+        :ok
+
+      true ->
+        {:error, media_unsupported_error(model, modality)}
+    end
+  end
+
+  defp media_model(context) do
+    case Map.get(context, :client_config) do
+      %{model: model} when is_binary(model) and model != "" -> model
+      _ -> nil
+    end
+  end
+
+  # The model's declared input modalities, or `[]` when nothing declares any.
+  #
+  # Matched on name alone: `client_config` carries the model name but no
+  # provider, and the catalog merges models from every provider by name. A
+  # provider that reports no capability contributes `nil`, which is "says
+  # nothing about it" rather than "does not support it", so a positive claim
+  # from any provider serving that model is the best evidence available.
+  defp media_inputs(model) do
+    Nest.Models.list()
+    |> Enum.filter(&(&1["name"] == model))
+    |> Enum.flat_map(fn
+      %{"multi_modal" => %{"input" => inputs}} when is_list(inputs) -> inputs
+      _ -> []
+    end)
+    |> Enum.uniq()
+  end
+
+  defp media_unsupported_error(model, modality) do
+    "file-read refused: the model #{inspect(model)} does not declare #{modality} input, " <>
+      "and a #{modality} part is re-sent on every subsequent request, so attaching one " <>
+      "would break every later turn until the conversation is compacted. " <>
+      "Use a model whose models-list entry shows input: #{modality}, or inspect the file " <>
+      "with shell-cmd instead (e.g. `file --mime-type <path>`)."
   end
 
   defp read_file_content(full_path, caps, mounts) do
@@ -166,9 +290,10 @@ defmodule Nest.Tools.FileTools do
 
   defp too_large_error(size) do
     mb = div(size, 1_000_000)
+    cap_mb = div(@max_read_file_bytes, 1_000_000)
 
     {:error,
-     "File is #{mb} MB; file-read is capped at 100 MB. " <>
+     "File is #{mb} MB; file-read is capped at #{cap_mb} MB. " <>
        "Use file-inspect, or run shell-cmd directly on the file (e.g. " <>
        "`head -1 <path>`) for a partial read — never piped into head/tail/grep."}
   end

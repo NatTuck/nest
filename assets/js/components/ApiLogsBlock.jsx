@@ -13,7 +13,7 @@
  */
 import { useState } from "react";
 import { CopyButton } from "./CopyButton";
-import { formatApiLogsAsJson } from "../utils/formatMessage.js";
+import { apiLogReplacer, formatApiLogsAsJson } from "../utils/formatMessage.js";
 import { agentChannels } from "../channels/state";
 
 const REQUEST_LOG_ROLES = new Set(["user", "tool"]);
@@ -168,7 +168,7 @@ function LogsBlock({ logs, isExpanded, onToggle }) {
                 {new Date(log.timestamp).toLocaleTimeString()}
               </div>
               <pre className="p-3 text-xs text-gray-700 whitespace-pre-wrap break-words overflow-x-hidden bg-gray-50">
-                {JSON.stringify(log.payload, null, 2)}
+                {JSON.stringify(log.payload, apiLogReplacer, 2)}
               </pre>
             </div>
           ))}

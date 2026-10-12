@@ -33,6 +33,7 @@ defmodule Nest.LLM.MockClient do
   alias Nest.LLM.Preflight
   alias Nest.LLM.RunRequest
   alias Nest.LLM.RunResponse
+  alias Nest.Messages.Part
 
   # Per-agent state. Each test starts a unique MockClient Agent
   # named after the agent pid. The chat task (spawned by the agent)
@@ -313,26 +314,88 @@ defmodule Nest.LLM.MockClient do
     end
   end
 
+  # A user message carrying media needs the content-array form; without media
+  # the plain string form is kept so every existing payload is unchanged.
   defp message_to_wire({:user, %{parts: parts}}) do
-    %{"role" => "user", "content" => Client.text_from_parts(parts)}
+    parts = parts || []
+
+    case Enum.filter(parts, &Part.media?/1) do
+      [] ->
+        %{"role" => "user", "content" => Client.text_from_parts(parts)}
+
+      media ->
+        # Text blocks for the message's text, then the media. An empty text
+        # block is omitted rather than emitted: the array form does not need
+        # the placeholder the string form uses, and an empty text part is not
+        # valid.
+        text = Client.text_from_parts(parts)
+        blocks = if text == "", do: [], else: [%{"type" => "text", "text" => text}]
+        %{"role" => "user", "content" => blocks ++ Enum.map(media, &media_block/1)}
+    end
   end
 
   defp message_to_wire({:system, %{parts: parts}}) do
     %{"role" => "system", "content" => Client.text_from_parts(parts)}
   end
 
+  # Models Anthropic's shape (a user-role message of `tool_result` blocks),
+  # including the media fold: a media part shares its `tool_call_id` with the
+  # result it answers, so it becomes an `image` block inside that result's
+  # content array. A media part with no result to fold into rides along as a
+  # bare block rather than being dropped. If the mock dropped media, the
+  # cross-provider replay harness would be lying about what the real clients
+  # send.
   defp message_to_wire({:tool, %{parts: parts}}) do
-    content =
-      Enum.map(parts || [], fn tr ->
-        %{
-          "type" => "tool_result",
-          "tool_use_id" => tr.tool_call_id,
-          "content" => tr.content || "",
-          "is_error" => Map.get(tr, :is_error) || false
-        }
-      end)
+    parts = parts || []
+    results = Enum.filter(parts, &match?(%Part.ToolResult{}, &1))
+    media = Enum.filter(parts, &Part.media?/1)
+    media_by_id = Enum.group_by(media, & &1.tool_call_id)
 
-    %{"role" => "user", "content" => content}
+    content = Enum.map(results, &tool_result_block(&1, media_by_id))
+    orphans = orphan_media_blocks(media, results)
+
+    %{"role" => "user", "content" => content ++ orphans}
+  end
+
+  defp tool_result_block(tr, media_by_id) do
+    %{
+      "type" => "tool_result",
+      "tool_use_id" => tr.tool_call_id,
+      "content" => tool_result_content(tr, Map.get(media_by_id, tr.tool_call_id, [])),
+      "is_error" => Map.get(tr, :is_error) || false
+    }
+  end
+
+  # A media part with no result to fold into rides along as a bare block rather
+  # than being dropped. Unreachable from the batch path, which always emits the
+  # pair.
+  defp orphan_media_blocks(media, results) do
+    result_ids = MapSet.new(results, & &1.tool_call_id)
+
+    media
+    |> Enum.reject(&MapSet.member?(result_ids, &1.tool_call_id))
+    |> Enum.map(&media_block/1)
+  end
+
+  defp tool_result_content(tr, []), do: tr.content || ""
+
+  defp tool_result_content(tr, media) do
+    [%{"type" => "text", "text" => tr.content || ""} | Enum.map(media, &media_block/1)]
+  end
+
+  defp media_block(%Part.Media{modality: :image, media_type: media_type, data: data})
+       when is_binary(media_type) and is_binary(data) do
+    %{
+      "type" => "image",
+      "source" => %{"type" => "base64", "media_type" => media_type, "data" => data}
+    }
+  end
+
+  # A restored part this build cannot send. The mock has to produce the same
+  # thing the real clients do, or the cross-provider replay harness would be
+  # lying about what goes on the wire.
+  defp media_block(%Part.Media{} = media) do
+    %{"type" => "text", "text" => Client.media_omitted_note(media)}
   end
 
   defp tool_call_to_wire(%{id: id, name: name, arguments: args}) do

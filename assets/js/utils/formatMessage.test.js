@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { messageToMarkdown, formatApiLogsAsJson } from "./formatMessage.js";
+import {
+  messageToMarkdown,
+  formatApiLogsAsJson,
+  apiLogReplacer,
+  MAX_INLINE_LOG_STRING,
+} from "./formatMessage.js";
 
 describe("messageToMarkdown — user messages", () => {
   it("returns the user content with the [mode: X]\\n prefix stripped", () => {
@@ -629,5 +634,105 @@ describe("formatApiLogsAsJson", () => {
   it("handles a missing payload by stringifying null", () => {
     const out = formatApiLogsAsJson([{ id: "a", timestamp: "t", type: "x" }]);
     expect(out).toBe("null");
+  });
+
+  it("elides a media payload in place, naming its length", () => {
+    // A request carrying an image has one multi-megabyte base64 string in it.
+    // The block would build and lay out all of it, so it is elided — visibly,
+    // with its length, rather than silently.
+    const url = `data:image/png;base64,${"A".repeat(4_000)}`;
+
+    const payload = {
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "image_url", image_url: { url } }],
+        },
+      ],
+    };
+
+    const out = formatApiLogsAsJson([
+      { id: "a", timestamp: "t", type: "request", payload },
+    ]);
+
+    expect(out).toContain(`[base64 payload elided: ${url.length} characters]`);
+    // The rest of the request shape is untouched, so the log still shows what
+    // was sent apart from the bytes themselves.
+    expect(out).toContain('"role": "user"');
+    expect(out).toContain('"type": "image_url"');
+    expect(out).not.toContain("A".repeat(4_000));
+  });
+});
+
+describe("messageToMarkdown — media parts", () => {
+  const PNG =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==";
+
+  it("emits a reference line, never the payload", () => {
+    const out = messageToMarkdown({
+      role: "tool",
+      parts: [
+        {
+          kind: "tool_result",
+          toolCallId: "c1",
+          name: "file-read",
+          content: "Read it",
+          isError: false,
+        },
+        {
+          kind: "media",
+          toolCallId: "c1",
+          modality: "image",
+          mediaType: "image/png",
+          bytes: 68,
+          data: PNG,
+          path: "shot.png",
+        },
+      ],
+    });
+
+    expect(out).toContain("**Tool media: image/png · 68 bytes · shot.png**");
+    // The bytes never reach the clipboard: a data URI is not useful there and
+    // would swamp everything else in the copy.
+    expect(out).not.toContain(PNG);
+    expect(out).not.toContain("base64");
+  });
+
+  it("names what is missing rather than emitting a bare marker", () => {
+    const out = messageToMarkdown({
+      role: "tool",
+      parts: [{ kind: "media", toolCallId: "c1", modality: "image" }],
+    });
+
+    expect(out).toContain("**Tool media: type not reported**");
+  });
+});
+
+describe("apiLogReplacer", () => {
+  it("leaves a short base64 string alone", () => {
+    const short = "AAAA";
+    expect(short.length).toBeLessThanOrEqual(MAX_INLINE_LOG_STRING);
+    expect(apiLogReplacer("data", short)).toBe(short);
+  });
+
+  it("leaves a long string that is not a payload alone", () => {
+    // Prose is long enough to be caught by a naive length check; its spaces
+    // break the base64 run, which is what distinguishes it from a payload.
+    const prose = "the quick brown fox ".repeat(300);
+    expect(prose.length).toBeGreaterThan(MAX_INLINE_LOG_STRING);
+    expect(apiLogReplacer("text", prose)).toBe(prose);
+  });
+
+  it("elides a bare base64 payload", () => {
+    const payload = "iVBORw0KGgo".repeat(300);
+    expect(apiLogReplacer("data", payload)).toBe(
+      `[base64 payload elided: ${payload.length} characters]`,
+    );
+  });
+
+  it("passes non-string values through unchanged", () => {
+    expect(apiLogReplacer("n", 42)).toBe(42);
+    expect(apiLogReplacer("b", true)).toBe(true);
+    expect(apiLogReplacer("n", null)).toBe(null);
   });
 });

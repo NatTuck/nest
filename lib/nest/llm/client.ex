@@ -278,6 +278,24 @@ defmodule Nest.LLM.Client do
   end
 
   @doc """
+  The text a provider wire carries in place of a media part this build cannot
+  send: one whose modality it does not know (a row restored from a build with a
+  wider vocabulary), or one with no usable type or payload.
+
+  Such a part is still rendered in the panel, so it must not simply vanish from
+  the request either — the model is told, in text, that something it cannot
+  receive is part of the history. A text part is valid on the user role for
+  every client here, so the request stays well-formed.
+  """
+  @spec media_omitted_note(Part.Media.t()) :: String.t()
+  def media_omitted_note(%Part.Media{} = media) do
+    type = media.media_type || "type not reported"
+
+    "[#{type} attachment omitted from this request: " <>
+      "this build cannot send modality #{inspect(media.modality)}]"
+  end
+
+  @doc """
   Strip a trailing `/v1` from a base URL only when the endpoint
   already includes it (e.g. `/v1/messages`). For endpoints like
   `/chat/completions`, the `/v1` in the base URL is preserved.

@@ -88,6 +88,18 @@ defmodule Nest.Messages.Sanitize do
   defp sanitize_struct(%Part.Refusal{refusal: refusal} = part),
     do: %{part | refusal: text(refusal)}
 
+  # `data` is base64 by construction, so it is deliberately left alone:
+  # `text/1` would corrupt it if it ever were not valid base64, and running
+  # `valid_utf8/1` over it is an O(n) copy that can only ever be a no-op. The
+  # two fields that reach the UI are sanitised normally. This clause exists
+  # rather than letting the struct fall to the catch-all so that a future
+  # field cannot silently skip sanitisation.
+  #
+  # `modality` needs none either: it is an atom this build produced, or a
+  # string that came out of a jsonb column and is therefore already valid.
+  defp sanitize_struct(%Part.Media{} = part),
+    do: %{part | media_type: text(part.media_type), path: text(part.path)}
+
   # System/User/Assistant/Tool carry `parts` plus `metadata` and
   # `api_logs`; a compaction message carries neither text nor parts, so
   # it falls through to the catch-all.

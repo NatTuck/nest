@@ -25,6 +25,7 @@ import { MessageContent } from "./MessageContent.jsx";
 import { ThinkingBlock } from "./ThinkingBlock.jsx";
 import { ToolCalls } from "./ToolCalls.jsx";
 import { ToolResults } from "./ToolResults.jsx";
+import { ToolMedia } from "./ToolMedia.jsx";
 import { ApiLogsBlock } from "./ApiLogsBlock.jsx";
 import { SystemMessageContent } from "./SystemMessageContent.jsx";
 import { CompactionMarkerBox } from "./CompactionMarker.jsx";
@@ -35,6 +36,7 @@ import {
   textPartsFor,
   toolCallsFromParts,
   toolResultsFromParts,
+  mediaFromParts,
 } from "../utils/messageParts.js";
 import { formatTimestamp } from "../utils/formatTimestamp";
 
@@ -112,6 +114,11 @@ function MessageBubble({ message }) {
                   message.mode,
                 ),
               },
+              // Media is appended rather than replaced: the text part above is
+              // synthesised from `textFromParts`, which is text-only, so
+              // without this a user-side attachment would be unrepresentable
+              // rather than merely unrendered.
+              ...(message.parts ?? []).filter((p) => p && p.kind === "media"),
             ]}
             isPartial={false}
             className="text-xs text-gray-700"
@@ -126,6 +133,10 @@ function MessageBubble({ message }) {
             />
             <ToolCalls toolCalls={toolCallsFromParts(message.parts)} />
             <ToolResults toolResults={toolResultsFromParts(message.parts)} />
+            {/* This branch's `MessageContent` gets text only, so the media is
+                rendered beside it; the user branch above hands its media to
+                `MessageContent` instead. */}
+            <ToolMedia media={mediaFromParts(message.parts)} />
             <ApiLogsBlock
               apiLogs={message.apiLogs}
               messageRole={message.role}
