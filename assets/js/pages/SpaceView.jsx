@@ -11,6 +11,7 @@
 import { Link, useParams } from "react-router-dom";
 import { useStore } from "../store";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
+import { StatusDot } from "../components/StatusDot";
 
 /**
  * Space View component
@@ -76,13 +77,7 @@ export function SpaceView() {
                 className="flex items-center justify-between"
               >
                 <div className="flex items-center gap-3">
-                  <div
-                    className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${
-                      agent.status === "streaming"
-                        ? "bg-green-500 animate-pulse"
-                        : "bg-gray-300"
-                    } ${agent.status === "executing_tools" ? "bg-amber-500 animate-pulse" : ""}`}
-                  />
+                  <StatusDot status={agent.status} className="w-2.5 h-2.5" />
                   <span className="text-sm font-medium text-gray-800">
                     {agent.name}
                   </span>

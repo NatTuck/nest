@@ -16,6 +16,7 @@ defmodule Nest.Agents.Supervisor do
   require Logger
 
   alias Nest.Agents.{Agent, ChildRegistry, NameGenerator, Registry}
+  alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.Turn.GiveUpDelivery
   alias Nest.Agents.PersistedAgent
@@ -373,13 +374,14 @@ defmodule Nest.Agents.Supervisor do
     result
   end
 
-  # Tell every connected lobby client that `name` was archived so the
-  # sidebar can move it into the per-space "Archived" group without a
-  # reload. Broadcast for each agent in the subtree (the recursion
-  # above archives descendants too), matching `SubAgent`'s
-  # `agent:created` notification style.
+  # Tell the lobby clients that can see `space_id` that `name` was archived so
+  # the sidebar can move it into the per-space "Archived" group without a
+  # reload. Broadcast for each agent in the subtree (the recursion above
+  # archives descendants too), matching `SubAgent`'s `agent:created` style.
+  # The frame rides the per-space topic (#41), so it reaches only clients whose
+  # user can see this space.
   defp broadcast_agent_archived(space_id, name) do
-    NestWeb.Endpoint.broadcast("lobby", "agent:archived", %{
+    Broadcasts.agent_archived(space_id, %{
       "space_id" => space_id,
       "name" => name
     })

@@ -37,6 +37,45 @@ defmodule Nest.Agents.Agent.Broadcasts do
   @spec topic(integer(), String.t()) :: String.t()
   def topic(space_id, name), do: "agent:#{space_id}:#{name}"
 
+  @doc """
+  The per-space PubSub topic. Frames a lobby client needs for the sidebar
+  (agent status, and — since #41 — agent lifecycle) are broadcast here so a
+  client only receives them for spaces it is subscribed to; see
+  `NestWeb.LobbyChannel`.
+  """
+  @spec space_topic(integer()) :: String.t()
+  def space_topic(space_id), do: "space:#{space_id}"
+
+  @doc """
+  Announce a newly spawned agent on its space's topic (#41).
+
+  Every lobby channel whose user can see `space_id` subscribes to that
+  topic and forwards the frame to its own client, so an agent's name
+  reaches exactly the clients that can see its space. The pre-#41 global
+  `"lobby"` broadcast reached every connected user, whatever space they
+  were in.
+  """
+  @spec agent_created(integer(), map()) :: :ok
+  def agent_created(space_id, payload), do: lifecycle(space_id, :agent_created, payload)
+
+  @doc """
+  Announce that an agent — and, because archiving recurses, its whole
+  subtree — was archived. See `agent_created/2` for the topic and audience.
+  """
+  @spec agent_archived(integer(), map()) :: :ok
+  def agent_archived(space_id, payload), do: lifecycle(space_id, :agent_archived, payload)
+
+  @doc """
+  Announce that an agent's model or workspace changed. See
+  `agent_created/2` for the topic and audience.
+  """
+  @spec agent_updated(integer(), map()) :: :ok
+  def agent_updated(space_id, payload), do: lifecycle(space_id, :agent_updated, payload)
+
+  defp lifecycle(space_id, tag, payload) do
+    Phoenix.PubSub.broadcast(PubSub, space_topic(space_id), {tag, payload})
+  end
+
   def message(state, message) do
     Phoenix.PubSub.broadcast(PubSub, topic(state.space_id, state.name), {:chat_message, message})
   end
@@ -168,6 +207,15 @@ defmodule Nest.Agents.Agent.Broadcasts do
       PubSub,
       topic(state.space_id, state.name),
       {:chat_status, payload}
+    )
+
+    # The sidebar's flat agent list follows status from here: the per-agent
+    # topic above only reaches clients *viewing* this agent, so a client
+    # would otherwise never learn that another agent went busy (#53).
+    Phoenix.PubSub.broadcast(
+      PubSub,
+      space_topic(state.space_id),
+      {:agent_status, %{space_id: state.space_id, name: state.name, status: payload.status}}
     )
   end
 

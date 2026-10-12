@@ -51,6 +51,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
   import Nest.Agents.AgentTurnTestHelpers
 
   alias Nest.Agents.Agent
+  alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Registry, as: AgentsRegistry
@@ -113,19 +114,17 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
     release_llm(llm1)
 
     # Deterministic wait: `broadcast_subagent_creation/2` broadcasts
-    # `agent:created` right after the child is registered, inside the parent's
+    # `agent:created` on the space topic (#41) right after the child is
+    # registered, inside the parent's
     # `handle_spawn_request/3` — before the tool worker even gets its reply. The
     # parent then parks in the stubbed `Nest.Agents.chat/3` (see
     # `stub_child_chat/0`), so it is still `:executing_tools` when we cast the
     # child's completion below, and the cast is in its mailbox before the tool
     # worker can deliver the batch's result. Filter on `parentName` so
     # concurrent tests' broadcasts don't match.
-    Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
+    Phoenix.PubSub.subscribe(Nest.PubSub, space_topic())
 
-    assert_receive %Phoenix.Socket.Broadcast{
-                     event: "agent:created",
-                     payload: %{"name" => child_name, "parentName" => ^parent_name}
-                   },
+    assert_receive {:agent_created, %{"name" => child_name, "parentName" => ^parent_name}},
                    5_000
 
     assert_receive {:child_chat_blocked, parent_pid}, 5_000
@@ -314,5 +313,11 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
       })
 
     vid
+  end
+
+  # #41: `agent:created` rides the per-space topic, so a test that wants to see
+  # it subscribes to its own space rather than to the shared "lobby" topic.
+  defp space_topic do
+    Broadcasts.space_topic(AgentTestHelpers.current_space_id())
   end
 end

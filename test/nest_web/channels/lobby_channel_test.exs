@@ -377,7 +377,9 @@ defmodule NestWeb.LobbyChannelTest do
       # test has exited its sandbox checkout.
       AgentTestHelpers.ensure_cleanup(name)
 
-      assert_broadcast "agent:created", %{
+      # The frame rides the space topic (#41) and the channel forwards it to
+      # this client, so it arrives as a push on the socket.
+      assert_push "agent:created", %{
         "name" => ^name,
         "space_id" => ^space_id,
         "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
@@ -404,7 +406,7 @@ defmodule NestWeb.LobbyChannelTest do
       assert model_name(info.model) == "qwen3.5-plus"
       assert model_provider(info.model) == "model-studio"
 
-      assert_broadcast "agent:created", %{
+      assert_push "agent:created", %{
         "name" => ^name,
         "model" => %{"name" => "qwen3.5-plus", "provider" => "model-studio"}
       }

@@ -29,6 +29,7 @@ export function joinLobby(onOk, onError) {
     store.setAgents(payload.agents || []);
     store.setArchivedAgents(payload.archived_agents || []);
     store.setBrokenAgents(payload.broken_agents || []);
+    store.applyAgentStatuses(payload.broken_agents || []);
     store.setModels(payload.models || []);
     store.setVocations(payload.vocations || []);
     store.setProviders(payload.providers || []);
@@ -61,6 +62,7 @@ export function joinLobby(onOk, onError) {
   lobbyChannel.on("broken_agents_updated", (payload) => {
     const store = getStore();
     store.setBrokenAgents(payload.broken_agents || []);
+    store.applyAgentStatuses(payload.broken_agents || []);
   });
 
   lobbyChannel.on("agent:created", (payload) => {
@@ -104,6 +106,18 @@ export function joinLobby(onOk, onError) {
     }
     if (payload?.name && payload?.workspace_path !== undefined) {
       store.applyAgentWorkspaceUpdate(payload.name, payload.workspace_path);
+    }
+  });
+
+  // A space-scoped status frame (#53). Only spaces this client is
+  // subscribed to deliver it, so a frame for an unknown agent is a no-op.
+  lobbyChannel.on("agent:status", (payload) => {
+    if (
+      payload?.name != null &&
+      payload?.space_id != null &&
+      payload?.status != null
+    ) {
+      getStore().applyAgentStatus(payload);
     }
   });
 
