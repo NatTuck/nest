@@ -31,6 +31,7 @@ defmodule Nest.ChatModel.ListModelsTest do
   """
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
   import Mimic
 
   alias Nest.ChatModel
@@ -168,6 +169,100 @@ defmodule Nest.ChatModel.ListModelsTest do
 
       assert [%{name: "with-limit", source: :vllm, limit: 4096}] =
                ChatModel.list_models_with_limits(provider)
+    end
+  end
+
+  describe "list_models_with_metadata/1" do
+    test "returns one entry per model with source, limit and multi_modal independently nullable" do
+      provider = %DotConfig.Provider{
+        name: "metadata-shape",
+        base_url: "http://api.test/v1",
+        api_key: "k",
+        protocol: "openai",
+        auto_models: true,
+        tags: [],
+        models: []
+      }
+
+      body = %{
+        "data" => [
+          %{"id" => "text-only-no-limit"},
+          %{"id" => "with-limit", "max_model_len" => 4096},
+          %{"id" => "image-no-limit", "input_modalities" => ["text", "image"]},
+          %{"id" => "image-and-limit", "max_model_len" => 8192, "input_modalities" => ["image"]}
+        ]
+      }
+
+      stub(Req, :get, fn _url, _opts -> {:ok, %{status: 200, body: body}} end)
+
+      assert [
+               %{name: "text-only-no-limit", source: nil, limit: nil, multi_modal: nil},
+               %{name: "with-limit", source: :vllm, limit: 4096, multi_modal: nil},
+               %{
+                 name: "image-no-limit",
+                 source: nil,
+                 limit: nil,
+                 multi_modal: %{"input" => ["image"]}
+               },
+               %{
+                 name: "image-and-limit",
+                 source: :vllm,
+                 limit: 8192,
+                 multi_modal: %{"input" => ["image"]}
+               }
+             ] = ChatModel.list_models_with_metadata(provider)
+
+      # The limits projection keeps its own contract — limit-carrying
+      # entries only. Folding `multi_modal` into *that* filter would
+      # silently drop `image-no-limit`, which is the regression pinned
+      # by the two entry lists below.
+      assert ChatModel.list_models_with_limits(provider) == [
+               %{name: "with-limit", source: :vllm, limit: 4096},
+               %{name: "image-and-limit", source: :vllm, limit: 8192}
+             ]
+    end
+
+    test "drops entries with no usable id, and returns [] when the fetch fails" do
+      provider = %DotConfig.Provider{
+        name: "no-id-shape",
+        base_url: "http://api.test/v1",
+        api_key: "k",
+        protocol: "openai",
+        auto_models: true,
+        tags: [],
+        models: []
+      }
+
+      body = %{
+        "data" => [
+          %{"max_model_len" => 4096},
+          %{"name" => "named-only", "input_modalities" => ["image"]},
+          "not-a-model"
+        ]
+      }
+
+      stub(Req, :get, fn _url, _opts -> {:ok, %{status: 200, body: body}} end)
+
+      assert [
+               %{
+                 name: "named-only",
+                 source: nil,
+                 limit: nil,
+                 multi_modal: %{"input" => ["image"]}
+               }
+             ] = ChatModel.list_models_with_metadata(provider)
+
+      stub(Req, :get, fn _url, _opts -> {:error, :econnrefused} end)
+
+      # A failed fetch is a logged, empty result rather than an error
+      # tuple: discovery is best-effort. Capture the line so it does
+      # not escape into the test log.
+      log =
+        capture_log(fn ->
+          assert ChatModel.list_models_with_metadata(provider) == []
+        end)
+
+      assert log =~ "Failed to list models from no-id-shape"
     end
   end
 

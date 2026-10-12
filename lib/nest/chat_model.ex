@@ -231,10 +231,36 @@ defmodule Nest.ChatModel do
   end
 
   @doc """
-  Like `list_models/1`, but returns one entry per model that
-  carries both the name and the extracted context-limit
-  source + value. Used by `Nest.Models` to populate its
-  context-limit cache alongside the merged model list.
+  Like `list_models/1`, but returns one entry per model carrying
+  **every** field the discovery pass could extract from the body:
+
+      %{name: String.t(), source: source() | nil,
+        limit: pos_integer() | nil, multi_modal: map() | nil}
+
+  `source`/`limit` come from `Discover.extract_limit_from_model/1`
+  and `multi_modal` from `Discover.extract_multi_modal_from_model/1`.
+  Each of the three is **independently nullable**, and an entry is
+  emitted for every model with a usable id — a model that reports
+  image input but no context limit still gets an entry, because
+  filtering this pass by "has a limit" would silently drop the
+  capability.
+
+  This is the single `/models` fetch `Nest.Models` builds both of its
+  per-model caches from. Entries with no usable id are dropped; a
+  failure to fetch any models returns `[]` so the caller can populate
+  only the models it found.
+  """
+  @spec list_models_with_metadata(DotConfig.Provider.t()) :: [map()]
+  def list_models_with_metadata(%DotConfig.Provider{} = provider) do
+    case fetch_models_body(provider) do
+      {:ok, body} -> model_entries_from_body(body)
+      :error -> []
+    end
+  end
+
+  @doc """
+  Like `list_models_with_metadata/1`, but returns only the entries
+  that carry a recognized context-limit source + value.
 
   Each entry has shape:
 
@@ -243,17 +269,20 @@ defmodule Nest.ChatModel do
   Missing / unparseable entries are silently dropped; a
   failure to fetch any models returns `[]` so the caller
   can populate only the names it found.
+
+  Retained as a public projection for callers that want only the
+  limits (the `scripts/minimax-test.exs` diagnostic does). Note that
+  it **fetches the `/models` body itself**: a caller that also needs
+  the names or the multi-modal capability must call
+  `list_models_with_metadata/1` once instead, or the provider pays a
+  second request (issue #48's duplicate GET).
   """
   @spec list_models_with_limits(DotConfig.Provider.t()) :: [map()]
   def list_models_with_limits(%DotConfig.Provider{} = provider) do
-    case fetch_models_body(provider) do
-      {:ok, body} ->
-        body
-        |> list_models_with_limits_from_body()
-
-      :error ->
-        []
-    end
+    provider
+    |> list_models_with_metadata()
+    |> Enum.reject(&is_nil(&1.source))
+    |> Enum.map(&Map.take(&1, [:name, :source, :limit]))
   end
 
   defp fetch_models_body(provider) do
@@ -305,17 +334,46 @@ defmodule Nest.ChatModel do
     structure.discovery_base_url <> structure.models_path
   end
 
-  defp list_models_with_limits_from_body(body) do
+  # One entry per model, with every field the discovery pass could
+  # extract — `source`, `limit` and `multi_modal` are each
+  # independently nullable. Entries whose id is missing (or is not a
+  # string) are dropped.
+  #
+  # Deliberately *not* filtered by "has a recognized limit": a model
+  # that reports image input but no context limit must survive, or the
+  # capability is lost. `list_models_with_limits/1` applies that filter
+  # for its own callers.
+  defp model_entries_from_body(body) do
     body
     |> extract_model_entries()
     |> Enum.flat_map(fn entry ->
-      with name when is_binary(name) <- Discover.model_id(entry),
-           {source, limit} when source != nil <- Discover.extract_limit_from_model(entry) do
-        [%{name: name, source: source, limit: limit}]
-      else
-        _ -> []
+      case Discover.model_id(entry) do
+        name when is_binary(name) ->
+          {source, limit} = limit_parts(entry)
+
+          [
+            %{
+              name: name,
+              source: source,
+              limit: limit,
+              multi_modal: Discover.extract_multi_modal_from_model(entry)
+            }
+          ]
+
+        _ ->
+          []
       end
     end)
+  end
+
+  # `{source, limit}` when the body names a recognized limit field,
+  # `{nil, nil}` otherwise — `extract_limit_from_model/1` reports the
+  # miss as a bare `nil`.
+  defp limit_parts(entry) do
+    case Discover.extract_limit_from_model(entry) do
+      {source, limit} -> {source, limit}
+      nil -> {nil, nil}
+    end
   end
 
   defp log_list_status(provider, status) do
