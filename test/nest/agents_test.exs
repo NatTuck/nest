@@ -211,12 +211,16 @@ defmodule Nest.AgentsTest do
 
       Mimic.stub(Nest.Agents.Agent, :pre_load_heal, fn _attrs -> raise "heal exploded" end)
 
-      assert_raise RuntimeError, "heal exploded", fn ->
-        Agents.create_agent(space_id, %{name: "qwen3.5-plus", provider: "model-studio"},
-          name: name,
-          vocation_id: AgentTestHelpers.vocation_id_for_test()
-        )
-      end
+      # The rollback logs a warning naming the row it removed; capture it so
+      # the suite's output stays clean.
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert_raise RuntimeError, "heal exploded", fn ->
+          Agents.create_agent(space_id, %{name: "qwen3.5-plus", provider: "model-studio"},
+            name: name,
+            vocation_id: AgentTestHelpers.vocation_id_for_test()
+          )
+        end
+      end)
 
       assert Nest.Persistence.fetch_agent(space_id, name) == {:error, :not_found}
       assert message_count(space_id) == 0
