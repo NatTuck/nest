@@ -7,12 +7,12 @@ defmodule Nest.Agents.Agent.ToolLoop do
   response with `tool_calls` is received. Responsibilities:
 
     * Split the batch by tool — sub-agent tools (`agents-spawn`,
-      `agents-query`, `agents-send`, `agents-wait`, `agents-list`,
-      `agents-list-archived`, `agents-archive`, `agents-unarchive`,
-      `agents-batch`, `models-list`) are routed through their
-      `run_*` handlers, which run in this worker and never in the
-      agent GenServer; everything else is delegated to
-      `Nest.Agents.Agent.BatchSizer`.
+      `agents-query`, `agents-send`, `agents-wait-for-idle`,
+      `agents-last-message`, `agents-list`, `agents-list-archived`,
+      `agents-archive`, `agents-unarchive`, `agents-batch`,
+      `models-list`) are routed through their `run_*` handlers, which run
+      in this worker and never in the agent GenServer; everything else is
+      delegated to `Nest.Agents.Agent.BatchSizer`.
     * Merge the two halves back into input order.
 
   `context-compact` is no longer routed through this module —
@@ -28,8 +28,10 @@ defmodule Nest.Agents.Agent.ToolLoop do
 
   alias Nest.Agents.Agent.BatchCoordinator
   alias Nest.Agents.Agent.BatchSizer
+  alias Nest.Agents.Agent.LastMessage
   alias Nest.Agents.Agent.SubAgentResults
-  alias Nest.Agents.Agent.WaitLoop
+  alias Nest.Agents.Agent.WaitForIdle
+  alias Nest.Agents.Agent.Watch
   alias Nest.Agents.Registry
   alias Nest.DotConfig
   alias Nest.Messages.ToolCall
@@ -132,7 +134,8 @@ defmodule Nest.Agents.Agent.ToolLoop do
               "agents-unarchive",
               "agents-batch",
               "agents-send",
-              "agents-wait",
+              "agents-wait-for-idle",
+              "agents-last-message",
               "models-list"
             ],
        do: true
@@ -142,7 +145,13 @@ defmodule Nest.Agents.Agent.ToolLoop do
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-spawn"} = tc), do: run_spawn_agent(ctx, tc)
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-query"} = tc), do: run_query_agent(ctx, tc)
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-send"} = tc), do: run_send_agent(ctx, tc)
-  defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-wait"} = tc), do: run_wait_agents(ctx, tc)
+
+  defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-wait-for-idle"} = tc),
+    do: run_wait_for_idle(ctx, tc)
+
+  defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-last-message"} = tc),
+    do: run_last_message(ctx, tc)
+
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-list"} = tc), do: run_list_agents(ctx, tc)
 
   defp run_sub_agent_tool(ctx, %ToolCall{name: "agents-list-archived"} = tc),
@@ -198,8 +207,9 @@ defmodule Nest.Agents.Agent.ToolLoop do
   defp spawn_confirmation(spawned_name, _query) do
     "Spawned agent #{spawned_name} with your query. Its answer will arrive as a " <>
       "message in your inbox; if it fails or is stopped before it answers, a " <>
-      "runtime notice saying so will arrive instead. Use `agents-wait` to wait " <>
-      "for it to finish."
+      "runtime notice saying so will arrive instead. Use `agents-wait-for-idle` " <>
+      "to be notified when it finishes, and `agents-last-message` to read its " <>
+      "message."
   end
 
   # Extract the `agents-spawn` args into an opts map, applying defaults. Kept
@@ -401,7 +411,8 @@ defmodule Nest.Agents.Agent.ToolLoop do
   defp query_confirmation(target, :delivered) do
     "Query delivered to #{target}, which now owes you a reply: it stays in its " <>
       "turn until it answers, and its answer will arrive as a message in your " <>
-      "inbox. Use `agents-wait` to wait for it."
+      "inbox. Use `agents-wait-for-idle` to be notified when it answers, and " <>
+      "`agents-last-message` to read its message."
   end
 
   defp query_confirmation(target, :queued) do
@@ -475,17 +486,42 @@ defmodule Nest.Agents.Agent.ToolLoop do
   defp refusal_message(verb, target, reason),
     do: "Could not #{verb} #{target}: #{inspect(reason)}"
 
-  # `agents-wait`: block in this worker until one of the target agents
-  # goes idle (or the wall-clock `timeout` expires), then report that
-  # agent and its stop message. The wait lives in `WaitLoop` so the
-  # agent GenServer is never blocked by it.
-  defp run_wait_agents(ctx, %ToolCall{} = tc) do
-    case WaitLoop.run(ctx, tc) do
+  # `agents-wait-for-idle`: synchronisation only (issue #62). By default it
+  # registers interest and returns immediately, leaving the agent idle so a
+  # human can message it (issue #54); the watcher delivers a bare notice when
+  # the event fires. `block: true` runs the wait in this worker instead and
+  # returns the partition. Neither mode carries the target's message.
+  defp run_wait_for_idle(ctx, %ToolCall{} = tc) do
+    if extract_bool_arg(tc, "block", false) do
+      blocking_wait(ctx, tc)
+    else
+      case Watch.register_call(ctx, tc) do
+        {:ok, content} -> build_tool_result(tc, "agents-wait-for-idle", content)
+        {:error, content} -> build_tool_result(tc, "agents-wait-for-idle", content, true)
+      end
+    end
+  end
+
+  defp blocking_wait(ctx, %ToolCall{} = tc) do
+    case WaitForIdle.run(ctx, tc) do
       {:ok, content} ->
-        build_tool_result(tc, "agents-wait", SubAgentResults.bound(content, tc, ctx))
+        build_tool_result(tc, "agents-wait-for-idle", SubAgentResults.bound(content, tc, ctx))
 
       {:error, content} ->
-        build_tool_result(tc, "agents-wait", content, true)
+        build_tool_result(tc, "agents-wait-for-idle", content, true)
+    end
+  end
+
+  # `agents-last-message`: the explicit content fetch (issue #62). Reads the
+  # pending delivery from `name` out of the caller's own inbox, mid-turn, and
+  # consumes it.
+  defp run_last_message(ctx, %ToolCall{} = tc) do
+    case LastMessage.run(ctx, tc) do
+      {:ok, content} ->
+        build_tool_result(tc, "agents-last-message", SubAgentResults.bound(content, tc, ctx))
+
+      {:error, content} ->
+        build_tool_result(tc, "agents-last-message", content, true)
     end
   end
 

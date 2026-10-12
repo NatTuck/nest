@@ -25,6 +25,7 @@ defmodule NestWeb.LobbyChannel do
 
   alias Nest.Accounts
   alias Nest.Agents
+  alias Nest.Agents.Agent.Broadcasts
   alias Nest.Blueprints
   alias Nest.Models
   alias Nest.Spaces
@@ -60,6 +61,23 @@ defmodule NestWeb.LobbyChannel do
   def handle_info(:after_join, socket) do
     user = socket.assigns.current_user
 
+    # Assign `user_id` before subscribing to anything. Every frame handler
+    # below keys off `socket.assigns.user_id` — notably the
+    # `{:spaces_changed, _}` guard, which would otherwise fall through to the
+    # drop clause — so the assign must not be something a later reader can
+    # outrun. Today nothing can be handled between here and the end of this
+    # function (`:after_join` is a single `handle_info/2`, and `join/3`
+    # self-sends it before any client push can arrive), but doing it first
+    # keeps that true by construction rather than by the accident that this
+    # body has not been split up yet.
+    socket = assign(socket, :user_id, user.id)
+
+    # Subscribe BEFORE the reads below. A frame that lands while we are
+    # reading is queued in this process's mailbox and handled after the
+    # `init` push, so the client always applies the newer state last.
+    Phoenix.PubSub.subscribe(Nest.PubSub, Spaces.user_topic(user.id))
+    space_subs = subscribe_space_topics(user.id)
+
     spaces = Spaces.list_for_user(user.id)
     archived_spaces = Spaces.list_archived_for_user(user.id)
     agents = visible_agents_across_spaces(spaces, user.id)
@@ -88,7 +106,7 @@ defmodule NestWeb.LobbyChannel do
 
     Phoenix.PubSub.subscribe(Nest.PubSub, "models")
 
-    socket = assign(socket, :user_id, user.id)
+    socket = assign(socket, :space_subs, space_subs)
 
     fetch_broken_agents_async(socket, spaces, user.id)
     {:noreply, socket}
@@ -121,6 +139,83 @@ defmodule NestWeb.LobbyChannel do
     {:noreply, assign(socket, :pending_rescan, rest)}
   end
 
+  # A space's agent changed status. The frame arrives on the space topic, so
+  # only clients whose user can see that space are reached (#53).
+  @impl true
+  def handle_info({:agent_status, payload}, socket) do
+    push(socket, "agent:status", payload)
+    {:noreply, socket}
+  end
+
+  # Agent lifecycle (#41). Same shape as `{:agent_status, _}`: the frame
+  # arrives on the space topic the channel subscribed to, and `push/3`
+  # delivers it to this client only. Every one of the user's sessions holds
+  # its own subscription, so they all get it — and no other user does, which
+  # is what the pre-#41 global `"lobby"` broadcast could not promise.
+  @impl true
+  def handle_info({:agent_created, payload}, socket) do
+    push(socket, "agent:created", payload)
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_info({:agent_archived, payload}, socket) do
+    push(socket, "agent:archived", payload)
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_info({:agent_updated, payload}, socket) do
+    push(socket, "agent:updated", payload)
+    {:noreply, socket}
+  end
+
+  # This user's space *set* changed — another session created/archived/
+  # unarchived/deleted a space (or, once sharing lands, a membership
+  # change). Re-read the visible set and make our subscriptions match.
+  # Unlike a `broadcast/3` on this channel's own topic, a PubSub frame
+  # arrives here as a plain message, so the session that made the change
+  # sees it too.
+  @impl true
+  def handle_info({:spaces_changed, user_id}, socket) when user_id == socket.assigns.user_id do
+    {:noreply, reconcile_space_subscriptions(socket)}
+  end
+
+  def handle_info({:spaces_changed, _user_id}, socket), do: {:noreply, socket}
+
+  # Space lifecycle rides the per-user topic (#41) for the same reason the
+  # agent frames ride the space topic: `space:archived` names a space, and
+  # only its owner's sessions should hear about it.
+  @impl true
+  def handle_info({:space_created, payload}, socket) do
+    push(socket, "space:created", payload)
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_info({:space_archived, payload}, socket) do
+    push(socket, "space:archived", payload)
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_info({:space_unarchived, payload}, socket) do
+    push(socket, "space:unarchived", payload)
+    {:noreply, socket}
+  end
+
+  # Anything else on a topic we subscribed to is a frame we do not know.
+  # Without this clause a single unrecognised PubSub message would raise a
+  # `FunctionClauseError` in `handle_info/2` and take the whole channel
+  # down, disconnecting the client's lobby. The channel subscribes to two
+  # topic families now (per-space and per-user), so an unknown tag is a
+  # live possibility rather than a theoretical one: log it and carry on.
+  @impl true
+  def handle_info(message, socket) do
+    Logger.warning("LobbyChannel ignoring unknown PubSub frame: #{inspect(message)}")
+    {:noreply, socket}
+  end
+
   # All `handle_in` clauses grouped together so the compiler
   # is happy with the multi-head pattern matching.
   @impl true
@@ -134,6 +229,10 @@ defmodule NestWeb.LobbyChannel do
 
     case Spaces.create_space_with_root_agent(user_id, attrs) do
       {:ok, %Spaces.Space{} = space, agent_name} ->
+        # Subscribe to the new space's topic BEFORE announcing the agent:
+        # the announcement rides the space topic, and a channel does not
+        # see its own broadcast, so this session must be listening first.
+        socket = reconcile_space_subscriptions(socket)
         broadcast_space_created(socket, space, agent_name, model, vocation, attrs)
 
         {:reply, {:ok, %{"space_id" => space.id, "name" => agent_name, "slug" => space.slug}},
@@ -286,6 +385,41 @@ defmodule NestWeb.LobbyChannel do
 
   # -- Private helpers --
 
+  # Subscribe this channel process to every space the user can see, and
+  # return the subscribed id set. The visible set is the authority (never
+  # client input); a future membership table slots in right here.
+  defp subscribe_space_topics(user_id) do
+    user_id |> visible_space_ids() |> subscribe_space_ids()
+  end
+
+  defp visible_space_ids(user_id) do
+    (Spaces.list_for_user(user_id) ++ Spaces.list_archived_for_user(user_id))
+    |> Enum.map(& &1.id)
+    |> MapSet.new()
+  end
+
+  defp subscribe_space_ids(ids) do
+    Enum.each(ids, &Phoenix.PubSub.subscribe(Nest.PubSub, Broadcasts.space_topic(&1)))
+    ids
+  end
+
+  # Bring the space subscriptions in line with the user's current visible
+  # set. Idempotent, so it is safe to call from several paths.
+  defp reconcile_space_subscriptions(socket) do
+    have = Map.get(socket.assigns, :space_subs, MapSet.new())
+    wanted = visible_space_ids(socket.assigns.user_id)
+
+    wanted
+    |> MapSet.difference(have)
+    |> subscribe_space_ids()
+
+    have
+    |> MapSet.difference(wanted)
+    |> Enum.each(&Phoenix.PubSub.unsubscribe(Nest.PubSub, Broadcasts.space_topic(&1)))
+
+    assign(socket, :space_subs, wanted)
+  end
+
   # Agents visible to `user_id` across every space in `spaces`,
   # flattened into one list. The sidebar renders a per-space agent
   # tree, so the init payload carries every space's agents rather
@@ -368,19 +502,18 @@ defmodule NestWeb.LobbyChannel do
   defp maybe_vocation(_payload, vocation), do: vocation
 
   defp broadcast_space_archived(socket, space_id),
-    do: broadcast(socket, "space:archived", %{"space_id" => space_id})
+    do: broadcast_to_user(socket, :space_archived, %{"space_id" => space_id})
 
   defp broadcast_space_unarchived(socket, space_id),
-    do: broadcast(socket, "space:unarchived", %{"space_id" => space_id})
+    do: broadcast_to_user(socket, :space_unarchived, %{"space_id" => space_id})
 
   defp broadcast_space_created(socket, space, agent_name, model, vocation, attrs) do
-    push(socket, "space:created", %{
+    broadcast_to_user(socket, :space_created, %{
       "space" => space,
       "agentName" => agent_name
     })
 
     broadcast_agent_created(
-      socket,
       space.id,
       agent_name,
       model,
@@ -389,10 +522,22 @@ defmodule NestWeb.LobbyChannel do
     )
   end
 
+  # Announce a space-set change on the per-user topic (#41). Every lobby
+  # channel of this user is subscribed, so all of their sessions hear it and
+  # no other user does — the pre-#41 `broadcast(socket, …)` went to the shared
+  # `"lobby"` topic, which every connected user is on.
+  defp broadcast_to_user(socket, tag, payload) do
+    Phoenix.PubSub.broadcast(
+      Nest.PubSub,
+      Spaces.user_topic(socket.assigns.user_id),
+      {tag, payload}
+    )
+  end
+
   defp do_change_model(space_id, name, model_params, socket) do
     case Agents.change_model(space_id, name, build_model_map(model_params)) do
       :ok ->
-        broadcast(socket, "agent:updated", %{
+        Broadcasts.agent_updated(space_id, %{
           "name" => name,
           "model" => model_params,
           "space_id" => space_id
@@ -408,7 +553,7 @@ defmodule NestWeb.LobbyChannel do
   defp do_edit_agent(space_id, s, name, mp, workspace_path) do
     case Agents.edit_agent(space_id, name, build_model_map(mp), workspace_path) do
       :ok ->
-        broadcast(s, "agent:updated", %{
+        Broadcasts.agent_updated(space_id, %{
           "name" => name,
           "model" => mp,
           "workspace_path" => workspace_path,
@@ -450,8 +595,8 @@ defmodule NestWeb.LobbyChannel do
     |> maybe_add_opt(:workspace_path, workspace_path)
   end
 
-  defp broadcast_agent_created(socket, space_id, name, model, vocation, workspace_path) do
-    broadcast(socket, "agent:created", %{
+  defp broadcast_agent_created(space_id, name, model, vocation, workspace_path) do
+    Broadcasts.agent_created(space_id, %{
       "name" => name,
       "space_id" => space_id,
       "model" => %{"name" => model.name, "provider" => model.provider},

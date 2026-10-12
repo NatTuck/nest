@@ -75,4 +75,36 @@ defmodule Nest.Agents.Agent.ClientAPI do
   def get_api_logs(pid, index, history) do
     GenServer.call(pid, {:get_api_logs, index, history})
   end
+
+  @doc """
+  Register interest for a non-blocking wait (issue #54). `spec` is the watcher's
+  own shape (`Nest.Agents.Agent.Watch`); the agent stores it so a Stop can kill
+  the watcher and so a delivery from a watched name can satisfy it.
+  """
+  @spec register_watch(pid(), reference(), term()) :: :ok
+  def register_watch(pid, ref, spec) do
+    GenServer.call(pid, {:register_watch, ref, spec}, 5_000)
+  end
+
+  @doc "Record the watcher task's pid, once it is up."
+  @spec watch_attached(pid(), reference(), pid()) :: :ok
+  def watch_attached(pid, ref, task_pid) do
+    GenServer.cast(pid, {:watch_attached, ref, task_pid})
+  end
+
+  @doc "Drop a watch whose watcher task could not be started."
+  @spec unregister_watch(pid(), reference()) :: :ok
+  def unregister_watch(pid, ref) do
+    GenServer.cast(pid, {:unregister_watch, ref})
+  end
+
+  @doc """
+  Deliver a fired watch's notice. Returns `:skipped` when the watch was already
+  satisfied by the watched agent's own delivery (issue #62 requirement 1).
+  """
+  @spec watch_fired(pid(), reference(), String.t()) :: :delivered | :queued | :skipped
+  def watch_fired(pid, ref, content) do
+    {:ok, disposition} = GenServer.call(pid, {:watch_fired, ref, content}, 5_000)
+    disposition
+  end
 end

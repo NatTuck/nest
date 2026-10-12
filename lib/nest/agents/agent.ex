@@ -409,6 +409,11 @@ defmodule Nest.Agents.Agent do
     GenServer.call(pid, {:deliver_internal, sender, content, kind}, 5_000)
   end
 
+  defdelegate register_watch(pid, ref, spec), to: ClientAPI
+  defdelegate watch_attached(pid, ref, task_pid), to: ClientAPI
+  defdelegate unregister_watch(pid, ref), to: ClientAPI
+  defdelegate watch_fired(pid, ref, content), to: ClientAPI
+
   @doc """
   Signal the in-flight chat turn (if any) to stop. `from` is the
   channel pid that initiated the stop (used so the in-process turn

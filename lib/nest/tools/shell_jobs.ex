@@ -8,6 +8,7 @@ defmodule Nest.Tools.ShellJobs do
   operation to the calling agent.
   """
 
+  alias Nest.Agents.Agent.Watch
   alias Nest.LLM.Tool
   alias Nest.Sandbox.ShellJobs
 
@@ -35,19 +36,29 @@ defmodule Nest.Tools.ShellJobs do
     }
   end
 
-  @doc "The `shell-wait` tool: block until a background job exits."
+  @doc "The `shell-wait` tool: watch for a background job to exit."
   @spec wait_function() :: Tool.t()
   def wait_function do
     %Tool{
       name: "shell-wait",
       description:
-        "Wait for a background shell job to finish and return its output and " <>
-          "exit code. Blocks up to `timeout` ms (default #{@default_wait_ms}). " <>
-          "If it times out the job keeps running.",
+        "Wait for a background shell job to finish and report its output and " <>
+          "exit code. By default this returns immediately and leaves you idle so " <>
+          "a human can message you: the job's result is delivered as a message " <>
+          "when it exits. Pass `block: true` to block this turn instead (bounded " <>
+          "by `timeout` ms, default #{@default_wait_ms}); if it times out the job " <>
+          "keeps running.",
       parameters_schema: %{
         "type" => "object",
         "properties" => %{
           "id" => %{"type" => "string", "description" => "The background job id."},
+          "block" => %{
+            "type" => "boolean",
+            "description" =>
+              "When true, block this turn until the job exits instead of " <>
+                "returning immediately. Defaults to false (non-blocking: you go " <>
+                "idle and the result arrives as a message)."
+          },
           "timeout" => %{
             "type" => "integer",
             "description" => "Maximum milliseconds to wait. Defaults to #{@default_wait_ms}."
@@ -79,9 +90,31 @@ defmodule Nest.Tools.ShellJobs do
 
   # ---- Implementations ----
 
+  # Non-blocking by default (issue #54): validate the job exists, then register
+  # a watch and return. The result is delivered as a notice when the job exits.
+  # `block: true` keeps the old in-worker wait.
   defp wait(%{"id" => id} = args, context) do
-    key = agent_key(context)
     timeout = max_timeout(args["timeout"])
+
+    if args["block"] == true do
+      blocking_wait(id, context, timeout)
+    else
+      async_wait(id, context, timeout)
+    end
+  end
+
+  defp async_wait(id, context, timeout) do
+    case ShellJobs.status(agent_key(context), id) do
+      {:error, :not_found} ->
+        {:error, "No such background job: #{id}"}
+
+      {:ok, _status} ->
+        Watch.register_shell_call(context, id, timeout)
+    end
+  end
+
+  defp blocking_wait(id, context, timeout) do
+    key = agent_key(context)
 
     case ShellJobs.subscribe(key, id, self()) do
       {:error, :not_found} ->
@@ -128,11 +161,7 @@ defmodule Nest.Tools.ShellJobs do
     end
   end
 
-  defp wait_result(id, 0, ""),
-    do: {:ok, "Background job #{id} exited 0 with no output."}
-
-  defp wait_result(id, code, output),
-    do: {:ok, "Background job #{id} exited with code #{code}:\n#{output}"}
+  defp wait_result(id, code, output), do: {:ok, ShellJobs.result_text(id, code, output)}
 
   defp render([]), do: "No background jobs."
 

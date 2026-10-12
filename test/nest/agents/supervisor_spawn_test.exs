@@ -29,6 +29,7 @@ defmodule Nest.Agents.SupervisorSpawnTest do
   import Eventually
 
   alias Nest.Agents
+  alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Config
   alias Nest.Agents.Agent.TmpSpace
   alias Nest.Agents.AgentTestHelpers
@@ -405,14 +406,11 @@ defmodule Nest.Agents.SupervisorSpawnTest do
 
       assert {:ok, ^name} = Supervisor.spawn_agent_in_space(state, name, vocation.slug)
 
-      Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
+      Phoenix.PubSub.subscribe(Nest.PubSub, Broadcasts.space_topic(space_id))
 
       assert :ok = Supervisor.archive_agent(space_id, name)
 
-      assert_receive %Phoenix.Socket.Broadcast{
-                       event: "agent:archived",
-                       payload: %{"space_id" => ^space_id, "name" => ^name}
-                     },
+      assert_receive {:agent_archived, %{"space_id" => ^space_id, "name" => ^name}},
                      1_000
 
       assert eventually(

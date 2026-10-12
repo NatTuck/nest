@@ -122,6 +122,60 @@ export function catalogSetters(set) {
       });
     },
 
+    /**
+     * Apply a live status change from the lobby's `agent:status` frame
+     * (#53). The sidebar dot reads `status` off the flat list; only the
+     * matching `{space_id, name}` agent is replaced (with a new object, so
+     * the tree re-renders), and a frame for an agent this client cannot
+     * see is a no-op.
+     */
+    applyAgentStatus: ({ space_id, name, status }) => {
+      set((state) => ({
+        agents: state.agents.map((a) =>
+          a.name === name && a.space_id === space_id ? { ...a, status } : a,
+        ),
+      }));
+    },
+
+    /**
+     * Stamp the lobby's `broken_agents` statuses onto the flat agent list
+     * (#53).
+     *
+     * A persisted agent whose model no longer resolves has no live
+     * process, so nothing ever broadcasts a status for it. The visibility
+     * query still lists its row — deliberately, so the user can click
+     * through and repair it — but with the placeholder `status: :idle` a
+     * row with no live process gets. Rendered as-is that is a neutral
+     * "Idle" dot, which tells the user the opposite of the truth: the
+     * agent cannot start at all. The server already names the reason on
+     * each broken entry (`status: :model_missing`), so stamp it onto the
+     * matching `{space_id, name}` row and let the dot render it.
+     *
+     * `brokenAgents` is kept alongside the stamp: it is still the list of
+     * rows that need repair, and `applyAgentModelUpdate` drops the agent
+     * it just repaired from it.
+     *
+     * Note the stamp is only as fresh as the payload. The lobby fetches
+     * `broken_agents` once per join (and again only when the client
+     * itself repairs an agent), so an agent that stops being broken
+     * without this client acting on it keeps the stamped status until the
+     * next join. That is the same freshness the "Needs Repair" group had
+     * before it was removed — no worse, but not self-clearing.
+     */
+    applyAgentStatuses: (brokenAgents) => {
+      const list = brokenAgents || [];
+      const stamped = new Map(
+        list.map((broken) => [agentKey(broken), broken.status]),
+      );
+
+      set((state) => ({
+        agents: state.agents.map((a) => {
+          const status = stamped.get(agentKey(a));
+          return status && status !== a.status ? { ...a, status } : a;
+        }),
+      }));
+    },
+
     applyAgentModelUpdate: (name, model) => {
       set((state) => {
         const newAgents = state.agents.map((a) =>
@@ -175,4 +229,13 @@ function normalizeAgent(agent) {
     parentName: agent.parentName ?? agent.parent_name ?? null,
     depth: agent.depth ?? 0,
   };
+}
+
+/**
+ * The identity of an agent: `{space_id, name}` is unique across the whole
+ * lobby, since a space owns its agent names. Used to match a broken-agent
+ * entry against its flat-list row without comparing whole objects.
+ */
+function agentKey({ space_id, name }) {
+  return `${space_id}:${name}`;
 }

@@ -4,9 +4,10 @@
  * `Sidebar` to keep that file under the source-line cap.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { archiveSpace, unarchiveAgent } from "../channels";
+import { StatusDot } from "./StatusDot";
 
 /**
  * Build a tree from a flat agents list. Each agent's
@@ -129,7 +130,13 @@ function restoreErrorMessage(err) {
  * Recursive agent row. Renders the agent's name with the
  * current-agent styling plus a chevron toggle when the node has
  * children (so a busy parent can be collapsed). Leaves render an
- * aligned spacer instead of a chevron. Default is expanded.
+ * aligned spacer instead of a chevron.
+ *
+ * Default is collapsed: expanding a node reveals exactly its direct
+ * children, and each of those starts collapsed too, so a click never
+ * unfolds a whole subtree at once and there is no remembered expansion
+ * state anywhere. The expansion is local component state only — remounting
+ * the row (navigating away and back) starts it collapsed again.
  *
  * Active nodes split their children: active children render inline,
  * archived children render at the bottom behind a collapsed
@@ -155,18 +162,12 @@ function AgentTreeRow({ node, depth, location, spaceSlug }) {
     : children.filter((child) => child.agent.archived === true);
   const directChildren = isArchived ? children : activeChildren;
   const hasChildren = activeChildren.length > 0 || archivedChildren.length > 0;
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(false);
   const [restoreError, setRestoreError] = useState(null);
 
   const label = (
     <>
-      <div
-        className={`
-          w-2 h-2 rounded-full flex-shrink-0
-          ${agent.status === "streaming" ? "bg-green-500 animate-pulse" : "bg-gray-300"}
-          ${agent.status === "executing_tools" ? "bg-amber-500 animate-pulse" : ""}
-        `}
-      />
+      <StatusDot status={agent.status} className="w-2 h-2" />
       <span className="truncate text-sm font-medium">{agent.name}</span>
       {directChildren.length > 0 && (
         <span className="text-xs text-gray-400 ml-1">
@@ -278,16 +279,33 @@ function AgentTreeRow({ node, depth, location, spaceSlug }) {
  * A collapsible space row: header (name + agent count) that expands to
  * the space's agent tree, plus archive. Clicking the name navigates to
  * `/space/:slug`; the chevron toggles the agent list.
+ *
+ * Root-level default: the space row for the space in the current route
+ * starts expanded, so opening a space shows its agent list without a click
+ * — the URL already says which space you are in, so this mirrors the route
+ * rather than remembering a choice. Every other space row starts collapsed,
+ * and every agent row under it starts collapsed (see `AgentTreeRow`), so
+ * expanding a space reveals exactly one level. Navigating between spaces
+ * moves the expansion with the route (see the `useEffect` below).
  */
 export function SpaceRow({
   space,
   spaceAgents,
   spaceArchivedAgents = [],
-  spaceBrokenAgents,
   location,
 }) {
   const selected = isSpaceActive(location, space);
   const [expanded, setExpanded] = useState(selected);
+
+  // `selected` is derived from the route, so it changes when the user
+  // navigates between spaces. Follow it: `useState` only reads its argument
+  // on mount, so without this the row the user just left would stay open and
+  // two space rows could be open at once. A manual toggle survives until the
+  // route moves again.
+  useEffect(() => {
+    setExpanded(selected);
+  }, [selected]);
+
   const tree = buildAgentTree([...spaceAgents, ...spaceArchivedAgents]);
   const activeRoots = tree.filter((node) => node.agent.archived !== true);
   const archivedRoots = tree.filter((node) => node.agent.archived === true);
@@ -365,44 +383,6 @@ export function SpaceRow({
               spaceSlug={space.slug}
             />
           ))}
-          {spaceBrokenAgents.length > 0 && (
-            <li className="pl-3 mt-2">
-              <p className="text-xs font-semibold text-amber-700 uppercase tracking-wider mb-1">
-                Needs Repair
-              </p>
-              <ul className="space-y-1">
-                {spaceBrokenAgents.map((entry) => {
-                  const path = `/space/${space.slug}/agent/${encodeURIComponent(entry.name)}`;
-                  const isCurrent = location.pathname === path;
-                  return (
-                    <li key={entry.name}>
-                      <div
-                        className={`
-                          flex items-center justify-between rounded-lg group
-                          transition-colors duration-200
-                          ${
-                            isCurrent
-                              ? "bg-amber-50 text-amber-800 border border-amber-200"
-                              : "text-gray-700 hover:bg-amber-50"
-                          }
-                        `}
-                      >
-                        <Link
-                          to={path}
-                          className="flex items-center gap-2 min-w-0 flex-1 px-3 py-2"
-                        >
-                          <div className="w-2 h-2 rounded-full flex-shrink-0 bg-amber-500 animate-pulse" />
-                          <span className="truncate text-sm font-medium">
-                            {entry.name}
-                          </span>
-                        </Link>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            </li>
-          )}
           <ArchivedGroup
             nodes={archivedRoots}
             depth={0}

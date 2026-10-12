@@ -11,8 +11,13 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
 
   use ExUnit.Case, async: true
 
+  import Nest.Test.TmpCleanup
+
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Inbox
+
+  # A big-enough body to exceed the default 8000-token cap.
+  @oversized String.duplicate("hello world ", 4_000)
 
   describe "entry shape and serialization" do
     test "serialize/1 emits the wire shape the browser renders, for every kind" do
@@ -23,48 +28,98 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
       at = ~U[2026-01-02 03:04:05Z]
 
       entries = [
-        %{from: "peer", content: "from an agent", timestamp: at, kind: :agent, mode: nil},
-        %{from: "alice", content: "from a human", timestamp: at, kind: :user, mode: "plan"},
-        %{from: nil, content: "from nobody", timestamp: at, kind: :user, mode: nil},
-        %{from: "peer", content: "a question", timestamp: at, kind: :query, mode: nil},
-        %{from: nil, content: "a notice", timestamp: at, kind: :notice, mode: nil}
+        %{
+          id: "e1",
+          from: "peer",
+          content: "from an agent",
+          timestamp: at,
+          kind: :agent,
+          mode: nil,
+          retrieved: false
+        },
+        %{
+          id: "e2",
+          from: "alice",
+          content: "from a human",
+          timestamp: at,
+          kind: :user,
+          mode: "plan",
+          retrieved: false
+        },
+        %{
+          id: "e3",
+          from: nil,
+          content: "from nobody",
+          timestamp: at,
+          kind: :user,
+          mode: nil,
+          retrieved: false
+        },
+        %{
+          id: "e4",
+          from: "peer",
+          content: "a question",
+          timestamp: at,
+          kind: :query,
+          mode: nil,
+          retrieved: false
+        },
+        %{
+          id: "e5",
+          from: nil,
+          content: "a notice",
+          timestamp: at,
+          kind: :notice,
+          mode: nil,
+          retrieved: false
+        }
       ]
 
       assert Inbox.serialize(entries) == [
                %{
+                 "id" => "e1",
                  "from" => "peer",
                  "content" => "from an agent",
                  "timestamp" => "2026-01-02T03:04:05Z",
                  "kind" => "agent",
-                 "mode" => nil
+                 "mode" => nil,
+                 "retrieved" => false
                },
                %{
+                 "id" => "e2",
                  "from" => "alice",
                  "content" => "from a human",
                  "timestamp" => "2026-01-02T03:04:05Z",
                  "kind" => "user",
-                 "mode" => "plan"
+                 "mode" => "plan",
+                 "retrieved" => false
                },
                %{
+                 "id" => "e3",
                  "from" => nil,
                  "content" => "from nobody",
                  "timestamp" => "2026-01-02T03:04:05Z",
                  "kind" => "user",
-                 "mode" => nil
+                 "mode" => nil,
+                 "retrieved" => false
                },
                %{
+                 "id" => "e4",
                  "from" => "peer",
                  "content" => "a question",
                  "timestamp" => "2026-01-02T03:04:05Z",
                  "kind" => "query",
-                 "mode" => nil
+                 "mode" => nil,
+                 "retrieved" => false
                },
                %{
+                 "id" => "e5",
                  "from" => nil,
                  "content" => "a notice",
                  "timestamp" => "2026-01-02T03:04:05Z",
                  "kind" => "notice",
-                 "mode" => nil
+                 "mode" => nil,
+                 "retrieved" => false
                }
              ]
     end
@@ -219,7 +274,99 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
     end
   end
 
-  defp entry(kind, from, content, mode \\ nil) do
-    %{from: from, content: content, timestamp: DateTime.utc_now(), kind: kind, mode: mode}
+  describe "delivery ids and consume semantics (issue #62)" do
+    test "every enqueued entry carries a distinct id" do
+      # intentional: the id is a per-delivery identity, not a sequence, so two
+      # enqueues in the same millisecond never collide on the wire or in an
+      # `agent-inbox-<id>.txt` filename.
+      state = %Agent{name: "ids", space_id: 1}
+
+      state = Inbox.enqueue_internal(state, "peer", "one", :agent)
+      state = Inbox.enqueue_internal(state, "peer", "two", :agent)
+
+      ids = Enum.map(state.live.inbox, & &1.id)
+      assert length(Enum.uniq(ids)) == 2
+      assert Enum.all?(ids, &(is_binary(&1) and &1 != ""))
+    end
+
+    test "batch/1 skips a retrieved entry and consume/2 drops it" do
+      # intentional: an `agents-last-message` fetch consumes the body, so the
+      # drain must neither deliver it nor leave it queued forever. A retrieved
+      # entry is never a human message (the fetch refuses `:user`), so skipping
+      # it cannot swallow a human turn.
+      peer = entry(:agent, "peer", "peer note", nil, "a")
+      human = entry(:user, "alice", "human note", "plan", "b")
+      taken = %{entry(:agent, "peer", "fetched", nil, "c") | retrieved: true}
+
+      assert Inbox.batch([taken, peer]) == [peer]
+      assert Inbox.batch([taken]) == []
+      assert Inbox.consume([taken, peer, human], [peer]) == [human]
+      assert Inbox.consume([taken], []) == []
+    end
+
+    test "combine_and_offload/2 tags a retrieved entry as a re-delivery" do
+      # intentional: requirement 5. A retrieved entry is normally suppressed by
+      # `batch/1`, so this is the safety net: if both channels ever carry the
+      # body, the second copy is explicitly a re-delivery and can never be
+      # mistaken for a fresh human turn.
+      state = %Agent{tmp_path: nil}
+
+      taken = %{entry(:agent, "peer", "the report", nil, "a") | retrieved: true}
+
+      rendered = Inbox.combine_and_offload([taken], state)
+      assert rendered =~ "[re-delivery:"
+      assert rendered =~ "already retrieved with agents-last-message"
+      assert rendered =~ "the report"
+    end
+
+    test "take_last/2 fetches the newest non-human entry from a name" do
+      # intentional: `agents-last-message` reads the pending delivery, never a
+      # human message, and consumes only the entry it returns.
+      peer = entry(:agent, "peer", "older", nil, "a")
+      bob = entry(:query, "bob", "a question", nil, "b")
+      human = entry(:user, "bob", "from the human bob", nil, "c")
+      newest = entry(:notice, "peer", "newer", nil, "d")
+
+      {left, taken} = Inbox.take_last([peer, bob, human, newest], "peer")
+      assert taken.id == "d"
+      assert Enum.find(left, &(&1.id == "d")).retrieved == true
+      assert Enum.find(left, &(&1.id == "a")).retrieved == false
+
+      # A name with only a human entry has nothing to fetch: the human's words
+      # must never be consumed out from under the drain.
+      {left, nil} = Inbox.take_last([human], "bob")
+      assert [^human] = left
+
+      # A name that is not queued at all.
+      assert {[], nil} = Inbox.take_last([], "ghost")
+      assert {[^human], nil} = Inbox.take_last([human], "ghost")
+    end
+
+    test "an over-cap batch's offload file is named after its first entry's id" do
+      # intentional: requirement 4 — the id is on the pointer's path too, so a
+      # caller that fetched the body recognises the file it names.
+      dir = Path.join(System.tmp_dir!(), "inbox-id-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> rm_tmp!(dir, "inbox-id-") end)
+
+      state = %Agent{name: "offload-id", space_id: 1, tmp_path: dir}
+      first = %{entry(:agent, "peer", "hello world", nil, "firstid") | content: @oversized}
+
+      content = Inbox.combine_and_offload([first], state)
+      assert content =~ "agent-inbox-firstid.txt"
+      assert File.read!(Path.join(dir, "agent-inbox-firstid.txt")) =~ "hello world"
+    end
+  end
+
+  defp entry(kind, from, content, mode \\ nil, id \\ nil) do
+    %{
+      id: id || Inbox.new_id(),
+      from: from,
+      content: content,
+      timestamp: DateTime.utc_now(),
+      kind: kind,
+      mode: mode,
+      retrieved: false
+    }
   end
 end

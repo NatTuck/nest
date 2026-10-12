@@ -232,7 +232,7 @@ defmodule NestWeb.AgentChannelQueuedMessageTest do
 
       # The backgrounding left `:executing_tools` for the delivered turn, and no
       # idle went out with it: an idle here would resolve an idle-based
-      # `agents-wait` with the pre-delivery answer.
+      # `agents-wait-for-idle` with the pre-delivery answer.
       assert_push "chat:status", %{status: "streaming", pendingMessageCount: 0}, 500
       refute_push "chat:status", %{status: "idle"}, 100
 

@@ -101,7 +101,7 @@ defmodule Nest.Sandbox do
 
   alias Nest.FSPath
   alias Nest.Hardware
-  alias Nest.Sandbox.{Caps, Failure, Glob, Paths}
+  alias Nest.Sandbox.{Caps, Failure, Glob, Paths, StatBatch}
   alias Nest.Tools.{ShellCmd, ShellEscape}
 
   @doc """
@@ -298,6 +298,26 @@ defmodule Nest.Sandbox do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  @doc """
+  The sizes of many paths in as few bwrap spawns as possible (issue #48).
+
+  `stat/4` is one bwrap spawn per path; the BatchSizer preflight needs only a
+  size per `file-read` target, so this runs one `stat` invocation per chunk of
+  paths instead of one per path.
+
+  Returns `%{path => {:ok, size} | {:error, reason}}` for every distinct path
+  in `paths`. Sizes only — nothing else in a batch's stat is read, and skipping
+  `File.Stat` construction keeps the batched parse trivial. A path the batch
+  did not report is re-statted with `stat/4`, so its reason and operator log
+  line are exactly what a per-path `stat/4` would produce. See
+  `Nest.Sandbox.StatBatch` for the framing and failure handling.
+  """
+  @spec stat_many([String.t()], map(), String.t() | nil, String.t() | nil) ::
+          %{required(String.t()) => {:ok, non_neg_integer()} | {:error, atom() | term()}}
+  def stat_many(paths, caps, workspace, tmp_path) do
+    StatBatch.stat_many(paths, caps, workspace, tmp_path)
   end
 
   @doc """

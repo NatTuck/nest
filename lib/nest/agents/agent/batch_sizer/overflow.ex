@@ -29,15 +29,21 @@ defmodule Nest.Agents.Agent.BatchSizer.Overflow do
   fails. `prefix` distinguishes the artifact type in the filename
   (e.g. `"exec"` for shell output, `"agents-batch"` for a batch
   aggregate).
+
+  `id` names the file (`"<prefix>-<id>.<ext>"`); when it is `nil` a
+  random token is used. The inbox passes its entry id so an offloaded
+  delivery is named after the message it carries (issue #62) — the
+  caller can then recognise `agent-inbox-<id>.txt` as the body it
+  already fetched.
   """
-  @spec write(binary(), map(), String.t(), String.t()) :: String.t() | nil
-  def write(content, ctx, prefix, ext) do
+  @spec write(binary(), map(), String.t(), String.t(), String.t() | nil) :: String.t() | nil
+  def write(content, ctx, prefix, ext, id \\ nil) do
     case Map.get(ctx, :tmp_path) do
       nil ->
         nil
 
       dir ->
-        name = "#{prefix}-#{token()}.#{ext}"
+        name = "#{prefix}-#{id || token()}.#{ext}"
         # HOST PATH: `dir` is the agent's host scratch directory, and `path`
         # is where the bytes are written. Neither is ever returned — the LLM
         # must only ever see the sandbox spelling (`/tmp/<agent>/...`), which

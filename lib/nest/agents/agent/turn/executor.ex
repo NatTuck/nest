@@ -40,6 +40,7 @@ defmodule Nest.Agents.Agent.Turn.Executor do
   alias Nest.Agents.Agent.Turn.GiveUpDelivery
   alias Nest.Agents.Agent.Turn.HTTPWorker
   alias Nest.Agents.Agent.Turn.Terminal
+  alias Nest.Agents.Agent.Watch
   alias Nest.Messages.Streaming
   alias Nest.Messages.ThinkTags
   alias Nest.Tokens.Compactor, as: TokensCompactor
@@ -330,21 +331,21 @@ defmodule Nest.Agents.Agent.Turn.Executor do
 
   defp execute({:stop_all_children}, state), do: {stop_running_children(state), :continue}
 
+  defp execute({:stop_watchers}, state), do: {Watch.stop_all(state), :continue}
+
   defp execute({:drain_inbox}, state) do
     case peek_inbox(state) do
-      :empty -> {state, :continue}
+      :empty -> {Inbox.prune_retrieved(state), :continue}
       {state, batch, content} -> {state, {:follow, {:inbox_drain, batch, content}}}
     end
   end
 
   # The loop breaker's give-up shape (issue #26): build the message from the
-  # peeked batch, append it, and consume it — without `start_chat/3`, so the ack
-  # cannot re-enter the compaction decision it just gave up on (the
-  # `{:append, {:user, _}}` arm's shape, for a parked chat request).
+  # peeked batch, append it, and consume it — without `start_chat/3`.
   defp execute({:drain_inbox, :append}, state) do
     case peek_inbox(state) do
       :empty ->
-        {state, :continue}
+        {Inbox.prune_retrieved(state), :continue}
 
       {state, batch, content} ->
         # The batch's `fulfilled_ids` ride it too (`Inbox.build_drained_message/3`).
@@ -363,8 +364,7 @@ defmodule Nest.Agents.Agent.Turn.Executor do
     end
   end
 
-  # The consume half of peek-then-consume, emitted by the branch that actually
-  # appended the message (issue #26).
+  # The consume half of peek-then-consume, emitted by the appending branch.
   defp execute({:consume_inbox, entries}, state), do: consume_inbox(state, entries)
 
   # A backgrounded batch's outcome (issue #36): the batch has no live worker
@@ -469,7 +469,9 @@ defmodule Nest.Agents.Agent.Turn.Executor do
     # Drop exactly the peeked batch, not the whole queue: the executor runs
     # synchronously inside one settle, so nothing can be enqueued between the
     # peek and the consume, and anything the peek did not deliver stays queued.
-    inbox = state.live.inbox -- entries
+    # A retrieved entry is dropped too (issue #62): `batch/1` skipped it, so the
+    # consume is the only thing that can clear it.
+    inbox = Inbox.consume(state.live.inbox, entries)
     state = %{state | live: %{state.live | inbox: inbox}}
     Broadcasts.inbox(state, Inbox.serialize(inbox))
     Timeline.drained(state, entries)

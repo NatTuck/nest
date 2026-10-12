@@ -209,6 +209,13 @@ defmodule Nest.Agents.Agent.TimelineEmittersTest do
     # A drain's own line: the batch it delivered, with the mode it resolved.
     assert [%{"action" => "drained", "count" => 1, "from" => "peer", "mode" => "chat"}] =
              inbox_action("drained")
+
+    # ...and the delivered entry's delivery id (issue #62), so a reader can
+    # recognise the copy the caller may already hold. The id is a 16-hex token
+    # from `Inbox.Delivery.new_id/0`; a regression that stopped propagating it
+    # would leave `nil` here.
+    assert [%{"id" => drained_id}] = inbox_action("drained")
+    assert is_binary(drained_id) and byte_size(drained_id) == 16
   end
 
   test "a delivery that backgrounds the batch records the disposition the sender was given" do

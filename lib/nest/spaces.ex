@@ -21,6 +21,21 @@ defmodule Nest.Spaces do
   alias Nest.Spaces.Space
   alias Nest.Vocations
 
+  # The per-user PubSub topic: "this user's space *set* changed" (a space
+  # was created/archived/unarchived/deleted — and, once space sharing
+  # lands, a membership change). `NestWeb.LobbyChannel` listens here to
+  # keep its space subscriptions in step with the change, whichever of the
+  # user's sessions made it (including the one that did: a PubSub
+  # subscription is delivered to `handle_info/2`, not routed through the
+  # channel's `handle_out/3` the way a `broadcast/3` on the channel's own
+  # topic would be).
+  @spec user_topic(integer()) :: String.t()
+  def user_topic(user_id), do: "user:#{user_id}"
+
+  defp broadcast_spaces_changed(user_id) do
+    Phoenix.PubSub.broadcast(Nest.PubSub, user_topic(user_id), {:spaces_changed, user_id})
+  end
+
   @doc """
   List all non-archived spaces visible to the given user.
 
@@ -118,9 +133,22 @@ defmodule Nest.Spaces do
   """
   @spec create_space(integer(), map()) :: {:ok, Space.t()} | {:error, Ecto.Changeset.t()}
   def create_space(user_id, attrs) do
-    %Space{}
-    |> Space.changeset(Map.put(attrs, :created_by_user_id, user_id))
-    |> Repo.insert()
+    with {:ok, %Space{} = space} <-
+           %Space{}
+           |> Space.changeset(Map.put(attrs, :created_by_user_id, user_id))
+           |> Repo.insert() do
+      # Announced here so `create_space/2` is self-contained: whoever creates a
+      # space announces it, whatever they do next. When the caller is
+      # `create_space_with_root_agent/2` this fires *inside* its transaction,
+      # before the commit, so a channel that reconciles on it reads committed
+      # state, does not see the new space, and is a no-op — and that wrapper
+      # announces again after the commit, which is the frame that carries the
+      # meaning for the lobby's create path. The duplicate is therefore
+      # harmless: `reconcile_space_subscriptions/1` is an idempotent diff, so
+      # running it twice costs one extra read and changes nothing.
+      broadcast_spaces_changed(user_id)
+      {:ok, space}
+    end
   end
 
   @doc """
@@ -151,6 +179,10 @@ defmodule Nest.Spaces do
           delete_agent_rows(space.id)
           Repo.delete!(space)
         end)
+
+        # The space is gone, so it can no longer be in anyone's visible set:
+        # tell the owner's channels to drop their subscription to its topic.
+        broadcast_spaces_changed(space.created_by_user_id)
 
         :ok
     end
@@ -210,6 +242,7 @@ defmodule Nest.Spaces do
       space ->
         stop_space_agents(space.id)
         set_archived(space.id, true)
+        broadcast_spaces_changed(space.created_by_user_id)
     end
   end
 
@@ -231,6 +264,7 @@ defmodule Nest.Spaces do
 
       space ->
         set_archived(space.id, false)
+        broadcast_spaces_changed(space.created_by_user_id)
     end
   end
 
@@ -321,9 +355,19 @@ defmodule Nest.Spaces do
       end
     end)
     |> case do
-      {:ok, {space, agent_name}} -> {:ok, space, agent_name}
-      {:error, reason} -> {:error, reason}
-      other -> other
+      {:ok, {space, agent_name}} ->
+        # The frame that matters for this path: `create_space/2` already
+        # announced inside the transaction, but that one ran pre-commit, so a
+        # reconciling channel could not see the new space yet. This is the
+        # post-commit announcement the lobby's create path relies on.
+        broadcast_spaces_changed(user_id)
+        {:ok, space, agent_name}
+
+      {:error, reason} ->
+        {:error, reason}
+
+      other ->
+        other
     end
   end
 

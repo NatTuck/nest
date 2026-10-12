@@ -36,6 +36,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
   alias Nest.Agents
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.BatchCoordinator
+  alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.Machine.Children
   alias Nest.Agents.Agent.Turn
@@ -64,7 +65,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     })
 
     # Subscribe before collecting so the first creation can't slip past.
-    Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
+    Phoenix.PubSub.subscribe(Nest.PubSub, space_topic())
 
     # The coordinator spawns children in item order (sequential `pace`), so the
     # creation broadcasts arrive in item order. Collect all three, filtered by
@@ -125,7 +126,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
       "items" => ["alpha", "beta"]
     })
 
-    Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
+    Phoenix.PubSub.subscribe(Nest.PubSub, space_topic())
     [child0, child1] = collect_child_names(parent_name, 2)
 
     on_exit(fn ->
@@ -154,7 +155,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
       "items" => ["alpha", "beta", "gamma"]
     })
 
-    Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
+    Phoenix.PubSub.subscribe(Nest.PubSub, space_topic())
     [child0, child1, child2] = collect_child_names(parent_name, 3)
 
     on_exit(fn ->
@@ -191,7 +192,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
       "timeout" => 1
     })
 
-    Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
+    Phoenix.PubSub.subscribe(Nest.PubSub, space_topic())
     [_child0, _child1] = collect_child_names(parent_name, 2)
 
     assert [first, second] = await_aggregate(parent_pid, "timed out after")
@@ -210,7 +211,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
       "on_error" => "fail_fast"
     })
 
-    Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
+    Phoenix.PubSub.subscribe(Nest.PubSub, space_topic())
     [_child0, _child1] = collect_child_names(parent_name, 2)
 
     # The confirmation promises exactly what fail_fast does, before anything
@@ -236,7 +237,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
       "items" => ["alpha", "beta"]
     })
 
-    Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
+    Phoenix.PubSub.subscribe(Nest.PubSub, space_topic())
     [child0, child1] = collect_child_names(parent_name, 2)
 
     on_exit(fn -> Enum.each([child0, child1], &Supervisor.stop_agent(space_id, &1)) end)
@@ -282,7 +283,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
       "max_concurrency" => 1
     })
 
-    Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
+    Phoenix.PubSub.subscribe(Nest.PubSub, space_topic())
     child_names = collect_child_names(parent_name, 3)
 
     on_exit(fn -> Enum.each(child_names, fn n -> _ = Supervisor.stop_agent(space_id, n) end) end)
@@ -309,7 +310,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
       "on_error" => "fail_fast"
     })
 
-    Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
+    Phoenix.PubSub.subscribe(Nest.PubSub, space_topic())
     [child0, child1, child2] = collect_child_names(parent_name, 3)
 
     on_exit(fn ->
@@ -345,7 +346,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
       "max_concurrency" => 1
     })
 
-    Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
+    Phoenix.PubSub.subscribe(Nest.PubSub, space_topic())
     [child0] = collect_child_names(parent_name, 1)
 
     on_exit(fn -> _ = Supervisor.stop_agent(space_id, child0) end)
@@ -433,7 +434,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
       "items" => ["alpha", "beta"]
     })
 
-    Phoenix.PubSub.subscribe(Nest.PubSub, "lobby")
+    Phoenix.PubSub.subscribe(Nest.PubSub, space_topic())
     [child0, child1] = collect_child_names(parent_name, 2)
 
     on_exit(fn ->
@@ -616,8 +617,8 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     result
   end
 
-  # Collect `count` `agent:created` broadcasts for `parent_name`, in the order
-  # they arrive (item order). Non-matching broadcasts from concurrent tests are
+  # Collect `count` `agent:created` frames for `parent_name`, in the order
+  # they arrive (item order). Non-matching frames from concurrent tests are
   # filtered by the `parentName` guard. There is no synchronous point to wait on
   # here: `Agent.chat/2` only casts, and the broadcast is emitted by the parent
   # while it handles a `{:spawn_agent_request, ...}` call from the coordinator
@@ -627,13 +628,15 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
   defp collect_child_names(_parent_name, 0, acc), do: Enum.reverse(acc)
 
   defp collect_child_names(parent_name, n, acc) do
-    assert_receive %Phoenix.Socket.Broadcast{
-                     event: "agent:created",
-                     payload: %{"name" => name, "parentName" => ^parent_name}
-                   },
+    assert_receive {:agent_created, %{"name" => name, "parentName" => ^parent_name}},
                    1_000
 
     collect_child_names(parent_name, n - 1, [name | acc])
+  end
+
+  # #41: `agent:created` rides the per-space topic, not the shared "lobby" one.
+  defp space_topic do
+    Broadcasts.space_topic(AgentTestHelpers.current_space_id())
   end
 
   defp collect_child_names(parent_name, n), do: collect_child_names(parent_name, n, [])

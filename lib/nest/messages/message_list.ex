@@ -555,7 +555,7 @@ defmodule Nest.Messages.MessageList do
 
   Returns `""` when the list does not end on an assistant message (or
   that message has no text parts). Shared by `Turn.Terminal` (the
-  parent's `:child_completed` payload) and `Agent.WaitLoop` (reading a
+  parent's `:child_completed` payload) and `Agent.WaitForIdle` (reading a
   peer's final message across processes), so both report exactly the
   same content for the same sequence.
   """

@@ -569,7 +569,15 @@ defmodule Nest.Agents.Agent.InboxTest do
   end
 
   defp entry(kind, from, content, mode \\ nil) do
-    %{from: from, content: content, timestamp: DateTime.utc_now(), kind: kind, mode: mode}
+    %{
+      id: Inbox.new_id(),
+      from: from,
+      content: content,
+      timestamp: DateTime.utc_now(),
+      kind: kind,
+      mode: mode,
+      retrieved: false
+    }
   end
 
   defp wait_idle(pid) do

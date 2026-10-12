@@ -356,7 +356,7 @@ defmodule Nest.Agents.Agent.Machine.Transitions do
   # The boundary delivery (issue #15): a drained inbox message lands here as a
   # user turn and the turn continues in place — the same body as the `:idle`
   # clause, but the phase stays `:generating`, so no transient idle is ever
-  # broadcast (an idle-based `agents-wait` would resolve early, and a
+  # broadcast (an idle-based `agents-wait-for-idle` would resolve early, and a
   # `{:finalize, :clean}` would report a partial result to a parent).
   def do_step(%{phase: :generating, kind: :chat} = m, {:inbox_drain, entries, content}),
     do: deliver_inbox(m, entries, content)
