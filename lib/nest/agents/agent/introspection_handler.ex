@@ -44,6 +44,7 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
   alias Nest.Messages.Message
   alias Nest.Messages.Streaming
   alias Nest.Sandbox
+  alias Nest.Sandbox.Mounts
   alias Nest.Vocations
 
   @doc """
@@ -229,6 +230,11 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
         repair_command: state.live.repair.command,
         vocation_id: state.vocation_id,
         vocation_slug: state.vocation && state.vocation.slug,
+        # The agent's scratch directory, unconsumed by the client: `statusExtras/1`
+        # in `assets/js/channels/agent.js` whitelists the fields it wants and
+        # does not include this one, and no tool reads it either. Retained
+        # because `agent_tmp_path_test.exs` uses it as its handle on the real
+        # tmp lifecycle; removing it is issue #79.
         tmp_path: state.tmp_path,
         # Run the streaming accumulator (or nil) through
         # `Streaming.to_json_safe/1` so `get_public_info/1`
@@ -353,9 +359,9 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
     do: :skip
 
   defp resolve_read_target(raw_path, state) do
-    case resolve_policy_path(raw_path, state) do
+    case Mounts.resolve(raw_path, Mounts.from_agent(state)) do
       {:ok, full_path} -> {:ok, full_path}
-      :skip -> :skip
+      {:error, _} -> :skip
     end
   end
 
@@ -364,14 +370,8 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
   # "recreate deleted file" semantics). Otherwise consult
   # the cache.
   defp check_against_on_disk_and_cache(full_path, state) do
-    # `full_path` is the sandbox-domain path the agent used. `state.tmp_path`
-    # is a HOST path passed only so `Sandbox.stat/4` can resolve it; the host
-    # spelling must never be shown to the LLM.
-    case Sandbox.stat(
-           full_path,
-           Agent.resolve_caps(state),
-           Map.get(state, :workspace_path),
-           Map.get(state, :tmp_path),
+    # `full_path` is the path the agent used, in the domain the agent names.
+    case Sandbox.stat(full_path, Agent.resolve_caps(state), Mounts.from_agent(state),
            time: :posix
          ) do
       {:error, :enoent} -> :ok
@@ -404,27 +404,14 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
 
   defp recorded_matches?(_, _, _), do: false
 
-  defp resolve_policy_path(path, state) do
-    if Path.type(path) == :absolute do
-      {:ok, path}
-    else
-      resolve_relative_policy_path(path, workspace_root(state))
-    end
-  end
-
-  defp resolve_relative_policy_path(path, root) when is_binary(root),
-    do: {:ok, Path.join(root, path)}
-
-  defp resolve_relative_policy_path(_path, _root), do: :skip
-
-  # The workspace root lives on the agent struct directly
-  # (set during `Agent.init/1` from the attrs `:workspace_path`).
-  # `ClientConfig` itself does NOT carry the workspace root —
-  # it's an LLM-level concern, not a request-level one.
-  defp workspace_root(state) do
-    case state do
-      %{workspace_path: root} when is_binary(root) -> root
-      _ -> nil
-    end
-  end
+  # The mounts value carries the workspace root the agent struct was built
+  # with (set during `Agent.init/1` from the attrs `:workspace_path`).
+  # `ClientConfig` itself does NOT carry it — it's an LLM-level concern, not a
+  # request-level one.
+  #
+  # `Mounts.from_agent/1` matches both keys hard rather than guarding for their
+  # absence, and that is safe here: every call site passes an
+  # `%Nest.Agents.Agent{}`, whose struct always carries them. The
+  # `when is_binary(root)` guard this replaced could only have absorbed a
+  # malformed agent-shaped map, which is a bug rather than a case to keep.
 end

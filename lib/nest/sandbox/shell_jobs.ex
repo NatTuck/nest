@@ -5,21 +5,22 @@ defmodule Nest.Sandbox.ShellJobs do
   A `shell-cmd` call with `background: true` hands its bwrap command to
   this manager instead of waiting for it. The manager owns the `:exec`
   port, streams the job's stdout/stderr to a per-job log file under the
-  agent's tmp dir (`<tmp_path>/shell-jobs/<id>.log`), tracks its status,
+  agent's scratch directory (`<scratch>/shell-jobs/<id>.log`), tracks its status,
   and lets `shell-list` / `shell-wait` / `shell-kill` inspect and control
   it. The sandbox is unchanged: the job is an ordinary bwrap invocation,
   so its PID/mount/net isolation is identical to a foreground call. It
   survives only because the manager outlives the tool call.
 
-  A job's log has two names. The manager reads and writes the host path
-  (`<tmp_path>/shell-jobs/<id>.log`); the sandbox sees the same file at
+  A job's log has two names. The manager reads and writes it under the
+  agent's scratch directory (`<scratch>/shell-jobs/<id>.log`); the sandbox
+  sees the same file at
   `/tmp/<agent-name>/shell-jobs/<id>.log`, because the *space* scratch
   dir is bound at `/tmp` inside it and the agent's own dir is
   `<agent-name>` beneath that. Everything an agent is told — the
   "started" message, `shell-list`, the `shell:jobs` broadcast — uses the
   sandbox path, since that is the only one that resolves inside a
-  `shell-cmd`. A host path handed to an agent is unusable (and leaks the
-  harness's layout).
+  `shell-cmd`. A scratch-directory path handed to an agent is unusable (and
+  leaks the harness's layout).
 
   ## Limits and lifetime
 
@@ -51,6 +52,7 @@ defmodule Nest.Sandbox.ShellJobs do
 
   alias Nest.PubSub
   alias Nest.Sandbox
+  alias Nest.Sandbox.Mounts
   alias Nest.Tools.Exec
   alias Nest.Tools.ShellCmd
 
@@ -73,7 +75,7 @@ defmodule Nest.Sandbox.ShellJobs do
           exit_code: integer() | nil,
           killed: boolean(),
           # The path inside the sandbox
-          # (`/tmp/<agent-name>/shell-jobs/<id>.log`), not the host path
+          # (`/tmp/<agent-name>/shell-jobs/<id>.log`), not the log file
           # the manager writes the log to.
           log_path: String.t(),
           started_at: DateTime.t()
@@ -102,10 +104,10 @@ defmodule Nest.Sandbox.ShellJobs do
     * `:agent_pid` — monitored; all the agent's jobs die with it
     * `:command` — the original command (for display)
     * `:bwrap` — the full bwrap command line to run
-    * `:script_path` — the staged script's **host** path, removed once
+    * `:script_path` — the staged script's path, removed once
       the job ends
-    * `:tmp_path` — the host dir the log lives under (the agent's own
-      scratch dir; the sandbox sees it at
+    * `:mounts` — the `Nest.Sandbox.Mounts` value for the agent; the log
+      lives under its scratch directory (which the sandbox sees at
       `/tmp/<agent-name>`)
     * `:max_jobs` — the per-agent ceiling (default #{@default_max_jobs})
 
@@ -316,12 +318,12 @@ defmodule Nest.Sandbox.ShellJobs do
 
   defp launch(attrs, agent_key, state) do
     job_id = "job-#{state.next_id}"
-    tmp_path = Map.fetch!(attrs, :tmp_path)
-    log_dir = Path.join(tmp_path, @log_subdir)
+    scratch = attrs |> Map.fetch!(:mounts) |> Mounts.scratch()
+    log_dir = Path.join(scratch, @log_subdir)
     log_path = Path.join(log_dir, "#{job_id}.log")
 
     sandbox_log_path =
-      Path.join([Sandbox.sandbox_tmp_path(tmp_path), @log_subdir, "#{job_id}.log"])
+      Path.join([Sandbox.sandbox_tmp_path(scratch), @log_subdir, "#{job_id}.log"])
 
     with :ok <- File.mkdir_p(log_dir),
          :ok <- File.write(log_path, ""),
@@ -470,10 +472,9 @@ defmodule Nest.Sandbox.ShellJobs do
 
   # ---- Retention / cleanup ----
 
-  # Remove the job's staged script. `script_path` is the *host* path
-  # (`ShellCmd.stage_script/2` writes it there); the sandbox spelling the
-  # bwrap command line uses is not a host path and must never be passed
-  # here.
+  # Remove the job's staged script. `script_path` is the staging path
+  # `ShellCmd.stage_script/2` writes to; the spelling the bwrap command line
+  # uses is a different thing and must never be passed here.
   defp remove_script(%{script_path: nil}), do: :ok
 
   defp remove_script(%{script_path: path}) do
@@ -556,8 +557,8 @@ defmodule Nest.Sandbox.ShellJobs do
       status: if(job.status == :running, do: :running, else: :exited),
       exit_code: job.exit_code,
       killed: job.killed,
-      # The path the sandbox sees, not the host path the manager writes:
-      # it is what `shell-list` shows the agent and what the UI receives.
+      # The path the sandbox sees, not the log file the manager writes: it
+      # is what `shell-list` shows the agent and what the UI receives.
       # `Map.get` (not `job.sandbox_log_path`) so jobs already in a live
       # manager's state from before this field existed still render.
       log_path: Map.get(job, :sandbox_log_path, job.log_path),

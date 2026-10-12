@@ -34,7 +34,7 @@ echo "    --proc /proc --ro-bind / / --dev /dev"
 echo
 
 # One bwrap invocation per variant. --tmpfs /tmp gives the probe a writable
-# scratch dir without us needing to bind any host paths into the sandbox.
+# scratch dir without us needing to bind any directories into the sandbox.
 # The probe body creates its own workspace dir under /tmp and exercises
 # /proc reads, /proc writes, /proc/self visibility.
 probe() {

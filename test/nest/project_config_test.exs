@@ -4,6 +4,7 @@ defmodule Nest.ProjectConfigTest do
   import ExUnit.CaptureLog
 
   alias Nest.ProjectConfig
+  alias Nest.Sandbox.Mounts
 
   setup do
     ProjectConfig.clear_cache()
@@ -98,16 +99,16 @@ defmodule Nest.ProjectConfigTest do
     end
   end
 
-  describe "effective_caps/3" do
+  describe "effective_caps/2" do
     test "leaves a non-project mode unchanged", %{dir: dir} do
       write_nest(dir, "[[mount]]\npath = \"~/x\"\nmode = \"rw\"\n")
       caps = caps([])
-      assert {:ok, ^caps} = ProjectConfig.effective_caps(caps, dir, "/tmp/agent")
+      assert {:ok, ^caps} = ProjectConfig.effective_caps(caps, Mounts.new(dir, "/tmp/agent"))
     end
 
     test "adds project mounts and protected .nest", %{dir: dir} do
       write_nest(dir, "[[mount]]\npath = \"~/x\"\nmode = \"rw\"\n")
-      assert {:ok, merged} = ProjectConfig.effective_caps(caps(), dir, "/tmp/agent")
+      assert {:ok, merged} = ProjectConfig.effective_caps(caps(), Mounts.new(dir, "/tmp/agent"))
       assert [%{"dest" => dest, "source" => source}] = merged["fs"]["project"]
       assert dest == Path.expand("~/x")
       assert source == dest
@@ -118,14 +119,14 @@ defmodule Nest.ProjectConfigTest do
 
     test "merges the shell background cap in a writable mode", %{dir: dir} do
       write_nest(dir, "[shell]\nbackground = 3\n")
-      assert {:ok, merged} = ProjectConfig.effective_caps(caps(), dir, "/tmp/agent")
+      assert {:ok, merged} = ProjectConfig.effective_caps(caps(), Mounts.new(dir, "/tmp/agent"))
       assert merged["shell"] == %{"background" => 3}
     end
 
     test "also merges the shell cap in a read-only mode", %{dir: dir} do
       write_nest(dir, "[shell]\nbackground = 3\n")
       caps = caps([])
-      assert {:ok, merged} = ProjectConfig.effective_caps(caps, dir, "/tmp/agent")
+      assert {:ok, merged} = ProjectConfig.effective_caps(caps, Mounts.new(dir, "/tmp/agent"))
       assert merged["shell"] == %{"background" => 3}
       # Mounts remain gated: no project/protected keys in a read-only mode.
       assert merged["fs"] == caps["fs"]
@@ -133,13 +134,13 @@ defmodule Nest.ProjectConfigTest do
 
     test "a tmp mount sources from the agent tmp", %{dir: dir} do
       write_nest(dir, "[[mount]]\npath = \"~/scratch\"\nmode = \"tmp\"\n")
-      assert {:ok, merged} = ProjectConfig.effective_caps(caps(), dir, "/tmp/agent")
+      assert {:ok, merged} = ProjectConfig.effective_caps(caps(), Mounts.new(dir, "/tmp/agent"))
       assert [%{"source" => source}] = merged["fs"]["project"]
       assert String.starts_with?(source, "/tmp/agent/project/")
     end
 
     test "masks /dev/null over a missing .nest", %{dir: dir} do
-      assert {:ok, merged} = ProjectConfig.effective_caps(caps(), dir, "/tmp/agent")
+      assert {:ok, merged} = ProjectConfig.effective_caps(caps(), Mounts.new(dir, "/tmp/agent"))
       assert [%{"source" => "/dev/null"}] = merged["fs"]["protected"]
     end
 
@@ -148,7 +149,7 @@ defmodule Nest.ProjectConfigTest do
 
       log =
         capture_log(fn ->
-          assert ProjectConfig.apply_or_default(caps(), dir, "/tmp/agent") == caps()
+          assert ProjectConfig.apply_or_default(caps(), Mounts.new(dir, "/tmp/agent")) == caps()
         end)
 
       assert log =~ "ignoring"

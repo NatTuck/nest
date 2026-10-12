@@ -111,6 +111,7 @@ defmodule Nest.Agents.Agent.Inbox do
   alias Nest.Agents.Agent.Watch
   alias Nest.Messages.MessageList
   alias Nest.Messages.User
+  alias Nest.Sandbox.Mounts
   alias Nest.Tokens.Estimator
 
   require Logger
@@ -673,7 +674,7 @@ defmodule Nest.Agents.Agent.Inbox do
     if Estimator.estimate(content) > Config.configured_async_message_max_tokens() do
       case Overflow.write(
              content,
-             %{tmp_path: state.tmp_path},
+             %{mounts: Mounts.from_agent(state)},
              "agent-inbox",
              "txt",
              Delivery.batch_id(entries)

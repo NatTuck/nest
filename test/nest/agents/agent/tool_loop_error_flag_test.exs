@@ -24,6 +24,7 @@ defmodule Nest.Agents.Agent.ToolLoopErrorFlagTest do
   alias Nest.LLM.Tool
   alias Nest.Messages.ToolCall
   alias Nest.Messages.ToolResult
+  alias Nest.Sandbox.Mounts
   alias Nest.Tools
 
   defp make_ctx(tools) do
@@ -67,7 +68,7 @@ defmodule Nest.Agents.Agent.ToolLoopErrorFlagTest do
 
   describe "is_error flag for missing required args" do
     test "write_file with empty arguments yields is_error: true in the chat path" do
-      tool = Tools.get_function("file-write", "/tmp")
+      tool = Tools.get_function("file-write", Mounts.new("/tmp", nil))
       ctx = make_ctx([tool])
 
       log =

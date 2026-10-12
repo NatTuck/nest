@@ -17,6 +17,7 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
 
   alias Nest.Agents.Agent.TmpSpace
   alias Nest.Sandbox
+  alias Nest.Sandbox.Mounts
 
   setup do
     # A *negative* id can never collide with a real `spaces.id` (a
@@ -154,7 +155,9 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
         # B's sandbox sees the same /tmp (the space dir), so A's file is
         # readable at /tmp/agent-a/report.txt. `ls /tmp` shows both agents
         # sit under the one bound root.
-        assert {:ok, out} = Sandbox.run("cat /tmp/agent-a/report.txt && ls /tmp", ws, b, caps)
+        assert {:ok, out} =
+                 Sandbox.run("cat /tmp/agent-a/report.txt && ls /tmp", Mounts.new(ws, b), caps)
+
         assert out =~ "shared result"
         assert out =~ "agent-a"
 
@@ -163,7 +166,7 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
         # real enforcement — `write_allowed?/3` has no production caller;
         # the bwrap mount is the gate.)
         leak = "leak-#{System.unique_integer([:positive])}"
-        assert {:ok, _} = Sandbox.run("echo x > /tmp/#{leak}", ws, b, caps)
+        assert {:ok, _} = Sandbox.run("echo x > /tmp/#{leak}", Mounts.new(ws, b), caps)
 
         assert File.read!(Path.join(space_dir, leak)) == "x\n"
         refute File.exists?(Path.join("/tmp", leak))

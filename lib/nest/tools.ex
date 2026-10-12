@@ -3,7 +3,7 @@ defmodule Nest.Tools do
   Tool dispatch for agent capabilities.
 
   Each tool is defined as a `Nest.LLM.Tool` that can be executed
-  by the agent. Tools are sandboxed to the agent's workspace_path.
+  by the agent. Tools are sandboxed to the agent's `Nest.Sandbox.Mounts`.
 
   The sandbox's *capability map* (caps) is read from the
   `context` at call time, not captured in the tool closure. This
@@ -17,6 +17,7 @@ defmodule Nest.Tools do
   alias Nest.Agents.Agent.Config
   alias Nest.LLM.Tool
   alias Nest.Sandbox
+  alias Nest.Sandbox.Mounts
   alias Nest.Tokens.ConversationSize
 
   alias Nest.Tools.{
@@ -34,11 +35,14 @@ defmodule Nest.Tools do
 
   @doc """
   Returns a list of `Nest.LLM.Tool` structs for the given tool names.
+
+  `mounts` is the `Nest.Sandbox.Mounts` value the tools hand back to
+  `Nest.Sandbox`; the tools capture it and never see the directories in it.
   """
-  @spec get_functions([String.t()], String.t() | nil, String.t() | nil) :: [Tool.t()]
-  def get_functions(tool_names, workspace_path, tmp_path \\ nil) do
+  @spec get_functions([String.t()], Mounts.t()) :: [Tool.t()]
+  def get_functions(tool_names, mounts) do
     tool_names
-    |> Enum.map(&resolve_tool(&1, workspace_path, tmp_path))
+    |> Enum.map(&resolve_tool(&1, mounts))
     |> Enum.reject(&is_nil/1)
   end
 
@@ -47,8 +51,8 @@ defmodule Nest.Tools do
   # declares an unknown/legacy tool name silently losing it — and
   # potentially ending up with an empty tools list — is visible
   # in the logs instead of surfacing only later as an LLM 400).
-  defp resolve_tool(name, workspace_path, tmp_path) do
-    case get_function(name, workspace_path, tmp_path) do
+  defp resolve_tool(name, mounts) do
+    case get_function(name, mounts) do
       nil ->
         Logger.warning("Unknown tool #{inspect(name)} not registered; skipped")
         nil
@@ -61,8 +65,8 @@ defmodule Nest.Tools do
   @doc """
   Returns a single `Nest.LLM.Tool` for a tool name.
   """
-  @spec get_function(String.t(), String.t() | nil, String.t() | nil) :: Tool.t() | nil
-  def get_function(name, workspace_path, tmp_path \\ nil) do
+  @spec get_function(String.t(), Mounts.t()) :: Tool.t() | nil
+  def get_function(name, mounts) do
     case name do
       name
       when name in [
@@ -81,12 +85,12 @@ defmodule Nest.Tools do
         sub_agent_tool_function(name)
 
       name ->
-        regular_tool_function(name, workspace_path, tmp_path)
+        regular_tool_function(name, mounts)
     end
   end
 
   # Dispatch the sub-agent tool stubs. Kept as its own function
-  # so `get_function/3` stays under the credo cyclomatic-
+  # so `get_function/2` stays under the credo cyclomatic-
   # complexity cap.
   defp sub_agent_tool_function("agents-spawn"), do: SpawnAgent.function()
   defp sub_agent_tool_function("agents-query"), do: QueryAgent.function()
@@ -106,19 +110,19 @@ defmodule Nest.Tools do
   defp sub_agent_tool_function("models-list"), do: models_list_function()
 
   # Dispatch the workspace, shell, and context tools. Kept as its
-  # own function so `get_function/3` stays under the credo
+  # own function so `get_function/2` stays under the credo
   # cyclomatic-complexity cap.
-  defp regular_tool_function("file-read", ws, tmp), do: FileTools.read_file_function(ws, tmp)
-  defp regular_tool_function("file-write", ws, tmp), do: FileTools.write_file_function(ws, tmp)
-  defp regular_tool_function("file-edit", ws, tmp), do: FileTools.edit_function(ws, tmp)
-  defp regular_tool_function("file-inspect", ws, tmp), do: InspectFile.build(ws, tmp)
-  defp regular_tool_function("shell-cmd", ws, tmp), do: shell_cmd_function(ws, tmp)
-  defp regular_tool_function("shell-list", _ws, _tmp), do: ShellJobs.list_function()
-  defp regular_tool_function("shell-wait", _ws, _tmp), do: ShellJobs.wait_function()
-  defp regular_tool_function("shell-kill", _ws, _tmp), do: ShellJobs.kill_function()
-  defp regular_tool_function("context-check", _ws, _tmp), do: context_check_function()
-  defp regular_tool_function("context-compact", _ws, _tmp), do: context_compact_function()
-  defp regular_tool_function(_name, _ws, _tmp), do: nil
+  defp regular_tool_function("file-read", mounts), do: FileTools.read_file_function(mounts)
+  defp regular_tool_function("file-write", mounts), do: FileTools.write_file_function(mounts)
+  defp regular_tool_function("file-edit", mounts), do: FileTools.edit_function(mounts)
+  defp regular_tool_function("file-inspect", mounts), do: InspectFile.build(mounts)
+  defp regular_tool_function("shell-cmd", mounts), do: shell_cmd_function(mounts)
+  defp regular_tool_function("shell-list", _mounts), do: ShellJobs.list_function()
+  defp regular_tool_function("shell-wait", _mounts), do: ShellJobs.wait_function()
+  defp regular_tool_function("shell-kill", _mounts), do: ShellJobs.kill_function()
+  defp regular_tool_function("context-check", _mounts), do: context_check_function()
+  defp regular_tool_function("context-compact", _mounts), do: context_compact_function()
+  defp regular_tool_function(_name, _mounts), do: nil
 
   @doc """
   JSON schema fragment for the `max_result_tokens` call arg.
@@ -175,7 +179,7 @@ defmodule Nest.Tools do
     {Map.get(context, :space_id, :unknown), Map.get(context, :agent_name, :unknown)}
   end
 
-  defp shell_cmd_function(workspace_path, tmp_path) do
+  defp shell_cmd_function(mounts) do
     %Tool{
       name: "shell-cmd",
       description: shell_cmd_description(),
@@ -193,7 +197,7 @@ defmodule Nest.Tools do
         "required" => ["command"]
       },
       function: fn args, context ->
-        shell_cmd(args, workspace_path, tmp_path, context)
+        shell_cmd(args, mounts, context)
       end
     }
   end
@@ -246,14 +250,15 @@ defmodule Nest.Tools do
     }
   end
 
-  defp shell_cmd(%{"command" => command} = args, workspace_path, tmp_path, context) do
+  defp shell_cmd(%{"command" => command} = args, mounts, context) do
     context = context || %{}
     caps = caps_from_context(context)
 
     with :ok <- ShellPipes.check(command),
          {:ok, timeout} <- shell_timeout_ms(args["timeout"]) do
       Logger.info(
-        "Tool shell-cmd: #{command} (workspace: #{workspace_path || "none"}, tmp: #{tmp_path || "none"}, background: #{args["background"] == true})"
+        "Tool shell-cmd: #{command} (workspace: #{Mounts.workspace(mounts) || "none"}, " <>
+          "scratch: #{Mounts.scratch(mounts) || "none"}, background: #{args["background"] == true})"
       )
 
       opts =
@@ -264,12 +269,12 @@ defmodule Nest.Tools do
         ]
         |> put_timeout(timeout)
 
-      Sandbox.run(command, workspace_path, tmp_path, caps, opts)
+      Sandbox.run(command, mounts, caps, opts)
     end
   end
 
   # `nil` means the argument was omitted: leave `:timeout` off the opts so
-  # `ShellCmd.execute/5`'s own default applies (one source of truth for the
+  # `ShellCmd.execute/4`'s own default applies (one source of truth for the
   # default bound).
   defp put_timeout(opts, nil), do: opts
   defp put_timeout(opts, ms), do: Keyword.put(opts, :timeout, ms)
@@ -499,8 +504,16 @@ defmodule Nest.Tools do
       name: "models-list",
       description:
         "List available models from providers that have expose_models enabled, " <>
-          "one \"provider/model-name\" per line. Optionally filter by provider " <>
-          "name. Feed the returned strings to `agents-spawn`'s `model` argument.",
+          "one per line, optionally filtered by provider name. Each line begins " <>
+          "with the \"provider/model-name\" string to feed to `agents-spawn`'s " <>
+          "`model` argument, followed by two-space-separated fields that are " <>
+          "present only when there is something to say: `input:` the input " <>
+          "modalities the model claims (a line whose `input:` field names " <>
+          "`image` positively claims image input; a line with no `input:` " <>
+          "field made no claim, so the model may still accept images), " <>
+          "`ctx:` its context limit in tokens, and `tags:` the provider's " <>
+          "tags. A field reading `invalid` was configured in a form that " <>
+          "cannot be read.",
       parameters_schema: %{
         "type" => "object",
         "properties" => %{

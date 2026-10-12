@@ -11,6 +11,7 @@ defmodule NestWeb.AgentChannelTest do
   import Nest.Test.TmpCleanup
 
   alias Nest.Agents.AgentTestHelpers
+  alias Nest.Sandbox.Mounts
   alias Nest.Sandbox.ShellJobs
   alias Nest.Tools.ShellCmd
 
@@ -392,7 +393,7 @@ defmodule NestWeb.AgentChannelTest do
       end)
 
       assert {:ok, _} =
-               ShellCmd.execute("sleep 30", File.cwd!(), tmp, nil,
+               ShellCmd.execute("sleep 30", Mounts.new(File.cwd!(), tmp), nil,
                  background: true,
                  agent_key: key,
                  grace_ms: 0
@@ -436,7 +437,7 @@ defmodule NestWeb.AgentChannelTest do
       end)
 
       assert {:ok, _} =
-               ShellCmd.execute("sleep 30", File.cwd!(), tmp, nil,
+               ShellCmd.execute("sleep 30", Mounts.new(File.cwd!(), tmp), nil,
                  background: true,
                  agent_key: key,
                  grace_ms: 0

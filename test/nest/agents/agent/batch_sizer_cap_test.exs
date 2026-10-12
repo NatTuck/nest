@@ -25,6 +25,7 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
   alias Nest.LLM.Tool
   alias Nest.Messages.ToolCall
   alias Nest.Messages.ToolResult
+  alias Nest.Sandbox.Mounts
   alias Nest.TextFixtures
   alias Nest.Tokens.Estimator
   alias Nest.Tools
@@ -52,7 +53,8 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
       caps: %{"fs" => %{"read" => ["/"], "write" => ["/tmp"]}, "net" => false},
       context_limit: Keyword.get(opts, :context_limit, 100_000),
       messages: Keyword.get(opts, :messages, []),
-      tmp_path: Keyword.get(opts, :tmp_path, nil),
+      mounts:
+        Mounts.new(Keyword.get(opts, :workspace_path, nil), Keyword.get(opts, :tmp_path, nil)),
       agent_pid: self(),
       agent_name: "test"
     }
@@ -183,7 +185,7 @@ defmodule Nest.Agents.Agent.BatchSizerCapTest do
       file = Path.join(dir, "big.txt")
       File.write!(file, big_content)
 
-      tools = [Tools.get_function("file-read", dir)]
+      tools = [Tools.get_function("file-read", Mounts.new(dir, nil))]
       c = ctx(tools, context_limit: 100_000)
 
       log =

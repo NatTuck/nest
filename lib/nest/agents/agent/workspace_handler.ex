@@ -5,8 +5,8 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
   `{:edit_agent, _, _}` edit.
 
   Changing the workspace retargets the file/shell tool closures (they
-  capture `workspace_path` at build time), so `state.tools` is rebuilt
-  via `Tools.get_functions/3`. The persisted system prompt (index 0) is
+  capture the agent's `Nest.Sandbox.Mounts` at build time), so `state.tools`
+  is rebuilt via `Tools.get_functions/2`. The persisted system prompt (index 0) is
   left untouched to preserve the LLM prefix cache; instead a
   user/assistant notice pair is appended (after a compaction preflight
   check) so the model learns the new working directory without a
@@ -27,6 +27,7 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
   alias Nest.Messages.Part
   alias Nest.Messages.User
   alias Nest.Persistence
+  alias Nest.Sandbox.Mounts
   alias Nest.Tools
   alias Nest.Tools.Groups
 
@@ -72,14 +73,15 @@ defmodule Nest.Agents.Agent.WorkspaceHandler do
   @spec apply_workspace(Agent.t(), String.t() | nil) ::
           {Agent.t(), :ok | {:error, :context_overflow}}
   def apply_workspace(state, path) do
-    tools = Tools.get_functions(tool_names(state), path, state.tmp_path)
+    names = tool_names(state)
 
     state = %{
       state
       | workspace_path: path,
-        tools: tools,
         chat_state: %{state.chat_state | read_files: %{}}
     }
+
+    state = %{state | tools: Tools.get_functions(names, Mounts.from_agent(state))}
 
     state = %{
       state
