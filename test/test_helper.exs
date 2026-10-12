@@ -93,3 +93,46 @@ for mod <- [
     Code.ensure_loaded?(mod) do
   :ok
 end
+
+# Warm the agent-start path (#21).
+#
+# `Agent.init/1` runs inside the supervisor's critical section —
+# `DynamicSupervisor.start_child/2` blocks for the whole of it — so its
+# first-call cost is paid once per BEAM but charged to whichever test
+# happens to start an agent first, and the start-up burst (many tests
+# starting agents at once) serialises that cost into one queue.
+#
+# Measured on this suite with `Agent.init/1` instrumented, before/after:
+# init mean 5.01ms -> 1.78ms, total init work across the suite
+# 2620ms -> 941ms, the start-up burst's mean 29ms -> 1.93ms, and caller
+# waits over 100ms 12 -> 0. The suite itself goes 8.4s -> 6.2s. Paying
+# the first-call cost here moves it out of the timed suite, exactly like
+# the code-server warm-up above.
+#
+# `Tools.get_functions/2` is the single biggest term (45% of all init
+# time), so every group is warmed rather than a representative subset.
+_ = Nest.DotConfig.load()
+_ = Nest.Agents.Agent.Config.configured_max_depth()
+_ = Nest.Agents.Agent.Config.configured_context_limit("warmup")
+_ = Nest.Agents.Agent.Config.configured_provider_default_context_limit("model-studio")
+
+_ =
+  Nest.Agents.Agent.Config.create_client_config(%{
+    name: "qwen3.5-plus",
+    provider: "model-studio"
+  })
+
+_ =
+  Nest.Agents.Agent.Init.initial_context_limit(%{
+    name: "qwen3.5-plus",
+    provider: "model-studio"
+  })
+
+_ = Nest.ProjectConfig.section(nil)
+_ = Nest.Agents.Agent.TmpSpace.create(0, "warmup")
+
+_ =
+  Nest.Tools.get_functions(
+    Nest.Tools.Groups.expand(Nest.Tools.Groups.all()),
+    Nest.Sandbox.Mounts.new(nil, nil)
+  )
