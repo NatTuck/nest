@@ -26,6 +26,7 @@
 
 import { stripModePrefix } from "./stripModePrefix.js";
 import { splitThinkFromParts } from "./thinkTags.js";
+import { mediaSummary } from "./media.js";
 
 // The clipboard omits reasoning on purpose (issue #51). When a message
 // carries *only* reasoning, the copy would otherwise be empty — which reads
@@ -114,10 +115,23 @@ function partToMarkdown(part, role, mode) {
       );
     case "tool_result":
       return toolResultToMarkdown(part);
+    case "media":
+      return mediaToMarkdown(part);
     default:
       // A kind this build does not know. Never drop it silently.
       return `*[unsupported part omitted from copy: ${part.kind ?? "unknown"}]*`;
   }
+}
+
+/**
+ * Serialise a media part to a reference line, never to the payload: a
+ * `data:` URI on the clipboard is not useful, and a multi-megabyte base64
+ * string would swamp everything else in the copy. The line still names
+ * what was attached — type, decoded size, and the path the agent asked
+ * for — so the copy says what the panel showed without carrying the bytes.
+ */
+function mediaToMarkdown(part) {
+  return `**Tool media: ${mediaSummary(part)}**`;
 }
 
 /**
@@ -262,7 +276,7 @@ function longestBacktickRun(text) {
  * Returns the clipboard-ready text for an API logs block — the same
  * 2-space-indented JSON dump the block renders, with one entry per
  * line, separated by a blank line. The output is exactly what
- * `JSON.stringify(log.payload, null, 2)` produces for each log,
+ * `JSON.stringify(log.payload, apiLogReplacer, 2)` produces for each log,
  * concatenated in the original order.
  *
  * Returns an empty string for an empty/null input so callers can wire
@@ -271,6 +285,37 @@ function longestBacktickRun(text) {
 export function formatApiLogsAsJson(apiLogs) {
   if (!Array.isArray(apiLogs) || apiLogs.length === 0) return "";
   return apiLogs
-    .map((log) => JSON.stringify(log?.payload ?? null, null, 2))
+    .map((log) => JSON.stringify(log?.payload ?? null, apiLogReplacer, 2))
     .join("\n\n");
+}
+
+// A media part's base64 payload is one multi-megabyte string, and the
+// API-log `<pre>` would build and lay out all of it (issue #40). Elide any
+// string that looks like it carries a large base64 payload, in place, with a
+// marker naming its length. Everything else is untouched, so the log still
+// shows the whole request shape.
+//
+// The elision is itself visible data rather than a silent omission, which is
+// what keeps this consistent with the project's rule that expected data is
+// never quietly dropped — and the *stored* parts are unaffected, so nothing
+// is hidden from anyone who wants the bytes.
+export const MAX_INLINE_LOG_STRING = 2_048;
+
+// A string is treated as an embedded payload when it is entirely base64, or
+// when it contains a long base64 run. The second form is what a provider's
+// image reference looks like — `data:image/png;base64,<payload>` — and the
+// run length is what keeps a long prose string (whose spaces break the run)
+// from being mistaken for one.
+const BASE64_ONLY_RE = /^[A-Za-z0-9+/]+={0,2}$/;
+const BASE64_RUN_RE = /[A-Za-z0-9+/]{1024,}={0,2}/;
+
+export function apiLogReplacer(_key, value) {
+  if (
+    typeof value === "string" &&
+    value.length > MAX_INLINE_LOG_STRING &&
+    (BASE64_ONLY_RE.test(value) || BASE64_RUN_RE.test(value))
+  ) {
+    return `[base64 payload elided: ${value.length} characters]`;
+  }
+  return value;
 }

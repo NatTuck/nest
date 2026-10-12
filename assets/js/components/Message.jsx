@@ -38,6 +38,7 @@ import { ThinkingBlock } from "./ThinkingBlock";
 import { MessageContent } from "./MessageContent";
 import { ToolCalls } from "./ToolCalls";
 import { ToolResults } from "./ToolResults";
+import { ToolMedia } from "./ToolMedia.jsx";
 import { DelegatedTask } from "./DelegatedTaskBlock";
 import { ApiLogsBlock } from "./ApiLogsBlock";
 import { SystemMessageContent } from "./SystemMessageContent";
@@ -49,6 +50,7 @@ import {
   thinkingFor,
   textPartsFor,
   toolCallsFromParts,
+  mediaFromParts,
 } from "../utils/messageParts.js";
 import { stripModePrefix } from "../utils/stripModePrefix.js";
 
@@ -142,6 +144,13 @@ function Message({ message, agentName }) {
                       kind: "text",
                       text: stripModePrefix(messageText(message), message.mode),
                     },
+                    // Media parts are appended, not replaced. This branch
+                    // synthesises its text part from `messageText`, which is
+                    // text-only, so without this a user-side attachment would
+                    // be unrepresentable rather than merely unrendered.
+                    ...(message.parts ?? []).filter(
+                      (p) => p && p.kind === "media",
+                    ),
                   ]
                 : textPartsFor(message)
             }
@@ -152,6 +161,16 @@ function Message({ message, agentName }) {
         <ToolCalls toolCalls={toolCalls} />
         <DelegatedTask message={message} agentName={agentName} />
         <ToolResults toolResults={message.toolResults} />
+        {/* The user branch above hands its media to `MessageContent`, which
+            renders it; every other role's `MessageContent` receives text only,
+            so its media is rendered here. The `isUser` guard is what keeps a
+            user-side attachment from rendering twice. `message.media` is
+            derived by the store alongside `toolResults`; the `mediaFromParts`
+            fallback covers a message that reached the renderer without going
+            through that merge. */}
+        {!isUser && (
+          <ToolMedia media={message.media ?? mediaFromParts(message.parts)} />
+        )}
         <ApiLogsBlock
           apiLogs={message.apiLogs}
           agentName={agentName}

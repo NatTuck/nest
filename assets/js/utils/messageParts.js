@@ -186,3 +186,26 @@ export function toolResultsFromParts(parts) {
     state: p.state ?? null,
   }));
 }
+
+// Derive the media attachments from a message's `parts` (issue #40).
+// Returns `null` when there are none — the same contract as
+// `toolResultsFromParts`, so a caller can use `?? []` and a caller that
+// wants to skip the render can test for null.
+//
+// `data` stays base64 (the component builds the `data:` URI) and `path`
+// is `null` rather than `undefined` when the wire omitted it, so the
+// renderer's `media.path && ...` guard is the only missing-data check it
+// needs.
+export function mediaFromParts(parts) {
+  if (!Array.isArray(parts)) return null;
+  const media = parts.filter((p) => p && p.kind === "media");
+  if (media.length === 0) return null;
+  return media.map((p) => ({
+    tool_call_id: p.toolCallId,
+    modality: p.modality,
+    mediaType: p.mediaType,
+    bytes: p.bytes,
+    data: p.data,
+    path: p.path ?? null,
+  }));
+}

@@ -18,6 +18,7 @@ import {
   textPartsFor,
   toolCallsFromParts,
   toolResultsFromParts,
+  mediaFromParts,
   formatToolCall,
   LONG_FIELD_THRESHOLD,
 } from "./messageParts.js";
@@ -267,5 +268,68 @@ describe("toolResultsFromParts", () => {
         state: "backgrounded",
       },
     ]);
+  });
+});
+
+describe("mediaFromParts", () => {
+  it("returns null when there is no media part", () => {
+    expect(mediaFromParts(null)).toBeNull();
+    expect(mediaFromParts(undefined)).toBeNull();
+    expect(mediaFromParts([{ kind: "text", text: "x" }])).toBeNull();
+    expect(
+      mediaFromParts([
+        {
+          kind: "tool_result",
+          toolCallId: "c1",
+          name: "file-read",
+          content: "r",
+        },
+      ]),
+    ).toBeNull();
+  });
+
+  it("derives the media shape, with `path` null when the wire omitted it", () => {
+    const base = {
+      kind: "media",
+      toolCallId: "c1",
+      modality: "image",
+      mediaType: "image/png",
+      bytes: 68,
+      data: "AAAA",
+    };
+
+    expect(mediaFromParts([base])).toEqual([
+      {
+        tool_call_id: "c1",
+        modality: "image",
+        mediaType: "image/png",
+        bytes: 68,
+        data: "AAAA",
+        path: null,
+      },
+    ]);
+
+    // `path` is the one optional key on the wire; when present it rides
+    // through verbatim rather than being normalized away.
+    expect(mediaFromParts([{ ...base, path: "shot.png" }])[0].path).toBe(
+      "shot.png",
+    );
+  });
+
+  it("keeps every media part, in order, ignoring the other kinds", () => {
+    const media = mediaFromParts([
+      { kind: "text", text: "x" },
+      { kind: "media", toolCallId: "c1", modality: "image", data: "a" },
+      {
+        kind: "tool_result",
+        toolCallId: "c1",
+        name: "file-read",
+        content: "r",
+      },
+      { kind: "media", toolCallId: "c2", modality: "image", data: "b" },
+    ]);
+
+    expect(media.map((m) => m.tool_call_id)).toEqual(["c1", "c2"]);
+    expect(media.map((m) => m.data)).toEqual(["a", "b"]);
   });
 });
