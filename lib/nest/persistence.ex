@@ -108,7 +108,7 @@ defmodule Nest.Persistence do
   `attrs` carries `:space_id`, `:name`, `:model`,
   `:vocation_id`, `:workspace_path`. `:next_message_index`
   defaults to 0 and the runtime bumps it via
-  `update_next_message_index/3` when messages are appended.
+  `update_next_message_index_by_id/2` when messages are appended.
 
   Returns `{:ok, %PersistedAgent{}}` on success,
   `{:error, :duplicate_name}` when the `(space_id, name)`
@@ -258,20 +258,51 @@ defmodule Nest.Persistence do
   `space_id` and `agent_name` identify the agent.
   `message` is the canonical `Message.t()` tagged tuple.
   The agent's integer FK (`agents.id`) is resolved
-  internally.
+  internally, by name.
+
+  ## `:expect_agent_row_id`
+
+  The name is the runtime handle, and it can outlive the row it used to
+  point at: a row deleted out from under a live process (space teardown)
+  followed by a *different* agent taking the same name makes the
+  resolution land on the successor's row. Passing
+  `expect_agent_row_id: id` asserts that the row the name resolves to is
+  that one; any other row — including `nil`, "this session has no row" —
+  is refused with `{:error, :agent_row_reused}` rather than silently
+  writing into another agent's transcript. The row is still resolved by
+  name (this is a check, not an id-keyed write), so the statement count
+  is unchanged.
+
+  Omitting the option leaves the resolution unchecked, which is what a
+  caller that just inserted the row itself (`Agent.pre_spawn/1`) wants:
+  it owns the name by construction.
 
   Returns `{:ok, %PersistedMessage{}}` on success, or
   `{:error, term()}` on failure.
   """
-  @spec insert_message(integer(), String.t(), Message.t()) ::
+  @spec insert_message(integer(), String.t(), Message.t(), keyword()) ::
           {:ok, PersistedMessage.t()} | {:error, term()}
-  def insert_message(space_id, agent_name, message) do
+  def insert_message(space_id, agent_name, message, opts \\ []) do
     case fetch_agent(space_id, agent_name) do
       {:error, :not_found} ->
         {:error, :agent_not_found}
 
-      {:ok, %PersistedAgent{id: agent_id}} ->
-        insert_message_with_agent_id(agent_id, agent_name, message)
+      {:ok, %PersistedAgent{id: agent_id} = row} ->
+        case check_expected_row(row, opts) do
+          :ok -> insert_message_with_agent_id(agent_id, agent_name, message)
+          {:error, reason} -> {:error, reason}
+        end
+    end
+  end
+
+  # `Keyword.fetch/2`, not `Keyword.get/3`: an absent option means "the
+  # caller did not ask for the check" while an explicit `nil` means "this
+  # session has no row" and must never match. See `insert_message/4`.
+  defp check_expected_row(%PersistedAgent{id: id}, opts) do
+    case Keyword.fetch(opts, :expect_agent_row_id) do
+      :error -> :ok
+      {:ok, ^id} -> :ok
+      {:ok, _other} -> {:error, :agent_row_reused}
     end
   end
 
@@ -310,6 +341,13 @@ defmodule Nest.Persistence do
   Insert a `role: "compaction"` marker row at `marker_index`
   and bump `agents.last_compaction_index` to match.
 
+  A thin facade over `insert_message/4` for callers holding positional
+  `(marker_index, archived_count, tokens…)` args rather than a
+  `%Compaction{}` struct. `opts` are forwarded, so `expect_agent_row_id:`
+  (see `insert_message/4`) applies here too — and the marker write is the
+  same guarded one the live path (`MessageAppender.append_marker/2`) uses,
+  rather than a second name-keyed resolution.
+
   Returns the new marker row on success,
   `{:error, :agent_not_found}` when the agent does not
   resolve, or `{:error, term()}` on other failures.
@@ -320,7 +358,8 @@ defmodule Nest.Persistence do
           non_neg_integer(),
           non_neg_integer(),
           non_neg_integer() | nil,
-          non_neg_integer() | nil
+          non_neg_integer() | nil,
+          keyword()
         ) :: {:ok, PersistedMessage.t()} | {:error, term()}
   def record_compaction(
         space_id,
@@ -328,30 +367,35 @@ defmodule Nest.Persistence do
         marker_index,
         archived_count,
         tokens_compacted \\ nil,
-        tokens_compacted_to \\ nil
+        tokens_compacted_to \\ nil,
+        opts \\ []
       ) do
-    case fetch_agent(space_id, agent_name) do
-      {:error, :not_found} ->
-        {:error, :agent_not_found}
-
-      {:ok, %PersistedAgent{id: agent_id}} ->
-        CompactionMarker.record(
-          agent_id,
-          marker_index,
-          archived_count,
-          nil,
-          tokens_compacted,
-          tokens_compacted_to
-        )
-    end
+    insert_message(
+      space_id,
+      agent_name,
+      {:compaction,
+       %Compaction{
+         index: marker_index,
+         archived_count: archived_count,
+         tokens_compacted: tokens_compacted,
+         tokens_compacted_to: tokens_compacted_to
+       }},
+      opts
+    )
   end
 
   @doc """
-  Bump the `next_message_index` column on the agent row.
+  Bump the `next_message_index` column on the agent row with this
+  `agents.id`.
+
+  This is the append path's bump: it takes the id of the row the append's
+  INSERT returned, so a name taken over between the two writes cannot move
+  a *successor's* counter. See
+  `Nest.Persistence.Messages.update_next_message_index_by_id/2`.
   """
-  defdelegate update_next_message_index(space_id, name, new_index),
+  defdelegate update_next_message_index_by_id(agent_id, new_index),
     to: Nest.Persistence.Messages,
-    as: :update_next_message_index
+    as: :update_next_message_index_by_id
 
   @doc """
   Set (or clear) the `fork_message_index` column on the agent
@@ -407,6 +451,10 @@ defmodule Nest.Persistence do
   `{:ok, attrs_map}` for `Agent.start_link/1`, or
   `{:error, :not_found}` when no row exists for the name.
 
+  The attrs carry the row's `agents.id` as `:agent_row_id`: the row this
+  session's messages belong to, which the append path checks before
+  writing (see `insert_message/4`).
+
   An *archived* row is refused with `{:error, :archived}`: archiving
   stops the process and means "out of service", so nothing may bring it
   back by accident (visiting its chat URL, or messaging it from an
@@ -450,6 +498,7 @@ defmodule Nest.Persistence do
     %{
       space_id: row.space_id,
       name: row.name,
+      agent_row_id: row.id,
       model: row.model,
       vocation_id: row.vocation_id,
       workspace_path: row.workspace_path,

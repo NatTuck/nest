@@ -73,7 +73,7 @@ defmodule Nest.Agents.Agent.Init do
       created_by_user_id: Map.get(attrs, :created_by_user_id),
       shared: Map.get(attrs, :shared, false),
       depth: Map.get(attrs, :depth, 0),
-      chat_state: build_chat_state(initial_messages, next_index),
+      chat_state: build_chat_state(initial_messages, next_index, Map.get(attrs, :agent_row_id)),
       live: build_live_state(mode)
     }
   end
@@ -128,8 +128,7 @@ defmodule Nest.Agents.Agent.Init do
     case state.chat_state.messages do
       [{:system, sys_struct} | _] when is_struct(sys_struct, System) ->
         AgentPersistence.append_message(
-          state.space_id,
-          state.name,
+          state,
           {:system, sys_struct},
           state.chat_state.next_message_index
         )
@@ -354,9 +353,10 @@ defmodule Nest.Agents.Agent.Init do
     }
   end
 
-  defp build_chat_state(messages, next_index) do
+  defp build_chat_state(messages, next_index, agent_row_id) do
     %Nest.Agents.Agent.ChatState{
       messages: messages,
+      agent_row_id: agent_row_id,
       next_message_index: next_index
     }
   end

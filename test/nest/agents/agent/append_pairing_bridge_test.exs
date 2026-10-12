@@ -22,6 +22,7 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
   alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.MessageAppender
   alias Nest.Agents.Agent.Turn
+  alias Nest.Agents.PersistedMessage
   alias Nest.LLM.Preflight
   alias Nest.Messages.Assistant
   alias Nest.Messages.MessageList
@@ -485,12 +486,12 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
       name = unique_name("append-order")
       test_pid = self()
 
-      Mimic.stub(Nest.Persistence, :insert_message, fn _space, _agent, _message ->
+      Mimic.stub(Nest.Persistence, :insert_message, fn _space, _agent, _message, _opts ->
         send(test_pid, :persisted)
-        {:ok, :row}
+        {:ok, %PersistedMessage{agent_id: 0}}
       end)
 
-      Mimic.stub(Nest.Persistence, :update_next_message_index, fn _space, _agent, _index ->
+      Mimic.stub(Nest.Persistence, :update_next_message_index_by_id, fn _agent_id, _index ->
         :ok
       end)
 
@@ -566,6 +567,10 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
     }
   end
 
+  # A hand-built state still has to name the row it owns: the tests create
+  # the row with `Persistence.insert_agent/1` and then drive
+  # `MessageAppender` with a state built by hand, and the append path
+  # refuses to write into any other row (`Persistence.insert_message/4`).
   defp state(name, messages) do
     %Agent{
       name: name,
@@ -576,7 +581,11 @@ defmodule Nest.Agents.Agent.AppendPairingBridgeTest do
         usage_totals: Broadcasts.empty_usage_totals(),
         descendant_usage: Broadcasts.empty_usage_totals()
       },
-      chat_state: %Agent.ChatState{messages: messages, next_message_index: next_index(messages)}
+      chat_state: %Agent.ChatState{
+        messages: messages,
+        agent_row_id: agent_row_id(test_space_id(), name),
+        next_message_index: next_index(messages)
+      }
     }
   end
 

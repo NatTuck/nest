@@ -13,6 +13,7 @@ defmodule Nest.Agents.Agent.LoadBridgeTest do
 
   import ExUnit.CaptureLog
   import Nest.Agents.AgentTestHelpers
+  import Nest.PersistenceTestHelpers
 
   alias Nest.Agents
   alias Nest.Agents.Agent
@@ -440,12 +441,20 @@ defmodule Nest.Agents.Agent.LoadBridgeTest do
     Enum.map(state.chat_state.messages, fn {role, %{index: index}} -> {index, role} end)
   end
 
+  # A hand-built state still has to name the row it owns: these tests
+  # persist the sequence first and then drive the heal with a state built
+  # by hand, and the append path refuses to write into any other row
+  # (`Persistence.insert_message/4`).
   defp load_state(name, space_id, messages) do
     %Agent{
       name: name,
       space_id: space_id,
       llm_metrics: %Agent.LlmMetrics{context_limit: 100_000, context_limit_source: :config},
-      chat_state: %Agent.ChatState{messages: messages, next_message_index: length(messages)}
+      chat_state: %Agent.ChatState{
+        messages: messages,
+        agent_row_id: agent_row_id(space_id, name),
+        next_message_index: length(messages)
+      }
     }
   end
 

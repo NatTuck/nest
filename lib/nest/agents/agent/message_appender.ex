@@ -162,12 +162,7 @@ defmodule Nest.Agents.Agent.MessageAppender do
             }
         }
 
-        AgentPersistence.append_message(
-          state.space_id,
-          state.name,
-          stamped,
-          state.chat_state.next_message_index
-        )
+        AgentPersistence.append_message(state, stamped, state.chat_state.next_message_index)
 
         {:ok, stamped, state}
 
@@ -247,12 +242,7 @@ defmodule Nest.Agents.Agent.MessageAppender do
           | chat_state: %{state.chat_state | messages: messages, next_message_index: index + 1}
         }
 
-        AgentPersistence.append_message(
-          state.space_id,
-          state.name,
-          stamped,
-          state.chat_state.next_message_index
-        )
+        AgentPersistence.append_message(state, stamped, state.chat_state.next_message_index)
 
         Broadcasts.message(state, stamped)
 

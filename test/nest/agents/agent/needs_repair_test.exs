@@ -12,6 +12,8 @@ defmodule Nest.Agents.Agent.NeedsRepairTest do
   use Nest.DataCase, async: true
   alias Nest.Agents.Agent.Machine
 
+  import Nest.PersistenceTestHelpers
+
   alias Nest.Agents
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Init
@@ -94,6 +96,7 @@ defmodule Nest.Agents.Agent.NeedsRepairTest do
               user(1, "run the command"),
               assistant_tool(2, "call_1")
             ],
+            agent_row_id: agent_row_id(space_id, name),
             next_message_index: 3
           }
         }

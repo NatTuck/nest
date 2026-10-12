@@ -168,7 +168,15 @@ defmodule Nest.Agents.Supervisor do
 
   # `start_pre_spawned/3` bound to this module's own start call. Kept as a
   # function so the `with` in the spawn paths stays under the ABC cap.
+  #
+  # The row id is attached to the attrs here rather than returned from
+  # `pre_spawn/1`: a spawned child is started straight from these attrs
+  # (a caller-created agent's come from
+  # `Persistence.build_attrs_for_start/2`), and the child's session must
+  # know which row it owns before its first append (see
+  # `Persistence.insert_message/4`).
   defp start_pre_spawned_child(attrs, agent_id, name) do
+    attrs = Map.put(attrs, :agent_row_id, agent_id)
     start_pre_spawned(attrs, agent_id, fn -> start_under_supervisor(attrs, name) end)
   end
 

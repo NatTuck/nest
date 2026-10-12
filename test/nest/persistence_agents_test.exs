@@ -139,7 +139,7 @@ defmodule Nest.PersistenceAgentsTest do
   describe "build_attrs_for_start/1" do
     test "returns attrs suitable for Agent.start_link including last_compaction_index" do
       attrs = agent_attrs("restore-#{Elixir.System.unique_integer([:positive])}")
-      {:ok, _} = Persistence.insert_agent(attrs)
+      {:ok, %PersistedAgent{id: row_id}} = Persistence.insert_agent(attrs)
 
       {:ok, _} =
         Persistence.insert_message(
@@ -169,6 +169,10 @@ defmodule Nest.PersistenceAgentsTest do
       assert (restored.model[:provider] || restored.model["provider"]) == attrs.model.provider
       assert restored.workspace_path == attrs.workspace_path
       assert restored.last_compaction_index == 2
+      # The `agents.id` row this session's messages belong to, which the
+      # append path checks before writing (see
+      # `Persistence.insert_message/4`).
+      assert restored.agent_row_id == row_id
 
       # 3 preloaded messages: system@0, user@1, marker@2.
       # Partition happens inside Agent.init/1's seed_from_db/3.
