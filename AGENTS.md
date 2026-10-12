@@ -25,7 +25,8 @@ discovered issues, repeat loop. We've lost *hours* to random "I'll just run the
 tests 20 times to collect stats" bullshit. Test run loops are **ABSOLUTELY
 prohibited**.
 - Do not run `mix precommit` except exactly once during a pre-commit or review.
-Do normal testing by running `mix test` and/or `pnpm --dir assets test`.
+Do normal testing by running `mix test` and/or (`pnpm --dir assets test` or
+`/node_modules/.bin/vitest run`).
 
 ## Important: Core Process Rules
 
