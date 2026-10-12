@@ -52,16 +52,26 @@ defmodule NestWeb.LobbyChannel.AgentErrorsTest do
              AgentErrors.create_payload(changeset)
   end
 
-  test "stays generic for a space changeset, even one with a :name error" do
-    # A blank space name is not an agent-name problem, and the agent's own
-    # `data:` match is what keeps the two apart.
-    changeset =
-      Space.changeset(%Space{}, %{name: "", created_by_user_id: 1})
+  test "stays generic for a space changeset, whatever field it failed on" do
+    # A blank space name — or a slug that could not be the root agent's name —
+    # is not an agent-name problem, and the agent's own `data:` match is what
+    # keeps the two apart. The slug case is why `Space.changeset/2` validates
+    # the slug at all: it used to surface as `invalid_agent_name`, naming a
+    # field the client never sent.
+    blank_name = Space.changeset(%Space{}, %{name: "", created_by_user_id: 1})
+
+    unusable_slug =
+      Space.changeset(%Space{}, %{name: "My Space", slug: "my space", created_by_user_id: 1})
+
+    assert {"must be usable as an agent name (letters, digits, `_` and `-`)", _} =
+             unusable_slug.errors[:slug]
 
     log =
       capture_log(fn ->
-        assert {:error, %{"reason" => "failed_to_create"}} =
-                 AgentErrors.create_payload(changeset)
+        for changeset <- [blank_name, unusable_slug] do
+          assert {:error, %{"reason" => "failed_to_create"}} =
+                   AgentErrors.create_payload(changeset)
+        end
       end)
 
     assert log =~ "Failed to create space"

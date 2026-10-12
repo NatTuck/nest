@@ -194,6 +194,25 @@ defmodule Nest.Agents.PersistedAgent do
     |> validate_number(:depth, greater_than_or_equal_to: 0)
   end
 
+  @doc """
+  Whether `name` may be used verbatim as a scratch-directory segment: letters,
+  digits, `_` and `-` only (`#{@name_format.source}`), at most
+  `#{@max_name_bytes}` bytes.
+
+  The rule is defined on this schema because an agent's `name` *is* the
+  directory segment (`Nest.Agents.Agent.TmpSpace`), and this is where it is
+  enforced at the DB boundary. It is exposed so a caller that *derives* a name
+  from another field can apply the same rule at its own boundary instead of
+  copying it: `Nest.Spaces.Space.changeset/2` refuses a client-supplied
+  `:slug` whose `<slug>-root` root-agent name would fail it — otherwise the
+  client gets an `invalid_agent_name` error naming a field it never sent (see
+  `NestWeb.LobbyChannel.AgentErrors.create_payload/1`).
+  """
+  @spec valid_name?(term()) :: boolean()
+  def valid_name?(name) do
+    is_binary(name) and byte_size(name) <= @max_name_bytes and Regex.match?(@name_format, name)
+  end
+
   defp atomize_keys(params) when is_map(params) and not is_struct(params) do
     Map.new(params, fn {k, v} -> {if(is_binary(k), do: safe_atom(k), else: k), v} end)
   end

@@ -38,12 +38,20 @@ defmodule Nest.Repo.Migrations.SanitizeAgentNames do
   #   sha256(name + attempt)>` suffix (lengthening the digest only if even
   #   that is taken). `(space_id, name)` stays unique throughout.
   # * **The agent's own system message is rewritten too.** The index-0
-  #   system prompt embeds the name twice (`Your name is "<name>"` and
-  #   `Your own scratch directory is `/tmp/<name>/``), so renaming the row
-  #   without it leaves the agent's own prompt — which the UI shows —
-  #   contradicting its name. Only those two exact renderings are replaced,
+  #   system prompt embeds the name once — `Your name is "<name>"` — so
+  #   renaming the row without it leaves the agent's own prompt (which the
+  #   UI shows) contradicting its name. That exact rendering is replaced,
   #   only in the agent's own index-0 system row. See
   #   `rewrite_system_message/3`.
+  # * **The scratch-directory rendering is a no-op.** The rewrite also
+  #   replaces `Your own scratch directory is `/tmp/<name>/``, which no
+  #   pre-migration row can contain: before #35 that sentence was appended
+  #   to *tool descriptions* — sent as the API `tools` parameter, never
+  #   composed into the system message — and the name inside it was
+  #   percent-encoded (`/tmp/Foo%20Bar/`), which this rendering does not
+  #   match. It is kept rather than deleted so the rewrite stays exact for
+  #   every rendering the prompt composer emits (it composes this one as of
+  #   #35).
   # * **Known gap: a renamed clone's notice row.** A clone's fork notice
   #   (a tool-result row in the clone's own sequence, *not* its index-0
   #   system row) names the clone and its scratch directory. A clone that
@@ -137,12 +145,12 @@ defmodule Nest.Repo.Migrations.SanitizeAgentNames do
   # hand-inserted with a raw name, say) rolls the whole migration back
   # rather than leaving names half-restored.
   #
-  # The system message is restored by applying the same two-rendering
-  # rewrite backwards, not by storing a copy of the old prompt: an index-0
-  # system row is written once at create and never rewritten by the
-  # application, so the text the inverse rewrite produces is exactly the
-  # text this migration found. (For a row migrated before the scratch line
-  # existed, the inverse of the scratch rendering simply matches nothing.)
+  # The system message is restored by applying the same rewrite backwards,
+  # not by storing a copy of the old prompt: an index-0 system row is
+  # written once at create and never rewritten by the application, so the
+  # text the inverse rewrite produces is exactly the text this migration
+  # found. (The scratch rendering is a no-op in both directions — no
+  # pre-migration row contains it; see the moduledoc.)
   def restore_names do
     for {agent_id, _space_id, old_name, new_name} <- recorded_renames() do
       rewrite_system_message(agent_id, new_name, old_name)
@@ -276,11 +284,14 @@ defmodule Nest.Repo.Migrations.SanitizeAgentNames do
     |> binary_part(0, @digest_length)
   end
 
-  # Rewrite the two prompt renderings that embed the agent's name in its
-  # own index-0 system message: the identity sentence and the scratch-dir
-  # line, both composed by `Nest.Agents.Agent.SystemPrompt`.
+  # Rewrite the prompt renderings that embed the agent's name in its own
+  # index-0 system message. The identity sentence (`Your name is "<name>"`)
+  # is the one a pre-migration row can actually contain: it is the only name
+  # rendering `Nest.Agents.Agent.SystemPrompt` composed before #35. The
+  # scratch-dir rendering is a no-op here (see the moduledoc), kept so the
+  # rewrite is exact for every rendering the composer emits today.
   #
-  # Only those two exact renderings are replaced, and only in this agent's
+  # Only those exact renderings are replaced, and only in this agent's
   # own index-0 `system` row. A general search-and-replace of the old name
   # would also rewrite prose that merely mentions it — an AGENTS.md excerpt,
   # a sibling's name in a transcript, the agent's own name inside another

@@ -87,12 +87,14 @@ defmodule NestWeb.LobbyChannel.AgentErrors do
         Logger.warning("Blueprint root vocation #{inspect(slug)} no longer exists")
         {:error, %{"reason" => "vocation_not_found"}}
 
-      # The client named the root agent (`create_space`'s `agent_name`).
-      # Matching `data:` on the *agent* schema is what keeps this precise: a
-      # space changeset (blank `:name`, taken `:slug`) also carries
-      # `:name`/`:slug` errors and must stay generic. The New Space form never
-      # sends an `agent_name` (the root agent is named `<slug>-root`), so this
-      # is for custom clients.
+      # The root agent's name (`create_space`'s `agent_name`) is not a
+      # filename-safe component. Matching `data:` on the *agent* schema is what
+      # keeps this precise: a space changeset (blank `:name`, taken `:slug`, a
+      # `:slug` that could not be an agent name) also carries `:name`/`:slug`
+      # errors and must stay generic, and `Space.changeset/2` refuses an unsafe
+      # slug before it ever becomes a name. The New Space form sends neither
+      # field (the root agent is named `<slug>-root`), so this is for custom
+      # clients.
       %Ecto.Changeset{data: %PersistedAgent{}, errors: errors} ->
         agent_changeset_payload(errors)
 

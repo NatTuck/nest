@@ -43,7 +43,8 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
       the boundary after the tool result.
     * `parent.llm_metrics.descendant_usage.output_tokens > 0` — the usage merge
       ran.
-    * The clone's fork notice names it and its depth.
+    * The clone's fork notice names it, its depth, and its own scratch
+      directory.
   """
   use Nest.DataCase, async: true
 
@@ -217,6 +218,28 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
 
     assert ack_text =~ "named \"#{child_name}\""
     assert ack_text =~ "at depth #{child_state.depth}"
+
+    # ...and the fork notice itself — the `agents-spawn` tool result in the
+    # clone's own sequence — carries its own scratch directory. That sentence is
+    # the *only* place a clone can learn it: the clone's system message is
+    # inherited verbatim from the parent (so it names the parent's directory),
+    # and the tool descriptions no longer mention scratch paths at all (#35).
+    # Deleting the sentence leaves the clone unable to find its own directory
+    # while the suite stays green, so it is pinned here.
+    fork_notice =
+      child_state.chat_state.messages
+      |> Enum.flat_map(fn
+        {:tool, %{parts: parts}} ->
+          for %Part.ToolResult{content: content} <- parts, do: content
+
+        _other ->
+          []
+      end)
+      |> Enum.join("\n")
+
+    assert fork_notice =~ ~s(You are now the delegated clone, named "#{child_name}")
+    assert fork_notice =~ "at depth #{child_state.depth}"
+    assert fork_notice =~ "Your own scratch directory is `/tmp/#{child_name}/`"
   end
 
   # Wait until the agent has settled to `:idle`, on the machine's own status.

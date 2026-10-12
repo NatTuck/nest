@@ -145,19 +145,26 @@ defmodule Nest.Agents.Agent.SystemPrompt do
 
   defp build_suffix(workspace_path, context_limit_info, name, depth, tools) do
     identity_section(name, depth) <>
-      scratch_section(name) <>
-      tool_sections(tools, workspace_path) <>
+      tool_sections(tools, workspace_path, name) <>
       context_limit_section(context_limit_info)
   end
 
   # Every prompt section that only makes sense when the agent can call
-  # tools: the workspace/tool working directory and the tool-call
+  # tools: the agent's own scratch directory (reached with `file-*` /
+  # `shell-cmd`), the workspace/tool working directory and the tool-call
   # budget. Gathered here so a tool-less vocation (e.g. Chat) gets a
-  # prompt with no dangling tool references.
-  defp tool_sections([], _workspace_path), do: ""
+  # prompt with no dangling tool references — it cannot reach a scratch
+  # directory, so telling it about one would be a dangling reference too.
+  #
+  # Ordering is load-bearing for the prompt's bytes: the scratch sentence
+  # follows the identity line, then the working directory.
+  defp tool_sections([], _workspace_path, _name), do: ""
 
-  defp tool_sections(_tools, workspace_path),
-    do: workspace_section(workspace_path) <> tool_call_limit_section()
+  defp tool_sections(_tools, workspace_path, name),
+    do:
+      scratch_section(name) <>
+        workspace_section(workspace_path) <>
+        tool_call_limit_section()
 
   # Tell the agent its name and spawn depth. Non-clones and
   # clones at/after compaction get this in the system message.
@@ -178,6 +185,10 @@ defmodule Nest.Agents.Agent.SystemPrompt do
   # is bound at `/tmp` inside the sandbox, so the agent's own directory is
   # `/tmp/<agent-name>` — the host backing path is internal to
   # `Nest.Sandbox` and must never be shown.
+  #
+  # Emitted only for a tool-capable vocation (see `tool_sections/3`): the
+  # directory is reached with `file-*` / `shell-cmd`, so a tool-less
+  # vocation has no use for it.
   #
   # This is stated HERE, once, rather than in the description of every
   # path-taking tool: the tool schemas and the system message are both
