@@ -56,7 +56,8 @@ If the tree is so screwed up that reverting is the only option then stop and rep
 
 - Once we have an active conversation, we *NEVER* make changes that would
 disrupt prefix caching, except on compaction or user-initiated model change
-(including enabling / disabling thinking).
+(including enabling / disabling thinking). This is a rule about *runtime*, it
+doesn't restrict codebase changes during development.
 - Specifically, that means our main system message is fixed once set and does
 not change except potentially on compaction.
 - The main system message explains things that will always be true for the
