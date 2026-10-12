@@ -49,7 +49,7 @@ defmodule Nest.Tools.ShellJobsTest do
   # authoritative status instead of racing the `shell-wait` timeout.
   defp wait_until_exited(key, id) do
     assert eventually(fn -> match?({:ok, {:exited, _}}, ShellJobs.status(key, id)) end,
-             timeout: 5_000
+             timeout: 2_000
            )
   end
 
