@@ -107,11 +107,20 @@ defmodule Nest.MixProject do
   #
   # See the documentation for `Mix` for more info on aliases.
   defp aliases do
+    # `mix test` prepares the test DB, then runs the suite. A caller that has
+    # already prepared it — or that is timing only the suite — sets
+    # NEST_TEST_NO_DB_PREP=1 to skip the prep, so the gate's timed window
+    # holds only the suite.
+    db_prep =
+      if System.get_env("NEST_TEST_NO_DB_PREP") == "1",
+        do: [],
+        else: ["ecto.create --quiet", "ecto.migrate --quiet"]
+
     [
       setup: ["deps.get", "ecto.setup", "assets.setup", "assets.build"],
       "ecto.setup": ["ecto.create", "ecto.migrate", "run priv/repo/seeds.exs"],
       "ecto.reset": ["ecto.drop", "ecto.setup"],
-      test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"],
+      test: db_prep ++ ["test"],
       "assets.setup": ["cmd --cd assets pnpm install"],
       "assets.build": ["cmd --cd assets pnpm build"],
       "assets.deploy": [
