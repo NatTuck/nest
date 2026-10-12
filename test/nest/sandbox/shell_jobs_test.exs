@@ -1,8 +1,6 @@
 defmodule Nest.Sandbox.ShellJobsTest do
   use ExUnit.Case, async: true
 
-  import Eventually
-
   import Nest.Test.TmpCleanup
 
   alias Nest.Sandbox.Mounts
@@ -10,7 +8,10 @@ defmodule Nest.Sandbox.ShellJobsTest do
   alias Nest.Tools.ShellCmd
 
   setup do
-    key = {:test, "agent-#{System.unique_integer([:positive])}"}
+    # A real space id: the manager's job-list broadcast is keyed by
+    # `{space_id, name}`, so a key whose first element is not an integer would
+    # silently disable it.
+    key = {1, "agent-#{System.unique_integer([:positive])}"}
     root = Path.join(System.tmp_dir!(), "nest_jobs_#{System.unique_integer([:positive])}")
     tmp = Path.join([root, "space-1", elem(key, 1)])
     File.mkdir_p!(tmp)
@@ -142,16 +143,37 @@ defmodule Nest.Sandbox.ShellJobsTest do
     assert ShellJobs.list(key) == []
   end
 
-  test "jobs die with their agent", %{key: key, tmp: tmp} do
+  test "jobs die with their agent, which says so to its waiters and its clients", %{
+    key: {space_id, name} = key,
+    tmp: tmp
+  } do
     agent = spawn(fn -> receive do: (:never -> :ok) end)
 
     assert {:ok, _} = start_background("sleep 30", tmp, key, agent_pid: agent)
+    assert [%{id: id}] = ShellJobs.list(key)
+
+    # A waiter that outlives the agent: the tool worker behind a blocking
+    # `shell-wait` is a task under `Nest.Agents.TaskSupervisor`, a sibling of
+    # the agent supervisor, so the test process stands in for it.
+    assert :ok = ShellJobs.subscribe(key, id, self())
+    assert self() in waiters(id)
+
+    Phoenix.PubSub.subscribe(Nest.PubSub, "agent:#{space_id}:#{name}")
 
     ref = Process.monitor(agent)
     Process.exit(agent, :kill)
     assert_receive {:DOWN, ^ref, :process, ^agent, :killed}, 500
 
-    assert eventually(fn -> ShellJobs.list(key) == [] end, timeout: 500)
+    # The job is gone, and both notifications are the evidence: the frame is
+    # broadcast after the drop, and the waiter is told why rather than left to
+    # wait out its timeout. `{:shell_job_exit, …}` would be a lie — there is no
+    # exit code.
+    assert_receive {:shell_jobs, %{jobs: []}}, 500
+    assert_receive {:shell_job_gone, ^id}, 500
+    refute_received {:shell_job_exit, ^id, _code}
+
+    assert ShellJobs.list(key) == []
+    assert waiters(id) == []
   end
 
   test "unknown job ids report :not_found", %{key: key} do

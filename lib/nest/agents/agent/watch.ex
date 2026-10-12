@@ -235,6 +235,16 @@ defmodule Nest.Agents.Agent.Watch do
       {:shell_job_exit, ^id, code} ->
         ShellJobs.unsubscribe(key, id, self())
         {:event, shell_result(key, id, code)}
+
+      # The job's agent stopped, so the job went with it. In production this is
+      # the watcher's own caller (`register_shell_call/3` keys the job to the
+      # calling agent), and the message is sent from that agent's `terminate/2`
+      # — so it can arrive just before this watcher's monitor DOWN. Worded as
+      # what it is rather than as an exit: there is no exit code, and the log
+      # goes with the agent's tmp directory.
+      {:shell_job_gone, ^id} ->
+        ShellJobs.unsubscribe(key, id, self())
+        {:event, ShellJobs.gone_text(id)}
     after
       timeout ->
         ShellJobs.unsubscribe(key, id, self())

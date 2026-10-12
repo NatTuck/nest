@@ -409,6 +409,50 @@ defmodule Nest.Agents.Agent.WatchTest do
     await_idle(pid)
   end
 
+  # A job the manager dropped with its agent (`ShellJobs.drop_agent/2` sends
+  # `{:shell_job_gone, id}` to the job's waiters) must be reported as gone: not
+  # as an exit, because no exit was observed and the log goes with the agent's
+  # tmp directory, and not as the `:not_found` a *missing* job gets, because
+  # this job existed and its owner stopped. The message is delivered to the
+  # watcher task directly: `drop_agent/2`'s own send to a waiter is pinned in
+  # `test/nest/sandbox/shell_jobs_test.exs`.
+  test "the watcher reports a job whose agent stopped as gone, not as an exit", %{
+    pid: pid,
+    name: name,
+    space_id: space_id
+  } do
+    state = :sys.get_state(pid)
+    key = {space_id, name}
+
+    {:ok, _} =
+      ShellCmd.execute("sleep 30", Mounts.new(state.workspace_path, state.tmp_path), nil,
+        background: true,
+        agent_key: key,
+        grace_ms: 0
+      )
+
+    [%{id: id}] = ShellJobs.list(key)
+    MockClient.set_response("acknowledged")
+
+    assert {:ok, content} = Watch.register_shell_call(ctx(pid, name, space_id), id, 5_000)
+    assert content =~ "Watching background job #{id}"
+
+    assert [{_ref, %{pid: task}}] = Map.to_list(watchers(pid))
+    send(task, {:shell_job_gone, id})
+
+    assert Eventually.eventually(
+             fn -> Enum.any?(notices(pid), &(&1 =~ "the agent that owned it stopped")) end,
+             timeout: 500
+           )
+
+    texts = notices(pid)
+    assert Enum.any?(texts, &(&1 =~ "Background job #{id} is gone"))
+    refute Enum.any?(texts, &(&1 =~ "exited with code"))
+    refute Enum.any?(texts, &(&1 =~ "no longer exists"))
+    assert watchers(pid) == %{}
+    await_idle(pid)
+  end
+
   test "the stop transition emits the watcher kill", %{pid: pid} do
     # The action is emitted by the pure stop; `Turn.Executor`'s clause reads
     # `live.watches`. Asserting the action here keeps the Stop contract pinned
