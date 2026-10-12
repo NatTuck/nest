@@ -1,8 +1,6 @@
 defmodule Nest.Sandbox.ShellJobsTest do
   use ExUnit.Case, async: true
 
-  import Eventually
-
   import Nest.Test.TmpCleanup
 
   alias Nest.Sandbox.Mounts
@@ -151,7 +149,12 @@ defmodule Nest.Sandbox.ShellJobsTest do
     Process.exit(agent, :kill)
     assert_receive {:DOWN, ^ref, :process, ^agent, :killed}, 500
 
-    assert eventually(fn -> ShellJobs.list(key) == [] end, timeout: 500)
+    # The agent-death path (`drop_agent/2`) deliberately emits no broadcast, so
+    # there is no event to wait on here. The ShellJobs server's own `:DOWN` for
+    # the agent is enqueued at its death - before we can receive ours - so a
+    # synchronous read is ordered behind the drop and the list is already empty.
+    _ = :sys.get_state(ShellJobs, 500)
+    assert ShellJobs.list(key) == []
   end
 
   test "unknown job ids report :not_found", %{key: key} do
