@@ -96,7 +96,7 @@ defmodule MachineDebtTest do
 
       # The budget is one reminder per debt: the next would-be-idle transition
       # gives up instead. It discharges the debt rather than idling with it
-      # standing — `agents-wait` reads an idle peer as one with no unpaid debt,
+      # standing — `agents-wait-for-idle` reads an idle peer as one with no unpaid debt,
       # and §1.6 replaces this discharge with the honest notice to the requester.
       ref2 = make_ref()
       {:ok, [], m} = Machine.step(m, {:worker_started, ref2, self(), :http})

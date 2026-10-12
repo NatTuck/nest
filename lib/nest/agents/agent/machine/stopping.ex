@@ -86,6 +86,7 @@ defmodule Nest.Agents.Agent.Machine.Stopping do
         coordinator_kills(m) ++
         Backgrounding.kill_actions(m) ++
         [{:stop_all_children}] ++
+        [{:stop_watchers}] ++
         timer_actions(m) ++
         worker_kills(m) ++
         cancellation_record(m) ++

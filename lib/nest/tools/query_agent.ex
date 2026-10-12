@@ -3,7 +3,7 @@ defmodule Nest.Tools.QueryAgent do
   The `agents-query` tool spec.
 
   Kept in its own module (like `FileTools`, `InspectFile`, `ShellJobs`,
-  and `WaitAgents`) so `Nest.Tools`'s own functions stay small.
+  and `WaitForIdle`) so `Nest.Tools`'s own functions stay small.
 
   The `function` here is a stub: real execution lives in
   `Nest.Agents.Agent.ToolLoop.run_query_agent/2`, which delivers the
@@ -32,7 +32,7 @@ defmodule Nest.Tools.QueryAgent do
           "until it answers rather than going idle; if it never answers, the " <>
           "runtime gives up and sends you a notice saying so instead. Use " <>
           "this to delegate a question to a specialist you have already " <>
-          "spawned (see `agents-spawn` and `agents-list`). Use `agents-wait` " <>
+          "spawned (see `agents-spawn` and `agents-list`). Use `agents-wait-for-idle` " <>
           "to wait for the peer to finish, and `agents-send` to reply to a " <>
           "peer that queried you.",
       parameters_schema: %{

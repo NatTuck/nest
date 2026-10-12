@@ -155,15 +155,16 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
 
           assert_reply ref, :ok, %{}, 750
 
-          assert_broadcast "agent:updated",
-                           %{
-                             "name" => ^name,
-                             "model" => %{
-                               "name" => "qwen3.5-plus",
-                               "provider" => "model-studio"
-                             }
-                           },
-                           200
+          # #41: the frame rides the space topic and is pushed to this client.
+          assert_push "agent:updated",
+                      %{
+                        "name" => ^name,
+                        "model" => %{
+                          "name" => "qwen3.5-plus",
+                          "provider" => "model-studio"
+                        }
+                      },
+                      200
         end)
 
       assert log =~ "could not resolve model"
@@ -213,16 +214,17 @@ defmodule NestWeb.LobbyChannelChangeModelTest do
 
       assert_reply ref, :ok, %{}, 750
 
-      # The `space_id` in the broadcast must come from the payload
-      # (the lobby socket has no `space_id` in its assigns), and the
-      # edited workspace_path must round-trip.
-      assert_broadcast "agent:updated",
-                       %{
-                         "name" => ^name,
-                         "space_id" => ^space_id,
-                         "workspace_path" => ^ws
-                       },
-                       200
+      # The `space_id` in the frame must come from the payload (the lobby
+      # socket has no `space_id` in its assigns), and the edited
+      # workspace_path must round-trip. #41: the frame rides the space topic
+      # and is pushed to this client.
+      assert_push "agent:updated",
+                  %{
+                    "name" => ^name,
+                    "space_id" => ^space_id,
+                    "workspace_path" => ^ws
+                  },
+                  200
     end
 
     test "rejects a missing or under-/tmp workspace with a named reason", %{socket: socket} do

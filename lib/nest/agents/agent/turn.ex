@@ -217,20 +217,22 @@ defmodule Nest.Agents.Agent.Turn do
   `Inbox.handle_delivery/3` (idle target).
 
   `:delivered` means nothing this drain found queued is still queued: the
-  entries it peeked were consumed, so the batch reached the transcript.
-  `:queued` means at least one of them survived — the delivery parked on a
-  compaction it needed before it could fit, or on a `:cannot_compact` block —
-  so the message is still queued and visible on the wire. The reply is
-  computed from the queue this drain peeked, not from "the inbox is empty":
-  under peek-then-consume (#26) the executor leaves the queue alone, so a
-  delivery that did not consume anything must report `:queued`.
+  entries it peeked were consumed — delivered to the transcript, or dropped
+  because an `agents-last-message` fetch already took them. `:queued` means at
+  least one of them survived — the delivery parked on a compaction it needed
+  before it could fit, or on a `:cannot_compact` block — so the message is
+  still queued and visible on the wire. The reply is computed from the queue
+  this drain peeked, not from "the inbox is empty": under peek-then-consume
+  (#26) the executor leaves the queue alone, so a delivery that did not consume
+  anything must report `:queued`.
   """
   @spec drain_inbox(Agent.t()) :: {Agent.t(), :delivered | :queued}
   def drain_inbox(state) do
-    # The empty-inbox clause and the `nil` follow-event clause below are
-    # unreachable from the only caller (`handle_delivery/3` enqueues first, and
-    # a non-empty queue always yields the `{:inbox_drain, …}` follow event).
-    # They are kept as the total-function shape, not as a contract.
+    # The empty-inbox clause is the total-function shape for a caller that
+    # drained nothing. A *non-empty* queue can also reach the `nil` follow-event
+    # clause: when every entry is retrieved (`agents-last-message` consumed it),
+    # the executor prunes them without delivering anything, so there is no
+    # `{:inbox_drain, …}` follow event.
     case state.live.inbox do
       [] ->
         {state, :delivered}
@@ -238,15 +240,16 @@ defmodule Nest.Agents.Agent.Turn do
       entries ->
         {state, follow} = Executor.run_all([{:drain_inbox}], state)
 
-        case follow do
-          nil ->
-            {state, :delivered}
+        state =
+          if follow do
+            {:ok, settled} = settle(state, follow)
+            settled
+          else
+            state
+          end
 
-          event ->
-            {:ok, state} = settle(state, event)
-            delivered? = not Enum.any?(entries, &(&1 in state.live.inbox))
-            {state, if(delivered?, do: :delivered, else: :queued)}
-        end
+        delivered? = not Enum.any?(entries, &(&1 in state.live.inbox))
+        {state, if(delivered?, do: :delivered, else: :queued)}
     end
   end
 

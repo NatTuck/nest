@@ -233,7 +233,7 @@ all_groups = ["file", "shell", "context", "agents"]
        reply, and the answer arrives later as a message in your inbox.
        Nothing blocks, so keep working and handle the reply when it lands.
        A peer that owes you a reply does not go idle until it has answered
-       (or the runtime has given up on it), so `agents-wait` on it waits
+       (or the runtime has given up on it), so `agents-wait-for-idle` on it waits
        for exactly that point. Use `agents-send` to hand off work or to
        reply to a peer; a successful send discharges the reply you owe.
     5. Review the results yourself, run the tests, and fix integration issues.

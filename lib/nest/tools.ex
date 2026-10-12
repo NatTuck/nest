@@ -23,12 +23,13 @@ defmodule Nest.Tools do
     ArchivedAgents,
     FileTools,
     InspectFile,
+    LastMessage,
     QueryAgent,
     ShellCmd,
     ShellJobs,
     ShellPipes,
     SpawnAgent,
-    WaitAgents
+    WaitForIdle
   }
 
   @doc """
@@ -73,7 +74,8 @@ defmodule Nest.Tools do
              "agents-unarchive",
              "agents-batch",
              "agents-send",
-             "agents-wait",
+             "agents-wait-for-idle",
+             "agents-last-message",
              "models-list"
            ] ->
         sub_agent_tool_function(name)
@@ -97,7 +99,8 @@ defmodule Nest.Tools do
   defp sub_agent_tool_function("agents-unarchive"), do: ArchivedAgents.unarchive_function()
   defp sub_agent_tool_function("agents-batch"), do: batch_agent_function()
   defp sub_agent_tool_function("agents-send"), do: send_agent_function()
-  defp sub_agent_tool_function("agents-wait"), do: WaitAgents.function()
+  defp sub_agent_tool_function("agents-wait-for-idle"), do: WaitForIdle.function()
+  defp sub_agent_tool_function("agents-last-message"), do: LastMessage.function()
 
   # Dispatch the models-list tool.
   defp sub_agent_tool_function("models-list"), do: models_list_function()
@@ -255,7 +258,7 @@ defmodule Nest.Tools do
         "Wall-clock limit in seconds on how long the command may run " <>
           "before it is killed and the call returns its output so far " <>
           "(default #{default_timeout_seconds()}). This one is in seconds; " <>
-          "the `timeout` of agents-wait and agents-batch is in milliseconds. " <>
+          "the `timeout` of agents-wait-for-idle and agents-batch is in milliseconds. " <>
           "The deadline is fixed when the command starts, so a command " <>
           "that keeps writing output cannot extend it. There is no upper " <>
           "limit. Not applied with `background: true` (a background job " <>
@@ -294,7 +297,7 @@ defmodule Nest.Tools do
 
   # The `timeout` argument is seconds of wall-clock time, and a positive
   # integer is the only accepted form. A non-positive or non-integer value
-  # is rejected as a tool error (the shape `agents-wait`'s `timeout` uses)
+  # is rejected as a tool error (the shape `agents-wait-for-idle`'s `timeout` uses)
   # rather than silently falling back to the default, so the model is told
   # what it got wrong.
   defp shell_timeout_ms(nil), do: {:ok, nil}
@@ -460,12 +463,18 @@ defmodule Nest.Tools do
     }
   end
 
-  # The `agents-wait` tool: block until one of the given agents (or,
-  # with an empty list, every other agent in this space) finishes its
-  # turn and goes idle. The spec lives in `Nest.Tools.WaitAgents`;
-  # execution lives in
-  # `Nest.Agents.Agent.ToolLoop.run_wait_agents/2`, which delegates to
-  # `Nest.Agents.Agent.WaitLoop` in the turn's tool worker.
+  # The `agents-wait-for-idle` tool: register interest in the named agents
+  # (or, with an empty list, every other agent in this space) going idle, and
+  # return immediately (issue #54); `block: true` blocks the turn instead. It
+  # carries no payload (issue #62). The spec lives in `Nest.Tools.WaitForIdle`;
+  # execution lives in `Nest.Agents.Agent.ToolLoop.run_wait_for_idle/2`, which
+  # delegates to `Nest.Agents.Agent.Watch` (async) or
+  # `Nest.Agents.Agent.WaitForIdle` (blocking) in the turn's tool worker.
+
+  # The `agents-last-message` tool: read the pending delivered message from a
+  # named agent out of the caller's own inbox, mid-turn, and consume it (issue
+  # #62). The spec lives in `Nest.Tools.LastMessage`; execution lives in
+  # `Nest.Agents.Agent.ToolLoop.run_last_message/2`.
 
   # The `agents-archive` tool: stop + mark an existing agent in
   # this space archived. It is then excluded from `agents-list`

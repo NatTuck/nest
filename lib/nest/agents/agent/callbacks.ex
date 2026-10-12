@@ -24,6 +24,7 @@ defmodule Nest.Agents.Agent.Callbacks do
   alias Nest.Agents.Agent.MessageAppender
   alias Nest.Agents.Agent.SubAgent
   alias Nest.Agents.Agent.Turn
+  alias Nest.Agents.Agent.Watch
 
   # A tool worker's "my `agents-send` reached its target": a turn event for this
   # agent, translated by `Turn.handle/2` like the other worker results. The
@@ -31,6 +32,16 @@ defmodule Nest.Agents.Agent.Callbacks do
   # before the response that settles the turn (issue #31 §1.4).
   def handle_cast({:reply_sent, sender}, state) do
     Turn.handle({:reply_sent, sender}, state)
+  end
+
+  # The watcher task's pid, once it is up (issue #54). A task that could not be
+  # started is unregistered instead, so no watch is left pointing at nothing.
+  def handle_cast({:watch_attached, ref, pid}, state) do
+    {:noreply, Watch.attach(state, ref, pid)}
+  end
+
+  def handle_cast({:unregister_watch, ref}, state) do
+    {:noreply, Watch.unregister(state, ref)}
   end
 
   # Sub-agent: child finished its turn. Merge usage, drop the
@@ -183,6 +194,37 @@ defmodule Nest.Agents.Agent.Callbacks do
   # it would lose the batch's whole output. See `Nest.Agents.Agent.Inbox`.
   def handle_call({:deliver_internal, sender, content, kind}, _from, state) do
     Inbox.deliver_internal(state, sender, content, kind)
+  end
+
+  # A tool worker registering interest for a non-blocking wait (issue #54).
+  # The watch is stored before the watcher task starts, so a task that fires
+  # immediately still finds its registration.
+  def handle_call({:register_watch, ref, spec}, _from, state) do
+    {:reply, :ok, Watch.register(state, ref, spec)}
+  end
+
+  # The watcher task's "the event fired" (issue #54). The caller decides: a
+  # watch already satisfied by the watched agent's own delivery is skipped
+  # (issue #62 requirement 1), so the caller wakes exactly once.
+  def handle_call({:watch_fired, ref, content}, _from, state) do
+    {state, disposition} = Watch.fired(state, ref, content)
+    {:reply, {:ok, disposition}, state}
+  end
+
+  # The `agents-last-message` fetch (issue #62): take the newest pending
+  # delivery from `name`, mark it retrieved, and publish the change. The caller
+  # then cannot be delivered the same body again at its next turn boundary.
+  def handle_call({:last_message, name}, _from, state) do
+    {inbox, entry} = Inbox.take_last(state.live.inbox, name)
+    state = %{state | live: %{state.live | inbox: inbox}}
+
+    case entry do
+      nil ->
+        {:reply, :none, state}
+
+      entry ->
+        {:reply, {:ok, entry.content, entry.id}, Inbox.broadcast(state)}
+    end
   end
 
   # Sub-agent: a tool worker running `agents-batch` hit a per-item

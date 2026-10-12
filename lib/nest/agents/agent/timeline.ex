@@ -191,6 +191,7 @@ defmodule Nest.Agents.Agent.Timeline do
     # outside the emitter's rescue.
     inbox(state, :drained, fn ->
       [
+        id: Map.get(first, :id),
         from: Map.get(first, :from),
         kind: Map.get(first, :kind),
         mode: state.live.mode,

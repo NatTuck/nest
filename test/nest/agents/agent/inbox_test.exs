@@ -644,13 +644,15 @@ defmodule Nest.Agents.Agent.InboxTest do
 
   defp entry(kind, from, content, mode \\ nil, human? \\ false) do
     %{
+      id: Inbox.new_id(),
       from: from,
       content: content,
       timestamp: DateTime.utc_now(),
       kind: kind,
       mode: mode,
       human?: human?,
-      fulfilled_ids: []
+      fulfilled_ids: [],
+      retrieved: false
     }
   end
 

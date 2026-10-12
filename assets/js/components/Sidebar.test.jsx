@@ -92,10 +92,18 @@ describe("Sidebar tree", () => {
     );
 
     expect(screen.getByText("parent")).toBeInTheDocument();
+
+    // A node starts collapsed, so its child is hidden until expanded.
+    expect(screen.queryByText("child-of-parent")).not.toBeInTheDocument();
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Toggle parent" }));
+    });
+
     expect(screen.getByText("child-of-parent")).toBeInTheDocument();
   });
 
-  it("collapses and expands the children of any interior node", () => {
+  it("expands one level at a time, never a whole subtree", () => {
     act(() => {
       withStore([
         { name: "root", parentId: null, parentName: null, depth: 0 },
@@ -110,14 +118,32 @@ describe("Sidebar tree", () => {
       </MemoryRouter>,
     );
 
-    // Expanded by default.
-    expect(screen.getByText("child")).toBeInTheDocument();
-    expect(screen.getByText("grandchild")).toBeInTheDocument();
+    // Every node starts collapsed: only the root is visible.
+    expect(screen.getByText("root")).toBeInTheDocument();
+    expect(screen.queryByText("child")).not.toBeInTheDocument();
+    expect(screen.queryByText("grandchild")).not.toBeInTheDocument();
 
     const rootToggle = screen.getByRole("button", { name: "Toggle root" });
+    expect(rootToggle).toHaveAttribute("aria-expanded", "false");
+
+    // Expanding the root reveals its direct children only — the
+    // grandchild stays behind the child's own collapsed toggle.
+    act(() => {
+      fireEvent.click(rootToggle);
+    });
+
+    expect(screen.getByText("child")).toBeInTheDocument();
+    expect(screen.queryByText("grandchild")).not.toBeInTheDocument();
     expect(rootToggle).toHaveAttribute("aria-expanded", "true");
 
-    // Collapsing the root hides its whole subtree.
+    // An interior node expands independently of its parent.
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Toggle child" }));
+    });
+
+    expect(screen.getByText("grandchild")).toBeInTheDocument();
+
+    // Collapsing the root hides its whole subtree again.
     act(() => {
       fireEvent.click(rootToggle);
     });
@@ -126,20 +152,90 @@ describe("Sidebar tree", () => {
     expect(screen.queryByText("child")).not.toBeInTheDocument();
     expect(screen.queryByText("grandchild")).not.toBeInTheDocument();
     expect(rootToggle).toHaveAttribute("aria-expanded", "false");
+  });
 
+  it("starts a space row collapsed when its route is not open", () => {
     act(() => {
-      fireEvent.click(rootToggle);
+      useStore.setState({
+        agents: [
+          {
+            name: "root-a",
+            space_id: 1,
+            parentId: null,
+            parentName: null,
+            depth: 0,
+          },
+        ],
+        archivedAgents: [],
+        spaces: [
+          { id: 1, slug: "first", name: "First Space" },
+          { id: 2, slug: "second", name: "Second Space" },
+        ],
+      });
     });
 
-    // An interior node collapses independently of its parent.
-    const childToggle = screen.getByRole("button", { name: "Toggle child" });
+    render(
+      <MemoryRouter initialEntries={["/space/second"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    // Only the route's own space row opens; the other stays closed.
+    expect(screen.queryByText("root-a")).not.toBeInTheDocument();
+
     act(() => {
-      fireEvent.click(childToggle);
+      fireEvent.click(
+        screen.getByRole("button", { name: "Toggle First Space" }),
+      );
     });
 
-    expect(screen.getByText("root")).toBeInTheDocument();
-    expect(screen.getByText("child")).toBeInTheDocument();
-    expect(screen.queryByText("grandchild")).not.toBeInTheDocument();
+    expect(screen.getByText("root-a")).toBeInTheDocument();
+  });
+
+  it("moves the expanded space row with the route", () => {
+    act(() => {
+      useStore.setState({
+        agents: [
+          {
+            name: "root-a",
+            space_id: 1,
+            parentId: null,
+            parentName: null,
+            depth: 0,
+          },
+          {
+            name: "root-b",
+            space_id: 2,
+            parentId: null,
+            parentName: null,
+            depth: 0,
+          },
+        ],
+        archivedAgents: [],
+        spaces: [
+          { id: 1, slug: "first", name: "First Space" },
+          { id: 2, slug: "second", name: "Second Space" },
+        ],
+      });
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/space/first"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText("root-a")).toBeInTheDocument();
+    expect(screen.queryByText("root-b")).not.toBeInTheDocument();
+
+    // The expansion follows the route rather than freezing at mount, so
+    // navigating away closes the row we left instead of leaving two open.
+    act(() => {
+      fireEvent.click(screen.getByRole("link", { name: /second space/i }));
+    });
+
+    expect(screen.getByText("root-b")).toBeInTheDocument();
+    expect(screen.queryByText("root-a")).not.toBeInTheDocument();
   });
 
   it("renders no chevron for leaf nodes", () => {
@@ -155,6 +251,10 @@ describe("Sidebar tree", () => {
         <Sidebar />
       </MemoryRouter>,
     );
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Toggle root" }));
+    });
 
     expect(screen.getByText("leaf")).toBeInTheDocument();
     expect(
@@ -217,9 +317,17 @@ describe("Sidebar tree", () => {
       fireEvent.click(toggle);
     });
 
-    // Expanded: the archived subtree renders with the same nesting as
-    // before archival.
+    // Expanded: the archived roots render, still one level at a time —
+    // the archived child stays behind its parent's own toggle.
     expect(screen.getByText("old-parent")).toBeInTheDocument();
+    expect(screen.queryByText("old-child")).not.toBeInTheDocument();
+
+    act(() => {
+      fireEvent.click(
+        screen.getByRole("button", { name: "Toggle old-parent" }),
+      );
+    });
+
     expect(screen.getByText("old-child")).toBeInTheDocument();
   });
 
@@ -256,6 +364,18 @@ describe("Sidebar tree", () => {
     );
 
     expect(screen.getByText("parent")).toBeInTheDocument();
+
+    // The parent starts collapsed, so its `Archived (1)` group is not
+    // rendered at all until the parent is expanded.
+    expect(
+      screen.queryByRole("button", {
+        name: "Toggle archived children of parent",
+      }),
+    ).not.toBeInTheDocument();
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Toggle parent" }));
+    });
 
     // The archived child stays nested under the active parent and is
     // hidden behind that parent's collapsed `Archived (1)` group.
@@ -323,7 +443,19 @@ describe("Sidebar tree", () => {
     });
 
     expect(screen.getByText("old-root")).toBeInTheDocument();
+    expect(screen.queryByText("old-mid")).not.toBeInTheDocument();
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Toggle old-root" }));
+    });
+
     expect(screen.getByText("old-mid")).toBeInTheDocument();
+    expect(screen.queryByText("old-leaf")).not.toBeInTheDocument();
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Toggle old-mid" }));
+    });
+
     expect(screen.getByText("old-leaf")).toBeInTheDocument();
   });
 
@@ -593,32 +725,22 @@ describe("Sidebar tree", () => {
   });
 });
 
-describe("Sidebar Needs Repair rows", () => {
-  // "Needs Repair" rows surface `state.brokenAgents`, populated by the
-  // lobby's `init` payload + the `broken_agents_updated` follow-up.
-  // They render *inside their own space's* expanded tree (not as a
-  // top-level section), linking to the space-scoped chat route, because
-  // persistent agents whose GenServer is gone but whose model is still
-  // unresolvable can't appear in the regular agents list
-  // (`Registry.list/0` excludes them).
+describe("Sidebar broken-agent rows", () => {
+  // A persisted agent whose model no longer resolves has no live process,
+  // so nothing broadcasts a status for it. It still gets a flat-list row —
+  // the visibility query lists persisted rows on purpose, so the user can
+  // click through and repair it — and the lobby stamps the server's
+  // `model_missing` onto that row (see `applyAgentStatuses`). The sidebar
+  // therefore renders one ordinary row with a red dot, not a separate
+  // "Needs Repair" group.
 
-  beforeEach(() => {
-    // Start from a fully reset store so each test sees a
-    // clean `brokenAgents`. The beforeEach at the top sets up
-    // the lobby channel; the model-picker / store-isolation
-    // reset is the same `useStore.getState()._reset()` used
-    // elsewhere.
-    useStore.getState()._reset();
-  });
-
-  it("hides the repair rows when state.brokenAgents is empty", () => {
+  it("renders no 'Needs Repair' group", () => {
     act(() => {
       withStore([]);
     });
-    useStore.setState({ brokenAgents: [] });
 
     render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={["/space/my-space"]}>
         <Sidebar />
       </MemoryRouter>,
     );
@@ -626,25 +748,12 @@ describe("Sidebar Needs Repair rows", () => {
     expect(screen.queryByText(/needs repair/i)).toBeNull();
   });
 
-  it("renders broken-agent rows inside the expanded space with an amber pulsing dot", () => {
+  it("renders a stamped broken agent as a static red dot with a tooltip", () => {
     act(() => {
-      withStore([]);
-    });
-    useStore.setState({
-      brokenAgents: [
-        {
-          name: "ghost-agent",
-          space_id: 1,
-          model: { name: "ghost-model" },
-          status: "model_missing",
-        },
-        {
-          name: "second-ghost",
-          space_id: 1,
-          model: { name: "other-missing" },
-          status: "model_missing",
-        },
-      ],
+      withStore([
+        { name: "ghost-agent", status: "model_missing" },
+        { name: "second-ghost", status: "model_missing" },
+      ]);
     });
 
     render(
@@ -653,37 +762,20 @@ describe("Sidebar Needs Repair rows", () => {
       </MemoryRouter>,
     );
 
-    // The inline heading is visible inside the space's tree.
-    expect(screen.getByText(/needs repair/i)).toBeInTheDocument();
-    // Both names render as links pointing at the space-scoped route.
-    const ghostLinks = screen.getAllByRole("link", {
-      name: /ghost-agent/i,
-    });
-    expect(ghostLinks.length).toBeGreaterThan(0);
-    expect(ghostLinks[0].getAttribute("href")).toBe(
-      "/space/my-space/agent/ghost-agent",
-    );
-    expect(screen.getByText(/second-ghost/i)).toBeInTheDocument();
+    expect(screen.queryByText(/needs repair/i)).toBeNull();
 
-    // Each row carries the amber pulsing dot — one per broken agent
-    // (the agents list is empty here, so no executing_tools dots).
-    const amberDots = document.querySelectorAll(".animate-pulse.bg-amber-500");
-    expect(amberDots.length).toBe(2);
+    const dots = screen.getAllByRole("img", { name: "Model missing" });
+    expect(dots.length).toBe(2);
+    for (const dot of dots) {
+      expect(dot.className).toContain("bg-red-500");
+      expect(dot.className).not.toContain("animate-pulse");
+      expect(dot.getAttribute("title")).toBe("Model missing");
+    }
   });
 
-  it("clicking a broken-agent row navigates to the space-scoped chat path", () => {
+  it("keeps the broken agent reachable on its space-scoped chat path", () => {
     act(() => {
-      withStore([]);
-    });
-    useStore.setState({
-      brokenAgents: [
-        {
-          name: "ghost-agent",
-          space_id: 1,
-          model: { name: "ghost-model" },
-          status: "model_missing",
-        },
-      ],
+      withStore([{ name: "ghost-agent", status: "model_missing" }]);
     });
 
     render(
@@ -692,33 +784,45 @@ describe("Sidebar Needs Repair rows", () => {
       </MemoryRouter>,
     );
 
-    const link = screen.getByRole("link", { name: /ghost-agent/i });
+    const link = screen.getByRole("link", { name: /ghost-agent/ });
     expect(link.getAttribute("href")).toBe("/space/my-space/agent/ghost-agent");
   });
 
-  it("scopes broken agents to their own space", () => {
+  it("shows a healthy agent's dot unchanged next to a broken one", () => {
+    act(() => {
+      withStore([
+        { name: "ghost-agent", status: "model_missing" },
+        { name: "healthy", status: "streaming" },
+      ]);
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/space/my-space"]}>
+        <Sidebar />
+      </MemoryRouter>,
+    );
+
+    expect(
+      screen.getByRole("img", { name: "Model missing" }),
+    ).toBeInTheDocument();
+    const healthy = screen.getByRole("img", { name: "Streaming" });
+    expect(healthy.className).toContain("bg-green-500");
+    expect(healthy.className).toContain("animate-pulse");
+  });
+
+  it("scopes a broken agent to its own space", () => {
     act(() => {
       withStore([]);
-    });
-    useStore.setState({
-      spaces: [
-        { id: 1, slug: "space-a", name: "Space A" },
-        { id: 2, slug: "space-b", name: "Space B" },
-      ],
-      brokenAgents: [
-        {
-          name: "broken-a",
-          space_id: 1,
-          model: { name: "ghost-model" },
-          status: "model_missing",
-        },
-        {
-          name: "broken-b",
-          space_id: 2,
-          model: { name: "ghost-model" },
-          status: "model_missing",
-        },
-      ],
+      useStore.setState({
+        spaces: [
+          { id: 1, slug: "space-a", name: "Space A" },
+          { id: 2, slug: "space-b", name: "Space B" },
+        ],
+        agents: [
+          { name: "broken-a", space_id: 1, status: "model_missing" },
+          { name: "broken-b", space_id: 2, status: "model_missing" },
+        ],
+      });
     });
 
     render(
@@ -727,9 +831,9 @@ describe("Sidebar Needs Repair rows", () => {
       </MemoryRouter>,
     );
 
-    // Space A is the route-selected/expanded space, so its broken
-    // agent renders with the correct space-scoped path.
-    const linkA = screen.getByRole("link", { name: /broken-a/i });
+    // Space A is the route-selected/expanded space, so its broken agent
+    // renders with the correct space-scoped path.
+    const linkA = screen.getByRole("link", { name: /broken-a/ });
     expect(linkA.getAttribute("href")).toBe("/space/space-a/agent/broken-a");
 
     // Space B is collapsed, so its broken agent is not rendered.
