@@ -503,10 +503,10 @@ defmodule Nest.Tools do
           "with the \"provider/model-name\" string to feed to `agents-spawn`'s " <>
           "`model` argument, followed by two-space-separated fields that are " <>
           "present only when known: `input:` the input modalities the model " <>
-          "claims (only `input: image` positively claims image input; a line " <>
-          "with no `input:` field made no claim, so the model may still accept " <>
-          "images), `ctx:` its context limit in tokens, and `tags:` the " <>
-          "provider's tags.",
+          "claims (a line whose `input:` field names `image` positively " <>
+          "claims image input; a line with no `input:` field made no claim, " <>
+          "so the model may still accept images), `ctx:` its context limit " <>
+          "in tokens, and `tags:` the provider's tags.",
       parameters_schema: %{
         "type" => "object",
         "properties" => %{

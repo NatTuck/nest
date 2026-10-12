@@ -398,14 +398,18 @@ defmodule Nest.Agents.Agent.ToolLoop do
   # provider's answer as `nil` too, and its own doc says a consumer must
   # read that as "no image input claimed" rather than "unknown".
   # Rendering `input: none` for it would turn "we were not told" into a
-  # false negative. An explicit `false` *is* a negative claim, so it
-  # renders — as does an empty modality list.
+  # false negative. An empty modality list *is* a claim — of no input
+  # modalities at all — so that one does render.
   defp input_field(entry) do
     case Map.get(entry, "multi_modal") do
-      %{"input" => [_ | _] = modalities} -> "input: " <> Enum.join(modalities, ",")
-      %{"input" => []} -> "input: none"
-      false -> "input: none"
-      _ -> nil
+      %{"input" => []} ->
+        "input: none"
+
+      %{"input" => [_ | _] = modalities} ->
+        if joinable?(modalities), do: "input: " <> Enum.join(modalities, ",")
+
+      _ ->
+        nil
     end
   end
 
@@ -422,12 +426,19 @@ defmodule Nest.Agents.Agent.ToolLoop do
   # from the provider struct this listing already loaded.
   defp tags_field(entry, exposed) do
     with provider when is_binary(provider) <- Map.get(entry, "provider"),
-         %{tags: [_ | _] = tags} <- Map.get(exposed, provider) do
+         %{tags: [_ | _] = tags} <- Map.get(exposed, provider),
+         true <- joinable?(tags) do
       "tags: " <> Enum.join(tags, ",")
     else
       _ -> nil
     end
   end
+
+  # `multi_modal` and `tags` both reach us unvalidated from TOML, so a list
+  # element that is not a binary — `input = [{ a = 1 }]`, `tags = [1]` —
+  # would raise inside `Enum.join/2` at tool-call time. A list we cannot
+  # join is rendered as no claim instead of killing the tool call.
+  defp joinable?(values), do: Enum.all?(values, &is_binary/1)
 
   # `agents-query`: deliver a message to a peer in this space and mark that the
   # peer owes the caller a reply. Nothing waits — the call returns as soon as the

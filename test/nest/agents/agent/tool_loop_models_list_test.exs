@@ -146,7 +146,6 @@ defmodule Nest.Agents.Agent.ToolLoopModelsListTest do
 
       stub_models([
         entry("audio-only", "alpha", %{"multi_modal" => %{"input" => ["audio"]}}),
-        entry("refuses-images", "alpha", %{"multi_modal" => false}),
         entry("claims-no-modalities", "alpha", %{"multi_modal" => %{"input" => []}}),
         entry("says-nothing", "alpha")
       ])
@@ -157,14 +156,36 @@ defmodule Nest.Agents.Agent.ToolLoopModelsListTest do
       # than reported as no claim.
       assert content =~ "alpha/audio-only  input: audio"
 
-      # An explicit negative is a claim, so it is shown — whether it
-      # arrives as `false` or as an empty modality list.
-      assert content =~ "alpha/refuses-images  input: none"
+      # An empty modality list is a claim — of no input modalities at all
+      # — so it is shown. `false` is deliberately not a case here: it is
+      # not a state that can occur, because `parse_model/1` coerces a
+      # non-map `multi-modal` to `nil` (that is #82).
       assert content =~ "alpha/claims-no-modalities  input: none"
 
       # Silence is not a negative: the model may still accept images, so
       # it gets no `input:` field rather than a misleading `input: none`.
       refute content =~ "says-nothing  input:"
+    end
+
+    test "does not crash on a modality or tag list it cannot join" do
+      stub_config(%{"alpha" => {true, [%{"a" => 1}]}})
+
+      stub_models([
+        entry("bad-modalities", "alpha", %{"multi_modal" => %{"input" => [%{"a" => 1}]}}),
+        entry("mixed-modalities", "alpha", %{"multi_modal" => %{"input" => ["image", 7]}})
+      ])
+
+      content = run_models_list(%{})
+
+      assert content =~ "alpha/bad-modalities"
+      assert content =~ "alpha/mixed-modalities"
+
+      # `Enum.join/2` raises on a non-binary element, and both lists reach
+      # us unvalidated from TOML, so each falls through to no claim rather
+      # than killing the tool call.
+      refute content =~ "bad-modalities  input:"
+      refute content =~ "mixed-modalities  input:"
+      refute content =~ "tags:"
     end
 
     test "reports nothing listed when the config cannot be loaded" do
