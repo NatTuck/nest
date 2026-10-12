@@ -36,9 +36,10 @@ defmodule Nest.LLM.Discover do
   * `extract_multi_modal_from_model/1` — the same bulk pass
     for multi-modal input support: returns the static
     vocabulary `%{"input" => ["image"]}` when the body says
-    the model takes images, `nil` otherwise. Used by
-    `Nest.Models` as a *fill-in* only — an explicit static
-    `multi-modal` is never overwritten.
+    the model takes images, and `nil` when it claims no image
+    input — or says nothing about it. Used by `Nest.Models` as
+    a *fill-in* only — an explicit static `multi-modal` is
+    never overwritten.
 
   Every one of these reads a body the caller already fetched:
   nothing here issues an HTTP request of its own.
@@ -129,8 +130,8 @@ defmodule Nest.LLM.Discover do
 
   @doc """
   Return the normalized multi-modal input vocabulary for a single
-  model map from a `/models` response, or `nil` when the provider
-  says nothing about it.
+  model map from a `/models` response, or `nil` when it claims no
+  image input — or says nothing about it.
 
   Three provider shapes are recognized, all normalized to the static
   TOML vocabulary `%{"input" => ["image"]}`:
@@ -143,9 +144,11 @@ defmodule Nest.LLM.Discover do
 
   `"image"` is the only modality in our vocabulary, so a modality
   list is filtered to it: a list that names modalities but not
-  `"image"` (e.g. `["text"]`) means "no image input", not "unknown".
-  OpenRouter's nested shape is checked before atlascloud's flat one
-  when a body carries both.
+  `"image"` (e.g. `["text"]`) is reported as `nil` too, so a consumer
+  must read `nil` as "no image input claimed" rather than "unknown".
+  A modality list is checked before the Anthropic capability flag —
+  an explicit list is the stronger statement — and OpenRouter's
+  nested shape before atlascloud's flat one when a body carries both.
 
   Used by `Nest.Models` (through `Nest.ChatModel`) to *fill in* a
   model's `multi_modal` when static config does not set one; a static
@@ -175,6 +178,12 @@ defmodule Nest.LLM.Discover do
 
   defp input_modalities(_), do: nil
 
+  # Anthropic's `GET /v1/models` documents a per-model `capabilities`
+  # object (`image_input.supported`, alongside batch / citations /
+  # pdf_input / …). This branch is unmeasured here — no Anthropic body
+  # we control has been captured — so it is kept as the documented
+  # shape. It requires exactly `true`, so it cannot misfire on a body
+  # that merely lacks the field.
   defp anthropic_image_input?(%{"capabilities" => %{"image_input" => %{"supported" => true}}}),
     do: true
 

@@ -269,6 +269,13 @@ defmodule Nest.ChatModel do
   Missing / unparseable entries are silently dropped; a
   failure to fetch any models returns `[]` so the caller
   can populate only the names it found.
+
+  Retained as a public projection for callers that want only the
+  limits (the `scripts/minimax-test.exs` diagnostic does). Note that
+  it **fetches the `/models` body itself**: a caller that also needs
+  the names or the multi-modal capability must call
+  `list_models_with_metadata/1` once instead, or the provider pays a
+  second request (issue #48's duplicate GET).
   """
   @spec list_models_with_limits(DotConfig.Provider.t()) :: [map()]
   def list_models_with_limits(%DotConfig.Provider{} = provider) do

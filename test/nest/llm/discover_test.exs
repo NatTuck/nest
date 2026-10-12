@@ -263,12 +263,13 @@ defmodule Nest.LLM.DiscoverTest do
              }) == %{"input" => ["image"]}
     end
 
-    test "returns nil when the body says nothing about image input" do
+    test "returns nil when the body claims no image input or says nothing about it" do
       # No capability field at all.
       assert Discover.extract_multi_modal_from_model(%{"id" => "text-only"}) == nil
 
-      # A modality list that names modalities but not "image" is a
-      # statement that the model takes no images, not a missing answer.
+      # A modality list that names modalities but not "image" is reported
+      # as `nil` too: discovery never claims "known to have none", so a
+      # consumer reads `nil` as "no image input claimed".
       assert Discover.extract_multi_modal_from_model(%{
                "id" => "text-only",
                "input_modalities" => ["text"]
@@ -277,6 +278,12 @@ defmodule Nest.LLM.DiscoverTest do
       assert Discover.extract_multi_modal_from_model(%{
                "id" => "text-only",
                "architecture" => %{"input_modalities" => ["text", "file"]}
+             }) == nil
+
+      # An empty list is still a list, so it takes the same branch.
+      assert Discover.extract_multi_modal_from_model(%{
+               "id" => "text-only",
+               "input_modalities" => []
              }) == nil
 
       # A malformed (non-list) modality field is not a signal either.
@@ -310,12 +317,21 @@ defmodule Nest.LLM.DiscoverTest do
                nil
     end
 
-    test "prefers OpenRouter's nested shape over atlascloud's flat one" do
+    test "prefers a modality list over the capability flag, and nested over flat" do
       assert Discover.extract_multi_modal_from_model(%{
                "id" => "both-shapes",
                "architecture" => %{"input_modalities" => ["text", "image"]},
                "input_modalities" => ["text"]
              }) == %{"input" => ["image"]}
+
+      # An explicit list is the stronger statement, so it is consulted
+      # first: a text-only list outranks a capability flag that says
+      # otherwise. (Flag-first would answer `%{"input" => ["image"]}`.)
+      assert Discover.extract_multi_modal_from_model(%{
+               "id" => "list-says-no-flag-says-yes",
+               "architecture" => %{"input_modalities" => ["text"]},
+               "capabilities" => %{"image_input" => %{"supported" => true}}
+             }) == nil
     end
   end
 

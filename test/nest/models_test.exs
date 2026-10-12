@@ -45,7 +45,11 @@ defmodule Nest.ModelsTest do
     #   * `pegasus-per-model-test` (static, `multi-modal` unset) and
     #     `pegasus-static-audio` (static `multi-modal` set by one test
     #     via `:sys.replace_state`) — the static-vs-detected fixtures.
+    #   * `MiniMax-M2.5` is image-capable here while its static twin under
+    #     `model-studio` sets nothing — the cross-provider fill-in guard.
     #
+    # A second auto provider (`other-auto`, injected by the one-request
+    # test) is answered too, so a scan with two providers can be counted.
     # Every request is also reported to the test process so a test can
     # assert how many `/models` requests a provider scan costs.
     stub(Req, :get, fn url, _opts ->
@@ -73,7 +77,11 @@ defmodule Nest.ModelsTest do
                  "id" => "MiniMax-M2.5",
                  "object" => "model",
                  "owned_by" => "minimax",
-                 "created" => 1_780_272_000
+                 "created" => 1_780_272_000,
+                 # Image-capable on purpose: `MiniMax-M2.5` is also a static
+                 # entry under the unscanned `model-studio`, so this is the
+                 # same-name/different-provider pair the fill-in must NOT cross.
+                 "input_modalities" => ["text", "image"]
                },
                %{
                  "id" => "vllm-shape-model",
@@ -100,7 +108,11 @@ defmodule Nest.ModelsTest do
            }
          }}
       else
-        {:error, :nxdomain}
+        if String.contains?(url, "other-auto") do
+          {:ok, %{status: 200, body: %{"data" => [%{"id" => "other-auto-model"}]}}}
+        else
+          {:error, :nxdomain}
+        end
       end
     end)
 
@@ -215,6 +227,19 @@ defmodule Nest.ModelsTest do
       assert model["context_limit"] == 32_000
     end
 
+    test "does not fill in from a same-named model found under another provider" do
+      # `MiniMax-M2.5` is a static entry under the unscanned `model-studio`
+      # with no `multi-modal`, while the `pegasus` scan reports an
+      # image-capable model of the same name. The fill-in is keyed on the
+      # {provider, name} pair — as the context-limit cache is — so another
+      # provider's capability must not land on this entry.
+      model = Enum.find(Models.list(), fn m -> m["name"] == "MiniMax-M2.5" end)
+
+      assert model != nil
+      assert model["provider"] == "model-studio"
+      assert model["multi_modal"] == nil
+    end
+
     test "a static multi_modal is never overwritten by a differing discovery answer" do
       # Inject a static `pegasus-static-audio` whose `multi-modal` uses
       # a vocabulary the provider's answer ("image") does not match.
@@ -253,18 +278,61 @@ defmodule Nest.ModelsTest do
   end
 
   describe "single /models request per provider (regression: duplicate GET)" do
-    test "a provider scan costs exactly one request" do
-      # `pegasus` is the only auto-models provider in the test config
-      # and the setup's scan has finished, so its discovery URL must
-      # have been fetched exactly once. Pre-fix `query_provider/1`
-      # called `ChatModel.list_models/1` *and*
-      # `list_models_with_limits/1`, each of which fetches the same
-      # `/models` URL: two requests per provider, per scan.
-      assert_received {:models_req_get, url}
-      assert String.contains?(url, "pegasus")
-      assert String.ends_with?(url, "/models")
+    test "a scan costs one request per provider, not one per scan" do
+      # The setup's scan covered `pegasus`, the config's only auto-models
+      # provider; consume that request so what is left is this test's own.
+      assert_received {:models_req_get, setup_url}
+      assert String.contains?(setup_url, "pegasus")
+      assert String.ends_with?(setup_url, "/models")
+
+      # A second auto-models provider, so "one request per provider" is
+      # distinguishable from "one request per scan". It is injected here
+      # rather than added to `test/data/config.toml` so that no other test
+      # file's scan grows a provider whose `/models` URL it does not stub.
+      inject_second_provider()
+      ModelsTestHelpers.await_models_refresh()
+
+      assert_receive {:models_req_get, first}, 1_000
+      assert_receive {:models_req_get, second}, 1_000
       refute_received {:models_req_get, _}
+
+      # One request each, and only one: pre-fix `query_provider/1` called
+      # `ChatModel.list_models/1` *and* `list_models_with_limits/1`, each
+      # fetching the same `/models` URL, so this scan would have left four.
+      assert Enum.sort([first, second]) == [
+               "http://other-auto.local/v1/models",
+               "http://pegasus-probe.local/olla/models"
+             ]
     end
+  end
+
+  # Add an auto-models provider to the running singleton's static config,
+  # restoring the previous snapshot afterwards. The stub answers its URL.
+  defp inject_second_provider do
+    previous = :sys.get_state(Models).static_config
+
+    provider = %Nest.DotConfig.Provider{
+      name: "other-auto",
+      base_url: "http://other-auto.local/v1",
+      api_key: "test",
+      protocol: "openai",
+      auto_models: true,
+      tags: [],
+      models: []
+    }
+
+    :sys.replace_state(Models, fn state ->
+      static_config = %{
+        previous
+        | providers: Map.put(previous.providers, "other-auto", provider)
+      }
+
+      %{state | static_config: static_config}
+    end)
+
+    on_exit(fn ->
+      :sys.replace_state(Models, fn state -> %{state | static_config: previous} end)
+    end)
   end
 
   describe "scan completion broadcast" do
