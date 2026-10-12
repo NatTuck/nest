@@ -5,6 +5,7 @@ defmodule Nest.ToolsFileMediaTest do
 
   alias Nest.LLM.ClientConfig
   alias Nest.Messages.Part
+  alias Nest.Sandbox.Mounts
   alias Nest.Tools
   alias Nest.Tools.MediaKind
 
@@ -77,7 +78,7 @@ defmodule Nest.ToolsFileMediaTest do
       File.write!(Path.join(workspace, "shot.png"), @png)
       stub_catalog([text_model()])
 
-      function = Tools.get_function("file-read", workspace)
+      function = Tools.get_function("file-read", Mounts.new(workspace, nil))
 
       assert {:error, msg} = function.function.(%{"path" => "shot.png"}, ctx("text-model"))
 
@@ -97,7 +98,7 @@ defmodule Nest.ToolsFileMediaTest do
       File.write!(Path.join(workspace, "shot.png"), @png)
       stub_catalog([image_model()])
 
-      function = Tools.get_function("file-read", workspace)
+      function = Tools.get_function("file-read", Mounts.new(workspace, nil))
 
       assert {:error, msg} =
                function.function.(%{"path" => "shot.png"}, %{tool_call_id: "call_1"})
@@ -109,7 +110,7 @@ defmodule Nest.ToolsFileMediaTest do
       File.write!(Path.join(workspace, "notes.txt"), "hello")
       stub_catalog([text_model()])
 
-      function = Tools.get_function("file-read", workspace)
+      function = Tools.get_function("file-read", Mounts.new(workspace, nil))
 
       # A text-only model must be able to read text with no catalog entry at
       # all; the gate is about media, not about knowing the model.
@@ -122,7 +123,7 @@ defmodule Nest.ToolsFileMediaTest do
       File.write!(Path.join(workspace, "shot.png"), @png)
       stub_catalog([image_model(), text_model()])
 
-      function = Tools.get_function("file-read", workspace)
+      function = Tools.get_function("file-read", Mounts.new(workspace, nil))
 
       assert {:ok, {:media, %Part.Media{} = part}} =
                function.function.(%{"path" => "shot.png"}, ctx("vision-model"))
@@ -141,7 +142,7 @@ defmodule Nest.ToolsFileMediaTest do
       File.write!(Path.join(workspace, "shots/inner.png"), @png)
       stub_catalog([image_model()])
 
-      function = Tools.get_function("file-read", workspace)
+      function = Tools.get_function("file-read", Mounts.new(workspace, nil))
 
       assert {:ok, {:media, %Part.Media{path: "shots/inner.png"}}} =
                function.function.(%{"path" => "shots/inner.png"}, ctx("vision-model"))
@@ -153,7 +154,7 @@ defmodule Nest.ToolsFileMediaTest do
       File.write!(Path.join(workspace, "fake.png"), "just text")
       stub_catalog([image_model()])
 
-      function = Tools.get_function("file-read", workspace)
+      function = Tools.get_function("file-read", Mounts.new(workspace, nil))
 
       assert {:ok, "just text"} =
                function.function.(%{"path" => "fake.png"}, ctx("vision-model"))
@@ -163,7 +164,7 @@ defmodule Nest.ToolsFileMediaTest do
       File.write!(Path.join(workspace, "blob.png"), <<0xFF, 0xFE, 0x00, 0x01>>)
       stub_catalog([image_model()])
 
-      function = Tools.get_function("file-read", workspace)
+      function = Tools.get_function("file-read", Mounts.new(workspace, nil))
 
       assert {:error, msg} = function.function.(%{"path" => "blob.png"}, ctx("vision-model"))
       assert msg =~ "non-text"
@@ -177,7 +178,7 @@ defmodule Nest.ToolsFileMediaTest do
       File.write!(Path.join(workspace, "a:b.png"), @png)
       stub_catalog([image_model()])
 
-      function = Tools.get_function("file-read", workspace)
+      function = Tools.get_function("file-read", Mounts.new(workspace, nil))
 
       assert {:ok, {:media, %Part.Media{media_type: "image/png", path: "a:b.png"}}} =
                function.function.(%{"path" => "a:b.png"}, ctx("vision-model"))
@@ -185,7 +186,7 @@ defmodule Nest.ToolsFileMediaTest do
 
     test "leaves the size cap and missing-file errors alone", %{workspace: workspace} do
       stub_catalog([image_model()])
-      function = Tools.get_function("file-read", workspace)
+      function = Tools.get_function("file-read", Mounts.new(workspace, nil))
 
       assert {:error, msg} = function.function.(%{"path" => "gone.png"}, ctx("vision-model"))
       assert msg =~ "File not found"

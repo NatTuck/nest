@@ -139,7 +139,7 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
   def projected?(name), do: name in @projected_tools
 
   @doc """
-  Sum of `project/2` over `tool_calls`, sharing one `Sandbox.stat/4` per
+  Sum of `project/2` over `tool_calls`, sharing one `Sandbox.stat/3` per
   distinct resolved `file-read` path (issue #48).
 
   `BatchSizer.projected_content_size/2` and `preflight/2` both go through
@@ -157,11 +157,11 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
   # The stat result for every distinct path a `file-read` call in this batch
   # targets. Keyed on the *resolved* path, so two spellings of one file share
   # a stat; spellings that resolve differently are statted separately (never a
-  # wrong size, at most one extra spawn). `caps`, `workspace_path` and
-  # `tmp_path` are constant across a `ctx`, so a memo hit is exactly what a
-  # live `Sandbox.stat/4` would have returned.
+  # wrong size, at most one extra spawn). `caps` and `mounts` are constant
+  # across a `ctx`, so a memo hit is exactly what a live `Sandbox.stat/3`
+  # would have returned.
   #
-  # `Sandbox.stat_many/4` runs one `stat` invocation for the whole chunk of
+  # `Sandbox.stat_many/3` runs one `stat` invocation for the whole chunk of
   # distinct paths, so the preflight costs a handful of bwrap spawns per batch
   # instead of one per `file-read` call.
   defp read_file_sizes(tool_calls, ctx) do
@@ -179,12 +179,7 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
       end)
       |> Enum.uniq()
 
-    Sandbox.stat_many(
-      paths,
-      caps_of(ctx),
-      Map.get(ctx, :workspace_path),
-      Map.get(ctx, :tmp_path)
-    )
+    Sandbox.stat_many(paths, caps_of(ctx), Map.get(ctx, :mounts))
   end
 
   # The path a `file-read` call targets, resolved against the workspace, or
@@ -194,7 +189,7 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
   defp resolved_read_path(%ToolCall{arguments: args}, ctx) do
     with %{"path" => path} <- args,
          true <- is_binary(path) and path != "",
-         {:ok, full_path} <- Sandbox.resolve(path, Map.get(ctx, :workspace_path)) do
+         {:ok, full_path} <- Sandbox.resolve(path, Map.get(ctx, :mounts)) do
       {:ok, full_path}
     else
       _ -> :error
@@ -202,7 +197,7 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
   end
 
   # The size of one resolved path: from the batch memo when the caller supplied
-  # one (see `project_batch/2`), otherwise a live `Sandbox.stat/4`. A memo miss
+  # one (see `project_batch/2`), otherwise a live `Sandbox.stat/3`. A memo miss
   # still stats, so `project/2` on its own keeps its old behaviour.
   defp stat_size_for(full_path, ctx) do
     case Map.get(ctx, :file_read_sizes) do
@@ -211,19 +206,13 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
     end
   end
 
-  # `Sandbox.stat_many/4` returns sizes directly; `Sandbox.stat/4` returns a
+  # `Sandbox.stat_many/3` returns sizes directly; `Sandbox.stat/3` returns a
   # partial `%File.Stat{}` of which the projection reads only `size`.
   #
-  # `full_path` is the sandbox-domain path the agent used; `ctx.tmp_path` is a
-  # HOST path passed only so the sandbox can resolve it. The host spelling must
-  # never be shown to the LLM.
+  # `full_path` is the path the agent used, in the domain the agent names;
+  # `ctx.mounts` is what `Nest.Sandbox` reads the bind layout out of.
   defp live_stat_size(full_path, ctx) do
-    case Sandbox.stat(
-           full_path,
-           caps_of(ctx),
-           Map.get(ctx, :workspace_path),
-           Map.get(ctx, :tmp_path)
-         ) do
+    case Sandbox.stat(full_path, caps_of(ctx), Map.get(ctx, :mounts)) do
       {:ok, %File.Stat{size: size}} -> {:ok, size}
       {:error, reason} -> {:error, reason}
     end

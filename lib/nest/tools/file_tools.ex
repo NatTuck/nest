@@ -17,6 +17,7 @@ defmodule Nest.Tools.FileTools do
   alias Nest.Messages.Part
   alias Nest.Messages.Sanitize
   alias Nest.Sandbox
+  alias Nest.Sandbox.Mounts
   alias Nest.Tools.MediaKind
 
   # Stat-then-cap mirrors `InspectFile`'s cap so the BatchSizer's
@@ -37,8 +38,8 @@ defmodule Nest.Tools.FileTools do
   @doc """
   Build the `file-read` `Nest.LLM.Tool` struct.
   """
-  @spec read_file_function(String.t() | nil, String.t() | nil) :: Tool.t()
-  def read_file_function(workspace_path, tmp_path) do
+  @spec read_file_function(Mounts.t()) :: Tool.t()
+  def read_file_function(mounts) do
     %Tool{
       name: "file-read",
       description:
@@ -56,7 +57,7 @@ defmodule Nest.Tools.FileTools do
         "required" => ["path"]
       },
       function: fn %{"path" => path}, context ->
-        read_file(path, workspace_path, tmp_path, context)
+        read_file(path, mounts, context)
       end
     }
   end
@@ -64,8 +65,8 @@ defmodule Nest.Tools.FileTools do
   @doc """
   Build the `file-write` `Nest.LLM.Tool` struct.
   """
-  @spec write_file_function(String.t() | nil, String.t() | nil) :: Tool.t()
-  def write_file_function(workspace_path, tmp_path) do
+  @spec write_file_function(Mounts.t()) :: Tool.t()
+  def write_file_function(mounts) do
     %Tool{
       name: "file-write",
       description: "Write content to a file in the workspace.",
@@ -85,18 +86,18 @@ defmodule Nest.Tools.FileTools do
         "required" => ["path", "content"]
       },
       function: fn %{"path" => path, "content" => content}, context ->
-        write_file(path, content, workspace_path, tmp_path, context)
+        write_file(path, content, mounts, context)
       end
     }
   end
 
   @doc """
   Build the `file-edit` `Nest.LLM.Tool` struct. The closure captures
-  the workspace + tmp paths and routes through `edit/5`
+  the agent's `Nest.Sandbox.Mounts` and routes through `edit/4`
   for the actual exact-string-replace logic.
   """
-  @spec edit_function(String.t() | nil, String.t() | nil) :: Tool.t()
-  def edit_function(workspace_path, tmp_path) do
+  @spec edit_function(Mounts.t()) :: Tool.t()
+  def edit_function(mounts) do
     %Tool{
       name: "file-edit",
       description:
@@ -134,53 +135,34 @@ defmodule Nest.Tools.FileTools do
         "required" => ["path", "old_text", "new_text"]
       },
       function: fn args, context ->
-        edit(args, workspace_path, tmp_path, context)
+        edit(args, mounts, context)
       end
     }
   end
 
-  # Read the file through the sandbox. The path is in the sandbox domain
-  # (the spelling the agent was told); the host backing path stays inside
-  # `Nest.Sandbox` and is never returned.
+  # Read the file through the sandbox. The path is in the sandbox domain, and
+  # `mounts` is the value `Nest.Sandbox` reads the bind layout out of.
   # Failed reads return bounded error strings whose sizes are
   # tracked accurately via `Estimator`.
-  defp read_file(path, workspace_path, tmp_path, context) do
+  defp read_file(path, mounts, context) do
     caps = caps_from_context(context)
 
-    case resolve_read_path(path, workspace_path) do
+    case Mounts.resolve(path, mounts) do
       {:ok, full_path} ->
-        read_after_stat(full_path, path, workspace_path, caps, tmp_path, context)
+        read_after_stat(full_path, path, caps, mounts, context)
 
       {:error, _} = err ->
         err
     end
   end
 
-  defp resolve_read_path(path, workspace_path) do
-    cond do
-      Path.type(path) == :absolute -> {:ok, path}
-      is_nil(workspace_path) -> {:error, "No workspace configured for this agent"}
-      true -> {:ok, Path.join(workspace_path, path)}
-    end
-  end
-
-  defp read_after_stat(full_path, original_path, workspace_path, caps, tmp_path, context) do
-    # `workspace_path`/`tmp_path` are HOST paths passed only so `Sandbox.stat/4`
-    # can resolve the agent's sandbox-domain path. The agent must only ever see
-    # the sandbox spelling; neither host path is returned.
-    case Sandbox.stat(full_path, caps, workspace_path, tmp_path) do
+  defp read_after_stat(full_path, original_path, caps, mounts, context) do
+    case Sandbox.stat(full_path, caps, mounts) do
       {:ok, %{size: size}} when size > @max_read_file_bytes ->
         too_large_error(size)
 
       {:ok, _} ->
-        read_classified(
-          full_path,
-          original_path,
-          workspace_path,
-          caps,
-          tmp_path,
-          context
-        )
+        read_classified(full_path, original_path, caps, mounts, context)
 
       {:error, reason} ->
         read_error(reason, original_path)
@@ -189,23 +171,15 @@ defmodule Nest.Tools.FileTools do
 
   # Media or text? The extension is only a filter, so a path that does not
   # look like media never pays the extra `file --mime-type` spawn, and a path
-  # that does look like media is still confirmed by `MediaKind.detect/4`
+  # that does look like media is still confirmed by `MediaKind.detect/3`
   # before anything is attached.
-  defp read_classified(full_path, original_path, workspace_path, caps, tmp_path, context) do
+  defp read_classified(full_path, original_path, caps, mounts, context) do
     case MediaKind.from_path(full_path) do
       :text ->
-        read_file_content(full_path, workspace_path, caps, tmp_path)
+        read_file_content(full_path, caps, mounts)
 
       {:ok, modality} ->
-        read_media_file(
-          full_path,
-          original_path,
-          workspace_path,
-          caps,
-          tmp_path,
-          modality,
-          context
-        )
+        read_media_file(full_path, original_path, caps, mounts, modality, context)
     end
   end
 
@@ -216,18 +190,10 @@ defmodule Nest.Tools.FileTools do
   # request, so attaching one the caller's model cannot accept would break
   # every later turn until the conversation is compacted. Refusing here, with
   # a message the model can act on, is the only fail-fast point there is.
-  defp read_media_file(
-         full_path,
-         original_path,
-         workspace_path,
-         caps,
-         tmp_path,
-         modality,
-         context
-       ) do
+  defp read_media_file(full_path, original_path, caps, mounts, modality, context) do
     with :ok <- check_media_input(modality, context),
-         {:ok, modality, mime} <- MediaKind.detect(full_path, workspace_path, tmp_path, caps),
-         {:ok, bytes} <- read_media_bytes(full_path, workspace_path, caps, tmp_path),
+         {:ok, modality, mime} <- MediaKind.detect(full_path, caps, mounts),
+         {:ok, bytes} <- read_media_bytes(full_path, caps, mounts),
          {:ok, part} <- build_media_part(original_path, modality, mime, bytes, context) do
       {:ok, {:media, part}}
     else
@@ -236,13 +202,13 @@ defmodule Nest.Tools.FileTools do
       # "non-text" error for a binary file. A failed `file` check is NOT this
       # case: it comes back as an error and is surfaced, because treating
       # "could not tell" as "not media" would read an image as text.
-      :text -> read_file_content(full_path, workspace_path, caps, tmp_path)
+      :text -> read_file_content(full_path, caps, mounts)
       {:error, _} = error -> error
     end
   end
 
-  defp read_media_bytes(full_path, workspace_path, caps, tmp_path) do
-    case Sandbox.read(full_path, caps, workspace_path, tmp_path) do
+  defp read_media_bytes(full_path, caps, mounts) do
+    case Sandbox.read(full_path, caps, mounts) do
       {:ok, bytes} -> {:ok, bytes}
       {:error, reason} -> read_error(reason, full_path)
     end
@@ -315,10 +281,8 @@ defmodule Nest.Tools.FileTools do
       "with shell-cmd instead (e.g. `file --mime-type <path>`)."
   end
 
-  defp read_file_content(full_path, workspace_path, caps, tmp_path) do
-    # `workspace_path`/`tmp_path` are HOST paths passed only to build the
-    # sandbox for the read. The agent must only ever see the sandbox spelling.
-    case Sandbox.read(full_path, caps, workspace_path, tmp_path) do
+  defp read_file_content(full_path, caps, mounts) do
+    case Sandbox.read(full_path, caps, mounts) do
       {:ok, content} -> validate_utf8(content)
       {:error, reason} -> read_error(reason, full_path)
     end
@@ -354,26 +318,12 @@ defmodule Nest.Tools.FileTools do
     end
   end
 
-  # Common path-resolution helper for write_file / edit.
-  # Mirrors the logic used in read_file's resolve_read_path/2.
-  defp resolve_full_path(path, workspace_path) do
-    if Path.type(path) == :absolute do
-      {:ok, path}
-    else
-      if is_nil(workspace_path) do
-        {:error, "No workspace configured for this agent"}
-      else
-        {:ok, Path.join(workspace_path, path)}
-      end
-    end
-  end
-
-  defp write_file(path, content, workspace_path, tmp_path, context) do
+  defp write_file(path, content, mounts, context) do
     caps = caps_from_context(context)
-    Logger.info("Tool file-write: #{path} (workspace: #{workspace_path || "none"})")
+    Logger.info("Tool file-write: #{path} (workspace: #{Mounts.workspace(mounts) || "none"})")
 
-    with {:ok, full_path} <- resolve_full_path(path, workspace_path) do
-      case Sandbox.write(full_path, content, caps, workspace_path, tmp_path) do
+    with {:ok, full_path} <- Mounts.resolve(path, mounts) do
+      case Sandbox.write(full_path, content, caps, mounts) do
         {:ok, _} -> {:ok, "Successfully wrote #{String.length(content)} bytes to #{path}"}
         {:error, reason} -> {:error, "Failed to write file: #{reason}"}
       end
@@ -385,7 +335,7 @@ defmodule Nest.Tools.FileTools do
   # back via the same sandboxed cat path as write_file. Splitting
   # on `old_text` is how we cheaply detect "not found" (parts == 1)
   # and "ambiguous" (parts > 2 with `replace_all: false`).
-  defp edit(args, workspace_path, tmp_path, context) do
+  defp edit(args, mounts, context) do
     path = args["path"]
     old_text = args["old_text"]
     new_text = args["new_text"]
@@ -394,21 +344,19 @@ defmodule Nest.Tools.FileTools do
     caps = caps_from_context(context)
     Logger.info("Tool file-edit: #{path} (replace_all: #{replace_all})")
 
-    with {:ok, full_path} <- resolve_full_path(path, workspace_path),
-         {:ok, current} <- read_file_via_shell(full_path, workspace_path, caps, tmp_path),
+    with {:ok, full_path} <- Mounts.resolve(path, mounts),
+         {:ok, current} <- read_file_via_shell(full_path, caps, mounts),
          {:ok, replacement_count, updated} <-
            compute_replacement(current, old_text, new_text, replace_all) do
-      case Sandbox.write(full_path, updated, caps, workspace_path, tmp_path) do
+      case Sandbox.write(full_path, updated, caps, mounts) do
         {:ok, _} -> {:ok, "Replaced #{replacement_count} occurrence(s) in #{path}"}
         {:error, reason} -> {:error, "Failed to write file: #{reason}"}
       end
     end
   end
 
-  defp read_file_via_shell(full_path, workspace_path, caps, tmp_path) do
-    # `workspace_path`/`tmp_path` are HOST paths passed only to build the
-    # sandbox for the read. Never returned; the agent sees sandbox spellings.
-    case Sandbox.read(full_path, caps, workspace_path, tmp_path) do
+  defp read_file_via_shell(full_path, caps, mounts) do
+    case Sandbox.read(full_path, caps, mounts) do
       {:ok, content} -> {:ok, content}
       {:error, :read_permission_denied} -> {:error, "Not permitted to read file by sandbox caps"}
       {:error, :enoent} -> {:error, "File not found: #{full_path}"}
@@ -458,10 +406,10 @@ defmodule Nest.Tools.FileTools do
     end
   end
 
-  # Every file tool addresses the same sandbox-domain scratch spelling
-  # (`/tmp/<agent>/...`); `Sandbox.read/4` resolves it inside bwrap. Where
-  # that spelling is stated (the agent's system prompt, not these
-  # descriptions) lives in `Nest.Agents.Agent.SystemPrompt`.
+  # Every file tool addresses the same scratch spelling the agent is given
+  # (`/tmp/<agent>/...`); `Sandbox.read/3` resolves it inside bwrap. Where that
+  # spelling is stated (the agent's system prompt, not these descriptions)
+  # lives in `Nest.Agents.Agent.SystemPrompt`.
   defp caps_from_context(%{caps: caps}) when is_map(caps), do: caps
   defp caps_from_context(_), do: Nest.Sandbox.default_caps()
 end

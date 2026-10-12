@@ -13,6 +13,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   alias Nest.Agents.Agent.Turn
   alias Nest.Messages.Part
   alias Nest.Messages.User
+  alias Nest.Sandbox.Mounts
   alias Nest.Tokens.PreFlight
   alias Nest.Tokens.Reserve
   alias Nest.Vocations
@@ -29,7 +30,7 @@ defmodule Nest.Agents.Agent.ChatPipeline do
     mode = requested_mode || state.live.mode
 
     {effective_mode, _caps} =
-      resolve_mode_and_caps(mode, state.vocation, state.workspace_path, state.tmp_path)
+      resolve_mode_and_caps(mode, state.vocation, Mounts.from_agent(state))
 
     state = %{state | live: %{state.live | mode: effective_mode, cancelled: false}}
     user = build_user_message(content, effective_mode, human?)
@@ -77,9 +78,8 @@ defmodule Nest.Agents.Agent.ChatPipeline do
   back to the vocation's default mode (or "chat" if the vocation has no
   modes). This matches the LLM-visible `[mode: X]` prefix.
   """
-  @spec resolve_mode_and_caps(String.t(), term(), String.t() | nil, String.t() | nil) ::
-          {String.t(), map()}
-  def resolve_mode_and_caps(mode, %Nest.Vocations.Vocation{} = vocation, workspace, tmp_path) do
+  @spec resolve_mode_and_caps(String.t(), term(), Mounts.t()) :: {String.t(), map()}
+  def resolve_mode_and_caps(mode, %Nest.Vocations.Vocation{} = vocation, mounts) do
     modes = Vocations.list_modes(vocation)
 
     {resolved, caps} =
@@ -90,14 +90,10 @@ defmodule Nest.Agents.Agent.ChatPipeline do
         {default, elem(Vocations.get_caps(vocation, default), 1)}
       end
 
-    {resolved, Nest.ProjectConfig.apply_or_default(caps, workspace, tmp_path)}
+    {resolved, Nest.ProjectConfig.apply_or_default(caps, mounts)}
   end
 
-  def resolve_mode_and_caps(_mode, _no_vocation_or_id, workspace, tmp_path) do
-    {"chat", chat_caps(workspace, tmp_path)}
-  end
-
-  defp chat_caps(workspace, tmp_path) do
-    Nest.ProjectConfig.apply_or_default(Nest.Sandbox.default_caps(), workspace, tmp_path)
+  def resolve_mode_and_caps(_mode, _no_vocation_or_id, mounts) do
+    {"chat", Nest.ProjectConfig.apply_or_default(Nest.Sandbox.default_caps(), mounts)}
   end
 end

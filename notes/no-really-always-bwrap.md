@@ -142,7 +142,7 @@ is no host-side emulation of `read`, `stat` or `glob`"); the `file-read` /
 `file-inspect` tool descriptions; and `ShellCmd.execute_raw/5`'s comment.
 
 **Enforce it with an AST guard, not a string match.** Today's guard
-(`sandbox_host_path_test.exs:85-90`) is `refute source =~ "File.read("`, which a
+(`sandbox_path_domain_test.exs:85-90`) is `refute source =~ "File.read("`, which a
 review defeated by reintroducing the fast path as `:file.read_file`. Replace it
 with the repo's `guard_test.exs:277-320` pattern (`Code.string_to_quoted!` +
 `Macro.prewalk`), scanning `lib/nest/sandbox.ex`, `lib/nest/sandbox/glob.ex`,
@@ -167,7 +167,7 @@ one), plus `batch_sizer_overflow_test.exs` `:60`, `:76`. Fix: build the real
 shape (`root/space-1/agent-N`), assert `=~ Sandbox.sandbox_tmp_path(dir)` and
 `refute =~ dir`, read files back via `Path.join(dir, Path.basename(path))`, and
 `on_exit` the root. **Prove it:** revert `Overflow.write/4` (`overflow.ex:49`) to
-return the host path — under the flat fixture the suite still passes (the no-op);
+return the scratch directory it wrote to — under the flat fixture the suite still passes (the no-op);
 under the fixed fixture every corrected assertion fails. `batch_sizer_cap_test.exs`
 asserts only `content =~ "saved to"` — same shape, no blind spot; optional.
 
@@ -177,8 +177,8 @@ asserts only `content =~ "saved to"` — same shape, no blind spot; optional.
 |---|---|
 | `sandbox_test.exs` `describe "glob/4"` (9 tests) | **keep** — they pass with the bash implementation (`nullglob`+`dotglob`+`globstar`+escaping+Elixir sort+limit) |
 | `sandbox_test.exs:462-469` "filtered to files readable under the caps" | **rewrite** — its caps omit `"/"`, so `Sandbox.build/5` errors and `ShellCmd.build_bwrap_args/3` raises; replace with a mount-based filter test (masked `.nest`, or a shadowed path) |
-| `sandbox_host_path_test.exs:48-84` (bind source, glob/stat/read, "never returns the host spelling", overflow pointer) | **keep** |
-| `sandbox_host_path_test.exs:85-90` source guard | **replace** with the AST guard (§3) |
+| `sandbox_path_domain_test.exs:48-84` (bind source, glob/stat/read, "returns only paths in the agent's domain", overflow pointer) | **keep** |
+| `sandbox_path_domain_test.exs:85-90` source guard | **replace** with the AST guard (§3) |
 | `sandbox_project_test.exs:77-90` (mount-only read) | **keep** |
 | `sandbox_project_test.exs:68-74` (`write_allowed?`) | **delete** with the helper |
 | `batch_plan_test.exs:71-99`, `batch_sizer_test.exs:272-315` | **keep** |
@@ -338,7 +338,7 @@ so a mode with a stale `fs.write`/`fs.project` source currently makes every
 `"File not found: <path>"`, with nothing in the log — the exact diagnostic
 `log_bwrap_failure/5`'s comment (`shell_cmd.ex:239-249`) says we must never
 lose. The other bwrap shape (`bwrap: Can't mkdir parents for …: Read-only file
-system`) is the one `sandbox_host_path_test.exs` already exercises; it classified
+system`) is the one `sandbox_path_domain_test.exs` already exercises; it classified
 as `:read_failed` by luck, not by design.
 
 **Logging.** Replace `log_read_failure/3` (`sandbox.ex:482-486`) with a single
@@ -506,7 +506,7 @@ New/updated tests for the rest:
 
 * a directory read is `:eisdir` and does **not** log;
 * a bwrap setup failure reports `:sandbox_setup_failed` and **does** log (the
-  existing "config 2" test in `sandbox_host_path_test.exs` asserts the log for
+  existing "config 2" test in `sandbox_path_domain_test.exs` asserts the log for
   `read`; it extends to `stat`/`glob`);
 * a timeout/cancel annotation reaches the caller (this is what locks in item 9;
   there is no test for `ShellCmd`'s own timeout path today);
@@ -515,7 +515,7 @@ New/updated tests for the rest:
   `set_workspace`, edit-agent), plus the JS message mapping.
 
 Item 14, in the same pass: the workspace-under-`/tmp` test in
-`sandbox_host_path_test.exs` asserts the rejection *message* instead of
+`sandbox_path_domain_test.exs` asserts the rejection *message* instead of
 `{:error, _}` (so an unrelated failure cannot pass it), and the two unguarded
 `File.rm_rf!`s on lines this PR touched get the `String.contains?` guard
 SMELLS.md requires — `test/nest/agents/agent/batch_sizer_test.exs:214` and
@@ -523,7 +523,7 @@ SMELLS.md requires — `test/nest/agents/agent/batch_sizer_test.exs:214` and
 
 ## 8.6 AST guard (item 11)
 
-`test/nest/sandbox_host_path_test.exs`'s `@sandbox_sources` gains
+`test/nest/sandbox_path_domain_test.exs`'s `@sandbox_sources` gains
 `"lib/nest/sandbox/shell_jobs.ex"`, which does `File.read/1` on the job log at
 `:559`. That read is benign — the log is Nest's own artifact, written by Nest,
 and the mount exposes the same bytes — so the guard gets an explicit, commented

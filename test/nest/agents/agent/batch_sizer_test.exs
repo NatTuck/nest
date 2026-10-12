@@ -29,6 +29,7 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
   alias Nest.LLM.Tool
   alias Nest.Messages.{Part, ToolCall, ToolResult}
   alias Nest.Sandbox
+  alias Nest.Sandbox.Mounts
   alias Nest.TextFixtures
   alias Nest.Tools
   alias Nest.Tools.Groups
@@ -66,7 +67,8 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       caps: %{"fs" => %{"read" => ["/"], "write" => ["/tmp"]}, "net" => false},
       context_limit: Keyword.get(opts, :context_limit, 100_000),
       messages: Keyword.get(opts, :messages, []),
-      tmp_path: Keyword.get(opts, :tmp_path, nil),
+      mounts:
+        Mounts.new(Keyword.get(opts, :workspace_path, nil), Keyword.get(opts, :tmp_path, nil)),
       agent_pid: self(),
       agent_name: "test"
     }
@@ -290,7 +292,7 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
       %{tmp_dir: dir, test_file: file} = ctx
       File.write!(file, "hello world")
 
-      tools = [Tools.get_function("file-read", dir)]
+      tools = [Tools.get_function("file-read", Mounts.new(dir, nil))]
       c = ctx(tools)
 
       assert [%ToolResult{content: content, is_error: false}] =
@@ -304,7 +306,7 @@ defmodule Nest.Agents.Agent.BatchSizerTest do
 
     test "returns error for non-existent file", ctx do
       %{tmp_dir: dir} = ctx
-      tools = [Tools.get_function("file-read", dir)]
+      tools = [Tools.get_function("file-read", Mounts.new(dir, nil))]
       c = ctx(tools)
 
       log =

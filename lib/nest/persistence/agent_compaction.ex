@@ -26,6 +26,7 @@ defmodule Nest.Persistence.AgentCompaction do
   alias Nest.Persistence.AgentCompaction.Planner
   alias Nest.Persistence.AgentCompaction.Summarizer
   alias Nest.Persistence.AgentCompaction.Writer
+  alias Nest.Sandbox.Mounts
   alias Nest.Spaces
   alias Nest.Vocations
 
@@ -139,7 +140,7 @@ defmodule Nest.Persistence.AgentCompaction do
     {system_prompt, _mode, _tools, _vocation} =
       SystemPrompt.compose_vocation_config(
         vocation,
-        agent.workspace_path,
+        Mounts.new(agent.workspace_path, nil),
         {limit, source},
         agent.name,
         agent.depth || 0

@@ -61,13 +61,13 @@ defmodule Nest.Sandbox.PathsTest do
       assert Paths.scratch_dir("clever-raven") == "/tmp/clever-raven"
       assert Sandbox.scratch_dir("clever-raven") == Paths.scratch_dir("clever-raven")
 
-      # The same answer as the host-path-based spelling, for the tmp_path
-      # that name produces.
-      tmp_path = "/tmp/nest-1/space-7/clever-raven"
-      assert Paths.scratch_dir("clever-raven") == Paths.sandbox_tmp_path(tmp_path)
+      # The same answer as the derived spelling, for the scratch dir that
+      # name produces.
+      scratch = "/tmp/nest-1/space-7/clever-raven"
+      assert Paths.scratch_dir("clever-raven") == Paths.sandbox_tmp_path(scratch)
     end
 
-    test "never returns a host path" do
+    test "names only the agent's own directory" do
       refute Paths.scratch_dir("agent-a") =~ "nest-"
       refute Sandbox.scratch_dir("agent-a") =~ "space-"
     end

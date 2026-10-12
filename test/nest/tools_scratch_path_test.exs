@@ -13,6 +13,7 @@ defmodule Nest.ToolsScratchPathTest do
   import ExUnit.CaptureLog
 
   alias Nest.Sandbox
+  alias Nest.Sandbox.Mounts
   alias Nest.Tools
 
   setup do
@@ -23,9 +24,9 @@ defmodule Nest.ToolsScratchPathTest do
     workspace = Path.join([File.cwd!(), "_build", "tmp", "nest_tools_spelling_#{unique}"])
     File.mkdir_p!(workspace)
 
-    # The real scratch shape, with the root under /tmp so a scratch
-    # file's host path is shadowed inside the sandbox (which is what
-    # makes the "wrong spelling fails" assertions meaningful).
+    # The real scratch shape, with the root under /tmp so a scratch file's
+    # own directory is shadowed inside the sandbox (which is what makes the
+    # "a path outside the agent's domain fails" assertions meaningful).
     root = Path.join(System.tmp_dir!(), "nest_tools_spelling_#{unique}")
     agent = "agent-#{unique}"
     tmp_path = Path.join([root, "space-1", agent])
@@ -40,36 +41,36 @@ defmodule Nest.ToolsScratchPathTest do
       tmp_path: tmp_path,
       agent: agent,
       sandbox_file: "/tmp/#{agent}/report.txt",
-      host_file: Path.join(tmp_path, "report.txt"),
+      outside_file: Path.join(tmp_path, "report.txt"),
       caps: Sandbox.default_caps()
     }
   end
 
-  test "every file tool uses the sandbox spelling; the host spelling never resolves", %{
+  test "every file tool addresses the agent's own paths; nothing else resolves", %{
     workspace: workspace,
     tmp_path: tmp_path,
     sandbox_file: sandbox_file,
-    host_file: host_file,
+    outside_file: outside_file,
     caps: caps
   } do
-    write = Tools.get_function("file-write", workspace, tmp_path)
-    read = Tools.get_function("file-read", workspace, tmp_path)
-    edit = Tools.get_function("file-edit", workspace, tmp_path)
-    inspect = Tools.get_function("file-inspect", workspace, tmp_path)
-    shell = Tools.get_function("shell-cmd", workspace, tmp_path)
+    write = Tools.get_function("file-write", Mounts.new(workspace, tmp_path))
+    read = Tools.get_function("file-read", Mounts.new(workspace, tmp_path))
+    edit = Tools.get_function("file-edit", Mounts.new(workspace, tmp_path))
+    inspect = Tools.get_function("file-inspect", Mounts.new(workspace, tmp_path))
+    shell = Tools.get_function("shell-cmd", Mounts.new(workspace, tmp_path))
 
     log =
       capture_log(fn ->
-        # `file-write`'s advertised spelling is the sandbox path: the file
-        # lands on the host under `tmp_path`.
+        # `file-write`'s advertised path is the sandbox path: the bytes land
+        # under the agent's scratch directory.
         assert {:ok, _} =
                  write.function.(%{"path" => sandbox_file, "content" => "hello"}, %{caps: caps})
 
-        assert File.read!(host_file) == "hello"
+        assert File.read!(outside_file) == "hello"
 
-        # ... and the host spelling does not resolve for a write either.
+        # ... and a path outside the agent's domain does not resolve either.
         assert {:error, message} =
-                 write.function.(%{"path" => host_file, "content" => "nope"}, %{caps: caps})
+                 write.function.(%{"path" => outside_file, "content" => "nope"}, %{caps: caps})
 
         assert message =~ "No such file"
 
@@ -95,8 +96,8 @@ defmodule Nest.ToolsScratchPathTest do
         assert {:ok, "world"} =
                  shell.function.(%{"command" => "cat #{sandbox_file}"}, %{caps: caps})
 
-        # ... and the host spelling does not resolve for a read.
-        assert {:error, message} = read.function.(%{"path" => host_file}, %{caps: caps})
+        # ... and a path outside the agent's domain does not resolve for a read.
+        assert {:error, message} = read.function.(%{"path" => outside_file}, %{caps: caps})
         assert message =~ "File not found"
       end)
 
@@ -122,8 +123,8 @@ defmodule Nest.ToolsScratchPathTest do
           "file-edit",
           "file-inspect"
         ] do
-      with_tmp = Tools.get_function(name, workspace, tmp_path).description
-      without_tmp = Tools.get_function(name, workspace, nil).description
+      with_tmp = Tools.get_function(name, Mounts.new(workspace, tmp_path)).description
+      without_tmp = Tools.get_function(name, Mounts.new(workspace, nil)).description
 
       assert with_tmp == without_tmp, "#{name}'s description still depends on tmp_path"
       refute with_tmp =~ tmp_path, "#{name} leaked the host scratch path"

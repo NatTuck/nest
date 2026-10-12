@@ -8,7 +8,7 @@ defmodule Nest.Tools.MediaKind do
       `BatchSizer`'s preflight can call it per tool call without paying a
       bwrap spawn. It can be wrong, and that is acceptable: the preflight
       only needs an upper bound, and the execution path re-checks.
-    * `detect/4` — the **authoritative** check. Runs `file --mime-type`
+    * `detect/3` — the **authoritative** check. Runs `file --mime-type`
       inside the sandbox and returns a modality only when the reported type
       is one of `media_types/0` *and* its modality agrees with the
       extension. The `file-read` media path calls this, so a file that is
@@ -25,7 +25,7 @@ defmodule Nest.Tools.MediaKind do
   alias Nest.Tools.ShellEscape
 
   # The media types this build can attach, and the modality each belongs to.
-  # This is the authority: `detect/4` accepts a file only when `file` reports
+  # This is the authority: `detect/3` accepts a file only when `file` reports
   # one of these, and `Part.new_media/1` re-checks that the type prefix agrees
   # with the modality. The four are the union of what the supported providers
   # accept as an image input.
@@ -36,7 +36,7 @@ defmodule Nest.Tools.MediaKind do
     "image/webp" => :image
   }
 
-  # Extension -> modality. A hint for the preflight only; `detect/4` decides.
+  # Extension -> modality. A hint for the preflight only; `detect/3` decides.
   # Matched case-insensitively.
   @extensions %{
     ".png" => :image,
@@ -76,11 +76,11 @@ defmodule Nest.Tools.MediaKind do
   treat a failed check as "not media", because that would silently read an
   image as text.
   """
-  @spec detect(String.t(), String.t() | nil, String.t() | nil, map()) ::
+  @spec detect(String.t(), map(), Mounts.t()) ::
           {:ok, Part.Media.modality(), String.t()} | :text | {:error, String.t()}
-  def detect(full_path, workspace_path, tmp_path, caps) do
+  def detect(full_path, caps, mounts) do
     with {:ok, modality} <- from_path(full_path),
-         {:ok, mime} <- mime_type(full_path, workspace_path, tmp_path, caps) do
+         {:ok, mime} <- mime_type(full_path, caps, mounts) do
       case @media_types do
         %{^mime => ^modality} -> {:ok, modality, mime}
         _ -> :text
@@ -94,13 +94,13 @@ defmodule Nest.Tools.MediaKind do
   # `file --mime-type --brief -- <path>` prints the type alone, with no
   # `<path>: ` prefix. That matters: splitting on the first colon would
   # misparse a path that itself contains one (`/tmp/a:b.png`), which would then
-  # match nothing in `@media_types` and make `detect/4` return `:text` — a
+  # match nothing in `@media_types` and make `detect/3` return `:text` — a
   # silent misclassification, in the one function whose contract says a caller
   # must not read a failed check as "not media".
-  defp mime_type(full_path, workspace_path, tmp_path, caps) do
+  defp mime_type(full_path, caps, mounts) do
     command = "file --mime-type --brief -- #{ShellEscape.escape(full_path)}"
 
-    case Sandbox.run(command, workspace_path, tmp_path, caps) do
+    case Sandbox.run(command, mounts, caps) do
       {:ok, output} -> {:ok, String.trim(output)}
       {:error, reason} -> {:error, "Failed to detect file type: #{inspect(reason)}"}
     end

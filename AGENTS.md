@@ -39,16 +39,21 @@ If the tree is so screwed up that reverting is the only option then stop and rep
   emulation** of `read`, `stat`, or `glob`: all three execute inside bwrap, so
   their results come from exactly the mounts bwrap exposes and can never
   disagree with what a shell inside the sandbox sees.
-- Do **not** add a host fast path for any of them. A host path (the scratch
-  bind source) is internal to `Nest.Sandbox`; the only spelling an agent is
-  ever told about or hands back is the sandbox spelling (`/tmp/<agent>/...`).
+- Do **not** add a host fast path for any of them. There is no second spelling
+  of a path an agent uses: the two directories the sandbox binds — the workspace
+  and the agent's own scratch directory — live in one `Nest.Sandbox.Mounts`
+  value that travels with the turn, and `Nest.Sandbox` is what turns it into
+  binds. A module that needs a real directory reads it from that value; none of
+  them needs one in order to name a path an agent uses, and
+  `/tmp/<agent-name>/...` is the only scratch spelling an agent is ever told
+  about or hands back.
 - The path mapping lives in exactly one place: `Nest.Sandbox.Paths`.
 - A workspace at or under `/tmp` is rejected **unconditionally**, because the
   space scratch dir is bound at `/tmp` and would shadow it. A workspace can
   never live under `/tmp`. A workspace that does not exist is rejected too.
   Both are rejected at the point the workspace is chosen (create-space,
   create-agent, `set_workspace`, edit-agent) and again at the final gate in
-  `Nest.Sandbox.build/5`.
+  `Nest.Sandbox.build/4`.
 
 ## Project Design
 

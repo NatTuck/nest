@@ -18,7 +18,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
   per-call synthetic errors and no tools execute.
 
   Registered tools (those listed in `state.tools`, served via
-  `Nest.Tools.get_function/3`) get a specific `projected_size/2`
+  `Nest.Tools.get_function/2`) get a specific `projected_size/2`
   clause. The catch-all handles hallucinated names the LLM
   invents or typos — it projects off a representative error
   string, since that's what Phase 2's `LLMTools.execute_one/3`
@@ -111,7 +111,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
   should use those two directly so the whole batch is cooked once.
 
   The `ctx` map carries `messages`, `context_limit`, `tools`,
-  `caps`, `agent_pid`, `tmp_path` (per-agent temp directory for
+  `caps`, `agent_pid`, `mounts` (the sandbox's bind layout, for
   summarized outputs), and `agent_name`.
   """
   @spec run([ToolCall.t()], map()) :: [Part.t()]
@@ -149,7 +149,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
   Handing the projection back is what keeps a response's `file-read` stats to
   one batched invocation: a caller that also needs the number would otherwise
   re-derive it, and re-deriving means a second `ProjectedSize.project_batch/2`
-  and so a second `Sandbox.stat_many/4` (issue #48).
+  and so a second `Sandbox.stat_many/3` (issue #48).
 
   `ctx.context_limit` is always a positive integer in the agent
   runtime; a nil/other value matches no clause and raises, so a
@@ -185,7 +185,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
   share this one function rather than each re-deriving a projection.
 
   The per-tool sum lives in `ProjectedSize.project_batch/2` so the whole
-  batch shares one `Sandbox.stat/4` per distinct `file-read` path
+  batch shares one `Sandbox.stat/3` per distinct `file-read` path
   (issue #48).
   """
   @spec projected_content_size([ToolCall.t()], map()) :: non_neg_integer()
@@ -250,7 +250,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
            agent_pid: Map.get(ctx, :agent_pid),
            agent_name: Map.get(ctx, :agent_name),
            space_id: Map.get(ctx, :space_id),
-           tmp_path: Map.get(ctx, :tmp_path),
+           mounts: Map.get(ctx, :mounts),
            # The caller's own model. `file-read`'s media gate consults it: a
            # media part is re-sent on every later request, so whether this
            # model accepts media input has to be settled before one is built.

@@ -6,17 +6,23 @@ defmodule Nest.ToolsTest do
   import Nest.Test.TmpCleanup
 
   alias Nest.LLM.Tool, as: Function
+  alias Nest.Sandbox.Mounts
   alias Nest.Tools
 
   describe "get_functions/2" do
     test "returns empty list for empty tool names" do
-      assert Tools.get_functions([], "/tmp") == []
+      assert Tools.get_functions([], Mounts.new("/tmp", nil)) == []
     end
 
     test "filters unknown names and logs a warning" do
       log =
         capture_log(fn ->
-          functions = Tools.get_functions(["file-read", "unknown_tool", "file-write"], "/tmp")
+          functions =
+            Tools.get_functions(
+              ["file-read", "unknown_tool", "file-write"],
+              Mounts.new("/tmp", nil)
+            )
+
           assert length(functions) == 2
           names = Enum.map(functions, & &1.name)
           assert "file-read" in names and "file-write" in names
@@ -27,7 +33,7 @@ defmodule Nest.ToolsTest do
     end
 
     test "returns Nest.LLM.Tool structs" do
-      [function] = Tools.get_functions(["file-read"], "/tmp")
+      [function] = Tools.get_functions(["file-read"], Mounts.new("/tmp", nil))
 
       assert %Function{} = function
       assert function.name == "file-read"
@@ -38,7 +44,7 @@ defmodule Nest.ToolsTest do
 
   describe "get_function/2" do
     test "returns read_file function" do
-      function = Tools.get_function("file-read", "/tmp")
+      function = Tools.get_function("file-read", Mounts.new("/tmp", nil))
 
       assert %Function{} = function
       assert function.name == "file-read"
@@ -46,7 +52,7 @@ defmodule Nest.ToolsTest do
     end
 
     test "returns write_file function" do
-      function = Tools.get_function("file-write", "/tmp")
+      function = Tools.get_function("file-write", Mounts.new("/tmp", nil))
 
       assert %Function{} = function
       assert function.name == "file-write"
@@ -54,7 +60,7 @@ defmodule Nest.ToolsTest do
     end
 
     test "returns shell_cmd function" do
-      function = Tools.get_function("shell-cmd", "/tmp")
+      function = Tools.get_function("shell-cmd", Mounts.new("/tmp", nil))
 
       assert %Function{} = function
       assert function.name == "shell-cmd"
@@ -62,7 +68,7 @@ defmodule Nest.ToolsTest do
     end
 
     test "returns nil for unknown tool" do
-      assert Tools.get_function("unknown_tool", "/tmp") == nil
+      assert Tools.get_function("unknown_tool", Mounts.new("/tmp", nil)) == nil
     end
   end
 
@@ -90,13 +96,13 @@ defmodule Nest.ToolsTest do
       test_file = Path.join(workspace, "test.txt")
       File.write!(test_file, "Hello, World!")
 
-      function = Tools.get_function("file-read", workspace)
+      function = Tools.get_function("file-read", Mounts.new(workspace, nil))
       assert {:ok, result} = function.function.(%{"path" => "test.txt"}, nil)
       assert result == "Hello, World!"
     end
 
     test "returns error for non-existent file", %{workspace: workspace} do
-      function = Tools.get_function("file-read", workspace)
+      function = Tools.get_function("file-read", Mounts.new(workspace, nil))
 
       assert {:error, error_msg} =
                function.function.(%{"path" => "nonexistent.txt"}, nil)
@@ -105,7 +111,7 @@ defmodule Nest.ToolsTest do
     end
 
     test "returns error when workspace is nil" do
-      function = Tools.get_function("file-read", nil)
+      function = Tools.get_function("file-read", Mounts.new(nil, nil))
 
       assert {:error, "No workspace configured for this agent"} =
                function.function.(%{"path" => "test.txt"}, nil)
@@ -116,7 +122,7 @@ defmodule Nest.ToolsTest do
       File.write!(Path.join(workspace, "nul.bin"), "text" <> <<0>> <> "more")
       File.write!(Path.join(workspace, "invalid.bin"), <<0xFF, 0xFE>>)
 
-      function = Tools.get_function("file-read", workspace)
+      function = Tools.get_function("file-read", Mounts.new(workspace, nil))
 
       for name <- ["nul.bin", "invalid.bin"] do
         assert {:error, error_msg} = function.function.(%{"path" => name}, nil)
@@ -147,7 +153,7 @@ defmodule Nest.ToolsTest do
     end
 
     test "writes file content successfully", %{workspace: workspace} do
-      function = Tools.get_function("file-write", workspace)
+      function = Tools.get_function("file-write", Mounts.new(workspace, nil))
 
       assert {:ok, result} =
                Function.execute(
@@ -163,7 +169,7 @@ defmodule Nest.ToolsTest do
     end
 
     test "returns error when parent directory does not exist", %{workspace: workspace} do
-      function = Tools.get_function("file-write", workspace)
+      function = Tools.get_function("file-write", Mounts.new(workspace, nil))
 
       log =
         capture_log(fn ->
@@ -188,7 +194,7 @@ defmodule Nest.ToolsTest do
       test_file = Path.join(workspace, "existing.txt")
       File.write!(test_file, "old content")
 
-      function = Tools.get_function("file-write", workspace)
+      function = Tools.get_function("file-write", Mounts.new(workspace, nil))
 
       assert {:ok, _} =
                Function.execute(
@@ -201,7 +207,7 @@ defmodule Nest.ToolsTest do
     end
 
     test "returns error when workspace is nil" do
-      function = Tools.get_function("file-write", nil)
+      function = Tools.get_function("file-write", Mounts.new(nil, nil))
 
       assert {:error, "No workspace configured for this agent"} =
                function.function.(%{"path" => "test.txt", "content" => "test"}, nil)
@@ -229,14 +235,14 @@ defmodule Nest.ToolsTest do
     end
 
     test "executes command and returns output", %{workspace: workspace} do
-      function = Tools.get_function("shell-cmd", workspace)
+      function = Tools.get_function("shell-cmd", Mounts.new(workspace, nil))
 
       assert {:ok, result} = function.function.(%{"command" => "echo hello"}, nil)
       assert result =~ "hello"
     end
 
     test "returns error for failed commands", %{workspace: workspace} do
-      function = Tools.get_function("shell-cmd", workspace)
+      function = Tools.get_function("shell-cmd", Mounts.new(workspace, nil))
 
       log =
         capture_log(fn ->
@@ -250,7 +256,7 @@ defmodule Nest.ToolsTest do
     end
 
     test "captures stderr", %{workspace: workspace} do
-      function = Tools.get_function("shell-cmd", workspace)
+      function = Tools.get_function("shell-cmd", Mounts.new(workspace, nil))
 
       assert {:ok, result} = function.function.(%{"command" => "echo error >&2"}, nil)
       assert result =~ "error"
@@ -259,7 +265,7 @@ defmodule Nest.ToolsTest do
     test "handles command in workspace", %{workspace: workspace} do
       File.write!(Path.join(workspace, "test.txt"), "workspace file")
 
-      function = Tools.get_function("shell-cmd", workspace)
+      function = Tools.get_function("shell-cmd", Mounts.new(workspace, nil))
 
       assert {:ok, result} = function.function.(%{"command" => "cat test.txt"}, nil)
       assert result =~ "workspace file"
@@ -279,7 +285,7 @@ defmodule Nest.ToolsTest do
         rm_tmp!(space_dir, "nest_tools_space_")
       end)
 
-      function = Tools.get_function("shell-cmd", workspace, agent_tmp)
+      function = Tools.get_function("shell-cmd", Mounts.new(workspace, agent_tmp))
 
       # Try to write to the agent's own /tmp subdir - this should succeed
       # when tmp_path is provided (the space dir is bound at /tmp).
@@ -302,7 +308,7 @@ defmodule Nest.ToolsTest do
     end
 
     test "returns placeholder message for commands with no output", %{workspace: workspace} do
-      function = Tools.get_function("shell-cmd", workspace)
+      function = Tools.get_function("shell-cmd", Mounts.new(workspace, nil))
 
       # Command that produces no output
       assert {:ok, result} =
@@ -316,7 +322,7 @@ defmodule Nest.ToolsTest do
     end
 
     test "cannot write to /tmp when tmp_path is not provided", %{workspace: workspace} do
-      function = Tools.get_function("shell-cmd", workspace, nil)
+      function = Tools.get_function("shell-cmd", Mounts.new(workspace, nil))
 
       # Try to write to /tmp - this should fail when no tmp_path is provided
       # (because /tmp is read-only in the sandbox without a bind mount)
@@ -337,7 +343,7 @@ defmodule Nest.ToolsTest do
     test "can redirect stdout to /dev/null", %{workspace: workspace} do
       # Regression: previously the read-only bind of the host root shadowed
       # the devtmpfs at /dev, so `> /dev/null` failed with "Permission denied".
-      function = Tools.get_function("shell-cmd", workspace, nil)
+      function = Tools.get_function("shell-cmd", Mounts.new(workspace, nil))
 
       assert {:ok, result} =
                Function.execute(
@@ -351,7 +357,7 @@ defmodule Nest.ToolsTest do
     end
 
     test "can redirect stderr to /dev/null", %{workspace: workspace} do
-      function = Tools.get_function("shell-cmd", workspace, nil)
+      function = Tools.get_function("shell-cmd", Mounts.new(workspace, nil))
 
       # `ls /nonexistent 2>/dev/null` should suppress the "No such file"
       # error; only the trailing `&& echo done` should appear in output.
@@ -370,7 +376,7 @@ defmodule Nest.ToolsTest do
     test "handles find with 2>/dev/null redirect", %{workspace: workspace} do
       # Mirrors a user-reported failing command: find a missing path
       # while redirecting stderr to /dev/null, then echo a marker.
-      function = Tools.get_function("shell-cmd", workspace, nil)
+      function = Tools.get_function("shell-cmd", Mounts.new(workspace, nil))
 
       assert {:ok, result} =
                Function.execute(
@@ -409,7 +415,7 @@ defmodule Nest.ToolsTest do
       test_file = Path.join(workspace, "x.txt")
       File.write!(test_file, "ok")
 
-      function = Tools.get_function("file-read", workspace)
+      function = Tools.get_function("file-read", Mounts.new(workspace, nil))
       # Read-only caps still allow reads (the ro-bind of / covers
       # the workspace).
       caps = %{"net" => false, "fs" => %{"read" => ["/"], "write" => []}}
@@ -418,7 +424,7 @@ defmodule Nest.ToolsTest do
     end
 
     test "write_file fails when :workspace is not in the write list", %{workspace: workspace} do
-      function = Tools.get_function("file-write", workspace)
+      function = Tools.get_function("file-write", Mounts.new(workspace, nil))
       # Plan mode caps: write: ["/tmp"] but no :workspace. The
       # workspace stays read-only via the ro-bind of /, so writes
       # fail at the kernel level.
@@ -442,7 +448,7 @@ defmodule Nest.ToolsTest do
     end
 
     test "write_file succeeds when :workspace is in the write list", %{workspace: workspace} do
-      function = Tools.get_function("file-write", workspace)
+      function = Tools.get_function("file-write", Mounts.new(workspace, nil))
       caps = %{"net" => false, "fs" => %{"read" => ["/"], "write" => ["/tmp", ":workspace"]}}
 
       assert {:ok, _} =
@@ -456,7 +462,7 @@ defmodule Nest.ToolsTest do
     test "shell_cmd with net=true caps passes --share-net through", %{workspace: workspace} do
       # We can't directly observe bwrap args, but we can verify the
       # tool still runs to completion when net=true.
-      function = Tools.get_function("shell-cmd", workspace, nil)
+      function = Tools.get_function("shell-cmd", Mounts.new(workspace, nil))
       caps = %{"net" => true, "fs" => %{"read" => ["/"], "write" => ["/tmp", ":workspace"]}}
 
       assert {:ok, result} =
@@ -471,7 +477,7 @@ defmodule Nest.ToolsTest do
 
     test "tool with nil context falls back to default caps", %{workspace: workspace} do
       # The legacy path: callers that pass nil context get default caps.
-      function = Tools.get_function("shell-cmd", workspace, nil)
+      function = Tools.get_function("shell-cmd", Mounts.new(workspace, nil))
       assert {:ok, result} = function.function.(%{"command" => "echo ok"}, nil)
       assert result =~ "ok"
     end
@@ -481,7 +487,7 @@ defmodule Nest.ToolsTest do
     } do
       # The catch-all path in caps_from_context/1: context is a map
       # but lacks the :caps key.
-      function = Tools.get_function("shell-cmd", workspace, nil)
+      function = Tools.get_function("shell-cmd", Mounts.new(workspace, nil))
 
       assert {:ok, result} =
                function.function.(%{"command" => "echo ok"}, %{other: "thing"})
@@ -493,7 +499,7 @@ defmodule Nest.ToolsTest do
   describe "max_result_tokens" do
     test "Tool struct does not carry a per-tool max_result_tokens field; cap is enforced by BatchSizer" do
       for name <- ["file-read", "shell-cmd", "file-write", "context-check", "context-compact"] do
-        function = Tools.get_function(name, "/tmp")
+        function = Tools.get_function(name, Mounts.new("/tmp", nil))
 
         refute Map.has_key?(function, :max_result_tokens),
                "#{name} still has a per-tool :max_result_tokens field; cap is enforced by BatchSizer"
@@ -501,20 +507,20 @@ defmodule Nest.ToolsTest do
     end
 
     test "context-check is included when added to a tool list" do
-      functions = Tools.get_functions(["context-check"], "/tmp")
+      functions = Tools.get_functions(["context-check"], Mounts.new("/tmp", nil))
       assert length(functions) == 1
       assert hd(functions).name == "context-check"
     end
 
     test "max_result_tokens is exposed in the parameters schema" do
-      function = Tools.get_function("file-read", "/tmp")
+      function = Tools.get_function("file-read", Mounts.new("/tmp", nil))
       schema = function.parameters_schema
       assert Map.has_key?(schema["properties"], "max_result_tokens")
       assert schema["properties"]["max_result_tokens"]["type"] == "integer"
     end
 
     test "max_result_tokens is not in the required list (it's optional)" do
-      function = Tools.get_function("file-read", "/tmp")
+      function = Tools.get_function("file-read", Mounts.new("/tmp", nil))
       required = function.parameters_schema["required"] || []
       refute "max_result_tokens" in required
     end
@@ -526,7 +532,7 @@ defmodule Nest.ToolsTest do
       # nothing. `agents-batch` is the case that caught this.
       takers =
         for name <- Tools.Groups.expand(Tools.Groups.all()),
-            function = Tools.get_function(name, "/tmp"),
+            function = Tools.get_function(name, Mounts.new("/tmp", nil)),
             Map.has_key?(function.parameters_schema["properties"], "max_result_tokens"),
             do: name
 

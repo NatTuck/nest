@@ -5,6 +5,7 @@ defmodule Nest.Tools.ShellJobsTest do
 
   alias Nest.Agents.Agent.BatchSizer
   alias Nest.Messages.{ToolCall, ToolResult}
+  alias Nest.Sandbox.Mounts
   alias Nest.Sandbox.ShellJobs
   alias Nest.Tools
   alias Nest.Tools.ShellCmd
@@ -27,7 +28,7 @@ defmodule Nest.Tools.ShellJobsTest do
 
   defp start_job!(command, tmp, key) do
     {:ok, _} =
-      ShellCmd.execute(command, File.cwd!(), tmp, nil,
+      ShellCmd.execute(command, Mounts.new(File.cwd!(), tmp), nil,
         background: true,
         agent_key: key,
         grace_ms: 0
@@ -54,11 +55,13 @@ defmodule Nest.Tools.ShellJobsTest do
 
   test "shell-list reports the agent's jobs", %{key: key, tmp: tmp, context: context} do
     assert {:ok, "No background jobs."} =
-             invoke(Tools.get_function("shell-list", nil, nil), %{}, context)
+             invoke(Tools.get_function("shell-list", Mounts.new(nil, nil)), %{}, context)
 
     id = start_job!("sleep 30", tmp, key)
 
-    assert {:ok, text} = invoke(Tools.get_function("shell-list", nil, nil), %{}, context)
+    assert {:ok, text} =
+             invoke(Tools.get_function("shell-list", Mounts.new(nil, nil)), %{}, context)
+
     assert text =~ "- #{id}: running"
     assert text =~ "sleep 30"
   end
@@ -73,7 +76,7 @@ defmodule Nest.Tools.ShellJobsTest do
 
     assert {:ok, text} =
              invoke(
-               Tools.get_function("shell-wait", nil, nil),
+               Tools.get_function("shell-wait", Mounts.new(nil, nil)),
                %{"id" => id, "timeout" => 500, "block" => true},
                context
              )
@@ -92,7 +95,7 @@ defmodule Nest.Tools.ShellJobsTest do
 
     assert {:ok, text} =
              invoke(
-               Tools.get_function("shell-wait", nil, nil),
+               Tools.get_function("shell-wait", Mounts.new(nil, nil)),
                %{"id" => id, "timeout" => 500, "block" => true},
                context
              )
@@ -107,7 +110,7 @@ defmodule Nest.Tools.ShellJobsTest do
 
     assert {:ok, text} =
              invoke(
-               Tools.get_function("shell-wait", nil, nil),
+               Tools.get_function("shell-wait", Mounts.new(nil, nil)),
                %{"id" => id, "timeout" => 10, "block" => true},
                context
              )
@@ -120,7 +123,11 @@ defmodule Nest.Tools.ShellJobsTest do
     id = start_job!("sleep 30", tmp, key)
 
     assert {:ok, text} =
-             invoke(Tools.get_function("shell-kill", nil, nil), %{"id" => id}, context)
+             invoke(
+               Tools.get_function("shell-kill", Mounts.new(nil, nil)),
+               %{"id" => id},
+               context
+             )
 
     assert text =~ "Killed background job #{id}"
     assert [%{id: ^id, status: :exited, killed: true}] = ShellJobs.list(key)
@@ -128,24 +135,32 @@ defmodule Nest.Tools.ShellJobsTest do
 
   test "unknown ids are reported as errors", %{context: context} do
     assert {:error, _} =
-             invoke(Tools.get_function("shell-wait", nil, nil), %{"id" => "job-999"}, context)
+             invoke(
+               Tools.get_function("shell-wait", Mounts.new(nil, nil)),
+               %{"id" => "job-999"},
+               context
+             )
 
     assert {:error, _} =
-             invoke(Tools.get_function("shell-kill", nil, nil), %{"id" => "job-999"}, context)
+             invoke(
+               Tools.get_function("shell-kill", Mounts.new(nil, nil)),
+               %{"id" => "job-999"},
+               context
+             )
   end
 
   test "shell-cmd background via BatchSizer is keyed to the calling agent", %{
     key: {space_id, name},
     tmp: tmp
   } do
-    tool = Tools.get_function("shell-cmd", File.cwd!(), tmp)
+    tool = Tools.get_function("shell-cmd", Mounts.new(File.cwd!(), tmp))
 
     ctx = %{
       tools: [tool],
       caps: nil,
       context_limit: 100_000,
       messages: [],
-      tmp_path: tmp,
+      mounts: Mounts.new(File.cwd!(), tmp),
       agent_pid: self(),
       agent_name: name,
       space_id: space_id
@@ -164,7 +179,7 @@ defmodule Nest.Tools.ShellJobsTest do
     assert [%{id: id, log_path: log_path}] = ShellJobs.list({space_id, name})
 
     # The agent is told the path it can actually read from inside the
-    # sandbox, not the host path the manager writes.
+    # sandbox, not the log file the manager writes.
     assert log_path == "/tmp/#{Path.basename(tmp)}/shell-jobs/#{id}.log"
     assert content =~ "(log: #{log_path})"
 

@@ -33,6 +33,7 @@ defmodule Nest.Tools.InspectFile do
   alias Nest.LLM.Tool
   alias Nest.Messages.Sanitize
   alias Nest.Sandbox
+  alias Nest.Sandbox.Mounts
   alias Nest.Tokens.Estimator
   alias Nest.Tools.ShellEscape
 
@@ -44,8 +45,8 @@ defmodule Nest.Tools.InspectFile do
   @doc """
   Build the `file-inspect` `Nest.LLM.Tool` struct.
   """
-  @spec build(String.t() | nil, String.t() | nil) :: Tool.t()
-  def build(workspace_path, tmp_path) do
+  @spec build(Mounts.t()) :: Tool.t()
+  def build(mounts) do
     %Tool{
       name: "file-inspect",
       description:
@@ -72,33 +73,31 @@ defmodule Nest.Tools.InspectFile do
         "required" => ["path"]
       },
       function: fn args, context ->
-        execute(args, workspace_path, tmp_path, context)
+        execute(args, mounts, context)
       end
     }
   end
 
   # Main implementation. Read-only. Never returns file content.
-  def execute(args, workspace_path, tmp_path, context) do
+  def execute(args, mounts, context) do
     path = args["path"]
     caps = caps_from_context(context)
-    Logger.info("Tool file-inspect: #{path} (workspace: #{workspace_path || "none"})")
+    Logger.info("Tool file-inspect: #{path} (workspace: #{Mounts.workspace(mounts) || "none"})")
 
-    with {:ok, full_path} <- resolve_full_path(path, workspace_path),
-         {:ok, byte_size} <- safe_byte_size(full_path, workspace_path, caps, tmp_path),
+    with {:ok, full_path} <- Mounts.resolve(path, mounts),
+         {:ok, byte_size} <- safe_byte_size(full_path, caps, mounts),
          :ok <- check_size_cap(byte_size, path),
-         {:ok, type_description} <- run_file_type(full_path, workspace_path, tmp_path, caps) do
+         {:ok, type_description} <- run_file_type(full_path, mounts, caps) do
       if text_type?(type_description) do
-        text_output(path, full_path, byte_size, type_description, workspace_path, tmp_path, caps)
+        text_output(path, full_path, byte_size, type_description, mounts, caps)
       else
         {:ok, format_binary_output(path, type_description, byte_size, nil)}
       end
     end
   end
 
-  defp safe_byte_size(path, workspace_path, caps, tmp_path) do
-    # `workspace_path`/`tmp_path` are HOST paths passed only so `Sandbox.stat/4`
-    # can resolve the agent's sandbox-domain path; never returned.
-    case Sandbox.stat(path, caps, workspace_path, tmp_path) do
+  defp safe_byte_size(path, caps, mounts) do
+    case Sandbox.stat(path, caps, mounts) do
       {:ok, %{size: size}} -> {:ok, size}
       {:error, :read_permission_denied} -> {:error, "Not permitted to stat file by sandbox caps"}
       {:error, :enoent} -> {:error, "File not found: #{path}"}
@@ -125,8 +124,8 @@ defmodule Nest.Tools.InspectFile do
   # part after "path:"). `file` is in every standard Linux/macOS
   # install; if it's missing in some sandbox, Sandbox.run surfaces
   # the error and we propagate.
-  defp run_file_type(full_path, workspace_path, tmp_path, caps) do
-    case Sandbox.run("file -- #{shell_escape(full_path)}", workspace_path, tmp_path, caps) do
+  defp run_file_type(full_path, mounts, caps) do
+    case Sandbox.run("file -- #{shell_escape(full_path)}", mounts, caps) do
       {:ok, output} -> {:ok, parse_file_type(output)}
       {:error, reason} -> {:error, "Failed to detect file type: #{reason}"}
     end
@@ -167,13 +166,13 @@ defmodule Nest.Tools.InspectFile do
   # output with a note. Empty files (size 0) skip the read entirely,
   # so their stats stay zero rather than relying on a read of an
   # empty file.
-  defp text_output(path, _full_path, byte_size, type, _workspace_path, _tmp_path, _caps)
+  defp text_output(path, _full_path, byte_size, type, _mounts, _caps)
        when byte_size == 0 do
     {:ok, format_text_output(path, type, byte_size, "")}
   end
 
-  defp text_output(path, full_path, byte_size, type, workspace_path, tmp_path, caps) do
-    case read_file_via_shell(full_path, workspace_path, tmp_path, caps) do
+  defp text_output(path, full_path, byte_size, type, mounts, caps) do
+    case read_file_via_shell(full_path, mounts, caps) do
       {:ok, content} ->
         if Sanitize.text?(content) do
           {:ok, format_text_output(path, type, byte_size, content)}
@@ -261,22 +260,8 @@ defmodule Nest.Tools.InspectFile do
   # ---- Shared helpers (duplicated from Nest.Tools to keep that
   # module's public surface minimal) ----
 
-  defp resolve_full_path(path, workspace_path) do
-    if Path.type(path) == :absolute do
-      {:ok, path}
-    else
-      if is_nil(workspace_path) do
-        {:error, "No workspace configured for this agent"}
-      else
-        {:ok, Path.join(workspace_path, path)}
-      end
-    end
-  end
-
-  defp read_file_via_shell(full_path, workspace_path, tmp_path, caps) do
-    # `workspace_path`/`tmp_path` are HOST paths passed only to build the
-    # sandbox for the read. Never returned; the agent sees sandbox spellings.
-    case Sandbox.read(full_path, caps, workspace_path, tmp_path) do
+  defp read_file_via_shell(full_path, mounts, caps) do
+    case Sandbox.read(full_path, caps, mounts) do
       {:ok, content} -> {:ok, content}
       {:error, :read_permission_denied} -> {:error, "Not permitted to read file by sandbox caps"}
       {:error, :eisdir} -> {:error, "Not a file: #{full_path}"}
@@ -287,9 +272,8 @@ defmodule Nest.Tools.InspectFile do
     end
   end
 
-  # All tools address the same sandbox-domain scratch spelling
-  # (`/tmp/<agent>/...`); `Sandbox.stat/4` and `Sandbox.read/4` resolve it
-  # internally and never expose the host path.
+  # All tools address the same scratch spelling (`/tmp/<agent>/...`);
+  # `Sandbox.stat/3` and `Sandbox.read/3` resolve it internally.
   defp caps_from_context(%{caps: caps}) when is_map(caps), do: caps
   defp caps_from_context(_), do: Nest.Sandbox.default_caps()
 

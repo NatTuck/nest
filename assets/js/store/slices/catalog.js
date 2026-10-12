@@ -245,9 +245,23 @@ function normalizeAgent(agent) {
 }
 
 /**
- * The identity of an agent: `{space_id, name}` is unique across the whole
- * lobby, since a space owns its agent names. Used to match a broken-agent
- * entry against its flat-list row without comparing whole objects.
+ * The identity of an agent row within this slice: `{space_id, name}` is unique
+ * across the whole lobby, since a space owns its agent names. Used to match a
+ * broken-agent entry against its flat-list row without comparing whole
+ * objects.
+ *
+ * Deliberately NOT `agentNodeKey` from `utils/agentTree.js`, even though the
+ * two spellings are the same shape. They are different identities and must
+ * never be compared: this one keys a *data* map local to
+ * `applyAgentStatuses`, whose only two participants are agent rows
+ * (`broken_agents` entries and `state.agents` entries), so no row of another
+ * kind can ever meet it. `agentNodeKey` keys *UI disclosure* state, where
+ * three row kinds share one map — that is the namespace collision #70 fixed
+ * with its `a:` / `g:` / `space:` prefixes, and the reason an agent row, an
+ * archived group and a space row can no longer spell out each other's keys.
+ * Importing that prefix here would put a UI node key in a data slice; if this
+ * identity ever does have to meet a tree key, route it through
+ * `agentNodeKey` rather than open-coding the spelling.
  */
 function agentKey({ space_id, name }) {
   return `${space_id}:${name}`;

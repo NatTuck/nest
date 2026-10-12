@@ -12,6 +12,7 @@ defmodule Nest.Agents.Agent.BatchPlanTest do
 
   alias Nest.Agents.Agent.BatchPlan
   alias Nest.Messages.ToolCall
+  alias Nest.Sandbox.Mounts
 
   setup do
     # A workspace outside /tmp: the scratch dir is bound at /tmp, so a
@@ -29,10 +30,9 @@ defmodule Nest.Agents.Agent.BatchPlanTest do
     %{tmp: dir}
   end
 
-  # `resolve_items/2` only reads `:caps` / `:workspace_path` on the
-  # glob branch; the items branch ignores the ctx. A bare map is enough
-  # for the items cases.
-  @ctx %{caps: %{}, workspace_path: nil}
+  # `resolve_items/2` only reads `:caps` / `:mounts` on the glob branch; the
+  # items branch ignores the ctx. A bare map is enough for the items cases.
+  @ctx %{caps: %{}, mounts: Mounts.new(nil, nil)}
 
   describe "resolve_items/2" do
     test "a non-empty items list (no glob) resolves to that list" do
@@ -94,7 +94,7 @@ defmodule Nest.Agents.Agent.BatchPlanTest do
       end
 
       caps = %{"net" => false, "fs" => %{"read" => ["/"], "write" => []}}
-      ctx = %{caps: caps, workspace_path: root}
+      ctx = %{caps: caps, mounts: Mounts.new(root, nil)}
       expected = [Path.join(root, "w/a.txt"), Path.join(root, "w/z.txt")]
 
       assert {:ok, ^expected} = BatchPlan.resolve_items(%{"glob" => "w/*.txt"}, ctx)
@@ -103,7 +103,7 @@ defmodule Nest.Agents.Agent.BatchPlanTest do
     test "a glob matching nothing is a whole-call error", %{tmp: dir} do
       root = Nest.FSPath.canonical(dir)
       caps = %{"net" => false, "fs" => %{"read" => ["/"], "write" => []}}
-      ctx = %{caps: caps, workspace_path: root}
+      ctx = %{caps: caps, mounts: Mounts.new(root, nil)}
 
       assert {:error, msg} = BatchPlan.resolve_items(%{"glob" => "w/*.xyz"}, ctx)
       assert msg =~ "matched no readable files"

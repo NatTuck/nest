@@ -20,6 +20,7 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
   alias Nest.LLM.RunResponse
   alias Nest.Messages.ToolCall
   alias Nest.Sandbox
+  alias Nest.Sandbox.Mounts
   alias Nest.Tokens.Estimator
 
   setup :verify_on_exit!
@@ -36,29 +37,28 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
       caps: %{"fs" => %{"read" => ["/"], "write" => ["/tmp"]}, "net" => false},
       context_limit: Keyword.get(opts, :context_limit, 100_000),
       messages: Keyword.get(opts, :messages, []),
-      tmp_path: Keyword.get(opts, :tmp_path, nil),
+      mounts:
+        Mounts.new(Keyword.get(opts, :workspace_path, nil), Keyword.get(opts, :tmp_path, nil)),
       agent_pid: self(),
       agent_name: "test"
     }
   end
 
-  # `ctx/2` carries no `workspace_path`, so a *relative* `file-read` path cannot
+  # `ctx/2` carries no workspace, so a *relative* `file-read` path cannot
   # resolve (and therefore never stats). Absolute paths resolve without one.
-  defp ctx_with_ws(ws, tools) do
-    ctx(tools) |> Map.put(:workspace_path, ws)
-  end
+  defp ctx_with_ws(ws, tools), do: ctx(tools, workspace_path: ws)
 
   # Stub the sandbox's two stat entry points so a test can assert *which*
   # distinct paths the preflight batched and how many spawns it took:
-  # `stat_many/4` (one bwrap spawn for a whole chunk of paths) and `stat/4`
+  # `stat_many/3` (one bwrap spawn for a whole chunk of paths) and `stat/3`
   # (one per path — the per-path fallback). Both modules are copied in
   # `test/test_helper.exs`, never per-test.
   defp stub_stats(size) do
-    Mimic.stub(Sandbox, :stat_many, fn paths, _caps, _ws, _tmp ->
+    Mimic.stub(Sandbox, :stat_many, fn paths, _caps, _mounts ->
       Map.new(paths, &{&1, {:ok, size}})
     end)
 
-    Mimic.stub(Sandbox, :stat, fn _path, _caps, _ws, _tmp ->
+    Mimic.stub(Sandbox, :stat, fn _path, _caps, _mounts ->
       {:ok, %File.Stat{size: size}}
     end)
   end
@@ -89,12 +89,12 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
     test "batches every call that targets the same path into one stat" do
       stub_stats(100)
 
-      Mimic.expect(Sandbox, :stat_many, 1, fn paths, _c, _w, _t ->
+      Mimic.expect(Sandbox, :stat_many, 1, fn paths, _c, _m ->
         assert paths == ["/ws/a.txt"]
         Map.new(paths, &{&1, {:ok, 100}})
       end)
 
-      Mimic.reject(Sandbox, :stat, 4)
+      Mimic.reject(Sandbox, :stat, 3)
 
       calls = [
         call("c1", "file-read", %{"path" => "a.txt"}),
@@ -111,12 +111,12 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
     test "passes each distinct path once, in a single stat invocation" do
       stub_stats(100)
 
-      Mimic.expect(Sandbox, :stat_many, 1, fn paths, _c, _w, _t ->
+      Mimic.expect(Sandbox, :stat_many, 1, fn paths, _c, _m ->
         assert Enum.sort(paths) == ["/ws/a.txt", "/ws/b.txt"]
         Map.new(paths, &{&1, {:ok, 100}})
       end)
 
-      Mimic.reject(Sandbox, :stat, 4)
+      Mimic.reject(Sandbox, :stat, 3)
 
       calls = [
         call("c1", "file-read", %{"path" => "a.txt"}),
@@ -131,12 +131,12 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
     test "batches only the file-read calls" do
       stub_stats(100)
 
-      Mimic.expect(Sandbox, :stat_many, 1, fn paths, _c, _w, _t ->
+      Mimic.expect(Sandbox, :stat_many, 1, fn paths, _c, _m ->
         assert paths == ["/ws/a.txt"]
         Map.new(paths, &{&1, {:ok, 100}})
       end)
 
-      Mimic.reject(Sandbox, :stat, 4)
+      Mimic.reject(Sandbox, :stat, 3)
 
       calls = [
         call("c1", "file-read", %{"path" => "a.txt"}),
@@ -151,9 +151,9 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
 
     test "hands the sandbox no path for a malformed or unresolvable file-read" do
       # An empty list is all the preflight may ask for, and the per-path
-      # fallback (`stat/4`) must never run.
-      Mimic.expect(Sandbox, :stat_many, 1, fn [], _c, _w, _t -> %{} end)
-      Mimic.reject(Sandbox, :stat, 4)
+      # fallback (`stat/3`) must never run.
+      Mimic.expect(Sandbox, :stat_many, 1, fn [], _c, _m -> %{} end)
+      Mimic.reject(Sandbox, :stat, 3)
 
       calls = [
         call("c1", "file-read", %{}),
@@ -176,12 +176,12 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
     test "different spellings of one file are batched separately (documented limit)" do
       stub_stats(100)
 
-      Mimic.expect(Sandbox, :stat_many, 1, fn paths, _c, _w, _t ->
+      Mimic.expect(Sandbox, :stat_many, 1, fn paths, _c, _m ->
         assert Enum.sort(paths) == ["/ws/./a.txt", "/ws/a.txt"]
         Map.new(paths, &{&1, {:ok, 100}})
       end)
 
-      Mimic.reject(Sandbox, :stat, 4)
+      Mimic.reject(Sandbox, :stat, 3)
 
       calls = [
         call("c1", "file-read", %{"path" => "a.txt"}),
@@ -200,7 +200,7 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
     test "a direct project/2 call still stats, with no memo in ctx" do
       stub_stats(100)
 
-      Mimic.expect(Sandbox, :stat, 1, fn path, _c, _w, _t ->
+      Mimic.expect(Sandbox, :stat, 1, fn path, _c, _m ->
         assert path == "/ws/a.txt"
         {:ok, %File.Stat{size: 100}}
       end)
@@ -211,7 +211,7 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
     end
 
     test "a memo that misses the path still stats, and a failed stat falls back" do
-      Mimic.expect(Sandbox, :stat, 1, fn _path, _c, _w, _t -> {:error, :enoent} end)
+      Mimic.expect(Sandbox, :stat, 1, fn _path, _c, _m -> {:error, :enoent} end)
 
       # A memo that does not mention this path: the projection must stat rather
       # than invent a size, and a failed stat is the summary fallback.
@@ -369,18 +369,18 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
   describe "one batched stat per response (issue #48 follow-up)" do
     # The response path used to derive the projection twice: `preflight/2`
     # projected the batch, then the `:fits` arm projected it again to get the
-    # number. Each projection is one `Sandbox.stat_many/4` (which delegates to
-    # `StatBatch.stat_many/4` — Mimic copies `Nest.Sandbox`, not `StatBatch`,
+    # number. Each projection is one `Sandbox.stat_many/3` (which delegates to
+    # `StatBatch.stat_many/3` — Mimic copies `Nest.Sandbox`, not `StatBatch`,
     # so this counts that call, the file's existing pattern), and the response
     # also projected once per notice step, so a single LLM response cost four
     # batched invocations. It must cost one.
     test "a response with tool calls stats the batch exactly once" do
-      Mimic.expect(Sandbox, :stat_many, 1, fn paths, _c, _w, _t ->
+      Mimic.expect(Sandbox, :stat_many, 1, fn paths, _c, _m ->
         assert paths == ["/ws/a.txt"]
         Map.new(paths, &{&1, {:ok, 100}})
       end)
 
-      Mimic.reject(Sandbox, :stat, 4)
+      Mimic.reject(Sandbox, :stat, 3)
 
       calls = [
         call("c1", "file-read", %{"path" => "/ws/a.txt"}),
@@ -463,8 +463,7 @@ defmodule Nest.Agents.Agent.BatchSizerPreflightStatTest do
       context_limit: 100_000,
       context_limit_source: :default,
       messages: [],
-      tmp_path: nil,
-      workspace_path: nil,
+      mounts: Mounts.new(nil, nil),
       mode: "chat",
       next_message_index: 1,
       crossed_thresholds: MapSet.new(),
