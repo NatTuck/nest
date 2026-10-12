@@ -36,10 +36,21 @@ defmodule Nest.Agents.SubAgentToolsHelpers do
   #   * the observed 1-in-40 gate failure (seed 200984, load 5.60) missed a
   #     500 ms fence outright
   #
-  # 2000 ms is ~100x the in-suite median and 4x the 500 ms fence the observed
-  # failure missed, and it stays under ExUnit's 5 s per-test timeout, so a stuck
-  # turn still fails — as a stuck turn, not as a flake.
-  @turn_fence_ms 2_000
+  # 2000 ms was ~100x the in-suite median and 4x the 500 ms fence the observed
+  # failure missed. It is now 1_800 ms, which is still ~52x the in-suite median
+  # and 3.6x that 500 ms fence, and it stays under ExUnit's per-test timeout, so
+  # a stuck turn still fails — as a stuck turn, not as a flake.
+  #
+  # Why 1_800 and not 2_000: `#21` caps every test-side timeout at 2_000 ms, and
+  # the park safety valves (`park/3`, `park_llm_requests/1`) must stay *strictly
+  # longer* than this fence so a slow host fails the fence instead of silently
+  # flipping a parked outcome. With the cap at 2_000 the valves can be at most
+  # 2_000, so the fence has to sit below them. Note the trade this makes: under
+  # the extreme load in the measurement above (48 CPU burners, max 1534 ms) a
+  # 1_800 ms fence is inside the observed spread, so it can now fire where
+  # 2_000 ms would not. That failure is *loud* (the fence reports) and is the
+  # outcome the invariant asks for — see `notes/sketchy-slow-tests.md`.
+  @turn_fence_ms 1_800
 
   @doc """
   The turn fence (`#{@turn_fence_ms}` ms) for a test's own `eventually/2`.
@@ -68,7 +79,7 @@ defmodule Nest.Agents.SubAgentToolsHelpers do
 
     AgentTestHelpers.ensure_cleanup(coordinator_name)
     {:ok, pid} = Supervisor.get_agent(space_id, coordinator_name)
-    :sys.get_state(pid)
+    :sys.get_state(pid, 500)
   end
 
   @doc """
@@ -141,9 +152,13 @@ defmodule Nest.Agents.SubAgentToolsHelpers do
     {:ok, pid} = Nest.Agents.Registry.lookup(space_id, name)
     Sandbox.allow(Nest.Repo, self(), pid)
 
-    :sys.replace_state(pid, fn st ->
-      %{st | client_config: %{st.client_config | client: MockClient}}
-    end)
+    :sys.replace_state(
+      pid,
+      fn st ->
+        %{st | client_config: %{st.client_config | client: MockClient}}
+      end,
+      500
+    )
 
     MockClient.start_link(pid)
     Enum.each(pending, &MockClient.put_pending(pid, &1))
@@ -156,7 +171,7 @@ defmodule Nest.Agents.SubAgentToolsHelpers do
   Whether the agent's machine has settled to `:idle`.
   """
   @spec idle?(pid()) :: boolean()
-  def idle?(pid), do: Machine.status_for(:sys.get_state(pid).live.machine) == :idle
+  def idle?(pid), do: Machine.status_for(:sys.get_state(pid, 500).live.machine) == :idle
 
   @doc """
   Wait until every given agent has settled to `:idle`.
@@ -182,7 +197,7 @@ defmodule Nest.Agents.SubAgentToolsHelpers do
   """
   @spec query_results(pid()) :: [Part.ToolResult.t()]
   def query_results(pid) do
-    state = :sys.get_state(pid)
+    state = :sys.get_state(pid, 500)
 
     Enum.flat_map(state.chat_state.messages, fn
       {:tool, %{parts: parts}} ->
@@ -198,7 +213,7 @@ defmodule Nest.Agents.SubAgentToolsHelpers do
   """
   @spec agent_texts(pid()) :: [String.t()]
   def agent_texts(pid) do
-    state = :sys.get_state(pid)
+    state = :sys.get_state(pid, 500)
 
     for {:user, %{parts: parts}} <- state.chat_state.messages, do: parts_text(parts)
   end

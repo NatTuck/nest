@@ -51,7 +51,13 @@ defmodule Nest.Agents.AgentTestHelpers do
   defdelegate text_from_parts(parts), to: AgentTestAssertions
   defdelegate assert_unique_message_indices(state), to: AgentTestAssertions
   defdelegate record_read_file(pid, path, opts \\ []), to: AgentTestAssertions
-  defdelegate wait_for_pid_down(space_id, name, timeout \\ 100), to: AgentTestLifecycle
+  # One default, one owner. This delegate and `AgentTestLifecycle`'s
+  # implementation used to disagree by 50x (100 vs 5_000) for the same
+  # helper, and the split was backwards from intuition: the *hot* `on_exit`
+  # paths got the long one and two hand-written call sites got the short one.
+  # 2_000 is the `#21` cap on any test-side timeout; see
+  # `notes/sketchy-slow-tests.md` for why a shorter window is not safe here.
+  defdelegate wait_for_pid_down(space_id, name, timeout \\ 2_000), to: AgentTestLifecycle
 
   @space_id_key :nest_test_space_id
 
@@ -154,24 +160,28 @@ defmodule Nest.Agents.AgentTestHelpers do
 
     # Put the machine into the compactor's generating phase with an empty
     # staged request and a live worker ref, then deliver the HTTP response.
-    :sys.replace_state(agent_pid, fn state ->
-      machine = state.live.machine
+    :sys.replace_state(
+      agent_pid,
+      fn state ->
+        machine = state.live.machine
 
-      machine = %{
-        machine
-        | kind: :compaction,
-          phase: :generating,
-          entry: {:compaction, [], carried_entry},
-          work: %{
-            machine.work
-            | worker_kind: :http,
-              worker_ref: ref,
-              active_message_index: state.chat_state.next_message_index
-          }
-      }
+        machine = %{
+          machine
+          | kind: :compaction,
+            phase: :generating,
+            entry: {:compaction, [], carried_entry},
+            work: %{
+              machine.work
+              | worker_kind: :http,
+                worker_ref: ref,
+                active_message_index: state.chat_state.next_message_index
+            }
+        }
 
-      %{state | live: %{state.live | machine: machine}}
-    end)
+        %{state | live: %{state.live | machine: machine}}
+      end,
+      500
+    )
 
     send(
       agent_pid,
@@ -253,7 +263,8 @@ defmodule Nest.Agents.AgentTestHelpers do
   cases that want raw `Process.flag(:trap_exit, true)` +
   `Process.exit(pid, :shutdown)` semantics.
 
-  Registers `on_exit(fn -> wait_for_pid_down(space_id, name) end)`.
+  Registers `on_exit(fn -> Supervisor.stop_agent(space_id, name);
+  AgentTestLifecycle.wait_for_pid_down(space_id, name) end)`.
   The `wait_for_pid_down/3` helper sends
   `Process.exit(pid, :shutdown)` and BLOCKS on a single
   `:DOWN` message (NOT a drain loop — see comment on
@@ -262,6 +273,11 @@ defmodule Nest.Agents.AgentTestHelpers do
   fire DB calls) before the test exits the cleanup
   callback — closing the parallel-test ownership race
   window.
+
+  (This doc used to spell the call `wait_for_pid_down(space_id, name)`,
+  which reads as the local delegate whose default was 100 ms, while the
+  code took the `AgentTestLifecycle` default of 5_000 ms. Both are now
+  2_000 ms and the doc names the call the code actually makes.)
 
   Note: this helper does NOT delete the `agents` DB row.
   The `DataCase` setup's automatic sandbox rollback already
@@ -491,9 +507,13 @@ defmodule Nest.Agents.AgentTestHelpers do
   # calls MockClient.run/2 and finds this test's queue via
   # `opts[:agent_pid]`.
   defp swap_to_mock_client(pid) do
-    :sys.replace_state(pid, fn state ->
-      %{state | client_config: %{state.client_config | client: MockClient}}
-    end)
+    :sys.replace_state(
+      pid,
+      fn state ->
+        %{state | client_config: %{state.client_config | client: MockClient}}
+      end,
+      500
+    )
   end
 
   # Transfer any pre-existing queued items from the test-pid queue

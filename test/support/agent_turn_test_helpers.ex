@@ -80,7 +80,14 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
       after
         # Safety valve only: it exists so a failing test cannot leave the HTTP
         # worker (and with it the turn) parked for long.
-        1_000 -> :ok
+        #
+        # It must stay strictly longer than the turn fence
+        # (`SubAgentToolsHelpers.@turn_fence_ms`, 1_800 ms) for the same reason
+        # `park/3`'s valve does: a slow host must fail the fence, not silently
+        # flip the outcome the park pins. At 1_000 ms it was *shorter* than the
+        # fence, so it could flip the outcome instead of letting the fence
+        # report. 2_000 ms is the `#21` cap on any test-side timeout.
+        2_000 -> :ok
       end
 
       Mimic.call_original(MockClient, :run, [request, opts])
@@ -192,7 +199,7 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
   # an extra wait (an `eventually`, another `assert_receive`) between a decisive
   # park and its release spends the margin between the fence and the valve, and
   # then a slow host flips the pinned outcome instead of failing the fence.
-  defp park(test_pid, blocked, release, timeout \\ 3_000) do
+  defp park(test_pid, blocked, release, timeout \\ 2_000) do
     send(test_pid, {blocked, self()})
 
     receive do

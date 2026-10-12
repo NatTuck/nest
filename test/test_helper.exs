@@ -39,8 +39,13 @@ Mimic.copy(Nest.Tools.ShellCmd)
 # timing-sensitive `assert_receive` fences flake. Cap at 24, which is
 # both faster (less contention) and stable on the reference host while
 # preserving the default on small machines.
+# The per-test ceiling. `#21` caps every test-side timeout at 2_000 ms, and this
+# is what makes that enforceable suite-wide: a test that needs longer than this
+# is a test to fix, not a number to raise. It was 5_000 — see
+# `notes/sketchy-slow-tests.md` for the tests that had to be looked at when it
+# came down.
 ExUnit.configure(
-  timeout: 5_000,
+  timeout: 2_000,
   max_cases: min(System.schedulers_online() * 2, 24)
 )
 
