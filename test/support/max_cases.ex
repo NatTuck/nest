@@ -30,15 +30,26 @@ defmodule Nest.Test.MaxCases do
   def real_cpus do
     logical = System.schedulers_online()
 
-    with text when is_binary(text) <- read_cpuinfo(),
-         siblings when is_integer(siblings) <- field(text, "siblings"),
-         cores when is_integer(cores) <- field(text, "cpu cores"),
-         true <- siblings > 0 and cores > 0 do
-      max(1, div(logical * cores, siblings))
-    else
-      _ -> logical
+    case smt_ratio() do
+      nil -> logical
+      ratio -> max(1, div(logical, ratio))
     end
   end
+
+  # `siblings / cpu cores`: 2 on an SMT host, 1 where there is none. `nil` when the
+  # fields are absent (ARM), in which case we assume no SMT.
+  defp smt_ratio do
+    case read_cpuinfo() do
+      nil -> nil
+      text -> ratio(field(text, "siblings"), field(text, "cpu cores"))
+    end
+  end
+
+  defp ratio(siblings, cores)
+       when is_integer(siblings) and is_integer(cores) and siblings > 0 and cores > 0,
+       do: div(siblings, cores)
+
+  defp ratio(_siblings, _cores), do: nil
 
   defp read_cpuinfo do
     case File.read(@cpuinfo) do
