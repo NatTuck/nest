@@ -144,7 +144,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
   Handing the projection back is what keeps a response's `file-read` stats to
   one batched invocation: a caller that also needs the number would otherwise
   re-derive it, and re-deriving means a second `ProjectedSize.project_batch/2`
-  and so a second `Sandbox.stat_many/4` (issue #48).
+  and so a second `Sandbox.stat_many/3` (issue #48).
 
   `ctx.context_limit` is always a positive integer in the agent
   runtime; a nil/other value matches no clause and raises, so a
@@ -180,7 +180,7 @@ defmodule Nest.Agents.Agent.BatchSizer do
   share this one function rather than each re-deriving a projection.
 
   The per-tool sum lives in `ProjectedSize.project_batch/2` so the whole
-  batch shares one `Sandbox.stat/4` per distinct `file-read` path
+  batch shares one `Sandbox.stat/3` per distinct `file-read` path
   (issue #48).
   """
   @spec projected_content_size([ToolCall.t()], map()) :: non_neg_integer()

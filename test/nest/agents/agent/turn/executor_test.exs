@@ -38,7 +38,7 @@ defmodule Nest.Agents.Agent.Turn.ExecutorTest do
   end
 
   # A vocation defining the modes the drain tests request, so
-  # `ChatPipeline.resolve_mode_and_caps/4` resolves "plan" to "plan" and an
+  # `ChatPipeline.resolve_mode_and_caps/3` resolves "plan" to "plan" and an
   # unknown mode to the "chat" default.
   defp vocation do
     %Nest.Vocations.Vocation{

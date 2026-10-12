@@ -500,8 +500,8 @@ defmodule Nest.Tools.ShellCmd do
   # running).
   defp handle_stop_chat(os_pid, acc) do
     :exec.stop(os_pid)
-    # The marker goes in *stderr* so both `execute/5` (which renders stderr via
-    # `combine_output/1`) and `execute_raw/4,5` (which classifies stderr) see
+    # The marker goes in *stderr* so both `execute/4` (which renders stderr via
+    # `combine_output/1`) and `execute_raw/3,4` (which classifies stderr) see
     # it; appending it to the combined output dropped it for raw callers.
     acc = append_stderr(acc, "[Command cancelled]")
     # 130 = 128 + SIGINT(2), the conventional shell cancellation
@@ -542,7 +542,7 @@ defmodule Nest.Tools.ShellCmd do
     # mailbox. Harmless: the next `collect_output/5` matches only the erlexec
     # pid of its own command, so it skips the stale one instead of reporting
     # it as its own result.
-    # Stderr, like `handle_stop_chat/2`, so `execute_raw/4,5` sees the marker.
+    # Stderr, like `handle_stop_chat/2`, so `execute_raw/3,4` sees the marker.
     acc = append_stderr(acc, "[Command timed out after #{timeout}ms]")
     {:ok, 1, combine_output(acc), stdout_bin(acc), stderr_bin(acc)}
   end

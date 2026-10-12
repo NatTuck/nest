@@ -274,7 +274,7 @@ defmodule Nest.Tools do
   end
 
   # `nil` means the argument was omitted: leave `:timeout` off the opts so
-  # `ShellCmd.execute/5`'s own default applies (one source of truth for the
+  # `ShellCmd.execute/4`'s own default applies (one source of truth for the
   # default bound).
   defp put_timeout(opts, nil), do: opts
   defp put_timeout(opts, ms), do: Keyword.put(opts, :timeout, ms)

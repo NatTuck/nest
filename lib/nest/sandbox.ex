@@ -8,7 +8,7 @@ defmodule Nest.Sandbox do
   ## The sandbox's filesystem view is bwrap's view
 
   There is **no host-side emulation** of `read`, `stat`, or `glob`: all three
-  execute a command inside bwrap via `ShellCmd.execute_raw/5`, so their bytes
+  execute a command inside bwrap via `ShellCmd.execute_raw/4`, so their bytes
   and metadata come from exactly the mounts bwrap exposes and can never
   disagree with what a shell inside the sandbox sees. The only path mapping
   that remains is the scratch bind source and the reported sandbox spelling,
@@ -113,7 +113,7 @@ defmodule Nest.Sandbox do
   @doc """
   The default "build" profile (full host read, workspace + /tmp
   writable, no network). Used by callers that haven't been migrated to
-  pass real caps (and as the fallback in `ShellCmd.execute/5`).
+  pass real caps (and as the fallback in `ShellCmd.execute/4`).
   """
   @spec default_caps() :: map()
   def default_caps do

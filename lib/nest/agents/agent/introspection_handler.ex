@@ -391,7 +391,7 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
   end
 
   # Read-time and write-time mtime records both come from the
-  # sandbox's read-only stat (`Sandbox.stat/3, time: :posix`), so
+  # sandbox's read-only stat (`Sandbox.stat/4, time: :posix`), so
   # `mtime` is a POSIX microsecond integer tuple. Comparison is
   # structural.
   defp recorded_matches?(%{mtime: m1, size: s1}, m2, s2),

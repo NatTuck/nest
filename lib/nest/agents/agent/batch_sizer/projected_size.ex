@@ -138,7 +138,7 @@ defmodule Nest.Agents.Agent.BatchSizer.ProjectedSize do
   def projected?(name), do: name in @projected_tools
 
   @doc """
-  Sum of `project/2` over `tool_calls`, sharing one `Sandbox.stat/4` per
+  Sum of `project/2` over `tool_calls`, sharing one `Sandbox.stat/3` per
   distinct resolved `file-read` path (issue #48).
 
   `BatchSizer.projected_content_size/2` and `preflight/2` both go through

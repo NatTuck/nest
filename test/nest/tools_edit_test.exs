@@ -1,7 +1,7 @@
 defmodule Nest.ToolsEditTest do
   @moduledoc """
-  Tests for the `edit` tool (`Nest.Tools.edit_function/2` and
-  `Nest.Tools.edit/4`).
+  Tests for the `edit` tool (`Nest.Tools.FileTools.edit_function/1` and its
+  private `edit/3`).
 
   The `edit` tool performs an exact string replacement in a file
   (Claude Code's Edit semantics). `old_text` must match uniquely

@@ -16,7 +16,7 @@ defmodule Nest.Agents.Agent.BatchPlan do
     `{index}` (substituted per item); otherwise the whole call is an
     error. When absent, each item *is* the child's instruction.
   * `items` (a non-empty list of non-blank strings or integers) XOR `glob`
-    (expanded via `Sandbox.glob/5` to readable regular files). A blank or
+    (expanded via `Sandbox.glob/4` to readable regular files). A blank or
     otherwise unusable item is a whole-call error, not a slot marker: it is
     knowable before the launch.
   * `vocation` (slug) / `model` (optional) — per child, inherit parent
