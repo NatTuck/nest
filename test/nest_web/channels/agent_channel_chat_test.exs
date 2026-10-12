@@ -457,7 +457,7 @@ defmodule NestWeb.AgentChannelChatTest do
       # channel no longer rejects `:compacting`.
       assert_reply ref, :ok, %{}
 
-      state = :sys.get_state(agent_pid)
+      state = :sys.get_state(agent_pid, 500)
       assert [%{content: "during compaction", kind: :user}] = state.live.inbox
       assert Machine.status_for(state.live.machine) == :compacting
 
@@ -594,7 +594,7 @@ defmodule NestWeb.AgentChannelChatTest do
       # The held user message was appended after the compaction summary
       # (wire role `user`); the bridge inserted an assistant ack so the
       # resumed list is wire-valid and the turn actually ran.
-      messages = :sys.get_state(agent_pid).chat_state.messages
+      messages = :sys.get_state(agent_pid, 500).chat_state.messages
 
       assert :ok = Preflight.validate(messages)
 
@@ -651,7 +651,7 @@ defmodule NestWeb.AgentChannelChatTest do
       # The channel read `payload["focus"]` and threaded it through
       # `Agents.compact/3` → `Agent.compact/2` onto the machine's working
       # set synchronously (before the reply).
-      assert :sys.get_state(agent_pid).live.machine.work.focus == "keep the API decisions"
+      assert :sys.get_state(agent_pid, 500).live.machine.work.focus == "keep the API decisions"
 
       # Retrying re-renders the same focus; the compactor completes
       # (MockClient's random-text fallback) and the agent returns to idle.

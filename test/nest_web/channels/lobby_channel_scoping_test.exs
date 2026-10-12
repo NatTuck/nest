@@ -520,7 +520,7 @@ defmodule NestWeb.LobbyChannelScopingTest do
   # is answered only after every frame queued before it — the same barrier
   # `NestWeb.LobbyChannelArchiveTest.push_and_settle/3` uses, applied at the
   # end of the test rather than around a single push.
-  defp settle(socket), do: :sys.get_state(socket.channel_pid)
+  defp settle(socket), do: :sys.get_state(socket.channel_pid, 500)
 
   # A real space owned by `user` — unlike the fabricated id above, this one
   # exists in the owner's visible set, so an over-broad subscription would

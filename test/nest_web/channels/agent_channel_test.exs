@@ -178,7 +178,7 @@ defmodule NestWeb.AgentChannelTest do
       # handled the broadcast. `:sys.get_state/1` is a synchronous call to the
       # channel process, so the check below is deterministic rather than a
       # 200 ms window.
-      _ = :sys.get_state(socket.channel_pid)
+      _ = :sys.get_state(socket.channel_pid, 500)
       refute_push "chat:delta", %{"content" => "x"}, 0
     end
   end
@@ -523,7 +523,7 @@ defmodule NestWeb.AgentChannelTest do
   # DB-backed with a rare 130-160 ms tail under 24-way concurrency.
   defp push_history(socket, payload) do
     ref = push(socket, "chat:history", payload)
-    _ = :sys.get_state(socket.channel_pid)
+    _ = :sys.get_state(socket.channel_pid, 500)
     ref
   end
 
