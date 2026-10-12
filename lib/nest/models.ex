@@ -168,13 +168,50 @@ defmodule Nest.Models do
 
   Reads the synchronous cache; never blocks on a network call.
   """
+  # The context-limit cache is published to a public ETS table so readers never
+  # touch the `Nest.Models` process. `Agent.init/1` resolves a context limit on
+  # every agent start, and `DynamicSupervisor.start_child/2` runs that `init/1`
+  # inside the supervisor's own `handle_call` — so a `GenServer.call` here put a
+  # *second* single process in the path of every concurrent start, and N starts
+  # queued on it behind the supervisor's own queue. The table holds one row: the
+  # whole `context_limits` map, rewritten whenever the canonical map changes
+  # (`init/1` and `finalize_scan/1`). Reads are lock-free and see either the old
+  # or the new map, never a partial one.
+  @limits_table :nest_models_context_limits
+
   @spec context_limit(provider :: String.t() | nil, model_id :: String.t() | nil) ::
           {source(), pos_integer()} | nil
   def context_limit(nil, _model_id), do: nil
   def context_limit(_provider, nil), do: nil
 
   def context_limit(provider, model_id) do
-    GenServer.call(__MODULE__, {:context_limit, provider, model_id})
+    case published_limits() do
+      {:ok, limits} -> get_in(limits, [provider, model_id])
+      :unavailable -> GenServer.call(__MODULE__, {:context_limit, provider, model_id})
+    end
+  end
+
+  # `:unavailable` means the table is gone (the server is not running, or is
+  # restarting), which is the only case that still needs the call — and the call
+  # raises `:noproc` then, exactly as it did before.
+  defp published_limits do
+    if :ets.whereis(@limits_table) == :undefined do
+      :unavailable
+    else
+      case :ets.lookup(@limits_table, :limits) do
+        [{:limits, limits}] -> {:ok, limits}
+        [] -> :unavailable
+      end
+    end
+  end
+
+  defp publish_limits(limits) do
+    if :ets.whereis(@limits_table) == :undefined do
+      :ets.new(@limits_table, [:named_table, :public, :set, read_concurrency: true])
+    end
+
+    :ets.insert(@limits_table, {:limits, limits})
+    :ok
   end
 
   @doc """
@@ -201,6 +238,8 @@ defmodule Nest.Models do
           send(self(), :startup_scan)
         end
 
+        publish_limits(%{})
+
         {:ok,
          %{
            static_config: config,
@@ -212,6 +251,8 @@ defmodule Nest.Models do
 
       {:error, reason} ->
         Logger.error("Failed to load config: #{inspect(reason)}")
+
+        publish_limits(%{})
 
         {:ok,
          %{
@@ -502,6 +543,8 @@ defmodule Nest.Models do
         auto_models: scan.auto_models,
         context_limits: scan.context_limits
     }
+
+    publish_limits(scan.context_limits)
 
     if scan.deadline_fired do
       # The deadline already emitted this scan's completion; surface
