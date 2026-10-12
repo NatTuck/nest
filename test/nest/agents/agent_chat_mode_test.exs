@@ -313,6 +313,31 @@ defmodule Nest.Agents.AgentChatModeTest do
     end
   end
 
+  describe "origin marker" do
+    test "tags a human chat but not a spawn-style kickoff" do
+      # The Ctrl/Cmd+Up recall list shows only rows tagged `origin: "human"`.
+      # The channel passes `human?: true`; `agents-spawn`'s `query` kickoff
+      # passes `false` (`SubAgent.handle_spawn_request/3`), so a prompt nobody
+      # typed can never reach that list.
+      {pid, _agent_id} = start_agent(%{model: %{name: "qwen3.5-plus"}})
+
+      :ok = Agent.chat(pid, "typed by a human", nil, "alice", true)
+
+      assert_receive {:chat_message,
+                      {:user, %{metadata: %{"mode" => "chat", "origin" => "human"}}}},
+                     @turn_fence_ms
+
+      await_idle(pid)
+
+      :ok = Agent.chat(pid, "kickoff nobody typed", nil, nil, false)
+
+      assert_receive {:chat_message, {:user, %{metadata: metadata}}}, @turn_fence_ms
+      refute Map.has_key?(metadata, "origin")
+
+      await_idle(pid)
+    end
+  end
+
   # Wait until the agent has settled to `:idle`, on the machine's own status
   # rather than the `chat:status` broadcast: a missed or reordered broadcast can
   # never be the reason this fails, and the condition waited on is exactly the

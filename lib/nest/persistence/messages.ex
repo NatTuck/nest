@@ -76,8 +76,9 @@ defmodule Nest.Persistence.Messages do
     cap = Keyword.fetch!(opts, :cap)
     limit = Keyword.get(opts, :limit, :all)
     roles = Keyword.get(opts, :roles)
+    origin = Keyword.get(opts, :origin)
 
-    own = load_own_slice(row.id, cap, limit, roles)
+    own = load_own_slice(row.id, cap, limit, roles, origin)
     remaining = subtract_limit(limit, length(own))
 
     case shared_parent(row, seen) do
@@ -87,7 +88,7 @@ defmodule Nest.Persistence.Messages do
         if parent_cap == :none do
           own
         else
-          parent_opts = [cap: parent_cap, limit: remaining, roles: roles]
+          parent_opts = [cap: parent_cap, limit: remaining, roles: roles, origin: origin]
           collect_slice(parent, MapSet.put(seen, row.id), parent_opts) ++ own
         end
 
@@ -96,11 +97,12 @@ defmodule Nest.Persistence.Messages do
     end
   end
 
-  defp load_own_slice(agent_id, cap, limit, roles) do
+  defp load_own_slice(agent_id, cap, limit, roles, origin) do
     PersistedMessage
     |> where([m], m.agent_id == ^agent_id)
     |> cap_index(cap)
     |> filter_roles(roles)
+    |> filter_origin(origin)
     |> order_by([m], desc: m.message_index)
     |> cap_rows(limit)
     |> Repo.all()
@@ -116,6 +118,16 @@ defmodule Nest.Persistence.Messages do
 
   defp filter_roles(query, nil), do: query
   defp filter_roles(query, roles), do: where(query, [m], m.role in ^roles)
+
+  # Restrict to rows carrying a given `metadata["origin"]` value. The recall
+  # projection asks for `"human"` so that delivered peer messages and notices
+  # (user-role rows with no marker) do not eat the page budget. A NULL
+  # `metadata` — or a row without the key — never equals the value, so this is
+  # fail-closed, exactly like the client-side filter it mirrors.
+  defp filter_origin(query, nil), do: query
+
+  defp filter_origin(query, origin),
+    do: where(query, [m], fragment("? ->> 'origin' = ?", m.metadata, ^origin))
 
   defp cap_rows(query, :all), do: query
   defp cap_rows(query, limit), do: limit(query, ^limit)

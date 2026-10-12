@@ -355,24 +355,24 @@ defmodule Nest.Agents.Agent do
   @doc """
   Sends a chat message to the agent.
 
-  The message is added to the chain and triggers a streaming response
-  from the LLM. Responses are broadcast via PubSub to all subscribers.
+  The message is added to the chain and triggers a streaming response from the
+  LLM. Responses are broadcast via PubSub to all subscribers.
 
-  The optional `mode` selects the sandbox capability profile for this
-  message's tool calls. When `nil`, the agent falls back to its
-  default mode (first key in the vocation's `modes` map, or `"chat"`
-  if no modes are defined).
+  The optional `mode` selects the sandbox capability profile for this message's
+  tool calls. When `nil`, the agent falls back to its default mode (first key in
+  the vocation's `modes` map, or `"chat"` if no modes are defined).
 
-  `sender` identifies the human behind the message (the channel passes
-  the socket's username). It is recorded on a queued inbox entry so the
-  delivered prompt names the sender; it is ignored for an idle agent,
-  which starts the turn immediately. When the agent is busy the message
-  and the requested `mode` are queued and delivered at the next turn
-  boundary instead of being dropped.
+  `sender` identifies the human behind the message (the channel passes the
+  socket's username). It is recorded on a queued inbox entry so the delivered
+  prompt names the sender; it is ignored for an idle agent, which starts the
+  turn immediately. When the agent is busy the message and the requested `mode`
+  are queued and delivered at the next turn boundary instead of being dropped.
+  `human?` says whether the content is the human's own words: only then is it tagged
+  `origin: "human"` for the Ctrl/Cmd+Up recall list; a spawn's `query` kickoff is not.
   """
-  @spec chat(pid(), String.t(), String.t() | nil, String.t() | nil) :: :ok
-  def chat(pid, content, mode \\ nil, sender \\ nil) do
-    GenServer.cast(pid, {:chat, content, mode, sender})
+  @spec chat(pid(), String.t(), String.t() | nil, String.t() | nil, boolean()) :: :ok
+  def chat(pid, content, mode \\ nil, sender \\ nil, human? \\ false) do
+    GenServer.cast(pid, {:chat, content, mode, sender, human?})
   end
 
   @doc """

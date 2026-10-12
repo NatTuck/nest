@@ -146,6 +146,11 @@ export function addUserMessage(set, id, content, mode) {
       parts: [{ kind: "text", text: content }],
       content,
       mode,
+      // The server stamps `origin: "human"` on a prompt the human typed, and
+      // the Ctrl/Cmd+Up recall list includes a user row only when it carries
+      // that marker. Without it the echo would be briefly missing from the
+      // list until the server's copy replaces it.
+      origin: "human",
       optimistic: true,
       timestamp: new Date().toISOString(),
     };

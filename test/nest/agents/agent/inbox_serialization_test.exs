@@ -15,16 +15,20 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
 
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Inbox
+  alias Nest.Messages.MessageList
 
   # A big-enough body to exceed the default 8000-token cap.
   @oversized String.duplicate("hello world ", 4_000)
 
   describe "entry shape and serialization" do
     test "serialize/1 emits the wire shape the browser renders, for every kind" do
-      # intentional: the channel/browser contract is exactly these five
-      # keys; `kind` is the entry's provenance (a peer's words, a query that
-      # owes a reply, the runtime speaking for itself, or a human's words) and
-      # `mode` carries the human's requested mode (nil for every other kind).
+      # intentional: the channel/browser contract is exactly these six keys;
+      # `kind` is the entry's provenance (a peer's words, a query that owes a
+      # reply, the runtime speaking for itself, or a human's words), `mode`
+      # carries the human's requested mode (nil for every other kind), and
+      # `human` is true only for a prompt the human typed — the `user` kind is
+      # shared with an `agents-spawn` `query` kickoff, so the flag is the only
+      # way a reader can tell them apart.
       at = ~U[2026-01-02 03:04:05Z]
 
       entries = [
@@ -35,6 +39,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
           timestamp: at,
           kind: :agent,
           mode: nil,
+          human?: false,
           retrieved: false
         },
         %{
@@ -44,6 +49,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
           timestamp: at,
           kind: :user,
           mode: "plan",
+          human?: true,
           retrieved: false
         },
         %{
@@ -53,6 +59,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
           timestamp: at,
           kind: :user,
           mode: nil,
+          human?: false,
           retrieved: false
         },
         %{
@@ -62,6 +69,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
           timestamp: at,
           kind: :query,
           mode: nil,
+          human?: false,
           retrieved: false
         },
         %{
@@ -71,6 +79,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
           timestamp: at,
           kind: :notice,
           mode: nil,
+          human?: false,
           retrieved: false
         }
       ]
@@ -83,6 +92,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
                  "timestamp" => "2026-01-02T03:04:05Z",
                  "kind" => "agent",
                  "mode" => nil,
+                 "human" => false,
                  "retrieved" => false
                },
                %{
@@ -92,6 +102,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
                  "timestamp" => "2026-01-02T03:04:05Z",
                  "kind" => "user",
                  "mode" => "plan",
+                 "human" => true,
                  "retrieved" => false
                },
                %{
@@ -101,6 +112,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
                  "timestamp" => "2026-01-02T03:04:05Z",
                  "kind" => "user",
                  "mode" => nil,
+                 "human" => false,
                  "retrieved" => false
                },
                %{
@@ -110,6 +122,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
                  "timestamp" => "2026-01-02T03:04:05Z",
                  "kind" => "query",
                  "mode" => nil,
+                 "human" => false,
                  "retrieved" => false
                },
                %{
@@ -119,6 +132,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
                  "timestamp" => "2026-01-02T03:04:05Z",
                  "kind" => "notice",
                  "mode" => nil,
+                 "human" => false,
                  "retrieved" => false
                }
              ]
@@ -274,6 +288,52 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
     end
   end
 
+  describe "build_drained_message/3 origin marker" do
+    test "a human batch is tagged as the human's own words" do
+      entries = [entry(:user, "alice", "hi", "plan", nil, true)]
+
+      assert {:user, %{metadata: metadata}} = Inbox.build_drained_message(entries, "hi", "plan")
+
+      assert metadata == %{"mode" => "plan", "origin" => "human"}
+    end
+
+    test "a delivered batch is left untagged and keeps its fulfilled ids" do
+      # The marker is fail-closed on the client, so a delivered batch must
+      # carry no `origin` at all — and the backgrounded-promise metadata that
+      # already rides this message must survive the merge.
+      entries = [
+        entry(:agent, "peer", "do it")
+        |> Map.put(:fulfilled_ids, ["call-1", "call-2"])
+      ]
+
+      assert {:user, %{metadata: metadata}} =
+               Inbox.build_drained_message(entries, "do it", "chat")
+
+      assert metadata ==
+               Map.merge(
+                 %{"mode" => "chat"},
+                 MessageList.fulfilled_metadata(["call-1", "call-2"])
+               )
+
+      refute Map.has_key?(metadata, "origin")
+    end
+
+    test "a non-user entry that claims human? is left untagged" do
+      # `origin_metadata/1` requires `kind: :user` *and* `human?: true`. The two
+      # agree by construction today — only `deliver_user_message/5` sets the
+      # flag, and it always sets `kind: :user`, which `batch/1` delivers alone —
+      # so this is defensive-input coverage for the invariant: an entry that
+      # claimed `human?` on another kind must stay untagged rather than be
+      # mistagged as the human's own words.
+      entries = [entry(:notice, nil, "runtime note", nil, nil, true)]
+
+      assert {:user, %{metadata: metadata}} =
+               Inbox.build_drained_message(entries, "runtime note", "chat")
+
+      refute Map.has_key?(metadata, "origin")
+    end
+  end
+
   describe "delivery ids and consume semantics (issue #62)" do
     test "every enqueued entry carries a distinct id" do
       # intentional: the id is a per-delivery identity, not a sequence, so two
@@ -358,7 +418,7 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
     end
   end
 
-  defp entry(kind, from, content, mode \\ nil, id \\ nil) do
+  defp entry(kind, from, content, mode \\ nil, id \\ nil, human? \\ false) do
     %{
       id: id || Inbox.new_id(),
       from: from,
@@ -366,6 +426,8 @@ defmodule Nest.Agents.Agent.InboxSerializationTest do
       timestamp: DateTime.utc_now(),
       kind: kind,
       mode: mode,
+      human?: human?,
+      fulfilled_ids: [],
       retrieved: false
     }
   end

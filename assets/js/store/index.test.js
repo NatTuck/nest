@@ -2511,6 +2511,10 @@ describe("store", () => {
         index: 0,
         role: "user",
         content: "Hello",
+        // The server stamps this on a prompt the human typed, and the
+        // Ctrl/Cmd+Up recall list includes a user row only when it carries it —
+        // the echo has to match or the just-sent prompt briefly vanishes.
+        origin: "human",
         // Marks the row as a client-side echo so a later `chat:inbox`
         // can retract it when the message was only queued.
         optimistic: true,

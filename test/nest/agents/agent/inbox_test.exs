@@ -373,10 +373,18 @@ defmodule Nest.Agents.Agent.InboxTest do
       # human message that arrives mid-turn is queued — never dropped or
       # rejected — with the content stored verbatim and the requested mode
       # recorded for the drain.
+      #
+      # The cast is the explicit `Agent.chat/5` with `human?: true` (the arity
+      # the chat channel uses), so this is the busy half of the recall-list
+      # wiring: `Callbacks.chat_or_queue/5` -> `Inbox.deliver_user_message/5`
+      # lands the flag on the entry, and `build_drained_message/3` turns it into
+      # the `origin: "human"` marker. Both halves are asserted below; the idle
+      # half is `agent_chat_mode_test.exs`'s "tags a human chat but not a
+      # spawn-style kickoff".
       for {status, n} <- Enum.with_index([:streaming, :executing_tools, :compacting], 1) do
         set_status(pid, status)
 
-        assert :ok = Agent.chat(pid, "queued while #{status}", "plan", "alice")
+        assert :ok = Agent.chat(pid, "queued while #{status}", "plan", "alice", true)
 
         assert_receive {:chat_inbox, %{count: ^n}}, 500
 
@@ -392,6 +400,7 @@ defmodule Nest.Agents.Agent.InboxTest do
       assert Enum.map(inbox, & &1.kind) == [:user, :user, :user]
       assert Enum.map(inbox, & &1.from) == ["alice", "alice", "alice"]
       assert Enum.map(inbox, & &1.mode) == ["plan", "plan", "plan"]
+      assert Enum.map(inbox, & &1.human?) == [true, true, true]
 
       assert Enum.map(inbox, & &1.content) == [
                "queued while streaming",
@@ -402,9 +411,35 @@ defmodule Nest.Agents.Agent.InboxTest do
       # Queueing is the only effect: no turn started, nothing appended.
       assert Enum.map(state.chat_state.messages, &elem(&1, 0)) == [:system]
 
-      # The fabricated busy status is test-only; leave the agent idle (and
-      # the queue empty) so the teardown's zero-in-flight assertion holds.
-      reset_to_idle(pid)
+      # Then drain them for real. The fabricated busy status is test-only, so
+      # the stop's own drain is the transition under test: each queued human
+      # message is delivered as its own batch, and every delivered message must
+      # carry the marker — a prompt sent while the agent was busy reaches the
+      # Ctrl/Cmd+Up recall list exactly like one sent while it was idle.
+      before = length(state.chat_state.messages)
+
+      Agent.stop_chat(pid, self())
+
+      assert Eventually.eventually(
+               fn -> :sys.get_state(pid).live.inbox == [] end,
+               timeout: 500
+             )
+
+      wait_idle(pid)
+
+      drained_metadata =
+        :sys.get_state(pid).chat_state.messages
+        |> Enum.drop(before)
+        |> Enum.flat_map(fn
+          {:user, %{metadata: metadata}} -> [metadata]
+          _ -> []
+        end)
+
+      assert drained_metadata == [
+               %{"mode" => "plan", "origin" => "human"},
+               %{"mode" => "plan", "origin" => "human"},
+               %{"mode" => "plan", "origin" => "human"}
+             ]
     end
 
     test "a message to an idle agent starts the turn immediately in the requested mode", %{
@@ -522,6 +557,45 @@ defmodule Nest.Agents.Agent.InboxTest do
 
       wait_idle(pid)
     end
+
+    test "a human message drained behind a busy turn is tagged as the human's own words", %{
+      pid: pid
+    } do
+      # A human message that arrives mid-turn is queued and later delivered
+      # through the same `build_drained_message/3` a peer batch uses, so the
+      # `origin: "human"` marker has to come from the entry's `human?` flag.
+      # Without it the prompt would drop out of the Ctrl/Cmd+Up recall list.
+      #
+      # The entry is injected with `:sys.replace_state`, so this pins
+      # `origin_metadata/1` and the drain on a hand-built entry — not
+      # `deliver_user_message/5`'s own wiring of the flag. That wiring is
+      # covered by this file's "a message to a busy agent is queued with its
+      # sender and mode" (the busy path: `Agent.chat/5` -> the entry -> the
+      # drain) and by the `build_drained_message/3` cases below;
+      # `agent_chat_mode_test.exs`'s "tags a human chat but not a spawn-style
+      # kickoff" covers only the idle path.
+      before = length(:sys.get_state(pid).chat_state.messages)
+      stage_drain(pid, [entry(:user, "alice", "queued prompt", "plan", true)])
+
+      Agent.stop_chat(pid, self())
+
+      assert Eventually.eventually(
+               fn -> :sys.get_state(pid).live.inbox == [] end,
+               timeout: 500
+             )
+
+      wait_idle(pid)
+
+      appended_user_metadata =
+        :sys.get_state(pid).chat_state.messages
+        |> Enum.drop(before)
+        |> Enum.flat_map(fn
+          {:user, %{metadata: metadata}} -> [metadata]
+          _ -> []
+        end)
+
+      assert [%{"origin" => "human"}] = appended_user_metadata
+    end
   end
 
   defp set_status(pid, status) do
@@ -568,7 +642,7 @@ defmodule Nest.Agents.Agent.InboxTest do
     end)
   end
 
-  defp entry(kind, from, content, mode \\ nil) do
+  defp entry(kind, from, content, mode \\ nil, human? \\ false) do
     %{
       id: Inbox.new_id(),
       from: from,
@@ -576,6 +650,8 @@ defmodule Nest.Agents.Agent.InboxTest do
       timestamp: DateTime.utc_now(),
       kind: kind,
       mode: mode,
+      human?: human?,
+      fulfilled_ids: [],
       retrieved: false
     }
   end

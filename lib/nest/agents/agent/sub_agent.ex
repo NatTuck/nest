@@ -141,6 +141,11 @@ defmodule Nest.Agents.Agent.SubAgent do
         maybe_test_swap_to_mock(state.space_id, child_name)
 
         if Map.get(opts, :query, "") != "" do
+          # The spawn's `query` kickoff is not the human's own words, so it must
+          # never be tagged `origin: "human"` (it would then appear in the
+          # child's Ctrl/Cmd+Up recall list). `Agents.chat/6`'s `human?` defaults
+          # to `false` — the marker has to be earned — so the three-argument
+          # call is the non-human one; only the chat channel passes `true`.
           Nest.Agents.chat(state.space_id, child_name, Map.get(opts, :query))
         end
 

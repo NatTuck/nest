@@ -8,17 +8,17 @@ defmodule Nest.Agents.Agent.Inbox do
       (`Agent.deliver_message/4` → `handle_delivery/4`), recorded with
       `kind: :agent`,
     * a human chat message that arrived while the agent was busy
-      (`Agent.chat/4` → `Callbacks.chat_or_queue/4` →
-      `deliver_user_message/4`), recorded with `kind: :user`, and
+      (`Agent.chat/5` → `Callbacks.chat_or_queue/5` →
+      `deliver_user_message/5`), recorded with `kind: :user`, and
     * the runtime's own result for this agent
       (`enqueue_internal/4`, W2's async spawn/batch completion).
 
-  An entry is `%{from, content, timestamp, kind, mode, fulfilled_ids}`. `content`
-  is stored **verbatim** (no `[mode: ...]` prefix — that is added when the
-  entry is delivered), `mode` is the human's requested mode, always `nil` for
-  an `agents-send` entry, and `fulfilled_ids` is the one producer-supplied
-  field: the tool-call ids a backgrounded batch's result answers (issue #36,
-  `enqueue_internal/5`), empty for every other producer.
+  An entry is `%{id, from, content, timestamp, kind, mode, human?, fulfilled_ids,
+  retrieved}`. `content` is stored **verbatim** (no `[mode: ...]` prefix — that
+  is added when the entry is delivered), `mode` is the human's requested mode,
+  always `nil` for an `agents-send` entry, and the producer-supplied fields are
+  `human?` (the human's own words) and `fulfilled_ids` (the tool-call ids a
+  backgrounded batch's result answers, issue #36), empty for other producers.
 
   ## Kinds
 
@@ -145,6 +145,7 @@ defmodule Nest.Agents.Agent.Inbox do
           timestamp: DateTime.t(),
           kind: kind(),
           mode: String.t() | nil,
+          human?: boolean(),
           fulfilled_ids: [String.t()],
           retrieved: boolean()
         }
@@ -194,7 +195,7 @@ defmodule Nest.Agents.Agent.Inbox do
         {:reply, {:error, :inbox_full}, state}
 
       busy_status?(status) ->
-        {state, disposition} = busy_delivery(state, sender, content, kind, nil)
+        {state, disposition} = busy_delivery(state, sender, content, kind, nil, false)
         {:reply, {:ok, disposition}, state}
 
       status == :idle ->
@@ -233,7 +234,7 @@ defmodule Nest.Agents.Agent.Inbox do
     if Machine.status_for(state.live.machine) == :idle do
       idle_delivery(state, sender, content, kind)
     else
-      {state, disposition} = busy_delivery(state, sender, content, kind, nil)
+      {state, disposition} = busy_delivery(state, sender, content, kind, nil, false)
       {:reply, {:ok, disposition}, state}
     end
   end
@@ -247,8 +248,8 @@ defmodule Nest.Agents.Agent.Inbox do
   # result reads "Message delivered to …"). `mode` is the human's requested mode
   # and `nil` for every other producer; it rides the record, so a reader still
   # sees what the human asked for.
-  defp busy_delivery(state, sender, content, kind, mode) do
-    state = state |> put_entry(sender, content, kind, mode) |> broadcast()
+  defp busy_delivery(state, sender, content, kind, mode, human?) do
+    state = state |> put_entry(sender, content, kind, mode, human?) |> broadcast()
     queued_before = length(state.live.inbox)
     {state, disposition} = drain_backgroundable(state)
 
@@ -308,11 +309,22 @@ defmodule Nest.Agents.Agent.Inbox do
   Unlike `handle_delivery/4` this never refuses: the sender is a human and
   the cap exists to bound a runaway *peer* producer, so a human message is
   queued even when the cap is reached instead of being silently dropped.
+
+  `human?` rides the entry so `build_drained_message/3` can tag the delivered
+  message `origin: "human"` for the Ctrl/Cmd+Up recall list. It defaults to
+  `false`: the marker has to be earned, so a caller that forgets leaves the
+  message untagged rather than claiming the human typed it.
   """
-  @spec deliver_user_message(Agent.t(), String.t() | nil, String.t(), String.t() | nil) ::
+  @spec deliver_user_message(
+          Agent.t(),
+          String.t() | nil,
+          String.t(),
+          String.t() | nil,
+          boolean()
+        ) ::
           {Agent.t(), :delivered | :queued}
-  def deliver_user_message(state, from, content, mode) do
-    busy_delivery(state, from, content, :user, mode)
+  def deliver_user_message(state, from, content, mode, human? \\ false) do
+    busy_delivery(state, from, content, :user, mode, human?)
   end
 
   # Deliver a just-enqueued entry now when the machine is executing a tool batch
@@ -353,7 +365,7 @@ defmodule Nest.Agents.Agent.Inbox do
     state =
       state
       |> satisfy_watch(from, kind)
-      |> put_entry(from, content, kind, nil, fulfilled_ids)
+      |> put_entry(from, content, kind, nil, false, fulfilled_ids)
       |> broadcast()
 
     record_inbox(state, :enqueued, from, kind, content,
@@ -451,7 +463,12 @@ defmodule Nest.Agents.Agent.Inbox do
   and tests. `"kind"` is one of `"agent"`, `"user"`, `"query"`,
   `"notice"`; `"mode"` is a string or `nil`; `"id"` is the delivery id
   (issue #62); `"retrieved"` says an `agents-last-message` fetch already
-  consumed the body, so the UI can show the retrieval rather than hide it.
+  consumed the body, so the UI can show the retrieval rather than hide it;
+  `"human"` is `true` only for a prompt the human typed.
+
+  `"human"` is not derivable from `"kind"`: an `agents-spawn` `query`
+  kickoff is also a `"user"` entry, so the flag is what lets a reader tell
+  a queued human prompt from a queued kickoff nobody typed.
   """
   @spec serialize([entry()]) :: [map()]
   def serialize(entries) do
@@ -463,6 +480,7 @@ defmodule Nest.Agents.Agent.Inbox do
         "timestamp" => DateTime.to_iso8601(entry.timestamp),
         "kind" => Atom.to_string(entry.kind),
         "mode" => entry.mode,
+        "human" => entry.human?,
         "retrieved" => Delivery.retrieved?(entry)
       }
     end)
@@ -495,11 +513,7 @@ defmodule Nest.Agents.Agent.Inbox do
   """
   @spec build_drained_message([entry()], String.t(), String.t()) :: {:user, User.t()}
   def build_drained_message(entries, content, mode) do
-    Dispatch.build_user_message(
-      content,
-      mode,
-      MessageList.fulfilled_metadata(fulfilled_ids(entries))
-    )
+    Dispatch.build_user_message(content, mode, MessageList.drained_metadata(entries))
   end
 
   @doc """
@@ -591,7 +605,7 @@ defmodule Nest.Agents.Agent.Inbox do
   # `from`/`mode` are normalized here, the single write point, so a malformed
   # payload can never put a number/map on the wire (`serialize/1`'s contract is
   # string-or-null for both).
-  defp put_entry(state, from, content, kind, mode, fulfilled_ids \\ []) do
+  defp put_entry(state, from, content, kind, mode, human? \\ false, fulfilled_ids \\ []) do
     entry = %{
       id: Delivery.new_id(),
       from: if(is_binary(from), do: from, else: nil),
@@ -599,18 +613,12 @@ defmodule Nest.Agents.Agent.Inbox do
       timestamp: DateTime.utc_now(),
       kind: kind,
       mode: if(is_binary(mode), do: mode, else: nil),
+      human?: human? == true,
       fulfilled_ids: fulfilled_ids,
       retrieved: false
     }
 
     %{state | live: %{state.live | inbox: state.live.inbox ++ [entry]}}
-  end
-
-  # `fulfilled_ids` is the entry's only producer-supplied metadata (see
-  # `enqueue_internal/5`); every other producer leaves it empty. Total like the
-  # rest of the inbox helpers, so a hand-built entry cannot crash a drain.
-  defp fulfilled_ids(entries) do
-    Enum.flat_map(entries, &Map.get(&1, :fulfilled_ids, []))
   end
 
   @doc """

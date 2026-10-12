@@ -489,6 +489,44 @@ defmodule Nest.Messages.MessageList do
   def fulfilled_metadata(ids), do: %{@fulfilled_promise_key => ids}
 
   @doc """
+  The metadata a drained inbox batch rides onto its delivered message: the ids
+  the batch's notice answers (`fulfilled_metadata/1`) plus the recall-list
+  origin marker (`origin_metadata/1`). Both halves are built here, beside each
+  other, so a delivered message's marker has one definition —
+  `Inbox.build_drained_message/3` is the only caller.
+  """
+  @spec drained_metadata([map()]) :: map()
+  def drained_metadata(entries) do
+    entries
+    |> fulfilled_ids()
+    |> fulfilled_metadata()
+    |> Map.merge(origin_metadata(entries))
+  end
+
+  # The entry's `fulfilled_ids` is its only producer-supplied metadata (see
+  # `Inbox.enqueue_internal/5`); every other producer leaves it empty. Total,
+  # like the rest of the inbox helpers, so a hand-built entry cannot crash a
+  # drain.
+  defp fulfilled_ids(entries), do: Enum.flat_map(entries, &Map.get(&1, :fulfilled_ids, []))
+
+  # The recall-list origin marker. It keys off the entry's explicit `human?`
+  # flag, never off `kind: :user` — a `:user` entry is also what an
+  # `agents-spawn` `query` kickoff produces, and a prompt nobody typed must not
+  # reach the Ctrl/Cmd+Up list. A human message is delivered alone
+  # (`Inbox.batch/1`), so the batch head is the entry that decides; every other
+  # batch is a delivery and is deliberately left untagged (the client filter is
+  # fail-closed).
+  #
+  # Both halves are required. They agree by construction today: only
+  # `Inbox.deliver_user_message/5` sets `human?: true`, and it always sets
+  # `kind: :user`, which `Inbox.batch/1` delivers alone. Requiring both anyway
+  # means a future entry that claimed `human?` on another kind — a `:notice`,
+  # say — batches with its peers and stays untagged, instead of being silently
+  # mistagged as the human's own words.
+  defp origin_metadata([%{kind: :user, human?: true} | _]), do: User.human_metadata()
+  defp origin_metadata(_entries), do: %{}
+
+  @doc """
   Tag a lost-promise record with the tool call ids it voids, so
   `backgrounded_results/1` does not report them again.
 

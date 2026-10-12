@@ -1,23 +1,36 @@
 /**
  * Tests for `js/utils/chatHistory.js`.
  *
- * The helper powers the Ctrl/Cmd+Up chat-input history: it pulls user
- * messages from both the active session and the archived (post-compaction)
- * history, strips the `[mode: X]\n` prefix, orders them most-recent-first,
- * and collapses consecutive duplicates.
+ * The helper powers the Ctrl/Cmd+Up chat-input history. It includes a
+ * user-role row only when it carries `origin: "human"` (the rule is
+ * fail-closed), pulls those from both the active session and the archived
+ * (post-compaction) history, strips the `[mode: X]\n` prefix, orders them
+ * most-recent-first, and collapses consecutive duplicates.
  */
 
 import { describe, expect, it } from "vitest";
 import { buildChatHistory } from "./chatHistory.js";
 
 describe("buildChatHistory", () => {
-  it("merges archived and active user messages most-recent-first, stripping the mode prefix", () => {
+  it("merges archived and active human messages most-recent-first, stripping the mode prefix", () => {
     const result = buildChatHistory(
       [
-        { role: "user", content: "[mode: build]\nsecond", mode: "build" },
+        {
+          role: "user",
+          origin: "human",
+          content: "[mode: build]\nsecond",
+          mode: "build",
+        },
         { role: "assistant", content: "not a user message" },
       ],
-      [{ role: "user", content: "[mode: plan]\nfirst", mode: "plan" }],
+      [
+        {
+          role: "user",
+          origin: "human",
+          content: "[mode: plan]\nfirst",
+          mode: "plan",
+        },
+      ],
     );
 
     expect(result).toEqual([
@@ -28,8 +41,8 @@ describe("buildChatHistory", () => {
 
   it("collapses consecutive duplicate content across the active and archived lists", () => {
     const result = buildChatHistory(
-      [{ role: "user", content: "same prompt" }],
-      [{ role: "user", content: "same prompt" }],
+      [{ role: "user", origin: "human", content: "same prompt" }],
+      [{ role: "user", origin: "human", content: "same prompt" }],
     );
 
     expect(result).toEqual([{ content: "same prompt", mode: null }]);
@@ -38,14 +51,14 @@ describe("buildChatHistory", () => {
   it("filters out non-user roles and non-string content in both lists", () => {
     const result = buildChatHistory(
       [
-        { role: "user", content: 42 },
+        { role: "user", origin: "human", content: 42 },
         { role: "assistant", content: "not a user message" },
-        { role: "user", content: "active user" },
+        { role: "user", origin: "human", content: "active user" },
       ],
       [
-        { role: "user", content: null },
+        { role: "user", origin: "human", content: null },
         { role: "tool", content: "tool result" },
-        { role: "user", content: "archived user" },
+        { role: "user", origin: "human", content: "archived user" },
       ],
     );
 
@@ -63,6 +76,7 @@ describe("buildChatHistory", () => {
       [
         {
           role: "user",
+          origin: "human",
           parts: [{ kind: "text", text: "[mode: build]\nactive" }],
           mode: "build",
         },
@@ -70,6 +84,7 @@ describe("buildChatHistory", () => {
       [
         {
           role: "user",
+          origin: "human",
           parts: [{ kind: "text", text: "[mode: plan]\narchived" }],
           mode: "plan",
         },
@@ -82,12 +97,64 @@ describe("buildChatHistory", () => {
     ]);
   });
 
+  it("includes a human prompt sent while the agent was busy", () => {
+    // A message queued behind a busy agent is still the human's own words, so
+    // the server tags it `origin: "human"` on the drained path.
+    const result = buildChatHistory([
+      {
+        role: "user",
+        origin: "human",
+        content: "[mode: build]\nqueued prompt",
+        mode: "build",
+      },
+    ]);
+
+    expect(result).toEqual([{ content: "queued prompt", mode: "build" }]);
+  });
+
+  it("excludes user rows that are not tagged as human (fail-closed)", () => {
+    // Peer deliveries, notices and runtime reminders are user-role rows with
+    // no `origin`; legacy rows predate the marker; a stray non-human origin is
+    // not human either. None of them is a prompt the human typed.
+    const result = buildChatHistory(
+      [
+        {
+          role: "user",
+          content: '[mode: build]\n[Message from agent "X"]\nhi',
+          mode: "build",
+        },
+        {
+          role: "user",
+          content: "[mode: build]\nlegacy prompt",
+          mode: "build",
+        },
+        { role: "user", origin: "agent", content: "[mode: build]\npeer" },
+        { role: "user", origin: "runtime", content: "[mode: build]\nnotice" },
+        {
+          role: "user",
+          origin: "human",
+          content: "[mode: build]\nreal prompt",
+          mode: "build",
+        },
+      ],
+      [
+        {
+          role: "user",
+          content: "[mode: plan]\nlegacy archived",
+          mode: "plan",
+        },
+      ],
+    );
+
+    expect(result).toEqual([{ content: "real prompt", mode: "build" }]);
+  });
+
   it("tolerates missing inputs and defaults a missing mode to null", () => {
     expect(buildChatHistory()).toEqual([]);
     expect(buildChatHistory(null, null)).toEqual([]);
 
     const result = buildChatHistory([
-      { role: "user", content: "no mode", mode: undefined },
+      { role: "user", origin: "human", content: "no mode", mode: undefined },
     ]);
 
     expect(result).toEqual([{ content: "no mode", mode: null }]);
