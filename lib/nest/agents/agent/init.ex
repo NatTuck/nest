@@ -90,7 +90,8 @@ defmodule Nest.Agents.Agent.Init do
   # stays under the credo ABC cap.
   defp build_vocation_pipeline(attrs) do
     model = Map.fetch!(attrs, :model)
-    {context_limit, context_limit_source} = initial_context_limit(model)
+    cache_lookup = Map.get(attrs, :context_limit_lookup, &Nest.Models.context_limit/2)
+    {context_limit, context_limit_source} = initial_context_limit(model, cache_lookup)
 
     {system_prompt, mode, tool_names, cached_vocation} =
       SystemPrompt.compose_vocation_config(
@@ -294,15 +295,24 @@ defmodule Nest.Agents.Agent.Init do
   lookup only runs when the previous tier missed — calling
   `Nest.Models.context_limit/2` once costs a `GenServer.call`,
   and `DotConfig.load/0` reads + parses TOML.
+
+  `cache_lookup` defaults to `Nest.Models.context_limit/2`. The
+  `:context_limit_lookup` attr (read by `build_vocation_pipeline/1`)
+  overrides the cache tier only, because that lookup runs inside the
+  agent's `init/1` process — a supervisor child has no `$callers`
+  chain back to the caller, so a caller-side stub is invisible there.
   """
-  @spec initial_context_limit(map()) :: {non_neg_integer(), atom()}
-  def initial_context_limit(model) do
+  @spec initial_context_limit(
+          map(),
+          (String.t() | nil, String.t() | nil -> {atom(), pos_integer()} | nil)
+        ) :: {non_neg_integer(), atom()}
+  def initial_context_limit(model, cache_lookup \\ &Nest.Models.context_limit/2) do
     provider = model[:provider] || model["provider"]
     model_name = model_name(model)
 
     context_limit_layer(
       fn -> Config.configured_context_limit(model_name) end,
-      fn -> Nest.Models.context_limit(provider, model_name) end,
+      fn -> cache_lookup.(provider, model_name) end,
       fn -> Config.configured_provider_default_context_limit(provider) end
     )
   end

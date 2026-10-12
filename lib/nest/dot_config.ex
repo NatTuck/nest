@@ -164,7 +164,7 @@ defmodule Nest.DotConfig do
         @config_file
       end
 
-    merge_loads(load(base), load(local_file()))
+    merge_loads(load(base), load(__MODULE__.local_file()))
   end
 
   # Merge the base (config.toml) and overlay (local.toml) parses. Missing

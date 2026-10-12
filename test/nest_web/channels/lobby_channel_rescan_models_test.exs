@@ -15,27 +15,30 @@ defmodule NestWeb.LobbyChannelRescanModelsTest do
   "models changed = done" client heuristic) is the bug this file
   locks out: a fast first provider would re-enable the button
   mid-scan and the rescan looked like a no-op.
+
+  ## Concurrency
+
+  This file is `async: true`. Neither thing it needs is a global:
+
+  * The `Nest.Models.rescan/0` stub runs inside the *channel* process, so it
+    is shared with `Mimic.allow/3` — Mimic's documented private-mode mechanism
+    for "stub set in the test process, called from another process". Global
+    mode is not required for that, and Mimic itself raises if it is set on an
+    async case.
+  * The scan events are delivered **directly to the channel under test**
+    (`send(socket.channel_pid, ...)`) instead of broadcast on the app-wide
+    `"models"` topic (`lobby_channel.ex:107`). The tuples are identical to
+    what PubSub delivers, so the channel's `handle_info/2` clauses are
+    exercised exactly as before, but no other concurrently-joined lobby socket
+    can observe them.
   """
-  use NestWeb.ChannelCase, async: false
+  use NestWeb.ChannelCase, async: true
 
   import Mimic
 
   alias Nest.Accounts
   alias Nest.Accounts.AuthToken
 
-  setup :set_mimic_global
-
-  # `async: false` is required, and for two independent reasons:
-  #
-  #   1. `set_mimic_global/0` above. The stub is for `Nest.Models.rescan/0`,
-  #      which runs inside the channel process, so it has to be visible
-  #      across processes — that is exactly what global mode means, and
-  #      global mode must not overlap another module's Mimic state.
-  #   2. `LobbyChannel.join/3` subscribes every lobby client to the global
-  #      `"models"` topic (`lobby_channel.ex:89`). The broadcasts below are
-  #      therefore visible to every concurrently-joined lobby socket in the
-  #      suite, so running this file in the async phase would inject
-  #      `models_updated` / `models_scan_complete` into unrelated tests.
   setup do
     unique = System.unique_integer([:positive])
 
@@ -55,20 +58,21 @@ defmodule NestWeb.LobbyChannelRescanModelsTest do
       socket = join_lobby(auth_token)
 
       stub(Nest.Models, :rescan, fn -> 4242 end)
+      Mimic.allow(Nest.Models, self(), socket.channel_pid)
       ref = push(socket, "rescan_models", %{})
 
       # A per-provider partial must never produce the reply. `refute_no_reply/2`
       # synchronises the channel process, so this is a deterministic check on
       # the reply the channel *would* have sent — not a timing window.
-      broadcast_models_updated()
+      send_models_updated(socket)
       refute_no_reply(socket, ref)
 
       # Neither may a completion for a different scan.
-      broadcast_scan_complete(999_999)
+      send_scan_complete(socket, 999_999)
       refute_no_reply(socket, ref)
 
       # Only the matching scan's terminal event does.
-      broadcast_scan_complete(4242)
+      send_scan_complete(socket, 4242)
       assert_reply ref, :ok, %{"scan_id" => 4242}
     end
 
@@ -76,11 +80,12 @@ defmodule NestWeb.LobbyChannelRescanModelsTest do
       socket = join_lobby(auth_token)
 
       stub(Nest.Models, :rescan, fn -> 7 end)
+      Mimic.allow(Nest.Models, self(), socket.channel_pid)
 
       ref_a = push(socket, "rescan_models", %{})
       ref_b = push(socket, "rescan_models", %{})
 
-      broadcast_scan_complete(7)
+      send_scan_complete(socket, 7)
 
       assert_reply ref_a, :ok, %{"scan_id" => 7}
       assert_reply ref_b, :ok, %{"scan_id" => 7}
@@ -108,24 +113,20 @@ defmodule NestWeb.LobbyChannelRescanModelsTest do
   # The assertion was vacuous and cost ~200 ms per run of this file.
   #
   # `:sys.get_state/1` is a synchronous call to the channel process: when it
-  # returns, every `"models"` broadcast sent above has already been handled
-  # (Phoenix.PubSub delivers to subscriber mailboxes before `broadcast/3`
-  # returns), so any reply the channel was going to send is already in the
-  # test mailbox. `refute_receive ..., 0` then checks it with no wait.
+  # returns, the event sent just above has already been handled (the send and
+  # this call come from the same process, so ordering is guaranteed), and any
+  # reply the channel was going to send is already in the test mailbox.
+  # `refute_receive ..., 0` then checks it with no wait.
   defp refute_no_reply(socket, ref) do
     _ = :sys.get_state(socket.channel_pid)
     refute_receive %Phoenix.Socket.Reply{ref: ^ref}, 0
   end
 
-  defp broadcast_models_updated do
-    Phoenix.PubSub.broadcast(Nest.PubSub, "models", {:models_updated, []})
+  defp send_models_updated(socket) do
+    send(socket.channel_pid, {:models_updated, []})
   end
 
-  defp broadcast_scan_complete(scan_id) do
-    Phoenix.PubSub.broadcast(
-      Nest.PubSub,
-      "models",
-      {:models_scan_complete, %{scan_id: scan_id, models: []}}
-    )
+  defp send_scan_complete(socket, scan_id) do
+    send(socket.channel_pid, {:models_scan_complete, %{scan_id: scan_id, models: []}})
   end
 end

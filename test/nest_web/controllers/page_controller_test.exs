@@ -19,10 +19,9 @@ defmodule NestWeb.PageControllerTest do
   """
 
   # Async: the shell reads `Nest.Hostname.get/0`, which is pinned to
-  # `"testhost"` by `config/test.exs`. The only module that *mutates* that
-  # config is `Nest.HostnameTest`, which is deliberately `async: false` and
-  # therefore runs in the serial phase after every async module has
-  # finished — so a reader here can never overlap that writer.
+  # `"testhost"` by `config/test.exs`. Nothing in the suite mutates that config
+  # any more — `Nest.HostnameTest` exercises the fallback through `get/1`,
+  # which takes the override as an argument — so reading it concurrently is safe.
   use NestWeb.ConnCase, async: true
 
   alias Nest.Accounts

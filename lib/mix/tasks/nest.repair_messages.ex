@@ -30,11 +30,22 @@ defmodule Mix.Tasks.Nest.RepairMessages do
   @switches [space: :string, all: :boolean, apply: :boolean, verbose: :boolean]
 
   @impl Mix.Task
-  def run(args) do
+  def run(args), do: run(args, Mix.shell())
+
+  @doc """
+  As `run/1`, with the shell passed in rather than read from `Mix.shell/0`.
+
+  `Mix.shell/1` writes a VM-global entry in `Mix.State`, so a test that asserts
+  on this task's output would otherwise have to be `async: false`. Injecting the
+  shell keeps the assertion (the output still arrives as a `{:mix_shell, :info, _}`
+  message from `Mix.Shell.Process`) without the global.
+  """
+  @spec run([String.t()], module() | pid()) :: :ok
+  def run(args, shell) do
     Mix.Task.run("app.start")
 
     case parse_args(args) do
-      {:ok, target, opts} -> execute(target, opts)
+      {:ok, target, opts} -> execute(target, opts, shell)
       {:error, message} -> Mix.raise(message)
     end
   end
@@ -74,10 +85,10 @@ defmodule Mix.Tasks.Nest.RepairMessages do
 
   defp flags(parsed), do: [apply: parsed[:apply] == true, verbose: parsed[:verbose] == true]
 
-  defp execute(target, opts) do
+  defp execute(target, opts, shell) do
     case MessageRepair.run(target, opts) do
       {:ok, plan, agents} ->
-        Mix.shell().info(MessageRepair.format_report(plan, agents, opts[:verbose]))
+        shell.info(MessageRepair.format_report(plan, agents, opts[:verbose]))
         enforce_exit(plan, opts)
 
       {:error, reason} ->

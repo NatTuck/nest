@@ -4,12 +4,16 @@ defmodule Mix.Tasks.Nest.RepairMessagesTest do
   dry-run raises on violations, `--apply` repairs and exits clean,
   and bad input raises.
 
-  `async: false` is required: `Mix.Shell.Process` is a global
-  swap, so these tests must not run concurrently with each other or
-  with any other test that prints through `Mix.shell/0`.
+  The shell is **injected** (`RepairMessages.run/2`) rather than swapped in with
+  `Mix.shell/1`. `Mix.shell/1` writes a VM-global entry in `Mix.State`, so using
+  it here would force the whole file to be `async: false` for the sake of one
+  call site inside the task. Passing `Mix.Shell.Process` keeps the output
+  assertion exactly as it was — the report still arrives as a
+  `{:mix_shell, :info, _}` message, sent to the process that called the task —
+  and lets the file run concurrently.
   """
 
-  use Nest.DataCase, async: false
+  use Nest.DataCase, async: true
 
   import Nest.PersistenceTestHelpers
 
@@ -20,12 +24,7 @@ defmodule Mix.Tasks.Nest.RepairMessagesTest do
   alias Nest.Messages.User
   alias Nest.Persistence
 
-  setup do
-    shell = Mix.shell()
-    Mix.shell(Mix.Shell.Process)
-    on_exit(fn -> Mix.shell(shell) end)
-    :ok
-  end
+  @shell Mix.Shell.Process
 
   test "dry-run raises on violations and --apply repairs" do
     space_id = test_space_id()
@@ -38,22 +37,25 @@ defmodule Mix.Tasks.Nest.RepairMessagesTest do
       assistant_tool(2, "call_1")
     ])
 
-    assert_raise Mix.Error, ~r/violations found/, fn -> RepairMessages.run(["--all"]) end
+    assert_raise Mix.Error, ~r/violations found/, fn ->
+      RepairMessages.run(["--all"], @shell)
+    end
+
     assert_received {:mix_shell, :info, [report]}
     assert report =~ "Violations found"
 
-    assert :ok = RepairMessages.run(["--all", "--apply", "--verbose"])
+    assert :ok = RepairMessages.run(["--all", "--apply", "--verbose"], @shell)
     assert_received {:mix_shell, :info, [applied_report]}
     assert applied_report =~ "Planned writes"
 
-    assert :ok = RepairMessages.run(["--all"])
+    assert :ok = RepairMessages.run(["--all"], @shell)
   end
 
   test "missing or bad targets raise" do
-    assert_raise Mix.Error, ~r/specify --space/, fn -> RepairMessages.run([]) end
+    assert_raise Mix.Error, ~r/specify --space/, fn -> RepairMessages.run([], @shell) end
 
     assert_raise Mix.Error, ~r/repair failed/, fn ->
-      RepairMessages.run(["--space", "does-not-exist"])
+      RepairMessages.run(["--space", "does-not-exist"], @shell)
     end
   end
 

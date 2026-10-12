@@ -34,8 +34,24 @@ defmodule Nest.Hostname do
   The hostname for this instance, or `"[missing host]"`.
   """
   @spec get() :: String.t()
-  def get do
-    case Application.get_env(:nest, :hostname) do
+  def get, do: get(Application.get_env(:nest, :hostname))
+
+  @doc """
+  As `get/0`, with the configured override supplied directly.
+
+  Reading the override is this module's only impure step, and it is a
+  VM-global `Application` read. A test that exercises the fallback would
+  therefore have to mutate that global — forcing it, and anything that reads
+  the same config, out of the concurrent phase. Taking the value as an argument
+  is the same injected-seam shape as `Nest.Hardware.hpu_device_paths/2`, and
+  leaves `get/0` as the only caller that touches the global.
+
+  `nil` and `""` both mean "no usable override", matching `get/0`'s
+  interpretation of an unset or blank config value.
+  """
+  @spec get(String.t() | nil) :: String.t()
+  def get(override) do
+    case override do
       hostname when is_binary(hostname) and hostname != "" -> hostname
       _ -> system_hostname()
     end

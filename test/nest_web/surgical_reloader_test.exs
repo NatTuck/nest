@@ -3,19 +3,14 @@ defmodule NestWeb.SurgicalReloaderTest do
   Tests for `NestWeb.SurgicalReloader` (the dev-only file-watch +
   selective-restart GenServer) and its `SurgicalReloaderPlug`.
 
-  ## Why `async: false`
+  ## Concurrency
 
-  `SurgicalReloader.init/1` calls `FileSystem.start_link(dirs: ["lib"],
-  recursive: true)` — it watches the whole source tree. That's not safe
-  to run twice concurrently in the test process because the watcher
-  process is per-test, but its messages are delivered to whichever
-  GenServer pid subscribes, and a concurrent test's `mix`-driven file
-  write (e.g. coverage regeneration) would cross-pollinate watchers.
-
-  Per AGENTS.md, this restriction needs justification; the comment above
-  is it. There is no `start_supervised!` trick that avoids starting a
-  real `FileSystem` watcher here without a refactor of the module
-  (out of scope for this PR).
+  Safe to run concurrently: the file watcher is started **per test and
+  anonymously** (`FileSystem.start_link/1` is called with no `:name`, and
+  `FileSystem.Worker` fans events out only to its own subscribers), and the
+  server under test is started under a private `@test_name` rather than the
+  module's registered name. Nothing here is process-global, so no test can
+  observe another's events.
 
   ## What we cover
 
@@ -43,9 +38,7 @@ defmodule NestWeb.SurgicalReloaderTest do
   - `find_parent_supervisor/1` and `restart_supervisor/1`: exercised
     only via the broken-restart fallback path above.
   """
-  use ExUnit.Case, async: false
-
-  import ExUnit.CaptureLog
+  use ExUnit.Case, async: true
 
   alias NestWeb.SurgicalReloaderPlug
 
@@ -109,23 +102,19 @@ defmodule NestWeb.SurgicalReloaderTest do
     test "records pending change for a modified .ex file" do
       pid = start_supervised_reloader!()
 
-      log =
-        capture_log(fn ->
-          send(pid, {:file_event, make_ref(), {"lib/example_test.ex", [:modified]}})
+      # Hold the compiler busy first. `handle_info(:do_compile, ...)` only
+      # compiles — and only then clears `pending_changes` — when `compiling`
+      # is false, so with it true the debounce timer firing is harmless and
+      # the assertion below cannot race it. It also keeps the real
+      # `Mix.Task.run("compile.elixir", ...)` path out of a concurrent test.
+      :sys.replace_state(pid, fn state -> %{state | compiling: true} end)
 
-          # Drain pending state via :sys.get_state after the message
-          # has been processed. `:sys.get_state/1` is synchronous
-          # relative to the GenServer's mailbox.
-          _ = :sys.get_state(pid)
-        end)
+      send(pid, {:file_event, make_ref(), {"lib/example_test.ex", [:modified]}})
 
-      # The debounce timer fires `Mix.Task.run("compile.elixir", ...)`,
-      # which in test env is a no-op (everything's already compiled).
-      # Compilation may succeed silently or log deprecation noise from
-      # Mix internals — we only assert on absence of crashes.
-      _ = log
-
+      # `:sys.get_state/1` is synchronous relative to the server's mailbox and
+      # the event was sent first, so this observes the state after the event.
       state = :sys.get_state(pid)
+
       assert MapSet.member?(state.pending_changes, "lib/example_test.ex")
       assert is_reference(state.debounce_timer) or is_nil(state.debounce_timer)
     end
