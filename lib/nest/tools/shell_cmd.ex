@@ -266,6 +266,13 @@ defmodule Nest.Tools.ShellCmd do
   # for reasons we don't fully understand yet. We want the
   # server log to capture every occurrence with enough detail
   # to diagnose a flake from the log alone.
+  #
+  # Printing the directories is deliberate here, as it is on the two `info`
+  # lines above: a bwrap flake is diagnosed by asking *which* directories the
+  # failing invocation was given, and the agent's own `/tmp/<agent-name>/...`
+  # spelling is not what bwrap was handed. None of it reaches the agent — this
+  # is the operator's log — so it is not the leak the sandbox-spelling rule is
+  # about.
   defp log_bwrap_failure(command, exit_code, output, mounts) do
     Logger.error(
       "ShellCmd.execute: bwrap exited non-zero " <>

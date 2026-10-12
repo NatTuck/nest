@@ -230,6 +230,11 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
         repair_command: state.live.repair.command,
         vocation_id: state.vocation_id,
         vocation_slug: state.vocation && state.vocation.slug,
+        # The agent's scratch directory, unconsumed by the client: `statusExtras/1`
+        # in `assets/js/channels/agent.js` whitelists the fields it wants and
+        # does not include this one, and no tool reads it either. Retained
+        # because `agent_tmp_path_test.exs` uses it as its handle on the real
+        # tmp lifecycle; removing it is issue #79.
         tmp_path: state.tmp_path,
         # Run the streaming accumulator (or nil) through
         # `Streaming.to_json_safe/1` so `get_public_info/1`
@@ -403,4 +408,10 @@ defmodule Nest.Agents.Agent.IntrospectionHandler do
   # with (set during `Agent.init/1` from the attrs `:workspace_path`).
   # `ClientConfig` itself does NOT carry it — it's an LLM-level concern, not a
   # request-level one.
+  #
+  # `Mounts.from_agent/1` matches both keys hard rather than guarding for their
+  # absence, and that is safe here: every call site passes an
+  # `%Nest.Agents.Agent{}`, whose struct always carries them. The
+  # `when is_binary(root)` guard this replaced could only have absorbed a
+  # malformed agent-shaped map, which is a bug rather than a case to keep.
 end

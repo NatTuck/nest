@@ -5,12 +5,13 @@ defmodule Nest.SandboxPathDomainTest do
   An agent names exactly one domain of paths. The space scratch dir is bound at
   `/tmp`, so an agent's own scratch directory is `/tmp/<agent>/...`; the
   workspace is bound at its own path. The two directories those binds are made
-  from travel in one `Nest.Sandbox.Mounts` value and are read only by
-  `Nest.Sandbox`. These tests pin that stat/glob/read return paths in the
-  agent's domain, that the `/tmp` bind source is exactly the scratch root
-  `Nest.Sandbox.Paths` derives, that a result or a pointer never carries a
-  directory the sandbox binds, and that read/stat/glob execute inside bwrap
-  rather than against the host.
+  from travel in one `Nest.Sandbox.Mounts` value; `Nest.Sandbox` is what turns
+  it into binds, and no module outside the boundary needs a directory in order
+  to name a path an agent uses. These tests pin that stat/glob/read return
+  paths in the agent's domain, that the `/tmp` bind source is exactly the
+  scratch root `Nest.Sandbox.Paths` derives, that a result or a pointer never
+  carries a directory the sandbox binds, and that read/stat/glob execute inside
+  bwrap rather than against the host.
   """
   use ExUnit.Case, async: true
 

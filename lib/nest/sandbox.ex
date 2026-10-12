@@ -23,9 +23,11 @@ defmodule Nest.Sandbox do
 
   The two directories the sandbox binds — the workspace and the agent's
   scratch directory — travel together in one `Nest.Sandbox.Mounts` value,
-  built from the agent's state. Nothing outside this boundary needs a
-  directory in order to name a path an agent uses, so nothing outside it
-  holds one.
+  built from the agent's state. This module is what turns that value into
+  binds, and nothing outside it needs a directory in order to name a path an
+  agent uses: a caller that wants a real directory (to stage a script into, to
+  write an offload into) reads it from the value, but the path it hands back to
+  the agent is always the agent's own spelling.
 
   ## bwrap argument builder
 
@@ -221,7 +223,8 @@ defmodule Nest.Sandbox do
   sandbox: `/tmp/<agent-name>` (the space dir is bound at `/tmp`).
 
   This is the only spelling an agent is ever told about or hands back; the
-  scratch directory itself is internal to this module.
+  directory it is derived from is the caller's, and is never given to the
+  agent.
   """
   @spec sandbox_tmp_path(String.t()) :: String.t()
   defdelegate sandbox_tmp_path(tmp_path), to: Paths
@@ -239,8 +242,8 @@ defmodule Nest.Sandbox do
   The sandbox spelling of an agent's own scratch directory, derived from the
   agent's name alone: `/tmp/<agent-name>`.
 
-  This is the only scratch spelling an agent is ever told about; the scratch
-  directory itself is internal to this module.
+  This is the only scratch spelling an agent is ever told about; the directory
+  it names is the caller's, and is never given to the agent.
   """
   @spec scratch_dir(String.t()) :: String.t()
   defdelegate scratch_dir(name), to: Paths
