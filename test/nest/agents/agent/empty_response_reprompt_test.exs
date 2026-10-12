@@ -106,9 +106,10 @@ defmodule Nest.Agents.Agent.EmptyResponseRepromptTest do
 
     assert Enum.any?(parts, &match?(%Part.Text{text: "A perfectly normal reply."}, &1))
 
-    # No nudge user message appears (the only user message is index 1).
-    refute_receive {:chat_message, {:user, %{index: 2}}}, 100
-
+    # No nudge user message appears (the only user message is index 1). The
+    # idle broadcast is emitted last, so asserting it first settles the mailbox
+    # and a nudge frame would already be here.
     assert_receive {:chat_status, %{status: "idle"}}, 500
+    refute_received {:chat_message, {:user, %{index: 2}}}
   end
 end

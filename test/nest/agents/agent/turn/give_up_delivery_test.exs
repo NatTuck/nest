@@ -95,10 +95,13 @@ defmodule Nest.Agents.Agent.Turn.GiveUpDeliveryTest do
     assert :ok = Nest.Agents.Supervisor.stop_agent(space_id, peer_name)
     assert_receive {:EXIT, ^peer_pid, :shutdown}, 500
 
-    assert Eventually.eventually(
-             fn -> Nest.Agents.Registry.lookup(space_id, peer_name) == {:error, :not_found} end,
-             timeout: 500
-           )
+    # `stop_agent/2` is synchronous and we have its `:EXIT`, so the process is
+    # provably dead. `get_running_agent/2` checks `Process.alive?/1`, so it is
+    # deterministic here even though the registry's own ETS cleanup is not: the
+    # partition server removes the entry from its link `EXIT`, asynchronously.
+    # Asserting the liveness check beats polling the row.
+    assert Nest.Agents.Supervisor.get_running_agent(space_id, peer_name) ==
+             {:error, :not_found}
 
     assert {:ok, _row} = Nest.Persistence.fetch_agent(space_id, peer_name)
 

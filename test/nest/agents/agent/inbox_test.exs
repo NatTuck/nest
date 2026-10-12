@@ -52,7 +52,7 @@ defmodule Nest.Agents.Agent.InboxTest do
     # test below for the other half of this contract).
     assert state.live.inbox == []
     assert_receive {:chat_inbox, %{count: 0, messages: []}}
-    refute_receive {:chat_inbox, _}, 50
+    refute_received {:chat_inbox, _}
   end
 
   test "delivery to a busy agent queues and drains all queued messages together on idle", %{
@@ -226,7 +226,7 @@ defmodule Nest.Agents.Agent.InboxTest do
     assert_receive {:chat_inbox, %{count: 1}}, 500
     # Nothing was consumed, so the enqueue frame above is the only one: a
     # consume's empty frame would mean the entry had been delivered.
-    refute_receive {:chat_inbox, %{count: 0}}, 50
+    refute_received {:chat_inbox, %{count: 0}}
     assert Machine.status_for(state.live.machine) == :context_overflow
   end
 

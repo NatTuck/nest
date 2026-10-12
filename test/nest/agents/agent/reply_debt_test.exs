@@ -244,7 +244,7 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       assert Machine.owed_senders(state.live.machine) == []
 
       # Exactly two requests: one reminder, never a second.
-      refute_receive {:llm_request, _}, 50
+      refute_received {:llm_request, _}
 
       # The requester learned that no answer is coming, as the runtime's own
       # words: the notice arrives bare, with no `[Message from agent …]` label.
@@ -341,15 +341,10 @@ defmodule Nest.Agents.Agent.ReplyDebtTest do
       # absence assertion there flakes and tests nothing.
       assert :ok = Supervisor.archive_agent(current_space_id(), name)
 
-      # The process is gone, so its `terminate/2` has run: the registry entry
-      # goes with the process.
-      assert Eventually.eventually(
-               fn ->
-                 Supervisor.get_running_agent(current_space_id(), name) ==
-                   {:error, :not_found}
-               end,
-               timeout: 500
-             )
+      # The process is gone, so its `terminate/2` has run. `get_running_agent/2`
+      # checks `Process.alive?/1`, so it is deterministic here even though the
+      # registry's own ETS cleanup (the partition server's link `EXIT`) is not.
+      assert Supervisor.get_running_agent(current_space_id(), name) == {:error, :not_found}
 
       assert Eventually.eventually(
                fn -> Enum.any?(peer_texts(peer), &(&1 =~ "did not reply")) end,

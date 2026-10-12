@@ -35,7 +35,6 @@ defmodule Nest.Agents.ChatTaskCrashTest do
   alias Nest.Agents.Agent.Machine
 
   import ExUnit.CaptureLog
-  import Eventually
   import Mimic
 
   alias Nest.Agents.Agent
@@ -124,7 +123,7 @@ defmodule Nest.Agents.ChatTaskCrashTest do
         # Agent is the single source. refute_receive can't be
         # converted to refute_received (which checks the current
         # mailbox snapshot), so it stays as a timed wait.
-        refute_receive {:chat_error, _}, 500
+        refute_received {:chat_error, _}
       end)
     end
 
@@ -242,7 +241,7 @@ defmodule Nest.Agents.ChatTaskCrashTest do
       # `Process.monitor/1` and report `:noproc` instead of the real exit
       # reason; blocking makes the monitor-DOWN reason deterministic.
       Mimic.stub(MockClient, :run, fn _request, _opts ->
-        send(parent, :worker_blocked)
+        send(parent, {self(), :worker_blocked})
 
         receive do
           :never -> :ok
@@ -260,12 +259,11 @@ defmodule Nest.Agents.ChatTaskCrashTest do
       capture_log(fn ->
         :ok = Agent.chat(pid, "Hello")
 
-        assert_receive :worker_blocked, 500
-
-        worker =
-          eventually(fn -> :sys.get_state(pid, 500).live.machine.work.active_worker end,
-            timeout: 500
-          )
+        # The worker sends us its own pid, so there is nothing to poll: the agent
+        # recorded `active_worker` before the worker could run, and a synchronous
+        # read is ordered after that write.
+        assert_receive {worker, :worker_blocked}, 500
+        assert :sys.get_state(pid, 500).live.machine.work.active_worker == worker
 
         # A raw exit signal (not trappable by the worker's own try/catch)
         # kills the worker before it can send a result. The turn's

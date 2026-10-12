@@ -2,9 +2,11 @@ defmodule Nest.Credo.Check.NoSleepInTests do
   @moduledoc """
   Flags any `Process.sleep/1` or `:timer.sleep/1` call in test files.
 
-  Polling with sleeps is racy and slow. Tests should use
-  `assert_receive/2`, `refute_receive/2`, or a dedicated event-based
-  waiting helper. Process.sleep is a code smell in a test suite.
+  Polling with sleeps is racy and slow. Tests should wait on the *event* they
+  care about: `assert_receive/2` for an arrival-decided frame, `assert_received/1`
+  when the frame is already in the mailbox (e.g. after a `GenServer.call`), and
+  `refute_received/1` — not `refute_receive …, <nonzero>`, which burns the
+  timeout to assert a negative. Process.sleep is a code smell in a test suite.
 
   Applies only to files under the top-level `test/` directory. Production
   code in `lib/` is exempt — long-running workers may legitimately need
@@ -12,8 +14,8 @@ defmodule Nest.Credo.Check.NoSleepInTests do
   infrastructure, but it's not under the test runner and is exempt.
 
   Exempted: `test/support/eventually.ex` (the `eventually/2` helper is
-  a general polling primitive. It is no longer "a small number of tests":
-  it has 73 call sites across 30 files, which is why `#21` questioned
+  a general polling primitive. It is not "a small number of tests":
+  it has 67 call sites across 30 test files, which is why `#21` questioned
   whether polling should still be the default answer — see
   `notes/sketchy-slow-tests.md`. Polling remains legitimate where the
   state being waited on has no PubSub event; where one exists, wait on
