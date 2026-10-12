@@ -10,7 +10,10 @@ defmodule NestWeb.SurgicalReloaderTest do
   `FileSystem.Worker` fans events out only to its own subscribers), and the
   server under test is started under a private `@test_name` rather than the
   module's registered name. Nothing here is process-global, so no test can
-  observe another's events.
+  observe another's events — note that holds for *events* only: a real
+  filesystem write under `lib/` during the async phase would be observed by
+  any live watcher here (and would break the `pending_changes` equality
+  assertions below).
 
   ## What we cover
 
@@ -66,9 +69,9 @@ defmodule NestWeb.SurgicalReloaderTest do
 
       # `init/1` returns `{:ok, state, {:continue, :build_module_map}}`,
       # so the module map is built asynchronously after init returns.
-      # `_ = :sys.get_state/1` flushes the GenServer mailbox so the
+      # `_ = :sys.get_state/2` flushes the GenServer mailbox so the
       # `handle_continue/2` callback has run before we read state.
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
 
       assert is_map(state)
       assert is_map(state.module_map)
@@ -86,7 +89,7 @@ defmodule NestWeb.SurgicalReloaderTest do
 
       send(pid, {:file_event, make_ref(), {"README.md", [:modified]}})
 
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
       assert state.pending_changes == MapSet.new()
     end
 
@@ -95,7 +98,7 @@ defmodule NestWeb.SurgicalReloaderTest do
 
       send(pid, {:file_event, make_ref(), {"lib/foo.ex", [:removed]}})
 
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
       assert state.pending_changes == MapSet.new()
     end
 
@@ -107,13 +110,13 @@ defmodule NestWeb.SurgicalReloaderTest do
       # is false, so with it true the debounce timer firing is harmless and
       # the assertion below cannot race it. It also keeps the real
       # `Mix.Task.run("compile.elixir", ...)` path out of a concurrent test.
-      :sys.replace_state(pid, fn state -> %{state | compiling: true} end)
+      :sys.replace_state(pid, fn state -> %{state | compiling: true} end, 500)
 
       send(pid, {:file_event, make_ref(), {"lib/example_test.ex", [:modified]}})
 
-      # `:sys.get_state/1` is synchronous relative to the server's mailbox and
+      # `:sys.get_state/2` is synchronous relative to the server's mailbox and
       # the event was sent first, so this observes the state after the event.
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
 
       assert MapSet.member?(state.pending_changes, "lib/example_test.ex")
       assert is_reference(state.debounce_timer) or is_nil(state.debounce_timer)
@@ -126,7 +129,7 @@ defmodule NestWeb.SurgicalReloaderTest do
 
       send(pid, :do_compile)
 
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
       assert state.pending_changes == MapSet.new()
       assert state.compiling == false
       assert state.debounce_timer == nil

@@ -112,13 +112,13 @@ defmodule NestWeb.LobbyChannelRescanModelsTest do
   # never produce, while spending the 100 ms default timeout doing it.
   # The assertion was vacuous and cost ~200 ms per run of this file.
   #
-  # `:sys.get_state/1` is a synchronous call to the channel process: when it
+  # `:sys.get_state/2` is a synchronous call to the channel process: when it
   # returns, the event sent just above has already been handled (the send and
   # this call come from the same process, so ordering is guaranteed), and any
   # reply the channel was going to send is already in the test mailbox.
   # `refute_receive ..., 0` then checks it with no wait.
   defp refute_no_reply(socket, ref) do
-    _ = :sys.get_state(socket.channel_pid)
+    _ = :sys.get_state(socket.channel_pid, 500)
     refute_receive %Phoenix.Socket.Reply{ref: ^ref}, 0
   end
 

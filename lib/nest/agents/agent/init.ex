@@ -90,6 +90,7 @@ defmodule Nest.Agents.Agent.Init do
   # stays under the credo ABC cap.
   defp build_vocation_pipeline(attrs) do
     model = Map.fetch!(attrs, :model)
+    # Internal/test-only cache-tier override; see `initial_context_limit/2`.
     cache_lookup = Map.get(attrs, :context_limit_lookup, &Nest.Models.context_limit/2)
     {context_limit, context_limit_source} = initial_context_limit(model, cache_lookup)
 

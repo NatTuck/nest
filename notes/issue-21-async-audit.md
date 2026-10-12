@@ -102,9 +102,11 @@ untouched.
 sync purely on the strength of a justification describing functions that do not
 exist and a scope the code does not have.
 
-**Fix:** `async: true` and a moduledoc rewritten against the real API. The
-Mimic setup in the file is still present and still used; it is private-mode, so
-it was never the forcing factor.
+**Fix:** `async: true` and a moduledoc rewritten against the real API. The file
+contains **no** `stub`/`expect`/`allow` call at all — only a vestigial
+`import Mimic` (`:24`) and `setup :verify_on_exit!` (`:30`), which are no-ops
+when nothing is stubbed and therefore force nothing. It was never the forcing
+factor.
 
 ### 5. `test/nest_web/surgical_reloader_test.exs`
 
@@ -276,37 +278,155 @@ opts, and contradicts the module's documented design. Not recommended.
    alternative (asserting `Init.initial_context_limit/1` in the test process)
    would drop the `Agent.init/1` → `llm_metrics` wiring the file claims to pin,
    which the mandate forbids. The judgement made here: accept it. The injected
-   value is a plain 2-arity lookup with exactly one production call site, and
-   the seam is the same *shape* as the pre-existing
-   `Nest.Hardware.hpu_device_paths/2`. **If reviewers disagree, this file
+   value is a plain 2-arity lookup with exactly one production call site. The
+   nearest existing precedent, `Nest.Hardware.hpu_device_paths/2`, **exists but
+   the analogy is loose**: it injects *data* and has no production caller of its
+   extra arity, whereas this injects *a function* and its default arity has four
+   production callers. The exact analogue is `Nest.Hostname.get/1`, added in
+   this same branch for the same reason. **If reviewers disagree, this file
    reverts to `async: false` and nothing else changes.**
 
-4. **`lobby_channel_providers_test` — the audit's 1-line production change was
-   taken as specified.** It is a genuine behaviour-preserving change (a
-   self-remote call instead of a local call, to defeat Mimic's module rename),
-   verified against `deps/mimic/lib/mimic/module.ex`. **If the team refuses it,
-   this file degrades to MANUAL-REVIEW** — the app env cannot be scoped from the
-   channel process by any test-side means.
+4. **`lobby_channel_providers_test` — the audit's production change was taken
+   as specified, and extended.** The required change is a genuine
+   behaviour-preserving one (a self-remote call instead of a local call, to
+   defeat Mimic's module rename), verified against
+   `deps/mimic/lib/mimic/module.ex`. Review additionally required **deleting the
+   now-dead `:nest, :local_config_file` app-env seam** in `local_file/0`: after
+   the stub replaced it, nothing anywhere read or wrote that key, so the
+   `case`'s `path -> path` clause was unreachable and had silently become an
+   uncovered line. Removing it recovers the line and removes dead code, which
+   AGENTS.md explicitly endorses. `local_file/0` stays **public** (the
+   `__MODULE__.` remote call depends on it). **If the team refuses the
+   self-remote call, this file degrades to MANUAL-REVIEW** — the app env cannot
+   be scoped from the channel process by any test-side means.
+
+---
+
+## A flake found during review — and fixed, not tolerated
+
+The first full `mix test --cover` run after the conversions failed once:
+
+```
+1) test handle_in(save_providers) persists the providers to local.toml and broadcasts providers_updated
+   test/nest_web/channels/lobby_channel/providers_test.exs:139
+   Assertion failed, no matching message after 100ms
+   The process mailbox is empty.
+   code: assert_receive %Phoenix.Socket.Reply{ref: ^ref, status: :ok, payload: %{}}
+   stacktrace:
+     test/nest_web/channels/lobby_channel/providers_test.exs:153: (test)
+```
+
+**Cause.** `assert_reply ref, :ok` at `:153` expands to that `assert_receive`
+with ExUnit's **implicit 100 ms** default. That test is the only one in the file
+whose `handle_in` does real work before replying — `Writer.save_providers/1`
+writes `local.toml`, `DotConfig.load/0` parses TOML, and the handler broadcasts
+before replying — and the file is now `async: true`, so it competes with 23
+other tests. `mix test --cover` instruments every module, which slows that path
+further. It had passed six or more earlier runs, including two `--cover` runs at
+load ~5; the failing run was at load 8.4 → 10.5. Since `mix test --cover` **is**
+the coverage gate, this could not be left as "a load flake".
+
+**Fix (deterministic, no timeout bump).** The test now synchronises on the
+channel process with `:sys.get_state(socket.channel_pid, 500)` — the idiom this
+same file already uses in `refute_no_reply/2` — and asserts with an explicit `0`
+timeout. A second barrier covers the `providers_updated` push, which reaches the
+test one channel turn later: `Nest.PubSub` is started with no `:dispatcher`, so
+`Phoenix.PubSub.broadcast/4` delivers to local subscribers with `send/2` from
+the broadcasting process — the channel enqueues the `%Broadcast{}` in its own
+mailbox while `handle_in/3` runs, so a second `:sys.get_state` (ordered after
+it) guarantees the push has been forwarded. Both assertions are therefore true
+with no timing window. Assertion semantics are unchanged: same ref, same `:ok`,
+same `%{}`, same event, same provider and file assertions. (The barrier itself
+is bounded at 500 ms — see *Host-load contention* below for what happens to it
+when the host is at load 16.)
+
+**Checked and left alone:** the file's other `assert_reply`/`refute_push` calls
+sit on handlers that return before any I/O (`forbidden`, two `invalid_payload`s,
+`does not broadcast on failure`), and the `init` / `broken_agents_updated` pushes
+are already in the mailbox when `subscribe_and_join/3` returns. The other six
+converted files have no implicit-timeout channel assertion on a slow handler.
+
+## Timeout caps
+
+A new hard constraint — "any timeout in the tests, implicit or explicit, gets
+lowered to 2000 ms and no higher" — was applied to every test file this branch
+touches. Every bare `:sys.get_state/1` and `:sys.replace_state/2` was given an
+explicit timeout: **`500` for reads** (consistent with SMELLS.md's 500 ms rule)
+and **`500` for the `:sys.replace_state` writes** as well. Nothing in these files
+now exceeds 2000 ms, and no timeout was *raised* to make anything pass. OTP's
+default for both `:sys.get_state/1` and `:sys.replace_state/2` is 5000 ms, so
+every one of these is a tightening.
+
+Two timeouts in these files were deliberately **left alone** because they are
+pre-existing values this branch did not introduce:
+`lobby_channel_rescan_models_test.exs:102`'s `assert_push "broken_agents_updated", …, 1_000`
+(verified against `eba4dc1`) and the implicit `assert_reply`/`assert_push`
+defaults in handlers that return before doing any I/O.
 
 ---
 
 ## Verification
 
-- Three full suite runs, distinct seeds, whole logs read:
-  `--seed 137` → **2369 tests, 0 failures** (6.8 s; 6.6 s async / 0.1 s sync);
-  `--seed 4242` → **2369 tests, 0 failures** (7.2 s);
-  `--seed 90210` → **2369 tests, 0 failures** (7.2 s).
-  No logger output in any run. All 7 converted modules land in the async phase
-  (the sync phase is 0.1 s).
-  Logs: `notes/test-runs/full-*.log` (gitignored).
+All logs are under `notes/test-runs/` (gitignored); every one was read whole.
+
+- **Five full suite runs, all green, before the review round:** seeds 137 / 4242
+  / 90210 → **2369 tests, 0 failures** (6.8 s / 7.2 s / 7.2 s), no logger output;
+  plus `full-after-fixes.log` and `flake-full.log`, both **2369 / 0**. All 7
+  converted modules land in the async phase (the sync phase is 0.1 s).
+- **Coverage gate** (`mix test --cover`) — **[TOTAL] 87.4%**, above the floor.
+  Both lines the review flagged as lost are recovered:
+
+  | file | before | after |
+  |---|---|---|
+  | `lib/mix/tasks/nest.repair_messages.ex` | 92.0%, 25 relevant, **2** missed | 95.8%, 24 relevant, **1** missed |
+  | `lib/nest/dot_config.ex` | 80.2%, 142 relevant, 28 missed | 80.7%, 140 relevant, 27 missed |
+
+  The one remaining miss in `repair_messages.ex` is the pre-existing `validate/2`
+  "use either `--space` … or `--all`, not both" branch, unrelated to this change.
 - `mix compile --warnings-as-errors` — clean, dev and test env.
-- `mix credo --strict` — 5162 mods/funs, found no issues.
+- `mix credo --strict` — 5161 mods/funs, found no issues.
 - `mix format --check-formatted` — clean.
 - `cd assets && node lint-file-size.mjs` — OK, no source file exceeds the caps.
 - No assertion was removed, renamed, split, disabled, downgraded or replaced in
-  any of the 7 files. Every pre-change `assert*`/`refute*` line is still present
-  and still tests the same thing; the only net additions are one extra
-  `Nest.Hostname.get/1` override assertion (the fallback assertions were kept).
+  any of the 7 converted files — 8 test files in total, since
+  `page_controller_test.exs` is the eighth (comment-only). Every pre-change
+  `assert*`/`refute*` line is still present and still tests the same thing; the
+  only net addition is one extra `Nest.Hostname.get/1` override assertion (the
+  fallback assertions were kept). A reviewer re-derived this mechanically, by
+  extracting every `assert*`/`refute*` line from `HEAD:<path>` and from the
+  working tree and diffing the sets, as well as by reading.
+
+### Host-load contention — reported, not papered over
+
+Four of the runs were made against a host that other agents were also running
+suites on. Two came back **red, purely on load-induced timeouts**:
+
+| run | load avg | result |
+|---|---|---|
+| `final-full.log` | 5.88 → 6.74 | 2369 / 0 |
+| `final-cover.log` | 8.41 → 10.49 | 2369 / **1** — `providers_test.exs:153`, the implicit 100 ms default |
+| `final2-full.log` | 7.79 → 10.36 | 2369 / **2** — both in files this branch never touches |
+| `final3-cover.log` | 12.08 → 15.79 | 2369 / **1** — the 500 ms barrier itself |
+
+The two failures at load 10.36 are `agent_compaction_preflight_test.exs:56` and
+`empty_response_reprompt_test.exs:46` — neither file is in this branch's diff,
+both are pre-existing `async: true` modules, and both are bare 500 ms
+`assert_receive` waits on a completed agent turn. Run in isolation they pass
+(**6 tests, 0 failures**), as does `providers_test.exs` alone (**8 tests, 0
+failures**). Everything passed in every run at load ≤ 9.9.
+
+So the suite is not green at host load ≥ 10, and that is already true of files
+this branch does not touch. One honest caveat: converting 7 more modules to
+async raises sustained concurrency toward ExUnit's 24-case cap, which is
+plausibly what tips other files' tight waits over at high load. That is a
+property of the whole async suite — issue #21's territory, and `cap-enforcer`'s
+sweep — not something this branch should fix by raising timeouts, which
+AGENTS.md forbids and the new rule caps at 2000 ms anyway.
+
+The `providers_test` barrier was therefore left at **500 ms** (the project's read
+cap) rather than raised to 2000: it is strictly more robust than the 100 ms
+default it replaced, and a green suite at load 16 would not have been achieved
+by raising it in any case.
 
 ### Latent shared state the conversions exposed, checked and found clean
 
@@ -314,14 +434,23 @@ opts, and contradicts the module's documented design. Not recommended.
   written by the *channel* process, but keys are `{path, mtime}` with a per-test
   unique path, so it cannot collide with the shared `test/data/config.toml`
   entry.
-- Mimic's coordinator `allow` rows are keyed `{allowed_pid, module}` and reaped
-  when the owner dies.
+- Mimic's `allow` rows live in the shared ETS table that `Mimic.Coordinator`
+  owns, keyed `{allowed_pid, module}`. They are cleared by
+  `Mimic.Server.clear_data_from_pid/2`, reached either from `Mimic.Server`'s
+  `:DOWN` handler (`deps/mimic/lib/mimic/server.ex:188`) or from `Server.exit/1`
+  on the `on_exit` path (`:182`). `Mimic.Coordinator` itself has **no** delete
+  path. When `verify_on_exit!` is in play the `:DOWN` handler deliberately skips
+  that pid (`:189-192`), leaving reaping to the `on_exit` path.
 - `:nest, :hostname` is now read-only suite-wide.
 - The `"models"` topic has no producer in the async phase (`models_test.exs` is
   sync, `Nest.Models`'s startup scan is skipped in test, and `providers_test`
-  stubs `rescan`). This mattered: `lobby_channel_scoping_test.exs` asserts
-  exactly two `models_updated` pushes, which a stray live scan would have
-  tripped.
+  stubs `rescan`).
+- **One latent global write this conversion *does* introduce**, recorded rather
+  than hidden: `Mix.Shell.Process.info/1` → `print_app/0` →
+  `Mix.Shell.printable_app_name/0` writes `Mix.ProjectStack`'s `io_done` key,
+  and `repair_messages_test` now calls that from the async phase. It is inert
+  today only because `Mix.Tasks.Test` has already set `io_done: true` and
+  nothing in the suite pushes a project onto the stack.
 - The `lobby`-topic broadcast at `lobby_channel/providers.ex:49` now reaches
   every concurrently-joined lobby socket. Verified inert: the only
   `providers_updated` assertion anywhere is in the same module, and every other
@@ -335,8 +464,14 @@ opts, and contradicts the module's documented design. Not recommended.
   **not** attributable to these changes — the sync phase is 0.1 s, so the
   conversion moved work *into* the concurrent phase — but the target is
   currently missed and that is worth a look separately.
-- `Mix.Tasks.Nest.RepairMessages.run/1` is now called by no test (all five call
-  sites pass the shell), so its one line is uncovered. That is inherent to the
-  chosen design: a test cannot call `run/1` without re-introducing the
-  `Mix.shell/1` global write. The default-arg variant would have kept it
-  covered, at the cost of `@impl` ambiguity.
+- `Mix.Tasks.Nest.RepairMessages.run/1`'s coverage was **recovered, not waived.**
+  The two-clause form (a `run/1` delegate plus `run/2`) left `run/1`'s body line
+  uncovered, because no test calls it — calling it would re-introduce the
+  `Mix.shell/1` global write this change exists to remove. The fix is a single
+  clause, `def run(args, shell \\ Mix.shell())`: with a default argument there is
+  no separate `run/1` body line, and the generated delegate shares the `def`'s
+  line, which the five `run/2` call sites cover. **A suspected `@impl Mix.Task`
+  ambiguity with a default argument was checked and does not exist** —
+  `mix compile --warnings-as-errors` is clean, the `Mix.Task` `run/1` callback is
+  still generated and satisfied, and the abstract code confirms both `run/1` and
+  `run/2` are attributed to the same line.

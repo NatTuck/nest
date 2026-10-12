@@ -29,19 +29,17 @@ defmodule Mix.Tasks.Nest.RepairMessages do
 
   @switches [space: :string, all: :boolean, apply: :boolean, verbose: :boolean]
 
-  @impl Mix.Task
-  def run(args), do: run(args, Mix.shell())
-
   @doc """
-  As `run/1`, with the shell passed in rather than read from `Mix.shell/0`.
+  Runs the repair task, writing its report to `shell` (default `Mix.shell/0`).
 
-  `Mix.shell/1` writes a VM-global entry in `Mix.State`, so a test that asserts
-  on this task's output would otherwise have to be `async: false`. Injecting the
-  shell keeps the assertion (the output still arrives as a `{:mix_shell, :info, _}`
-  message from `Mix.Shell.Process`) without the global.
+  Injecting the shell keeps the output assertion — the report still arrives as a
+  `{:mix_shell, :info, _}` message from `Mix.Shell.Process` — without touching
+  the VM-global `Mix.shell/1` slot in `Mix.State`, so the test can stay
+  `async: true`.
   """
+  @impl Mix.Task
   @spec run([String.t()], module() | pid()) :: :ok
-  def run(args, shell) do
+  def run(args, shell \\ Mix.shell()) do
     Mix.Task.run("app.start")
 
     case parse_args(args) do

@@ -150,8 +150,26 @@ defmodule NestWeb.LobbyChannel.ProvidersTest do
 
       ref = push(socket, "save_providers", %{"providers" => [%{"name" => "acme"}]})
 
-      assert_reply ref, :ok
-      assert_push "providers_updated", %{providers: providers}
+      # Synchronise instead of racing the default 100 ms channel timeout: this
+      # handler writes `local.toml`, parses it back through `DotConfig.load/0`
+      # and broadcasts before it replies, so it is the slowest `handle_in` in
+      # this file and flaked under `mix test --cover`.
+      #
+      # `:sys.get_state/2` is a synchronous call processed in mailbox order,
+      # and the push above came from this same process, so the first barrier
+      # returns only after `handle_in/3` has run — the reply is already in this
+      # mailbox. The `providers_updated` broadcast is a
+      # `%Phoenix.Socket.Broadcast{}` enqueued in the channel's *own* mailbox
+      # while `handle_in/3` runs (`Phoenix.PubSub.broadcast/4` delivers local
+      # subscribers with `send/2` from the broadcasting process), so the
+      # channel forwards it to this process on its next turn — before the
+      # second barrier. Both assertions below are therefore true with a `0`
+      # timeout, with no timing window.
+      _ = :sys.get_state(socket.channel_pid, 500)
+      assert_reply ref, :ok, %{}, 0
+
+      _ = :sys.get_state(socket.channel_pid, 500)
+      assert_push "providers_updated", %{providers: providers}, 0
 
       assert Enum.any?(providers, &(&1["name"] == "acme"))
       assert File.exists?(local_file)

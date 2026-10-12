@@ -32,6 +32,11 @@ defmodule Nest.Agents do
   * `:parent_name` — readable name of the spawning agent
   * `:depth` — tree depth (default 0); children get `parent + 1`
 
+  The attrs map that reaches `Agent.Init` honours the internal, test-only
+  `:context_limit_lookup` key (a `(provider, model) -> {source, limit} | nil`
+  fun overriding the context-limit cache tier); it is not exposed through
+  `opts`.
+
   ## Returns
 
   * `{:ok, name}` — agent created successfully with readable name
