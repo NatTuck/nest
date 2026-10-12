@@ -87,6 +87,9 @@ describe("describeCreateError", () => {
     expect(describeCreateError({ reason: "missing_vocation" })).toMatch(
       /vocation/i,
     );
+    expect(describeCreateError({ reason: "invalid_agent_name" })).toMatch(
+      /letters, numbers, dashes and underscores/i,
+    );
   });
 
   it("words the workspace refusals exactly as the edit-agent path does", () => {

@@ -466,8 +466,10 @@ defmodule Nest.Spaces do
 
   # Root agent name. Falls back to the slug if the caller
   # doesn't supply an explicit name. The slug is guaranteed
-  # non-nil because `create_space` derives it from `name`.
+  # non-nil because `create_space` derives it from `name`, and
+  # `Space.changeset/2` guarantees the derived name is filename-safe
+  # (`Space.root_agent_suffix/0` is the suffix it validates against).
   defp root_agent_name(attrs, %Space{slug: slug}) do
-    attrs[:agent_name] || "#{slug}-root"
+    attrs[:agent_name] || slug <> Space.root_agent_suffix()
   end
 end

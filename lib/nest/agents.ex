@@ -60,9 +60,20 @@ defmodule Nest.Agents do
     attrs = Persistence.build_agent_attrs(attrs)
 
     with :ok <- Nest.Sandbox.workspace_error(attrs.workspace_path),
-         :ok <- Agent.pre_spawn(attrs) do
-      Supervisor.fetch_or_start_agent(space_id, attrs)
+         {:ok, agent_id} <- Agent.pre_spawn(attrs) do
+      start_pre_spawned_agent(attrs, agent_id, space_id)
     end
+  end
+
+  # The row (and its index-0 system message) is in the DB before the process
+  # exists, so a start that fails — or raises, e.g. inside
+  # `Agent.pre_load_heal/1` — would leave an orphan row that also blocks every
+  # retry with the same name (`unique_constraint([:space_id, :name])`).
+  # `start_pre_spawned/3` rolls that row back, by `agent_id`.
+  defp start_pre_spawned_agent(attrs, agent_id, space_id) do
+    Supervisor.start_pre_spawned(attrs, agent_id, fn ->
+      Supervisor.fetch_or_start_agent(space_id, attrs)
+    end)
   end
 
   defp name_or_generate(space_id, opts) do

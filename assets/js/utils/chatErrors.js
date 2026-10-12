@@ -61,6 +61,8 @@ export function describeCreateError(err) {
       return "That blueprint's root agent vocation no longer exists. Pick another blueprint.";
     case "missing_vocation":
       return "No agent vocation is configured on the server.";
+    case "invalid_agent_name":
+      return "Agent names can only contain letters, numbers, dashes and underscores.";
     default:
       return err?.message || "Failed to create space.";
   }

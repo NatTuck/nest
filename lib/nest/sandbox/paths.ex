@@ -71,6 +71,21 @@ defmodule Nest.Sandbox.Paths do
   def sandbox_tmp_path(tmp_path), do: Path.join(@sandbox_root, Path.basename(tmp_path))
 
   @doc """
+  The SANDBOX spelling of an agent's own scratch directory, derived from the
+  agent's *name* alone: `#{@sandbox_root}/<agent-name>`.
+
+  `sandbox_tmp_path/1` needs a host `tmp_path`; this needs only the name, so
+  callers that have just the name (the prompt composer, the clone notice) can
+  state the spelling without one. The name is the scratch segment
+  (`Nest.Agents.PersistedAgent` enforces that), so the two agree.
+
+  SANDBOX PATH — the contrast with `scratch_root/1`, which returns the HOST
+  directory bound at `#{@sandbox_root}`.
+  """
+  @spec scratch_dir(String.t()) :: String.t()
+  def scratch_dir(name), do: Path.join(@sandbox_root, name)
+
+  @doc """
   The HOST directory `Nest.Tools.ShellCmd` stages command transcripts in.
 
   With a scratch bind, it lives *inside* the bound space dir

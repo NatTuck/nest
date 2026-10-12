@@ -96,28 +96,30 @@ defmodule Nest.Agents.Agent.TmpSpaceTest do
       end)
     end
 
-    test "neutralizes a hostile agent name to a single safe segment", %{
+    test "refuses a hostile agent name instead of escaping the space dir", %{
       space_id: space_id,
       space_dir: space_dir
     } do
       capture_log(fn ->
-        # ".." must not escape the space dir: `cleanup/2`'s syntactic
-        # guard would otherwise `rm_rf` the whole shared `nest-<ospid>`
-        # root (every space, every agent's scratch).
-        dotdot = TmpSpace.create(space_id, "..")
-        assert Path.dirname(dotdot) == space_dir
-        refute dotdot == space_dir
+        # A real agent dir first, so the refusals below are checked
+        # against something that exists.
+        keeper = TmpSpace.create(space_id, "keeper")
+        assert Path.dirname(keeper) == space_dir
 
-        # A "/" would otherwise create a nested path.
-        nested = TmpSpace.create(space_id, "a/b")
-        assert Path.dirname(nested) == space_dir
+        # ".." would pass a *syntactic* `Path.dirname/1` guard and
+        # `rm_rf` the whole shared `nest-<ospid>` root (every space,
+        # every agent's scratch). "a/b" would nest a path. `create/2`
+        # refuses both outright (the DB boundary rejects such a name, so
+        # this only happens if a caller skipped it)...
+        assert_raise ArgumentError, fn -> TmpSpace.create(space_id, "..") end
+        assert_raise ArgumentError, fn -> TmpSpace.create(space_id, "a/b") end
 
+        # ...and `cleanup/2` (which runs from `terminate/2`, so it must
+        # never raise) logs the refusal and removes nothing.
         assert :ok = TmpSpace.cleanup(space_id, "..")
-        refute File.exists?(dotdot)
-        assert File.dir?(space_dir)
-
         assert :ok = TmpSpace.cleanup(space_id, "a/b")
-        refute File.exists?(nested)
+
+        assert File.dir?(keeper)
         assert File.dir?(space_dir)
       end)
     end

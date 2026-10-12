@@ -14,6 +14,8 @@ defmodule NestWeb.LobbyChannel.AgentErrorsTest do
 
   import ExUnit.CaptureLog
 
+  alias Nest.Agents.PersistedAgent
+  alias Nest.Spaces.Space
   alias NestWeb.LobbyChannel.AgentErrors
 
   test "names every refusal a user can act on" do
@@ -36,6 +38,43 @@ defmodule NestWeb.LobbyChannel.AgentErrorsTest do
       end)
 
     assert log =~ "ghost-vocation"
+  end
+
+  test "names an unsafe client-supplied root-agent name" do
+    changeset =
+      PersistedAgent.changeset(%PersistedAgent{}, %{
+        name: "Code Reviewer",
+        space_id: 1,
+        model: %{name: "m", provider: "p"}
+      })
+
+    assert {:error, %{"reason" => "invalid_agent_name"}} =
+             AgentErrors.create_payload(changeset)
+  end
+
+  test "stays generic for a space changeset, whatever field it failed on" do
+    # A blank space name — or a slug that could not be the root agent's name —
+    # is not an agent-name problem, and the agent's own `data:` match is what
+    # keeps the two apart. The slug case is why `Space.changeset/2` validates
+    # the slug at all: it used to surface as `invalid_agent_name`, naming a
+    # field the client never sent.
+    blank_name = Space.changeset(%Space{}, %{name: "", created_by_user_id: 1})
+
+    unusable_slug =
+      Space.changeset(%Space{}, %{name: "My Space", slug: "my space", created_by_user_id: 1})
+
+    assert {"must be usable as an agent name (letters, digits, `_` and `-`)", _} =
+             unusable_slug.errors[:slug]
+
+    log =
+      capture_log(fn ->
+        for changeset <- [blank_name, unusable_slug] do
+          assert {:error, %{"reason" => "failed_to_create"}} =
+                   AgentErrors.create_payload(changeset)
+        end
+      end)
+
+    assert log =~ "Failed to create space"
   end
 
   test "stays generic and logs a reason it cannot show a user" do

@@ -143,6 +143,10 @@ defmodule Nest.Agents.AgentSystemPromptCompositionTest do
       assert system_prompt =~ Vocations.compact_description()
       refute system_prompt =~ "Workspace and tool working directory"
       refute system_prompt =~ "Tool call budget"
+      # The scratch directory is reached with `file-*` / `shell-cmd`, so a
+      # tool-less vocation must not be told about one either (see
+      # `SystemPrompt.tool_sections/3`).
+      refute system_prompt =~ "Your own scratch directory"
       refute system_prompt =~ "errors in tool calls"
       refute system_prompt =~ "Network disabled"
       refute system_prompt =~ ~s(Read only "/")

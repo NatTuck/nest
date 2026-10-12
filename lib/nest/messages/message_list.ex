@@ -141,7 +141,14 @@ defmodule Nest.Messages.MessageList do
   end
 
   defp clone_notice(child_name, depth) do
-    "You are now the delegated clone, named \"#{child_name}\", at depth #{depth}."
+    # The clone's own scratch directory rides here for the same reason its
+    # name does: its system message is inherited verbatim from the root
+    # ancestor, and the ancestor's message names the *ancestor's*
+    # directory. The child's tools say nothing about scratch paths (see
+    # `Nest.Agents.Agent.SystemPrompt.scratch_section/1`), so this notice
+    # is the only place that can state the clone's own.
+    "You are now the delegated clone, named \"#{child_name}\", at depth #{depth}. " <>
+      "Your own scratch directory is `#{Nest.Sandbox.scratch_dir(child_name)}/`."
   end
 
   # The clone's acknowledgement: its system message is inherited

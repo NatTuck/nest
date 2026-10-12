@@ -65,6 +65,43 @@ defmodule Nest.PersistenceAgentsTest do
       assert {:error, :missing_required_field} =
                Persistence.insert_agent(%{space_id: 0})
     end
+
+    test "rejects a name that is not a single filename-safe component" do
+      for bad <- [
+            # A space / dot / slash / uppercase-free slug rule.
+            "my agent",
+            "a/b",
+            "..",
+            ".",
+            "a.b",
+            "café",
+            "agent\n",
+            "agent:1",
+            ""
+          ] do
+        assert {:error, %Ecto.Changeset{} = changeset} =
+                 Persistence.insert_agent(agent_attrs(bad))
+
+        assert Keyword.has_key?(changeset.errors, :name),
+               "expected a :name error for #{inspect(bad)}, got #{inspect(changeset.errors)}"
+      end
+    end
+
+    test "accepts a name at the filesystem component limit and rejects one byte more" do
+      longest = String.duplicate("a", 255)
+
+      assert {:ok, %PersistedAgent{name: ^longest}} =
+               Persistence.insert_agent(agent_attrs(longest))
+
+      too_long = String.duplicate("b", 256)
+
+      assert {:error, %Ecto.Changeset{} = changeset} =
+               Persistence.insert_agent(agent_attrs(too_long))
+
+      assert {"should be at most %{count} byte(s)", details} = changeset.errors[:name]
+      assert details[:count] == 255
+      assert details[:kind] == :max
+    end
   end
 
   describe "fetch_agent_by_name/1" do

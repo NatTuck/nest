@@ -21,6 +21,7 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.ToolLoop
   alias Nest.Agents.AgentTestHelpers
+  alias Nest.Agents.PersistedAgent
   alias Nest.Agents.Registry, as: AgentsRegistry
   alias Nest.LLM.MockClient
   alias Nest.Messages.Part
@@ -138,6 +139,35 @@ defmodule Nest.Agents.Agent.ToolLoopSpawnTest do
 
       assert hd(results).content =~ "max_depth_reached"
       assert log =~ "is_error=true tool result"
+    end
+
+    test "an unsafe name is reported as the name rule, never as a dumped changeset" do
+      # The likeliest validation trip: an LLM writing a human-readable name
+      # (`"Code Reviewer"`, `"Reviewer 2"`) instead of a slug. The parent
+      # hands back the *real* changeset `PersistedAgent.changeset/2` builds,
+      # and the model must be able to act on what it reads — a dumped
+      # `#Ecto.Changeset<...>` is noise it cannot.
+      changeset =
+        PersistedAgent.changeset(%PersistedAgent{}, %{
+          name: "Code Reviewer",
+          space_id: AgentTestHelpers.current_space_id(),
+          model: %{name: "m", provider: "p"}
+        })
+
+      {:ok, _pid} =
+        FakeParent.start(
+          via: AgentsRegistry.via_tuple(AgentTestHelpers.current_space_id(), "parent-bad-name"),
+          reply_failure: changeset
+        )
+
+      {results, _log} =
+        with_log(fn -> spawn_from("parent-bad-name", %{"name" => "Code Reviewer"}) end)
+
+      assert [%ToolResult{name: "agents-spawn", is_error: true, content: content}] = results
+
+      assert content =~ "letters, digits"
+      assert content =~ "no spaces or slashes"
+      refute content =~ "Ecto.Changeset"
     end
   end
 

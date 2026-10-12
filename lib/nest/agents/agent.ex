@@ -131,12 +131,11 @@ defmodule Nest.Agents.Agent do
   (test pid for tests, channel pid for production) so the
   supervisor pid never has to do DB work during spawn.
 
-  Returns `:ok` on success, `{:error, reason}` on failure. On
-  `:duplicate_name` the row is left untouched — the caller
-  decides whether to retry with a fresh name or surface the
-  error.
+  Returns `{:ok, id}` (the inserted row's `agents.id`) on success,
+  `{:error, reason}` on failure, so a caller whose start then fails can
+  remove *its own* row. On `:duplicate_name` nothing was inserted.
   """
-  @spec pre_spawn(map()) :: :ok | {:error, term()}
+  @spec pre_spawn(map()) :: {:ok, integer()} | {:error, term()}
   def pre_spawn(attrs) do
     case Map.get(attrs, :fork_message_index) do
       nil -> pre_spawn_with_system(attrs)
@@ -149,9 +148,9 @@ defmodule Nest.Agents.Agent do
     # Refuse an agent without a non-empty system message (validate first).
     case build_initial_system_message(attrs) do
       {:ok, system_message} ->
-        with {:ok, _} <- Persistence.insert_agent(attrs),
+        with {:ok, %{id: id}} <- Persistence.insert_agent(attrs),
              {:ok, _} <- Persistence.insert_message(attrs.space_id, attrs.name, system_message) do
-          :ok
+          {:ok, id}
         end
 
       {:error, :missing_system_prompt} ->
@@ -169,8 +168,9 @@ defmodule Nest.Agents.Agent do
       |> Map.get(:preloaded_messages, [])
       |> Enum.filter(fn {_role, %{index: idx}} -> idx >= fork_index end)
 
-    with {:ok, _} <- Persistence.insert_agent(attrs) do
-      persist_own_messages(attrs, own_messages)
+    with {:ok, %{id: id}} <- Persistence.insert_agent(attrs),
+         :ok <- persist_own_messages(attrs, own_messages) do
+      {:ok, id}
     end
   end
 

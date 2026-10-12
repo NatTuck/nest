@@ -112,6 +112,76 @@ defmodule Nest.Agents.Supervisor do
   end
 
   @doc """
+  Run the start call for a row `Agent.pre_spawn/1` just inserted, removing
+  that row when no process started.
+
+  Every pre-spawn site has the same shape: insert the row (and its system
+  message), then start the process. The row is in the database before the
+  process exists, so a start that does not happen leaves an orphan that also
+  blocks every retry with the same name
+  (`unique_constraint([:space_id, :name])`). `start` is the call that starts
+  the agent — `fetch_or_start_agent/2` for a caller-created agent,
+  `start_under_supervisor/2` for a spawn — and its `{:ok, name}` is passed
+  through untouched.
+
+  Anything else means no process exists for `attrs`:
+
+    * an `{:error, reason}` return (a failed `init/1`, a `:not_found` race);
+    * an exception raised on the way, e.g. inside `Agent.pre_load_heal/1`,
+      which is why this is a `rescue` and not just a `case`. The exception
+      is re-raised unchanged after the cleanup — it is the caller's failure
+      to report, not ours to swallow.
+
+  The delete is by `id`, never by name: this can only ever remove the row
+  the caller inserted. A concurrent caller cannot take the name until the
+  delete has happened, and its row would be a different `id`, so the
+  "removes only its own row" guarantee holds even across the race. Deleting
+  also cascades to the messages the same `pre_spawn/1` wrote
+  (`messages.agent_id` is `on_delete: :delete_all`).
+
+  A start that reports `{:ok, name}` (including `:already_started`, which
+  means some other caller's process owns the name) removes nothing.
+  """
+  @spec start_pre_spawned(map(), integer(), (-> {:ok, String.t()} | {:error, term()})) ::
+          {:ok, String.t()} | {:error, term()}
+  def start_pre_spawned(attrs, agent_id, start) when is_integer(agent_id) do
+    start.()
+  rescue
+    exception ->
+      rollback_pre_spawned(attrs, agent_id, exception)
+      reraise exception, __STACKTRACE__
+  else
+    {:ok, name} ->
+      {:ok, name}
+
+    {:error, reason} ->
+      rollback_pre_spawned(attrs, agent_id, reason)
+      {:error, reason}
+  end
+
+  # The clone's attrs: its forked message prefix, tree position, and inherited
+  # config. Kept as a function so `start_agent_with_parent/3` stays under the
+  # ABC cap.
+  defp clone_attrs(parent_state, instruction, child_name, parent_id, model_override) do
+    Agent.build_child_attrs(parent_state, instruction, child_name, parent_id, model_override)
+  end
+
+  # `start_pre_spawned/3` bound to this module's own start call. Kept as a
+  # function so the `with` in the spawn paths stays under the ABC cap.
+  defp start_pre_spawned_child(attrs, agent_id, name) do
+    start_pre_spawned(attrs, agent_id, fn -> start_under_supervisor(attrs, name) end)
+  end
+
+  defp rollback_pre_spawned(attrs, agent_id, reason) do
+    Logger.warning(
+      "Agent #{attrs.space_id}/#{attrs.name} (id #{agent_id}) failed to start " <>
+        "(#{inspect(reason)}); removing the row it pre-spawned"
+    )
+
+    Persistence.delete_agent_by_id(agent_id)
+  end
+
+  @doc """
   Test-only: start a single agent under the supervisor.
 
   Applies `Agent.pre_load_heal/1` in the caller's DB context (matching
@@ -144,16 +214,9 @@ defmodule Nest.Agents.Supervisor do
 
     with {:ok, %PersistedAgent{id: parent_id}} <- Persistence.fetch_agent(space_id, parent_name),
          child_name <- generate_unique_name_for_space(space_id),
-         attrs <-
-           Agent.build_child_attrs(
-             parent_state,
-             instruction,
-             child_name,
-             parent_id,
-             model_override
-           ),
-         :ok <- Agent.pre_spawn(attrs),
-         {:ok, _pid} <- start_under_supervisor(attrs, child_name),
+         attrs = clone_attrs(parent_state, instruction, child_name, parent_id, model_override),
+         {:ok, agent_id} <- Agent.pre_spawn(attrs),
+         {:ok, _pid} <- start_pre_spawned_child(attrs, agent_id, child_name),
          :ok <- ChildRegistry.register(space_id, parent_name, child_name) do
       {:ok, child_name}
     end
@@ -287,8 +350,8 @@ defmodule Nest.Agents.Supervisor do
       )
       |> Persistence.build_agent_attrs()
 
-    with :ok <- Agent.pre_spawn(attrs),
-         {:ok, _pid} <- start_under_supervisor(attrs, name) do
+    with {:ok, agent_id} <- Agent.pre_spawn(attrs),
+         {:ok, _pid} <- start_pre_spawned_child(attrs, agent_id, name) do
       ChildRegistry.register(parent_state.space_id, parent_state.name, name)
     end
   end

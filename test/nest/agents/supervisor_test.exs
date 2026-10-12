@@ -28,6 +28,7 @@ defmodule Nest.Agents.SupervisorTest do
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Registry
   alias Nest.Agents.Supervisor
+  alias Nest.Persistence
 
   setup do
     # Note: we deliberately do NOT call `Supervisor.stop_agent/1`
@@ -55,6 +56,71 @@ defmodule Nest.Agents.SupervisorTest do
   end
 
   defp fresh_name, do: "agent#{System.unique_integer([:positive])}"
+
+  describe "start_pre_spawned/3" do
+    test "passes a successful start through and removes nothing" do
+      space_id = AgentTestHelpers.current_space_id()
+      name = fresh_name()
+      {:ok, ours} = Persistence.insert_agent(attrs_for(space_id, name))
+
+      assert {:ok, ^name} =
+               Supervisor.start_pre_spawned(attrs_for(space_id, name), ours.id, fn ->
+                 {:ok, name}
+               end)
+
+      assert {:ok, _row} = Persistence.fetch_agent(space_id, name)
+    end
+
+    test "cleans up and re-raises when the start raises" do
+      space_id = AgentTestHelpers.current_space_id()
+      name = fresh_name()
+      {:ok, ours} = Persistence.insert_agent(attrs_for(space_id, name))
+
+      # The rollback logs a warning naming the row it removed; capture it so
+      # the suite's output stays clean.
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert_raise RuntimeError, "boom", fn ->
+          Supervisor.start_pre_spawned(attrs_for(space_id, name), ours.id, fn -> raise "boom" end)
+        end
+      end)
+
+      # The exception is the caller's to report, and the row is gone with it.
+      assert Persistence.fetch_agent(space_id, name) == {:error, :not_found}
+    end
+
+    test "cannot remove a row it did not insert, even when the name is reused" do
+      # The cleanup deletes by `id`, never by name. Our own row can only be
+      # removed by us, and the name only becomes free *after* that — so a row
+      # holding the same name is necessarily someone else's, and must survive
+      # even though this call is rolling back a failure for that name.
+      space_id = AgentTestHelpers.current_space_id()
+      name = fresh_name()
+
+      {:ok, ours} = Persistence.insert_agent(attrs_for(space_id, name))
+      Persistence.delete_agent_by_id(ours.id)
+      {:ok, theirs} = Persistence.insert_agent(attrs_for(space_id, name))
+      refute theirs.id == ours.id
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:error, :boom} =
+                 Supervisor.start_pre_spawned(attrs_for(space_id, name), ours.id, fn ->
+                   {:error, :boom}
+                 end)
+      end)
+
+      assert {:ok, %{id: id}} = Persistence.fetch_agent(space_id, name)
+      assert id == theirs.id
+    end
+  end
+
+  defp attrs_for(space_id, name) do
+    %{
+      name: name,
+      space_id: space_id,
+      model: test_model(),
+      vocation_id: AgentTestHelpers.vocation_id_for_test()
+    }
+  end
 
   defp test_model, do: %{name: "qwen3.5-plus", provider: "model-studio"}
 

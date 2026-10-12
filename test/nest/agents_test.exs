@@ -18,6 +18,7 @@ defmodule Nest.AgentsTest do
 
   alias Nest.Agents
   alias Nest.Agents.Agent
+  alias Nest.Agents.Agent.TmpSpace
   alias Nest.Agents.AgentTestHelpers
   alias Nest.Agents.Supervisor
   alias Nest.LLM.MockClient
@@ -142,6 +143,100 @@ defmodule Nest.AgentsTest do
       # No agent row was created (pre_spawn validated before inserting).
       assert Nest.Persistence.fetch_agent(space_id, name) == {:error, :not_found}
     end
+
+    test "rolls back the pre-spawned row when the process fails to start" do
+      # `pre_spawn` inserts the agent row (and its index-0 system
+      # message) *before* the supervisor starts the process, so a start
+      # that fails used to leave an orphan row — which also made every
+      # retry with that name fail on `unique_constraint([:space_id,
+      # :name])`.
+      #
+      # Make `init/1` fail deterministically: `TmpSpace.create/2` does
+      # `File.mkdir_p!` on the agent's scratch dir, so a *file* sitting
+      # where that directory belongs raises `File.Error` during start.
+      space_id = AgentTestHelpers.current_space_id()
+      name = fresh_name()
+      space_dir = TmpSpace.space_dir(space_id)
+      blocker = Path.join(space_dir, name)
+
+      File.mkdir_p!(space_dir)
+      File.write!(blocker, "not a directory")
+
+      on_exit(fn ->
+        File.rm(blocker)
+      end)
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert {:error, _reason} =
+                   Agents.create_agent(
+                     space_id,
+                     %{name: "qwen3.5-plus", provider: "model-studio"},
+                     name: name,
+                     vocation_id: AgentTestHelpers.vocation_id_for_test()
+                   )
+        end)
+
+      # The row is gone, and so is the system message it wrote (the
+      # `messages.agent_id` FK cascades) — the space has no agent left,
+      # so it has no messages left either.
+      assert Nest.Persistence.fetch_agent(space_id, name) == {:error, :not_found}
+
+      assert message_count(space_id) == 0
+      assert log =~ "failed to start"
+
+      # The name is free again: the retry now succeeds (which it could
+      # not have if the orphan row were still there).
+      File.rm!(blocker)
+
+      assert {:ok, ^name} =
+               Agents.create_agent(space_id, %{name: "qwen3.5-plus", provider: "model-studio"},
+                 name: name,
+                 vocation_id: AgentTestHelpers.vocation_id_for_test()
+               )
+
+      AgentTestHelpers.ensure_cleanup(name)
+      assert {:ok, _row} = Nest.Persistence.fetch_agent(space_id, name)
+      assert message_count(space_id) == 1
+    end
+
+    test "rolls back the pre-spawned row when the start raises" do
+      # The cleanup is not only for `{:error, _}` returns: `fetch_or_start_agent`
+      # runs `Agent.pre_load_heal/1` between the pre-spawn and the start, and an
+      # exception there used to leave the row behind with no process to own it.
+      # The exception is re-raised untouched — it is the caller's failure to
+      # report, not the rollback's to swallow.
+      space_id = AgentTestHelpers.current_space_id()
+      name = fresh_name()
+
+      Mimic.stub(Nest.Agents.Agent, :pre_load_heal, fn _attrs -> raise "heal exploded" end)
+
+      # The rollback logs a warning naming the row it removed; capture it so
+      # the suite's output stays clean.
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert_raise RuntimeError, "heal exploded", fn ->
+          Agents.create_agent(space_id, %{name: "qwen3.5-plus", provider: "model-studio"},
+            name: name,
+            vocation_id: AgentTestHelpers.vocation_id_for_test()
+          )
+        end
+      end)
+
+      assert Nest.Persistence.fetch_agent(space_id, name) == {:error, :not_found}
+      assert message_count(space_id) == 0
+    end
+  end
+
+  # Every persisted message belonging to any agent in `space_id`.
+  defp message_count(space_id) do
+    Nest.Repo.one(
+      from(m in "messages",
+        join: a in "agents",
+        on: m.agent_id == a.id,
+        where: a.space_id == ^space_id,
+        select: count(m.id)
+      )
+    )
   end
 
   describe "get_info/1" do

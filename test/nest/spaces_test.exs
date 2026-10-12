@@ -13,6 +13,7 @@ defmodule Nest.SpacesTest do
 
   alias Nest.Agents
   alias Nest.Agents.AgentTestHelpers
+  alias Nest.Agents.PersistedAgent
   alias Nest.Agents.Supervisor
   alias Nest.Blueprints
   alias Nest.BlueprintsFixtures
@@ -128,6 +129,57 @@ defmodule Nest.SpacesTest do
 
       assert {:error, :missing_vocation} =
                Spaces.create_space_with_root_agent(user_id, attrs)
+    end
+  end
+
+  describe "create_space_with_root_agent/2 slug validation" do
+    test "refuses a slug that could not be the root agent's name", %{user_id: user_id} do
+      vocation = VocationsFixtures.vocation_fixture()
+
+      # The root agent is named `<slug>-root` (`root_agent_name/2`) and an
+      # agent's name doubles as its scratch-directory segment, so a slug has to
+      # be filename-safe. Refusing it here — as a *space* changeset error — is
+      # what keeps the lobby's reply generic: otherwise the failure surfaces
+      # from the agent changeset as `invalid_agent_name`, which names a field
+      # the client never sent (see
+      # `NestWeb.LobbyChannel.AgentErrors.create_payload/1`).
+      attrs = %{
+        name: "My Space #{System.unique_integer([:positive])}",
+        slug: "my space",
+        vocation: vocation.slug,
+        model: %{name: "qwen3.5-plus", provider: "model-studio"}
+      }
+
+      assert {:error, %Ecto.Changeset{data: %Space{}} = changeset} =
+               Spaces.create_space_with_root_agent(user_id, attrs)
+
+      assert [slug: {message, _opts}] = changeset.errors
+      assert message == "must be usable as an agent name (letters, digits, `_` and `-`)"
+
+      # The slug is refused before the insert, so the transaction left nothing
+      # behind — no space row, and no agent row for it to hang off.
+      assert Spaces.list_for_user(user_id) == []
+    end
+
+    test "keeps a derived slug (and the name it comes from) working", %{user_id: user_id} do
+      # The rule is on the *derived* agent name, not on the slug's own shape, so
+      # a slug the server derives from a name still passes: `Slug.from_name/1`
+      # collapses everything unsafe to `-`.
+      vocation = VocationsFixtures.vocation_fixture()
+
+      attrs = %{
+        name: "My Space #{System.unique_integer([:positive])}",
+        vocation: vocation.slug,
+        model: %{name: "qwen3.5-plus", provider: "model-studio"}
+      }
+
+      assert {:ok, %Space{} = space, agent_name} =
+               Spaces.create_space_with_root_agent(user_id, attrs)
+
+      on_exit(fn -> _ = Supervisor.stop_agent(space.id, agent_name) end)
+
+      assert agent_name == space.slug <> "-root"
+      assert PersistedAgent.valid_name?(agent_name)
     end
   end
 
