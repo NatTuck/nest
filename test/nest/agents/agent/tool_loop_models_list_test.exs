@@ -199,7 +199,11 @@ defmodule Nest.Agents.Agent.ToolLoopModelsListTest do
 
     test "reports an unrecognized multi_modal shape as invalid" do
       stub_config(%{"alpha" => true})
-      stub_models([entry("odd-shape", "alpha", %{"multi_modal" => %{"image" => true}})])
+
+      stub_models([
+        entry("odd-shape", "alpha", %{"multi_modal" => %{"image" => true}}),
+        entry("not-a-map", "alpha", %{"multi_modal" => "abc"})
+      ])
 
       content = run_models_list(%{})
 
@@ -207,6 +211,20 @@ defmodule Nest.Agents.Agent.ToolLoopModelsListTest do
       # parser never produces must neither raise nor read as a claim of
       # `image` input — it is a claim we cannot read.
       assert content =~ "alpha/odd-shape  input: invalid"
+      assert content =~ "alpha/not-a-map  input: invalid"
+    end
+
+    test "reports a provider whose tags are not a list as invalid" do
+      stub_config(%{"alpha" => {true, "abc"}, "beta" => {true, 5}})
+      stub_models([entry("from-alpha", "alpha"), entry("from-beta", "beta")])
+
+      content = run_models_list(%{})
+
+      # A `tags` value that is not a list is unreadable, not "no tags":
+      # omitting the field would let a typo pass for a provider that simply
+      # has none.
+      assert content =~ "alpha/from-alpha  tags: invalid"
+      assert content =~ "beta/from-beta  tags: invalid"
     end
   end
 end

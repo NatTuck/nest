@@ -400,26 +400,24 @@ defmodule Nest.Agents.Agent.ToolLoop do
   # Rendering `input: none` for it would turn "we were not told" into a
   # false negative. An empty modality list *is* a claim — of no input
   # modalities at all — so that one does render.
-  #
-  # Anything else non-nil is a claim we cannot *read*: a list with a
-  # non-binary element, or a shape the parser never produces such as
-  # `%{"image" => true}`. It renders as `invalid` rather than being
-  # omitted, so a broken config is never mistaken for a model that made
-  # no claim. Both lists reach us unvalidated from TOML, and
-  # `Enum.join/2` would raise on such a list.
   defp input_field(entry) do
     case Map.get(entry, "multi_modal") do
       nil -> nil
-      %{"input" => list} when is_list(list) -> input_text(list)
+      %{"input" => []} -> "input: none"
+      %{"input" => list} when is_list(list) -> list_field(list, "input")
       _malformed -> "input: invalid"
     end
   end
 
-  defp input_text([]), do: "input: none"
-
-  defp input_text(list) do
-    if joinable?(list), do: "input: " <> Enum.join(list, ","), else: "input: invalid"
+  # Renders a list of names as `<prefix>: <a,b>`, or `<prefix>: invalid` when
+  # it is not one we can read — so a broken config never passes for a field
+  # that said nothing. Callers decide what an empty list means: `input`
+  # renders it `none`, `tags` omits the field.
+  defp list_field(list, prefix) when is_list(list) do
+    if joinable?(list), do: "#{prefix}: " <> Enum.join(list, ","), else: "#{prefix}: invalid"
   end
+
+  defp list_field(_unreadable, prefix), do: "#{prefix}: invalid"
 
   defp ctx_field(entry) do
     case Map.get(entry, "context_limit") do
@@ -433,18 +431,15 @@ defmodule Nest.Agents.Agent.ToolLoop do
   # model, and `models.ex` is close to its line cap — so they are read
   # from the provider struct this listing already loaded.
   defp tags_field(entry, exposed) do
-    with provider when is_binary(provider) <- Map.get(entry, "provider"),
-         %{tags: [_ | _] = tags} <- Map.get(exposed, provider) do
-      if joinable?(tags), do: "tags: " <> Enum.join(tags, ","), else: "tags: invalid"
-    else
-      _ -> nil
-    end
+    provider = Map.get(exposed, Map.get(entry, "provider"), %{})
+    tags = Map.get(provider, :tags)
+
+    unless tags in [nil, []], do: list_field(tags, "tags")
   end
 
-  # `multi_modal` and `tags` both reach us unvalidated from TOML, so a list
-  # element that is not a binary — `input = [{ a = 1 }]`, `tags = [1]` —
-  # cannot be joined. Callers render such a list as `invalid` rather than
-  # omitting it or letting `Enum.join/2` raise inside the tool.
+  # `multi_modal` and `tags` reach us unvalidated from TOML, so an element
+  # that is not a name we can render — `input = [{ a = 1 }]`, `tags = [1]` —
+  # must not reach `Enum.join/2`, which raises on some non-binaries.
   defp joinable?(values), do: Enum.all?(values, &is_binary/1)
 
   # `agents-query`: deliver a message to a peer in this space and mark that the
