@@ -41,7 +41,10 @@ If the tree is so screwed up that reverting is the only option then stop and rep
   disagree with what a shell inside the sandbox sees.
 - Do **not** add a host fast path for any of them. There is no second spelling
   of a path an agent uses: the two directories the sandbox binds — the workspace
-  and the agent's own scratch directory — are internal to `Nest.Sandbox`, and
+  and the agent's own scratch directory — live in one `Nest.Sandbox.Mounts`
+  value that travels with the turn, and `Nest.Sandbox` is what turns it into
+  binds. A module that needs a real directory reads it from that value; none of
+  them needs one in order to name a path an agent uses, and
   `/tmp/<agent-name>/...` is the only scratch spelling an agent is ever told
   about or hands back.
 - The path mapping lives in exactly one place: `Nest.Sandbox.Paths`.

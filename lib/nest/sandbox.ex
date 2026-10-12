@@ -242,8 +242,9 @@ defmodule Nest.Sandbox do
   The sandbox spelling of an agent's own scratch directory, derived from the
   agent's name alone: `/tmp/<agent-name>`.
 
-  This is the only scratch spelling an agent is ever told about; the directory
-  it names is the caller's, and is never given to the agent.
+  It takes a name and returns a spelling, so no directory is involved — the
+  contrast with `sandbox_tmp_path/1`, which needs the agent's scratch
+  directory. This is the only scratch spelling an agent is ever told about.
   """
   @spec scratch_dir(String.t()) :: String.t()
   defdelegate scratch_dir(name), to: Paths

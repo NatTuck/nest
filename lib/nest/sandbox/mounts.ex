@@ -25,19 +25,37 @@ defmodule Nest.Sandbox.Mounts do
   the sandbox domain, and `resolve/2` is the only thing that turns a relative
   tool path into an absolute one.
 
-  The directories are still *read* outside the boundary, by the modules that
-  need a real directory for real file work rather than to name an agent's path:
-  `Nest.Tools.ShellCmd` stages command transcripts into the scratch dir and
-  passes the resulting sandbox spelling to bash; `Nest.Tools.FileTools`,
-  `Nest.Tools.InspectFile` and `Nest.Agents.Agent.SystemPrompt` resolve a
-  relative tool path with `resolve/2`; `Nest.Agents.Agent.BatchSizer.Overflow`
-  writes offloaded results into the scratch dir; `Nest.ProjectConfig` reads
-  `<workspace>/.nest` and backs a `mode = "tmp"` mount under the scratch dir.
-  Three of those write into the scratch dir *without* going through bwrap —
-  `ShellCmd.stage_script/2` (`Paths.stage_dir/1` plus `Paths.stage_dir_sandbox/1`),
-  `Overflow.write/4` and `Nest.Sandbox.ShellJobs`'s job logs — and each of the
-  three hands the agent the `/tmp/<agent-name>/...` spelling of what it wrote,
-  never the directory it wrote to.
+  The directories are still *read* outside the boundary, and not only for file
+  work:
+
+    * `resolve/2`, to turn a relative tool path into an absolute one:
+      `Nest.Tools.FileTools`, `Nest.Tools.InspectFile`,
+      `Nest.Agents.Agent.SystemPrompt`, `Nest.Agents.Agent.IntrospectionHandler`,
+      `Nest.Agents.Agent.Handlers.LLMStreamHandler.FileAccess` and
+      `Nest.Agents.Agent.BatchSizer.ProjectedSize`.
+    * The workspace, to name it to the agent or to an operator log:
+      `Nest.Agents.Agent.SystemPrompt` (the working-directory and
+      project-config sections), `Nest.ProjectConfig` (which reads
+      `<workspace>/.nest`), and `Nest.Tools`, `Nest.Tools.FileTools`,
+      `Nest.Tools.InspectFile` and `Nest.Tools.ShellCmd`, which print it.
+    * The scratch directory: `Nest.Tools` prints it; `Nest.Tools.ShellCmd`
+      creates it (`ensure_scratch!/1`), stages the command transcript in it
+      (`Paths.stage_dir/1`) and prints it in its two failure diagnostics;
+      `Nest.Agents.Agent.BatchSizer.Overflow` writes an offloaded result into
+      it; `Nest.ProjectConfig` creates `<scratch>/project/<slug>` as the bind
+      source for a `mode = "tmp"` mount (`ensure_dirs/1`).
+
+  Of the modules that write into the scratch directory without going through
+  bwrap, each reports a *sandbox* path back rather than the directory it wrote
+  to — except the last, which only creates a directory:
+  `ShellCmd.stage_script/2` stages in the staging dir (`/tmp/.cmds/<script>`
+  with a scratch bind, `/tmp/.nest-cmds/<script>` without), a sibling of the
+  agent's own directory rather than a child of it — deliberately, so a glob
+  over the agent's scratch tree never sees it — and hands that path to bash,
+  not to the agent; `Overflow.write/4` returns `/tmp/<agent-name>/<name>`;
+  `Nest.Sandbox.ShellJobs` reports `/tmp/<agent-name>/shell-jobs/<job>.log`;
+  `Nest.ProjectConfig.ensure_dirs/1` `mkdir_p`s `<scratch>/project/<slug>` and
+  reports nothing.
   """
 
   alias Nest.FSPath

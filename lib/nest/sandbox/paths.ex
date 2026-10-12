@@ -69,7 +69,8 @@ defmodule Nest.Sandbox.Paths do
   `#{@sandbox_root}`).
 
   This is the only scratch spelling an agent is ever told about or hands
-  back; the scratch directory itself is internal to the sandbox.
+  back; the scratch directory it is derived from is the caller's, and is never
+  given to the agent.
   """
   @spec sandbox_tmp_path(String.t()) :: String.t()
   def sandbox_tmp_path(tmp_path), do: Path.join(@sandbox_root, Path.basename(tmp_path))
