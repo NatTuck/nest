@@ -28,21 +28,20 @@ Not changed, because they are **not** timeouts: `ShellCmd.default_timeout_ms() =
 `exit({:normal, {GenServer, :call, [..., 5000]}})` / `{:timeout, {GenServer,
 :call, [Nest.Models, :list, 5000]}}` simulate production error tuples.
 
-## 2. The global per-test ceiling stays at 5000 — it is a failure bound, not a wait
+## 2. The global per-test ceiling is 2000 — the ruling, and what it exposes
 
-`test_helper.exs`'s per-test ceiling was briefly lowered 5000 → 2000 as part of
-the `#21` cap, on the reading that `@tag timeout:` is a test-side timeout and so
-in scope. **That is a category error, and it is reverted.**
+The ruling is that **every** timeout in the tests, implicit or explicit, is
+2000 ms or lower, with no exceptions: *"If a test can't run under that, we need
+to fix it or consider removing it as untestable."* The per-test ceiling is
+implicit, so it is 2000 ms. (It was briefly restored to 5000 on the argument
+that a failure detector is not a wait; that argument is overruled.)
 
-The ceiling is a **failure detector**: it turns a hung test into a failed test
-instead of a hang. It decides no outcome, so it is not one of the waits `#21`
-caps — fences, `receive ... after` clauses, `GenServer.call`/`:sys.*` timeouts,
-helper defaults — and every one of *those* in `test/` is at or under 2000 ms. A
-failure bound has exactly one correct property: it must sit comfortably above the
-worst-case legitimate test duration. The slowest single test here is **1680 ms
-serially** (next: 918 ms; `mix test --slowest`, seed 301962), so 2000 ms left
-~320 ms of headroom. Under 24-way concurrency that is not a bound but a coin
-flip, and it landed tails:
+The consequence is that the tests which lose a scheduling race now **fail
+visibly** instead of being hidden by a longer deadline. The failure set is
+*unstable* — three consecutive runs gave 9, 11 and 6 failures with only one test
+common to the first two — so this is not "six broken tests", it is **whichever
+tests lose the race**. That makes it a mechanism problem, and §10 is the
+mechanism.
 
 | run | ceiling | result |
 |---|---|---|
