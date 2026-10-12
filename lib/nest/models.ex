@@ -100,6 +100,11 @@ defmodule Nest.Models do
     * `"provider"` — Provider name
     * `"context_limit"` — Effective context limit (per-model static,
       auto-discovery cache hit, or provider default)
+    * `"multi_modal"` — Multi-modal input vocabulary
+      (`%{"input" => ["image"]}`): an explicit static `multi-modal`
+      verbatim, with the scan's detection as a fill-in when static
+      config sets nothing
+    * `"thinking_levels"` — Thinking levels the model accepts
   """
   @spec list() :: [map()]
   def list, do: GenServer.call(__MODULE__, :list)
@@ -523,33 +528,33 @@ defmodule Nest.Models do
     |> Enum.filter(& &1.auto_models)
   end
 
-  # Query a single provider. The two HTTP calls (names + limits)
-  # hit the same `/models` endpoint — current implementation
-  # issues two requests. Returns `{models_map, limits_map}` where
-  # `models_map` has `%{name => %DotConfig.Model{}}` shape and
-  # `limits_map` has `%{model_id => {source, limit}}` shape.
+  # Query a single provider with **one** `/models` request: the
+  # discovery pass extracts the model names, their context-limit
+  # source + value, and their multi-modal input support from the same
+  # body. Returns `{models_map, limits_map}` where `models_map` has
+  # `%{name => %DotConfig.Model{}}` shape (each model carrying what
+  # the provider said about multi-modal input) and `limits_map` has
+  # `%{model_id => {source, limit}}` shape.
   #
-  # Empty maps on failure (the existing `ChatModel.list_models/1`
-  # and `list_models_with_limits/1` swallow transport errors and
-  # return `[]` / `%{}`).
+  # Empty maps on failure (`ChatModel.list_models_with_metadata/1`
+  # swallows transport errors and returns `[]`).
   defp query_provider(provider) do
-    names = ChatModel.list_models(provider)
-    models_with_limits = ChatModel.list_models_with_limits(provider)
+    entries = ChatModel.list_models_with_metadata(provider)
 
     limits =
-      Map.new(models_with_limits, fn entry ->
-        {entry.name, {entry.source, entry.limit}}
-      end)
+      entries
+      |> Enum.reject(&is_nil(&1.source))
+      |> Map.new(fn entry -> {entry.name, {entry.source, entry.limit}} end)
 
     models =
-      names
-      |> Enum.map(fn name ->
-        {name,
+      entries
+      |> Enum.map(fn entry ->
+        {entry.name,
          %DotConfig.Model{
-           name: name,
+           name: entry.name,
            provider_name: provider.name,
            context_limit: nil,
-           multi_modal: nil
+           multi_modal: entry.multi_modal
          }}
       end)
       |> Map.new()
@@ -581,6 +586,7 @@ defmodule Nest.Models do
         "name" => model.name,
         "provider" => model.provider_name,
         "context_limit" => effective_context_limit(model, cache, providers),
+        "multi_modal" => effective_multi_modal(model, auto),
         "thinking_levels" => thinking_levels()
       }
     end)
@@ -617,6 +623,29 @@ defmodule Nest.Models do
 
       true ->
         provider_default(providers, model.provider_name)
+    end
+  end
+
+  # The multi-modal input vocabulary for a merged model entry. An
+  # explicit static `multi-modal` is authoritative and is never
+  # overwritten by a differing discovery answer; detection is a
+  # fill-in for when static config sets nothing.
+  #
+  # When static config has no entry at all, `model` *is* the
+  # auto-discovered entry and already carries the detected value, so
+  # the first clause covers it. Otherwise the fill-in is looked up for
+  # this model's own {provider, name} pair — the key the context-limit
+  # cache uses — so a same-named model discovered under a *different*
+  # provider cannot contribute a capability this one lacks.
+  defp effective_multi_modal(%{multi_modal: static}, _auto) when static != nil, do: static
+
+  defp effective_multi_modal(model, auto) do
+    case Map.get(auto, model.name) do
+      %{provider_name: provider, multi_modal: detected} ->
+        if provider == model.provider_name, do: detected, else: nil
+
+      _ ->
+        nil
     end
   end
 

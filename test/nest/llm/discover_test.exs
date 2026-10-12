@@ -239,6 +239,102 @@ defmodule Nest.LLM.DiscoverTest do
     end
   end
 
+  describe "extract_multi_modal_from_model/1" do
+    # Every recognized shape normalizes to the static TOML vocabulary
+    # (`multi-modal = { input = ["image"] }` in config.toml).
+    test "normalizes each recognized provider shape to the static vocabulary" do
+      # OpenRouter: the measured shape lists every modality the model
+      # accepts. Only "image" is in our vocabulary.
+      assert Discover.extract_multi_modal_from_model(%{
+               "id" => "openai/gpt-4o",
+               "architecture" => %{"input_modalities" => ["text", "image", "file"]}
+             }) == %{"input" => ["image"]}
+
+      # atlascloud: the same list at the top level.
+      assert Discover.extract_multi_modal_from_model(%{
+               "id" => "atlas-model",
+               "input_modalities" => ["image", "text"]
+             }) == %{"input" => ["image"]}
+
+      # Anthropic: a capability flag rather than a modality list.
+      assert Discover.extract_multi_modal_from_model(%{
+               "id" => "claude-3-opus-20240229",
+               "capabilities" => %{"image_input" => %{"supported" => true}}
+             }) == %{"input" => ["image"]}
+    end
+
+    test "returns nil when the body claims no image input or says nothing about it" do
+      # No capability field at all.
+      assert Discover.extract_multi_modal_from_model(%{"id" => "text-only"}) == nil
+
+      # A modality list that names modalities but not "image" is reported
+      # as `nil` too: discovery never claims "known to have none", so a
+      # consumer reads `nil` as "no image input claimed".
+      assert Discover.extract_multi_modal_from_model(%{
+               "id" => "text-only",
+               "input_modalities" => ["text"]
+             }) == nil
+
+      assert Discover.extract_multi_modal_from_model(%{
+               "id" => "text-only",
+               "architecture" => %{"input_modalities" => ["text", "file"]}
+             }) == nil
+
+      # An empty list is still a list, so it takes the same branch.
+      assert Discover.extract_multi_modal_from_model(%{
+               "id" => "text-only",
+               "input_modalities" => []
+             }) == nil
+
+      # A malformed (non-list) modality field is not a signal either.
+      assert Discover.extract_multi_modal_from_model(%{
+               "id" => "text-only",
+               "input_modalities" => "image"
+             }) == nil
+
+      # An Anthropic capability flag that is false, empty or not a map.
+      assert Discover.extract_multi_modal_from_model(%{
+               "id" => "claude-3-opus-20240229",
+               "capabilities" => %{"image_input" => %{"supported" => false}}
+             }) == nil
+
+      assert Discover.extract_multi_modal_from_model(%{
+               "id" => "claude-3-opus-20240229",
+               "capabilities" => %{"image_input" => %{}}
+             }) == nil
+
+      assert Discover.extract_multi_modal_from_model(%{
+               "id" => "claude-3-opus-20240229",
+               "capabilities" => "nope"
+             }) == nil
+    end
+
+    test "returns nil for a non-map entry" do
+      assert Discover.extract_multi_modal_from_model(nil) == nil
+      assert Discover.extract_multi_modal_from_model("not-a-model") == nil
+
+      assert Discover.extract_multi_modal_from_model([%{"input_modalities" => ["image"]}]) ==
+               nil
+    end
+
+    test "prefers a modality list over the capability flag, and nested over flat" do
+      assert Discover.extract_multi_modal_from_model(%{
+               "id" => "both-shapes",
+               "architecture" => %{"input_modalities" => ["text", "image"]},
+               "input_modalities" => ["text"]
+             }) == %{"input" => ["image"]}
+
+      # An explicit list is the stronger statement, so it is consulted
+      # first: a text-only list outranks a capability flag that says
+      # otherwise. (Flag-first would answer `%{"input" => ["image"]}`.)
+      assert Discover.extract_multi_modal_from_model(%{
+               "id" => "list-says-no-flag-says-yes",
+               "architecture" => %{"input_modalities" => ["text"]},
+               "capabilities" => %{"image_input" => %{"supported" => true}}
+             }) == nil
+    end
+  end
+
   describe "model id matching" do
     test "matches on exact id" do
       body = %{
