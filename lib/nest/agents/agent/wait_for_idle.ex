@@ -27,14 +27,33 @@ defmodule Nest.Agents.Agent.WaitForIdle do
   listing). Both paths use the listing, so a given agent gets the same
   disposition however it is named.
 
-  ## Bounded by elapsed time, never by a message count
+  ## Woken by events, bounded by the caller's deadline
 
-  The target's own streaming traffic (`chat:delta`, `chat_message`,
+  The wait is woken by the events that can change a target's disposition,
+  and by nothing else:
+
+    * a target's `{:chat_status, %{status: "idle"}}` frame on its own
+      topic — the status broadcast `Turn.run/6` emits whenever the derived
+      status changes, so an idle transition is always announced;
+    * a target's `:DOWN`. A target that is stopped or archived emits no
+      frame at all (the topic is keyed by name and a process that is gone
+      broadcasts nothing), so its monitor is the only event that reports it;
+    * the caller's own deadline, which is reported as an ordinary timeout
+      result.
+
+  The ordering is established by construction, never guessed: the
+  subscription (and the monitors) happen **before** the authoritative
+  status read, so a change made before that read is already visible to it
+  and a change made after it is delivered as an event. There is no window
+  between the two in which a target could go idle unobserved, which is what
+  a poll would be papering over — so there is no poll, and no
+  `receive ... after` slice other than the time left on the deadline.
+
+  Bounding the wait by received messages would be wrong for a different
+  reason: the target's own streaming traffic (`chat:delta`, `chat_message`,
   `shell:jobs`, ...) is broadcast on the same PubSub topic this process
-  subscribes to, so bounding the wait by received messages would let a
-  chatty target exhaust a long timeout in seconds (issue #20). The wait
-  is bounded only by a `System.monotonic_time/1` deadline; each
-  `receive ... after` slice is capped at the time remaining.
+  subscribes to, so a chatty target could exhaust a long timeout in seconds
+  (issue #20). The deadline is `System.monotonic_time/1`.
 
   Reaching the deadline is a normal result, not an error. The listing
   re-read is the authority, never the broadcast payload: a status broadcast
@@ -51,7 +70,11 @@ defmodule Nest.Agents.Agent.WaitForIdle do
   alias Nest.Messages.ToolCall
 
   @default_wait_ms 300_000
-  @wait_slice_ms 250
+
+  # The largest value `receive ... after` accepts. `:timeout` itself has no
+  # upper limit, so a wait longer than this re-arms rather than reporting an
+  # expiry it has not reached (see `loop/7`). Mirrors `ShellCmd`'s ceiling.
+  @max_after_ms 4_294_967_295
 
   @type partition :: %{
           idle: [String.t()],
@@ -118,24 +141,58 @@ defmodule Nest.Agents.Agent.WaitForIdle do
   idle (or gone); true waits until every target is idle (or gone). `monitor`
   is an optional caller monitor: a `:DOWN` aborts with `:caller_down` so an
   async watcher never outlives its agent.
+
+  The subscription and the target monitors are installed **before** the
+  authoritative status read, so a disposition change made after that read is
+  delivered as an event and one made before it is already visible to it.
+  There is no window between the two in which a target could go idle
+  unobserved, which is what the poll this replaced was papering over.
+
+  `initial` — the caller's own read, taken before the subscription — is the
+  reference for what `any` waits for: a target that was busy when the call was
+  made and is idle now is exactly the change `any` reports, however the two
+  reads are spaced. The caller's own `timeout` is the only wall-clock value
+  involved: it bounds the wait, and its expiry is the `{:timeout, partition}`
+  result.
   """
   @spec await(integer(), [String.t()], pos_integer(), boolean(), partition(), reference() | nil) ::
           {:ok, partition()} | {:timeout, partition()} | :caller_down
   def await(space_id, names, timeout, all?, initial, monitor \\ nil) do
-    deadline = System.monotonic_time(:millisecond) + timeout
     subscribe(space_id, names)
+    refs = monitor_targets(space_id, names)
 
     try do
+      current = partition(space_id, names)
       initial_busy = MapSet.new(initial.still_busy)
+      deadline = System.monotonic_time(:millisecond) + timeout
 
-      if met?(initial, initial_busy, all?) do
-        {:ok, initial}
+      if met?(current, initial_busy, all?) do
+        {:ok, current}
       else
         loop(space_id, names, initial_busy, deadline, timeout, all?, monitor)
       end
     after
+      Enum.each(refs, &Process.demonitor(&1, [:flush]))
       unsubscribe(space_id, names)
     end
+  end
+
+  # Monitor every target that has a live process, and return the refs so the
+  # wait can drop them on the way out. A target that is stopped or archived
+  # emits no frame at all (see the moduledoc), so its `:DOWN` is the event that
+  # reports it; the loop treats it exactly as it treats a status frame — as
+  # "re-read the authority".
+  #
+  # A persisted-only target has no process to monitor and the listing reports
+  # it `:idle`, so there is nothing to watch for — and nothing to start: the
+  # wait never brings an agent up (see "A read-only wait" above).
+  defp monitor_targets(space_id, names) do
+    Enum.flat_map(names, fn name ->
+      case Nest.Agents.Registry.lookup(space_id, name) do
+        {:ok, pid} -> [Process.monitor(pid)]
+        {:error, :not_found} -> []
+      end
+    end)
   end
 
   # The event is "the busy set shrank" for `any` and "the busy set is empty"
@@ -152,6 +209,9 @@ defmodule Nest.Agents.Agent.WaitForIdle do
     end
   end
 
+  # The event loop. Every wake-up is either a real event or the caller's
+  # deadline: the `after` value is the time left on the deadline, so a wake-up
+  # that is not an event *is* the expiry. There is no poll slice.
   defp loop(space_id, names, initial_busy, deadline, timeout, all?, monitor) do
     remaining = deadline - System.monotonic_time(:millisecond)
 
@@ -162,6 +222,13 @@ defmodule Nest.Agents.Agent.WaitForIdle do
         {:DOWN, ^monitor, :process, _pid, _reason} ->
           :caller_down
 
+        # A target died: a stopped or archived agent broadcasts nothing, so its
+        # monitor is the event that says "re-read". Any other `:DOWN` in this
+        # mailbox (a stale one, or one this process took for another reason)
+        # costs nothing but the read.
+        {:DOWN, _ref, :process, _pid, _reason} ->
+          recheck(space_id, names, initial_busy, deadline, timeout, all?, monitor)
+
         {:chat_status, %{status: "idle"}} ->
           recheck(space_id, names, initial_busy, deadline, timeout, all?, monitor)
 
@@ -171,8 +238,15 @@ defmodule Nest.Agents.Agent.WaitForIdle do
         _other ->
           loop(space_id, names, initial_busy, deadline, timeout, all?, monitor)
       after
-        min(wait_slice_ms(), remaining) ->
-          recheck(space_id, names, initial_busy, deadline, timeout, all?, monitor)
+        min(remaining, @max_after_ms) ->
+          # `remaining` is positive here, so this is either the caller's
+          # deadline or the `receive` ceiling: a wait longer than `after`
+          # accepts re-arms rather than reporting an expiry it has not reached.
+          if remaining > @max_after_ms do
+            loop(space_id, names, initial_busy, deadline, timeout, all?, monitor)
+          else
+            {:timeout, partition(space_id, names)}
+          end
       end
     end
   end
@@ -383,8 +457,4 @@ defmodule Nest.Agents.Agent.WaitForIdle do
   # The default wall-clock wait, in milliseconds.
   @spec default_wait_ms() :: pos_integer()
   def default_wait_ms, do: @default_wait_ms
-
-  # The `receive ... after` slice used while polling for a wait, in milliseconds.
-  @spec wait_slice_ms() :: pos_integer()
-  defp wait_slice_ms, do: @wait_slice_ms
 end

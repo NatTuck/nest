@@ -204,6 +204,9 @@ defmodule Nest.Agents.Agent.Watch do
   end
 
   defp await({:agent_idle, space_id, names, timeout, all?}, monitor) do
+    # The reference read for what `any` waits for. It is taken before the
+    # subscription on purpose (`WaitForIdle.await/6` re-reads the authority
+    # after subscribing, so nothing can slip between the two).
     initial = WaitForIdle.partition(space_id, names)
 
     case WaitForIdle.await(space_id, names, timeout, all?, initial, monitor) do

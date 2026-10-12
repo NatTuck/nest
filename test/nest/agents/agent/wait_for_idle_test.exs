@@ -17,8 +17,9 @@ defmodule Nest.Agents.Agent.WaitForIdleTest do
   malformed `names`/`timeout`/`all` argument is rejected loudly.
 
   The wait is driven deterministically: the idle status broadcast is
-  already in the mailbox (or, for the timeout, a `timeout` below one
-  slice means the deadline has already passed), so no test sleeps.
+  already in the mailbox, so the loop is woken by a real event, and the
+  timeout case uses a `timeout` whose deadline has already passed. No test
+  sleeps and no test waits out a poll.
 
   The async (registration) mode lives in `WatchTest`.
   """
@@ -55,9 +56,10 @@ defmodule Nest.Agents.Agent.WaitForIdleTest do
   # Drive `Nest.Agents.list_agents_info_for_space/1` from a FIFO of space
   # snapshots: each read pops the next snapshot, and the last one sticks
   # once the list is exhausted. One read answers the initial status
-  # question and every slice recheck, so a frame can flip a target from
-  # busy to idle (or drop it from the space entirely). This is the only
-  # status source the wait reads — `Nest.Agents.get_info/2` is never
+  # question, one the wait's own authoritative read (taken after it
+  # subscribes), and one each event-driven recheck, so a frame can flip a
+  # target from busy to idle (or drop it from the space entirely). This is
+  # the only status source the wait reads — `Nest.Agents.get_info/2` is never
   # called, which is what keeps the wait read-only.
   defp stub_listing(frames) do
     id = {:wait_listing, System.unique_integer([:positive])}
@@ -111,7 +113,12 @@ defmodule Nest.Agents.Agent.WaitForIdleTest do
   end
 
   test "a busy target going idle reports the partition with no payload" do
+    # The first snapshot is the caller's reference read and the second the
+    # wait's own authoritative read; only the third — reached by the status
+    # frame the target broadcasts when it goes idle — shows bob idle, so the
+    # event is what the wait is woken by.
     stub_listing([
+      [agent("bob", :streaming), agent("carol", :streaming)],
       [agent("bob", :streaming), agent("carol", :streaming)],
       [agent("bob", :idle), agent("carol", :streaming)]
     ])
@@ -124,7 +131,7 @@ defmodule Nest.Agents.Agent.WaitForIdleTest do
 
     # A target that vanishes mid-wait (no live process, no persisted row)
     # is reported as gone rather than waited out to the timeout.
-    stub_listing([[agent("bob", :streaming)], []])
+    stub_listing([[agent("bob", :streaming)], [agent("bob", :streaming)], []])
 
     send(self(), {:chat_status, %{status: "idle"}})
     {gone, _log} = run(%{"names" => ["bob"]})
@@ -134,9 +141,11 @@ defmodule Nest.Agents.Agent.WaitForIdleTest do
   end
 
   test "all: true waits until every named target is idle" do
-    # The first snapshot still has carol busy, so `any` would return there;
-    # `all: true` must keep waiting until the second.
+    # The authoritative read still has carol busy, so `any` would return there;
+    # `all: true` must keep waiting until the event-driven recheck, where the
+    # third snapshot has both idle.
     stub_listing([
+      [agent("bob", :idle), agent("carol", :streaming)],
       [agent("bob", :idle), agent("carol", :streaming)],
       [agent("bob", :idle), agent("carol", :idle)]
     ])

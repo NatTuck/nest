@@ -13,6 +13,7 @@ defmodule Nest.Agents.Agent.WatchTest do
   import Mimic
 
   alias Nest.Agents.Agent
+  alias Nest.Agents.Agent.Broadcasts
   alias Nest.Agents.Agent.Machine
   alias Nest.Agents.Agent.ToolLoop
   alias Nest.Agents.Agent.Watch
@@ -47,10 +48,24 @@ defmodule Nest.Agents.Agent.WatchTest do
 
   defp agent(name, status), do: %{name: name, status: status}
 
+  # Wake a watcher the way the runtime does: the target's own `chat:status`
+  # frame on its topic (`Broadcasts.status/1`). Sent from inside an `eventually`
+  # loop because the watcher subscribes inside its own task, so a frame sent
+  # before that subscription is not delivered to it. This replaces what used to
+  # be a wait for the wait's own poll slice.
+  defp broadcast_idle(space_id, name) do
+    Phoenix.PubSub.broadcast(
+      Nest.PubSub,
+      Broadcasts.topic(space_id, name),
+      {:chat_status, %{status: "idle"}}
+    )
+  end
+
   # Drive `list_agents_info_for_space/1` from a FIFO of snapshots; the last
-  # sticks. The watcher reads the listing once up front and again on each
-  # slice, so a frame can flip a target busy → idle. `Elixir.Agent` is the
-  # stdlib queue process — `Agent` here is `Nest.Agents.Agent`.
+  # sticks. The wait reads the listing for its reference partition, once more
+  # after subscribing, and again on each event it is woken by, so a frame can
+  # flip a target busy → idle. `Elixir.Agent` is the stdlib queue process —
+  # `Agent` here is `Nest.Agents.Agent`.
   defp stub_listing(frames) do
     id = {:watch_listing, System.unique_integer([:positive])}
     queue = start_supervised!({Elixir.Agent, fn -> frames end}, id: id)
@@ -282,9 +297,10 @@ defmodule Nest.Agents.Agent.WatchTest do
     stub_listing([
       # resolve: the target is busy, so a watch is registered
       [agent(name, :idle), agent("bob", :streaming)],
-      # the watcher's initial read: still busy
+      # the watcher's reference read, then its authoritative read: still busy
       [agent(name, :idle), agent("bob", :streaming)],
-      # the watcher's recheck: bob is idle now, so it fires
+      [agent(name, :idle), agent("bob", :streaming)],
+      # the recheck the target's status frame drives: bob is idle now, so it fires
       [agent(name, :idle), agent("bob", :idle)]
     ])
 
@@ -296,11 +312,19 @@ defmodule Nest.Agents.Agent.WatchTest do
     # starts its turn.
     assert {:ok, :delivered} = Agent.deliver_internal(pid, "bob", "the report", :agent)
 
-    # The watcher fires within a slice and finds the watch satisfied: the caller
-    # is not woken a second time. `fired/3` unregisters before delivering, so
-    # assert the wake itself too — exactly one user turn (the report), no bare
-    # notice in the transcript or still queued.
-    assert Eventually.eventually(fn -> watchers(pid) == %{} end, timeout: 500)
+    # Then the target's own status frame — the event the wait is woken by. It
+    # fires, finds the watch satisfied by that delivery, and is skipped: the
+    # caller is not woken a second time. `fired/3` unregisters before
+    # delivering, so assert the wake itself too — exactly one user turn (the
+    # report), no bare notice in the transcript or still queued.
+    assert Eventually.eventually(
+             fn ->
+               broadcast_idle(space_id, "bob")
+               watchers(pid) == %{}
+             end,
+             timeout: 500
+           )
+
     await_idle(pid)
 
     texts = notices(pid)
@@ -320,8 +344,11 @@ defmodule Nest.Agents.Agent.WatchTest do
     space_id: space_id
   } do
     stub_listing([
+      # resolve, then the watcher's reference read, then its authoritative read
       [agent(name, :idle), agent("bob", :streaming)],
       [agent(name, :idle), agent("bob", :streaming)],
+      [agent(name, :idle), agent("bob", :streaming)],
+      # the recheck the target's status frame drives
       [agent(name, :idle), agent("bob", :idle)]
     ])
 
@@ -331,8 +358,15 @@ defmodule Nest.Agents.Agent.WatchTest do
     set_busy(pid)
     assert {:ok, :queued} = Agent.deliver_internal(pid, "bob", "the report", :agent)
 
-    # The watch fires satisfied: no bare notice.
-    assert Eventually.eventually(fn -> watchers(pid) == %{} end, timeout: 500)
+    # The target's status frame wakes the watch; it fires satisfied, so no bare
+    # notice is delivered on top of the queued body.
+    assert Eventually.eventually(
+             fn ->
+               broadcast_idle(space_id, "bob")
+               watchers(pid) == %{}
+             end,
+             timeout: 500
+           )
 
     [%ToolResult{content: content, is_error: false}] =
       ToolLoop.execute(ctx(pid, name, space_id), nil, [
