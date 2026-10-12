@@ -33,7 +33,7 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
   # every test-side timeout, so a genuinely stuck turn still fails — as a stuck
   # turn, not as a flake. (Measured on the spawn turn in `sub_agent_tools_test.exs`;
   # the turns in this file are the same class.)
-  @turn_fence_ms 2_000
+  @turn_fence_ms 1_000
 
   alias Nest.Agents.Agent
   alias Nest.Agents.Agent.Machine

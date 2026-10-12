@@ -195,14 +195,14 @@ defmodule NestWeb.AgentChannelTest do
       # after the rejoin matches the *new* channel's init, not the
       # stale one. Without this, the assertion sees the setup's
       # messageCount = 0 and the test would pass for the wrong reason.
-      assert_push "init", _setup_init, 2000
+      assert_push "init", _setup_init, 1_000
 
       # Push one user message; the agent will respond, leaving 2 persisted messages.
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 2000
-      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 2000
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 1_000
+      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 1_000
 
       assert_receive {:chat_status, %{status: "idle"}}, 500
 
@@ -223,7 +223,7 @@ defmodule NestWeb.AgentChannelTest do
       {:ok, _, _new_socket} =
         subscribe_and_join(connected, NestWeb.AgentChannel, "agent:#{space_id}:#{id}")
 
-      assert_push "init", payload, 2000
+      assert_push "init", payload, 1_000
       assert payload["messageCount"] == 3
     end
   end

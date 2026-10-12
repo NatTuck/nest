@@ -40,7 +40,7 @@ defmodule Nest.Agents.SubAgentToolsHelpers do
   # failure missed, and it is also the `#21` cap on every test-side timeout (and
   # so on ExUnit's per-test timeout too), so a stuck turn still fails — as a
   # stuck turn, not as a flake.
-  @turn_fence_ms 2_000
+  @turn_fence_ms 1_000
 
   @doc """
   The turn fence (`#{@turn_fence_ms}` ms) for a test's own `eventually/2`.

@@ -164,7 +164,7 @@ defmodule Nest.Agents.AgentStopTest do
       # auto-resuming.
       assert :ok = Agent.stop_chat(pid, self())
 
-      assert_receive {:chat_status, %{status: "idle"}}, 2000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
     end
   end
 
@@ -184,7 +184,7 @@ defmodule Nest.Agents.AgentStopTest do
       Agent.stop_chat(pid, self())
       Agent.stop_chat(pid, self())
 
-      assert_receive {:chat_status, %{status: "idle"}}, 2000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       # After the stop, the agent is in a clean state. A new
       # chat turn should work normally.
@@ -195,7 +195,7 @@ defmodule Nest.Agents.AgentStopTest do
       # avoids mailbox pollution from the first turn that
       # could otherwise match the second turn's assertions
       # in a flaky way.
-      assert_receive {:chat_status, %{status: "idle"}}, 2000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
       assert_receive {:chat_message, {:user, %{index: 3}}}, 500
       assert_receive {:chat_message, {:assistant, _}}, 500
     end
@@ -215,7 +215,7 @@ defmodule Nest.Agents.AgentStopTest do
       assert_receive {:chat_delta, _}, 500
 
       Agent.stop_chat(pid, self())
-      assert_receive {:chat_status, %{status: "idle"}}, 2000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       # The `cancelled` flag must be cleared on the next turn,
       # otherwise a pre-flight compaction's resume
@@ -232,7 +232,7 @@ defmodule Nest.Agents.AgentStopTest do
       # the user message first, which can flake when the
       # first turn's stale messages pollute the test
       # process's mailbox.
-      assert_receive {:chat_status, %{status: "idle"}}, 2000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
       assert_receive {:chat_message, {:user, %{index: 3}}}, 500
 
       assert_receive {:chat_message,
@@ -266,7 +266,7 @@ defmodule Nest.Agents.AgentStopTest do
       assert_receive {:chat_delta, _}, 500
 
       Agent.stop_chat(pid, self())
-      assert_receive {:chat_status, %{status: "idle"}}, 2000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       # Immediately start a new chat. The previous chat's
       # HTTP worker may still be in flight; any late
@@ -274,7 +274,7 @@ defmodule Nest.Agents.AgentStopTest do
       MockClient.set_response("Second response")
       :ok = Agent.chat(pid, "Second turn")
 
-      assert_receive {:chat_status, %{status: "idle"}}, 2000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
       assert_receive {:chat_message, {:user, %{index: 3}}}, 500
 
       # Reaching the second response proves the Agent GenServer survived
@@ -304,7 +304,7 @@ defmodule Nest.Agents.AgentStopTest do
 
       assert :ok = Agent.stop_chat(pid, self())
 
-      assert_receive {:chat_status, %{status: "idle"}}, 2000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       state = :sys.get_state(pid, 500)
       assert Machine.status_for(state.live.machine) == :idle

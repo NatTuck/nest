@@ -69,12 +69,26 @@ Application.ensure_all_started(:nest)
 # JSONB decoding in Postgrex, app modules) at once and serialize on
 # that one process, which manifests as multi-second stalls. Eagerly
 # loading the hot modules before the suite starts removes the race.
+#
+# The endpoint's plug stack belongs in this list: `Plug.Static.init/1` in
+# particular is loaded on the first request, and a `page_controller_test` has
+# been observed burning its whole per-test deadline in `code_server.call/1`
+# waiting for exactly that. See `lib/nest_web/endpoint.ex`.
 for mod <- [
       Jason,
       Jason.Decoder,
       Jason.Encoder,
       Postgrex.Extensions.JSONB,
-      Postgrex.DefaultTypes
+      Postgrex.DefaultTypes,
+      Plug.Static,
+      Plug.RequestId,
+      Plug.Telemetry,
+      Plug.Parsers,
+      Plug.MethodOverride,
+      Plug.Head,
+      Plug.Session,
+      NestWeb.Router,
+      NestWeb.Endpoint
     ],
     Code.ensure_loaded?(mod) do
   :ok

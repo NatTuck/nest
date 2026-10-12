@@ -90,7 +90,7 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
 
       capture_log(fn ->
         :ok = Agent.chat(pid, "Loop until done")
-        assert_receive {:chat_status, %{status: "idle"}}, 2_000
+        assert_receive {:chat_status, %{status: "idle"}}, 1_000
       end)
 
       state = :sys.get_state(pid, 500)
@@ -148,7 +148,7 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
 
       capture_log(fn ->
         :ok = Agent.chat(pid, "Loop until done")
-        assert_receive {:chat_status, %{status: "idle"}}, 2_000
+        assert_receive {:chat_status, %{status: "idle"}}, 1_000
       end)
 
       state = :sys.get_state(pid, 500)
@@ -238,7 +238,7 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
       )
 
       :ok = Agent.chat(pid, "Loop until done")
-      assert_receive {:chat_status, %{status: "idle"}}, 2_000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       state = :sys.get_state(pid, 500)
 

@@ -88,7 +88,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
 
       :ok = Agent.chat(pid, "Hello")
 
-      assert_receive {:chat_status, %{status: "idle"}}, 2000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       state = :sys.get_state(pid, 500)
 
@@ -133,7 +133,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
 
       :ok = Agent.chat(pid, "Run a command")
 
-      assert_receive {:chat_status, %{status: "idle"}}, 2000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       state = :sys.get_state(pid, 500)
 
@@ -172,7 +172,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
         })
 
       :ok = Agent.chat(pid, "Loop until done")
-      assert_receive {:chat_status, %{status: "idle"}}, 2000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       state = :sys.get_state(pid, 500)
 
@@ -290,7 +290,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
 
       # The Agent broadcasts `chat:status: streaming` when the
       # chat turn starts streaming.
-      assert_receive {:chat_status, %{status: "streaming"}}, 2000
+      assert_receive {:chat_status, %{status: "streaming"}}, 1_000
 
       # Wait for at least one delta to be processed so the
       # Agent's `streaming_acc` mirror has content to finalize.
@@ -304,7 +304,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
       # process.
       Agent.stop_chat(pid, self())
 
-      assert_receive {:chat_status, %{status: "idle"}}, 2000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       state = :sys.get_state(pid, 500)
 
@@ -355,7 +355,7 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
       capture_log(fn ->
         :ok = Agent.chat(pid, "Hello")
 
-        assert_receive {:chat_status, %{status: "idle"}}, 2000
+        assert_receive {:chat_status, %{status: "idle"}}, 1_000
       end)
 
       state = :sys.get_state(pid, 500)
@@ -377,13 +377,13 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
         })
 
       :ok = Agent.chat(pid, "First")
-      assert_receive {:chat_status, %{status: "idle"}}, 2000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       first_info = Agent.get_public_info(pid)
       first_output = first_info.usage.output_tokens || 0
 
       :ok = Agent.chat(pid, "Second")
-      assert_receive {:chat_status, %{status: "idle"}}, 2000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       second_info = Agent.get_public_info(pid)
       second_output = second_info.usage.output_tokens || 0
@@ -406,10 +406,10 @@ defmodule Nest.Agents.Agent.TurnAcceptanceTest do
         })
 
       :ok = Agent.chat(pid, "First chat")
-      assert_receive {:chat_status, %{status: "idle"}}, 2000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       :ok = Agent.chat(pid, "Second chat")
-      assert_receive {:chat_status, %{status: "idle"}}, 2000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       state = :sys.get_state(pid, 500)
       indices = message_indices(state)

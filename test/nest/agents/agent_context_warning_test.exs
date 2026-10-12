@@ -103,13 +103,13 @@ defmodule Nest.Agents.AgentContextWarningTest do
     seed_past_25_percent(pid)
 
     :ok = Agent.chat(pid, "First message")
-    assert_receive {:chat_status, %{status: "idle"}}, 2_000
+    assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
     :ok = Agent.chat(pid, "Second message")
-    assert_receive {:chat_status, %{status: "idle"}}, 2_000
+    assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
     :ok = Agent.chat(pid, "Third message")
-    assert_receive {:chat_status, %{status: "idle"}}, 2_000
+    assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
     state = :sys.get_state(pid, 500)
 
@@ -153,7 +153,7 @@ defmodule Nest.Agents.AgentContextWarningTest do
     seed_past_25_percent(pid)
 
     :ok = Agent.chat(pid, "First message")
-    assert_receive {:chat_status, %{status: "idle"}}, 2_000
+    assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
     state = :sys.get_state(pid, 500)
 

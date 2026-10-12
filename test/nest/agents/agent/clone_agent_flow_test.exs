@@ -76,7 +76,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
   # max 1534 ms (39 of 40 over 500 ms) under 48 CPU burners. 2000 ms is ~100x
   # the in-suite median and is also the `#21` cap on every test-side timeout, so
   # a genuinely stuck turn still fails — as a stuck turn, not as a flake.
-  @turn_fence_ms 2_000
+  @turn_fence_ms 1_000
 
   test "a spawn's tool result is backgrounded, and the child's answer arrives as a message",
        %{vid: vid} do
@@ -128,7 +128,7 @@ defmodule Nest.Agents.Agent.CloneAgentFlowTest do
     assert_receive {:agent_created, %{"name" => child_name, "parentName" => ^parent_name}},
                    2_000
 
-    assert_receive {:child_chat_blocked, parent_pid}, 2_000
+    assert_receive {:child_chat_blocked, parent_pid}, 1_000
 
     space_id = AgentTestHelpers.current_space_id()
     {:ok, child_pid} = AgentsRegistry.lookup(space_id, child_name)

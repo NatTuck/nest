@@ -51,8 +51,8 @@ defmodule NestWeb.AgentChannelChatTest do
       ref1 = push(socket, "chat:message", %{"content" => "First"})
       assert_reply ref1, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 2000
-      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 2000
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 1_000
+      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 1_000
 
       # Fence each turn on its own `idle` before starting the next one:
       # turn 1's idle must be consumed here, or the final idle assertion
@@ -66,8 +66,8 @@ defmodule NestWeb.AgentChannelChatTest do
       ref2 = push(socket, "chat:message", %{"content" => "Second"})
       assert_reply ref2, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 3, "role" => "user"}, 2000
-      assert_push "chat:message", %{"index" => 4, "role" => "assistant"}, 2000
+      assert_push "chat:message", %{"index" => 3, "role" => "user"}, 1_000
+      assert_push "chat:message", %{"index" => 4, "role" => "assistant"}, 1_000
       assert_push "chat:status", %{status: "idle"}, 100
 
       # Sync from index 2: messages 3 and 4.
@@ -100,7 +100,7 @@ defmodule NestWeb.AgentChannelChatTest do
       assert_reply ref, :ok, %{}
 
       # Wait for completion
-      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 2000
+      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 1_000
 
       # Consume the turn's idle before syncing: otherwise the
       # `chat:status` push can sit in the socket mailbox ahead of the
@@ -229,8 +229,8 @@ defmodule NestWeb.AgentChannelChatTest do
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
-      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 2000
-      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 2000
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 1_000
+      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 1_000
 
       # Fence the turn's idle before asking for status: the assistant
       # message is appended before the turn finalizes, so without this
@@ -258,7 +258,7 @@ defmodule NestWeb.AgentChannelChatTest do
       assert_reply ref, :ok, %{}
 
       # Wait for completion
-      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 2000
+      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 1_000
 
       # Fence the turn's idle before asking for status (the assistant
       # message is appended before the turn finalizes).
@@ -294,7 +294,7 @@ defmodule NestWeb.AgentChannelChatTest do
       ref = push(socket, "chat:message", %{"content" => "Hello"})
       assert_reply ref, :ok, %{}
 
-      assert_push "chat:message", _payload, 2000
+      assert_push "chat:message", _payload, 1_000
 
       # Fence the turn's idle before syncing.
       assert_push "chat:status", %{status: "idle"}, 100
@@ -326,8 +326,8 @@ defmodule NestWeb.AgentChannelChatTest do
       assert_reply ref1, :ok, %{}
 
       # Wait for completion (user message first, then assistant)
-      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 2000
-      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 2000
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 1_000
+      assert_push "chat:message", %{"index" => 2, "role" => "assistant"}, 1_000
 
       # Fence the turn's idle before syncing.
       assert_push "chat:status", %{status: "idle"}, 100
@@ -362,7 +362,7 @@ defmodule NestWeb.AgentChannelChatTest do
           ref = push(socket, "chat:message", %{"content" => "Hello"})
           assert_reply ref, :ok, %{}
 
-          assert_push "chat:error", payload, 2000
+          assert_push "chat:error", payload, 1_000
           assert payload["index"] == 2
           assert is_binary(payload["content"])
           assert payload["content"] =~ "unavailable" or payload["content"] =~ "error"
@@ -432,7 +432,7 @@ defmodule NestWeb.AgentChannelChatTest do
               assert_reply ref, :ok, %{}
 
               # Wait for error broadcast
-              assert_push "chat:error", error_payload, 2000
+              assert_push "chat:error", error_payload, 1_000
               assert error_payload["index"] >= 0
               assert is_binary(error_payload["content"])
 
@@ -522,7 +522,7 @@ defmodule NestWeb.AgentChannelChatTest do
       ref = push(socket, "chat:message", %{"content" => "Hello"})
 
       assert_reply ref, :ok, %{}
-      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 2000
+      assert_push "chat:message", %{"index" => 1, "role" => "user"}, 1_000
 
       assert_receive {:chat_status, %{status: "idle"}}, 500
     end

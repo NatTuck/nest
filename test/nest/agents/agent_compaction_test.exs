@@ -323,8 +323,8 @@ defmodule Nest.Agents.AgentCompactionTest do
 
       :ok = Agent.chat(pid, "answer this")
 
-      assert_receive {:chat_compaction, %{marker: _}}, 2_000
-      assert_receive {:chat_status, %{status: "idle"}}, 2_000
+      assert_receive {:chat_compaction, %{marker: _}}, 1_000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       state = :sys.get_state(pid, 500)
       messages = state.chat_state.messages
@@ -457,7 +457,7 @@ defmodule Nest.Agents.AgentCompactionTest do
       # Single deterministic fence: `:chat_status "idle"` fires once
       # at the end. Read intermediate broadcasts races the BEAM
       # scheduler.
-      assert_receive {:chat_status, %{status: "idle"}}, 2_000
+      assert_receive {:chat_status, %{status: "idle"}}, 1_000
 
       state = :sys.get_state(pid, 500)
       messages = state.chat_state.messages

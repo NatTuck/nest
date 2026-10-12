@@ -144,7 +144,7 @@ defmodule Nest.Agents.ChatTaskCrashTest do
         # Agent's `chat_crashed/3` handler broadcasts
         # `chat:status: idle` after finalizing the partial
         # and transitioning out of `:streaming`.
-        assert_receive {:chat_status, %{status: "idle"}}, 2000
+        assert_receive {:chat_status, %{status: "idle"}}, 1_000
       end)
 
       # The agent is still alive and queryable. The `get_public_info/1`
