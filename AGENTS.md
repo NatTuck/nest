@@ -22,7 +22,10 @@ future, and stop.
 - **ABSOLUTELY NEVER** run the tests more than three times during a task unless
 the user explicitly requests it or you are in a run the test once, fix all newly
 discovered issues, repeat loop. We've lost *hours* to random "I'll just run the
-tests 20 times to collect stats" bullshit. This is **ABSOLUTELY prohibited**.
+tests 20 times to collect stats" bullshit. Test run loops are **ABSOLUTELY
+prohibited**.
+- Do not run `mix precommit` except exactly once during a pre-commit or review.
+Do normal testing by running `mix test` and/or `pnpm --dir assets test`.
 
 ## Important: Core Process Rules
 
@@ -81,8 +84,9 @@ missing rather than nothing.
 ### Before Commit
 
 - Read SMELLS.md. Check the proposed changes for code stench.
-- Run `mix precommit` and read the *full* output. No head/tail/grep, read the
-whole thing.
+- Run `mix precommit` **exactly once** and read the *full* output. No
+head/tail/grep, read the whole thing. The time limit can fail due to excess
+load; if that's likely, report it - absolutely do not re-run.
 - There's no such thing as "out of scope" or "pre-existing issue" for this step.
 Either we're 100% clean (no fails, no warnings, no style suggestions, no test
 log prints, etc) or we're not.
