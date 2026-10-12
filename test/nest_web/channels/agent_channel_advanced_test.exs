@@ -17,8 +17,9 @@ defmodule NestWeb.AgentChannelAdvancedTest do
   alias Nest.Messages.Tool
 
   # `:sys.replace_state/3` with an explicit timeout: OTP's default is 5000 ms,
-  # which is ExUnit's own per-test ceiling, so a wedged server would surface as
-  # a test timeout rather than as the stuck call it is (#21).
+  # well over both this suite's 500 ms test bound and ExUnit's 2000 ms per-test
+  # ceiling, so a wedged server surfaces as the stuck call it is rather than as
+  # a test timeout (#21).
   defp replace_state(pid, fun), do: :sys.replace_state(pid, fun, 500)
 
   setup :verify_on_exit!

@@ -75,20 +75,22 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
     Mimic.stub(MockClient, :run, fn request, opts ->
       send(test_pid, {:llm_request, request.messages, self()})
 
+      # This closure runs in the agent's HTTP worker, so `self()` here is that
+      # worker; `test_pid` is the process that called `park_llm_requests/1`
+      # (the test). We monitor the *test*, because the test going away is the
+      # only reason to give up the park.
+      #
+      # No `after` clause: release is the test's `release_llm/1` or the test
+      # process's own `:DOWN`, both events. See `park/3` for why the timer this
+      # replaced was a hazard rather than a safety net.
+      ref = Process.monitor(test_pid)
+
       receive do
         :release_llm -> :ok
-      after
-        # Safety valve only: it exists so a failing test cannot leave the HTTP
-        # worker (and with it the turn) parked for long.
-        #
-        # It must stay strictly longer than the turn fence
-        # (`SubAgentToolsHelpers.@turn_fence_ms`, 1_800 ms) for the same reason
-        # `park/3`'s valve does: a slow host must fail the fence, not silently
-        # flip the outcome the park pins. At 1_000 ms it was *shorter* than the
-        # fence, so it could flip the outcome instead of letting the fence
-        # report. 2_000 ms is the `#21` cap on any test-side timeout.
-        2_000 -> :ok
+        {:DOWN, ^ref, :process, ^test_pid, _reason} -> :ok
       end
+
+      Process.demonitor(ref, [:flush])
 
       Mimic.call_original(MockClient, :run, [request, opts])
     end)
@@ -120,10 +122,9 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
   `hold_result: true` it parks a second time *after* it, sending
   `{:send_delivered, worker}` and waiting for `:release_result` — so the batch is
   still in flight while the delivered message's turn runs, which is the shape
-  where the batch's own result arrives only once that turn has ended. Each park's
-  `after` is a safety valve (3 s — see `park/3`) so a failing test cannot leave
-  the worker parked for long; release a decisive park within one fence, as the
-  invariant on `park/3` requires.
+  where the batch's own result arrives only once that turn has ended. Each park
+  ends on the test's release or on the test process's own `:DOWN`, so a failing
+  test cannot leave the worker parked (see `park/3`).
   """
   @spec park_agent_sends(pid(), keyword()) :: :ok
   def park_agent_sends(pid, opts \\ []) do
@@ -161,8 +162,8 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
   the caller's batch is still in flight — the batch is backgrounded, not the
   answer queued behind it.
 
-  Both parks use the 3 s safety valve documented on `park/3`; release a decisive
-  park within one fence, as the invariant there requires.
+  Both parks end on the test's release or on the test process's own `:DOWN` —
+  see `park/3`; there is no timer on either path.
   """
   @spec park_agent_queries(pid(), keyword()) :: :ok
   def park_agent_queries(pid, opts \\ []) do
@@ -185,28 +186,42 @@ defmodule Nest.Agents.AgentTurnTestHelpers do
     Mimic.allow(Nest.Agents, self(), pid)
   end
 
-  # Park the worker until the test releases it.
+  # Park the worker until the test releases it — or until the test process
+  # itself ends.
   #
-  # The 3 s `after` is a safety valve, not a timing assumption — it only ever
-  # fires for a test that has already failed — and it is deliberately longer than
-  # a turn fence (2 s, `Nest.Agents.SubAgentToolsHelpers.turn_fence_ms/0`) so a
-  # slow host fails a fence instead of silently flipping the outcome a park pins;
-  # it stays under ExUnit's 5 s per-test timeout.
+  # Both exits are events, and there is deliberately **no timer**. The `after`
+  # clause this used to carry was a valve whose only job was "the owner went
+  # away"; the owner going away is directly observable, so a timer there was
+  # never a safety net — it was a race. It could fire while the owner was still
+  # running and let the worker proceed, silently flipping the outcome a decisive
+  # park pins instead of letting the test's own fence report the failure. A
+  # monitor cannot do that: `:DOWN` arrives only once the owner is gone.
   #
-  # INVARIANT (do not break this when editing a parked test): a *decisive* park —
-  # one whose release decides which outcome the test observes — must be released
-  # within one fence, and this valve must stay longer than that fence. Inserting
-  # an extra wait (an `eventually`, another `assert_receive`) between a decisive
-  # park and its release spends the margin between the fence and the valve, and
-  # then a slow host flips the pinned outcome instead of failing the fence.
-  defp park(test_pid, blocked, release, timeout \\ 2_000) do
+  # HISTORY (kept because the reason it was fragile still explains the shape of
+  # a parked test, but it is no longer a live constraint on any number): the
+  # valve was 3 s and had to stay *strictly longer* than a turn fence
+  # (`Nest.Agents.SubAgentToolsHelpers.turn_fence_ms/0`, 2 s), so that a slow
+  # host failed the fence rather than silently flipping a pinned outcome. `#21`
+  # caps every test-side timeout at 2 s, which made "valve > fence" impossible
+  # to satisfy. Removing the timer removes the constraint instead of trading one
+  # number against another.
+  #
+  # What still matters when editing a parked test: a *decisive* park — one whose
+  # release decides which outcome the test observes — must be released by the
+  # test itself. An extra wait (an `eventually`, another `assert_receive`)
+  # between a decisive park and its release is fine; a park whose release the
+  # test never reaches is now a loud ExUnit timeout rather than a quiet flip.
+  defp park(test_pid, blocked, release) do
     send(test_pid, {blocked, self()})
+
+    ref = Process.monitor(test_pid)
 
     receive do
       ^release -> :ok
-    after
-      timeout -> :ok
+      {:DOWN, ^ref, :process, ^test_pid, _reason} -> :ok
     end
+
+    Process.demonitor(ref, [:flush])
   end
 
   @doc "The text of a message's parts (\"\" for a message without parts)."

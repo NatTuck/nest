@@ -28,8 +28,9 @@ defmodule Nest.ModelsTest do
   alias Nest.Test.ModelsTestHelpers
 
   # `:sys.replace_state/3` with an explicit timeout: OTP's default is 5000 ms,
-  # which is ExUnit's own per-test ceiling, so a wedged server would surface as
-  # a test timeout rather than as the stuck call it is (#21).
+  # well over both this suite's 500 ms test bound and ExUnit's 2000 ms per-test
+  # ceiling, so a wedged server surfaces as the stuck call it is rather than as
+  # a test timeout (#21).
   defp replace_state(pid, fun), do: :sys.replace_state(pid, fun, 500)
 
   setup :set_mimic_global
@@ -259,14 +260,18 @@ defmodule Nest.ModelsTest do
         multi_modal: %{"input" => ["audio"]}
       }
 
-      replace_state(Models, fn state ->
-        static_config = %{
-          previous
-          | models: Map.put(previous.models, "pegasus-static-audio", static_model)
-        }
+      replace_state(
+        Models,
+        fn state ->
+          static_config = %{
+            previous
+            | models: Map.put(previous.models, "pegasus-static-audio", static_model)
+          }
 
-        %{state | static_config: static_config}
-      end)
+          %{state | static_config: static_config}
+        end,
+        500
+      )
 
       on_exit(fn ->
         replace_state(Models, fn state -> %{state | static_config: previous} end)
@@ -326,14 +331,18 @@ defmodule Nest.ModelsTest do
       models: []
     }
 
-    replace_state(Models, fn state ->
-      static_config = %{
-        previous
-        | providers: Map.put(previous.providers, "other-auto", provider)
-      }
+    replace_state(
+      Models,
+      fn state ->
+        static_config = %{
+          previous
+          | providers: Map.put(previous.providers, "other-auto", provider)
+        }
 
-      %{state | static_config: static_config}
-    end)
+        %{state | static_config: static_config}
+      end,
+      500
+    )
 
     on_exit(fn ->
       replace_state(Models, fn state -> %{state | static_config: previous} end)

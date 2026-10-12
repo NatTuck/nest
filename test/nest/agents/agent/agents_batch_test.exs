@@ -396,7 +396,12 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     # phase first: `{:stop, …}` on an idle agent is a no-op.
     state = await_idle(parent_pid)
     set_status(parent_pid, :streaming)
-    :sys.suspend(parent_pid)
+    # Explicit timeouts on both: `:sys.suspend/1` and `:sys.resume/1` otherwise
+    # rely on OTP's implicit 5 s ack deadline, which is over the `#21` cap. They
+    # get the cap rather than the 500 ms the `:sys.get_state` reads use, because
+    # they *change* the process's system state (a timeout here is a broken test,
+    # not a slow read) and because the ack is handled ahead of the mailbox.
+    :sys.suspend(parent_pid, 2_000)
     send(parent_pid, {:chat_stopped, self()})
 
     # The batch is launched while the parent is suspended, so its request cannot
@@ -411,7 +416,7 @@ defmodule Nest.Agents.Agent.AgentsBatchTest do
     # request), then let the parent run.
     assert Eventually.eventually(fn -> queued_messages(parent_pid) >= 2 end, timeout: 500)
 
-    :sys.resume(parent_pid)
+    :sys.resume(parent_pid, 2_000)
 
     # The stop was processed first and the request was refused: nothing was
     # spawned, nothing was started, and the parent was not told a batch was lost

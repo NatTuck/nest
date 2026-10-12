@@ -29,9 +29,9 @@ defmodule Nest.Agents.AgentPostToolCallContentTest do
   # mocked LLM call. 500 ms is not a bound for that under load — a whole mocked
   # turn measured p50 18.7 ms / max 34.3 ms across 40 samples in the full
   # suite, but p50 926 ms / max 1534 ms (39 of 40 over 500 ms) under 48 CPU
-  # burners. 2000 ms is ~100x the in-suite median and stays under ExUnit's 5 s
-  # per-test timeout, so a genuinely stuck turn still fails — as a stuck turn,
-  # not as a flake. (Measured on the spawn turn in `sub_agent_tools_test.exs`;
+  # burners. 2000 ms is ~100x the in-suite median and is also the `#21` cap on
+  # every test-side timeout, so a genuinely stuck turn still fails — as a stuck
+  # turn, not as a flake. (Measured on the spawn turn in `sub_agent_tools_test.exs`;
   # the turns in this file are the same class.)
   @turn_fence_ms 2_000
 

@@ -18,6 +18,22 @@ defmodule NestWeb.AgentChannelChatTest do
   alias Nest.Messages.Part
   alias Nest.Messages.Streaming
 
+  # `:sys.replace_state/3` with an explicit timeout: OTP's default is 5000 ms,
+  # well over both this suite's 500 ms test bound and ExUnit's 2000 ms per-test
+  # ceiling, so a wedged server surfaces as the stuck call it is rather than as
+  # a test timeout (#21).
+  defp replace_state(pid, fun), do: :sys.replace_state(pid, fun, 500)
+
+  # Force the agent's observable status (test-only; see `Machine.status_to_machine/2`).
+  defp force_status(pid, status) do
+    replace_state(pid, fn state ->
+      %{
+        state
+        | live: %{state.live | machine: Machine.status_to_machine(state.live.machine, status)}
+      }
+    end)
+  end
+
   setup :verify_on_exit!
 
   describe "handle_in(chat:sync)" do
@@ -122,7 +138,7 @@ defmodule NestWeb.AgentChannelChatTest do
         Streaming.new(5)
         |> Streaming.append_text("streaming ")
 
-      :sys.replace_state(agent_pid, fn state ->
+      replace_state(agent_pid, fn state ->
         %{state | live: %{state.live | streaming_acc: acc}}
       end)
 
@@ -387,7 +403,7 @@ defmodule NestWeb.AgentChannelChatTest do
               created_by_user_id: user.id
             })
 
-          :sys.replace_state(error_agent_pid, fn state ->
+          replace_state(error_agent_pid, fn state ->
             %{state | client_config: %{state.client_config | client: MockClient}}
           end)
 
@@ -441,15 +457,7 @@ defmodule NestWeb.AgentChannelChatTest do
     } do
       {:ok, agent_pid} = Supervisor.get_agent(space_id, id)
 
-      :sys.replace_state(agent_pid, fn state ->
-        %{
-          state
-          | live: %{
-              state.live
-              | machine: Machine.status_to_machine(state.live.machine, :compacting)
-            }
-        }
-      end)
+      force_status(agent_pid, :compacting)
 
       ref = push(socket, "chat:message", %{"content" => "during compaction"})
 
@@ -464,7 +472,7 @@ defmodule NestWeb.AgentChannelChatTest do
       # The `:compacting` status was fabricated for the disposition check
       # (there is no real turn). Restore idle so the teardown's
       # zero-in-flight-agents assertion holds.
-      :sys.replace_state(agent_pid, fn state ->
+      replace_state(agent_pid, fn state ->
         %{
           state
           | live: %{
@@ -483,19 +491,7 @@ defmodule NestWeb.AgentChannelChatTest do
     } do
       {:ok, agent_pid} = Supervisor.get_agent(space_id, id)
 
-      :sys.replace_state(agent_pid, fn state ->
-        %{
-          state
-          | live: %{
-              state.live
-              | machine:
-                  Machine.status_to_machine(
-                    state.live.machine,
-                    :compaction_failed
-                  )
-            }
-        }
-      end)
+      force_status(agent_pid, :compaction_failed)
 
       ref = push(socket, "chat:message", %{"content" => "after failure"})
 
@@ -512,19 +508,7 @@ defmodule NestWeb.AgentChannelChatTest do
       # push.
       {:ok, agent_pid} = Supervisor.get_agent(space_id, id)
 
-      :sys.replace_state(agent_pid, fn state ->
-        %{
-          state
-          | live: %{
-              state.live
-              | machine:
-                  Machine.status_to_machine(
-                    state.live.machine,
-                    :context_overflow
-                  )
-            }
-        }
-      end)
+      force_status(agent_pid, :context_overflow)
 
       ref = push(socket, "chat:message", %{"content" => "this won't fit"})
 
@@ -561,7 +545,7 @@ defmodule NestWeb.AgentChannelChatTest do
       # of being refused by the send guard. This test pins the
       # *forwarding* (the `:compacting` transition) and that the resume
       # completes.
-      :sys.replace_state(agent_pid, fn state ->
+      replace_state(agent_pid, fn state ->
         %{
           state
           | live: %{
@@ -668,15 +652,7 @@ defmodule NestWeb.AgentChannelChatTest do
     } do
       {:ok, agent_pid} = Supervisor.get_agent(space_id, id)
 
-      :sys.replace_state(agent_pid, fn state ->
-        %{
-          state
-          | live: %{
-              state.live
-              | machine: Machine.status_to_machine(state.live.machine, :compacting)
-            }
-        }
-      end)
+      force_status(agent_pid, :compacting)
 
       ref = push(socket, "chat:compact", %{})
 
@@ -685,15 +661,7 @@ defmodule NestWeb.AgentChannelChatTest do
       # The `:compacting` status was fabricated for the rejection check
       # (there is no real turn). Restore idle so the teardown's
       # zero-in-flight-agents assertion holds.
-      :sys.replace_state(agent_pid, fn state ->
-        %{
-          state
-          | live: %{
-              state.live
-              | machine: Machine.status_to_machine(state.live.machine, :idle)
-            }
-        }
-      end)
+      force_status(agent_pid, :idle)
     end
   end
 end
