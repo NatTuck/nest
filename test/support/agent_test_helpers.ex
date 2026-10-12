@@ -154,24 +154,28 @@ defmodule Nest.Agents.AgentTestHelpers do
 
     # Put the machine into the compactor's generating phase with an empty
     # staged request and a live worker ref, then deliver the HTTP response.
-    :sys.replace_state(agent_pid, fn state ->
-      machine = state.live.machine
+    :sys.replace_state(
+      agent_pid,
+      fn state ->
+        machine = state.live.machine
 
-      machine = %{
-        machine
-        | kind: :compaction,
-          phase: :generating,
-          entry: {:compaction, [], carried_entry},
-          work: %{
-            machine.work
-            | worker_kind: :http,
-              worker_ref: ref,
-              active_message_index: state.chat_state.next_message_index
-          }
-      }
+        machine = %{
+          machine
+          | kind: :compaction,
+            phase: :generating,
+            entry: {:compaction, [], carried_entry},
+            work: %{
+              machine.work
+              | worker_kind: :http,
+                worker_ref: ref,
+                active_message_index: state.chat_state.next_message_index
+            }
+        }
 
-      %{state | live: %{state.live | machine: machine}}
-    end)
+        %{state | live: %{state.live | machine: machine}}
+      end,
+      500
+    )
 
     send(
       agent_pid,
@@ -491,9 +495,13 @@ defmodule Nest.Agents.AgentTestHelpers do
   # calls MockClient.run/2 and finds this test's queue via
   # `opts[:agent_pid]`.
   defp swap_to_mock_client(pid) do
-    :sys.replace_state(pid, fn state ->
-      %{state | client_config: %{state.client_config | client: MockClient}}
-    end)
+    :sys.replace_state(
+      pid,
+      fn state ->
+        %{state | client_config: %{state.client_config | client: MockClient}}
+      end,
+      500
+    )
   end
 
   # Transfer any pre-existing queued items from the test-pid queue

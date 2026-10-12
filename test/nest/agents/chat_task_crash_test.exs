@@ -254,7 +254,9 @@ defmodule Nest.Agents.ChatTaskCrashTest do
         assert_receive :worker_blocked, 500
 
         worker =
-          eventually(fn -> :sys.get_state(pid).live.machine.work.active_worker end, timeout: 500)
+          eventually(fn -> :sys.get_state(pid, 500).live.machine.work.active_worker end,
+            timeout: 500
+          )
 
         # A raw exit signal (not trappable by the worker's own try/catch)
         # kills the worker before it can send a result. The turn's
@@ -267,7 +269,7 @@ defmodule Nest.Agents.ChatTaskCrashTest do
         assert content =~ "boom"
       end)
 
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
       assert Machine.status_for(state.live.machine) == :idle
       assert state.live.machine.work.active_worker == nil
     end
@@ -287,7 +289,7 @@ defmodule Nest.Agents.ChatTaskCrashTest do
         assert content =~ "no content"
       end)
 
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
 
       # No message in the list is empty.
       refute Enum.any?(state.chat_state.messages, fn

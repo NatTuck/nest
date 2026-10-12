@@ -138,21 +138,29 @@ defmodule NestWeb.AgentChannelAdvancedTest do
 
       {:ok, pid} = Supervisor.get_agent(space_id, id)
 
-      :sys.replace_state(pid, fn state ->
-        %{
-          state
-          | live: %{state.live | machine: Machine.owe_replies(state.live.machine, ["peer"])}
-        }
-      end)
+      :sys.replace_state(
+        pid,
+        fn state ->
+          %{
+            state
+            | live: %{state.live | machine: Machine.owe_replies(state.live.machine, ["peer"])}
+          }
+        end,
+        500
+      )
 
       ref = push(socket, "chat:status", %{})
       assert_reply ref, :ok, %{"owedReplies" => ["peer"]}
 
       # Discharge the debt before the test ends: the teardown stops the agent,
       # and a stop with an unpaid reply logs the accepted loss of it.
-      :sys.replace_state(pid, fn state ->
-        %{state | live: %{state.live | machine: Machine.discharge_all(state.live.machine)}}
-      end)
+      :sys.replace_state(
+        pid,
+        fn state ->
+          %{state | live: %{state.live | machine: Machine.discharge_all(state.live.machine)}}
+        end,
+        500
+      )
     end
   end
 
@@ -384,15 +392,19 @@ defmodule NestWeb.AgentChannelAdvancedTest do
 
       {:ok, agent_pid} = Supervisor.get_agent(space_id, id)
 
-      :sys.replace_state(agent_pid, fn state ->
-        %{
-          state
-          | chat_state: %{
-              state.chat_state
-              | messages: [tool_result_message | state.chat_state.messages]
-            }
-        }
-      end)
+      :sys.replace_state(
+        agent_pid,
+        fn state ->
+          %{
+            state
+            | chat_state: %{
+                state.chat_state
+                | messages: [tool_result_message | state.chat_state.messages]
+              }
+          }
+        end,
+        500
+      )
 
       sync_ref = push(socket, "chat:sync", %{"lastIndex" => -1})
       assert_reply sync_ref, :ok, %{"messages" => messages}
@@ -453,15 +465,19 @@ defmodule NestWeb.AgentChannelAdvancedTest do
 
       {:ok, agent_pid} = Supervisor.get_agent(space_id, id)
 
-      :sys.replace_state(agent_pid, fn state ->
-        %{
-          state
-          | chat_state: %{
-              state.chat_state
-              | messages: [message_with_api_logs | state.chat_state.messages]
-            }
-        }
-      end)
+      :sys.replace_state(
+        agent_pid,
+        fn state ->
+          %{
+            state
+            | chat_state: %{
+                state.chat_state
+                | messages: [message_with_api_logs | state.chat_state.messages]
+              }
+          }
+        end,
+        500
+      )
 
       sync_ref = push(socket, "chat:sync", %{"lastIndex" => -1})
       assert_reply sync_ref, :ok, %{"messages" => messages}

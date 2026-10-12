@@ -56,15 +56,19 @@ defmodule NestWeb.AgentChannelCompactionLoopTest do
   } do
     {:ok, agent_pid} = Supervisor.get_agent(space_id, agent_id)
 
-    :sys.replace_state(agent_pid, fn %Agent{live: cs} = state ->
-      %{
-        state
-        | live: %{
-            cs
-            | machine: Machine.status_to_machine(cs.machine, :compaction_loop_detected)
-          }
-      }
-    end)
+    :sys.replace_state(
+      agent_pid,
+      fn %Agent{live: cs} = state ->
+        %{
+          state
+          | live: %{
+              cs
+              | machine: Machine.status_to_machine(cs.machine, :compaction_loop_detected)
+            }
+        }
+      end,
+      500
+    )
 
     ref = push(socket, "chat:message", %{"content" => "trying to send", "mode" => "chat"})
 
@@ -83,25 +87,29 @@ defmodule NestWeb.AgentChannelCompactionLoopTest do
        } do
     {:ok, agent_pid} = Supervisor.get_agent(space_id, id)
 
-    :sys.replace_state(agent_pid, fn %Agent{live: cs} = state ->
-      %{
-        state
-        | live: %{
-            cs
-            | machine: %{
-                Machine.status_to_machine(cs.machine, :compaction_loop_detected)
-                | loop_count: 4
-              }
-          }
-      }
-    end)
+    :sys.replace_state(
+      agent_pid,
+      fn %Agent{live: cs} = state ->
+        %{
+          state
+          | live: %{
+              cs
+              | machine: %{
+                  Machine.status_to_machine(cs.machine, :compaction_loop_detected)
+                  | loop_count: 4
+                }
+            }
+        }
+      end,
+      500
+    )
 
     ref = push(socket, "chat:loop-detected-ok", %{})
     assert_reply ref, :ok, %{}, 1_000
 
     # Status should transition back to :idle after the OK click,
     # and the counter resets to 0.
-    state = :sys.get_state(agent_pid)
+    state = :sys.get_state(agent_pid, 500)
 
     assert Machine.status_for(state.live.machine) == :idle
     assert state.live.machine.loop_count == 0

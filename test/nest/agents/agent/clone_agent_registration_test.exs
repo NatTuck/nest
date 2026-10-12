@@ -54,7 +54,7 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
     {:ok, parent_name, parent_pid, parent_id} = start_parent(vid)
     Mimic.allow(MockClient, self(), parent_pid)
     Mimic.allow(Nest.Agents, self(), parent_pid)
-    :sys.replace_state(parent_pid, &swap_to_mock/1)
+    :sys.replace_state(parent_pid, &swap_to_mock/1, 500)
     MockClient.start_link(parent_pid)
 
     # The worker is the test process. The agent should
@@ -64,7 +64,7 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
       GenServer.call(
         parent_pid,
         {:spawn_agent_request, self(), %{query: "do the thing", clone_context: true}},
-        5_000
+        2_000
       )
 
     assert is_binary(child_name)
@@ -91,14 +91,14 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
     {:ok, parent_name, parent_pid, _parent_id} = start_parent(vid)
     Mimic.allow(MockClient, self(), parent_pid)
     Mimic.allow(Nest.Agents, self(), parent_pid)
-    :sys.replace_state(parent_pid, &swap_to_mock/1)
+    :sys.replace_state(parent_pid, &swap_to_mock/1, 500)
     MockClient.start_link(parent_pid)
 
     {:ok, child_name} =
       GenServer.call(
         parent_pid,
         {:spawn_agent_request, self(), %{query: "x", clone_context: true}},
-        5_000
+        2_000
       )
 
     :ok = Supervisor.stop_agent(AgentTestHelpers.current_space_id(), parent_name)
@@ -115,20 +115,20 @@ defmodule Nest.Agents.Agent.CloneAgentRegistrationTest do
     space_id = AgentTestHelpers.current_space_id()
     Mimic.allow(MockClient, self(), parent_pid)
     Mimic.allow(Nest.Agents, self(), parent_pid)
-    :sys.replace_state(parent_pid, &swap_to_mock/1)
+    :sys.replace_state(parent_pid, &swap_to_mock/1, 500)
     MockClient.start_link(parent_pid)
 
     # Force the parent to max depth — a clone at max depth still
     # has `agents-spawn` in its (inherited) tool list, so the
     # spawn must be rejected at runtime.
     max = Config.configured_max_depth()
-    :sys.replace_state(parent_pid, &%{&1 | depth: max})
+    :sys.replace_state(parent_pid, &%{&1 | depth: max}, 500)
 
     assert {:error, :max_depth_reached} =
              GenServer.call(
                parent_pid,
                {:spawn_agent_request, self(), %{query: "x", clone_context: true}},
-               5_000
+               2_000
              )
 
     on_exit(fn -> _ = Supervisor.stop_agent(space_id, parent_name) end)

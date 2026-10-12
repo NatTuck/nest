@@ -76,11 +76,11 @@ defmodule Nest.Agents.AgentStreamErrorTest do
       # The in-process turn clears its worker as `llm_error` idles the
       # agent, so wait for it to clear rather than reading immediately.
       assert eventually(
-               fn -> :sys.get_state(pid).live.machine.work.active_worker == nil end,
+               fn -> :sys.get_state(pid, 500).live.machine.work.active_worker == nil end,
                timeout: 1_000
              )
 
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
       assert Machine.status_for(state.live.machine) == :idle
     end
 
@@ -138,7 +138,7 @@ defmodule Nest.Agents.AgentStreamErrorTest do
   # same budget.
   defp await_idle(pid) do
     assert eventually(
-             fn -> Machine.status_for(:sys.get_state(pid).live.machine) == :idle end,
+             fn -> Machine.status_for(:sys.get_state(pid, 500).live.machine) == :idle end,
              timeout: 1_000
            )
   end

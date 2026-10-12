@@ -105,7 +105,7 @@ defmodule Nest.Agents.AgentStopTest do
 
       assert_receive {:chat_status, %{status: "idle"}}, 500
 
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
 
       # No message in the list is empty.
       refute Enum.any?(state.chat_state.messages, fn
@@ -306,7 +306,7 @@ defmodule Nest.Agents.AgentStopTest do
 
       assert_receive {:chat_status, %{status: "idle"}}, 2000
 
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
       assert Machine.status_for(state.live.machine) == :idle
       assert state.live.machine.work.active_worker == nil
       assert state.live.cancelled == false
@@ -320,24 +320,28 @@ defmodule Nest.Agents.AgentStopTest do
 
       # Busy status with no worker to stop (e.g. the turn already
       # finished). Stop must recover synchronously.
-      :sys.replace_state(pid, fn state ->
-        %{
-          state
-          | live: %{
-              state.live
-              | machine:
-                  Machine.status_to_machine(
-                    state.live.machine,
-                    :executing_tools
-                  )
-            }
-        }
-      end)
+      :sys.replace_state(
+        pid,
+        fn state ->
+          %{
+            state
+            | live: %{
+                state.live
+                | machine:
+                    Machine.status_to_machine(
+                      state.live.machine,
+                      :executing_tools
+                    )
+              }
+          }
+        end,
+        500
+      )
 
       assert :ok = Agent.stop_chat(pid, self())
 
       assert_receive {:chat_status, %{status: "idle"}}, 500
-      assert Machine.status_for(:sys.get_state(pid).live.machine) == :idle
+      assert Machine.status_for(:sys.get_state(pid, 500).live.machine) == :idle
     end
   end
 

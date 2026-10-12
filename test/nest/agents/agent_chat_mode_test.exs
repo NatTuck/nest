@@ -14,9 +14,9 @@ defmodule Nest.Agents.AgentChatModeTest do
   # mocked LLM call. 500 ms is not a bound for that under load — a whole mocked
   # turn measured p50 18.7 ms / max 34.3 ms across 40 samples in the full
   # suite, but p50 926 ms / max 1534 ms (39 of 40 over 500 ms) under 48 CPU
-  # burners. 2000 ms is ~100x the in-suite median and stays under ExUnit's 5 s
-  # per-test timeout, so a genuinely stuck turn still fails — as a stuck turn,
-  # not as a flake. (Measured on the spawn turn in `sub_agent_tools_test.exs`;
+  # burners. 2000 ms is ~100x the in-suite median and is also the `#21` cap on
+  # every test-side timeout, so a genuinely stuck turn still fails — as a stuck
+  # turn, not as a flake. (Measured on the spawn turn in `sub_agent_tools_test.exs`;
   # the turns in this file are the same class.)
   @turn_fence_ms 2_000
 
@@ -226,14 +226,14 @@ defmodule Nest.Agents.AgentChatModeTest do
         start_agent(%{model: %{name: "qwen3.5-plus"}, vocation_id: vocation.id})
 
       # Initial state: vocation default (lex-first: "build").
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
       assert state.live.mode == "build"
 
       # Send a chat with mode "plan". The agent's state.live.mode
       # should update to "plan".
       :ok = Agent.chat(pid, "Plan this", "plan")
       await_idle(pid)
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
       assert state.live.mode == "plan"
 
       # The next chat without an explicit mode arg uses the
@@ -242,7 +242,7 @@ defmodule Nest.Agents.AgentChatModeTest do
       # fallback.
       :ok = Agent.chat(pid, "And another")
       await_idle(pid)
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
       assert state.live.mode == "plan"
     end
 
@@ -271,7 +271,7 @@ defmodule Nest.Agents.AgentChatModeTest do
 
       # The fallback (vocation default, lex-first: "build") is
       # written to state.live.mode.
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
       assert state.live.mode == "build"
 
       # And reflected in the chat:status broadcast.
@@ -344,7 +344,7 @@ defmodule Nest.Agents.AgentChatModeTest do
   # one the test-teardown invariant checks. See `@turn_fence_ms` for the budget.
   defp await_idle(pid) do
     assert Eventually.eventually(
-             fn -> Machine.status_for(:sys.get_state(pid).live.machine) == :idle end,
+             fn -> Machine.status_for(:sys.get_state(pid, 500).live.machine) == :idle end,
              timeout: @turn_fence_ms
            )
   end

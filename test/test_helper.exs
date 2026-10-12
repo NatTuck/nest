@@ -33,6 +33,11 @@ Mimic.copy(Task.Supervisor)
 Mimic.copy(Nest.Sandbox)
 Mimic.copy(Nest.Tools.ShellCmd)
 
+# `timeout` is the per-test deadline. `#21` caps every test-side timeout at
+# 2000 ms, and this one is a test-side timeout like any other: no single test
+# may spend more of the suite's 5 s gate budget than the longest fence
+# (`Nest.Agents.SubAgentToolsHelpers.turn_fence_ms/0`) is allowed to wait.
+#
 # `max_cases` defaults to `schedulers_online * 2`. The suite is
 # DB- and message-passing-bound, and over-subscribing the schedulers
 # (32 cases on a 32-scheduler host) causes enough contention that the
@@ -40,7 +45,7 @@ Mimic.copy(Nest.Tools.ShellCmd)
 # both faster (less contention) and stable on the reference host while
 # preserving the default on small machines.
 ExUnit.configure(
-  timeout: 5_000,
+  timeout: 2_000,
   max_cases: min(System.schedulers_online() * 2, 24)
 )
 

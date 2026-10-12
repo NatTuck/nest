@@ -57,7 +57,7 @@ defmodule Nest.Agents.AgentToolsIterationsTest do
       # deterministic bound.
       assert eventually(
                fn ->
-                 Machine.status_for(:sys.get_state(pid).live.machine) == :idle
+                 Machine.status_for(:sys.get_state(pid, 500).live.machine) == :idle
                end,
                timeout: 1_000
              )

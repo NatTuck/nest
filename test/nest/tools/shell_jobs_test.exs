@@ -43,13 +43,13 @@ defmodule Nest.Tools.ShellJobsTest do
   # The tool's caller must not be left registered for the job's exit.
   # The manager owns the waiter list, so read it directly instead of
   # racing an OS kill against a fixed receive timeout.
-  defp waiters(id), do: Map.get(:sys.get_state(ShellJobs).waiters, id, [])
+  defp waiters(id), do: Map.get(:sys.get_state(ShellJobs, 500).waiters, id, [])
 
   # `echo` is fast, but the OS decides when it exits. Poll the manager's
   # authoritative status instead of racing the `shell-wait` timeout.
   defp wait_until_exited(key, id) do
     assert eventually(fn -> match?({:ok, {:exited, _}}, ShellJobs.status(key, id)) end,
-             timeout: 5_000
+             timeout: 2_000
            )
   end
 

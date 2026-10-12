@@ -396,7 +396,7 @@ defmodule Nest.AgentsTest do
       # transition past it.
       assert eventually(
                fn ->
-                 Machine.status_for(:sys.get_state(pid).live.machine) == :idle
+                 Machine.status_for(:sys.get_state(pid, 500).live.machine) == :idle
                end,
                timeout: 1_000
              )
@@ -492,36 +492,44 @@ defmodule Nest.AgentsTest do
 
       # Fabricate a streaming agent: `compact/3` must refuse rather than
       # stage a compaction on a turn that is already in flight.
-      :sys.replace_state(agent_pid, fn state ->
-        %{
-          state
-          | live: %{
-              state.live
-              | machine: Machine.status_to_machine(state.live.machine, :streaming)
-            }
-        }
-      end)
+      :sys.replace_state(
+        agent_pid,
+        fn state ->
+          %{
+            state
+            | live: %{
+                state.live
+                | machine: Machine.status_to_machine(state.live.machine, :streaming)
+              }
+          }
+        end,
+        500
+      )
 
       assert Agents.compact(space_id, name, "keep the API decisions") ==
                {:error, {:not_idle, :streaming}}
 
       # No compaction was staged: the machine is still the fabricated
       # streaming state, the loop counter and focus are untouched.
-      machine = :sys.get_state(agent_pid).live.machine
+      machine = :sys.get_state(agent_pid, 500).live.machine
       assert Machine.status_for(machine) == :streaming
       assert machine.loop_count == 0
       assert machine.work.focus == nil
 
       # Restore idle so the teardown's zero-in-flight-agents assertion holds.
-      :sys.replace_state(agent_pid, fn state ->
-        %{
-          state
-          | live: %{
-              state.live
-              | machine: Machine.status_to_machine(state.live.machine, :idle)
-            }
-        }
-      end)
+      :sys.replace_state(
+        agent_pid,
+        fn state ->
+          %{
+            state
+            | live: %{
+                state.live
+                | machine: Machine.status_to_machine(state.live.machine, :idle)
+              }
+          }
+        end,
+        500
+      )
     end
   end
 

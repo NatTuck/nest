@@ -72,12 +72,16 @@ defmodule Nest.TimelineTestHelpers do
   @doc "Force an agent's observable status (test-only; see `Machine.status_to_machine/2`)."
   @spec set_status(pid(), atom()) :: :ok
   def set_status(pid, status) do
-    :sys.replace_state(pid, fn state ->
-      %{
-        state
-        | live: %{state.live | machine: Machine.status_to_machine(state.live.machine, status)}
-      }
-    end)
+    :sys.replace_state(
+      pid,
+      fn state ->
+        %{
+          state
+          | live: %{state.live | machine: Machine.status_to_machine(state.live.machine, status)}
+        }
+      end,
+      500
+    )
   end
 
   @doc "Fill an agent's inbox with `count` queued peer entries."
@@ -93,9 +97,13 @@ defmodule Nest.TimelineTestHelpers do
       fulfilled_ids: []
     }
 
-    :sys.replace_state(pid, fn state ->
-      %{state | live: %{state.live | inbox: List.duplicate(entry, count)}}
-    end)
+    :sys.replace_state(
+      pid,
+      fn state ->
+        %{state | live: %{state.live | inbox: List.duplicate(entry, count)}}
+      end,
+      500
+    )
   end
 
   @doc "Create a distinct vocation for a spawned specialist; returns its slug."

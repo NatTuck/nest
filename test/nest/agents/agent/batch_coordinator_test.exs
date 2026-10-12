@@ -84,7 +84,7 @@ defmodule Nest.Agents.Agent.BatchCoordinatorTest do
 
     assert_receive {:registered, ^stand_in}, 500
 
-    ctx = %{Turn.build_ctx(:sys.get_state(parent_pid)) | agent_pid: gone, agent_name: name}
+    ctx = %{Turn.build_ctx(:sys.get_state(parent_pid, 500)) | agent_pid: gone, agent_name: name}
     tc = %ToolCall{name: "agents-batch", arguments: %{"items" => ["alpha"]}}
 
     log =

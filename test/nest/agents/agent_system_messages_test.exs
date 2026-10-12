@@ -45,7 +45,7 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
           vocation_id: programmer_vocation_id_for_test()
         })
 
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
       first = hd(state.chat_state.messages)
 
       assert match?({:system, %SystemMsg{}}, first)
@@ -90,10 +90,10 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
 
       capture_log(fn ->
         :ok = Agent.chat(pid, "Loop until done")
-        assert_receive {:chat_status, %{status: "idle"}}, 5000
+        assert_receive {:chat_status, %{status: "idle"}}, 2_000
       end)
 
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
 
       # The budget reminder is a {:user, _} message containing
       # the notice text, preceded by a {:assistant, _} attention
@@ -148,10 +148,10 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
 
       capture_log(fn ->
         :ok = Agent.chat(pid, "Loop until done")
-        assert_receive {:chat_status, %{status: "idle"}}, 5000
+        assert_receive {:chat_status, %{status: "idle"}}, 2_000
       end)
 
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
 
       # The final assistant has a different index from the
       # budget-reminder user message (regression: dual-counter
@@ -212,31 +212,35 @@ defmodule Nest.Agents.AgentSystemMessagesTest do
       # Force the context threshold to cross by seeding a
       # large user body and a small context_limit. The Case 1
       # pipeline injection fires on the user message arrival.
-      :sys.replace_state(pid, fn st ->
-        big_text = String.duplicate("x", 4_000)
+      :sys.replace_state(
+        pid,
+        fn st ->
+          big_text = String.duplicate("x", 4_000)
 
-        messages = [
-          {:system,
-           %SystemMsg{
-             index: 0,
-             parts: [%Part.Text{text: "Test system prompt."}],
-             api_logs: []
-           }},
-          {:user,
-           %Nest.Messages.User{index: 1, parts: [%Part.Text{text: big_text}], api_logs: []}}
-        ]
+          messages = [
+            {:system,
+             %SystemMsg{
+               index: 0,
+               parts: [%Part.Text{text: "Test system prompt."}],
+               api_logs: []
+             }},
+            {:user,
+             %Nest.Messages.User{index: 1, parts: [%Part.Text{text: big_text}], api_logs: []}}
+          ]
 
-        %{
-          st
-          | chat_state: %{st.chat_state | messages: messages},
-            llm_metrics: %{st.llm_metrics | context_limit: 10_000}
-        }
-      end)
+          %{
+            st
+            | chat_state: %{st.chat_state | messages: messages},
+              llm_metrics: %{st.llm_metrics | context_limit: 10_000}
+          }
+        end,
+        500
+      )
 
       :ok = Agent.chat(pid, "Loop until done")
-      assert_receive {:chat_status, %{status: "idle"}}, 5000
+      assert_receive {:chat_status, %{status: "idle"}}, 2_000
 
-      state = :sys.get_state(pid)
+      state = :sys.get_state(pid, 500)
 
       # With context_limit: 10_000, the 4000-char user body
       # (~643 tokens) crosses 25% (working budget ~1808 / 4
