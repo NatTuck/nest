@@ -28,41 +28,58 @@ Not changed, because they are **not** timeouts: `ShellCmd.default_timeout_ms() =
 `exit({:normal, {GenServer, :call, [..., 5000]}})` / `{:timeout, {GenServer,
 :call, [Nest.Models, :list, 5000]}}` simulate production error tuples.
 
-## 2. ⚠️ The global 2000 ms ceiling currently fails tests — needs a decision
+## 2. The global per-test ceiling stays at 5000 — it is a failure bound, not a wait
 
-`test_helper.exs`'s per-test ceiling came down from 5000 to 2000. At the same
-machine load:
+`test_helper.exs`'s per-test ceiling was briefly lowered 5000 → 2000 as part of
+the `#21` cap, on the reading that `@tag timeout:` is a test-side timeout and so
+in scope. **That is a category error, and it is reverted.**
+
+The ceiling is a **failure detector**: it turns a hung test into a failed test
+instead of a hang. It decides no outcome, so it is not one of the waits `#21`
+caps — fences, `receive ... after` clauses, `GenServer.call`/`:sys.*` timeouts,
+helper defaults — and every one of *those* in `test/` is at or under 2000 ms. A
+failure bound has exactly one correct property: it must sit comfortably above the
+worst-case legitimate test duration. The slowest single test here is **1680 ms
+serially** (next: 918 ms; `mix test --slowest`, seed 301962), so 2000 ms left
+~320 ms of headroom. Under 24-way concurrency that is not a bound but a coin
+flip, and it landed tails:
 
 | run | ceiling | result |
 |---|---|---|
-| baseline | 5000 | **2372 tests, 0 failures** |
-| seed 940660 | 2000 | 2372 tests, **9 failures** |
-| seed (quiet attempt) | 2000 | 2372 tests, **13 failures** |
+| baseline (main @ 3f4c0ec) | 5000 | 2372 tests, **0 failures** |
+| cleanup branch, seed 940660 | 2000 | 2372 tests, **9 failures** |
+| cleanup branch, quiet attempt | 2000 | 2372 tests, **13 failures** |
+| cap branch, seed 17475 | 2000 | 2369 tests, **9 failures** |
+| cap branch, seed 155072 | 2000 | 2369 tests, **11 failures** |
+| merged branch, seed 155072 | 2000 | 2372 tests, **6 failures** |
 
-**The failures are not "these tests need more than 2 s of work".** Reading the
-stack traces, they are almost entirely **serialization points** that the longer
-ceiling was hiding:
+A different set of tests each run — only one test was common to the cap branch's
+first two runs — which is the definition of a flaky suite, and `AGENTS.md` rates
+a sometimes-failing test as much worse than an always-failing one.
 
-- **6 of the 9** in the first run blocked in `Mimic.allow/3` →
-  `GenServer.call` on the **single global `Mimic.Coordinator`**. `start_agent/1`
-  performs three of these per test (`agent_test_helpers.ex:495`), and every test
-  in the suite shares one coordinator process.
-- one blocked in `code_server.call/1` (lazy module load inside
-  `Plug.Static.init`).
+**The failures were not "these tests need more than 2 s of work".** Every one
+blocked in a *serialization point* that the longer ceiling had been hiding:
+
+- **4 of the 6** in the merged run blocked in `Mimic.allow/3` →
+  `GenServer.call` on the **single global `Mimic.Coordinator`**
+  (`deps/mimic/lib/mimic.ex:344-347`). `start_agent/1` performs three of these
+  per test (`test/support/agent_test_helpers.ex:499`), and every test in the
+  suite shares that one coordinator process. It is a third-party library, so
+  this cannot be de-serialized without forking Mimic.
+- one blocked in `Nest.Agents.Supervisor.start_under_supervisor/2`
+  (`lib/nest/agents/supervisor.ex:107`).
+- one blocked in `code_server.call/1` (lazy module load inside the endpoint).
 - one blocked in `Postgrex.Protocol.recv_bind` (DB contention).
 
-That is a **real finding**: `Mimic.allow/3`'s global coordinator is a
-suite-wide serialization point, and a 5 s ceiling made it invisible. Fixing it
-(per-shard `allow`, or fewer calls per `start_agent/1`) is architectural and is
-**not** part of the easy pass.
+Both shared points are written up as their own work in §10. They are **not**
+fixed here: a supervisor-concurrency rewrite does not belong in a
+timeout-capping branch.
 
-**I could not cleanly attribute these to the ceiling versus load**, because two
-other agents were running the suite concurrently for the whole pass; the runs
-above are at load 6.9–10.5. The ceiling is nonetheless the discriminator: the
-identical suite is 0-failure at 5000 under the same load.
-
-**Decision needed:** fix the `Mimic.allow/3` serialization, or accept a per-test
-ceiling above 2000.
+**It also buys nothing for the gate.** The suite's 5 s budget
+(`scripts/precommit-test.sh`) is *throughput* across `max_cases` concurrent
+tests, not the deadline of any single test. The suite measured 6.4–8.3 s ExUnit
+with the ceiling at either value, so lowering it cannot move the suite toward
+5 s — it only converts slow tests into failed ones.
 
 ## 3. A fence at exactly the ceiling can never fire
 
@@ -209,3 +226,64 @@ ceiling has started exposing the `Mimic.allow/3` serialization in §2.
 
 All runs were taken while two other agents were running the suite concurrently,
 at load 6.9–10.5, so the wall times are upper bounds.
+
+## 10. The two shared serialization points — their own work, not part of #21
+
+Both were found by lowering the per-test ceiling and reading the stack traces.
+Both are real, and both deserve their own change with their own review. **Do not
+fold either into a timeout branch.**
+
+### 10a. `Nest.Agents.Supervisor.start_under_supervisor/2` serializes agent starts
+
+`lib/nest/agents/supervisor.ex:107` is a `GenServer.call` to the single
+`Nest.Agents.Supervisor`, and the `handle_call` behind it performs the *entire*
+agent start — the `agents` row insert, model/context-limit resolution, tmp-dir
+creation and the child spec — inside that one callback. With `max_cases: 24`, N
+tests starting an agent concurrently queue on that one process, so the Nth waits
+for all N−1 before its own work begins. The failure that exposes it:
+
+```
+** (ExUnit.TimeoutError) test timed out after 2000ms
+  code: {:ok, parent_name, parent_pid, _parent_id} = start_parent(vid)
+  stacktrace:
+    :gen.do_call/4
+    GenServer.call/3
+    lib/nest/agents/supervisor.ex:107: Nest.Agents.Supervisor.start_under_supervisor/2
+    lib/nest/agents/supervisor.ex:148: Nest.Agents.Supervisor.start_pre_spawned/3
+    test/support/agent_test_helpers.ex:142: Nest.Agents.AgentTestHelpers.start_agent/1
+    test/nest/agents/agent/clone_agent_registration_test.exs:164: start_parent/1
+```
+
+This is a **production scaling defect**, not a test problem: it is why
+agent-starting tests need milliseconds-to-seconds rather than tens of ms. The
+shape of a fix is to keep only registry/child-spec bookkeeping in the supervisor
+callback and let each start do its own DB work in the caller (or under a
+per-space supervisor) — a real design change with its own fallout.
+
+### 10b. `Mimic.allow/3`'s single global coordinator
+
+`test/support/agent_test_helpers.ex:499` (`allow_mimic_stubs/1`) calls
+`Mimic.allow/3` once per stubbed module per `start_agent/1` — three calls per
+agent start. Each is a `GenServer.call` to the single global `Mimic.Coordinator`
+(`deps/mimic/lib/mimic.ex:344-347`), so the whole suite serializes there. That is
+test-infrastructure cost and is **not** fixable without forking Mimic (or
+dropping Mimic for a per-process stub mechanism). Recorded so nobody spends
+another afternoon re-deriving it.
+
+```
+** (ExUnit.TimeoutError) test timed out after 2000ms
+  code: start_agent(%{
+  stacktrace:
+    :gen.do_call/4
+    GenServer.call/3
+    (mimic 2.4.2) lib/mimic.ex:345: Mimic.allow/3
+    test/support/agent_test_helpers.ex:499: Nest.Agents.AgentTestHelpers.allow_mimic_stubs/1
+    test/support/agent_test_helpers.ex:217: bridge_test_to_agent/3
+    test/support/agent_test_helpers.ex:146: start_agent/1
+```
+
+Measured cost: with the ceiling at 2000 ms these two points accounted for 5 of
+the 6 failures in the merged run (4 Mimic, 1 supervisor); the sixth was DB
+contention. With the ceiling back at 5000 ms the suite is green, so neither point
+is *currently* a failure — they are latent and load-dependent, and they are what
+make a 2000 ms ceiling unworkable rather than merely tight.
